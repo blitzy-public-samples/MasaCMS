@@ -31,6 +31,15 @@ import {
   type TraceCarrier,
 } from '../../src/tracing/propagation.js';
 import {
+  assertTraceContinuity,
+  checkTraceContinuity,
+  spansFromOtlpJsonLines,
+  toContinuitySpan,
+  TraceContinuityError,
+  type ContinuitySpan,
+  type SpanSelector,
+} from '../../src/tracing/continuity.js';
+import {
   flushTracing,
   MemorySpanExporter,
   shutdownTracing,
@@ -483,6 +492,324 @@ describe('tracing propagation', () => {
       expect(span?.events).toHaveLength(1);
       expect(span?.events[0]?.name).toBe('exception');
       expect(span?.events[0]?.attributes).toMatchObject(event);
+    });
+  });
+});
+
+describe('trace continuity', () => {
+  const TRACE_A = 'a'.repeat(32);
+  const TRACE_B = 'b'.repeat(32);
+  const ARCHIVE_CHAIN: SpanSelector[] = [
+    { name: 'POST', service: 'gateway', kind: SpanKind.SERVER },
+    { service: 'gateway', kind: SpanKind.CLIENT },
+    { name: 'POST', service: 'people', kind: SpanKind.SERVER },
+    'outbox.publish',
+    /^events\.consume /,
+  ];
+
+  function plain(name: string, traceId: string, spanId: string, parentSpanId?: string): ContinuitySpan {
+    return parentSpanId === undefined ? { name, traceId, spanId } : { name, traceId, spanId, parentSpanId };
+  }
+
+  async function hop<T>(serviceName: string, fn: () => Promise<T>): Promise<{ result: T; spans: ReadableSpan[] }> {
+    const exporter = new MemorySpanExporter();
+    await startTracing({ serviceName, version: '1.0.0', exporter });
+    try {
+      const result = await fn();
+      return { result, spans: await exported(exporter) };
+    } finally {
+      await shutdownTracing();
+    }
+  }
+
+  async function archiveTrace(consumer: 'extracted' | 'dropped'): Promise<ReadableSpan[]> {
+    const gateway = await hop('gateway', () =>
+      startSpan('POST', SpanKind.SERVER, () => startSpan('POST', SpanKind.CLIENT, () => injectHttpHeaders({}))),
+    );
+    const people = await hop('people', () =>
+      context.with(extractHttpContext(gateway.result, ROOT_CONTEXT), () =>
+        startSpan('POST', SpanKind.SERVER, () => startSpan('outbox.publish', SpanKind.PRODUCER, currentTraceparent)),
+      ),
+    );
+    const timesheets = await hop('timesheets', () => {
+      const consume = (): Promise<void> =>
+        startSpan('events.consume people.person.archived.v1', SpanKind.CONSUMER, () => undefined);
+      return consumer === 'extracted' ? withExtractedContext(people.result, consume) : context.with(ROOT_CONTEXT, consume);
+    });
+    return [...gateway.spans, ...people.spans, ...timesheets.spans];
+  }
+
+  afterEach(async () => {
+    await shutdownTracing();
+  });
+
+  it('passes an archive chain propagated across gateway, people and timesheets', async () => {
+    const spans = await archiveTrace('extracted');
+    const root = spans.find((span) => span.kind === SpanKind.SERVER && span.resource.attributes[ATTR_SERVICE_NAME] === 'gateway');
+
+    const result = assertTraceContinuity(spans, { expectedSpanNames: ARCHIVE_CHAIN });
+
+    expect(result).toEqual(checkTraceContinuity(spans, { expectedSpanNames: ARCHIVE_CHAIN }));
+    expect(result.ok).toBe(true);
+    expect(result.problems).toEqual([]);
+    expect(result.traceId).toBe(root?.spanContext().traceId);
+    expect(result.matched.map((span) => [span.name, span.service, span.kind])).toEqual([
+      ['POST', 'gateway', SpanKind.SERVER],
+      ['POST', 'gateway', SpanKind.CLIENT],
+      ['POST', 'people', SpanKind.SERVER],
+      ['outbox.publish', 'people', SpanKind.PRODUCER],
+      ['events.consume people.person.archived.v1', 'timesheets', SpanKind.CONSUMER],
+    ]);
+    expect(result.matched[0]).toEqual({
+      name: 'POST',
+      traceId: root?.spanContext().traceId,
+      spanId: root?.spanContext().spanId,
+      kind: SpanKind.SERVER,
+      service: 'gateway',
+    });
+  });
+
+  it('reports a broken chain and throws when the consumer drops the extracted context', async () => {
+    const spans = await archiveTrace('dropped');
+    const gatewayTrace = spans[0]?.spanContext().traceId;
+    const consumerTrace = spans.find((span) => span.kind === SpanKind.CONSUMER)?.spanContext().traceId;
+
+    const result = checkTraceContinuity(spans, { expectedSpanNames: ARCHIVE_CHAIN });
+
+    expect(consumerTrace).not.toBe(gatewayTrace);
+    expect(result).toEqual({
+      ok: false,
+      matched: [],
+      problems: [
+        'broken chain: expected spans do not share one traceId (' +
+          `POST@gateway(SERVER) -> [${gatewayTrace}], @gateway(CLIENT) -> [${gatewayTrace}], ` +
+          `POST@people(SERVER) -> [${gatewayTrace}], outbox.publish -> [${gatewayTrace}], ` +
+          `^events\\.consume  -> [${consumerTrace}])`,
+      ],
+    });
+    let thrown: unknown;
+    try {
+      assertTraceContinuity(spans, { expectedSpanNames: ARCHIVE_CHAIN });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(TraceContinuityError);
+    expect(thrown).toMatchObject({
+      name: 'TraceContinuityError',
+      message: `trace continuity broken: ${result.problems.join('; ')}`,
+      result,
+    });
+  });
+
+  it('accepts a consumer parented to the server span instead of the publish span', () => {
+    const spans = [
+      plain('consume', TRACE_A, '0000000000000004', '0000000000000002'),
+      plain('publish', TRACE_A, '0000000000000003', '0000000000000002'),
+      plain('server', TRACE_A, '0000000000000002', '0000000000000001'),
+      plain('gateway', TRACE_A, '0000000000000001'),
+    ];
+
+    const result = checkTraceContinuity(spans, { expectedSpanNames: ['gateway', 'publish', 'consume'] });
+
+    expect(result).toEqual({ ok: true, traceId: TRACE_A, matched: [spans[3], spans[1], spans[0]], problems: [] });
+  });
+
+  it('returns the first root trace whose chain is intact', () => {
+    const spans = [
+      plain('root', TRACE_A, '00000000000000a1'),
+      plain('leaf', TRACE_A, '00000000000000a2'),
+      plain('root', TRACE_B, '00000000000000b1'),
+      plain('leaf', TRACE_B, '00000000000000b2', '00000000000000b1'),
+    ];
+
+    const result = checkTraceContinuity(spans, { expectedSpanNames: ['root', /leaf/g] });
+
+    expect(result).toEqual({ ok: true, traceId: TRACE_B, matched: [spans[2], spans[3]], problems: [] });
+  });
+
+  it.each<{ name: string; selectors: SpanSelector[]; problems: string[] }>([
+    { name: 'an unmatched name', selectors: ['root', 'absent'], problems: ['missing span: absent'] },
+    {
+      name: 'unmatched pattern, service and kind selectors',
+      selectors: [/^ro/, { name: /^x/, service: 'svc' }, { kind: SpanKind.CONSUMER }, { service: 'people' }],
+      problems: ['missing span: ^x@svc', 'missing span: (CONSUMER)', 'missing span: @people'],
+    },
+    { name: 'an unmatched root', selectors: [{ name: 'gateway', kind: SpanKind.SERVER }], problems: ['missing span: gateway(SERVER)'] },
+    { name: 'no selectors', selectors: [], problems: ['no expected spans given'] },
+  ])('reports $name', ({ selectors, problems }) => {
+    const spans = [{ ...plain('root', TRACE_A, '0000000000000001'), kind: SpanKind.SERVER, service: 'gateway' }];
+
+    expect(checkTraceContinuity(spans, { expectedSpanNames: selectors })).toEqual({ ok: false, matched: [], problems });
+  });
+
+  it.each<{ name: string; spans: ContinuitySpan[]; problems: string[] }>([
+    {
+      name: 'a dangling parent',
+      spans: [plain('root', TRACE_A, '0000000000000001'), plain('leaf', TRACE_A, '0000000000000003', '0000000000000002')],
+      problems: ['dangling parent 0000000000000002 of leaf'],
+    },
+    {
+      name: 'a missing parent link',
+      spans: [plain('root', TRACE_A, '0000000000000001'), plain('leaf', TRACE_A, '0000000000000002')],
+      problems: ['no parent link: leaf'],
+    },
+    {
+      name: 'a span under another root',
+      spans: [
+        plain('root', TRACE_A, '0000000000000001'),
+        plain('other', TRACE_A, '0000000000000002'),
+        plain('leaf', TRACE_A, '0000000000000003', '0000000000000002'),
+      ],
+      problems: ['leaf does not descend from root'],
+    },
+    {
+      name: 'a parent cycle',
+      spans: [
+        plain('root', TRACE_A, '0000000000000001'),
+        plain('leaf', TRACE_A, '0000000000000002', '0000000000000003'),
+        plain('loop', TRACE_A, '0000000000000003', '0000000000000002'),
+      ],
+      problems: ['leaf does not descend from root'],
+    },
+  ])('reports $name', ({ spans, problems }) => {
+    expect(checkTraceContinuity(spans, { expectedSpanNames: ['root', 'leaf'] })).toEqual({ ok: false, matched: [], problems });
+  });
+
+  it('reports every failing match of the trace in which most selectors matched', () => {
+    const spans = [
+      plain('root', TRACE_A, '00000000000000a1'),
+      plain('root', TRACE_B, '00000000000000b1'),
+      plain('mid', TRACE_B, '00000000000000b2'),
+      plain('mid', TRACE_B, '00000000000000b3', '00000000000000ff'),
+      plain('leaf', TRACE_A, '00000000000000a2', '00000000000000a1'),
+      plain('leaf', TRACE_B, '00000000000000b4', '00000000000000b1'),
+    ];
+
+    expect(checkTraceContinuity(spans, { expectedSpanNames: ['root', 'mid', /leaf/g] })).toEqual({
+      ok: false,
+      matched: [],
+      problems: ['no parent link: mid', 'dangling parent 00000000000000ff of mid'],
+    });
+  });
+
+  it('prefixes a broken chain when the best trace still lacks selectors', () => {
+    const spans = [
+      plain('root', TRACE_A, '0000000000000001'),
+      plain('mid', TRACE_A, '0000000000000002'),
+      plain('leaf', TRACE_B, '0000000000000003'),
+    ];
+
+    expect(checkTraceContinuity(spans, { expectedSpanNames: ['root', 'mid', 'leaf'] }).problems).toEqual([
+      `broken chain: expected spans do not share one traceId (root -> [${TRACE_A}], mid -> [${TRACE_A}], leaf -> [${TRACE_B}])`,
+      'no parent link: mid',
+    ]);
+  });
+
+  it('matches every span for an empty selector', () => {
+    const spans = [plain('root', TRACE_A, '0000000000000001'), plain('child', TRACE_A, '0000000000000002', '0000000000000001')];
+
+    expect(checkTraceContinuity(spans, { expectedSpanNames: ['root', {}] })).toMatchObject({ ok: true, matched: [spans[0], spans[1]] });
+    expect(checkTraceContinuity([spans[0] as ContinuitySpan], { expectedSpanNames: ['root', {}] }).problems).toEqual([
+      'no parent link: *',
+    ]);
+  });
+
+  it('returns a span already in continuity shape unchanged', () => {
+    const span = plain('root', TRACE_A, '0000000000000001');
+
+    expect(toContinuitySpan(span)).toBe(span);
+  });
+
+  describe('spansFromOtlpJsonLines', () => {
+    const GATEWAY_LINE = JSON.stringify({
+      resourceSpans: [
+        {
+          resource: { attributes: [{ key: 'service.version', value: { stringValue: '1.0.0' } }, { key: 'service.name', value: { stringValue: 'gateway' } }] },
+          scopeSpans: [
+            {
+              scope: { name: '@opentelemetry/instrumentation-http' },
+              spans: [
+                { traceId: TRACE_A, spanId: '0000000000000001', parentSpanId: '', name: 'POST', kind: 2 },
+                { traceId: TRACE_A, spanId: '0000000000000002', parentSpanId: '0000000000000001', name: 'POST', kind: 'SPAN_KIND_CLIENT' },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    const PEOPLE_LINE = JSON.stringify({
+      resourceSpans: [
+        {
+          resource: { attributes: [{ key: 'service.name', value: { stringValue: 'people' } }] },
+          instrumentationLibrarySpans: [
+            {
+              spans: [
+                { traceId: TRACE_A, spanId: '0000000000000003', parentSpanId: '0000000000000002', name: 'POST', kind: 'SPAN_KIND_SERVER' },
+                { traceId: TRACE_A, spanId: '0000000000000004', parentSpanId: '0000000000000003', name: 'outbox.publish', kind: 4 },
+              ],
+            },
+          ],
+        },
+        {
+          scopeSpans: [
+            {
+              spans: [
+                { traceId: TRACE_B, spanId: '0000000000000005', kind: 0 },
+                { traceId: TRACE_B, spanId: '0000000000000006', name: 'odd', kind: 'SPAN_KIND_UNKNOWN' },
+              ],
+            },
+            {},
+          ],
+        },
+      ],
+    });
+
+    it('parses resource, scope and legacy library spans, skipping blank lines', () => {
+      const spans = spansFromOtlpJsonLines(`\n${GATEWAY_LINE}\r\n   \n${PEOPLE_LINE}\n`);
+
+      expect(spans).toStrictEqual([
+        { name: 'POST', traceId: TRACE_A, spanId: '0000000000000001', kind: SpanKind.SERVER, service: 'gateway' },
+        {
+          name: 'POST',
+          traceId: TRACE_A,
+          spanId: '0000000000000002',
+          parentSpanId: '0000000000000001',
+          kind: SpanKind.CLIENT,
+          service: 'gateway',
+        },
+        {
+          name: 'POST',
+          traceId: TRACE_A,
+          spanId: '0000000000000003',
+          parentSpanId: '0000000000000002',
+          kind: SpanKind.SERVER,
+          service: 'people',
+        },
+        {
+          name: 'outbox.publish',
+          traceId: TRACE_A,
+          spanId: '0000000000000004',
+          parentSpanId: '0000000000000003',
+          kind: SpanKind.PRODUCER,
+          service: 'people',
+        },
+        { name: '', traceId: TRACE_B, spanId: '0000000000000005' },
+        { name: 'odd', traceId: TRACE_B, spanId: '0000000000000006' },
+      ]);
+      expect(
+        checkTraceContinuity(spans, { expectedSpanNames: [{ service: 'gateway', kind: SpanKind.SERVER }, ...ARCHIVE_CHAIN.slice(1, 4)] }),
+      ).toMatchObject({ ok: true, traceId: TRACE_A });
+    });
+
+    it.each([
+      { name: 'an empty export', text: '' },
+      { name: 'a request without resource spans', text: '{}\nnull' },
+    ])('returns no spans for $name', ({ text }) => {
+      expect(spansFromOtlpJsonLines(text)).toEqual([]);
+    });
+
+    it('names the line of malformed JSON', () => {
+      expect(() => spansFromOtlpJsonLines(`${GATEWAY_LINE}\n\n{"resourceSpans": [`)).toThrow(/^malformed OTLP JSON on line 3: /);
     });
   });
 });
