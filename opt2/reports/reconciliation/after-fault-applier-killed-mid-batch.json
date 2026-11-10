@@ -1,0 +1,16 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "generatedBy": "migration/src/reconcile/",
+  "generatedAt": null,
+  "status": "pending-run",
+  "point": "after-fault-applier-killed-mid-batch",
+  "expectedTableVersion": "v0001",
+  "tableVersion": null,
+  "snapshotSeq": null,
+  "legacySource": "snapshot",
+  "tolerance": 0,
+  "measures": ["rowCount", "sha256", "differences", "fileManifest"],
+  "units": [],
+  "summary": { "units": null, "unitsWithDifferences": null, "orphans": null },
+  "result": "pending-run"
+}

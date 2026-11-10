@@ -1,0 +1,634 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "generatedBy": "harness/src/reporting/speed.ts",
+  "generatedAt": null,
+  "status": "pending-run",
+  "inputs": {
+    "activity": "opt2/speed/blitzy-activity.json",
+    "cloc": "opt2/inventory/cloc.json",
+    "inventory": "opt2/inventory/legacy-inventory.json",
+    "vitest": "services/<svc>/coverage/coverage-summary.json and vitest JSON reporter output"
+  },
+  "bases": {
+    "reviewMinutesPerRow": null,
+    "hoursApportionment": "share of output TypeScript lines when per-service bounds are missing"
+  },
+  "labels": [
+    "measured",
+    "estimated",
+    "derived",
+    "unavailable"
+  ],
+  "services": [
+    {
+      "service": "identity",
+      "folder": "services/identity",
+      "synthetic": false,
+      "fixtureModule": null,
+      "blitzyElapsedHours": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "humanReviewHours": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "cfmlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "fixtureSqlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "entities": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "endpoints": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "typescriptLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "tests": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "coverage": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "hoursPer1000CfmlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "hoursPerEntity": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      }
+    },
+    {
+      "service": "people",
+      "folder": "services/people",
+      "synthetic": false,
+      "fixtureModule": null,
+      "blitzyElapsedHours": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "humanReviewHours": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "cfmlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "fixtureSqlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "entities": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "endpoints": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "typescriptLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "tests": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "coverage": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "hoursPer1000CfmlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "hoursPerEntity": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      }
+    },
+    {
+      "service": "programs-sites",
+      "folder": "services/programs-sites",
+      "synthetic": false,
+      "fixtureModule": null,
+      "blitzyElapsedHours": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "humanReviewHours": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "cfmlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "fixtureSqlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "entities": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "endpoints": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "typescriptLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "tests": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "coverage": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "hoursPer1000CfmlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "hoursPerEntity": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      }
+    },
+    {
+      "service": "strategies-content",
+      "folder": "services/strategies-content",
+      "synthetic": false,
+      "fixtureModule": null,
+      "blitzyElapsedHours": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "humanReviewHours": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "cfmlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "fixtureSqlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "entities": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "endpoints": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "typescriptLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "tests": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "coverage": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "hoursPer1000CfmlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "hoursPerEntity": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      }
+    },
+    {
+      "service": "communications",
+      "folder": "services/communications",
+      "synthetic": true,
+      "fixtureModule": "communications",
+      "blitzyElapsedHours": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "humanReviewHours": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "cfmlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "fixtureSqlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "entities": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "endpoints": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "typescriptLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "tests": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "coverage": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "hoursPer1000CfmlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "hoursPerEntity": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      }
+    },
+    {
+      "service": "reporting",
+      "folder": "services/reporting",
+      "synthetic": true,
+      "fixtureModule": "reporting",
+      "blitzyElapsedHours": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "humanReviewHours": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "cfmlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "fixtureSqlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "entities": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "endpoints": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "typescriptLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "tests": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "coverage": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "hoursPer1000CfmlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "hoursPerEntity": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      }
+    },
+    {
+      "service": "surveys",
+      "folder": "services/surveys",
+      "synthetic": true,
+      "fixtureModule": "surveys",
+      "blitzyElapsedHours": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "humanReviewHours": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "cfmlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "fixtureSqlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "entities": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "endpoints": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "typescriptLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "tests": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "coverage": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "hoursPer1000CfmlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "hoursPerEntity": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      }
+    },
+    {
+      "service": "timesheets",
+      "folder": "services/timesheets",
+      "synthetic": true,
+      "fixtureModule": "timesheets",
+      "blitzyElapsedHours": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "humanReviewHours": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "cfmlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "fixtureSqlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "entities": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "endpoints": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "typescriptLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "tests": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "coverage": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "hoursPer1000CfmlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "hoursPerEntity": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      }
+    },
+    {
+      "service": "finance",
+      "folder": "services/finance",
+      "synthetic": true,
+      "fixtureModule": "finance",
+      "blitzyElapsedHours": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "humanReviewHours": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "cfmlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "fixtureSqlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "entities": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "endpoints": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "typescriptLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "tests": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "coverage": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "hoursPer1000CfmlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "hoursPerEntity": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      }
+    },
+    {
+      "service": "e-signature",
+      "folder": "services/e-signature",
+      "synthetic": true,
+      "fixtureModule": "esignature",
+      "blitzyElapsedHours": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "humanReviewHours": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "cfmlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "fixtureSqlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "entities": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "endpoints": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "typescriptLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "tests": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "coverage": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "hoursPer1000CfmlLines": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      },
+      "hoursPerEntity": {
+        "value": null,
+        "label": "pending-run",
+        "basis": null
+      }
+    }
+  ]
+}

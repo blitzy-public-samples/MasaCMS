@@ -1,0 +1,10 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "generatedBy": "migration/src/windows/",
+  "generatedAt": null,
+  "status": "pending-run",
+  "unitIds": "opt2/table-ownership.json units[].unit",
+  "flagThresholdMs": 5000,
+  "windows": [],
+  "summary": { "count": null, "byOutcome": null, "overThreshold": null }
+}

@@ -1,0 +1,168 @@
+import { homedir } from 'node:os';
+import path from 'node:path';
+import { z } from 'zod';
+
+const SERVICE_NAME = /^[a-z][a-z0-9-]*$/;
+const HOST_PORT = /^(?:\[[0-9a-fA-F:.]+\]|[^\s:/[\]]+):\d{1,5}$/;
+const CLOUD_SQL_INSTANCE = /^[^:]+:[^:]+:[^:]+$/;
+const MODES = ['local', 'cloud'] as const;
+const ADAPTER_KEYS = ['OPT2_TASKS_ADAPTER', 'OPT2_STORAGE_ADAPTER'] as const;
+
+type Mode = (typeof MODES)[number];
+type AdapterKey = (typeof ADAPTER_KEYS)[number];
+
+const blankToUndefined = (value: unknown): unknown =>
+  typeof value === 'string' && value.trim() === '' ? undefined : value;
+
+// Plain z.url() also accepts scheme-like 'host:port' strings; every configured endpoint is HTTP.
+const httpUrl = () => z.url({ protocol: /^https?$/ }).transform((url) => url.replace(/\/+$/, ''));
+
+/** Optional variable; blank values count as absent. */
+export function optionalEnvString(): z.ZodPreprocess<z.ZodOptional<z.ZodString>>;
+export function optionalEnvString<T extends z.ZodType>(schema: T): z.ZodPreprocess<z.ZodOptional<T>>;
+export function optionalEnvString(schema: z.ZodType = z.string()): z.ZodPreprocess<z.ZodOptional<z.ZodType>> {
+  // The blank check must wrap `.optional()`: an outer `.optional()` would hand '' to the inner schema.
+  return z.preprocess(blankToUndefined, schema.optional());
+}
+
+/** Required variable; blank values count as absent. */
+export function requiredEnvString(): z.ZodPreprocess<z.ZodString>;
+export function requiredEnvString<T extends z.ZodType>(schema: T): z.ZodPreprocess<T>;
+export function requiredEnvString(schema: z.ZodType = z.string()): z.ZodPreprocess<z.ZodType> {
+  return z.preprocess(blankToUndefined, schema);
+}
+
+/** Required absolute http(s) URL, trailing `/` trimmed. */
+export function envUrl() {
+  return requiredEnvString(httpUrl());
+}
+
+/** Required TCP port. */
+export function envPort() {
+  return requiredEnvString().pipe(z.coerce.number<string>().int().min(1).max(65535));
+}
+
+const serviceUrlMap = z
+  .string()
+  .default('{}')
+  .transform((raw, ctx): unknown => {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      ctx.addIssue({ code: 'custom', message: 'OPT2_SERVICE_URLS must be a JSON object' });
+      return z.NEVER;
+    }
+  })
+  .pipe(z.record(z.string().regex(SERVICE_NAME), httpUrl()));
+
+/** Variables every OPT-2 process reads; gateway, migration and communications `.extend()` it with the builders above. */
+export const baseEnvSchema = z.object({
+  PORT: envPort(),
+  OPT2_SERVICE_NAME: requiredEnvString(z.string().regex(SERVICE_NAME)),
+  OPT2_ENV: requiredEnvString(z.enum(MODES)),
+  PG_HOST: optionalEnvString(),
+  PG_PORT: optionalEnvString(envPort()),
+  PG_DATABASE: optionalEnvString(),
+  PG_USER: optionalEnvString(),
+  PG_PASSWORD: optionalEnvString(),
+  OPT2_DB_AUTH: optionalEnvString(z.enum(['password', 'iam'])),
+  CLOUD_SQL_INSTANCE: optionalEnvString(z.string().regex(CLOUD_SQL_INSTANCE)),
+  PUBSUB_EMULATOR_HOST: optionalEnvString(z.string().regex(HOST_PORT)),
+  GOOGLE_CLOUD_PROJECT: optionalEnvString(),
+  OTEL_EXPORTER_OTLP_ENDPOINT: optionalEnvString(envUrl()),
+  OPT2_JWKS_URL: optionalEnvString(envUrl()),
+  OPT2_TOKEN_ISSUER: requiredEnvString(),
+  OPT2_TOKEN_AUDIENCE: requiredEnvString(),
+  OPT2_GATEWAY_URL: optionalEnvString(envUrl()),
+  OPT2_MIGRATION_URL: optionalEnvString(envUrl()),
+  OPT2_SERVICE_URLS: z.preprocess(blankToUndefined, serviceUrlMap),
+  OPT2_STATE_DIR: z.preprocess(
+    blankToUndefined,
+    z.string().default(() => path.join(homedir(), '.opt2', 'state')),
+  ),
+  OPT2_TASKS_ADAPTER: optionalEnvString(z.enum(MODES)),
+  OPT2_STORAGE_ADAPTER: optionalEnvString(z.enum(MODES)),
+  TZ: requiredEnvString(),
+});
+
+/** Any object schema that carries every base variable. */
+export type EnvSchema = z.ZodObject<typeof baseEnvSchema.shape>;
+
+/** Parsed variables of `S`, with the adapter choices always set. */
+export type LoadedEnv<S extends EnvSchema = typeof baseEnvSchema> = Omit<z.output<S>, AdapterKey> &
+  Record<AdapterKey, Mode>;
+
+/** Parsed base variables as `loadEnv` returns them. */
+export type BaseEnv = LoadedEnv<typeof baseEnvSchema>;
+
+/** Cross-variable rules of a parsed environment, as messages naming variables only. */
+export function envModeIssues(env: BaseEnv): string[] {
+  const issues: string[] = [];
+  const need = (when: string, keys: readonly (keyof BaseEnv)[]) => {
+    for (const key of keys) if (env[key] === undefined) issues.push(`${key}: is required when ${when}`);
+  };
+  const forbid = (when: string, key: keyof BaseEnv) => {
+    if (env[key] !== undefined) issues.push(`${key}: must be unset when ${when}`);
+  };
+  const runIn = (when: string, mode: Mode) => {
+    if (env.OPT2_ENV !== mode) issues.push(`OPT2_ENV: must be ${mode} when ${when}`);
+  };
+
+  if (env.OPT2_DB_AUTH === 'password') {
+    need('OPT2_DB_AUTH=password', ['PG_HOST', 'PG_PORT', 'PG_DATABASE', 'PG_USER', 'PG_PASSWORD']);
+    runIn('OPT2_DB_AUTH=password', 'local');
+  } else if (env.OPT2_DB_AUTH === 'iam') {
+    need('OPT2_DB_AUTH=iam', ['CLOUD_SQL_INSTANCE', 'PG_DATABASE', 'PG_USER']);
+    forbid('OPT2_DB_AUTH=iam', 'PG_PASSWORD');
+    runIn('OPT2_DB_AUTH=iam', 'cloud');
+  }
+  if (env.OPT2_ENV === 'cloud') {
+    need('OPT2_ENV=cloud', ['GOOGLE_CLOUD_PROJECT']);
+    forbid('OPT2_ENV=cloud', 'PUBSUB_EMULATOR_HOST');
+  } else {
+    need('OPT2_ENV=local', ['OPT2_JWKS_URL']);
+  }
+  for (const key of ADAPTER_KEYS) {
+    if (env[key] !== env.OPT2_ENV) issues.push(`${key}: must equal OPT2_ENV`);
+  }
+  return issues;
+}
+
+/** Start-up failure listing every invalid or missing variable. */
+export class EnvValidationError extends Error {
+  override readonly name = 'EnvValidationError';
+  readonly issues: string[];
+
+  constructor(issues: string[], service?: string) {
+    super([`${service === undefined ? '' : `${service}: `}invalid environment`, ...issues.map((i) => `  ${i}`)].join('\n'));
+    this.issues = issues;
+  }
+}
+
+const serviceNameOf = (source: NodeJS.ProcessEnv): string | undefined => {
+  const name = source.OPT2_SERVICE_NAME;
+  return name !== undefined && SERVICE_NAME.test(name) ? name : undefined;
+};
+
+/** Parses and checks `source` against `schema`; throws `EnvValidationError` on any issue. */
+export function loadEnv<S extends EnvSchema = typeof baseEnvSchema>(
+  schema: S = baseEnvSchema as S,
+  source: NodeJS.ProcessEnv = process.env,
+): Readonly<LoadedEnv<S>> {
+  const result = schema.safeParse(source, {
+    error: (issue) => (issue.input === undefined ? 'is required' : undefined),
+  });
+  if (!result.success) {
+    const issues = result.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`);
+    throw new EnvValidationError(issues, serviceNameOf(source));
+  }
+
+  const base = result.data as z.output<typeof baseEnvSchema>;
+  const adapters: Record<AdapterKey, Mode> = {
+    OPT2_TASKS_ADAPTER: base.OPT2_TASKS_ADAPTER ?? base.OPT2_ENV,
+    OPT2_STORAGE_ADAPTER: base.OPT2_STORAGE_ADAPTER ?? base.OPT2_ENV,
+  };
+  const issues = envModeIssues({ ...base, ...adapters });
+  if (issues.length > 0) throw new EnvValidationError(issues, base.OPT2_SERVICE_NAME);
+  return Object.freeze({ ...result.data, ...adapters }) as Readonly<LoadedEnv<S>>;
+}

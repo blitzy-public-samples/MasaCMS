@@ -1,0 +1,24 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "generatedBy": "harness/src/baseline/compare.ts",
+  "generatedAt": null,
+  "status": "pending-run",
+  "alsoWrittenTo": "/tmp/masa-baseline.json",
+  "expected": {
+    "provenance": "planning",
+    "source": "harness/legacy-baseline/expected-baseline.json",
+    "totals": { "bundles": 22, "specs": 683, "passed": 662, "failed": 21, "errored": 0 },
+    "failures": [
+      { "bundle": "muraWRM.core.tests.specs.mura.core.entities", "suite": "Testing Entity Schema Creation and Persistence", "specPattern": "<prop> should match schema datatype VARCHAR|FLOAT", "count": 19, "cause": "one data-driven loop", "source": { "path": "core/tests/specs/mura/core/entities.cfc", "lines": "460" } },
+      { "bundle": "muraWRM.core.tests.specs.mura.core.beanFeedSecurity", "suite": "Performance and Stress Tests", "spec": "should handle repeated sanitization efficiently", "count": 1, "cause": "1,000 ms timing threshold; ran at 1,177-1,387 ms", "timingSensitive": true, "source": { "path": "core/tests/specs/mura/core/beanFeedSecurity.cfc", "lines": "38-47" } },
+      { "bundle": "muraWRM.core.tests.specs.mura.core.utility", "suite": "Testing isPathLegal", "spec": "should reject an alttheme traversal path outside the webroot", "count": 1, "cause": "Lucee-specific expectation", "source": { "path": "core/tests/specs/mura/core/utility.cfc", "lines": "906" } }
+    ],
+    "excludedBundles": [
+      { "bundle": "muraWRM.core.tests.specs.mura.core.bundleValidatorSecurity", "reason": "does not compile on ACF: directoryCreate with two arguments", "source": { "path": "core/tests/specs/mura/core/bundleValidatorSecurity.cfc", "lines": "36" } }
+    ]
+  },
+  "officialRunner": { "url": "/core/tests/runner.cfm?reporter=json", "expectedHttpStatus": 500, "expectedSpecs": 0, "httpStatus": null, "specs": null },
+  "diagnostic": { "url": "/harness/legacy-baseline/cfml/run.cfm", "bundles": null, "totals": null, "failures": null, "rerun": null },
+  "differences": [],
+  "result": "pending-run"
+}
