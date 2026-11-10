@@ -1,0 +1,36 @@
+{
+  "name": "@opt2/programs-sites",
+  "version": "1.0.0",
+  "private": true,
+  "description": "OPT-2 programs/sites service: Masa sites as tenants, site registry producer and site-monitor orchestrator.",
+  "type": "module",
+  "main": "dist/main.js",
+  "engines": {
+    "node": "22.23.4"
+  },
+  "scripts": {
+    "postinstall": "npm ci --prefix ../../platform && npm run build --prefix ../../platform",
+    "generate": "node -e \"const fs=require('node:fs');for(const d of ['src/generated/clients','src/generated/events'])fs.mkdirSync(d,{recursive:true})\" && openapi-typescript contracts/openapi.yaml -o src/generated/openapi.ts && openapi-typescript ../strategies-content/contracts/openapi.yaml -o src/generated/clients/strategies-content.ts && openapi-typescript ../../migration/contracts/openapi.yaml -o src/generated/clients/migration.ts && json2ts -i contracts/events/programs-sites.site.changed.v1.json -o src/generated/events/programs-sites.site.changed.v1.ts",
+    "prebuild": "npm run generate",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "test": "vitest run --coverage",
+    "test:contract": "vitest run test/contract",
+    "test:security": "vitest run test/security"
+  },
+  "dependencies": {
+    "@opt2/platform": "file:../../platform"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@vitest/coverage-v8": "5.0.5",
+    "eslint": "10.13.0",
+    "json-schema-to-typescript": "16.0.0",
+    "openapi-typescript": "7.13.0",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.1",
+    "vitest": "5.0.5",
+    "yaml": "2.9.1"
+  }
+}

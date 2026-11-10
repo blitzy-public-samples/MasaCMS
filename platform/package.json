@@ -1,0 +1,113 @@
+{
+  "name": "@opt2/platform",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Shared OPT-2 platform components for the gateway, web, migration and services.",
+  "type": "module",
+  "engines": {
+    "node": "22.23.4"
+  },
+  "exports": {
+    "./service-kit": {
+      "types": "./dist/service-kit/index.d.ts",
+      "default": "./dist/service-kit/index.js"
+    },
+    "./auth": {
+      "types": "./dist/auth/index.d.ts",
+      "default": "./dist/auth/index.js"
+    },
+    "./tenancy": {
+      "types": "./dist/tenancy/index.d.ts",
+      "default": "./dist/tenancy/index.js"
+    },
+    "./outbox": {
+      "types": "./dist/outbox/index.d.ts",
+      "default": "./dist/outbox/index.js"
+    },
+    "./events": {
+      "types": "./dist/events/index.d.ts",
+      "default": "./dist/events/index.js"
+    },
+    "./logging": {
+      "types": "./dist/logging/index.d.ts",
+      "default": "./dist/logging/index.js"
+    },
+    "./tracing": {
+      "types": "./dist/tracing/index.d.ts",
+      "default": "./dist/tracing/index.js"
+    },
+    "./legacy-compat": {
+      "types": "./dist/legacy-compat/index.d.ts",
+      "default": "./dist/legacy-compat/index.js"
+    },
+    "./tasks": {
+      "types": "./dist/tasks/index.d.ts",
+      "default": "./dist/tasks/index.js"
+    },
+    "./storage": {
+      "types": "./dist/storage/index.d.ts",
+      "default": "./dist/storage/index.js"
+    },
+    "./migration-kit": {
+      "types": "./dist/migration-kit/index.d.ts",
+      "default": "./dist/migration-kit/index.js"
+    },
+    "./state-machine": {
+      "types": "./dist/state-machine/index.d.ts",
+      "default": "./dist/state-machine/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "default": "./dist/testing/index.js"
+    }
+  },
+  "bin": {
+    "opt2-auth": "dist/auth/cli.js",
+    "opt2-outbox": "dist/outbox/cli.js",
+    "opt2-events": "dist/events/cli.js",
+    "opt2-tasks": "dist/tasks/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run --coverage",
+    "test:contract": "vitest run test/contract"
+  },
+  "dependencies": {
+    "@fastify/cookie": "11.1.5",
+    "@fastify/formbody": "9.0.1",
+    "@fastify/multipart": "10.1.6",
+    "@google-cloud/cloud-sql-connector": "1.12.1",
+    "@google-cloud/pubsub": "6.3.2",
+    "@google-cloud/storage": "8.4.0",
+    "@google-cloud/tasks": "7.3.1",
+    "@opentelemetry/api": "1.10.0",
+    "@opentelemetry/core": "3.0.0",
+    "@opentelemetry/exporter-trace-otlp-http": "0.300.0",
+    "@opentelemetry/instrumentation-http": "0.300.0",
+    "@opentelemetry/instrumentation-pg": "0.77.0",
+    "@opentelemetry/instrumentation-undici": "0.34.0",
+    "@opentelemetry/resources": "3.0.0",
+    "@opentelemetry/sdk-node": "0.300.0",
+    "@opentelemetry/semantic-conventions": "1.44.0",
+    "@types/pg": "8.23.1",
+    "ajv": "8.20.0",
+    "fastify": "5.12.7",
+    "google-auth-library": "11.3.2",
+    "jose": "6.2.14",
+    "pg": "8.23.1",
+    "pino": "10.4.0",
+    "undici": "8.12.3",
+    "uuid": "14.0.3",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@vitest/coverage-v8": "5.0.5",
+    "eslint": "10.13.0",
+    "fast-check": "4.10.2",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.1",
+    "vitest": "5.0.5"
+  }
+}

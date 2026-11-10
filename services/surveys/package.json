@@ -1,0 +1,38 @@
+{
+  "name": "@opt2/surveys",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SYNTHETIC surveys service (OPT-2) - no Masa equivalent; legacy oracle in legacy-fixtures/",
+  "type": "module",
+  "engines": {
+    "node": "22.23.4"
+  },
+  "scripts": {
+    "postinstall": "npm ci --prefix ../../platform && npm run build --prefix ../../platform",
+    "generate": "node -e \"for (const d of ['src/generated/clients','src/generated/events']) require('node:fs').mkdirSync(d,{recursive:true})\" && openapi-typescript contracts/openapi.yaml -o src/generated/openapi.ts && openapi-typescript ../communications/contracts/openapi.yaml -o src/generated/clients/communications.ts && json2ts -i ../programs-sites/contracts/events/programs-sites.site.changed.v1.json -o src/generated/events/programs-sites.site.changed.v1.ts && json2ts -i contracts/events/surveys.survey.scheduled.v1.json -o src/generated/events/surveys.survey.scheduled.v1.ts",
+    "prebuild": "npm run generate",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "pretest": "npm run generate",
+    "test": "vitest run --coverage",
+    "pretest:contract": "npm run generate",
+    "test:contract": "vitest run test/contract",
+    "pretest:security": "npm run generate",
+    "test:security": "vitest run test/security"
+  },
+  "dependencies": {
+    "@opt2/platform": "file:../../platform"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@vitest/coverage-v8": "5.0.5",
+    "eslint": "10.13.0",
+    "fast-check": "4.10.2",
+    "json-schema-to-typescript": "16.0.0",
+    "openapi-typescript": "7.13.0",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.1",
+    "vitest": "5.0.5"
+  }
+}
