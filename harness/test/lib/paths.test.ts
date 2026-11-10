@@ -35,12 +35,13 @@ function insideMessage(label: string, resolved: string): string {
 }
 
 describe('REPO_ROOT and HARNESS_ROOT', () => {
-  it('REPO_ROOT is the absolute checkout root holding harness/ and opt2/, without a trailing separator', () => {
+  it('REPO_ROOT is the absolute checkout root holding harness/, opt2/ and core/, without a trailing separator', () => {
     expect(REPO_ROOT).toBe(CHECKOUT);
     expect(path.isAbsolute(REPO_ROOT)).toBe(true);
     expect(REPO_ROOT.endsWith(path.sep)).toBe(false);
     expect(fs.existsSync(path.join(REPO_ROOT, 'harness', 'package.json'))).toBe(true);
     expect(fs.existsSync(path.join(REPO_ROOT, 'opt2', 'source-pin.json'))).toBe(true);
+    expect(fs.existsSync(path.join(REPO_ROOT, 'core', 'tests', 'runner.cfm'))).toBe(true);
   });
 
   it('HARNESS_ROOT is the harness package folder', () => {
