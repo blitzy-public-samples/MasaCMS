@@ -26,8 +26,7 @@ export interface TenantTx extends TxBase {
   readonly tenantId: string;
 }
 
-// Declared here rather than imported from metadata.ts, which declares the same shape, so this file
-// compiles without metadata.ts and the tenancy modules keep metadata.ts -> transaction.ts as their only edge.
+// Mirrors metadata.ts's MetadataTx so metadata.ts -> transaction.ts stays the only import edge.
 /** A transaction over non-tenant tables only; its `app.tenant_id` is empty. */
 export interface MetadataTx extends TxBase {
   readonly kind: 'metadata';
@@ -64,6 +63,15 @@ export class TransactionEndedError extends Error {
 
   constructor() {
     super('The transaction has ended; statements and commit callbacks must be issued inside its callback');
+  }
+}
+
+/** Raised when PostgreSQL answers COMMIT by rolling the transaction back. */
+export class TransactionRolledBackError extends Error {
+  override readonly name = 'TransactionRolledBackError';
+
+  constructor() {
+    super('PostgreSQL rolled the transaction back at COMMIT because a statement in it failed');
   }
 }
 
@@ -148,7 +156,10 @@ export async function runTransaction<X extends TenantTx | MetadataTx, T>(
     } finally {
       close();
     }
-    await client.query('COMMIT');
+    const commit = await client.query('COMMIT');
+    if (commit.command !== 'COMMIT') {
+      throw new TransactionRolledBackError();
+    }
   } catch (err) {
     close();
     await rollbackAndRelease(client);

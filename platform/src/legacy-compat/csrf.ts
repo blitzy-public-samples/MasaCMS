@@ -1,5 +1,6 @@
 import { cfDateAdd, formatCsrfExpires } from './dates.js';
 import { cfHash } from './headers.js';
+import { cfIsNumeric, cfToNumber } from './serializer.js';
 
 /** Form fields legacy reads the token from (sessionUserFacade.cfc:217,228). */
 export const CSRF_FIELD_TOKEN = 'csrf_token';
@@ -19,11 +20,9 @@ export interface CsrfTokens {
 /** Used-token ledger: token to the time it was consumed (session.mura.csrfusedtokens). */
 export type CsrfUsedLedger = ReadonlyMap<string, Date> | Record<string, Date>;
 
-const CF_NUMERIC = /^\s*[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?\s*$/;
-
 /** CFML `a > b` on strings: numeric when both are numeric, otherwise case-insensitive string order. */
 function cfmlGreaterThan(a: string, b: string): boolean {
-  if (CF_NUMERIC.test(a) && CF_NUMERIC.test(b)) return Number(a) > Number(b);
+  if (cfIsNumeric(a) && cfIsNumeric(b)) return cfToNumber(a) > cfToNumber(b);
   return a.toLowerCase() > b.toLowerCase();
 }
 

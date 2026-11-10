@@ -18,6 +18,19 @@ resource "google_sql_database_instance" "this" {
       name  = "cloudsql.iam_authentication"
       value = "on"
     }
+
+    # Daily automated backups with point-in-time recovery; one backup more than log days keeps the full recovery window.
+    backup_configuration {
+      enabled                        = true
+      start_time                     = "03:00"
+      point_in_time_recovery_enabled = true
+      transaction_log_retention_days = 7
+
+      backup_retention_settings {
+        retained_backups = 8
+        retention_unit   = "COUNT"
+      }
+    }
   }
 }
 

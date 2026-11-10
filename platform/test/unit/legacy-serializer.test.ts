@@ -9,6 +9,7 @@ import {
   cfIsNumeric,
   cfNumberString,
   cfToBoolean,
+  cfToNumber,
   createApiSerializer,
   entityPropertyHint,
   legacyQuery,
@@ -150,7 +151,9 @@ describe('CFML predicates', () => {
     ['-5', true], ['.5', true], ['5.', true], ['1e5', true], ['1E+5', true], ['1e-5', true], ['00012', true],
     ['-.5', true], ['+.5e3', true], ['1e', false], ['0x1F', false], ['1d', false], ['1f', false], ['Infinity', false],
     ['NaN', false], ['--5', false], ['1 2', false], ['', false], [' ', false], ['1,000', false], ['$5', false],
-    ['1.2.3', false], ['5\u00a0', false], ['\u00a05', false], ['5\u007f', false],
+    ['1.2.3', false], ['5\u00a0', false], ['\u00a05', false], ['5\u007f', false], ['1e308', true],
+    ['1.7976931348623157e308', true], ['1e-400', true], ['1e10', true], ['1.8e308', false], ['1e309', false],
+    ['-1e400', false],
   ])('cfIsNumeric(%j) is %s', (value, expected) => {
     expect(cfIsNumeric(value)).toBe(expected);
   });
@@ -162,7 +165,9 @@ describe('CFML predicates', () => {
   it.each<[unknown, boolean]>([
     ['yes', true], ['YES', true], ['no', true], ['true', true], ['False', true], ['1', true], ['0', true], ['1.5', true],
     ['0.0', true], ['-1', true], [false, true], [2, true], [' yes', false], ['yes ', false], [' 1', false], ['on', false],
-    ['off', false], ['y', false], ['', false], ['12\u0001', false], [Infinity, false], [LOCAL, false],
+    ['off', false], ['y', false], ['', false], ['12\u0001', false], [Infinity, false], [LOCAL, false], ['1e308', true],
+    ['1.7976931348623157e308', true], ['1e-400', true], ['1e10', true], ['1.8e308', false], ['1e309', false],
+    ['-1e400', false],
   ])('cfIsBoolean(%j) is %s', (value, expected) => {
     expect(cfIsBoolean(value)).toBe(expected);
   });
@@ -175,6 +180,17 @@ describe('CFML predicates', () => {
 
   it('cfToBoolean rejects a value CFML cannot convert', () => {
     expect(() => cfToBoolean('maybe')).toThrow(TypeError);
+  });
+
+  it.each<[unknown, number]>([
+    [' 1 ', 1], ['\t7\n', 7], ['12\u0001', 12], ['-.5', -0.5], ['1e1', 10], [3, 3], ['1e308', 1e308],
+    ['1.7976931348623157e308', Number.MAX_VALUE], ['1e-400', 0], ['1e10', 1e10],
+  ])('cfToNumber(%j) is %s', (value, expected) => {
+    expect(cfToNumber(value)).toBe(expected);
+  });
+
+  it.each(['abc', '\u00a05', '1.8e308', '1e309', '-1e400'])('cfToNumber rejects %j, which CFML cannot convert', (value) => {
+    expect(() => cfToNumber(value)).toThrow(TypeError);
   });
 
   it.each<[unknown, boolean]>([[LOCAL, true], [new Date(NaN), false], ['2026-01-02', false]])('cfIsDate(%j) is %s', (value, expected) => {

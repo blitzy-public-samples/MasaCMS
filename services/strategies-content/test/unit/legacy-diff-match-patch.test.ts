@@ -1,4 +1,5 @@
 // Fidelity of the diff_match_patch port: reference vectors, outputs of the bundled jar on Java 17, and captured carch.loaddiff bodies.
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   computeDiff,
@@ -188,14 +189,16 @@ describe('computeDiff', () => {
     ['STATUSID', '3', '2'],
   ];
   const statusHtml = '<h3>STATUS</h3>' + del('Archiv') + ins('Publish') + span('ed') + '<h3>STATUSID</h3>' + del('3') + ins('2');
+  const aboutUsRows: [string, string, string][] = [
+    ['TITLE', 'About Us', 'About Our Team'],
+    ['BODY', '<p>Welcome to the tenant A.</p>\n<p>Contact us today.</p>', '<p>Welcome to the Tenant A program.</p>\n<p>Contact us today.</p>'],
+  ];
+  const renderLoadDiff = (properties: [string, string, string][]): string =>
+    properties.map(([name, older, newer]) => `<h3>${name}</h3>${computeDiff(older, newer).html}`).join('');
   it.each<[string, [string, string, string][], string]>([
     [
       'about us page',
-      [
-        ...statusRows,
-        ['TITLE', 'About Us', 'About Our Team'],
-        ['BODY', '<p>Welcome to the tenant A.</p>\n<p>Contact us today.</p>', '<p>Welcome to the Tenant A program.</p>\n<p>Contact us today.</p>'],
-      ],
+      [...statusRows, ...aboutUsRows],
       statusHtml +
         '<h3>TITLE</h3>' + span('About ') + del('Us') + ins('Our Team') +
         '<h3>BODY</h3>' + span('&lt;p&gt;Welcome to the ') + del('t') + ins('T') + span('enant A') + ins(' program') +
@@ -242,7 +245,11 @@ describe('computeDiff', () => {
         ins('four is common.&para;<br>A brand new line five, added at the end') + span('.'),
     ],
   ])('reproduces the legacy carch.loaddiff body for the %s', (_name, properties, body) => {
-    const rendered = properties.map(([name, older, newer]) => `<h3>${name}</h3>${computeDiff(older, newer).html}`).join('');
-    expect(rendered).toBe(body);
+    expect(renderLoadDiff(properties)).toBe(body);
+  });
+
+  it('matches the web loaddiff fixture, the TITLE and BODY sections of the about us page body', () => {
+    const fixture = readFileSync(new URL('../../../../web/test/fixtures/strategies-content/loaddiff.html', import.meta.url), 'utf8');
+    expect(fixture).toBe(renderLoadDiff(aboutUsRows));
   });
 });

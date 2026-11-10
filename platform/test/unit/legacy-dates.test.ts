@@ -309,8 +309,32 @@ describe('cfDateAdd', () => {
     { label: 's adds an hour of seconds', part: 's', n: 3600, from: new Date(2026, 5, 30, 23, 30), to: new Date(2026, 6, 1, 0, 30) },
     { label: 'l crosses midnight forwards', part: 'l', n: 1500, from: new Date(2026, 5, 30, 23, 59, 59), to: new Date(2026, 6, 1, 0, 0, 0, 500) },
     { label: 'l crosses a year backwards', part: 'l', n: -1, from: new Date(2026, 0, 1), to: new Date(2025, 11, 31, 23, 59, 59, 999) },
+    { label: 'l accepts the Java int maximum', part: 'l', n: 2_147_483_647, from: TUE, to: new Date(TUE.getTime() + 2_147_483_647) },
+    { label: 's accepts the Java int minimum', part: 's', n: -2_147_483_648, from: TUE, to: new Date(TUE.getTime() - 2_147_483_648_000) },
   ])('$label', ({ part, n, from, to }) => {
     expect(cfDateAdd(part, n, from)).toEqual(to);
+  });
+
+  it.each([
+    { n: 2_147_483_648, value: '2.147483648E9' },
+    { n: -2_147_483_649, value: '-2.147483649E9' },
+    { n: 1e10, value: '1.0E10' },
+    { n: 1e308, value: '1.0E308' },
+    { n: Number.MAX_VALUE, value: '1.7976931348623157E308' },
+  ])('rejects $n, which does not fit a Java int', ({ n, value }) => {
+    const add = (): Date => cfDateAdd('d', n, TUE);
+    expect(add).toThrow(RangeError);
+    expect(add).toThrow(`Cannot convert the value ${value} to an integer because it cannot fit inside an integer.`);
+  });
+
+  it.each<{ part: DatePart; n: number }>([
+    { part: 'd', n: 1e9 },
+    { part: 'm', n: -2_147_483_648 },
+    { part: 'yyyy', n: 2_147_483_647 },
+  ])('rejects $part $n, whose instant JS Date cannot represent', ({ part, n }) => {
+    const add = (): Date => cfDateAdd(part, n, TUE);
+    expect(add).toThrow(RangeError);
+    expect(add).toThrow(`DateAdd('${part}', ${n}) is outside the JS Date range`);
   });
 
   it('leaves its input unchanged', () => {

@@ -4,6 +4,7 @@ import { InvalidTenantIdError, tenantIdForSite } from '../../src/tenancy/tenant-
 import {
   OutsideTenantTransactionError,
   TransactionEndedError,
+  TransactionRolledBackError,
   currentTenantTx,
   currentTransaction,
   requireTenantTx,
@@ -30,6 +31,8 @@ class FakeClient {
   readonly calls: Recorded[] = [];
   readonly releases: (Error | boolean | undefined)[] = [];
   readonly failures = new Map<string, Error>();
+  /** Command tags answered in place of the statement text, keyed by statement. */
+  readonly commands = new Map<string, string>();
   readonly events: string[];
 
   constructor(events: string[]) {
@@ -44,7 +47,7 @@ class FakeClient {
     if (failure !== undefined) {
       return Promise.reject(failure);
     }
-    return Promise.resolve({ command: sql, rowCount: 0, oid: 0, fields: [], rows: [] });
+    return Promise.resolve({ command: this.commands.get(sql) ?? sql, rowCount: 0, oid: 0, fields: [], rows: [] });
   }
 
   release(err?: Error | boolean): void {
@@ -239,6 +242,37 @@ describe('commit callbacks', () => {
         return Promise.reject(new Error('boom'));
       }),
     ).rejects.toThrow('boom');
+    expect(committed).not.toHaveBeenCalled();
+    expect(own).not.toHaveBeenCalled();
+    expect(h.onError).not.toHaveBeenCalled();
+  });
+
+  const RUNNERS: readonly (readonly [
+    string,
+    (h: ReturnType<typeof setup>, fn: (tx: TxBase) => Promise<string>) => Promise<string>,
+  ])[] = [
+    ['tenant', (h, fn) => runTenantTransaction(h.pool, h.opts, TENANT_A, fn)],
+    ['metadata', (h, fn) => runTransaction(h.pool, h.opts, '', asMetadata, fn)],
+  ];
+
+  it.each(RUNNERS)('never run when PostgreSQL rolls a %s transaction back at COMMIT', async (_label, run) => {
+    const h = setup();
+    const insert = 'INSERT INTO people.person (id) VALUES ($1)';
+    h.client.failures.set(insert, new Error('duplicate key value violates unique constraint'));
+    h.client.commands.set('COMMIT', 'ROLLBACK');
+    const committed = vi.fn(() => Promise.reject(new Error('published')));
+    const own = vi.fn<CommitErrorHandler>();
+
+    await expect(
+      run(h, async (tx) => {
+        tx.onCommit(committed, own);
+        tx.onCommit(committed);
+        await tx.query(insert, ['p1']).catch(() => undefined);
+        return 'value';
+      }),
+    ).rejects.toBeInstanceOf(TransactionRolledBackError);
+    expect(h.events).toEqual(['BEGIN', SET_TENANT, insert, 'COMMIT', 'ROLLBACK', 'release']);
+    expect(h.client.releases).toEqual([undefined]);
     expect(committed).not.toHaveBeenCalled();
     expect(own).not.toHaveBeenCalled();
     expect(h.onError).not.toHaveBeenCalled();

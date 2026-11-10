@@ -51,17 +51,22 @@ function javaTrim(s: string): string {
   return s.slice(start, end);
 }
 
+/** Decimal text whose double value is finite (ACF: '1e309' is not numeric, '1e-400' is). */
+function isFiniteDecimal(s: string): boolean {
+  return DECIMAL.test(s) && Number.isFinite(Number(s));
+}
+
 /** CFML isNumeric: finite numbers, and strings holding a decimal number once Java-trimmed (ACF: '12'&chr(1) is numeric). */
 export function cfIsNumeric(v: unknown): boolean {
   if (typeof v === 'number') return Number.isFinite(v);
-  return typeof v === 'string' && DECIMAL.test(javaTrim(v));
+  return typeof v === 'string' && isFiniteDecimal(javaTrim(v));
 }
 
 /** CFML isBoolean: booleans, finite numbers, true/false/yes/no in any case, and untrimmed numeric strings (ACF: ' 1' is not boolean). */
 export function cfIsBoolean(v: unknown): boolean {
   if (typeof v === 'boolean') return true;
   if (typeof v === 'number') return Number.isFinite(v);
-  return typeof v === 'string' && (BOOLEAN_WORD.test(v) || DECIMAL.test(v));
+  return typeof v === 'string' && (BOOLEAN_WORD.test(v) || isFiniteDecimal(v));
 }
 
 /** CFML boolean conversion: true/yes and false/no by word, numbers by non-zero; throws for a value CFML cannot convert. */
@@ -73,6 +78,12 @@ export function cfToBoolean(v: unknown): boolean {
   if (word === 'true' || word === 'yes') return true;
   if (word === 'false' || word === 'no') return false;
   return Number(v) !== 0;
+}
+
+/** CFML numeric conversion: a number as is, Java-trimmed decimal text as its value; throws for a value CFML cannot convert. */
+export function cfToNumber(v: unknown): number {
+  if (!cfIsNumeric(v)) throw new TypeError(`Cannot convert ${String(v)} to a number`);
+  return typeof v === 'number' ? v : Number(javaTrim(v as string));
 }
 
 /** CFML isDate for serializer input: valid Date instances only; date-typed values must arrive as Date objects. */

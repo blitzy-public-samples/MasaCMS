@@ -235,11 +235,29 @@ function addDays(d: Date, days: number): Date {
   return new Date(Math.floor((second + offsetAt(second)) / DAY_MS) === Math.floor(wall / DAY_MS) ? second : first);
 }
 
-/** CFML dateAdd: n truncates toward zero; yyyy/m clamp to month end; d keeps the wall-clock time across DST; h/n/s/l add exact ms. */
+/** Java Double.toString of a value outside the int range: 1.0E10, -2.147483649E9, Infinity. */
+function javaDoubleString(v: number): string {
+  if (!Number.isFinite(v)) return String(v);
+  const [mantissa = '', exponent = '0'] = v.toExponential().split('e');
+  return `${mantissa.includes('.') ? mantissa : `${mantissa}.0`}E${Number(exponent)}`;
+}
+
+/** CFML dateAdd: n truncates toward zero and must fit a Java int; yyyy/m clamp to month end; d keeps the wall-clock time across DST; h/n/s/l add exact ms. */
 export function cfDateAdd(part: 'yyyy' | 'm' | 'd' | 'h' | 'n' | 's' | 'l', n: number, d: Date): Date {
   const amount = Math.trunc(n);
+  if (!(amount >= -2_147_483_648 && amount <= 2_147_483_647)) {
+    throw new RangeError(`Cannot convert the value ${javaDoubleString(n)} to an integer because it cannot fit inside an integer.`);
+  }
   // GregorianCalendar.add returns at once for 0, so a repeated-hour instant keeps its offset.
   if (amount === 0) return new Date(d.getTime());
+  const result = addPart(part, amount, d);
+  // JS Date cannot represent the instant legacy's GregorianCalendar would produce, so this fails fast.
+  if (Number.isNaN(result.getTime())) throw new RangeError(`DateAdd('${part}', ${amount}) is outside the JS Date range`);
+  return result;
+}
+
+/** GregorianCalendar.add of a non-zero int amount of one date part. */
+function addPart(part: Parameters<typeof cfDateAdd>[0], amount: number, d: Date): Date {
   switch (part) {
     case 'yyyy':
       return addMonths(d, amount * 12);

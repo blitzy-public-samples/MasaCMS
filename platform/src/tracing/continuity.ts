@@ -163,33 +163,31 @@ function describeSelector(selector: SpanSelector): string {
   return `${name}${service}${kind}` || '*';
 }
 
-type Descent = { reached: string } | { problem: string };
-
-/** Walks parent links from `span` within one trace until a root span id is reached. */
+/** Walks parent links from `span` within one trace to `rootId`; returns the problem, or undefined when reached. */
 function descend(
   span: ContinuitySpan,
   label: string,
   rootLabel: string,
   byId: ReadonlyMap<string, ContinuitySpan>,
-  rootIds: ReadonlySet<string>,
-): Descent {
+  rootId: string,
+): string | undefined {
   if (span.parentSpanId === undefined) {
-    return { problem: `no parent link: ${label}` };
+    return `no parent link: ${label}`;
   }
   const visited = new Set<string>([span.spanId]);
   let parentId: string | undefined = span.parentSpanId;
   while (parentId !== undefined && !visited.has(parentId)) {
-    if (rootIds.has(parentId)) {
-      return { reached: parentId };
+    if (parentId === rootId) {
+      return undefined;
     }
     const parent = byId.get(parentId);
     if (parent === undefined) {
-      return { problem: `dangling parent ${parentId} of ${label}` };
+      return `dangling parent ${parentId} of ${label}`;
     }
     visited.add(parentId);
     parentId = parent.parentSpanId;
   }
-  return { problem: `${label} does not descend from ${rootLabel}` };
+  return `${label} does not descend from ${rootLabel}`;
 }
 
 interface Evaluation {
@@ -198,7 +196,10 @@ interface Evaluation {
   problems: string[];
 }
 
-/** Tests the chain inside trace `traceId`; `present` counts the selectors with a match in that trace. */
+/**
+ * Tests the chain inside trace `traceId`, trying each root match in turn; `present` counts selectors matched there.
+ * Returns the first intact root's chain, else the problems of the root that reached the most selectors.
+ */
 function evaluateTrace(
   traceId: string,
   spans: readonly ContinuitySpan[],
@@ -212,38 +213,38 @@ function evaluateTrace(
     }
   }
   const inTrace = matches.map((list) => list.filter((span) => span.traceId === traceId));
-  const roots = inTrace[0] ?? [];
-  const rootIds = new Set(roots.map((span) => span.spanId));
   const rootLabel = labels[0] ?? '';
-  const later: ContinuitySpan[] = [];
-  const problems = new Set<string>();
-  let reachedRoot: string | undefined;
-  for (let i = 1; i < inTrace.length; i += 1) {
-    const failures: string[] = [];
-    for (const span of inTrace[i] ?? []) {
-      const descent = descend(span, labels[i] ?? '', rootLabel, byId, rootIds);
-      if ('reached' in descent) {
-        later.push(span);
-        reachedRoot ??= descent.reached;
-        failures.length = 0;
-        break;
+  const present = inTrace.filter((list) => list.length > 0).length;
+  let best: Evaluation | undefined;
+  for (const root of inTrace[0] ?? []) {
+    const matched: ContinuitySpan[] = [root];
+    const problems = new Set<string>();
+    for (let i = 1; i < inTrace.length; i += 1) {
+      const failures: string[] = [];
+      for (const span of inTrace[i] ?? []) {
+        const problem = descend(span, labels[i] ?? '', rootLabel, byId, root.spanId);
+        if (problem === undefined) {
+          matched.push(span);
+          failures.length = 0;
+          break;
+        }
+        failures.push(problem);
       }
-      failures.push(descent.problem);
+      for (const problem of failures) {
+        problems.add(problem);
+      }
     }
-    for (const problem of failures) {
-      problems.add(problem);
+    if (best === undefined || matched.length > best.matched.length) {
+      best = { present, matched, problems: [...problems] };
+    }
+    if (matched.length === inTrace.length) {
+      break;
     }
   }
-  const present = inTrace.filter((list) => list.length > 0).length;
-  const root = (reachedRoot === undefined ? undefined : byId.get(reachedRoot)) ?? roots[0];
-  return {
-    present,
-    matched: root === undefined ? later : [root, ...later],
-    problems: [...problems],
-  };
+  return best ?? { present, matched: [], problems: [] };
 }
 
-/** Checks that one trace holds a span for every selector, each later one descending from a root-selector span. */
+/** Checks that one trace holds a span per selector, each later one descending from the same root-selector span. */
 export function checkTraceContinuity(
   spans: ReadonlyArray<ReadableSpan | ContinuitySpan>,
   options: ContinuityOptions,

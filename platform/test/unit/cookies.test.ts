@@ -88,13 +88,34 @@ describe('setCookieLegacy', () => {
     { label: '1 day across spring-forward', expires: 1, zone: 'America/New_York', now: new Date('2026-03-07T17:00:00Z'), expected: 'Sun, 08-Mar-2026 16:00:00 GMT' },
     { label: 'now across spring-forward', expires: 'now', zone: 'America/New_York', now: new Date('2026-03-09T16:00:00Z'), expected: 'Sun, 08-Mar-2026 16:00:00 GMT' },
     { label: "'1' day across fall-back", expires: '1', zone: 'America/New_York', now: new Date('2026-10-31T16:00:00Z'), expected: 'Sun, 01-Nov-2026 17:00:00 GMT' },
+    { label: "' 1 ' days", expires: ' 1 ', zone: 'UTC', now: NOW, expected: 'Wed, 01-Jul-2026 12:00:00 GMT' },
+    { label: "'\\t7\\n' days", expires: '\t7\n', zone: 'UTC', now: NOW, expected: WEEK_GMT },
+    { label: "'1\\u0001' days", expires: '1\u0001', zone: 'UTC', now: NOW, expected: 'Wed, 01-Jul-2026 12:00:00 GMT' },
+    { label: "' -1 ' days", expires: ' -1 ', zone: 'UTC', now: NOW, expected: 'Mon, 29-Jun-2026 12:00:00 GMT' },
+    { label: "' 0 ' days", expires: ' 0 ', zone: 'UTC', now: NOW, expected: NOW_GMT },
+    { label: "'\\u00002' days", expires: '\u00002', zone: 'UTC', now: NOW, expected: 'Thu, 02-Jul-2026 12:00:00 GMT' },
+    { label: "'\\u000b2' days", expires: '\u000b2', zone: 'UTC', now: NOW, expected: 'Thu, 02-Jul-2026 12:00:00 GMT' },
+    { label: "' 1e1 ' days", expires: ' 1e1 ', zone: 'UTC', now: NOW, expected: 'Fri, 10-Jul-2026 12:00:00 GMT' },
+    { label: "'1.9' days", expires: '1.9', zone: 'UTC', now: NOW, expected: 'Wed, 01-Jul-2026 12:00:00 GMT' },
   ])('expires $label in $zone', ({ expires, zone, now, expected }) => {
     const header = withZone(zone, () => setCookieLegacy({ name: 'a', value: 'v', expires }, {}, now));
     expect(header).toBe(`A=v;expires=${expected};path=/;HttpOnly;`);
   });
 
-  it.each(['', 'session', 'session only', 'abc'])('omits expires for %j', (expires) => {
+  it.each([
+    '', 'session', 'session only', 'abc', '\u00a01', '\ufeff2', ' now ', ' never ', '1e309', '-1e400', '1.8e308',
+  ])('omits expires for %j', (expires) => {
     expect(setCookieLegacy({ name: 'a', value: 'v', expires }, {}, NOW)).toBe('A=v;path=/;HttpOnly;');
+  });
+
+  it.each([
+    { expires: '1e10', value: '1.0E10' },
+    { expires: '1e308', value: '1.0E308' },
+    { expires: '1.7976931348623157e308', value: '1.7976931348623157E308' },
+  ])('throws for a day count of $expires as legacy DateAdd does', ({ expires, value }) => {
+    const write = (): string => setCookieLegacy({ name: 'a', value: 'v', expires }, {}, NOW);
+    expect(write).toThrow(RangeError);
+    expect(write).toThrow(`Cannot convert the value ${value} to an integer because it cannot fit inside an integer.`);
   });
 });
 
@@ -137,8 +158,8 @@ describe('sessionCookieStrings', () => {
     ]);
   });
 
-  it('applies a day count and the cookie config', () => {
-    const cfg = { sessionCookiesExpires: '7', secureCookies: true, cookieDomain: 'cfg.example', cookiePath: '/site' };
+  it.each(['7', ' 7 '])('applies the day count %j and the cookie config', (sessionCookiesExpires) => {
+    const cfg = { sessionCookiesExpires, secureCookies: true, cookieDomain: 'cfg.example', cookiePath: '/site' };
     expect(withZone('UTC', () => sessionCookieStrings(tokens, cfg, NOW))).toEqual([
       `CFID=1234;expires=${WEEK_GMT};domain=cfg.example;path=/site;secure;HttpOnly;`,
       `CFTOKEN=5678;expires=${WEEK_GMT};domain=cfg.example;path=/site;secure;HttpOnly;`,

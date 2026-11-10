@@ -623,6 +623,55 @@ describe('trace continuity', () => {
     expect(result).toEqual({ ok: true, traceId: TRACE_B, matched: [spans[2], spans[3]], problems: [] });
   });
 
+  it.each<{ name: string; spans: ContinuitySpan[]; ok: boolean; traceId?: string; matched: number[]; problems: string[] }>([
+    {
+      name: 'publish and consume under different roots',
+      spans: [
+        plain('root', TRACE_A, '0000000000000001'),
+        plain('root', TRACE_A, '0000000000000002'),
+        plain('publish', TRACE_A, '0000000000000003', '0000000000000001'),
+        plain('consume', TRACE_A, '0000000000000004', '0000000000000002'),
+      ],
+      ok: false,
+      matched: [],
+      problems: ['consume does not descend from root'],
+    },
+    {
+      name: 'the whole chain under the second root',
+      spans: [
+        plain('root', TRACE_A, '0000000000000001'),
+        plain('root', TRACE_A, '0000000000000002'),
+        plain('publish', TRACE_A, '0000000000000003', '0000000000000001'),
+        plain('publish', TRACE_A, '0000000000000005', '0000000000000002'),
+        plain('consume', TRACE_A, '0000000000000004', '0000000000000002'),
+      ],
+      ok: true,
+      traceId: TRACE_A,
+      matched: [1, 3, 4],
+      problems: [],
+    },
+    {
+      name: 'a consumer under a root nested in the first',
+      spans: [
+        plain('root', TRACE_A, '0000000000000001'),
+        plain('root', TRACE_A, '0000000000000002', '0000000000000001'),
+        plain('publish', TRACE_A, '0000000000000003', '0000000000000001'),
+        plain('consume', TRACE_A, '0000000000000004', '0000000000000002'),
+      ],
+      ok: true,
+      traceId: TRACE_A,
+      matched: [0, 2, 3],
+      problems: [],
+    },
+  ])('checks each root match of one trace on its own: $name', ({ spans, ok, traceId, matched, problems }) => {
+    expect(checkTraceContinuity(spans, { expectedSpanNames: ['root', 'publish', 'consume'] })).toEqual({
+      ok,
+      traceId,
+      matched: matched.map((index) => spans[index]),
+      problems,
+    });
+  });
+
   it.each<{ name: string; selectors: SpanSelector[]; problems: string[] }>([
     { name: 'an unmatched name', selectors: ['root', 'absent'], problems: ['missing span: absent'] },
     {

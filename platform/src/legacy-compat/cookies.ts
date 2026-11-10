@@ -1,5 +1,6 @@
 // Legacy Set-Cookie writer and cookie parsing (utility.cfc:683-861).
 import { cfDateAdd, formatCookieExpires } from './dates.js';
+import { cfIsNumeric, cfToNumber } from './serializer.js';
 
 /** Session cookie names ACF issues and the gateway jar maps. */
 export const LEGACY_SESSION_COOKIE_NAMES = ['CFID', 'CFTOKEN', 'JSESSIONID'] as const;
@@ -36,7 +37,6 @@ export interface ParsedSetCookie {
 }
 
 const CONFIG_DEFAULT_SESSION_EXPIRES = 'never';
-const CF_NUMERIC = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
 
 /** Expiry instant for the expires argument (utility.cfc:827-843); cfswitch matches case-insensitively. */
 function expiryDate(expires: Date | number | string, now: Date): Date | undefined {
@@ -51,7 +51,7 @@ function expiryDate(expires: Date | number | string, now: Date): Date | undefine
       return cfDateAdd('yyyy', 30, now);
   }
   // Date strings are not parsed: callers pass Date objects, and configBean holds only keywords or day counts.
-  return CF_NUMERIC.test(expires) ? cfDateAdd('d', Number(expires), now) : undefined;
+  return cfIsNumeric(expires) ? cfDateAdd('d', cfToNumber(expires), now) : undefined;
 }
 
 /** Set-Cookie header value legacy writes, header name SET-COOKIE (utility.cfc:793-861). */

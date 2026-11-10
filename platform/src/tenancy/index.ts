@@ -8,6 +8,7 @@ export {
   requireTenantTx,
   OutsideTenantTransactionError,
   TransactionEndedError,
+  TransactionRolledBackError,
 } from './transaction.js';
 export type { TenantDb, TenantTx, TxBase, Queryable, CommitCallback, CommitErrorHandler } from './transaction.js';
 export { withMetadata, NON_TENANT_TABLES, isNonTenantTable } from './metadata.js';
