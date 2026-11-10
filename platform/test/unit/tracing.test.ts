@@ -8,44 +8,40 @@ import {
   INVALID_SPAN_CONTEXT,
   propagation,
   ROOT_CONTEXT,
-  SpanKind,
-  SpanStatusCode,
   trace,
   TraceFlags,
-  type Context,
 } from '@opentelemetry/api';
 import { W3CTraceContextPropagator } from '@opentelemetry/core';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   activeSpanIds,
+  assertTraceContinuity,
+  checkTraceContinuity,
   contextFromEnvelope,
   currentTraceparent,
   extractHttpContext,
+  flushTracing,
   injectHttpHeaders,
+  MemorySpanExporter,
   pubsubAttributes,
-  startSpan,
-  taskHeaders,
-  withExtractedContext,
-  type HeaderBag,
-  type TraceCarrier,
-} from '../../src/tracing/propagation.js';
-import {
-  assertTraceContinuity,
-  checkTraceContinuity,
+  shutdownTracing,
+  SpanKind,
   spansFromOtlpJsonLines,
+  SpanStatusCode,
+  startSpan,
+  startTracing,
+  taskHeaders,
   toContinuitySpan,
   TraceContinuityError,
+  withExtractedContext,
+  type Context,
   type ContinuitySpan,
-  type SpanSelector,
-} from '../../src/tracing/continuity.js';
-import {
-  flushTracing,
-  MemorySpanExporter,
-  shutdownTracing,
-  startTracing,
+  type HeaderBag,
   type ReadableSpan,
-} from '../../src/tracing/sdk.js';
+  type SpanSelector,
+  type TraceCarrier,
+} from '../../src/tracing/index.js';
 
 const otlpUrls = vi.hoisted((): string[] => []);
 
