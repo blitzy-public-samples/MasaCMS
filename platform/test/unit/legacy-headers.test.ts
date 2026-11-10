@@ -38,6 +38,18 @@ describe('cfHash', () => {
   ])('returns the uppercase SHA-256 hex of $label', ({ input, expected }) => {
     expect(cfHash(input)).toBe(expected);
   });
+
+  // hash(s, "CFMX_COMPAT") on ACF 2023.0.26, the algorithm Masa passes as defaultHashAlgorithm.
+  it.each([
+    { label: 'the empty string', input: '', expected: 'D41D8CD98F00B204E9800998ECF8427E' },
+    { label: 'ASCII text', input: 'abc', expected: '900150983CD24FB0D6963F7D28E17F72' },
+    { label: 'a URL', input: 'http://example.com/a?b=1&c=2', expected: '2A9F971E93DBC26601B86298F1954773' },
+    { label: 'multi-byte text, truncated to low bytes', input: 'café ✓', expected: '1ACC886451B173DE25EEE59089E8B75C' },
+    { label: 'U+0100, whose low byte is zero', input: '\u0100', expected: '93B885ADFE0DA089CDF634904FD59F71' },
+    { label: 'a surrogate pair', input: '\u{1F600}', expected: 'C151C5FA0F424DBF71E349896C45EC16' },
+  ])('returns the uppercase CFMX_COMPAT hex of $label', ({ input, expected }) => {
+    expect(cfHash(input, 'CFMX_COMPAT')).toBe(expected);
+  });
 });
 
 describe('etag', () => {

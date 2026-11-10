@@ -1,11 +1,22 @@
-// Unit tests for the source-pin reader and the JSON and Markdown report writers.
-import { mkdir, mkdtemp, readdir, readFile, rm, unlink, writeFile } from 'node:fs/promises';
+// Unit tests for the source-pin reader, the JSON and Markdown report writers and the run logs.
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import {
+  RUN_LOGS,
+  TRANSITION_STEP_NAMES,
+  WINDOW_FLAG_THRESHOLD_MS,
+  appendLogEntry,
+  readLogEntries,
+  summariseWindows,
+  upsertLogEntry,
+  type RunLogFile,
+  type WindowLogEntry,
+} from '../../src/reports/append-log.js';
 import { SourcePinError, readSourcePin, readSourceSha, resetSourcePinCache } from '../../src/reports/source-pin.js';
 import {
   ReportPathError,
@@ -30,6 +41,7 @@ const PIN_SHA = '696383140578f8dea3ece26f80cd7bfb370ddf0f';
 const PIN_SUBJECT = 'Increase version to 7.6.1 in package files and configuration';
 const OTHER_SHA = '0123456789abcdef0123456789abcdef01234567';
 const REPO_PIN_FILE = fileURLToPath(new URL('../../../opt2/source-pin.json', import.meta.url));
+const REPO_REPORTS_DIR = fileURLToPath(new URL('../../../opt2/reports/', import.meta.url));
 const FIXED_AT = '2026-01-02T03:04:05.678Z';
 
 const tempDirs: string[] = [];
@@ -469,5 +481,189 @@ describe('writeFileAtomic', () => {
     expect((error as AggregateError).message).toBe(`Writing ${file} failed and ${temp} was not removed`);
     expect((error as AggregateError).errors).toEqual([expect.objectContaining({ code: 'EISDIR' }), cleanupFailure]);
     expect((await readdir(dir)).sort()).toEqual([path.basename(temp), 'taken'].sort());
+  });
+});
+
+describe('run logs', () => {
+  const HEAD = ['sourceSha', 'generatedBy', 'generatedAt', 'status'];
+
+  /** A window entry with `overrides` applied. */
+  function windowEntry(windowId: string, overrides: Partial<WindowLogEntry> = {}): WindowLogEntry {
+    return {
+      windowId,
+      holderId: `holder-${windowId}`,
+      kind: 'request',
+      routeKey: 'cusers.update{type=2,action=Delete}',
+      units: ['people.person', 'identity.user_account'],
+      scope: { siteid: 'tenant-a', userid: windowId },
+      phases: [{ phase: 'quiet', at: FIXED_AT }],
+      ...overrides,
+    };
+  }
+
+  /** The parsed JSON file `relPath` under `dir`. */
+  async function readDoc(dir: string, relPath: string): Promise<Record<string, unknown>> {
+    return JSON.parse(await readFile(path.join(dir, relPath), 'utf8')) as Record<string, unknown>;
+  }
+
+  /** Window ids of `windows.json` under `reportsDir`, in file order. */
+  async function windowIds(reportsDir: string): Promise<string[]> {
+    return (await readLogEntries<WindowLogEntry>(reportsDir, 'windows.json')).map((entry) => entry.windowId);
+  }
+
+  /** Temp files left in `dir`. */
+  async function tempFiles(dir: string): Promise<string[]> {
+    return (await readdir(dir)).filter((name) => name.endsWith('.tmp'));
+  }
+
+  it('names the transition steps of the committed transitions placeholder, in order', async () => {
+    const placeholder = await readDoc(REPO_REPORTS_DIR, 'transitions.json');
+    expect([...TRANSITION_STEP_NAMES]).toEqual(placeholder.steps);
+  });
+
+  it.each(['windows.json', 'transitions.json'] as const)(
+    'records into the committed %s placeholder, keeping its other keys',
+    async (file) => {
+      const target = await makeTarget(OTHER_SHA);
+      await copyFile(path.join(REPO_REPORTS_DIR, file), path.join(target.reportsDir, file));
+      const placeholder = await readDoc(target.reportsDir, file);
+      const { collectionKey, idKey = '', generatedBy } = RUN_LOGS[file];
+      const replacement = { [idKey]: 'id-1', revision: 2 };
+
+      await appendLogEntry(target, file, { [idKey]: 'id-1', revision: 1 });
+      await upsertLogEntry(target, file, idKey, replacement, { clock: fixedClock(FIXED_AT) });
+
+      const doc = await readDoc(target.reportsDir, file);
+      const rest = (report: Record<string, unknown>): Record<string, unknown> =>
+        Object.fromEntries(
+          Object.entries(report).filter(([key]) => !HEAD.includes(key) && key !== collectionKey && key !== 'summary'),
+        );
+      expect(Object.keys(doc)).toEqual(Object.keys(placeholder));
+      expect(doc).toMatchObject({ sourceSha: OTHER_SHA, generatedBy, generatedAt: FIXED_AT, status: 'recorded' });
+      expect(doc[collectionKey]).toEqual([replacement]);
+      expect(rest(doc)).toEqual(rest(placeholder));
+    },
+  );
+
+  it('creates windows.json with the flag threshold and a summary', async () => {
+    const target = await makeTarget();
+    const entry = windowEntry('W1');
+    await appendLogEntry(target, 'windows.json', entry, { clock: fixedClock(FIXED_AT) });
+
+    const doc = await readDoc(target.reportsDir, 'windows.json');
+    expect(Object.keys(doc)).toEqual([...HEAD, 'flagThresholdMs', 'windows', 'summary']);
+    expect(doc).toMatchObject({
+      generatedBy: 'migration/src/windows/',
+      status: 'recorded',
+      flagThresholdMs: WINDOW_FLAG_THRESHOLD_MS,
+      windows: [entry],
+      summary: { count: 1, byOutcome: { open: 1 }, overThreshold: 0 },
+    });
+  });
+
+  it('keeps all 50 concurrent appends in call order and leaves no temp file', async () => {
+    const target = await makeTarget();
+    const ids = Array.from({ length: 50 }, (_, i) => `W${i}`);
+    await Promise.all(ids.map((id) => appendLogEntry(target, 'windows.json', windowEntry(id))));
+
+    expect(await windowIds(target.reportsDir)).toEqual(ids);
+    expect((await readDoc(target.reportsDir, 'windows.json')).summary).toMatchObject({ count: 50 });
+    expect(await tempFiles(target.reportsDir)).toEqual([]);
+  });
+
+  it('upserts concurrently by id while readers always parse, replacing an entry in place without merging', async () => {
+    const target = await makeTarget();
+    const ids = Array.from({ length: 20 }, (_, i) => `W${i}`);
+    await Promise.all(
+      ids.flatMap((id) => [
+        upsertLogEntry(target, 'windows.json', 'windowId', windowEntry(id, { durationMs: 1 })),
+        readLogEntries(target.reportsDir, 'windows.json'),
+      ]),
+    );
+    const replacement = windowEntry('W7', { outcome: 'closed' });
+    await upsertLogEntry(target, 'windows.json', 'windowId', replacement);
+
+    const entries = await readLogEntries<WindowLogEntry>(target.reportsDir, 'windows.json');
+    expect(entries.map((entry) => entry.windowId)).toEqual(ids);
+    expect(entries[7]).toEqual(replacement);
+  });
+
+  it.each([
+    [4000, 0],
+    [5000, 0],
+    [5001, 1],
+    [6000, 1],
+  ])('flags a window of %i ms only above the threshold (%i)', (durationMs, flagged) => {
+    expect(summariseWindows([windowEntry('W', { durationMs })]).overThreshold).toBe(flagged);
+  });
+
+  it('counts windows by outcome, as open while it is unset', () => {
+    const summary = summariseWindows([
+      windowEntry('A'),
+      windowEntry('B', { outcome: 'closed' }),
+      windowEntry('C', { outcome: 'closed' }),
+      windowEntry('D', { outcome: 'aborted-503' }),
+    ]);
+    expect(summary).toEqual({ count: 4, byOutcome: { open: 1, closed: 2, 'aborted-503': 1 }, overThreshold: 0 });
+  });
+
+  it("summarises with the file's own flag threshold", async () => {
+    const target = await makeTarget();
+    await writeFile(path.join(target.reportsDir, 'windows.json'), JSON.stringify({ flagThresholdMs: 3000 }), 'utf8');
+    await appendLogEntry(target, 'windows.json', windowEntry('W', { durationMs: 4000 }));
+
+    expect(await readDoc(target.reportsDir, 'windows.json')).toMatchObject({
+      flagThresholdMs: 3000,
+      summary: { count: 1, overThreshold: 1 },
+    });
+  });
+
+  it('records an unknown log under entries and keeps its own generatedBy', async () => {
+    const target = await makeTarget();
+    const existing = { generatedBy: 'tool', status: 'pending-run', extra: 1 };
+    await writeFile(path.join(target.reportsDir, 'other.json'), JSON.stringify(existing), 'utf8');
+    await appendLogEntry(target, 'other.json', { id: 1 });
+
+    const doc = await readDoc(target.reportsDir, 'other.json');
+    expect(Object.keys(doc)).toEqual([...HEAD, 'extra', 'entries']);
+    expect(doc).toMatchObject({ generatedBy: 'tool', status: 'recorded', extra: 1, entries: [{ id: 1 }] });
+    expect(await readLogEntries(target.reportsDir, 'other.json')).toEqual([{ id: 1 }]);
+  });
+
+  it.each<RunLogFile | string>(['windows.json', 'transitions.json', 'other.json'])(
+    'reads no entries from a missing %s',
+    async (file) => {
+      expect(await readLogEntries((await makeTarget()).reportsDir, file)).toEqual([]);
+    },
+  );
+
+  it('rejects only the call that meets invalid JSON, and appends once the file is fixed', async () => {
+    const target = await makeTarget();
+    const file = path.join(target.reportsDir, 'windows.json');
+    await writeFile(file, '{"windows": [', 'utf8');
+
+    await expect(appendLogEntry(target, 'windows.json', windowEntry('bad'))).rejects.toThrow(SyntaxError);
+    expect(await readFile(file, 'utf8')).toBe('{"windows": [');
+    expect(await tempFiles(target.reportsDir)).toEqual([]);
+
+    await writeFile(file, JSON.stringify({ windows: [windowEntry('kept')] }), 'utf8');
+    await appendLogEntry(target, 'windows.json', windowEntry('next'));
+    expect(await windowIds(target.reportsDir)).toEqual(['kept', 'next']);
+  });
+
+  it('runs a queued call after the call ahead of it fails', async () => {
+    const target = await makeTarget();
+    const failing: ReportClock = {
+      now: () => {
+        throw new Error('clock failed');
+      },
+    };
+    const first = appendLogEntry(target, 'windows.json', windowEntry('first'), { clock: failing });
+    const second = appendLogEntry(target, 'windows.json', windowEntry('second'));
+
+    await expect(first).rejects.toThrow('clock failed');
+    await second;
+    expect(await windowIds(target.reportsDir)).toEqual(['second']);
+    expect(await tempFiles(target.reportsDir)).toEqual([]);
   });
 });

@@ -12,7 +12,7 @@ import {
   type BridgeAssertionPayload,
   type BridgeAssertionResult,
   type NonceStore,
-} from '../../src/legacy-compat/bridge-assertion.js';
+} from '../../src/legacy-compat/index.js';
 
 const KEY = 'bridge-unit-test-key';
 const NOW_S = 1_768_471_200;

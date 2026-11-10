@@ -13,7 +13,7 @@ import {
   fallbackSiteId,
   htmlAttr,
   parseAdminUrl,
-} from '../../src/legacy-compat/admin-url.js';
+} from '../../src/legacy-compat/index.js';
 
 describe('access-gate actions', () => {
   it('names the FW/1 home action without its subsystem', () => {

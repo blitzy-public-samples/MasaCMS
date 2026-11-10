@@ -3,9 +3,19 @@ import { createHash } from 'node:crypto';
 // ACF 2023 hash() with no algorithm argument yields SHA-256, not MD5: legacy ETags and CSRF tokens are 64-hex SHA-256.
 const CF_HASH_DEFAULT_ALGORITHM = 'sha256';
 
-/** Uppercase hex of ColdFusion hash(s) over UTF-8 bytes (jsonApiUtility.cfc:1508, sessionUserFacade.cfc:250). */
-export function cfHash(s: string): string {
-  return createHash(CF_HASH_DEFAULT_ALGORITHM).update(s, 'utf8').digest('hex').toUpperCase();
+/** ColdFusion hash() algorithms legacy uses: the default, or the configured `defaultHashAlgorithm` (CFMX_COMPAT). */
+export type CfHashAlgorithm = 'default' | 'CFMX_COMPAT';
+
+/**
+ * Uppercase hex of ColdFusion hash(s[, algorithm]) (jsonApiUtility.cfc:1508, sessionUserFacade.cfc:250, feedUtility.cfc:137).
+ * The default digests UTF-8 bytes with SHA-256; CFMX_COMPAT is MD5 over the low byte of each UTF-16 unit, as ACF 2023 computes it.
+ */
+export function cfHash(s: string, algorithm: CfHashAlgorithm = 'default'): string {
+  const hash =
+    algorithm === 'CFMX_COMPAT'
+      ? createHash('md5').update(Buffer.from(s, 'latin1'))
+      : createHash(CF_HASH_DEFAULT_ALGORITHM).update(s, 'utf8');
+  return hash.digest('hex').toUpperCase();
 }
 
 /** ETag value for an exact serialized body; unquoted, never weak (jsonApiUtility.cfc:1506-1508). */
