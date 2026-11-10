@@ -58,14 +58,14 @@ component output="false" hint="Masa-session authentication and role-group author
 		}
 	}
 
-	public array function rolesHeld() hint="Returns the role group names, in role-map order, the user held at login in the public or private pool of request.siteid; callers run resolveSite first." {
+	public array function rolesHeld() hint="Returns the role group names, in role-map order, the user held at login in the private pool of request.siteid, the role-map privateUserPool scope; callers run resolveSite first." {
 		local.user = currentUser();
 		local.held = [];
 		if (!local.user.isLoggedIn()) {
 			return local.held;
 		}
 		for (local.name in variables.roleNames) {
-			if (local.user.isInGroup(local.name)) {
+			if (local.user.isInGroup(local.name, 0)) {
 				arrayAppend(local.held, local.name);
 			}
 		}

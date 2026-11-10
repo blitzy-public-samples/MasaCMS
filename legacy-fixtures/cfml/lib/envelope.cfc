@@ -114,8 +114,11 @@ component output="false" hint="Masa-shaped JSON envelope and value formats for t
 		success(arguments.method, arguments.params, local.data);
 	}
 
-	public void function sendFile(required binary bytes, required string contentType, required string fileName) hint="Streams bytes as an attachment download with status 200 and ends the request." {
-		cfheader(name="Content-Disposition", value='attachment; filename="' & arguments.fileName & '"');
+	public void function sendFile(required binary bytes, required string contentType, required string fileName, string method="", struct params={}) hint="Streams bytes as an attachment download with status 200, the filename as an escaped quoted-string, and ends the request; a control character in the filename answers server_error." {
+		if (reFind("[[:cntrl:]]", arguments.fileName)) {
+			fail("server_error", arguments.method, arguments.params);
+		}
+		cfheader(name="Content-Disposition", value='attachment; filename="' & replace(replace(arguments.fileName, "\", "\\", "all"), '"', '\"', "all") & '"');
 		cfcontent(type=arguments.contentType, variable=arguments.bytes, reset=true);
 		abort;
 	}
