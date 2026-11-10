@@ -839,4 +839,3 @@ export function computeDiff(text1: string, text2: string, options: DiffTimingOpt
   diffCleanupSemantic(diffs);
   return { diffs, html: diffPrettyHtml(diffs), text1: diffText1(diffs), text2: diffText2(diffs) };
 }
-
