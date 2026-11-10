@@ -1,0 +1,8 @@
+{
+  "apiversion": "v1",
+  "method": "validateEmail",
+  "error": {
+    "code": "invalid_request",
+    "message": "Bad Request"
+  }
+}
