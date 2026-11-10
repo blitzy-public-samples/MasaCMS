@@ -1,0 +1,5665 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "schemaVersion": 1,
+  "description": "Ownership of every legacy table, its target tables, owned columns and units; a unit of write authority is one target table.",
+  "ruleSteps": {
+    "1": "Entity owner: the service that owns the entity owns its table.",
+    "2": "Membership and permission tables go to identity.",
+    "3": "Other services keep an id plus an event-fed projection.",
+    "4": "Pooled data is umbrella-tenant data.",
+    "5": "Anything else goes on the decision list."
+  },
+  "conventions": {
+    "owner": "A service folder name, split (owners per target), decision-list, retired, or migration (OPT-2 coordination state).",
+    "unit": "<schema>.<table> of a target table.",
+    "columnPolicy": {
+      "whole-table": "The target owns every live column of the legacy table; ownedColumns lists the static set.",
+      "explicit": "The target owns exactly ownedColumns."
+    },
+    "rowIdentity": {
+      "key": "Rows match on primaryKey.",
+      "multiset": "Rows match on their full canonical encoding; the target stores legacy_row_hash and an occurrence number."
+    },
+    "tenantResolution": {
+      "siteID": "tenantIdForSite(siteID); the column is NOT NULL.",
+      "siteID-or-umbrella": "tenantIdForSite(siteID), or the umbrella tenant with an orphan flag when siteID is null or names no site.",
+      "parent:<table>": "The parent row's tenant through tenantParent.join; a row with no parent, or parents in several tenants, loads under the umbrella tenant as an orphan.",
+      "program_site": "synthetic.program_site maps the Program_<id> schema to its siteID, then tenantIdForSite; the fold adds legacy_program_id.",
+      "null": "Not migrated."
+    },
+    "liveCatalog": "false only for a table the pinned code drops; fixture tables exist after legacy-fixtures/load-fixtures.sh.",
+    "programN": "Program_N stands for each of Program_1 and Program_2, which hold the same table set."
+  },
+  "counts": {
+    "bootstrap": 41,
+    "migration": 12,
+    "orm": 21,
+    "liveStatic": 73,
+    "retired": 1,
+    "withSiteIdStatic": 55,
+    "noPrimaryKeyBootstrap": 10,
+    "noPrimaryKeyAfterMigrations": 8,
+    "units": 108
+  },
+  "countNotes": {
+    "withSiteIdStatic": "Counts tcontentfilemetadata, whose siteID comes from the beanORMVersioned base, and tremotepointer, which an install creates lazily, so a fresh live catalog shows 54.",
+    "noPrimaryKeyAfterMigrations": "tsettings gains its key in core/mura/dbUpdates/6.1.cfm:120-122 and tglobals is retired, leaving 8 keyless live tables."
+  },
+  "units": [
+    {
+      "unit": "communications.delivery_status",
+      "owner": "communications",
+      "schema": "communications",
+      "table": "delivery_status",
+      "legacyTables": ["synthetic.delivery_status"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "communications.email",
+      "owner": "communications",
+      "schema": "communications",
+      "table": "email",
+      "legacyTables": ["temails"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "communications.email_return_stat",
+      "owner": "communications",
+      "schema": "communications",
+      "table": "email_return_stat",
+      "legacyTables": ["temailreturnstats"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "communications.email_stat",
+      "owner": "communications",
+      "schema": "communications",
+      "table": "email_stat",
+      "legacyTables": ["temailstats"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "communications.mailing_list",
+      "owner": "communications",
+      "schema": "communications",
+      "table": "mailing_list",
+      "legacyTables": ["tmailinglist"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "communications.mailing_list_member",
+      "owner": "communications",
+      "schema": "communications",
+      "table": "mailing_list_member",
+      "legacyTables": ["tmailinglistmembers"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "communications.message",
+      "owner": "communications",
+      "schema": "communications",
+      "table": "message",
+      "legacyTables": ["synthetic.message"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "communications.message_template",
+      "owner": "communications",
+      "schema": "communications",
+      "table": "message_template",
+      "legacyTables": ["synthetic.message_template"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "communications.trash",
+      "owner": "communications",
+      "schema": "communications",
+      "table": "trash",
+      "legacyTables": ["ttrash"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.approval_action",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "approval_action",
+      "legacyTables": ["tapprovalactions"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.approval_assignment",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "approval_assignment",
+      "legacyTables": ["tapprovalassignments"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.approval_chain",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "approval_chain",
+      "legacyTables": ["tapprovalchains"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.approval_membership",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "approval_membership",
+      "legacyTables": ["tapprovalmemberships"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.approval_request",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "approval_request",
+      "legacyTables": ["tapprovalrequests"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.category",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "category",
+      "legacyTables": ["tcontentcategories"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.changeset",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "changeset",
+      "legacyTables": ["tchangesets"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.changeset_category_assign",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "changeset_category_assign",
+      "legacyTables": ["tchangesetcategoryassign"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.changeset_rollback",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "changeset_rollback",
+      "legacyTables": ["tchangesetrollback"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.changeset_tag_assign",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "changeset_tag_assign",
+      "legacyTables": ["tchangesettagassign"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.comment",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "comment",
+      "legacyTables": ["tcontentcomments"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.commenter",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "commenter",
+      "legacyTables": ["tcontentcommentcommenters"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.content",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "content",
+      "legacyTables": ["tcontent"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.content_assignment",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "content_assignment",
+      "legacyTables": ["tcontentassignments"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.content_category_assign",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "content_category_assign",
+      "legacyTables": ["tcontentcategoryassign"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.content_object",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "content_object",
+      "legacyTables": ["tcontentobjects"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.content_rating",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "content_rating",
+      "legacyTables": ["tcontentratings"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.content_related",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "content_related",
+      "legacyTables": ["tcontentrelated"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.content_remote_pointer",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "content_remote_pointer",
+      "legacyTables": ["tcontentremotepointer"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.content_stats",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "content_stats",
+      "legacyTables": ["tcontentstats"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.content_tag",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "content_tag",
+      "legacyTables": ["tcontenttags"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.display_title_approval",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "display_title_approval",
+      "legacyTables": ["tcontentdisplaytitleapprovals"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.extend_attribute",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "extend_attribute",
+      "legacyTables": ["tclassextendattributes"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.extend_data",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "extend_data",
+      "legacyTables": ["tclassextenddata"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.extend_rc_set",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "extend_rc_set",
+      "legacyTables": ["tclassextendrcsets"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.extend_set",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "extend_set",
+      "legacyTables": ["tclassextendsets"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.extend_subtype",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "extend_subtype",
+      "legacyTables": ["tclassextend"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.feed",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "feed",
+      "legacyTables": ["tcontentfeeds"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.feed_advanced_param",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "feed_advanced_param",
+      "legacyTables": ["tcontentfeedadvancedparams"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.feed_item",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "feed_item",
+      "legacyTables": ["tcontentfeeditems"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.file",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "file",
+      "legacyTables": ["tfiles"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.file_metadata",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "file_metadata",
+      "legacyTables": ["tcontentfilemetadata"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.filename_archive",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "filename_archive",
+      "legacyTables": ["tcontentfilenamearchive"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.form_response_packet",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "form_response_packet",
+      "legacyTables": ["tformresponsepackets"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.form_response_question",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "form_response_question",
+      "legacyTables": ["tformresponsequestions"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.public_submission_approval",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "public_submission_approval",
+      "legacyTables": ["tcontentpublicsubmissionapprovals"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.source_map",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "source_map",
+      "legacyTables": ["tcontentsourcemaps"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.trash",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "trash",
+      "legacyTables": ["ttrash"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "content.variation_targeting",
+      "owner": "strategies-content",
+      "schema": "content",
+      "table": "variation_targeting",
+      "legacyTables": ["tcontentvariationtargeting"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "esignature.audit_entry",
+      "owner": "e-signature",
+      "schema": "esignature",
+      "table": "audit_entry",
+      "legacyTables": ["synthetic.audit_entry"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "esignature.signature",
+      "owner": "e-signature",
+      "schema": "esignature",
+      "table": "signature",
+      "legacyTables": ["synthetic.signature"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "esignature.signature_request",
+      "owner": "e-signature",
+      "schema": "esignature",
+      "table": "signature_request",
+      "legacyTables": ["synthetic.signature_request"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "finance.attachment",
+      "owner": "finance",
+      "schema": "finance",
+      "table": "attachment",
+      "legacyTables": ["Program_N.finance_attachment"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "finance.record",
+      "owner": "finance",
+      "schema": "finance",
+      "table": "record",
+      "legacyTables": ["Program_N.finance_record"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "finance.record_version",
+      "owner": "finance",
+      "schema": "finance",
+      "table": "record_version",
+      "legacyTables": ["Program_N.finance_record_version"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "finance.rollup",
+      "owner": "finance",
+      "schema": "finance",
+      "table": "rollup",
+      "legacyTables": ["Program_N.finance_rollup"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "identity.credential",
+      "owner": "identity",
+      "schema": "identity",
+      "table": "credential",
+      "legacyTables": ["tusers"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "identity.extend_data_user_activity",
+      "owner": "identity",
+      "schema": "identity",
+      "table": "extend_data_user_activity",
+      "legacyTables": ["tclassextenddatauseractivity"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "identity.group_account",
+      "owner": "identity",
+      "schema": "identity",
+      "table": "group_account",
+      "legacyTables": ["tusers"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "identity.login_state",
+      "owner": "identity",
+      "schema": "identity",
+      "table": "login_state",
+      "legacyTables": ["tusers"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "identity.membership",
+      "owner": "identity",
+      "schema": "identity",
+      "table": "membership",
+      "legacyTables": ["tusersmemb"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "identity.oauth_client",
+      "owner": "identity",
+      "schema": "identity",
+      "table": "oauth_client",
+      "legacyTables": ["toauthclients"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "identity.oauth_token",
+      "owner": "identity",
+      "schema": "identity",
+      "table": "oauth_token",
+      "legacyTables": ["toauthtokens"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "identity.permission",
+      "owner": "identity",
+      "schema": "identity",
+      "table": "permission",
+      "legacyTables": ["tpermissions"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "identity.redirect",
+      "owner": "identity",
+      "schema": "identity",
+      "table": "redirect",
+      "legacyTables": ["tredirects"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "identity.remote_session",
+      "owner": "identity",
+      "schema": "identity",
+      "table": "remote_session",
+      "legacyTables": ["tuserremotesessions"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "identity.trash",
+      "owner": "identity",
+      "schema": "identity",
+      "table": "trash",
+      "legacyTables": ["ttrash"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "identity.user_account",
+      "owner": "identity",
+      "schema": "identity",
+      "table": "user_account",
+      "legacyTables": ["tusers"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "identity.user_address",
+      "owner": "identity",
+      "schema": "identity",
+      "table": "user_address",
+      "legacyTables": ["tuseraddresses"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "identity.user_device",
+      "owner": "identity",
+      "schema": "identity",
+      "table": "user_device",
+      "legacyTables": ["tuserdevice"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "identity.user_favorite",
+      "owner": "identity",
+      "schema": "identity",
+      "table": "user_favorite",
+      "legacyTables": ["tusersfavorites"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "identity.user_interest",
+      "owner": "identity",
+      "schema": "identity",
+      "table": "user_interest",
+      "legacyTables": ["tusersinterests"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "identity.user_strike",
+      "owner": "identity",
+      "schema": "identity",
+      "table": "user_strike",
+      "legacyTables": ["tuserstrikes"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "identity.user_tag",
+      "owner": "identity",
+      "schema": "identity",
+      "table": "user_tag",
+      "legacyTables": ["tuserstags"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "people.extend_attribute",
+      "owner": "people",
+      "schema": "people",
+      "table": "extend_attribute",
+      "legacyTables": ["tclassextendattributes"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "people.extend_data",
+      "owner": "people",
+      "schema": "people",
+      "table": "extend_data",
+      "legacyTables": ["tclassextenddata"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "people.extend_data_user_activity",
+      "owner": "people",
+      "schema": "people",
+      "table": "extend_data_user_activity",
+      "legacyTables": ["tclassextenddatauseractivity"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "people.extend_rc_set",
+      "owner": "people",
+      "schema": "people",
+      "table": "extend_rc_set",
+      "legacyTables": ["tclassextendrcsets"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "people.extend_set",
+      "owner": "people",
+      "schema": "people",
+      "table": "extend_set",
+      "legacyTables": ["tclassextendsets"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "people.extend_subtype",
+      "owner": "people",
+      "schema": "people",
+      "table": "extend_subtype",
+      "legacyTables": ["tclassextend"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "people.person",
+      "owner": "people",
+      "schema": "people",
+      "table": "person",
+      "legacyTables": ["tusers"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "people.person_archive",
+      "owner": "people",
+      "schema": "people",
+      "table": "person_archive",
+      "legacyTables": ["synthetic.person_archive"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "people.trash",
+      "owner": "people",
+      "schema": "people",
+      "table": "trash",
+      "legacyTables": ["ttrash"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "people.user_address",
+      "owner": "people",
+      "schema": "people",
+      "table": "user_address",
+      "legacyTables": ["tuseraddresses"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "people.user_favorite",
+      "owner": "people",
+      "schema": "people",
+      "table": "user_favorite",
+      "legacyTables": ["tusersfavorites"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "people.user_interest",
+      "owner": "people",
+      "schema": "people",
+      "table": "user_interest",
+      "legacyTables": ["tusersinterests"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "people.user_tag",
+      "owner": "people",
+      "schema": "people",
+      "table": "user_tag",
+      "legacyTables": ["tuserstags"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "programs_sites.directory",
+      "owner": "programs-sites",
+      "schema": "programs_sites",
+      "table": "directory",
+      "legacyTables": ["tdirectories"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "programs_sites.extend_attribute",
+      "owner": "programs-sites",
+      "schema": "programs_sites",
+      "table": "extend_attribute",
+      "legacyTables": ["tclassextendattributes"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "programs_sites.extend_data",
+      "owner": "programs-sites",
+      "schema": "programs_sites",
+      "table": "extend_data",
+      "legacyTables": ["tclassextenddata"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "programs_sites.extend_rc_set",
+      "owner": "programs-sites",
+      "schema": "programs_sites",
+      "table": "extend_rc_set",
+      "legacyTables": ["tclassextendrcsets"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "programs_sites.extend_set",
+      "owner": "programs-sites",
+      "schema": "programs_sites",
+      "table": "extend_set",
+      "legacyTables": ["tclassextendsets"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "programs_sites.extend_subtype",
+      "owner": "programs-sites",
+      "schema": "programs_sites",
+      "table": "extend_subtype",
+      "legacyTables": ["tclassextend"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "programs_sites.image_size",
+      "owner": "programs-sites",
+      "schema": "programs_sites",
+      "table": "image_size",
+      "legacyTables": ["timagesizes"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "programs_sites.site",
+      "owner": "programs-sites",
+      "schema": "programs_sites",
+      "table": "site",
+      "legacyTables": ["tsettings"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "programs_sites.system_object",
+      "owner": "programs-sites",
+      "schema": "programs_sites",
+      "table": "system_object",
+      "legacyTables": ["tsystemobjects"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "programs_sites.trash",
+      "owner": "programs-sites",
+      "schema": "programs_sites",
+      "table": "trash",
+      "legacyTables": ["ttrash"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "reporting.export_definition",
+      "owner": "reporting",
+      "schema": "reporting",
+      "table": "export_definition",
+      "legacyTables": ["synthetic.export_definition"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "reporting.export_job",
+      "owner": "reporting",
+      "schema": "reporting",
+      "table": "export_job",
+      "legacyTables": ["synthetic.export_job"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "reporting.session_tracking",
+      "owner": "reporting",
+      "schema": "reporting",
+      "table": "session_tracking",
+      "legacyTables": ["tsessiontracking"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "surveys.survey",
+      "owner": "surveys",
+      "schema": "surveys",
+      "table": "survey",
+      "legacyTables": ["synthetic.survey"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "surveys.survey_reminder",
+      "owner": "surveys",
+      "schema": "surveys",
+      "table": "survey_reminder",
+      "legacyTables": ["synthetic.survey_reminder"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "surveys.survey_response",
+      "owner": "surveys",
+      "schema": "surveys",
+      "table": "survey_response",
+      "legacyTables": ["synthetic.survey_response"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "surveys.survey_schedule",
+      "owner": "surveys",
+      "schema": "surveys",
+      "table": "survey_schedule",
+      "legacyTables": ["synthetic.survey_schedule"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "surveys.survey_target",
+      "owner": "surveys",
+      "schema": "surveys",
+      "table": "survey_target",
+      "legacyTables": ["synthetic.survey_target"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "timesheets.approval_action",
+      "owner": "timesheets",
+      "schema": "timesheets",
+      "table": "approval_action",
+      "legacyTables": ["Program_N.approval_action"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "timesheets.blackout",
+      "owner": "timesheets",
+      "schema": "timesheets",
+      "table": "blackout",
+      "legacyTables": ["Program_N.blackout"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "timesheets.timesheet",
+      "owner": "timesheets",
+      "schema": "timesheets",
+      "table": "timesheet",
+      "legacyTables": ["Program_N.timesheet"],
+      "tenantOwned": true
+    },
+    {
+      "unit": "timesheets.timesheet_day",
+      "owner": "timesheets",
+      "schema": "timesheets",
+      "table": "timesheet_day",
+      "legacyTables": ["Program_N.timesheet_day"],
+      "tenantOwned": true
+    }
+  ],
+  "tables": [
+    {
+      "table": "fb_*",
+      "schema": "dbo",
+      "origin": "dynamic",
+      "pattern": true,
+      "source": {
+        "path": "core/mura/formBuilder/formBuilderManager.cfc",
+        "lines": [443, 773]
+      },
+      "liveCatalog": true,
+      "hasSiteId": null,
+      "siteIdColumn": null,
+      "hasPrimaryKey": null,
+      "primaryKey": [],
+      "rowIdentity": null,
+      "columns": [],
+      "serializedDocumentColumns": [],
+      "tenantResolution": null,
+      "owner": "decision-list",
+      "ruleSteps": [5],
+      "targets": [],
+      "decisionRef": "opt2/decision-list.json#fb_*",
+      "notes": "Form-builder tables generated at runtime from component strings; every live table named fb_* matches this entry."
+    },
+    {
+      "table": "opt2_sync.projector_checkpoint",
+      "schema": "opt2_sync",
+      "origin": "opt2",
+      "source": {
+        "path": "migration/sql/005_opt2_sync.sql",
+        "lines": [4, 14]
+      },
+      "liveCatalog": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["owner", "tenant_id"],
+      "rowIdentity": "key",
+      "columns": ["owner", "tenant_id", "cursor_xid", "cursor_seq", "applied_horizon", "batch_id", "rows_applied", "updated_at"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": null,
+      "owner": "migration",
+      "ruleSteps": [],
+      "targets": [],
+      "notes": "Reverse-projector checkpoint that only the migration service writes inside the legacy database; it is coordination state and never migrates."
+    },
+    {
+      "table": "tapprovalactions",
+      "schema": "dbo",
+      "origin": "orm",
+      "source": {
+        "path": "core/mura/content/approval/approvalActionBean.cfc",
+        "lines": [1, 1]
+      },
+      "liveCatalog": true,
+      "ormEntity": {
+        "path": "core/mura/content/approval/approvalActionBean.cfc",
+        "entityName": "approvalAction"
+      },
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["actiontID"],
+      "rowIdentity": "key",
+      "columns": ["siteID", "actionType", "comments", "userID", "groupID", "created", "actiontID", "requestID", "parentID", "chainID"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.approval_action",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "approval_action",
+          "rowPredicate": null,
+          "keyColumns": ["actiontID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["siteID", "actionType", "comments", "userID", "groupID", "created", "actiontID", "requestID", "parentID", "chainID"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tapprovalassignments",
+      "schema": "dbo",
+      "origin": "orm",
+      "source": {
+        "path": "core/mura/content/approval/approvalChainAssignmentBean.cfc",
+        "lines": [1, 1]
+      },
+      "liveCatalog": true,
+      "ormEntity": {
+        "path": "core/mura/content/approval/approvalChainAssignmentBean.cfc",
+        "entityName": "approvalChainAssignment"
+      },
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["assignmentID"],
+      "rowIdentity": "key",
+      "columns": ["siteID", "assignmentID", "contentID", "exemptID", "chainID"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.approval_assignment",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "approval_assignment",
+          "rowPredicate": null,
+          "keyColumns": ["assignmentID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["siteID", "assignmentID", "contentID", "exemptID", "chainID"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tapprovalchains",
+      "schema": "dbo",
+      "origin": "orm",
+      "source": {
+        "path": "core/mura/content/approval/approvalChainBean.cfc",
+        "lines": [1, 1]
+      },
+      "liveCatalog": true,
+      "ormEntity": {
+        "path": "core/mura/content/approval/approvalChainBean.cfc",
+        "entityName": "approvalChain"
+      },
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["chainID"],
+      "rowIdentity": "key",
+      "columns": ["siteID", "chainID", "name", "created", "lastupdate", "description", "lastupdateby", "lastupdatebyid"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.approval_chain",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "approval_chain",
+          "rowPredicate": null,
+          "keyColumns": ["chainID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["siteID", "chainID", "name", "created", "lastupdate", "description", "lastupdateby", "lastupdatebyid"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tapprovalmemberships",
+      "schema": "dbo",
+      "origin": "orm",
+      "source": {
+        "path": "core/mura/content/approval/approvalChainMembershipBean.cfc",
+        "lines": [1, 1]
+      },
+      "liveCatalog": true,
+      "ormEntity": {
+        "path": "core/mura/content/approval/approvalChainMembershipBean.cfc",
+        "entityName": "approvalChainMembership"
+      },
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["membershipID"],
+      "rowIdentity": "key",
+      "columns": ["groupID", "siteID", "created", "orderno", "membershipID", "chainID"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.approval_membership",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "approval_membership",
+          "rowPredicate": null,
+          "keyColumns": ["membershipID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["groupID", "siteID", "created", "orderno", "membershipID", "chainID"],
+          "ruleSteps": [1]
+        }
+      ],
+      "notes": "It links approval chains to approving groups, which is workflow configuration rather than a user-to-group membership, so step 2 does not apply and group names are read by projection."
+    },
+    {
+      "table": "tapprovalrequests",
+      "schema": "dbo",
+      "origin": "orm",
+      "source": {
+        "path": "core/mura/content/approval/approvalRequestBean.cfc",
+        "lines": [1, 1]
+      },
+      "liveCatalog": true,
+      "ormEntity": {
+        "path": "core/mura/content/approval/approvalRequestBean.cfc",
+        "entityName": "approvalRequest"
+      },
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["requestID"],
+      "rowIdentity": "key",
+      "columns": ["siteID", "userID", "groupID", "created", "status", "contentHistID", "requestID", "chainID"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.approval_request",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "approval_request",
+          "rowPredicate": null,
+          "keyColumns": ["requestID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["siteID", "userID", "groupID", "created", "status", "contentHistID", "requestID", "chainID"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tchangesetcategoryassign",
+      "schema": "dbo",
+      "origin": "orm",
+      "source": {
+        "path": "core/mura/content/changeset/changesetCategoryAssignmentBean.cfc",
+        "lines": [1, 2]
+      },
+      "liveCatalog": true,
+      "ormEntity": {
+        "path": "core/mura/content/changeset/changesetCategoryAssignmentBean.cfc",
+        "entityName": "changesetCategoryAssignment"
+      },
+      "hasSiteId": true,
+      "siteIdColumn": "siteid",
+      "hasPrimaryKey": true,
+      "primaryKey": ["assignmentid"],
+      "rowIdentity": "key",
+      "columns": ["siteid", "categoryid", "changesetid", "assignmentid"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.changeset_category_assign",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "changeset_category_assign",
+          "rowPredicate": null,
+          "keyColumns": ["assignmentid"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["siteid", "categoryid", "changesetid", "assignmentid"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tchangesetrollback",
+      "schema": "dbo",
+      "origin": "orm",
+      "source": {
+        "path": "core/mura/content/changeset/changesetRollBackBean.cfc",
+        "lines": [1, 1]
+      },
+      "liveCatalog": true,
+      "ormEntity": {
+        "path": "core/mura/content/changeset/changesetRollBackBean.cfc",
+        "entityName": "changesetRollBack"
+      },
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["rollbackID"],
+      "rowIdentity": "key",
+      "columns": ["siteID", "rollbackID", "changesetID", "previousHistID", "changesetHistID"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.changeset_rollback",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "changeset_rollback",
+          "rowPredicate": null,
+          "keyColumns": ["rollbackID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["siteID", "rollbackID", "changesetID", "previousHistID", "changesetHistID"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tchangesets",
+      "schema": "dbo",
+      "origin": "migration",
+      "source": {
+        "path": "core/mura/dbUpdates/5.4.3178.cfm",
+        "lines": [21, 35]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["changesetID"],
+      "rowIdentity": "key",
+      "columns": ["changesetID", "siteID", "name", "description", "created", "publishDate", "published", "lastUpdate", "lastUpdateBy", "lastUpdateByID", "remoteID", "remotePubDate", "remoteSourceURL", "closeDate"],
+      "addedColumns": [
+        {
+          "column": "closeDate",
+          "source": "core/mura/dbUpdates/6.1.cfm:75"
+        }
+      ],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.changeset",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "changeset",
+          "rowPredicate": null,
+          "keyColumns": ["changesetID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["changesetID", "siteID", "name", "description", "created", "publishDate", "published", "lastUpdate", "lastUpdateBy", "lastUpdateByID", "remoteID", "remotePubDate", "remoteSourceURL", "closeDate"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tchangesettagassign",
+      "schema": "dbo",
+      "origin": "orm",
+      "source": {
+        "path": "core/mura/content/changeset/changesetTagAssignmentBean.cfc",
+        "lines": [1, 2]
+      },
+      "liveCatalog": true,
+      "ormEntity": {
+        "path": "core/mura/content/changeset/changesetTagAssignmentBean.cfc",
+        "entityName": "changesetTagAssignment"
+      },
+      "hasSiteId": true,
+      "siteIdColumn": "siteid",
+      "hasPrimaryKey": true,
+      "primaryKey": ["assignmentid"],
+      "rowIdentity": "key",
+      "columns": ["siteid", "changesetid", "assignmentid", "tag"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.changeset_tag_assign",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "changeset_tag_assign",
+          "rowPredicate": null,
+          "keyColumns": ["assignmentid"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["siteid", "changesetid", "assignmentid", "tag"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tclassextend",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [569, 582]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["subTypeID"],
+      "rowIdentity": "key",
+      "columns": ["subTypeID", "siteID", "baseTable", "baseKeyField", "dataTable", "type", "subType", "isActive", "notes", "lastUpdate", "dateCreated", "lastUpdateBy", "hasSummary", "hasBody", "description", "availableSubTypes", "iconclass", "hasAssocFile", "hasConfigurator", "adminonly"],
+      "addedColumns": [
+        {
+          "column": "hasSummary",
+          "source": "core/mura/dbUpdates/5.6.1.cfm:51"
+        },
+        {
+          "column": "hasBody",
+          "source": "core/mura/dbUpdates/5.6.1.cfm:52"
+        },
+        {
+          "column": "description",
+          "source": "core/mura/dbUpdates/5.7.cfm:3"
+        },
+        {
+          "column": "availableSubTypes",
+          "source": "core/mura/dbUpdates/5.7.cfm:4"
+        },
+        {
+          "column": "iconclass",
+          "source": "core/mura/dbUpdates/6.1.cfm:61"
+        },
+        {
+          "column": "hasAssocFile",
+          "source": "core/mura/dbUpdates/6.1.cfm:62"
+        },
+        {
+          "column": "hasConfigurator",
+          "source": "core/mura/dbUpdates/6.1.cfm:63"
+        },
+        {
+          "column": "adminonly",
+          "source": "core/mura/dbUpdates/6.2.2.cfm:5"
+        }
+      ],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "split",
+      "ruleSteps": [1],
+      "split": {
+        "by": "baseTable",
+        "resolve": "tclassextend.baseTable",
+        "baseTableOwners": {
+          "tcontent": "strategies-content",
+          "tsettings": "programs-sites",
+          "tusers": "people",
+          "tusersaddresses": "people"
+        },
+        "baseTableRule": "Any other baseTable goes to the owner of that table in this file, in that owner's schema, and a baseTable this file does not map fails services/*/test/unit/mapping.test.ts."
+      },
+      "targets": [
+        {
+          "unit": "content.extend_subtype",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "extend_subtype",
+          "rowPredicate": "baseTable = 'tcontent'",
+          "keyColumns": ["subTypeID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["subTypeID", "siteID", "baseTable", "baseKeyField", "dataTable", "type", "subType", "isActive", "notes", "lastUpdate", "dateCreated", "lastUpdateBy", "hasSummary", "hasBody", "description", "availableSubTypes", "iconclass", "hasAssocFile", "hasConfigurator", "adminonly"],
+          "ruleSteps": [1]
+        },
+        {
+          "unit": "people.extend_subtype",
+          "owner": "people",
+          "schema": "people",
+          "table": "extend_subtype",
+          "rowPredicate": "baseTable in ('tusers', 'tusersaddresses')",
+          "keyColumns": ["subTypeID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["subTypeID", "siteID", "baseTable", "baseKeyField", "dataTable", "type", "subType", "isActive", "notes", "lastUpdate", "dateCreated", "lastUpdateBy", "hasSummary", "hasBody", "description", "availableSubTypes", "iconclass", "hasAssocFile", "hasConfigurator", "adminonly"],
+          "ruleSteps": [1]
+        },
+        {
+          "unit": "programs_sites.extend_subtype",
+          "owner": "programs-sites",
+          "schema": "programs_sites",
+          "table": "extend_subtype",
+          "rowPredicate": "baseTable = 'tsettings'",
+          "keyColumns": ["subTypeID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["subTypeID", "siteID", "baseTable", "baseKeyField", "dataTable", "type", "subType", "isActive", "notes", "lastUpdate", "dateCreated", "lastUpdateBy", "hasSummary", "hasBody", "description", "availableSubTypes", "iconclass", "hasAssocFile", "hasConfigurator", "adminonly"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tclassextendattributes",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [585, 602]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["attributeID"],
+      "rowIdentity": "key",
+      "columns": ["attributeID", "extendSetID", "siteID", "name", "label", "hint", "type", "orderno", "isActive", "required", "validation", "regex", "message", "defaultValue", "optionList", "optionLabelList", "adminonly"],
+      "addedColumns": [
+        {
+          "column": "adminonly",
+          "source": "core/mura/dbUpdates/6.2.2.cfm:4"
+        }
+      ],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "split",
+      "ruleSteps": [1],
+      "split": {
+        "by": "baseTable",
+        "resolve": "tclassextendattributes.extendSetID = tclassextendsets.extendSetID, then tclassextendsets.subTypeID = tclassextend.subTypeID",
+        "baseTableOwners": {
+          "tcontent": "strategies-content",
+          "tsettings": "programs-sites",
+          "tusers": "people",
+          "tusersaddresses": "people"
+        },
+        "baseTableRule": "Any other baseTable goes to the owner of that table in this file, in that owner's schema, and a baseTable this file does not map fails services/*/test/unit/mapping.test.ts."
+      },
+      "targets": [
+        {
+          "unit": "content.extend_attribute",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "extend_attribute",
+          "rowPredicate": "baseTable = 'tcontent'",
+          "keyColumns": ["attributeID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["attributeID", "extendSetID", "siteID", "name", "label", "hint", "type", "orderno", "isActive", "required", "validation", "regex", "message", "defaultValue", "optionList", "optionLabelList", "adminonly"],
+          "ruleSteps": [1]
+        },
+        {
+          "unit": "people.extend_attribute",
+          "owner": "people",
+          "schema": "people",
+          "table": "extend_attribute",
+          "rowPredicate": "baseTable in ('tusers', 'tusersaddresses')",
+          "keyColumns": ["attributeID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["attributeID", "extendSetID", "siteID", "name", "label", "hint", "type", "orderno", "isActive", "required", "validation", "regex", "message", "defaultValue", "optionList", "optionLabelList", "adminonly"],
+          "ruleSteps": [1]
+        },
+        {
+          "unit": "programs_sites.extend_attribute",
+          "owner": "programs-sites",
+          "schema": "programs_sites",
+          "table": "extend_attribute",
+          "rowPredicate": "baseTable = 'tsettings'",
+          "keyColumns": ["attributeID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["attributeID", "extendSetID", "siteID", "name", "label", "hint", "type", "orderno", "isActive", "required", "validation", "regex", "message", "defaultValue", "optionList", "optionLabelList", "adminonly"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tclassextenddata",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [560, 566]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["dataID"],
+      "rowIdentity": "key",
+      "columns": ["dataID", "baseID", "attributeID", "siteID", "attributeValue", "remoteID", "datetimevalue", "numericvalue", "stringvalue"],
+      "addedColumns": [
+        {
+          "column": "remoteID",
+          "source": "core/mura/dbUpdates/5.2.1.2696.cfm:88"
+        },
+        {
+          "column": "datetimevalue",
+          "source": "core/mura/dbUpdates/5.2.2655.cfm:53"
+        },
+        {
+          "column": "numericvalue",
+          "source": "core/mura/dbUpdates/5.2.2655.cfm:56"
+        },
+        {
+          "column": "stringvalue",
+          "source": "core/mura/dbUpdates/5.2.2655.cfm:59"
+        }
+      ],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "split",
+      "ruleSteps": [1],
+      "split": {
+        "by": "baseTable",
+        "resolve": "tclassextenddata.attributeID = tclassextendattributes.attributeID, then tclassextendattributes.extendSetID = tclassextendsets.extendSetID, then tclassextendsets.subTypeID = tclassextend.subTypeID",
+        "baseTableOwners": {
+          "tcontent": "strategies-content",
+          "tsettings": "programs-sites",
+          "tusers": "people",
+          "tusersaddresses": "people"
+        },
+        "baseTableRule": "Any other baseTable goes to the owner of that table in this file, in that owner's schema, and a baseTable this file does not map fails services/*/test/unit/mapping.test.ts."
+      },
+      "targets": [
+        {
+          "unit": "content.extend_data",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "extend_data",
+          "rowPredicate": "baseTable = 'tcontent'",
+          "keyColumns": ["dataID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["dataID", "baseID", "attributeID", "siteID", "attributeValue", "remoteID", "datetimevalue", "numericvalue", "stringvalue"],
+          "ruleSteps": [1]
+        },
+        {
+          "unit": "people.extend_data",
+          "owner": "people",
+          "schema": "people",
+          "table": "extend_data",
+          "rowPredicate": "baseTable in ('tusers', 'tusersaddresses')",
+          "keyColumns": ["dataID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["dataID", "baseID", "attributeID", "siteID", "attributeValue", "remoteID", "datetimevalue", "numericvalue", "stringvalue"],
+          "ruleSteps": [1]
+        },
+        {
+          "unit": "programs_sites.extend_data",
+          "owner": "programs-sites",
+          "schema": "programs_sites",
+          "table": "extend_data",
+          "rowPredicate": "baseTable = 'tsettings'",
+          "keyColumns": ["dataID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["dataID", "baseID", "attributeID", "siteID", "attributeValue", "remoteID", "datetimevalue", "numericvalue", "stringvalue"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tclassextenddatauseractivity",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [551, 557]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["dataID"],
+      "rowIdentity": "key",
+      "columns": ["dataID", "baseID", "attributeID", "siteID", "attributeValue", "remoteID", "datetimevalue", "numericvalue", "stringvalue"],
+      "addedColumns": [
+        {
+          "column": "remoteID",
+          "source": "core/mura/dbUpdates/5.2.1.2696.cfm:15"
+        },
+        {
+          "column": "datetimevalue",
+          "source": "core/mura/dbUpdates/5.2.2655.cfm:198"
+        },
+        {
+          "column": "numericvalue",
+          "source": "core/mura/dbUpdates/5.2.2655.cfm:201"
+        },
+        {
+          "column": "stringvalue",
+          "source": "core/mura/dbUpdates/5.2.2655.cfm:204"
+        }
+      ],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "split",
+      "ruleSteps": [1],
+      "split": {
+        "by": "ownerType",
+        "parent": {
+          "table": "tusers",
+          "join": "tclassextenddatauseractivity.baseID = tusers.UserID"
+        },
+        "addressJoin": "tclassextenddatauseractivity.baseID = tuseraddresses.addressID, then tuseraddresses.userID = tusers.UserID"
+      },
+      "targets": [
+        {
+          "unit": "identity.extend_data_user_activity",
+          "owner": "identity",
+          "schema": "identity",
+          "table": "extend_data_user_activity",
+          "rowPredicate": "owner Type = 1",
+          "keyColumns": ["dataID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["dataID", "baseID", "attributeID", "siteID", "attributeValue", "remoteID", "datetimevalue", "numericvalue", "stringvalue"],
+          "ruleSteps": [1]
+        },
+        {
+          "unit": "people.extend_data_user_activity",
+          "owner": "people",
+          "schema": "people",
+          "table": "extend_data_user_activity",
+          "rowPredicate": "owner Type = 2",
+          "keyColumns": ["dataID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["dataID", "baseID", "attributeID", "siteID", "attributeValue", "remoteID", "datetimevalue", "numericvalue", "stringvalue"],
+          "ruleSteps": [1]
+        }
+      ],
+      "notes": "Address extended data stores the address id as baseID (core/mura/user/addressBean.cfc:254-256), so those rows reach their user through tuseraddresses."
+    },
+    {
+      "table": "tclassextendrcsets",
+      "schema": "dbo",
+      "origin": "orm",
+      "source": {
+        "path": "core/mura/extend/extendRelatedContentSetBean.cfc",
+        "lines": [1, 1]
+      },
+      "liveCatalog": true,
+      "ormEntity": {
+        "path": "core/mura/extend/extendRelatedContentSetBean.cfc",
+        "entityName": "relatedContentSet"
+      },
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["relatedContentSetID"],
+      "rowIdentity": "key",
+      "columns": ["subTypeID", "availableSubTypes", "siteID", "entitytype", "name", "orderNo", "relatedContentSetID"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "split",
+      "ruleSteps": [1],
+      "split": {
+        "by": "baseTable",
+        "resolve": "tclassextendrcsets.subTypeID = tclassextend.subTypeID",
+        "baseTableOwners": {
+          "tcontent": "strategies-content",
+          "tsettings": "programs-sites",
+          "tusers": "people",
+          "tusersaddresses": "people"
+        },
+        "baseTableRule": "Any other baseTable goes to the owner of that table in this file, in that owner's schema, and a baseTable this file does not map fails services/*/test/unit/mapping.test.ts."
+      },
+      "targets": [
+        {
+          "unit": "content.extend_rc_set",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "extend_rc_set",
+          "rowPredicate": "baseTable = 'tcontent'",
+          "keyColumns": ["relatedContentSetID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["subTypeID", "availableSubTypes", "siteID", "entitytype", "name", "orderNo", "relatedContentSetID"],
+          "ruleSteps": [1]
+        },
+        {
+          "unit": "people.extend_rc_set",
+          "owner": "people",
+          "schema": "people",
+          "table": "extend_rc_set",
+          "rowPredicate": "baseTable in ('tusers', 'tusersaddresses')",
+          "keyColumns": ["relatedContentSetID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["subTypeID", "availableSubTypes", "siteID", "entitytype", "name", "orderNo", "relatedContentSetID"],
+          "ruleSteps": [1]
+        },
+        {
+          "unit": "programs_sites.extend_rc_set",
+          "owner": "programs-sites",
+          "schema": "programs_sites",
+          "table": "extend_rc_set",
+          "rowPredicate": "baseTable = 'tsettings'",
+          "keyColumns": ["relatedContentSetID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["subTypeID", "availableSubTypes", "siteID", "entitytype", "name", "orderNo", "relatedContentSetID"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tclassextendsets",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [605, 613]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["extendSetID"],
+      "rowIdentity": "key",
+      "columns": ["extendSetID", "subTypeID", "categoryID", "siteID", "name", "orderno", "isActive", "container"],
+      "addedColumns": [
+        {
+          "column": "container",
+          "source": "core/mura/dbUpdates/5.2.1806.cfm:158"
+        }
+      ],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "split",
+      "ruleSteps": [1],
+      "split": {
+        "by": "baseTable",
+        "resolve": "tclassextendsets.subTypeID = tclassextend.subTypeID",
+        "baseTableOwners": {
+          "tcontent": "strategies-content",
+          "tsettings": "programs-sites",
+          "tusers": "people",
+          "tusersaddresses": "people"
+        },
+        "baseTableRule": "Any other baseTable goes to the owner of that table in this file, in that owner's schema, and a baseTable this file does not map fails services/*/test/unit/mapping.test.ts."
+      },
+      "targets": [
+        {
+          "unit": "content.extend_set",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "extend_set",
+          "rowPredicate": "baseTable = 'tcontent'",
+          "keyColumns": ["extendSetID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["extendSetID", "subTypeID", "categoryID", "siteID", "name", "orderno", "isActive", "container"],
+          "ruleSteps": [1]
+        },
+        {
+          "unit": "people.extend_set",
+          "owner": "people",
+          "schema": "people",
+          "table": "extend_set",
+          "rowPredicate": "baseTable in ('tusers', 'tusersaddresses')",
+          "keyColumns": ["extendSetID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["extendSetID", "subTypeID", "categoryID", "siteID", "name", "orderno", "isActive", "container"],
+          "ruleSteps": [1]
+        },
+        {
+          "unit": "programs_sites.extend_set",
+          "owner": "programs-sites",
+          "schema": "programs_sites",
+          "table": "extend_set",
+          "rowPredicate": "baseTable = 'tsettings'",
+          "keyColumns": ["extendSetID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["extendSetID", "subTypeID", "categoryID", "siteID", "name", "orderno", "isActive", "container"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tclustercommands",
+      "schema": "dbo",
+      "origin": "migration",
+      "source": {
+        "path": "core/mura/dbUpdates/5.7.cfm",
+        "lines": [128, 134]
+      },
+      "liveCatalog": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["commandID"],
+      "rowIdentity": "key",
+      "columns": ["commandID", "instanceID", "command", "created"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": null,
+      "owner": "decision-list",
+      "ruleSteps": [5],
+      "targets": [],
+      "decisionRef": "opt2/decision-list.json#tclustercommands"
+    },
+    {
+      "table": "tclusterpeers",
+      "schema": "dbo",
+      "origin": "migration",
+      "source": {
+        "path": "core/mura/dbUpdates/5.7.cfm",
+        "lines": [124, 126]
+      },
+      "liveCatalog": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["instanceID"],
+      "rowIdentity": "key",
+      "columns": ["instanceID"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": null,
+      "owner": "decision-list",
+      "ruleSteps": [5],
+      "targets": [],
+      "decisionRef": "opt2/decision-list.json#tclusterpeers"
+    },
+    {
+      "table": "tcontent",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [2, 62]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "SiteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["tcontent_ID"],
+      "rowIdentity": "key",
+      "columns": ["tcontent_ID", "SiteID", "ModuleID", "ParentID", "ContentID", "ContentHistID", "RemoteID", "RemoteURL", "RemotePubDate", "RemoteSourceURL", "RemoteSource", "Credits", "FileID", "Template", "Type", "subType", "Active", "OrderNo", "Title", "MenuTitle", "Summary", "Filename", "MetaDesc", "MetaKeyWords", "Body", "lastUpdate", "lastUpdateBy", "lastUpdateByID", "DisplayStart", "DisplayStop", "Display", "Approved", "IsNav", "Restricted", "RestrictGroups", "Target", "TargetParams", "responseChart", "responseMessage", "responseSendTo", "responseDisplayFields", "moduleAssign", "displayTitle", "Notes", "inheritObjects", "isFeature", "ReleaseDate", "IsLocked", "nextN", "sortBy", "sortDirection", "featureStart", "featureStop", "forceSSL", "audience", "keyPoints", "searchExclude", "path", "tags", "doCache", "urltitle", "htmltitle", "created", "mobileExclude", "changesetID", "imageSize", "imageHeight", "imageWidth", "childTemplate", "majorVersion", "minorVersion", "expires", "displayInterval", "objectParams"],
+      "addedColumns": [
+        {
+          "column": "doCache",
+          "source": "core/mura/dbUpdates/5.0.746.cfm:56"
+        },
+        {
+          "column": "created",
+          "source": "core/mura/dbUpdates/5.1.85.cfm:119"
+        },
+        {
+          "column": "urltitle",
+          "source": "core/mura/dbUpdates/5.1.553.cfm:18"
+        },
+        {
+          "column": "htmltitle",
+          "source": "core/mura/dbUpdates/5.1.553.cfm:21"
+        },
+        {
+          "column": "mobileExclude",
+          "source": "core/mura/dbUpdates/5.3.3161.cfm:9"
+        },
+        {
+          "column": "changesetID",
+          "source": "core/mura/dbUpdates/5.4.3178.cfm:60"
+        },
+        {
+          "column": "imageSize",
+          "source": "core/mura/dbUpdates/5.5.cfm:157"
+        },
+        {
+          "column": "imageHeight",
+          "source": "core/mura/dbUpdates/5.5.cfm:193"
+        },
+        {
+          "column": "imageWidth",
+          "source": "core/mura/dbUpdates/5.5.cfm:229"
+        },
+        {
+          "column": "childTemplate",
+          "source": "core/mura/dbUpdates/5.5.cfm:265"
+        },
+        {
+          "column": "majorVersion",
+          "source": "core/mura/dbUpdates/5.6.cfm:12"
+        },
+        {
+          "column": "minorVersion",
+          "source": "core/mura/dbUpdates/5.6.cfm:53"
+        },
+        {
+          "column": "expires",
+          "source": "core/mura/dbUpdates/5.6.cfm:253"
+        },
+        {
+          "column": "displayInterval",
+          "source": "core/mura/dbUpdates/5.7.cfm:33"
+        },
+        {
+          "column": "objectParams",
+          "source": "core/mura/dbUpdates/6.2.2.cfm:13"
+        }
+      ],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.content",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "content",
+          "rowPredicate": null,
+          "keyColumns": ["tcontent_ID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["tcontent_ID", "SiteID", "ModuleID", "ParentID", "ContentID", "ContentHistID", "RemoteID", "RemoteURL", "RemotePubDate", "RemoteSourceURL", "RemoteSource", "Credits", "FileID", "Template", "Type", "subType", "Active", "OrderNo", "Title", "MenuTitle", "Summary", "Filename", "MetaDesc", "MetaKeyWords", "Body", "lastUpdate", "lastUpdateBy", "lastUpdateByID", "DisplayStart", "DisplayStop", "Display", "Approved", "IsNav", "Restricted", "RestrictGroups", "Target", "TargetParams", "responseChart", "responseMessage", "responseSendTo", "responseDisplayFields", "moduleAssign", "displayTitle", "Notes", "inheritObjects", "isFeature", "ReleaseDate", "IsLocked", "nextN", "sortBy", "sortDirection", "featureStart", "featureStop", "forceSSL", "audience", "keyPoints", "searchExclude", "path", "tags", "doCache", "urltitle", "htmltitle", "created", "mobileExclude", "changesetID", "imageSize", "imageHeight", "imageWidth", "childTemplate", "majorVersion", "minorVersion", "expires", "displayInterval", "objectParams"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tcontentassignments",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [79, 84]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["contentID", "contentHistID", "siteID", "userID"],
+      "rowIdentity": "key",
+      "columns": ["contentID", "contentHistID", "siteID", "userID", "type"],
+      "addedColumns": [
+        {
+          "column": "type",
+          "source": "core/mura/dbUpdates/5.6.cfm:212"
+        }
+      ],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.content_assignment",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "content_assignment",
+          "rowPredicate": null,
+          "keyColumns": ["contentID", "contentHistID", "siteID", "userID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["contentID", "contentHistID", "siteID", "userID", "type"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tcontentcategories",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [87, 103]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["categoryID"],
+      "rowIdentity": "key",
+      "columns": ["categoryID", "siteID", "parentID", "dateCreated", "lastUpdate", "lastUpdateBy", "name", "notes", "isInterestGroup", "isActive", "isOpen", "sortBy", "sortDirection", "restrictGroups", "path", "remoteID", "remoteSourceURL", "remotePubDate", "urltitle", "filename", "isfeatureable"],
+      "addedColumns": [
+        {
+          "column": "remoteID",
+          "source": "core/mura/dbUpdates/5.2.1806.cfm:88"
+        },
+        {
+          "column": "remoteSourceURL",
+          "source": "core/mura/dbUpdates/5.2.1806.cfm:91"
+        },
+        {
+          "column": "remotePubDate",
+          "source": "core/mura/dbUpdates/5.2.1990.cfm:234"
+        },
+        {
+          "column": "urltitle",
+          "source": "core/mura/dbUpdates/5.4.3178.cfm:457"
+        },
+        {
+          "column": "filename",
+          "source": "core/mura/dbUpdates/5.4.3178.cfm:460"
+        },
+        {
+          "column": "isfeatureable",
+          "source": "core/mura/dbUpdates/6.1.cfm:106"
+        }
+      ],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.category",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "category",
+          "rowPredicate": null,
+          "keyColumns": ["categoryID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["categoryID", "siteID", "parentID", "dateCreated", "lastUpdate", "lastUpdateBy", "name", "notes", "isInterestGroup", "isActive", "isOpen", "sortBy", "sortDirection", "restrictGroups", "path", "remoteID", "remoteSourceURL", "remotePubDate", "urltitle", "filename", "isfeatureable"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tcontentcategoryassign",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [106, 115]
+      },
+      "liveCatalog": true,
+      "ormEntity": {
+        "path": "core/mura/content/contentCategoryAssignBean.cfc",
+        "entityName": "contentCategoryAssign"
+      },
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["contentHistID", "categoryID"],
+      "rowIdentity": "key",
+      "columns": ["contentHistID", "categoryID", "contentID", "isFeature", "orderno", "siteID", "featureStart", "featureStop"],
+      "declaredNotCreated": ["featureSop"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.content_category_assign",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "content_category_assign",
+          "rowPredicate": null,
+          "keyColumns": ["contentHistID", "categoryID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["contentHistID", "categoryID", "contentID", "isFeature", "orderno", "siteID", "featureStart", "featureStop"],
+          "ruleSteps": [1]
+        }
+      ],
+      "notes": "featureSop is an ORM property typo that no schema check creates, because the bean maps a bootstrap table."
+    },
+    {
+      "table": "tcontentcommentcommenters",
+      "schema": "dbo",
+      "origin": "orm",
+      "source": {
+        "path": "core/mura/content/contentCommenterBean.cfc",
+        "lines": [77, 77]
+      },
+      "liveCatalog": true,
+      "ormEntity": {
+        "path": "core/mura/content/contentCommenterBean.cfc",
+        "entityName": "commenter"
+      },
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["commenterID"],
+      "rowIdentity": "key",
+      "columns": ["remoteID", "commenterID", "email", "name"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "parent:tcontentcomments",
+      "tenantParent": {
+        "table": "tcontentcomments",
+        "join": "tcontentcomments.userID = tcontentcommentcommenters.commenterID"
+      },
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.commenter",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "commenter",
+          "rowPredicate": null,
+          "keyColumns": ["commenterID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["remoteID", "commenterID", "email", "name"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tcontentcomments",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [118, 130]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteid",
+      "hasPrimaryKey": true,
+      "primaryKey": ["commentid"],
+      "rowIdentity": "key",
+      "columns": ["commentid", "contentid", "contenthistid", "url", "name", "comments", "entered", "email", "siteid", "ip", "isApproved", "subscribe", "userID", "parentID", "path", "remoteID", "flagCount", "isSpam", "isDeleted"],
+      "addedColumns": [
+        {
+          "column": "subscribe",
+          "source": "core/mura/dbUpdates/5.0.746.cfm:11"
+        },
+        {
+          "column": "userID",
+          "source": "core/mura/dbUpdates/5.2.0.cfm:56"
+        },
+        {
+          "column": "parentID",
+          "source": "core/mura/dbUpdates/5.2.1990.cfm:16"
+        },
+        {
+          "column": "path",
+          "source": "core/mura/dbUpdates/5.2.1990.cfm:19"
+        },
+        {
+          "column": "remoteID",
+          "source": "core/mura/dbUpdates/5.6.cfm:289"
+        },
+        {
+          "column": "flagCount",
+          "source": "core/mura/dbUpdates/6.1.cfm:164"
+        },
+        {
+          "column": "isSpam",
+          "source": "core/mura/dbUpdates/6.1.cfm:165"
+        },
+        {
+          "column": "isDeleted",
+          "source": "core/mura/dbUpdates/6.1.cfm:166"
+        }
+      ],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.comment",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "comment",
+          "rowPredicate": null,
+          "keyColumns": ["commentid"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["commentid", "contentid", "contenthistid", "url", "name", "comments", "entered", "email", "siteid", "ip", "isApproved", "subscribe", "userID", "parentID", "path", "remoteID", "flagCount", "isSpam", "isDeleted"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tcontentdisplaytitleapprovals",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [206, 211]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteid",
+      "hasPrimaryKey": false,
+      "primaryKey": [],
+      "bootstrapHasPrimaryKey": false,
+      "rowIdentity": "multiset",
+      "columns": ["contentid", "isApproved", "email", "siteid"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.display_title_approval",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "display_title_approval",
+          "rowPredicate": null,
+          "keyColumns": [],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["contentid", "isApproved", "email", "siteid"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tcontenteventreminders",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [133, 142]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteId",
+      "hasPrimaryKey": false,
+      "primaryKey": [],
+      "bootstrapHasPrimaryKey": false,
+      "rowIdentity": "multiset",
+      "columns": ["contentId", "siteId", "email", "RemindDate", "RemindHour", "RemindMinute", "RemindInterval", "isSent"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": null,
+      "owner": "decision-list",
+      "ruleSteps": [5],
+      "targets": [],
+      "decisionRef": "opt2/decision-list.json#tcontenteventreminders"
+    },
+    {
+      "table": "tcontentfeedadvancedparams",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [145, 154]
+      },
+      "liveCatalog": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["paramID"],
+      "rowIdentity": "key",
+      "columns": ["paramID", "feedID", "param", "relationship", "field", "condition", "criteria", "dataType"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "parent:tcontentfeeds",
+      "tenantParent": {
+        "table": "tcontentfeeds",
+        "join": "tcontentfeedadvancedparams.feedID = tcontentfeeds.feedID"
+      },
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.feed_advanced_param",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "feed_advanced_param",
+          "rowPredicate": null,
+          "keyColumns": ["paramID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["paramID", "feedID", "param", "relationship", "field", "condition", "criteria", "dataType"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tcontentfeeditems",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [157, 161]
+      },
+      "liveCatalog": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["feedID", "itemID"],
+      "rowIdentity": "key",
+      "columns": ["feedID", "itemID", "type"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "parent:tcontentfeeds",
+      "tenantParent": {
+        "table": "tcontentfeeds",
+        "join": "tcontentfeeditems.feedID = tcontentfeeds.feedID"
+      },
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.feed_item",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "feed_item",
+          "rowPredicate": null,
+          "keyColumns": ["feedID", "itemID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["feedID", "itemID", "type"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tcontentfeeds",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [164, 191]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["feedID"],
+      "rowIdentity": "key",
+      "columns": ["feedID", "siteID", "parentID", "name", "isActive", "isPublic", "isDefault", "isFeaturesOnly", "description", "maxItems", "allowHTML", "lang", "lastUpdateBy", "lastUpdate", "dateCreated", "restricted", "restrictGroups", "version", "channelLink", "Type", "sortBy", "sortDirection", "nextN", "displayName", "displayRatings", "displayComments", "altname", "remoteID", "remoteSourceURL", "remotePubDate", "imageSize", "imageHeight", "imageWidth", "displayList", "showNavOnly", "showExcludeSearch", "viewalllink", "viewalllabel", "cssclass", "autoimport", "isLocked", "contentpoolid", "useCategoryIntersect", "authtype"],
+      "addedColumns": [
+        {
+          "column": "altname",
+          "source": "core/mura/dbUpdates/5.0.746.cfm:45"
+        },
+        {
+          "column": "remoteID",
+          "source": "core/mura/dbUpdates/5.2.1806.cfm:18"
+        },
+        {
+          "column": "remoteSourceURL",
+          "source": "core/mura/dbUpdates/5.2.1806.cfm:21"
+        },
+        {
+          "column": "remotePubDate",
+          "source": "core/mura/dbUpdates/5.2.1990.cfm:275"
+        },
+        {
+          "column": "imageSize",
+          "source": "core/mura/dbUpdates/5.5.cfm:12"
+        },
+        {
+          "column": "imageHeight",
+          "source": "core/mura/dbUpdates/5.5.cfm:48"
+        },
+        {
+          "column": "imageWidth",
+          "source": "core/mura/dbUpdates/5.5.cfm:84"
+        },
+        {
+          "column": "displayList",
+          "source": "core/mura/dbUpdates/5.5.cfm:121"
+        },
+        {
+          "column": "showNavOnly",
+          "source": "core/mura/dbUpdates/5.5.cfm:383"
+        },
+        {
+          "column": "showExcludeSearch",
+          "source": "core/mura/dbUpdates/5.5.cfm:424"
+        },
+        {
+          "column": "viewalllink",
+          "source": "core/mura/dbUpdates/5.7.cfm:110"
+        },
+        {
+          "column": "viewalllabel",
+          "source": "core/mura/dbUpdates/5.7.cfm:111"
+        },
+        {
+          "column": "cssclass",
+          "source": "core/mura/dbUpdates/5.7.cfm:112"
+        },
+        {
+          "column": "autoimport",
+          "source": "core/mura/dbUpdates/5.7.cfm:118"
+        },
+        {
+          "column": "isLocked",
+          "source": "core/mura/dbUpdates/5.7.cfm:119"
+        },
+        {
+          "column": "useCategoryIntersect",
+          "source": "core/mura/dbUpdates/6.1.cfm:129"
+        },
+        {
+          "column": "contentpoolid",
+          "source": "core/mura/dbUpdates/6.1.1.cfm:8"
+        },
+        {
+          "column": "authtype",
+          "source": "core/mura/dbUpdates/6.2.2.cfm:6"
+        }
+      ],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.feed",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "feed",
+          "rowPredicate": null,
+          "keyColumns": ["feedID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["feedID", "siteID", "parentID", "name", "isActive", "isPublic", "isDefault", "isFeaturesOnly", "description", "maxItems", "allowHTML", "lang", "lastUpdateBy", "lastUpdate", "dateCreated", "restricted", "restrictGroups", "version", "channelLink", "Type", "sortBy", "sortDirection", "nextN", "displayName", "displayRatings", "displayComments", "altname", "remoteID", "remoteSourceURL", "remotePubDate", "imageSize", "imageHeight", "imageWidth", "displayList", "showNavOnly", "showExcludeSearch", "viewalllink", "viewalllabel", "cssclass", "autoimport", "isLocked", "contentpoolid", "useCategoryIntersect", "authtype"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tcontentfilemetadata",
+      "schema": "dbo",
+      "origin": "orm",
+      "source": {
+        "path": "core/mura/content/contentFileMetaDataBean.cfc",
+        "lines": [77, 82]
+      },
+      "liveCatalog": true,
+      "ormEntity": {
+        "path": "core/mura/content/contentFileMetaDataBean.cfc",
+        "entityName": "fileMetaData"
+      },
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["metaID"],
+      "rowIdentity": "key",
+      "columns": ["altText", "contenthistid", "fileid", "credits", "siteID", "remoteURL", "exif", "remoteID", "remoteSourceURL", "remoteSource", "remotePubDate", "metaID", "contentid", "caption"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.file_metadata",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "file_metadata",
+          "rowPredicate": null,
+          "keyColumns": ["metaID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["altText", "contenthistid", "fileid", "credits", "siteID", "remoteURL", "exif", "remoteID", "remoteSourceURL", "remoteSource", "remotePubDate", "metaID", "contentid", "caption"],
+          "ruleSteps": [1]
+        }
+      ],
+      "notes": "siteID, contentid and contenthistid come from the beanORMVersioned base (core/mura/bean/beanORMVersioned.cfc:78-80)."
+    },
+    {
+      "table": "tcontentfilenamearchive",
+      "schema": "dbo",
+      "origin": "orm",
+      "source": {
+        "path": "core/mura/content/contentFilenameArchiveBean.cfc",
+        "lines": [77, 81]
+      },
+      "liveCatalog": true,
+      "ormEntity": {
+        "path": "core/mura/content/contentFilenameArchiveBean.cfc",
+        "entityName": "contentFilenameArchive"
+      },
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["archiveid"],
+      "rowIdentity": "key",
+      "columns": ["siteID", "archiveid", "contentID", "filename"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.filename_archive",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "filename_archive",
+          "rowPredicate": null,
+          "keyColumns": ["archiveid"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["siteID", "archiveid", "contentID", "filename"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tcontentobjects",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [194, 203]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "SiteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["ContentHistID", "ObjectID", "Object", "ColumnID", "OrderNo"],
+      "primaryKeySource": {
+        "path": "core/mura/dbUpdates/5.2.1990.cfm",
+        "lines": [142, 150]
+      },
+      "rowIdentity": "key",
+      "columns": ["ContentHistID", "ObjectID", "Object", "ContentID", "Name", "OrderNo", "SiteID", "ColumnID", "Params"],
+      "addedColumns": [
+        {
+          "column": "Params",
+          "source": "core/mura/dbUpdates/5.2.1990.cfm:133"
+        }
+      ],
+      "serializedDocumentColumns": ["Params"],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.content_object",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "content_object",
+          "rowPredicate": null,
+          "keyColumns": ["ContentHistID", "ObjectID", "Object", "ColumnID", "OrderNo"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["ContentHistID", "ObjectID", "Object", "ContentID", "Name", "OrderNo", "SiteID", "ColumnID", "Params"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tcontentpublicsubmissionapprovals",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [534, 539]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteid",
+      "hasPrimaryKey": false,
+      "primaryKey": [],
+      "bootstrapHasPrimaryKey": false,
+      "rowIdentity": "multiset",
+      "columns": ["contentid", "isApproved", "email", "siteid"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.public_submission_approval",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "public_submission_approval",
+          "rowPredicate": null,
+          "keyColumns": [],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["contentid", "isApproved", "email", "siteid"],
+          "ruleSteps": [1]
+        }
+      ],
+      "notes": "core/mura/dbUpdates/7.1.cfm:232-233 tries a contentID,siteID key, which SQL Server rejects on the nullable siteid, so the table stays keyless."
+    },
+    {
+      "table": "tcontentratings",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [214, 220]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["contentID", "userID", "siteID"],
+      "rowIdentity": "key",
+      "columns": ["contentID", "userID", "siteID", "rate", "entered"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.content_rating",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "content_rating",
+          "rowPredicate": null,
+          "keyColumns": ["contentID", "userID", "siteID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["contentID", "userID", "siteID", "rate", "entered"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tcontentrelated",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [223, 228]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["relatedContentID"],
+      "primaryKeySource": {
+        "path": "core/mura/dbUpdates/6.1.cfm",
+        "lines": [103, 103]
+      },
+      "rowIdentity": "key",
+      "columns": ["contentHistID", "relatedID", "contentID", "siteID", "relatedContentSetID", "orderNo", "relatedContentID"],
+      "addedColumns": [
+        {
+          "column": "relatedContentSetID",
+          "source": "core/mura/dbUpdates/6.1.cfm:91"
+        },
+        {
+          "column": "orderNo",
+          "source": "core/mura/dbUpdates/6.1.cfm:92"
+        },
+        {
+          "column": "relatedContentID",
+          "source": "core/mura/dbUpdates/6.1.cfm:96"
+        }
+      ],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.content_related",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "content_related",
+          "rowPredicate": null,
+          "keyColumns": ["relatedContentID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["contentHistID", "relatedID", "contentID", "siteID", "relatedContentSetID", "orderNo", "relatedContentID"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tcontentremotepointer",
+      "schema": "dbo",
+      "origin": "orm",
+      "source": {
+        "path": "core/mura/content/contentRemotePointerBean.cfc",
+        "lines": [1, 6]
+      },
+      "liveCatalog": true,
+      "ormEntity": {
+        "path": "core/mura/content/contentRemotePointerBean.cfc",
+        "entityName": "remotecontentpointer"
+      },
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["pointerid"],
+      "rowIdentity": "key",
+      "columns": ["siteID", "remoteid", "remoteurl", "created", "pointerid", "contentid"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.content_remote_pointer",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "content_remote_pointer",
+          "rowPredicate": null,
+          "keyColumns": ["pointerid"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["siteID", "remoteid", "remoteurl", "created", "pointerid", "contentid"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tcontentsourcemaps",
+      "schema": "dbo",
+      "origin": "orm",
+      "source": {
+        "path": "core/mura/content/contentSourceMapBean.cfc",
+        "lines": [1, 4]
+      },
+      "liveCatalog": true,
+      "ormEntity": {
+        "path": "core/mura/content/contentSourceMapBean.cfc",
+        "entityName": "contentSourceMap"
+      },
+      "hasSiteId": true,
+      "siteIdColumn": "siteid",
+      "hasPrimaryKey": true,
+      "primaryKey": ["mapid"],
+      "rowIdentity": "key",
+      "columns": ["siteid", "created", "sourceid", "contenthistid", "mapid", "contentid"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.source_map",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "source_map",
+          "rowPredicate": null,
+          "keyColumns": ["mapid"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["siteid", "created", "sourceid", "contenthistid", "mapid", "contentid"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tcontentstats",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [67, 76]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["contentID", "siteID"],
+      "rowIdentity": "key",
+      "columns": ["contentID", "siteID", "views", "rating", "totalVotes", "upVotes", "downVotes", "comments", "majorVersion", "minorVersion", "lockID", "lockType", "disableComments"],
+      "addedColumns": [
+        {
+          "column": "majorVersion",
+          "source": "core/mura/dbUpdates/5.6.cfm:94"
+        },
+        {
+          "column": "minorVersion",
+          "source": "core/mura/dbUpdates/5.6.cfm:135"
+        },
+        {
+          "column": "lockID",
+          "source": "core/mura/dbUpdates/5.6.cfm:176"
+        },
+        {
+          "column": "lockType",
+          "source": "core/mura/dbUpdates/6.1.cfm:160"
+        },
+        {
+          "column": "disableComments",
+          "source": "core/mura/dbUpdates/6.1.cfm:161"
+        }
+      ],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.content_stats",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "content_stats",
+          "rowPredicate": null,
+          "keyColumns": ["contentID", "siteID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["contentID", "siteID", "views", "rating", "totalVotes", "upVotes", "downVotes", "comments", "majorVersion", "minorVersion", "lockID", "lockType", "disableComments"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tcontenttags",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [542, 548]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["tagID"],
+      "rowIdentity": "key",
+      "columns": ["tagID", "contentHistID", "contentID", "siteID", "tag", "taggroup"],
+      "addedColumns": [
+        {
+          "column": "taggroup",
+          "source": "core/mura/dbUpdates/6.1.cfm:126"
+        }
+      ],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.content_tag",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "content_tag",
+          "rowPredicate": null,
+          "keyColumns": ["tagID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["tagID", "contentHistID", "contentID", "siteID", "tag", "taggroup"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tcontentvariationtargeting",
+      "schema": "dbo",
+      "origin": "orm",
+      "source": {
+        "path": "core/mura/content/contentVariationTargetingBean.cfc",
+        "lines": [76, 80]
+      },
+      "liveCatalog": true,
+      "ormEntity": {
+        "path": "core/mura/content/contentVariationTargetingBean.cfc",
+        "entityName": "variationTargeting"
+      },
+      "hasSiteId": true,
+      "siteIdColumn": "siteid",
+      "hasPrimaryKey": true,
+      "primaryKey": ["targetingid"],
+      "rowIdentity": "key",
+      "columns": ["targetingid", "siteid", "initjs", "targetingjs", "contentid"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.variation_targeting",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "variation_targeting",
+          "rowPredicate": null,
+          "keyColumns": ["targetingid"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["targetingid", "siteid", "initjs", "targetingjs", "contentid"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tdirectories",
+      "schema": "dbo",
+      "origin": "migration",
+      "source": {
+        "path": "core/mura/dbUpdates/5.7.cfm",
+        "lines": [158, 164]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["dirID"],
+      "rowIdentity": "key",
+      "columns": ["dirID", "siteID", "subdir", "editfilename"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "programs-sites",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "programs_sites.directory",
+          "owner": "programs-sites",
+          "schema": "programs_sites",
+          "table": "directory",
+          "rowPredicate": null,
+          "keyColumns": ["dirID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["dirID", "siteID", "subdir", "editfilename"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "temailreturnstats",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [231, 236]
+      },
+      "liveCatalog": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": false,
+      "primaryKey": [],
+      "bootstrapHasPrimaryKey": false,
+      "rowIdentity": "multiset",
+      "columns": ["emailID", "email", "url", "created"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "parent:temails",
+      "tenantParent": {
+        "table": "temails",
+        "join": "temailreturnstats.emailID = temails.EmailID"
+      },
+      "owner": "communications",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "communications.email_return_stat",
+          "owner": "communications",
+          "schema": "communications",
+          "table": "email_return_stat",
+          "rowPredicate": null,
+          "keyColumns": [],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["emailID", "email", "url", "created"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "temails",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [250, 267]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteid",
+      "hasPrimaryKey": true,
+      "primaryKey": ["EmailID"],
+      "rowIdentity": "key",
+      "columns": ["EmailID", "siteid", "Subject", "BodyText", "BodyHtml", "CreatedDate", "DeliveryDate", "status", "GroupList", "LastUpdateBy", "LastUpdateByID", "NumberSent", "ReplyTo", "format", "fromLabel", "isDeleted", "template"],
+      "addedColumns": [
+        {
+          "column": "template",
+          "source": "core/mura/dbUpdates/6.1.cfm:72"
+        }
+      ],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "communications",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "communications.email",
+          "owner": "communications",
+          "schema": "communications",
+          "table": "email",
+          "rowPredicate": null,
+          "keyColumns": ["EmailID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["EmailID", "siteid", "Subject", "BodyText", "BodyHtml", "CreatedDate", "DeliveryDate", "status", "GroupList", "LastUpdateBy", "LastUpdateByID", "NumberSent", "ReplyTo", "format", "fromLabel", "isDeleted", "template"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "temailstats",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [239, 247]
+      },
+      "liveCatalog": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": false,
+      "primaryKey": [],
+      "bootstrapHasPrimaryKey": false,
+      "rowIdentity": "multiset",
+      "columns": ["EmailID", "Email", "emailOpen", "returnClick", "bounce", "sent", "Created"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "parent:temails",
+      "tenantParent": {
+        "table": "temails",
+        "join": "temailstats.EmailID = temails.EmailID"
+      },
+      "owner": "communications",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "communications.email_stat",
+          "owner": "communications",
+          "schema": "communications",
+          "table": "email_stat",
+          "rowPredicate": null,
+          "keyColumns": [],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["EmailID", "Email", "emailOpen", "returnClick", "bounce", "sent", "Created"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tentity",
+      "schema": "dbo",
+      "origin": "orm",
+      "source": {
+        "path": "core/mura/bean/beanEntity.cfc",
+        "lines": [1, 1]
+      },
+      "liveCatalog": true,
+      "ormEntity": {
+        "path": "core/mura/bean/beanEntity.cfc",
+        "entityName": "entity"
+      },
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["entityid"],
+      "rowIdentity": "key",
+      "columns": ["displayName", "path", "entityid", "dynamic", "name", "code", "created", "lastupdate", "bundleable", "scaffold"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": null,
+      "owner": "decision-list",
+      "ruleSteps": [5],
+      "targets": [],
+      "decisionRef": "opt2/decision-list.json#tentity"
+    },
+    {
+      "table": "tentity-declared:*",
+      "schema": "dbo",
+      "origin": "dynamic",
+      "pattern": true,
+      "source": {
+        "path": "core/mura/bean/beanEntity.cfc",
+        "lines": [1, 12]
+      },
+      "liveCatalog": true,
+      "hasSiteId": null,
+      "siteIdColumn": null,
+      "hasPrimaryKey": null,
+      "primaryKey": [],
+      "rowIdentity": null,
+      "columns": [],
+      "serializedDocumentColumns": [],
+      "tenantResolution": null,
+      "owner": "decision-list",
+      "ruleSteps": [5],
+      "targets": [],
+      "decisionRef": "opt2/decision-list.json#tentity-declared:*",
+      "notes": "Entity tables declared at runtime through tentity or by plugins; live registration in application.objectMappings identifies them."
+    },
+    {
+      "table": "testoption",
+      "schema": "dbo",
+      "origin": "test-suite",
+      "source": {
+        "path": "core/tests/resources/model/beans/option.cfc",
+        "lines": [1, 1]
+      },
+      "liveCatalog": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["optionid"],
+      "rowIdentity": "key",
+      "columns": ["optionid", "description", "widgetid", "name"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": null,
+      "owner": "retired",
+      "ruleSteps": [],
+      "targets": [],
+      "notes": "Created only when the TestBox entities spec registers core/tests/resources/model and checks its schema (core/tests/specs/mura/core/entities.cfc:20,76), so the application never reaches it and nothing migrates."
+    },
+    {
+      "table": "testwidget",
+      "schema": "dbo",
+      "origin": "test-suite",
+      "source": {
+        "path": "core/tests/resources/model/beans/widget.cfc",
+        "lines": [1, 1]
+      },
+      "liveCatalog": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["widgetid"],
+      "rowIdentity": "key",
+      "columns": ["widgetid", "dateVar", "smallintVar", "email", "name", "description", "intVar", "floatVar", "doubleVar"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": null,
+      "owner": "retired",
+      "ruleSteps": [],
+      "targets": [],
+      "notes": "Created only when the TestBox entities spec registers core/tests/resources/model and checks its schema (core/tests/specs/mura/core/entities.cfc:20,76), so the application never reaches it and nothing migrates."
+    },
+    {
+      "table": "tfiles",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [270, 284]
+      },
+      "liveCatalog": true,
+      "ormEntity": {
+        "path": "core/mura/content/file/fileBean.cfc",
+        "entityName": "file"
+      },
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["fileID"],
+      "rowIdentity": "key",
+      "columns": ["fileID", "contentID", "siteID", "moduleID", "filename", "image", "imageSmall", "imageMedium", "fileSize", "contentType", "contentSubType", "fileExt", "created", "deleted", "caption", "credits", "alttext", "remoteID", "remoteURL", "remotePubDate", "remoteSource", "remoteSourceURL", "exif"],
+      "addedColumns": [
+        {
+          "column": "deleted",
+          "source": "core/mura/dbUpdates/5.2.1.2893.cfm:225"
+        },
+        {
+          "column": "caption",
+          "source": "core/mura/dbUpdates/6.1.cfm:21"
+        },
+        {
+          "column": "exif",
+          "source": "core/mura/dbUpdates/6.1.cfm:39"
+        },
+        {
+          "column": "credits",
+          "source": "core/mura/dbUpdates/6.1.cfm:46"
+        },
+        {
+          "column": "alttext",
+          "source": "core/mura/dbUpdates/6.1.cfm:47"
+        },
+        {
+          "column": "remoteID",
+          "source": "core/mura/dbUpdates/6.1.cfm:48"
+        },
+        {
+          "column": "remoteURL",
+          "source": "core/mura/dbUpdates/6.1.cfm:49"
+        },
+        {
+          "column": "remotePubDate",
+          "source": "core/mura/dbUpdates/6.1.cfm:50"
+        },
+        {
+          "column": "remoteSource",
+          "source": "core/mura/dbUpdates/6.1.cfm:51"
+        },
+        {
+          "column": "remoteSourceURL",
+          "source": "core/mura/dbUpdates/6.1.cfm:52"
+        }
+      ],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.file",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "file",
+          "rowPredicate": null,
+          "keyColumns": ["fileID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["fileID", "contentID", "siteID", "moduleID", "filename", "image", "imageSmall", "imageMedium", "fileSize", "contentType", "contentSubType", "fileExt", "created", "deleted", "caption", "credits", "alttext", "remoteID", "remoteURL", "remotePubDate", "remoteSource", "remoteSourceURL", "exif"],
+          "ruleSteps": [1],
+          "notes": "image, imageSmall and imageMedium stay bytea columns, and stored file objects are tracked in content.file_object."
+        }
+      ]
+    },
+    {
+      "table": "tformresponsepackets",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [287, 294]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "SiteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["ResponseID"],
+      "rowIdentity": "key",
+      "columns": ["ResponseID", "FormID", "SiteID", "FieldList", "Data", "Entered"],
+      "serializedDocumentColumns": ["Data"],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.form_response_packet",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "form_response_packet",
+          "rowPredicate": null,
+          "keyColumns": ["ResponseID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["ResponseID", "FormID", "SiteID", "FieldList", "Data", "Entered"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tformresponsequestions",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [297, 303]
+      },
+      "liveCatalog": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["responseID", "formID", "formField"],
+      "rowIdentity": "key",
+      "columns": ["responseID", "formID", "formField", "formValue", "pollValue"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "parent:tformresponsepackets",
+      "tenantParent": {
+        "table": "tformresponsepackets",
+        "join": "tformresponsequestions.responseID = tformresponsepackets.ResponseID"
+      },
+      "owner": "strategies-content",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "content.form_response_question",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "form_response_question",
+          "rowPredicate": null,
+          "keyColumns": ["responseID", "formID", "formField"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["responseID", "formID", "formField", "formValue", "pollValue"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tglobals",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [306, 309]
+      },
+      "liveCatalog": false,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": false,
+      "primaryKey": [],
+      "bootstrapHasPrimaryKey": false,
+      "rowIdentity": "multiset",
+      "columns": ["appreload", "loadlist"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": null,
+      "owner": "retired",
+      "ruleSteps": [],
+      "targets": [],
+      "notes": "Dropped by core/mura/dbUpdates/5.7.cfm:136, so it is absent from the live catalog and nothing migrates."
+    },
+    {
+      "table": "timagesizes",
+      "schema": "dbo",
+      "origin": "migration",
+      "source": {
+        "path": "core/mura/dbUpdates/5.7.cfm",
+        "lines": [94, 102]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["sizeID"],
+      "rowIdentity": "key",
+      "columns": ["sizeID", "siteID", "name", "height", "width"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "programs-sites",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "programs_sites.image_size",
+          "owner": "programs-sites",
+          "schema": "programs_sites",
+          "table": "image_size",
+          "rowPredicate": null,
+          "keyColumns": ["sizeID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["sizeID", "siteID", "name", "height", "width"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tmailinglist",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [312, 320]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "SiteID",
+      "hasPrimaryKey": false,
+      "primaryKey": [],
+      "bootstrapHasPrimaryKey": false,
+      "rowIdentity": "multiset",
+      "columns": ["MLID", "SiteID", "Name", "Description", "LastUpdate", "isPurge", "isPublic"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "communications",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "communications.mailing_list",
+          "owner": "communications",
+          "schema": "communications",
+          "table": "mailing_list",
+          "rowPredicate": null,
+          "keyColumns": [],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["MLID", "SiteID", "Name", "Description", "LastUpdate", "isPurge", "isPublic"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tmailinglistmembers",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [323, 331]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "SiteID",
+      "hasPrimaryKey": false,
+      "primaryKey": [],
+      "bootstrapHasPrimaryKey": false,
+      "rowIdentity": "multiset",
+      "columns": ["MLID", "Email", "SiteID", "fname", "lname", "company", "isVerified", "created"],
+      "addedColumns": [
+        {
+          "column": "created",
+          "source": "core/mura/dbUpdates/5.2.2655.cfm:9"
+        }
+      ],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "communications",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "communications.mailing_list_member",
+          "owner": "communications",
+          "schema": "communications",
+          "table": "mailing_list_member",
+          "rowPredicate": null,
+          "keyColumns": [],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["MLID", "Email", "SiteID", "fname", "lname", "company", "isVerified", "created"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "toauthclients",
+      "schema": "dbo",
+      "origin": "orm",
+      "source": {
+        "path": "core/mura/client/api/oauth/oauthClientBean.cfc",
+        "lines": [1, 1]
+      },
+      "liveCatalog": true,
+      "ormEntity": {
+        "path": "core/mura/client/api/oauth/oauthClientBean.cfc",
+        "entityName": "oauthClient"
+      },
+      "hasSiteId": true,
+      "siteIdColumn": "siteid",
+      "hasPrimaryKey": true,
+      "primaryKey": ["clientid"],
+      "rowIdentity": "key",
+      "columns": ["clientsecret", "siteid", "granttype", "userid", "clientid", "name", "created", "lastupdate", "description", "redirecturl", "lastupdatebidy", "lastupdateby"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID",
+      "owner": "identity",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "identity.oauth_client",
+          "owner": "identity",
+          "schema": "identity",
+          "table": "oauth_client",
+          "rowPredicate": null,
+          "keyColumns": ["clientid"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["clientsecret", "siteid", "granttype", "userid", "clientid", "name", "created", "lastupdate", "description", "redirecturl", "lastupdatebidy", "lastupdateby"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "toauthtokens",
+      "schema": "dbo",
+      "origin": "orm",
+      "source": {
+        "path": "core/mura/client/api/oauth/oauthTokenBean.cfc",
+        "lines": [1, 1]
+      },
+      "liveCatalog": true,
+      "ormEntity": {
+        "path": "core/mura/client/api/oauth/oauthTokenBean.cfc",
+        "entityName": "oauthToken"
+      },
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["token"],
+      "rowIdentity": "key",
+      "columns": ["granttype", "userid", "clientid", "accessCode", "data", "expires", "token"],
+      "serializedDocumentColumns": ["data"],
+      "tenantResolution": "parent:toauthclients",
+      "tenantParent": {
+        "table": "toauthclients",
+        "join": "toauthtokens.clientid = toauthclients.clientid"
+      },
+      "owner": "identity",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "identity.oauth_token",
+          "owner": "identity",
+          "schema": "identity",
+          "table": "oauth_token",
+          "rowPredicate": null,
+          "keyColumns": ["token"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["granttype", "userid", "clientid", "accessCode", "data", "expires", "token"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tpermissions",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [334, 339]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "SiteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["ContentID", "GroupID", "SiteID", "Type"],
+      "rowIdentity": "key",
+      "columns": ["ContentID", "GroupID", "SiteID", "Type"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID",
+      "owner": "identity",
+      "ruleSteps": [2],
+      "targets": [
+        {
+          "unit": "identity.permission",
+          "owner": "identity",
+          "schema": "identity",
+          "table": "permission",
+          "rowPredicate": null,
+          "keyColumns": ["ContentID", "GroupID", "SiteID", "Type"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["ContentID", "GroupID", "SiteID", "Type"],
+          "ruleSteps": [2]
+        }
+      ]
+    },
+    {
+      "table": "tplugindisplayobjects",
+      "schema": "dbo",
+      "origin": "migration",
+      "source": {
+        "path": "core/mura/dbUpdates/5.0.594.cfm",
+        "lines": [36, 42]
+      },
+      "liveCatalog": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["objectID"],
+      "rowIdentity": "key",
+      "columns": ["objectID", "moduleID", "name", "location", "displayObjectFile", "displaymethod", "docache", "configuratorInit", "configuratorJS"],
+      "addedColumns": [
+        {
+          "column": "displaymethod",
+          "source": "core/mura/dbUpdates/5.1.85.cfm:9"
+        },
+        {
+          "column": "docache",
+          "source": "core/mura/dbUpdates/5.1.85.cfm:43"
+        },
+        {
+          "column": "configuratorInit",
+          "source": "core/mura/dbUpdates/5.5.cfm:465"
+        },
+        {
+          "column": "configuratorJS",
+          "source": "core/mura/dbUpdates/5.5.cfm:501"
+        }
+      ],
+      "serializedDocumentColumns": [],
+      "tenantResolution": null,
+      "owner": "decision-list",
+      "ruleSteps": [5],
+      "targets": [],
+      "decisionRef": "opt2/decision-list.json#tplugindisplayobjects"
+    },
+    {
+      "table": "tplugins",
+      "schema": "dbo",
+      "origin": "migration",
+      "source": {
+        "path": "core/mura/dbUpdates/5.0.594.cfm",
+        "lines": [8, 18]
+      },
+      "liveCatalog": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["pluginID"],
+      "rowIdentity": "key",
+      "columns": ["pluginID", "moduleID", "name", "created", "provider", "providerURL", "category", "version", "deployed", "package", "directory", "loadPriority"],
+      "addedColumns": [
+        {
+          "column": "package",
+          "source": "core/mura/dbUpdates/5.1.288.cfm:11"
+        },
+        {
+          "column": "directory",
+          "source": "core/mura/dbUpdates/5.1.288.cfm:42"
+        },
+        {
+          "column": "loadPriority",
+          "source": "core/mura/dbUpdates/5.2.0.cfm:445"
+        }
+      ],
+      "serializedDocumentColumns": [],
+      "tenantResolution": null,
+      "owner": "decision-list",
+      "ruleSteps": [5],
+      "targets": [],
+      "decisionRef": "opt2/decision-list.json#tplugins"
+    },
+    {
+      "table": "tpluginscripts",
+      "schema": "dbo",
+      "origin": "migration",
+      "source": {
+        "path": "core/mura/dbUpdates/5.0.594.cfm",
+        "lines": [60, 65]
+      },
+      "liveCatalog": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["scriptID"],
+      "rowIdentity": "key",
+      "columns": ["scriptID", "moduleID", "runat", "scriptfile", "docache"],
+      "addedColumns": [
+        {
+          "column": "docache",
+          "source": "core/mura/dbUpdates/5.1.85.cfm:81"
+        }
+      ],
+      "serializedDocumentColumns": [],
+      "tenantResolution": null,
+      "owner": "decision-list",
+      "ruleSteps": [5],
+      "targets": [],
+      "decisionRef": "opt2/decision-list.json#tpluginscripts"
+    },
+    {
+      "table": "tpluginsettings",
+      "schema": "dbo",
+      "origin": "migration",
+      "source": {
+        "path": "core/mura/dbUpdates/5.0.594.cfm",
+        "lines": [83, 87]
+      },
+      "liveCatalog": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["moduleID", "name"],
+      "rowIdentity": "key",
+      "columns": ["moduleID", "name", "settingValue"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": null,
+      "owner": "decision-list",
+      "ruleSteps": [5],
+      "targets": [],
+      "decisionRef": "opt2/decision-list.json#tpluginsettings"
+    },
+    {
+      "table": "trazunasettings",
+      "schema": "dbo",
+      "origin": "orm",
+      "source": {
+        "path": "core/mura/content/file/razuna/razunaSettingsBean.cfc",
+        "lines": [2, 2]
+      },
+      "liveCatalog": true,
+      "ormEntity": {
+        "path": "core/mura/content/file/razuna/razunaSettingsBean.cfc",
+        "entityName": "razunasettings"
+      },
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["settingsID"],
+      "rowIdentity": "key",
+      "columns": ["damPath", "siteID", "settingsID", "apiKey", "hostName", "hostID", "servertype"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": null,
+      "owner": "decision-list",
+      "ruleSteps": [5],
+      "targets": [],
+      "decisionRef": "opt2/decision-list.json#trazunasettings"
+    },
+    {
+      "table": "tredirects",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [342, 346]
+      },
+      "liveCatalog": true,
+      "ormEntity": {
+        "path": "core/mura/user/userRedirectBean.cfc",
+        "entityName": "userRedirect"
+      },
+      "hasSiteId": true,
+      "siteIdColumn": "siteid",
+      "hasPrimaryKey": true,
+      "primaryKey": ["redirectID"],
+      "rowIdentity": "key",
+      "columns": ["redirectID", "URL", "created", "userid", "siteid"],
+      "addedColumns": [
+        {
+          "column": "userid",
+          "source": "core/mura/dbUpdates/7.0.cfm:33"
+        },
+        {
+          "column": "siteid",
+          "source": "core/mura/dbUpdates/7.0.cfm:35"
+        }
+      ],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "identity",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "identity.redirect",
+          "owner": "identity",
+          "schema": "identity",
+          "table": "redirect",
+          "rowPredicate": null,
+          "keyColumns": ["redirectID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["redirectID", "URL", "created", "userid", "siteid"],
+          "ruleSteps": [1]
+        }
+      ],
+      "notes": "Account-recovery and redirect entity (core/mura/user/userRedirectBean.cfc), whose userid and siteid columns are added by core/mura/dbUpdates/7.0.cfm:32-35."
+    },
+    {
+      "table": "tremotepointer",
+      "schema": "dbo",
+      "origin": "orm",
+      "source": {
+        "path": "core/mura/bean/beanRemotePointer.cfc",
+        "lines": [1, 1]
+      },
+      "liveCatalog": true,
+      "ormEntity": {
+        "path": "core/mura/bean/beanRemotePointer.cfc",
+        "entityName": "beanRemotePointer"
+      },
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["pointerid"],
+      "rowIdentity": "key",
+      "columns": ["pointerid", "siteID", "entityType", "remoteid", "localid"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": null,
+      "owner": "decision-list",
+      "ruleSteps": [5],
+      "targets": [],
+      "decisionRef": "opt2/decision-list.json#tremotepointer",
+      "notes": "An install creates this table only when the entity schema is first checked, so a live catalog can lack it."
+    },
+    {
+      "table": "tsessiontracking",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [349, 367]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["trackingID"],
+      "rowIdentity": "key",
+      "columns": ["trackingID", "contentID", "siteID", "userid", "remote_addr", "server_name", "query_string", "referer", "user_agent", "script_name", "urlToken", "entered", "country", "lang", "locale", "keywords", "originalUrlToken", "fname", "lname", "company"],
+      "addedColumns": [
+        {
+          "column": "fname",
+          "source": "core/mura/dbUpdates/6.1.1.cfm:3"
+        },
+        {
+          "column": "lname",
+          "source": "core/mura/dbUpdates/6.1.1.cfm:4"
+        },
+        {
+          "column": "company",
+          "source": "core/mura/dbUpdates/6.1.1.cfm:5"
+        }
+      ],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "reporting",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "reporting.session_tracking",
+          "owner": "reporting",
+          "schema": "reporting",
+          "table": "session_tracking",
+          "rowPredicate": null,
+          "keyColumns": ["trackingID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["trackingID", "contentID", "siteID", "userid", "remote_addr", "server_name", "query_string", "referer", "user_agent", "script_name", "urlToken", "entered", "country", "lang", "locale", "keywords", "originalUrlToken", "fname", "lname", "company"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tsettings",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [370, 433]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "SiteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["SiteID"],
+      "primaryKeySource": {
+        "path": "core/mura/dbUpdates/6.1.cfm",
+        "lines": [120, 122]
+      },
+      "bootstrapHasPrimaryKey": false,
+      "rowIdentity": "key",
+      "columns": ["SiteID", "Site", "MaxNestLevel", "PageLimit", "Locking", "Domain", "exportLocation", "FileDir", "Contact", "MailserverIP", "MailServerUsername", "MailServerPassword", "EmailBroadcaster", "Extranet", "ExtranetPublicReg", "ExtranetPublicRegNotify", "ExtranetSSL", "Cache", "ViewDepth", "NextN", "DataCollection", "columnCount", "columnNames", "primaryColumn", "publicSubmission", "archiveDate", "contactName", "contactAddress", "contactCity", "contactState", "contactZip", "contactEmail", "contactPhone", "privateUserPoolID", "publicUserPoolID", "orderNo", "emailBroadcasterLimit", "feedManager", "displayPoolID", "galleryMainScaleBy", "galleryMainScale", "gallerySmallScaleBy", "gallerySmallScale", "galleryMediumScaleBy", "galleryMediumScale", "sendLoginScript", "mailingListConfirmScript", "publicSubmissionApprovalScript", "reminderScript", "loginURL", "editProfileURL", "CommentApprovalDefault", "deploy", "lastDeployment", "accountActivationScript", "googleAPIKey", "useDefaultSMTPServer", "theme", "mailserverSMTPPort", "mailserverPOPPort", "mailserverTLS", "mailserverSSL", "siteLocale", "domainAlias", "cacheCapacity", "cacheFreeMemoryThreshold", "tagline", "hasChangesets", "baseID", "enforcePrimaryDomain", "enforceChangesets", "smallImageHeight", "smallImageWidth", "mediumImageHeight", "mediumImageWidth", "largeImageHeight", "largeImageWidth", "contentApprovalScript", "contentRejectionScript", "hasComments", "hasLockableNodes", "enableLockdown", "customTagGroups", "filePoolID", "categoryPoolID", "contentPoolID", "sendAuthCodeScript", "reCAPTCHASiteKey", "reCAPTCHASecret", "reCAPTCHALanguage", "JSONApi", "useSSL", "isremote", "resourceSSL", "resourceDomain", "remoteport", "remotecontext", "contentPendingScript", "contentCanceledScript", "showDashboard", "placeholderImgID", "placeholderImgExt", "scaffolding"],
+      "addedColumns": [
+        {
+          "column": "siteLocale",
+          "source": "core/mura/dbUpdates/5.0.629.cfm:11"
+        },
+        {
+          "column": "domainAlias",
+          "source": "core/mura/dbUpdates/5.1.787.cfm:18"
+        },
+        {
+          "column": "cacheCapacity",
+          "source": "core/mura/dbUpdates/5.2.0.cfm:258"
+        },
+        {
+          "column": "cacheFreeMemoryThreshold",
+          "source": "core/mura/dbUpdates/5.2.0.cfm:261"
+        },
+        {
+          "column": "tagline",
+          "source": "core/mura/dbUpdates/5.2.1990.cfm:91"
+        },
+        {
+          "column": "hasChangesets",
+          "source": "core/mura/dbUpdates/5.4.3178.cfm:405"
+        },
+        {
+          "column": "baseID",
+          "source": "core/mura/dbUpdates/5.6.1.cfm:11"
+        },
+        {
+          "column": "enforcePrimaryDomain",
+          "source": "core/mura/dbUpdates/5.7.cfm:7"
+        },
+        {
+          "column": "enforceChangesets",
+          "source": "core/mura/dbUpdates/5.7.cfm:8"
+        },
+        {
+          "column": "smallImageHeight",
+          "source": "core/mura/dbUpdates/5.7.cfm:14"
+        },
+        {
+          "column": "smallImageWidth",
+          "source": "core/mura/dbUpdates/5.7.cfm:15"
+        },
+        {
+          "column": "mediumImageHeight",
+          "source": "core/mura/dbUpdates/5.7.cfm:21"
+        },
+        {
+          "column": "mediumImageWidth",
+          "source": "core/mura/dbUpdates/5.7.cfm:22"
+        },
+        {
+          "column": "largeImageHeight",
+          "source": "core/mura/dbUpdates/5.7.cfm:29"
+        },
+        {
+          "column": "largeImageWidth",
+          "source": "core/mura/dbUpdates/5.7.cfm:30"
+        },
+        {
+          "column": "contentApprovalScript",
+          "source": "core/mura/dbUpdates/6.1.cfm:66"
+        },
+        {
+          "column": "contentRejectionScript",
+          "source": "core/mura/dbUpdates/6.1.cfm:67"
+        },
+        {
+          "column": "hasComments",
+          "source": "core/mura/dbUpdates/6.1.cfm:68"
+        },
+        {
+          "column": "hasLockableNodes",
+          "source": "core/mura/dbUpdates/6.1.cfm:69"
+        },
+        {
+          "column": "enableLockdown",
+          "source": "core/mura/dbUpdates/6.1.cfm:115"
+        },
+        {
+          "column": "customTagGroups",
+          "source": "core/mura/dbUpdates/6.1.cfm:117"
+        },
+        {
+          "column": "filePoolID",
+          "source": "core/mura/dbUpdates/6.1.cfm:155"
+        },
+        {
+          "column": "categoryPoolID",
+          "source": "core/mura/dbUpdates/6.1.cfm:156"
+        },
+        {
+          "column": "contentPoolID",
+          "source": "core/mura/dbUpdates/6.1.cfm:157"
+        },
+        {
+          "column": "reCAPTCHASiteKey",
+          "source": "core/mura/dbUpdates/6.2.cfm:3"
+        },
+        {
+          "column": "reCAPTCHASecret",
+          "source": "core/mura/dbUpdates/6.2.cfm:4"
+        },
+        {
+          "column": "reCAPTCHALanguage",
+          "source": "core/mura/dbUpdates/6.2.cfm:5"
+        },
+        {
+          "column": "JSONApi",
+          "source": "core/mura/dbUpdates/6.2.cfm:6"
+        },
+        {
+          "column": "useSSL",
+          "source": "core/mura/dbUpdates/6.2.cfm:7"
+        },
+        {
+          "column": "isremote",
+          "source": "core/mura/dbUpdates/6.2.cfm:8"
+        },
+        {
+          "column": "resourceSSL",
+          "source": "core/mura/dbUpdates/6.2.cfm:9"
+        },
+        {
+          "column": "resourceDomain",
+          "source": "core/mura/dbUpdates/6.2.cfm:10"
+        },
+        {
+          "column": "remoteport",
+          "source": "core/mura/dbUpdates/6.2.cfm:11"
+        },
+        {
+          "column": "remotecontext",
+          "source": "core/mura/dbUpdates/6.2.cfm:12"
+        },
+        {
+          "column": "sendAuthCodeScript",
+          "source": "core/mura/dbUpdates/6.2.2.cfm:3"
+        },
+        {
+          "column": "contentPendingScript",
+          "source": "core/mura/dbUpdates/7.0.cfm:23"
+        },
+        {
+          "column": "contentCanceledScript",
+          "source": "core/mura/dbUpdates/7.0.cfm:24"
+        },
+        {
+          "column": "showDashboard",
+          "source": "core/mura/dbUpdates/7.0.cfm:25"
+        },
+        {
+          "column": "placeholderImgID",
+          "source": "core/mura/dbUpdates/7.0.cfm:26"
+        },
+        {
+          "column": "placeholderImgExt",
+          "source": "core/mura/dbUpdates/7.0.cfm:27"
+        },
+        {
+          "column": "scaffolding",
+          "source": "core/mura/dbUpdates/7.1.cfm:4"
+        }
+      ],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID",
+      "owner": "programs-sites",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "programs_sites.site",
+          "owner": "programs-sites",
+          "schema": "programs_sites",
+          "table": "site",
+          "rowPredicate": null,
+          "keyColumns": ["SiteID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["SiteID", "Site", "MaxNestLevel", "PageLimit", "Locking", "Domain", "exportLocation", "FileDir", "Contact", "MailserverIP", "MailServerUsername", "MailServerPassword", "EmailBroadcaster", "Extranet", "ExtranetPublicReg", "ExtranetPublicRegNotify", "ExtranetSSL", "Cache", "ViewDepth", "NextN", "DataCollection", "columnCount", "columnNames", "primaryColumn", "publicSubmission", "archiveDate", "contactName", "contactAddress", "contactCity", "contactState", "contactZip", "contactEmail", "contactPhone", "privateUserPoolID", "publicUserPoolID", "orderNo", "emailBroadcasterLimit", "feedManager", "displayPoolID", "galleryMainScaleBy", "galleryMainScale", "gallerySmallScaleBy", "gallerySmallScale", "galleryMediumScaleBy", "galleryMediumScale", "sendLoginScript", "mailingListConfirmScript", "publicSubmissionApprovalScript", "reminderScript", "loginURL", "editProfileURL", "CommentApprovalDefault", "deploy", "lastDeployment", "accountActivationScript", "googleAPIKey", "useDefaultSMTPServer", "theme", "mailserverSMTPPort", "mailserverPOPPort", "mailserverTLS", "mailserverSSL", "siteLocale", "domainAlias", "cacheCapacity", "cacheFreeMemoryThreshold", "tagline", "hasChangesets", "baseID", "enforcePrimaryDomain", "enforceChangesets", "smallImageHeight", "smallImageWidth", "mediumImageHeight", "mediumImageWidth", "largeImageHeight", "largeImageWidth", "contentApprovalScript", "contentRejectionScript", "hasComments", "hasLockableNodes", "enableLockdown", "customTagGroups", "filePoolID", "categoryPoolID", "contentPoolID", "sendAuthCodeScript", "reCAPTCHASiteKey", "reCAPTCHASecret", "reCAPTCHALanguage", "JSONApi", "useSSL", "isremote", "resourceSSL", "resourceDomain", "remoteport", "remotecontext", "contentPendingScript", "contentCanceledScript", "showDashboard", "placeholderImgID", "placeholderImgExt", "scaffolding"],
+          "ruleSteps": [1]
+        }
+      ],
+      "notes": "The bootstrap DDL declares no key, and core/mura/dbUpdates/6.1.cfm:120-122 adds the SiteID primary key the live catalog carries."
+    },
+    {
+      "table": "tsystemobjects",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [436, 441]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "SiteID",
+      "hasPrimaryKey": false,
+      "primaryKey": [],
+      "bootstrapHasPrimaryKey": false,
+      "rowIdentity": "multiset",
+      "columns": ["Object", "SiteID", "Name", "OrderNo"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "programs-sites",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "programs_sites.system_object",
+          "owner": "programs-sites",
+          "schema": "programs_sites",
+          "table": "system_object",
+          "rowPredicate": null,
+          "keyColumns": [],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["Object", "SiteID", "Name", "OrderNo"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "ttrash",
+      "schema": "dbo",
+      "origin": "migration",
+      "source": {
+        "path": "core/mura/dbUpdates/5.2.1.2893.cfm",
+        "lines": [7, 18]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["objectID"],
+      "rowIdentity": "key",
+      "columns": ["objectID", "parentID", "siteID", "objectLabel", "objectClass", "objectType", "objectSubType", "objectstring", "deletedDate", "deletedBy", "deleteid", "orderno"],
+      "addedColumns": [
+        {
+          "column": "deleteid",
+          "source": "core/mura/dbUpdates/5.7.cfm:105"
+        },
+        {
+          "column": "orderno",
+          "source": "core/mura/dbUpdates/5.7.cfm:106"
+        }
+      ],
+      "serializedDocumentColumns": ["objectstring"],
+      "tenantResolution": "siteID",
+      "owner": "split",
+      "ruleSteps": [1],
+      "split": {
+        "by": "objectClass",
+        "classSource": {
+          "path": "core/mura/trash/trashManager.cfc",
+          "lines": [175, 176]
+        },
+        "classMap": [
+          {
+            "classes": ["content", "feed", "category", "changeset"],
+            "owner": "strategies-content"
+          },
+          {
+            "classes": ["mailinglist", "email"],
+            "owner": "communications"
+          },
+          {
+            "classes": ["group"],
+            "owner": "identity"
+          },
+          {
+            "classes": ["user"],
+            "ownerBy": "stored Type",
+            "owners": {
+              "1": "identity",
+              "2": "people"
+            }
+          },
+          {
+            "classes": ["address"],
+            "ownerBy": "owning user's Type",
+            "owners": {
+              "1": "identity",
+              "2": "people"
+            }
+          },
+          {
+            "classes": ["extendObject"],
+            "ownerBy": "baseTable",
+            "owners": {
+              "tcontent": "strategies-content",
+              "tsettings": "programs-sites",
+              "tusers": "people",
+              "tusersaddresses": "people"
+            }
+          },
+          {
+            "classes": ["<ORM entity name>"],
+            "ownerBy": "owner of the entity's table",
+            "notes": "Core ORM beans declare no usetrash (core/mura/bean/bean.cfc:745-748), so only dynamic entities reach ttrash here, and their decision-list rows stay on legacy."
+          }
+        ],
+        "unmappedClassRule": "An unmapped objectClass fails services/*/test/unit/mapping.test.ts."
+      },
+      "targets": [
+        {
+          "unit": "content.trash",
+          "owner": "strategies-content",
+          "schema": "content",
+          "table": "trash",
+          "rowPredicate": "classMap owner = strategies-content",
+          "keyColumns": ["objectID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["objectID", "parentID", "siteID", "objectLabel", "objectClass", "objectType", "objectSubType", "objectstring", "deletedDate", "deletedBy", "deleteid", "orderno"],
+          "ruleSteps": [1]
+        },
+        {
+          "unit": "communications.trash",
+          "owner": "communications",
+          "schema": "communications",
+          "table": "trash",
+          "rowPredicate": "classMap owner = communications",
+          "keyColumns": ["objectID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["objectID", "parentID", "siteID", "objectLabel", "objectClass", "objectType", "objectSubType", "objectstring", "deletedDate", "deletedBy", "deleteid", "orderno"],
+          "ruleSteps": [1]
+        },
+        {
+          "unit": "identity.trash",
+          "owner": "identity",
+          "schema": "identity",
+          "table": "trash",
+          "rowPredicate": "classMap owner = identity",
+          "keyColumns": ["objectID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["objectID", "parentID", "siteID", "objectLabel", "objectClass", "objectType", "objectSubType", "objectstring", "deletedDate", "deletedBy", "deleteid", "orderno"],
+          "ruleSteps": [1]
+        },
+        {
+          "unit": "people.trash",
+          "owner": "people",
+          "schema": "people",
+          "table": "trash",
+          "rowPredicate": "classMap owner = people",
+          "keyColumns": ["objectID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["objectID", "parentID", "siteID", "objectLabel", "objectClass", "objectType", "objectSubType", "objectstring", "deletedDate", "deletedBy", "deleteid", "orderno"],
+          "ruleSteps": [1]
+        },
+        {
+          "unit": "programs_sites.trash",
+          "owner": "programs-sites",
+          "schema": "programs_sites",
+          "table": "trash",
+          "rowPredicate": "classMap owner = programs-sites",
+          "keyColumns": ["objectID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["objectID", "parentID", "siteID", "objectLabel", "objectClass", "objectType", "objectSubType", "objectstring", "deletedDate", "deletedBy", "deleteid", "orderno"],
+          "ruleSteps": [1]
+        }
+      ],
+      "notes": "objectstring is WDDX; the trash screens are withheld on the decision list, but the rows still migrate."
+    },
+    {
+      "table": "tuseraddresses",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [444, 464]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["addressID"],
+      "rowIdentity": "key",
+      "columns": ["addressID", "userID", "siteID", "addressName", "address1", "address2", "city", "state", "zip", "country", "phone", "fax", "isPrimary", "addressNotes", "addressURL", "longitude", "latitude", "addressEmail", "hours"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "split",
+      "ruleSteps": [1],
+      "split": {
+        "by": "ownerType",
+        "parent": {
+          "table": "tusers",
+          "join": "tuseraddresses.userID = tusers.UserID"
+        }
+      },
+      "targets": [
+        {
+          "unit": "identity.user_address",
+          "owner": "identity",
+          "schema": "identity",
+          "table": "user_address",
+          "rowPredicate": "owner Type = 1",
+          "keyColumns": ["addressID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["addressID", "userID", "siteID", "addressName", "address1", "address2", "city", "state", "zip", "country", "phone", "fax", "isPrimary", "addressNotes", "addressURL", "longitude", "latitude", "addressEmail", "hours"],
+          "ruleSteps": [1]
+        },
+        {
+          "unit": "people.user_address",
+          "owner": "people",
+          "schema": "people",
+          "table": "user_address",
+          "rowPredicate": "owner Type = 2",
+          "keyColumns": ["addressID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["addressID", "userID", "siteID", "addressName", "address1", "address2", "city", "state", "zip", "country", "phone", "fax", "isPrimary", "addressNotes", "addressURL", "longitude", "latitude", "addressEmail", "hours"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tuserdevice",
+      "schema": "dbo",
+      "origin": "orm",
+      "source": {
+        "path": "core/mura/user/userDeviceBean.cfc",
+        "lines": [1, 1]
+      },
+      "liveCatalog": true,
+      "ormEntity": {
+        "path": "core/mura/user/userDeviceBean.cfc",
+        "entityName": "userDevice"
+      },
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["deviceid"],
+      "rowIdentity": "key",
+      "columns": ["siteID", "created", "deviceid", "userID", "lastLogin"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "identity",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "identity.user_device",
+          "owner": "identity",
+          "schema": "identity",
+          "table": "user_device",
+          "rowPredicate": null,
+          "keyColumns": ["deviceid"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["siteID", "created", "deviceid", "userID", "lastLogin"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tuserremotesessions",
+      "schema": "dbo",
+      "origin": "migration",
+      "source": {
+        "path": "core/mura/dbUpdates/5.2.0.cfm",
+        "lines": [88, 94]
+      },
+      "liveCatalog": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["userID"],
+      "rowIdentity": "key",
+      "columns": ["userID", "authToken", "data", "created", "lastAccessed"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "parent:tusers",
+      "tenantParent": {
+        "table": "tusers",
+        "join": "tuserremotesessions.userID = tusers.UserID"
+      },
+      "owner": "identity",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "identity.remote_session",
+          "owner": "identity",
+          "schema": "identity",
+          "table": "remote_session",
+          "rowPredicate": null,
+          "keyColumns": ["userID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["userID", "authToken", "data", "created", "lastAccessed"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tusers",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [467, 505]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "SiteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["UserID"],
+      "rowIdentity": "key",
+      "columns": ["UserID", "GroupName", "Fname", "Lname", "UserName", "Password", "PasswordCreated", "Email", "Company", "JobTitle", "mobilePhone", "Website", "Type", "subType", "Ext", "ContactForm", "Admin", "S2", "LastLogin", "LastUpdate", "LastUpdateBy", "LastUpdateByID", "Perm", "InActive", "isPublic", "SiteID", "Subscribe", "notes", "description", "interests", "keepPrivate", "photoFileID", "IMName", "IMService", "created", "remoteID", "tags", "tablist"],
+      "addedColumns": [
+        {
+          "column": "tablist",
+          "source": "core/mura/dbUpdates/5.2.1932.cfm:18"
+        }
+      ],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "split",
+      "ruleSteps": [1],
+      "split": {
+        "by": "Type+column",
+        "typeColumn": "Type",
+        "liveColumnRule": "unassigned live column fails services/*/test/unit/mapping.test.ts",
+        "reassembly": "reverse projector reassembles the legacy row from every owner's columns"
+      },
+      "columnPolicy": "explicit",
+      "targets": [
+        {
+          "unit": "identity.group_account",
+          "owner": "identity",
+          "schema": "identity",
+          "table": "group_account",
+          "rowPredicate": "Type = 1",
+          "keyColumns": ["UserID"],
+          "columnPolicy": "explicit",
+          "ownedColumns": ["UserID", "GroupName", "Fname", "Lname", "UserName", "Password", "PasswordCreated", "Email", "Company", "JobTitle", "mobilePhone", "Website", "Type", "subType", "Ext", "ContactForm", "Admin", "S2", "LastLogin", "LastUpdate", "LastUpdateBy", "LastUpdateByID", "Perm", "InActive", "isPublic", "SiteID", "Subscribe", "notes", "description", "interests", "keepPrivate", "photoFileID", "IMName", "IMService", "created", "remoteID", "tags", "tablist"],
+          "ruleSteps": [1]
+        },
+        {
+          "unit": "identity.user_account",
+          "owner": "identity",
+          "schema": "identity",
+          "table": "user_account",
+          "rowPredicate": "Type = 2",
+          "keyColumns": ["UserID"],
+          "columnPolicy": "explicit",
+          "ownedColumns": ["UserID", "UserName", "Type", "Admin", "S2", "Perm", "InActive", "isPublic", "SiteID", "remoteID", "tablist"],
+          "ruleSteps": [1],
+          "notes": "tablist is a group content-editor tab list that core/mura/user/userBean.cfc:640-660 unions across memberships, so for Type=2 rows it is an account authorisation attribute."
+        },
+        {
+          "unit": "identity.credential",
+          "owner": "identity",
+          "schema": "identity",
+          "table": "credential",
+          "rowPredicate": "Type = 2",
+          "keyColumns": ["UserID"],
+          "columnPolicy": "explicit",
+          "ownedColumns": ["Password", "PasswordCreated"],
+          "ruleSteps": [1]
+        },
+        {
+          "unit": "identity.login_state",
+          "owner": "identity",
+          "schema": "identity",
+          "table": "login_state",
+          "rowPredicate": "Type = 2",
+          "keyColumns": ["UserID"],
+          "columnPolicy": "explicit",
+          "ownedColumns": ["LastLogin"],
+          "ruleSteps": [1]
+        },
+        {
+          "unit": "people.person",
+          "owner": "people",
+          "schema": "people",
+          "table": "person",
+          "rowPredicate": "Type = 2",
+          "keyColumns": ["UserID", "SiteID"],
+          "columnPolicy": "explicit",
+          "ownedColumns": ["GroupName", "Fname", "Lname", "Email", "Company", "JobTitle", "mobilePhone", "Website", "subType", "Ext", "ContactForm", "LastUpdate", "LastUpdateBy", "LastUpdateByID", "Subscribe", "notes", "description", "interests", "keepPrivate", "photoFileID", "IMName", "IMService", "created", "tags"],
+          "ruleSteps": [1],
+          "notes": "UserID and SiteID are copied as the join key and owned by identity.user_account."
+        }
+      ],
+      "notes": "Group rows keep every column in identity; user rows split into account, credential, login state and person columns."
+    },
+    {
+      "table": "tusersfavorites",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [508, 519]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["favoriteID"],
+      "rowIdentity": "key",
+      "columns": ["favoriteID", "userID", "favoriteName", "favorite", "type", "siteID", "dateCreated", "columnNumber", "rowNumber", "maxRSSItems"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "split",
+      "ruleSteps": [1, 3],
+      "split": {
+        "by": "ownerType",
+        "parent": {
+          "table": "tusers",
+          "join": "tusersfavorites.userID = tusers.UserID"
+        }
+      },
+      "targets": [
+        {
+          "unit": "identity.user_favorite",
+          "owner": "identity",
+          "schema": "identity",
+          "table": "user_favorite",
+          "rowPredicate": "owner Type = 1",
+          "keyColumns": ["favoriteID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["favoriteID", "userID", "favoriteName", "favorite", "type", "siteID", "dateCreated", "columnNumber", "rowNumber", "maxRSSItems"],
+          "ruleSteps": [1]
+        },
+        {
+          "unit": "people.user_favorite",
+          "owner": "people",
+          "schema": "people",
+          "table": "user_favorite",
+          "rowPredicate": "owner Type = 2",
+          "keyColumns": ["favoriteID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["favoriteID", "userID", "favoriteName", "favorite", "type", "siteID", "dateCreated", "columnNumber", "rowNumber", "maxRSSItems"],
+          "ruleSteps": [1, 3],
+          "notes": "Favorite content ids are kept and are resolved through strategies-content."
+        }
+      ]
+    },
+    {
+      "table": "tusersinterests",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [522, 525]
+      },
+      "liveCatalog": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["userID", "categoryID"],
+      "rowIdentity": "key",
+      "columns": ["userID", "categoryID"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "parent:tusers",
+      "tenantParent": {
+        "table": "tusers",
+        "join": "tusersinterests.userID = tusers.UserID"
+      },
+      "owner": "split",
+      "ruleSteps": [1, 3],
+      "split": {
+        "by": "ownerType",
+        "parent": {
+          "table": "tusers",
+          "join": "tusersinterests.userID = tusers.UserID"
+        }
+      },
+      "targets": [
+        {
+          "unit": "identity.user_interest",
+          "owner": "identity",
+          "schema": "identity",
+          "table": "user_interest",
+          "rowPredicate": "owner Type = 1",
+          "keyColumns": ["userID", "categoryID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["userID", "categoryID"],
+          "ruleSteps": [1]
+        },
+        {
+          "unit": "people.user_interest",
+          "owner": "people",
+          "schema": "people",
+          "table": "user_interest",
+          "rowPredicate": "owner Type = 2",
+          "keyColumns": ["userID", "categoryID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["userID", "categoryID"],
+          "ruleSteps": [1, 3],
+          "notes": "Category ids are kept and category names are read by projection."
+        }
+      ]
+    },
+    {
+      "table": "tusersmemb",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [528, 531]
+      },
+      "liveCatalog": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["UserID", "GroupID"],
+      "rowIdentity": "key",
+      "columns": ["UserID", "GroupID"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "parent:tusers",
+      "tenantParent": {
+        "table": "tusers",
+        "join": "tusersmemb.UserID = tusers.UserID"
+      },
+      "owner": "identity",
+      "ruleSteps": [2],
+      "targets": [
+        {
+          "unit": "identity.membership",
+          "owner": "identity",
+          "schema": "identity",
+          "table": "membership",
+          "rowPredicate": null,
+          "keyColumns": ["UserID", "GroupID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["UserID", "GroupID"],
+          "ruleSteps": [2]
+        }
+      ]
+    },
+    {
+      "table": "tuserstags",
+      "schema": "dbo",
+      "origin": "bootstrap",
+      "source": {
+        "path": "core/setup/db/mssql.sql",
+        "lines": [616, 621]
+      },
+      "liveCatalog": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteid",
+      "hasPrimaryKey": true,
+      "primaryKey": ["tagID"],
+      "rowIdentity": "key",
+      "columns": ["tagID", "userID", "siteid", "tag"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID-or-umbrella",
+      "owner": "split",
+      "ruleSteps": [1],
+      "split": {
+        "by": "ownerType",
+        "parent": {
+          "table": "tusers",
+          "join": "tuserstags.userID = tusers.UserID"
+        }
+      },
+      "targets": [
+        {
+          "unit": "identity.user_tag",
+          "owner": "identity",
+          "schema": "identity",
+          "table": "user_tag",
+          "rowPredicate": "owner Type = 1",
+          "keyColumns": ["tagID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["tagID", "userID", "siteid", "tag"],
+          "ruleSteps": [1]
+        },
+        {
+          "unit": "people.user_tag",
+          "owner": "people",
+          "schema": "people",
+          "table": "user_tag",
+          "rowPredicate": "owner Type = 2",
+          "keyColumns": ["tagID"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["tagID", "userID", "siteid", "tag"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "tuserstrikes",
+      "schema": "dbo",
+      "origin": "migration",
+      "source": {
+        "path": "core/mura/dbUpdates/5.2.0.cfm",
+        "lines": [318, 322]
+      },
+      "liveCatalog": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["username"],
+      "rowIdentity": "key",
+      "columns": ["username", "strikes", "lastAttempt"],
+      "serializedDocumentColumns": [],
+      "tenantResolution": "parent:tusers",
+      "tenantParent": {
+        "table": "tusers",
+        "join": "tuserstrikes.username = tusers.UserName"
+      },
+      "owner": "identity",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "identity.user_strike",
+          "owner": "identity",
+          "schema": "identity",
+          "table": "user_strike",
+          "rowPredicate": null,
+          "keyColumns": ["username"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["username", "strikes", "lastAttempt"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "Program_N.approval_action",
+      "schema": "Program_N",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/timesheets/",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "programFold": true,
+      "programSchemas": ["Program_1", "Program_2"],
+      "migrated": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["action_id"],
+      "rowIdentity": "key",
+      "columns": ["action_id", "day_id", "action", "role", "from_state", "to_state", "actor_user_id", "comment", "created"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": "program_site",
+      "owner": "timesheets",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "timesheets.approval_action",
+          "owner": "timesheets",
+          "schema": "timesheets",
+          "table": "approval_action",
+          "rowPredicate": null,
+          "keyColumns": ["action_id"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["action_id", "day_id", "action", "role", "from_state", "to_state", "actor_user_id", "comment", "created"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "Program_N.blackout",
+      "schema": "Program_N",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/timesheets/",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "programFold": true,
+      "programSchemas": ["Program_1", "Program_2"],
+      "migrated": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["blackout_id"],
+      "rowIdentity": "key",
+      "columns": ["blackout_id", "day_id", "person_id", "archive_id", "reason", "created"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": "program_site",
+      "owner": "timesheets",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "timesheets.blackout",
+          "owner": "timesheets",
+          "schema": "timesheets",
+          "table": "blackout",
+          "rowPredicate": null,
+          "keyColumns": ["blackout_id"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["blackout_id", "day_id", "person_id", "archive_id", "reason", "created"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "Program_N.finance_attachment",
+      "schema": "Program_N",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/finance/",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "programFold": true,
+      "programSchemas": ["Program_1", "Program_2"],
+      "migrated": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["attachment_id"],
+      "rowIdentity": "key",
+      "columns": ["attachment_id", "record_id", "file_name", "content_type", "size_bytes", "sha256", "content", "created", "createdByID"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": "program_site",
+      "owner": "finance",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "finance.attachment",
+          "owner": "finance",
+          "schema": "finance",
+          "table": "attachment",
+          "rowPredicate": null,
+          "keyColumns": ["attachment_id"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["attachment_id", "record_id", "file_name", "content_type", "size_bytes", "sha256", "content", "created", "createdByID"],
+          "ruleSteps": [1],
+          "objectColumns": {
+            "content": "finance-attachments"
+          },
+          "notes": "The content bytes become objects in bucket finance-attachments, and the row keeps the object key."
+        }
+      ]
+    },
+    {
+      "table": "Program_N.finance_record",
+      "schema": "Program_N",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/finance/",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "programFold": true,
+      "programSchemas": ["Program_1", "Program_2"],
+      "migrated": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["record_id"],
+      "rowIdentity": "key",
+      "columns": ["record_id", "siteID", "title", "amount", "period", "state", "version", "created", "createdByID", "lastUpdate", "lastUpdateByID"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": "program_site",
+      "owner": "finance",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "finance.record",
+          "owner": "finance",
+          "schema": "finance",
+          "table": "record",
+          "rowPredicate": null,
+          "keyColumns": ["record_id"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["record_id", "siteID", "title", "amount", "period", "state", "version", "created", "createdByID", "lastUpdate", "lastUpdateByID"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "Program_N.finance_record_version",
+      "schema": "Program_N",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/finance/",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "programFold": true,
+      "programSchemas": ["Program_1", "Program_2"],
+      "migrated": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["version_id"],
+      "rowIdentity": "key",
+      "columns": ["version_id", "record_id", "version", "state", "title", "amount", "period", "action", "actor_user_id", "created"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": "program_site",
+      "owner": "finance",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "finance.record_version",
+          "owner": "finance",
+          "schema": "finance",
+          "table": "record_version",
+          "rowPredicate": null,
+          "keyColumns": ["version_id"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["version_id", "record_id", "version", "state", "title", "amount", "period", "action", "actor_user_id", "created"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "Program_N.finance_rollup",
+      "schema": "Program_N",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/finance/",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "programFold": true,
+      "programSchemas": ["Program_1", "Program_2"],
+      "migrated": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["period", "state"],
+      "rowIdentity": "key",
+      "columns": ["period", "state", "record_count", "total_amount", "computed_at"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": "program_site",
+      "owner": "finance",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "finance.rollup",
+          "owner": "finance",
+          "schema": "finance",
+          "table": "rollup",
+          "rowPredicate": null,
+          "keyColumns": ["period", "state"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["period", "state", "record_count", "total_amount", "computed_at"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "Program_N.timesheet",
+      "schema": "Program_N",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/timesheets/",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "programFold": true,
+      "programSchemas": ["Program_1", "Program_2"],
+      "migrated": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["timesheet_id"],
+      "rowIdentity": "key",
+      "columns": ["timesheet_id", "person_id", "siteID", "period_start", "period_end", "due_date", "created", "lastUpdate", "lastUpdateByID"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": "program_site",
+      "owner": "timesheets",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "timesheets.timesheet",
+          "owner": "timesheets",
+          "schema": "timesheets",
+          "table": "timesheet",
+          "rowPredicate": null,
+          "keyColumns": ["timesheet_id"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["timesheet_id", "person_id", "siteID", "period_start", "period_end", "due_date", "created", "lastUpdate", "lastUpdateByID"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "Program_N.timesheet_day",
+      "schema": "Program_N",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/timesheets/",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "programFold": true,
+      "programSchemas": ["Program_1", "Program_2"],
+      "migrated": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["day_id"],
+      "rowIdentity": "key",
+      "columns": ["day_id", "timesheet_id", "work_date", "hours", "state", "lastUpdate", "lastUpdateByID"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": "program_site",
+      "owner": "timesheets",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "timesheets.timesheet_day",
+          "owner": "timesheets",
+          "schema": "timesheets",
+          "table": "timesheet_day",
+          "rowPredicate": null,
+          "keyColumns": ["day_id"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["day_id", "timesheet_id", "work_date", "hours", "state", "lastUpdate", "lastUpdateByID"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "synthetic.audit_entry",
+      "schema": "synthetic",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/esignature/",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "migrated": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["entry_id"],
+      "rowIdentity": "key",
+      "columns": ["entry_id", "request_id", "seq", "action", "actor_user_id", "detail", "at", "prev_hash", "entry_hash"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": "parent:synthetic.signature_request",
+      "tenantParent": {
+        "table": "synthetic.signature_request",
+        "join": "synthetic.audit_entry.request_id = synthetic.signature_request.request_id"
+      },
+      "owner": "e-signature",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "esignature.audit_entry",
+          "owner": "e-signature",
+          "schema": "esignature",
+          "table": "audit_entry",
+          "rowPredicate": null,
+          "keyColumns": ["entry_id"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["entry_id", "request_id", "seq", "action", "actor_user_id", "detail", "at", "prev_hash", "entry_hash"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "synthetic.delivery_status",
+      "schema": "synthetic",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/communications/",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "migrated": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["status_id"],
+      "rowIdentity": "key",
+      "columns": ["status_id", "message_id", "status", "detail", "mailpit_id", "recorded_at"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": "parent:synthetic.message",
+      "tenantParent": {
+        "table": "synthetic.message",
+        "join": "synthetic.delivery_status.message_id = synthetic.message.message_id"
+      },
+      "owner": "communications",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "communications.delivery_status",
+          "owner": "communications",
+          "schema": "communications",
+          "table": "delivery_status",
+          "rowPredicate": null,
+          "keyColumns": ["status_id"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["status_id", "message_id", "status", "detail", "mailpit_id", "recorded_at"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "synthetic.export_definition",
+      "schema": "synthetic",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/reporting/",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "migrated": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["definition_id"],
+      "rowIdentity": "key",
+      "columns": ["definition_id", "siteID", "name", "source", "columns"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID",
+      "owner": "reporting",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "reporting.export_definition",
+          "owner": "reporting",
+          "schema": "reporting",
+          "table": "export_definition",
+          "rowPredicate": null,
+          "keyColumns": ["definition_id"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["definition_id", "siteID", "name", "source", "columns"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "synthetic.export_job",
+      "schema": "synthetic",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/reporting/",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "migrated": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["job_id"],
+      "rowIdentity": "key",
+      "columns": ["job_id", "siteID", "definition_id", "format", "state", "requested_by_id", "created", "started_at", "finished_at", "error", "file_name", "content_type", "output", "output_sha256"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID",
+      "owner": "reporting",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "reporting.export_job",
+          "owner": "reporting",
+          "schema": "reporting",
+          "table": "export_job",
+          "rowPredicate": null,
+          "keyColumns": ["job_id"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["job_id", "siteID", "definition_id", "format", "state", "requested_by_id", "created", "started_at", "finished_at", "error", "file_name", "content_type", "output", "output_sha256"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "synthetic.finance_transition",
+      "schema": "synthetic",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/finance/",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "migrated": false,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["from_state", "action", "role"],
+      "rowIdentity": "key",
+      "columns": ["from_state", "action", "role", "outcome", "status", "to_state", "new_version", "error"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": null,
+      "owner": "finance",
+      "ruleSteps": [1],
+      "targets": [],
+      "notes": "Loaded from opt2/reports/state-machines/finance.json; it is not migrated."
+    },
+    {
+      "table": "synthetic.message",
+      "schema": "synthetic",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/communications/",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "migrated": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["message_id"],
+      "rowIdentity": "key",
+      "columns": ["message_id", "siteID", "template_id", "to_address", "from_address", "subject", "body_text", "body_html", "state", "created", "sent_at"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID",
+      "owner": "communications",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "communications.message",
+          "owner": "communications",
+          "schema": "communications",
+          "table": "message",
+          "rowPredicate": null,
+          "keyColumns": ["message_id"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["message_id", "siteID", "template_id", "to_address", "from_address", "subject", "body_text", "body_html", "state", "created", "sent_at"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "synthetic.message_template",
+      "schema": "synthetic",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/communications/",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "migrated": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["template_id"],
+      "rowIdentity": "key",
+      "columns": ["template_id", "siteID", "name", "subject", "body_text", "body_html", "created", "lastUpdate"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID",
+      "owner": "communications",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "communications.message_template",
+          "owner": "communications",
+          "schema": "communications",
+          "table": "message_template",
+          "rowPredicate": null,
+          "keyColumns": ["template_id"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["template_id", "siteID", "name", "subject", "body_text", "body_html", "created", "lastUpdate"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "synthetic.person_archive",
+      "schema": "synthetic",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/people/",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "migrated": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["archive_id"],
+      "rowIdentity": "key",
+      "columns": ["archive_id", "person_id", "siteID", "effective_from", "archived_at", "archived_by_id", "archived_by"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID",
+      "owner": "people",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "people.person_archive",
+          "owner": "people",
+          "schema": "people",
+          "table": "person_archive",
+          "rowPredicate": null,
+          "keyColumns": ["archive_id"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["archive_id", "person_id", "siteID", "effective_from", "archived_at", "archived_by_id", "archived_by"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "synthetic.program_site",
+      "schema": "synthetic",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/010_program_site.sql",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "migrated": false,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["program_id"],
+      "rowIdentity": "key",
+      "columns": ["program_id", "siteID"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": null,
+      "owner": "programs-sites",
+      "ruleSteps": [1],
+      "targets": [],
+      "notes": "Fold mapping read by platform/src/migration-kit to resolve each Program_<id> schema to its site; it is not migrated."
+    },
+    {
+      "table": "synthetic.signature",
+      "schema": "synthetic",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/esignature/",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "migrated": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["signature_id"],
+      "rowIdentity": "key",
+      "columns": ["signature_id", "request_id", "typed_name", "signer_user_id", "signed_at"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": "parent:synthetic.signature_request",
+      "tenantParent": {
+        "table": "synthetic.signature_request",
+        "join": "synthetic.signature.request_id = synthetic.signature_request.request_id"
+      },
+      "owner": "e-signature",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "esignature.signature",
+          "owner": "e-signature",
+          "schema": "esignature",
+          "table": "signature",
+          "rowPredicate": null,
+          "keyColumns": ["signature_id"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["signature_id", "request_id", "typed_name", "signer_user_id", "signed_at"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "synthetic.signature_request",
+      "schema": "synthetic",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/esignature/",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "migrated": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["request_id"],
+      "rowIdentity": "key",
+      "columns": ["request_id", "siteID", "document_name", "document_sha256", "document", "signer_user_id", "state", "created", "createdByID"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID",
+      "owner": "e-signature",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "esignature.signature_request",
+          "owner": "e-signature",
+          "schema": "esignature",
+          "table": "signature_request",
+          "rowPredicate": null,
+          "keyColumns": ["request_id"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["request_id", "siteID", "document_name", "document_sha256", "document", "signer_user_id", "state", "created", "createdByID"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "synthetic.survey",
+      "schema": "synthetic",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/surveys/",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "migrated": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["survey_id"],
+      "rowIdentity": "key",
+      "columns": ["survey_id", "siteID", "title", "status", "created", "createdByID", "lastUpdate", "lastUpdateByID", "launched_at"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": "siteID",
+      "owner": "surveys",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "surveys.survey",
+          "owner": "surveys",
+          "schema": "surveys",
+          "table": "survey",
+          "rowPredicate": null,
+          "keyColumns": ["survey_id"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["survey_id", "siteID", "title", "status", "created", "createdByID", "lastUpdate", "lastUpdateByID", "launched_at"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "synthetic.survey_reminder",
+      "schema": "synthetic",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/surveys/",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "migrated": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["reminder_id"],
+      "rowIdentity": "key",
+      "columns": ["reminder_id", "survey_id", "offset_minutes", "remind_at", "task_name", "task_token_hash", "sent_at"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": "parent:synthetic.survey",
+      "tenantParent": {
+        "table": "synthetic.survey",
+        "join": "synthetic.survey_reminder.survey_id = synthetic.survey.survey_id"
+      },
+      "owner": "surveys",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "surveys.survey_reminder",
+          "owner": "surveys",
+          "schema": "surveys",
+          "table": "survey_reminder",
+          "rowPredicate": null,
+          "keyColumns": ["reminder_id"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["reminder_id", "survey_id", "offset_minutes", "remind_at", "task_name", "task_token_hash", "sent_at"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "synthetic.survey_response",
+      "schema": "synthetic",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/surveys/",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "migrated": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["response_id"],
+      "rowIdentity": "key",
+      "columns": ["response_id", "survey_id", "siteID", "respondentSiteID", "respondent_user_id", "answers", "created"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": ["answers"],
+      "tenantResolution": "siteID",
+      "owner": "surveys",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "surveys.survey_response",
+          "owner": "surveys",
+          "schema": "surveys",
+          "table": "survey_response",
+          "rowPredicate": null,
+          "keyColumns": ["response_id"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["response_id", "survey_id", "siteID", "respondentSiteID", "respondent_user_id", "answers", "created"],
+          "ruleSteps": [1]
+        }
+      ],
+      "notes": "siteID is the survey's site and respondentSiteID the respondent's, matching the survey-response tenant grant."
+    },
+    {
+      "table": "synthetic.survey_schedule",
+      "schema": "synthetic",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/surveys/",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "migrated": true,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["schedule_id"],
+      "rowIdentity": "key",
+      "columns": ["schedule_id", "survey_id", "launch_at", "schedule_version", "task_name", "task_token_hash", "created"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": "parent:synthetic.survey",
+      "tenantParent": {
+        "table": "synthetic.survey",
+        "join": "synthetic.survey_schedule.survey_id = synthetic.survey.survey_id"
+      },
+      "owner": "surveys",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "surveys.survey_schedule",
+          "owner": "surveys",
+          "schema": "surveys",
+          "table": "survey_schedule",
+          "rowPredicate": null,
+          "keyColumns": ["schedule_id"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["schedule_id", "survey_id", "launch_at", "schedule_version", "task_name", "task_token_hash", "created"],
+          "ruleSteps": [1]
+        }
+      ]
+    },
+    {
+      "table": "synthetic.survey_target",
+      "schema": "synthetic",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/surveys/",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "migrated": true,
+      "hasSiteId": true,
+      "siteIdColumn": "siteID",
+      "hasPrimaryKey": true,
+      "primaryKey": ["target_id"],
+      "rowIdentity": "key",
+      "columns": ["target_id", "survey_id", "siteID", "group_name", "created"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": "parent:synthetic.survey",
+      "tenantParent": {
+        "table": "synthetic.survey",
+        "join": "synthetic.survey_target.survey_id = synthetic.survey.survey_id"
+      },
+      "owner": "surveys",
+      "ruleSteps": [1],
+      "targets": [
+        {
+          "unit": "surveys.survey_target",
+          "owner": "surveys",
+          "schema": "surveys",
+          "table": "survey_target",
+          "rowPredicate": null,
+          "keyColumns": ["target_id"],
+          "columnPolicy": "whole-table",
+          "ownedColumns": ["target_id", "survey_id", "siteID", "group_name", "created"],
+          "ruleSteps": [1]
+        }
+      ],
+      "notes": "siteID names the targeted site, so the row takes the tenant of its survey."
+    },
+    {
+      "table": "synthetic.timesheet_transition",
+      "schema": "synthetic",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/timesheets/",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "migrated": false,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["from_state", "action", "role"],
+      "rowIdentity": "key",
+      "columns": ["from_state", "action", "role", "outcome", "status", "to_state", "new_version", "error"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": null,
+      "owner": "timesheets",
+      "ruleSteps": [1],
+      "targets": [],
+      "notes": "Loaded from opt2/reports/state-machines/timesheets.json; it is not migrated."
+    },
+    {
+      "table": "synthetic.transition_rule",
+      "schema": "synthetic",
+      "origin": "fixture",
+      "source": {
+        "path": "legacy-fixtures/sql/020_load_transitions.sql",
+        "lines": null
+      },
+      "liveCatalog": true,
+      "migrated": false,
+      "hasSiteId": false,
+      "siteIdColumn": null,
+      "hasPrimaryKey": true,
+      "primaryKey": ["service", "rule_name"],
+      "rowIdentity": "key",
+      "columns": ["service", "rule_name", "applies_to", "outcome", "status", "error"],
+      "columnPolicy": "whole-table",
+      "serializedDocumentColumns": [],
+      "tenantResolution": null,
+      "owner": "timesheets",
+      "ruleSteps": [1],
+      "targets": [],
+      "notes": "Holds the timesheets blackout rule loaded from opt2/reports/state-machines/timesheets.json; it is not migrated."
+    }
+  ],
+  "pools": [
+    {
+      "pools": ["publicUserPoolID", "privateUserPoolID"],
+      "ruleStep": 4,
+      "tables": ["tusers", "tusersmemb", "tuseraddresses", "tusersinterests", "tuserstags", "tusersfavorites", "tclassextenddatauseractivity", "tuserremotesessions", "tuserstrikes"],
+      "rows": "tusers and the identity and people child tables where SiteID is the pool site",
+      "owners": ["identity", "people"],
+      "representation": "Rows carry the umbrella tenant_id, and each member site's two user pools are resolved from the registry, never from the token.",
+      "source": [
+        {
+          "path": "core/mura/settings/settingsBean.cfc",
+          "lines": [119, 124]
+        },
+        {
+          "path": "core/mura/settings/settingsBean.cfc",
+          "lines": [328, 344]
+        }
+      ]
+    },
+    {
+      "pools": ["categoryPoolID"],
+      "ruleStep": 4,
+      "tables": ["tcontentcategories", "tusersinterests"],
+      "rows": "tcontentcategories rows and tusersinterests category references whose siteID is the pool site",
+      "owners": ["strategies-content"],
+      "representation": "Rows carry the umbrella tenant_id and are read in a pool-tenant transaction.",
+      "source": [
+        {
+          "path": "core/mura/settings/settingsBean.cfc",
+          "lines": [119, 124]
+        },
+        {
+          "path": "core/mura/settings/settingsBean.cfc",
+          "lines": [328, 344]
+        }
+      ]
+    },
+    {
+      "pools": ["filePoolID"],
+      "ruleStep": 4,
+      "tables": ["tfiles"],
+      "rows": "tfiles rows and the pool site's stored objects",
+      "owners": ["strategies-content"],
+      "representation": "Rows carry the umbrella tenant_id, and objects sit under the umbrella prefix in bucket content-files.",
+      "source": [
+        {
+          "path": "core/mura/settings/settingsBean.cfc",
+          "lines": [119, 124]
+        },
+        {
+          "path": "core/mura/settings/settingsBean.cfc",
+          "lines": [328, 344]
+        }
+      ]
+    },
+    {
+      "pools": ["contentPoolID"],
+      "ruleStep": 4,
+      "tables": [],
+      "rows": "no rows; a site setting naming the sites whose content a site may reference",
+      "owners": ["programs-sites", "strategies-content"],
+      "representation": "programs-sites stores it and strategies-content reads it from the site projection, running one transaction per pool tenant and merging.",
+      "source": [
+        {
+          "path": "core/mura/settings/settingsBean.cfc",
+          "lines": [119, 124]
+        },
+        {
+          "path": "core/mura/settings/settingsBean.cfc",
+          "lines": [328, 344]
+        }
+      ]
+    },
+    {
+      "pools": ["displayPoolID"],
+      "ruleStep": 4,
+      "tables": [],
+      "rows": "no rows; it selects theme and display-object directories",
+      "owners": ["programs-sites"],
+      "representation": "programs-sites stores it, and only legacy-served rendering consumes it.",
+      "source": [
+        {
+          "path": "core/mura/settings/settingsBean.cfc",
+          "lines": [119, 124]
+        },
+        {
+          "path": "core/mura/settings/settingsBean.cfc",
+          "lines": [328, 344]
+        }
+      ]
+    }
+  ],
+  "newTables": [
+    {
+      "table": "people.roster_operation",
+      "owner": "people",
+      "kind": "roster write protocol intent"
+    },
+    {
+      "table": "identity.account_operation",
+      "owner": "identity",
+      "kind": "roster write protocol account part"
+    },
+    {
+      "table": "identity.session",
+      "owner": "identity",
+      "kind": "session state"
+    },
+    {
+      "table": "identity.csrf_claim",
+      "owner": "identity",
+      "kind": "CSRF single-use ledger"
+    },
+    {
+      "table": "identity.person_contact",
+      "owner": "identity",
+      "kind": "projection of people.person.changed.v1"
+    },
+    {
+      "table": "content.file_object",
+      "owner": "strategies-content",
+      "kind": "stored object manifest"
+    },
+    {
+      "table": "content.permission_projection",
+      "owner": "strategies-content",
+      "kind": "projection of identity.permission.changed.v1"
+    },
+    {
+      "table": "content.membership_projection",
+      "owner": "strategies-content",
+      "kind": "projection of identity.membership.changed.v1"
+    },
+    {
+      "table": "programs_sites.sitemonitor_state",
+      "owner": "programs-sites",
+      "kind": "site-monitor cursor"
+    },
+    {
+      "table": "<schema>.tenant_registry",
+      "owner": "every service",
+      "kind": "platform"
+    },
+    {
+      "table": "<schema>.tenant_grant",
+      "owner": "every service",
+      "kind": "platform"
+    },
+    {
+      "table": "<schema>.unit_gate",
+      "owner": "every service",
+      "kind": "platform"
+    },
+    {
+      "table": "<schema>.open_operation",
+      "owner": "every service",
+      "kind": "platform"
+    },
+    {
+      "table": "<schema>.migration_watermark",
+      "owner": "every service",
+      "kind": "platform"
+    },
+    {
+      "table": "<schema>.migration_batch",
+      "owner": "every service",
+      "kind": "platform"
+    },
+    {
+      "table": "<schema>.changelog",
+      "owner": "every service",
+      "kind": "platform"
+    },
+    {
+      "table": "<schema>.outbox",
+      "owner": "every service",
+      "kind": "platform"
+    },
+    {
+      "table": "<schema>.inbox",
+      "owner": "every service",
+      "kind": "platform"
+    }
+  ]
+}
