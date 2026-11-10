@@ -1,5 +1,8 @@
 import type { Pool, QueryConfig, QueryResult } from 'pg';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { setDiagnosticLogger } from '../../src/logging/diagnostics.js';
+import { createLogger } from '../../src/logging/logger.js';
+import { validateLogRecord } from '../../src/logging/validate.js';
 import { InvalidTenantIdError, tenantIdForSite } from '../../src/tenancy/tenant-id.js';
 import {
   OutsideTenantTransactionError,
@@ -22,7 +25,16 @@ import {
 const TENANT_A = tenantIdForSite('tenant-a');
 const TENANT_B = tenantIdForSite('tenant-b');
 const SET_TENANT = "SELECT set_config('app.tenant_id', $1, true)";
-const NON_ERROR: unknown = 'handler down';
+const SECRET = ['c10', 'sentinel', 'secret'].join('-');
+const MAILBOX = ['c10', 'sentinel', 'mailbox'].join('-');
+/** Error text with credentials, session material, echoed input, an email address and line-forging control characters. */
+const LEAKY_TEXT = [
+  `connect postgres://svc:${SECRET}@db/x?sslpassword=${SECRET} refused`,
+  `Cookie: CFID=${SECRET}`,
+  `syntax error at or near "'${SECRET}'"`,
+  `owner ${MAILBOX}@example.com\r\u001b[31mforged\u2028line\u0085end`,
+].join('\n');
+const RAW_CONTROL = /[\p{Cc}\u2028\u2029]/u;
 
 type Recorded = [text: string, values: unknown[] | undefined];
 
@@ -67,6 +79,32 @@ function setup() {
 
 const asMetadata = (base: TxBase): MetadataTx => ({ ...base, kind: 'metadata' });
 
+/** Labelled commit error handlers of every failure shape, each failing with `text`, and whether the failure has a stack. */
+function failingHandlers(text: string): (readonly [string, CommitErrorHandler, boolean])[] {
+  const nonError: unknown = text;
+  return [
+    [
+      'throws an Error',
+      () => {
+        throw new Error(text);
+      },
+      true,
+    ],
+    ['rejects with an Error', () => Promise.reject(new Error(text)), true],
+    [
+      'throws a non-Error value',
+      () => {
+        throw nonError;
+      },
+      false,
+    ],
+    ['rejects with a non-Error value', () => Promise.reject(nonError), false],
+  ];
+}
+
+/** Warning detail of a failure: its frames under `Error: [REDACTED]` on one line, or none without a stack. */
+const SAFE_DETAIL = /^Error: \[REDACTED\]\\n {4}at \S/;
+
 /** A promise plus the function that resolves it. */
 function gate(): { promise: Promise<void>; open: () => void } {
   let open: () => void = () => undefined;
@@ -77,6 +115,7 @@ function gate(): { promise: Promise<void>; open: () => void } {
 }
 
 afterEach(() => {
+  setDiagnosticLogger(undefined);
   vi.restoreAllMocks();
 });
 
@@ -322,23 +361,7 @@ describe('commit callbacks', () => {
     expect(last).toHaveBeenCalledOnce();
   });
 
-  const HANDLER_FAILURES: readonly (readonly [string, CommitErrorHandler])[] = [
-    [
-      'throws an Error',
-      () => {
-        throw new Error('handler down');
-      },
-    ],
-    ['rejects with an Error', () => Promise.reject(new Error('handler down'))],
-    [
-      'throws a non-Error value',
-      () => {
-        throw NON_ERROR;
-      },
-    ],
-  ];
-
-  it.each(HANDLER_FAILURES)('turn a handler that %s into an OPT2_TENANCY warning', async (_label, handler) => {
+  it.each(failingHandlers('handler down'))('turn a handler that %s into an OPT2_TENANCY warning', async (_label, handler, stack) => {
     const h = setup();
     const emitWarning = vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
 
@@ -352,9 +375,69 @@ describe('commit callbacks', () => {
       expect(emitWarning).toHaveBeenCalledOnce();
     });
     const [message, options] = emitWarning.mock.calls[0] ?? [];
-    expect(message).toBe('Commit callback error handler failed: handler down');
+    expect(message).toBe('Commit callback error handler failed: [REDACTED]');
     expect(options?.code).toBe('OPT2_TENANCY');
-    expect(options?.detail).toContain('handler down');
+    expect(options?.detail).toEqual(stack ? expect.stringMatching(SAFE_DETAIL) : undefined);
+    expect(options?.detail ?? '').not.toContain('handler down');
+  });
+
+  it.each(failingHandlers(LEAKY_TEXT))('redact a handler that %s and keep its warning on one line', async (_label, handler, stack) => {
+    const h = setup();
+    const emitWarning = vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
+
+    await expect(
+      runTenantTransaction(h.pool, h.opts, TENANT_A, (tx) => {
+        tx.onCommit(() => Promise.reject(new Error('callback down')), handler);
+        return Promise.resolve('value');
+      }),
+    ).resolves.toBe('value');
+    await vi.waitFor(() => {
+      expect(emitWarning).toHaveBeenCalledOnce();
+    });
+    const [message, options] = emitWarning.mock.calls[0] ?? [];
+    expect(options?.code).toBe('OPT2_TENANCY');
+    expect(message).toBe('Commit callback error handler failed: [REDACTED]');
+    expect(options?.detail).toEqual(stack ? expect.stringMatching(SAFE_DETAIL) : undefined);
+    for (const text of [message, options?.detail ?? '']) {
+      expect(text).not.toContain(SECRET);
+      expect(text).not.toContain(MAILBOX);
+      expect(text).not.toContain('forged');
+      expect(text).not.toMatch(RAW_CONTROL);
+    }
+  });
+
+  it.each(failingHandlers(LEAKY_TEXT))('write a handler that %s to a registered diagnostic logger', async (_label, handler) => {
+    const lines: Record<string, unknown>[] = [];
+    setDiagnosticLogger(
+      createLogger({
+        service: 'people',
+        version: '1.0.0',
+        env: 'local',
+        destination: { write: (line: string) => lines.push(JSON.parse(line) as Record<string, unknown>) },
+      }),
+    );
+    const h = setup();
+    const emitWarning = vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
+
+    await expect(
+      runTenantTransaction(h.pool, h.opts, TENANT_A, (tx) => {
+        tx.onCommit(() => Promise.reject(new Error('callback down')), handler);
+        return Promise.resolve('value');
+      }),
+    ).resolves.toBe('value');
+    await vi.waitFor(() => {
+      expect(lines).toHaveLength(1);
+    });
+    expect(emitWarning).not.toHaveBeenCalled();
+    expect(validateLogRecord(lines[0])).toStrictEqual({ valid: true, errors: [] });
+    expect(lines[0]).toMatchObject({
+      severity: 'WARNING',
+      message: 'OPT2_TENANCY: Commit callback error handler failed: [REDACTED]',
+      error: { message: '[REDACTED]' },
+    });
+    for (const text of [SECRET, MAILBOX, 'forged']) {
+      expect(JSON.stringify(lines[0])).not.toContain(text);
+    }
   });
 });
 

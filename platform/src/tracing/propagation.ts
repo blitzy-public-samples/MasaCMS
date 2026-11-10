@@ -14,6 +14,7 @@ import {
   type TextMapSetter,
 } from '@opentelemetry/api';
 import { W3CTraceContextPropagator } from '@opentelemetry/core';
+import { redactException } from './redact.js';
 
 const TRACER_NAME = '@opt2/platform';
 const TRACEPARENT = 'traceparent';
@@ -159,7 +160,7 @@ export async function startSpan<T>(
     try {
       return await fn(span);
     } catch (err) {
-      span.recordException(err instanceof Error ? err : String(err));
+      span.recordException(redactException(err));
       span.setStatus({ code: SpanStatusCode.ERROR });
       throw err;
     } finally {

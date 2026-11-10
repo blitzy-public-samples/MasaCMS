@@ -472,9 +472,9 @@ describe('tracing propagation', () => {
       {
         name: 'an Error',
         thrown: new Error('boom'),
-        event: { 'exception.type': 'Error', 'exception.message': 'boom' },
+        event: { 'exception.type': 'Error', 'exception.message': '[REDACTED]' },
       },
-      { name: 'a string', thrown: 'boom', event: { 'exception.message': 'boom' } },
+      { name: 'a string', thrown: 'boom', event: { 'exception.message': '[REDACTED]' } },
     ])('records $name as an exception, marks the span failed and rethrows', async ({ thrown, event }) => {
       await expect(
         startSpan('fail', SpanKind.INTERNAL, () => {

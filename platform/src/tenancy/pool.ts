@@ -3,6 +3,7 @@ import { Connector, AuthTypes, IpAddressTypes } from '@google-cloud/cloud-sql-co
 import { GoogleAuth } from 'google-auth-library';
 import { runTenantTransaction, type TenantDb, type CommitErrorHandler } from './transaction.js';
 import { runMetadataTransaction } from './metadata.js';
+import { tenancyWarning } from './warning.js';
 
 /** Database settings createPool reads; a structural subset of the service-kit environment. */
 export interface DbEnv {
@@ -22,7 +23,7 @@ export interface CreatePoolOptions {
   schema: string;
   max?: number;
   applicationName?: string;
-  /** Receives idle-client and commit-callback errors; defaults to a process warning. */
+  /** Receives idle-client and commit-callback errors; defaults to an OPT2_TENANCY diagnostic warning. */
   onError?: CommitErrorHandler;
 }
 
@@ -36,7 +37,8 @@ export interface TenantDbOptions {
 
 const SCHEMA_NAME = /^[a-z_][a-z0-9_]*$/;
 const SERVICE_ACCOUNT_SUFFIX = '.gserviceaccount.com';
-const WARNING_CODE = 'OPT2_TENANCY';
+// Unary, because pg emits a pool 'error' with the client as a second argument.
+const warn = tenancyWarning();
 
 /** Cloud SQL IAM database user for a service-account email: the email without its `.gserviceaccount.com` suffix. */
 export function iamDbUser(email: string): string {
@@ -126,10 +128,4 @@ async function serviceAccountDbUser(): Promise<string> {
     throw new Error('OPT2_DB_AUTH=iam without PG_USER needs a service-account email from Google credentials');
   }
   return iamDbUser(email);
-}
-
-// The string form keeps the warning code; process.emitWarning drops it when given an Error. Stderr only: stdout carries log-record.v1 lines.
-function warn(err: unknown): void {
-  const error = err instanceof Error ? err : new Error(String(err));
-  process.emitWarning(error.message, { code: WARNING_CODE, detail: error.stack });
 }

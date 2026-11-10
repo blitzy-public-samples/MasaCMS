@@ -7,6 +7,7 @@ import {
   createLogger,
   fastifyLoggerOptions,
   fastifySerializers,
+  REDACTED,
   serializeError,
   SEVERITY_BY_LEVEL,
   validateLogRecord,
@@ -53,6 +54,33 @@ function validRecord(line: LogLine | undefined): LogLine {
 /** The six base fields of a line written by `captureRecords`. */
 function baseRecord(severity: string, message: string, env: LogEnv = 'local'): LogLine {
   return { timestamp: expect.any(String), severity, message, service: 'unit', version: '0.0.0', env };
+}
+
+// Synthetic credentials assembled at run time, so no literal secret appears in source.
+const SENTINEL = ['opt2', 'sentinel'].join('-');
+const AUTHZ = `${SENTINEL}-authz`;
+const CFID = `${SENTINEL}-cfid`;
+const CFTOKEN = `${SENTINEL}-cftoken`;
+const SET_COOKIE = `CFID=${SENTINEL}-setcookie; Path=/; HttpOnly`;
+const REQUEST_HEADERS = { authorization: `Bearer ${AUTHZ}`, cookie: `CFID=${CFID}; CFTOKEN=${CFTOKEN}` };
+const CREDENTIAL_HEADERS: [string, string][] = [...Object.entries(REQUEST_HEADERS), ['set-cookie', SET_COOKIE]];
+
+/** Creates a `trace`-level logger for service `unit` that keeps each raw written chunk. */
+function captureChunks(): { logger: RecordLogger; chunks: string[] } {
+  const chunks: string[] = [];
+  const destination: DestinationStream = {
+    write: (chunk: string) => {
+      chunks.push(chunk);
+    },
+  };
+  return { logger: createLogger({ service: 'unit', version: '0.0.0', env: 'local', level: 'trace', destination }), chunks };
+}
+
+/** Returns the parsed lines after asserting each is valid and the raw output carries no sentinel. */
+function credentialFreeRecords(chunks: string[]): LogLine[] {
+  expect(chunks.length).toBeGreaterThan(0);
+  expect(chunks.join('')).not.toContain(SENTINEL);
+  return chunks.map((chunk) => validRecord(JSON.parse(chunk) as LogLine));
 }
 
 function capturingLogger(): { logger: Logger; lines: Record<string, unknown>[] } {
@@ -110,11 +138,11 @@ describe('createLogger record shape', () => {
     expect(validRecord(lines[0])).toStrictEqual({ ...baseRecord('INFO', 'served'), ...bindings, ...fields });
   });
 
-  it('serializes an Error to type, message and stack and logs that record as a valid error line', () => {
+  it('serializes an Error to type, safe message and stack frames and logs that record as a valid error line', () => {
     const { logger, lines } = captureRecords();
     const error = new TypeError('x');
     const record = serializeError(error);
-    expect(record).toStrictEqual({ type: 'TypeError', message: 'x', stack: error.stack });
+    expect(record).toStrictEqual({ type: 'TypeError', message: REDACTED, stack: error.stack?.replace('TypeError: x', `TypeError: ${REDACTED}`) });
     logger.error({ error: record }, 'failed');
     expect(lines).toHaveLength(1);
     expect(validRecord(lines[0])).toStrictEqual({ ...baseRecord('ERROR', 'failed'), error: record });
@@ -201,6 +229,77 @@ describe('fastifyLoggerOptions', () => {
     expect(lines[0]).not.toHaveProperty('reqId');
     expect(typeof lines[0]?.requestId).toBe('string');
     expect(lines[0]?.requestId).not.toBe('');
+  });
+});
+
+describe('createLogger credential headers', () => {
+  it.each(CREDENTIAL_HEADERS)('keeps a %s header out of a merge object', (name, value) => {
+    const { logger, chunks } = captureChunks();
+    const headers = { [name]: value };
+    logger.info(
+      { req: { method: 'GET', url: '/', headers }, res: { statusCode: 200, headers }, headers, [name]: value, route: '/' } as LogFields,
+      'served',
+    );
+    expect(credentialFreeRecords(chunks)).toStrictEqual([{ ...baseRecord('INFO', 'served'), route: '/' }]);
+  });
+
+  it.each(CREDENTIAL_HEADERS)('keeps a %s header out of child bindings', (name, value) => {
+    const { logger, chunks } = captureChunks();
+    const headers = { [name]: value };
+    logger.child({ req: { headers }, res: { headers }, headers, [name]: value, requestId: 'req-1' } as LogFields).info('bound');
+    expect(credentialFreeRecords(chunks)).toStrictEqual([{ ...baseRecord('INFO', 'bound'), requestId: 'req-1' }]);
+  });
+
+  it('keeps request and reply headers out of Fastify request logs', async () => {
+    const { logger, chunks } = captureChunks();
+    const app = fastify(fastifyLoggerOptions(logger));
+    app.get('/served', (request, reply) => {
+      reply.header('set-cookie', SET_COOKIE);
+      request.log.info({ req: request, res: reply }, 'served');
+      request.log.info({ headers: request.headers, replyHeaders: reply.getHeaders() }, 'headers');
+      request.log.info(request.raw);
+      request.log.child({ headers: request.headers }).info('child');
+      return reply.send({ ok: true });
+    });
+    try {
+      const response = await app.inject({ method: 'GET', url: '/served', headers: REQUEST_HEADERS });
+      expect(response.statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
+    const lines = credentialFreeRecords(chunks);
+    expect(lines.map((line) => line.message)).toStrictEqual(['served', 'headers', '', 'child']);
+    for (const line of lines) {
+      expect(Object.keys(line).toSorted()).toStrictEqual(['env', 'message', 'requestId', 'service', 'severity', 'timestamp', 'version']);
+    }
+  });
+
+  it.each<[string, string]>([
+    ['header lines', `upstream rejected Authorization: Bearer ${AUTHZ}\nCookie: CFID=${CFID}; CFTOKEN=${CFTOKEN}`],
+    ['a credential URL', `GET https://u:${AUTHZ}@legacy.example.test/admin/?CFID=${CFID}&CFTOKEN=${CFTOKEN} failed`],
+    ['a JSON header dump', JSON.stringify(REQUEST_HEADERS)],
+    ['cookie pairs', `session lost: CFID=${CFID}; CFTOKEN=${CFTOKEN}`],
+  ])('keeps credentials in a thrown error with %s out of the Fastify error log', async (_, text) => {
+    const { logger, chunks } = captureChunks();
+    const app = fastify(fastifyLoggerOptions(logger));
+    app.setErrorHandler<Error>((err, request, reply) => {
+      request.log.error({ req: request, res: reply, err }, err.message);
+      return reply.code(500).send({ error: 'internal' });
+    });
+    app.get('/boom', () => {
+      throw new Error(text);
+    });
+    try {
+      const response = await app.inject({ method: 'GET', url: '/boom', headers: REQUEST_HEADERS });
+      expect(response.statusCode).toBe(500);
+    } finally {
+      await app.close();
+    }
+    const [line, ...rest] = credentialFreeRecords(chunks);
+    expect(rest).toStrictEqual([]);
+    expect(line).toMatchObject({ severity: 'ERROR', error: { type: 'Error' } });
+    expect(line?.message).toBe(REDACTED);
+    expect((line?.error as { stack?: string }).stack).toMatch(/^Error: \[REDACTED\]\n {4}at \S/);
   });
 });
 

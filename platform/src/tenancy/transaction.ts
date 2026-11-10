@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Pool, PoolClient, QueryConfig, QueryResult, QueryResultRow } from 'pg';
 import { assertTenantId } from './tenant-id.js';
+import { tenancyWarning } from './warning.js';
 
 /** Runs parameterised SQL. */
 export interface Queryable {
@@ -76,7 +77,7 @@ export class TransactionRolledBackError extends Error {
 }
 
 const SET_TENANT_SQL = "SELECT set_config('app.tenant_id', $1, true)";
-const WARNING_CODE = 'OPT2_TENANCY';
+const warn = tenancyWarning('Commit callback error handler failed: ');
 
 const als = new AsyncLocalStorage<TenantTx | MetadataTx>();
 const openTransactions = new WeakSet<TenantTx | MetadataTx>();
@@ -208,7 +209,7 @@ async function runCommitCallbacks(callbacks: readonly PendingCallback[], fallbac
   }
 }
 
-// The write has committed, so neither a callback nor its handler may fail the caller; a failing handler becomes a process warning.
+// The write has committed, so neither a callback nor its handler may fail the caller; a failing handler becomes an OPT2_TENANCY diagnostic warning.
 function report(handler: CommitErrorHandler, err: unknown): void {
   try {
     const outcome: unknown = handler(err);
@@ -218,11 +219,6 @@ function report(handler: CommitErrorHandler, err: unknown): void {
   } catch (handlerError) {
     warn(handlerError);
   }
-}
-
-function warn(err: unknown): void {
-  const error = toError(err);
-  process.emitWarning(`Commit callback error handler failed: ${error.message}`, { code: WARNING_CODE, detail: error.stack });
 }
 
 function toError(err: unknown): Error {

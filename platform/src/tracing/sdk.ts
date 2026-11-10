@@ -7,6 +7,7 @@ import { UndiciInstrumentation } from '@opentelemetry/instrumentation-undici';
 import { defaultResource, resourceFromAttributes } from '@opentelemetry/resources';
 import { NodeSDK, type NodeSDKConfiguration } from '@opentelemetry/sdk-node';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
+import { RedactingSpanExporter } from './redact.js';
 
 /** Span exporter accepted by the SDK. */
 export type SpanExporter = NodeSDKConfiguration['traceExporter'];
@@ -20,7 +21,7 @@ export interface StartTracingOptions {
   version: string;
   /** OTLP/HTTP base URL; defaults to `OTEL_EXPORTER_OTLP_ENDPOINT`, then `http://localhost:4318`. */
   endpoint?: string;
-  /** Replaces the OTLP exporter, for example with a {@link MemorySpanExporter} in tests. */
+  /** Replaces the OTLP exporter, for example with a {@link MemorySpanExporter} in tests; it receives redacted spans. */
   exporter?: SpanExporter;
 }
 
@@ -78,7 +79,7 @@ export async function startTracing(options: StartTracingOptions): Promise<void> 
     ),
     autoDetectResources: false,
     textMapPropagator: new W3CTraceContextPropagator(),
-    traceExporter: options.exporter ?? new OTLPTraceExporter({ url: `${base}/v1/traces` }),
+    traceExporter: new RedactingSpanExporter(options.exporter ?? new OTLPTraceExporter({ url: `${base}/v1/traces` })),
     metricReaders: [],
     logRecordProcessors: [],
     instrumentations,
