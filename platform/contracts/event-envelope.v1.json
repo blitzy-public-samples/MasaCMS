@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:opt2:platform:event-envelope:v1",
+  "$comment": "source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "title": "OPT-2 event envelope v1",
+  "description": "Pub/Sub event envelope. Attributes mirror eventId, eventType, schemaVersion, tenantId, aggregateVersion and traceparent; ordering key is aggregateId.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "eventId",
+    "eventType",
+    "schemaVersion",
+    "tenantId",
+    "occurredAt",
+    "producer",
+    "aggregateType",
+    "aggregateId",
+    "aggregateVersion",
+    "traceparent",
+    "correlationId",
+    "payload"
+  ],
+  "$defs": {
+    "rfc4122Uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "rfc3339DateTime": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})$"
+    }
+  },
+  "properties": {
+    "eventId": {
+      "description": "Unique event id; the inbox idempotency key.",
+      "$ref": "#/$defs/rfc4122Uuid"
+    },
+    "eventType": {
+      "description": "<service>.<entity>.<event>; the topic is <eventType>.v<major>.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*\\.[a-z][a-z0-9-]*\\.[a-z][a-z0-9-]*$"
+    },
+    "schemaVersion": {
+      "description": "Payload contract version; its major equals the topic's v<major>.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "tenantId": {
+      "description": "Producer's transaction tenant (UUIDv5 of the site id); the umbrella tenant for pooled data.",
+      "$ref": "#/$defs/rfc4122Uuid"
+    },
+    "occurredAt": {
+      "$ref": "#/$defs/rfc3339DateTime"
+    },
+    "producer": {
+      "description": "Producing service folder name, for example people or programs-sites.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "aggregateType": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "aggregateId": {
+      "description": "Aggregate id and Pub/Sub ordering key.",
+      "type": "string",
+      "minLength": 1
+    },
+    "aggregateVersion": {
+      "description": "Producer's per-aggregate row_version, incremented in the write's transaction.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "traceparent": {
+      "description": "W3C trace context.",
+      "type": "string",
+      "pattern": "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"
+    },
+    "tracestate": {
+      "type": "string",
+      "maxLength": 512
+    },
+    "correlationId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "causationId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "payload": {
+      "description": "Topic payload, validated against services/<producer>/contracts/events/<topic>.json.",
+      "type": "object"
+    }
+  }
+}

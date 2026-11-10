@@ -1,0 +1,73 @@
+{
+  "$comment": "SYNTHETIC: seed - no Masa equivalent; legacy oracle in legacy-fixtures/",
+  "seed": 20260601,
+  "businessDate": "2026-06-30",
+  "chunkRows": 1000,
+  "historyDays": 120,
+  "emailDomain": "seed.opt2.test",
+  "roleGroups": [
+    "timesheets.employee", "timesheets.primary-approver", "timesheets.secondary-approver",
+    "finance.preparer", "finance.approver",
+    "esignature.signer", "esignature.auditor",
+    "reporting.exporter", "surveys.manager", "communications.sender"
+  ],
+  "sites": {
+    "umbrella": {
+      "site": "Umbrella",
+      "programId": null,
+      "pools": {},
+      "counts": { "members": 1000, "categories": 100, "files": 20 }
+    },
+    "tenant-a": {
+      "site": "Tenant A",
+      "programId": 1,
+      "pools": { "publicUserPoolID": "umbrella", "categoryPoolID": "umbrella", "filePoolID": "umbrella", "displayPoolID": "umbrella" },
+      "counts": {
+        "systemUsers": 2000, "groups": 50, "contentNodes": 5000, "maxVersionsPerNode": 3,
+        "timesheetDays": 20000, "daysPerTimesheet": 20,
+        "financeRecords": 3000, "financeAttachments": 300,
+        "surveys": 20, "surveyResponses": 500, "multiSiteResponses": 50,
+        "exportDefinitions": 5, "exportJobs": 200,
+        "messageTemplates": 10, "messages": 200,
+        "signatureRequests": 50,
+        "oauthClients": 1
+      }
+    },
+    "tenant-b": {
+      "site": "Tenant B",
+      "programId": 2,
+      "pools": {},
+      "counts": {
+        "systemUsers": 180, "members": 20, "groups": 10, "categories": 10, "contentNodes": 300, "maxVersionsPerNode": 3,
+        "timesheetDays": 2000, "daysPerTimesheet": 20,
+        "financeRecords": 300, "financeAttachments": 30,
+        "surveys": 2, "surveyResponses": 20, "multiSiteResponses": 0,
+        "exportDefinitions": 2, "exportJobs": 10,
+        "messageTemplates": 3, "messages": 20,
+        "signatureRequests": 5,
+        "oauthClients": 0
+      }
+    }
+  },
+  "reserved": {
+    "rehearsal": {
+      "site": "tenant-a",
+      "persons": [
+        "9678B200-EEB1-5DDC-DEB98A399FCE1AA4",
+        "553CB6B4-E700-FF3C-CAFFA6D5AD1E3899",
+        "C65DE1CE-62FF-75E5-9397DFAB7AB9FDBC",
+        "EEFD3F04-8500-6F01-E521368C9DE111CF",
+        "A8426A52-F0A4-2E22-4C4252FD096A02FB",
+        "4145EDF5-D56D-9361-468714CE612F728E",
+        "7958F7A9-FC12-1EF0-C22A84F3D475A3E2",
+        "0CA3AE6A-EA5A-CD4C-F105EE1BE6CFC9C8",
+        "DDE76F4A-2565-3FA9-6FAAA3DBE7E2F20D",
+        "55FAE948-CDAC-D934-213DE5D9257DCEB7"
+      ],
+      "usernames": [
+        "rh-create-01", "rh-create-02", "rh-create-03", "rh-create-04", "rh-create-05",
+        "rh-create-06", "rh-create-07", "rh-create-08", "rh-create-09", "rh-create-10"
+      ]
+    }
+  }
+}

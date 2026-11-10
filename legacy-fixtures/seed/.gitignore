@@ -1,0 +1,4 @@
+# SYNTHETIC: seed - no Masa equivalent; legacy oracle in legacy-fixtures/
+dist/
+coverage/
+node_modules/
