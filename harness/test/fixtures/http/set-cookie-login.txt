@@ -1,0 +1,11 @@
+# Legacy admin Set-Cookie sample: login, logout, second login
+Set-Cookie: CFID=1001;path=/;HttpOnly;
+Set-Cookie: CFTOKEN=10000001;path=/;HttpOnly;
+Set-Cookie: JSESSIONID=FIXTURE-JSESSION-0001; Path=/; Secure; HttpOnly; SameSite=Lax
+Set-Cookie: userid=6E1D3B2A-C2F4-4B6A-9D8E7F6A5B4C3D2E; Expires=Wed, 30-Jun-2027 14:15:00 GMT; Max-Age=31536000; Domain=127.0.0.1; Path=/; HttpOnly; SameSite=Lax
+
+Set-Cookie: userid=;expires=Thu, 01-Jan-1970 00:00:00 GMT;path=/;HttpOnly;
+
+Set-Cookie: CFID=1001;path=/;HttpOnly;
+Set-Cookie: CFTOKEN=10000001;path=/;HttpOnly;
+Set-Cookie: JSESSIONID=FIXTURE-JSESSION-0001; Path=/; Secure; HttpOnly; SameSite=Lax
