@@ -1,0 +1,475 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "generatedBy": "services/finance/scripts/export-transitions.ts",
+  "generatedAt": null,
+  "provenance": "planning",
+  "service": "finance",
+  "aggregate": "finance_record",
+  "states": [
+    "IN-PROGRESS",
+    "SUBMITTED",
+    "RE-SUBMITTED",
+    "APPROVED",
+    "REJECTED"
+  ],
+  "terminal": [
+    "APPROVED"
+  ],
+  "roles": [
+    "finance.preparer",
+    "finance.approver"
+  ],
+  "actions": [
+    "submit",
+    "approve",
+    "reject",
+    "resubmit",
+    "edit"
+  ],
+  "rows": [
+    {
+      "from": "APPROVED",
+      "action": "approve",
+      "role": "finance.approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "APPROVED",
+      "action": "approve",
+      "role": "finance.preparer",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "APPROVED",
+      "action": "edit",
+      "role": "finance.approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "APPROVED",
+      "action": "edit",
+      "role": "finance.preparer",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "APPROVED",
+      "action": "reject",
+      "role": "finance.approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "APPROVED",
+      "action": "reject",
+      "role": "finance.preparer",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "APPROVED",
+      "action": "resubmit",
+      "role": "finance.approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "APPROVED",
+      "action": "resubmit",
+      "role": "finance.preparer",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "APPROVED",
+      "action": "submit",
+      "role": "finance.approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "APPROVED",
+      "action": "submit",
+      "role": "finance.preparer",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "IN-PROGRESS",
+      "action": "approve",
+      "role": "finance.approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "IN-PROGRESS",
+      "action": "approve",
+      "role": "finance.preparer",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "IN-PROGRESS",
+      "action": "edit",
+      "role": "finance.approver",
+      "outcome": "wrong-role",
+      "status": "403",
+      "to": null,
+      "error": "authorization"
+    },
+    {
+      "from": "IN-PROGRESS",
+      "action": "edit",
+      "role": "finance.preparer",
+      "outcome": "legal",
+      "status": "2xx",
+      "to": "IN-PROGRESS",
+      "newVersion": true
+    },
+    {
+      "from": "IN-PROGRESS",
+      "action": "reject",
+      "role": "finance.approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "IN-PROGRESS",
+      "action": "reject",
+      "role": "finance.preparer",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "IN-PROGRESS",
+      "action": "resubmit",
+      "role": "finance.approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "IN-PROGRESS",
+      "action": "resubmit",
+      "role": "finance.preparer",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "IN-PROGRESS",
+      "action": "submit",
+      "role": "finance.approver",
+      "outcome": "wrong-role",
+      "status": "403",
+      "to": null,
+      "error": "authorization"
+    },
+    {
+      "from": "IN-PROGRESS",
+      "action": "submit",
+      "role": "finance.preparer",
+      "outcome": "legal",
+      "status": "2xx",
+      "to": "SUBMITTED"
+    },
+    {
+      "from": "RE-SUBMITTED",
+      "action": "approve",
+      "role": "finance.approver",
+      "outcome": "legal",
+      "status": "2xx",
+      "to": "APPROVED"
+    },
+    {
+      "from": "RE-SUBMITTED",
+      "action": "approve",
+      "role": "finance.preparer",
+      "outcome": "wrong-role",
+      "status": "403",
+      "to": null,
+      "error": "authorization"
+    },
+    {
+      "from": "RE-SUBMITTED",
+      "action": "edit",
+      "role": "finance.approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RE-SUBMITTED",
+      "action": "edit",
+      "role": "finance.preparer",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RE-SUBMITTED",
+      "action": "reject",
+      "role": "finance.approver",
+      "outcome": "legal",
+      "status": "2xx",
+      "to": "REJECTED"
+    },
+    {
+      "from": "RE-SUBMITTED",
+      "action": "reject",
+      "role": "finance.preparer",
+      "outcome": "wrong-role",
+      "status": "403",
+      "to": null,
+      "error": "authorization"
+    },
+    {
+      "from": "RE-SUBMITTED",
+      "action": "resubmit",
+      "role": "finance.approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RE-SUBMITTED",
+      "action": "resubmit",
+      "role": "finance.preparer",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RE-SUBMITTED",
+      "action": "submit",
+      "role": "finance.approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RE-SUBMITTED",
+      "action": "submit",
+      "role": "finance.preparer",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "REJECTED",
+      "action": "approve",
+      "role": "finance.approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "REJECTED",
+      "action": "approve",
+      "role": "finance.preparer",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "REJECTED",
+      "action": "edit",
+      "role": "finance.approver",
+      "outcome": "wrong-role",
+      "status": "403",
+      "to": null,
+      "error": "authorization"
+    },
+    {
+      "from": "REJECTED",
+      "action": "edit",
+      "role": "finance.preparer",
+      "outcome": "legal",
+      "status": "2xx",
+      "to": "REJECTED",
+      "newVersion": true
+    },
+    {
+      "from": "REJECTED",
+      "action": "reject",
+      "role": "finance.approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "REJECTED",
+      "action": "reject",
+      "role": "finance.preparer",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "REJECTED",
+      "action": "resubmit",
+      "role": "finance.approver",
+      "outcome": "wrong-role",
+      "status": "403",
+      "to": null,
+      "error": "authorization"
+    },
+    {
+      "from": "REJECTED",
+      "action": "resubmit",
+      "role": "finance.preparer",
+      "outcome": "legal",
+      "status": "2xx",
+      "to": "RE-SUBMITTED"
+    },
+    {
+      "from": "REJECTED",
+      "action": "submit",
+      "role": "finance.approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "REJECTED",
+      "action": "submit",
+      "role": "finance.preparer",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "approve",
+      "role": "finance.approver",
+      "outcome": "legal",
+      "status": "2xx",
+      "to": "APPROVED"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "approve",
+      "role": "finance.preparer",
+      "outcome": "wrong-role",
+      "status": "403",
+      "to": null,
+      "error": "authorization"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "edit",
+      "role": "finance.approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "edit",
+      "role": "finance.preparer",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "reject",
+      "role": "finance.approver",
+      "outcome": "legal",
+      "status": "2xx",
+      "to": "REJECTED"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "reject",
+      "role": "finance.preparer",
+      "outcome": "wrong-role",
+      "status": "403",
+      "to": null,
+      "error": "authorization"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "resubmit",
+      "role": "finance.approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "resubmit",
+      "role": "finance.preparer",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "submit",
+      "role": "finance.approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "submit",
+      "role": "finance.preparer",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    }
+  ]
+}
