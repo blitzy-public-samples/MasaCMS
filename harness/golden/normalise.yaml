@@ -1,0 +1,416 @@
+# Golden normalisation rules; implemented by harness/src/golden/normalise/.
+sourceSha: 696383140578f8dea3ece26f80cd7bfb370ddf0f
+version: 1
+
+origins:
+  id: origin
+  placeholder: "<origin>"
+  values: ["${CAPTURE_ORIGIN}", "${REPLAY_ORIGIN}"]
+  defaults:
+    CAPTURE_ORIGIN: "http://127.0.0.1:${PORT}"
+    REPLAY_ORIGIN: "http://127.0.0.1:8100"
+  # Masa redirects 127.0.0.1 to localhost and renders absolute URLs with the request host.
+  hostAliases: ["127.0.0.1", "localhost"]
+  schemes: [http, https]
+  match: [scheme-origin, host-port, percent-encoded-host-port]
+
+ids:
+  id: cf-uuid
+  pattern: "[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}"
+  flags: i
+  boundary: "[0-9A-Za-z]"
+  placeholder: "<id:{n}>"
+  ordinal: scenario
+  ordinalKey: exact
+  keepLiteral:
+    - "00000000000000000000000000000000001"
+    - "00000000000000000000000000000000END"
+    - "00000000000000000000000000000000003"
+    - "00000000000000000000000000000000004"
+    - "00000000000000000000000000000000000"
+    - "00000000000000000000000000000000008"
+  rfc4122:
+    id: uuid-rfc4122
+    pattern: "[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}"
+    flags: i
+    boundary: "[0-9A-Za-z]"
+    placeholder: "<uuid:{n}>"
+    ordinal: scenario
+    ordinalKey: exact
+
+timestamps:
+  id: timestamp
+  placeholder: "<ts>"
+  assertSameFormatClass: true
+  classification: first-listed-wins
+  boundary: "[0-9A-Za-z]"
+  keyMatch: glob-case-insensitive
+  classes:
+    - name: cf-odbc
+      format: "{ts 'yyyy-MM-dd HH:mm:ss'}"
+      pattern: "\\{ts '\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?'\\}"
+    - name: serializer
+      format: "yyyy-mm-ddTHH:mm:ss"
+      pattern: "\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:[+-]\\d{2,3}:\\d{2})?(?![.\\d])"
+    - name: iso-local
+      format: "ISO-8601 yyyy-MM-ddTHH:mm:ss[.SSS]"
+      pattern: "\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})?"
+    - name: jdbc-timestamp
+      format: "yyyy-MM-dd HH:mm:ss[.S]"
+      pattern: "\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?"
+    - name: cf-datetime
+      format: "MMMM, dd yyyy HH:mm:ss Z"
+      pattern: "(?:January|February|March|April|May|June|July|August|September|October|November|December), \\d{2} \\d{4} \\d{2}:\\d{2}:\\d{2}(?: [+-]\\d{4})?"
+    - name: http-date
+      format: "RFC 1123 EEE, dd MMM yyyy HH:mm:ss GMT"
+      pattern: "(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \\d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \\d{4} \\d{2}:\\d{2}:\\d{2} GMT"
+    - name: cookie-expires
+      format: "ddd, dd-mmm-yyyy HH:mm:ss GMT"
+      pattern: "(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \\d{2}-(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\\d{4} \\d{2}:\\d{2}:\\d{2} GMT"
+    - name: iso-date
+      format: "yyyy-mm-dd"
+      pattern: "\\d{4}-\\d{2}-\\d{2}"
+      scope: whole-value
+    - name: csrf-expires
+      format: "yyMMddHHnnsslll"
+      pattern: "\\d{15}"
+      scope: whole-value
+    - name: admin-date
+      format: "MM/DD/YYYY"
+      pattern: "\\d{1,2}/\\d{1,3}/\\d{4}"
+    - name: admin-time
+      format: "h:mm a"
+      pattern: "\\d{1,2}:\\d{2} [AP]M"
+    - name: epoch-ms
+      format: "epoch milliseconds"
+      pattern: "\\d{13}"
+      scope: whole-value
+      keys: ["*time*", "*At"]
+  dateOnlyFields: [asOf, effectiveFrom, workDate, businessDate, dueDate]
+  dateOnlyFieldMatch: ignore-case-and-underscores
+  dateOnlyFieldKinds: [json-keys, form-fields, query-params, column-headers]
+
+tokens:
+  id: token
+  placeholder: "<token>"
+  # OAuth code, state and nonce are query-only so error.code and synthetic state values stay compared.
+  fields: [csrf_token, csrf_token_expires, access_token, refresh_token, authToken, returnID, id_token]
+  fieldMatch: case-insensitive
+  headers: [X-csrf_token, X-csrf_token_expires]
+  headerMatch: case-insensitive
+  queryParams:
+    - csrf_token
+    - csrf_token_expires
+    - access_token
+    - refresh_token
+    - authToken
+    - returnID
+    - id_token
+    - code
+    - state
+    - nonce
+    - token
+    - sig
+    - signature
+    - X-Goog-Signature
+    - X-Goog-Credential
+    - X-Goog-Date
+    - expires
+    - Expires
+  queryParamMatch: exact
+  htmlInputs: ["input[name=csrf_token]", "input[name=csrf_token_expires]"]
+
+urls:
+  id: signed-url
+  placeholder: "<url>"
+  signedQueryParams: [X-Goog-Signature, sig, signature]
+  pathPrefixes: ["/opt2/files/"]
+  downloadFields:
+    - key: downloadUrl
+    - key: signedUrl
+    - key: url
+      whenContains: ["/opt2/files/", "storage.googleapis.com"]
+  downloadFieldMatch: case-insensitive
+  otherwise:
+    apply: [token, origin, cf-uuid, uuid-rfc4122]
+    sortQuery: false
+
+headers:
+  id: drop-headers
+  match: case-insensitive
+  drop:
+    - Date
+    - Server
+    - Content-Length
+    - Connection
+    - Keep-Alive
+    - Transfer-Encoding
+    - traceparent
+    - tracestate
+    - traceresponse
+    - X-Request-Id
+  etag:
+    id: etag
+    header: ETag
+    contentTypes: [application/json, application/x-shunter+json]
+    check: format-and-self-consistency
+    # ACF 2023 hash() defaults to SHA-256, so the legacy ETag is 64 uppercase hex digits.
+    format: "^[0-9A-F]{64}$"
+    selfConsistency: uppercase-sha256-of-raw-body
+    placeholder: "<etag:ok>"
+    mismatchPlaceholder: "<etag:mismatch>"
+    otherContentTypes: compare-exact
+  location:
+    id: location
+    header: Location
+    normalise: as-body-url
+    apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122]
+  compare:
+    id: compare-case
+    names: lower-case
+    values: exact-after-rules
+    apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122, timestamp]
+    alwaysCompared:
+      - Generator
+      - Strict-Transport-Security
+      - Content-Type
+      - Content-Disposition
+      - Cache-Control
+      - "Access-Control-*"
+      - WWW-Authenticate
+      - X-HTTP-Method-Override
+
+auth:
+  id: auth-behaviour
+  cookies:
+    header: Set-Cookie
+    value: "<token>"
+    names: exact
+    keepAttributes: [Path, Domain, HttpOnly, Secure, SameSite]
+    attributeNames: case-insensitive
+    persistence:
+      from: [Max-Age, Expires]
+      reference: response-date
+      classes: [session, persistent, expired]
+    sessionNames: [CFID, CFTOKEN, JSESSIONID]
+  compareHeaders: [WWW-Authenticate]
+  compareHeaderValues: exact
+  redirects:
+    compare: target
+    statuses: [301, 302, 303, 307]
+    targetRule: location
+
+envelope:
+  id: json-envelope
+  contentTypes: [application/json, application/x-shunter+json]
+  fields: [apiversion, method, params, data, error]
+  errorFields: [type, code, message]
+  comparison: deep-equal-after-normalisation
+  keyCase: exact
+  apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122, timestamp]
+  stacktrace:
+    id: error-stacktrace
+    optIn: true
+    dropPaths: ["error.stacktrace"]
+
+dom:
+  id: dom-model
+  parser: cheerio
+  screenshots: review-only
+  exclude: [script, style, noscript, "comment()"]
+  whitespace: collapse-and-trim
+  apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122, timestamp]
+  extract:
+    title:
+      selector: "title"
+      take: [text]
+    headings:
+      selector: "h1,h2,h3,h4,h5,h6"
+      take: [tag, text]
+    labels:
+      selector: "label"
+      take: [text, for]
+    controls:
+      selector: "input,select,textarea"
+      take: [name, type, value, checked, disabled]
+      options:
+        selector: "option"
+        take: [value, text, selected]
+      omitValueWhen:
+        type: password
+    buttons:
+      selector: "button,input[type=submit],input[type=button],a.btn"
+      take: [text-or-value]
+    links:
+      selector: "a[href]"
+      take: [href, text]
+      urlRule: mura-action-url
+    tables:
+      selector: "table"
+      rows: "tr"
+      cells: "th,td"
+      take: [text]
+    alerts:
+      selector: ".alert,.alert-error,.alert-danger,.alert-success,.alert-info,.alert-warning,.help-block.error,.mura-error"
+      take: [text]
+    forms:
+      selector: "form"
+      take: [id, name, method, action]
+      urlRule: mura-action-url
+  actionUrl:
+    id: mura-action-url
+    attributes: [href, action]
+    apply: [token, origin, cf-uuid, uuid-rfc4122]
+    lowerCaseValuesOf: [muraAction, fuseaction]
+    paramNames: case-insensitive
+    keepParamOrder: true
+    ampersandEntity: equal
+
+exports:
+  id: exports
+  apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122, timestamp]
+  csv:
+    parser: csv-parse
+    compare: cells
+    whitespace: exact
+  xlsx:
+    parser: exceljs
+    compare: cells-per-sheet
+    sheetNames: compare
+    dates: iso-before-timestamp-rule
+  pdf:
+    parser: pdfjs-dist
+    compare: text-per-page
+    whitespace: collapse-and-trim
+  file:
+    compare: [sha256, contentType, contentDispositionFilename]
+  neverCompareBytes: [xlsx, pdf]
+
+transitions:
+  id: transitions
+  compare: ordered-state-sequence-per-aggregate
+  aggregateId: [cf-uuid, uuid-rfc4122]
+  stateNames: literal
+
+mail:
+  id: mail
+  source: mailpit-api
+  compare: [To, From, Subject, Text, HTMLText]
+  htmlText: cheerio-text
+  dropHeaders: [Message-ID, Date, Received]
+  apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122, timestamp]
+  order: [recipient, subject]
+
+rows:
+  id: rows
+  source: canonical
+  target: /internal/v1/migration/export
+  legacy: read-only-sql
+  encoding: platform/src/migration-kit/canonical.ts
+  order: key
+  keyForm: normalised
+  keyless: multiset-with-counts
+  apply: [cf-uuid, uuid-rfc4122, timestamp]
+  literal:
+    money: "^-?\\d+\\.\\d{4}$"
+    dateOnlyFields: true
+
+tasks:
+  id: tasks
+  compare: [kind, targetRoute, offsetSeconds]
+  base:
+    requestFields: [launchAt, launch_at]
+    fallback: earliest-task-time
+  times: offset-seconds-from-base
+  apply: [origin, cf-uuid, uuid-rfc4122]
+  order: [kind, offsetSeconds, targetRoute]
+
+files:
+  id: stored-files
+  compare: [variant, name, contentType, sha256, size]
+  variants: [original, _source, _small, _medium]
+  apply: [cf-uuid, uuid-rfc4122]
+
+knownIssues:
+  - id: date-mask
+    title: "The admin date mask shows 10/302/2026"
+    scope:
+      compareKinds: [dom, envelope]
+      selectors:
+        - "input.datepicker[value]"
+        - "input[class*=mura-datepicker][value]"
+        - "dd.updated"
+        - ".updated-short strong"
+        - ".meta-label span"
+        - "td"
+      # DD is the day of the year, padded to two digits.
+      textPattern: "\\b\\d{1,2}/\\d{2,3}/\\d{4}\\b"
+    source:
+      - "core/mura/customtags/datetimeselector.cfm:44"
+      - "admin/common/layouts/includes/nav.cfm:413"
+      - "admin/core/views/carch/loadsitemanager.cfm:372"
+    routeKeys: ["*"]
+    appliesTo: ["*"]
+    report: known-issue
+  - id: session-rotation
+    title: "The session id is not rotated at login"
+    scope:
+      headers: [Set-Cookie]
+      cookieNames: [CFID, CFTOKEN, JSESSIONID]
+      observations: [presence, absence, value-equal-across-login]
+    source:
+      - "core/mura/user/userUtility.cfc:382-387"
+    routeKeys: ["admin:clogin.login", "api:login", "page:login"]
+    appliesTo: ["*"]
+    report: known-issue
+  - id: header-search-404
+    title: "The header search box posts to a route that returns 404"
+    scope:
+      selectors: ["form#globalSearch", "form#globalSearch input"]
+      steps:
+        knownIssue: header-search-404
+        parts: [status, body]
+        appliesTo: [GS-CO-06]
+    source:
+      - "admin/common/layouts/includes/header.cfm:162-171"
+    routeKeys: ["*"]
+    appliesTo: ["*"]
+    report: known-issue
+  - id: default-member
+    title: "The group and user forms default to Member"
+    scope:
+      selectors: ["input[name=isPublic][value=1]", "input[name=isPublic][value=0]"]
+      attributes: [checked]
+    source:
+      - "admin/core/views/cusers/editgroup.cfm:214-218"
+      - "admin/core/views/cusers/edituser.cfm:495-500"
+    routeKeys: ["admin:cusers.editgroup", "admin:cusers.edituser"]
+    appliesTo: [GS-ID-05, GS-ID-06, GS-PE-01, GS-PE-02, GS-PE-RH-01, GS-PE-RH-02]
+    report: known-issue
+
+overrides:
+  scope: scenario
+  knownIssueScoping: fixed
+  pathSyntax: "dot path; [*] selects every array element"
+  operations:
+    dropPaths:
+      value: json-paths
+      description: "Removes the listed paths from JSON bodies before comparison."
+    literalPaths:
+      value: json-paths
+      description: "Exempts the listed paths from the ids and timestamps rules."
+    extraTokenFields:
+      value: field-names
+      description: "Adds JSON keys and form fields whose values become <token>."
+    dropHeaders:
+      value: header-names
+      description: "Adds response headers to drop, matched case-insensitively."
+    applyRules:
+      value: rule-ids
+      description: "Enables opt-in rules such as error-stacktrace."
+    domExclude:
+      value: css-selectors
+      description: "Removes matching elements from the DOM model."
+    sortArrays:
+      value: json-paths
+      description: "Sorts arrays at the listed paths, whose order legacy does not guarantee."
