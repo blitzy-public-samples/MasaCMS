@@ -1,0 +1,203 @@
+{
+  "results": [
+    {
+      "source": {
+        "path": "services/people/package-lock.json",
+        "type": "lockfile"
+      },
+      "packages": [
+        {
+          "package": {
+            "name": "fixture-prod-parser",
+            "version": "1.0.0",
+            "ecosystem": "npm",
+            "purl": "pkg:npm/fixture-prod-parser@1.0.0?source=PUBLIC_REGISTRY"
+          },
+          "groups": [
+            {
+              "ids": [
+                "OSV-FIXTURE-0001"
+              ],
+              "aliases": [
+                "OSV-FIXTURE-0001"
+              ],
+              "max_severity": "7.5"
+            }
+          ],
+          "vulnerabilities": [
+            {
+              "affected": [
+                {
+                  "package": {
+                    "ecosystem": "npm",
+                    "name": "fixture-prod-parser"
+                  },
+                  "ranges": [
+                    {
+                      "events": [
+                        {
+                          "introduced": "0"
+                        },
+                        {
+                          "fixed": "1.0.1"
+                        }
+                      ],
+                      "type": "SEMVER"
+                    }
+                  ]
+                }
+              ],
+              "database_specific": {
+                "severity": "HIGH"
+              },
+              "id": "OSV-FIXTURE-0001",
+              "modified": "2026-01-01T00:00:00Z",
+              "published": "2026-01-01T00:00:00Z",
+              "schema_version": "1.6.0",
+              "severity": [
+                {
+                  "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+                  "type": "CVSS_V3"
+                }
+              ],
+              "summary": "Fixture advisory: production high"
+            }
+          ]
+        },
+        {
+          "package": {
+            "name": "fixture-prod-formatter",
+            "version": "3.0.0",
+            "ecosystem": "npm",
+            "purl": "pkg:npm/fixture-prod-formatter@3.0.0?source=PUBLIC_REGISTRY"
+          },
+          "groups": [
+            {
+              "ids": [
+                "OSV-FIXTURE-0003"
+              ],
+              "aliases": [
+                "OSV-FIXTURE-0003"
+              ],
+              "max_severity": "3.1"
+            }
+          ],
+          "vulnerabilities": [
+            {
+              "affected": [
+                {
+                  "package": {
+                    "ecosystem": "npm",
+                    "name": "fixture-prod-formatter"
+                  },
+                  "ranges": [
+                    {
+                      "events": [
+                        {
+                          "introduced": "0"
+                        },
+                        {
+                          "fixed": "3.0.1"
+                        }
+                      ],
+                      "type": "SEMVER"
+                    }
+                  ]
+                }
+              ],
+              "database_specific": {
+                "severity": "LOW"
+              },
+              "id": "OSV-FIXTURE-0003",
+              "modified": "2026-01-01T00:00:00Z",
+              "published": "2026-01-01T00:00:00Z",
+              "schema_version": "1.6.0",
+              "severity": [
+                {
+                  "score": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:N/A:N",
+                  "type": "CVSS_V3"
+                }
+              ],
+              "summary": "Fixture advisory: production low"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "source": {
+        "path": "platform/package-lock.json",
+        "type": "lockfile"
+      },
+      "packages": [
+        {
+          "package": {
+            "name": "fixture-dev-bundler",
+            "version": "2.0.0",
+            "ecosystem": "npm",
+            "purl": "pkg:npm/fixture-dev-bundler@2.0.0?source=PUBLIC_REGISTRY"
+          },
+          "dependency_groups": [
+            "dev"
+          ],
+          "groups": [
+            {
+              "ids": [
+                "OSV-FIXTURE-0002"
+              ],
+              "aliases": [
+                "OSV-FIXTURE-0002"
+              ],
+              "max_severity": "9.8"
+            }
+          ],
+          "vulnerabilities": [
+            {
+              "affected": [
+                {
+                  "package": {
+                    "ecosystem": "npm",
+                    "name": "fixture-dev-bundler"
+                  },
+                  "ranges": [
+                    {
+                      "events": [
+                        {
+                          "introduced": "0"
+                        },
+                        {
+                          "fixed": "2.0.1"
+                        }
+                      ],
+                      "type": "SEMVER"
+                    }
+                  ]
+                }
+              ],
+              "database_specific": {
+                "severity": "CRITICAL"
+              },
+              "id": "OSV-FIXTURE-0002",
+              "modified": "2026-01-01T00:00:00Z",
+              "published": "2026-01-01T00:00:00Z",
+              "schema_version": "1.6.0",
+              "severity": [
+                {
+                  "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+                  "type": "CVSS_V3"
+                }
+              ],
+              "summary": "Fixture advisory: development critical"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "experimental_config": {
+    "licenses": {
+      "summary": false,
+      "allowlist": null
+    }
+  }
+}
