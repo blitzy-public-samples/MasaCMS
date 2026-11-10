@@ -3,7 +3,8 @@ import { CookieJar } from 'tough-cookie';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHttpSession, type FetchLike, type HttpRequest, type MultipartFile } from '../../src/lib/http.js';
 
-const BASE = 'http://127.0.0.1:8080/';
+// No listener on this port; every request goes to an injected fetch stub.
+const BASE = 'http://127.0.0.1:8500/';
 const SET_COOKIE_PREFIX = 'Set-Cookie: ';
 
 /** Set-Cookie values of the fixture, one array per blank-line-separated block. */
@@ -51,11 +52,12 @@ function setCookieHeaders(lines: readonly string[]): [string, string][] {
   return lines.map((line) => ['set-cookie', line]);
 }
 
-/** Fetch stub answering each call with the next scripted response, recording every call. */
+/** Fetch stub answering each call with the next scripted response, recording every call; rejects on an aborted signal as fetch does. */
 function scripted(...replies: Response[]): { fetch: FetchLike; calls: Call[] } {
   const calls: Call[] = [];
   const fetch: FetchLike = async (url, init) => {
     calls.push({ url, init });
+    init.signal?.throwIfAborted();
     const next = replies.shift();
     if (next === undefined) throw new Error(`Unscripted request: ${init.method ?? ''} ${url}`);
     return next;
@@ -87,16 +89,16 @@ describe('createHttpSession request building', () => {
   it.each<{ label: string; baseUrl: string; path?: string; query?: HttpRequest['query']; expected: string }>([
     {
       label: 'a relative path against the base URL',
-      baseUrl: 'http://127.0.0.1:8080/admin/',
+      baseUrl: 'http://127.0.0.1:8500/admin/',
       path: 'index.cfm',
-      expected: 'http://127.0.0.1:8080/admin/index.cfm',
+      expected: 'http://127.0.0.1:8500/admin/index.cfm',
     },
     { label: 'the base URL when no path is given', baseUrl: BASE, expected: BASE },
     {
       label: 'an absolute URL over the base URL',
       baseUrl: BASE,
-      path: 'http://localhost:8080/_api/json/v1/default/content',
-      expected: 'http://localhost:8080/_api/json/v1/default/content',
+      path: 'http://localhost:8500/_api/json/v1/default/content',
+      expected: 'http://localhost:8500/_api/json/v1/default/content',
     },
     {
       label: 'query values appended, arrays repeated',
@@ -132,6 +134,24 @@ describe('createHttpSession request building', () => {
     await createHttpSession({ baseUrl: BASE, fetch }).request({ path: '/', signal });
 
     expect(calls[0]?.init).toEqual({ method: 'GET', headers: {}, body: undefined, redirect: 'manual', signal });
+  });
+
+  it.each<{ label: string; abortBeforeCall: number }>([
+    { label: 'before the first request', abortBeforeCall: 0 },
+    { label: 'while following a redirect', abortBeforeCall: 1 },
+  ])('rejects when the caller signal aborts $label', async ({ abortBeforeCall }) => {
+    const controller = new AbortController();
+    const { fetch, calls } = scripted(reply({ status: 302, headers: [['location', '/next']] }), reply());
+    const aborting: FetchLike = async (url, init) => {
+      if (calls.length === abortBeforeCall) controller.abort();
+      return fetch(url, init);
+    };
+
+    await expect(
+      createHttpSession({ baseUrl: BASE, fetch: aborting }).get('/', { signal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(calls).toHaveLength(abortBeforeCall + 1);
+    expect(calls.every((call) => call.init.signal === controller.signal)).toBe(true);
   });
 
   it('upper-cases the method and lower-cases header names, request headers over defaults', async () => {
@@ -268,6 +288,14 @@ describe('createHttpSession responses', () => {
     expect(result.json<{ data: { id: number } }>().data.id).toBe(1);
   });
 
+  it('throws from json() on a non-JSON body', async () => {
+    const { fetch } = scripted(reply({ headers: [['content-type', 'text/html']], body: '<html>Masa</html>' }));
+    const result = await createHttpSession({ baseUrl: BASE, fetch }).get('/');
+
+    expect(result.text).toBe('<html>Masa</html>');
+    expect(() => result.json()).toThrow(SyntaxError);
+  });
+
   it('gives set-cookie as an empty array when the response sets none', async () => {
     const { fetch } = scripted(reply());
     const result = await createHttpSession({ baseUrl: BASE, fetch }).get('/');
@@ -308,7 +336,7 @@ describe('createHttpSession cookies', () => {
 
   it('keeps every raw line in the hop, including one the jar rejects', async () => {
     const { fetch } = scripted(reply({ headers: setCookieHeaders(LOGIN) }));
-    const session = createHttpSession({ baseUrl: 'http://localhost:8080/', fetch });
+    const session = createHttpSession({ baseUrl: 'http://localhost:8500/', fetch });
     const result = await session.get('/admin/');
 
     const accepted = LOGIN.filter((line) => !/Domain=127\.0\.0\.1/i.test(line));
@@ -317,7 +345,7 @@ describe('createHttpSession cookies', () => {
     expect(await session.cookieHeader()).toBe(cookieOf(accepted));
   });
 
-  it('drops the cookie a logout expires and takes the second login cookies', async () => {
+  it('drops the cookie a logout expires and keeps the unrotated session values on the second login', async () => {
     const { fetch } = scripted(
       reply({ headers: setCookieHeaders(LOGIN) }),
       reply({ headers: setCookieHeaders(LOGOUT) }),
@@ -333,7 +361,9 @@ describe('createHttpSession cookies', () => {
     expect(remaining).toHaveLength(LOGIN.length - 1);
     expect(await session.cookieHeader()).toBe(cookieOf(remaining));
     await session.post('/admin/index.cfm');
-    expect(await session.cookieHeader()).toBe(cookieOf(RELOGIN));
+    const relogin = await session.cookieHeader();
+    expect(relogin).toBe(cookieOf(RELOGIN));
+    expect(relogin).toBe(cookieOf(remaining));
   });
 
   it('sends a caller Cookie header instead of the jar on every hop', async () => {
@@ -359,12 +389,14 @@ describe('createHttpSession cookies', () => {
   });
 
   it('gives each session without a jar its own empty one', async () => {
-    const { fetch } = scripted(reply({ headers: setCookieHeaders(LOGIN) }));
+    const { fetch, calls } = scripted(reply({ headers: setCookieHeaders(LOGIN) }), reply());
     const first = createHttpSession({ baseUrl: BASE, fetch });
     const second = createHttpSession({ baseUrl: BASE, fetch });
     await first.get('/');
+    await second.get('/');
 
     expect(first.jar).not.toBe(second.jar);
+    expect(calls[1]?.init.headers).toEqual({});
     expect(await first.cookieHeader()).toBe(cookieOf(LOGIN));
     expect(await second.cookieHeader()).toBe('');
   });
@@ -414,6 +446,28 @@ describe('createHttpSession redirects', () => {
       requestHeaders: { 'user-agent': 'opt2-harness', cookie: cookieOf(LOGIN) },
       responseHeaders: { 'content-type': 'text/plain;charset=UTF-8', 'set-cookie': [] },
     });
+  });
+
+  it('attributes each Set-Cookie line to its own hop and sends the jar as it stands at each hop', async () => {
+    const { fetch, calls } = scripted(
+      reply({ status: 302, headers: [['location', '/admin/?muraAction=clogin.logout'], ...setCookieHeaders(LOGIN)] }),
+      reply({ status: 302, headers: [['location', '/admin/?muraAction=clogin.main'], ...setCookieHeaders(LOGOUT)] }),
+      reply({ body: 'login form' }),
+    );
+    const remaining = LOGIN.filter((line) => !line.startsWith('userid='));
+    const result = await createHttpSession({ baseUrl: BASE, fetch }).get('/admin/');
+
+    expect(result).toMatchObject({ status: 200, url: `${BASE}admin/?muraAction=clogin.main` });
+    expect(result.hops.map(({ status, location, setCookie }) => ({ status, location, setCookie }))).toEqual([
+      { status: 302, location: '/admin/?muraAction=clogin.logout', setCookie: LOGIN },
+      { status: 302, location: '/admin/?muraAction=clogin.main', setCookie: LOGOUT },
+      { status: 200, location: undefined, setCookie: [] },
+    ]);
+    expect(calls.map((call) => (call.init.headers as Record<string, string>).cookie)).toEqual([
+      undefined,
+      cookieOf(LOGIN),
+      cookieOf(remaining),
+    ]);
   });
 
   const bodyHeaders = {
@@ -467,7 +521,7 @@ describe('createHttpSession redirects', () => {
   });
 
   it('resolves each Location against the URL of the hop that returned it', async () => {
-    const locations = ['c', '/d/e?x=1', 'f', 'http://localhost:8080/g'];
+    const locations = ['c', '/d/e?x=1', 'f', 'http://localhost:8500/g'];
     const { fetch, calls } = scripted(
       ...locations.map((location) => reply({ status: 302, headers: [['location', location]] })),
       reply(),
@@ -479,10 +533,10 @@ describe('createHttpSession redirects', () => {
       `${BASE}a/c`,
       `${BASE}d/e?x=1`,
       `${BASE}d/f`,
-      'http://localhost:8080/g',
+      'http://localhost:8500/g',
     ]);
     expect(result.hops.map((hop) => hop.location)).toEqual([...locations, undefined]);
-    expect(result.url).toBe('http://localhost:8080/g');
+    expect(result.url).toBe('http://localhost:8500/g');
   });
 
   it('cancels the body of a redirect it follows', async () => {
