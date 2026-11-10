@@ -128,6 +128,34 @@ describe('loadEnv', () => {
     expect(issuesOf(source).some((issue) => issue.startsWith(expected))).toBe(true);
   });
 
+  it.each([
+    ['PUBSUB_EMULATOR_HOST', 'localhost', 'PUBSUB_EMULATOR_HOST: Invalid string'],
+    ['PUBSUB_EMULATOR_HOST', 'localhost:0', 'PUBSUB_EMULATOR_HOST: port must be from 1 to 65535'],
+    ['PUBSUB_EMULATOR_HOST', 'localhost:99999', 'PUBSUB_EMULATOR_HOST: port must be from 1 to 65535'],
+    ['PUBSUB_EMULATOR_HOST', '[::1]:65536', 'PUBSUB_EMULATOR_HOST: port must be from 1 to 65535'],
+    ['TZ', 'America/New_Yrok', 'TZ: must be an IANA time zone name that this process applies, such as UTC or America/New_York'],
+    ['TZ', '+05:00', 'TZ: must be an IANA time zone name that this process applies, such as UTC or America/New_York'],
+    ['TZ', 'america/new_york', 'TZ: must be an IANA time zone name that this process applies, such as UTC or America/New_York'],
+    ['TZ', 'EST+5', 'TZ: must be an IANA time zone name that this process applies, such as UTC or America/New_York'],
+  ])('reports an invalid %s %s as one issue that never echoes the value', (key, value, expected) => {
+    const error = rejectionOf({ ...localEnv, [key]: value });
+
+    expect(error.issues).toHaveLength(1);
+    expect(error.issues[0]?.startsWith(expected)).toBe(true);
+    expect(error.message).not.toContain(value);
+  });
+
+  it.each([
+    ['PUBSUB_EMULATOR_HOST', '[::1]:8085'],
+    ['PUBSUB_EMULATOR_HOST', 'localhost:65535'],
+    ['TZ', 'UTC'],
+    ['TZ', 'Etc/UTC'],
+    ['TZ', 'America/New_York'],
+    ['TZ', 'US/Eastern'],
+  ])('accepts %s %s and returns it unchanged', (key, value) => {
+    expect(loadEnv(baseEnvSchema, { ...localEnv, [key]: value })).toMatchObject({ [key]: value });
+  });
+
   it('lists every issue under the service name and never echoes the database password', () => {
     const source = { ...cloudEnv, PG_PASSWORD: PG_SECRET, PUBSUB_EMULATOR_HOST: 'localhost:8085' };
 
@@ -200,10 +228,17 @@ describe('loadEnv', () => {
     );
   });
 
-  it('reads process.env by default', () => {
+  it('reads process.env by default and keeps the wall clock of its TZ', () => {
     for (const key of Object.keys(baseEnvSchema.shape)) vi.stubEnv(key, localEnv[key]);
 
-    expect(loadEnv()).toMatchObject({ OPT2_SERVICE_NAME: 'people', PORT: 8112, OPT2_TASKS_ADAPTER: 'local' });
+    expect(loadEnv()).toMatchObject({ OPT2_SERVICE_NAME: 'people', PORT: 8112, OPT2_TASKS_ADAPTER: 'local', TZ: 'America/New_York' });
+    expect(new Date(Date.UTC(2026, 6, 1, 16)).getHours()).toBe(12);
+  });
+
+  it.each(['us/eastern', 'EST'])('rejects the process TZ %s, which Date does not apply', (tz) => {
+    for (const key of Object.keys(baseEnvSchema.shape)) vi.stubEnv(key, key === 'TZ' ? tz : localEnv[key]);
+
+    expect(() => loadEnv()).toThrow(/\n {2}TZ: must be an IANA time zone name/);
   });
 });
 

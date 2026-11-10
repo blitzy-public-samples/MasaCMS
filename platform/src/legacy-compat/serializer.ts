@@ -43,7 +43,7 @@ const MONTHS = [
 ];
 
 /** Java String.trim(), which ACF applies before numeric parsing: strips every char <= U+0020. */
-function javaTrim(s: string): string {
+export function javaTrim(s: string): string {
   let start = 0;
   let end = s.length;
   while (start < end && s.charCodeAt(start) <= 0x20) start++;
@@ -60,6 +60,14 @@ function isFiniteDecimal(s: string): boolean {
 export function cfIsNumeric(v: unknown): boolean {
   if (typeof v === 'number') return Number.isFinite(v);
   return typeof v === 'string' && isFiniteDecimal(javaTrim(v));
+}
+
+/** CFML `==` on strings: numeric when both Java-trimmed sides are numeric and neither ends in '.', else case-insensitive (ACF: '1.' == '1' is false). */
+export function cfEq(a: string, b: string): boolean {
+  const x = javaTrim(a);
+  const y = javaTrim(b);
+  if (isFiniteDecimal(x) && isFiniteDecimal(y) && !x.endsWith('.') && !y.endsWith('.')) return Number(x) === Number(y);
+  return a.toLowerCase() === b.toLowerCase();
 }
 
 /** CFML isBoolean: booleans, finite numbers, true/false/yes/no in any case, and untrimmed numeric strings (ACF: ' 1' is not boolean). */

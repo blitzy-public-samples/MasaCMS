@@ -3,7 +3,8 @@ import path from 'node:path';
 import { z } from 'zod';
 
 const SERVICE_NAME = /^[a-z][a-z0-9-]*$/;
-const HOST_PORT = /^(?:\[[0-9a-fA-F:.]+\]|[^\s:/[\]]+):\d{1,5}$/;
+const HOST_PORT = /^(?:\[[0-9a-fA-F:.]+\]|[^\s:/[\]]+):(\d{1,5})$/;
+const PORT_NUMBER = z.coerce.number<string>().int().min(1).max(65535);
 const CLOUD_SQL_INSTANCE = /^[^:]+:[^:]+:[^:]+$/;
 const MODES = ['local', 'cloud'] as const;
 const ADAPTER_KEYS = ['OPT2_TASKS_ADAPTER', 'OPT2_STORAGE_ADAPTER'] as const;
@@ -16,6 +17,37 @@ const blankToUndefined = (value: unknown): unknown =>
 
 // Plain z.url() also accepts scheme-like 'host:port' strings; every configured endpoint is HTTP.
 const httpUrl = () => z.url({ protocol: /^https?$/ }).transform((url) => url.replace(/\/+$/, ''));
+
+const OFFSET_INSTANTS = [Date.UTC(2026, 0, 15, 12), Date.UTC(2026, 6, 15, 12)];
+const WALL_CLOCK = {
+  hourCycle: 'h23',
+  year: 'numeric',
+  month: 'numeric',
+  day: 'numeric',
+  hour: 'numeric',
+  minute: 'numeric',
+} as const;
+
+/** Minutes by which `format`'s time zone is ahead of UTC at `at`. */
+const zoneOffsetMinutes = (format: Intl.DateTimeFormat, at: number): number => {
+  const parts = format.formatToParts(at);
+  const field = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((part) => part.type === type)?.value);
+  return (Date.UTC(field('year'), field('month') - 1, field('day'), field('hour'), field('minute')) - at) / 60_000;
+};
+
+/** Whether `name` is a correctly cased IANA zone id that `Date` also applies when it is this process's TZ. */
+function isAppliedTimeZone(name: string): boolean {
+  let format: Intl.DateTimeFormat;
+  try {
+    format = new Intl.DateTimeFormat('en-US', { timeZone: name, ...WALL_CLOCK });
+  } catch {
+    return false;
+  }
+  const resolved = format.resolvedOptions().timeZone;
+  if (/^[+-]/.test(resolved) || (resolved !== name && resolved.toLowerCase() === name.toLowerCase())) return false;
+  if (name !== process.env.TZ) return true;
+  return OFFSET_INSTANTS.every((at) => zoneOffsetMinutes(format, at) === -new Date(at).getTimezoneOffset());
+}
 
 /** Optional variable; blank values count as absent. */
 export function optionalEnvString(): z.ZodPreprocess<z.ZodOptional<z.ZodString>>;
@@ -39,7 +71,7 @@ export function envUrl() {
 
 /** Required TCP port. */
 export function envPort() {
-  return requiredEnvString().pipe(z.coerce.number<string>().int().min(1).max(65535));
+  return requiredEnvString().pipe(PORT_NUMBER);
 }
 
 const serviceUrlMap = z
@@ -67,7 +99,12 @@ export const baseEnvSchema = z.object({
   PG_PASSWORD: optionalEnvString(),
   OPT2_DB_AUTH: optionalEnvString(z.enum(['password', 'iam'])),
   CLOUD_SQL_INSTANCE: optionalEnvString(z.string().regex(CLOUD_SQL_INSTANCE)),
-  PUBSUB_EMULATOR_HOST: optionalEnvString(z.string().regex(HOST_PORT)),
+  PUBSUB_EMULATOR_HOST: optionalEnvString(
+    z
+      .string()
+      .regex(HOST_PORT, { abort: true })
+      .refine((value) => PORT_NUMBER.safeParse(HOST_PORT.exec(value)?.[1]).success, 'port must be from 1 to 65535'),
+  ),
   GOOGLE_CLOUD_PROJECT: optionalEnvString(),
   OTEL_EXPORTER_OTLP_ENDPOINT: optionalEnvString(envUrl()),
   OPT2_JWKS_URL: optionalEnvString(envUrl()),
@@ -82,7 +119,11 @@ export const baseEnvSchema = z.object({
   ),
   OPT2_TASKS_ADAPTER: optionalEnvString(z.enum(MODES)),
   OPT2_STORAGE_ADAPTER: optionalEnvString(z.enum(MODES)),
-  TZ: requiredEnvString(),
+  TZ: requiredEnvString(
+    z
+      .string()
+      .refine(isAppliedTimeZone, 'must be an IANA time zone name that this process applies, such as UTC or America/New_York'),
+  ),
 });
 
 /** Any object schema that carries every base variable. */

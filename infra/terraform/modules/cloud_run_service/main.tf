@@ -30,8 +30,9 @@ resource "google_cloud_run_v2_service" "this" {
         container_port = 8080
       }
 
+      # CPU stays allocated outside requests so trace export to and from the collector completes.
       resources {
-        cpu_idle = var.cpu_idle
+        cpu_idle = false
       }
 
       dynamic "env" {
@@ -61,6 +62,10 @@ resource "google_cloud_run_v2_service" "this" {
       name  = "otel-collector"
       image = var.otel_image
       args  = ["--config=/etc/otelcol-google/config.yaml"]
+
+      resources {
+        cpu_idle = false
+      }
 
       env {
         name  = "GOOGLE_CLOUD_PROJECT"

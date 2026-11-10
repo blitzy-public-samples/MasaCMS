@@ -4,6 +4,7 @@ import { formatSerializerUtcDate } from '../../src/legacy-compat/dates.js';
 import {
   API_SERIALIZER_HINTS,
   LegacyJsonSerializer,
+  cfEq,
   cfIsBoolean,
   cfIsDate,
   cfIsNumeric,
@@ -160,6 +161,16 @@ describe('CFML predicates', () => {
 
   it.each<[unknown, boolean]>([[3, true], [NaN, false], [true, false], [LOCAL, false]])('cfIsNumeric(%s) is %s', (value, expected) => {
     expect(cfIsNumeric(value)).toBe(expected);
+  });
+
+  it.each<[string, string, boolean]>([
+    ['1', '1', true], ['1.', '1', false], ['1.', '1.', true], ['1.', '1.0', false], ['1. ', '1', false], [' 1.', '1.', false],
+    ['2.', '2', false], ['-1.', '-1', false], [' 1', '1', true], ['1 ', '1', true], ['1\u0001', '1', true], ['01', '1', true],
+    ['1.0', '1', true], ['1e0', '1', true], ['1.e0', '1', true], ['+1', '1', true], ['.5', '0.5', true],
+    ['1', '00000000000000000000000000000000001', true], ['1.', '00000000000000000000000000000000001', false],
+    ['Update', 'update', true], ['abc', 'ABC', true], [' abc', 'abc', false],
+  ])('cfEq(%j, %j) is %s', (a, b, expected) => {
+    expect(cfEq(a, b)).toBe(expected);
   });
 
   it.each<[unknown, boolean]>([

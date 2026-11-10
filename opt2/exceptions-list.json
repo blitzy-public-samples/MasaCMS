@@ -22,7 +22,7 @@
     {
       "id": "EX-SEC-APPRELOAD",
       "scenario": "GS-PS-04",
-      "routeKey": "appreload",
+      "routeKey": "reload:application",
       "appliesTo": [],
       "difference": "Any request other than `method=processAsyncObject` whose query string carries the reload key (`application.appReloadKey`, default `appreload`) re-runs application start-up without authentication (core/appcfc/onApplicationStart_include.cfm:80,99; core/appcfc/onRequestStart_include.cfm:123-130).",
       "decision": "fix",

@@ -88,6 +88,51 @@ describe('path normalisation', () => {
   });
 });
 
+describe('path decoding', () => {
+  // The root front controller urlDecodes the container-decoded path again (contentServer.cfc:167).
+  it.each([
+    ['splits an API path on a double-encoded slash', `${API}/content%252Fnew`, 'api:content.findnew'],
+    ['decodes twice behind index.cfm', `/index.cfm${API}/content%252Fnew`, 'api:content.findnew'],
+    ['decodes no third time', `${API}/user/%252531`, 'api:!invalidmethodcall'],
+    ['routes a double-encoded _api page path to the API', '/%255Fapi/json/v1/default/content/new', 'api:content.findnew'],
+    ['routes a double-encoded _api after index.cfm to the API', '/index.cfm/%255Fapi/json/v1/default/content', 'api:content.findall'],
+    ['turns + into a space', `${API}/user/1+`, 'api:user.findall'],
+    ['turns an encoded + into a space', `${API}/user/1%2B`, 'api:user.findall'],
+    ['keeps the + of a double-encoded %2B', `${API}/user/1%252B`, 'api:!invalidmethodcall'],
+    ['decodes a double-encoded digit', `${API}/user/%2531`, 'api:user.findall'],
+    ['decodes a double-encoded tab', `${API}/user/%25091`, 'api:user.findall'],
+    ['decodes a double-encoded comma', `${API}/content/1%252C2`, 'api:content.findmany'],
+    ['decodes lower-case hex', `${API}/content/1%252c2`, 'api:content.findmany'],
+    ['keeps a malformed second escape and decodes the rest', `${API}/content/1%252C2%25zz`, 'api:content.findmany'],
+    ['keeps the two characters after a lone percent', `${API}/content/1%25%252C2`, 'api:content.findone'],
+    ['keeps a short escape before a valid one', `${API}/content/1%252%252C2`, 'api:content.findone'],
+    ['keeps a trailing lone percent', `${API}/user/1%25`, 'api:!invalidmethodcall'],
+    ['leaves %u escapes', `${API}/content/1%25u002C2`, 'api:content.findone'],
+    ['gives a path the container rejects no second decode', `${API}/content/1%252C2%zz`, 'api:content.findone'],
+  ])('%s', (_label, url, key) => {
+    expect(keyOf('GET', url, {}, ONLY_DEFAULT)).toBe(key);
+  });
+
+  it('reads the site id and params from the double-decoded path', () => {
+    const site = resultOf('GET', '/_api/json/v1/%2564efault/content/new', {}, ONLY_DEFAULT);
+    const spaced = resultOf('GET', '/_api/json/v1/de+fault/content/new', {}, ONLY_DEFAULT);
+    expect([site.key, site.siteId]).toEqual(['api:content.findnew', 'default']);
+    expect([spaced.key, spaced.params.siteid]).toEqual(['api:!invalidparameters', 'de fault']);
+  });
+
+  // Admin reads cgi.path_info as the container decoded it (framework.cfc:21-24).
+  it.each([
+    ['keeps + in an admin action', '/admin/index.cfm/cu+sers/list', 'admin:cu+sers.list'],
+    ['decodes an admin action once', '/admin/index.cfm/cusers%252Flist', 'admin:cusers%2flist.default'],
+    ['splits an admin path on an encoded slash', '/admin/index.cfm/cu+sers%2Flist', 'admin:cu+sers.list'],
+    ['replaces an invalid UTF-8 byte with U+FFFD', '/admin/index.cfm/cu%FFsers/list', 'admin:cu\uFFFDsers.list'],
+    ['replaces a truncated UTF-8 sequence with U+FFFD', '/admin/index.cfm/cu%C3sers/list', 'admin:cu\uFFFDsers.list'],
+    ['decodes a UTF-8 sequence', '/admin/index.cfm/cu%C3%A9sers/list', 'admin:cu\u00E9sers.list'],
+  ])('%s', (_label, url, key) => {
+    expect(keyOf('GET', url)).toBe(key);
+  });
+});
+
 describe('X-HTTP-Method-Override', () => {
   it('replaces the request method for an API operation', () => {
     const result = resultOf('POST', `${API}/content/${UUID}`, { headers: { 'x-http-method-override': 'delete' } });
@@ -164,13 +209,15 @@ describe('JSON API parameter merge', () => {
     expect(keyOf('GET', `${API}/content/?muraPointInTime=2024-01-01`)).toBe('api:!server_error');
   });
 
-  it.each([
-    [{}, '?appreload', 'api:content.findall'],
-    [{}, '?appreload&title=Home', 'api:content.findquery'],
-    [{ appReloadKey: 'Reload' }, '?reload', 'api:content.findall'],
-    [{ appReloadKey: 'Reload' }, '?appreload', 'api:content.findquery'],
-  ])('with options %j removes only the reload key from the query %s', (opts, search, key) => {
-    expect(keyOf('GET', `${API}/content/${search}`, {}, opts)).toBe(key);
+  it.each<[RouteKeyOptions, string, string, string | undefined]>([
+    [{}, '?appreload', 'reload:application', 'api:content.findall'],
+    [{}, '?appreload&title=Home', 'reload:application', 'api:content.findquery'],
+    [{ appReloadKey: 'Reload' }, '?reload', 'reload:application', 'api:content.findall'],
+    [{ appReloadKey: 'Reload' }, '?appreload', 'api:content.findquery', undefined],
+  ])('with options %j removes only the reload key from the query %s', (opts, search, key, afterReload) => {
+    const result = resultOf('GET', `${API}/content/${search}`, {}, opts);
+    expect(result.key).toBe(key);
+    expect(result.afterReload?.key).toBe(afterReload);
   });
 
   it('copies X-csrf_token headers into JSON API params but not into REST params', () => {
@@ -199,6 +246,38 @@ describe('JSON API method resolution', () => {
     { name: 'an entity-route local', url: '/_api/json/v1/tenant-a/siteManager', key: 'api:!invalidmethodcall' },
     { name: 'a non-public entity-route method', url: '/_api/json/v1/tenant-a/getSerializer', key: 'api:!invalidmethodcall' },
     { name: 'a method named in path params', url: `${API}/login/method/logout`, key: 'api:!invalidmethodcall' },
+    {
+      name: 'a direct method a sanitised path name overwrites',
+      url: `${API}/login/m!ethod/findAll?entityname=content`,
+      key: 'api:content.findall',
+    },
+    {
+      name: 'an entity-route method a sanitised path name overwrites',
+      url: `${API}/login/m!ethod/findAll?method=zz&entityname=content`,
+      key: 'api:content.findall',
+    },
+    { name: 'a sanitised path name overwriting with save', url: `${API}/login/m!ethod/save?entityname=user`, key: 'api:user.save' },
+    {
+      name: 'a sanitised path name overwriting with a non-public method',
+      url: `${API}/login/m!ethod/getSerializer`,
+      key: 'api:!invalidmethodcall',
+    },
+    { name: 'a sanitised path name without a value', url: `${API}/login/m!ethod`, key: 'api:!invalidmethodcall' },
+    {
+      name: 'a public method without a function, falling through to the entity route',
+      url: `${API}/content/x/m!ethod/submitForm?method=login`,
+      key: 'api:content.findone',
+    },
+    {
+      name: 'a sanitised path name overwriting with a generic method',
+      url: `${API}/content/x/m!ethod/findAll?method=login`,
+      key: 'api:.findall',
+    },
+    {
+      name: 'an entity-route invoke of a public method without a function',
+      url: `${API}/login/m!ethod/submitForm?method=zz`,
+      key: 'api:!server_error',
+    },
     { name: 'an undefined method name', url: `${API}/?method=noSuchMethod`, key: 'api:entity.findquery' },
     { name: 'neither a method nor an entity', url: `${API}/`, key: 'api:entity.findall' },
     {
@@ -245,6 +324,13 @@ describe('JSON API method resolution', () => {
       name: 'an unknown siteid with a direct method',
       method: 'GET',
       url: `${API}/?method=login&siteid=nosuch`,
+      key: 'api:!invalidparameters',
+    },
+    {
+      name: 'an unknown form siteid that path pairs overwrite before the entity route',
+      method: 'POST',
+      url: `${API}/content/x/m!ethod/submitForm/siteid/default?method=login`,
+      form: { siteid: 'nosuch' },
       key: 'api:!invalidparameters',
     },
     { name: 'no site segment', method: 'GET', url: '/_api/json/v1', key: 'api:!invalidparameters' },
@@ -308,6 +394,12 @@ describe('JSON API entity operations', () => {
     ['GET', `${API}/user/properties`, 'api:user.findproperties'],
     ['GET', `${API}/group/permissions`, 'api:group.findpermissions'],
     ['GET', `${API}/user/New`, 'api:!invalidmethodcall'],
+    ['GET', `${API}/user/01`, 'api:user.findall'],
+    ['GET', `${API}/user/2`, 'api:!invalidmethodcall'],
+    ['GET', `${API}/user/1.`, 'api:!invalidmethodcall'],
+    ['GET', `${API}/user/1.0`, 'api:user.findall'],
+    ['GET', `${API}/user/1e0`, 'api:user.findall'],
+    ['GET', `${API}/user/2.`, 'api:!invalidmethodcall'],
     ['GET', `${API}/content/?id=new`, 'api:content.findnew'],
     ['GET', `${API}/content/?id=properties`, 'api:content.findproperties'],
     ['GET', `${API}/content/?id=permissions`, 'api:content.findpermissions'],
@@ -603,6 +695,114 @@ describe('public pages', () => {
   });
 });
 
+describe('application reload', () => {
+  const RELOAD = { key: 'reload:application', baseKey: 'reload:application', family: 'reload' };
+
+  it.each<{ name: string; method?: string; url: string; form?: Record<string, string>; afterReload: string }>([
+    { name: 'a public page', url: '/?appreload', afterReload: 'page:render' },
+    { name: 'the Global Config action', url: '/admin/?appreload&reload=appreload', afterReload: 'admin:home.redirect' },
+    { name: 'an upper-case key on the front controller', url: '/index.cfm?APPRELOAD', afterReload: 'page:render' },
+    { name: 'a key with a value', url: '/about/?appreload=1&doaction=login', afterReload: 'page:login' },
+    { name: 'a static file', url: '/assets/site.css?appreload', afterReload: 'static:/assets/site.css' },
+    { name: 'a template', url: '/admin/custom.cfm?appreload', afterReload: 'cfm:/admin/custom.cfm' },
+    {
+      name: 'a remote CFC call',
+      url: '/core/mura/remote.cfc?appreload&method=doThing',
+      afterReload: 'cfc:/core/mura/remote.cfc?method=dothing',
+    },
+    { name: 'another /_api family', url: '/_api/other/thing?appreload', afterReload: 'apiother:/_api/other/thing' },
+    {
+      name: 'a processAsyncObject path method',
+      url: `${API}/processAsyncObject?appreload`,
+      afterReload: 'api:processasyncobject',
+    },
+    {
+      name: 'a processAsyncObject form method',
+      method: 'POST',
+      url: `${API}/?appreload`,
+      form: { method: 'processAsyncObject' },
+      afterReload: 'api:processasyncobject',
+    },
+  ])('keys $name as the reload entry', ({ method, url, form, afterReload }) => {
+    const result = resultOf(method ?? 'GET', url, form === undefined ? {} : { form });
+    expect(result).toMatchObject(RELOAD);
+    expect(result.afterReload?.key).toBe(afterReload);
+    expect(ROUTE_FAMILIES).toContain(result.family);
+  });
+
+  it.each<{ name: string; method?: string; url: string; extra?: Partial<RouteKeyRequest>; opts?: RouteKeyOptions; key: string }>([
+    { name: 'a reload key in the form only', method: 'POST', url: '/', extra: { form: { appreload: '' } }, key: 'page:render' },
+    {
+      name: 'a reload key in the JSON body only',
+      method: 'POST',
+      url: `${API}/content/`,
+      extra: { jsonBody: { appreload: '' }, headers: JSON_TYPE },
+      key: 'api:content.save',
+    },
+    { name: 'an OPT-2 path', url: '/opt2/stub/x?appreload', key: 'opt2:/opt2/stub/x' },
+    {
+      name: 'a bridge path',
+      url: '/gateway/legacy-bridge/cfml/session.cfm?appreload',
+      key: 'bridge:/gateway/legacy-bridge/cfml/session.cfm',
+    },
+    { name: 'a fixture route', url: '/legacy-fixtures/cfml/api.cfm/people/persons?appreload', key: 'fixture:people/persons@get' },
+    { name: 'the default key under a configured one', url: '/?appreload', opts: { appReloadKey: 'S3cretKey' }, key: 'page:render' },
+    { name: 'an empty configured key', url: '/?appreload', opts: { appReloadKey: '' }, key: 'page:render' },
+  ])('keeps $name as $key', ({ method, url, extra, opts, key }) => {
+    const result = resultOf(method ?? 'GET', url, extra, opts);
+    expect(result.key).toBe(key);
+    expect(result).not.toHaveProperty('afterReload');
+  });
+
+  it.each(['processAsyncObject', 'PROCESSASYNCOBJECT'])('keeps a URL method=%s call, dropping the key from its params', (method) => {
+    const result = resultOf('GET', `${API}/?method=${method}&appreload`);
+    expect(result.key).toBe('api:processasyncobject');
+    expect(result).not.toHaveProperty('afterReload');
+    expect(result.params).not.toHaveProperty('appreload');
+  });
+
+  it.each(['/?S3cretKey&doaction=login', '/admin/?S3cretKey&reload=S3cretKey', `${API}/content/?s3cretkey&title=Home`])(
+    'omits a configured reload key from the reload result of %s',
+    (url) => {
+      const result = resultOf('GET', url, {}, { appReloadKey: 'S3cretKey' });
+      const ordinary = Object.keys(result.afterReload?.params ?? {});
+      expect(result).toMatchObject(RELOAD);
+      expect(result.params).not.toHaveProperty('s3cretkey');
+      expect(Object.keys(result.params)).toEqual(ordinary.filter((name) => name !== 's3cretkey'));
+    },
+  );
+
+  it('carries the ordinary result unchanged as afterReload, with its site', () => {
+    const url = '/admin/?appreload&muraAction=cArch.list&siteid=tenant-a';
+    const result = resultOf('GET', url);
+    expect(result.afterReload).toStrictEqual(resultOf('GET', url, {}, { appReloadKey: 'otherkey' }));
+    expect(result.afterReload?.key).toBe('admin:carch.list');
+    expect(result.siteId).toBe('tenant-a');
+  });
+
+  it('appends a variant declared on the reload key', () => {
+    const variants: VariantDeclaration[] = [
+      { route: 'reload:application', variant: 'admin', when: [{ param: 'reload', nonEmpty: true }] },
+    ];
+    expect(keyOf('GET', '/admin/?appreload&reload=appreload', {}, { variants })).toBe('reload:application{admin}');
+    expect(keyOf('GET', '/?appreload', {}, { variants })).toBe('reload:application');
+  });
+
+  it.each([
+    '/?appreload',
+    '/admin/?appreload&reload=appreload',
+    `${API}/content/?appreload`,
+    '/assets/site.css?appreload',
+    '/admin/custom.cfm?appreload',
+    '/_api/other/thing?appreload',
+  ])('matches %s to the reload entry only', (url) => {
+    const carried = ['page:render', 'admin:home.redirect', 'api:content.findall', 'static:/**', 'cfm:/**', 'apiother:/**'];
+    const result = resultOf('GET', url);
+    expect(matchRouteKey(result, carried)).toBeUndefined();
+    expect(matchRouteKey(result, [...carried, 'reload:application'])).toBe('reload:application');
+  });
+});
+
 describe('variants', () => {
   const VARIANTS: readonly VariantDeclaration[] = [
     { route: 'admin:cUsers.update', variant: 'photo', when: [PHOTO_CONDITION] },
@@ -634,8 +834,17 @@ describe('variants', () => {
     });
   });
 
-  it('compares parameter values with CFML equality', () => {
-    expect(usersUpdate({ type: '2.0', action: 'ADD' }).key).toBe('admin:cusers.update{type=2,action=add}');
+  it.each<[Record<string, string>, string]>([
+    [{ type: '2.0', action: 'ADD' }, 'admin:cusers.update{type=2,action=add}'],
+    [{ type: '1' }, 'admin:cusers.update{type=1}'],
+    [{ type: ' 1' }, 'admin:cusers.update{type=1}'],
+    [{ type: '01' }, 'admin:cusers.update{type=1}'],
+    [{ type: '1e0' }, 'admin:cusers.update{type=1}'],
+    [{ type: '1.' }, 'admin:cusers.update'],
+    [{ type: '1. ' }, 'admin:cusers.update'],
+    [{ type: '2.', action: 'Add' }, 'admin:cusers.update'],
+  ])('compares parameter values %j with CFML equality, keying %s', (form, key) => {
+    expect(usersUpdate(form).key).toBe(key);
   });
 
   it('lets a more specific declaration listed first win over a broader one', () => {
@@ -720,6 +929,10 @@ describe('variants', () => {
     [{ not: { param: 'siteid', nonEmpty: true } }, {}, true],
     [{ not: { param: 'siteid', nonEmpty: true } }, { siteid: 'default' }, false],
     [{ anyOf: [{ param: 'a', equals: '1' }, { param: 'b', equals: '1' }] }, { b: '1' }, true],
+    [{ param: 'type', equals: '1.' }, { type: '1.' }, true],
+    [{ param: 'type', equals: '1.' }, { type: '1' }, false],
+    [{ param: 'type', in: ['1', '2'] }, { type: '2.' }, false],
+    [{ param: 'type', in: ['1', '2'] }, { type: ' 2' }, true],
   ])('evaluates %j over %j as %s', (condition, form, holds) => {
     const declarations = [{ route: 'admin:csettings.updatesite', variant: 'v', when: [condition] }];
     const result = resultOf('POST', '/admin/?muraAction=cSettings.updateSite', { form }, { variants: declarations });
@@ -896,9 +1109,31 @@ describe('routeKeyForEntryPoint', () => {
       req: request('GET', '/_api/sitemonitor'),
       key: 'sitemonitor:run',
     },
+    { name: 'an application reload', entry: { kind: 'reload' }, req: request('GET', '/?appreload'), key: 'reload:application' },
+    {
+      name: 'the Global Config reload',
+      entry: { kind: 'reload', admin: true },
+      req: request('GET', '/admin/?appreload&reload=appreload'),
+      key: 'reload:application',
+    },
+    {
+      name: 'a reload under a configured key',
+      entry: { kind: 'reload' },
+      req: request('GET', '/?S3cretKey'),
+      opts: { appReloadKey: 'S3cretKey' },
+      key: 'reload:application',
+    },
+    {
+      name: 'the Global Config reload under a configured key and admin dir',
+      entry: { kind: 'reload', admin: true },
+      req: request('GET', '/manage/?S3cretKey&reload=s3cretkey'),
+      opts: { appReloadKey: 'S3cretKey', adminDir: '/manage' },
+      key: 'reload:application',
+    },
   ])('keys $name like the equivalent request', ({ entry, req, opts, key }) => {
     expect(routeKeyForEntryPoint(entry, opts).key).toBe(key);
     expect(routeKeyForRequest(req, opts).key).toBe(key);
+    expect(routeKeyForEntryPoint(entry, opts).afterReload?.key).toBe(routeKeyForRequest(req, opts).afterReload?.key);
   });
 
   it('places an API entry point on its site', () => {

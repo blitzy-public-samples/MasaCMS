@@ -11,6 +11,7 @@
  *   admin      `<section>.<item>` (subsystem `core:` dropped) | `<subsystem>:<section>.<item>` | `!actioncontainsslash`
  *   fixture    `<module>/<resource>[/{id}][/<seg>…]@<httpmethod>` | `!notfound@<httpmethod>`
  *   page       `render` | `<doaction>[,<doaction>…]` | `saveform` | `<doaction>[,…]+saveform`
+ *   reload     `application`: URL reload key, unless url `method=processAsyncObject` (onRequestStart_include.cfm:114-138)
  */
 import {
   CONTENTNAV_ENTITY,
@@ -22,8 +23,8 @@ import {
   isPublicMethod,
   isValidVariableName,
 } from './jsonapi-names.js';
-import { LEGACY_ADMIN_SENTINEL_ID, isCfUuid, isLegacyFindOneId } from './ids.js';
-import { cfIsBoolean, cfIsNumeric, cfToBoolean } from './serializer.js';
+import { isCfUuid, isLegacyFindOneId } from './ids.js';
+import { cfEq, cfIsBoolean, cfToBoolean } from './serializer.js';
 
 /** Route families, the first token of every key. */
 export const ROUTE_FAMILIES = Object.freeze([
@@ -45,6 +46,7 @@ export const ROUTE_FAMILIES = Object.freeze([
   'page',
   'opt2',
   'bridge',
+  'reload',
 ] as const);
 
 /** A route family token. */
@@ -99,6 +101,8 @@ export interface RouteKeyResult {
   httpMethod: string;
   /** The family's merged params as legacy merges them, lower-cased keys, simple values only. */
   params: Record<string, string>;
+  /** Reload only: the route legacy serves once start-up has re-run (session effects, CSRF claims, 503 surface). */
+  afterReload?: RouteKeyResult;
 }
 
 /** A request-decidable predicate of a variant declaration. */
@@ -151,6 +155,7 @@ export type RouteEntryPoint = EntryPointExtras &
     | { kind: 'cfc'; path: string; method: string }
     | { kind: 'fixture'; httpMethod: string; path: string }
     | { kind: 'path'; httpMethod?: string; path: string; query?: Record<string, string> }
+    | { kind: 'reload'; admin?: boolean }
   );
 
 type Scope = Readonly<Record<string, string | readonly string[]>>;
@@ -183,6 +188,8 @@ interface NormalisedPath {
   path: string;
   /** Non-empty segments before the removed `index.cfm`; -1 when none was removed. */
   indexAt: number;
+  /** `path` as the root front controller reads it: urlDecoded once more (contentServer.cfc:167). */
+  rootPath: string;
 }
 
 interface BaseRoute {
@@ -193,12 +200,15 @@ interface BaseRoute {
 }
 
 const GLOB_FAMILIES: ReadonlySet<RouteFamily> = new Set<RouteFamily>(['opt2', 'bridge', 'static', 'cfm', 'apiother']);
+/** OPT-2 namespaces and the fixture front controller, whose Application.cfc suppresses the reload. */
+const NO_RELOAD_FAMILIES: ReadonlySet<RouteFamily> = new Set<RouteFamily>(['opt2', 'bridge', 'fixture']);
+const RELOAD_KEY = 'reload:application';
 const FIXTURE_PREFIX = '/legacy-fixtures/cfml/api.cfm/';
 const BRIDGE_PREFIX = '/gateway/legacy-bridge/';
 const RFC_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DIGITS = /^\d+$/;
 const FILE_EXTENSION = /\.[A-Za-z0-9]+$/;
-const JAVA_TRIM = /^[\u0000-\u0020]+|[\u0000-\u0020]+$/g;
+const HEX_PAIR = /^[0-9A-Fa-f]{2}$/;
 const PATH_PARAM_CHARS = /[^0-9A-Za-z._,\-*]/g;
 const ENTITY_NAME_CHARS = /[^0-9A-Za-z_,\-*]/g;
 const REST_HEADER_PARAMS: ReadonlyArray<readonly [string, string]> = [
@@ -246,19 +256,8 @@ function listFind(list: string, value: string): boolean {
   return listToArray(list).includes(value);
 }
 
-/** CFML `==`: numeric when both sides are numeric, otherwise case-insensitive. */
-function cfEq(a: string, b: string): boolean {
-  if (cfIsNumeric(a) && cfIsNumeric(b)) return Number(a.replace(JAVA_TRIM, '')) === Number(b.replace(JAVA_TRIM, ''));
-  return a.toLowerCase() === b.toLowerCase();
-}
-
 function startsNoCase(s: string, prefix: string): boolean {
   return s.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase();
-}
-
-/** The JSON API's findOne id test, with the sentinel compared by CFML `==` (jsonApiUtility.cfc:1262, 1273). */
-function isFindOneId(s: string): boolean {
-  return isLegacyFindOneId(s) || cfEq(s, LEGACY_ADMIN_SENTINEL_ID);
 }
 
 // ---- Params ----
@@ -350,32 +349,56 @@ function resolveOptions(opts: RouteKeyOptions): ResolvedOptions {
 
 // ---- Path normalisation ----
 
-/** Percent-decodes as the servlet container does for path_info; a malformed escape is kept as sent. */
-function decodePath(raw: string): string {
-  try {
-    return decodeURIComponent(raw);
-  } catch {
-    return raw;
+/** UTF-8 percent-decoding: `cfml` as urlDecode (`+` to space, malformed escape kept), else as the container (malformed: undefined). */
+function percentDecode(s: string, cfml: true): string;
+function percentDecode(s: string, cfml: false): string | undefined;
+function percentDecode(s: string, cfml: boolean): string | undefined {
+  let out = '';
+  const bytes: number[] = [];
+  const flush = (): void => {
+    out += Buffer.from(bytes).toString('utf8');
+    bytes.length = 0;
+  };
+  for (let i = 0; i < s.length; i++) {
+    const ch = s.charAt(i);
+    if (ch === '%' && HEX_PAIR.test(s.slice(i + 1, i + 3))) {
+      bytes.push(parseInt(s.slice(i + 1, i + 3), 16));
+      i += 2;
+      continue;
+    }
+    flush();
+    if (ch === '%') {
+      if (!cfml) return undefined;
+      out += s.slice(i, i + 3);
+      i += 2;
+    } else {
+      out += cfml && ch === '+' ? ' ' : ch;
+    }
   }
+  flush();
+  return out;
 }
 
 /** URL-decoded path without the context and the first `index.cfm` segment (contentServer.cfc:141-165). */
 function normalisePath(rawPath: string, context: string): NormalisedPath {
-  let path = decodePath(rawPath);
+  const decoded = percentDecode(rawPath, false);
+  let path = decoded ?? rawPath;
   if (!path.startsWith('/')) path = `/${path}`;
   const ctx = context && context !== '/' ? `/${listToArray(context, '/').join('/')}` : '';
   if (ctx.length > 1 && (path.toLowerCase() === ctx.toLowerCase() || startsNoCase(path, `${ctx}/`))) {
     path = path.slice(ctx.length) || '/';
   }
+  // A path the container rejects never reaches CFML, so it gets no second decode.
+  const rootPath = (p: string): string => (decoded === undefined ? p : percentDecode(p, true));
   const parts = path.split('/');
   const at = parts.findIndex((p, i) => i > 0 && p.toLowerCase() === 'index.cfm');
-  if (at < 0) return { path, indexAt: -1 };
+  if (at < 0) return { path, indexAt: -1, rootPath: rootPath(path) };
   const indexAt = parts.slice(0, at).filter((p) => p !== '').length;
   const wasLast = at === parts.length - 1;
   parts.splice(at, 1);
   let stripped = parts.join('/') || '/';
   if (wasLast && !stripped.endsWith('/')) stripped += '/';
-  return { path: stripped, indexAt };
+  return { path: stripped, indexAt, rootPath: rootPath(stripped) };
 }
 
 
@@ -486,11 +509,11 @@ function getOperation(entity: string, pi: readonly string[], P: ParamMap, url: P
     if (cfEq(s, 'properties')) return 'findproperties';
     if (cfEq(s, 'permissions')) return 'findpermissions';
     if (listLen(s) > 1) return 'findmany';
-    if (isFindOneId(s)) return 'findone';
+    if (isLegacyFindOneId(s)) return 'findone';
     return isValidVariableName(s) && has(opts.remoteFunctions, entity, s) ? `~${s}` : 'findone';
   }
   const third = nth(pi, 3);
-  if (pi.length === 3 && !isFindOneId(third)) {
+  if (pi.length === 3 && !isLegacyFindOneId(third)) {
     if (isValidVariableName(third) && has(opts.remoteFunctions, entity, third)) return `~${third}`;
     throw new LegacyThrow('invalidmethodcall');
   }
@@ -594,6 +617,8 @@ function resolveJsonApi(c: RouteContext, restMode: boolean, siteId: string, P: P
     isDefinedApiName(name, { ...nameContext, entityPhase });
   const isPublic = (name: string): boolean => isPublicMethod(name, opts.registeredMethods);
   let pi = c.segments.slice(3);
+  // structAppend(form, params) at line 845 left params' siteid in the form scope.
+  const formSiteId = P.get('siteid');
 
   // Direct method (jsonApiUtility.cfc:856-901).
   if (!P.has('method') && pi.length > 0 && isValidVariableName(nth(pi, 1))) {
@@ -608,18 +633,19 @@ function resolveJsonApi(c: RouteContext, restMode: boolean, siteId: string, P: P
   }
   const direct = P.get('method');
   if (typeof direct === 'string' && isValidVariableName(direct) && defined(direct)) {
+    // Path pairs may overwrite method; legacy checks and invokes the updated value (jsonApiUtility.cfc:875-891, 930-938).
     if (pi.length > 1) parsePathParams(pi, P, 2);
-    if (!isPublic(direct)) throw new LegacyThrow('invalidmethodcall');
+    const effective = str(P, 'method') ?? '';
+    if (!isPublic(effective)) throw new LegacyThrow('invalidmethodcall');
     if (!P.has('siteid')) P.set('siteid', siteId);
     if (!opts.siteExists(str(P, 'siteid') ?? '')) throw new LegacyThrow('invalidparameters');
-    return keyForMethod(direct, str(P, 'entityname'));
+    // A public name with no function (submitForm) falls through to the entity route.
+    if (defined(effective)) return keyForMethod(effective, str(P, 'entityname'));
   }
 
   // Entity route (jsonApiUtility.cfc:903-979).
   if (!P.has('method')) P.set('method', 'undefined');
   if (pi.length === 0) throw new LegacyThrow('invalidparameters');
-  // structAppend(form, params) at line 845 left params' siteid in the form scope.
-  const formSiteId = P.get('siteid');
   P.set('siteid', nth(pi, 1));
   const urlSiteId = url.get('siteid');
   if (
@@ -634,8 +660,11 @@ function resolveJsonApi(c: RouteContext, restMode: boolean, siteId: string, P: P
     if (isValidVariableName(second) && defined(second, true) && !cfEq(second, 'file')) {
       P.set('method', second);
       if (pi.length > 2) parsePathParams(pi, P, 3);
-      if (!isPublic(second)) throw new LegacyThrow('invalidmethodcall');
-      return keyForMethod(second, str(P, 'entityname'));
+      const effective = str(P, 'method') ?? '';
+      if (!isPublic(effective)) throw new LegacyThrow('invalidmethodcall');
+      // invoke() of a public name with no function fails.
+      if (!defined(effective)) throw new LegacyThrow('server_error');
+      return keyForMethod(effective, str(P, 'entityname'));
     }
     P.set('entityname', second);
   }
@@ -826,17 +855,20 @@ function pageRoute(c: RouteContext, allowStatic: boolean): BaseRoute {
   return { family: 'page', body, params };
 }
 
-/** First matching rule of the shared precedence. */
-function baseRoute(c: RouteContext, indexAt: number): BaseRoute {
+/** First matching rule of the shared precedence; `rootPath` is the path the root front controller reads. */
+function baseRoute(c: RouteContext, indexAt: number, rootPath: string): BaseRoute {
   const { req, path, segments } = c;
   const first = nth(segments, 1).toLowerCase();
   // The root index.cfm is the front controller, which serves only API and page requests (contentServer.cfc:779-799).
   const frontController = indexAt === 0;
+  const root: RouteContext = { ...c, path: rootPath, segments: listToArray(rootPath, '/') };
+  const rootFirst = nth(root.segments, 1).toLowerCase();
+  const rootApi = rootFirst === '_api' || rootFirst === 'tasks';
   if (!frontController) {
     if (first === 'opt2') return { family: 'opt2', body: path, params: queryThenForm(req) };
     if (startsNoCase(path, BRIDGE_PREFIX)) return { family: 'bridge', body: path, params: queryThenForm(req) };
   }
-  if (first === '_api' || first === 'tasks') return apiRoute(c);
+  if (first === '_api' || first === 'tasks' || (frontController && rootApi)) return apiRoute(root);
   if (frontController) return pageRoute(c, false);
   const adminLength = adminPrefixLength(c, indexAt);
   if (adminLength !== undefined) return adminRoute(c, adminLength);
@@ -844,7 +876,16 @@ function baseRoute(c: RouteContext, indexAt: number): BaseRoute {
   if (last.endsWith('.cfc')) return cfcRoute(c);
   if (startsNoCase(path, FIXTURE_PREFIX)) return fixtureRoute(c);
   if (last.endsWith('.cfm')) return { family: 'cfm', body: path, params: queryThenForm(req) };
-  return pageRoute(c, true);
+  const page = pageRoute(c, true);
+  // A page path is rewritten to the root front controller (CommandBox framework-rewrite).
+  return page.family === 'page' && rootApi ? apiRoute(root) : page;
+}
+
+/** structKeyExists(url, appReloadKey) outside a URL processAsyncObject call (onRequestStart_include.cfm:114-138). */
+function isReloadRequest(req: RouteKeyRequest, family: RouteFamily, opts: ResolvedOptions): boolean {
+  if (NO_RELOAD_FAMILIES.has(family) || opts.appReloadKey === '') return false;
+  const url = scopeMap(req.query);
+  return url.has(opts.appReloadKey) && !cfEq(str(url, 'method') ?? '', 'processAsyncObject');
 }
 
 // ---- Variants ----
@@ -890,6 +931,24 @@ function selectVariant(
   return declared === undefined ? undefined : normaliseRouteKey(declared.variant);
 }
 
+type KeyFacts = Pick<RouteKeyResult, 'baseKey' | 'family' | 'httpMethod' | 'params' | 'siteId'>;
+
+/** The result for a base key, carrying the first declared variant that holds. */
+function keyedResult(facts: KeyFacts, req: RouteKeyRequest, opts: ResolvedOptions): RouteKeyResult {
+  const { baseKey, family, httpMethod, params, siteId } = facts;
+  const variant = selectVariant(baseKey, params, req.multipartFileNames ?? [], opts.variants);
+  const result: RouteKeyResult = {
+    key: variant === undefined ? baseKey : `${baseKey}{${variant}}`,
+    baseKey,
+    family,
+    httpMethod,
+    params,
+  };
+  if (variant !== undefined) result.variant = variant;
+  if (siteId !== undefined) result.siteId = siteId;
+  return result;
+}
+
 // ---- Public API ----
 
 /** Trims and lower-cases an authored route key. */
@@ -901,21 +960,19 @@ export function normaliseRouteKey(s: string): string {
 export function routeKeyForRequest(req: RouteKeyRequest, opts: RouteKeyOptions = {}): RouteKeyResult {
   const resolved = resolveOptions(opts);
   const httpMethod = (header(req.headers, 'X-HTTP-Method-Override') ?? req.method).toUpperCase();
-  const { path, indexAt } = normalisePath(req.path, resolved.context);
-  const route = baseRoute({ req, path, segments: listToArray(path, '/'), httpMethod, opts: resolved }, indexAt);
+  const { path, indexAt, rootPath } = normalisePath(req.path, resolved.context);
+  const route = baseRoute({ req, path, segments: listToArray(path, '/'), httpMethod, opts: resolved }, indexAt, rootPath);
   const baseKey = `${route.family}:${route.body}`.toLowerCase();
   const params = simpleParams(route.params);
-  const variant = selectVariant(baseKey, params, req.multipartFileNames ?? [], resolved.variants);
-  const result: RouteKeyResult = {
-    key: variant === undefined ? baseKey : `${baseKey}{${variant}}`,
-    baseKey,
-    family: route.family,
-    httpMethod,
-    params,
-  };
-  if (variant !== undefined) result.variant = variant;
-  if (route.siteId !== undefined) result.siteId = route.siteId;
-  return result;
+  const result = keyedResult({ baseKey, family: route.family, httpMethod, params, siteId: route.siteId }, req, resolved);
+  if (!isReloadRequest(req, route.family, resolved)) return result;
+  const reloadParams = Object.fromEntries(Object.entries(params).filter(([name]) => name !== resolved.appReloadKey));
+  const reload = keyedResult(
+    { baseKey: RELOAD_KEY, family: 'reload', httpMethod, params: reloadParams, siteId: result.siteId },
+    req,
+    resolved,
+  );
+  return { ...reload, afterReload: result };
 }
 
 /** The cut-over route a key resolves to; `undefined` means legacy. A variant never falls back to its base. */
@@ -972,5 +1029,14 @@ export function routeKeyForEntryPoint(entry: RouteEntryPoint, opts: RouteKeyOpti
         { ...base, method: entry.httpMethod ?? 'GET', path: entry.path, query: { ...entry.query, ...params } },
         opts,
       );
+    case 'reload': {
+      const resolved = resolveOptions(opts);
+      const key = resolved.appReloadKey;
+      // The Global Config action is `<adminDir>/?<key>&reload=<key>` (nav.cfm:338).
+      const request = entry.admin
+        ? { path: `/${resolved.adminSegments.join('/')}/`, query: { ...params, [key]: '', reload: key } }
+        : { path: '/', query: { [key]: '', ...params } };
+      return routeKeyForRequest({ ...base, method: 'GET', ...request }, opts);
+    }
   }
 }

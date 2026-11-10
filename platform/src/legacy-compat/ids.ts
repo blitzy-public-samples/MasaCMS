@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { cfEq } from './serializer.js';
 
 const CF_UUID_PATTERN = /^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}$/;
 
@@ -16,7 +17,7 @@ export function isCfUuid(s: string): boolean {
   return CF_UUID_PATTERN.test(s);
 }
 
-/** Mirrors the JSON API test that routes an id to `findOne`: a CF uuid or `LEGACY_ADMIN_SENTINEL_ID`. */
+/** Mirrors the JSON API findOne id test (jsonApiUtility.cfc:1265, 1277): a CF uuid, or the sentinel by ACF `==` (`1`, `01` match; `1.` does not). */
 export function isLegacyFindOneId(s: string): boolean {
-  return isCfUuid(s) || s === LEGACY_ADMIN_SENTINEL_ID;
+  return isCfUuid(s) || cfEq(s, LEGACY_ADMIN_SENTINEL_ID);
 }
