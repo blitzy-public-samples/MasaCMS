@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   catFileExists,
   commitSubject,
@@ -25,6 +25,8 @@ vi.mock(import('../../src/lib/paths.js'), async (importOriginal) => {
 const SHA = '696383140578f8dea3ece26f80cd7bfb370ddf0f';
 const PIN_SUBJECT = 'Increase version to 7.6.1 in package files and configuration';
 const MISSING_SHA = '0'.repeat(40);
+// A shallow clone lacks the pin commit; read at collection so runIf can skip the pin cases.
+const pinPresent = await catFileExists(SHA);
 // Never created or entered: only fake runners receive it.
 const FAKE_CWD = path.join(os.tmpdir(), 'opt2-git-test-fake-cwd');
 const guard = vi.mocked(assertOutsideRepo);
@@ -134,8 +136,8 @@ beforeEach(() => {
 
 describe('defaultRunner', () => {
   it('passes arguments to the executable without a shell and decodes stdout and stderr as UTF-8', async () => {
-    await expect(defaultRunner('git', ['log', '-1', '--format=$HOME %s', SHA], { cwd: REPO_ROOT })).resolves.toEqual({
-      stdout: `$HOME ${PIN_SUBJECT}\n`,
+    await expect(defaultRunner('git', ['log', '-1', '--format=$HOME %s', head], { cwd: repo })).resolves.toEqual({
+      stdout: '$HOME Fixture commit subject\n',
       stderr: '',
     });
   });
@@ -191,6 +193,22 @@ describe.each<[string, (deps: GitDeps) => Promise<string[]>]>([
   ])('splits %s on NUL', async (_label, stdout, expected) => {
     const { run } = recorder(() => stdout);
     await expect(list({ run })).resolves.toEqual(expected);
+  });
+});
+
+describe.each<[string, (deps: GitDeps) => Promise<unknown>]>([
+  ['lsTree', (deps) => lsTree(SHA, deps)],
+  ['lsFiles', (deps) => lsFiles({ cached: true }, deps)],
+  ['diffNames', (deps) => diffNames(SHA, 'DMRT', deps)],
+  ['commitSubject', (deps) => commitSubject(SHA, deps)],
+])('%s failure', (_name, call) => {
+  it('propagates a non-zero git exit as the same rejection', async () => {
+    const failure = Object.assign(new Error('git exited 128'), { code: 128 });
+    const { run, calls } = recorder(() => {
+      throw failure;
+    });
+    await expect(call({ run })).rejects.toBe(failure);
+    expect(calls).toHaveLength(1);
   });
 });
 
@@ -285,17 +303,47 @@ describe('catFileExists', () => {
   });
 });
 
-describe('this checkout at the pin, through defaultRunner and REPO_ROOT', () => {
+describe('this checkout, through defaultRunner and REPO_ROOT', () => {
+  const extracted: string[] = [];
+
+  afterEach(async () => {
+    for (const dir of extracted.splice(0)) await rm(dir, { recursive: true, force: true });
+  });
+
   it.each<[string, boolean]>([
-    [SHA, true],
+    ['HEAD', true],
     [MISSING_SHA, false],
-  ])('catFileExists(%s) is %s', async (sha, expected) => {
-    await expect(catFileExists(sha)).resolves.toBe(expected);
+  ])('catFileExists(%s) is %s', async (rev, expected) => {
+    await expect(catFileExists(rev)).resolves.toBe(expected);
   });
 
   it('catFileExists rethrows ENOENT when git cannot be spawned', async () => {
     const run: ProcessRunner = (_file, args, opts) => defaultRunner('opt2-no-such-git', args, opts);
     await expect(catFileExists(SHA, { run })).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('gitArchiveExtract extracts HEAD into a new directory under os.tmpdir()', async () => {
+    const target = await gitArchiveExtract('HEAD');
+    extracted.push(target);
+    expect(path.dirname(target)).toBe(path.resolve(os.tmpdir()));
+    expect(existsSync(path.join(target, 'core', 'tests', 'runner.cfm'))).toBe(true);
+    expect(existsSync(`${target}.tar`)).toBe(false);
+  });
+});
+
+describe.runIf(pinPresent)('this checkout at the pin (requires full history)', () => {
+  let tmp = '';
+
+  beforeEach(async () => {
+    tmp = await mkdtemp(path.join(os.tmpdir(), 'opt2-git-'));
+  });
+
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  it('catFileExists finds the pin commit', async () => {
+    await expect(catFileExists(SHA)).resolves.toBe(true);
   });
 
   it('commitSubject reads the pin subject', async () => {
@@ -309,6 +357,14 @@ describe('this checkout at the pin, through defaultRunner and REPO_ROOT', () => 
       expect.arrayContaining(['Application.cfc', 'core/tests/runner.cfm', 'core/mura/content/contentServer.cfc']),
     );
     expect(names.filter((name) => name.startsWith('harness/'))).toEqual([]);
+  });
+
+  it('gitArchiveExtract extracts the pin tree without the new harness and opt2 folders', async () => {
+    await expect(gitArchiveExtract(SHA, tmp)).resolves.toBe(tmp);
+    expect(existsSync(path.join(tmp, 'core', 'tests', 'runner.cfm'))).toBe(true);
+    expect(existsSync(path.join(tmp, 'harness'))).toBe(false);
+    expect(existsSync(path.join(tmp, 'opt2'))).toBe(false);
+    expect(await readdir(tmp)).toContain('core');
   });
 });
 
