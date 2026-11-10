@@ -50,8 +50,8 @@ interface FakeDriver {
   log: string[];
 }
 
-/** Driver whose pools record every call and answer each query with `rows`; `connectError` makes `connect` reject. */
-function fakeDriver(rows: Record<string, unknown>[] = [], connectError?: Error): FakeDriver {
+/** Driver whose pools record every call and answer each query with `rows`; `connectError`/`queryError` make `connect`/`query` reject. */
+function fakeDriver(rows: Record<string, unknown>[] = [], connectError?: Error, queryError?: Error): FakeDriver {
   const configs: MssqlConfig[] = [];
   const log: string[] = [];
   class FakePool implements MssqlPool {
@@ -74,6 +74,7 @@ function fakeDriver(rows: Record<string, unknown>[] = [], connectError?: Error):
         },
         async query<T = Record<string, unknown>>(sql: string): Promise<{ recordset: T[] }> {
           log.push(`query ${sql}`);
+          if (queryError !== undefined) throw queryError;
           return { recordset: rows as T[] };
         },
       };
@@ -90,9 +91,18 @@ function fakeDriver(rows: Record<string, unknown>[] = [], connectError?: Error):
 describe('assertReadOnlySql', () => {
   it.each<[string, string]>([
     ['a plain SELECT', 'SELECT 1'],
+    ['the baseline version probe', 'select @@VERSION AS v'],
     ['lower case with a trailing terminator and whitespace', 'select name from sys.procedures;\n  '],
+    ['mixed case', 'SeLeCt TOP 1 name FrOm sys.procedures'],
+    ['leading whitespace', '\n\t  SELECT 1'],
     ['WITH … SELECT', 'WITH c AS (SELECT 1 AS n) SELECT n FROM c'],
+    ['WITH over sys.procedures', 'WITH t AS (SELECT name FROM sys.procedures) SELECT COUNT(*) FROM t'],
+    [
+      'the live stored-procedure check',
+      "SELECT COUNT(*) AS n FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id WHERE o.type IN ('P','TR','FN','IF','TF') AND s.name NOT IN ('synthetic') AND s.name NOT LIKE 'Program[_]%'",
+    ],
     ['a leading comment', '-- stored-procedure check\nSELECT COUNT(*) FROM sys.procedures'],
+    ['a leading block comment', '/* baseline */ SELECT @@VERSION AS v'],
     ['keywords and a semicolon inside a string literal', "SELECT 'DROP TABLE tusers; DELETE' AS note"],
     ['a doubled quote inside a literal', "SELECT 'it''s; INSERT' AS note"],
     ['keywords inside comments', 'SELECT 1 /* INSERT INTO t; */ AS n -- DELETE FROM t;'],
@@ -115,6 +125,7 @@ describe('assertReadOnlySql', () => {
     ['DELETE', 'DELETE FROM tusers', START],
     ['MERGE', 'MERGE tusers AS t USING tusers AS s ON 1 = 0 WHEN NOT MATCHED THEN INSERT DEFAULT VALUES;', START],
     ['EXEC', 'EXEC sp_who', START],
+    ['EXECUTE', 'EXECUTE sp_who', START],
     ['DECLARE', 'DECLARE @n int', START],
     ['SET', 'SET NOCOUNT ON', START],
     ['SELECT hidden in a block comment', '/* SELECT */ DELETE FROM tusers', START],
@@ -127,6 +138,7 @@ describe('assertReadOnlySql', () => {
     ['a semicolon in an unterminated literal', "SELECT 'x; DROP TABLE tusers", SINGLE],
     ['a write after WITH … SELECT', 'WITH c AS (SELECT 1 AS n) DELETE FROM tusers', uses('DELETE')],
     ['SELECT … INTO', 'SELECT * INTO tusers_copy FROM tusers', uses('INTO')],
+    ['SELECT … INTO a temp table', 'SELECT * INTO #t FROM tusers', uses('INTO')],
     ['a second statement without a terminator', 'SELECT 1\nDELETE FROM tusers', uses('DELETE')],
     ['a write after an unterminated block comment', 'SELECT 1 /* DROP TABLE tusers', uses('DROP')],
     ['a lower-case keyword', "select 1 from tusers waitfor delay '0:0:5'", uses('WAITFOR')],
@@ -265,6 +277,14 @@ describe('createReadOnlyMssql', () => {
     ]);
   });
 
+  it('rejects with the driver error when the query fails', async () => {
+    const failure = new Error("Invalid object name 'synthetic.program_site'.");
+    const fake = fakeDriver([], undefined, failure);
+    const client = await createReadOnlyMssql(ENV, { driver: fake.driver });
+    await expect(client.readOnlyQuery('SELECT program_id FROM synthetic.program_site')).rejects.toBe(failure);
+    expect(fake.log).toEqual(['connect', 'request', 'query SELECT program_id FROM synthetic.program_site']);
+  });
+
   it('refuses a write before creating a request', async () => {
     const fake = fakeDriver();
     const client = await createReadOnlyMssql(ENV, { driver: fake.driver });
@@ -321,6 +341,7 @@ describe('default mssql driver', () => {
     expect(fake.log).toEqual(['connect']);
   });
 
+  // The only real-driver load: offline, never connects, and keeps MssqlDriver in step with the pinned mssql package.
   it('the installed mssql package fits MssqlDriver and takes the config without connecting', () => {
     const driver = createRequire(import.meta.url)('mssql') as MssqlDriver;
     const pool = new driver.ConnectionPool(CONFIG);
