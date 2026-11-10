@@ -1,0 +1,40 @@
+{
+  "name": "@opt2/timesheets",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SYNTHETIC timesheets service (no Masa equivalent; legacy oracle in legacy-fixtures/): day approval workflow, sheet status and archive blackouts.",
+  "type": "module",
+  "main": "dist/main.js",
+  "engines": {
+    "node": "22.23.4"
+  },
+  "scripts": {
+    "postinstall": "npm ci --prefix ../../platform && npm run build --prefix ../../platform",
+    "generate": "node -e \"require('node:fs').mkdirSync('src/generated/events',{recursive:true})\" && openapi-typescript contracts/openapi.yaml -o src/generated/openapi.ts && json2ts -i ../people/contracts/events/people.person.archived.v1.json -o src/generated/events/people.person.archived.v1.ts && json2ts -i ../programs-sites/contracts/events/programs-sites.site.changed.v1.json -o src/generated/events/programs-sites.site.changed.v1.ts",
+    "prebuild": "npm run generate",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "pretest": "npm run generate",
+    "test": "vitest run --coverage",
+    "pretest:contract": "npm run generate",
+    "test:contract": "vitest run test/contract",
+    "pretest:security": "npm run generate",
+    "test:security": "vitest run test/security",
+    "export-transitions": "tsx scripts/export-transitions.ts"
+  },
+  "dependencies": {
+    "@opt2/platform": "file:../../platform"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@vitest/coverage-v8": "5.0.5",
+    "eslint": "10.13.0",
+    "fast-check": "4.10.2",
+    "json-schema-to-typescript": "16.0.0",
+    "openapi-typescript": "7.13.0",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.1",
+    "vitest": "5.0.5"
+  }
+}
