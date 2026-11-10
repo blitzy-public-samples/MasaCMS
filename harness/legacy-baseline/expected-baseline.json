@@ -1,0 +1,100 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "provenance": "request",
+  "totals": {
+    "bundles": 22,
+    "specs": 683,
+    "passed": 662,
+    "failed": 21,
+    "errored": 0
+  },
+  "bundles": [
+    "beanFeedSecurity",
+    "beanORMSecurity",
+    "category",
+    "content",
+    "contentIntervals",
+    "contentOrdering",
+    "contentTypes",
+    "entities",
+    "eventHandlers",
+    "feedDenylistGenericSecurity",
+    "feedDenylistSecurity",
+    "feedSecurity",
+    "filebrowser",
+    "group",
+    "jsonApiFeedSSRF",
+    "jsonApiValidateSecurity",
+    "modules",
+    "muraScope",
+    "plugins",
+    "settings",
+    "user",
+    "utility"
+  ],
+  "failures": [
+    {
+      "bundle": "entities",
+      "titlePattern": "^.+ should match schema datatype (VARCHAR|FLOAT)$",
+      "count": 19,
+      "reason": "data-driven loop over entity properties",
+      "source": {
+        "path": "core/tests/specs/mura/core/entities.cfc",
+        "lines": [
+          460
+        ]
+      }
+    },
+    {
+      "bundle": "beanFeedSecurity",
+      "suite": "Performance and Stress Tests",
+      "title": "should handle repeated sanitization efficiently",
+      "count": 1,
+      "timingSensitive": true,
+      "thresholdMs": 1000,
+      "observedMs": [
+        1177,
+        1387
+      ],
+      "reason": "1,000 ms timing threshold",
+      "source": {
+        "path": "core/tests/specs/mura/core/beanFeedSecurity.cfc",
+        "lines": [
+          38,
+          47
+        ]
+      }
+    },
+    {
+      "bundle": "utility",
+      "suite": "Testing isPathLegal",
+      "title": "should reject an alttheme traversal path outside the webroot",
+      "count": 1,
+      "reason": "Lucee-specific expectation",
+      "source": {
+        "path": "core/tests/specs/mura/core/utility.cfc",
+        "lines": [
+          906
+        ]
+      }
+    }
+  ],
+  "excludedBundles": [
+    {
+      "bundle": "bundleValidatorSecurity",
+      "reason": "two-argument directoryCreate does not compile on ACF",
+      "source": {
+        "path": "core/tests/specs/mura/core/bundleValidatorSecurity.cfc",
+        "lines": [
+          36
+        ]
+      }
+    }
+  ],
+  "officialRunner": {
+    "url": "/core/tests/runner.cfm?reporter=json",
+    "expectedHttpStatus": 500,
+    "expectedSpecs": 0,
+    "reason": "directory discovery compiles bundleValidatorSecurity and aborts"
+  }
+}

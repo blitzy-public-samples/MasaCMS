@@ -1,0 +1,38 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "entries": [
+    {
+      "id": "EX-FILE-RENDITION",
+      "scenario": "GS-CO-07",
+      "routeKey": "admin:carch.update{upload=image}",
+      "appliesTo": [
+        "admin:carch.multifileupload{upload=image}",
+        "api:file.save{upload=image}"
+      ],
+      "difference": "Legacy re-encodes png, gif, jpg and jpeg uploads with ColdFusion's image engine into `_source`, `_small` and `_medium` renditions, and may replace the stored original with a resized copy (core/mura/content/file/processImgCfimage.cfc:266-320,371-417; core/mura/content/file/fileDAO.cfc:159-179, which also stores `_small` and `_medium` JPEGs for flv). Another encoder cannot reproduce those bytes.",
+      "decision": "preserve",
+      "reason": "Equivalence is impossible, so the `{upload=image}` variants stay `legacy-write` inside write windows, which import their originals and renditions into Cloud Storage for the target to serve byte for byte through `/_api/render`. Non-image uploads are carried.",
+      "status": "halted",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-CO-07.json",
+        "replay": "opt2/reports/parity.json#GS-CO-07"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-SEC-APPRELOAD",
+      "scenario": "GS-PS-04",
+      "routeKey": "appreload",
+      "appliesTo": [],
+      "difference": "Any request other than `method=processAsyncObject` whose query string carries the reload key (`application.appReloadKey`, default `appreload`) re-runs application start-up without authentication (core/appcfc/onApplicationStart_include.cfm:80,99; core/appcfc/onRequestStart_include.cfm:123-130).",
+      "decision": "fix",
+      "reason": "Pre-existing weakness, reported and not fixed: the proposal is to require an authenticated S2 user or a secret, non-default reload key. The reload entry is `legacy-write` in every version, so the proposal never affects cut-over and is not activated this run.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-PS-04.json",
+        "replay": "opt2/reports/parity.json#GS-PS-04"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    }
+  ]
+}

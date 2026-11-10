@@ -1,0 +1,151 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "generatedBy": "harness/src/events/",
+  "generatedAt": null,
+  "status": "pending-run",
+  "outboxReplay": {
+    "command": "opt2-outbox replay --since <ts>",
+    "before": {
+      "inboxCounts": null,
+      "aggregateChecksums": null
+    },
+    "after": {
+      "inboxCounts": null,
+      "aggregateChecksums": null
+    },
+    "unchanged": null
+  },
+  "checks": {
+    "duplicateDelivery": null,
+    "outOfOrderState": null,
+    "outOfOrderProcess": null,
+    "droppedDeliveryRecovered": null,
+    "unpublishedRowSwept": null,
+    "sweepChainRecreated": null,
+    "fanoutRedelivery": null,
+    "dlqReplayOnce": null
+  },
+  "seams": {
+    "archiveToBlackout": {
+      "topic": "people.person.archived.v1",
+      "result": null,
+      "source": "harness/e2e/events/"
+    },
+    "surveyToCloudTasks": {
+      "topic": "surveys.survey.scheduled.v1",
+      "result": null,
+      "source": "harness/e2e/events/"
+    }
+  },
+  "topics": [
+    {
+      "topic": "programs-sites.site.changed.v1",
+      "producer": "programs-sites",
+      "consumers": [
+        "identity",
+        "people",
+        "strategies-content",
+        "communications",
+        "reporting",
+        "surveys",
+        "timesheets",
+        "finance",
+        "e-signature",
+        "stub"
+      ],
+      "kind": "state",
+      "tenantFanout": null,
+      "provenance": "planning"
+    },
+    {
+      "topic": "identity.group.changed.v1",
+      "producer": "identity",
+      "consumers": [
+        "people",
+        "strategies-content"
+      ],
+      "kind": "state",
+      "tenantFanout": null,
+      "provenance": "planning"
+    },
+    {
+      "topic": "identity.permission.changed.v1",
+      "producer": "identity",
+      "consumers": [
+        "strategies-content"
+      ],
+      "kind": "state",
+      "tenantFanout": null,
+      "provenance": "planning"
+    },
+    {
+      "topic": "identity.membership.changed.v1",
+      "producer": "identity",
+      "consumers": [
+        "strategies-content"
+      ],
+      "kind": "state",
+      "tenantFanout": null,
+      "provenance": "planning"
+    },
+    {
+      "topic": "identity.login-mail.requested.v1",
+      "producer": "identity",
+      "consumers": [
+        "communications"
+      ],
+      "kind": "process",
+      "tenantFanout": null,
+      "provenance": "planning"
+    },
+    {
+      "topic": "people.person.changed.v1",
+      "producer": "people",
+      "consumers": [
+        "identity"
+      ],
+      "kind": "state",
+      "tenantFanout": null,
+      "provenance": "planning"
+    },
+    {
+      "topic": "people.person.archived.v1",
+      "producer": "people",
+      "consumers": [
+        "timesheets"
+      ],
+      "kind": "process",
+      "tenantFanout": "userPool",
+      "provenance": "planning"
+    },
+    {
+      "topic": "surveys.survey.scheduled.v1",
+      "producer": "surveys",
+      "consumers": [
+        "communications"
+      ],
+      "kind": "process",
+      "tenantFanout": null,
+      "provenance": "planning"
+    },
+    {
+      "topic": "communications.message.delivery-status-changed.v1",
+      "producer": "communications",
+      "consumers": [],
+      "kind": null,
+      "tenantFanout": null,
+      "provenance": "planning"
+    },
+    {
+      "topic": "stub.note.created.v1",
+      "producer": "stub",
+      "consumers": [
+        "stub"
+      ],
+      "kind": null,
+      "tenantFanout": null,
+      "provenance": "planning"
+    }
+  ],
+  "result": "pending-run"
+}

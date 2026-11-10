@@ -1,0 +1,34 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "generatedBy": "migration/src/transition/",
+  "generatedAt": null,
+  "status": "pending-run",
+  "planned": {
+    "provenance": "planning",
+    "items": [
+      {
+        "from": "v0001",
+        "to": "v0002",
+        "stage": 6,
+        "purpose": "cut-over: carry groups target-authoritative after parity replay"
+      },
+      {
+        "from": "v0002",
+        "to": "v0003",
+        "stage": 8,
+        "purpose": "people-roster rollback rehearsal: roster group set R returns to legacy"
+      }
+    ]
+  },
+  "steps": [
+    "transition-set",
+    "stop-new-work",
+    "confirm-inflight-finished",
+    "drain-effects",
+    "close-gates",
+    "final-state-and-reconcile",
+    "activate",
+    "hand-off-and-reopen"
+  ],
+  "transitions": []
+}

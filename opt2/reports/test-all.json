@@ -1,0 +1,213 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "generatedBy": "harness/repro/test-all.sh",
+  "generatedAt": null,
+  "status": "pending-run",
+  "exitCode": null,
+  "exitCodes": {
+    "0": "all stages passed",
+    "2": "completed with acceptance items unmet (fixtures unavailable)"
+  },
+  "fixtures": {
+    "available": null,
+    "reason": null,
+    "source": "${OPT2_STATE_DIR}/fixtures.json"
+  },
+  "stages": [
+    {
+      "stage": 0,
+      "name": "pin-and-synthetic-labels",
+      "result": null,
+      "durationMs": null,
+      "evidence": [
+        "harness/src/reporting/check-pin.ts",
+        "harness/src/reporting/check-synthetic.ts"
+      ]
+    },
+    {
+      "stage": 1,
+      "name": "legacy-baseline",
+      "result": null,
+      "durationMs": null,
+      "evidence": [
+        "opt2/reports/baseline.json"
+      ]
+    },
+    {
+      "stage": 2,
+      "name": "platform-on-stub",
+      "result": null,
+      "durationMs": null,
+      "evidence": [
+        "opt2/reports/platform-proof.json"
+      ]
+    },
+    {
+      "stage": 3,
+      "name": "each-service",
+      "result": null,
+      "durationMs": null,
+      "evidence": [
+        "services/identity: npm test",
+        "services/people: npm test",
+        "services/programs-sites: npm test",
+        "services/strategies-content: npm test",
+        "services/communications: npm test",
+        "services/reporting: npm test",
+        "services/surveys: npm test",
+        "services/timesheets: npm test",
+        "services/finance: npm test",
+        "services/e-signature: npm test",
+        "web: npm test",
+        "migration: npm test",
+        "harness: npm test"
+      ]
+    },
+    {
+      "stage": 4,
+      "name": "migration",
+      "result": null,
+      "durationMs": null,
+      "evidence": [
+        "opt2/reports/reconciliation/summary.md"
+      ]
+    },
+    {
+      "stage": 5,
+      "name": "capture",
+      "result": null,
+      "durationMs": null,
+      "evidence": [
+        "harness/golden/sets/"
+      ]
+    },
+    {
+      "stage": 6,
+      "name": "cut-over",
+      "result": null,
+      "durationMs": null,
+      "evidence": [
+        "opt2/reports/transitions.json",
+        "opt2/reports/reconciliation/post-cutover.json"
+      ]
+    },
+    {
+      "stage": 7,
+      "name": "equivalence-and-cross-cutting",
+      "result": null,
+      "durationMs": null,
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/reports/isolation.json",
+        "opt2/reports/events.json",
+        "opt2/reports/observability.json"
+      ]
+    },
+    {
+      "stage": 8,
+      "name": "rollback",
+      "result": null,
+      "durationMs": null,
+      "evidence": [
+        "opt2/reports/rollback-rehearsal.md"
+      ]
+    },
+    {
+      "stage": 9,
+      "name": "reports",
+      "result": null,
+      "durationMs": null,
+      "evidence": [
+        "opt2/reports/speed.json",
+        "opt2/reports/reviewability.json",
+        "opt2/reports/windows.json",
+        "opt2/reports/transitions.json"
+      ]
+    }
+  ],
+  "serviceMatrix": [
+    {
+      "service": "identity",
+      "parity": { "state": "pending-run", "reason": null },
+      "contract": { "state": "pending-run", "reason": null },
+      "isolation": { "state": "pending-run", "reason": null },
+      "events": { "state": "pending-run", "reason": null },
+      "security": { "state": "pending-run", "reason": null }
+    },
+    {
+      "service": "people",
+      "parity": { "state": "pending-run", "reason": null },
+      "contract": { "state": "pending-run", "reason": null },
+      "isolation": { "state": "pending-run", "reason": null },
+      "events": { "state": "pending-run", "reason": null },
+      "security": { "state": "pending-run", "reason": null }
+    },
+    {
+      "service": "programs-sites",
+      "parity": { "state": "pending-run", "reason": null },
+      "contract": { "state": "pending-run", "reason": null },
+      "isolation": { "state": "pending-run", "reason": null },
+      "events": { "state": "pending-run", "reason": null },
+      "security": { "state": "pending-run", "reason": null }
+    },
+    {
+      "service": "strategies-content",
+      "parity": { "state": "pending-run", "reason": null },
+      "contract": { "state": "pending-run", "reason": null },
+      "isolation": { "state": "pending-run", "reason": null },
+      "events": { "state": "pending-run", "reason": null },
+      "security": { "state": "pending-run", "reason": null }
+    },
+    {
+      "service": "communications",
+      "parity": { "state": "pending-run", "reason": null },
+      "contract": { "state": "pending-run", "reason": null },
+      "isolation": { "state": "pending-run", "reason": null },
+      "events": { "state": "pending-run", "reason": null },
+      "security": { "state": "pending-run", "reason": null }
+    },
+    {
+      "service": "reporting",
+      "parity": { "state": "pending-run", "reason": null },
+      "contract": { "state": "pending-run", "reason": null },
+      "isolation": { "state": "pending-run", "reason": null },
+      "events": { "state": "pending-run", "reason": null },
+      "security": { "state": "pending-run", "reason": null }
+    },
+    {
+      "service": "surveys",
+      "parity": { "state": "pending-run", "reason": null },
+      "contract": { "state": "pending-run", "reason": null },
+      "isolation": { "state": "pending-run", "reason": null },
+      "events": { "state": "pending-run", "reason": null },
+      "security": { "state": "pending-run", "reason": null }
+    },
+    {
+      "service": "timesheets",
+      "parity": { "state": "pending-run", "reason": null },
+      "contract": { "state": "pending-run", "reason": null },
+      "isolation": { "state": "pending-run", "reason": null },
+      "events": { "state": "pending-run", "reason": null },
+      "security": { "state": "pending-run", "reason": null }
+    },
+    {
+      "service": "finance",
+      "parity": { "state": "pending-run", "reason": null },
+      "contract": { "state": "pending-run", "reason": null },
+      "isolation": { "state": "pending-run", "reason": null },
+      "events": { "state": "pending-run", "reason": null },
+      "security": { "state": "pending-run", "reason": null }
+    },
+    {
+      "service": "e-signature",
+      "parity": { "state": "pending-run", "reason": null },
+      "contract": { "state": "pending-run", "reason": null },
+      "isolation": { "state": "pending-run", "reason": null },
+      "events": { "state": "pending-run", "reason": null },
+      "security": { "state": "pending-run", "reason": null }
+    }
+  ],
+  "unmet": [],
+  "cloudPathsUntested": "Identity Platform tokens, invocation credentials, Cloud Tasks, storage signing, Secret Manager, the db-bootstrap job and the collector sidecar are untested against live services; terraform plan proves resources and bindings only (AAP 0.11.2)",
+  "result": "pending-run"
+}

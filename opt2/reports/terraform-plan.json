@@ -1,0 +1,43 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "generatedBy": "infra/terraform/plan.sh",
+  "generatedAt": null,
+  "status": "pending-run",
+  "terraformVersion": "1.17.1",
+  "providerVersion": "hashicorp/google 8.9.0",
+  "commands": [
+    "terraform -chdir=envs/plan init -backend=false -input=false",
+    "terraform fmt -check -recursive",
+    "terraform -chdir=envs/plan validate",
+    "terraform -chdir=envs/plan plan -input=false -refresh=false -lock=false -var-file=plan.tfvars -out=<state-dir>/tfplan",
+    "terraform -chdir=envs/plan show -json <state-dir>/tfplan"
+  ],
+  "applied": false,
+  "expected": {
+    "provenance": "planning",
+    "cloudRunServices": [
+      "gateway",
+      "web",
+      "identity",
+      "people",
+      "programs-sites",
+      "strategies-content",
+      "communications",
+      "reporting",
+      "surveys",
+      "timesheets",
+      "finance",
+      "e-signature",
+      "migration"
+    ],
+    "cloudRunJobs": [
+      "db-bootstrap"
+    ],
+    "minInstanceCount": {
+      "default": 0,
+      "migration": 1
+    }
+  },
+  "minInstanceCounts": null,
+  "plan": null
+}

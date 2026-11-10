@@ -1,0 +1,18 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "generatedBy": "harness/e2e/isolation/platform-proof.e2e.test.ts",
+  "generatedAt": null,
+  "status": "pending-run",
+  "target": { "service": "services/stub", "port": 8199, "tableVersion": "v0001", "routes": "/opt2/stub/**", "topic": "stub.note.created.v1" },
+  "checks": [
+    { "id": "dispatch", "title": "gateway dispatches /opt2/stub/** to the stub", "result": null, "evidence": null },
+    { "id": "unmoved-to-legacy", "title": "unmoved route proxied to legacy unchanged", "result": null, "evidence": null },
+    { "id": "fail-closed-write", "title": "write fails closed with legacy-shaped 503 when the stub is down", "result": null, "evidence": null },
+    { "id": "outbox-pubsub-idempotent-consumer", "title": "outbox -> Pub/Sub -> idempotent consumer (stub.note_projection)", "result": null, "evidence": null },
+    { "id": "dlq-replay", "title": "dead-lettered message replays once", "result": null, "evidence": null },
+    { "id": "rls-isolation", "title": "RLS isolates tenant A from B", "result": null, "evidence": null },
+    { "id": "log-schema", "title": "log lines validate against log-record.v1", "result": null, "evidence": null },
+    { "id": "trace", "title": "one traceId across gateway, stub and consumer", "result": null, "evidence": null }
+  ],
+  "result": "pending-run"
+}

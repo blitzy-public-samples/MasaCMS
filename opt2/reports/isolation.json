@@ -1,0 +1,217 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "generatedBy": "harness/src/isolation/",
+  "generatedAt": null,
+  "status": "pending-run",
+  "tenants": {
+    "a": "tenant-a",
+    "b": "tenant-b",
+    "umbrella": "umbrella",
+    "idRule": "tenantIdForSite(siteID): UUIDv5 under 6f0a2c1e-5b7d-4e8a-9c3f-0d1e2f3a4b5c"
+  },
+  "passCondition": "crossTenantReads = 0 and crossTenantWrites = 0 for every service and consumer; RLS enabled+forced with USING and WITH CHECK on every tenant table; no role with rolbypassrls or rolsuper",
+  "services": [
+    {
+      "service": "identity",
+      "schema": "identity",
+      "crossTenantReads": null,
+      "crossTenantWrites": null,
+      "pooledConnectionReuse": {
+        "rowsSeen": null,
+        "writeBlocked": null
+      },
+      "rlsCatalog": {
+        "tables": null,
+        "enabled": null,
+        "forced": null,
+        "usingAndWithCheck": null
+      },
+      "source": "services/identity/test/isolation/"
+    },
+    {
+      "service": "people",
+      "schema": "people",
+      "crossTenantReads": null,
+      "crossTenantWrites": null,
+      "pooledConnectionReuse": {
+        "rowsSeen": null,
+        "writeBlocked": null
+      },
+      "rlsCatalog": {
+        "tables": null,
+        "enabled": null,
+        "forced": null,
+        "usingAndWithCheck": null
+      },
+      "source": "services/people/test/isolation/"
+    },
+    {
+      "service": "programs-sites",
+      "schema": "programs_sites",
+      "crossTenantReads": null,
+      "crossTenantWrites": null,
+      "pooledConnectionReuse": {
+        "rowsSeen": null,
+        "writeBlocked": null
+      },
+      "rlsCatalog": {
+        "tables": null,
+        "enabled": null,
+        "forced": null,
+        "usingAndWithCheck": null
+      },
+      "source": "services/programs-sites/test/isolation/"
+    },
+    {
+      "service": "strategies-content",
+      "schema": "content",
+      "crossTenantReads": null,
+      "crossTenantWrites": null,
+      "pooledConnectionReuse": {
+        "rowsSeen": null,
+        "writeBlocked": null
+      },
+      "rlsCatalog": {
+        "tables": null,
+        "enabled": null,
+        "forced": null,
+        "usingAndWithCheck": null
+      },
+      "source": "services/strategies-content/test/isolation/"
+    },
+    {
+      "service": "communications",
+      "schema": "communications",
+      "crossTenantReads": null,
+      "crossTenantWrites": null,
+      "pooledConnectionReuse": {
+        "rowsSeen": null,
+        "writeBlocked": null
+      },
+      "rlsCatalog": {
+        "tables": null,
+        "enabled": null,
+        "forced": null,
+        "usingAndWithCheck": null
+      },
+      "source": "services/communications/test/isolation/"
+    },
+    {
+      "service": "reporting",
+      "schema": "reporting",
+      "crossTenantReads": null,
+      "crossTenantWrites": null,
+      "pooledConnectionReuse": {
+        "rowsSeen": null,
+        "writeBlocked": null
+      },
+      "rlsCatalog": {
+        "tables": null,
+        "enabled": null,
+        "forced": null,
+        "usingAndWithCheck": null
+      },
+      "source": "services/reporting/test/isolation/"
+    },
+    {
+      "service": "surveys",
+      "schema": "surveys",
+      "crossTenantReads": null,
+      "crossTenantWrites": null,
+      "pooledConnectionReuse": {
+        "rowsSeen": null,
+        "writeBlocked": null
+      },
+      "rlsCatalog": {
+        "tables": null,
+        "enabled": null,
+        "forced": null,
+        "usingAndWithCheck": null
+      },
+      "source": "services/surveys/test/isolation/"
+    },
+    {
+      "service": "timesheets",
+      "schema": "timesheets",
+      "crossTenantReads": null,
+      "crossTenantWrites": null,
+      "pooledConnectionReuse": {
+        "rowsSeen": null,
+        "writeBlocked": null
+      },
+      "rlsCatalog": {
+        "tables": null,
+        "enabled": null,
+        "forced": null,
+        "usingAndWithCheck": null
+      },
+      "source": "services/timesheets/test/isolation/"
+    },
+    {
+      "service": "finance",
+      "schema": "finance",
+      "crossTenantReads": null,
+      "crossTenantWrites": null,
+      "pooledConnectionReuse": {
+        "rowsSeen": null,
+        "writeBlocked": null
+      },
+      "rlsCatalog": {
+        "tables": null,
+        "enabled": null,
+        "forced": null,
+        "usingAndWithCheck": null
+      },
+      "source": "services/finance/test/isolation/"
+    },
+    {
+      "service": "e-signature",
+      "schema": "esignature",
+      "crossTenantReads": null,
+      "crossTenantWrites": null,
+      "pooledConnectionReuse": {
+        "rowsSeen": null,
+        "writeBlocked": null
+      },
+      "rlsCatalog": {
+        "tables": null,
+        "enabled": null,
+        "forced": null,
+        "usingAndWithCheck": null
+      },
+      "source": "services/e-signature/test/isolation/"
+    },
+    {
+      "service": "stub",
+      "schema": "stub",
+      "crossTenantReads": null,
+      "crossTenantWrites": null,
+      "pooledConnectionReuse": {
+        "rowsSeen": null,
+        "writeBlocked": null
+      },
+      "rlsCatalog": {
+        "tables": null,
+        "enabled": null,
+        "forced": null,
+        "usingAndWithCheck": null
+      },
+      "source": "services/stub/test/isolation/"
+    }
+  ],
+  "consumers": [],
+  "roles": {
+    "rolbypassrls": null,
+    "rolsuper": null,
+    "membershipViolations": null
+  },
+  "endToEnd": {
+    "via": "gateway http://127.0.0.1:8100",
+    "crossTenantReads": null,
+    "crossTenantWrites": null,
+    "surveyGrantOnly": null,
+    "fanoutRegistryOnly": null,
+    "source": "harness/e2e/isolation/"
+  },
+  "result": "pending-run"
+}

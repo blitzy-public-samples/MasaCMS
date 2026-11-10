@@ -1,0 +1,21 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "generatedBy": "harness/e2e/events/trace.e2e.test.ts",
+  "generatedAt": null,
+  "status": "pending-run",
+  "scenario": "people archive through the gateway (seam 1)",
+  "traceSource": "${OPT2_STATE_DIR}/otel/traces.jsonl",
+  "trace": {
+    "traceId": null,
+    "singleTrace": null,
+    "requiredSpans": [
+      { "name": "gateway server span", "service": "gateway", "found": null, "spanId": null, "parentSpanId": null },
+      { "name": "people server span (archive)", "service": "people", "found": null, "spanId": null, "parentSpanId": null },
+      { "name": "outbox publish span", "service": "people", "found": null, "spanId": null, "parentSpanId": null },
+      { "name": "timesheets consumer span", "service": "timesheets", "found": null, "spanId": null, "parentSpanId": null }
+    ]
+  },
+  "droppedContextTest": { "source": "platform/test/contract/trace-propagation.test.ts", "failsByDesign": null },
+  "logs": { "schema": "platform/contracts/log-record.v1.json", "linesChecked": null, "invalid": null, "invalidSamples": [] },
+  "result": "pending-run"
+}
