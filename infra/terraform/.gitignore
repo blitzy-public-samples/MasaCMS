@@ -1,0 +1,5 @@
+# Terraform working files; .terraform.lock.hcl stays tracked.
+.terraform/
+*.tfstate
+*.tfstate.*
+tfplan

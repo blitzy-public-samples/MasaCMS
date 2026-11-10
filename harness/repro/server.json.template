@@ -1,0 +1,28 @@
+{
+  "name": "@SERVER_NAME@",
+  "openBrowser": false,
+  "trayEnable": false,
+  "app": {
+    "cfengine": "@CFENGINE@",
+    "serverHomeDirectory": "@SERVER_HOME@"
+  },
+  "web": {
+    "webroot": "@WEBROOT@",
+    "host": "@HOST@",
+    "http": {
+      "enable": true,
+      "port": "@PORT@"
+    },
+    "ssl": {
+      "enable": false
+    },
+    "rewrites": {
+      "enable": true
+    }
+  },
+  "jvm": {
+    "javaHome": "/usr/lib/jvm/java-17-openjdk-amd64",
+    "heapSize": 2048,
+    "args": "@JVM_ARGS@"
+  }
+}
