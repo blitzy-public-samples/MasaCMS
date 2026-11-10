@@ -65,7 +65,8 @@ function deleteNoCase(obj: Record<string, unknown>, key: string): void {
 function setNoCase(obj: Record<string, unknown>, key: string, value: unknown): void {
   const [found = key, ...duplicates] = keysNoCase(obj, key);
   for (const k of duplicates) delete obj[k];
-  obj[found] = value;
+  // Defined, not assigned, so a `__proto__` key stays a data key as structAppend copies it.
+  Object.defineProperty(obj, found, { value, writable: true, enumerable: true, configurable: true });
 }
 
 /** CFML isDefined on a struct member: present and not null. */

@@ -10,7 +10,7 @@
         "from": "v0001",
         "to": "v0002",
         "stage": 6,
-        "purpose": "cut-over: carry groups target-authoritative after parity replay"
+        "purpose": "cut-over: activate v0002 (carry groups target-authoritative) for stage-7 parity replay; the file is committed after replay"
       },
       {
         "from": "v0002",

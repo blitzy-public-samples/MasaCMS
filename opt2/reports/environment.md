@@ -19,7 +19,8 @@ The tech spec's "Runtime" lists only Lucee 5 and ACF 2016 sandboxes; this run's 
 | OpenTelemetry Collector | `otelcol-contrib --version` | v0.164.0 | pending-run |
 | Google Cloud CLI (Pub/Sub emulator) | `gcloud version` | — | pending-run |
 | CommandBox | `box version` | — | pending-run |
-| Java | `java -version` | 17 | pending-run |
+| Java (default CLI JVM) | `java -version` | — | pending-run |
+| Java (ColdFusion JVM) | `/usr/lib/jvm/java-17-openjdk-amd64/bin/java -version` (`jvm.javaHome` in `harness/repro/server.json.template`) | 17 | pending-run |
 | sqlcmd | `sqlcmd -?` version line | — | pending-run |
 | PostgreSQL client | `psql --version` | 16.x | pending-run |
 

@@ -45,7 +45,7 @@ Unit counts cover Masa tables; fixture tables and their units are under Fixture 
 | communications | `temails`, `temailstats`, `temailreturnstats`, `tmailinglist`, `tmailinglistmembers`; its `ttrash` share | Schema `communications`, 6 units | 1 |
 | reporting | `tsessiontracking` | Schema `reporting`, 1 unit | 1 |
 | retired | `tglobals` (dropped by `core/mura/dbUpdates/5.7.cfm:136`); `testoption`, `testwidget` (created only by the TestBox entities spec) | None; nothing migrates | — |
-| decision list | `tplugins`, `tpluginsettings`, `tpluginscripts`, `tplugindisplayobjects`, `tclusterpeers`, `tclustercommands`, `tentity`, `tentity-declared:*`, `tremotepointer`, `trazunasettings`, `tcontenteventreminders`, `fb_*` ([decision-list.md](decision-list.md)) | None until approved | 5 |
+| decision list | `tplugins`, `tpluginsettings`, `tpluginscripts`, `tplugindisplayobjects`, `tclusterpeers`, `tclustercommands`, `tentity`, `tentity-declared:*`, `tremotepointer`, `trazunasettings`, `tcontenteventreminders`, `fb_*` (`opt2/decision-list.md`, pending) | None until approved | 5 |
 | migration | `opt2_sync.projector_checkpoint` (reverse-projector checkpoint in the legacy database) | None; coordination state that never migrates | — |
 
 ## `tusers` column split

@@ -52,6 +52,6 @@ Values are `target-primary` or `legacy-primary`; the mode changes only if `R` co
 | GS-PE-RH-03 (archive → blackout) | `harness/golden/sets/GS-PE-RH-03.json` | pending-run | pending-run |
 | GS-ID-09 (session step across `v0003` activation) | `harness/golden/sets/GS-ID-09.json` | pending-run | pending-run |
 
-Golden sets are captured at `harness/repro/test-all.sh` stage 5 from the same seeded state, on the reserved rehearsal identities (`legacy-fixtures/seed/seed.config.json` `reserved.rehearsal`).
+GS-PE-RH-01/02/03 golden sets are captured at `harness/repro/test-all.sh` stage 5 from the same seeded state, on the reserved rehearsal identities (`legacy-fixtures/seed/seed.config.json` `reserved.rehearsal`), which no other scenario may reference. GS-ID-09 is the session-continuity case: its session step runs across the `v0003` activation and uses no reserved identity.
 
 With fixtures unavailable, the rehearsal covers create and edit only; the archive-to-blackout leg (GS-PE-RH-03) is unmet (AAP 0.7.6).

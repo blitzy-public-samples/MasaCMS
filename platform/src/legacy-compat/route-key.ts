@@ -974,4 +974,3 @@ export function routeKeyForEntryPoint(entry: RouteEntryPoint, opts: RouteKeyOpti
       );
   }
 }
-
