@@ -4,7 +4,7 @@ import path from 'node:path';
 import { Writable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { UsageError, isMainModule, parseFlags, runCli, type CliIo, type CliMain } from '../../src/lib/cli.js';
 import { REPO_ROOT } from '../../src/lib/paths.js';
 
@@ -430,5 +430,408 @@ describe('isMainModule', () => {
   it('is false when node has no script argument', () => {
     process.argv = ['node'];
     expect(isMainModule(moduleUrl)).toBe(false);
+  });
+});
+
+// The same API driven through a `test-cmd` boundary with its own flag spec, argv capture and summary-line checks.
+describe('cli through an injected test-cmd boundary', () => {
+  const USAGE = 'usage: test-cmd [--confirm] [--out <file>] [pos]';
+  const OPTIONS = { confirm: { type: 'boolean', short: 'c' }, out: { type: 'string' } } as const;
+
+  /** Injected process boundary: stdout chunks land in `lines`, exit codes in `codes`, and nothing exits. */
+  function captureIo(argv: string[] = []): { io: CliIo; lines: string[]; codes: number[] } {
+    const lines: string[] = [];
+    const codes: number[] = [];
+    const io: CliIo = {
+      argv,
+      stdout: { write: (chunk: string) => lines.push(chunk) },
+      exit: (code) => {
+        codes.push(code);
+      },
+      command: 'test-cmd',
+    };
+    return { io, lines, codes };
+  }
+
+  /** Parsed summary line; fails unless exactly one newline-terminated single-line chunk was written. */
+  function summaryOf(lines: string[]): Record<string, unknown> {
+    expect(lines).toHaveLength(1);
+    const chunk = lines[0] ?? '';
+    expect(chunk.endsWith('\n')).toBe(true);
+    expect(chunk.indexOf('\n')).toBe(chunk.length - 1);
+    return JSON.parse(chunk) as Record<string, unknown>;
+  }
+
+  /** What `run` throws, or `undefined` when it returns. */
+  function thrownBy(run: () => unknown): unknown {
+    try {
+      run();
+    } catch (err) {
+      return err;
+    }
+    return undefined;
+  }
+
+  /** Runs `run` synchronously while `process.argv` holds no script path, as under `node -e`. */
+  function withoutScript<T>(run: () => T): T {
+    const saved = process.argv;
+    process.argv = saved.slice(0, 1);
+    try {
+      return run();
+    } finally {
+      process.argv = saved;
+    }
+  }
+
+  function muteStderr() {
+    return vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('UsageError', () => {
+    it('is an Error named UsageError with optional usage text', () => {
+      const err = new UsageError('bad flag', USAGE);
+      expect(err).toBeInstanceOf(Error);
+      expect(err).toMatchObject({ name: 'UsageError', message: 'bad flag', usage: USAGE });
+      expect(new UsageError('bad flag').usage).toBeUndefined();
+    });
+  });
+
+  describe('runCli success', () => {
+    it('writes one JSON line with the command, status and summary fields, then exits 0', async () => {
+      const { io, lines, codes } = captureIo();
+      await expect(runCli(() => ({ summary: { n: 1 } }), io)).resolves.toBe(0);
+      expect(summaryOf(lines)).toEqual({ command: 'test-cmd', ok: true, code: 0, n: 1 });
+      expect(lines[0]).toBe('{"command":"test-cmd","ok":true,"code":0,"n":1}\n');
+      expect(codes).toEqual([0]);
+    });
+
+    it('exits 0 with a bare status line when main resolves undefined', async () => {
+      const { io, lines, codes } = captureIo();
+      await expect(runCli(async () => undefined, io)).resolves.toBe(0);
+      expect(summaryOf(lines)).toEqual({ command: 'test-cmd', ok: true, code: 0 });
+      expect(codes).toEqual([0]);
+    });
+
+    it.each([3, 4, 255])('exits %i when main returns that code, still printing one line', async (code) => {
+      const { io, lines, codes } = captureIo();
+      await expect(runCli(() => ({ code, summary: { n: 1 } }), io)).resolves.toBe(code);
+      expect(summaryOf(lines)).toEqual({ command: 'test-cmd', ok: false, code, n: 1 });
+      expect(codes).toEqual([code]);
+    });
+
+    it('keeps command, ok and code authoritative over summary fields of the same name', async () => {
+      const { io, lines } = captureIo();
+      await runCli(() => ({ code: 3, summary: { command: 'other', ok: true, code: 0, n: 1 } }), io);
+      expect(summaryOf(lines)).toEqual({ command: 'test-cmd', ok: false, code: 3, n: 1 });
+    });
+
+    it('passes io.argv to main', async () => {
+      const argv = ['--confirm', '--out', '/x', 'pos'];
+      const seen: string[][] = [];
+      const { io } = captureIo(argv);
+      await runCli((received) => {
+        seen.push(received);
+      }, io);
+      expect(seen).toEqual([argv]);
+    });
+
+    it('writes the line before calling exit', async () => {
+      const events: string[] = [];
+      await runCli(() => undefined, {
+        argv: [],
+        stdout: { write: (chunk: string) => events.push(`write ${chunk}`) },
+        exit: (code) => {
+          events.push(`exit ${code}`);
+        },
+        command: 'test-cmd',
+      });
+      expect(events).toEqual(['write {"command":"test-cmd","ok":true,"code":0}\n', 'exit 0']);
+    });
+
+    it('exits only after a Writable sink has flushed the line', async () => {
+      const events: string[] = [];
+      const stdout = new Writable({
+        write(chunk: Buffer, _encoding, done) {
+          events.push(`write ${chunk.toString()}`);
+          setImmediate(() => {
+            events.push('flushed');
+            done();
+          });
+        },
+      });
+      const code = await runCli(() => ({ summary: { n: 1 } }), {
+        argv: [],
+        stdout,
+        exit: (exitCode) => {
+          events.push(`exit ${exitCode}`);
+        },
+        command: 'test-cmd',
+      });
+      expect(code).toBe(0);
+      expect(events).toEqual(['write {"command":"test-cmd","ok":true,"code":0,"n":1}\n', 'flushed', 'exit 0']);
+    });
+
+    it('defaults argv and command to the running script, relative to the repository root', async () => {
+      const { io, lines } = captureIo();
+      const seen: string[][] = [];
+      await runCli(
+        (received) => {
+          seen.push(received);
+        },
+        { stdout: io.stdout, exit: io.exit },
+      );
+      expect(seen).toEqual([process.argv.slice(2)]);
+      const { command } = summaryOf(lines);
+      expect(typeof command).toBe('string');
+      expect(path.isAbsolute(command as string)).toBe(false);
+      expect(command).not.toContain('\\');
+      expect(path.resolve(REPO_ROOT, command as string)).toBe(path.resolve(process.argv[1] ?? ''));
+    });
+
+    it('names an empty command when the process has no script path', async () => {
+      const { io, lines, codes } = captureIo();
+      const seen: string[][] = [];
+      const pending = withoutScript(() =>
+        runCli(
+          (received) => {
+            seen.push(received);
+          },
+          { stdout: io.stdout, exit: io.exit },
+        ),
+      );
+      await expect(pending).resolves.toBe(0);
+      expect(seen).toEqual([[]]);
+      expect(summaryOf(lines)).toEqual({ command: '', ok: true, code: 0 });
+      expect(codes).toEqual([0]);
+    });
+  });
+
+  describe('runCli failures', () => {
+    it('exits 1 on a thrown Error, with its message on the line and its stack on stderr only', async () => {
+      const stderr = muteStderr();
+      const err = new Error('boom');
+      const { io, lines, codes } = captureIo();
+      await expect(
+        runCli(() => {
+          throw err;
+        }, io),
+      ).resolves.toBe(1);
+      expect(summaryOf(lines)).toEqual({
+        command: 'test-cmd',
+        ok: false,
+        code: 1,
+        error: { type: 'Error', message: 'boom' },
+      });
+      expect(lines[0]).not.toContain(' at ');
+      expect(stderr).toHaveBeenCalledWith(`${err.stack ?? ''}\n`);
+      expect(codes).toEqual([1]);
+    });
+
+    it.each<[string, CliMain]>([
+      [
+        'a synchronous throw',
+        () => {
+          throw new TypeError('sync failure');
+        },
+      ],
+      [
+        'an async rejection',
+        async () => {
+          await Promise.resolve();
+          throw new TypeError('async failure');
+        },
+      ],
+      ['a rejected promise', () => Promise.reject(new TypeError('rejected failure'))],
+    ])('exits 1 on %s', async (_label, main) => {
+      muteStderr();
+      const { io, lines, codes } = captureIo();
+      await expect(runCli(main, io)).resolves.toBe(1);
+      expect(summaryOf(lines)).toMatchObject({
+        command: 'test-cmd',
+        ok: false,
+        code: 1,
+        error: { type: 'TypeError', message: expect.stringContaining('failure') },
+      });
+      expect(codes).toEqual([1]);
+    });
+
+    it.each([
+      { label: 'a string', thrown: 'nope' as unknown, error: { type: 'string', message: 'nope' } },
+      { label: 'an object', thrown: { reason: 'x' }, error: { type: 'object', message: "{ reason: 'x' }" } },
+      { label: 'a number', thrown: 42, error: { type: 'number', message: '42' } },
+      { label: 'undefined', thrown: undefined, error: { type: 'undefined', message: 'undefined' } },
+    ])('exits 1 and describes a thrown non-Error ($label)', async ({ thrown, error }) => {
+      const stderr = muteStderr();
+      const { io, lines, codes } = captureIo();
+      await expect(
+        runCli(() => {
+          throw thrown;
+        }, io),
+      ).resolves.toBe(1);
+      expect(summaryOf(lines)).toEqual({ command: 'test-cmd', ok: false, code: 1, error });
+      expect(stderr).toHaveBeenCalledWith(`${error.message}\n`);
+      expect(codes).toEqual([1]);
+    });
+
+    it.each([-1, 256, 1.5, Number.NaN])('exits 1 with a RangeError when main returns exit code %s', async (code) => {
+      muteStderr();
+      const { io, lines, codes } = captureIo();
+      await expect(runCli(() => ({ code, summary: { n: 1 } }), io)).resolves.toBe(1);
+      expect(summaryOf(lines)).toEqual({
+        command: 'test-cmd',
+        ok: false,
+        code: 1,
+        error: { type: 'RangeError', message: `exit code ${String(code)} is not an integer from 0 to 255` },
+      });
+      expect(codes).toEqual([1]);
+    });
+
+    it.each([
+      { label: 'with usage text', usage: USAGE as string | undefined, extra: { usage: USAGE } },
+      { label: 'without usage text', usage: undefined, extra: {} },
+    ])('exits 2 on a UsageError $label, writing nothing to stderr', async ({ usage, extra }) => {
+      const stderr = muteStderr();
+      const { io, lines, codes } = captureIo();
+      await expect(
+        runCli(() => {
+          throw new UsageError('missing --out', usage);
+        }, io),
+      ).resolves.toBe(2);
+      const parsed = summaryOf(lines);
+      expect(parsed).toEqual({
+        command: 'test-cmd',
+        ok: false,
+        code: 2,
+        error: { type: 'UsageError', message: 'missing --out' },
+        ...extra,
+      });
+      expect(Object.keys(parsed)).toHaveLength(usage === undefined ? 4 : 5);
+      expect(stderr).not.toHaveBeenCalled();
+      expect(codes).toEqual([2]);
+    });
+
+    it('exits 2 when parseFlags rejects the arguments main receives', async () => {
+      const { io, lines, codes } = captureIo(['--bogus']);
+      await expect(
+        runCli((argv) => {
+          parseFlags(argv, { options: OPTIONS, usage: USAGE });
+        }, io),
+      ).resolves.toBe(2);
+      expect(summaryOf(lines)).toMatchObject({
+        ok: false,
+        code: 2,
+        error: { type: 'UsageError', message: expect.stringContaining('--bogus') },
+        usage: USAGE,
+      });
+      expect(codes).toEqual([2]);
+    });
+  });
+
+  describe('parseFlags', () => {
+    it('parses booleans, strings and positionals', () => {
+      const { values, positionals } = parseFlags(['--confirm', '--out', '/x', 'pos'], {
+        options: { confirm: { type: 'boolean' }, out: { type: 'string' } },
+        allowPositionals: true,
+      });
+      expect(values.confirm).toBe(true);
+      expect(values.out).toBe('/x');
+      expect({ ...values }).toEqual({ confirm: true, out: '/x' });
+      expect(positionals).toEqual(['pos']);
+    });
+
+    it.each([
+      [['-c', '--out=/x']],
+      [['--out', '/x', '--confirm']],
+    ])('accepts short aliases and inline values in any order (%j)', (argv) => {
+      const { values, positionals } = parseFlags(argv, { options: OPTIONS });
+      expect({ ...values }).toEqual({ confirm: true, out: '/x' });
+      expect(positionals).toEqual([]);
+    });
+
+    it('leaves absent flags undefined', () => {
+      const { values } = parseFlags([], { options: OPTIONS });
+      expect(values.confirm).toBeUndefined();
+      expect(values.out).toBeUndefined();
+      expect({ ...values }).toEqual({});
+    });
+
+    it('applies declared defaults unless the flag is given', () => {
+      const options = {
+        confirm: { type: 'boolean', default: false },
+        out: { type: 'string', default: '/default' },
+      } as const;
+      expect({ ...parseFlags([], { options }).values }).toEqual({ confirm: false, out: '/default' });
+      expect({ ...parseFlags(['--confirm', '--out', '/x'], { options }).values }).toEqual({ confirm: true, out: '/x' });
+    });
+
+    it('collects repeated values of a multiple flag', () => {
+      const { values } = parseFlags(['--tag', 'a', '--tag', 'b'], { options: { tag: { type: 'string', multiple: true } } });
+      expect(values.tag).toEqual(['a', 'b']);
+    });
+
+    it.each([
+      { label: 'an unknown flag', argv: ['--unknown'], names: '--unknown' },
+      { label: 'a string flag without a value', argv: ['--out'], names: '--out' },
+      { label: 'a value on a boolean flag', argv: ['--confirm=yes'], names: '--confirm' },
+      { label: 'a positional when none are allowed', argv: ['pos'], names: 'pos' },
+    ])('raises a UsageError carrying spec.usage for $label', ({ argv, names }) => {
+      const err = thrownBy(() => parseFlags(argv, { options: OPTIONS, usage: USAGE }));
+      expect(err).toBeInstanceOf(UsageError);
+      expect(err).toMatchObject({ name: 'UsageError', message: expect.stringContaining(names), usage: USAGE });
+    });
+
+    it('raises a UsageError without usage text when the spec has none', () => {
+      const err = thrownBy(() => parseFlags(['--unknown'], { options: OPTIONS }));
+      expect(err).toBeInstanceOf(UsageError);
+      expect((err as UsageError).usage).toBeUndefined();
+    });
+
+    it('rethrows an invalid flag spec unchanged instead of as a UsageError', () => {
+      const err = thrownBy(() => parseFlags([], { options: { out: { type: 'string', short: 'xy' } } }));
+      expect(err).toBeInstanceOf(TypeError);
+      expect(err).not.toBeInstanceOf(UsageError);
+      expect(err).toMatchObject({ code: 'ERR_INVALID_ARG_VALUE' });
+    });
+  });
+
+  describe('isMainModule', () => {
+    let dir = '';
+    let script = '';
+
+    beforeAll(async () => {
+      dir = await mkdtemp(path.join(os.tmpdir(), 'opt2-cli-test-'));
+      script = path.join(dir, 'main.ts');
+      await writeFile(script, '');
+      await writeFile(path.join(dir, 'other.ts'), '');
+      await symlink(script, path.join(dir, 'link.ts'));
+    });
+
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    it.each<[string, (dir: string) => string, boolean]>([
+      ['the script itself', (d) => path.join(d, 'main.ts'), true],
+      ['a relative path to the script', (d) => path.relative(process.cwd(), path.join(d, 'main.ts')), true],
+      ['a symlink to the script', (d) => path.join(d, 'link.ts'), true],
+      ['a different file', (d) => path.join(d, 'other.ts'), false],
+      ['a path that does not exist', (d) => path.join(d, 'missing.ts'), false],
+    ])('given %s as argv1, returns %s', (_label, argv1, expected) => {
+      expect(isMainModule(pathToFileURL(script).href, argv1(dir))).toBe(expected);
+    });
+
+    it('defaults argv1 to process.argv[1]', () => {
+      expect(isMainModule(pathToFileURL(process.argv[1] ?? '').href)).toBe(true);
+      expect(isMainModule(pathToFileURL(script).href)).toBe(false);
+      expect(isMainModule(pathToFileURL(script).href, undefined)).toBe(false);
+    });
+
+    it('returns false when the process has no script path', () => {
+      expect(withoutScript(() => isMainModule(pathToFileURL(script).href))).toBe(false);
+    });
   });
 });
