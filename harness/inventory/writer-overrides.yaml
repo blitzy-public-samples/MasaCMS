@@ -1,0 +1,518 @@
+# Reviewed legacy table writers the static extractor cannot resolve; harness/src/inventory merges them into opt2/inventory/legacy-inventory.json tables[].writers[].
+sourceSha: "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+
+writers:
+  - id: wov:scheduler-registration
+    tablesFrom: {job: "job:sitemonitor"}
+    component: core/appcfc/onApplicationStart_include.cfm
+    method: null
+    op: schedule
+    source: {path: core/appcfc/onApplicationStart_include.cfm, lines: [561, 575]}
+    routeKeys: []
+    keyScope: table
+    trigger: appstart
+    sessionEffects: none
+    condition: "iniProperties.ping is true (settings default ping=false, core/templates/settings.template.cfm:91); runs on every start-up, reload and re-initialisation (core/appcfc/onApplicationStart_method.cfm:81, core/appcfc/onRequestStart_include.cfm:131, admin/Application.cfc:184)"
+    preventedBy: scheduler-registration
+    reason: "It registers the ACF siteMonitor task whose runs write every site-monitor step's tables, which no request closure reaches."
+
+  - id: wov:native-sitemonitor-task
+    tablesFrom: {job: "job:sitemonitor"}
+    component: core/mura/content/contentServer.cfc
+    method: handleAPIRequest
+    op: update
+    source: {path: core/mura/content/contentServer.cfc, lines: [669, 747]}
+    routeKeys: ["sitemonitor:run"]
+    keyScope: table
+    trigger: scheduler
+    sessionEffects: none
+    condition: "the ACF task exists only when registered with ping true, every 900 s with a 600 s request timeout (core/appcfc/onApplicationStart_include.cfm:561-575); each step's own writes resolve through application.<manager>"
+    preventedBy: native-sitemonitor-task
+    reason: "The ACF scheduler, not an inventoried request, calls the /_api/sitemonitor handler, so the extractor cannot give its steps a scheduler trigger."
+
+  - id: wov:fixture-survey-tasks
+    tables: [synthetic.survey, synthetic.survey_reminder]
+    component: legacy-fixtures/cfml/modules/surveys.cfc
+    method: handle
+    op: update
+    source: {path: legacy-fixtures/cfml/modules/surveys.cfc, lines: [37, 42]}
+    routeKeys: ["fixture:surveys/surveys/{id}/launch@get", "fixture:surveys/surveys/{id}/remind@get"]
+    keyScope: [id]
+    trigger: scheduler
+    sessionEffects: none
+    condition: "the opt2-survey-<id>-launch and opt2-survey-<id>-reminder-<n> cfschedule tasks that scheduleSurvey creates (surveys.cfc:207-225) call launchCallback (334-341, survey status and launched_at) and remindCallback (343-368, reminder sent_at) with a valid opt2TaskToken"
+    preventedBy: fixture-survey-tasks
+    reason: "ACF tasks the fixture registers at run time issue these requests, so no inventoried entry point carries their scheduler trigger."
+
+  - id: wov:fixture-export-threads
+    tables: [synthetic.export_job]
+    component: legacy-fixtures/cfml/modules/reporting.cfc
+    method: createExport
+    op: update
+    source: {path: legacy-fixtures/cfml/modules/reporting.cfc, lines: [72, 74]}
+    routeKeys: ["fixture:reporting/exports@post"]
+    keyScope: table
+    trigger: thread
+    sessionEffects: none
+    condition: "the opt2-export-<jobId> cfthread runs runExport (reporting.cfc:107-147), which moves the job to running and then done or failed only through synthetic.usp_export_job_transition"
+    preventedBy: fixture-export-threads
+    reason: "The writes run in a cfthread that outlives the request that queued the job, so that request's closure cannot carry them."
+
+  - id: wov:startup-url-conversion
+    tables: [tcontent]
+    columns: [Body, Filename, urltitle]
+    component: core/appcfc/onApplicationStart_include.cfm
+    method: null
+    op: update
+    source: {path: core/appcfc/onApplicationStart_include.cfm, lines: [892, 929]}
+    routeKeys: []
+    keyScope: table
+    trigger: appstart
+    sessionEffects: none
+    condition: "readonly is false and tcontent holds rows with type in ('File','Link'), active=1, body null and filename not null (896-899); sets body=filename (910), then filename and urlTitle (922); contentUtility.setUniqueFilename (912) only computes those values in memory"
+    preventedBy: startup-url-conversion
+    reason: "Start-up code in a .cfm include runs outside every inventoried entry point."
+
+  - id: wov:login-lastlogin
+    tables: [tusers]
+    columns: [LastLogin]
+    component: core/mura/user/userUtility.cfc
+    method: loginByQuery
+    op: update
+    source: {path: core/mura/user/userUtility.cfc, lines: [367, 370]}
+    routeKeys: ["admin:clogin.login", "api:login", "api:processasyncobject", "page:createprofile", "page:login", "page:render", "page:updateprofile"]
+    keyScope: table
+    trigger: request
+    sessionEffects: login
+    condition: "request.muraSessionManagement is true (userUtility.cfc:338), so /_api/rest/ requests never write it; page:render reaches it through a maintenance-lockdown login (core/mura/Handler/standardEventsHandler.cfc:683-701)"
+    reason: "Login paths reach loginByQuery through loginManager, event validators and handlers chosen at run time, and the extractor cannot infer the login session effect of this write."
+
+  - id: wov:remember-me-login
+    tables: [tusers]
+    columns: [LastLogin]
+    component: core/appcfc/onRequestStart_include.cfm
+    method: null
+    op: update
+    source: {path: core/appcfc/onRequestStart_include.cfm, lines: [222, 229]}
+    routeKeys: []
+    entryScope: {families: [admin, api, cfc, page], when: "userid and userHash cookies are set while the session is not logged in"}
+    keyScope: table
+    trigger: request
+    sessionEffects: login
+    condition: "encryptionKey is set (settings default empty, core/templates/settings.template.cfm:41), MFA is off and the decrypted userHash matches the stored one (core/mura/login/loginManager.cfc:90-108); LastLogin is written only when request.muraSessionManagement is true"
+    reason: "Request start-up code calls loginManager.rememberMe before any entry point is dispatched, so no route closure contains it."
+
+  - id: wov:oauth-token-session-data
+    tables: [toauthtokens]
+    columns: [data]
+    component: core/mura/client/api/json/v1/jsonApiUtility.cfc
+    method: processRequest
+    op: save
+    source: {path: core/mura/client/api/json/v1/jsonApiUtility.cfc, lines: [521, 769]}
+    routeKeys: ["rest:oauth", "rest:oauth2", "rest:tokeninfo"]
+    entryScope: {families: [rest], when: "Bearer access_token naming a stored token whose data is not JSON (jsonApiUtility.cfc:503-522)"}
+    keyScope: table
+    trigger: request
+    sessionEffects: login
+    condition: "REST mode only (request.muraSessionManagement false); stores the request-scoped session built by the preceding userBean.login() while the token's data is not yet JSON"
+    reason: "token.setData(serializeJSON(getSession())).save() at lines 521, 614, 656, 709 and 769 writes through a token bean held in a local variable."
+
+  - id: wov:userbean-login
+    tables: [tusers]
+    columns: [LastLogin]
+    component: core/mura/user/userBean.cfc
+    method: login
+    op: update
+    source: {path: core/mura/user/userBean.cfc, lines: [768, 771]}
+    routeKeys: ["admin:ceditprofile.edit", "page:render"]
+    entryScope: {families: [admin, api, cfc, page], when: "url loginProvider with code, error or state (login module authHandler.onGlobalRequestStart), or returnID and returnUserID present (userUtility.returnLoginCheck)"}
+    keyScope: table
+    trigger: request
+    sessionEffects: relogin
+    condition: "writes through loginByUserID and loginByQuery only when request.muraSessionManagement is true, so the REST callers (jsonApiUtility.cfc:520, 613, 655, 708, 768, 825) write nothing here; the session-managed callers are core/modules/v1/login/model/oauthLoginUtility.cfc:106, 111, 116 and userUtility.cfc:842"
+    reason: "login() is called on user beans held in variables or returned by other beans, never on a getBean('<name>') result."
+
+  - id: wov:returnlogincheck-magic-link
+    tables: [tusers]
+    columns: [LastLogin]
+    component: core/mura/user/userUtility.cfc
+    method: returnLoginCheck
+    op: update
+    source: {path: core/mura/user/userUtility.cfc, lines: [817, 843]}
+    routeKeys: ["admin:ceditprofile.edit", "page:render"]
+    entryScope: {families: [admin, page], when: "returnID and returnUserID request parameters present"}
+    keyScope: table
+    trigger: request
+    sessionEffects: relogin
+    condition: "logs any current user out (817-819), then logs the tredirects row's user in through loginByUserID (839, MFA per device) or user.login() (842) when the row is at most mfadayslinkvalid days old and returnUserID matches it; the sent link targets cEditProfile.edit or the site edit-profile page (userUtility.cfc:534-568)"
+    reason: "Every admin request (admin/Application.cfc:424) and every page permission check (core/mura/Handler/standardEventsHandler.cfc:142) calls it before dispatch, outside any route closure."
+
+  - id: wov:jsonapi-self-save-relogin
+    tables: [tusers]
+    columns: [LastLogin]
+    component: core/mura/client/api/json/v1/jsonApiUtility.cfc
+    method: save
+    op: update
+    source: {path: core/mura/client/api/json/v1/jsonApiUtility.cfc, lines: [2065, 2071]}
+    routeKeys: ["api:user.save", "api:user.save{photo}"]
+    keyScope: table
+    trigger: request
+    sessionEffects: relogin
+    condition: "request.muraAPIRequestMode is json, the saved entity is User without errors, and the logged-in user saved their own record"
+    reason: "The re-login follows the generic entity save, so the entity closure carries the user write but not this relogin effect."
+
+  - id: wov:legacy-hash-upgrade
+    tables: [tusers]
+    columns: [Password, PasswordCreated]
+    component: core/mura/user/userUtility.cfc
+    method: lookupByCredentials
+    op: update
+    source: {path: core/mura/user/userUtility.cfc, lines: [167, 173]}
+    routeKeys: ["admin:clogin.login", "api:login", "api:processasyncobject", "page:login", "page:render", "rest:login", "rest:oauth", "rest:oauth2"]
+    entryScope: {families: [rest], when: "Authorization Basic credentials whose client id is not a UUID (jsonApiUtility.cfc:457-480)"}
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "javaEnabled, BCryptPasswords and encryptPasswords are true and the stored password equals hash(password, defaultHashAlgorithm) (167-171); userDAO.savePassword (core/mura/user/userDAO.cfc:693-703) rewrites it as bcrypt, in REST mode too"
+    noGroupJoin: true
+    reason: "Identity performs this upgrade only while identity.credential is target-authoritative, so the write must not join the credential unit to the login group."
+
+  - id: wov:userstrikes-credential-lookup
+    tables: [tuserstrikes]
+    component: core/mura/user/userUtility.cfc
+    method: lookupByCredentials
+    op: update
+    source: {path: core/mura/user/userUtility.cfc, lines: [120, 120]}
+    routeKeys: ["admin:clogin.login", "api:login", "api:processasyncobject", "page:login", "page:render", "rest:login", "rest:oauth", "rest:oauth2"]
+    entryScope: {families: [rest], when: "Authorization Basic credentials whose client id is not a UUID (jsonApiUtility.cfc:457-480)"}
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "userstrikes.init inserts the username's row when missing and resets strikes last attempted over 10 minutes ago (core/mura/user/userstrikes.cfc:10-61)"
+    reason: "The strikes object comes from createObject('component','mura.user.userstrikes'), not from getBean or an application manager."
+
+  - id: wov:userstrikes-login
+    tables: [tuserstrikes]
+    component: core/mura/user/userUtility.cfc
+    method: login
+    op: update
+    source: {path: core/mura/user/userUtility.cfc, lines: [191, 239]}
+    routeKeys: ["admin:clogin.login", "api:login", "api:processasyncobject", "page:login", "page:render", "rest:login"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "init as in wov:userstrikes-credential-lookup (191); addStrike on a public user outside the site's pool or a failed unblocked attempt (200, 239); clear on success (224)"
+    reason: "The strikes object comes from createObject('component','mura.user.userstrikes'), not from getBean or an application manager."
+
+  - id: wov:userstrikes-mfa-challenge
+    tables: [tuserstrikes]
+    component: core/mura/login/loginManager.cfc
+    method: handleChallengeAttempt
+    op: update
+    source: {path: core/mura/login/loginManager.cfc, lines: [268, 275]}
+    routeKeys: ["admin:clogin.login", "api:processasyncobject", "page:login"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "attemptChallenge is true with a pending session.mfa login; init as in wov:userstrikes-credential-lookup, then clear on a valid code (271) or addStrike (274)"
+    reason: "The strikes object comes from createObject('component','mura.user.userstrikes'), not from getBean or an application manager."
+
+  - id: wov:userstrikes-login-display-object
+    tables: [tuserstrikes]
+    component: core/modules/v1/login/index.cfm
+    method: null
+    op: update
+    source: {path: core/modules/v1/login/index.cfm, lines: [103, 103]}
+    routeKeys: ["api:processasyncobject", "page:render"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the login display object renders while session.mfa.username is set; init as in wov:userstrikes-credential-lookup"
+    reason: "The display object is included by page rendering at run time and creates the strikes object with createObject."
+
+  - id: wov:userstrikes-edituser-view
+    tables: [tuserstrikes]
+    component: admin/core/views/cusers/edituser.cfm
+    method: null
+    op: update
+    source: {path: admin/core/views/cusers/edituser.cfm, lines: [129, 132]}
+    routeKeys: ["admin:cusers.edituser"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the edited user has a username; init as in wov:userstrikes-credential-lookup, and removeBlock clears the strikes (130-132)"
+    reason: "The view, not the controller, creates the strikes object with createObject while rendering the edit screen."
+
+  - id: wov:oauth-generate-token
+    tables: [toauthtokens]
+    component: core/mura/client/api/json/v1/jsonApiUtility.cfc
+    method: processRequest
+    op: save
+    source: {path: core/mura/client/api/json/v1/jsonApiUtility.cfc, lines: [624, 765]}
+    routeKeys: ["rest:oauth", "rest:oauth2"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "generateToken (core/mura/client/api/oauth/oauthClientBean.cfc:24-71) inserts a token unless an unexpired one matches client, grant type and user, and for authorization_code and client_credentials deletes the client's tokens expired over a day"
+    reason: "oauthclient.generateToken(...) at lines 624, 652, 667, 680, 696, 720, 733 and 765 writes through an OAuth client bean held in a local variable."
+
+  - id: wov:oauth-refresh-token-delete
+    tables: [toauthtokens]
+    component: core/mura/client/api/json/v1/jsonApiUtility.cfc
+    method: processRequest
+    op: delete
+    source: {path: core/mura/client/api/json/v1/jsonApiUtility.cfc, lines: [755, 757]}
+    routeKeys: ["rest:oauth", "rest:oauth2"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "refresh_token grant whose stored refresh token has expired"
+    reason: "refreshToken.delete() removes a token bean held in a local variable."
+
+  - id: wov:oauth-authorize-display-object
+    tables: [toauthtokens]
+    component: core/modules/v1/oauth/index.cfm
+    method: null
+    op: save
+    source: {path: core/modules/v1/oauth/index.cfm, lines: [46, 46]}
+    routeKeys: ["api:processasyncobject", "page:render"]
+    keyScope: [client_id]
+    trigger: request
+    sessionEffects: none
+    condition: "the oauth display object renders for a logged-in user with accept true, a valid CSRF token for the client, a valid redirect_uri and grant_type implicit or authorization_code (28-37); generateToken as in wov:oauth-generate-token"
+    reason: "The display object is included by page rendering at run time and calls generateToken on a client bean held in a variable."
+
+  - id: wov:oauth-login-module-user-save
+    tables: [tusers]
+    columns: [UserID, GroupName, Fname, Lname, UserName, Password, PasswordCreated, Email, Company, JobTitle, mobilePhone, Website, Type, subType, ContactForm, S2, LastUpdate, LastUpdateBy, LastUpdateByID, Perm, InActive, isPublic, SiteID, Subscribe, notes, description, interests, keepPrivate, photoFileID, IMName, IMService, created, remoteID, tags, tablist]
+    component: core/modules/v1/login/model/oauthLoginUtility.cfc
+    method: updateOrCreateUserAccount
+    op: save
+    source: {path: core/modules/v1/login/model/oauthLoginUtility.cfc, lines: [105, 115]}
+    routeKeys: ["page:render"]
+    entryScope: {families: [admin, api, cfc, page], when: "url loginProvider with code, error or state (core/modules/v1/login/model/handlers/authHandler.cfc onGlobalRequestStart)"}
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a login provider is configured and validates the callback; saves the user matched by remoteID or email, or a new one, under the site's lockdown rules (99-117); the callback URL is /?loginProvider=<name> (baseLoginProvider.cfc:11-13)"
+    reason: "The login module's event handler, registered from its handlers directory at run time, saves a user bean held in a variable."
+
+  - id: wov:oauth-login-module-user-relations
+    tables: [tclassextenddatauseractivity, tredirects, tuseraddresses, tusersinterests, tusersmemb, tuserstags]
+    component: core/modules/v1/login/model/oauthLoginUtility.cfc
+    method: updateOrCreateUserAccount
+    op: save
+    source: {path: core/modules/v1/login/model/oauthLoginUtility.cfc, lines: [105, 115]}
+    routeKeys: ["page:render"]
+    entryScope: {families: [admin, api, cfc, page], when: "url loginProvider with code, error or state (core/modules/v1/login/model/handlers/authHandler.cfc onGlobalRequestStart)"}
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "as wov:oauth-login-module-user-save; userManager.save writes memberships, interests, tags, the primary address, user extended data and, on update, removes prior magic-link redirects (core/mura/user/userDAO.cfc:460-497)"
+    reason: "The login module's event handler, registered from its handlers directory at run time, saves a user bean held in a variable."
+
+  - id: wov:carch-edit-locknode-stats
+    tables: [tcontentstats]
+    columns: [lockID, lockType]
+    component: admin/core/controllers/carch.cfc
+    method: edit
+    op: save
+    source: {path: admin/core/controllers/carch.cfc, lines: [323, 328]}
+    routeKeys: ["admin:carch.edit"]
+    keyScope: [contentid, siteid]
+    trigger: request
+    sessionEffects: none
+    condition: "rc.locknode is true and the node is unlocked or locked by the session user"
+    reason: "The stats bean comes from contentBean.getStats(), a getter on another bean that the extractor does not follow."
+
+  - id: wov:carch-lockfile-stats
+    tables: [tcontentstats]
+    columns: [lockID, lockType]
+    component: admin/core/controllers/carch.cfc
+    method: lockFile
+    op: save
+    source: {path: admin/core/controllers/carch.cfc, lines: [585, 585]}
+    routeKeys: ["admin:carch.lockfile"]
+    keyScope: [contentid, siteid]
+    trigger: request
+    sessionEffects: none
+    condition: "a valid lockfile CSRF token and author or editor permission on the node, or S2 (579-584)"
+    reason: "The stats bean comes from contentBean.getStats(), a getter on another bean that the extractor does not follow."
+
+  - id: wov:carch-unlockfile-stats
+    tables: [tcontentstats]
+    columns: [lockID, lockType]
+    component: admin/core/controllers/carch.cfc
+    method: unlockFile
+    op: save
+    source: {path: admin/core/controllers/carch.cfc, lines: [598, 605]}
+    routeKeys: ["admin:carch.unlockfile"]
+    keyScope: [contentid, siteid]
+    trigger: request
+    sessionEffects: none
+    condition: "a valid unlockfile CSRF token and a lock held by the session user, or S2"
+    reason: "The stats bean comes from contentBean.getStats(), a getter on another bean that the extractor does not follow."
+
+  - id: wov:carch-unlocknode-stats
+    tables: [tcontentstats]
+    columns: [lockID, lockType]
+    component: admin/core/controllers/carch.cfc
+    method: unlockNode
+    op: save
+    source: {path: admin/core/controllers/carch.cfc, lines: [617, 624]}
+    routeKeys: ["admin:carch.unlocknode"]
+    keyScope: [contentid, siteid]
+    trigger: request
+    sessionEffects: none
+    condition: "a valid unlocknode CSRF token and a lock held by the session user, or S2"
+    reason: "The stats bean comes from contentBean.getStats(), a getter on another bean that the extractor does not follow."
+
+  - id: wov:commentsproxy-flag
+    tables: [tcontentcomments, tcontentstats]
+    component: core/modules/v1/comments/ajax/commentsProxy.cfc
+    method: flag
+    op: update
+    source: {path: core/modules/v1/comments/ajax/commentsProxy.cfc, lines: [101, 102]}
+    routeKeys: ["cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=flag"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "contentCommentBean.flag increments flagCount and recounts the content's comment stats (core/mura/content/contentCommentBean.cfc:363-382)"
+    reason: "The comment bean comes from contentManager.getCommentBean(), a getter whose result the extractor does not follow."
+
+  - id: wov:comments-display-object-writes
+    tables: [tcontentcommentcommenters, tcontentcomments, tcontentstats, ttrash]
+    component: core/modules/v1/comments/index.cfm
+    method: null
+    op: save
+    source: {path: core/modules/v1/comments/index.cfm, lines: [163, 245]}
+    routeKeys: ["api:processasyncobject", "page:render"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the comments display object renders on a site with comments enabled: commentUnsubscribe (163-165); a posted comment that passes the human check (168-233); deletecommentid or spamcommentid for editors, or approvedcommentid for any visitor (235-245)"
+    reason: "The display object is included by page rendering at run time, outside every inventoried entry point's closure."
+
+  - id: wov:cextend-subtype-write
+    tables: [tclassextend, tclassextendattributes, tclassextenddata, tclassextenddatauseractivity, tclassextendsets, tfiles]
+    component: admin/core/controllers/cextend.cfc
+    method: updateSubType
+    op: save
+    source: {path: admin/core/controllers/cextend.cfc, lines: [140, 151]}
+    routeKeys: ["admin:cextend.updatesubtype"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a valid CSRF token for rc.subtypeid; Add or Update saves the subtype (core/mura/extend/extendSubType.cfc:590-699), Delete also deletes its sets, attributes, attribute values and unused attribute files (721-749)"
+    reason: "The subtype bean comes from application.classExtensionManager, which configBean creates outside the bean factory and the application serviceList."
+
+  - id: wov:cextend-set-write
+    tables: [tclassextendattributes, tclassextenddata, tclassextenddatauseractivity, tclassextendsets, tfiles]
+    component: admin/core/controllers/cextend.cfc
+    method: updateSet
+    op: save
+    source: {path: admin/core/controllers/cextend.cfc, lines: [162, 173]}
+    routeKeys: ["admin:cextend.updateset"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a valid CSRF token for rc.extendsetid; Add or Update saves the set, Delete also deletes its attributes and their values (core/mura/extend/extendSet.cfc:374-390)"
+    reason: "The set bean comes from getSubTypeBean().getExtendSetBean(), getters on a bean from application.classExtensionManager."
+
+  - id: wov:cextend-attribute-write
+    tables: [tclassextendattributes, tclassextenddata, tclassextenddatauseractivity, tfiles]
+    component: admin/core/controllers/cextend.cfc
+    method: updateAttribute
+    op: save
+    source: {path: admin/core/controllers/cextend.cfc, lines: [200, 211]}
+    routeKeys: ["admin:cextend.updateattribute"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a valid CSRF token for rc.attributeid; Add or Update saves the attribute, Delete also removes its values and marks unused attribute files deleted (core/mura/extend/extendAttribute.cfc:459-503)"
+    reason: "The attribute bean comes from getSubTypeBean().getExtendSetBean().getattributeBean(), getters on a bean from application.classExtensionManager."
+
+  - id: wov:cextend-subtype-basetable
+    tables: []
+    component: admin/core/controllers/cextend.cfc
+    method: updateSubType
+    op: update
+    source: {path: admin/core/controllers/cextend.cfc, lines: [140, 151]}
+    routeKeys: ["admin:cextend.updatesubtype"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "renaming a content subtype updates type and subType of its rows in the stored baseTable (core/mura/extend/extendSubType.cfc:652-662); deleting a subtype other than Custom, Site or Base sets subType='Default' on its baseTable rows, tcontent or tusers (741-747)"
+    dynamic: true
+    reason: "The written table is the stored subtype's baseTable, read at run time."
+
+  - id: wov:ctrash-restore-object-save
+    tables: []
+    component: admin/core/controllers/ctrash.cfc
+    method: restore
+    op: save
+    source: {path: admin/core/controllers/ctrash.cfc, lines: [123, 142]}
+    routeKeys: ["admin:ctrash.restore"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a valid restore CSRF token; saves each trashed object of rc.deleteid, or the one of rc.objectid, rebuilt as getBean(objectClass) from its stored objectstring (core/mura/trash/trashManager.cfc:308)"
+    dynamic: true
+    reason: "The entity, and so its table, is decided by the stored ttrash objectClass at run time."
+
+  - id: wov:plugin-monitor-events
+    tables: []
+    component: core/mura/content/contentServer.cfc
+    method: handleAPIRequest
+    op: save
+    source: {path: core/mura/content/contentServer.cfc, lines: [737, 743]}
+    routeKeys: ["sitemonitor:run"]
+    keyScope: table
+    trigger: scheduler
+    sessionEffects: none
+    condition: "no plugin, theme, site or module handler for onGlobalMonitor or onSiteMonitor exists at the pin and there is no plugins/ directory, so the write set is empty unless handlers are registered live (tplugins, decision list)"
+    dynamic: true
+    reason: "Event handlers are registered at run time, so their writes cannot be read from the pinned source."
+
+  - id: wov:plugin-login-events-lookup
+    tables: []
+    component: core/mura/user/userUtility.cfc
+    method: lookupByCredentials
+    op: save
+    source: {path: core/mura/user/userUtility.cfc, lines: [123, 131]}
+    routeKeys: ["admin:clogin.login", "api:login", "api:processasyncobject", "page:login", "page:render"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "announces onSiteLogin or onGlobalLogin when request.muraSessionManagement is true; no handler for either exists at the pin"
+    dynamic: true
+    reason: "Event handlers are registered at run time, so their writes cannot be read from the pinned source."
+
+  - id: wov:plugin-login-events
+    tables: []
+    component: core/mura/user/userUtility.cfc
+    method: login
+    op: save
+    source: {path: core/mura/user/userUtility.cfc, lines: [229, 251]}
+    routeKeys: ["admin:clogin.login", "api:login", "api:processasyncobject", "page:login", "page:render", "rest:login"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "announces onSiteLoginSuccess or onGlobalLoginSuccess (229-233), LoginFailure (240-244) or LoginBlocked (247-251), in REST mode too; no handler for these exists at the pin"
+    dynamic: true
+    reason: "Event handlers are registered at run time, so their writes cannot be read from the pinned source."
+
+  - id: wov:plugin-login-events-by-userid
+    tables: []
+    component: core/mura/user/userUtility.cfc
+    method: loginByUserID
+    op: save
+    source: {path: core/mura/user/userUtility.cfc, lines: [292, 298]}
+    routeKeys: ["admin:ceditprofile.edit", "admin:clogin.login", "api:processasyncobject", "api:user.save", "api:user.save{photo}", "page:createprofile", "page:render", "page:updateprofile"]
+    entryScope: {families: [admin, api, cfc, page], when: "userid and userHash cookies are set while the session is not logged in"}
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "announces onSiteLoginSuccess or onGlobalLoginSuccess when request.muraSessionManagement is true; no handler for either exists at the pin"
+    dynamic: true
+    reason: "Event handlers are registered at run time, so their writes cannot be read from the pinned source."

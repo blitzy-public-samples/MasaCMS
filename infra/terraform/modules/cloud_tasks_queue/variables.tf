@@ -27,7 +27,7 @@ variable "retry" {
 }
 
 variable "creator_emails" {
-  description = "Service-account emails that create tasks on and pause or resume the queue."
+  description = "Service-account emails that create, list and delete tasks on the queue and pause or resume it."
   type        = list(string)
   default     = []
 }
