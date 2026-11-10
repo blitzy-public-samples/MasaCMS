@@ -1,0 +1,31 @@
+{
+  "name": "@opt2/legacy-fixtures-seed",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SYNTHETIC: seed - no Masa equivalent; legacy oracle in legacy-fixtures/. Fixed-seed dataset generator for legacy fixtures and backfill.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": "22.23.4"
+  },
+  "scripts": {
+    "postinstall": "npm ci --prefix ../../platform && npm run build --prefix ../../platform",
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run --coverage",
+    "generate": "node dist/generate.js",
+    "generate:direct": "node dist/generate.js --direct"
+  },
+  "dependencies": {
+    "@faker-js/faker": "10.6.0",
+    "@opt2/platform": "file:../../platform",
+    "seedrandom": "3.0.5"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/seedrandom": "3.0.8",
+    "@vitest/coverage-v8": "5.0.5",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "vitest": "5.0.5"
+  }
+}
