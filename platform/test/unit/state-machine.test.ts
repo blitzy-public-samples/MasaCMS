@@ -5,31 +5,27 @@ import fc from 'fast-check';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   SAME_NEW_VERSION,
+  TRANSITION_ERROR_CODES,
   TransitionDefinitionError,
+  TransitionRejectedError,
+  applyTransition,
+  compareTableRows,
+  decide,
   defineTransitions,
+  evaluate,
+  generateTable,
   lifecycleRoles,
+  serializeTable,
+  transitionError,
+  transitionErrorEnvelope,
+  writeTableJson,
+  type EvaluateInput,
+  type TransitionDecision,
   type TransitionDefinition,
   type TransitionGuard,
   type TransitionRow,
-} from '../../src/state-machine/definition.js';
-import {
-  compareTableRows,
-  generateTable,
-  serializeTable,
-  writeTableJson,
   type TransitionTableRow,
-} from '../../src/state-machine/generate-table.js';
-import {
-  TRANSITION_ERROR_CODES,
-  TransitionRejectedError,
-  applyTransition,
-  decide,
-  evaluate,
-  transitionError,
-  transitionErrorEnvelope,
-  type EvaluateInput,
-  type TransitionDecision,
-} from '../../src/state-machine/runner.js';
+} from '../../src/state-machine/index.js';
 
 interface Ctx {
   readonly blackout: boolean;
@@ -37,7 +33,7 @@ interface Ctx {
 
 type LooseDefinition = TransitionDefinition<string, string, string, Ctx>;
 
-const blackout: TransitionGuard<Ctx> = { name: 'blackout', applies: (ctx) => ctx.blackout };
+const blackout: TransitionGuard<Ctx> = { name: 'blackout', applies: (ctx) => ctx.blackout === true };
 
 const DEFINITION = {
   service: 'approvals',
@@ -48,7 +44,7 @@ const DEFINITION = {
   rows: [
     { from: ['DRAFT'], action: 'submit', roles: ['author'], to: 'SUBMITTED' },
     { from: ['SUBMITTED'], action: 'approve', roles: ['approver'], to: 'APPROVED' },
-    { from: ['DRAFT', 'SUBMITTED'], action: 'edit', roles: ['author', 'approver'], to: SAME_NEW_VERSION },
+    { from: ['DRAFT'], action: 'edit', roles: ['author'], to: SAME_NEW_VERSION },
   ],
   guards: [blackout],
 } as const;
@@ -318,9 +314,9 @@ describe('evaluate', () => {
       decision: { outcome: 'ok', to: 'DRAFT', newVersion: true, actingRole: 'author' },
     },
     {
-      case: 'keeps SUBMITTED with a new version on edit by the approver',
-      input: request('SUBMITTED', 'edit', ['approver']),
-      decision: { outcome: 'ok', to: 'SUBMITTED', newVersion: true, actingRole: 'approver' },
+      case: 'answers 409 illegalTransition for submit from SUBMITTED',
+      input: request('SUBMITTED', 'submit', ['author']),
+      decision: { outcome: 'illegal', status: 409, error: ILLEGAL },
     },
     {
       case: 'answers 409 illegalTransition for an action without a row from the state',
@@ -328,8 +324,8 @@ describe('evaluate', () => {
       decision: { outcome: 'illegal', status: 409, error: ILLEGAL },
     },
     {
-      case: 'answers 409 illegalTransition from the terminal state',
-      input: request('APPROVED', 'edit', ['author']),
+      case: 'answers 409 illegalTransition for edit from SUBMITTED',
+      input: request('SUBMITTED', 'edit', ['author', 'approver']),
       decision: { outcome: 'illegal', status: 409, error: ILLEGAL },
     },
     {
@@ -371,11 +367,32 @@ describe('evaluate', () => {
     expect(evaluate(LOOSE, input)).toStrictEqual(decision);
   });
 
-  it.each<{ roles: readonly string[]; actingRole: string }>([
-    { roles: ['approver', 'author'], actingRole: 'author' },
-    { roles: ['admin', 'approver'], actingRole: 'approver' },
-  ])('acts as the first definition role among $roles that the row allows', ({ roles, actingRole }) => {
-    expect(evaluate(LOOSE, request('DRAFT', 'edit', roles))).toMatchObject({ outcome: 'ok', actingRole });
+  it.each(LOOSE.actions.flatMap((action) => LOOSE.roles.map((role) => ({ action, role }))))(
+    'answers 409 illegalTransition for $action by $role from the terminal state',
+    ({ action, role }) => {
+      expect(evaluate(LOOSE, request('APPROVED', action, [role]))).toStrictEqual({
+        outcome: 'illegal',
+        status: 409,
+        error: ILLEGAL,
+      });
+    },
+  );
+
+  const SHARED_EDIT: LooseDefinition = {
+    ...LOOSE,
+    rows: [row({ from: ['DRAFT', 'SUBMITTED'], action: 'edit', roles: ['author', 'approver'], to: SAME_NEW_VERSION })],
+  };
+
+  it.each<{ state: string; roles: readonly string[]; actingRole: string }>([
+    { state: 'DRAFT', roles: ['approver', 'author'], actingRole: 'author' },
+    { state: 'SUBMITTED', roles: ['admin', 'approver'], actingRole: 'approver' },
+  ])('acts as the first definition role among $roles that the row allows', ({ state, roles, actingRole }) => {
+    expect(evaluate(SHARED_EDIT, request(state, 'edit', roles))).toStrictEqual({
+      outcome: 'ok',
+      to: state,
+      newVersion: true,
+      actingRole,
+    });
   });
 });
 
@@ -467,8 +484,8 @@ describe('applyTransition', () => {
     },
     {
       case: 'an edit',
-      input: { state: 'SUBMITTED', action: 'edit', roles: ['approver'] },
-      applied: { from: 'SUBMITTED', action: 'edit', to: 'SUBMITTED', newVersion: true, actingRole: 'approver' },
+      input: { state: 'DRAFT', action: 'edit', roles: ['author'] },
+      applied: { from: 'DRAFT', action: 'edit', to: 'DRAFT', newVersion: true, actingRole: 'author' },
     },
   ])('persists $case once and returns what persist returns', async ({ input, applied }) => {
     const persist = vi.fn((transition: { to: string }) => Promise.resolve({ saved: transition.to }));
@@ -552,6 +569,11 @@ describe('generateTable', () => {
       outcome: { expectedStatus: 200, to: 'DRAFT', newVersion: true, errorCode: null },
     },
     {
+      case: '409 illegalTransition for submit from SUBMITTED',
+      key: [null, 'SUBMITTED', 'submit', 'author'],
+      outcome: { expectedStatus: 409, to: null, newVersion: false, errorCode: 'illegalTransition' },
+    },
+    {
       case: '409 illegalTransition for an action without a row from the state',
       key: [null, 'DRAFT', 'approve', 'approver'],
       outcome: { expectedStatus: 409, to: null, newVersion: false, errorCode: 'illegalTransition' },
@@ -562,7 +584,12 @@ describe('generateTable', () => {
       outcome: { expectedStatus: 409, to: null, newVersion: false, errorCode: 'illegalTransition' },
     },
     {
-      case: '403 authorization for a role the row excludes',
+      case: '403 authorization for submit by the approver',
+      key: [null, 'DRAFT', 'submit', 'approver'],
+      outcome: { expectedStatus: 403, to: null, newVersion: false, errorCode: 'authorization' },
+    },
+    {
+      case: '403 authorization for approve by the author',
       key: [null, 'SUBMITTED', 'approve', 'author'],
       outcome: { expectedStatus: 403, to: null, newVersion: false, errorCode: 'authorization' },
     },
@@ -587,20 +614,28 @@ describe('generateTable', () => {
     expect(guarded.filter((row) => row.expectedStatus !== 409 || row.errorCode !== 'blackout' || row.to !== null)).toEqual([]);
   });
 
-  it('agrees with decide for every guard context, state, action and role', () => {
+  it('equals the decide and evaluate outcome for every guard, state, action and role, never 200 from a terminal state', () => {
+    const expectedRow = (key: Key, decision: TransitionDecision<string, string>): TransitionTableRow => {
+      const [guard, from, action, role] = key;
+      const base = { service: LOOSE.service, from, action, role, guard };
+      return decision.outcome === 'ok'
+        ? { ...base, expectedStatus: 200, to: decision.to, newVersion: decision.newVersion, errorCode: null }
+        : { ...base, expectedStatus: decision.status, to: null, newVersion: false, errorCode: decision.error.code };
+    };
     fc.assert(
       fc.property(
-        fc.boolean(),
+        fc.constantFrom(null, ...(LOOSE.guards ?? []).map((guard) => guard.name)),
         fc.constantFrom(...LOOSE.states),
         fc.constantFrom(...LOOSE.actions),
         fc.constantFrom(...LOOSE.roles),
-        (active, from, action, role) => {
-          const decision = decide(LOOSE, { state: from, action, roles: [role], guards: { blackout: active } });
-          const expected =
-            decision.outcome === 'ok'
-              ? { expectedStatus: 200, to: decision.to, newVersion: decision.newVersion, errorCode: null }
-              : { expectedStatus: decision.status, to: null, newVersion: false, errorCode: decision.error.code };
-          expect(tableRow(active ? 'blackout' : null, from, action, role)).toMatchObject(expected);
+        (guard, from, action, role) => {
+          const key: Key = [guard, from, action, role];
+          const generated = tableRow(...key);
+          const decided = decide(LOOSE, { state: from, action, roles: [role], guards: { blackout: guard === 'blackout' } });
+          const evaluated = evaluate(LOOSE, request(from, action, [role], guard));
+          expect(generated).toStrictEqual(expectedRow(key, decided));
+          expect(generated).toStrictEqual(expectedRow(key, evaluated));
+          expect(generated?.expectedStatus === 200 && LOOSE.terminal.includes(from)).toBe(false);
         },
       ),
       { seed: SEED, numRuns: 200 },
@@ -619,7 +654,8 @@ describe('serializeTable', () => {
     expect(keyOf(parsed.at(-1) as TransitionTableRow)).toEqual(['blackout', 'SUBMITTED', 'submit', 'author']);
   });
 
-  it('serializes the same rows identically in any input order', () => {
+  it('serializes the same rows identically on every call and in any input order', () => {
+    expect(serializeTable(TABLE)).toBe(serializeTable(TABLE));
     fc.assert(
       fc.property(fc.shuffledSubarray(TABLE, { minLength: TABLE.length }), (shuffled) => {
         expect(serializeTable(shuffled)).toBe(serializeTable(TABLE));
