@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import fc from 'fast-check';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   SAME_NEW_VERSION,
   TransitionDefinitionError,
@@ -8,6 +12,24 @@ import {
   type TransitionGuard,
   type TransitionRow,
 } from '../../src/state-machine/definition.js';
+import {
+  compareTableRows,
+  generateTable,
+  serializeTable,
+  writeTableJson,
+  type TransitionTableRow,
+} from '../../src/state-machine/generate-table.js';
+import {
+  TRANSITION_ERROR_CODES,
+  TransitionRejectedError,
+  applyTransition,
+  decide,
+  evaluate,
+  transitionError,
+  transitionErrorEnvelope,
+  type EvaluateInput,
+  type TransitionDecision,
+} from '../../src/state-machine/runner.js';
 
 interface Ctx {
   readonly blackout: boolean;
@@ -231,5 +253,445 @@ describe('defineTransitions', () => {
 describe('lifecycleRoles', () => {
   it('returns the declared roles in order', () => {
     expect(lifecycleRoles(defineTransitions(DEFINITION))).toEqual(['author', 'approver']);
+  });
+});
+
+const ILLEGAL = { code: 'illegalTransition', message: 'Illegal state transition' };
+const FORBIDDEN = { code: 'authorization', message: 'Insufficient Account Permissions' };
+const BLACKOUT = { code: 'blackout', message: 'Illegal state transition: blackout' };
+const SEED = 20260630;
+
+type Key = readonly [guard: string | null, from: string, action: string, role: string];
+
+function request(state: string, action: string, roles: readonly string[], activeGuard: string | null = null): EvaluateInput {
+  return { state, action, roles, activeGuard };
+}
+
+/** The rejection `evaluate` returns for `input`; throws when the transition is legal. */
+function rejectionFor(input: EvaluateInput) {
+  const decision = evaluate(LOOSE, input);
+  if (decision.outcome === 'ok') throw new Error(`expected ${input.action} from ${input.state} to be rejected`);
+  return decision;
+}
+
+function keyOf(row: TransitionTableRow): Key {
+  return [row.guard, row.from, row.action, row.role];
+}
+
+const TABLE = generateTable(LOOSE);
+
+const UNGUARDED: LooseDefinition = { ...LOOSE, guards: undefined };
+
+function tableRow(...[guard, from, action, role]: Key): TransitionTableRow | undefined {
+  return TABLE.find((r) => r.guard === guard && r.from === from && r.action === action && r.role === role);
+}
+
+describe('transitionError', () => {
+  it('uses illegalTransition and authorization as the runner error codes', () => {
+    expect(TRANSITION_ERROR_CODES).toEqual({ illegal: 'illegalTransition', forbidden: 'authorization' });
+  });
+
+  it.each([
+    { code: 'illegalTransition', body: ILLEGAL },
+    { code: 'authorization', body: FORBIDDEN },
+    { code: 'blackout', body: BLACKOUT },
+  ])('returns the fixed legacy message for $code', ({ code, body }) => {
+    expect(transitionError(code)).toStrictEqual(body);
+  });
+});
+
+describe('evaluate', () => {
+  it.each<{ case: string; input: EvaluateInput; decision: TransitionDecision<string, string> }>([
+    {
+      case: 'moves DRAFT to SUBMITTED on submit by the author',
+      input: request('DRAFT', 'submit', ['author']),
+      decision: { outcome: 'ok', to: 'SUBMITTED', newVersion: false, actingRole: 'author' },
+    },
+    {
+      case: 'moves SUBMITTED to APPROVED on approve by the approver',
+      input: request('SUBMITTED', 'approve', ['approver']),
+      decision: { outcome: 'ok', to: 'APPROVED', newVersion: false, actingRole: 'approver' },
+    },
+    {
+      case: 'keeps DRAFT with a new version on edit by the author',
+      input: request('DRAFT', 'edit', ['author']),
+      decision: { outcome: 'ok', to: 'DRAFT', newVersion: true, actingRole: 'author' },
+    },
+    {
+      case: 'keeps SUBMITTED with a new version on edit by the approver',
+      input: request('SUBMITTED', 'edit', ['approver']),
+      decision: { outcome: 'ok', to: 'SUBMITTED', newVersion: true, actingRole: 'approver' },
+    },
+    {
+      case: 'answers 409 illegalTransition for an action without a row from the state',
+      input: request('DRAFT', 'approve', ['approver']),
+      decision: { outcome: 'illegal', status: 409, error: ILLEGAL },
+    },
+    {
+      case: 'answers 409 illegalTransition from the terminal state',
+      input: request('APPROVED', 'edit', ['author']),
+      decision: { outcome: 'illegal', status: 409, error: ILLEGAL },
+    },
+    {
+      case: 'answers 409 illegalTransition for a state outside the definition',
+      input: request('ARCHIVED', 'submit', ['author']),
+      decision: { outcome: 'illegal', status: 409, error: ILLEGAL },
+    },
+    {
+      case: 'answers 409 illegalTransition for an action outside the definition',
+      input: request('DRAFT', 'publish', ['author']),
+      decision: { outcome: 'illegal', status: 409, error: ILLEGAL },
+    },
+    {
+      case: 'answers 403 authorization for a role the row excludes',
+      input: request('DRAFT', 'submit', ['approver']),
+      decision: { outcome: 'forbidden', status: 403, error: FORBIDDEN },
+    },
+    {
+      case: 'answers 403 authorization for a caller without roles',
+      input: request('SUBMITTED', 'approve', []),
+      decision: { outcome: 'forbidden', status: 403, error: FORBIDDEN },
+    },
+    {
+      case: 'answers 409 with the guard name for a legal transition under an active guard',
+      input: request('DRAFT', 'submit', ['author'], 'blackout'),
+      decision: { outcome: 'illegal', status: 409, error: BLACKOUT },
+    },
+    {
+      case: 'answers 409 with the guard name ahead of the terminal check',
+      input: request('APPROVED', 'edit', ['author'], 'blackout'),
+      decision: { outcome: 'illegal', status: 409, error: BLACKOUT },
+    },
+    {
+      case: 'answers 409 with the guard name ahead of the role check',
+      input: request('DRAFT', 'submit', ['approver'], 'blackout'),
+      decision: { outcome: 'illegal', status: 409, error: BLACKOUT },
+    },
+  ])('$case', ({ input, decision }) => {
+    expect(evaluate(LOOSE, input)).toStrictEqual(decision);
+  });
+
+  it.each<{ roles: readonly string[]; actingRole: string }>([
+    { roles: ['approver', 'author'], actingRole: 'author' },
+    { roles: ['admin', 'approver'], actingRole: 'approver' },
+  ])('acts as the first definition role among $roles that the row allows', ({ roles, actingRole }) => {
+    expect(evaluate(LOOSE, request('DRAFT', 'edit', roles))).toMatchObject({ outcome: 'ok', actingRole });
+  });
+});
+
+describe('decide', () => {
+  it('evaluates no guard when the request carries no guard context', () => {
+    const applies = vi.fn(() => true);
+    const def: LooseDefinition = { ...LOOSE, guards: [{ name: 'frozen', applies }] };
+    expect(decide(def, { state: 'DRAFT', action: 'submit', roles: ['author'] })).toMatchObject({ outcome: 'ok' });
+    expect(applies).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { blackout: true, decision: { outcome: 'illegal', status: 409, error: BLACKOUT } },
+    { blackout: false, decision: { outcome: 'ok', to: 'SUBMITTED', newVersion: false, actingRole: 'author' } },
+  ])('decides submit from DRAFT with blackout $blackout', ({ blackout: active, decision }) => {
+    const input = { state: 'DRAFT', action: 'submit', roles: ['author'], guards: { blackout: active } };
+    expect(decide(DEFINITION, input)).toStrictEqual(decision);
+  });
+
+  it('answers with the first applying guard in definition order and passes it the context', () => {
+    const quiet = vi.fn(() => false);
+    const frozen = vi.fn(() => true);
+    const later = vi.fn(() => true);
+    const def: LooseDefinition = {
+      ...LOOSE,
+      guards: [
+        { name: 'quiet', applies: quiet },
+        { name: 'frozen', applies: frozen },
+        { name: 'later', applies: later },
+      ],
+    };
+    const ctx = { blackout: false };
+    expect(decide(def, { state: 'DRAFT', action: 'submit', roles: ['author'], guards: ctx })).toMatchObject({
+      outcome: 'illegal',
+      error: { code: 'frozen' },
+    });
+    expect(quiet).toHaveBeenCalledWith(ctx);
+    expect(frozen).toHaveBeenCalledWith(ctx);
+    expect(later).not.toHaveBeenCalled();
+  });
+
+  it('applies no guard for a definition without guards', () => {
+    const input = { state: 'DRAFT', action: 'submit', roles: ['author'], guards: { blackout: true } };
+    expect(decide(UNGUARDED, input)).toMatchObject({ outcome: 'ok', to: 'SUBMITTED' });
+  });
+});
+
+describe('transitionErrorEnvelope', () => {
+  it('wraps the rejection error in the legacy envelope with the method and params', () => {
+    const envelope = transitionErrorEnvelope(rejectionFor(request('APPROVED', 'edit', ['author'])), {
+      method: 'edit',
+      params: { id: 'r-1' },
+    });
+    expect(envelope).toStrictEqual({ apiversion: 'v1', method: 'edit', params: { id: 'r-1' }, error: ILLEGAL });
+  });
+
+  it('omits params when the context has none', () => {
+    const envelope = transitionErrorEnvelope(rejectionFor(request('DRAFT', 'submit', ['approver'])), { method: 'submit' });
+    expect(envelope).toStrictEqual({ apiversion: 'v1', method: 'submit', error: FORBIDDEN });
+  });
+});
+
+describe('TransitionRejectedError', () => {
+  it.each([
+    { case: 'an illegal transition', input: request('APPROVED', 'edit', ['author']), statusCode: 409, body: ILLEGAL },
+    { case: 'a forbidden transition', input: request('DRAFT', 'submit', ['approver']), statusCode: 403, body: FORBIDDEN },
+    { case: 'an active guard', input: request('DRAFT', 'submit', ['author'], 'blackout'), statusCode: 409, body: BLACKOUT },
+  ])('carries the status, code, message and decision of $case', ({ input, statusCode, body }) => {
+    const decision = rejectionFor(input);
+    const error = new TransitionRejectedError(decision);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({ name: 'TransitionRejectedError', statusCode, code: body.code, message: body.message });
+    expect(error.decision).toBe(decision);
+  });
+
+  it('renders the same envelope as transitionErrorEnvelope', () => {
+    const decision = rejectionFor(request('DRAFT', 'submit', ['author'], 'blackout'));
+    const ctx = { method: 'submit', params: { id: 'r-1' } };
+    expect(new TransitionRejectedError(decision).toEnvelope(ctx)).toStrictEqual(transitionErrorEnvelope(decision, ctx));
+  });
+});
+
+describe('applyTransition', () => {
+  it.each([
+    {
+      case: 'a state change',
+      input: { state: 'DRAFT', action: 'submit', roles: ['author'] },
+      applied: { from: 'DRAFT', action: 'submit', to: 'SUBMITTED', newVersion: false, actingRole: 'author' },
+    },
+    {
+      case: 'an edit',
+      input: { state: 'SUBMITTED', action: 'edit', roles: ['approver'] },
+      applied: { from: 'SUBMITTED', action: 'edit', to: 'SUBMITTED', newVersion: true, actingRole: 'approver' },
+    },
+  ])('persists $case once and returns what persist returns', async ({ input, applied }) => {
+    const persist = vi.fn((transition: { to: string }) => Promise.resolve({ saved: transition.to }));
+    await expect(applyTransition(LOOSE, { ...input, guards: { blackout: false } }, persist)).resolves.toEqual({
+      saved: applied.to,
+    });
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(persist).toHaveBeenCalledWith(applied);
+  });
+
+  it.each([
+    {
+      case: 'an illegal state',
+      input: { state: 'APPROVED', action: 'edit', roles: ['author'], guards: { blackout: false } },
+      statusCode: 409,
+      code: 'illegalTransition',
+    },
+    {
+      case: 'a wrong role',
+      input: { state: 'DRAFT', action: 'submit', roles: ['approver'], guards: { blackout: false } },
+      statusCode: 403,
+      code: 'authorization',
+    },
+    {
+      case: 'an active guard',
+      input: { state: 'DRAFT', action: 'submit', roles: ['author'], guards: { blackout: true } },
+      statusCode: 409,
+      code: 'blackout',
+    },
+  ])('throws TransitionRejectedError for $case without calling persist', async ({ input, statusCode, code }) => {
+    const persist = vi.fn(() => Promise.resolve('saved'));
+    const pending = applyTransition(LOOSE, input, persist);
+    await expect(pending).rejects.toThrow(TransitionRejectedError);
+    await expect(pending).rejects.toMatchObject({ statusCode, code });
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it('rejects with the error persist throws', async () => {
+    const failure = new Error('write failed');
+    await expect(
+      applyTransition(LOOSE, { state: 'DRAFT', action: 'submit', roles: ['author'] }, () => Promise.reject(failure)),
+    ).rejects.toBe(failure);
+  });
+});
+
+describe('generateTable', () => {
+  it('emits one row per guard or none, state, action and role', () => {
+    const { states, actions, roles, guards = [] } = LOOSE;
+    expect(TABLE).toHaveLength((guards.length + 1) * states.length * actions.length * roles.length);
+    expect(TABLE).toHaveLength(36);
+    expect(new Set(TABLE.map((row) => JSON.stringify(keyOf(row)))).size).toBe(TABLE.length);
+  });
+
+  it('emits unguarded rows first, then guarded ones, each in definition order of state, action and role', () => {
+    expect(TABLE.slice(0, 3).map(keyOf)).toEqual([
+      [null, 'DRAFT', 'submit', 'author'],
+      [null, 'DRAFT', 'submit', 'approver'],
+      [null, 'DRAFT', 'approve', 'author'],
+    ]);
+    expect(keyOf(TABLE[18] as TransitionTableRow)).toEqual(['blackout', 'DRAFT', 'submit', 'author']);
+    expect(keyOf(TABLE.at(-1) as TransitionTableRow)).toEqual(['blackout', 'APPROVED', 'edit', 'approver']);
+  });
+
+  it('emits only unguarded rows for a definition without guards', () => {
+    const rows = generateTable(UNGUARDED);
+    expect(rows).toHaveLength(18);
+    expect(rows.filter((row) => row.guard !== null)).toEqual([]);
+  });
+
+  type Outcome = Pick<TransitionTableRow, 'expectedStatus' | 'to' | 'newVersion' | 'errorCode'>;
+
+  it.each<{ case: string; key: Key; outcome: Outcome }>([
+    {
+      case: '200 and the new state for a legal transition',
+      key: [null, 'DRAFT', 'submit', 'author'],
+      outcome: { expectedStatus: 200, to: 'SUBMITTED', newVersion: false, errorCode: null },
+    },
+    {
+      case: '200, the same state and a new version for an edit',
+      key: [null, 'DRAFT', 'edit', 'author'],
+      outcome: { expectedStatus: 200, to: 'DRAFT', newVersion: true, errorCode: null },
+    },
+    {
+      case: '409 illegalTransition for an action without a row from the state',
+      key: [null, 'DRAFT', 'approve', 'approver'],
+      outcome: { expectedStatus: 409, to: null, newVersion: false, errorCode: 'illegalTransition' },
+    },
+    {
+      case: '409 illegalTransition from the terminal state',
+      key: [null, 'APPROVED', 'edit', 'author'],
+      outcome: { expectedStatus: 409, to: null, newVersion: false, errorCode: 'illegalTransition' },
+    },
+    {
+      case: '403 authorization for a role the row excludes',
+      key: [null, 'SUBMITTED', 'approve', 'author'],
+      outcome: { expectedStatus: 403, to: null, newVersion: false, errorCode: 'authorization' },
+    },
+    {
+      case: '409 with the guard name ahead of the role check',
+      key: ['blackout', 'DRAFT', 'submit', 'approver'],
+      outcome: { expectedStatus: 409, to: null, newVersion: false, errorCode: 'blackout' },
+    },
+    {
+      case: '409 with the guard name ahead of the terminal check',
+      key: ['blackout', 'APPROVED', 'edit', 'author'],
+      outcome: { expectedStatus: 409, to: null, newVersion: false, errorCode: 'blackout' },
+    },
+  ])('expects $case', ({ key, outcome }) => {
+    const [guard, from, action, role] = key;
+    expect(tableRow(...key)).toStrictEqual({ service: 'approvals', from, action, role, guard, ...outcome });
+  });
+
+  it('expects 409 with the guard name on every guarded row', () => {
+    const guarded = TABLE.filter((row) => row.guard !== null);
+    expect(guarded).toHaveLength(18);
+    expect(guarded.filter((row) => row.expectedStatus !== 409 || row.errorCode !== 'blackout' || row.to !== null)).toEqual([]);
+  });
+
+  it('agrees with decide for every guard context, state, action and role', () => {
+    fc.assert(
+      fc.property(
+        fc.boolean(),
+        fc.constantFrom(...LOOSE.states),
+        fc.constantFrom(...LOOSE.actions),
+        fc.constantFrom(...LOOSE.roles),
+        (active, from, action, role) => {
+          const decision = decide(LOOSE, { state: from, action, roles: [role], guards: { blackout: active } });
+          const expected =
+            decision.outcome === 'ok'
+              ? { expectedStatus: 200, to: decision.to, newVersion: decision.newVersion, errorCode: null }
+              : { expectedStatus: decision.status, to: null, newVersion: false, errorCode: decision.error.code };
+          expect(tableRow(active ? 'blackout' : null, from, action, role)).toMatchObject(expected);
+        },
+      ),
+      { seed: SEED, numRuns: 200 },
+    );
+  });
+});
+
+describe('serializeTable', () => {
+  it('sorts rows by service, guard with null first, from, action and role', () => {
+    const parsed = JSON.parse(serializeTable(TABLE)) as TransitionTableRow[];
+    expect(parsed).toEqual([...TABLE].sort(compareTableRows));
+    expect(parsed.slice(0, 2).map(keyOf)).toEqual([
+      [null, 'APPROVED', 'approve', 'approver'],
+      [null, 'APPROVED', 'approve', 'author'],
+    ]);
+    expect(keyOf(parsed.at(-1) as TransitionTableRow)).toEqual(['blackout', 'SUBMITTED', 'submit', 'author']);
+  });
+
+  it('serializes the same rows identically in any input order', () => {
+    fc.assert(
+      fc.property(fc.shuffledSubarray(TABLE, { minLength: TABLE.length }), (shuffled) => {
+        expect(serializeTable(shuffled)).toBe(serializeTable(TABLE));
+      }),
+      { seed: SEED, numRuns: 50 },
+    );
+  });
+
+  it('indents by two spaces and ends with a newline', () => {
+    const text = serializeTable(TABLE);
+    expect(text.startsWith('[\n  {\n    "service": "approvals",\n')).toBe(true);
+    expect(text.endsWith('  }\n]\n')).toBe(true);
+    expect(serializeTable([])).toBe('[]\n');
+  });
+
+  it('leaves the input rows in their order', () => {
+    const rows = [...TABLE].reverse();
+    const before = [...rows];
+    serializeTable(rows);
+    expect(rows).toStrictEqual(before);
+  });
+});
+
+describe('compareTableRows', () => {
+  const ROW: TransitionTableRow = {
+    service: 'approvals',
+    from: 'DRAFT',
+    action: 'submit',
+    role: 'author',
+    guard: null,
+    expectedStatus: 200,
+    to: 'SUBMITTED',
+    newVersion: false,
+    errorCode: null,
+  };
+
+  it.each<{ case: string; first: Partial<TransitionTableRow>; second: Partial<TransitionTableRow> }>([
+    { case: 'service', first: { service: 'approvals' }, second: { service: 'billing' } },
+    { case: 'a null guard before a named one', first: { guard: null }, second: { guard: 'blackout' } },
+    { case: 'guard name', first: { guard: 'blackout' }, second: { guard: 'freeze' } },
+    { case: 'from', first: { from: 'DRAFT' }, second: { from: 'SUBMITTED' } },
+    { case: 'action', first: { action: 'approve' }, second: { action: 'submit' } },
+    { case: 'role', first: { role: 'approver' }, second: { role: 'author' } },
+    { case: 'code unit, upper case first', first: { role: 'Zed' }, second: { role: 'author' } },
+    {
+      case: 'service ahead of every later key',
+      first: { service: 'approvals', guard: 'blackout', from: 'SUBMITTED', action: 'submit', role: 'author' },
+      second: { service: 'billing', guard: null, from: 'APPROVED', action: 'approve', role: 'approver' },
+    },
+  ])('orders by $case', ({ first, second }) => {
+    expect(compareTableRows({ ...ROW, ...first }, { ...ROW, ...second })).toBe(-1);
+    expect(compareTableRows({ ...ROW, ...second }, { ...ROW, ...first })).toBe(1);
+  });
+
+  it.each([null, 'blackout'])('treats rows with equal keys and guard %s as equal whatever their outcome', (guard) => {
+    const rejected: TransitionTableRow = { ...ROW, guard, expectedStatus: 409, to: null, errorCode: 'blackout' };
+    expect(compareTableRows({ ...ROW, guard }, rejected)).toBe(0);
+  });
+});
+
+describe('writeTableJson', () => {
+  const dirs: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  it('writes the serialized table, creating missing parent directories', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'opt2-transition-table-'));
+    dirs.push(dir);
+    const path = join(dir, 'test', 'generated', 'transition-table.json');
+    await writeTableJson(TABLE, path);
+    expect(await readFile(path, 'utf8')).toBe(serializeTable(TABLE));
   });
 });
