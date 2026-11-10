@@ -58,6 +58,7 @@ describe('dateKeyFor', () => {
     ['nl_NL', '-', '1,0,2', 'DD-MM-YYYY', '315-11-2024', 'nl-NL'],
     ['ru_RU', '.', '1,0,2', 'DD.MM.YYYY', '315.11.2024', 'ru-RU'],
     ['ja_JP', '/', '1,2,0', 'YYYY/MM/DD', '2024/11/315', 'ja-JP'],
+    ['th_TH', '/', '1,0', 'DD/MM/DD', '315/11/315', 'th-TH'],
   ])('derives %s from its short date', (javaLocale, dtCh, dtFormat, dateKeyFormat, dtExample, locale) => {
     expect(fieldsOf(dateKeyFor(javaLocale))).toEqual(expectedKey(locale, dtCh, dtFormat, dateKeyFormat, dtExample));
   });

@@ -213,6 +213,7 @@ describe('checkLabel', () => {
     ['a prefix with no text after it', 'missing-label', 'services/finance/src/a.ts', '// SYNTHETIC:   \n', TS_EXPECTED],
     ['the label on line 3', 'missing-label', 'services/finance/src/a.ts', `import fs from 'node:fs';\n\n${TS_HEADER}\n`, TS_EXPECTED],
     ['a shell label on line 2 without a shebang', 'missing-label', 'legacy-fixtures/a.sh', `set -euo pipefail\n${SH_HEADER}\n`, SH_EXPECTED],
+    ['a shell label on line 3 after a shebang', 'missing-label', 'legacy-fixtures/a.sh', `#!/usr/bin/env bash\n\n${SH_HEADER}\n`, SH_EXPECTED],
     ['a shebang with no second line', 'missing-label', 'legacy-fixtures/a.sh', '#!/usr/bin/env bash', SH_EXPECTED],
     ['a README opening with a heading', 'missing-readme-label', 'services/finance/README.md', '# Finance\n\n**SYNTHETIC MODULE**\n', README_EXPECTED],
     ['an empty README', 'missing-readme-label', 'services/finance/README.md', '', README_EXPECTED],
