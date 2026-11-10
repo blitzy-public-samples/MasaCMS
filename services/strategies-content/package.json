@@ -1,0 +1,37 @@
+{
+  "name": "@opt2/strategies-content",
+  "version": "1.0.0",
+  "private": true,
+  "description": "OPT-2 strategies/content service: content, versions, approvals, change sets, categories, comments, feeds, files and forms.",
+  "type": "module",
+  "main": "dist/main.js",
+  "engines": {
+    "node": "22.23.4"
+  },
+  "scripts": {
+    "postinstall": "npm ci --prefix ../../platform && npm run build --prefix ../../platform",
+    "generate": "node -e \"require('node:fs').mkdirSync('src/generated/events',{recursive:true})\" && openapi-typescript contracts/openapi.yaml -o src/generated/openapi.ts && node -p \"require('node:fs').readFileSync(process.argv[1],'utf8').replaceAll('urn:opt2:platform:event-envelope:v1#','../../platform/contracts/event-envelope.v1.json#')\" ../identity/contracts/events/identity.group.changed.v1.json | json2ts -o src/generated/events/identity.group.changed.v1.ts && node -p \"require('node:fs').readFileSync(process.argv[1],'utf8').replaceAll('urn:opt2:platform:event-envelope:v1#','../../platform/contracts/event-envelope.v1.json#')\" ../identity/contracts/events/identity.permission.changed.v1.json | json2ts -o src/generated/events/identity.permission.changed.v1.ts && node -p \"require('node:fs').readFileSync(process.argv[1],'utf8').replaceAll('urn:opt2:platform:event-envelope:v1#','../../platform/contracts/event-envelope.v1.json#')\" ../identity/contracts/events/identity.membership.changed.v1.json | json2ts -o src/generated/events/identity.membership.changed.v1.ts && node -p \"require('node:fs').readFileSync(process.argv[1],'utf8').replaceAll('urn:opt2:platform:event-envelope:v1#','../../platform/contracts/event-envelope.v1.json#')\" ../programs-sites/contracts/events/programs-sites.site.changed.v1.json | json2ts -o src/generated/events/programs-sites.site.changed.v1.ts",
+    "prebuild": "npm run generate",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "test": "vitest run --coverage",
+    "test:contract": "vitest run test/contract",
+    "test:security": "vitest run test/security",
+    "auth:matrix": "node node_modules/@opt2/platform/dist/auth/cli.js matrix --app dist/app.js --export buildApp"
+  },
+  "dependencies": {
+    "@opt2/platform": "file:../../platform"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@vitest/coverage-v8": "5.0.5",
+    "eslint": "10.13.0",
+    "json-schema-to-typescript": "16.0.0",
+    "openapi-typescript": "7.13.0",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.1",
+    "vitest": "5.0.5",
+    "yaml": "2.9.1"
+  }
+}

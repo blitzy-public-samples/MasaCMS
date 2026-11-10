@@ -1,0 +1,41 @@
+{
+  "name": "@opt2/gateway",
+  "version": "1.0.0",
+  "private": true,
+  "description": "OPT-2 gateway and compatibility dispatcher",
+  "type": "module",
+  "engines": {
+    "node": "22.23.4"
+  },
+  "scripts": {
+    "postinstall": "npm ci --prefix ../platform && npm run build --prefix ../platform",
+    "generate": "openapi-typescript contracts/openapi.yaml -o src/generated/openapi.ts && openapi-typescript ../services/identity/contracts/openapi.yaml -o src/generated/clients/identity.ts && openapi-typescript ../migration/contracts/openapi.yaml -o src/generated/clients/migration.ts",
+    "prebuild": "npm run generate",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "test": "vitest run --coverage",
+    "test:contract": "vitest run test/contract",
+    "test:security": "vitest run test/security",
+    "cutover:groups": "tsx src/cutover/build-groups.ts --write",
+    "cutover:versions": "tsx src/cutover/build-versions.ts --write",
+    "cutover:validate": "tsx src/cutover/validate.ts --ci",
+    "auth:matrix": "node node_modules/@opt2/platform/dist/auth/cli.js matrix --app dist/app.js --export buildApp"
+  },
+  "dependencies": {
+    "@fastify/reply-from": "12.8.0",
+    "@opt2/platform": "file:../platform",
+    "ajv": "8.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@vitest/coverage-v8": "5.0.5",
+    "eslint": "10.13.0",
+    "fastify": "5.12.7",
+    "openapi-typescript": "7.13.0",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.1",
+    "vitest": "5.0.5",
+    "yaml": "2.9.1"
+  }
+}
