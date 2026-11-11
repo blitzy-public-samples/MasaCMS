@@ -1,0 +1,161 @@
+// SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
+/** Read-only queries of schema `finance` in the fixture `finance.cfc` order; each runs in the caller's tenant transaction, whose RLS scopes the rows. */
+import { awaitReadable, qualified, type TableDefinition } from '@opt2/platform/migration-kit';
+import type { TenantTx } from '@opt2/platform/tenancy';
+import {
+  FINANCE_ATTACHMENT,
+  FINANCE_RECORD,
+  FINANCE_RECORD_VERSION,
+  FINANCE_ROLLUP,
+  PROGRAM_BINDING,
+  type FinanceAttachmentRow,
+  type FinanceRecordRow,
+  type FinanceRecordVersionRow,
+  type FinanceRollupRow,
+  type ProgramBindingRow,
+} from './tables.js';
+
+/** A record list page as envelope.cfc `page()` validates it: `pageIndex` from 1, `itemsPerPage` from 1 to 1000. */
+export interface RecordPaging {
+  pageIndex: number;
+  itemsPerPage: number;
+}
+
+/** One page of the tenant's records and the count of all of them. */
+export interface RecordPage {
+  rows: FinanceRecordRow[];
+  total: number;
+}
+
+/** One stored attachment object of the migration export manifest; `size` is the row's `size_bytes`. */
+export type AttachmentObject = {
+  attachment_id: string;
+  record_id: string;
+  object_key: string;
+  size: number;
+  sha256: string;
+  content_type: string;
+  legacy_program_id: number;
+};
+
+/** The `finance.attachment` column behind each manifest field. */
+const MANIFEST_COLUMNS: { readonly [F in keyof AttachmentObject]: keyof FinanceAttachmentRow } = {
+  attachment_id: 'attachment_id',
+  record_id: 'record_id',
+  object_key: 'object_key',
+  size: 'size_bytes',
+  sha256: 'sha256',
+  content_type: 'content_type',
+  legacy_program_id: 'legacy_program_id',
+};
+
+interface Statements {
+  readonly record: string;
+  readonly recordForUpdate: string;
+  readonly countRecords: string;
+  readonly recordPage: string;
+  readonly versions: string;
+  readonly attachments: string;
+  readonly attachment: string;
+  readonly rollups: string;
+  readonly binding: string;
+  readonly attachmentObjects: string;
+}
+
+/** The quoted catalogue columns of `def`, in catalogue order. */
+function columnList(def: TableDefinition): string {
+  return def.columns.map((column) => `"${column.name}"`).join(', ');
+}
+
+/** The statements over `schema`, which is `finance` except in throwaway test schemas. */
+function statementsFor(schema: string): Statements {
+  const record = `SELECT ${columnList(FINANCE_RECORD)} FROM ${qualified(schema, FINANCE_RECORD.table)}`;
+  const version = `SELECT ${columnList(FINANCE_RECORD_VERSION)} FROM ${qualified(schema, FINANCE_RECORD_VERSION.table)}`;
+  const attachment = `SELECT ${columnList(FINANCE_ATTACHMENT)} FROM ${qualified(schema, FINANCE_ATTACHMENT.table)}`;
+  const manifest = Object.entries(MANIFEST_COLUMNS)
+    .map(([field, column]) => (field === column ? `"${column}"` : `"${column}" AS "${field}"`))
+    .join(', ');
+  // The fixture's siteID filter is the tenant's own site, so RLS alone scopes rows; ids match exactly, as stored CF UUIDs.
+  // CF UUIDs are fixed-format uppercase hex, so byte order matches SQL Server's case-insensitive order on ids;
+  // COLLATE "C" on period and state matches the fixture's Latin1_General_BIN2.
+  return Object.freeze({
+    record: `${record} WHERE "record_id" = $1`,
+    recordForUpdate: `${record} WHERE "record_id" = $1 FOR UPDATE`,
+    countRecords: `SELECT count(*)::integer AS "total" FROM ${qualified(schema, FINANCE_RECORD.table)}`,
+    recordPage: `${record} ORDER BY "created", "record_id" COLLATE "C" LIMIT $1 OFFSET $2`,
+    versions: `${version} WHERE "record_id" = $1 ORDER BY "version"`,
+    attachments: `${attachment} WHERE "record_id" = $1 ORDER BY "created", "attachment_id" COLLATE "C"`,
+    attachment: `${attachment} WHERE "record_id" = $1 AND "attachment_id" = $2`,
+    rollups:
+      `SELECT ${columnList(FINANCE_ROLLUP)} FROM ${qualified(schema, FINANCE_ROLLUP.table)}` +
+      ' ORDER BY "period" COLLATE "C", "state" COLLATE "C", "legacy_program_id"',
+    binding: `SELECT ${columnList(PROGRAM_BINDING)} FROM ${qualified(schema, PROGRAM_BINDING.table)} ORDER BY "legacy_program_id" LIMIT 1`,
+    attachmentObjects: `SELECT ${manifest} FROM ${qualified(schema, FINANCE_ATTACHMENT.table)} ORDER BY "attachment_id" COLLATE "C"`,
+  });
+}
+
+/** The record `id`, or null; `forUpdate` row-locks it so transitions on one record serialise. */
+export async function findRecord(
+  tx: TenantTx,
+  id: string,
+  { forUpdate = false }: { forUpdate?: boolean } = {},
+): Promise<FinanceRecordRow | null> {
+  const statements = statementsFor(tx.schema);
+  await awaitReadable(tx, [FINANCE_RECORD.unit]);
+  const { rows } = await tx.query<FinanceRecordRow>(forUpdate ? statements.recordForUpdate : statements.record, [id]);
+  return rows[0] ?? null;
+}
+
+/** One page of the tenant's records by `created`, then id, and their total, read as envelope.cfc `queryPage()` reads it. */
+export async function listRecords(tx: TenantTx, paging: RecordPaging): Promise<RecordPage> {
+  const statements = statementsFor(tx.schema);
+  await awaitReadable(tx, [FINANCE_RECORD.unit]);
+  const [{ total }] = (await tx.query<{ total: number }>(statements.countRecords)).rows as [{ total: number }];
+  const offset = (paging.pageIndex - 1) * paging.itemsPerPage;
+  if (offset >= total) {
+    return { rows: [], total };
+  }
+  const { rows } = await tx.query<FinanceRecordRow>(statements.recordPage, [paging.itemsPerPage, offset]);
+  return { rows, total };
+}
+
+/** Every version row of record `recordId`, by version. */
+export async function listVersions(tx: TenantTx, recordId: string): Promise<FinanceRecordVersionRow[]> {
+  const statements = statementsFor(tx.schema);
+  await awaitReadable(tx, [FINANCE_RECORD_VERSION.unit]);
+  return (await tx.query<FinanceRecordVersionRow>(statements.versions, [recordId])).rows;
+}
+
+/** Every attachment row of record `recordId`, by `created`, then id. */
+export async function listAttachments(tx: TenantTx, recordId: string): Promise<FinanceAttachmentRow[]> {
+  const statements = statementsFor(tx.schema);
+  await awaitReadable(tx, [FINANCE_ATTACHMENT.unit]);
+  return (await tx.query<FinanceAttachmentRow>(statements.attachments, [recordId])).rows;
+}
+
+/** The attachment `attachmentId` of record `recordId`, or null when either id does not match. */
+export async function findAttachment(tx: TenantTx, recordId: string, attachmentId: string): Promise<FinanceAttachmentRow | null> {
+  const statements = statementsFor(tx.schema);
+  await awaitReadable(tx, [FINANCE_ATTACHMENT.unit]);
+  const { rows } = await tx.query<FinanceAttachmentRow>(statements.attachment, [recordId, attachmentId]);
+  return rows[0] ?? null;
+}
+
+/** Every rollup row of the tenant, by period, then state, in binary order. */
+export async function listRollups(tx: TenantTx): Promise<FinanceRollupRow[]> {
+  const statements = statementsFor(tx.schema);
+  await awaitReadable(tx, [FINANCE_ROLLUP.unit]);
+  return (await tx.query<FinanceRollupRow>(statements.rollups)).rows;
+}
+
+/** The tenant's `Program_<id>` binding with the lowest program id, or null; `program_binding` has no unit gate. */
+export async function findProgramBinding(tx: TenantTx): Promise<ProgramBindingRow | null> {
+  const { rows } = await tx.query<ProgramBindingRow>(statementsFor(tx.schema).binding);
+  return rows[0] ?? null;
+}
+
+/** The tenant's attachment object manifest, by attachment id. */
+export async function listAttachmentObjects(tx: TenantTx): Promise<AttachmentObject[]> {
+  // No read gate: the migration export reads this while a write window imports the unit, and waiting would stall that window.
+  return (await tx.query<AttachmentObject>(statementsFor(tx.schema).attachmentObjects)).rows;
+}

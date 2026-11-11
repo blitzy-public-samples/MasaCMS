@@ -84,6 +84,8 @@ export interface NewResponse {
 
 /** The platform repository of schema `surveys` plus the fixture's writes; every helper takes the caller's open tenant transaction. */
 export interface SurveysRepository extends Repository {
+  /** Locks the survey row FOR UPDATE until the transaction ends and returns it, as the fixture's task callbacks and the status, schedule, reminder and target writes lock it before any child row; null when absent. */
+  lockSurvey(tx: TenantTx, surveyId: string): Promise<SurveyRow | null>;
   /** Inserts a `DRAFT` survey created now. */
   insertSurvey(tx: TenantTx, input: NewSurvey, ctx?: WriteContext): Promise<SurveyRow>;
   /** Sets `status`; `LAUNCHED` also stamps `launched_at` and writes only while it is null. Null when the survey is absent. */
@@ -320,6 +322,7 @@ export function createSurveysRepository({ clock, schema = SCHEMA }: SurveysRepos
 
   return Object.freeze({
     ...base,
+    lockSurvey,
     insertSurvey,
     setSurveyStatus,
     upsertSchedule,

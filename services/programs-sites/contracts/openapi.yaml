@@ -1629,9 +1629,116 @@ components:
         extendSets:
           type: array
           items:
-            type: object
+            $ref: '#/components/schemas/SiteExtendSet'
         imageSizes:
           $ref: '#/components/schemas/ImageSizeList'
+    SiteExtendSet:
+      type: object
+      description: A `tclassextendsets` row of the site's active `Site`/`Default` subtype in container `Default`, in display order, with its attributes.
+      required:
+        - extendSetID
+        - subTypeID
+        - categoryID
+        - siteID
+        - name
+        - orderno
+        - isActive
+        - container
+        - attributes
+      additionalProperties: false
+      properties:
+        extendSetID:
+          type: string
+        subTypeID:
+          $ref: '#/components/schemas/NullableString'
+        categoryID:
+          $ref: '#/components/schemas/NullableString'
+        siteID:
+          $ref: '#/components/schemas/NullableString'
+        name:
+          $ref: '#/components/schemas/NullableString'
+        orderno:
+          type:
+            - integer
+            - 'null'
+        isActive:
+          type:
+            - integer
+            - 'null'
+        container:
+          $ref: '#/components/schemas/NullableString'
+        attributes:
+          type: array
+          items:
+            $ref: '#/components/schemas/SiteExtendAttribute'
+    SiteExtendAttribute:
+      type: object
+      description: A `tclassextendattributes` row with the site's stored value.
+      required:
+        - attributeID
+        - extendSetID
+        - siteID
+        - name
+        - label
+        - hint
+        - type
+        - orderno
+        - isActive
+        - required
+        - validation
+        - regex
+        - message
+        - defaultValue
+        - optionList
+        - optionLabelList
+        - adminonly
+        - value
+      additionalProperties: false
+      properties:
+        attributeID:
+          type: integer
+        extendSetID:
+          $ref: '#/components/schemas/NullableString'
+        siteID:
+          $ref: '#/components/schemas/NullableString'
+        name:
+          $ref: '#/components/schemas/NullableString'
+        label:
+          $ref: '#/components/schemas/NullableString'
+        hint:
+          $ref: '#/components/schemas/NullableString'
+        type:
+          $ref: '#/components/schemas/NullableString'
+        orderno:
+          type:
+            - integer
+            - 'null'
+        isActive:
+          type:
+            - integer
+            - 'null'
+        required:
+          $ref: '#/components/schemas/NullableString'
+        validation:
+          $ref: '#/components/schemas/NullableString'
+        regex:
+          $ref: '#/components/schemas/NullableString'
+        message:
+          $ref: '#/components/schemas/NullableString'
+        defaultValue:
+          $ref: '#/components/schemas/NullableString'
+          description: The stored default, before `setDynamicContent`.
+        optionList:
+          $ref: '#/components/schemas/NullableString'
+        optionLabelList:
+          $ref: '#/components/schemas/NullableString'
+        adminonly:
+          type:
+            - integer
+            - 'null'
+        value:
+          $ref: '#/components/schemas/NullableString'
+          description: The stored `attributeValue` for the site's `baseID`; null when no value is stored.
     SiteUpdate:
       type: object
       description: The Edit Site form; fields left out keep their stored values, and extended attribute fields pass through by name.

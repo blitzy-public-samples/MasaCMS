@@ -115,8 +115,11 @@ export interface MigrationHandlerOptions {
   db?: TenantDb;
   /** Object manifest of a unit, returned with the first export page. */
   exportObjects?(tx: TenantTx, scope: { unit: string; tenantId: string }): Promise<ObjectManifestEntry[]>;
-  /** Writes the `state` events of one applied change in the apply transaction. */
-  emitStateEvents?(tx: TenantTx, change: AppliedChange): Promise<void>;
+  /**
+   * Writes the `state` events of one applied change in the apply transaction; `write` is the apply's own write
+   * context (origin and migration authority), so the service's audited writes for the event pass the unit gate.
+   */
+  emitStateEvents?(tx: TenantTx, change: AppliedChange, write: WriteContext): Promise<void>;
   /** Statuses of operations; ids it omits fall back to the `open_operation` registry. */
   operationStatus?(db: TenantDb, operationIds: string[]): Promise<Record<string, OperationStatus>>;
 }
@@ -659,7 +662,11 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
           const change = await applyRow(tx, entry, input.op, target, ctx);
           if (change === null) continue;
           wrote = true;
-          await options.emitStateEvents?.(tx, { ...change, unit: entry.mapping.unit, table: entry.table, origin: body.origin, tenantId });
+          await options.emitStateEvents?.(
+            tx,
+            { ...change, unit: entry.mapping.unit, table: entry.table, origin: body.origin, tenantId },
+            ctx,
+          );
         }
         if (wrote) applied += 1;
       }

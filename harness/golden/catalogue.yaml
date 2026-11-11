@@ -522,7 +522,7 @@ scenarios:
         form:
           groupid: ${seed.group.groupID}
           siteid: tenant-a
-          moduleid: 00000000000000000000000000000000008
+          moduleid: '00000000000000000000000000000000008'
           topid: ''
       - name: module-after
         method: GET
@@ -537,12 +537,12 @@ scenarios:
         form:
           groupid: ''
           siteid: tenant-a
-          moduleid: 00000000000000000000000000000000008
+          moduleid: '00000000000000000000000000000000008'
           topid: ''
     compare: [status, auth, dom, rows]
     rows:
       - {table: tpermissions, where: {contentid: '${seed.page.contentID}', siteid: tenant-a}}
-      - {table: tpermissions, where: {contentid: 00000000000000000000000000000000008, siteid: tenant-a}}
+      - {table: tpermissions, where: {contentid: '00000000000000000000000000000000008', siteid: tenant-a}}
     normalisationOverrides: {}
     covers:
       - admin:cperm.main
@@ -6773,8 +6773,8 @@ scenarios:
           remoteid: gs-co-19-variation
           remoteurl: https://tenant-a.seed.opt2.test/gs-co-19
           title: GS-CO-19 Variation
-          parentid: 00000000000000000000000000000000099
-          moduleid: 00000000000000000000000000000000099
+          parentid: '00000000000000000000000000000000099'
+          moduleid: '00000000000000000000000000000000099'
           type: Variation
           compactDisplay: 'true'
           contentid: ${variation-form.contentid}
@@ -6790,8 +6790,8 @@ scenarios:
           remoteid: gs-co-19-variation
           remoteurl: https://tenant-a.seed.opt2.test/gs-co-19
           title: GS-CO-19 Variation
-          parentid: 00000000000000000000000000000000099
-          moduleid: 00000000000000000000000000000000099
+          parentid: '00000000000000000000000000000000099'
+          moduleid: '00000000000000000000000000000000099'
           type: Variation
           compactDisplay: 'true'
           contentid: ${variation-form.contentid}

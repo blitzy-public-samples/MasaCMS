@@ -5,7 +5,8 @@ CREATE TABLE identity.session (
   session_id text NOT NULL,
   user_id char(35),
   site_id text,
-  login_snapshot jsonb,
+  -- JSON text, not jsonb: changelog images encode every column canonically as text, and pg returns jsonb as parsed objects.
+  login_snapshot text,
   epoch bigint NOT NULL DEFAULT 0,
   csrf_secret char(35) NOT NULL,
   mode text NOT NULL CHECK (mode IN ('legacy-primary','target-primary')),
@@ -47,8 +48,9 @@ CREATE TABLE identity.account_operation (
   kind text NOT NULL CHECK (kind IN ('create','update')),
   state text NOT NULL CHECK (state IN ('prepared','committed','aborted','reverted','finished')),
   username text,
-  pending_change jsonb,
-  before_values jsonb,
+  -- JSON text, as session.login_snapshot.
+  pending_change text,
+  before_values text,
   commit_xid xid8,
   created_at timestamp(3) without time zone NOT NULL,
   updated_at timestamp(3) without time zone NOT NULL,

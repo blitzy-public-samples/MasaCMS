@@ -11,7 +11,7 @@ import { inboxSql } from '../../src/events/index.js';
 import { REDACTED, createLogger, type Logger } from '../../src/logging/index.js';
 import { encodeKey, encodeRow, sha256Hex, type CanonicalColumn } from '../../src/migration-kit/canonical.js';
 import { migrationKitSql } from '../../src/migration-kit/ddl.js';
-import { GATE_WAIT_MS, endOperation } from '../../src/migration-kit/gates.js';
+import { GATE_WAIT_MS, endOperation, isMigrationAuthority } from '../../src/migration-kit/gates.js';
 import {
   MIGRATION_PATH_PREFIX,
   registerMigrationHandlers,
@@ -26,7 +26,13 @@ import {
   type WatermarkRecord,
 } from '../../src/migration-kit/handlers.js';
 import { defineMapping, type MappingColumn } from '../../src/migration-kit/mapping.js';
-import { createRepository, type Repository, type RepositoryRow, type TableDefinition } from '../../src/migration-kit/repository.js';
+import {
+  createRepository,
+  type Repository,
+  type RepositoryRow,
+  type TableDefinition,
+  type WriteContext,
+} from '../../src/migration-kit/repository.js';
 import { WRITE_POSITION_HEADER_LC, registerWritePositionHeader } from '../../src/migration-kit/write-position.js';
 import { outboxSql } from '../../src/outbox/index.js';
 import { createService } from '../../src/service-kit/create-service.js';
@@ -352,6 +358,7 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
   let migration: Record<string, string>;
   let gateway: Record<string, string>;
   const emitted: AppliedChange[] = [];
+  const emitContexts: WriteContext[] = [];
   const statusCalls: string[][] = [];
   let sites = 0;
 
@@ -371,8 +378,9 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
       mappings: MAPPINGS,
       units: UNITS,
       exportObjects: (_tx, scope) => Promise.resolve(objectsOf(scope.unit, scope.tenantId)),
-      emitStateEvents: (_tx, change) => {
+      emitStateEvents: (_tx, change, write) => {
         emitted.push(change);
+        emitContexts.push(write);
         return Promise.resolve();
       },
       operationStatus: (_db, ids) => {
@@ -396,6 +404,7 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
 
   beforeEach(() => {
     emitted.length = 0;
+    emitContexts.length = 0;
     statusCalls.length = 0;
   });
 
@@ -510,6 +519,10 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
     expect(emitted).toEqual([
       { unit: 'mk.item', table: 'item', op: 'insert', after: one, origin: 'backfill', tenantId },
       { unit: 'mk.item', table: 'item', op: 'insert', after: two, origin: 'backfill', tenantId },
+    ]);
+    expect(emitContexts.map((write) => [write.origin, write.requestId, isMigrationAuthority(write.authority)])).toEqual([
+      ['backfill', `${site}-b1`, true],
+      ['backfill', `${site}-b1`, true],
     ]);
 
     emitted.length = 0;

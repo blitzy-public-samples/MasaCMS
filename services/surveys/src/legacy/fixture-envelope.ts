@@ -157,7 +157,7 @@ function digitValue(codePoint: number): number {
 }
 
 /** ACF isValid('integer', s), which parses as Java Integer.parseInt: an optional sign, digits of any script, 32-bit range. */
-function parseCfInteger(s: string): number | undefined {
+export function parseCfInteger(s: string): number | undefined {
   if (!ANY_SCRIPT_INTEGER.test(s)) return undefined;
   let magnitude = 0;
   for (const digit of s.replace(/^[+-]/, '')) magnitude = magnitude * 10 + digitValue(digit.codePointAt(0) ?? 0);
