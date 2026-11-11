@@ -1,0 +1,637 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "variants": [
+    {
+      "route": "admin:carch.multifileupload",
+      "variant": "upload=image",
+      "when": [
+        {
+          "multipartExtensionIn": [
+            "png",
+            "gif",
+            "jpg",
+            "jpeg",
+            "flv"
+          ]
+        }
+      ]
+    },
+    {
+      "route": "admin:carch.update",
+      "variant": "upload=image",
+      "when": [
+        {
+          "multipartExtensionIn": [
+            "png",
+            "gif",
+            "jpg",
+            "jpeg",
+            "flv"
+          ]
+        }
+      ]
+    },
+    {
+      "route": "admin:ceditprofile.update",
+      "variant": "photo",
+      "when": [
+        {
+          "anyOf": [
+            {
+              "param": "newFile",
+              "nonEmpty": true
+            },
+            {
+              "param": "removePhotoFile",
+              "truthy": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "route": "admin:csettings.updatesite",
+      "variant": "bundle",
+      "when": [
+        {
+          "anyOf": [
+            {
+              "param": "bundleFile",
+              "nonEmpty": true
+            },
+            {
+              "param": "serverBundlePath",
+              "nonEmpty": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "route": "admin:cusers.update",
+      "variant": "photo",
+      "when": [
+        {
+          "anyOf": [
+            {
+              "param": "newFile",
+              "nonEmpty": true
+            },
+            {
+              "param": "removePhotoFile",
+              "truthy": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "route": "api:file.save",
+      "variant": "upload=image",
+      "when": [
+        {
+          "multipartExtensionIn": [
+            "png",
+            "gif",
+            "jpg",
+            "jpeg",
+            "flv"
+          ]
+        }
+      ]
+    },
+    {
+      "route": "api:group.save",
+      "variant": "photo",
+      "when": [
+        {
+          "anyOf": [
+            {
+              "param": "newFile",
+              "nonEmpty": true
+            },
+            {
+              "param": "removePhotoFile",
+              "truthy": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "route": "api:site.save",
+      "variant": "bundle",
+      "when": [
+        {
+          "anyOf": [
+            {
+              "param": "bundleFile",
+              "nonEmpty": true
+            },
+            {
+              "param": "serverBundlePath",
+              "nonEmpty": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "route": "api:user.save",
+      "variant": "photo",
+      "when": [
+        {
+          "anyOf": [
+            {
+              "param": "newFile",
+              "nonEmpty": true
+            },
+            {
+              "param": "removePhotoFile",
+              "truthy": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "route": "rest:file.save",
+      "variant": "upload=image",
+      "when": [
+        {
+          "multipartExtensionIn": [
+            "png",
+            "gif",
+            "jpg",
+            "jpeg",
+            "flv"
+          ]
+        }
+      ]
+    },
+    {
+      "route": "rest:group.save",
+      "variant": "photo",
+      "when": [
+        {
+          "anyOf": [
+            {
+              "param": "newFile",
+              "nonEmpty": true
+            },
+            {
+              "param": "removePhotoFile",
+              "truthy": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "route": "rest:site.save",
+      "variant": "bundle",
+      "when": [
+        {
+          "anyOf": [
+            {
+              "param": "bundleFile",
+              "nonEmpty": true
+            },
+            {
+              "param": "serverBundlePath",
+              "nonEmpty": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "route": "rest:user.save",
+      "variant": "photo",
+      "when": [
+        {
+          "anyOf": [
+            {
+              "param": "newFile",
+              "nonEmpty": true
+            },
+            {
+              "param": "removePhotoFile",
+              "truthy": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "route": "admin:cusers.update",
+      "variant": "type=2,action=add,extdata",
+      "when": [
+        {
+          "param": "type",
+          "equals": "2"
+        },
+        {
+          "param": "action",
+          "equals": "Add"
+        },
+        {
+          "param": "extendSetID",
+          "nonEmpty": true
+        }
+      ]
+    },
+    {
+      "route": "admin:cusers.update",
+      "variant": "type=2,action=update,extdata",
+      "when": [
+        {
+          "param": "type",
+          "equals": "2"
+        },
+        {
+          "param": "action",
+          "equals": "Update"
+        },
+        {
+          "param": "extendSetID",
+          "nonEmpty": true
+        }
+      ]
+    },
+    {
+      "route": "admin:cusers.update",
+      "variant": "type=1,action=delete",
+      "when": [
+        {
+          "param": "type",
+          "equals": "1"
+        },
+        {
+          "param": "action",
+          "equals": "Delete"
+        }
+      ]
+    },
+    {
+      "route": "admin:cusers.update",
+      "variant": "type=1,extdata",
+      "when": [
+        {
+          "param": "type",
+          "equals": "1"
+        },
+        {
+          "param": "extendSetID",
+          "nonEmpty": true
+        }
+      ]
+    },
+    {
+      "route": "admin:cusers.update",
+      "variant": "type=2,action=add",
+      "when": [
+        {
+          "param": "type",
+          "equals": "2"
+        },
+        {
+          "param": "action",
+          "equals": "Add"
+        }
+      ]
+    },
+    {
+      "route": "admin:cusers.update",
+      "variant": "type=2,action=delete",
+      "when": [
+        {
+          "param": "type",
+          "equals": "2"
+        },
+        {
+          "param": "action",
+          "equals": "Delete"
+        }
+      ]
+    },
+    {
+      "route": "admin:cusers.update",
+      "variant": "type=2,action=update",
+      "when": [
+        {
+          "param": "type",
+          "equals": "2"
+        },
+        {
+          "param": "action",
+          "equals": "Update"
+        }
+      ]
+    },
+    {
+      "route": "admin:carch.approvalaction",
+      "variant": "action=approve",
+      "when": [
+        {
+          "param": "action",
+          "equals": "approve"
+        }
+      ]
+    },
+    {
+      "route": "admin:carch.update",
+      "variant": "approved=1",
+      "when": [
+        {
+          "param": "approved",
+          "truthy": true
+        }
+      ]
+    },
+    {
+      "route": "admin:carch.update",
+      "variant": "notify",
+      "when": [
+        {
+          "param": "notify",
+          "nonEmpty": true
+        }
+      ]
+    },
+    {
+      "route": "admin:carch.updateobjectparams",
+      "variant": "approved=1",
+      "when": [
+        {
+          "param": "approved",
+          "truthy": true
+        }
+      ]
+    },
+    {
+      "route": "admin:carch.variationtargeting",
+      "variant": "notify",
+      "when": [
+        {
+          "param": "notify",
+          "nonEmpty": true
+        }
+      ]
+    },
+    {
+      "route": "admin:ceditprofile.update",
+      "variant": "extdata",
+      "when": [
+        {
+          "param": "extendSetID",
+          "nonEmpty": true
+        }
+      ]
+    },
+    {
+      "route": "admin:csettings.updatesite",
+      "variant": "action=add",
+      "when": [
+        {
+          "param": "action",
+          "equals": "Add"
+        }
+      ]
+    },
+    {
+      "route": "admin:csettings.updatesite",
+      "variant": "action=delete",
+      "when": [
+        {
+          "param": "action",
+          "equals": "Delete"
+        }
+      ]
+    },
+    {
+      "route": "admin:csettings.updatesite",
+      "variant": "action=update",
+      "when": [
+        {
+          "param": "action",
+          "equals": "Update"
+        }
+      ]
+    },
+    {
+      "route": "admin:cusers.update",
+      "variant": "type=1",
+      "when": [
+        {
+          "param": "type",
+          "equals": "1"
+        }
+      ]
+    },
+    {
+      "route": "admin:cusers.updateaddress",
+      "variant": "action=delete",
+      "when": [
+        {
+          "param": "action",
+          "equals": "Delete"
+        }
+      ]
+    },
+    {
+      "route": "admin:cusers.updateaddress",
+      "variant": "extdata",
+      "when": [
+        {
+          "anyOf": [
+            {
+              "param": "extendSetID",
+              "nonEmpty": true
+            },
+            {
+              "param": "extendSetID",
+              "equals": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "route": "api:address.save",
+      "variant": "extdata",
+      "when": [
+        {
+          "anyOf": [
+            {
+              "param": "extendSetID",
+              "nonEmpty": true
+            },
+            {
+              "param": "extendSetID",
+              "equals": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "route": "api:content.save",
+      "variant": "approved=1",
+      "when": [
+        {
+          "param": "approved",
+          "truthy": true
+        }
+      ]
+    },
+    {
+      "route": "api:content.save",
+      "variant": "notify",
+      "when": [
+        {
+          "param": "notify",
+          "nonEmpty": true
+        }
+      ]
+    },
+    {
+      "route": "api:contentnav.save",
+      "variant": "approved=1",
+      "when": [
+        {
+          "param": "approved",
+          "truthy": true
+        }
+      ]
+    },
+    {
+      "route": "api:contentnav.save",
+      "variant": "notify",
+      "when": [
+        {
+          "param": "notify",
+          "nonEmpty": true
+        }
+      ]
+    },
+    {
+      "route": "api:group.save",
+      "variant": "extdata",
+      "when": [
+        {
+          "param": "extendSetID",
+          "nonEmpty": true
+        }
+      ]
+    },
+    {
+      "route": "api:processasyncobject",
+      "variant": "saveform",
+      "when": [
+        {
+          "param": "saveform",
+          "nonEmpty": true
+        }
+      ]
+    },
+    {
+      "route": "api:user.save",
+      "variant": "extdata",
+      "when": [
+        {
+          "param": "extendSetID",
+          "nonEmpty": true
+        }
+      ]
+    },
+    {
+      "route": "rest:address.save",
+      "variant": "extdata",
+      "when": [
+        {
+          "anyOf": [
+            {
+              "param": "extendSetID",
+              "nonEmpty": true
+            },
+            {
+              "param": "extendSetID",
+              "equals": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "route": "rest:content.save",
+      "variant": "approved=1",
+      "when": [
+        {
+          "param": "approved",
+          "truthy": true
+        }
+      ]
+    },
+    {
+      "route": "rest:content.save",
+      "variant": "notify",
+      "when": [
+        {
+          "param": "notify",
+          "nonEmpty": true
+        }
+      ]
+    },
+    {
+      "route": "rest:contentnav.save",
+      "variant": "approved=1",
+      "when": [
+        {
+          "param": "approved",
+          "truthy": true
+        }
+      ]
+    },
+    {
+      "route": "rest:contentnav.save",
+      "variant": "notify",
+      "when": [
+        {
+          "param": "notify",
+          "nonEmpty": true
+        }
+      ]
+    },
+    {
+      "route": "rest:group.save",
+      "variant": "extdata",
+      "when": [
+        {
+          "param": "extendSetID",
+          "nonEmpty": true
+        }
+      ]
+    },
+    {
+      "route": "rest:processasyncobject",
+      "variant": "saveform",
+      "when": [
+        {
+          "param": "saveform",
+          "nonEmpty": true
+        }
+      ]
+    },
+    {
+      "route": "rest:user.save",
+      "variant": "extdata",
+      "when": [
+        {
+          "param": "extendSetID",
+          "nonEmpty": true
+        }
+      ]
+    }
+  ]
+}

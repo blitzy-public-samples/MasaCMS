@@ -45,6 +45,19 @@ function eq(param: string, equals: string): VariantCondition {
   return { param, equals };
 }
 
+function nonEmpty(param: string): VariantCondition {
+  return { param, nonEmpty: true };
+}
+
+function truthy(param: string): VariantCondition {
+  return { param, truthy: true };
+}
+
+/** structKeyExists over the merged params, empty value included (userManager.cfc:888,930). */
+function present(param: string): VariantCondition {
+  return { anyOf: [nonEmpty(param), eq(param, '')] };
+}
+
 function variant(route: string, name: string, ...when: VariantCondition[]): VariantDeclaration {
   return { route, variant: name, when };
 }
@@ -77,23 +90,70 @@ function conflict(name: string, source: string, req: RouteKeyRequest, expectedKe
   return { name, source, request: req, expectedKey };
 }
 
-/** Gateway variant declarations in precedence order; photo branches outrank type and action branches. */
+const BUNDLE_CONDITION: VariantCondition = { anyOf: [nonEmpty('bundleFile'), nonEmpty('serverBundlePath')] };
+
+/** The inventory's variants as gateway/cutover/variants.json declares them: by precedence, then route and variant. */
 export const routeKeyCaseVariants: readonly VariantDeclaration[] = deepFreeze([
-  variant('admin:cusers.update', 'photo', PHOTO_CONDITION),
+  variant('admin:carch.multifileupload', 'upload=image', IMAGE_UPLOAD_CONDITION),
+  variant('admin:carch.update', 'upload=image', IMAGE_UPLOAD_CONDITION),
   variant('admin:ceditprofile.update', 'photo', PHOTO_CONDITION),
-  variant('api:user.save', 'photo', PHOTO_CONDITION),
+  variant('admin:csettings.updatesite', 'bundle', BUNDLE_CONDITION),
+  variant('admin:cusers.update', 'photo', PHOTO_CONDITION),
+  variant('api:file.save', 'upload=image', IMAGE_UPLOAD_CONDITION),
   variant('api:group.save', 'photo', PHOTO_CONDITION),
-  variant('admin:cusers.update', 'type=1', eq('type', '1')),
+  variant('api:site.save', 'bundle', BUNDLE_CONDITION),
+  variant('api:user.save', 'photo', PHOTO_CONDITION),
+  variant('rest:file.save', 'upload=image', IMAGE_UPLOAD_CONDITION),
+  variant('rest:group.save', 'photo', PHOTO_CONDITION),
+  variant('rest:site.save', 'bundle', BUNDLE_CONDITION),
+  variant('rest:user.save', 'photo', PHOTO_CONDITION),
+  variant(
+    'admin:cusers.update',
+    'type=2,action=add,extdata',
+    eq('type', '2'),
+    eq('action', 'Add'),
+    nonEmpty('extendSetID'),
+  ),
+  variant(
+    'admin:cusers.update',
+    'type=2,action=update,extdata',
+    eq('type', '2'),
+    eq('action', 'Update'),
+    nonEmpty('extendSetID'),
+  ),
+  variant('admin:cusers.update', 'type=1,action=delete', eq('type', '1'), eq('action', 'Delete')),
+  variant('admin:cusers.update', 'type=1,extdata', eq('type', '1'), nonEmpty('extendSetID')),
   variant('admin:cusers.update', 'type=2,action=add', eq('type', '2'), eq('action', 'Add')),
-  variant('admin:cusers.update', 'type=2,action=update', eq('type', '2'), eq('action', 'Update')),
   variant('admin:cusers.update', 'type=2,action=delete', eq('type', '2'), eq('action', 'Delete')),
-  variant('admin:csettings.updatesite', 'action=update', eq('action', 'Update')),
+  variant('admin:cusers.update', 'type=2,action=update', eq('type', '2'), eq('action', 'Update')),
+  variant('admin:carch.approvalaction', 'action=approve', eq('action', 'approve')),
+  variant('admin:carch.update', 'approved=1', truthy('approved')),
+  variant('admin:carch.update', 'notify', nonEmpty('notify')),
+  variant('admin:carch.updateobjectparams', 'approved=1', truthy('approved')),
+  variant('admin:carch.variationtargeting', 'notify', nonEmpty('notify')),
+  variant('admin:ceditprofile.update', 'extdata', nonEmpty('extendSetID')),
   variant('admin:csettings.updatesite', 'action=add', eq('action', 'Add')),
   variant('admin:csettings.updatesite', 'action=delete', eq('action', 'Delete')),
-  variant('admin:carch.update', 'upload=image', IMAGE_UPLOAD_CONDITION),
-  variant('admin:carch.multifileupload', 'upload=image', IMAGE_UPLOAD_CONDITION),
-  variant('api:file.save', 'upload=image', IMAGE_UPLOAD_CONDITION),
+  variant('admin:csettings.updatesite', 'action=update', eq('action', 'Update')),
+  variant('admin:cusers.update', 'type=1', eq('type', '1')),
+  variant('admin:cusers.updateaddress', 'action=delete', eq('action', 'Delete')),
+  variant('admin:cusers.updateaddress', 'extdata', present('extendSetID')),
+  variant('api:address.save', 'extdata', present('extendSetID')),
+  variant('api:content.save', 'approved=1', truthy('approved')),
+  variant('api:content.save', 'notify', nonEmpty('notify')),
+  variant('api:contentnav.save', 'approved=1', truthy('approved')),
+  variant('api:contentnav.save', 'notify', nonEmpty('notify')),
+  variant('api:group.save', 'extdata', nonEmpty('extendSetID')),
   variant('api:processasyncobject', 'saveform', SAVEFORM_CONDITION),
+  variant('api:user.save', 'extdata', nonEmpty('extendSetID')),
+  variant('rest:address.save', 'extdata', present('extendSetID')),
+  variant('rest:content.save', 'approved=1', truthy('approved')),
+  variant('rest:content.save', 'notify', nonEmpty('notify')),
+  variant('rest:contentnav.save', 'approved=1', truthy('approved')),
+  variant('rest:contentnav.save', 'notify', nonEmpty('notify')),
+  variant('rest:group.save', 'extdata', nonEmpty('extendSetID')),
+  variant('rest:processasyncobject', 'saveform', SAVEFORM_CONDITION),
+  variant('rest:user.save', 'extdata', nonEmpty('extendSetID')),
 ]);
 
 /** Site ids the case options treat as registered (settingsManager.siteExists). */
