@@ -1,0 +1,35 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "generatedBy": "migration/src/order/dependency-order.ts",
+  "generatedAt": null,
+  "status": "pending-run",
+  "basis": {
+    "relations": "opt2/inventory/legacy-inventory.json relations[]",
+    "kinds": [
+      "beanORM fkcolumn/cfc property",
+      "DAO join predicate in core/mura/**",
+      "Program_<id> fixture foreign-key column"
+    ],
+    "foreignKeysDeclared": 0,
+    "cyclePolicy": "load without back-reference column, patch in second pass"
+  },
+  "expectedHead": {
+    "provenance": "planning",
+    "tables": [
+      "tsettings",
+      "tusers",
+      "tusersmemb",
+      "tpermissions",
+      "people children",
+      "tcontent",
+      "tcontent version children",
+      "categories",
+      "files and file objects",
+      "approvals and change sets",
+      "synthetic.program_site",
+      "fixture modules"
+    ]
+  },
+  "order": [],
+  "brokenCycles": []
+}
