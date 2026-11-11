@@ -168,8 +168,18 @@
       "withheld": "all",
       "approval": "pending",
       "source": {"path": "core/mura/bean/beanRemotePointer.cfc", "lines": [1, 1]},
-      "withheldEntryPoints": [],
-      "affectedScenarios": []
+      "withheldEntryPoints": [
+        {"id": "api:site.save{bundle}", "routeKey": "api:site.save{bundle}"},
+        {"id": "ctl:carch.importcontent", "routeKey": "admin:carch.importcontent"},
+        {"id": "ctl:cextend.importsubtypes", "routeKey": "admin:cextend.importsubtypes"},
+        {"id": "ctl:csettings.deployplugin", "routeKey": "admin:csettings.deployplugin"},
+        {"id": "ctl:csettings.sitecopy", "routeKey": "admin:csettings.sitecopy"},
+        {"id": "ctl:csettings.updateplugin", "routeKey": "admin:csettings.updateplugin"},
+        {"id": "ctl:csettings.updatesite{action=delete}", "routeKey": "admin:csettings.updatesite{action=delete}"},
+        {"id": "ctl:csettings.updatesite{bundle}", "routeKey": "admin:csettings.updatesite{bundle}"},
+        {"id": "rest:site.save{bundle}", "routeKey": "rest:site.save{bundle}"}
+      ],
+      "affectedScenarios": ["GS-PS-03", "GS-PS-05"]
     },
     {
       "table": "trazunasettings",
@@ -353,7 +363,7 @@
       "entryPoints": [
         {"id": "ctl:csettings.updatesite{action=add}", "routeKey": "admin:csettings.updatesite{action=add}"}
       ],
-      "writeSet": ["tclassextenddata", "tclassextendrcsets", "tclassextendsets", "tcontent", "tfiles", "timagesizes", "tmailinglist", "trazunasettings", "tsettings", "tsystemobjects", "tusers", "file-store"],
+      "writeSet": ["tclassextend", "tclassextendattributes", "tclassextenddata", "tclassextendrcsets", "tclassextendsets", "tcontent", "tfiles", "timagesizes", "tmailinglist", "trazunasettings", "tsettings", "tsystemobjects", "tusers", "file-store"],
       "owners": ["communications", "identity", "people", "programs-sites", "strategies-content"],
       "proposal": "Programs-sites orchestrates the site-create closure across identity, people, strategies-content and communications under the roster write protocol, extended to every participant, once `trazunasettings` is decided.",
       "affectedScenarios": ["GS-PS-01"],
@@ -369,9 +379,9 @@
       "entryPoints": [
         {"id": "ctl:csettings.updatesite{action=delete}", "routeKey": "admin:csettings.updatesite{action=delete}"}
       ],
-      "writeSet": ["tapprovalactions", "tapprovalassignments", "tapprovalchains", "tapprovalmemberships", "tapprovalrequests", "tchangesets", "tclassextend", "tclassextendattributes", "tclassextenddata", "tclassextendrcsets", "tclassextendsets", "tcontent", "tcontentassignments", "tcontentcategories", "tcontentcategoryassign", "tcontentcomments", "tcontenteventreminders", "tcontentfeedadvancedparams", "tcontentfeeditems", "tcontentfeeds", "tcontentobjects", "tcontentratings", "tcontentrelated", "tcontenttags", "temailreturnstats", "temails", "temailstats", "tfiles", "tformresponsepackets", "tformresponsequestions", "timagesizes", "tmailinglist", "tmailinglistmembers", "tpermissions", "trazunasettings", "tsessiontracking", "tsettings", "tsystemobjects", "ttrash", "tuseraddresses", "tusers", "tusersfavorites", "tusersinterests", "tusersmemb", "file-store"],
+      "writeSet": ["tapprovalactions", "tapprovalassignments", "tapprovalchains", "tapprovalmemberships", "tapprovalrequests", "tchangesetcategoryassign", "tchangesets", "tchangesettagassign", "tclassextend", "tclassextendattributes", "tclassextenddata", "tclassextendrcsets", "tclassextendsets", "tcontent", "tcontentassignments", "tcontentcategories", "tcontentcategoryassign", "tcontentcomments", "tcontenteventreminders", "tcontentfeedadvancedparams", "tcontentfeeditems", "tcontentfeeds", "tcontentfilemetadata", "tcontentfilenamearchive", "tcontentobjects", "tcontentratings", "tcontentrelated", "tcontentremotepointer", "tcontenttags", "tcontentvariationtargeting", "temailreturnstats", "temails", "temailstats", "tfiles", "tformresponsepackets", "tformresponsequestions", "timagesizes", "tmailinglist", "tmailinglistmembers", "toauthclients", "tpermissions", "trazunasettings", "tremotepointer", "tsessiontracking", "tsettings", "tsystemobjects", "ttrash", "tuseraddresses", "tusers", "tusersfavorites", "tusersinterests", "tusersmemb", "file-store"],
       "owners": ["communications", "identity", "people", "programs-sites", "reporting", "strategies-content"],
-      "proposal": "Programs-sites orchestrates the site-delete closure across identity, people, strategies-content, communications and reporting, including the decision-list `tcontenteventreminders` and `trazunasettings` rows and the bundleable entity tables, under the roster write protocol extended to every participant.",
+      "proposal": "Programs-sites orchestrates the site-delete closure across identity, people, strategies-content, communications and reporting, including the decision-list `tcontenteventreminders`, `tremotepointer` and `trazunasettings` rows and the bundleable entity tables, under the roster write protocol extended to every participant.",
       "affectedScenarios": [],
       "approval": "pending",
       "source": [
@@ -402,9 +412,9 @@
       "entryPoints": [
         {"id": "ctl:csettings.sitecopy", "routeKey": "admin:csettings.sitecopy"}
       ],
-      "writeSet": ["tchangesets", "tclassextend", "tclassextendattributes", "tclassextenddata", "tclassextenddatauseractivity", "tclassextendrcsets", "tclassextendsets", "tcontent", "tcontentcategories", "tcontentcategoryassign", "tcontentcomments", "tcontentfeedadvancedparams", "tcontentfeeditems", "tcontentfeeds", "tcontentobjects", "tcontentratings", "tcontentrelated", "tcontentstats", "tcontenttags", "tfiles", "tformresponsepackets", "tformresponsequestions", "timagesizes", "tmailinglist", "tmailinglistmembers", "tpermissions", "tplugindisplayobjects", "tplugins", "tpluginscripts", "tpluginsettings", "trazunasettings", "tsettings", "tsystemobjects", "ttrash", "tuseraddresses", "tusers", "tusersfavorites", "tusersinterests", "tusersmemb", "tuserstags", "file-store"],
+      "writeSet": ["tapprovalactions", "tapprovalchains", "tapprovalmemberships", "tapprovalrequests", "tchangesetcategoryassign", "tchangesets", "tchangesettagassign", "tclassextend", "tclassextendattributes", "tclassextenddata", "tclassextenddatauseractivity", "tclassextendrcsets", "tclassextendsets", "tcontent", "tcontentcategories", "tcontentcategoryassign", "tcontentcommentcommenters", "tcontentcomments", "tcontentfeedadvancedparams", "tcontentfeeditems", "tcontentfeeds", "tcontentfilemetadata", "tcontentfilenamearchive", "tcontentobjects", "tcontentratings", "tcontentrelated", "tcontentremotepointer", "tcontentstats", "tcontenttags", "tcontentvariationtargeting", "tfiles", "tformresponsepackets", "tformresponsequestions", "timagesizes", "tmailinglist", "tmailinglistmembers", "toauthclients", "tpermissions", "tplugindisplayobjects", "tplugins", "tpluginscripts", "tpluginsettings", "trazunasettings", "tremotepointer", "tsettings", "tsystemobjects", "ttrash", "tuseraddresses", "tusers", "tusersfavorites", "tusersinterests", "tusersmemb", "tuserstags", "file-store"],
       "owners": ["communications", "identity", "people", "programs-sites", "strategies-content"],
-      "proposal": "Programs-sites orchestrates the `publisher.copy` closure across every owner under the roster write protocol, extended to every participant, once the plugin tables and `trazunasettings` are decided.",
+      "proposal": "Programs-sites orchestrates the `publisher.copy` closure across every owner under the roster write protocol, extended to every participant, once the plugin tables, `tremotepointer` and `trazunasettings` are decided.",
       "affectedScenarios": ["GS-PS-03"],
       "approval": "pending",
       "source": [
@@ -433,7 +443,7 @@
         {"id": "ctl:cextend.updateset", "routeKey": "admin:cextend.updateset"},
         {"id": "ctl:cextend.updatesubtype", "routeKey": "admin:cextend.updatesubtype"}
       ],
-      "writeSet": ["tchangesets", "tclassextend", "tclassextendattributes", "tclassextenddata", "tclassextenddatauseractivity", "tclassextendrcsets", "tclassextendsets", "tcontent", "tcontentcategories", "tcontentcategoryassign", "tcontentcomments", "tcontentfeedadvancedparams", "tcontentfeeditems", "tcontentfeeds", "tcontentobjects", "tcontentratings", "tcontentrelated", "tcontentstats", "tcontenttags", "tfiles", "tformresponsepackets", "tformresponsequestions", "timagesizes", "tmailinglist", "tmailinglistmembers", "tpermissions", "tplugindisplayobjects", "tplugins", "tpluginscripts", "tpluginsettings", "trazunasettings", "tsettings", "tsystemobjects", "ttrash", "tuseraddresses", "tusers", "tusersfavorites", "tusersinterests", "tusersmemb", "tuserstags", "file-store"],
+      "writeSet": ["tapprovalactions", "tapprovalchains", "tapprovalmemberships", "tapprovalrequests", "tchangesetcategoryassign", "tchangesets", "tchangesettagassign", "tclassextend", "tclassextendattributes", "tclassextenddata", "tclassextenddatauseractivity", "tclassextendrcsets", "tclassextendsets", "tcontent", "tcontentcategories", "tcontentcategoryassign", "tcontentcommentcommenters", "tcontentcomments", "tcontentfeedadvancedparams", "tcontentfeeditems", "tcontentfeeds", "tcontentfilemetadata", "tcontentfilenamearchive", "tcontentobjects", "tcontentratings", "tcontentrelated", "tcontentremotepointer", "tcontentstats", "tcontenttags", "tcontentvariationtargeting", "tfiles", "tformresponsepackets", "tformresponsequestions", "timagesizes", "tmailinglist", "tmailinglistmembers", "toauthclients", "tpermissions", "tplugindisplayobjects", "tplugins", "tpluginscripts", "tpluginsettings", "trazunasettings", "tremotepointer", "tsettings", "tsystemobjects", "ttrash", "tuseraddresses", "tusers", "tusersfavorites", "tusersinterests", "tusersmemb", "tuserstags", "file-store"],
       "owners": ["communications", "identity", "people", "programs-sites", "strategies-content"],
       "proposal": "Programs-sites hosts the class-extension screens, and writes are delegated to the owner of each stored subtype's `baseTable`.",
       "affectedScenarios": ["GS-PS-05"],
@@ -466,7 +476,7 @@
         {"id": "ctl:ctrash.list", "routeKey": "admin:ctrash.list"},
         {"id": "ctl:ctrash.restore", "routeKey": "admin:ctrash.restore"}
       ],
-      "writeSet": ["tcontentassignments", "tcontentcategoryassign", "tcontentcomments", "tcontenteventreminders", "tcontentfeedadvancedparams", "tcontentfeeditems", "tcontentratings", "tcontentremotepointer", "tcontentvariationtargeting", "tfiles", "tformresponsepackets", "tformresponsequestions", "tmailinglistmembers", "tpermissions", "ttrash", "tuseraddresses", "tusersfavorites", "tusersinterests", "tusersmemb", "file-store"],
+      "writeSet": ["tcontentassignments", "tcontentcategoryassign", "tcontentcomments", "tcontenteventreminders", "tcontentfeedadvancedparams", "tcontentfeeditems", "tcontentfilemetadata", "tcontentratings", "tcontentremotepointer", "tcontentvariationtargeting", "tfiles", "tformresponsepackets", "tformresponsequestions", "tmailinglistmembers", "tpermissions", "ttrash", "tuseraddresses", "tusersfavorites", "tusersinterests", "tusersmemb", "file-store"],
       "owners": ["communications", "identity", "people", "programs-sites", "strategies-content"],
       "proposal": "Programs-sites hosts the trash screens, and writes are delegated to the owner of each stored `objectClass`.",
       "affectedScenarios": ["GS-PS-06"],
@@ -621,7 +631,7 @@
       "entryPoints": [
         {"id": "ctl:carch.copy", "routeKey": "admin:carch.copy"}
       ],
-      "writeSet": ["tapprovalactions", "tapprovalrequests", "tchangesetcategoryassign", "tchangesets", "tchangesettagassign", "tclassextenddata", "tcontent", "tcontentassignments", "tcontentcategoryassign", "tcontentfilenamearchive", "tcontentobjects", "tcontentpublicsubmissionapprovals", "tcontentrelated", "tcontentsourcemaps", "tcontentstats", "tcontenttags", "tfiles", "tpermissions", "file-store"],
+      "writeSet": ["tapprovalactions", "tapprovalrequests", "tchangesetcategoryassign", "tchangesets", "tchangesettagassign", "tclassextenddata", "tcontent", "tcontentassignments", "tcontentcategoryassign", "tcontentfilemetadata", "tcontentfilenamearchive", "tcontentobjects", "tcontentpublicsubmissionapprovals", "tcontentrelated", "tcontentsourcemaps", "tcontentstats", "tcontenttags", "tfiles", "tpermissions", "file-store"],
       "owners": ["identity", "strategies-content"],
       "proposal": "Strategies-content owns the copy and asks identity to copy the source nodes' `tpermissions` rows under the roster write protocol, with strategies-content coordinating.",
       "affectedScenarios": [],
@@ -636,7 +646,7 @@
       "entryPoints": [
         {"id": "ctl:carch.variationtargeting{notify}", "routeKey": "admin:carch.variationtargeting{notify}"}
       ],
-      "writeSet": ["tapprovalactions", "tapprovalrequests", "tchangesetcategoryassign", "tchangesets", "tchangesettagassign", "tclassextenddata", "tcontent", "tcontentassignments", "tcontentcategoryassign", "tcontentfilenamearchive", "tcontentobjects", "tcontentpublicsubmissionapprovals", "tcontentrelated", "tcontentsourcemaps", "tcontentstats", "tcontenttags", "tfiles", "tredirects", "file-store"],
+      "writeSet": ["tapprovalactions", "tapprovalrequests", "tchangesetcategoryassign", "tchangesets", "tchangesettagassign", "tclassextenddata", "tcontent", "tcontentassignments", "tcontentcategoryassign", "tcontentfilemetadata", "tcontentfilenamearchive", "tcontentobjects", "tcontentpublicsubmissionapprovals", "tcontentrelated", "tcontentsourcemaps", "tcontentstats", "tcontenttags", "tfiles", "tredirects", "file-store"],
       "owners": ["identity", "strategies-content"],
       "proposal": "Strategies-content owns the save and asks identity to create the notification's `tredirects` links under the roster write protocol, with strategies-content coordinating.",
       "affectedScenarios": [],

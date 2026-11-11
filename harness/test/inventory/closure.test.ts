@@ -44,7 +44,7 @@ const FIXTURES: Readonly<Record<string, string>> = {
   [CFIXTURE]: 'controller-gate.cfc',
 };
 
-/** Inline excerpts modelled on userManager.cfc, cusers.cfc and fileManager.cfc; cbranch also routes ORM save, re-login and thread calls through a controller. */
+/** Inline excerpts modelled on userManager.cfc, cusers.cfc and fileManager.cfc; cbranch also routes ORM save, re-login, thread and literal-text calls through a controller. */
 const INLINE: Readonly<Record<string, string>> = {
   [ROSTER_MANAGER]: `component extends="mura.cfobject" output="false" {
 
@@ -89,6 +89,14 @@ const INLINE: Readonly<Record<string, string>> = {
 
 	public any function stats(rc) {
 		getBean('fixtureManager').trackStats(arguments.rc.siteid);
+	}
+
+	public any function literal(rc) {
+		var example = "application.userManager.delete(arguments.rc.userid)";
+	}
+
+	public any function interpolated(rc) {
+		var example = "#application.userManager.delete(arguments.rc.userid)#";
 	}
 }
 `,
@@ -564,6 +572,15 @@ describe('computeClosure', () => {
     expect(result.writes).toEqual([
       expect.objectContaining({ table: 'tnosuchbean', op: 'save', override: 'wov:fixture-orphan', conditional: false }),
     ]);
+  });
+
+  it.each<[string, string[], string[]]>([
+    ['literal', [], []],
+    ['interpolated', ['application.userManager.delete'], ['tfixturemembers']],
+  ])('follows the %s userManager.delete text only where it runs', (method, calls, tables) => {
+    const unit = component(CBRANCH);
+    expect(extractCalls(fn(unit, method), unit, { tree, index }).map((c) => c.text)).toEqual(calls);
+    expect(closure(CBRANCH, method).tables).toEqual(tables);
   });
 
   it('terminates on a component that calls itself', () => {

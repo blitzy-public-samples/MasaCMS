@@ -19,6 +19,7 @@ import type {
   ComponentIndex,
   Predicates,
   SourceTree,
+  UnresolvedKind,
   WriteClosure,
 } from '../../src/inventory/closure.js';
 import { loadWriterOverrides, parseWriterOverrides } from '../../src/inventory/overrides.js';
@@ -1559,6 +1560,79 @@ describe('writer overrides', () => {
     );
     expect(walkClosureOf('walk/cmember.cfc', 'signin', {}, member).sessionEffects).toBe('relogin');
     expect(walkClosureOf('walk/memberBean.cfc', 'login', {}, member).sessionEffects).toBe('login');
+  });
+});
+
+describe('settled calls', () => {
+  const SETTLE = 'core/mura/settle/settleManager.cfc';
+  const settleTree = memorySourceTree({
+    [SETTLE]: `component output="false" {
+  public any function run(rc) {
+    getBean('missingService').run(arguments.rc);
+    application.ghostService.run();
+    this.absentMethod();
+    local.record.save();
+    include "parts/absent.cfm";
+    queryExecute("DELETE FROM #arguments.rc.tbl# WHERE siteid = :siteid", {siteid=1});
+  }
+}
+`,
+  });
+  const settleIndex = componentIndex(settleTree, { ghostService: 'core/mura/ghost/ghostService.cfc' });
+  const line = (marker: string): number => at(settleTree, SETTLE, marker).lines[0];
+  const first = line("getBean('missingService')");
+  const last = line('DELETE FROM');
+
+  /** Closure of settleManager.run, under one settled call spanning `source` when it is given. */
+  function runClosure(source?: SourceRef): WriteClosure {
+    const overrides =
+      source === undefined
+        ? undefined
+        : parseWriterOverrides(
+            stringify({
+              sourceSha: pinnedSha(),
+              writers: [],
+              settledCalls: [
+                { id: 'wov:settle-run', source, calls: ['run'], resolution: 'non-write', reason: 'The span writes no table.' },
+              ],
+            }),
+            'settled-calls.yaml',
+          );
+    return computeClosure({ component: SETTLE, method: 'run' }, { tree: settleTree, index: settleIndex, overrides });
+  }
+
+  it.each<[UnresolvedKind, string]>([
+    ['bean', "getBean('missingService')"],
+    ['component', 'application.ghostService'],
+    ['method', 'this.absentMethod'],
+    ['receiver', 'local.record.save'],
+    ['include', 'parts/absent.cfm'],
+    ['table', 'DELETE FROM'],
+  ])('applies the settled call covering the %s reference instead of reporting it', (kind, marker) => {
+    const source = at(settleTree, SETTLE, marker);
+    const unsettled = runClosure();
+    expect(unsettled.unresolved.filter((u) => u.source.lines[0] === source.lines[0]).map((u) => u.kind)).toEqual([kind]);
+    const settled = runClosure(source);
+    expect(settled.unresolved).toEqual(unsettled.unresolved.filter((u) => u.kind !== kind));
+    expect(settled.overrides).toEqual(['wov:settle-run']);
+    expect(settled.writes).toEqual(unsettled.writes);
+  });
+
+  it('settles every reference of an inclusive span from the first to the last of their lines', () => {
+    const result = runClosure({ path: SETTLE, lines: [first, last] });
+    expect(result.unresolved).toEqual([]);
+    expect(result.overrides).toEqual(['wov:settle-run']);
+  });
+
+  it.each<[string, SourceRef]>([
+    ['the lines above the references', { path: SETTLE, lines: [1, first - 1] }],
+    ['the same lines of another file', { path: 'core/mura/settle/otherManager.cfc', lines: [first, last] }],
+  ])('still reports every reference when the settled span covers only %s', (_label, source) => {
+    const unsettled = runClosure();
+    expect(unsettled.unresolved).toHaveLength(6);
+    const result = runClosure(source);
+    expect(result.unresolved).toEqual(unsettled.unresolved);
+    expect(result.overrides).toEqual([]);
   });
 });
 

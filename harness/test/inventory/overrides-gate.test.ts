@@ -11,6 +11,7 @@ import {
   RequiredRole,
   RequiredRoleTemplate,
   SessionEffects,
+  SettledResolution,
   SourceRef,
   Trigger,
   WRITER_OVERRIDES_PATH,
@@ -308,7 +309,7 @@ describe('committed override files', () => {
     const doc: WriterOverrides = await loadWriterOverrides();
     expect(doc.sourceSha).toBe(SHA);
     expect(doc.writers.length).toBeGreaterThan(0);
-    expect(repeated(doc.writers.map((w) => w.id))).toEqual([]);
+    expect(repeated([...doc.writers, ...(doc.settledCalls ?? [])].map((w) => w.id))).toEqual([]);
     for (const w of doc.writers) {
       expect(w.tables === undefined).not.toBe(w.tablesFrom === undefined);
       if (w.preventedBy !== undefined) expect(w.trigger).not.toBe('request');
@@ -332,6 +333,7 @@ describe('enumerations', () => {
         'fixture-export-threads',
       ],
     ],
+    ['SettledResolution', SettledResolution.options, ['not-cfml', 'non-write', 'unreachable', 'counted']],
   ])('%s lists exactly its values, in order', (_name, options, expected) => {
     expect(options).toEqual(expected);
   });
@@ -747,6 +749,115 @@ describe('parseWriterOverrides', () => {
     ],
   ])('rejects a document with %s', (_label, edits, expected) => {
     expect(writerIssues(edits)).toEqual(expected);
+  });
+});
+
+describe('parseWriterOverrides settled calls', () => {
+  const COUNTED_BY = 'required when resolution is counted and forbidden otherwise';
+
+  /** The minimal writer document with one settled call of each resolution. */
+  function settledDocument(): Record<string, unknown> {
+    return {
+      ...writerDocument(),
+      settledCalls: [
+        {
+          id: 'wov:carch-edit-script',
+          source: ref('admin/core/views/carch/edit.cfm', 659, 700),
+          calls: ['document.createElement'],
+          resolution: 'not-cfml',
+          reason: 'The calls are JavaScript the template writes to the page.',
+        },
+        {
+          id: 'wov:recaptcha-verify',
+          source: ref('core/mura/reCAPTCHA.cfc', 124, 124),
+          calls: ['httpSvc.send'],
+          resolution: 'non-write',
+          reason: 'The call posts the response token to the reCAPTCHA service.',
+        },
+        {
+          id: 'wov:dbutility-nuodb-oracle',
+          source: ref('core/mura/dbUtility.cfc', 523, 595),
+          calls: ['update #arguments.table#'],
+          resolution: 'unreachable',
+          reason: 'The nuodb and oracle cases of the dbtype switch cannot run on the mssql installation.',
+        },
+        {
+          id: 'wov:userbean-address-save',
+          source: ref('core/mura/user/userBean.cfc', 574, 574),
+          calls: ['address.save'],
+          resolution: 'counted',
+          countedBy: ['tuseraddresses'],
+          reason: 'addressBean.save writes through userManager.createAddress or updateAddress.',
+        },
+      ],
+    };
+  }
+
+  function settledIssues(edits: Edits): readonly string[] {
+    return overrideError(() => parseWriterOverrides(stringify(edit(settledDocument(), edits)), LABEL)).issues;
+  }
+
+  it('keeps settledCalls optional and returns each settled call with its keys in schema order', () => {
+    expect(parseWriterOverrides(stringify(writerDocument()), LABEL).settledCalls).toBeUndefined();
+    const doc = parseWriterOverrides(stringify(settledDocument()), LABEL);
+    expect(doc.settledCalls?.map((s) => [s.id, s.resolution, s.countedBy])).toEqual([
+      ['wov:carch-edit-script', 'not-cfml', undefined],
+      ['wov:recaptcha-verify', 'non-write', undefined],
+      ['wov:dbutility-nuodb-oracle', 'unreachable', undefined],
+      ['wov:userbean-address-save', 'counted', ['tuseraddresses']],
+    ]);
+    expect(Object.keys(doc.settledCalls?.[3] ?? {})).toEqual([
+      'id',
+      'source',
+      'calls',
+      'resolution',
+      'countedBy',
+      'reason',
+    ]);
+  });
+
+  it.each<[string, Edits, string[]]>([
+    [
+      'a counted settlement without countedBy',
+      { 'settledCalls.3.countedBy': DROP },
+      [`settledCalls.3.countedBy: ${COUNTED_BY}`],
+    ],
+    [
+      'countedBy on a non-write settlement',
+      { 'settledCalls.1.countedBy': ['tusers'] },
+      [`settledCalls.1.countedBy: ${COUNTED_BY}`],
+    ],
+    ['an empty countedBy list', { 'settledCalls.3.countedBy': [] }, [`settledCalls.3.countedBy: ${NO_ITEMS}`]],
+    [
+      'an unknown resolution',
+      { 'settledCalls.0.resolution': 'ignored' },
+      ['settledCalls.0.resolution: Invalid option: expected one of "not-cfml"|"non-write"|"unreachable"|"counted"'],
+    ],
+    [
+      'an unknown key on a settled call',
+      { 'settledCalls.2.owner': 'people' },
+      ['settledCalls.2: Unrecognized key: "owner"'],
+    ],
+    ['an empty calls list', { 'settledCalls.0.calls': [] }, [`settledCalls.0.calls: ${NO_ITEMS}`]],
+    ['an empty call text', { 'settledCalls.0.calls': [''] }, [`settledCalls.0.calls.0: ${NO_CHARACTERS}`]],
+    ['no reason', { 'settledCalls.1.reason': DROP }, [`settledCalls.1.reason: ${NO_STRING}`]],
+    [
+      'a settled-call id without the wov: prefix',
+      { 'settledCalls.1.id': 'recaptcha-verify' },
+      ['settledCalls.1.id: must be wov:<lower-case slug>'],
+    ],
+    [
+      'a settled-call id shared with a writer',
+      { 'settledCalls.1.id': 'wov:login-lastlogin' },
+      ['settledCalls.1.id: duplicate id wov:login-lastlogin'],
+    ],
+    [
+      'a duplicate settled-call id',
+      { 'settledCalls.2.id': 'wov:carch-edit-script' },
+      ['settledCalls.2.id: duplicate id wov:carch-edit-script'],
+    ],
+  ])('rejects a document with %s', (_label, edits, expected) => {
+    expect(settledIssues(edits)).toEqual(expected);
   });
 });
 

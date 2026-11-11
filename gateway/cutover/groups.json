@@ -2,7 +2,7 @@
   "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
   "generatedBy": "gateway/src/cutover/build-groups.ts",
   "inputs": {
-    "inventorySha256": "1ce333f7eeb6b66b846bd4f94946c185d7285ecef04e8196f556ef009ffa43f5",
+    "inventorySha256": "53e4f1a281b16e1ed016f85db8e6723984d79f4a48a39316059e9d2c221732de",
     "tableOwnershipSha256": "e2961c444acc1641d6c81f58a255ecdcf5d200ea9c184020e2c6bdc53313a4df"
   },
   "groups": [
@@ -323,6 +323,7 @@
         "identity.group_account",
         "identity.login_state",
         "identity.membership",
+        "identity.oauth_client",
         "identity.oauth_token",
         "identity.redirect",
         "identity.user_account",
@@ -348,6 +349,8 @@
         "admin:cusers.update{type=1}",
         "admin:cusers.update{type=2,action=add}",
         "admin:cusers.update{type=2,action=update}",
+        "admin:cwebservice.delete",
+        "admin:cwebservice.save",
         "api:address.save",
         "api:group.save",
         "api:login",
@@ -369,17 +372,6 @@
       ],
       "writeEntries": [],
       "hasCarryWrite": false
-    },
-    {
-      "id": "grp:identity.oauth_client",
-      "units": [
-        "identity.oauth_client"
-      ],
-      "writeEntries": [
-        "admin:cwebservice.delete",
-        "admin:cwebservice.save"
-      ],
-      "hasCarryWrite": true
     },
     {
       "id": "grp:identity.permission",

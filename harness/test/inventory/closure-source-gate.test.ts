@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  computeClosure,
   describeCondition,
   detectMode,
   extractCalls,
@@ -893,6 +894,104 @@ describe('call chains and actual arguments', () => {
     ]);
   });
 });
+
+describe('literal text', () => {
+  const script = (body: string) => `component {\n function f(rc) {\n  ${body}\n }\n}`;
+
+  it.each<[string, string, string, string, string[]]>([
+    ['a double-quoted literal', 'x.cfc', 'f', script('var example = "application.userManager.delete(arguments.rc.userid)";'), []],
+    ['a single-quoted literal with doubled quotes', 'x.cfc', 'f', script("var s = 'getBean(''user'').save()';"), []],
+    ['escaped hashes', 'x.cfc', 'f', script('var s = "##application.userManager.delete(x)##";'), []],
+    ['an interpolation', 'x.cfc', 'f', script('var x = "#application.userManager.delete(arguments.rc.userid)#";'), ['application.userManager.delete']],
+    ['an interpolation inside an argument', 'x.cfc', 'f', script(`foo("#getBean('user').save()#");`), ["getBean('user').save"]],
+    ['an evaluate argument', 'x.cfc', 'f', script(`evaluate('getBean("user").save()');`), ['getBean("user").save']],
+    ['template JavaScript', 'v/t.cfm', '', '<script>document.createElement("a"); obj.save();</script>', []],
+    ['template output interpolation', 'v/t.cfm', '', "<cfoutput><p>#getBean('content').save()#</p></cfoutput>", ["getBean('content').save"]],
+    ['a cfset expression', 'v/t.cfm', '', '<cfset application.userManager.delete(x)>', ['application.userManager.delete']],
+    ['a cfset string literal', 'v/t.cfm', '', '<cfset s = "obj.save()">', []],
+    ['a cfloop condition', 'v/t.cfm', '', `<cfloop condition="getBean('feed').save() eq false"></cfloop>`, ["getBean('feed').save"]],
+    ['another cfloop attribute', 'v/t.cfm', '', '<cfloop list="application.userManager.delete(x)" index="i"></cfloop>', []],
+    ['a tag attribute interpolation', 'v/t.cfm', '', `<cfparam name="x" default="getBean('a').save()"><cfparam name="y" default="#getBean('b').save()#">`, ["getBean('b').save"]],
+    ['a cfscript block of a template', 'v/t.cfm', '', `<p>obj.save()</p><cfscript>var s = "obj.save()"; getBean('user').save();</cfscript>`, ["getBean('user').save"]],
+    ['a stray hash outside cfoutput', 'v/t.cfm', '', "<p>Item #1</p><cfoutput><p>#getBean('a').save()#</p></cfoutput>", ["getBean('a').save"]],
+    ['a cffunction body', 'x.cfc', 'f', '<cfcomponent><cffunction name="f"><cfset var s = "obj.save()"><p>obj.save()</p><cfset obj.save()></cffunction></cfcomponent>', ['obj.save']],
+    ['a cfscript function of a tag component', 'x.cfc', 'f', '<cfcomponent><cfscript>function f() { var s = "<cfset obj.save()>"; }</cfscript></cfcomponent>', []],
+    ['a cfscript function of a template', 'v/t.cfm', 'f', '<cfscript>function f() { var s = "<cfset obj.save()>"; }</cfscript>', []],
+  ])('follows calls of %s only where they run', (_label, file, fnName, source, texts) => {
+    expect(guardedCalls(file, source, fnName).map((s) => s.text)).toEqual(texts);
+  });
+
+  it.each<[string, string, string, string]>([
+    ['a script literal assignment', 'x.cfc', 'f', script(`var s = "x; dao = getBean('wrongDAO');"; var dao = getBean('rightDAO'); dao.save();`)],
+    ['a template JavaScript assignment', 'v/t.cfm', '', "<script>\ndao = getBean('wrongDAO');\n</script>\n<cfset dao = getBean('rightDAO')>\n<cfset dao.save()>"],
+    [
+      'a script literal return',
+      'x.cfc',
+      'f',
+      `component { function getDao() { var s = "return getBean('wrongDAO');"; return getBean('rightDAO'); } function f() { getDao().save(); } }`,
+    ],
+    [
+      'a tag literal return',
+      'x.cfc',
+      'f',
+      `<cfcomponent><cffunction name="getDao"><p>return getBean('wrongDAO');</p><cfset var s = "<cfreturn getBean('wrongDAO')>"><cfreturn getBean('rightDAO')></cffunction><cffunction name="f"><cfset getDao().save()></cffunction></cfcomponent>`,
+    ],
+  ])('binds the receiver past %s', (_label, file, fnName, source) => {
+    const unit = file.endsWith('.cfm') ? parseCfmTemplate(file, source) : component(file, source);
+    const beans: Record<string, string> = { wrongdao: 'm/wrong.cfc', rightdao: 'm/right.cfc' };
+    const ctx: ClosureContext = {
+      tree: memorySourceTree({ [file]: source }),
+      index: {
+        resolveBean: (name) => beans[name.toLowerCase()] ?? null,
+        ormTable: () => null,
+        parsed: (p) => (p === file && unit.syntax !== 'template' ? (unit as CfmlComponent) : null),
+      },
+    };
+    expect(extractCalls(fn(unit, fnName), unit, ctx).map((s) => [s.text.split('.').pop(), s.target])).toEqual([['save', { bean: 'rightDAO', method: 'save' }]]);
+  });
+
+  it.each<[string, string, string, string[]]>([
+    ['script literals', 'x.cfc', script(`var s = "include 'x.cfm'"; var t = "cfinclude(template='y.cfm')"; include "real.cfm";`), ['real.cfm']],
+    ['template text', 'v/t.cfm', '<p>Please include "your name".</p><cfinclude template="a.cfm"><cfscript>var s = "include \'x.cfm\'"; include "b.cfm";</cfscript>', ['a.cfm', 'b.cfm']],
+  ])('ignores includes inside %s', (_label, file, source, templates) => {
+    const unit = file.endsWith('.cfm') ? parseCfmTemplate(file, source) : component(file, source);
+    expect(unit.functions[0]?.includes.map((i) => i.template)).toEqual(templates);
+  });
+
+  it.each<[string, string, string, string, string[], string[], string[]]>([
+    ['a script string', 'x.cfc', 'f', script(`var s = "<cfinclude template='writer.cfm'>";`), [], [], []],
+    ['a cfset string of a template', 'v/t.cfm', '', `<cfset s = "<cfinclude template='writer.cfm'>">`, [], [], []],
+    ['a cfset string of a cffunction', 'x.cfc', 'f', `<cfcomponent><cffunction name="f"><cfset var s = "<cfinclude template='writer.cfm'>"></cffunction></cfcomponent>`, [], [], []],
+    ['a cfscript string of a template', 'v/t.cfm', '', `<cfscript>var s = "<cfinclude template='writer.cfm'>";</cfscript>`, [], [], []],
+    ['template text', 'v/t.cfm', '', '<p>x</p><cfinclude template="writer.cfm">', ['writer.cfm'], ['tinvented'], []],
+    ['a cffunction body', 'x.cfc', 'f', '<cfcomponent><cffunction name="f"><cfinclude template="writer.cfm"></cffunction></cfcomponent>', ['writer.cfm'], ['tinvented'], []],
+    ['template JavaScript quotes', 'v/t.cfm', '', `<script>var s = "<cfinclude template='writer.cfm'>";</script>`, ['writer.cfm'], ['tinvented'], []],
+    ['template text with an interpolated name', 'v/t.cfm', '', '<cfset n = "writer"><cfinclude template="#n#.cfm">', ['#n#.cfm'], [], ['include:#n#.cfm']],
+  ])('follows a <cfinclude> in %s only where it runs', (_label, file, fnName, source, templates, tables, unresolved) => {
+    const unit = file.endsWith('.cfm') ? parseCfmTemplate(file, source) : component(file, source);
+    const writer = path.posix.join(path.posix.dirname(file), 'writer.cfm');
+    const ctx: ClosureContext = {
+      tree: memorySourceTree({ [file]: source, [writer]: '<cfquery>delete from tinvented</cfquery>' }),
+      index: { resolveBean: () => null, ormTable: () => null, parsed: (p) => (p === file && unit.syntax !== 'template' ? (unit as CfmlComponent) : null) },
+    };
+    const closure = computeClosure({ component: file, method: fnName }, ctx);
+    expect(fn(unit, fnName).includes.map((i) => i.template)).toEqual(templates);
+    expect(closure.tables).toEqual(tables);
+    expect(closure.unresolved.map((u) => `${u.kind}:${u.expr}`)).toEqual(unresolved);
+  });
+
+  it.each<[string, string, string, string, 'script' | 'tag']>([
+    ['a script component function', 'x.cfc', 'component { function f() {} }', 'f', 'script'],
+    ['a cffunction', 'x.cfc', '<cfcomponent><cffunction name="f"></cffunction></cfcomponent>', 'f', 'tag'],
+    ['a cfscript function of a tag component', 'x.cfc', '<cfcomponent><cfscript>function f() {}</cfscript></cfcomponent>', 'f', 'script'],
+    ['the template pseudo-function', 'v/t.cfm', '<cfscript>function f() {}</cfscript>', '', 'tag'],
+    ['a cfscript function of a template', 'v/t.cfm', '<cfscript>function f() {}</cfscript>', 'f', 'script'],
+  ])('records the lexical mode of %s', (_label, file, source, fnName, mode) => {
+    const unit = file.endsWith('.cfm') ? parseCfmTemplate(file, source) : component(file, source);
+    expect(fn(unit, fnName).mode).toBe(mode);
+  });
+});
+
 
 describe('extractSqlWrites', () => {
   it('finds the cfquery writes of the DAO fixture with their lines and WHERE argument references', () => {

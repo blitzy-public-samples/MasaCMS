@@ -197,7 +197,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:cextend.export` | `admin:cextend.export` | — | decision (3) | none | page (text/html) |
 | `ctl:cextend.exportsubtype` | `admin:cextend.exportsubtype` | — | decision (3) | none | page (text/html) |
 | `ctl:cextend.importsubtypes` | `admin:cextend.importsubtypes` | spans communications, identity, people, programs-sites, strategies-content | decision (2) | validates `import` | page (text/html) |
-| `ctl:cextend.listsets` | `admin:cextend.listsets` | spans people, programs-sites, strategies-content | decision (3) | none | page (text/html) |
+| `ctl:cextend.listsets` | `admin:cextend.listsets` | — | decision (3) | none | page (text/html) |
 | `ctl:cextend.listsubtypes` | `admin:cextend.listsubtypes` | — | decision (3) | none | page (text/html) |
 | `ctl:cextend.saveattributesort` | `admin:cextend.saveattributesort` | spans people, programs-sites, strategies-content | decision (3) | none | json (application/json) |
 | `ctl:cextend.saveextendsetsort` | `admin:cextend.saveextendsetsort` | spans people, programs-sites, strategies-content | decision (3) | none | json (application/json) |
@@ -257,7 +257,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:csettings.updatesite{bundle}` | `admin:csettings.updatesite{bundle}` | spans communications, identity, people, programs-sites, reporting, strategies-content | decision (2) | validates `"" \| rc.siteID` | redirect |
 | `ctl:csettings.updatesite{action=add}` | `admin:csettings.updatesite{action=add}` | programs-sites | decision (2) | validates `"" \| rc.siteID` | redirect |
 | `ctl:csettings.updatesite{action=delete}` | `admin:csettings.updatesite{action=delete}` | programs-sites | decision (2) | validates `"" \| rc.siteID` | redirect |
-| `ctl:csettings.updatesite{action=update}` | `admin:csettings.updatesite{action=update}` | spans programs-sites, strategies-content | decision (2) (corrected; expected carry) | validates `"" \| rc.siteID` | redirect |
+| `ctl:csettings.updatesite{action=update}` | `admin:csettings.updatesite{action=update}` | spans people, programs-sites, strategies-content | decision (2) (corrected; expected carry) | validates `"" \| rc.siteID` | redirect |
 | `ctl:csettings.updatesite` | `admin:csettings.updatesite` | programs-sites | carry (5) | validates `"" \| rc.siteID` | redirect |
 | `ctl:ctrash.detail` | `admin:ctrash.detail` | — | decision (3) | none | page (text/html) |
 | `ctl:ctrash.empty` | `admin:ctrash.empty` | spans communications, identity, people, programs-sites, strategies-content | decision (2) | validates `'emptytrash' & rc.siteID` | redirect |
@@ -887,17 +887,17 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `tbl:synthetic.survey_target` | fixture | yes | yes | surveys | 1 | carry (5) | 1 |
 | `tbl:synthetic.timesheet_transition` | fixture | no | yes | timesheets | 1 | carry (5) | 0 |
 | `tbl:synthetic.transition_rule` | fixture | no | yes | timesheets | 1 | carry (5) | 0 |
-| `tbl:tapprovalactions` | orm | yes | yes | strategies-content | 1 | carry (5) | 5 |
+| `tbl:tapprovalactions` | orm | yes | yes | strategies-content | 1 | carry (5) | 15 |
 | `tbl:tapprovalassignments` | orm | yes | yes | strategies-content | 1 | carry (5) | 3 |
-| `tbl:tapprovalchains` | orm | yes | yes | strategies-content | 1 | carry (5) | 4 |
-| `tbl:tapprovalmemberships` | orm | yes | yes | strategies-content | 1 | carry (5) | 4 |
-| `tbl:tapprovalrequests` | orm | yes | yes | strategies-content | 1 | carry (5) | 10 |
-| `tbl:tchangesetcategoryassign` | orm | yes | yes | strategies-content | 1 | carry (5) | 9 |
+| `tbl:tapprovalchains` | orm | yes | yes | strategies-content | 1 | carry (5) | 8 |
+| `tbl:tapprovalmemberships` | orm | yes | yes | strategies-content | 1 | carry (5) | 11 |
+| `tbl:tapprovalrequests` | orm | yes | yes | strategies-content | 1 | carry (5) | 17 |
+| `tbl:tchangesetcategoryassign` | orm | yes | yes | strategies-content | 1 | carry (5) | 13 |
 | `tbl:tchangesetrollback` | orm | yes | yes | strategies-content | 1 | carry (5) | 4 |
 | `tbl:tchangesets` | migration | yes | yes | strategies-content | 1 | carry (5) | 12 |
-| `tbl:tchangesettagassign` | orm | yes | yes | strategies-content | 1 | carry (5) | 8 |
-| `tbl:tclassextend` | bootstrap | yes | yes | people, programs-sites, strategies-content | 1 | carry (5) | 14 |
-| `tbl:tclassextendattributes` | bootstrap | yes | yes | people, programs-sites, strategies-content | 1 | carry (5) | 14 |
+| `tbl:tchangesettagassign` | orm | yes | yes | strategies-content | 1 | carry (5) | 12 |
+| `tbl:tclassextend` | bootstrap | yes | yes | people, programs-sites, strategies-content | 1 | carry (5) | 15 |
+| `tbl:tclassextendattributes` | bootstrap | yes | yes | people, programs-sites, strategies-content | 1 | carry (5) | 15 |
 | `tbl:tclassextenddata` | bootstrap | yes | yes | people, programs-sites, strategies-content | 1 | carry (5) | 41 |
 | `tbl:tclassextenddatauseractivity` | bootstrap | yes | yes | identity, people | 1 | carry (5) | 28 |
 | `tbl:tclassextendrcsets` | orm | yes | yes | people, programs-sites, strategies-content | 1 | carry (5) | 6 |
@@ -908,24 +908,24 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `tbl:tcontentassignments` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 10 |
 | `tbl:tcontentcategories` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 15 |
 | `tbl:tcontentcategoryassign` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 21 |
-| `tbl:tcontentcommentcommenters` | orm | no | yes | strategies-content | 1 | carry (5) | 1 |
+| `tbl:tcontentcommentcommenters` | orm | no | yes | strategies-content | 1 | carry (5) | 3 |
 | `tbl:tcontentcomments` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 23 |
 | `tbl:tcontentdisplaytitleapprovals` | bootstrap | yes | no | strategies-content | 1 | carry (5) | 0 |
 | `tbl:tcontenteventreminders` | bootstrap | yes | no | — | 5 | decision (2) | 12 |
 | `tbl:tcontentfeedadvancedparams` | bootstrap | no | yes | strategies-content | 1 | carry (5) | 10 |
 | `tbl:tcontentfeeditems` | bootstrap | no | yes | strategies-content | 1 | carry (5) | 9 |
 | `tbl:tcontentfeeds` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 10 |
-| `tbl:tcontentfilemetadata` | orm | yes | yes | strategies-content | 1 | carry (5) | 3 |
-| `tbl:tcontentfilenamearchive` | orm | yes | yes | strategies-content | 1 | carry (5) | 4 |
+| `tbl:tcontentfilemetadata` | orm | yes | yes | strategies-content | 1 | carry (5) | 13 |
+| `tbl:tcontentfilenamearchive` | orm | yes | yes | strategies-content | 1 | carry (5) | 8 |
 | `tbl:tcontentobjects` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 23 |
 | `tbl:tcontentpublicsubmissionapprovals` | bootstrap | yes | no | strategies-content | 1 | carry (5) | 6 |
 | `tbl:tcontentratings` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 12 |
 | `tbl:tcontentrelated` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 18 |
-| `tbl:tcontentremotepointer` | orm | yes | yes | strategies-content | 1 | carry (5) | 2 |
+| `tbl:tcontentremotepointer` | orm | yes | yes | strategies-content | 1 | carry (5) | 6 |
 | `tbl:tcontentsourcemaps` | orm | yes | yes | strategies-content | 1 | carry (5) | 7 |
 | `tbl:tcontentstats` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 19 |
 | `tbl:tcontenttags` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 16 |
-| `tbl:tcontentvariationtargeting` | orm | yes | yes | strategies-content | 1 | carry (5) | 4 |
+| `tbl:tcontentvariationtargeting` | orm | yes | yes | strategies-content | 1 | carry (5) | 8 |
 | `tbl:tdirectories` | migration | yes | yes | programs-sites | 1 | carry (5) | 1 |
 | `tbl:temailreturnstats` | bootstrap | no | no | communications | 1 | legacy-served (4) | 4 |
 | `tbl:temails` | bootstrap | yes | yes | communications | 1 | legacy-served (4) | 12 |
@@ -941,8 +941,8 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `tbl:timagesizes` | migration | yes | yes | programs-sites | 1 | carry (5) | 10 |
 | `tbl:tmailinglist` | bootstrap | yes | no | communications | 1 | legacy-served (4) | 10 |
 | `tbl:tmailinglistmembers` | bootstrap | yes | no | communications | 1 | legacy-served (4) | 14 |
-| `tbl:toauthclients` | orm | yes | yes | identity | 1 | carry (5) | 3 |
-| `tbl:toauthtokens` | orm | no | yes | identity | 1 | carry (5) | 5 |
+| `tbl:toauthclients` | orm | yes | yes | identity | 1 | carry (5) | 7 |
+| `tbl:toauthtokens` | orm | no | yes | identity | 1 | carry (5) | 8 |
 | `tbl:tpermissions` | bootstrap | yes | yes | identity | 2 | carry (5) | 18 |
 | `tbl:tplugindisplayobjects` | migration | no | yes | — | 5 | decision (2) | 13 |
 | `tbl:tplugins` | migration | no | yes | — | 5 | decision (2) | 23 |
@@ -950,7 +950,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `tbl:tpluginsettings` | migration | no | yes | — | 5 | decision (2) | 8 |
 | `tbl:trazunasettings` | orm | yes | yes | — | 5 | decision (2) | 5 |
 | `tbl:tredirects` | bootstrap | yes | yes | identity | 1 | carry (5) | 9 |
-| `tbl:tremotepointer` | orm | yes | yes | — | 5 | decision (2) | 0 |
+| `tbl:tremotepointer` | orm | yes | yes | — | 5 | decision (2) | 4 |
 | `tbl:tsessiontracking` | bootstrap | yes | yes | reporting | 1 | legacy-served (4) | 6 |
 | `tbl:tsettings` | bootstrap | yes | yes (bootstrap: no) | programs-sites | 1 | carry (5) | 32 |
 | `tbl:tsystemobjects` | bootstrap | yes | no | programs-sites | 1 | carry (5) | 15 |

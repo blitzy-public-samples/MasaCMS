@@ -4,6 +4,7 @@ import path from 'node:path';
 import { isInsideRepo } from '../lib/paths.js';
 import type {
   SessionEffects,
+  SettledCall,
   SourceRef,
   Trigger,
   WriterOp,
@@ -196,8 +197,8 @@ function skipInterpolation(text: string, from: number, end: number): number {
   return end;
 }
 
-/** Index just after the string literal opening at `at`: doubled quotes escape, `##` escapes, `#…#` interpolates. */
-function skipString(text: string, at: number, end: number = text.length): number {
+/** Index just after the string literal opening at `at`: doubled quotes escape, `##` escapes, `#…#` interpolates (`onExpr` gets each span). */
+function skipString(text: string, at: number, end: number = text.length, onExpr?: (from: number, to: number) => void): number {
   const quote = text.charAt(at);
   let j = at + 1;
   while (j < end) {
@@ -214,7 +215,9 @@ function skipString(text: string, at: number, end: number = text.length): number
         j += 2;
         continue;
       }
-      j = skipInterpolation(text, j + 1, end);
+      const from = j + 1;
+      j = skipInterpolation(text, from, end);
+      onExpr?.(from, j);
       continue;
     }
     j++;
@@ -384,6 +387,89 @@ export function stripComments(text: string, mode: SourceMode | 'auto' = 'auto'):
   return parts.join('');
 }
 
+/** Marks the interior of the string literal at `at` as literal text, except its `#…#` expressions; returns its end. */
+function markString(text: string, at: number, end: number, mask: Uint8Array): number {
+  let from = at + 1;
+  const close = skipString(text, at, end, (exprFrom, exprTo) => {
+    mask.fill(1, from, exprFrom);
+    markStrings(text, exprFrom, exprTo, mask);
+    from = exprTo;
+  });
+  mask.fill(1, from, close);
+  return close;
+}
+
+const EVALUATED = /\bevaluate\s*\(\s*$/i;
+
+/** Marks the string literals of the code in `[from, to)`; an `evaluate` argument, or a quote `isCode` accepts, is code. */
+function markStrings(text: string, from: number, to: number, mask: Uint8Array, isCode?: (quoteAt: number) => boolean): void {
+  let i = from;
+  while (i < to) {
+    const c = text.charAt(i);
+    if (c !== '"' && c !== "'") {
+      i++;
+    } else if (isCode?.(i) === true || EVALUATED.test(text.slice(Math.max(from, i - 32), i))) {
+      const close = skipString(text, i, to);
+      markStrings(text, i + 1, close - 1, mask);
+      i = close;
+    } else {
+      i = markString(text, i, to, mask);
+    }
+  }
+}
+
+const CF_TAG = /<\/?cf/gi;
+
+/** Start of the first CFML tag at or after `from`, or the end of `text`. */
+function nextCfTag(text: string, from: number): number {
+  CF_TAG.lastIndex = from;
+  return CF_TAG.exec(text)?.index ?? text.length;
+}
+
+/** Marks template text outside CFML tags and `<cfscript>` bodies, except `#…#`, plus the string literals of both. */
+function markTagText(text: string, mask: Uint8Array): void {
+  const n = text.length;
+  let lit = 0;
+  let i = 0;
+  while (i < n) {
+    const c = text.charAt(i);
+    if (c === '#' && text.charAt(i + 1) === '#') {
+      i += 2;
+    } else if (c === '#') {
+      // An interpolation never spans a CFML tag, so a stray `#` outside `<cfoutput>` cannot swallow one.
+      mask.fill(1, lit, i + 1);
+      const stop = skipInterpolation(text, i + 1, nextCfTag(text, i + 1));
+      markStrings(text, i + 1, stop, mask);
+      lit = i = stop;
+    } else if (c === '<' && (startsWithCi(text, '<cf', i) || startsWithCi(text, '</cf', i))) {
+      mask.fill(1, lit, i);
+      const at = i;
+      const end = tagEnd(text, at);
+      if (startsWithCi(text, '<cfscript', at) && !isIdentPart(text.charAt(at + 9))) {
+        const close = indexOfCi(text, '</cfscript', end);
+        i = close < 0 ? n : close;
+        markStrings(text, end, i, mask);
+      } else {
+        const loop = startsWithCi(text, '<cfloop', at) && !isIdentPart(text.charAt(at + 7));
+        markStrings(text, at, end, mask, loop ? (q) => /\bcondition\s*=\s*$/i.test(text.slice(at, q)) : undefined);
+        i = end;
+      }
+      lit = i;
+    } else {
+      i++;
+    }
+  }
+  mask.fill(1, lit, n);
+}
+
+/** Offsets of `body` (flagged 1) holding text that never runs: string interiors and, in tag mode, template text. */
+function literalMask(body: string, mode: SourceMode): Uint8Array {
+  const mask = new Uint8Array(body.length);
+  if (mode === 'script') markStrings(body, 0, body.length, mask);
+  else markTagText(body, mask);
+  return mask;
+}
+
 /** `name=value` attributes with single, double or no quotes; keys lower-cased, first occurrence kept. */
 export function parseAttributes(source: string): Record<string, string> {
   const attrs: Record<string, string> = {};
@@ -474,6 +560,8 @@ export interface CfmlFunction {
   offset: number;
   bodyLine: number;
   includes: CfmlInclude[];
+  /** Lexical syntax of `body`; absent, it follows the unit's syntax. */
+  mode?: SourceMode;
 }
 
 /** A parsed CFML file: components carry a declaration, templates (`syntax: 'template'`) do not. */
@@ -572,21 +660,25 @@ function isWord(t: Token | undefined, w: string): boolean {
 
 const ACCESS = new Set(['public', 'private', 'remote', 'package']);
 
-/** `<cfinclude template>`, script `include "…";` and `cfinclude(template=…)` in `body`. */
-function findIncludes(body: string, offset: number, lines: LineIndex): CfmlInclude[] {
+/** `<cfinclude template>`, script `include "…";` and `cfinclude(template=…)` in `body`, outside its literal text. */
+function findIncludes(body: string, offset: number, lines: LineIndex, mode: SourceMode): CfmlInclude[] {
   const found: CfmlInclude[] = [];
+  const literal = literalMask(body, mode);
   const push = (template: string | undefined, at: number): void => {
     if (template !== undefined && template !== '') found.push({ template, line: lines.line(offset + at), offset: at });
   };
   for (const m of body.matchAll(/<cfinclude\b/gi)) {
+    if (literal[m.index] === 1) continue;
     push(parseAttributes(body.slice(m.index + m[0].length, tagEnd(body, m.index) - 1)).template, m.index);
   }
   for (const m of body.matchAll(/\bcfinclude\s*\(/gi)) {
+    if (literal[m.index] === 1) continue;
     const open = m.index + m[0].length - 1;
     const close = matchBracket(body, open);
     if (close > open) push(parseAttributes(body.slice(open + 1, close)).template, m.index);
   }
   for (const m of body.matchAll(/(?<![\w$.<])include\s+(["'])/gi)) {
+    if (literal[m.index] === 1) continue;
     const quoteAt = m.index + m[0].length - 1;
     push(unquote(body.slice(quoteAt, skipString(body, quoteAt))), m.index);
   }
@@ -702,7 +794,8 @@ function scanScriptMembers(
           body,
           offset,
           bodyLine: lines.line(offset),
-          includes: findIncludes(body, offset, lines),
+          includes: findIncludes(body, offset, lines, 'script'),
+          mode: 'script',
         });
         i = bodyClose + 1;
       } else {
@@ -764,7 +857,8 @@ function tagFunctions(text: string, lines: LineIndex, from: number): { functions
       body,
       offset: bodyStart,
       bodyLine: lines.line(bodyStart),
-      includes: findIncludes(body, bodyStart, lines),
+      includes: findIncludes(body, bodyStart, lines, 'tag'),
+      mode: 'tag',
     });
     ranges.push([open, bodyEnd]);
     re.lastIndex = bodyEnd;
@@ -842,7 +936,8 @@ export function parseCfmTemplate(path: string, source: string): CfmlTemplate {
     body: text,
     offset: 0,
     bodyLine: 1,
-    includes: findIncludes(text, 0, lines),
+    includes: findIncludes(text, 0, lines, 'tag'),
+    mode: 'tag',
   };
   const { functions, ranges } = tagFunctions(text, lines, 0);
   scriptBlockMembers(text, lines, ranges, functions, null);
@@ -1940,12 +2035,12 @@ function chainText(chain: Chain, k: number, body: string): string {
   return first === undefined || last === undefined ? '' : body.slice(first.s, last.e).replace(/\s+/g, ' ');
 }
 
-function chainCalls(body: string): RawCall[] {
+function chainCalls(body: string, literal: Uint8Array): RawCall[] {
   const calls: RawCall[] = [];
   let skipUntil = -1;
   for (const m of body.matchAll(/[A-Za-z_$][\w$]*/g)) {
     const at = m.index;
-    if (at < skipUntil) continue;
+    if (at < skipUntil || literal[at] === 1) continue;
     const prev = body.charAt(at - 1);
     if (prev !== '' && (isIdentPart(prev) || prev === '.')) continue;
     let kind: Chain['kind'] = 'name';
@@ -1995,10 +2090,11 @@ function cleanRhs(raw: string): string {
   return raw.trim().replace(/\/$/, '').trim();
 }
 
-function findAssignments(body: string): Assignment[] {
+function findAssignments(body: string, literal: Uint8Array): Assignment[] {
   const found: Assignment[] = [];
-  const re = /(<cfset\s+|(?:^|[;{}\n])[ \t]*)(?:var\s+)?([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*=(?!=)/gi;
+  const re = /(<cfset\s+|(?:^|[;{}\n])[ \t]*)(?:var\s+)?([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*=(?!=)/dgi;
   for (const m of body.matchAll(re)) {
+    if (literal[m.indices?.[2]?.[0] ?? m.index] === 1) continue;
     const lvalue = (m[2] ?? '').toLowerCase().replace(/^local\./, '');
     const start = m.index + m[0].length;
     const rhs = cleanRhs(body.slice(start, expressionEnd(body, start, (m[1] ?? '').toLowerCase().startsWith('<cfset'))));
@@ -2007,9 +2103,10 @@ function findAssignments(body: string): Assignment[] {
   return found;
 }
 
-function findReturns(body: string): string[] {
+function findReturns(body: string, literal: Uint8Array): string[] {
   const out: string[] = [];
   for (const m of body.matchAll(/(<cfreturn\s+|\breturn\s+)/gi)) {
+    if (literal[m.index] === 1) continue;
     const start = m.index + m[0].length;
     const rhs = cleanRhs(body.slice(start, expressionEnd(body, start, (m[1] ?? '').startsWith('<'))));
     if (rhs !== '') out.push(rhs);
@@ -2131,12 +2228,13 @@ function analyse(fn: CfmlFunction, syntax: CfmlUnit['syntax']): Analysis {
   const regions: Region[] = [];
   if (syntax === 'script') scriptRegions(fn.body, 0, fn.body.length, regions);
   else tagRegions(fn.body, regions);
+  const literal = literalMask(fn.body, fn.mode ?? (syntax === 'script' ? 'script' : 'tag'));
   const analysis: Analysis = {
     regions,
-    calls: chainCalls(fn.body),
+    calls: chainCalls(fn.body, literal),
     writes: sqlWrites(fn.body, regions, lineAt),
-    assignments: findAssignments(fn.body),
-    returns: findReturns(fn.body),
+    assignments: findAssignments(fn.body, literal),
+    returns: findReturns(fn.body, literal),
     lineAt,
   };
   analyses.set(fn, analysis);
@@ -2643,7 +2741,7 @@ export interface ClosureThread {
   source: SourceRef;
 }
 
-/** A reference the walk could not follow; settled by a writer override or reported for review. */
+/** A reference the walk could not follow; settled by a writer override or a settled call, else reported for review. */
 export interface UnresolvedRef {
   expr: string;
   kind: UnresolvedKind;
@@ -2660,7 +2758,7 @@ export interface WriteClosure {
   sessionEffects: SessionEffects;
   threads: ClosureThread[];
   unresolved: UnresolvedRef[];
-  /** Ids of the writer overrides applied, including those naming tables through a job (`tablesFrom`). */
+  /** Ids of the writer overrides (including `tablesFrom` writers) and settled calls applied. */
   overrides: string[];
   visited: string[];
 }
@@ -2910,6 +3008,13 @@ function indexOverrides(overrides: WriterOverrides | undefined): Map<string, Wri
   return byKey;
 }
 
+/** Settled-call records keyed by the path of their source span. */
+function indexSettledCalls(overrides: WriterOverrides | undefined): Map<string, SettledCall[]> {
+  const byPath = new Map<string, SettledCall[]>();
+  for (const s of overrides?.settledCalls ?? []) byPath.set(s.source.path, [...(byPath.get(s.source.path) ?? []), s]);
+  return byPath;
+}
+
 function sourceRef(p: string, from: number, to: number): SourceRef {
   return { path: p, lines: [from, Math.max(from, to)] };
 }
@@ -2925,7 +3030,15 @@ export function computeClosure(entry: ClosureEntry, ctx: ClosureContext): WriteC
   const exclusions = (entry.excludePredicates ?? []).map(lowerKeys);
   const baseTrigger: Trigger = entry.trigger ?? 'request';
   const overrides = indexOverrides(ctx.overrides);
+  const settledCalls = indexSettledCalls(ctx.overrides);
   const acc = new ClosureAccumulator();
+  /** Reports `u` unless a settled call's span in its file holds its first line; that record's id is applied instead. */
+  const unresolvedRef = (u: UnresolvedRef): void => {
+    const line = u.source.lines[0];
+    const settledBy = settledCalls.get(u.source.path)?.find(({ source: { lines } }) => lines[0] <= line && line <= lines[1]);
+    if (settledBy === undefined) acc.unresolvedRef(u);
+    else acc.overrides.add(settledBy.id);
+  };
   const decided = new Map<string, Tri>();
   const condIds = new WeakMap<GuardCondition, number>();
   let nextCondId = 0;
@@ -3072,7 +3185,7 @@ export function computeClosure(entry: ClosureEntry, ctx: ClosureContext): WriteC
       };
       if (table === null) {
         write.dynamic = true;
-        acc.unresolvedRef({ expr: w.tableExpr, kind: 'table', source });
+        unresolvedRef({ expr: w.tableExpr, kind: 'table', source });
       }
       acc.write(write, conditions);
     }
@@ -3102,7 +3215,7 @@ export function computeClosure(entry: ClosureEntry, ctx: ClosureContext): WriteC
       if (c.resolution.kind !== 'resolved') {
         const reportable = c.resolution.kind === 'unresolved' || lowerMethod === 'save' || lowerMethod === 'delete';
         if (reportable && !settled) {
-          acc.unresolvedRef({ expr: c.site.text, kind: c.resolution.kind === 'unresolved' ? c.resolution.why : 'receiver', source });
+          unresolvedRef({ expr: c.site.text, kind: c.resolution.kind === 'unresolved' ? c.resolution.why : 'receiver', source });
         }
         continue;
       }
@@ -3120,11 +3233,11 @@ export function computeClosure(entry: ClosureEntry, ctx: ClosureContext): WriteC
       const found = locate({ ...node, receiver: target, from, method });
       if (found === null) {
         if (resolver.unit(from) === null) {
-          if (!settled) acc.unresolvedRef({ expr: c.site.text, kind: 'component', source });
+          if (!settled) unresolvedRef({ expr: c.site.text, kind: 'component', source });
         } else if (resolver.hasOnMissingMethod(from)) {
           enqueue({ receiver: target, from, method: 'onMissingMethod', aliases: [{ name: 'request.context', kind: 'struct' }], literals: {}, thread: inThread, relogin: node.relogin || relogin, conditions });
         } else if (!/^(get|set|has)[A-Za-z_$]/.test(method) && !settled) {
-          acc.unresolvedRef({ expr: c.site.text, kind: 'method', source });
+          unresolvedRef({ expr: c.site.text, kind: 'method', source });
         }
         continue;
       }
@@ -3147,7 +3260,7 @@ export function computeClosure(entry: ClosureEntry, ctx: ClosureContext): WriteC
       if (verdict.tri === 'F') continue;
       const template = resolveTemplatePath(inc.template, unit.path, ctx.tree);
       if (template === null) {
-        if (!settled) acc.unresolvedRef({ expr: inc.template, kind: 'include', source: sourceRef(unit.path, inc.line, inc.line) });
+        if (!settled) unresolvedRef({ expr: inc.template, kind: 'include', source: sourceRef(unit.path, inc.line, inc.line) });
         continue;
       }
       const aliases = templateAliases([...node.aliases]);

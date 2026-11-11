@@ -96,8 +96,13 @@ interface Identified {
   id: string;
 }
 
-function flagDuplicateIds(ctx: z.RefinementCtx, items: readonly Identified[], path: readonly (string | number)[]): void {
-  const seen = new Set<string>();
+/** Flags each id of `items` already in `seen`, case-insensitively; lists sharing one id namespace share `seen`. */
+function flagDuplicateIds(
+  ctx: z.RefinementCtx,
+  items: readonly Identified[],
+  path: readonly (string | number)[],
+  seen: Set<string> = new Set(),
+): void {
   items.forEach((item, index) => {
     const key = item.id.toLowerCase();
     if (seen.has(key)) {
@@ -204,8 +209,10 @@ const tableName = z
   .string()
   .regex(/^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)?$/, 'must be a lower-cased legacy table name');
 
+const writerId = z.string().regex(/^wov:[a-z0-9-]+$/, 'must be wov:<lower-case slug>');
+
 const writerFields = z.strictObject({
-  id: z.string().regex(/^wov:[a-z0-9-]+$/, 'must be wov:<lower-case slug>'),
+  id: writerId,
   tables: z.array(tableName).optional(),
   tablesFrom: z.strictObject({ job: text }).optional(),
   columns: z.array(text).min(1).optional(),
@@ -253,13 +260,45 @@ const writerOverride = writerFields
   })
   .transform((w) => w as WriterOverride);
 
-/** Schema of `harness/inventory/writer-overrides.yaml`. */
+/** Why a settled call adds no writer: not executed CFML, writes no table, cannot run at the pin, or already counted. */
+export const SettledResolution = z.enum(['not-cfml', 'non-write', 'unreachable', 'counted']);
+export type SettledResolution = z.infer<typeof SettledResolution>;
+
+/** Reviewed resolution of the unresolved calls in one source span; `countedBy` names what counts their writes. */
+export const settledCallSchema = z
+  .strictObject({
+    id: writerId,
+    source: SourceRef,
+    calls: z.array(text).min(1),
+    resolution: SettledResolution,
+    countedBy: z.array(text).min(1).optional(),
+    reason: text,
+  })
+  .superRefine((s, ctx) => {
+    if ((s.resolution === 'counted') !== (s.countedBy !== undefined)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'required when resolution is counted and forbidden otherwise',
+        path: ['countedBy'],
+      });
+    }
+  });
+
+/** A validated settled-call record. */
+export type SettledCall = z.infer<typeof settledCallSchema>;
+
+/** Schema of `harness/inventory/writer-overrides.yaml`; writer and settled-call ids share one namespace. */
 export const writerOverridesSchema = z
   .strictObject({
     sourceSha: commitSha,
     writers: z.array(writerOverride),
+    settledCalls: z.array(settledCallSchema).optional(),
   })
-  .superRefine((doc, ctx) => flagDuplicateIds(ctx, doc.writers, ['writers']));
+  .superRefine((doc, ctx) => {
+    const seen = new Set<string>();
+    flagDuplicateIds(ctx, doc.writers, ['writers'], seen);
+    flagDuplicateIds(ctx, doc.settledCalls ?? [], ['settledCalls'], seen);
+  });
 
 /** A validated writer-overrides document. */
 export type WriterOverrides = z.infer<typeof writerOverridesSchema>;
