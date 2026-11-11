@@ -20,6 +20,7 @@ import {
   withSetCookies,
   type LegacyResponseContext,
 } from '@/lib/responses';
+import { useTestEnv } from '../helpers/env';
 
 const bytes = [0, 255, 1];
 
@@ -37,9 +38,15 @@ const pinLocale = (locale: string): void => {
   resetLegacySettingsForTests();
 };
 
-beforeEach(() => pinLocale('Server'));
+let restoreEnv: () => void;
+
+beforeEach(() => {
+  restoreEnv = useTestEnv();
+  pinLocale('Server');
+});
 
 afterEach(() => {
+  restoreEnv();
   vi.unstubAllEnvs();
   resetLegacySettingsForTests();
 });
@@ -316,6 +323,7 @@ describe('responses', () => {
     const res = legacyUnavailable();
     expect(res.status).toBe(503);
     expect(res.statusText).toBe('An Error Occurred');
+    // The legacy wire form: the servlet container drops the space before `charset`.
     expect(res.headers.get('content-type')).toBe('text/html;charset=UTF-8');
     expect(await res.text()).toBe(LEGACY_ERROR_PAGE_HTML);
   });

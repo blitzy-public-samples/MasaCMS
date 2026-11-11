@@ -32,6 +32,7 @@ import {
   webAuthRuntime,
 } from '@/lib/auth';
 import { setWebEnvForTests, webEnvSchema, type WebEnv } from '@/lib/env';
+import { SUBJECTS, userTokenFor, type WebTestSubject } from '../helpers/tokens';
 
 const JWKS_URL = 'http://127.0.0.1:8111/.well-known/jwks.json';
 const PATH = '/admin/cusers/list';
@@ -66,8 +67,25 @@ async function invocation(caller: string, audience = 'web'): Promise<string> {
 }
 
 /** Tenant-a system-user token. */
-function userToken(claims: { aud?: string; iat?: number; exp?: number } = {}): Promise<string> {
+function userToken(claims: { iss?: string; aud?: string; iat?: number; exp?: number } = {}): Promise<string> {
   return mintUserToken({ sub: USER_ID, site: TENANT_A.siteId, roles: [Roles.systemUser], ...claims });
+}
+
+/** User token of a subject that has one. */
+async function subjectToken(subject: WebTestSubject): Promise<string> {
+  const token = await userTokenFor(subject);
+  if (token === undefined) {
+    throw new TypeError(`${subject.key} has no user token`);
+  }
+  return token;
+}
+
+/** `token` with its claims raised to `s2`, keeping the original signature. */
+function tampered(token: string): string {
+  const [header = '', payload = '', signature = ''] = token.split('.');
+  const claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as Record<string, unknown>;
+  const forged = Buffer.from(JSON.stringify({ ...claims, roles: [Roles.s2], s2: true })).toString('base64url');
+  return [header, forged, signature].join('.');
 }
 
 /** Headers of a gateway request carrying `authorization`. */
@@ -114,20 +132,24 @@ describe('authenticateRequest', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('accepts the gateway with a user token', async () => {
-    const token = await userToken();
-    const auth = await authenticateRequest(new Headers(await gatewayWith(`Bearer ${token}`)), PATH);
+  it.each([SUBJECTS.admin, SUBJECTS[Roles.timesheetsEmployee]])(
+    'accepts the gateway with the $key user token',
+    async (subject) => {
+      const token = await subjectToken(subject);
+      const auth = await authenticateRequest(new Headers(await gatewayWith(`Bearer ${token}`)), PATH);
 
-    expect(auth).toMatchObject({
-      caller: { name: GATEWAY_CALLER },
-      user: { sub: USER_ID, site: TENANT_A.siteId, tid: TENANT_A.tenantId, roles: [Roles.systemUser] },
-      userToken: token,
-    });
-    expect(isAuthenticated(auth)).toBe(true);
-    expect(isAuthenticated({ caller: auth.caller, user: auth.user })).toBe(false);
-    expect(fetchSpy).toHaveBeenCalledWith(JWKS_URL, expect.anything());
-  });
+      expect(auth).toMatchObject({
+        caller: { name: GATEWAY_CALLER },
+        user: { sub: subject.sub, site: subject.site, tid: subject.tid, roles: [...subject.roles], s2: subject.s2 },
+        userToken: token,
+      });
+      expect(isAuthenticated(auth)).toBe(true);
+      expect(isAuthenticated({ caller: auth.caller, user: auth.user })).toBe(false);
+      expect(fetchSpy).toHaveBeenCalledWith(JWKS_URL, expect.anything());
+    },
+  );
 
+  // authenticateRequest refuses invocation-credential failures with 403 and user-token failures with 401.
   it.each<{
     refusal: string;
     headers: () => Promise<Record<string, string>>;
@@ -140,6 +162,12 @@ describe('authenticateRequest', () => {
       headers: async () => ({ authorization: `Bearer ${await userToken()}` }),
       status: 403,
       reason: 'missing-credential',
+    },
+    {
+      refusal: 'a user token as the invocation credential',
+      headers: async () => ({ [INVOCATION_HEADER]: `Bearer ${await userToken()}` }),
+      status: 403,
+      reason: 'invalid-credential',
     },
     {
       refusal: 'a garbage invocation credential',
@@ -172,6 +200,12 @@ describe('authenticateRequest', () => {
       reason: 'invalid-credential',
     },
     {
+      refusal: 'a tampered user token',
+      headers: async () => gatewayWith(`Bearer ${tampered(await userToken())}`),
+      status: 401,
+      reason: 'invalid-credential',
+    },
+    {
       refusal: 'a non-bearer user credential',
       headers: () => gatewayWith('Basic opaque'),
       status: 401,
@@ -180,6 +214,12 @@ describe('authenticateRequest', () => {
     {
       refusal: 'a user token for another audience',
       headers: async () => gatewayWith(`Bearer ${await userToken({ aud: 'opt2-other' })}`),
+      status: 401,
+      reason: 'invalid-credential',
+    },
+    {
+      refusal: 'a user token from another issuer',
+      headers: async () => gatewayWith(`Bearer ${await userToken({ iss: 'x' })}`),
       status: 401,
       reason: 'invalid-credential',
     },

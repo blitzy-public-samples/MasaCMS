@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EnvValidationError, loadEnv } from '@opt2/platform/service-kit';
 import {
@@ -11,27 +12,27 @@ import {
   type LegacySettings,
   type WebEnv,
 } from '@/lib/env';
+import { TEST_ENV_DEFAULTS, useTestEnv } from '../helpers/env';
 
-/** Valid synthetic web variables. */
-const TEST_ENV_DEFAULTS = {
-  NODE_ENV: 'test',
-  PORT: '8101',
-  OPT2_SERVICE_NAME: 'web',
-  OPT2_ENV: 'local',
-  OPT2_TOKEN_ISSUER: 'https://identity.opt2.test',
-  OPT2_TOKEN_AUDIENCE: 'opt2-web',
-  OPT2_JWKS_URL: 'http://127.0.0.1:8111/.well-known/jwks.json',
-  OPT2_GATEWAY_URL: 'http://127.0.0.1:8100/',
-  TZ: 'UTC',
-} as const satisfies NodeJS.ProcessEnv;
+/** `TEST_ENV_DEFAULTS` as a `loadEnv` source; Next's `ProcessEnv` typing requires `NODE_ENV`. */
+const SOURCE = { ...TEST_ENV_DEFAULTS, NODE_ENV: 'test' } as const satisfies NodeJS.ProcessEnv;
 
 type Overrides = Record<string, string | undefined>;
 
-/** Replaces every web and `MURA_` variable in `process.env` with `vars`; returns a restore for the cached env. */
-function useTestEnv(vars: NodeJS.ProcessEnv = TEST_ENV_DEFAULTS): () => void {
+/** settings.template.cfm `key=value` lines by lower-cased key, with their 1-based line numbers. */
+const TEMPLATE: ReadonlyMap<string, { readonly line: number; readonly value: string }> = new Map(
+  readFileSync(new URL('../../../core/templates/settings.template.cfm', import.meta.url), 'utf8')
+    .split(/\r?\n/)
+    .flatMap((text, index) => {
+      const [, key, value] = /^(\w+)=(.*)$/.exec(text) ?? [];
+      return key === undefined || value === undefined ? [] : [[key.toLowerCase(), { line: index + 1, value }] as const];
+    }),
+);
+
+/** Points every web variable of `process.env` at `SOURCE` and unsets every `MURA_` variable. */
+function stubProcessEnv(): void {
   for (const key of Object.keys(process.env)) if (key.startsWith('MURA_')) vi.stubEnv(key, undefined);
-  for (const key of Object.keys(webEnvSchema.shape)) vi.stubEnv(key, vars[key]);
-  return setWebEnvForTests(undefined);
+  for (const key of Object.keys(webEnvSchema.shape)) vi.stubEnv(key, (SOURCE as NodeJS.ProcessEnv)[key]);
 }
 
 /** The issues `loadEnv(webEnvSchema, source)` throws. */
@@ -48,13 +49,13 @@ function issuesOf(source: NodeJS.ProcessEnv): string[] {
 let restoreEnv: () => void;
 
 beforeEach(() => {
+  stubProcessEnv();
   restoreEnv = useTestEnv();
 });
 
 afterEach(() => {
   restoreEnv();
   vi.unstubAllEnvs();
-  resetLegacySettingsForTests();
 });
 
 describe('constants', () => {
@@ -65,10 +66,10 @@ describe('constants', () => {
 });
 
 describe('webEnvSchema', () => {
-  it('parses the defaults', () => {
-    const env: WebEnv = loadEnv(webEnvSchema, TEST_ENV_DEFAULTS);
+  it('parses TEST_ENV_DEFAULTS', () => {
+    const env: WebEnv = loadEnv(webEnvSchema, SOURCE);
     const gatewayUrl: string = env.OPT2_GATEWAY_URL;
-    expect(gatewayUrl).toBe('http://127.0.0.1:8100');
+    expect(gatewayUrl).toBe(TEST_ENV_DEFAULTS.OPT2_GATEWAY_URL);
     expect(env).toMatchObject({
       PORT: 8101,
       OPT2_SERVICE_NAME: 'web',
@@ -81,12 +82,12 @@ describe('webEnvSchema', () => {
   });
 
   it.each([[''], ['  '], [undefined]])('defaults OPT2_SERVICE_NAME %j to web', (name) => {
-    expect(loadEnv(webEnvSchema, { ...TEST_ENV_DEFAULTS, OPT2_SERVICE_NAME: name }).OPT2_SERVICE_NAME).toBe('web');
+    expect(loadEnv(webEnvSchema, { ...SOURCE, OPT2_SERVICE_NAME: name }).OPT2_SERVICE_NAME).toBe('web');
   });
 
   it('parses OPT2_SERVICE_URLS into a record', () => {
     const env = loadEnv(webEnvSchema, {
-      ...TEST_ENV_DEFAULTS,
+      ...SOURCE,
       OPT2_SERVICE_URLS: '{"people":"http://127.0.0.1:8112/","identity":"http://127.0.0.1:8111"}',
     });
     expect(env.OPT2_SERVICE_URLS).toEqual({ people: 'http://127.0.0.1:8112', identity: 'http://127.0.0.1:8111' });
@@ -101,26 +102,36 @@ describe('webEnvSchema', () => {
     { overrides: { OPT2_SERVICE_NAME: 'people' }, issues: ['OPT2_SERVICE_NAME: must be web'] },
     { overrides: { OPT2_SERVICE_URLS: 'people' }, issues: ['OPT2_SERVICE_URLS: OPT2_SERVICE_URLS must be a JSON object'] },
   ])('rejects $overrides', ({ overrides, issues }) => {
-    expect(issuesOf({ ...TEST_ENV_DEFAULTS, ...overrides })).toEqual(issues);
+    expect(issuesOf({ ...SOURCE, ...overrides })).toEqual(issues);
   });
 });
 
 describe('webEnv', () => {
-  it('parses process.env once', () => {
+  it('returns the installed env on every call', () => {
     const first = webEnv();
-    vi.stubEnv('PORT', '8199');
     expect(webEnv()).toBe(first);
     expect(first.PORT).toBe(8101);
   });
 
+  it('parses process.env once', () => {
+    const restore = setWebEnvForTests(undefined);
+    const first = webEnv();
+    vi.stubEnv('PORT', '8199');
+    expect(webEnv()).toBe(first);
+    expect(first.PORT).toBe(8101);
+    restore();
+  });
+
   it('throws EnvValidationError when process.env is invalid', () => {
+    const restore = setWebEnvForTests(undefined);
     vi.stubEnv('OPT2_GATEWAY_URL', undefined);
     expect(() => webEnv()).toThrow(EnvValidationError);
+    restore();
   });
 
   it('installs a test env and restores the previous one', () => {
     const parsed = webEnv();
-    const installed: WebEnv = loadEnv(webEnvSchema, { ...TEST_ENV_DEFAULTS, PORT: '8199' });
+    const installed: WebEnv = loadEnv(webEnvSchema, { ...SOURCE, PORT: '8199' });
     const restore = setWebEnvForTests(installed);
     expect(webEnv()).toBe(installed);
     restore();
@@ -148,36 +159,61 @@ describe('webEnv', () => {
 });
 
 describe('legacySettings', () => {
-  it('resolves the settings template values', () => {
-    expect(legacySettings()).toMatchObject({
-      title: 'Masa CMS',
-      context: '',
-      adminDir: '/admin',
-      adminDomain: '',
-      adminSSL: false,
-      sessionTimeout: 180,
-      renderMuraAlerts: true,
-      secureCookies: false,
-      sessionHistory: 0,
-      windowDocumentDomain: '',
-      defaultLocale: 'Server',
-      allowAutoUpdates: true,
-      fileManagerEnabled: true,
-      fmShowSiteFiles: true,
-      fmShowApplicationRoot: true,
-      mode: 'production',
-      dbType: '',
-      indexFileInAPI: true,
-      version: '7.6.1',
-    } satisfies Partial<LegacySettings>);
+  it.each(
+    (
+      [
+        ['title', 'title', 'Masa CMS', 'Masa CMS'],
+        ['context', 'context', '', ''],
+        ['adminDir', 'admindir', '/admin', '/admin'],
+        ['adminDomain', 'admindomain', '', ''],
+        ['adminSSL', 'adminssl', 'false', false],
+        ['sessionTimeout', 'sessiontimeout', '180', 180],
+        ['renderMuraAlerts', 'rendermuraalerts', 'true', true],
+        ['secureCookies', 'securecookies', 'false', false],
+        ['sessionHistory', 'sessionhistory', '0', 0],
+        ['windowDocumentDomain', 'windowdocumentdomain', '', ''],
+        ['defaultLocale', 'locale', 'Server', 'Server'],
+        ['allowAutoUpdates', 'allowautoupdates', 'true', true],
+        ['fileManagerEnabled', 'filemanagerenabled', 'true', true],
+        ['fmShowSiteFiles', 'fmshowsitefiles', 'true', true],
+        ['fmShowApplicationRoot', 'fmshowapplicationroot', 'true', true],
+        ['mode', 'mode', 'production', 'production'],
+        ['dbType', 'dbtype', '', ''],
+        ['indexFileInAPI', 'indexfileinurls', 'true', true],
+        ['serverPort', 'port', '${cgi.SERVER_PORT}', ''],
+      ] as const
+    ).map(([field, key, raw, expected]) => ({
+      field,
+      key,
+      raw,
+      expected,
+      shown: JSON.stringify(expected),
+      line: TEMPLATE.get(key)?.line,
+    })),
+  )('settings.template.cfm:$line $key=$raw gives $field $shown', ({ field, key, raw, expected }) => {
+    expect(TEMPLATE.get(key)?.value).toBe(raw);
+    expect(legacySettings()[field]).toBe(expected);
   });
 
-  it('falls back to configBean for settings the template lacks', () => {
-    expect(legacySettings()).toMatchObject({
-      htmlEditorType: '',
-      expirePasswords: 0,
-      fileDelim: process.platform === 'win32' ? '\\' : '/',
-    } satisfies Partial<LegacySettings>);
+  it.each(
+    (
+      [
+        ['htmlEditorType', 'htmleditortype', '', 1734],
+        ['expirePasswords', 'expirepasswords', 0, 271],
+        ['fileDelim', 'filedelim', process.platform === 'win32' ? '\\' : '/', 653],
+        ['webroot', 'webroot', '', 85],
+        ['assetPath', 'assetpath', '/sites', 2172],
+        ['version', 'version', '7.6.1', 81],
+      ] as const
+    ).map(([field, key, expected, line]) => ({ field, key, expected, shown: JSON.stringify(expected), line })),
+  )('configBean.cfc:$line gives $field $shown when the template lacks or blanks $key', ({ field, key, expected }) => {
+    expect(TEMPLATE.get(key)?.value ?? '').toBe('');
+    expect(legacySettings()[field]).toBe(expected);
+  });
+
+  it.each(['${application.title}', '{{application.title}}'])('blanks the CFML expression MURA_TITLE=%s', (title) => {
+    vi.stubEnv('MURA_TITLE', title);
+    expect(legacySettings().title).toBe('');
   });
 
   it('caches a frozen object until reset', () => {
@@ -227,6 +263,9 @@ describe('legacySettings', () => {
     [{ MURA_INDEXFILEINURLS: 'true' }, 'indexFileInAPI', true],
     [{ MURA_INDEXFILEINAPI: 'false' }, 'indexFileInAPI', false],
     [{ MURA_INDEXFILEINAPI: 'true', MURA_INDEXFILEINURLS: 'false' }, 'indexFileInAPI', true],
+    [{ MURA_ASSETPATH: '/assets/' }, 'assetPath', '/assets'],
+    [{ MURA_SITEDIR: 'tenants' }, 'assetPath', '/tenants'],
+    [{ MURA_SITEDIR: '' }, 'assetPath', ''],
   ])('reads %j as %s %j', (vars, field, expected) => {
     for (const [key, value] of Object.entries(vars)) vi.stubEnv(key, value);
     expect(legacySettings()[field]).toBe(expected);

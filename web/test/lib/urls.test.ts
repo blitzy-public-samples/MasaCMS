@@ -11,6 +11,7 @@ import {
   fw1RedirectTarget,
   sanitizeHref,
 } from '@/lib/urls';
+import { useTestEnv } from '../helpers/env';
 
 /** Clears every `MURA_` variable, then sets `vars`, so legacy settings resolve from `vars` alone. */
 function useSettings(vars: Record<string, string> = {}): void {
@@ -19,9 +20,15 @@ function useSettings(vars: Record<string, string> = {}): void {
   resetLegacySettingsForTests();
 }
 
-beforeEach(() => useSettings());
+let restoreEnv: () => void;
+
+beforeEach(() => {
+  restoreEnv = useTestEnv();
+  useSettings();
+});
 
 afterEach(() => {
+  restoreEnv();
   vi.unstubAllEnvs();
   resetLegacySettingsForTests();
 });
@@ -49,6 +56,13 @@ describe('boundAdminUrl', () => {
       '/admin/?muraAction=cArch.list&siteid=a%26b&x=a&b',
     );
   });
+
+  it.each([
+    [{ siteid: 'default' }, '/admin/?muraAction=cUsers.list&siteid=default'],
+    [{ siteid: 'default', keywords: 'a b&c' }, '/admin/?muraAction=cUsers.list&siteid=default&keywords=a+b%26c'],
+  ])('boundAdminUrl(cUsers, list, %j) is %j', (params, expected) => {
+    expect(boundAdminUrl('cUsers', 'list', params)).toBe(expected);
+  });
 });
 
 describe('buildUrl', () => {
@@ -56,9 +70,14 @@ describe('buildUrl', () => {
     expect(FW1_HOME_ACTION).toBe('core:home.redirect');
   });
 
-  // Expected values were captured from FW/1 buildURL on the legacy ACF 2023 instance with the admin configuration.
+  // Expected values follow FW/1 buildURL (admin/framework.cfc 41-153) under the admin framework settings.
   it.each([
     ['cLogin.main', './', '', './?muraAction=cLogin.main'],
+    ['core:cusers.list', './', '', './?muraAction=cusers.list'],
+    ['cusers.list', './', 'siteid=default&x=1', './?muraAction=cusers.list&siteid=default&x=1'],
+    ['cusers.list?siteid=default', './', '', './?muraAction=cusers.list&siteid=default'],
+    ['carch.list', './', 'siteid=default#tabBasic', './?muraAction=carch.list&siteid=default#tabBasic'],
+    ['cusers.list', './?', '', './?muraAction=cusers.list'],
     ['core:home.redirect', './', '', './'],
     ['home.redirect', './', '', './'],
     ['CORE:Home.Redirect', './', '', './'],
@@ -260,6 +279,12 @@ describe('sanitizeHref', () => {
 describe('assetUrl', () => {
   it.each([
     [{}, '/core/vendor/ckeditor/ckeditor.js', {}, '/core/vendor/ckeditor/ckeditor.js'],
+    [
+      {},
+      '/admin/assets/js/jquery/jquery.min.js',
+      { coreversion: true },
+      '/admin/assets/js/jquery/jquery.min.js?coreversion=7.6.1',
+    ],
     [
       {},
       '/core/vendor/colorpicker/js/bootstrap-colorpicker.js',

@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createResourceBundles, type RbLookup } from '@/lib/resource-bundles/rb';
 import {
   FORMBUILDER_TEMPLATES,
@@ -8,8 +8,30 @@ import {
   renderFormBuilderTemplate,
   type NestedFormOption,
   type TemplateInput,
+  type TemplateRenderer,
 } from '@/screens/cform/templates';
+import { datasetCreate } from '@/screens/cform/templates/dataset-create';
+import { datasetForm } from '@/screens/cform/templates/dataset-form';
+import { datasetGrid } from '@/screens/cform/templates/dataset-grid';
+import { datasetNested } from '@/screens/cform/templates/dataset-nested';
+import { datasetRow } from '@/screens/cform/templates/dataset-row';
+import { datasetSourced } from '@/screens/cform/templates/dataset-sourced';
+import { fieldBlock } from '@/screens/cform/templates/field-block';
+import { fieldCheckbox } from '@/screens/cform/templates/field-checkbox';
+import { fieldDropdown } from '@/screens/cform/templates/field-dropdown';
+import { fieldFile } from '@/screens/cform/templates/field-file';
+import { fieldHidden } from '@/screens/cform/templates/field-hidden';
+import { fieldNested } from '@/screens/cform/templates/field-nested';
+import { fieldRadio } from '@/screens/cform/templates/field-radio';
+import { fieldSection } from '@/screens/cform/templates/field-section';
+import { fieldTextarea } from '@/screens/cform/templates/field-textarea';
+import { fieldTextblock } from '@/screens/cform/templates/field-textblock';
+import { fieldTextfield } from '@/screens/cform/templates/field-textfield';
+import { formForm } from '@/screens/cform/templates/form-form';
+import { messageDatasetSourcerequired } from '@/screens/cform/templates/message-dataset-sourcerequired';
+import { messageDeleteRow } from '@/screens/cform/templates/message-delete-row';
 import { fixtureBundles } from '../../fixtures/resource-bundles/generated-bundles';
+import { useTestEnv } from '../../helpers/env';
 
 const here = import.meta.dirname ?? __dirname;
 const LEGACY_DIR = path.resolve(here, '../../../../admin/core/utilities/formbuilder/templates');
@@ -18,7 +40,8 @@ const FORM_A: NestedFormOption = { contentID: '2B7E4A10-5C3D-4E8F-9A1B2C3D4E5F60
 const FORM_B: NestedFormOption = { contentID: 'C0FFEE00-1A2B-3C4D-5E6F708192A3B4C5', title: 'R&D <Intake> #2' };
 const FORMS: readonly NestedFormOption[] = [FORM_A, FORM_B];
 
-const rb = createResourceBundles(fixtureBundles).rbFor('en');
+const rb = createResourceBundles(fixtureBundles).rbFor('en_US');
+const METACHAR_LABEL = 'Del <b>&"x"</b>';
 const labelled = createResourceBundles({
   ...fixtureBundles,
   admin: {
@@ -28,7 +51,8 @@ const labelled = createResourceBundles({
       en: {
         entries: [
           ['formbuilder.dataset.rowdeleteconfirm', 'Delete Row?'],
-          ['formbuilder.missingfieldtemplatefile', 'Missing template'],
+          ['formbuilder.delete', METACHAR_LABEL],
+          ['formbuilder.missingfieldtemplatefile', '  Missing template  '],
         ],
       },
     },
@@ -81,27 +105,31 @@ function legacyOutput(name: string, lookup: RbLookup, forms: readonly NestedForm
   ).trim();
 }
 
-const TEMPLATE_CASES: [string, string][] = [
-  ['dataset-create', '<span>'],
-  ['dataset-form', '<div class="ui-tabs">'],
-  ['dataset-grid', '<span>'],
-  ['dataset-nested', '<div id="dataset-row">'],
-  ['dataset-row', '<div id="dataset-row">'],
-  ['dataset-sourced', '<div id="mura-tb-grid" class="mura-tb-form">'],
-  ['field-block', '<li>'],
-  ['field-checkbox', '<span>'],
-  ['field-dropdown', '<span>'],
-  ['field-file', '<span>'],
-  ['field-hidden', '<span>'],
-  ['field-nested', '<span>'],
-  ['field-radio', '<span>'],
-  ['field-section', '<span>'],
-  ['field-textarea', '<span>'],
-  ['field-textblock', '<span>'],
-  ['field-textfield', '<span>'],
-  ['form-form', '<span>'],
-  ['message-dataset-sourcerequired', '<span>formbuilder.dataset.sourcerequired_missing</span>'],
-  ['message-delete-row', '<span>formbuilder.dataset.rowdeleteconfirm_missing</span>'],
+const TEMPLATE_CASES: [string, TemplateRenderer, string][] = [
+  ['dataset-create', datasetCreate, '<span>'],
+  ['dataset-form', datasetForm, '<div class="ui-tabs">'],
+  ['dataset-grid', datasetGrid, '<span>'],
+  ['dataset-nested', datasetNested, '<div id="dataset-row">'],
+  ['dataset-row', datasetRow, '<div id="dataset-row">'],
+  ['dataset-sourced', datasetSourced, '<div id="mura-tb-grid" class="mura-tb-form">'],
+  ['field-block', fieldBlock, '<li>'],
+  ['field-checkbox', fieldCheckbox, '<span>'],
+  ['field-dropdown', fieldDropdown, '<span>'],
+  ['field-file', fieldFile, '<span>'],
+  ['field-hidden', fieldHidden, '<span>'],
+  ['field-nested', fieldNested, '<span>'],
+  ['field-radio', fieldRadio, '<span>'],
+  ['field-section', fieldSection, '<span>'],
+  ['field-textarea', fieldTextarea, '<span>'],
+  ['field-textblock', fieldTextblock, '<span>'],
+  ['field-textfield', fieldTextfield, '<span>'],
+  ['form-form', formForm, '<span>'],
+  [
+    'message-dataset-sourcerequired',
+    messageDatasetSourcerequired,
+    `<span>${rb.rbKey('formbuilder.dataset.sourcerequired')}</span>`,
+  ],
+  ['message-delete-row', messageDeleteRow, `<span>${rb.rbKey('formbuilder.dataset.rowdeleteconfirm')}</span>`],
 ];
 
 const tabs = (count: number): string => '\t'.repeat(count);
@@ -109,6 +137,14 @@ const optionMarkup = (form: NestedFormOption): string =>
   `\n${tabs(9)}<option value="${form.contentID}">${form.title}</option>\n${tabs(8)}`;
 const selectMarkup = (forms: readonly NestedFormOption[]): string =>
   `<select name="formid" id="tb-formid">\n${tabs(8)}${forms.map(optionMarkup).join('')}\n${tabs(7)}</select>`;
+
+let restore: () => void;
+beforeEach(() => {
+  restore = useTestEnv();
+});
+afterEach(() => {
+  restore();
+});
 
 describe('FORMBUILDER_TEMPLATES', () => {
   it('holds one frozen renderer per legacy template file', () => {
@@ -139,7 +175,8 @@ describe('fieldTemplateName', () => {
 });
 
 describe('renderFormBuilderTemplate', () => {
-  it.each(TEMPLATE_CASES)('%s matches the legacy template', async (name, firstLine) => {
+  // Whole-output equality with the evaluated legacy source also pins `${fieldid}`, `##` -> `#` and every label used.
+  it.each(TEMPLATE_CASES)('%s matches the legacy template', async (name, renderer, firstLine) => {
     const target = recording(rb);
     const legacy = recording(rb);
     const html = await renderFormBuilderTemplate(name, inputOf(target.rb));
@@ -147,7 +184,8 @@ describe('renderFormBuilderTemplate', () => {
     expect(html.split('\n')[0]).toBe(firstLine);
     expect(html).toBe(expected);
     expect(target.keys).toEqual(legacy.keys);
-    expect((await FORMBUILDER_TEMPLATES[name]?.(inputOf(rb)))?.trim()).toBe(html);
+    expect(FORMBUILDER_TEMPLATES[name]).toBe(renderer);
+    expect((await renderer(inputOf(rb))).trim()).toBe(html);
   });
 
   it.each([
@@ -169,7 +207,7 @@ describe('renderFormBuilderTemplate', () => {
   ])('reports %j as missing', async (raw, file) => {
     const loadForms = vi.fn(async () => FORMS);
     expect(await renderFormBuilderTemplate(raw, { rb, loadForms })).toBe(
-      `formbuilder.missingfieldtemplatefile_missing: ${file}`,
+      `${rb.rbKey('formbuilder.missingfieldtemplatefile')}: ${file}`,
     );
     expect(loadForms.mock.calls.length).toBe(0);
   });
@@ -181,8 +219,16 @@ describe('renderFormBuilderTemplate', () => {
     expect(await render(labelled.rbFor('de'))).toBe('<span>Zeile l&ouml;schen?</span>');
     expect(await render(rb)).toBe('<span>formbuilder.dataset.rowdeleteconfirm_missing</span>');
     expect(await renderFormBuilderTemplate('field-unknown', inputOf(labelled.rbFor('en')))).toBe(
-      'Missing template: field-unknown.cfm',
+      '  Missing template  : field-unknown.cfm',
     );
+  });
+
+  it('emits labels unescaped', async () => {
+    const render = (lookup: RbLookup): Promise<string> => renderFormBuilderTemplate('field-block', inputOf(lookup));
+    expect(await render(rb)).toContain(`title="${rb.rbKey('formbuilder.delete')}"`);
+    const html = await render(labelled.rbFor('en'));
+    expect(html).toContain(`title="${METACHAR_LABEL}"`);
+    expect(html).toBe(legacyOutput('field-block', labelled.rbFor('en'), FORMS));
   });
 
   it('loads forms only for field-nested', async () => {
