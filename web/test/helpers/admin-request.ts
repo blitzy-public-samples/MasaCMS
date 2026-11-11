@@ -18,9 +18,11 @@ import {
   dashboardSpanFor,
   mergeFw1Context,
   nextSessionSite,
+  requestScopes,
   resolveAction,
   type AdminMode,
   type AdminRequest,
+  type AdminRequestInput,
   type AdminSessionState,
   type SiteData,
 } from '@/lib/request-context';
@@ -199,10 +201,12 @@ const listsSites = (flags: ClaimFlags): boolean =>
 const readsSite = (user: UserClaims | undefined, flags: ClaimFlags, siteId: string): boolean =>
   (flags.isS2 || flags.isSiteAdmin) && user?.site === siteId;
 
-/** `session.mura` identity holds for `user`: the anonymous struct, or the logged-in user without memberships. */
+/** `session.mura` identity holds for `user`: the anonymous struct, or the user with loginByQuery's pool markers. */
 function sessionUserOf(user: UserClaims | undefined, flags: ClaimFlags): SessionUser {
   if (user === undefined || !flags.isLoggedIn) return { isLoggedIn: false, userID: '' };
-  return { isLoggedIn: true, userID: user.sub, siteID: user.site, memberships: '' };
+  const pool = flags.isPrivateUser ? 'S2IsPrivate' : 'S2IsPublic';
+  const memberships = `${pool};${user.site},${pool}${flags.isS2 ? ',S2' : ''}`;
+  return { isLoggedIn: true, userID: user.sub, siteID: user.site, memberships };
 }
 
 /** The `tsettings` row served for `siteId`: own pools, every flag off, no site locale. */
@@ -393,13 +397,7 @@ export function noSitesRequest(
   partial: AdminRequestPartial = {},
 ): AdminRequest {
   const subject = s2IsPrivate ? SUBJECTS.systemUser : SUBJECTS.member;
-  // The pool entries loginByQuery adds for a private or public user (core/mura/user/userUtility.cfc 324-330).
-  const pool = s2IsPrivate ? 'S2IsPrivate' : 'S2IsPublic';
-  const memberships = `${pool};${subject.site},${pool}`;
-  return makeAdminRequest(
-    { ...partial, session: { ...partial.session, siteArray: [], mura: { ...partial.session?.mura, memberships } } },
-    subject,
-  );
+  return makeAdminRequest({ ...partial, session: { ...partial.session, siteArray: [] } }, subject);
 }
 
 /** The tenant-a subject holding synthetic-module `role`, with `session.siteid` on its site. */
@@ -440,7 +438,23 @@ export async function buildTestAdminRequest(input: TestAdminRequestInput): Promi
   const flags = claimFlags(user);
   const userToken = user === undefined ? undefined : await userTokenFor(subject, user);
   const gateway = input.gateway ?? fakeGatewayClient({}, { userToken });
-  const siteId = input.query?.siteid ?? input.form?.siteid ?? user?.site ?? 'default';
+  const searchParams = new URLSearchParams({ muraAction: `${input.circuit}.${input.action}` });
+  for (const [name, value] of Object.entries(input.query ?? {})) searchParams.set(name, value);
+  const form = input.form === undefined ? undefined : new URLSearchParams(input.form);
+  const auth: WebAuth = { caller: { name: GATEWAY_CALLER, roles: rolesForService(GATEWAY_CALLER) }, user, userToken };
+  const request: AdminRequestInput = {
+    params: { circuit: input.circuit, action: input.action },
+    searchParams,
+    headers: requestHeaders(input.headers),
+    form,
+    auth,
+    gateway,
+    mode: input.mode ?? (form === undefined ? 'page' : 'redirect'),
+  };
+  // The requested site as the builder's merged context reads it; without one, the subject's own site.
+  const scopes = requestScopes(request);
+  const rcSiteId = mergeFw1Context(scopes.pathInfo, scopes.url, scopes.form)['siteid'] ?? '';
+  const siteId = rcSiteId !== '' ? rcSiteId : (user?.site ?? 'default');
   const siteArray = input.sessionState?.siteArray ?? (listsSites(flags) ? [siteId] : []);
   const replies: Record<string, FakeReply> = {
     [CURRENT_SESSION_ROUTE]: {
@@ -464,17 +478,5 @@ export async function buildTestAdminRequest(input: TestAdminRequestInput): Promi
     if (!gateway.hasRoute(key)) gateway.setRoute(key, reply);
   }
 
-  const searchParams = new URLSearchParams({ muraAction: `${input.circuit}.${input.action}` });
-  for (const [name, value] of Object.entries(input.query ?? {})) searchParams.set(name, value);
-  const form = input.form === undefined ? undefined : new URLSearchParams(input.form);
-  const auth: WebAuth = { caller: { name: GATEWAY_CALLER, roles: rolesForService(GATEWAY_CALLER) }, user, userToken };
-  return buildAdminRequest({
-    params: { circuit: input.circuit, action: input.action },
-    searchParams,
-    headers: requestHeaders(input.headers),
-    form,
-    auth,
-    gateway,
-    mode: input.mode ?? (form === undefined ? 'page' : 'redirect'),
-  });
+  return buildAdminRequest(request);
 }

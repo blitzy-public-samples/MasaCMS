@@ -118,6 +118,9 @@ export type SignatureRequestRow = {
   row_version: string;
 };
 
+/** A request row without its document bytes, as the fixture's request columns read it. */
+export type SignatureRequestMetadataRow = Omit<SignatureRequestRow, 'document'>;
+
 /** An `esignature.signature` row as pg returns it. */
 export type SignatureRow = {
   tenant_id: string;

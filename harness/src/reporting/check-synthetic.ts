@@ -59,6 +59,31 @@ export interface SyntheticCheckResult {
 }
 
 const USAGE = 'check-synthetic [--root <dir>]';
+const HELP = `${USAGE} [--help]
+
+Checks that every source file and README of a synthetic module carries its SYNTHETIC label.
+
+Options:
+  --root <dir>  tree to check, resolved against the working directory (default: the repository root)
+  --help        print this help and exit 0
+
+Synthetic roots:
+${SYNTHETIC_ROOTS.map((root) => `  ${root}`).join('\n')}
+
+Each ${Object.keys(LABEL_PREFIXES).join(', ')} file under them starts, after any #! line, with
+"<comment> SYNTHETIC: <module> - ${LABEL_TEXT}"
+(a CFML tag comment closes with " --->"; a service's module is its folder name), and each README.md opens with
+${README_LABEL}. Other files are exempt.
+Directories not walked: ${SKIPPED_DIRS.join(', ')}.
+
+Requires: only read access to the tree; no git or network.
+
+Output: one JSON summary line on stdout. Exit: 0 every file labelled, 1 a file lacks its label, the root is not a
+directory, or no synthetic root holds a file, 2 usage error.
+
+Examples (from harness/):
+  npm run check:synthetic
+  npm run --silent check:synthetic -- --root /path/to/other-checkout`;
 
 // A SYNTHETIC: header behind another comment marker, or behind none.
 const MISPLACED_LABEL = /^\W*SYNTHETIC:/;
@@ -149,7 +174,7 @@ async function collectFiles(base: string, relDir: string, files: string[]): Prom
 
 /**
  * Checks every file under each of {@link SYNTHETIC_ROOTS} in `opts.root` (default the checkout); absent roots are listed, not failed.
- * Rejects with `ENOENT` or `ENOTDIR` when `opts.root` is not a directory.
+ * Rejects with `ENOENT` or `ENOTDIR` when `opts.root` is not a directory, and with `ENOENT` when no root holds a file.
  */
 export async function checkSynthetic(opts: { root?: string } = {}): Promise<SyntheticCheckResult> {
   const base = opts.root ?? REPO_ROOT;
@@ -176,13 +201,17 @@ export async function checkSynthetic(opts: { root?: string } = {}): Promise<Synt
     }
   }
 
+  if (Object.values(checked).every((count) => count === 0)) {
+    const message = `no file checked under '${base}': none of ${SYNTHETIC_ROOTS.join(', ')} holds a file`;
+    throw Object.assign(new Error(message), { code: 'ENOENT', path: base });
+  }
   findings.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   return { ok: findings.length === 0, checked, rootsMissing, findings };
 }
 
-/** CLI entry; `--root <dir>` checks another tree. Exit 1 when any file lacks its label or the root is not a directory. */
+/** CLI entry; `--root <dir>` checks another tree. Exit 1 when any file lacks its label, the root is not a directory, or no synthetic root holds a file. */
 export async function main(argv: string[]): Promise<CliOutcome> {
-  const { values } = parseFlags(argv, { options: { root: { type: 'string' } }, usage: USAGE });
+  const { values } = parseFlags(argv, { options: { root: { type: 'string' } }, usage: USAGE, help: HELP });
   if (values.root === '') throw new UsageError('--root needs a directory', USAGE);
   const root = values.root === undefined ? REPO_ROOT : path.resolve(values.root);
   const result = await checkSynthetic({ root });

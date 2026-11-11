@@ -586,10 +586,32 @@ export async function generateCloc(opts: GenerateClocOptions = {}): Promise<Cloc
 }
 
 const USAGE = 'cloc [--out <dir>]';
+const HELP = `${USAGE} [--help]
+
+Measures the pinned legacy source with cloc and writes the size report cloc.json and cloc.md.
+
+Options:
+  --out <dir>  output directory for cloc.json and cloc.md; a relative path resolves against the repository root,
+               not the working directory (default: opt2/inventory)
+  --help       print this help and exit 0
+
+The commit pinned in opt2/source-pin.json is extracted with git archive into a new opt2-archive-* directory under
+TMPDIR, measured with the full exclusions and again unfiltered, and removed. Figures or a cloc version that differ
+from the cloc ${CLOC_REQUIRED_VERSION} planning measurement are reported and noted in cloc.md, not failed.
+
+Requires: git and tar on PATH, a checkout that holds the pinned commit, cloc ${CLOC_REQUIRED_VERSION} on PATH (apt: cloc), and TMPDIR
+(default /tmp) outside the checkout.
+
+Output: one JSON summary line on stdout. Exit: 0 report written, 1 failure (cloc missing or failing, git, pin or
+write error), 2 usage error.
+
+Examples (from harness/):
+  npm run inventory:cloc
+  TMPDIR=/path/to/scratch npm run --silent inventory:cloc -- --out /path/to/out`;
 
 /** CLI entry: writes the report and summarises the figures and any planning differences. */
 export async function main(argv: string[]): Promise<CliOutcome> {
-  const { values } = parseFlags(argv, { options: { out: { type: 'string' } }, usage: USAGE });
+  const { values } = parseFlags(argv, { options: { out: { type: 'string' } }, usage: USAGE, help: HELP });
   if (values.out === '') throw new UsageError('--out needs a directory', USAGE);
   const { jsonPath, mdPath, report, planning } = await generateCloc({ out: values.out });
   return {

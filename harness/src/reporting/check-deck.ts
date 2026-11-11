@@ -144,6 +144,30 @@ export interface RenderOptions {
 }
 
 const USAGE = 'check-deck [--file <path>] [--render]';
+const HELP = `${USAGE} [--help]
+
+Checks the executive summary deck against the user rule "Executive Presentation".
+
+Options:
+  --file <path>  deck to check, resolved against the working directory (default: opt2/executive-summary/index.html)
+  --render       also render the deck in headless Chromium through Playwright and report every Mermaid diagram or
+                 Lucide icon that does not render, page error and failed request (default: static checks only)
+  --help         print this help and exit 0
+
+Static checks: slide count, types, order and styles; a non-text visual on every slide; content and closing limits;
+no emoji, fenced code or local file reference; Mermaid block markup; CDN pins (reveal.js ${CDN_PINS.reveal}, Mermaid ${CDN_PINS.mermaid},
+Lucide ${CDN_PINS.lucide}); Google Fonts; the inline theme; reveal.js, Mermaid and Lucide wiring; and the pinned SHA from
+opt2/source-pin.json.
+
+Requires: opt2/source-pin.json. --render also needs Chromium (npx playwright install chromium, from harness/) and
+network access to the CDN scripts and Google Fonts the deck loads.
+
+Output: one JSON summary line on stdout. Exit: 0 no findings, 1 any finding or failure, 2 usage error.
+
+Examples (from harness/):
+  npm run check:deck
+  npm run check:deck -- --render
+  npm run --silent check:deck -- --file /path/to/index.html`;
 const SLIDE_SELECTOR = '.reveal .slides > section';
 const SLIDE_RANGE = { min: 12, max: 18 } as const;
 const CONTENT_MAX_BULLETS = 4;
@@ -1341,6 +1365,7 @@ export async function main(argv: string[]): Promise<CliOutcome> {
   const { values } = parseFlags(argv, {
     options: { file: { type: 'string' }, render: { type: 'boolean', default: false } },
     usage: USAGE,
+    help: HELP,
   });
   if (values.file === '') throw new UsageError('--file needs a path', USAGE);
   const file = path.resolve(values.file ?? DECK_PATH);

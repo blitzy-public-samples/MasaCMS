@@ -1,5 +1,5 @@
 // SYNTHETIC: e-signature - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** E-signature read queries against a throwaway `esignature` schema: fixture order and paging, id matching, the append lock, tenant isolation and window read gates. */
+/** E-signature read queries against a throwaway `esignature` schema: projections, fixture order and paging, index plans, id matching, the append lock, tenant isolation and window read gates. */
 import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -7,7 +7,7 @@ import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import { UnitReadBlockedError, closeGates, ensureUnitGates, openGates, withGatedTenant, type GatePhase } from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
-import { findRequest, findSignature, lastAuditEntry, listAuditEntries, listRequests, lockRequest } from '../../src/repo/queries.js';
+import { auditChainBatches, findRequest, findSignature, lastAuditEntry, listAuditEntries, listRequests, lockRequest } from '../../src/repo/queries.js';
 import { AUDIT_ENTRY, SIGNATURE, SIGNATURE_REQUEST, UNITS } from '../../src/repo/tables.js';
 
 let handle: ThrowawaySchema;
@@ -54,6 +54,21 @@ function recording(tx: TenantTx, seen: string[]): TenantTx {
     return tx.query(text, values);
   }) as TenantTx['query'];
   return { ...tx, query };
+}
+
+/** Every batch `batches` yields, in order. */
+async function collect<T>(batches: AsyncIterable<T>): Promise<T[]> {
+  const out: T[] = [];
+  for await (const batch of batches) out.push(batch);
+  return out;
+}
+
+/** The text of `tx`'s plan for `text` with `values`, with sequential scans and sorts priced out so only a usable index avoids them. */
+async function planOf(tx: TenantTx, text: string, values: unknown[]): Promise<string> {
+  await tx.query('SET LOCAL enable_seqscan = off');
+  await tx.query('SET LOCAL enable_sort = off');
+  const plan = await tx.query<{ 'QUERY PLAN': string }>(`EXPLAIN ${text}`, values);
+  return plan.rows.map((row) => row['QUERY PLAN']).join('\n');
 }
 
 /** Fixture order of requests: `created`, then id. */
@@ -118,15 +133,30 @@ describe.skipIf(!(await pgAvailable()))('e-signature read queries', () => {
     expect(page.rows.map((row) => row.request_id)).toEqual(fixtureOrder(A_REQUESTS).slice(offset, offset + itemsPerPage));
   });
 
+  const REQUEST_METADATA_COLUMNS = SIGNATURE_REQUEST.columns.map((column) => column.name).filter((name) => name !== 'document');
+
+  it.each<{ name: string; read: (tx: TenantTx) => Promise<readonly (object | null | undefined)[]> }>([
+    { name: 'findRequest', read: async (tx) => [await findRequest(tx, SIGNED)] },
+    { name: 'findRequest for update', read: async (tx) => [await findRequest(tx, SIGNED, { forUpdate: true })] },
+    { name: 'listRequests', read: async (tx) => (await listRequests(tx, { pageIndex: 1, itemsPerPage: 1000 })).rows },
+    { name: 'lockRequest', read: async (tx) => [(await lockRequest(tx, SIGNED))?.request] },
+  ])('reads requests through $name in catalogue order without the document bytes', async ({ read }) => {
+    const rows = await handle.app.withTenant(TENANT_A.tenantId, read);
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(Object.keys(row ?? {})).toEqual(REQUEST_METADATA_COLUMNS);
+      expect(row).not.toHaveProperty('document');
+    }
+  });
+
   it('selects the catalogue columns of each table in pg value forms', async () => {
     await handle.app.withTenant(TENANT_A.tenantId, async (tx) => {
       const request = await findRequest(tx, SIGNED);
       const signature = await findSignature(tx, SIGNED);
-      const entries = await listAuditEntries(tx, CHAINED);
-      expect(Object.keys(request ?? {})).toEqual(SIGNATURE_REQUEST.columns.map((column) => column.name));
+      const entries = (await listAuditEntries(tx, CHAINED, { pageIndex: 1, itemsPerPage: 1000 })).rows;
       expect(Object.keys(signature ?? {})).toEqual(SIGNATURE.columns.map((column) => column.name));
       expect(Object.keys(entries[0] ?? {})).toEqual(AUDIT_ENTRY.columns.map((column) => column.name));
-      expect(request).toMatchObject({ state: 'PENDING', row_version: '0', document: Buffer.from('document') });
+      expect(request).toMatchObject({ state: 'PENDING', row_version: '0' });
       expect(request?.created).toBeInstanceOf(Date);
       expect(signature?.typed_name).toBe('Jane Doe');
       expect(entries[0]?.prev_hash).toEqual(GENESIS);
@@ -135,14 +165,55 @@ describe.skipIf(!(await pgAvailable()))('e-signature read queries', () => {
 
   it('lists audit entries by seq, finds the last one, and answers empty for a request without entries or signature', async () => {
     await handle.app.withTenant(TENANT_A.tenantId, async (tx) => {
-      const entries = await listAuditEntries(tx, CHAINED);
+      const entries = (await listAuditEntries(tx, CHAINED, { pageIndex: 1, itemsPerPage: 50 })).rows;
       expect(entries.map((entry) => entry.seq)).toEqual([1, 2, 3]);
       expect(entries[2]?.prev_hash).toEqual(entries[1]?.entry_hash);
       expect((await lastAuditEntry(tx, CHAINED))?.seq).toBe(3);
       expect(await lastAuditEntry(tx, SIGNED)).toBeNull();
-      expect(await listAuditEntries(tx, SIGNED)).toEqual([]);
+      expect(await listAuditEntries(tx, SIGNED, { pageIndex: 1, itemsPerPage: 50 })).toEqual({ rows: [], total: 0 });
       expect(await findSignature(tx, CHAINED)).toBeNull();
     });
+  });
+
+  it.each([
+    [1, 2],
+    [2, 2],
+    [3, 2],
+    [1, 1000],
+    [4, 1],
+  ])('pages pageIndex %i of %i audit entries by seq with the total, reading the page only when it starts before the total', async (pageIndex, itemsPerPage) => {
+    const seen: string[] = [];
+    const page = await handle.app.withTenant(TENANT_A.tenantId, (tx) => listAuditEntries(recording(tx, seen), CHAINED, { pageIndex, itemsPerPage }));
+    const offset = (pageIndex - 1) * itemsPerPage;
+    expect(page.total).toBe(3);
+    expect(page.rows.map((row) => row.seq)).toEqual([1, 2, 3].slice(offset, offset + itemsPerPage));
+    expect(seen.filter((text) => text.endsWith('OFFSET $3'))).toHaveLength(offset < 3 ? 1 : 0);
+  });
+
+  it.each([
+    [1, [[1], [2], [3]]],
+    [2, [[1, 2], [3]]],
+    [3, [[1, 2, 3]]],
+    [1000, [[1, 2, 3]]],
+  ])('reads the whole chain in batches of %i by seq', async (batchSize, expected) => {
+    const batches = await handle.app.withTenant(TENANT_A.tenantId, async (tx) => {
+      expect(await collect(auditChainBatches(tx, SIGNED, batchSize))).toEqual([]);
+      return collect(auditChainBatches(tx, CHAINED, batchSize));
+    });
+    expect(batches.map((batch) => batch.map((entry) => entry.seq))).toEqual(expected);
+  });
+
+  it('reads a chain whose seq runs below 1 from its lowest entry on', async () => {
+    const target = A_REQUESTS[9]!.id;
+    const batches = await handle.app.withTenant(TENANT_A.tenantId, async (tx) => {
+      let prev: Buffer = GENESIS;
+      for (const seq of [-1, 0, 1, 2]) prev = await insertEntry(tx, target, seq, prev, `low${seq}`);
+      return collect(auditChainBatches(tx, target, 2));
+    });
+    expect(batches.map((batch) => batch.map((entry) => entry.seq))).toEqual([
+      [-1, 0],
+      [1, 2],
+    ]);
   });
 
   it('matches request ids case- and trailing-space-insensitively, as the fixture collation does', async () => {
@@ -150,7 +221,8 @@ describe.skipIf(!(await pgAvailable()))('e-signature read queries', () => {
       expect((await findRequest(tx, SIGNED.toLowerCase()))?.request_id).toBe(SIGNED);
       expect((await findRequest(tx, `${SIGNED}  `))?.request_id).toBe(SIGNED);
       expect((await findSignature(tx, SIGNED.toLowerCase()))?.request_id).toBe(SIGNED);
-      expect(await listAuditEntries(tx, CHAINED.toLowerCase())).toHaveLength(3);
+      expect((await listAuditEntries(tx, CHAINED.toLowerCase(), { pageIndex: 1, itemsPerPage: 50 })).rows).toHaveLength(3);
+      expect((await collect(auditChainBatches(tx, `${CHAINED.toLowerCase()}  `))).flat()).toHaveLength(3);
       expect((await lockRequest(tx, CHAINED.toLowerCase()))?.last?.seq).toBe(3);
       expect(await findRequest(tx, 'unknown')).toBeNull();
       await tx.query('SET LOCAL enable_seqscan = off');
@@ -159,6 +231,42 @@ describe.skipIf(!(await pgAvailable()))('e-signature read queries', () => {
         [SIGNED],
       );
       expect(plan.rows.map((row) => row['QUERY PLAN']).join('\n')).toMatch(/Index (Only )?Scan using pk_signature_request/);
+    });
+  });
+
+  const AUDIT_INDEX = /Index (Only )?Scan using (uq_audit_entry_request_seq|ix_audit_entry_tenant_request_seq)/;
+
+  it.each<{ name: string; read: (tx: TenantTx) => Promise<unknown>; pick: (text: string) => boolean; values: unknown[]; index: RegExp }>([
+    {
+      name: 'a request page',
+      read: (tx) => listRequests(tx, { pageIndex: 2, itemsPerPage: 10 }),
+      pick: (text) => text.endsWith('LIMIT $1 OFFSET $2'),
+      values: [10, 10],
+      index: /Index (Only )?Scan using ix_signature_request_tenant_created_request/,
+    },
+    {
+      name: 'an audit page',
+      read: (tx) => listAuditEntries(tx, CHAINED, { pageIndex: 1, itemsPerPage: 2 }),
+      pick: (text) => text.endsWith('OFFSET $3'),
+      values: [CHAINED, 2, 0],
+      index: AUDIT_INDEX,
+    },
+    {
+      name: 'an audit batch after the first',
+      read: (tx) => collect(auditChainBatches(tx, CHAINED, 1)),
+      pick: (text) => text.includes('"seq" > $2'),
+      values: [CHAINED, 1, 1],
+      index: AUDIT_INDEX,
+    },
+  ])('reads $name in index order without a sort', async ({ read, pick, values, index }) => {
+    await handle.app.withTenant(TENANT_A.tenantId, async (tx) => {
+      const seen: string[] = [];
+      await read(recording(tx, seen));
+      const text = seen.find(pick);
+      expect(text).toBeDefined();
+      const plan = await planOf(tx, text ?? '', values);
+      expect(plan).toMatch(index);
+      expect(plan).not.toMatch(/Sort/);
     });
   });
 
@@ -214,7 +322,7 @@ describe.skipIf(!(await pgAvailable()))('e-signature read queries', () => {
     }
     await Promise.all([first, second]);
     expect(events).toEqual(['first:locked', 'first:inserted', 'second:locked', 'second:inserted']);
-    const entries = await handle.app.withTenant(TENANT_A.tenantId, (tx) => listAuditEntries(tx, target));
+    const { rows: entries } = await handle.app.withTenant(TENANT_A.tenantId, (tx) => listAuditEntries(tx, target, { pageIndex: 1, itemsPerPage: 50 }));
     expect(entries.map((entry) => [entry.seq, entry.detail])).toEqual([
       [1, 'first'],
       [2, 'second'],
@@ -227,7 +335,8 @@ describe.skipIf(!(await pgAvailable()))('e-signature read queries', () => {
     await handle.app.withTenant(TENANT_B.tenantId, async (tx) => {
       expect(await findRequest(tx, SIGNED)).toBeNull();
       expect(await findSignature(tx, SIGNED)).toBeNull();
-      expect(await listAuditEntries(tx, CHAINED)).toEqual([]);
+      expect(await listAuditEntries(tx, CHAINED, { pageIndex: 1, itemsPerPage: 50 })).toEqual({ rows: [], total: 0 });
+      expect(await collect(auditChainBatches(tx, CHAINED))).toEqual([]);
       expect(await lastAuditEntry(tx, CHAINED)).toBeNull();
       expect(await lockRequest(tx, CHAINED)).toBeNull();
       const page = await listRequests(tx, { pageIndex: 1, itemsPerPage: 50 });
@@ -235,7 +344,8 @@ describe.skipIf(!(await pgAvailable()))('e-signature read queries', () => {
     });
     await handle.app.withTenant(TENANT_A.tenantId, async (tx) => {
       expect(await findRequest(tx, B_REQUEST)).toBeNull();
-      expect(await listAuditEntries(tx, B_REQUEST)).toEqual([]);
+      expect(await listAuditEntries(tx, B_REQUEST, { pageIndex: 1, itemsPerPage: 50 })).toEqual({ rows: [], total: 0 });
+      expect(await collect(auditChainBatches(tx, B_REQUEST))).toEqual([]);
     });
     await handle.app.withTenant(TENANT_UMBRELLA.tenantId, async (tx) => {
       expect(await listRequests(tx, { pageIndex: 1, itemsPerPage: 50 })).toEqual({ rows: [], total: 0 });
@@ -251,7 +361,8 @@ describe.skipIf(!(await pgAvailable()))('e-signature read queries', () => {
         (tx) => findRequest(tx, CHAINED),
         (tx) => listRequests(tx, { pageIndex: 1, itemsPerPage: 5 }),
         (tx) => findSignature(tx, SIGNED),
-        (tx) => listAuditEntries(tx, CHAINED),
+        (tx) => listAuditEntries(tx, CHAINED, { pageIndex: 1, itemsPerPage: 50 }),
+        (tx) => auditChainBatches(tx, CHAINED).next(),
         (tx) => lastAuditEntry(tx, CHAINED),
         (tx) => lockRequest(tx, CHAINED),
       ];
@@ -284,8 +395,8 @@ describe.skipIf(!(await pgAvailable()))('e-signature read queries', () => {
     const holderId = `window-${randomUUID()}`;
     await closeGates(handle.app, { units, holderId, phase: 'quiet', allowLegacy: true });
     try {
-      const entries = await withGatedTenant(handle.app, TENANT_A.tenantId, (tx) => listAuditEntries(tx, CHAINED), { budgetMs: 300 });
-      expect(entries).toHaveLength(3);
+      const page = await withGatedTenant(handle.app, TENANT_A.tenantId, (tx) => listAuditEntries(tx, CHAINED, { pageIndex: 1, itemsPerPage: 50 }), { budgetMs: 300 });
+      expect(page.rows).toHaveLength(3);
     } finally {
       await openGates(handle.app, { units, holderId, state: 'legacy' });
     }

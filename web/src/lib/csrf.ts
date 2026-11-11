@@ -15,7 +15,7 @@ export interface CsrfTokenOptions {
   readonly fresh?: boolean;
 }
 
-/** The CSRF token pairs of one admin request, issued by identity at most once per context. */
+/** The CSRF token pairs of one admin request, issued by identity and memoised per context unless `fresh` is requested. */
 export interface CsrfRenderer {
   /** The pair for `context`, issued on first use and memoised unless `fresh` is set. */
   tokens(context: string, options?: CsrfTokenOptions): Promise<CsrfTokens>;

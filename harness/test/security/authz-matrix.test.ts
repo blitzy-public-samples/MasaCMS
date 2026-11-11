@@ -142,6 +142,12 @@ function conformingObservations(expectations: readonly Expectation[]): Observati
   return expectations.map((expectation) => observe(expectation, expectation.status ?? 200));
 }
 
+/** `expectations` sorted by package, method, url and subject, the order the diff lists them in. */
+function inKeyOrder(expectations: readonly Expectation[]): Expectation[] {
+  const keyOf = (e: Expectation): string => `${e.package}|${e.method}|${e.url}|${e.subject}`;
+  return [...expectations].sort((a, b) => (keyOf(a) < keyOf(b) ? -1 : keyOf(a) > keyOf(b) ? 1 : 0));
+}
+
 /** `observations` with `target`'s request answered with `status`. */
 function answeredWith(observations: readonly Observation[], target: Expectation, status: number): Observation[] {
   return observations.map((observation) =>
@@ -698,13 +704,25 @@ describe('diffOutcomes', () => {
     expect(diffOutcomes(expectations, answeredWith(conforming, allowedAnonymous, status)).pass).toBe(true);
   });
 
-  it('lists expectations without an observation as missing, in key order, without failing', () => {
-    const observed = conforming.filter(
-      (o) => !(o.url === HEALTH_URL && o.subject === 'anonymous') && !(o.url === USERS_URL && o.subject === Roles.member),
-    );
-    const diff = diffOutcomes(expectations, observed);
-    expect(diff.pass).toBe(true);
-    expect(diff.missing).toEqual([allowedAnonymous, deniedMember]);
+  it.each<[string, Observation[], Expectation[]]>([
+    [
+      'two unobserved',
+      conforming.filter(
+        (o) =>
+          !(o.url === HEALTH_URL && o.subject === 'anonymous') && !(o.url === USERS_URL && o.subject === Roles.member),
+      ),
+      [allowedAnonymous, deniedMember],
+    ],
+    ['none observed', [], inKeyOrder(expectations)],
+  ])('fails and lists unobserved expectations as missing, in key order (%s)', (_case, observed, missing) => {
+    expect(diffOutcomes(expectations, observed)).toEqual({
+      unexpectedAllows: [],
+      unexpectedDenies: [],
+      statusMismatches: [],
+      missing,
+      unmatched: [],
+      pass: false,
+    });
   });
 
   it('fails on an allowed observation without an expectation and only records an unmatched deny', () => {

@@ -23,6 +23,7 @@ import {
   HASH_BYTES,
   canonicalAt,
   canonicalString,
+  chainVerifier,
   entryHash,
   hashFromHex,
   hashToHex,
@@ -30,7 +31,9 @@ import {
   roundAt,
   verifyChain,
   type ChainEntry,
+  type ChainSource,
   type NextEntry,
+  type VerifyResult,
 } from '../../src/domain/hash-chain.js';
 import { signatureRequestMapping } from '../../src/migration/mappings/signature-request.js';
 import { createEsignatureRepository, type EsignatureRepository, type NewSignatureRequest } from '../../src/repo/repository.js';
@@ -309,6 +312,67 @@ describe('verifyChain', () => {
   it('breaks a supplied copy at an entry whose at text SQL Server cannot convert', () => {
     const chain = suppliedChain().map((e) => (e.seq === 2 ? { ...e, at: '2026-02-30T00:00:00.000' } : e));
     expect(verifyChain(chain, 'supplied')).toEqual({ valid: false, entries: 3, brokenat: 2 });
+  });
+});
+
+describe('chainVerifier', () => {
+  /** A copy of `hash` with its first byte's low bit flipped. */
+  const flipped = (hash: Buffer): Buffer => {
+    const copy = Buffer.from(hash);
+    copy.writeUInt8(copy.readUInt8(0) ^ 0x01, 0);
+    return copy;
+  };
+  /** `items` cut into consecutive slices of `size`. */
+  const inBatches = <T>(items: readonly T[], size: number): T[][] =>
+    Array.from({ length: Math.ceil(items.length / size) }, (_, i) => items.slice(i * size, (i + 1) * size));
+
+  it.each<{ name: string; chain: () => ChainEntry[]; source: ChainSource; expected: VerifyResult }>([
+    { name: 'an intact stored chain', chain: storedChain, source: 'stored', expected: { valid: true, entries: 3, brokenat: 0 } },
+    { name: 'the empty chain', chain: () => [], source: 'stored', expected: { valid: true, entries: 0, brokenat: 0 } },
+    {
+      name: 'an entry_hash with one flipped bit',
+      chain: () => storedChain().map((e) => (e.seq === 2 ? { ...e, entry_hash: flipped(e.entry_hash) } : e)),
+      source: 'stored',
+      expected: { valid: false, entries: 3, brokenat: 2 },
+    },
+    {
+      name: 'a broken prev_hash link',
+      chain: () => storedChain().map((e) => (e.seq === 3 ? { ...e, prev_hash: flipped(e.prev_hash) } : e)),
+      source: 'stored',
+      expected: { valid: false, entries: 3, brokenat: 3 },
+    },
+    {
+      name: 'a wrong seq',
+      chain: () => storedChain().map((e) => (e.seq === 2 ? { ...e, seq: 4 } : e)),
+      source: 'stored',
+      expected: { valid: false, entries: 3, brokenat: 3 },
+    },
+    {
+      name: 'a first entry renumbered to seq 0',
+      chain: () => storedChain().map((e) => (e.seq === 1 ? { ...e, seq: 0 } : e)),
+      source: 'stored',
+      expected: { valid: false, entries: 3, brokenat: 0 },
+    },
+    { name: 'an intact supplied copy', chain: suppliedChain, source: 'supplied', expected: { valid: true, entries: 3, brokenat: 0 } },
+    {
+      name: 'a supplied copy out of order',
+      chain: () => {
+        const c = suppliedChain();
+        return [c[0], c[2], c[1]] as ChainEntry[];
+      },
+      source: 'supplied',
+      expected: { valid: false, entries: 3, brokenat: 3 },
+    },
+  ])('gives the verifyChain verdict on $name fed in batches of every size', ({ chain, source, expected }) => {
+    const entries = chain();
+    const pushed = source === 'stored' ? [...entries].sort((a, b) => a.seq - b.seq) : entries;
+    expect(verifyChain(entries, source)).toEqual(expected);
+    for (let size = 1; size <= Math.max(pushed.length, 1); size += 1) {
+      const verifier = chainVerifier(source);
+      verifier.push([]);
+      for (const batch of inBatches(pushed, size)) verifier.push(batch);
+      expect(verifier.result()).toEqual(expected);
+    }
   });
 });
 

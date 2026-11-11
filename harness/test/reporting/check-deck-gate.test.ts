@@ -1024,5 +1024,31 @@ describe('check-deck: Executive Presentation rule', () => {
       });
       expect(playwright.imports).toBe(0);
     });
+
+    it('--help prints the help text naming every flag, with no JSON line, exits 0 and never imports Playwright', async () => {
+      vi.resetModules();
+      vi.doMock('@playwright/test', () => {
+        playwright.imports += 1;
+        return {};
+      });
+      const { main } = await import('../../src/reporting/check-deck.js');
+      const { runCli } = await import('../../src/lib/cli.js');
+      const chunks: string[] = [];
+      const exits: number[] = [];
+      const code = await runCli(main, {
+        argv: ['--help'],
+        command: COMMAND,
+        stdout: { write: (chunk: string) => chunks.push(chunk) },
+        exit: (exitCode) => exits.push(exitCode),
+      });
+      const output = chunks.join('');
+      expect(code).toBe(0);
+      expect(exits).toEqual([0]);
+      expect(output.startsWith(`${USAGE} [--help]\n`)).toBe(true);
+      expect(output.endsWith('\n') && !output.endsWith('\n\n')).toBe(true);
+      for (const flag of ['--file <path>', '--render', '--help']) expect(output).toContain(`  ${flag}`);
+      expect(output).not.toContain(`"command":`);
+      expect(playwright.imports).toBe(0);
+    });
   });
 });

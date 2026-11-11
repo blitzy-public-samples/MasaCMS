@@ -270,7 +270,7 @@ describe('carchViewState', () => {
       perm: 'editor',
       deletable: true,
       siteAdminOrS2: true,
-      s2IsPrivate: false,
+      s2IsPrivate: true,
     });
   });
 

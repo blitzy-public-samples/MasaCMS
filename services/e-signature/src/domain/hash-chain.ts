@@ -140,28 +140,53 @@ export interface VerifyResult {
   brokenat: number;
 }
 
+/** A chain recomputation fed in batches; entries are checked in the order pushed, so a stored chain is pushed in `seq` order. */
+export interface ChainVerifier {
+  /** Checks `entries` as the chain's next entries. */
+  push(entries: readonly ChainEntry[]): void;
+  /** The verdict over every entry pushed so far. */
+  result(): VerifyResult;
+}
+
+/** A verifier applying `verifyChain`'s rule entry by entry; after the first break it only counts entries. */
+export function chainVerifier(source: ChainSource = 'stored'): ChainVerifier {
+  let previous = GENESIS_PREV_HASH;
+  let count = 0;
+  let broken: number | null = null;
+  return {
+    push(entries) {
+      for (const entry of entries) {
+        count += 1;
+        if (broken !== null) continue;
+        const canonical = canonicalString(
+          {
+            requestId: entry.request_id,
+            seq: entry.seq,
+            action: entry.action,
+            actorUserId: entry.actor_user_id,
+            detail: entry.detail,
+            at: entry.at,
+          },
+          source,
+        );
+        if (entry.seq !== count || !entry.prev_hash.equals(previous) || !entry.entry_hash.equals(entryHash(entry.prev_hash, canonical))) {
+          broken = entry.seq;
+        } else {
+          previous = entry.entry_hash;
+        }
+      }
+    },
+    result() {
+      return broken === null ? { valid: true, entries: count, brokenat: 0 } : { valid: false, entries: count, brokenat: broken };
+    },
+  };
+}
+
 /** Recomputes a chain as the fixture verify route does: an entry breaks on its position, its link to the previous `entry_hash`, or its own hash. */
 export function verifyChain(entries: readonly ChainEntry[], source: ChainSource = 'stored'): VerifyResult {
-  const chain = source === 'stored' ? [...entries].sort((a, b) => a.seq - b.seq) : entries;
-  let previous = GENESIS_PREV_HASH;
-  for (const [index, entry] of chain.entries()) {
-    const canonical = canonicalString(
-      {
-        requestId: entry.request_id,
-        seq: entry.seq,
-        action: entry.action,
-        actorUserId: entry.actor_user_id,
-        detail: entry.detail,
-        at: entry.at,
-      },
-      source,
-    );
-    if (entry.seq !== index + 1 || !entry.prev_hash.equals(previous) || !entry.entry_hash.equals(entryHash(entry.prev_hash, canonical))) {
-      return { valid: false, entries: chain.length, brokenat: entry.seq };
-    }
-    previous = entry.entry_hash;
-  }
-  return { valid: true, entries: chain.length, brokenat: 0 };
+  const verifier = chainVerifier(source);
+  verifier.push(source === 'stored' ? [...entries].sort((a, b) => a.seq - b.seq) : entries);
+  return verifier.result();
 }
 
 /** Hex text of a hash; the fixture emits lowercase everywhere. */

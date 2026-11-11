@@ -87,14 +87,14 @@ function lowerCased(headers: Readonly<Record<string, string>> = {}): Record<stri
   return Object.fromEntries(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]));
 }
 
-/** Fields in order, a repeated name collected into an array. */
+/** Fields in order as own properties, `__proto__` included; a repeated name collected into an array. */
 function fields(params: URLSearchParams): Record<string, string | string[]> {
-  const result: Record<string, string | string[]> = {};
+  const result = new Map<string, string | string[]>();
   for (const [name, value] of params) {
-    const previous = result[name];
-    result[name] = previous === undefined ? value : [previous, value].flat();
+    const previous = result.get(name);
+    result.set(name, previous === undefined ? value : [previous, value].flat());
   }
-  return result;
+  return Object.fromEntries(result);
 }
 
 function mediaType(contentType: string | string[] | undefined): string {

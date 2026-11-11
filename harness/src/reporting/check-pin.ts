@@ -88,8 +88,34 @@ export const DELIVERABLE_PATTERNS: readonly { readonly glob: string; readonly re
  */
 export const FORBIDDEN_TRACKED_PREFIXES: readonly string[] = ['themes/default/', 'blitzy/'];
 
+/** The `sites/<siteid>/` folder a path lies under. */
+const SITE_FOLDER = /^sites\/[^/]+\//;
+
 const PIN_RELATIVE_PATH = 'opt2/source-pin.json';
 const USAGE = 'check-pin [--confirm] [--root <dir>]';
+const HELP = `${USAGE} [--help]
+
+Confirms the source pin, or checks that every deliverable added since the pin carries the pinned SHA.
+
+Options:
+  --confirm     confirm the pin instead: the pinned commit exists, its subject matches the pin record, and no file
+                tracked at the pin is deleted, modified, renamed or type-changed (default: check deliverables)
+  --root <dir>  checkout to check, resolved against the working directory (default: the repository root)
+  --help        print this help and exit 0
+
+Deliverables: the files not tracked at the pin that match ${DELIVERABLE_PATTERNS.map(({ glob }) => glob).join(', ')}.
+Each must carry the SHA recorded in <root>/${PIN_RELATIVE_PATH}.
+Runtime folders are not deliverables: nothing under ${FORBIDDEN_TRACKED_PREFIXES.join(' or ')} may be tracked, and untracked
+files under a sites/<siteid>/ folder absent at the pin (a site Masa creates at runtime) are skipped.
+
+Requires: git on PATH, and a checkout at <root> that holds the pinned commit and ${PIN_RELATIVE_PATH}.
+
+Output: one JSON summary line on stdout. Exit: 0 no findings, 1 any finding or failure, 2 usage error.
+
+Examples (from harness/):
+  npm run check:pin
+  npm run check:pin -- --confirm
+  npm run --silent check:pin -- --root /path/to/other-checkout`;
 const BINARY_SNIFF_LENGTH = 8192;
 
 const HEX40 = /^[0-9a-fA-F]{40}$/;
@@ -104,6 +130,12 @@ export function isDeliverable(relPath: string): boolean {
 
 function isForbidden(relPath: string): boolean {
   return FORBIDDEN_TRACKED_PREFIXES.some((prefix) => relPath.startsWith(prefix));
+}
+
+/** Whether `relPath` lies under a `sites/<siteid>/` folder absent from `pinnedSites`: a site Masa creates at runtime. */
+export function isRuntimeSitePath(relPath: string, pinnedSites: ReadonlySet<string>): boolean {
+  const folder = SITE_FOLDER.exec(relPath)?.[0];
+  return folder !== undefined && !pinnedSites.has(folder);
 }
 
 /** Form implied by `relPath` alone; {@link extractSha} refines `yaml` to `openapi` when the document has an `openapi` key. */
@@ -238,7 +270,7 @@ export async function confirmPin(deps: PinDeps = {}): Promise<ConfirmResult> {
   return { mode: 'confirm', sha: pin.sha, subject: pin.subject, ok: findings.length === 0, findings };
 }
 
-/** Checks every deliverable for the pinned SHA, and that no forbidden path is tracked. */
+/** Checks every deliverable for the pinned SHA, skipping untracked files of Masa runtime sites, and that no forbidden path is tracked. */
 export async function checkDeliverables(deps: PinDeps = {}): Promise<DeliverablesResult> {
   const { root, git, pin } = resolveDeps(deps);
   const [listed, atPin, tracked] = await Promise.all([
@@ -252,8 +284,16 @@ export async function checkDeliverables(deps: PinDeps = {}): Promise<Deliverable
     .map((forbidden): PinFinding => ({ kind: 'forbidden-tracked', path: forbidden }));
 
   const pinned = new Set(atPin);
+  const pinnedSites = new Set(atPin.flatMap((relPath) => SITE_FOLDER.exec(relPath)?.[0] ?? []));
+  const trackedNow = new Set(tracked);
   const deliverables = [...new Set(listed)]
-    .filter((relPath) => !pinned.has(relPath) && !isForbidden(relPath) && isDeliverable(relPath))
+    .filter(
+      (relPath) =>
+        !pinned.has(relPath) &&
+        !isForbidden(relPath) &&
+        (trackedNow.has(relPath) || !isRuntimeSitePath(relPath, pinnedSites)) &&
+        isDeliverable(relPath),
+    )
     .sort();
 
   let checked = 0;
@@ -278,6 +318,7 @@ export async function main(argv: string[], deps: PinDeps = {}): Promise<CliOutco
   const { values } = parseFlags(argv, {
     options: { confirm: { type: 'boolean' }, root: { type: 'string' } },
     usage: USAGE,
+    help: HELP,
   });
   if (values.root === '') throw new UsageError('--root needs a directory', USAGE);
   const root = values.root === undefined ? (deps.root ?? REPO_ROOT) : path.resolve(values.root);

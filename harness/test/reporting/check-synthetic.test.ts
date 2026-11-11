@@ -84,7 +84,11 @@ const LABELLED_TREE_ROOTS_MISSING = [
   'services/e-signature',
   'web/app/opt2',
 ];
-const NOTHING_CHECKED: Record<FileClass, number> = { labelled: 0, readme: 0, exempt: 0 };
+
+/** Message checkSynthetic rejects with when no synthetic root under `dir` holds a file. */
+function nothingCheckedMessage(dir: string): string {
+  return `no file checked under '${dir}': none of ${ALL_ROOTS.join(', ')} holds a file`;
+}
 
 let root: string;
 
@@ -270,13 +274,16 @@ describe('checkSynthetic', () => {
     } satisfies SyntheticCheckResult);
   });
 
-  it('passes a tree holding every root with nothing in them, listing no root as missing', async () => {
-    for (const synthetic of ALL_ROOTS) await mkdir(path.join(root, synthetic), { recursive: true });
-    await expect(checkSynthetic({ root })).resolves.toEqual({
-      ok: true,
-      checked: NOTHING_CHECKED,
-      rootsMissing: [],
-      findings: [],
+  it.each<[string, string[]]>([
+    ['an empty root', []],
+    ['every synthetic root present and empty', ALL_ROOTS],
+    ['empty services/finance and legacy-fixtures roots', ['services/finance', 'legacy-fixtures']],
+  ])('rejects, not passes, when no file is checked under %s', async (_label, dirs) => {
+    for (const synthetic of dirs) await mkdir(path.join(root, synthetic), { recursive: true });
+    await expect(checkSynthetic({ root })).rejects.toMatchObject({
+      code: 'ENOENT',
+      path: root,
+      message: nothingCheckedMessage(root),
     });
   });
 
@@ -321,8 +328,7 @@ describe('checkSynthetic', () => {
     async (dir) => {
       await write(`services/finance/${dir}/nested/unlabelled.ts`, 'export {};\n');
       await write(`web/app/opt2/finance/${dir}/README.md`, '# Generated\n');
-      const result = await checkSynthetic({ root });
-      expect(result).toMatchObject({ ok: true, checked: NOTHING_CHECKED, findings: [] });
+      await expect(checkSynthetic({ root })).rejects.toThrow(nothingCheckedMessage(root));
     },
   );
 
@@ -363,12 +369,7 @@ describe('checkSynthetic', () => {
       'harness/src/tool.ts': 'export {};\n',
       'platform/src/index.ts': 'export {};\n',
     });
-    await expect(checkSynthetic({ root })).resolves.toEqual({
-      ok: true,
-      checked: NOTHING_CHECKED,
-      rootsMissing: ALL_ROOTS,
-      findings: [],
-    });
+    await expect(checkSynthetic({ root })).rejects.toThrow(nothingCheckedMessage(root));
   });
 
   it('follows no symbolic link to a file or directory', async () => {
@@ -377,11 +378,7 @@ describe('checkSynthetic', () => {
     await mkdir(path.join(root, 'services/finance/src'), { recursive: true });
     await symlink(outsideFile, path.join(root, 'services/finance/src/linked.ts'));
     await symlink(path.join(root, 'elsewhere/nested'), path.join(root, 'services/finance/linked-dir'));
-    await expect(checkSynthetic({ root })).resolves.toMatchObject({
-      ok: true,
-      checked: NOTHING_CHECKED,
-      findings: [],
-    });
+    await expect(checkSynthetic({ root })).rejects.toThrow(nothingCheckedMessage(root));
   });
 
   it('rejects when the root is a file rather than a directory', async () => {
@@ -467,6 +464,25 @@ describe('main through runCli', () => {
     });
   });
 
+  it('--help prints the help text naming every flag and synthetic root, with no JSON line, and exits 0', async () => {
+    const chunks: string[] = [];
+    const exits: number[] = [];
+    const code = await runCli(main, {
+      argv: ['--help'],
+      command: COMMAND,
+      stdout: { write: (chunk: string) => chunks.push(chunk) },
+      exit: (exitCode) => exits.push(exitCode),
+    });
+    const output = chunks.join('');
+    expect(code).toBe(0);
+    expect(exits).toEqual([0]);
+    expect(output.startsWith(`${USAGE} [--help]\n`)).toBe(true);
+    expect(output.endsWith('\n') && !output.endsWith('\n\n')).toBe(true);
+    for (const flag of ['--root <dir>', '--help']) expect(output).toContain(`  ${flag}`);
+    for (const syntheticRoot of SYNTHETIC_ROOTS) expect(output).toContain(`  ${syntheticRoot}\n`);
+    expect(output).not.toContain(`"command":`);
+  });
+
   it('main throws a UsageError carrying the usage text for an empty --root', async () => {
     const failure = main(['--root=']);
     await expect(failure).rejects.toBeInstanceOf(UsageError);
@@ -495,6 +511,16 @@ describe('main through runCli', () => {
     expect(run.output.split('\n')).toHaveLength(2);
     expect(run.line).toEqual({ command: COMMAND, ok: false, code: 1, error: { type: 'Error', message: expect.stringContaining('ENOENT') } });
     expect(String((run.line['error'] as { message: unknown }).message)).toContain(path.join(root, 'typo'));
+    expect(stderr).toHaveBeenCalled();
+  });
+
+  it('exits 1 with the nothing-checked error in the summary line, not a pass, for an empty --root', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const run = await runCheck(['--root', root]);
+    expect(run.code).toBe(1);
+    expect(run.exits).toEqual([1]);
+    expect(run.output.split('\n')).toHaveLength(2);
+    expect(run.line).toEqual({ command: COMMAND, ok: false, code: 1, error: { type: 'Error', message: nothingCheckedMessage(root) } });
     expect(stderr).toHaveBeenCalled();
   });
 });

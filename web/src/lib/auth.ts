@@ -18,7 +18,7 @@ import { webEnv } from './env';
 /** The only workload allowed to invoke web. */
 export const GATEWAY_CALLER = 'gateway';
 
-/** Identities verified for one web request; `user` and `userToken` are absent for anonymous requests. */
+/** Identities verified for one web request; `user`/`userToken` absent without a user token, `user.sub` empty for an anonymous session. */
 export interface WebAuth {
   readonly caller: ServiceIdentity;
   readonly user?: UserClaims;
@@ -123,7 +123,7 @@ export async function authenticateRequest(headers: Headers, path: string): Promi
   return { caller, user, userToken };
 }
 
-/** Whether the request carries a verified user. */
+/** Whether a verified user token is present, an anonymous session's (empty `sub`) included; not "logged in". */
 export function isAuthenticated(
   auth: WebAuth,
 ): auth is WebAuth & { readonly user: UserClaims; readonly userToken: string } {

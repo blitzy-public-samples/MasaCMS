@@ -620,6 +620,51 @@ describe('checkDeliverables', () => {
     expect(reads()).toEqual(['themes/other/README.md']);
   });
 
+  const SITES_AT_PIN = ['sites/Application.cfc', 'sites/default/modules/README.md'];
+
+  it('skips, without reading, untracked files of a sites/<siteid>/ folder that holds no path at the pin', async () => {
+    const runtime = [
+      'sites/tenant-b/modules/README.md',
+      'sites/tenant-b/themes/README.md',
+      'sites/umbrella/themes/README.md',
+    ];
+    await writeTree(Object.fromEntries(runtime.map((relPath) => [relPath, '# Masa site folder\n'])));
+    const { run } = fakeRunner(
+      listingReplies({ listed: [...SITES_AT_PIN, ...runtime], atPin: SITES_AT_PIN, tracked: SITES_AT_PIN }),
+    );
+    const reads = spyReads();
+    await expect(checkDeliverables({ root, git: { run } })).resolves.toEqual({
+      mode: 'deliverables',
+      sha: SHA,
+      checked: 0,
+      ok: true,
+      findings: [],
+    });
+    expect(reads()).toEqual([]);
+  });
+
+  it.each<{ label: string; relPath: string; tracked: boolean }>([
+    { label: 'a tracked file of a site folder absent at the pin', relPath: 'sites/tenant-b/notes.md', tracked: true },
+    { label: 'an untracked file of a site folder present at the pin', relPath: 'sites/default/new.md', tracked: false },
+    { label: 'an untracked file directly under sites/', relPath: 'sites/notes.md', tracked: false },
+  ])('still checks $label', async ({ relPath, tracked }) => {
+    await write(relPath, '# Notes\n');
+    const { run } = fakeRunner(
+      listingReplies({
+        listed: [...SITES_AT_PIN, relPath],
+        atPin: SITES_AT_PIN,
+        tracked: tracked ? [...SITES_AT_PIN, relPath] : SITES_AT_PIN,
+      }),
+    );
+    await expect(checkDeliverables({ root, git: { run } })).resolves.toEqual({
+      mode: 'deliverables',
+      sha: SHA,
+      checked: 1,
+      ok: false,
+      findings: [{ kind: 'missing', path: relPath, form: 'markdown' }],
+    });
+  });
+
   it.each<{ state: string; directory: boolean; relPath: string; finding: PinFinding }>([
     {
       state: 'no longer on disk',
@@ -780,6 +825,26 @@ describe('main through runCli', () => {
       error: { type: 'UsageError', message: expect.stringContaining(message) },
       usage: USAGE,
     });
+    expect(calls).toEqual([]);
+  });
+
+  it('--help prints the help text naming every flag, with no JSON line, exits 0 and runs no git', async () => {
+    const { run, calls } = fakeRunner({});
+    const chunks: string[] = [];
+    const exits: number[] = [];
+    const code = await runCli((args) => main(args, { root, git: { run } }), {
+      argv: ['--help'],
+      command: COMMAND,
+      stdout: { write: (chunk: string) => chunks.push(chunk) },
+      exit: (exitCode) => exits.push(exitCode),
+    });
+    const output = chunks.join('');
+    expect(code).toBe(0);
+    expect(exits).toEqual([0]);
+    expect(output.startsWith(`${USAGE} [--help]\n`)).toBe(true);
+    expect(output.endsWith('\n') && !output.endsWith('\n\n')).toBe(true);
+    for (const flag of ['--confirm', '--root <dir>', '--help']) expect(output).toContain(`  ${flag}`);
+    expect(output).not.toContain(`"command":`);
     expect(calls).toEqual([]);
   });
 

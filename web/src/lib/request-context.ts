@@ -466,7 +466,7 @@ function pathInfoOf(path: string): string[] {
 }
 
 /** Path info, URL scope and form scope of the legacy request the gateway forwarded. */
-function requestScopes({ headers, searchParams, form }: AdminRequestInput): {
+export function requestScopes({ headers, searchParams, form }: AdminRequestInput): {
   pathInfo: string[];
   url: Pairs;
   form: Pairs;

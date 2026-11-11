@@ -314,7 +314,7 @@ export interface MatrixFinding {
   observation: Observation;
 }
 
-/** Comparison of expected and observed outcomes; `pass` is false exactly when something was allowed unexpectedly. */
+/** Comparison of expected and observed outcomes; `pass` is false on an unexpected allow or unobserved expectation. */
 export interface MatrixDiff {
   unexpectedAllows: MatrixFinding[];
   unexpectedDenies: MatrixFinding[];
@@ -367,12 +367,13 @@ export function diffOutcomes(expected: readonly Expectation[], observed: readonl
     }
   }
   const findingOrder = byKey((finding: MatrixFinding) => outcomeKey(finding.observation));
+  const missing = expected.filter((expectation) => !seen.has(outcomeKey(expectation))).sort(byKey(outcomeKey));
   return {
     unexpectedAllows: unexpectedAllows.sort(findingOrder),
     unexpectedDenies: unexpectedDenies.sort(findingOrder),
     statusMismatches: statusMismatches.sort(findingOrder),
-    missing: expected.filter((expectation) => !seen.has(outcomeKey(expectation))).sort(byKey(outcomeKey)),
+    missing,
     unmatched: unmatched.sort(byKey(outcomeKey)),
-    pass: unexpectedAllows.length === 0,
+    pass: unexpectedAllows.length === 0 && missing.length === 0,
   };
 }

@@ -163,6 +163,7 @@ ALTER TABLE esignature.signature_request ENABLE ROW LEVEL SECURITY; ALTER TABLE 
 CREATE POLICY tenant_isolation ON esignature.signature_request
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+CREATE INDEX ix_signature_request_tenant_created_request ON esignature.signature_request (tenant_id, created, request_id COLLATE "C");
 
 CREATE TABLE esignature.signature (
   tenant_id uuid NOT NULL,

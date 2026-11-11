@@ -7,7 +7,16 @@ import { parseArgs } from 'node:util';
 import { REDACTED } from '@opt2/platform/logging';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse as parseYaml } from 'yaml';
-import { UsageError, isMainModule, parseFlags, runCli, type CliIo, type CliMain, type CliOutcome } from '../../src/lib/cli.js';
+import {
+  HelpRequest,
+  UsageError,
+  isMainModule,
+  parseFlags,
+  runCli,
+  type CliIo,
+  type CliMain,
+  type CliOutcome,
+} from '../../src/lib/cli.js';
 import { UNEXPECTED_TOKEN } from '../../src/lib/diagnostics.js';
 import { REPO_ROOT } from '../../src/lib/paths.js';
 
@@ -422,6 +431,50 @@ describe('runCli', () => {
     });
   });
 
+  describe('help', () => {
+    it.each([
+      ['without a trailing newline', 'usage: example\n\nDoes things.'],
+      ['with trailing newlines', 'usage: example\n\nDoes things.\n\n'],
+    ])('writes exactly the --help text %s, ending in one newline, with no JSON line, and exits 0', async (_label, help) => {
+      const chunks: string[] = [];
+      const exits: number[] = [];
+      const main: CliMain = (argv) => {
+        parseFlags(argv, { options: OPTIONS, usage: USAGE, help });
+      };
+      const code = await runCli(main, {
+        argv: ['--help'],
+        command: COMMAND,
+        stdout: { write: (chunk: string) => chunks.push(chunk) },
+        exit: (exitCode) => exits.push(exitCode),
+      });
+      expect(code).toBe(0);
+      expect(exits).toEqual([0]);
+      expect(chunks).toEqual(['usage: example\n\nDoes things.\n']);
+      expect(stderr).not.toHaveBeenCalled();
+    });
+
+    it('waits for a Writable stdout to flush the help text before calling exit', async () => {
+      const events: string[] = [];
+      const stdout = new Writable({
+        write(chunk: Buffer, _encoding, callback) {
+          events.push(`write:${chunk.toString()}`);
+          setImmediate(() => {
+            events.push('flushed');
+            callback();
+          });
+        },
+      });
+      const code = await runCli(
+        () => {
+          throw new HelpRequest('usage: example');
+        },
+        { argv: [], command: COMMAND, stdout, exit: (exitCode) => events.push(`exit:${exitCode}`) },
+      );
+      expect(code).toBe(0);
+      expect(events).toEqual(['write:usage: example\n', 'flushed', 'exit:0']);
+    });
+  });
+
   describe('command name', () => {
     it.each([
       ['a script under the checkout', path.join(REPO_ROOT, 'harness', 'src', 'repro', 'ports.ts'), 'harness/src/repro/ports.ts'],
@@ -494,6 +547,44 @@ describe('parseFlags', () => {
     const err = thrown(() => parseFlags(['--unknown'], { options: OPTIONS }));
     expect(err).toBeInstanceOf(UsageError);
     expect(err.usage).toBeUndefined();
+  });
+
+  describe('--help', () => {
+    const HELP = `${USAGE}\n\nDoes things.`;
+
+    it.each([[['--help']], [['--name', 'alpha', '--help', '-v']], [['--help', '--help']]])(
+      'throws a HelpRequest carrying spec.help for %j when the spec has help text',
+      (argv) => {
+        const err = thrown(() => parseFlags(argv, { options: OPTIONS, usage: USAGE, help: HELP }));
+        expect(err).toBeInstanceOf(HelpRequest);
+        expect(err.name).toBe('HelpRequest');
+        expect((err as unknown as HelpRequest).text).toBe(HELP);
+      },
+    );
+
+    it('keeps --help an unknown option, a UsageError, when the spec has no help text', () => {
+      const native = thrown(() => parseArgs({ args: ['--help'], options: OPTIONS, strict: true, allowPositionals: false }));
+      const err = thrown(() => parseFlags(['--help'], { options: OPTIONS, usage: USAGE }));
+      expect(err).toBeInstanceOf(UsageError);
+      expect(err.message).toBe(native.message);
+      expect(err.usage).toBe(USAGE);
+    });
+
+    it.each([
+      ['an unknown option', ['--help', '--bogus']],
+      ['a value for --help', ['--help=yes']],
+      ['a negated --help', ['--no-help']],
+    ])('throws a UsageError, not a HelpRequest, for %s when the spec has help text', (_label, argv) => {
+      const err = thrown(() => parseFlags(argv, { options: OPTIONS, usage: USAGE, help: HELP }));
+      expect(err).toBeInstanceOf(UsageError);
+      expect(err.usage).toBe(USAGE);
+    });
+
+    it('returns the values without a help key when the spec has help text and --help is absent', () => {
+      const parsed = parseFlags(['--name', 'alpha'], { options: OPTIONS, usage: USAGE, help: HELP });
+      expect({ ...parsed.values }).toEqual({ name: 'alpha' });
+      expect(parsed.positionals).toEqual([]);
+    });
   });
 
   it.each<[string, () => unknown, string]>([

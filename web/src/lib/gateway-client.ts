@@ -48,7 +48,7 @@ const UNAVAILABLE_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
 
 /** Per-request facts every call carries. */
 export interface GatewayCallContext {
-  /** Raw bearer user token exactly as the gateway attached it; absent for anonymous requests. */
+  /** Raw bearer user token exactly as the gateway attached it, an anonymous session's included; absent without one. */
   readonly userToken?: string;
   readonly requestId: string;
   /** Inbound request headers; their `traceparent`/`tracestate` continue the trace when no span is active. */

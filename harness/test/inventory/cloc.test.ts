@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -24,7 +24,7 @@ import {
   type ClocRunner,
 } from '../../src/inventory/cloc.js';
 import type { ClocResult } from '../../src/inventory/cloc.js';
-import { UsageError } from '../../src/lib/cli.js';
+import { UsageError, runCli } from '../../src/lib/cli.js';
 import { REPO_ROOT } from '../../src/lib/paths.js';
 import { readPin } from '../../src/lib/pin.js';
 
@@ -379,5 +379,26 @@ describe('generateCloc', () => {
 describe('main', () => {
   it.each([[['--out', '']], [['--unknown']]])('rejects %j as usage', async (argv) => {
     await expect(main(argv)).rejects.toBeInstanceOf(UsageError);
+  });
+
+  it('--help prints the help text naming every flag, with no JSON line, exits 0 and writes no report', async () => {
+    const report = path.join(REPO_ROOT, 'opt2', 'inventory', 'cloc.json');
+    const before = (await stat(report)).mtimeMs;
+    const chunks: string[] = [];
+    const exits: number[] = [];
+    const code = await runCli(main, {
+      argv: ['--help'],
+      command: 'harness/src/inventory/cloc.ts',
+      stdout: { write: (chunk: string) => chunks.push(chunk) },
+      exit: (exitCode) => exits.push(exitCode),
+    });
+    const output = chunks.join('');
+    expect(code).toBe(0);
+    expect(exits).toEqual([0]);
+    expect(output.startsWith('cloc [--out <dir>] [--help]\n')).toBe(true);
+    expect(output.endsWith('\n') && !output.endsWith('\n\n')).toBe(true);
+    for (const flag of ['--out <dir>', '--help']) expect(output).toContain(`  ${flag}`);
+    expect(output).not.toContain(`"command":`);
+    expect((await stat(report)).mtimeMs).toBe(before);
   });
 });
