@@ -320,7 +320,7 @@ export const TRASH: ProgramsSitesTableDefinition<'programs_sites.trash'> = {
   unit: 'programs_sites.trash',
 };
 
-/** `programs_sites.sitemonitor_state`, the site-monitor cursor; no unit, so it is never migrated, projected or gated. */
+/** `programs_sites.sitemonitor_state`, the site-monitor cursor and run lease; no unit, so it is never migrated, projected or gated. */
 export const SITE_MONITOR_STATE: TableDefinition = {
   table: 'sitemonitor_state',
   columns: [
@@ -328,6 +328,8 @@ export const SITE_MONITOR_STATE: TableDefinition = {
     { name: 'id', type: 'i' },
     { name: 'last_monitored', type: 't' },
     { name: 'updated_at', type: 't' },
+    { name: 'lease_id', type: 's' },
+    { name: 'lease_until', type: 't' },
   ],
   key: ['id'],
 };

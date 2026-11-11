@@ -32,17 +32,19 @@ const TARGET_ONLY: Readonly<Record<string, readonly string[]>> = { group_account
 const CREATE_TABLE = /^CREATE TABLE (\w+)\.(\w+) \(\n([\s\S]*?)\n\);/gm;
 const COLUMN = /^"?([a-z_0-9]+)"? (.+?)(?= NOT NULL| NULL| DEFAULT | PRIMARY KEY| UNIQUE| CHECK | GENERATED |$)/;
 const CONSTRAINT = /^(PRIMARY KEY|UNIQUE) /;
+const ADD_COLUMN = /^ALTER TABLE (\w+)\.(\w+) ADD COLUMN (.+);$/gm;
 
 /** Canonical tag of a migration column type; xid8 is carried as its decimal text. */
 function canonicalTag(type: string): string {
   return type === 'xid8' ? 's' : canonicalTypeForPostgres(type).type;
 }
 
-/** Every `CREATE TABLE` of the service-table migrations (0002 onwards), keyed `<schema>.<table>`, with file, columns and primary key. */
+/** Every `CREATE TABLE` of the service-table migrations (0002 onwards), keyed `<schema>.<table>`, with file, columns (later `ADD COLUMN`s appended) and primary key. */
 function migrationTables(): Map<string, DdlTable> {
   const tables = new Map<string, DdlTable>();
   for (const file of readdirSync(MIGRATIONS).filter((name) => /^\d{4}_\w+\.sql$/.test(name) && !name.startsWith('0001_')).sort()) {
-    for (const [, schema, table, body] of readFileSync(new URL(file, MIGRATIONS), 'utf8').matchAll(CREATE_TABLE)) {
+    const sql = readFileSync(new URL(file, MIGRATIONS), 'utf8');
+    for (const [, schema, table, body] of sql.matchAll(CREATE_TABLE)) {
       const lines = (body as string)
         .split('\n')
         .map((line) => line.trim().replace(/,$/, ''))
@@ -57,6 +59,10 @@ function migrationTables(): Map<string, DdlTable> {
         columns,
         primaryKey: primaryKey === undefined ? [] : primaryKey.split(',').map((column) => column.trim()),
       });
+    }
+    for (const [, schema, table, definition] of sql.matchAll(ADD_COLUMN)) {
+      const m = COLUMN.exec(definition as string);
+      if (m !== null) tables.get(`${schema as string}.${table as string}`)?.columns.push({ name: m[1] as string, type: m[2] as string });
     }
   }
   return tables;
@@ -147,6 +153,7 @@ describe('identity tables', () => {
       created_at: now,
       updated_at: now,
       ended_at: null,
+      admin_state: null,
     };
     expect(Object.keys(row)).toEqual(SESSION.columns.map((column) => column.name));
   });

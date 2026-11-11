@@ -58,8 +58,8 @@ function siteBeanOf(site: SiteData): SiteBean {
   };
 }
 
-// programs-sites serves site data to S2 users and site admins only; for other users the session site is taken to be
-// served on the request host with its own pools and no theme, since its row cannot be read.
+// programs-sites serves site data to private admin users for their token's site only; otherwise the session site is
+// taken to be served on the request host with its own pools and no theme, since its row cannot be read.
 /** The session site's bean when no site data was served for it. */
 function unreadSiteBean(ctx: AdminRequest): SiteBean {
   const siteId = ctx.session.siteid !== '' ? ctx.session.siteid : 'default';

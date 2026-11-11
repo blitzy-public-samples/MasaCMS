@@ -16,6 +16,7 @@ import {
   listRecords,
   listRollups,
   listVersions,
+  periodTotals,
 } from '../../src/repo/queries.js';
 import { FINANCE_ATTACHMENT, FINANCE_RECORD, UNITS } from '../../src/repo/tables.js';
 
@@ -167,6 +168,16 @@ describe.skipIf(!(await pgAvailable()))('finance read queries', () => {
     await handle.app.withTenant(TENANT_B.tenantId, async (tx) => {
       expect(await findRecord(tx, RECORD_WITH_CHILDREN)).toBeNull();
       expect(await findProgramBinding(tx)).toMatchObject({ site_id: TENANT_B.siteId, legacy_program_id: 2 });
+    });
+  });
+
+  it('totals one program period of the tenant, without the excluded record', async () => {
+    await handle.app.withTenant(TENANT_A.tenantId, async (tx) => {
+      expect(await periodTotals(tx, { programId: 1, period: '2026-06' })).toEqual({ positive: 61725000n, negative: 0n });
+      expect(await periodTotals(tx, { programId: 1, period: '2026-06', excludeRecordId: RECORD_WITH_CHILDREN })).toEqual({ positive: 49380000n, negative: 0n });
+      expect(await periodTotals(tx, { programId: 1, period: '2026-07' })).toEqual({ positive: 0n, negative: 0n });
+      // Tenant B's program-2 record stays hidden.
+      expect(await periodTotals(tx, { programId: 2, period: '2026-06' })).toEqual({ positive: 0n, negative: 0n });
     });
   });
 

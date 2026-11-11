@@ -1496,23 +1496,9 @@ components:
       examples:
         - '1250.5000'
     MoneyInput:
-      description: An amount of at most 15 integer digits and 4 decimals. A fractional JSON number must be below 10^12 in magnitude and, below 10^7, a multiple of 0.0001; ACF rounds numbers to 12 significant digits before the check.
-      anyOf:
-        - type: string
-          pattern: '^-?[0-9]{1,15}(\.[0-9]{1,4})?$'
-        - type: integer
-          minimum: -999999999999999
-          maximum: 999999999999999
-        - type: number
-          exclusiveMinimum: -10000000
-          exclusiveMaximum: 10000000
-          multipleOf: 0.0001
-        - type: number
-          minimum: 10000000
-          exclusiveMaximum: 1000000000000
-        - type: number
-          exclusiveMinimum: -1000000000000
-          maximum: -10000000
+      type: string
+      description: Amount text of at most 15 integer digits and 4 decimals; surrounding U+0000 to U+0020 are trimmed as ColdFusion trim() does.
+      pattern: '^[\u0000-\u0020]*-?[0-9]{1,15}(\.[0-9]{1,4})?[\u0000-\u0020]*$'
     Period:
       type: string
       description: Accounting month `YYYY-MM`.

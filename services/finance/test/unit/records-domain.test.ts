@@ -21,7 +21,7 @@ import {
   type RecordInput,
 } from '../../src/domain/records.js';
 import { createFinanceRepository } from '../../src/repo/repository.js';
-import { UNITS } from '../../src/repo/tables.js';
+import { UNITS, type FinanceRecordRow } from '../../src/repo/tables.js';
 
 const NOW = new Date(2026, 5, 30, 10, 0, 0, 0);
 const PREPARER = ['finance.preparer'];
@@ -32,6 +32,8 @@ const SITE_B = 'records-b';
 const ACTOR_A: FinanceActor = { userId: '11111111-2222-3333-4444555566667777', siteId: SITE_A };
 const ACTOR_B: FinanceActor = { userId: '22222222-2222-3333-4444555566667777', siteId: SITE_B };
 const TRAVEL: RecordInput = { title: 'Travel', amount: 125050000n, period: '2026-06' };
+// 999999999999999.9999, the largest numeric(19,4) value.
+const MAX = 9_999_999_999_999_999_999n;
 
 type Step = readonly [action: FinanceAction, roles: readonly string[], to: string];
 
@@ -232,6 +234,93 @@ describe.skipIf(!available)('finance record domain against PostgreSQL', () => {
     const { record: edited, version } = await transition(record.record_id, 'edit', PREPARER);
     expect(edited).toMatchObject({ title: 'Travel', amount: '12505.0000', state: 'IN-PROGRESS', version: 2 });
     expect(version).toMatchObject({ version: 2, action: 'edit' });
+  });
+
+  /** Creates one tenant-A record per amount in `period` and returns the records. */
+  async function fill(period: string, amounts: readonly bigint[]): Promise<FinanceRecordRow[]> {
+    const records: FinanceRecordRow[] = [];
+    for (const amount of amounts) records.push((await create({ ...TRAVEL, amount, period })).record);
+    return records;
+  }
+
+  it.each<[string, string, readonly bigint[], bigint, readonly [string, number]]>([
+    ['refuses a positive sum past the bound', '2031-01', [MAX], 1n, ['invalidParameters', 0]],
+    ['refuses a negative sum past the bound', '2031-02', [-MAX, 5n], -1n, ['invalidParameters', 0]],
+    ['accepts a positive sum of exactly the bound', '2031-03', [MAX - 1n, -7n], 1n, ['0.0001', 2]],
+    ['accepts a negative sum of exactly the bound', '2031-04', [1n - MAX], -1n, ['-0.0001', 2]],
+    ['sums each sign apart, so an opposite amount fits a full period', '2031-05', [MAX], -MAX, ['-999999999999999.9999', 2]],
+  ])('create %s of a program period', async (_, period, existing, amount, expected) => {
+    await fill(period, existing);
+    const before = await count('changelog');
+    const outcome = await create({ ...TRAVEL, amount, period }).then(
+      ({ record }) => record.amount,
+      (error: unknown) => (error as FinanceDomainError).type,
+    );
+    expect([outcome, (await count('changelog')) - before]).toEqual(expected);
+  });
+
+  it.each<[string, readonly [string, bigint], readonly [string, bigint], Partial<RecordInput>]>([
+    ['moves the record into a full period', ['2032-01', MAX], ['2032-02', 1n], { period: '2032-01' }],
+    ['raises the amount past the bound', ['2032-03', MAX - 5n], ['2032-03', 5n], { amount: 6n }],
+    ['lowers the amount past the negative bound', ['2032-04', -MAX], ['2032-04', 0n], { amount: -1n }],
+    ['moves the record with a new amount that no longer fits', ['2032-05', MAX - 1n], ['2032-06', 1n], { period: '2032-05', amount: 2n }],
+  ])('refuses an edit that %s and writes nothing', async (_, [otherPeriod, otherAmount], [period, amount], input) => {
+    await fill(otherPeriod, [otherAmount]);
+    const [record] = (await fill(period, [amount])) as [FinanceRecordRow];
+    const before = await count('changelog');
+    await expect(transition(record.record_id, 'edit', PREPARER, input)).rejects.toMatchObject({ name: 'FinanceDomainError', type: 'invalidParameters' });
+    expect(await count('changelog')).toBe(before);
+    expect(await inTenant((tx) => getRecord(tx, record.record_id))).toMatchObject({ period, amount: record.amount, version: 1 });
+    expect(await inTenant((tx) => listVersions(tx, record.record_id))).toHaveLength(1);
+  });
+
+  it('excludes the edited record from its own period sum and accepts an edit that fits exactly', async () => {
+    const [full] = (await fill('2032-07', [MAX])) as [FinanceRecordRow];
+    expect((await transition(full.record_id, 'edit', PREPARER, { amount: MAX })).record).toMatchObject({ amount: '999999999999999.9999', version: 2 });
+    expect((await transition(full.record_id, 'edit', PREPARER)).record).toMatchObject({ version: 3 });
+    await fill('2032-08', [MAX - 1n]);
+    const moved = await transition(full.record_id, 'edit', PREPARER, { period: '2032-08', amount: 1n });
+    expect(moved.record).toMatchObject({ period: '2032-08', amount: '0.0001', version: 4 });
+  });
+
+  it('never refuses a lifecycle action other than edit in a full period', async () => {
+    const [full, zero] = (await fill('2032-09', [MAX, 0n])) as [FinanceRecordRow, FinanceRecordRow];
+    const steps: readonly [string, FinanceAction, readonly string[]][] = [
+      [full.record_id, 'submit', PREPARER],
+      [full.record_id, 'approve', APPROVER],
+      [zero.record_id, 'submit', PREPARER],
+      [zero.record_id, 'reject', APPROVER],
+      [zero.record_id, 'resubmit', PREPARER],
+      [zero.record_id, 'approve', APPROVER],
+    ];
+    const states: string[] = [];
+    for (const [id, action, roles] of steps) states.push((await transition(id, action, roles)).record.state);
+    expect(states).toEqual(['SUBMITTED', 'APPROVED', 'SUBMITTED', 'REJECTED', 'RE-SUBMITTED', 'APPROVED']);
+  });
+
+  it('makes creates wait on the tenant write lock for an uncommitted create that took the last room of a period', async () => {
+    const period = '2032-10';
+    await fill(period, [MAX - 1n]);
+    let locked = (): void => undefined;
+    let release = (): void => undefined;
+    const isLocked = new Promise<void>((resolve) => (locked = resolve));
+    const released = new Promise<void>((resolve) => (release = resolve));
+    const holder = inTenant(async (tx) => {
+      await createRecord(tx, deps, { ...TRAVEL, amount: 1n, period }, ACTOR_A);
+      locked();
+      await released;
+    });
+    await isLocked;
+    const waiting = Promise.allSettled([1n, 1n].map((amount) => create({ ...TRAVEL, amount, period })));
+    // Long enough for an unserialised create to read the committed period and finish.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    release();
+    await holder;
+    const results = await waiting;
+    expect(results.map((result) => (result.status === 'rejected' ? (result.reason as FinanceDomainError).type : result.status))).toEqual([
+      'invalidParameters',
+      'invalidParameters',
+    ]);
   });
 
   it.each([

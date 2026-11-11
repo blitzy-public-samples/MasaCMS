@@ -1,13 +1,17 @@
 // Unit tests for the Program_<id> fold, over a fake legacy pool with scripted rows per table and a fake unit catalog.
 import { EventEmitter } from 'node:events';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import type { ConnectionPool } from 'mssql';
 import { compareEncodings, encodeKey, encodeRow, LEGACY_PROGRAM_ID_COLUMN, parseProgramTable } from '@opt2/platform/migration-kit';
 import type { CanonicalColumn } from '@opt2/platform/migration-kit';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { TableNotFoundError, clearCatalogCache, type LegacyTableRef } from '../../../src/extract/catalog.js';
 import {
+  DEFAULT_MAX_OPEN_PARTS,
   FoldShapeError,
   describeLegacyTable,
   streamFoldedRows,
@@ -45,6 +49,7 @@ interface StreamScript {
 }
 
 const CANCELED = Object.assign(new Error('Canceled.'), { code: 'ECANCEL' });
+const POOL_EXHAUSTED = new Error('operation timed out for an unknown reason');
 const FROM_TABLE = / FROM \[([^\]]+)\]\.\[([^\]]+)\]/;
 
 class FakeStreamRequest extends EventEmitter {
@@ -132,11 +137,15 @@ function liveTableRow(name: string): { schema_name: string; table_name: string }
   return { schema_name: name.slice(0, dot), table_name: name.slice(dot + 1) };
 }
 
-/** Fake LegacyDb: catalog and table-list queries answer from `tables` (keyed `schema.table`), row requests from `scripts` by FROM table. */
-function fakeLegacy(tables: Readonly<Record<string, TableSpec>>, scripts: Readonly<Record<string, StreamScript>> = {}) {
+/**
+ * Fake LegacyDb: catalog and table-list queries answer from `tables` (keyed `schema.table`), row requests from `scripts` by FROM table.
+ * A row request holds one of `capacity` connections until it ends; a query finding none free is refused, as the pool's acquire times out.
+ */
+function fakeLegacy(tables: Readonly<Record<string, TableSpec>>, scripts: Readonly<Record<string, StreamScript>> = {}, capacity = Infinity) {
   const streams: FakeStreamRequest[] = [];
   const opened: string[] = [];
   const listed: string[] = [];
+  const connections = { held: 0, peak: 0 };
   const specs = new Map(Object.entries(tables).map(([name, spec]) => [name.toLowerCase(), spec]));
   const pool = {
     config: { database: 'muradb_test' },
@@ -144,6 +153,7 @@ function fakeLegacy(tables: Readonly<Record<string, TableSpec>>, scripts: Readon
       const request = new FakeStreamRequest(scripts);
       const query = request.query.bind(request);
       request.query = (text: string) => {
+        if (connections.held >= capacity) return Promise.reject(POOL_EXHAUSTED);
         if (text.includes('INFORMATION_SCHEMA.COLUMNS')) {
           const sets = catalogSets(specs.get(`${String(request.inputs.schema?.value)}.${String(request.inputs.table?.value)}`.toLowerCase()));
           return Promise.resolve({ recordsets: sets, recordset: sets[0] });
@@ -154,6 +164,11 @@ function fakeLegacy(tables: Readonly<Record<string, TableSpec>>, scripts: Readon
           return Promise.resolve({ recordset: Object.keys(tables).map(liveTableRow) });
         }
         streams.push(request);
+        connections.held += 1;
+        connections.peak = Math.max(connections.peak, connections.held);
+        request.once('done', () => {
+          connections.held -= 1;
+        });
         return query(text);
       };
       return request;
@@ -172,7 +187,7 @@ function fakeLegacy(tables: Readonly<Record<string, TableSpec>>, scripts: Readon
     close: () => Promise.resolve(),
   };
   const streamOf = (table: string): FakeStreamRequest | undefined => streams.find((stream) => stream.sql.includes(` FROM ${table} `));
-  return { legacy, streams, opened, listed, streamOf };
+  return { legacy, streams, opened, listed, streamOf, connections };
 }
 
 /** Ownership entries as `opt2/table-ownership.json` records them; `migratable: false` marks a retired table. */
@@ -465,6 +480,166 @@ describe('streamFoldedRows', () => {
       }
     })();
     await expect(throwing).rejects.toThrow('consumer');
+  });
+});
+
+describe('streamFoldedRows over more parts than it keeps open', () => {
+  let spillParent: string;
+
+  beforeEach(async () => {
+    spillParent = await mkdtemp(join(tmpdir(), 'fold-test-'));
+  });
+
+  afterEach(async () => {
+    await rm(spillParent, { recursive: true, force: true });
+  });
+
+  /** `count` programs of one table, each `Program_<id>.<table>` with `spec` and the rows `rows(id)`; `script` extends program 3's. */
+  function programs(table: string, spec: TableSpec, count: number, rows: (id: number) => Row[], script: Partial<StreamScript> = {}) {
+    const tables: Record<string, TableSpec> = {};
+    const scripts: Record<string, StreamScript> = {};
+    const parts = Array.from({ length: count }, (_, index) => part(index + 1, table));
+    for (const { programId, ref: { qualified } } of parts) {
+      tables[qualified] = spec;
+      scripts[qualified] = { rows: rows(programId), ...(programId === 3 ? script : {}) };
+    }
+    return { tables, scripts, parts, table: `Program_N.${table}` };
+  }
+
+  /** Every key value form a spill run carries: bigint, datetime, binary, float with negative zero and padded char. */
+  const MIXED: TableSpec = {
+    columns: [
+      { name: 'serial', type: 'bigint' },
+      { name: 'at', type: 'datetime' },
+      { name: 'tag', type: 'varbinary', maxLength: 8 },
+      { name: 'score', type: 'float' },
+      { name: 'code', type: 'char', maxLength: 4 },
+      { name: 'photo', type: 'varbinary', maxLength: 200 },
+      { name: 'note', type: 'nvarchar', maxLength: 50 },
+    ],
+    primaryKey: ['serial', 'at', 'tag', 'score', 'code'],
+  };
+
+  // Programs with the same id mod 3 share every key, so the merge orders them by program id.
+  const mixedRows = (id: number): Row[] =>
+    Array.from({ length: 6 }, (_, index) => ({
+      serial: String(9_007_199_254_740_993n + BigInt(index * 3 + (id % 3))),
+      at: new Date(2026, 0, 1 + index, 8, 30),
+      tag: Buffer.from([0xff, index]),
+      score: index === 0 ? -0 : index / 4,
+      code: 'AB  ',
+      photo: index % 2 === 0 ? null : Buffer.from(`photo-${String(id)}-${String(index)}`),
+      note: index % 3 === 0 ? null : `note ${String(id)} ✓`,
+    }));
+
+  const blackoutRows = (id: number): Row[] => Array.from({ length: 8 }, (_, index) => blackout(`P-${String((index + id) % 3)}`, index % 2 === 0 ? 'leave' : 'audit'));
+
+  const timesheetRows = (id: number): Row[] => Array.from({ length: 12 }, (_, index) => sheet(index * 4 + (id % 4), `P-${String(id)}`));
+
+  it('folds 11 keyed parts filled past their high-water mark on a 10-connection pool in direct-merge order', async () => {
+    const { tables, scripts, parts, table } = programs('timesheet', TIMESHEET, 11, timesheetRows);
+    const options = { table, parts, highWaterMark: 4, spillDir: spillParent };
+    const direct = await collect(streamFoldedRows({ ...options, legacy: fakeLegacy(tables, scripts).legacy, maxOpenParts: parts.length }));
+    const bounded = fakeLegacy(tables, scripts, 10);
+    const out = await collect(streamFoldedRows({ ...options, legacy: bounded.legacy }));
+
+    expect(out).toHaveLength(132);
+    expect(out).toStrictEqual(direct);
+    out.slice(1).forEach((row, index) => expect(compareCanonicalRows(out[index] as CanonicalRow, row)).toBeLessThan(0));
+    expect(DEFAULT_MAX_OPEN_PARTS).toBeLessThan(10);
+    expect(bounded.connections).toEqual({ held: 0, peak: DEFAULT_MAX_OPEN_PARTS });
+    expect(bounded.streams).toHaveLength(11);
+    expect(await readdir(spillParent)).toEqual([]);
+  });
+
+  it('exhausts a 10-connection pool when all 11 keyed parts stream at once', async () => {
+    const { tables, scripts, parts, table } = programs('timesheet', TIMESHEET, 11, timesheetRows);
+    const fake = fakeLegacy(tables, scripts, 10);
+    const failure = await collect(streamFoldedRows({ legacy: fake.legacy, table, parts, highWaterMark: 4, maxOpenParts: parts.length })).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ExtractError);
+    expect(failure).toMatchObject({ table, cause: POOL_EXHAUSTED });
+    expect(fake.connections).toEqual({ held: 0, peak: 10 });
+    expect(fake.streams.map((stream) => stream.cancels)).toEqual(Array.from({ length: 10 }, () => 1));
+  });
+
+  it.each<[string, number, string, TableSpec, (id: number) => Row[], number]>([
+    ['keyed', 1, 'mixed', MIXED, mixedRows, 1],
+    ['keyed', 2, 'mixed', MIXED, mixedRows, 2],
+    ['keyed', 3, 'mixed', MIXED, mixedRows, 3],
+    ['keyless', 1, 'blackout', BLACKOUT, blackoutRows, 1],
+    ['keyless', 2, 'blackout', BLACKOUT, blackoutRows, 1],
+    ['keyless', 3, 'blackout', BLACKOUT, blackoutRows, 1],
+  ])('merges five %s parts in groups of %i through spill runs exactly as the direct merge', async (_label, maxOpenParts, name, spec, rows, peak) => {
+    const { tables, scripts, parts, table } = programs(name, spec, 5, rows);
+    const direct = await collect(streamFoldedRows({ legacy: fakeLegacy(tables, scripts).legacy, table, parts, highWaterMark: 2, maxOpenParts: parts.length }));
+    const fake = fakeLegacy(tables, scripts);
+    const out = await collect(streamFoldedRows({ legacy: fake.legacy, table, parts, highWaterMark: 2, maxOpenParts, spillDir: spillParent }));
+
+    expect(out.length).toBeGreaterThan(0);
+    expect(out).toStrictEqual(direct);
+    if (spec === MIXED) {
+      const [serial, at, tag, score, code] = (out[0] as CanonicalRow).keyValues;
+      expect([typeof serial, at instanceof Date, Buffer.isBuffer(tag), Object.is(score, -0), code]).toEqual(['bigint', true, true, true, 'AB  ']);
+      expect(out.some((row) => Buffer.isBuffer(row.row.photo))).toBe(true);
+    }
+    expect(fake.connections).toEqual({ held: 0, peak });
+    expect(await readdir(spillParent)).toEqual([]);
+  });
+
+  it('removes its spill directory when the consumer breaks during the run merge, with no part request left open', async () => {
+    const { tables, scripts, parts, table } = programs('timesheet', TIMESHEET, 5, timesheetRows);
+    const fake = fakeLegacy(tables, scripts);
+    const seen: unknown[] = [];
+    for await (const row of streamFoldedRows({ legacy: fake.legacy, table, parts, maxOpenParts: 2, spillDir: spillParent })) {
+      seen.push(row.row.timesheet_id);
+      break;
+    }
+
+    expect(seen).toEqual(['0']);
+    expect(fake.connections.held).toBe(0);
+    expect(fake.streams.map((stream) => stream.cancels)).toEqual([0, 0, 0, 0, 0]);
+    expect(await readdir(spillParent)).toEqual([]);
+  });
+
+  const cause = Object.assign(new Error('Connection lost - read ECONNRESET'), { code: 'ESOCKET' });
+
+  it.each<[string, string, TableSpec, (id: number) => Row[], readonly number[]]>([
+    ['keyed', 'timesheet', TIMESHEET, timesheetRows, [0, 0, 0, 1]],
+    ['keyless', 'blackout', BLACKOUT, blackoutRows, [0, 0, 0]],
+  ])('propagates a %s part failure in a later group once, cancelling its group and opening no later group', async (_label, name, spec, rows, cancels) => {
+    const { tables, scripts, parts, table } = programs(name, spec, 5, rows, { failAt: 2, error: cause });
+    const fake = fakeLegacy(tables, scripts);
+    const seen: unknown[] = [];
+    const stream = streamFoldedRows({ legacy: fake.legacy, table, parts, highWaterMark: 2, maxOpenParts: 2, spillDir: spillParent });
+    const failure = await (async () => {
+      for await (const row of stream) seen.push(row);
+    })().catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ExtractError);
+    expect(failure).toMatchObject({ table, cause });
+    expect(await stream.next()).toEqual({ done: true, value: undefined });
+    expect(seen).toEqual([]);
+    expect(fake.streams.map((request) => request.cancels)).toEqual(cancels);
+    expect(fake.connections.held).toBe(0);
+    expect(await readdir(spillParent)).toEqual([]);
+  });
+
+  it('propagates a spill directory failure before opening any part', async () => {
+    const { tables, scripts, parts, table } = programs('timesheet', TIMESHEET, 5, timesheetRows);
+    const fake = fakeLegacy(tables, scripts);
+
+    await expect(collect(streamFoldedRows({ legacy: fake.legacy, table, parts, maxOpenParts: 2, spillDir: join(spillParent, 'missing') }))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(fake.streams).toHaveLength(0);
+  });
+
+  it.each([0, -1, 2.5, Number.NaN])('rejects maxOpenParts %s before opening the database', async (maxOpenParts) => {
+    const fake = fakeLegacy(LIVE, SCRIPTS);
+    const failure = await collect(streamFoldedRows({ legacy: fake.legacy, table: 'Program_N.timesheet', parts: [part(1, 'timesheet')], maxOpenParts })).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(RangeError);
+    expect(failure).toMatchObject({ message: `maxOpenParts must be a positive integer, got ${String(maxOpenParts)}` });
+    expect(fake.opened).toEqual([]);
   });
 });
 

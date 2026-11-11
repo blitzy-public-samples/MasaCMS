@@ -19,6 +19,7 @@ import {
   LEGACY_GLOBAL_CONFIG_DEFAULTS,
   SITE_COLUMNS,
   applySet,
+  effectiveEmailBroadcaster,
   getSiteText,
   getSiteValue,
   newSiteBean,
@@ -40,6 +41,8 @@ type Schemas = components['schemas'];
 type Site = Schemas['Site'];
 type SiteListItem = Schemas['SiteListItem'];
 type SiteDetail = Schemas['SiteDetail'];
+type ShellSite = Schemas['ShellSite'];
+type ShellSiteDetail = Schemas['ShellSiteDetail'];
 type SiteExtendSet = Schemas['SiteExtendSet'];
 type SiteExtendAttribute = Schemas['SiteExtendAttribute'];
 type SiteUpdateResult = Schemas['SiteUpdateResult'];
@@ -86,7 +89,7 @@ export interface ExtendDataWrite {
   values: ExtendDataValues | null;
 }
 
-/** Site operations behind `csettings.list`, `editSite`, `updateSite{action=Update}` and the JSON API `site` entity. */
+/** Site operations behind `csettings.list`, `editSite`, `updateSite{action=Update}`, the admin layout and the JSON API `site` entity. */
 export interface SitesDomain {
   /**
    * The Sites screen rows: every registered site for an S2 token, else the token's own. Always read fresh; legacy's
@@ -95,6 +98,8 @@ export interface SitesDomain {
   listSites(db: TenantDb, claims: UserClaims, options?: SiteListOptions): Promise<SiteListItem[]>;
   /** The Edit Site data of `siteId`; an unknown id yields the defaulted new site with `isNew = 1`. */
   readSite(db: TenantDb, claims: UserClaims, siteId: string): Promise<SiteDetail>;
+  /** The admin layout's settings of `siteId`, EmailBroadcaster effective; an unknown id yields the new site, `isNew = 1`. */
+  readShellSite(db: TenantDb, claims: UserClaims, siteId: string): Promise<ShellSiteDetail>;
   /** Port of `settingsManager.update`: validation errors are returned, never thrown, and leave everything unwritten. */
   updateSite(
     db: TenantDb,
@@ -199,6 +204,27 @@ function toSite(bean: SiteBean, row: SiteRow | null): Site {
         : stored;
   }
   return { ...site, SiteID: getSiteText(bean, 'siteID') };
+}
+
+/** Fields of the contract `ShellSite`. */
+const SHELL_SITE_FIELDS = Object.freeze([
+  'SiteID', 'Site', 'Domain', 'domainAlias', 'enforcePrimaryDomain', 'siteLocale', 'theme', 'publicUserPoolID',
+  'privateUserPoolID', 'displayPoolID', 'contentPoolID', 'categoryPoolID', 'filePoolID', 'hasChangesets', 'hasComments',
+  'feedManager', 'EmailBroadcaster', 'Extranet', 'ExtranetSSL', 'Cache', 'enableLockdown', 'lastDeployment',
+  'showDashboard', 'exportLocation', 'useSSL', 'isremote', 'resourceSSL', 'resourceDomain', 'remoteport', 'remotecontext',
+] as const satisfies ReadonlyArray<keyof ShellSite>);
+
+/** The contract `ShellSite`: those fields of `toSite`, with getEmailBroadcaster() (settingsBean.cfc:435-441). */
+function toShellSite(bean: SiteBean, row: SiteRow | null, config: LegacyGlobalConfig): ShellSite {
+  const site = toSite(bean, row);
+  const shell: Record<string, unknown> = {};
+  for (const field of SHELL_SITE_FIELDS) shell[field] = site[field];
+  const emailBroadcaster = effectiveEmailBroadcaster(bean, config);
+  return {
+    ...shell,
+    SiteID: site.SiteID,
+    EmailBroadcaster: cfIsNumeric(emailBroadcaster) ? cfToNumber(emailBroadcaster) : null,
+  };
 }
 
 /** A stored custom image size; a NULL height or width reads as the bean's `AUTO` default. */
@@ -512,6 +538,15 @@ export function createSitesDomain({
     });
   }
 
+  async function readShellSite(db: TenantDb, claims: UserClaims, siteId: string): Promise<ShellSiteDetail> {
+    assertSiteMatches(siteId, claims);
+    return withTenant(db, claims.tid, async (tx) => {
+      const row = await findSite(tx, siteId);
+      const bean = row === null ? newSiteBean(cfUuid()) : readBean(row);
+      return { isNew: bean.isNew, site: toShellSite(bean, row, config) };
+    });
+  }
+
   async function updateSite(
     db: TenantDb,
     claims: UserClaims,
@@ -591,5 +626,5 @@ export function createSitesDomain({
     await announce(tx, row, change.origin);
   };
 
-  return Object.freeze({ listSites, readSite, updateSite, saveOrderAndDeploy, emitStateEvents });
+  return Object.freeze({ listSites, readSite, readShellSite, updateSite, saveOrderAndDeploy, emitStateEvents });
 }

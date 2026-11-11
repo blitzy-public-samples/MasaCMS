@@ -1,12 +1,19 @@
 // Diff of two snapshots' file-store manifests: the objects the change feed must transfer.
 import { Buffer } from 'node:buffer';
 
-import { readManifest, type FilesContext, type ManifestEntry, type ManifestKey } from './manifest.js';
+import { streamManifest, type FilesContext, type ManifestEntry, type ManifestKey } from './manifest.js';
 
-/** Options of diffSnapshotManifests; `read` replaces the readManifest call for a snapshot. */
+/** Options of diffSnapshotManifests; `read` replaces streamManifest for a snapshot and must yield in compareManifestKeys order. */
 export interface DiffManifestOptions {
-  read?: (snapshotSeq: number) => Promise<ManifestEntry[]>;
+  read?: (snapshotSeq: number) => AsyncIterable<ManifestEntry>;
 }
+
+/** One key of a manifest diff; `unchanged` keys have equal sha256, size and orphan flag. */
+export type ManifestDifference =
+  | { kind: 'added'; after: ManifestEntry }
+  | { kind: 'removed'; before: ManifestEntry }
+  | { kind: 'changed'; before: ManifestEntry; after: ManifestEntry }
+  | { kind: 'unchanged'; before: ManifestEntry; after: ManifestEntry };
 
 /** Differences from snapshot `from` to snapshot `to`; every list follows compareManifestKeys order. */
 export interface ManifestDiff {
@@ -37,9 +44,65 @@ function keyOf(entry: ManifestEntry): ManifestKey {
   return { siteId: entry.siteId, path: entry.path };
 }
 
+/** Yields `entries`, throwing as soon as a key does not follow its predecessor in compareManifestKeys order. */
+async function* inKeyOrder(entries: AsyncIterable<ManifestEntry>): AsyncGenerator<ManifestEntry, void, undefined> {
+  let previous: ManifestEntry | undefined;
+  for await (const entry of entries) {
+    if (previous !== undefined && compareManifestKeys(previous, entry) >= 0) {
+      throw new Error(
+        `manifest of snapshot ${String(entry.snapshotSeq)} is not in key order: ${JSON.stringify(entry.path)} of site ` +
+          `${JSON.stringify(entry.siteId)} follows ${JSON.stringify(previous.path)} of site ${JSON.stringify(previous.siteId)}`,
+      );
+    }
+    previous = entry;
+    yield entry;
+  }
+}
+
+/** Next value of `iterator`, or undefined once it is done. */
+async function pull(iterator: AsyncIterator<ManifestEntry, void>): Promise<ManifestEntry | undefined> {
+  const next = await iterator.next();
+  return next.done ? undefined : next.value;
+}
+
 /**
- * Merges the manifests of snapshots `n` and `n1` by key; a key in both is `changed` when its sha256, size or orphan
- * flag differs. Both manifests are re-sorted, so the result does not depend on the reader's order.
+ * Merges two manifests in compareManifestKeys order, holding one entry of each, and yields one difference per key.
+ * @throws Error when either manifest is out of key order or repeats a key.
+ */
+export async function* streamManifestDiff(
+  from: AsyncIterable<ManifestEntry>,
+  to: AsyncIterable<ManifestEntry>,
+): AsyncGenerator<ManifestDifference, void, undefined> {
+  const before = inKeyOrder(from);
+  const after = inKeyOrder(to);
+  try {
+    let old = await pull(before);
+    let current = await pull(after);
+    while (old !== undefined && current !== undefined) {
+      const order = compareManifestKeys(old, current);
+      if (order < 0) {
+        yield { kind: 'removed', before: old };
+        old = await pull(before);
+      } else if (order > 0) {
+        yield { kind: 'added', after: current };
+        current = await pull(after);
+      } else {
+        yield { kind: differs(old, current) ? 'changed' : 'unchanged', before: old, after: current };
+        old = await pull(before);
+        current = await pull(after);
+      }
+    }
+    for (; old !== undefined; old = await pull(before)) yield { kind: 'removed', before: old };
+    for (; current !== undefined; current = await pull(after)) yield { kind: 'added', after: current };
+  } finally {
+    await Promise.all([before.return(), after.return()]);
+  }
+}
+
+/**
+ * Merges the manifests of snapshots `n` and `n1` by key, streaming both; a key in both is `changed` when its sha256,
+ * size or orphan flag differs.
+ * @throws Error when a manifest is not in compareManifestKeys order.
  */
 export async function diffSnapshotManifests(
   ctx: Pick<FilesContext, 'db'>,
@@ -47,44 +110,25 @@ export async function diffSnapshotManifests(
   n1: number,
   opts: DiffManifestOptions = {},
 ): Promise<ManifestDiff> {
-  const read = opts.read ?? ((snapshotSeq: number) => readManifest(ctx, snapshotSeq));
-  const [fromEntries, toEntries] = await Promise.all([read(n), read(n1)]);
-  const before = fromEntries.toSorted(compareManifestKeys);
-  const after = toEntries.toSorted(compareManifestKeys);
-
+  const read = opts.read ?? ((snapshotSeq: number) => streamManifest(ctx, snapshotSeq));
   const diff: ManifestDiff = { from: n, to: n1, added: [], changed: [], removed: [], unchanged: 0, toTransfer: [] };
-  let i = 0;
-  let j = 0;
-  let old = before[i];
-  let current = after[j];
-  while (old !== undefined && current !== undefined) {
-    const order = compareManifestKeys(old, current);
-    if (order < 0) {
-      diff.removed.push(old);
-      i += 1;
-      old = before[i];
-    } else if (order > 0) {
-      diff.added.push(current);
-      diff.toTransfer.push(keyOf(current));
-      j += 1;
-      current = after[j];
-    } else {
-      if (differs(old, current)) {
-        diff.changed.push({ before: old, after: current });
-        diff.toTransfer.push(keyOf(current));
-      } else {
+  for await (const difference of streamManifestDiff(read(n), read(n1))) {
+    switch (difference.kind) {
+      case 'added':
+        diff.added.push(difference.after);
+        diff.toTransfer.push(keyOf(difference.after));
+        break;
+      case 'removed':
+        diff.removed.push(difference.before);
+        break;
+      case 'changed':
+        diff.changed.push({ before: difference.before, after: difference.after });
+        diff.toTransfer.push(keyOf(difference.after));
+        break;
+      case 'unchanged':
         diff.unchanged += 1;
-      }
-      i += 1;
-      j += 1;
-      old = before[i];
-      current = after[j];
+        break;
     }
-  }
-  for (const entry of before.slice(i)) diff.removed.push(entry);
-  for (const entry of after.slice(j)) {
-    diff.added.push(entry);
-    diff.toTransfer.push(keyOf(entry));
   }
   return diff;
 }

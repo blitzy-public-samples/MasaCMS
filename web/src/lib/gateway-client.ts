@@ -392,9 +392,12 @@ type ProgramsSitesOperation<P extends PathOf<ProgramsSitesPaths>, M extends Meth
 >;
 type CurrentSessionOperation = IdentityOperation<'/v1/sessions/current', 'get'>;
 type SessionSitesOperation = IdentityOperation<'/v1/sessions/current/sites', 'get'>;
+type AdminSessionStateOperation = IdentityOperation<'/v1/sessions/current/admin-state', 'get'>;
+type SaveAdminSessionStateOperation = IdentityOperation<'/v1/sessions/current/admin-state', 'post'>;
 type CsrfTokensOperation = IdentityOperation<'/v1/csrf/tokens', 'post'>;
 type ListSitesOperation = ProgramsSitesOperation<'/v1/sites', 'get'>;
 type GetSiteOperation = ProgramsSitesOperation<'/v1/sites/{siteId}', 'get'>;
+type GetShellSiteOperation = ProgramsSitesOperation<'/v1/sites/{siteId}/shell', 'get'>;
 
 /** Identity calls, plus the session and CSRF operations the shell and lib use. */
 export interface IdentityFacade extends ServiceFacade<IdentityPaths> {
@@ -402,6 +405,12 @@ export interface IdentityFacade extends ServiceFacade<IdentityPaths> {
   currentSession(): Promise<OperationResponse<CurrentSessionOperation>>;
   /** Sites the session may administer, the admin `siteArray` (`listCurrentSessionSites`). */
   sessionSites(): Promise<OperationResponse<SessionSitesOperation>>;
+  /** The admin session-scope values the session stored, `{}` when none (`getAdminSessionState`). */
+  adminSessionState(): Promise<OperationResponse<AdminSessionStateOperation>>;
+  /** Stores each given admin session value, replacing that key whole (`saveAdminSessionState`). */
+  saveAdminSessionState(
+    state: JsonBodyOf<SaveAdminSessionStateOperation>,
+  ): Promise<OperationResponse<SaveAdminSessionStateOperation>>;
   /** One token pair per legacy CSRF context, in request order (`issueCsrfTokens`). */
   csrfTokens(contexts: JsonBodyOf<CsrfTokensOperation>['contexts']): Promise<OperationResponse<CsrfTokensOperation>>;
 }
@@ -412,6 +421,8 @@ export interface ProgramsSitesFacade extends ServiceFacade<ProgramsSitesPaths> {
   listSites(query?: QueryOf<ListSitesOperation>): Promise<OperationResponse<ListSitesOperation>>;
   /** One site with the data of every Edit Site tab (`getSite`). */
   getSite(siteId: PathParamsOf<GetSiteOperation>['siteId']): Promise<OperationResponse<GetSiteOperation>>;
+  /** The site settings the admin layout reads, for any private admin user (`getShellSite`). */
+  getShellSite(siteId: PathParamsOf<GetShellSiteOperation>['siteId']): Promise<OperationResponse<GetShellSiteOperation>>;
 }
 
 /** Service calls of one web request, all relayed by the gateway. */
@@ -498,6 +509,8 @@ function identityFacade(core: CoreCalls): IdentityFacade {
     ...facade,
     currentSession: () => facade.call('get', '/v1/sessions/current'),
     sessionSites: () => facade.call('get', '/v1/sessions/current/sites'),
+    adminSessionState: () => facade.call('get', '/v1/sessions/current/admin-state'),
+    saveAdminSessionState: (state) => facade.call('post', '/v1/sessions/current/admin-state', { json: state }),
     csrfTokens: (contexts) => facade.call('post', '/v1/csrf/tokens', { json: { contexts } }),
   };
 }
@@ -508,6 +521,7 @@ function programsSitesFacade(core: CoreCalls): ProgramsSitesFacade {
     ...facade,
     listSites: (query) => facade.call('get', '/v1/sites', { query }),
     getSite: (siteId) => facade.call('get', '/v1/sites/{siteId}', { params: { siteId } }),
+    getShellSite: (siteId) => facade.call('get', '/v1/sites/{siteId}/shell', { params: { siteId } }),
   };
 }
 

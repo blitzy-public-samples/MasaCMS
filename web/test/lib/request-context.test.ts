@@ -14,6 +14,7 @@ import {
   nextSessionSite,
   resolveAction,
   restoreFlashContext,
+  saveSessionWrites,
   type AdminMode,
   type AdminRequest,
   type AdminRequestInput,
@@ -46,7 +47,9 @@ const PLUGIN_MODULE = 'A1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
 
 const CURRENT_SESSION = routeKey('GET', 'identity', '/v1/sessions/current');
 const SESSION_SITES = routeKey('GET', 'identity', '/v1/sessions/current/sites');
-const siteRoute = (siteId: string): string => routeKey('GET', 'programs-sites', `/v1/sites/${siteId}`);
+const ADMIN_STATE = routeKey('GET', 'identity', '/v1/sessions/current/admin-state');
+const SAVE_ADMIN_STATE = routeKey('POST', 'identity', '/v1/sessions/current/admin-state');
+const siteRoute = (siteId: string): string => routeKey('GET', 'programs-sites', `/v1/sites/${siteId}/shell`);
 
 const SITE_NAMES: Readonly<Record<string, string>> = { default: 'Default', 'tenant-a': 'Tenant A' };
 
@@ -85,10 +88,7 @@ const TENANT_A_RECORD: SiteRecord = {
   lastDeployment: '2026-01-02 03:04:05',
 };
 
-const siteReply = (record: SiteRecord, isNew: 0 | 1 = 0): FakeReply => ({
-  status: 200,
-  body: { site: record, isNew, extendSets: [], imageSizes: [] },
-});
+const siteReply = (record: SiteRecord, isNew: 0 | 1 = 0): FakeReply => ({ status: 200, body: { site: record, isNew } });
 
 function sessionReply(subject: WebTestSubject, user: Partial<SessionUser>): FakeReply {
   return {
@@ -104,12 +104,13 @@ function sessionReply(subject: WebTestSubject, user: Partial<SessionUser>): Fake
   };
 }
 
-/** Identity and programs-sites answers for `subject`: S2 users administer every site, others their own. */
+/** Identity and programs-sites answers for `subject`: S2 users administer every site, others their own; no admin state is stored. */
 function routesFor(subject: WebTestSubject, user: Partial<SessionUser> = {}): FakeRouteTable {
   const siteIds = subject.s2 ? Object.keys(SITE_NAMES) : [subject.site];
   return {
     [CURRENT_SESSION]: sessionReply(subject, user),
     [SESSION_SITES]: { status: 200, body: { sites: siteIds.map((siteID) => ({ siteID, site: SITE_NAMES[siteID] })) } },
+    [ADMIN_STATE]: { status: 200, body: {} },
     [siteRoute('default')]: siteReply(DEFAULT_RECORD),
     [siteRoute('tenant-a')]: siteReply(TENANT_A_RECORD),
   };
@@ -486,8 +487,9 @@ describe('buildAdminRequest', () => {
 
       expect(callsOf(gateway).sort()).toEqual([
         'identity /v1/sessions/current',
+        'identity /v1/sessions/current/admin-state',
         'identity /v1/sessions/current/sites',
-        'programs-sites /v1/sites/default',
+        'programs-sites /v1/sites/default/shell',
       ]);
       expect(request.session).toMatchObject({
         siteid: 'default',
@@ -516,10 +518,12 @@ describe('buildAdminRequest', () => {
       expect(request.modulePerm(PLUGIN_MODULE)).toBe(true);
     });
 
+    const SESSION_READS = ['identity /v1/sessions/current', 'identity /v1/sessions/current/admin-state'];
+
     it.each<[string, WebTestSubjectKey, Partial<MintUserTokenInput>, string[], boolean]>([
       ['anonymous', 'anonymous', {}, [], false],
-      ['an anonymous-session token', 'member', { sub: '' }, ['identity /v1/sessions/current'], false],
-      ['a member', 'member', {}, ['identity /v1/sessions/current'], true],
+      ['an anonymous-session token', 'member', { sub: '' }, SESSION_READS, false],
+      ['a member', 'member', {}, SESSION_READS, true],
     ])('loads no site list for %s', async (_label, subject, claims, calls, isLoggedIn) => {
       const { request, gateway } = await build({ subject, claims, target: '/admin/' });
 
@@ -567,7 +571,8 @@ describe('buildAdminRequest', () => {
         'qaEditor',
         'listCurrentSessionSites answered HTTP 403',
       ],
-      ['a failing site read', { [siteRoute('default')]: { status: 500 } }, 'admin', 'getSite answered HTTP 500'],
+      ['a refused admin state', { [ADMIN_STATE]: { status: 401 } }, 'member', 'getAdminSessionState answered HTTP 401'],
+      ['a failing site read', { [siteRoute('default')]: { status: 500 } }, 'admin', 'getShellSite answered HTTP 500'],
     ])('fails on %s', async (_label, routes, subject, message) => {
       await expect(build({ subject, routes, target: '/admin/?siteid=default' })).rejects.toThrow(message);
     });
@@ -595,7 +600,7 @@ describe('buildAdminRequest', () => {
       const { request, gateway } = await build({ subject: 'siteAdmin', target: '/admin/?siteid=tenant-a' });
 
       expect(callsOf(gateway).filter((call) => call.startsWith('programs-sites'))).toEqual([
-        'programs-sites /v1/sites/tenant-a',
+        'programs-sites /v1/sites/tenant-a/shell',
       ]);
       expect(request.site).toEqual({
         siteid: 'tenant-a',
@@ -651,16 +656,99 @@ describe('buildAdminRequest', () => {
       });
     });
 
-    it('takes an editor site from the identity site list without reading it', async () => {
-      const { request, gateway } = await build({ subject: 'qaEditor', target: '/admin/?siteid=default' });
+    it.each(
+      (['qaEditor', 'systemUser', 'siteAdmin', 'admin'] as const).flatMap((subject) =>
+        ([0, 1] as const).map((on) => [subject, on] as const),
+      ),
+    )('serves %s the flags of its site with every flag %i', async (subject, on) => {
+      const siteId = SUBJECTS[subject].site;
+      const record: SiteRecord = {
+        SiteID: siteId,
+        hasChangesets: on,
+        hasComments: on,
+        feedManager: on,
+        EmailBroadcaster: on,
+        Extranet: on,
+        Cache: on,
+        showDashboard: on,
+      };
+      const { request, gateway } = await build({
+        subject,
+        target: `/admin/?siteid=${siteId}`,
+        routes: { [siteRoute(siteId)]: siteReply(record) },
+      });
 
-      expect(callsOf(gateway)).toEqual(['identity /v1/sessions/current', 'identity /v1/sessions/current/sites']);
+      const served = on === 1;
+      expect(callsOf(gateway).filter((call) => call.startsWith('programs-sites'))).toEqual([
+        `programs-sites /v1/sites/${siteId}/shell`,
+      ]);
+      expect(request.site).toMatchObject({
+        siteid: siteId,
+        hasChangesets: served,
+        hasComments: served,
+        hasFeedManager: served,
+        emailBroadcaster: served,
+        extranet: served,
+        cache: served,
+        record,
+      });
+    });
+
+    it.each<WebTestSubjectKey>(['member', 'anonymous'])('reads no site data for %s', async (subject) => {
+      const { request, gateway } = await build({ subject, target: `/admin/?siteid=${SUBJECTS[subject].site}` });
+
+      expect(callsOf(gateway).filter((call) => call.startsWith('programs-sites'))).toEqual([]);
       expect(request.site).toBeUndefined();
-      expect(request.session).toMatchObject({ siteid: 'default', locale: 'en_US', dateKeyFormat: 'MM/DD/YYYY' });
+    });
+
+    it('serves an editor its pooled site under the site locale', async () => {
+      const pool = 'umbrella';
+      const record: SiteRecord = {
+        SiteID: 'default',
+        siteLocale: 'German (Standard)',
+        theme: 'clean',
+        publicUserPoolID: pool,
+        privateUserPoolID: pool,
+        displayPoolID: pool,
+        contentPoolID: pool,
+        categoryPoolID: pool,
+        filePoolID: pool,
+      };
+      const { request } = await build({
+        subject: 'qaEditor',
+        target: '/admin/?siteid=default',
+        routes: { [siteRoute('default')]: siteReply(record) },
+      });
+
+      expect(request.site).toMatchObject({
+        siteid: 'default',
+        siteLocale: 'German (Standard)',
+        javaLocale: 'de_DE',
+        publicUserPoolID: pool,
+        privateUserPoolID: pool,
+        displayPoolID: pool,
+        contentPoolID: pool,
+        categoryPoolID: pool,
+        filePoolID: pool,
+        record,
+      });
+      expect(request.session).toMatchObject({ siteid: 'default', locale: 'de_DE', dateKeyFormat: 'DD.MM.YYYY' });
       expect(request).toMatchObject({ isS2: false, isSiteAdmin: false, isPrivateUser: true });
       expect(request.modulePerm(CONTENT_MODULE)).toBe(true);
       expect(request.modulePerm(USERS_MODULE)).toBe(false);
       expect(request.modulePerm(PLUGIN_MODULE)).toBe(false);
+    });
+
+    it("takes a site other than the token's from the identity site list without reading it", async () => {
+      const { request, gateway } = await build({
+        subject: 'qaEditor',
+        claims: { site: 'tenant-a' },
+        target: '/admin/?siteid=default',
+      });
+
+      expect(callsOf(gateway).filter((call) => call.startsWith('programs-sites'))).toEqual([]);
+      expect(request.site).toBeUndefined();
+      expect(request.session).toMatchObject({ siteid: 'default', locale: 'en_US', dateKeyFormat: 'MM/DD/YYYY' });
     });
 
     it.each<[string, FakeReply, string]>([
@@ -677,7 +765,7 @@ describe('buildAdminRequest', () => {
       expect(request.session.siteid).toBe(siteid);
       expect(request.site).toBeUndefined();
       expect(callsOf(gateway).filter((call) => call.startsWith('programs-sites'))).toEqual([
-        'programs-sites /v1/sites/default',
+        'programs-sites /v1/sites/default/shell',
       ]);
     });
 
@@ -685,7 +773,7 @@ describe('buildAdminRequest', () => {
       const { request, gateway } = await build({ target: '/admin/?siteid=nosuch' });
 
       expect(callsOf(gateway).filter((call) => call.startsWith('programs-sites'))).toEqual([
-        'programs-sites /v1/sites/default',
+        'programs-sites /v1/sites/default/shell',
       ]);
       expect(request.session.siteid).toBe('');
       expect(request.rc.siteid).toBe('nosuch');
@@ -866,6 +954,215 @@ describe('buildAdminRequest', () => {
 
       expect(request).toMatchObject(expected);
       expect(request.headers.get(ORIGINAL_URL_HEADER)).toBe('/admin/');
+    });
+  });
+});
+
+describe('admin session state', () => {
+  type StoredState = Record<string, unknown>;
+
+  /** Identity's admin-state routes over one session: reads answer the stored state, saves lay their keys over it. */
+  function identityStore(initial: StoredState = {}): { readonly routes: FakeRouteTable; state(): StoredState } {
+    let stored: StoredState = { ...initial };
+    return {
+      routes: {
+        [ADMIN_STATE]: () => ({ status: 200, body: stored }),
+        [SAVE_ADMIN_STATE]: (request) => {
+          stored = { ...stored, ...(request.json as StoredState) };
+          return { status: 200, body: stored };
+        },
+      },
+      state: () => stored,
+    };
+  }
+
+  /** One request over `store`, its session writes then persisted as the request pipeline persists them. */
+  async function roundTrip(
+    store: ReturnType<typeof identityStore>,
+    call: Call,
+  ): Promise<{ request: AdminRequest; gateway: FakeGatewayClient }> {
+    const built = await build({ ...call, routes: { ...call.routes, ...store.routes } });
+    const auth = await authFor(SUBJECTS[call.subject ?? 'admin'], call.claims);
+    await saveSessionWrites(built.gateway, auth, built.request.sessionWrites);
+    return built;
+  }
+
+  const saves = (gateway: FakeGatewayClient): unknown[] =>
+    gateway.calls.filter((call) => call.method === 'POST').map((call) => call.json);
+
+  it('keeps the site a request switched to on the next request without a siteid', async () => {
+    const store = identityStore();
+
+    const first = await roundTrip(store, { target: '/admin/?muraAction=cusers.list&siteid=tenant-a' });
+    const second = await roundTrip(store, { target: '/admin/?muraAction=cusers.list' });
+
+    const switched = { siteid: 'tenant-a', userFilesPath: '/sites/tenant-a/assets/', topID: HOME_ID };
+    expect(saves(first.gateway)).toEqual([expect.objectContaining(switched)]);
+    expect(saves(first.gateway)[0]).not.toHaveProperty('alerts');
+    expect(second.request.session).toMatchObject(switched);
+    expect(second.request.rc.siteid).toBe('tenant-a');
+    expect(second.request.sessionWrites).toEqual({ alerts: { 'tenant-a': {} } });
+    expect(saves(second.gateway)).toEqual([]);
+  });
+
+  it.each<[string, string, 'rb' | 'moduleid' | 'frontEndProxyLoc', string]>([
+    ['the resource bundle', 'rb=pt_BR', 'rb', 'pt_BR'],
+    ['the module', `moduleid=${USERS_MODULE}`, 'moduleid', USERS_MODULE],
+    [
+      'the compact proxy location',
+      'frontEndProxyLoc=https://www.example.test',
+      'frontEndProxyLoc',
+      'https://www.example.test',
+    ],
+  ])('keeps %s a request set on the next request', async (_label, query, key, value) => {
+    const store = identityStore();
+
+    await roundTrip(store, { subject: 'qaEditor', target: `/admin/?muraAction=cusers.list&${query}` });
+    const { request } = await roundTrip(store, { subject: 'qaEditor', target: '/admin/?muraAction=cusers.list' });
+
+    expect(store.state()[key]).toBe(value);
+    expect(request.session[key]).toBe(value);
+    expect(request.sessionWrites).not.toHaveProperty(key);
+  });
+
+  it('restores the advanced search on the next request', async () => {
+    const store = identityStore();
+    const search = {
+      paramArray: [{ Field: 'tusers.lname', Relationship: 'and', Criteria: 'Smith', Condition: 'Contains' }],
+      paramCount: 1,
+      paramCircuit: 'cusers',
+      inActive: '1',
+      paramCategories: 'C1',
+      paramGroups: 'G1',
+      membersOnly: 'true',
+    };
+
+    await roundTrip(store, {
+      subject: 'qaEditor',
+      mode: 'redirect',
+      received: { muraAction: 'cusers.advancedsearch' },
+      form: new URLSearchParams({
+        param: '1',
+        paramField1: 'tusers.lname',
+        paramRelationship1: 'and',
+        paramCriteria1: 'Smith',
+        paramCondition1: 'Contains',
+        inActive: '1',
+        categoryID: 'C1',
+        groupID: 'G1',
+        membersOnly: 'true',
+      }),
+    });
+    const { request } = await roundTrip(store, {
+      subject: 'qaEditor',
+      target: '/admin/?muraAction=cusers.advancedsearch',
+    });
+
+    expect(store.state()).toMatchObject(search);
+    expect(request.session).toMatchObject({ ...search, visitorStatus: 'All' });
+    expect(Object.keys(request.sessionWrites).filter((key) => key in search)).toEqual([]);
+  });
+
+  it.each<[string, string, Record<string, string | undefined>]>([
+    ['the stored flash context fw1pk names, without overwriting rc', '&fw1pk=3', { msg: 'Saved', siteid: 'default' }],
+    ['no stored flash context without fw1pk', '', { msg: undefined, siteid: 'default' }],
+  ])('restores %s', async (_label, query, rc) => {
+    const flash = { '3': { msg: 'Saved', siteid: 'tenant-a' } };
+    const store = identityStore({ flash, nextPreserveKey: 4 });
+
+    const { request } = await roundTrip(store, {
+      subject: 'qaEditor',
+      target: `/admin/?muraAction=cusers.list&siteid=default${query}`,
+    });
+
+    expect({ msg: request.rc.msg, siteid: request.rc.siteid }).toEqual(rc);
+    expect(request.session).toMatchObject({ flash, nextPreserveKey: 4 });
+    expect(request.sessionWrites).not.toHaveProperty('flash');
+    expect(request.sessionWrites).not.toHaveProperty('nextPreserveKey');
+  });
+
+  it('starts every value the set-up leaves alone from the stored state', async () => {
+    const stored = {
+      siteid: 'default',
+      userFilesPath: '/sites/default/assets/',
+      topID: 'C0000000-0000-0000-0000000000000001',
+      openSectionList: 'S1,S2',
+      moduleid: USERS_MODULE,
+      keywords: 'smith',
+      rb: 'fr_FR',
+      paramArray: [],
+      paramCount: 0,
+      paramCircuit: 'cusers',
+      paramCategories: '',
+      paramGroups: '',
+      inActive: '0',
+      membersOnly: 'false',
+      visitorStatus: 'Members',
+      frontEndProxyLoc: 'https://www.example.test',
+      flash: {},
+      nextPreserveKey: 7,
+    };
+
+    const { request } = await build({ subject: 'qaEditor', target: '/admin/', routes: identityStore(stored).routes });
+
+    expect(request.session).toMatchObject(stored);
+    expect(Object.keys(request.sessionWrites).filter((key) => key in stored)).toEqual([]);
+  });
+
+  it('replaces a stored dashboard span with the configured one, as every request does', async () => {
+    useSettings({ MURA_SESSIONHISTORY: '7' });
+
+    const { request } = await build({
+      subject: 'qaEditor',
+      target: '/admin/',
+      routes: identityStore({ dashboardSpan: 30 }).routes,
+    });
+
+    expect(request.session.dashboardSpan).toBe(7);
+    expect(request.sessionWrites.dashboardSpan).toBe(7);
+  });
+
+  describe('saveSessionWrites', () => {
+    it('sends the writes but alerts in one save', async () => {
+      const auth = await authFor(SUBJECTS.qaEditor);
+      const gateway = fakeGatewayClient(identityStore().routes, { userToken: auth.userToken });
+      const paramArray = [{ Field: 'tusers.fname', Relationship: 'or', Criteria: 'Ann', Condition: 'Equals' }];
+
+      await saveSessionWrites(gateway, auth, { alerts: { default: {} }, siteid: 'default', paramArray });
+
+      expect(gateway.calls).toEqual([
+        expect.objectContaining({
+          service: 'identity',
+          method: 'POST',
+          path: '/v1/sessions/current/admin-state',
+          json: { siteid: 'default', paramArray },
+        }),
+      ]);
+    });
+
+    it.each<[string, WebTestSubjectKey, Parameters<typeof saveSessionWrites>[2]]>([
+      ['no writes', 'qaEditor', {}],
+      ['only alerts', 'qaEditor', { alerts: { default: {} } }],
+      ['no user token', 'anonymous', { siteid: 'default' }],
+    ])('sends nothing for %s', async (_label, subject, writes) => {
+      const auth = await authFor(SUBJECTS[subject]);
+      const gateway = fakeGatewayClient(identityStore().routes, { userToken: auth.userToken });
+
+      await saveSessionWrites(gateway, auth, writes);
+
+      expect(gateway.calls).toEqual([]);
+    });
+
+    it.each<[number, string | typeof GatewayUnavailableError]>([
+      [400, 'saveAdminSessionState answered HTTP 400'],
+      [401, 'saveAdminSessionState answered HTTP 401'],
+      [500, 'saveAdminSessionState answered HTTP 500'],
+      [503, GatewayUnavailableError],
+    ])('fails on an HTTP %i answer', async (status, error) => {
+      const auth = await authFor(SUBJECTS.qaEditor);
+      const gateway = fakeGatewayClient({ [SAVE_ADMIN_STATE]: { status } }, { userToken: auth.userToken });
+
+      await expect(saveSessionWrites(gateway, auth, { siteid: 'default' })).rejects.toThrow(error);
     });
   });
 });

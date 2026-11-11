@@ -491,6 +491,109 @@ describe('readSite', () => {
   });
 });
 
+describe('readShellSite', () => {
+  const SHELL_FIELDS = Object.keys(
+    (OPENAPI as { components: { schemas: { ShellSite: { properties: object } } } }).components.schemas.ShellSite.properties,
+  );
+  const SENSITIVE = /^(mailserver|recaptcha|googleapikey|contact|filedir|baseid)|script$/i;
+
+  it('denies another site with 403 before opening a transaction', async () => {
+    const { db, domain, opened } = harness([siteRow('tenant-b')]);
+
+    await expect(domain.readShellSite(db, claimsFor('tenant-a', false), 'tenant-b')).rejects.toMatchObject({ statusCode: 403 });
+    expect(opened).toEqual([]);
+  });
+
+  it('projects exactly the layout fields of the stored site, pooled ids and locale as read, and no sensitive field', async () => {
+    const { db, domain, repo, opened } = harness([
+      siteRow('tenant-a', {
+        site: 'Alpha',
+        sitelocale: 'German (Standard)',
+        theme: 'clean',
+        publicuserpoolid: 'umbrella',
+        privateuserpoolid: 'umbrella',
+        categorypoolid: 'umbrella',
+        haschangesets: 1,
+        hascomments: 0,
+        feedmanager: 1,
+        extranet: 1,
+        cache: 1,
+        showdashboard: 1,
+        isremote: 0,
+        remoteport: 8080,
+        lastdeployment: LAST_DEPLOYMENT,
+        mailserverpassword: 'not-for-the-shell',
+        recaptchasecret: 'not-for-the-shell',
+        contactemail: 'site@example.test',
+        sendloginscript: 'script',
+      }),
+    ]);
+
+    const detail = await domain.readShellSite(db, claimsFor('tenant-a', false), 'tenant-a');
+
+    expect(Object.keys(detail.site).sort()).toEqual([...SHELL_FIELDS].sort());
+    expect(Object.keys(detail.site).filter((key) => SENSITIVE.test(key))).toEqual([]);
+    expect(detail).toMatchObject({
+      isNew: 0,
+      site: {
+        SiteID: 'tenant-a',
+        Site: 'Alpha',
+        siteLocale: 'German (Standard)',
+        theme: 'clean',
+        publicUserPoolID: 'umbrella',
+        privateUserPoolID: 'umbrella',
+        categoryPoolID: 'umbrella',
+        displayPoolID: 'tenant-a',
+        contentPoolID: 'tenant-a',
+        filePoolID: 'tenant-a',
+        hasChangesets: 1,
+        hasComments: 0,
+        feedManager: 1,
+        Extranet: 1,
+        Cache: 1,
+        showDashboard: 1,
+        remoteport: 8080,
+        lastDeployment: '2026-01-02T03:04:05.006',
+      },
+    });
+    expect(opened).toEqual([TENANT_A]);
+    expect(repo.readSiteExtendDefinitions).not.toHaveBeenCalled();
+    expect(repo.readSiteExtendData).not.toHaveBeenCalled();
+    expect(repo.listImageSizes).not.toHaveBeenCalled();
+    expect(writesOf(repo)).toEqual([]);
+    assertContract('GET', '/v1/sites/tenant-a/shell', detail);
+  });
+
+  it('reads an unknown id as the defaulted new site with isNew 1', async () => {
+    const { db, domain } = harness([]);
+
+    const detail = await domain.readShellSite(db, claimsFor('tenant-a', false), 'tenant-a');
+
+    expect(detail).toMatchObject({
+      isNew: 1,
+      site: { SiteID: '', publicUserPoolID: '', hasChangesets: 1, hasComments: 1, EmailBroadcaster: 0, lastDeployment: null },
+    });
+    assertContract('GET', '/v1/sites/tenant-a/shell', detail);
+  });
+
+  it.each<{ global: boolean; stored: number | null; expected: number | null }>([
+    { global: false, stored: 0, expected: 0 },
+    { global: false, stored: 1, expected: 0 },
+    { global: false, stored: null, expected: 0 },
+    { global: true, stored: 0, expected: 0 },
+    { global: true, stored: 1, expected: 1 },
+    { global: true, stored: null, expected: null },
+  ])('answers EmailBroadcaster $expected for a global broadcaster $global and a stored $stored', async ({ global, stored, expected }) => {
+    const config = { emailBroadcaster: global, dataCollection: true, indexFile: '' };
+    const { db, domain } = harness([siteRow('tenant-a', { emailbroadcaster: stored })], { config });
+
+    const detail = await domain.readShellSite(db, claimsFor('tenant-a', false), 'tenant-a');
+
+    expect(detail.site.EmailBroadcaster).toBe(expected);
+    assertContract('GET', '/v1/sites/tenant-a/shell', detail);
+  });
+});
+
 describe('updateSite', () => {
   it.each<{ path: string; posted: string }>([
     { path: 'tenant-b', posted: 'tenant-a' },

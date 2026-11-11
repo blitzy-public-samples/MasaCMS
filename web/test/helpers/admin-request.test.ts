@@ -55,7 +55,7 @@ afterEach(() => {
 
 describe('buildTestAdminRequest site seeding', () => {
   it.each<[string, ScopeInput, string, string[]]>([
-    ['form over query', { query: { siteid: 'tenant-a' }, form: { siteid: 'default' } }, 'default', ['/v1/sites/default']],
+    ['form over query', { query: { siteid: 'tenant-a' }, form: { siteid: 'default' } }, 'default', ['/v1/sites/default/shell']],
     ['an upper-case query name', { query: { SITEID: 'tenant-a' } }, 'tenant-a', []],
     ['a mixed-case form name', { form: { SiteID: 'tenant-a' } }, 'tenant-a', []],
     ['the original URL query', { headers: { [ORIGINAL_URL_HEADER]: ORIGINAL_LIST_URL } }, 'tenant-a', []],
@@ -69,7 +69,7 @@ describe('buildTestAdminRequest site seeding', () => {
       'form over the original URL query',
       { headers: { [ORIGINAL_URL_HEADER]: ORIGINAL_LIST_URL }, form: { siteid: 'default' } },
       'default',
-      ['/v1/sites/default'],
+      ['/v1/sites/default/shell'],
     ],
   ])('seeds identity and programs-sites for the site of %s', async (_, scopes, siteId, siteReads) => {
     const gateway = fakeGatewayClient();
@@ -98,7 +98,7 @@ describe('buildTestAdminRequest site seeding', () => {
       site: { Site: 'Overridden' },
     });
     expect(request.site?.site).toBe('Overridden');
-    expect(programsSitesPaths(gateway)).toEqual(['/v1/sites/default']);
+    expect(programsSitesPaths(gateway)).toEqual(['/v1/sites/default/shell']);
   });
 
   it("falls back to the subject's own site when the request names none", async () => {

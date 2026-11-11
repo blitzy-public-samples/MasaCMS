@@ -139,9 +139,9 @@ Gate: any of `timesheets.employee`, `timesheets.primary-approver`, `timesheets.s
 | Method | Path | Required group | Procedure | Notes |
 |---|---|---|---|---|
 | GET | `finance/records` | any of `finance.preparer`, `finance.approver` | — | Paged |
-| POST | `finance/records` | `finance.preparer` | `usp_finance_create`, `usp_finance_rollup` | `title`, `amount`, `period`. Starts IN-PROGRESS with version 1 |
+| POST | `finance/records` | `finance.preparer` | `usp_finance_create`, `usp_finance_rollup` | `title`, `amount`, `period`. Starts IN-PROGRESS with version 1. Answers `invalidParameters` when the period's positive or negative amounts would sum past 999999999999999.9999 |
 | GET | `finance/records/{id}` | any of preparer, approver | — | — |
-| POST | `finance/records/{id}/{submit\|approve\|reject\|resubmit\|edit}` | the action's role in `synthetic.finance_transition` | `usp_finance_transition`, `usp_finance_rollup` | Each transition and edit writes a version row |
+| POST | `finance/records/{id}/{submit\|approve\|reject\|resubmit\|edit}` | the action's role in `synthetic.finance_transition` | `usp_finance_transition`, `usp_finance_rollup` | Each transition and edit writes a version row. An edit answers `invalidParameters` under the same period bound as create |
 | GET | `finance/records/{id}/versions` | any of preparer, approver | — | — |
 | GET | `finance/records/{id}/attachments` | any of preparer, approver | — | Metadata |
 | POST | `finance/records/{id}/attachments` | `finance.preparer` | — | Multipart field `file` |

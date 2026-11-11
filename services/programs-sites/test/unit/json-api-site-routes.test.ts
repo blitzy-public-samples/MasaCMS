@@ -10,7 +10,7 @@ import { parse } from 'yaml';
 import { collectRouteMatrix } from '@opt2/platform/auth';
 import { LEGACY_JSON_CONTENT_TYPE, etag } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
-import { createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
+import { EnvValidationError, createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import {
   tenantIdForSite,
   type MetadataTx,
@@ -49,11 +49,16 @@ const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', impor
   paths: Record<string, Record<string, ContractOperation>>;
 };
 const UUID_SITE = 'C0FFEE00-1234-5678-9ABCDEF012345678';
+const ORIGIN_DOMAINS: Readonly<Record<string, string[]>> = {
+  default: ['localhost'],
+  [TENANT_A.siteId]: ['tenant-a.example.test', 'alias.example.test'],
+};
 const REGISTRY = ['default', TENANT_A.siteId, TENANT_B.siteId, 'tenant-c', UUID_SITE].map((siteId) => ({
   site_id: siteId,
   tenant_id: tenantIdForSite(siteId),
+  domains: ORIGIN_DOMAINS[siteId] ?? [],
 }));
-const SETTINGS: JsonApiLegacySettings = { adminSSL: false, context: '', appReloadKey: 'appreload' };
+const SETTINGS: JsonApiLegacySettings = { adminSSL: false, context: '', appReloadKey: 'appreload', adminDomain: '' };
 const BASE = 'http://localhost/index.cfm/_api';
 const SITE: components['schemas']['Site'] = { SiteID: 'tenant-a', Site: 'Tenant A' };
 const FORM = { 'content-type': 'application/x-www-form-urlencoded' };
@@ -85,17 +90,31 @@ let rows: Map<string, Record<string, unknown>>;
 let repository: { readSite: Mock<ProgramsSitesRepository['readSite']> };
 let sites: { [K in Exclude<keyof SitesDomain, 'emitStateEvents'>]: Mock<SitesDomain[K]> };
 
+let metadataReads: number;
+
+// Every registry query answers the rows; one bound to a tenant id answers that tenant's row.
 const metadataTx: MetadataTx = {
   kind: 'metadata',
   schema: 'programs_sites',
   onCommit: () => undefined,
-  query: async <R extends QueryResultRow>() =>
-    ({ rows: REGISTRY, command: 'SELECT', rowCount: REGISTRY.length, oid: 0, fields: [] }) as unknown as QueryResult<R>,
+  query: async <R extends QueryResultRow>(_text: unknown, values?: unknown[]) => {
+    const selected = values === undefined ? REGISTRY : REGISTRY.filter((row) => row.tenant_id === values[0]);
+    return {
+      rows: selected,
+      command: 'SELECT',
+      rowCount: selected.length,
+      oid: 0,
+      fields: [],
+    } as unknown as QueryResult<R>;
+  },
 };
 
 const db: TenantDb = {
   schema: 'programs_sites',
-  withMetadata: (fn) => fn(metadataTx),
+  withMetadata: (fn) => {
+    metadataReads += 1;
+    return fn(metadataTx);
+  },
   withTenant: (tenantId, fn) => {
     const tx: TenantTx = {
       kind: 'tenant',
@@ -191,6 +210,7 @@ beforeEach(async () => {
   identity.valid = true;
   identity.status = 200;
   identity.calls.length = 0;
+  metadataReads = 0;
   rows = seededRows();
   repository = {
     readSite: vi.fn<ProgramsSitesRepository['readSite']>(
@@ -200,6 +220,7 @@ beforeEach(async () => {
   sites = {
     listSites: vi.fn<SitesDomain['listSites']>(async () => []),
     readSite: vi.fn<SitesDomain['readSite']>(async () => ({ site: SITE, isNew: 0, extendSets: [], imageSizes: [] })),
+    readShellSite: vi.fn<SitesDomain['readShellSite']>(async () => ({ site: { SiteID: SITE.SiteID }, isNew: 0 })),
     updateSite: vi.fn<SitesDomain['updateSite']>(async () => ({ written: true, errors: {}, site: SITE })),
     saveOrderAndDeploy: vi.fn<SitesDomain['saveOrderAndDeploy']>(async () => ({ written: true, sites: [] })),
   };
@@ -260,7 +281,7 @@ describe('jsonApiLegacySettings', () => {
     [{ MURA_ADMINSSL: 'true' }, { adminSSL: true }],
     [{ MURA_ADMINSSL: 'Yes' }, { adminSSL: true }],
     [{ MURA_ADMINSSL: '0' }, { adminSSL: false }],
-    [{ MURA_ADMINSSL: 'maybe' }, { adminSSL: false }],
+    [{ MURA_ADMINSSL: '' }, { adminSSL: false }],
     [{ MURA_ADMINSSL: '${adminSSL}' }, { adminSSL: false }],
     [{ MURA_PORT: '8080' }, { serverPort: ':8080' }],
     [{ MURA_PORT: '80' }, { serverPort: '' }],
@@ -270,10 +291,36 @@ describe('jsonApiLegacySettings', () => {
     [{ MURA_PORT: '{{port}}' }, {}],
     [{ MURA_CONTEXT: '/masa/' }, { context: '/masa' }],
     [{ MURA_CONTEXT: '\\masa\\' }, { context: '\\masa' }],
+    [{ MURA_CONTEXT: ' ' }, { context: '' }],
     [{ MURA_CONTEXT: '{{context}}' }, { context: '' }],
     [{ MURA_APPRELOADKEY: 'reloadnow' }, { appReloadKey: 'reloadnow' }],
+    [{ MURA_APPRELOADKEY: '' }, { appReloadKey: '' }],
+    [{ MURA_ADMINDOMAIN: 'admin.example.test,B.example.test' }, { adminDomain: 'admin.example.test,B.example.test' }],
+    [{ MURA_ADMINDOMAIN: 'a.example.test,,b.example.test' }, { adminDomain: 'a.example.test,,b.example.test' }],
+    [{ MURA_ADMINDOMAIN: ' ' }, { adminDomain: '' }],
+    [{ MURA_ADMINDOMAIN: '${adminDomain}' }, { adminDomain: '' }],
   ])('overrides the template with %j', (env, override) => {
     expect(jsonApiLegacySettings(env)).toStrictEqual({ ...SETTINGS, ...override });
+  });
+
+  it.each([
+    ['MURA_ADMINSSL', 'maybe'],
+    ['MURA_PORT', 'garbage'],
+    ['MURA_PORT', '0'],
+    ['MURA_PORT', '65536'],
+    ['MURA_PORT', ' 8080'],
+    ['MURA_CONTEXT', 'masa'],
+    ['MURA_CONTEXT', '/ma sa'],
+    ['MURA_CONTEXT', '/masa?x'],
+    ['MURA_ADMINDOMAIN', 'https://admin.example.test'],
+    ['MURA_ADMINDOMAIN', 'admin.example.test:8443'],
+    ['MURA_ADMINDOMAIN', 'admin.example.test/admin'],
+    ['MURA_ADMINDOMAIN', 'admin.example.test, b.example.test'],
+    ['MURA_APPRELOADKEY', 'reload now'],
+    ['MURA_APPRELOADKEY', 'reload\u0000'],
+  ])('rejects %s=%j with an error naming the variable', (key, value) => {
+    expect(() => jsonApiLegacySettings({ [key]: value })).toThrow(EnvValidationError);
+    expect(() => jsonApiLegacySettings({ [key]: value })).toThrow(new RegExp(`^  ${key}: `, 'm'));
   });
 });
 
@@ -457,6 +504,16 @@ describe('findOne', () => {
     const reload = await send('GET', '/_api/json/v1/tenant-a/site?reloadnow');
     expect(reload.statusCode).toBe(503);
     expect(repository.readSite).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects registration under a malformed MURA_ setting of process.env, naming it', async () => {
+    vi.stubEnv('MURA_PORT', 'garbage');
+    const deps = {
+      db,
+      repository: repository as unknown as ProgramsSitesRepository,
+      sites: { ...sites, emitStateEvents: vi.fn() },
+    };
+    await expect(registerJsonApiSiteRoutes(app, deps)).rejects.toThrow(/^ {2}MURA_PORT: /m);
   });
 });
 
@@ -773,5 +830,133 @@ describe('save', () => {
       UUID_SITE,
       expect.anything(),
     );
+  });
+});
+
+describe('CORS origin echo', () => {
+  /** The response's CORS headers, undefined when absent. */
+  function corsOf(res: { headers: Record<string, unknown> }) {
+    return {
+      origin: res.headers['access-control-allow-origin'],
+      credentials: res.headers['access-control-allow-credentials'],
+    };
+  }
+
+  const echo = (origin: string) => ({ origin, credentials: 'true' });
+  const none = { origin: undefined, credentials: undefined };
+
+  it.each([
+    ['http://localhost:3000', true],
+    ['https://sub.localhost', true],
+    ['HTTP://LOCALHOST', true],
+    ['http://tenant-a.example.test', true],
+    ['https://www.alias.example.test:8443', true],
+    ['http://evil.example', false],
+    ['http://notlocalhost', false],
+    ['http://localhost.evil.example', false],
+    ['localhost', true],
+  ])('GET with Origin %s echoes it with credentials: %s, from one registry read', async (origin, echoed) => {
+    metadataReads = 0;
+    const res = await send('GET', '/_api/json/v1/tenant-a/site', { headers: { origin } });
+    expect(res.statusCode).toBe(200);
+    expect(corsOf(res)).toEqual(echoed ? echo(origin) : none);
+    expect(metadataReads).toBe(1);
+  });
+
+  it('sends neither header without an Origin', async () => {
+    const res = await send('GET', '/_api/json/v1/unknown/site');
+    expect(res.statusCode).toBe(400);
+    expect(corsOf(res)).toEqual(none);
+  });
+
+  it.each([
+    ['a json save', 'POST', '/_api/json/v1/tenant-a/site', { as: 's2', headers: FORM, payload: TOKEN_FIELDS }, 200],
+    ['a rest save', 'POST', '/_api/rest/v1/tenant-a/site', { as: 's2', headers: FORM, payload: 'domain=x.test' }, 200],
+    ['an unknown site', 'GET', '/_api/ajax/v1/tenant-a/site?siteid=unknown', {}, 400],
+    ['a save without a token', 'POST', '/_api/json/v1/tenant-a/site', { as: 's2', headers: FORM, payload: 'x=1' }, 400],
+    ['a body legacy cannot read', 'POST', '/_api/json/v1/tenant-a/site', { headers: JSON_BODY, payload: '[1]' }, 500],
+    [
+      'a rest save without S2',
+      'POST',
+      '/_api/rest/v1/tenant-a/site',
+      { as: 'site-admin', headers: FORM, payload: 'x=1' },
+      401,
+    ],
+    ['another site', 'GET', '/_api/json/v1/tenant-b/site', { as: 's2' }, 403],
+    ['a method not served here', 'GET', '/_api/json/v1/tenant-a/site?method=swagger', {}, 503],
+    [
+      'a site create',
+      'POST',
+      '/_api/json/v1/tenant-a/site?method=save&entityName=site',
+      { as: 's2', headers: FORM, payload: TOKEN_FIELDS },
+      503,
+    ],
+  ] as const)('echoes an allowed Origin on %s (%s %s)', async (_label, method, url, call, status) => {
+    const origin = 'http://localhost:3000';
+    const res = await send(method, url, { ...call, headers: { ...('headers' in call ? call.headers : {}), origin } });
+    expect(res.statusCode).toBe(status);
+    expect(corsOf(res)).toEqual(echo(origin));
+  });
+
+  const INVALID_BEARER = { authorization: 'Bearer invalid-test-token' };
+  const INVALID_TOKEN = legacyError('invalid', 'Invalid Access Token', 'invalid_token');
+
+  it.each(
+    (['json', 'ajax', 'rest'] as const).flatMap((family) =>
+      (['GET', 'POST'] as const).flatMap((method) =>
+        (
+          [
+            ['http://localhost:3000', true],
+            ['http://evil.example', false],
+          ] as const
+        ).map(([origin, echoed]) => [family, method, origin, echoed] as const),
+      ),
+    ),
+  )('denies an invalid bearer on %s %s with 401, echoing Origin %s: %s', async (family, method, origin, echoed) => {
+    metadataReads = 0;
+    const headers = { ...(method === 'POST' ? FORM : {}), ...INVALID_BEARER, origin };
+    const payload = method === 'POST' ? TOKEN_FIELDS : undefined;
+    const res = await send(method, `/_api/${family}/v1/tenant-a/site`, { headers, payload });
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual(INVALID_TOKEN);
+    expect(corsOf(res)).toEqual(echoed ? echo(origin) : none);
+    expect(metadataReads).toBe(1);
+    expect(repository.readSite).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['the handler', {}, 500, legacyError('invalid', 'Unhandled Exception', 'server_error')],
+    ['an auth denial', INVALID_BEARER, 401, INVALID_TOKEN],
+  ])('sends the answer of %s without the echo when the registry read fails', async (_label, headers, status, body) => {
+    const read = vi.spyOn(db, 'withMetadata').mockRejectedValueOnce(new Error('registry unavailable'));
+    try {
+      const origin = 'http://localhost:3000';
+      const res = await send('GET', '/_api/json/v1/tenant-a/site', { headers: { ...headers, origin } });
+      expect(res.statusCode).toBe(status);
+      expect(res.json()).toEqual(body);
+      expect(corsOf(res)).toEqual(none);
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(repository.readSite).not.toHaveBeenCalled();
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it.each([
+    ['admin.example.test', { host: 'admin.example.test:8443' }, 'https://admin.example.test', true],
+    [
+      'x.test,Admin.example.test',
+      { 'x-forwarded-host': 'admin.EXAMPLE.test:8443', host: 'gw' },
+      'http://admin.example.test',
+      true,
+    ],
+    ['admin.example.test', { host: 'other.example.test' }, 'http://other.example.test', true],
+    ['admin.example.test', { host: 'other.example.test:8080' }, 'http://other.example.test', false],
+    ['', { host: 'admin.example.test' }, 'http://admin.example.test', false],
+  ])('with adminDomain %j and host headers %j, echoes Origin %s: %s', async (adminDomain, headers, origin, echoed) => {
+    await restart({ ...SETTINGS, adminDomain });
+    const res = await send('GET', '/_api/json/v1/tenant-a/site', { headers: { ...headers, origin } });
+    expect(res.statusCode).toBe(200);
+    expect(corsOf(res)).toEqual(echoed ? echo(origin) : none);
   });
 });

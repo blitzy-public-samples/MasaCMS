@@ -85,8 +85,8 @@ CREATE TABLE migration.scheduler_state (
 
 CREATE TABLE migration.file_manifest (
   snapshot_seq integer NOT NULL,
-  site_id text NOT NULL,
-  path text NOT NULL,
+  site_id text COLLATE "C" NOT NULL,
+  path text COLLATE "C" NOT NULL,
   file_id char(35) NOT NULL,
   variant text NOT NULL, -- '' | _source | _small | _medium
   ext text NOT NULL,

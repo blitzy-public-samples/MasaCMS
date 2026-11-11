@@ -28,7 +28,13 @@ type ContractOperation = Record<string, unknown>;
 const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
   paths: Record<string, Record<string, ContractOperation>>;
 };
-const SITE_PATHS = ['/v1/sites', '/v1/sites/order', '/v1/sites/{siteId}', '/v1/sites/{siteId}/update'];
+const SITE_PATHS = [
+  '/v1/sites',
+  '/v1/sites/order',
+  '/v1/sites/{siteId}',
+  '/v1/sites/{siteId}/shell',
+  '/v1/sites/{siteId}/update',
+];
 const SITE_ROW: components['schemas']['SiteListItem'] = {
   siteid: 'tenant-a',
   site: 'Tenant A',
@@ -38,6 +44,7 @@ const SITE_ROW: components['schemas']['SiteListItem'] = {
   lastDeployment: null,
 };
 const SITE: components['schemas']['Site'] = { SiteID: 'tenant-a', Site: 'Tenant A' };
+const SHELL_SITE: components['schemas']['ShellSite'] = { SiteID: 'tenant-a', Site: 'Tenant A', EmailBroadcaster: 0 };
 const FORM = { 'content-type': 'application/x-www-form-urlencoded' };
 const JSON_BODY = { 'content-type': 'application/json' };
 const TOKEN_FIELDS = 'csrf_token=T&csrf_token_expires=E';
@@ -100,6 +107,7 @@ beforeEach(async () => {
   sites = {
     listSites: vi.fn<SitesDomain['listSites']>(async () => [SITE_ROW]),
     readSite: vi.fn<SitesDomain['readSite']>(async () => ({ site: SITE, isNew: 0, extendSets: [], imageSizes: [] })),
+    readShellSite: vi.fn<SitesDomain['readShellSite']>(async () => ({ site: SHELL_SITE, isNew: 0 })),
     updateSite: vi.fn<SitesDomain['updateSite']>(async () => ({ written: true, errors: {}, site: SITE })),
     saveOrderAndDeploy: vi.fn<SitesDomain['saveOrderAndDeploy']>(async () => ({ written: true, sites: [SITE_ROW] })),
   };
@@ -134,17 +142,19 @@ afterEach(async () => {
   await app.opt2.shutdown();
 });
 
-async function headersAs(name: 's2' | 'site-admin'): Promise<Record<string, string>> {
+type SubjectName = 's2' | 'site-admin' | 'editor' | 'member' | 'anonymous';
+
+async function headersAs(name: SubjectName, site = 'tenant-a'): Promise<Record<string, string>> {
   const subject = ROLE_SET.find((candidate) => candidate.name === name);
   if (subject === undefined) throw new Error(`No role subject ${name}`);
-  return authHeadersFor(subject, { audience: 'programs-sites', site: 'tenant-a' });
+  return authHeadersFor(subject, { audience: 'programs-sites', site });
 }
 
 /** Injects a request as `as` and checks the answer against the contract. */
 async function send(
   method: 'GET' | 'POST',
   url: string,
-  as: 's2' | 'site-admin',
+  as: SubjectName,
   extra: Record<string, string> = {},
   payload?: string | Record<string, unknown>,
 ) {
@@ -173,11 +183,11 @@ describe('route declarations', () => {
           siteCheck: true,
         })),
     );
-    expect(expected).toHaveLength(4);
+    expect(expected).toHaveLength(5);
     expect(declared.filter((route) => route.url.startsWith('/v1/sites'))).toEqual(
       expect.arrayContaining(expected.map((entry) => expect.objectContaining(entry))),
     );
-    expect(declared.filter((route) => route.url.startsWith('/v1/sites'))).toHaveLength(4);
+    expect(declared.filter((route) => route.url.startsWith('/v1/sites'))).toHaveLength(5);
   });
 });
 
@@ -234,12 +244,16 @@ describe('POST /v1/sites/order', () => {
     expect(sites.saveOrderAndDeploy).not.toHaveBeenCalled();
   });
 
-  it('answers invalidParameters for a complex JSON list value', async () => {
-    const body = { orderID: ['a'], csrf_token: 'T', csrf_token_expires: 'E' };
-    const res = await send('POST', '/v1/sites/order', 's2', JSON_BODY, body);
+  it.each([
+    ['an absent orderID', FORM, `orderno=1&deploy=1&sortBy=orderno&${TOKEN_FIELDS}`],
+    ['a complex JSON list value', JSON_BODY, { orderID: ['a'], csrf_token: 'T', csrf_token_expires: 'E' }],
+  ])('answers invalidParameters for %s before the CSRF check and the writes', async (_label, headers, payload) => {
+    const res = await send('POST', '/v1/sites/order', 's2', headers, payload);
     expect(res.statusCode).toBe(400);
     expect(res.json()).toMatchObject({ error: { code: 'invalid_request' } });
+    expect(identity.calls).toHaveLength(0);
     expect(sites.saveOrderAndDeploy).not.toHaveBeenCalled();
+    expect(sites.listSites).not.toHaveBeenCalled();
   });
 });
 
@@ -248,6 +262,39 @@ describe('GET /v1/sites/:siteId', () => {
     const res = await send('GET', '/v1/sites/tenant-a', 'site-admin');
     expect(res.statusCode).toBe(200);
     expect(sites.readSite).toHaveBeenCalledWith(db, expect.objectContaining({ site: 'tenant-a' }), 'tenant-a');
+  });
+
+  it('refuses an editor, whose role reads only the shell settings', async () => {
+    const res = await send('GET', '/v1/sites/tenant-a', 'editor');
+    expect(res.statusCode).toBe(403);
+    expect(sites.readSite).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /v1/sites/:siteId/shell', () => {
+  it.each<SubjectName>(['editor', 'site-admin', 's2'])('reads the path site for %s', async (as) => {
+    const res = await send('GET', '/v1/sites/tenant-a/shell', as);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ site: SHELL_SITE, isNew: 0 });
+    expect(sites.readShellSite).toHaveBeenCalledWith(db, expect.objectContaining({ site: 'tenant-a' }), 'tenant-a');
+  });
+
+  it.each<[SubjectName, number]>([
+    ['member', 403],
+    ['anonymous', 401],
+  ])('refuses %s with %i', async (as, status) => {
+    const res = await send('GET', '/v1/sites/tenant-a/shell', as);
+    expect(res.statusCode).toBe(status);
+    expect(sites.readShellSite).not.toHaveBeenCalled();
+  });
+
+  it('refuses an editor token for another site', async () => {
+    const url = '/v1/sites/tenant-a/shell';
+    const res = await app.inject({ method: 'GET', url, headers: await headersAs('editor', 'tenant-b') });
+    const { statusCode: status, body } = res;
+    assertResponseMatchesOpenApi(OPENAPI, { method: 'GET', path: url, status, contentType: res.headers['content-type'], body });
+    expect(status).toBe(403);
+    expect(sites.readShellSite).not.toHaveBeenCalled();
   });
 });
 
@@ -266,10 +313,10 @@ describe('POST /v1/sites/:siteId/update', () => {
 
   it.each([
     [
-      'an absent siteid',
-      { action: 'Update', site: 'Renamed', useSSL: 1 },
+      'a lower-case action',
+      { siteid: 'tenant-a', action: 'update', site: 'Renamed', useSSL: 1 },
       'tenant-a',
-      { action: 'Update', site: 'Renamed', useSSL: '1', siteid: 'tenant-a' },
+      { siteid: 'tenant-a', action: 'update', site: 'Renamed', useSSL: '1' },
     ],
     ['an empty siteid', { siteid: '', action: 'Update' }, 'tenant-a', { siteid: 'tenant-a', action: 'Update' }],
     ['a posted SiteID', { SiteID: 'TENANT-A', action: 'Update' }, 'TENANT-A', { SiteID: 'TENANT-A', action: 'Update' }],
@@ -279,6 +326,30 @@ describe('POST /v1/sites/:siteId/update', () => {
     expect(res.json()).toEqual({ written: true, errors: {}, site: SITE });
     expect(identity.calls).toEqual([expect.objectContaining({ context })]);
     expect(sites.updateSite).toHaveBeenCalledWith(db, expect.objectContaining({ site: 'tenant-a' }), 'tenant-a', form);
+  });
+
+  it.each([
+    ['an absent action', url, JSON_BODY, { siteid: 'tenant-a', site: 'Renamed' }],
+    ['action Add', url, JSON_BODY, { siteid: 'tenant-a', action: 'Add' }],
+    ['action Delete', url, FORM, 'siteid=tenant-a&action=Delete'],
+    ['an absent siteid', url, JSON_BODY, { action: 'Update', site: 'Renamed' }],
+    ['a complex JSON value', url, JSON_BODY, { siteid: 'tenant-a', action: 'Update', site: { name: 'Renamed' } }],
+    ['a path siteId of 26 characters', `/v1/sites/${'a'.repeat(26)}/update`, FORM, 'siteid=&action=Update'],
+  ])('answers invalidParameters for %s before the CSRF check and the update', async (_label, path, headers, body) => {
+    const token = { 'x-csrf_token': 'T', 'x-csrf_token_expires': 'E' };
+    const res = await send('POST', path, 's2', { ...headers, ...token }, body);
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request' } });
+    expect(identity.calls).toHaveLength(0);
+    expect(sites.updateSite).not.toHaveBeenCalled();
+    expect(sites.readSite).not.toHaveBeenCalled();
+  });
+
+  it('admits a path siteId of 25 characters to the site check', async () => {
+    const res = await send('POST', `/v1/sites/${'a'.repeat(25)}/update`, 's2', FORM, 'siteid=&action=Update');
+    expect(res.statusCode).toBe(403);
+    expect(identity.calls).toHaveLength(0);
+    expect(sites.updateSite).not.toHaveBeenCalled();
   });
 
   it('passes multipart file parts by name and lets a foreign branch answer the legacy 503', async () => {

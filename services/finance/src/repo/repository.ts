@@ -65,6 +65,8 @@ export interface FinanceWrites {
   insertAttachment(tx: TenantTx, row: NewFinanceAttachment, ctx?: WriteContext): Promise<FinanceAttachmentRow>;
   /** Deletes every rollup row of the tenant, then inserts `rows` in order, as `usp_finance_rollup` rebuilds its table. */
   replaceRollups(tx: TenantTx, rows: readonly NewFinanceRollup[], ctx?: WriteContext): Promise<FinanceRollupRow[]>;
+  /** Takes the tenant's finance write lock until `tx` ends, as the fixture procedures take their program applock. */
+  lockWrites(tx: TenantTx): Promise<void>;
 }
 
 /** The platform repository of schema `finance` with its database handle, attachment storage and domain writes. */
@@ -240,9 +242,13 @@ export function createFinanceRepository({ db, storage, clock = systemClock }: Fi
     return insert<FinanceAttachmentRow>(tx, FINANCE_ATTACHMENT.table, { ...row, attachment_id: row.attachment_id ?? cfUuid() }, ctx);
   }
 
+  async function lockWrites(tx: TenantTx): Promise<void> {
+    await tx.query(ADVISORY_LOCK_SQL, [`${tx.schema}:writes:${tx.tenantId}`]);
+  }
+
   async function replaceRollups(tx: TenantTx, rows: readonly NewFinanceRollup[], ctx: WriteContext = {}): Promise<FinanceRollupRow[]> {
-    // Serialises rebuilds of one tenant, as the procedure's TABLOCKX does, so two rebuilds never insert the same key.
-    await tx.query(ADVISORY_LOCK_SQL, [`${tx.schema}.${FINANCE_ROLLUP.table}:rebuild:${tx.tenantId}`]);
+    // Serialises rebuilds with the tenant's other writes, as the procedure's applock does, so two rebuilds never insert the same key.
+    await lockWrites(tx);
     const stale = await base.read(tx, FINANCE_ROLLUP.unit, async () => {
       const { rows: keys } = await tx.query<RollupKey>(
         `SELECT legacy_program_id, period, state FROM ${qualified(tx.schema, FINANCE_ROLLUP.table)}` +
@@ -274,6 +280,7 @@ export function createFinanceRepository({ db, storage, clock = systemClock }: Fi
     insertVersion,
     insertAttachment,
     replaceRollups,
+    lockWrites,
   };
   return Object.freeze(repository satisfies MigrationHandlerOptions['repository']);
 }

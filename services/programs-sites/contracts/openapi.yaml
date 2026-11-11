@@ -284,6 +284,32 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /v1/sites/{siteId}/shell:
+    parameters:
+      - $ref: '#/components/parameters/SiteId'
+    get:
+      operationId: getShellSite
+      summary: Reads the site settings the admin layout uses, for any private admin user; an unknown id yields the defaulted new site.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - s2
+        - site-admin
+        - system-user
+      responses:
+        '200':
+          description: The site's layout settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShellSiteDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /v1/sites/{siteId}/update:
     parameters:
       - $ref: '#/components/parameters/SiteId'
@@ -3175,3 +3201,115 @@ components:
           type:
             - integer
             - 'null'
+
+    ShellSiteDetail:
+      type: object
+      description: A site's layout settings; `isNew` is 1 for an unknown id, whose settings are the defaulted new site's.
+      required:
+        - site
+        - isNew
+      additionalProperties: false
+      properties:
+        site:
+          $ref: '#/components/schemas/ShellSite'
+        isNew:
+          type: integer
+          enum:
+            - 0
+            - 1
+    ShellSite:
+      type: object
+      description: The `Site` fields the admin layout reads, valued as in `Site`, without credentials, secrets, scripts or contact details.
+      required:
+        - SiteID
+      additionalProperties: false
+      properties:
+        SiteID:
+          type: string
+        Site:
+          $ref: '#/components/schemas/NullableString'
+        Domain:
+          $ref: '#/components/schemas/NullableString'
+        domainAlias:
+          $ref: '#/components/schemas/NullableString'
+        enforcePrimaryDomain:
+          type:
+            - integer
+            - 'null'
+        siteLocale:
+          $ref: '#/components/schemas/NullableString'
+        theme:
+          $ref: '#/components/schemas/NullableString'
+        publicUserPoolID:
+          type: string
+        privateUserPoolID:
+          type: string
+        displayPoolID:
+          type: string
+        contentPoolID:
+          type: string
+        categoryPoolID:
+          type: string
+        filePoolID:
+          type: string
+        hasChangesets:
+          type:
+            - integer
+            - 'null'
+        hasComments:
+          type:
+            - integer
+            - 'null'
+        feedManager:
+          type:
+            - integer
+            - 'null'
+        EmailBroadcaster:
+          description: The effective `getEmailBroadcaster()`, 0 while the global email broadcaster is off.
+          type:
+            - integer
+            - 'null'
+        Extranet:
+          type:
+            - integer
+            - 'null'
+        ExtranetSSL:
+          type:
+            - integer
+            - 'null'
+        Cache:
+          type:
+            - integer
+            - 'null'
+        enableLockdown:
+          $ref: '#/components/schemas/NullableString'
+        lastDeployment:
+          oneOf:
+            - $ref: '#/components/schemas/LocalTimestamp'
+            - type: 'null'
+        showDashboard:
+          type:
+            - integer
+            - 'null'
+        exportLocation:
+          $ref: '#/components/schemas/NullableString'
+        useSSL:
+          type:
+            - integer
+            - 'null'
+        isremote:
+          type:
+            - integer
+            - 'null'
+        resourceSSL:
+          type:
+            - integer
+            - 'null'
+        resourceDomain:
+          $ref: '#/components/schemas/NullableString'
+        remoteport:
+          type:
+            - integer
+            - 'null'
+        remotecontext:
+          $ref: '#/components/schemas/NullableString'

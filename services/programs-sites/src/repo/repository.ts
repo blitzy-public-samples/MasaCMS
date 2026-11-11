@@ -12,6 +12,7 @@ import {
   IMAGE_SIZE,
   OWNED_TABLES,
   SITE,
+  SITE_MONITOR_STATE,
   type ExtendAttributeRow,
   type ExtendDataRow,
   type ExtendRcSetRow,
@@ -108,9 +109,9 @@ function nextRowVersion(row: SiteRow): string {
   return String(BigInt(row.row_version) + 1n);
 }
 
-/** Builds the programs-sites repository over the platform repository of `OWNED_TABLES`. */
+/** Builds the programs-sites repository over the platform repository of `OWNED_TABLES` and the unit-less `SITE_MONITOR_STATE`. */
 export function createProgramsSitesRepository({ clock, schema = SCHEMA }: ProgramsSitesRepositoryOptions): ProgramsSitesRepository {
-  const base = createRepository({ owner: OWNER, schema, tables: OWNED_TABLES, clock });
+  const base = createRepository({ owner: OWNER, schema, tables: [...OWNED_TABLES, SITE_MONITOR_STATE], clock });
   const site = qualified(schema, SITE.table);
   const imageSize = qualified(schema, IMAGE_SIZE.table);
   const subtype = qualified(schema, EXTEND_SUBTYPE.table);

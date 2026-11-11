@@ -1832,6 +1832,56 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /v1/sessions/current/admin-state:
+    get:
+      operationId: getAdminSessionState
+      summary: Reads the admin session-scope values the token's session holds; a session that stored none answers `{}`.
+      tags: [sessions]
+      x-opt2-transport: service
+      x-opt2-public: true
+      security: [{userToken: [], invocationCredential: []}]
+      responses:
+        '200':
+          description: The stored values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminSessionState'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+          description: No user token, so there is no session.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: saveAdminSessionState
+      summary: Stores each given admin session value in the token's session, replacing that key whole; absent keys keep their stored value.
+      tags: [sessions]
+      x-opt2-transport: service
+      x-opt2-public: true
+      security: [{userToken: [], invocationCredential: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminSessionState'
+      responses:
+        '200':
+          description: The stored values after the merge.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminSessionState'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+          description: No user token, so there is no session.
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /v1/sessions/login:
     post:
       operationId: login
@@ -4523,6 +4573,81 @@ components:
                 type: string
               site:
                 type: string
+    AdminSessionState:
+      type: object
+      description: Admin session-scope values the request set-up and screens keep between requests, under their legacy `session` names.
+      additionalProperties: false
+      properties:
+        siteid:
+          type: string
+        userFilesPath:
+          type: string
+        topID:
+          type: string
+        openSectionList:
+          type: string
+        moduleid:
+          type: string
+        keywords:
+          type: string
+        rb:
+          type: string
+          description: Resource bundle locale of the admin labels.
+        locale:
+          type: string
+          description: Java locale of dates.
+        dateKeyFormat:
+          type: string
+        localeHasDayParts:
+          type: boolean
+        dashboardSpan:
+          type: integer
+        paramArray:
+          type: array
+          description: Criteria of the users advanced search.
+          items:
+            type: object
+            required:
+              - Field
+              - Relationship
+              - Criteria
+              - Condition
+            additionalProperties: false
+            properties:
+              Field:
+                type: string
+              Relationship:
+                type: string
+              Criteria:
+                type: string
+              Condition:
+                type: string
+        paramCount:
+          type: integer
+        paramCircuit:
+          type: string
+        paramCategories:
+          type: string
+        paramGroups:
+          type: string
+        inActive:
+          type: string
+        membersOnly:
+          type: string
+        visitorStatus:
+          type: string
+        frontEndProxyLoc:
+          type: string
+        flash:
+          type: object
+          description: FW/1 preserved request contexts by preserve key (`session['__fw1<key>']`).
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: string
+        nextPreserveKey:
+          type: integer
+          description: '`session.__fw1NextPreserveKey`.'
     LoginRequest:
       type: object
       description: The admin login form, or the MFA challenge form when `attemptChallenge` is true.

@@ -230,7 +230,7 @@ function moduleEntries(n: NavState): SafeHtml[] {
   const site = n.ctx.site;
   const perm = (id: string): boolean => n.ctx.modulePerm(id);
   const inPerm = (id: string): boolean => is(n.oc, 'cPerm') && is(n.mid, id);
-  // Without site data (programs-sites serves it to S2 users and site admins only) the flag-gated entries stay hidden.
+  // Without site data (programs-sites serves it to private admin users only) the flag-gated entries stay hidden.
   const emailBroadcaster = site?.emailBroadcaster === true;
   const entries: readonly ModuleEntry[] = [
     {

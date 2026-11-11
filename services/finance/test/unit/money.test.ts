@@ -7,7 +7,7 @@ const NUMERIC_19_4_MAX: Money = 10n ** 19n - 1n;
 const FIXTURE_STORED_TEXT = /^-?[0-9]{1,15}\.[0-9]{4}$/;
 
 /** Parses an amount the fixture accepts, failing the test on rejection. */
-const parse = (input: unknown): Money => {
+const parse = (input: string): Money => {
   const result = parseMoney(input);
   if (!result.ok) throw new Error(`amount ${JSON.stringify(input)} rejected: ${result.reason}`);
   return result.value;
@@ -96,8 +96,8 @@ describe('numeric(19,4) bounds', () => {
     expect(formatMoney(value)).toBe(text);
   });
 
-  it.each(['1000000000000000.0000', '-1000000000000000.0000', '1000000000000000'])(
-    'rejects %s with 16 integer digits as range',
+  it.each(['1000000000000000.0000', '-1000000000000000.0000', '1000000000000000', '\t1000000000000000\n'])(
+    'rejects %j with 16 integer digits as range',
     (text) => {
       expect(parseMoney(text)).toEqual({ ok: false, reason: 'range' });
     },
@@ -118,15 +118,18 @@ describe('parseMoney rejections the fixture amount pattern makes', () => {
     ['a leading plus sign', '+1'],
     ['a missing integer part', '.5'],
     ['a trailing decimal point', '1.'],
-    ['leading whitespace', ' 12'],
-    ['trailing whitespace', '12 '],
-    ['a trailing newline', '12\n'],
-    ['a trailing carriage return', '12\r'],
-    ['a trailing CRLF', '12\r\n'],
     ['a trailing line separator', '12\u2028'],
     ['a trailing paragraph separator', '12\u2029'],
     ['a trailing next-line character', '12\u0085'],
-    ['a trailing newline after a fraction', '12.5\n'],
+    ['a leading no-break space', '\u00A012'],
+    ['a trailing figure space', '12\u2007'],
+    ['a trailing ideographic space', '12\u3000'],
+    ['a leading byte order mark', '\uFEFF12'],
+    ['a trailing delete character', '12\u007F'],
+    ['an internal space', '1 2'],
+    ['an internal tab', '1\t2'],
+    ['a space after the minus sign', '- 5'],
+    ['a space before the fraction', '12 .5'],
     ['a doubled minus sign', '--1'],
     ['a bare minus sign', '-'],
     ['hex notation', '0x10'],
@@ -136,50 +139,53 @@ describe('parseMoney rejections the fixture amount pattern makes', () => {
     expect(parseMoney(text)).toEqual({ ok: false, reason: 'format' });
   });
 
+  // finance.cfc accepts only a java.lang.String amount: form and URL values, or a JSON string.
   it.each([
     ['null', null],
     ['undefined', undefined],
-    ['a boolean', true],
+    ['the boolean true', true],
+    ['the boolean false', false],
     ['an object', {}],
     ['an array', []],
-  ])('rejects %s with reason format', (_label, input) => {
+    ['an array holding amount text', ['5']],
+    ['the JSON integer 5', 5],
+    ['the JSON integer -1', -1],
+    ['the JSON integer 0', 0],
+    ['the JSON number 12345678901.2345', 12_345_678_901.2345],
+    ['the JSON number 123456789012.5', 123_456_789_012.5],
+    ['the JSON number 99999999999.9999', 99_999_999_999.9999],
+    ['the JSON number 1E2', 1e2],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['a bigint', 5n],
+  ])('rejects %s, which is not a string, with reason format', (_label, input) => {
     expect(parseMoney(input)).toEqual({ ok: false, reason: 'format' });
   });
 });
 
-describe('parseMoney with JSON numbers, as ACF prints them after deserializeJSON', () => {
+// Masa's Portcullis trims form and URL values with ColdFusion trim(), and finance.cfc trims a JSON amount alike.
+describe('parseMoney surrounding whitespace, as ColdFusion trim() strips it', () => {
   it.each([
-    [12, '12.0000'],
-    [12.5, '12.5000'],
-    [0.1, '0.1000'],
-    [-0.5, '-0.5000'],
-    [0.0001, '0.0001'],
-    [-0.0001, '-0.0001'],
-    [0.1 + 0.2, '0.3000'],
-    [1_000_000_000_000, '1000000000000.0000'],
-    [99_999_999_999.99995, '100000000000.0000'],
-    [100_000_000_000.5, '100000000000.0000'],
-    [100_000_000_001.5, '100000000002.0000'],
-    [10_000_000_000.25, '10000000000.2000'],
-    [10_000_000_000.75, '10000000000.8000'],
-  ])('reads %s as %s', (input, formatted) => {
-    expect(formatMoney(parse(input))).toBe(formatted);
+    [' 5', '5.0000'],
+    ['5 ', '5.0000'],
+    ['5\n', '5.0000'],
+    ['\t5', '5.0000'],
+    ['\r\n-12.5\r\n', '-12.5000'],
+    ['\u0000\u0001\u001F5\u000B\u000C', '5.0000'],
+    ['  000012.5  ', '12.5000'],
+    ['\n12345678901.2345\t', '12345678901.2345'],
+  ])('accepts %j as %s', (text, formatted) => {
+    expect(formatMoney(parse(text))).toBe(formatted);
   });
 
-  it.each([
-    ['0.00001, printed in E notation', 0.00001],
-    ['1234567890123.5, printed in E notation', 1_234_567_890_123.5],
-    ['1.23456, with five decimals', 1.23456],
-    ['0.00025, with five decimals', 0.00025],
-    ['NaN', Number.NaN],
-    ['Infinity', Number.POSITIVE_INFINITY],
-    ['-Infinity', Number.NEGATIVE_INFINITY],
-  ])('rejects %s with reason format', (_label, input) => {
-    expect(parseMoney(input)).toEqual({ ok: false, reason: 'format' });
-  });
-
-  it('rejects the integer 10^16 with reason range', () => {
-    expect(parseMoney(10_000_000_000_000_000)).toEqual({ ok: false, reason: 'range' });
+  it('strips exactly the code units U+0000 to U+0020 around an amount', () => {
+    const stripped: number[] = [];
+    for (let code = 0; code <= 0xffff; code += 1) {
+      const c = String.fromCharCode(code);
+      const result = parseMoney(`${c}5${c}`);
+      if (result.ok && result.value === 50_000n) stripped.push(code);
+    }
+    expect(stripped).toEqual(Array.from({ length: 0x21 }, (_, code) => code));
   });
 });
 

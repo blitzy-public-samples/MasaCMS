@@ -199,6 +199,33 @@ describe.skipIf(!available)('finance repository writes against PostgreSQL', () =
     expect(await select('SELECT period FROM <s>.rollup')).toHaveLength(1);
   });
 
+  it('makes a rebuild of the same tenant, and of no other, wait for a holder of the tenant write lock', async () => {
+    const order: string[] = [];
+    let locked = (): void => undefined;
+    let release = (): void => undefined;
+    const isLocked = new Promise<void>((resolve) => (locked = resolve));
+    const released = new Promise<void>((resolve) => (release = resolve));
+    const holder = inTenant(async (tx) => {
+      await repository.lockWrites(tx);
+      locked();
+      await released;
+      order.push('holder');
+    });
+    await isLocked;
+    const same = inTenant(async (tx) => {
+      await repository.replaceRollups(tx, []);
+      order.push('same tenant');
+    });
+    await inTenant(async (tx) => {
+      await repository.replaceRollups(tx, []);
+      order.push('other tenant');
+    }, tenantIdForSite(`finance-repository-other-${tenants}`));
+    order.push('release');
+    release();
+    await Promise.all([holder, same]);
+    expect(order).toEqual(['other tenant', 'release', 'holder', 'same tenant']);
+  });
+
   it('refuses to update a record that is gone', async () => {
     await inTenant(async (tx) => {
       const record = await repository.insertRecord(tx, newRecord());

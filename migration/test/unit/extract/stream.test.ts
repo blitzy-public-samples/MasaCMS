@@ -1,8 +1,9 @@
 // Unit tests for the row extractor, using a fake pool whose stream requests emit scripted rows with pause, resume and cancel.
 import { EventEmitter } from 'node:events';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, open, readdir, rm, truncate } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import type { ConnectionPool } from 'mssql';
 import { compareEncodings, decodeRow, encodeKey, encodeRow } from '@opt2/platform/migration-kit';
@@ -14,10 +15,12 @@ import {
   DEFAULT_SORT_RUN_BYTES,
   ExtractError,
   ExtractOrderError,
+  RunReader,
   compareCanonicalRows,
   compareKeyValues,
   describeStream,
   streamCanonicalRows,
+  writeRecords,
   type CanonicalRow,
   type KeyValue,
   type StreamOptions,
@@ -44,7 +47,7 @@ interface StreamScript {
   failAt?: number;
   error?: unknown;
   cancelError?: unknown;
-  rejectWith?: unknown;
+  rejectWith?: Error;
 }
 
 const CANCELED = Object.assign(new Error('Canceled.'), { code: 'ECANCEL' });
@@ -534,6 +537,43 @@ describe('streamCanonicalRows on keyless tables', () => {
   });
 });
 
+describe('spill run records', () => {
+  async function readAll(file: string): Promise<string[]> {
+    const reader = new RunReader(file, await open(file, 'r'));
+    const records: string[] = [];
+    try {
+      for (let record = await reader.next(); record !== undefined; record = await reader.next()) records.push(record);
+    } finally {
+      await reader.close();
+    }
+    return records;
+  }
+
+  it('writes records from an async iterable in order, which RunReader reads back byte-exactly', async () => {
+    const records = ['', 'é€ multi-byte', 's1:a', 'x'.repeat(1024 * 1024 + 3)];
+    const file = join(spillParent, 'run');
+    await writeRecords(file, (async function* () {
+      for (const record of records) {
+        await delay(0);
+        yield record;
+      }
+    })());
+
+    expect(await readAll(file)).toEqual(records);
+  });
+
+  it.each([
+    ['a record header', 2],
+    ['a record', 6],
+  ])('rejects a run that ends inside %s', async (label, bytes) => {
+    const file = join(spillParent, 'run');
+    await writeRecords(file, ['abcdef']);
+    await truncate(file, bytes);
+
+    await expect(readAll(file)).rejects.toThrow(`spill run ${file} ends inside ${label}`);
+  });
+});
+
 describe('comparators', () => {
   const day = (d: number) => new Date(2026, 5, d);
   it.each<[string, readonly KeyValue[], readonly KeyValue[], number]>([
@@ -571,6 +611,7 @@ describe('comparators', () => {
     ['keys first', keyed(['a'], 2), keyed(['b'], 1), -1],
     ['program id breaks ties', keyed(['a'], 2), keyed(['a'], 1), 1],
     ['an absent program id first', keyed(['a']), keyed(['a'], 1), -1],
+    ['a present program id after an absent one', keyed(['a'], 1), keyed(['a']), 1],
     ['equal keys and program ids', keyed(['a'], 1), keyed(['a'], 1), 0],
     ['keyless rows by encoding', keylessRow('s1:b'), keylessRow('s1:a'), 1],
   ])('compareCanonicalRows: %s', (_label, a, b, expected) => {

@@ -3,10 +3,12 @@ import { assertSiteMatches, type Opt2RouteConfig, type UserClaims } from '@opt2/
 import {
   LegacyApiError,
   LegacyServiceUnavailableError,
+  accessControlOriginDomains,
   buildEnvelope,
   cfEq,
   cfIsBoolean,
   cfToBoolean,
+  corsHeaders,
   isLegacyFindOneId,
   paramsWithoutMethod,
   routeKeyForRequest,
@@ -17,15 +19,24 @@ import {
   type RouteKeyRequest,
 } from '@opt2/platform/legacy-compat';
 import {
+  EnvValidationError,
   csrfPreHandler,
   legacyParamsOf,
   multipartFilesOf,
   sendLegacyResponse,
+  z,
   type FastifyInstance,
   type FastifyReply,
   type FastifyRequest,
 } from '@opt2/platform/service-kit';
-import { registeredTenants, withTenant, type TenantDb } from '@opt2/platform/tenancy';
+import {
+  registeredTenants,
+  registryEntryForTenant,
+  withMetadata,
+  withTenant,
+  type TenantDb,
+  type TenantRegistryEntry,
+} from '@opt2/platform/tenancy';
 import type { SitesDomain } from '../domain/sites.js';
 import {
   canWriteSite,
@@ -38,7 +49,7 @@ import { applySet, getSiteValue, newSiteBean, readBean, type SiteBean } from '..
 import { hasSiteErrors } from '../legacy/validation.js';
 import type { ProgramsSitesRepository } from '../repo/repository.js';
 
-/** configBean and application settings the endpoint URL and the route key read. */
+/** configBean and application settings the endpoint URL, the route key and the CORS allow-list read. */
 export interface JsonApiLegacySettings {
   /** configBean `adminSSL`. */
   readonly adminSSL: boolean;
@@ -48,6 +59,8 @@ export interface JsonApiLegacySettings {
   readonly context: string;
   /** `application.appreloadkey`. */
   readonly appReloadKey: string;
+  /** configBean `adminDomain`, a comma list of admin host names, or `''`. */
+  readonly adminDomain: string;
 }
 
 /** Dependencies of {@link registerJsonApiSiteRoutes}. */
@@ -91,6 +104,9 @@ interface RegisteredSite {
   siteId: string;
 }
 
+/** The registry as one request reads it; origin domains are read only for a request with an Origin. */
+type RegistrySnapshot = ReadonlyArray<RegisteredSite & { domains?: string[] }>;
+
 /** Masa start-up blanks a `${expr}` or `{{expr}}` value it cannot evaluate here. */
 function literal(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
@@ -108,17 +124,47 @@ function serverPortSetting(port: string): string {
   return port === '80' || port === '443' || port.trim() === '' ? '' : `:${port}`;
 }
 
-/** The settings from `MURA_<KEY>` variables, which override settings.ini.cfm, else the settings template values. */
-export function jsonApiLegacySettings(env: Readonly<Record<string, string | undefined>> = process.env): JsonApiLegacySettings {
-  const adminSSL = literal(env.MURA_ADMINSSL) ?? 'false';
-  const port = literal(env.MURA_PORT);
-  return {
-    adminSSL: cfIsBoolean(adminSSL) && cfToBoolean(adminSSL),
+const BLANK = /^\s*$/;
+
+/** A `MURA_<KEY>` value that is unset or an expression, as undefined, else text `valid` accepts. */
+function literalSetting(valid: (value: string) => boolean, message: string) {
+  return z.preprocess((value) => literal(value as string | undefined), z.string().refine(valid, message).optional());
+}
+
+const LEGACY_SETTINGS = z
+  .object({
+    MURA_ADMINSSL: literalSetting((v) => BLANK.test(v) || cfIsBoolean(v), 'must be a CFML boolean'),
+    MURA_PORT: literalSetting(
+      (v) => BLANK.test(v) || (/^\d+$/.test(v) && Number(v) >= 1 && Number(v) <= 65535),
+      'must be blank or a TCP port',
+    ),
+    MURA_CONTEXT: literalSetting((v) => /^(?:\s*|[/\\][^\s?#]*)$/.test(v), 'must be blank or a path from / or \\'),
+    MURA_ADMINDOMAIN: literalSetting((v) => /^(?:\s*|[^\s:/\\?#@]+)$/.test(v), 'must be a comma list of host names'),
+    MURA_APPRELOADKEY: z
+      .string()
+      .regex(/^[^\s\p{Cc}]*$/u, 'must not contain whitespace or control characters')
+      .optional(),
+  })
+  .transform((env): JsonApiLegacySettings => ({
+    adminSSL: env.MURA_ADMINSSL !== undefined && !BLANK.test(env.MURA_ADMINSSL) && cfToBoolean(env.MURA_ADMINSSL),
     // The template's port is ${cgi.SERVER_PORT}, which the servlet takes from the request host.
-    ...(port === undefined ? {} : { serverPort: serverPortSetting(port) }),
-    context: cleanFilePath(literal(env.MURA_CONTEXT) ?? ''),
+    ...(env.MURA_PORT === undefined ? {} : { serverPort: serverPortSetting(env.MURA_PORT) }),
+    context: env.MURA_CONTEXT === undefined || BLANK.test(env.MURA_CONTEXT) ? '' : cleanFilePath(env.MURA_CONTEXT),
     appReloadKey: env.MURA_APPRELOADKEY ?? 'appreload',
-  };
+    adminDomain: env.MURA_ADMINDOMAIN === undefined || BLANK.test(env.MURA_ADMINDOMAIN) ? '' : env.MURA_ADMINDOMAIN,
+  }));
+
+/**
+ * The settings from `MURA_<KEY>` variables, which override settings.ini.cfm, else the settings template values.
+ * Throws EnvValidationError naming each malformed variable.
+ */
+export function jsonApiLegacySettings(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): JsonApiLegacySettings {
+  const parsed = LEGACY_SETTINGS.safeParse(env);
+  if (parsed.success) return parsed.data;
+  const issues = parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`);
+  throw new EnvValidationError(issues, 'programs-sites');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -196,6 +242,25 @@ function clientHostOf(request: FastifyRequest): { name: string; port: string } {
   return { name: match?.[1] ?? host, port: match?.[2] ?? '' };
 }
 
+/** configBean.getCurrentAdminDomain() (configBean.cfc:517-525): the host's name on an admin domain, else the host. */
+function currentAdminDomainOf(request: FastifyRequest, adminDomain: string): string {
+  const { name, port } = clientHostOf(request);
+  const onAdminDomain = adminDomain.split(',').some((domain) => domain.toLowerCase() === name.toLowerCase());
+  return onAdminDomain || port === '' ? name : `${name}:${port}`;
+}
+
+/** Every registry entry, origin domains included, read in one metadata transaction. */
+function registryEntries(db: TenantDb): Promise<TenantRegistryEntry[]> {
+  return withMetadata(db, async (tx) => {
+    const entries: TenantRegistryEntry[] = [];
+    for (const { tenantId } of await registeredTenants(tx)) {
+      const entry = await registryEntryForTenant(tx, tenantId);
+      if (entry !== null) entries.push(entry);
+    }
+    return entries;
+  });
+}
+
 /** The request and configBean parts of getEndPoint's URL (jsonApiUtility.cfc:3337-3364). */
 function endpointOf(
   request: FastifyRequest,
@@ -263,6 +328,35 @@ function loadedBean(row: StoredSite, scopeSiteId: string): SiteBean {
 /** Registers the contract's JSON API `site` routes; every mode and path shares one handler. */
 export async function registerJsonApiSiteRoutes(app: FastifyInstance, deps: JsonApiSiteRouteDeps): Promise<void> {
   const settings = deps.legacy ?? jsonApiLegacySettings();
+  const snapshots = new WeakMap<FastifyRequest, Promise<RegistrySnapshot>>();
+
+  /** The request's single registry read, which the Origin echo and the route resolution share. */
+  function registryOf(request: FastifyRequest): Promise<RegistrySnapshot> {
+    let snapshot = snapshots.get(request);
+    if (snapshot === undefined) {
+      snapshot = request.headers.origin === undefined ? registeredTenants(deps.db) : registryEntries(deps.db);
+      snapshots.set(request, snapshot);
+    }
+    return snapshot;
+  }
+
+  /** processRequest's Origin echo on every answer of the route, auth denials included (jsonApiUtility.cfc:382-394). */
+  async function allowOrigin(request: FastifyRequest, reply: FastifyReply, payload: unknown): Promise<unknown> {
+    const origin = request.headers.origin;
+    if (origin === undefined) return payload;
+    let registry: RegistrySnapshot;
+    try {
+      registry = await registryOf(request);
+    } catch {
+      // The answer goes out without the echo: a throw from onSend re-enters error handling and sends it again.
+      return payload;
+    }
+    const sites = registry.map((entry) => ({ domain: entry.domains?.join(',') ?? '' }));
+    const { adminDomain } = settings;
+    const cfg = { adminDomain, currentAdminDomain: currentAdminDomainOf(request, adminDomain) };
+    reply.headers(corsHeaders(origin, accessControlOriginDomains(sites, cfg)));
+    return payload;
+  }
 
   function readSiteRow(tenantId: string, site: RegisteredSite): Promise<StoredSite> {
     return withTenant(deps.db, tenantId, (tx) => deps.repository.readSite(tx, site.siteId));
@@ -318,7 +412,7 @@ export async function registerJsonApiSiteRoutes(app: FastifyInstance, deps: Json
 
   /** processRequest's resolution through the shared route key, then the served operation. */
   async function handle(request: FastifyRequest, reply: FastifyReply): Promise<FastifyReply> {
-    const registry = new Map((await registeredTenants(deps.db)).map((entry) => [entry.siteId.toLowerCase(), entry]));
+    const registry = new Map((await registryOf(request)).map((entry) => [entry.siteId.toLowerCase(), entry]));
     const lookup = (siteId: string): RegisteredSite | undefined => registry.get(siteId.toLowerCase());
     const keyed = routeKeyRequestOf(request);
     const key = routeKeyForRequest(keyed, {
@@ -379,6 +473,12 @@ export async function registerJsonApiSiteRoutes(app: FastifyInstance, deps: Json
   }
 
   for (const url of JSON_API_SITE_PATHS) {
-    app.route({ method: [...JSON_API_SITE_METHODS], url, config: { opt2: { ...ROUTE_AUTH } }, handler: handle });
+    app.route({
+      method: [...JSON_API_SITE_METHODS],
+      url,
+      config: { opt2: { ...ROUTE_AUTH } },
+      onSend: allowOrigin,
+      handler: handle,
+    });
   }
 }

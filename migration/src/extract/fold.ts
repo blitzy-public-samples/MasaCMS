@@ -1,6 +1,11 @@
 /** Folds the fixture `Program_<id>` tables of one logical table into a single stream, and resolves any legacy table to its stream. */
+import { Buffer } from 'node:buffer';
+import { mkdtemp, open, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { encodeKey, encodeRow, LEGACY_PROGRAM_ID_COLUMN, parseProgramTable, programTableName } from '@opt2/platform/migration-kit';
-import type { CanonicalColumn } from '@opt2/platform/migration-kit';
+import type { CanonicalColumn, CanonicalValue } from '@opt2/platform/migration-kit';
 
 import type { MigrationContext } from '../context.js';
 import { UnitCatalogError, UnknownLegacyTableError, type UnitCatalog } from '../owners/units.js';
@@ -8,13 +13,18 @@ import { findColumn, listLegacyTables, parseQualifiedName, qualifiedName, TableN
 import {
   compareCanonicalRows,
   describeStream,
+  RunReader,
   streamCanonicalRows,
+  writeRecords,
   type CanonicalRow,
   type KeyValue,
   type StreamOptions,
   type StreamShape,
 } from './stream.js';
 import type { MigratableTable } from './tables.js';
+
+/** Part streams a fold keeps open at once; each holds a connection of the driver's default pool of 10. */
+export const DEFAULT_MAX_OPEN_PARTS = 4;
 
 /** One `Program_<id>` table of a folded logical table. */
 export interface FoldPart {
@@ -26,6 +36,8 @@ export interface FoldPart {
 export interface FoldedStreamOptions extends Omit<StreamOptions, 'table' | 'label'> {
   table: string;
   parts: readonly FoldPart[];
+  /** Part streams open at once; more parts are merged in groups of this many through spill runs. */
+  maxOpenParts?: number;
 }
 
 /**
@@ -65,6 +77,21 @@ const PLAIN_TABLE = /^[^.[\]]+$/;
 const LIVE_DATABASE = '(live)';
 const NO_PARTS: readonly FoldPart[] = Object.freeze([]);
 const NO_KEY: readonly string[] = Object.freeze([]);
+const SPILL_PREFIX = 'opt2-fold-';
+
+/** A key value as JSON: as is, or tagged as bigint text, epoch milliseconds, base64 bytes or negative zero. */
+type SpilledKey = string | number | null | { i: string } | { t: number } | { b: string } | { z: 0 };
+
+type SpilledValue = string | null | { b: string };
+
+/** One folded row of a spill run; `k` is absent when the key is the encoding. */
+interface SpilledRow {
+  p: number;
+  k?: string;
+  v: SpilledKey[];
+  e: string;
+  r: Record<string, SpilledValue>;
+}
 
 interface FoldPlan {
   readonly shape: LegacyTableShape;
@@ -152,21 +179,68 @@ async function pull(source: AsyncGenerator<CanonicalRow, void, undefined>): Prom
   return next.done === true ? undefined : next.value;
 }
 
-/** Returns every part stream; a failure is thrown unless `quiet`, as an earlier error is already propagating. */
+/** Returns every source; a failure is thrown unless `quiet`, as an earlier error is already propagating. */
 async function closeParts(sources: readonly AsyncGenerator<CanonicalRow, void, undefined>[], quiet: boolean): Promise<void> {
   const outcomes = await Promise.allSettled(sources.map((source) => source.return(undefined)));
   const failure = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected');
   if (!quiet && failure !== undefined) throw failure.reason;
 }
 
-/**
- * Streams the parts of one folded table as one table in `compareCanonicalRows` order, each row with `legacyProgramId`.
- * Breaking early cancels every part's SQL request and removes its spill files.
- * @throws FoldShapeError when the parts do not share one shape.
- */
-export async function* streamFoldedRows(options: FoldedStreamOptions): AsyncGenerator<CanonicalRow, void, undefined> {
-  const plan = await planFold(options);
-  const sources = plan.partOptions.map((_, index) => foldedPartRows(plan, index));
+function spillKey(value: KeyValue): SpilledKey {
+  if (typeof value === 'bigint') return { i: value.toString() };
+  if (value instanceof Date) return { t: value.getTime() };
+  if (Buffer.isBuffer(value)) return { b: value.toString('base64') };
+  return Object.is(value, -0) ? { z: 0 } : value;
+}
+
+function restoreKey(value: SpilledKey): KeyValue {
+  if (value === null || typeof value !== 'object') return value;
+  if ('i' in value) return BigInt(value.i);
+  if ('t' in value) return new Date(value.t);
+  return 'b' in value ? Buffer.from(value.b, 'base64') : -0;
+}
+
+function spillValue(value: CanonicalValue): SpilledValue {
+  return Buffer.isBuffer(value) ? { b: value.toString('base64') } : value;
+}
+
+function spillRow(row: CanonicalRow): string {
+  const spilled: SpilledRow = {
+    p: row.legacyProgramId as number,
+    v: row.keyValues.map(spillKey),
+    e: row.encoding,
+    r: Object.fromEntries(Object.entries(row.row).map(([name, value]) => [name, spillValue(value)])),
+  };
+  if (row.key !== row.encoding) spilled.k = row.key;
+  return JSON.stringify(spilled);
+}
+
+function restoreValue(value: SpilledValue): CanonicalValue {
+  return value !== null && typeof value === 'object' ? Buffer.from(value.b, 'base64') : value;
+}
+
+function restoreRow(table: string, text: string): CanonicalRow {
+  const spilled = JSON.parse(text) as SpilledRow;
+  const row = Object.fromEntries(Object.entries(spilled.r).map(([name, value]) => [name, restoreValue(value)]));
+  return { table, legacyProgramId: spilled.p, key: spilled.k ?? spilled.e, keyValues: spilled.v.map(restoreKey), encoding: spilled.e, row };
+}
+
+async function* spilledRows(rows: AsyncIterable<CanonicalRow>): AsyncGenerator<string, void, undefined> {
+  for await (const row of rows) yield spillRow(row);
+}
+
+/** The rows of one spill run; its file is closed when the run ends or is returned. */
+async function* runRows(table: string, file: string): AsyncGenerator<CanonicalRow, void, undefined> {
+  const reader = new RunReader(file, await open(file, 'r'));
+  try {
+    for (let text = await reader.next(); text !== undefined; text = await reader.next()) yield restoreRow(table, text);
+  } finally {
+    await reader.close();
+  }
+}
+
+/** Merges ordered sources in `compareCanonicalRows` order, ties to the earlier source, and returns every source. */
+async function* mergeRows(sources: readonly AsyncGenerator<CanonicalRow, void, undefined>[]): AsyncGenerator<CanonicalRow, void, undefined> {
   let thrown = false;
   try {
     const heads: (CanonicalRow | undefined)[] = [];
@@ -188,6 +262,38 @@ export async function* streamFoldedRows(options: FoldedStreamOptions): AsyncGene
   } finally {
     await closeParts(sources, thrown);
   }
+}
+
+/** Merges each group of `limit` parts, in program id order, into a spill run, then merges the runs; no part outlives its group. */
+async function* spilledMerge(plan: FoldPlan, limit: number, spillDir: string | undefined): AsyncGenerator<CanonicalRow, void, undefined> {
+  const dir = await mkdtemp(join(spillDir ?? tmpdir(), SPILL_PREFIX));
+  try {
+    const files: string[] = [];
+    for (let start = 0; start < plan.partOptions.length; start += limit) {
+      const file = join(dir, `run-${String(files.length)}`);
+      const group = plan.partOptions.slice(start, start + limit).map((_, offset) => foldedPartRows(plan, start + offset));
+      await writeRecords(file, spilledRows(mergeRows(group)));
+      files.push(file);
+    }
+    yield* mergeRows(files.map((file) => runRows(plan.shape.table, file)));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Streams the parts of one folded table as one table in `compareCanonicalRows` order, each row with `legacyProgramId`.
+ * At most `maxOpenParts` parts stream at once; more parts are merged in groups through spill runs before the first row.
+ * Breaking early cancels every open part's SQL request and removes its spill files.
+ * @throws FoldShapeError when the parts do not share one shape.
+ * @throws RangeError when `maxOpenParts` is not a positive integer.
+ */
+export async function* streamFoldedRows(options: FoldedStreamOptions): AsyncGenerator<CanonicalRow, void, undefined> {
+  const limit = options.maxOpenParts ?? DEFAULT_MAX_OPEN_PARTS;
+  if (!Number.isInteger(limit) || limit < 1) throw new RangeError(`maxOpenParts must be a positive integer, got ${String(limit)}`);
+  const plan = await planFold(options);
+  if (plan.partOptions.length > limit) yield* spilledMerge(plan, limit, options.spillDir);
+  else yield* mergeRows(plan.partOptions.map((_, index) => foldedPartRows(plan, index)));
 }
 
 /** Lookup form of a table name: bare for `dbo`, unbracketed, lower case. */

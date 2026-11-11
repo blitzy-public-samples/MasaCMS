@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -27,6 +27,14 @@ import type { ClocResult } from '../../src/inventory/cloc.js';
 import { UsageError, runCli } from '../../src/lib/cli.js';
 import { REPO_ROOT } from '../../src/lib/paths.js';
 import { readPin } from '../../src/lib/pin.js';
+
+// Pass-through spy on rm, so a test can deliver a signal while generateCloc removes its scratch directory.
+vi.mock(import('node:fs/promises'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, rm: vi.fn(actual.rm) };
+});
+
+const { rm: actualRm } = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
 
 const CANNED = {
   header: { cloc_version: '1.98', n_files: 3, n_lines: 120 },
@@ -71,7 +79,12 @@ function modeRunner(byLanguage: unknown, byFile: unknown) {
 
 /** Extractor returning a new empty directory under the temp root. */
 function tempExtractor() {
-  return vi.fn(async (_sha: string) => mkdtemp(path.join(root, 'extract-')));
+  return vi.fn(async (_sha: string, _scratch: string) => mkdtemp(path.join(root, 'extract-')));
+}
+
+/** Listener counts of the signals that interrupt a measurement. */
+function signalListeners(): number[] {
+  return (['SIGINT', 'SIGTERM', 'SIGHUP'] as const).map((signal) => process.listenerCount(signal));
 }
 
 const enoentRunner: ClocRunner = async () => {
@@ -303,11 +316,22 @@ describe('generateCloc', () => {
     const extract = tempExtractor();
     const runner = modeRunner(CANNED, CANNED_BY_FILE);
     const out = fresh('out');
-    const result = await generateCloc({ out, extract, runner, clock: () => new Date('2026-06-30T12:00:00.000Z') });
+    const listeners = signalListeners();
+    const result = await generateCloc({
+      out,
+      extract,
+      runner,
+      clock: () => new Date('2026-06-30T12:00:00.000Z'),
+      reference: fresh('reference.json'),
+    });
 
-    expect(extract).toHaveBeenCalledWith(pin.sha);
+    expect(extract).toHaveBeenCalledWith(pin.sha, expect.stringMatching(/\/opt2-cloc-[^/]+$/));
+    const scratch = extract.mock.calls[0]?.[1] ?? '';
+    expect(path.dirname(scratch)).toBe(path.resolve(os.tmpdir()));
+    expect(existsSync(scratch)).toBe(false);
     const dir = await extract.mock.results[0]?.value;
     expect(existsSync(dir)).toBe(false);
+    expect(signalListeners()).toEqual(listeners);
     expect(runner.mock.calls.map(([, args]) => args)).toEqual([
       ['--json', '--fullpath', '--quiet', `--not-match-d=${CLOC_NOT_MATCH_D}`, `--not-match-f=${CLOC_NOT_MATCH_F}`, '--by-file', '.'],
       ['--json', '--fullpath', '--quiet', `--not-match-d=${UNFILTERED_NOT_MATCH_D}`, `--not-match-f=${UNFILTERED_NOT_MATCH_F}`, '.'],
@@ -341,7 +365,12 @@ describe('generateCloc', () => {
 
   it('reports and notes every figure that differs from the planning measurement', async () => {
     const out = fresh('out');
-    const { planning } = await generateCloc({ out, extract: tempExtractor(), runner: modeRunner(CANNED, CANNED_BY_FILE) });
+    const { planning } = await generateCloc({
+      out,
+      extract: tempExtractor(),
+      runner: modeRunner(CANNED, CANNED_BY_FILE),
+      reference: fresh('reference.json'),
+    });
     expect(planning.matchesPlanning).toBe(false);
     expect(planning.differences).toContainEqual({ figure: 'totals', planning: { files: 1179, code: 228839 }, measured: { files: 3, code: 105 } });
     expect(planning.differences).toContainEqual({ figure: 'languages.LESS', planning: { files: 153, code: 32856 }, measured: null });
@@ -354,31 +383,217 @@ describe('generateCloc', () => {
     const header = { cloc_version: '2.04' };
     const out = fresh('out');
     const runner = modeRunner({ ...CANNED, header }, { ...CANNED_BY_FILE, header });
-    const { report, planning } = await generateCloc({ out, extract: tempExtractor(), runner });
+    const { report, planning } = await generateCloc({ out, extract: tempExtractor(), runner, reference: fresh('reference.json') });
     expect(report.measuredWith).toBe('cloc 2.04');
     expect(planning.versionMatches).toBe(false);
     expect(await readFile(path.join(out, 'cloc.md'), 'utf8')).toContain('this report was measured with cloc 2.04');
   });
 
-  it('removes the extraction when cloc is unavailable', async () => {
+  const FIRST_AT = '2026-06-30T12:00:00.000Z';
+  const LATER_AT = '2026-07-01T08:30:00.000Z';
+
+  /** Writes the canned measurement, clocked at `at`, into a fresh directory and returns it. */
+  async function measuredOut(at: string, reference: string = fresh('reference.json')): Promise<string> {
+    const out = fresh('out');
+    const runner = modeRunner(CANNED, CANNED_BY_FILE);
+    await generateCloc({ out, extract: tempExtractor(), runner, clock: () => new Date(at), reference });
+    return out;
+  }
+
+  it('keeps the measurement time of an unchanged reference, so a rerun reproduces both files byte for byte', async () => {
+    const first = await measuredOut(FIRST_AT);
+    const second = await measuredOut(LATER_AT, path.join(first, 'cloc.json'));
+    for (const name of ['cloc.json', 'cloc.md']) {
+      expect(await readFile(path.join(second, name), 'utf8')).toBe(await readFile(path.join(first, name), 'utf8'));
+    }
+    const json = JSON.parse(await readFile(path.join(second, 'cloc.json'), 'utf8'));
+    expect([json.measuredAt, json.generatedAt]).toEqual([FIRST_AT, FIRST_AT]);
+  });
+
+  it.each<[string, ((text: string) => string) | undefined]>([
+    ['is absent', undefined],
+    ['is not JSON', () => '{'],
+    ['is JSON null', () => 'null'],
+    ['records other figures', (text) => text.replace('"code": 105', '"code": 106')],
+    ['has a measuredAt that is not a time', (text) => text.replaceAll(FIRST_AT, 'yesterday')],
+    ['has a non-canonical measuredAt', (text) => text.replaceAll(FIRST_AT, '2026-06-30T12:00:00Z')],
+  ])('stamps the clock time when the reference %s', async (_case, edit) => {
+    const reference = fresh('reference.json');
+    if (edit !== undefined) {
+      const first = await measuredOut(FIRST_AT);
+      await writeFile(reference, edit(await readFile(path.join(first, 'cloc.json'), 'utf8')), 'utf8');
+    }
+    const second = await measuredOut(LATER_AT, reference);
+    const json = JSON.parse(await readFile(path.join(second, 'cloc.json'), 'utf8'));
+    expect([json.measuredAt, json.generatedAt]).toEqual([LATER_AT, LATER_AT]);
+    expect(await readFile(path.join(second, 'cloc.md'), 'utf8')).toContain(`measured at: ${LATER_AT}`);
+  });
+
+  it('rethrows a reference that cannot be read for a reason other than its absence, writing nothing', async () => {
+    const out = fresh('out');
+    const runner = modeRunner(CANNED, CANNED_BY_FILE);
+    await expect(generateCloc({ out, extract: tempExtractor(), runner, reference: root })).rejects.toThrow(/EISDIR/);
+    expect(existsSync(out)).toBe(false);
+  });
+
+  it('removes the scratch directory and the extraction when cloc is unavailable', async () => {
     const extract = tempExtractor();
     await expect(generateCloc({ out: fresh('out'), extract, runner: enoentRunner })).rejects.toBeInstanceOf(ClocUnavailable);
     expect(existsSync(await extract.mock.results[0]?.value)).toBe(false);
+    expect(existsSync(extract.mock.calls[0]?.[1] ?? '')).toBe(false);
   });
 
   it('refuses an extraction inside the checkout and leaves it in place', async () => {
     const runner = cannedRunner(CANNED);
-    await expect(generateCloc({ out: fresh('out'), extract: async () => REPO_ROOT, runner })).rejects.toThrow(
-      /outside the repository checkout/,
-    );
+    const extract = vi.fn(async (_sha: string, _scratch: string) => REPO_ROOT);
+    await expect(generateCloc({ out: fresh('out'), extract, runner })).rejects.toThrow(/outside the repository checkout/);
     expect(runner).not.toHaveBeenCalled();
     expect(existsSync(path.join(REPO_ROOT, 'harness', 'package.json'))).toBe(true);
+    expect(existsSync(extract.mock.calls[0]?.[1] ?? '')).toBe(false);
+  });
+});
+
+describe('generateCloc on an interrupting signal', () => {
+  const STEPS = ['extraction', 'filtered count', 'unfiltered count'] as const;
+
+  it.each<[NodeJS.Signals, (typeof STEPS)[number], number]>([
+    ['SIGTERM', 'extraction', 143],
+    ['SIGTERM', 'filtered count', 143],
+    ['SIGINT', 'unfiltered count', 130],
+    ['SIGHUP', 'filtered count', 129],
+  ])('on %s during the %s, finishes that step, removes the scratch extraction, then exits %i', async (signal, step, status) => {
+    const before = signalListeners();
+    let scratch = '';
+    let during: number[] = [];
+    let afterSignal: number[] = [];
+    let atExit: { scratch: boolean; listeners: number[] } | undefined;
+    const interrupt = (): void => {
+      during = signalListeners();
+      process.emit(signal, signal);
+      afterSignal = signalListeners();
+    };
+    const extract = vi.fn(async (_sha: string, dir: string) => {
+      scratch = dir;
+      const tree = path.join(dir, 'tree');
+      await mkdir(tree);
+      await writeFile(path.join(tree, 'userBean.cfc'), 'component {}\n', 'utf8');
+      if (step === 'extraction') interrupt();
+      return tree;
+    });
+    const runner = vi.fn<ClocRunner>(async (_file, args) => {
+      const byFile = args.includes('--by-file');
+      if (step === (byFile ? 'filtered count' : 'unfiltered count')) interrupt();
+      return { stdout: JSON.stringify(byFile ? CANNED_BY_FILE : CANNED), stderr: '' };
+    });
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => {
+      atExit = { scratch: existsSync(scratch), listeners: signalListeners() };
+    }) as typeof process.exit);
+    const out = fresh('out');
+    try {
+      await expect(generateCloc({ out, extract, runner, reference: fresh('reference.json') })).rejects.toThrow(
+        `cloc measurement interrupted by ${signal}`,
+      );
+      expect(exit).toHaveBeenCalledExactlyOnceWith(status);
+    } finally {
+      exit.mockRestore();
+    }
+    expect(during).toEqual(before.map((count) => count + 1));
+    expect(afterSignal).toEqual(before);
+    expect(atExit).toEqual({ scratch: false, listeners: before });
+    expect(path.dirname(scratch)).toBe(path.resolve(os.tmpdir()));
+    expect(runner).toHaveBeenCalledTimes(STEPS.indexOf(step));
+    expect(existsSync(out)).toBe(false);
+  });
+
+  it.each<[NodeJS.Signals, number]>([
+    ['SIGTERM', 143],
+    ['SIGINT', 130],
+  ])('on %s while the scratch extraction is removed, finishes the removal, then exits %i writing nothing', async (signal, status) => {
+    const before = signalListeners();
+    let tree = '';
+    let removing = '';
+    let during: number[] = [];
+    let atExit: { scratch: boolean; tree: boolean; listeners: number[] } | undefined;
+    const extract = vi.fn(async (_sha: string, scratch: string) => {
+      tree = path.join(scratch, 'tree');
+      await mkdir(tree);
+      await writeFile(path.join(tree, 'userBean.cfc'), 'component {}\n', 'utf8');
+      return tree;
+    });
+    vi.mocked(rm).mockImplementationOnce(async (target, options) => {
+      removing = String(target);
+      const removal = actualRm(target, options);
+      during = signalListeners();
+      process.emit(signal, signal);
+      return removal;
+    });
+    // A real exit never returns, so the spy throws to keep the measurement from writing its reports.
+    const exit = vi.spyOn(process, 'exit').mockImplementation((code) => {
+      atExit = { scratch: existsSync(removing), tree: existsSync(tree), listeners: signalListeners() };
+      throw new Error(`process.exit(${code})`);
+    });
+    const out = fresh('out');
+    const runner = modeRunner(CANNED, CANNED_BY_FILE);
+    try {
+      await expect(generateCloc({ out, extract, runner, reference: fresh('reference.json') })).rejects.toThrow(
+        `process.exit(${status})`,
+      );
+      expect(exit).toHaveBeenCalledExactlyOnceWith(status);
+    } finally {
+      exit.mockRestore();
+      vi.mocked(rm).mockReset();
+    }
+    expect(runner).toHaveBeenCalledTimes(2);
+    expect(removing).toBe(path.dirname(tree));
+    expect(during).toEqual(before.map((count) => count + 1));
+    expect(atExit).toEqual({ scratch: false, tree: false, listeners: before });
+    expect(existsSync(out)).toBe(false);
+  });
+
+  it('removes its listeners and rethrows when the scratch removal fails', async () => {
+    const before = signalListeners();
+    const extract = tempExtractor();
+    vi.mocked(rm).mockRejectedValueOnce(Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' }));
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as typeof process.exit);
+    const out = fresh('out');
+    try {
+      const runner = modeRunner(CANNED, CANNED_BY_FILE);
+      await expect(generateCloc({ out, extract, runner, reference: fresh('reference.json') })).rejects.toThrow('EBUSY');
+      expect(exit).not.toHaveBeenCalled();
+    } finally {
+      exit.mockRestore();
+      vi.mocked(rm).mockReset();
+      for (const left of [extract.mock.calls[0]?.[1], await extract.mock.results[0]?.value]) {
+        if (left !== undefined) await actualRm(left, { recursive: true, force: true });
+      }
+    }
+    expect(signalListeners()).toEqual(before);
+    expect(existsSync(out)).toBe(false);
   });
 });
 
 describe('main', () => {
   it.each([[['--out', '']], [['--unknown']]])('rejects %j as usage', async (argv) => {
     await expect(main(argv)).rejects.toBeInstanceOf(UsageError);
+  });
+
+  it.each([
+    ['a relative --out against the working directory', false],
+    ['an absolute --out as given', true],
+  ])('resolves %s', async (_case, absolute) => {
+    const cwd = fresh('cwd');
+    await mkdir(cwd);
+    const expected = absolute ? fresh('abs-out') : path.join(cwd, 'rel', 'out');
+    const deps = { extract: tempExtractor(), runner: modeRunner(CANNED, CANNED_BY_FILE), reference: fresh('reference.json') };
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(cwd);
+    try {
+      const outcome = await main(['--out', absolute ? expected : path.join('rel', 'out')], deps);
+      expect(outcome.summary).toMatchObject({ json: path.join(expected, 'cloc.json'), md: path.join(expected, 'cloc.md') });
+    } finally {
+      cwdSpy.mockRestore();
+    }
+    expect(existsSync(path.join(expected, 'cloc.json'))).toBe(true);
+    expect(existsSync(path.join(REPO_ROOT, 'rel'))).toBe(false);
   });
 
   it('--help prints the help text naming every flag, with no JSON line, exits 0 and writes no report', async () => {
@@ -400,5 +615,6 @@ describe('main', () => {
     for (const flag of ['--out <dir>', '--help']) expect(output).toContain(`  ${flag}`);
     expect(output).not.toContain(`"command":`);
     expect((await stat(report)).mtimeMs).toBe(before);
+    expect(output).toContain('a relative path resolves against the working directory');
   });
 });

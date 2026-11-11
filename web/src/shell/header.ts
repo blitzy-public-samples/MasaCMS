@@ -96,7 +96,7 @@ function siteHomeUrl(ctx: AdminRequest): string {
   if (site !== undefined) {
     return htmlEditFormat(siteWebPath(ctx, site) + homeStem(ctx.rc.siteid ?? '', flag(site.record.isremote)));
   }
-  // programs-sites serves no site data to this user, so the request host stands in for the site domain.
+  // programs-sites served no site data for this request, so the request host stands in for the site domain.
   const { serverPort, context } = legacySettings();
   const webPath = `${ctx.https ? 'https' : 'http'}://${ctx.serverName}${serverPort}${context}`;
   return htmlEditFormat(webPath + homeStem(ctx.rc.siteid ?? '', false));

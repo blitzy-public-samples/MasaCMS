@@ -8,7 +8,7 @@ import type { AdminRequest } from '@/lib/request-context';
 import { rbFor } from '@/lib/resource-bundles/rb';
 import { renderHeader, userPromptTally } from '@/shell/header';
 import type { ShellContext, ShellData, ShellSite, UserPrompts } from '@/shell/types';
-import { adminS2Request, editorRequest, makeAdminRequest, type AdminRequestPartial } from '../helpers/admin-request';
+import { adminS2Request, makeAdminRequest, unservedEditorRequest, type AdminRequestPartial } from '../helpers/admin-request';
 import { fragmentModel } from '../helpers/dom-model';
 
 const CONTENT_MODULE_ID = '00000000000000000000000000000000000';
@@ -139,7 +139,7 @@ describe('renderHeader', () => {
     ['the user site list', { adminSites: [] }, [{ siteId: 'DEFAULT', site: 'Listed', showDashboard: false }], ' Listed'],
     ['nothing', { adminSites: [] }, [], ' '],
   ])('names a site served without site data from %s', (_, partial, userSites, text) => {
-    const ctx = editorRequest(partial);
+    const ctx = unservedEditorRequest(partial);
     expect(ctx.site).toBeUndefined();
     expect(load(render(shellFor(ctx, { userSites })))('#select-site-btn').text()).toBe(text);
   });
@@ -215,7 +215,7 @@ describe('site home link', () => {
   });
 
   it('links the request host without site data', () => {
-    const ctx = editorRequest({ https: true, serverName: 'admin.test' });
+    const ctx = unservedEditorRequest({ https: true, serverName: 'admin.test' });
     expect(load(render(shellFor(ctx)))('#select-site-btn').attr('href')).toBe('https://admin.test:8080/');
   });
 });

@@ -1,9 +1,14 @@
 // Forwards a request to the legacy Masa origin; request and response bytes pass unchanged except the session cookie mapping.
+import { channel } from 'node:diagnostics_channel';
 import type { IncomingHttpHeaders, OutgoingHttpHeaders } from 'node:http';
-import { finished, pipeline, type Readable } from 'node:stream';
+import { PassThrough, finished, pipeline, type Readable } from 'node:stream';
 import type { FastifyReplyFromHooks, FastifyReplyFromResponse } from '@fastify/reply-from';
 import type { HeaderMap } from '@opt2/platform/auth';
+import { isLegacySessionCookie, parseSetCookie } from '@opt2/platform/legacy-compat';
+import { serializeError } from '@opt2/platform/logging';
 import type { FastifyReply, FastifyRequest } from '@opt2/platform/service-kit';
+import { injectHttpHeaders } from '@opt2/platform/tracing';
+import type { SessionMode } from '../session/mode.js';
 import { failClosed, type FailContext } from './fail-closed.js';
 import { HOP_BY_HOP_HEADERS, forwardedHeaders } from './headers.js';
 
@@ -26,6 +31,9 @@ export interface BufferedLegacyResponse extends LegacyUpstream {
   body: Buffer;
 }
 
+/** Why legacy can no longer commit for an exchange: its response ended, or the request never reached it. */
+export type LegacySettlement = 'completed' | 'not-sent';
+
 /** Inputs of one forward to legacy. */
 export interface LegacyForwardContext {
   /** Legacy origin, e.g. `http://127.0.0.1:8080`. */
@@ -34,13 +42,15 @@ export interface LegacyForwardContext {
   headers: HeaderMap;
   /** `Cookie` legacy receives in place of the inbound one; '' sends none, undefined keeps the inbound one. */
   cookieHeader?: string;
+  /** In `target-primary`, legacy session `Set-Cookie` values reach the client only through `beforeSend`'s `setCookies`. */
+  sessionMode: SessionMode;
   /** `buffer` holds the whole response until `beforeSend` and `onBuffered` have resolved. */
   mode: 'stream' | 'buffer';
   beforeSend?: LegacyBeforeSend;
-  /** Buffer mode only; called only for a complete body. */
+  /** Buffer mode only; called only for a complete body, after `onSettled` has run. */
   onBuffered?: (res: BufferedLegacyResponse) => Promise<void>;
-  /** Called exactly once: when legacy's response ended or failed, or when the exchange failed before a response. */
-  onSettled?: () => Promise<void>;
+  /** Called at most once, only when legacy can no longer commit for this exchange; never after an uncertain end. */
+  onSettled?: (outcome: LegacySettlement) => Promise<void>;
   failContext: FailContext;
 }
 
@@ -49,6 +59,9 @@ const DROPPED_REQUEST_HEADERS: ReadonlySet<string> = new Set([...HOP_BY_HOP_HEAD
 
 /** Only tells reply-from not to re-encode the body; the forwarded `content-type` is the inbound one or none. */
 const RAW_BODY_CONTENT_TYPE = 'application/octet-stream';
+
+/** Connection-establishment failure codes, after which legacy never received the request. */
+const NOT_SENT_CODES: ReadonlySet<string> = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'UND_ERR_CONNECT_TIMEOUT']);
 
 /** Lower-cased header names a `Connection` value lists. */
 function connectionTokens(value: string | string[] | undefined): Set<string> {
@@ -61,7 +74,10 @@ function connectionTokens(value: string | string[] | undefined): Set<string> {
   );
 }
 
-/** Headers legacy receives: the stripped inbound ones, the inbound `Host`, `X-Forwarded-*` and the mapped `Cookie`. */
+// The OTel undici instrumentation subscribes here and appends, never replaces, the active trace context's headers.
+const undiciRequestCreated = channel('undici:request:create');
+
+/** Headers legacy receives: the stripped inbound ones, the inbound `Host`, `X-Forwarded-*`, the mapped `Cookie` and one trace context. */
 function legacyRequestHeaders(
   request: FastifyRequest,
   ctx: LegacyForwardContext,
@@ -82,6 +98,12 @@ function legacyRequestHeaders(
   if (ctx.cookieHeader === '') delete headers.cookie;
   else if (ctx.cookieHeader !== undefined) headers.cookie = ctx.cookieHeader;
   if (bodyLength !== undefined) headers['content-length'] = String(bodyLength);
+  if (undiciRequestCreated.hasSubscribers) {
+    delete headers.traceparent;
+    delete headers.tracestate;
+  } else {
+    injectHttpHeaders(headers);
+  }
   return headers;
 }
 
@@ -93,11 +115,18 @@ function upstreamOf(res: FastifyReplyFromResponse): LegacyUpstream {
   return { statusCode: res.statusCode, headers };
 }
 
-/** Replaces the reply's `Set-Cookie` headers with `setCookies` when it is defined. */
-function replaceSetCookies(reply: FastifyReply, setCookies: readonly string[] | undefined): void {
-  if (setCookies === undefined) return;
+/** Replaces the reply's `Set-Cookie` headers with `setCookies`; without them, target-primary withholds legacy's session cookies. */
+function replaceSetCookies(
+  reply: FastifyReply,
+  sessionMode: SessionMode,
+  upstream: LegacyUpstream,
+  setCookies: readonly string[] | undefined,
+): void {
+  if (setCookies === undefined && sessionMode === 'legacy-primary') return;
+  const cookies =
+    setCookies ?? (upstream.headers['set-cookie'] ?? []).filter((value) => !isLegacySessionCookie(parseSetCookie(value).name));
   reply.removeHeader('set-cookie');
-  if (setCookies.length > 0) reply.header('set-cookie', [...setCookies]);
+  if (cookies.length > 0) reply.header('set-cookie', [...cookies]);
 }
 
 /** Every byte of `stream`. */
@@ -105,6 +134,41 @@ async function collect(stream: Readable): Promise<Buffer> {
   const chunks: Buffer[] = [];
   for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
   return Buffer.concat(chunks);
+}
+
+/** True when `error` failed to establish the connection, so legacy never received the request. */
+function neverSent(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  return typeof code === 'string' && NOT_SENT_CODES.has(code);
+}
+
+/** Relay of `origin` that ends after `onEnd` resolved; destroying it leaves `origin` draining, an origin failure calls `onFail`. */
+function settlingRelay(origin: Readable, onEnd: () => Promise<void>, onFail: (error: Error) => void): PassThrough {
+  const relay = new PassThrough();
+  // The last byte so far waits for the next chunk, so a Content-Length response completes only after `onEnd`.
+  let held: Buffer = Buffer.alloc(0);
+  origin.on('data', (chunk: Buffer) => {
+    if (relay.destroyed || chunk.length === 0) return;
+    const ready = held.length === 0 ? chunk.subarray(0, -1) : Buffer.concat([held, chunk.subarray(0, -1)]);
+    held = chunk.subarray(-1);
+    if (ready.length > 0 && !relay.write(ready)) origin.pause();
+  });
+  relay.on('drain', () => origin.resume());
+  relay.on('close', () => origin.resume());
+  finished(origin, (error) => {
+    if (error) {
+      onFail(error);
+      // Without an error, so a relay nobody reads yet emits none; its readers see a premature close.
+      relay.destroy();
+      return;
+    }
+    void onEnd().then(() => {
+      if (relay.destroyed) return;
+      if (held.length > 0) relay.end(held);
+      else relay.end();
+    });
+  });
+  return relay;
 }
 
 /**
@@ -123,7 +187,7 @@ function sendAsLegacy(request: FastifyRequest, reply: FastifyReply, body: Readab
     return;
   }
   pipeline(body, reply.raw, (error) => {
-    if (error) request.log.warn({ error }, 'legacy response stream ended early');
+    if (error) request.log.warn({ error: serializeError(error) }, 'legacy response stream ended early');
   });
 }
 
@@ -132,7 +196,7 @@ async function guarded<T>(request: FastifyRequest, name: string, run: () => Prom
   try {
     return await run();
   } catch (error) {
-    request.log.error({ error }, `legacy forward ${name} failed`);
+    request.log.error({ error: serializeError(error) }, `legacy forward ${name} failed`);
     return undefined;
   }
 }
@@ -147,11 +211,18 @@ export async function forwardToLegacy(
   ctx: LegacyForwardContext,
 ): Promise<FastifyReply> {
   let settled = false;
-  const settle = (): void => {
+  /** Runs `onSettled` once with `outcome`; a later call returns at once. */
+  const settle = async (outcome: LegacySettlement): Promise<void> => {
     if (settled) return;
     settled = true;
-    void guarded(request, 'onSettled', () => ctx.onSettled?.());
+    await guarded(request, 'onSettled', () => ctx.onSettled?.(outcome));
   };
+  /** Logs an end after which legacy may still commit, which therefore leaves the exchange unsettled. */
+  const unsettled = (error: unknown): void => {
+    request.log.warn({ error: serializeError(error) }, 'legacy exchange ended uncertainly; in-flight registration kept');
+  };
+  /** Settlement of a request that never reached legacy, which its 503 waits for. */
+  let notSentSettlement: Promise<void> | undefined;
 
   async function respond(res: FastifyReplyFromResponse): Promise<void> {
     // reply-from also calls onResponse after it answered an invalid upstream status through onError.
@@ -162,14 +233,14 @@ export async function forwardToLegacy(
     const upstream = upstreamOf(res);
     if (ctx.mode === 'stream') {
       const extra = await guarded(request, 'beforeSend', () => ctx.beforeSend?.(upstream));
-      replaceSetCookies(reply, extra?.setCookies);
+      replaceSetCookies(reply, ctx.sessionMode, upstream, extra?.setCookies);
       sendAsLegacy(request, reply, res.stream);
       return;
     }
     const body = await collect(res.stream);
     const extra = await guarded(request, 'beforeSend', () => ctx.beforeSend?.(upstream));
     await guarded(request, 'onBuffered', () => ctx.onBuffered?.({ ...upstream, body }));
-    replaceSetCookies(reply, extra?.setCookies);
+    replaceSetCookies(reply, ctx.sessionMode, upstream, extra?.setCookies);
     sendAsLegacy(request, reply, body);
   }
 
@@ -188,23 +259,33 @@ export async function forwardToLegacy(
     timeout: 0,
     retriesCount: 0,
     // Runs once per exchange, before reply-from may destroy the response of an aborted client; null disables retries.
-    retryDelay: ({ res }) => {
+    retryDelay: ({ err, res }) => {
+      if (ctx.onSettled === undefined) return null;
       // Typed as the reply, but reply-from passes the upstream response here, or nothing when the exchange failed.
       const upstream = res as unknown as FastifyReplyFromResponse | undefined;
-      if (upstream?.stream === undefined) settle();
-      else finished(upstream.stream, () => settle());
+      // The same object reaches reply-from's abort check and onResponse, so both see only the relay.
+      if (upstream !== undefined) upstream.stream = settlingRelay(upstream.stream, () => settle('completed'), unsettled);
+      else if (neverSent(err)) notSentSettlement = settle('not-sent');
+      else unsettled(err);
       return null;
     },
     onResponse: (_request, _reply, res) => {
       // No byte has reached the client before `respond` sends, so a failure here (a broken buffered body) answers the 503.
       respond(res).catch((error: unknown) => {
-        request.log.error({ error }, 'legacy response failed');
+        request.log.error({ error: serializeError(error) }, 'legacy response failed');
         res.stream.destroy();
         failClosed(reply, ctx.failContext);
       });
     },
     onError: () => {
-      failClosed(reply, ctx.failContext);
+      // Synchronous otherwise: for an invalid status reply-from calls onResponse next, which must see the 503 sent.
+      if (notSentSettlement === undefined) {
+        failClosed(reply, ctx.failContext);
+        return;
+      }
+      void notSentSettlement.then(() => {
+        failClosed(reply, ctx.failContext);
+      });
     },
   };
 
@@ -212,8 +293,8 @@ export async function forwardToLegacy(
     return reply.from(`${ctx.legacyOrigin.replace(/\/+$/, '')}${path}`, options);
   } catch (error) {
     // reply-from rejects a path it cannot parse before anything is sent to legacy.
-    request.log.warn({ error }, 'legacy forward rejected before sending');
-    settle();
+    request.log.warn({ error: serializeError(error) }, 'legacy forward rejected before sending');
+    await settle('not-sent');
     return failClosed(reply, ctx.failContext);
   }
 }

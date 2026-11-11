@@ -392,6 +392,26 @@ describe.skipIf(!available)('identity repository against PostgreSQL', () => {
     expect(await gated((tx) => repo.removePrevRedirects(tx, id(1)))).toBe(2);
   });
 
+  it('merges admin session state by top-level key, replacing a given key whole', async () => {
+    await inTenant((tx) => repo.insertSession(tx, { session_id: 'S1', csrf_secret: id(1, 'K'), mode: 'target-primary', state: 'active' }));
+    expect(await inTenant((tx) => repo.readSessionAdminState(tx, 'S1'))).toEqual({});
+
+    const first = { siteid: 'tenant-a', flash: { '1': { msg: 'Saved', siteid: 'tenant-a' } }, nextPreserveKey: 2 };
+    expect(await inTenant((tx) => repo.mergeSessionAdminState(tx, 'S1', first))).toEqual(first);
+    expect(await inTenant((tx) => repo.readSessionAdminState(tx, 'S1'))).toEqual(first);
+
+    const second = { flash: { '2': { msg: 'Deleted' } }, rb: 'de_DE' };
+    const merged = { siteid: 'tenant-a', flash: { '2': { msg: 'Deleted' } }, nextPreserveKey: 2, rb: 'de_DE' };
+    expect(await inTenant((tx) => repo.mergeSessionAdminState(tx, 'S1', second))).toEqual(merged);
+    expect(await inTenant((tx) => repo.readSessionAdminState(tx, 'S1'))).toEqual(merged);
+    expect(JSON.parse((await inTenant((tx) => repo.findSession(tx, 'S1')))?.admin_state ?? 'null')).toEqual(merged);
+    expect((await changelog()).filter(({ table }) => table === 'session').map(({ op }) => op)).toEqual(['insert', 'update', 'update']);
+
+    expect(await inTenant((tx) => repo.readSessionAdminState(tx, 'S9'))).toBeNull();
+    expect(await inTenant((tx) => repo.mergeSessionAdminState(tx, 'S9', { siteid: 'x' }))).toBeNull();
+    expect(await inTenant((tx) => repo.readSessionAdminState(tx, 'S1'), otherTenantId)).toBeNull();
+  });
+
   it('stores OAuth clients and tokens, reuses only user-bound unexpired tokens and purges day-old ones', async () => {
     const client = await gated((tx) =>
       repo.insertOAuthClient(tx, {

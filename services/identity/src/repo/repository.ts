@@ -120,6 +120,11 @@ function isUniqueViolation(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === UNIQUE_VIOLATION;
 }
 
+/** The parsed `session.admin_state` JSON text; `{}` for NULL. */
+function storedAdminState(text: string | null): SessionAdminState {
+  return text === null ? {} : (JSON.parse(text) as SessionAdminState);
+}
+
 /** The acting user of a group save, as the session's `session.mura` values give it. */
 export interface AuditActor {
   userId: string;
@@ -228,12 +233,17 @@ export type StrikeValues = Pick<UserStrikeRow, 'strikes' | 'lastattempt'>;
 
 /** A session to insert; timestamps default to now and `epoch` to 0. */
 export type SessionInsert = Pick<SessionRow, 'session_id' | 'csrf_secret' | 'mode' | 'state'> &
-  Partial<Pick<SessionRow, 'user_id' | 'site_id' | 'login_snapshot' | 'jar_ref' | 'ended_at'>> & { epoch?: number | string };
+  Partial<Pick<SessionRow, 'user_id' | 'site_id' | 'login_snapshot' | 'jar_ref' | 'ended_at' | 'admin_state'>> & { epoch?: number | string };
 
 /** Session columns `updateSession` may set; `updated_at` is always now. */
-export type SessionPatch = Partial<Pick<SessionRow, 'user_id' | 'site_id' | 'login_snapshot' | 'csrf_secret' | 'mode' | 'state' | 'jar_ref' | 'ended_at'>> & {
+export type SessionPatch = Partial<
+  Pick<SessionRow, 'user_id' | 'site_id' | 'login_snapshot' | 'csrf_secret' | 'mode' | 'state' | 'jar_ref' | 'ended_at' | 'admin_state'>
+> & {
   epoch?: number | string;
 };
+
+/** Admin session-scope values by their legacy `session` names, as `session.admin_state` holds them. */
+export type SessionAdminState = Record<string, unknown>;
 
 /** A remote session to store. */
 export type RemoteSessionInput = Omit<RemoteSessionRow, 'tenant_id'>;
@@ -447,6 +457,10 @@ export interface IdentityRepository extends Repository {
   updateSession(tx: TenantTx, sessionId: string, patch: SessionPatch, ctx?: WriteContext): Promise<SessionRow | null>;
   /** Deletes the session of this tenant; false when absent. */
   deleteSession(tx: TenantTx, sessionId: string, ctx?: WriteContext): Promise<boolean>;
+  /** The admin state the session stored, `{}` when none; null when the session is absent. */
+  readSessionAdminState(tx: TenantTx, sessionId: string): Promise<SessionAdminState | null>;
+  /** Locks the session and lays the top-level `values` over its stored admin state; returns the result, null when the session is absent. */
+  mergeSessionAdminState(tx: TenantTx, sessionId: string, values: Readonly<SessionAdminState>, ctx?: WriteContext): Promise<SessionAdminState | null>;
 
   /** The remote session of `userId`; null when absent. */
   findRemoteSession(tx: TenantTx, userId: string): Promise<RemoteSessionRow | null>;
@@ -588,6 +602,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
   const redirect = name(REDIRECT);
   const oauthClient = name(OAUTH_CLIENT);
   const oauthToken = name(OAUTH_TOKEN);
+  const session = name(SESSION);
   const csrfClaim = name(CSRF_CLAIM);
   const accountOperation = name(ACCOUNT_OPERATION);
   const personContact = name(PERSON_CONTACT);
@@ -677,6 +692,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
   const lockExpiredTokensSql =
     `SELECT token FROM ${oauthToken} WHERE tenant_id = $1 AND clientid = $2 AND granttype = $3 AND expires < $4` +
     ' ORDER BY token FOR UPDATE';
+  const lockSessionAdminStateSql = `SELECT admin_state FROM ${session} WHERE tenant_id = $1 AND session_id = $2 FOR UPDATE`;
   const claimsSql =
     `SELECT * FROM ${csrfClaim} WHERE tenant_id = $1 AND session_id = $2 AND ($3::text IS NULL OR state = $3)` +
     ' AND ($4::timestamp IS NULL OR coalesce(used_at, claimed_at) >= $4) ORDER BY claimed_at, token';
@@ -1275,6 +1291,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
       login_snapshot: null,
       jar_ref: null,
       ended_at: null,
+      admin_state: null,
       epoch: 0,
       ...row,
       created_at: now,
@@ -1289,6 +1306,26 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
 
   async function deleteSession(tx: TenantTx, sessionId: string, ctx: WriteContext = {}): Promise<boolean> {
     return (await base.delete(tx, SESSION.table, { session_id: sessionId }, ctx)) !== null;
+  }
+
+  async function readSessionAdminState(tx: TenantTx, sessionId: string): Promise<SessionAdminState | null> {
+    const row = await findSession(tx, sessionId);
+    return row === null ? null : storedAdminState(row.admin_state);
+  }
+
+  async function mergeSessionAdminState(
+    tx: TenantTx,
+    sessionId: string,
+    values: Readonly<SessionAdminState>,
+    ctx: WriteContext = {},
+  ): Promise<SessionAdminState | null> {
+    const current = (await select<Pick<SessionRow, 'admin_state'>>(tx, lockSessionAdminStateSql, [tx.tenantId, sessionId]))[0];
+    if (current === undefined) {
+      return null;
+    }
+    const merged = { ...storedAdminState(current.admin_state), ...values };
+    await updateSession(tx, sessionId, { admin_state: JSON.stringify(merged) }, ctx);
+    return merged;
   }
 
   function findRemoteSession(tx: TenantTx, userId: string): Promise<RemoteSessionRow | null> {
@@ -1576,6 +1613,8 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     insertSession,
     updateSession,
     deleteSession,
+    readSessionAdminState,
+    mergeSessionAdminState,
     findRemoteSession,
     findRemoteSessionByToken,
     saveRemoteSession,

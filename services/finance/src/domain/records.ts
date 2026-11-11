@@ -7,13 +7,15 @@ import type { TenantTx } from '@opt2/platform/tenancy';
 import type { StoragePort } from '@opt2/platform/storage';
 import type { WriteContext } from '@opt2/platform/migration-kit';
 import { financeLifecycle, type FinanceAction, type FinanceState } from './lifecycle.transitions.js';
-import { formatMoney, type Money } from './money.js';
+import { formatMoney, moneyFromNumeric, type Money } from './money.js';
 import type { FinanceRecordChanges, FinanceRepository, NewFinanceRecordVersion } from '../repo/repository.js';
 import {
   findProgramBinding,
   findRecord,
+  periodTotals,
   listRecords as queryRecordPage,
   listVersions as queryVersions,
+  type PeriodScope,
   type RecordPage,
   type RecordPaging,
 } from '../repo/queries.js';
@@ -58,6 +60,8 @@ export class FinanceDomainError extends Error {
 const INITIAL_STATE: FinanceState = 'IN-PROGRESS';
 const CREATE_ACTION = 'create';
 const EDIT_ACTION: FinanceAction = 'edit';
+// 999999999999999.9999, the largest numeric(19,4) value, as Money.
+const MAX_PERIOD_TOTAL: Money = 9_999_999_999_999_999_999n;
 
 /** The version row snapshotting the stored `record` after `action` by `actor` at `at`. */
 function versionOf(record: FinanceRecordRow, action: string, actor: FinanceActor, at: Date): NewFinanceRecordVersion {
@@ -86,15 +90,28 @@ function editedColumns(input: RecordEdit = {}): FinanceRecordChanges {
   };
 }
 
+/** Takes the tenant write lock, then throws `invalidParameters` when `amount` would carry a sum of `scope` past numeric(19,4), as the fixture procedures do. */
+async function guardPeriodTotal(tx: TenantTx, deps: FinanceDomainDeps, scope: PeriodScope, amount: Money): Promise<void> {
+  await deps.repository.lockWrites(tx);
+  const totals = await periodTotals(tx, scope);
+  if (totals.positive + (amount > 0n ? amount : 0n) > MAX_PERIOD_TOTAL || totals.negative + (amount < 0n ? amount : 0n) < -MAX_PERIOD_TOTAL) {
+    throw new FinanceDomainError('invalidParameters');
+  }
+}
+
 /** Provenance of a domain write by `actor`. */
 function writeContext(actor: FinanceActor): WriteContext {
   return { actorUserId: actor.userId };
 }
 
-/** Creates an IN-PROGRESS record at version 1 with its `create` version row; throws `invalidParameters` when the tenant has no program. */
+/**
+ * Creates an IN-PROGRESS record at version 1 with its `create` version row.
+ * Throws `invalidParameters` when the tenant has no program or the amount would overflow its period's totals.
+ */
 export async function createRecord(tx: TenantTx, deps: FinanceDomainDeps, input: RecordInput, actor: FinanceActor): Promise<RecordWrite> {
   const binding = await findProgramBinding(tx);
   if (binding === null) throw new FinanceDomainError('invalidParameters');
+  await guardPeriodTotal(tx, deps, { programId: binding.legacy_program_id, period: input.period }, input.amount);
   const now = deps.clock.now();
   const ctx = writeContext(actor);
   const record = await deps.repository.insertRecord(
@@ -122,7 +139,8 @@ export async function createRecord(tx: TenantTx, deps: FinanceDomainDeps, input:
 
 /**
  * Applies `command.action` to its record under the finance lifecycle and writes the resulting version row.
- * Throws `notFound` for a missing record before any role or state check; a rejected transition throws `TransitionRejectedError`.
+ * Throws `notFound` for a missing record before any role or state check; a rejected transition throws `TransitionRejectedError`;
+ * an edit that would overflow its period's totals throws `invalidParameters`.
  */
 export async function transitionRecord(
   tx: TenantTx,
@@ -133,6 +151,10 @@ export async function transitionRecord(
   const current = await findRecord(tx, command.id, { forUpdate: true });
   if (current === null) throw new FinanceDomainError('notFound');
   return applyTransition(financeLifecycle, { state: current.state, action: command.action, roles: command.roles }, async (transition) => {
+    if (transition.action === EDIT_ACTION) {
+      const scope = { programId: current.legacy_program_id, period: command.input?.period ?? current.period, excludeRecordId: current.record_id };
+      await guardPeriodTotal(tx, deps, scope, command.input?.amount ?? moneyFromNumeric(current.amount));
+    }
     const now = deps.clock.now();
     const ctx = writeContext(actor);
     const changes: FinanceRecordChanges = {

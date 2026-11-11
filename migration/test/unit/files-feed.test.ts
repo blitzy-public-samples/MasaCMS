@@ -4,8 +4,14 @@ import { createHash } from 'node:crypto';
 import type { MetadataTx, TenantDb } from '@opt2/platform/tenancy';
 import { describe, expect, it, vi } from 'vitest';
 
-import { compareManifestKeys, diffSnapshotManifests, type DiffManifestOptions } from '../../src/files/feed.js';
-import type { ManifestEntry, ManifestKey } from '../../src/files/manifest.js';
+import {
+  compareManifestKeys,
+  diffSnapshotManifests,
+  streamManifestDiff,
+  type DiffManifestOptions,
+  type ManifestDifference,
+} from '../../src/files/feed.js';
+import { streamManifest, type ManifestEntry, type ManifestKey } from '../../src/files/manifest.js';
 import type { StoredVariant } from '../../src/files/names.js';
 
 const FID_A = 'A1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
@@ -43,9 +49,27 @@ const k = (siteId: string, path: string): ManifestKey => ({ siteId, path });
 
 const keyOf = ({ siteId, path }: ManifestEntry): ManifestKey => k(siteId, path);
 
+/** Async iterable over `entries` that records how far it was read and whether it was closed. */
+function sourceOf(entries: readonly ManifestEntry[], failure?: Error) {
+  const state = { read: 0, closed: false };
+  async function* iterate(): AsyncGenerator<ManifestEntry, void, undefined> {
+    try {
+      for (const found of entries) {
+        await Promise.resolve();
+        state.read += 1;
+        yield found;
+      }
+      if (failure !== undefined) throw failure;
+    } finally {
+      state.closed = true;
+    }
+  }
+  return { entries: iterate(), state };
+}
+
 /** Reader over in-memory manifests keyed by snapshot sequence. */
 function readerOf(manifests: Record<number, ManifestEntry[]>) {
-  return vi.fn((snapshotSeq: number) => Promise.resolve(manifests[snapshotSeq] ?? []));
+  return vi.fn((snapshotSeq: number) => sourceOf(manifests[snapshotSeq] ?? []).entries);
 }
 
 /** Migration pool that fails every use, for diffs whose manifests come from `opts.read`. */
@@ -56,24 +80,30 @@ const unusedDb = {
   end: () => Promise.resolve(),
 } as unknown as TenantDb;
 
-/** Migration pool answering readManifest with each snapshot's `migration.file_manifest` rows, as `pg` returns them. */
+/** Migration pool answering manifest page reads with each snapshot's `migration.file_manifest` rows, as `pg` returns them. */
 function manifestDb(manifests: Record<number, ManifestEntry[]>) {
-  const queries: { sql: string; values: unknown[] }[] = [];
+  const queries: { sql: string; values: unknown[]; returned: number }[] = [];
   const tx = {
     schema: 'migration',
     kind: 'metadata',
     query: (sql: string, values: unknown[]) => {
-      queries.push({ sql, values });
-      const rows = (manifests[values[0] as number] ?? []).map((found) => ({
-        site_id: found.siteId,
-        path: found.path,
-        file_id: found.fileId,
-        variant: found.variant,
-        ext: found.ext,
-        size: String(found.size),
-        sha256: found.sha256,
-        orphan: found.orphan,
-      }));
+      const after = sql.includes(') > ($2, $3)') ? k(values[1] as string, values[2] as string) : undefined;
+      const limit = values[after === undefined ? 1 : 3] as number;
+      const rows = (manifests[values[0] as number] ?? [])
+        .toSorted(compareManifestKeys)
+        .filter((found) => after === undefined || compareManifestKeys(found, after) > 0)
+        .slice(0, limit)
+        .map((found) => ({
+          site_id: found.siteId,
+          path: found.path,
+          file_id: found.fileId,
+          variant: found.variant,
+          ext: found.ext,
+          size: String(found.size),
+          sha256: found.sha256,
+          orphan: found.orphan,
+        }));
+      queries.push({ sql, values, returned: rows.length });
       return Promise.resolve({ rows, rowCount: rows.length, command: 'SELECT', oid: 0, fields: [] });
     },
   } as unknown as MetadataTx;
@@ -164,31 +194,35 @@ describe('diffSnapshotManifests', () => {
     expect(read.mock.calls).toEqual([[4], [5]]);
   });
 
-  it('gives the same diff whatever order the reader returns, and leaves the read arrays as read', async () => {
-    const before = [entry(4, 'tenant-a', `${FID_D}.png`), entry(4, 'default', `${FID_B}.pdf`), entry(4, 'default', `${FID_A}.jpg`)];
-    const after = [
-      entry(5, 'tenant-b', `${FID_E}.png`),
-      entry(5, 'default', `${FID_B}.pdf`, { sha256: sha('edited') }),
-      entry(5, 'default', `${FID_A}.jpg`),
-      entry(5, 'Default', `${FID_C}.png`),
-    ];
-    const readOrder = { before: [...before], after: [...after] };
+  it.each<[string, ManifestEntry[], ManifestEntry[], string]>([
+    [
+      'the earlier manifest lists a key before its predecessor',
+      [entry(4, 'default', `${FID_A}.jpg`), entry(4, 'tenant-a', `${FID_D}.png`), entry(4, 'default', `${FID_B}.pdf`)],
+      [entry(5, 'default', `${FID_A}.jpg`), entry(5, 'tenant-b', `${FID_E}.png`)],
+      `manifest of snapshot 4 is not in key order: "default/cache/file/${FID_B}.pdf" of site "default" follows ` +
+        `"tenant-a/cache/file/${FID_D}.png" of site "tenant-a"`,
+    ],
+    [
+      'the later manifest sorts site ids case-insensitively',
+      [],
+      [entry(5, 'default', `${FID_A}.jpg`), entry(5, 'Default', `${FID_C}.png`)],
+      `manifest of snapshot 5 is not in key order: "Default/cache/file/${FID_C}.png" of site "Default" follows ` +
+        `"default/cache/file/${FID_A}.jpg" of site "default"`,
+    ],
+    [
+      'a manifest repeats a key',
+      [entry(4, 'default', `${FID_A}.jpg`)],
+      [entry(5, 'default', `${FID_A}.jpg`), entry(5, 'default', `${FID_A}.jpg`, { size: 1 })],
+      `manifest of snapshot 5 is not in key order: "default/cache/file/${FID_A}.jpg" of site "default" follows ` +
+        `"default/cache/file/${FID_A}.jpg" of site "default"`,
+    ],
+  ])('rejects instead of re-sorting when %s, and closes both readers', async (_case, before, after, message) => {
+    const sources = { 4: sourceOf(before), 5: sourceOf(after) };
 
-    const shuffled = await diffSnapshotManifests({ db: unusedDb }, 4, 5, { read: readerOf({ 4: before, 5: after }) });
-    const sorted = await diffSnapshotManifests({ db: unusedDb }, 4, 5, {
-      read: readerOf({ 4: before.toSorted(compareManifestKeys), 5: after.toSorted(compareManifestKeys) }),
-    });
+    const diff = diffSnapshotManifests({ db: unusedDb }, 4, 5, { read: (snapshotSeq) => sources[snapshotSeq as 4 | 5].entries });
 
-    expect(shuffled).toEqual(sorted);
-    expect(shuffled.toTransfer).toEqual([
-      k('Default', `Default/cache/file/${FID_C}.png`),
-      k('default', `default/cache/file/${FID_B}.pdf`),
-      k('tenant-b', `tenant-b/cache/file/${FID_E}.png`),
-    ]);
-    expect(shuffled.removed).toEqual([before[0]]);
-    expect(shuffled.unchanged).toBe(1);
-    expect(before).toEqual(readOrder.before);
-    expect(after).toEqual(readOrder.after);
+    await expect(diff).rejects.toThrow(new Error(message));
+    expect([sources[4].state.closed, sources[5].state.closed]).toEqual([true, true]);
   });
 
   it('counts an object with equal sha256, size and orphan flag as unchanged although its snapshot differs', async () => {
@@ -200,26 +234,14 @@ describe('diffSnapshotManifests', () => {
     expect(diff).toEqual({ from: 4, to: 9, added: [], changed: [], removed: [], unchanged: 2, toTransfer: [] });
   });
 
-  it.each<[string, ManifestEntry[], ManifestEntry[], ManifestEntry[], ManifestEntry[]]>([
-    ['both manifests are empty', [], [], [], []],
-    [
-      'the earlier manifest is empty',
-      [],
-      [entry(5, 'tenant-a', `${FID_D}.png`), entry(5, 'default', `${FID_A}.jpg`)],
-      [entry(5, 'default', `${FID_A}.jpg`), entry(5, 'tenant-a', `${FID_D}.png`)],
-      [],
-    ],
-    [
-      'the later manifest is empty',
-      [entry(4, 'tenant-a', `${FID_D}.png`), entry(4, 'default', `${FID_A}.jpg`)],
-      [],
-      [],
-      [entry(4, 'default', `${FID_A}.jpg`), entry(4, 'tenant-a', `${FID_D}.png`)],
-    ],
-  ])('adds every later object and removes every earlier one when %s', async (_case, before, after, added, removed) => {
+  it.each<[string, ManifestEntry[], ManifestEntry[]]>([
+    ['both manifests are empty', [], []],
+    ['the earlier manifest is empty', [], [entry(5, 'default', `${FID_A}.jpg`), entry(5, 'tenant-a', `${FID_D}.png`)]],
+    ['the later manifest is empty', [entry(4, 'default', `${FID_A}.jpg`), entry(4, 'tenant-a', `${FID_D}.png`)], []],
+  ])('adds every later object and removes every earlier one when %s', async (_case, before, after) => {
     const diff = await diffSnapshotManifests({ db: unusedDb }, 4, 5, { read: readerOf({ 4: before, 5: after }) });
 
-    expect(diff).toEqual({ from: 4, to: 5, added, changed: [], removed, unchanged: 0, toTransfer: added.map(keyOf) });
+    expect(diff).toEqual({ from: 4, to: 5, added: after, changed: [], removed: before, unchanged: 0, toTransfer: after.map(keyOf) });
   });
 
   it.each<[string, [] | [DiffManifestOptions]]>([
@@ -241,14 +263,81 @@ describe('diffSnapshotManifests', () => {
       unchanged: 1,
       toTransfer: [k('default', `default/cache/file/${FID_C}.png`)],
     });
-    expect(queries.map((query) => query.values)).toEqual([[4], [5]]);
+    expect(queries.map((query) => query.values)).toEqual([
+      [4, 1000],
+      [5, 1000],
+    ]);
     for (const query of queries) expect(query.sql).toMatch(/FROM migration\.file_manifest WHERE snapshot_seq = \$1/);
   });
 
-  it('rejects with the reader error when a manifest cannot be read', async () => {
-    const failure = new Error('snapshot 5 has no manifest');
-    const read = vi.fn((snapshotSeq: number) => (snapshotSeq === 5 ? Promise.reject(failure) : Promise.resolve([])));
+  it.each([1, 2, 3, 7])('gives the same diff when both manifests are read in keyset pages of %i entries', async (pageRows) => {
+    const names = (fileIds: string[]) => fileIds.flatMap((id) => [`${id}.jpg`, `${id}_small.jpg`]);
+    const before = [
+      ...names([FID_A, FID_B, FID_C]).map((name) => entry(4, 'default', name)),
+      ...names([FID_D]).map((name) => entry(4, 'tenant-a', name)),
+    ];
+    const after = [
+      entry(5, 'Default', `${FID_E}.png`),
+      ...names([FID_A, FID_C]).map((name) => entry(5, 'default', name, name.startsWith(FID_C) ? { size: 7 } : {})),
+      ...names([FID_D, FID_E]).map((name) => entry(5, 'tenant-a', name)),
+    ];
+    const { db, queries } = manifestDb({ 4: before, 5: after });
+    const expected = await diffSnapshotManifests({ db: unusedDb }, 4, 5, { read: readerOf({ 4: before, 5: after }) });
 
-    await expect(diffSnapshotManifests({ db: unusedDb }, 4, 5, { read })).rejects.toBe(failure);
+    const diff = await diffSnapshotManifests({ db }, 4, 5, { read: (snapshotSeq) => streamManifest({ db }, snapshotSeq, { pageRows }) });
+
+    expect(diff).toEqual(expected);
+    expect(diff).toMatchObject({ unchanged: 4, removed: before.slice(2, 4), toTransfer: after.filter((_found, index) => [0, 3, 4, 7, 8].includes(index)).map(keyOf) });
+    expect(Math.max(...queries.map((query) => query.returned))).toBeLessThanOrEqual(pageRows);
+    expect(queries.filter((query) => query.values[0] === 4)).toHaveLength(Math.floor(before.length / pageRows) + 1);
+    expect(queries.filter((query) => query.values[0] === 5)).toHaveLength(Math.floor(after.length / pageRows) + 1);
+  });
+
+  it('rejects with the reader error when a manifest cannot be read, and closes the other reader', async () => {
+    const failure = new Error('snapshot 5 has no manifest');
+    const sources = { 4: sourceOf([entry(4, 'default', `${FID_A}.jpg`), entry(4, 'default', `${FID_B}.pdf`)]), 5: sourceOf([], failure) };
+
+    const diff = diffSnapshotManifests({ db: unusedDb }, 4, 5, { read: (snapshotSeq) => sources[snapshotSeq as 4 | 5].entries });
+
+    await expect(diff).rejects.toBe(failure);
+    expect(sources[4].state).toEqual({ read: 1, closed: true });
+  });
+});
+
+describe('streamManifestDiff', () => {
+  it('yields one difference per key in key order, unchanged keys included', async () => {
+    const kept = [entry(4, 'default', `${FID_A}.jpg`), entry(5, 'default', `${FID_A}.jpg`)] as const;
+    const edited = [entry(4, 'default', `${FID_B}.pdf`), entry(5, 'default', `${FID_B}.pdf`, { sha256: sha('edited') })] as const;
+    const removed = entry(4, 'default', `${FID_C}.png`);
+    const added = entry(5, 'tenant-a', `${FID_D}.png`);
+
+    const differences: ManifestDifference[] = [];
+    for await (const difference of streamManifestDiff(sourceOf([kept[0], edited[0], removed]).entries, sourceOf([kept[1], edited[1], added]).entries)) {
+      differences.push(difference);
+    }
+
+    expect(differences).toEqual([
+      { kind: 'unchanged', before: kept[0], after: kept[1] },
+      { kind: 'changed', before: edited[0], after: edited[1] },
+      { kind: 'removed', before: removed },
+      { kind: 'added', after: added },
+    ]);
+  });
+
+  it('reads one entry ahead on each side and closes both manifests when the consumer stops early', async () => {
+    const from = sourceOf([FID_A, FID_B, FID_C].map((id) => entry(4, 'default', `${id}.jpg`)));
+    const to = sourceOf([FID_B, FID_C, FID_D].map((id) => entry(5, 'default', `${id}.jpg`)));
+
+    const first: ManifestDifference[] = [];
+    for await (const difference of streamManifestDiff(from.entries, to.entries)) {
+      first.push(difference);
+      break;
+    }
+
+    expect(first).toMatchObject([{ kind: 'removed', before: { path: `default/cache/file/${FID_A}.jpg` } }]);
+    expect([from.state, to.state]).toEqual([
+      { read: 1, closed: true },
+      { read: 1, closed: true },
+    ]);
   });
 });

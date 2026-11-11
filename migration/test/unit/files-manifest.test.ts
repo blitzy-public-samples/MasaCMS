@@ -1,19 +1,25 @@
 // Unit tests for the legacy file-store manifest: snapshot lookups, listing through the bridge, orphans, store refusals and reads.
 import { createHash } from 'node:crypto';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import type { Logger } from '@opt2/platform/logging';
 import type { MetadataTx, TenantDb } from '@opt2/platform/tenancy';
 import type { QueryResult, QueryResultRow } from 'pg';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   FileStoreUnsupportedError,
+  MANIFEST_PAGE_ROWS,
   SUPPORTED_FILE_STORE,
   buildFileManifest,
   readManifest,
+  readManifestPage,
   readSnapshotFileOwners,
   readSnapshotSites,
   snapshotDatabase,
+  streamManifest,
   type ManifestEntry,
 } from '../../src/files/manifest.js';
 import {
@@ -50,9 +56,18 @@ interface ManifestRecord {
 interface Statement {
   sql: string;
   values: unknown[];
+  /** Rows the statement returned. */
+  returned: number;
 }
 
+const SELECT_MANIFEST = 'SELECT site_id, path, file_id, variant, ext, size, sha256, orphan FROM migration.file_manifest';
+const MANIFEST_ORDER = 'ORDER BY site_id COLLATE "C", path COLLATE "C"';
+const FIRST_PAGE_SQL = `${SELECT_MANIFEST} WHERE snapshot_seq = $1 ${MANIFEST_ORDER} LIMIT $2`;
+const NEXT_PAGE_SQL = `${SELECT_MANIFEST} WHERE snapshot_seq = $1 AND (site_id COLLATE "C", path COLLATE "C") > ($2, $3) ${MANIFEST_ORDER} LIMIT $4`;
+
 const byteOrder = (a: string, b: string): number => Buffer.compare(Buffer.from(a), Buffer.from(b));
+const keyOrder = (a: { site_id: string; path: string }, b: { site_id: string; path: string }): number =>
+  byteOrder(a.site_id, b.site_id) || byteOrder(a.path, b.path);
 
 /** In-memory migration.snapshot and migration.file_manifest with the primary key and rollback PostgreSQL gives them. */
 class MigrationTables {
@@ -88,8 +103,17 @@ class MigrationTables {
     return this.statements.filter((statement) => statement.sql.startsWith('INSERT'));
   }
 
+  pages(): Statement[] {
+    return this.statements.filter((statement) => statement.sql === FIRST_PAGE_SQL || statement.sql === NEXT_PAGE_SQL);
+  }
+
   private run(sql: string, values: unknown[]): QueryResult {
-    this.statements.push({ sql, values });
+    const answer = this.answer(sql, values);
+    this.statements.push({ sql, values, returned: answer.rows.length });
+    return answer;
+  }
+
+  private answer(sql: string, values: unknown[]): QueryResult {
     const seq = values[0] as number;
     if (sql === 'SELECT database_name FROM migration.snapshot WHERE seq = $1') {
       const snapshot = this.snapshots.get(seq);
@@ -109,14 +133,12 @@ class MigrationTables {
       if (snapshot !== undefined) snapshot.manifest_complete = true;
       return result([], snapshot === undefined ? 0 : 1);
     }
-    if (
-      sql ===
-      'SELECT site_id, path, file_id, variant, ext, size, sha256, orphan FROM migration.file_manifest ' +
-        'WHERE snapshot_seq = $1 ORDER BY site_id COLLATE "C", path COLLATE "C"'
-    ) {
+    if (sql === FIRST_PAGE_SQL || sql === NEXT_PAGE_SQL) {
+      const [after, limit] = sql === FIRST_PAGE_SQL ? [undefined, values[1]] : [{ site_id: values[1] as string, path: values[2] as string }, values[3]];
       const rows = this.manifest
-        .filter((row) => row.snapshot_seq === seq)
-        .sort((a, b) => byteOrder(a.site_id, b.site_id) || byteOrder(a.path, b.path))
+        .filter((row) => row.snapshot_seq === seq && (after === undefined || keyOrder(row, after) > 0))
+        .sort(keyOrder)
+        .slice(0, limit as number)
         .map(({ site_id, path, file_id, variant, ext, size, sha256, orphan }) => ({
           site_id,
           path,
@@ -437,6 +459,85 @@ describe('buildFileManifest', () => {
     expect(await readManifest({ db: tables.db() }, 4)).toHaveLength(501);
   });
 
+  it('inserts the rows of consecutive sites in shared statements of at most 500 rows', async () => {
+    const tables = new MigrationTables();
+    tables.snapshots.set(4, { database_name: SNAP_DB, manifest_complete: false });
+    const ids = Array.from({ length: 600 }, (_unused, index) => `${String(index).padStart(8, '0')}-E5F6-A7B8-C9D0E1F2A3B4C5D6`);
+    const legacy = legacyOf({ [SNAP_DB]: { tsettings: ['a', 'b'], tfiles: ids.map((fileID) => ({ fileID, siteID: 'a' })) } });
+    const bridge = bridgeOf({
+      a: listing(ids.slice(0, 300).map((id) => listed(`${id}.txt`, 2))),
+      b: listing(ids.slice(300).map((id) => listed(`${id}.txt`, 3))),
+    });
+
+    const built = await buildFileManifest({ db: tables.db(), legacy: legacy.legacy, bridge: bridge.bridge, logger: logger().logger }, 4);
+
+    expect(built).toMatchObject({ sites: 2, entries: 600, orphans: 0, bytes: 300 * 2 + 300 * 3, skipped: [] });
+    expect(tables.inserts().map((statement) => statement.values.length)).toEqual([5000, 1000]);
+    expect((await readManifest({ db: tables.db() }, 4)).map((found) => found.siteId)).toEqual([...Array<string>(300).fill('a'), ...Array<string>(300).fill('b')]);
+  });
+
+  describe('spill directory', () => {
+    let spillDir: string;
+
+    beforeEach(async () => {
+      spillDir = await mkdtemp(join(tmpdir(), 'files-manifest-test-'));
+    });
+
+    afterEach(async () => {
+      await rm(spillDir, { recursive: true, force: true });
+    });
+
+    it('spills each listed site to disk before listing the next one and removes the spill on success', async () => {
+      const { tables, bridge, ctx } = twoSiteStore();
+      const seen: { dirs: string[]; paths: string[] }[] = [];
+      const filesList = async (siteId: string): Promise<FileListing> => {
+        const dirs = await readdir(spillDir);
+        const text = await readFile(join(spillDir, dirs[0] ?? '', 'rows.ndjson'), 'utf8');
+        const paths = text
+          .split('\n')
+          .filter((line) => line !== '')
+          .map((line) => (JSON.parse(line) as ManifestEntry).path);
+        seen.push({ dirs, paths });
+        return bridge.bridge.filesList(siteId);
+      };
+
+      const built = await buildFileManifest({ ...ctx, bridge: { filesList } as unknown as BridgeClient }, 3, { spillDir });
+
+      expect(built.entries).toBe(7);
+      expect(seen.map(({ dirs }) => dirs.map((dir) => dir.startsWith('opt2-file-manifest-')))).toEqual([[true], [true]]);
+      expect(seen.map(({ paths }) => paths)).toEqual([
+        [],
+        [`${FID_A}.jpg`, `${FID_A}_source.jpg`, `${FID_A}_small.jpg`, `${FID_A}_medium.jpg`, `${FID_A}_W100_H50.jpg`, `${FID_B}.pdf`].map(
+          (name) => `default/cache/file/${name}`,
+        ),
+      ]);
+      expect(tables.manifest).toHaveLength(7);
+      expect(await readdir(spillDir)).toEqual([]);
+    });
+
+    it.each<[string, Record<string, FileListing | Error>, Record<string, unknown>]>([
+      [
+        'a later site cannot be listed',
+        { default: listing([listed(`${FID_A}.jpg`, 1)]), 'tenant-a': new BridgeError('files.list', 500, 'Internal Server Error') },
+        { name: 'BridgeError', status: 500 },
+      ],
+      [
+        'an insert fails',
+        { default: listing([listed(`${FID_A}.jpg`, 1), listed(`${FID_A}.jpg`, 1)]), 'tenant-a': listing([]) },
+        { code: '23505' },
+      ],
+    ])('removes the spill and leaves the manifest unwritten when %s', async (_case, answers, failure) => {
+      const { tables, ctx } = twoSiteStore();
+
+      const error = await buildFileManifest({ ...ctx, bridge: bridgeOf(answers).bridge }, 3, { spillDir }).catch((caught: unknown) => caught);
+
+      expect(error).toMatchObject(failure);
+      expect(tables.manifest).toEqual([]);
+      expect(tables.snapshots.get(3)?.manifest_complete).toBe(false);
+      expect(await readdir(spillDir)).toEqual([]);
+    });
+  });
+
   it('marks a site without stored files complete without inserting', async () => {
     const tables = new MigrationTables();
     tables.snapshots.set(5, { database_name: SNAP_DB, manifest_complete: false });
@@ -452,20 +553,34 @@ describe('buildFileManifest', () => {
 });
 
 describe('readManifest', () => {
+  const row = (site_id: string, name: string, snapshot_seq = 6): ManifestRecord => ({
+    snapshot_seq,
+    site_id,
+    path: `${site_id}/cache/file/${name}`,
+    file_id: name.slice(0, 35),
+    variant: name.slice(35, name.lastIndexOf('.')),
+    ext: name.slice(name.lastIndexOf('.') + 1),
+    size: 3_000_000_000,
+    sha256: sha(name),
+    orphan: false,
+    last_modified: MODIFIED,
+  });
+
+  /** Snapshot 6 of four entries, out of key order, and one entry of snapshot 7. */
+  function fourEntries(): MigrationTables {
+    const tables = new MigrationTables();
+    tables.manifest.push(
+      row('tenant-a', `${FID_C}.png`),
+      row('default', `${FID_A}_small.jpg`),
+      row('Default', `${FID_B}.pdf`),
+      row('default', `${FID_A}_W100_H50.jpg`),
+      row('default', `${FID_A}.jpg`, 7),
+    );
+    return tables;
+  }
+
   it('returns the snapshot entries by site id then path in byte order, with int8 sizes as numbers', async () => {
     const tables = new MigrationTables();
-    const row = (site_id: string, name: string, snapshot_seq = 6): ManifestRecord => ({
-      snapshot_seq,
-      site_id,
-      path: `${site_id}/cache/file/${name}`,
-      file_id: name.slice(0, 35),
-      variant: name.slice(35, name.lastIndexOf('.')),
-      ext: name.slice(name.lastIndexOf('.') + 1),
-      size: 3_000_000_000,
-      sha256: sha(name),
-      orphan: false,
-      last_modified: MODIFIED,
-    });
     tables.manifest.push(
       row('tenant-a', `${FID_C}.png`),
       row('default', `${FID_A}_small.jpg`),
@@ -489,5 +604,66 @@ describe('readManifest', () => {
 
   it('returns no entries for a snapshot without a manifest', async () => {
     expect(await readManifest({ db: new MigrationTables().db() }, 1)).toEqual([]);
+  });
+
+  it.each<[number, number[]]>([
+    [1, [1, 1, 1, 1, 0]],
+    [2, [2, 2, 0]],
+    [3, [3, 1]],
+    [4, [4, 0]],
+    [5, [4]],
+  ])('streams the manifest in keyset pages of %i entries', async (pageRows, returned) => {
+    const tables = fourEntries();
+    const expected = await readManifest({ db: fourEntries().db() }, 6);
+
+    const streamed: ManifestEntry[] = [];
+    for await (const found of streamManifest({ db: tables.db() }, 6, { pageRows })) streamed.push(found);
+
+    expect(streamed).toEqual(expected);
+    const pages = tables.pages();
+    expect(pages.map((page) => page.returned)).toEqual(returned);
+    expect(tables.statements).toEqual(pages);
+    expect(pages[0]).toMatchObject({ sql: FIRST_PAGE_SQL, values: [6, pageRows] });
+    pages.slice(1).forEach((page, index) => {
+      const last = streamed[(index + 1) * pageRows - 1];
+      expect(page).toMatchObject({ sql: NEXT_PAGE_SQL, values: [6, last?.siteId, last?.path, pageRows] });
+    });
+  });
+
+  it.each<[number, number[]]>([
+    [2345, [1000, 1000, 345]],
+    [2000, [1000, 1000, 0]],
+  ])('reads %i entries in pages of at most MANIFEST_PAGE_ROWS rows', async (count, returned) => {
+    const tables = new MigrationTables();
+    const names = Array.from({ length: count }, (_unused, index) => `${String(count - index).padStart(8, '0')}-E5F6-A7B8-C9D0E1F2A3B4C5D6.txt`);
+    tables.manifest.push(...names.map((name) => row(Number(name.slice(0, 8)) % 2 === 0 ? 'even' : 'odd', name, 8)));
+
+    const entries = await readManifest({ db: tables.db() }, 8);
+
+    expect(entries).toHaveLength(count);
+    expect(entries.map((found) => found.path)).toEqual(
+      tables.manifest.toSorted(keyOrder).map((found) => found.path),
+    );
+    expect(MANIFEST_PAGE_ROWS).toBe(1000);
+    expect(tables.pages().map((page) => page.returned)).toEqual(returned);
+    expect(Math.max(...tables.statements.map((statement) => statement.returned))).toBeLessThanOrEqual(MANIFEST_PAGE_ROWS);
+  });
+
+  it.each([0, -1, 1.5, Number.NaN])('rejects a page size of %s before querying', async (limit) => {
+    const tables = fourEntries();
+
+    await expect(readManifestPage({ db: tables.db() }, 6, undefined, limit)).rejects.toThrow(
+      new RangeError(`manifest page size must be a positive integer, not ${String(limit)}`),
+    );
+    expect(tables.statements).toEqual([]);
+  });
+
+  it('reads the page following a key that is not itself in the manifest', async () => {
+    const tables = fourEntries();
+
+    const page = await readManifestPage({ db: tables.db() }, 6, { siteId: 'default', path: `default/cache/file/${FID_A}_X` }, 10);
+
+    expect(page.map((found) => found.path)).toEqual([`default/cache/file/${FID_A}_small.jpg`, `tenant-a/cache/file/${FID_C}.png`]);
+    expect(tables.statements).toMatchObject([{ sql: NEXT_PAGE_SQL, values: [6, 'default', `default/cache/file/${FID_A}_X`, 10], returned: 2 }]);
   });
 });

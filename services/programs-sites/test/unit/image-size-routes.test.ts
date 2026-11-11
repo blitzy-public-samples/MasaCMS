@@ -216,7 +216,27 @@ describe('PUT /v1/sites/:siteId/image-sizes/:sizeId', () => {
       `siteid=TENANT-A&sizeid=${NEW_SIZE_ID}&name=Hero&height=AUTO&width=120`,
       { siteid: 'TENANT-A', sizeid: NEW_SIZE_ID, name: 'Hero', height: 'AUTO', width: '120' },
     ],
-    ['a malformed JSON body, which legacy ignores', SIZE_URL, JSON_BODY, '{"name":', {}],
+    [
+      'a malformed JSON body, which legacy ignores',
+      `${SIZE_URL}?name=Q&height=1&width=2`,
+      JSON_BODY,
+      '{"name":',
+      { name: 'Q', height: '1', width: '2' },
+    ],
+    [
+      'a name of 50 code points',
+      SIZE_URL,
+      JSON_BODY,
+      { name: '\u{1F600}'.repeat(50), height: '400', width: 'AUTO' },
+      { name: '\u{1F600}'.repeat(50), height: '400', width: 'AUTO' },
+    ],
+    [
+      'a height neither digits nor AUTO',
+      SIZE_URL,
+      FORM,
+      'name=Hero&height=tall&width=AUTO',
+      { name: 'Hero', height: 'tall', width: 'AUTO' },
+    ],
   ])('saves the merged request values of %s under the path ids, then lists the site', async (_label, url, headers, payload, posted) => {
     const res = await send('PUT', url, { ...(await headersAs('s2')), ...headers }, payload);
     expect(res.statusCode).toBe(200);
@@ -230,6 +250,21 @@ describe('PUT /v1/sites/:siteId/image-sizes/:sizeId', () => {
     });
     expect(imageSizes.listImageSizes).toHaveBeenCalledExactlyOnceWith(db, claims, 'tenant-a');
     expect(imageSizes.saveImageSize).toHaveBeenCalledBefore(imageSizes.listImageSizes);
+  });
+
+  it.each([
+    ['an absent name', SIZE_URL, JSON_BODY, { height: '400', width: 'AUTO' }],
+    ['an absent height', SIZE_URL, JSON_BODY, { name: 'hero', width: 'AUTO' }],
+    ['an absent width', SIZE_URL, FORM, 'name=hero&height=400'],
+    ['a non-string JSON name', SIZE_URL, JSON_BODY, { ...SIZE_BODY, name: ['hero'] }],
+    ['a name of 51 code points', SIZE_URL, JSON_BODY, { ...SIZE_BODY, name: 'a'.repeat(51) }],
+    ['a path sizeId of 36 characters', `${LIST_URL}/${'B'.repeat(36)}`, JSON_BODY, SIZE_BODY],
+    ['a path siteId of 26 characters', `/v1/sites/${'a'.repeat(26)}/image-sizes/${SIZE_ID}`, JSON_BODY, SIZE_BODY],
+  ])('answers invalidParameters for %s before any domain operation', async (_label, url, headers, payload) => {
+    const res = await send('PUT', url, { ...(await headersAs('s2')), ...headers }, payload);
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request' } });
+    expectNoDomainCall();
   });
 
   it('denies a posted siteid of another site before any domain operation', async () => {

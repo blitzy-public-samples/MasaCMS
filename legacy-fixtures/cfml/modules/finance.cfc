@@ -8,6 +8,7 @@ component output="false" hint="Finance records, lifecycle transitions, versions,
 		variables.writeRoles = ["finance.preparer"];
 		variables.actions = "submit,approve,reject,resubmit,edit";
 		variables.titleMaxLength = 255;
+		variables.periodTotalError = 50020;
 		return this;
 	}
 
@@ -68,7 +69,7 @@ component output="false" hint="Finance records, lifecycle transitions, versions,
 		local.params.vid = idParam(createUUID());
 		local.params.now = {value = local.now, cfsqltype = "cf_sql_timestamp"};
 		transaction {
-			queryExecute(
+			writeProcedure(
 				"EXEC #arguments.schema#.usp_finance_create @record_id = :rid, @siteID = :siteid, @title = :title, @amount = :amount, @period = :period, @actor_user_id = :actor, @version_id = :vid, @now = :now",
 				local.params
 			);
@@ -92,7 +93,7 @@ component output="false" hint="Finance records, lifecycle transitions, versions,
 		local.params.vid = idParam(createUUID());
 		local.params.now = {value = local.now, cfsqltype = "cf_sql_timestamp"};
 		transaction {
-			local.outcome = queryExecute(
+			local.outcome = writeProcedure(
 				"EXEC #arguments.schema#.usp_finance_transition @record_id = :id, @action = :action, @roles = :roles, @actor_user_id = :actor, @version_id = :vid, @now = :now, @title = :title, @amount = :amount, @period = :period",
 				local.params
 			);
@@ -127,7 +128,8 @@ component output="false" hint="Finance records, lifecycle transitions, versions,
 		if (!structKeyExists(form, "file") || !isSimpleValue(form.file) || !len(form.file) || !isFilePart("file")) {
 			variables.envelope.raise("invalidParameters");
 		}
-		local.up = fileUpload(getTempDirectory(), "file", "", "makeUnique");
+		// "*" lifts the server's blocked- and empty-extension checks: the bytes go to varbinary, never to the web root.
+		local.up = fileUpload(getTempDirectory(), "file", "", "makeUnique", true, "*");
 		local.path = local.up.serverDirectory & "/" & local.up.serverFile;
 		try {
 			local.bytes = fileReadBinary(local.path);
@@ -202,10 +204,13 @@ component output="false" hint="Finance records, lifecycle transitions, versions,
 
 	private struct function recordFields(required struct params) hint="Returns title, amount and period as strings, or raises invalidParameters unless all three are valid." {
 		local.fields = {};
-		for (local.name in ["title", "amount", "period"]) {
+		for (local.name in ["title", "period"]) {
 			local.value = structKeyExists(arguments.params, local.name) && !isNull(arguments.params[local.name]) ? arguments.params[local.name] : "";
 			local.fields[local.name] = isSimpleValue(local.value) ? toString(local.value) : "";
 		}
+		// Masa's Portcullis trims form and URL values, so a JSON amount must likewise be a string and is trimmed the same way.
+		local.amount = structKeyExists(arguments.params, "amount") && !isNull(arguments.params.amount) ? arguments.params.amount : "";
+		local.fields.amount = isInstanceOf(local.amount, "java.lang.String") ? trim(local.amount) : "";
 		if (!len(trim(local.fields.title)) || len(local.fields.title) > variables.titleMaxLength
 			|| !reFind("^-?[0-9]{1,15}(\.[0-9]{1,4})?$", local.fields.amount)
 			|| !reFind("^[0-9]{4}-(0[1-9]|1[0-2])$", local.fields.period)) {
@@ -247,6 +252,17 @@ component output="false" hint="Finance records, lifecycle transitions, versions,
 				variables.envelope.raise("notFound");
 			default:
 				throw(type="opt2.finance.outcome", message="Unexpected finance transition outcome");
+		}
+	}
+
+	private query function writeProcedure(required string sql, required struct params) hint="Runs a finance write procedure and returns its result; the procedure's period-total refusal raises invalidParameters." {
+		try {
+			return queryExecute(arguments.sql, arguments.params);
+		} catch (database e) {
+			if (e.nativeErrorCode == variables.periodTotalError) {
+				variables.envelope.raise("invalidParameters");
+			}
+			rethrow;
 		}
 	}
 

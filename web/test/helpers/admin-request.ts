@@ -98,7 +98,9 @@ const TOKEN_IAT = Math.floor(businessClock().now().getTime() / 1000);
 
 const CURRENT_SESSION_ROUTE = routeKey('GET', 'identity', '/v1/sessions/current');
 const SESSION_SITES_ROUTE = routeKey('GET', 'identity', '/v1/sessions/current/sites');
-const siteRoute = (siteId: string): string => routeKey('GET', 'programs-sites', `/v1/sites/${siteId}`);
+const ADMIN_STATE_ROUTE = routeKey('GET', 'identity', '/v1/sessions/current/admin-state');
+const SAVE_ADMIN_STATE_ROUTE = routeKey('POST', 'identity', '/v1/sessions/current/admin-state');
+const shellSiteRoute = (siteId: string): string => routeKey('GET', 'programs-sites', `/v1/sites/${siteId}/shell`);
 
 /** Cookie scope with lower-cased names and case-insensitive lookup, as the platform's parsed Cookie header holds it. */
 class CookieScope extends Map<string, string> {
@@ -199,7 +201,7 @@ const listsSites = (flags: ClaimFlags): boolean =>
 
 /** Whether programs-sites serves `siteId` to the user, so the request carries its site data. */
 const readsSite = (user: UserClaims | undefined, flags: ClaimFlags, siteId: string): boolean =>
-  (flags.isS2 || flags.isSiteAdmin) && user?.site === siteId;
+  flags.isLoggedIn && (flags.isPrivateUser || flags.isSiteAdmin) && user?.site === siteId;
 
 /** `session.mura` identity holds for `user`: the anonymous struct, or the user with loginByQuery's pool markers. */
 function sessionUserOf(user: UserClaims | undefined, flags: ClaimFlags): SessionUser {
@@ -386,6 +388,12 @@ export function editorRequest(partial?: AdminRequestPartial): AdminRequest {
   return makeAdminRequest(partial, SUBJECTS.qaEditor);
 }
 
+/** qa_editor on `default` under a token for tenant-a, so programs-sites serves no data for the session site. */
+export function unservedEditorRequest(partial: AdminRequestPartial = {}): AdminRequest {
+  const { site, tid } = SUBJECTS.siteAdmin;
+  return makeAdminRequest({ ...partial, user: { ...partial.user, site, tid } }, SUBJECTS.qaEditor);
+}
+
 /** The tenant-a site admin, with `session.siteid` set to `siteId`. */
 export function siteAdminRequest(siteId: string = SUBJECTS.siteAdmin.site, partial: AdminRequestPartial = {}): AdminRequest {
   return makeAdminRequest({ ...partial, session: { ...partial.session, siteid: siteId } }, SUBJECTS.siteAdmin);
@@ -469,13 +477,18 @@ export async function buildTestAdminRequest(input: TestAdminRequestInput): Promi
       },
     },
     [SESSION_SITES_ROUTE]: { status: 200, body: { sites: siteArray.map(sessionSiteOf) } },
+    [ADMIN_STATE_ROUTE]: { status: 200, body: {} },
   };
   for (const id of new Set([siteId, user?.site ?? 'default', 'default'])) {
     const site = { ...siteRecordFor(id), ...(id === siteId ? input.site : {}) };
-    replies[siteRoute(id)] = { status: 200, body: { site, isNew: 0, extendSets: [], imageSizes: [] } };
+    replies[shellSiteRoute(id)] = { status: 200, body: { site, isNew: 0 } };
   }
   for (const [key, reply] of Object.entries(replies)) {
     if (!gateway.hasRoute(key)) gateway.setRoute(key, reply);
+  }
+  // Over a session that stored nothing, a save answers exactly the values it was given.
+  if (!gateway.hasRoute(SAVE_ADMIN_STATE_ROUTE)) {
+    gateway.setRoute(SAVE_ADMIN_STATE_ROUTE, (request) => ({ status: 200, body: request.json ?? {} }));
   }
 
   return buildAdminRequest(request);

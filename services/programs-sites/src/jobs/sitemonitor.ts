@@ -1,13 +1,18 @@
-/** Site-monitor orchestrator replacing legacy `/_api/sitemonitor` (contentServer.cfc:669-747): cursor, catch-up, step order and per-site gating. */
+/** Site-monitor orchestrator replacing legacy `/_api/sitemonitor` (contentServer.cfc:669-747): cursor and run lease, catch-up, step order and per-site gating. */
+import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { registeredTenants, withTenant, type TenantDb } from '@opt2/platform/tenancy';
 import type { Clock } from '@opt2/platform/service-kit';
+import type { WriteContext } from '@opt2/platform/migration-kit';
 import { SITEMONITOR_QUEUE, queueDefinition } from '@opt2/platform/tasks';
-import { cfDateAdd, cfIsBoolean, cfToBoolean } from '@opt2/platform/legacy-compat';
+import { LegacyServiceUnavailableError, cfDateAdd, cfIsBoolean, cfToBoolean } from '@opt2/platform/legacy-compat';
 import { stepNamed, type SiteMonitorStepName } from './steps.js';
 import { SiteMonitorDeadlineError, type StepDispatcher, type StepInvocation, type StepOutcome } from './dispatch.js';
-import { readCursor, writeCursor } from '../repo/sitemonitor-state.js';
-import { createProgramsSitesRepository } from '../repo/repository.js';
+import { acquireLease, advanceCursor, releaseLease, type LeaseGrant } from '../repo/sitemonitor-state.js';
+import { OWNER, createProgramsSitesRepository } from '../repo/repository.js';
 import type { SiteRow } from '../repo/tables.js';
+
+const DEFAULT_LEASE_POLL_MS = 1000;
 
 /** One site as the monitor loops see it. */
 export interface MonitoredSite {
@@ -21,10 +26,14 @@ export interface MonitoredSite {
   readonly orderNo: number;
 }
 
-/** The persisted `application.lastMonitored`. */
+/** The persisted `application.lastMonitored` behind the run lease that serialises passes across instances. */
 export interface CursorStore {
-  read(): Promise<Date | null>;
-  write(at: Date): Promise<void>;
+  /** Takes the lease for `leaseId` until `until` unless another pass holds a live one. */
+  acquire(leaseId: string, until: Date): Promise<LeaseGrant>;
+  /** Moves the cursor forward to `at` while `leaseId` holds the lease; false once it no longer does. */
+  advance(leaseId: string, at: Date): Promise<boolean>;
+  /** Clears the lease while `leaseId` holds it; false when it does not. */
+  release(leaseId: string): Promise<boolean>;
 }
 
 /** Sites the per-site loops iterate, in loop order. */
@@ -39,6 +48,10 @@ export interface SiteMonitorDeps {
   dispatch: StepDispatcher;
   cursor?: CursorStore;
   sites?: SiteFlagsSource;
+  /** Waits `ms` between lease attempts; defaults to a timer. */
+  sleep?: (ms: number) => Promise<unknown>;
+  /** Interval between lease attempts while another pass holds the lease; default 1000 ms. */
+  pollIntervalMs?: number;
 }
 
 /** A completed run: its `theTime` and one outcome per dispatched step, in dispatch order. */
@@ -47,30 +60,74 @@ export interface SiteMonitorResult {
   steps: StepOutcome[];
 }
 
-/** A run that stopped before `setCursor`, leaving the cursor unchanged; `completed` holds the outcomes before the stop. */
-export class SiteMonitorRunError extends Error {
+/** Why a pass stopped. */
+export type SiteMonitorStopReason = 'step-failed' | 'deadline';
+
+/** Where a pass stopped before advancing the cursor; `step` is undefined before the first step, `completed` holds the outcomes before the stop. */
+export interface SiteMonitorStop {
+  readonly reason: SiteMonitorStopReason;
+  readonly step: SiteMonitorStepName | undefined;
+  readonly siteId: string | undefined;
+  readonly completed: StepOutcome[];
+}
+
+function stopMessage(reason: SiteMonitorStopReason, step: SiteMonitorStepName | undefined, siteId: string | undefined): string {
+  const at = step === undefined ? 'before the first step' : `at step ${step}${siteId === undefined ? '' : ` for site ${siteId}`}`;
+  return `Site monitor ${reason === 'deadline' ? 'deadline passed' : 'failed'} ${at}`;
+}
+
+/** A pass stopped by a fault that is neither unavailability nor the deadline; renders as a 500. */
+export class SiteMonitorRunError extends Error implements SiteMonitorStop {
   override readonly name: string = 'SiteMonitorRunError';
 
   constructor(
-    readonly reason: 'step-failed' | 'deadline',
+    readonly reason: SiteMonitorStopReason,
     readonly step: SiteMonitorStepName | undefined,
     readonly siteId: string | undefined,
     readonly completed: StepOutcome[],
     cause?: unknown,
   ) {
-    super(
-      `Site monitor ${reason === 'deadline' ? 'deadline passed at' : 'failed at'} step ${String(step)}` +
-        (siteId === undefined ? '' : ` for site ${siteId}`),
-      cause === undefined ? undefined : { cause },
-    );
+    super(stopMessage(reason, step, siteId), cause === undefined ? undefined : { cause });
   }
 }
 
-/** Cursor store over the system-tenant `sitemonitor_state` row. */
+/** A pass stopped by the deadline or an unavailable executor; renders as the legacy 503 on the cause's surface. */
+export class SiteMonitorUnavailableError extends LegacyServiceUnavailableError implements SiteMonitorStop {
+  override readonly name: string = 'SiteMonitorUnavailableError';
+  // Narrows the base field, which the base constructor assigns; a field declaration would reset it after super().
+  declare readonly reason: SiteMonitorStopReason;
+
+  constructor(
+    reason: SiteMonitorStopReason,
+    readonly step: SiteMonitorStepName | undefined,
+    readonly siteId: string | undefined,
+    readonly completed: StepOutcome[],
+    override readonly cause?: unknown,
+  ) {
+    super(stopMessage(reason, step, siteId), cause instanceof LegacyServiceUnavailableError ? cause.surface : 'auto', reason);
+  }
+}
+
+/** The stop error for `cause`: SiteMonitorUnavailableError for the deadline or an unavailable cause, else SiteMonitorRunError. */
+export function siteMonitorStop(
+  reason: SiteMonitorStopReason,
+  step: SiteMonitorStepName | undefined,
+  siteId: string | undefined,
+  completed: StepOutcome[],
+  cause?: unknown,
+): SiteMonitorRunError | SiteMonitorUnavailableError {
+  return reason === 'deadline' || cause instanceof LegacyServiceUnavailableError
+    ? new SiteMonitorUnavailableError(reason, step, siteId, completed, cause)
+    : new SiteMonitorRunError(reason, step, siteId, completed, cause);
+}
+
+/** Cursor store over the system-tenant `sitemonitor_state` row; its changelog rows name programs-sites as the actor. */
 export function defaultCursorStore(db: TenantDb, clock: Clock): CursorStore {
+  const ctx: WriteContext = { actorService: OWNER };
   return {
-    read: () => readCursor(db),
-    write: (at) => writeCursor(db, at, clock),
+    acquire: (leaseId, until) => acquireLease(db, leaseId, until, clock, ctx),
+    advance: (leaseId, at) => advanceCursor(db, leaseId, at, clock, ctx),
+    release: (leaseId) => releaseLease(db, leaseId, clock, ctx),
   };
 }
 
@@ -119,25 +176,77 @@ function byOrderNo(a: MonitoredSite, b: MonitoredSite): number {
   return compareText(a.siteId, b.siteId);
 }
 
-/** Runs one site-monitor pass; rejects with `SiteMonitorRunError` at the first failed step or at the queue deadline. */
-export async function runSiteMonitor(deps: SiteMonitorDeps): Promise<SiteMonitorResult> {
-  const { clock, dispatch } = deps;
-  const cursor = deps.cursor ?? defaultCursorStore(deps.db, clock);
-  const siteFlags = deps.sites ?? registrySiteFlags(deps.db, clock);
+/** Polls for the run lease; the stored cursor once granted, SiteMonitorUnavailableError once `deadlineAt` passes first. */
+async function acquireRunLease(
+  cursor: CursorStore,
+  leaseId: string,
+  deadlineAt: Date,
+  clock: Clock,
+  sleep: (ms: number) => Promise<unknown>,
+  pollIntervalMs: number,
+): Promise<Date | null> {
+  for (;;) {
+    const grant = await cursor.acquire(leaseId, deadlineAt);
+    if (grant.status === 'granted') return grant.lastMonitored;
+    const remainingMs = deadlineAt.getTime() - clock.now().getTime();
+    if (remainingMs <= 0) throw new SiteMonitorUnavailableError('deadline', undefined, undefined, []);
+    await sleep(Math.min(pollIntervalMs, remainingMs));
+  }
+}
 
+/** Runs one site-monitor pass under the run lease; rejects with `siteMonitorStop`'s error at the first failed step, at the queue deadline or when the lease is lost. */
+export async function runSiteMonitor(deps: SiteMonitorDeps): Promise<SiteMonitorResult> {
+  const cursor = deps.cursor ?? defaultCursorStore(deps.db, deps.clock);
+  const startedAt = deps.clock.now();
+  const deadlineAt = new Date(startedAt.getTime() + queueDefinition(SITEMONITOR_QUEUE).deadlineS * 1000);
+  const leaseId = randomUUID();
+  const stored = await acquireRunLease(
+    cursor,
+    leaseId,
+    deadlineAt,
+    deps.clock,
+    deps.sleep ?? delay,
+    deps.pollIntervalMs ?? DEFAULT_LEASE_POLL_MS,
+  );
+  let result: SiteMonitorResult;
+  try {
+    result = await runPass(deps, cursor, leaseId, stored, deadlineAt);
+  } catch (err) {
+    // A failed release must not replace the pass's error; the lease then lapses at deadlineAt.
+    await cursor.release(leaseId).catch(() => false);
+    throw err;
+  }
+  await cursor.release(leaseId);
+  return result;
+}
+
+/** The steps of one pass while `leaseId` holds the lease; `stored` is the cursor the grant returned. */
+async function runPass(
+  deps: SiteMonitorDeps,
+  cursor: CursorStore,
+  leaseId: string,
+  stored: Date | null,
+  deadlineAt: Date,
+): Promise<SiteMonitorResult> {
+  const { clock, dispatch } = deps;
+  const siteFlags = deps.sites ?? registrySiteFlags(deps.db, clock);
+  const steps: StepOutcome[] = [];
+
+  // Taken after the grant, so a pass that waited starts where the previous pass ended.
   const theTime = clock.now();
-  const deadlineAt = new Date(theTime.getTime() + queueDefinition(SITEMONITOR_QUEUE).deadlineS * 1000);
+
+  /** Advances the cursor to `at`; a lease another pass took after it lapsed stops this pass as past its deadline. */
+  async function advance(at: Date, step: SiteMonitorStepName | undefined): Promise<void> {
+    if (!(await cursor.advance(leaseId, at))) throw new SiteMonitorUnavailableError('deadline', step, undefined, [...steps]);
+  }
 
   // legacy: contentServer.cfc:676 cfparam stores the default before any step runs, so a failed first run keeps it.
-  const stored = await cursor.read();
   const lastMonitored = stored ?? cfDateAdd('n', -1, theTime);
-  if (stored === null) await cursor.write(lastMonitored);
-
-  const steps: StepOutcome[] = [];
+  if (stored === null) await advance(lastMonitored, undefined);
 
   async function run(name: SiteMonitorStepName, siteId?: string, at: Date = theTime): Promise<void> {
     if (clock.now().getTime() >= deadlineAt.getTime()) {
-      throw new SiteMonitorRunError('deadline', name, siteId, [...steps]);
+      throw new SiteMonitorUnavailableError('deadline', name, siteId, [...steps]);
     }
     const invocation: StepInvocation = {
       step: stepNamed(name),
@@ -150,8 +259,7 @@ export async function runSiteMonitor(deps: SiteMonitorDeps): Promise<SiteMonitor
     try {
       steps.push(await dispatch.dispatch(invocation));
     } catch (cause) {
-      const reason = cause instanceof SiteMonitorDeadlineError ? 'deadline' : 'step-failed';
-      throw new SiteMonitorRunError(reason, name, siteId, [...steps], cause);
+      throw siteMonitorStop(cause instanceof SiteMonitorDeadlineError ? 'deadline' : 'step-failed', name, siteId, [...steps], cause);
     }
   }
 
@@ -179,7 +287,7 @@ export async function runSiteMonitor(deps: SiteMonitorDeps): Promise<SiteMonitor
 
   // legacy: contentServer.cfc:745 moves the cursor only after every step succeeded.
   await run('setCursor');
-  await cursor.write(theTime);
+  await advance(theTime, 'setCursor');
 
   return { theTime, steps };
 }

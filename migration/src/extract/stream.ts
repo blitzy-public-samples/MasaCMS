@@ -410,15 +410,14 @@ async function writeFully(handle: FileHandle, data: Buffer): Promise<void> {
   }
 }
 
-/** Sorts `run` and writes it to `file` as records of a 4-byte big-endian byte length and the UTF-8 encoding. */
-async function writeRun(file: string, run: string[]): Promise<void> {
-  run.sort(compareEncodings);
+/** Writes `records` in order to the new file `file`, each as a 4-byte big-endian byte length and its UTF-8 text. */
+export async function writeRecords(file: string, records: Iterable<string> | AsyncIterable<string>): Promise<void> {
   const handle = await open(file, 'wx');
   try {
     let batch: Buffer[] = [];
     let batchBytes = 0;
-    for (const encoding of run) {
-      const payload = Buffer.from(encoding, 'utf8');
+    for await (const record of records) {
+      const payload = Buffer.from(record, 'utf8');
       const header = Buffer.allocUnsafe(4);
       header.writeUInt32BE(payload.length, 0);
       batch.push(header, payload);
@@ -435,8 +434,14 @@ async function writeRun(file: string, run: string[]): Promise<void> {
   }
 }
 
+/** Sorts `run` and writes it to `file` as one record per encoding. */
+async function writeRun(file: string, run: string[]): Promise<void> {
+  run.sort(compareEncodings);
+  await writeRecords(file, run);
+}
+
 /** Sequential reader of one spill run's records. */
-class RunReader {
+export class RunReader {
   private buffer = Buffer.alloc(0);
   private offset = 0;
   private position = 0;

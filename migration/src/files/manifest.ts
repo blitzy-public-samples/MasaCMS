@@ -1,4 +1,12 @@
 // Per-snapshot manifest of the legacy file store, listed through the bridge and kept in migration.file_manifest.
+import { createReadStream } from 'node:fs';
+import { mkdtemp, open, rm, type FileHandle } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createInterface } from 'node:readline';
+
+import type { MetadataTx } from '@opt2/platform/tenancy';
+
 import type { MigrationContext } from '../context.js';
 import { UnsupportedFileStoreError, type FileListing } from '../legacy/bridge.js';
 
@@ -40,6 +48,9 @@ export interface ManifestBuildResult {
 /** The only legacy file store whose objects can be listed, read and moved. */
 export const SUPPORTED_FILE_STORE = 'fileDir';
 
+/** Default entries per manifest page read. */
+export const MANIFEST_PAGE_ROWS = 1000;
+
 /** Raised when the legacy file store is not `fileDir`, so the file units cannot move. */
 export class FileStoreUnsupportedError extends Error {
   override readonly name = 'FileStoreUnsupportedError';
@@ -60,12 +71,14 @@ const SNAPSHOT_SITES_SQL = 'SELECT DISTINCT [SiteID] FROM [dbo].[tsettings] ORDE
 const SNAPSHOT_FILE_OWNERS_SQL = 'SELECT [fileID], [siteID] FROM [dbo].[tfiles];';
 const DELETE_MANIFEST_SQL = 'DELETE FROM migration.file_manifest WHERE snapshot_seq = $1';
 const MARK_MANIFEST_COMPLETE_SQL = 'UPDATE migration.snapshot SET manifest_complete = true WHERE seq = $1';
-const READ_MANIFEST_SQL = [
-  'SELECT site_id, path, file_id, variant, ext, size, sha256, orphan',
-  'FROM migration.file_manifest',
-  'WHERE snapshot_seq = $1',
-  'ORDER BY site_id COLLATE "C", path COLLATE "C"',
-].join(' ');
+const SELECT_MANIFEST = 'SELECT site_id, path, file_id, variant, ext, size, sha256, orphan FROM migration.file_manifest';
+const MANIFEST_ORDER = 'ORDER BY site_id COLLATE "C", path COLLATE "C"';
+const READ_MANIFEST_FIRST_PAGE_SQL = `${SELECT_MANIFEST} WHERE snapshot_seq = $1 ${MANIFEST_ORDER} LIMIT $2`;
+const READ_MANIFEST_PAGE_SQL =
+  `${SELECT_MANIFEST} WHERE snapshot_seq = $1 AND (site_id COLLATE "C", path COLLATE "C") > ($2, $3) ` +
+  `${MANIFEST_ORDER} LIMIT $4`;
+const SPILL_PREFIX = 'opt2-file-manifest-';
+const SPILL_FILE = 'rows.ndjson';
 
 const MANIFEST_COLUMNS = [
   'snapshot_seq',
@@ -144,104 +157,151 @@ async function listSite(ctx: Pick<FilesContext, 'bridge'>, siteId: string): Prom
   return listing;
 }
 
+/** Inserts one chunk of manifest rows in a single statement. */
+async function insertChunk(tx: MetadataTx, chunk: readonly ManifestRowInput[]): Promise<void> {
+  const values: unknown[] = [];
+  const tuples = chunk.map((row, index) => {
+    values.push(
+      row.snapshotSeq,
+      row.siteId,
+      row.path,
+      row.fileId,
+      row.variant,
+      row.ext,
+      row.size,
+      row.sha256,
+      row.orphan,
+      row.lastModified,
+    );
+    const first = index * MANIFEST_COLUMNS.length;
+    return `(${MANIFEST_COLUMNS.map((_column, offset) => `$${String(first + offset + 1)}`).join(', ')})`;
+  });
+  await tx.query(`INSERT INTO migration.file_manifest (${MANIFEST_COLUMNS.join(', ')}) VALUES ${tuples.join(', ')}`, values);
+}
+
 /** Replaces the snapshot's manifest rows with `rows` and marks its manifest complete, in one transaction. */
-async function writeManifest(ctx: Pick<FilesContext, 'db'>, snapshotSeq: number, rows: ManifestRowInput[]): Promise<void> {
+async function writeManifest(ctx: Pick<FilesContext, 'db'>, snapshotSeq: number, rows: AsyncIterable<ManifestRowInput>): Promise<void> {
   await ctx.db.withMetadata(async (tx) => {
     await tx.query(DELETE_MANIFEST_SQL, [snapshotSeq]);
-    for (let start = 0; start < rows.length; start += INSERT_CHUNK_ROWS) {
-      const chunk = rows.slice(start, start + INSERT_CHUNK_ROWS);
-      const values: unknown[] = [];
-      const tuples = chunk.map((row, index) => {
-        values.push(
-          row.snapshotSeq,
-          row.siteId,
-          row.path,
-          row.fileId,
-          row.variant,
-          row.ext,
-          row.size,
-          row.sha256,
-          row.orphan,
-          row.lastModified,
-        );
-        const first = index * MANIFEST_COLUMNS.length;
-        return `(${MANIFEST_COLUMNS.map((_column, offset) => `$${String(first + offset + 1)}`).join(', ')})`;
-      });
-      await tx.query(
-        `INSERT INTO migration.file_manifest (${MANIFEST_COLUMNS.join(', ')}) VALUES ${tuples.join(', ')}`,
-        values,
-      );
+    let chunk: ManifestRowInput[] = [];
+    for await (const row of rows) {
+      chunk.push(row);
+      if (chunk.length === INSERT_CHUNK_ROWS) {
+        await insertChunk(tx, chunk);
+        chunk = [];
+      }
     }
+    if (chunk.length > 0) await insertChunk(tx, chunk);
     await tx.query(MARK_MANIFEST_COMPLETE_SQL, [snapshotSeq]);
   });
+}
+
+/** Appends `rows` to the spill file, one JSON line each. */
+async function spillRows(handle: FileHandle, rows: readonly ManifestRowInput[]): Promise<void> {
+  if (rows.length > 0) await handle.appendFile(rows.map((row) => `${JSON.stringify(row)}\n`).join(''), 'utf8');
+}
+
+/** Rows of a spill file in written order. */
+async function* spilledRows(spill: string): AsyncGenerator<ManifestRowInput, void, undefined> {
+  const input = createReadStream(spill, { encoding: 'utf8' });
+  try {
+    for await (const line of createInterface({ input, crlfDelay: Infinity })) yield JSON.parse(line) as ManifestRowInput;
+  } finally {
+    input.destroy();
+  }
+}
+
+/** Counts of one manifest build. */
+type BuildCounts = Pick<ManifestBuildResult, 'entries' | 'orphans' | 'bytes' | 'skipped'>;
+
+/** Lists the sites one at a time and appends each one's stored objects to `spill` in insert-sized chunks. */
+async function spillSites(
+  ctx: Pick<FilesContext, 'bridge'>,
+  snapshotSeq: number,
+  sites: readonly string[],
+  owners: ReadonlyMap<string, string | null>,
+  spill: string,
+): Promise<BuildCounts> {
+  const counts: BuildCounts = { entries: 0, orphans: 0, bytes: 0, skipped: [] };
+  const handle = await open(spill, 'wx');
+  try {
+    for (const siteId of sites) {
+      const listing = await listSite(ctx, siteId);
+      let batch: ManifestRowInput[] = [];
+      for (const file of listing.files) {
+        // Parts come from the name itself, not the listing; on-demand renditions such as `_W100_H50` parse as variants
+        // and are recorded like fileDAO's, so only names outside the stored-name language are skipped.
+        const parsed = parseStoredName(file.name);
+        if (parsed === null) {
+          counts.skipped.push({ siteId, name: file.name });
+          continue;
+        }
+        // The listing is CFML-serialized JSON; coerce before summing.
+        const size = Number(file.size);
+        const orphan = !owners.has(parsed.fileId.toUpperCase());
+        batch.push({
+          snapshotSeq,
+          siteId,
+          path: storePath(siteId, file.name),
+          name: file.name,
+          fileId: parsed.fileId,
+          variant: parsed.variant,
+          ext: parsed.ext,
+          size,
+          sha256: file.sha256.toLowerCase(),
+          orphan,
+          lastModified: file.lastModified,
+        });
+        counts.entries += 1;
+        if (orphan) counts.orphans += 1;
+        counts.bytes += size;
+        if (batch.length === INSERT_CHUNK_ROWS) {
+          await spillRows(handle, batch);
+          batch = [];
+        }
+      }
+      await spillRows(handle, batch);
+    }
+  } finally {
+    await handle.close();
+  }
+  return counts;
 }
 
 /**
  * Lists every site of the snapshot through the bridge and records each stored object, replacing earlier rows of the snapshot.
  * Files without a `tfiles` row are kept with `orphan: true`.
  * @param opts.database restored snapshot database; defaults to the one recorded for `snapshotSeq`.
+ * @param opts.spillDir parent of the temporary directory the listed rows are spilled to; defaults to the OS temporary directory.
  * @throws FileStoreUnsupportedError before any row is written when the store is not `fileDir`.
  */
 export async function buildFileManifest(
   ctx: Pick<FilesContext, 'db' | 'legacy' | 'bridge' | 'logger'>,
   snapshotSeq: number,
-  opts: { database?: string } = {},
+  opts: { database?: string; spillDir?: string } = {},
 ): Promise<ManifestBuildResult> {
   const database = opts.database ?? (await snapshotDatabase(ctx, snapshotSeq));
   const sites = await readSnapshotSites(ctx, database);
   const owners = await readSnapshotFileOwners(ctx, database);
 
-  const listings: { siteId: string; listing: FileListing }[] = [];
-  for (const siteId of sites) {
-    listings.push({ siteId, listing: await listSite(ctx, siteId) });
+  const dir = await mkdtemp(join(opts.spillDir ?? tmpdir(), SPILL_PREFIX));
+  try {
+    const spill = join(dir, SPILL_FILE);
+    const { entries, orphans, bytes, skipped } = await spillSites(ctx, snapshotSeq, sites, owners, spill);
+    await writeManifest(ctx, snapshotSeq, spilledRows(spill));
+    ctx.logger.info(
+      `file manifest of snapshot ${String(snapshotSeq)} built: ${String(sites.length)} sites, ` +
+        `${String(entries)} entries, ${String(orphans)} orphans, ${String(skipped.length)} skipped`,
+    );
+    return { snapshotSeq, database, sites: sites.length, entries, orphans, bytes, skipped };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
-
-  const rows: ManifestRowInput[] = [];
-  const skipped: { siteId: string; name: string }[] = [];
-  let orphans = 0;
-  let bytes = 0;
-  for (const { siteId, listing } of listings) {
-    for (const file of listing.files) {
-      // Parts come from the name itself, not the listing; on-demand renditions such as `_W100_H50` parse as variants
-      // and are recorded like fileDAO's, so only names outside the stored-name language are skipped.
-      const parsed = parseStoredName(file.name);
-      if (parsed === null) {
-        skipped.push({ siteId, name: file.name });
-        continue;
-      }
-      // The listing is CFML-serialized JSON; coerce before summing.
-      const size = Number(file.size);
-      const orphan = !owners.has(parsed.fileId.toUpperCase());
-      rows.push({
-        snapshotSeq,
-        siteId,
-        path: storePath(siteId, file.name),
-        name: file.name,
-        fileId: parsed.fileId,
-        variant: parsed.variant,
-        ext: parsed.ext,
-        size,
-        sha256: file.sha256.toLowerCase(),
-        orphan,
-        lastModified: file.lastModified,
-      });
-      if (orphan) orphans += 1;
-      bytes += size;
-    }
-  }
-
-  await writeManifest(ctx, snapshotSeq, rows);
-  ctx.logger.info(
-    `file manifest of snapshot ${String(snapshotSeq)} built: ${String(sites.length)} sites, ` +
-      `${String(rows.length)} entries, ${String(orphans)} orphans, ${String(skipped.length)} skipped`,
-  );
-  return { snapshotSeq, database, sites: sites.length, entries: rows.length, orphans, bytes, skipped };
 }
 
-/** Manifest of snapshot `snapshotSeq`, ordered by site id then path in byte order. */
-export async function readManifest(ctx: Pick<FilesContext, 'db'>, snapshotSeq: number): Promise<ManifestEntry[]> {
-  const result = await ctx.db.withMetadata((tx) => tx.query<ManifestRow>(READ_MANIFEST_SQL, [snapshotSeq]));
-  return result.rows.map((row) => ({
+/** Entry of one `migration.file_manifest` row. */
+function manifestEntry(snapshotSeq: number, row: ManifestRow): ManifestEntry {
+  return {
     snapshotSeq,
     siteId: row.site_id,
     path: row.path,
@@ -252,5 +312,50 @@ export async function readManifest(ctx: Pick<FilesContext, 'db'>, snapshotSeq: n
     size: Number(row.size),
     sha256: row.sha256,
     orphan: row.orphan,
-  }));
+  };
+}
+
+/**
+ * Up to `limit` entries of snapshot `snapshotSeq` following key `after`, or from the start when it is undefined, ordered
+ * by site id then path in byte order.
+ */
+export async function readManifestPage(
+  ctx: Pick<FilesContext, 'db'>,
+  snapshotSeq: number,
+  after: ManifestKey | undefined,
+  limit: number = MANIFEST_PAGE_ROWS,
+): Promise<ManifestEntry[]> {
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new RangeError(`manifest page size must be a positive integer, not ${String(limit)}`);
+  }
+  const result = await ctx.db.withMetadata((tx) =>
+    after === undefined
+      ? tx.query<ManifestRow>(READ_MANIFEST_FIRST_PAGE_SQL, [snapshotSeq, limit])
+      : tx.query<ManifestRow>(READ_MANIFEST_PAGE_SQL, [snapshotSeq, after.siteId, after.path, limit]),
+  );
+  return result.rows.map((row) => manifestEntry(snapshotSeq, row));
+}
+
+/** Manifest of snapshot `snapshotSeq` in readManifest order, one keyset page of `opts.pageRows` entries per query. */
+export async function* streamManifest(
+  ctx: Pick<FilesContext, 'db'>,
+  snapshotSeq: number,
+  opts: { pageRows?: number } = {},
+): AsyncGenerator<ManifestEntry, void, undefined> {
+  const pageRows = opts.pageRows ?? MANIFEST_PAGE_ROWS;
+  let after: ManifestKey | undefined;
+  for (;;) {
+    const page = await readManifestPage(ctx, snapshotSeq, after, pageRows);
+    yield* page;
+    const last = page.at(-1);
+    if (last === undefined || page.length < pageRows) return;
+    after = { siteId: last.siteId, path: last.path };
+  }
+}
+
+/** Manifest of snapshot `snapshotSeq`, ordered by site id then path in byte order. */
+export async function readManifest(ctx: Pick<FilesContext, 'db'>, snapshotSeq: number): Promise<ManifestEntry[]> {
+  const entries: ManifestEntry[] = [];
+  for await (const entry of streamManifest(ctx, snapshotSeq)) entries.push(entry);
+  return entries;
 }

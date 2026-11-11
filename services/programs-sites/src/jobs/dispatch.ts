@@ -12,7 +12,7 @@ import {
   type QueueName,
   type TaskPort,
 } from '@opt2/platform/tasks';
-import type { Clock, ServiceClient } from '@opt2/platform/service-kit';
+import { ServiceUnavailableError, systemClock, type Clock, type ServiceClient, type ServiceResponse } from '@opt2/platform/service-kit';
 import { LegacyServiceUnavailableError, cfDateTimeFormat } from '@opt2/platform/legacy-compat';
 import type { SiteMonitorStep, SiteMonitorStepName } from './steps.js';
 import type { components as MigrationContract, paths as MigrationPaths } from '../generated/clients/migration.js';
@@ -78,7 +78,7 @@ export interface LegacyStepRequest {
 export interface MigrationJobsPort {
   /** True only when migration reports every unit `target`-authoritative under the active cut-over version. */
   unitsTargetAuthoritative(units: readonly string[]): Promise<boolean>;
-  /** Runs the step on legacy, inside a write window where migration needs one; rejects unless it completed. */
+  /** Runs the step on legacy, inside a write window where migration needs one, by `deadlineAt`; rejects unless it completed. */
   runLegacyStep(req: LegacyStepRequest, deadlineAt: Date): Promise<void>;
 }
 
@@ -89,6 +89,7 @@ export class SiteMonitorDeadlineError extends LegacyServiceUnavailableError {
   constructor(
     readonly step: SiteMonitorStepName,
     readonly siteId?: string,
+    override readonly cause?: unknown,
   ) {
     super(
       `Site monitor deadline passed during step ${step}${siteId === undefined ? '' : ` for site ${siteId}`}`,
@@ -151,9 +152,17 @@ function migrationFailure(operation: string, status: number): Error {
     : new Error(`Migration ${operation} answered ${String(status)}`);
 }
 
+const CALL_TIMEOUTS: ReadonlySet<string> = new Set(['TimeoutError', 'HeadersTimeoutError', 'BodyTimeoutError']);
+
+/** True when the client stopped at the call's own bound, which runLegacyStep sets to the run's remaining budget. */
+function callTimedOut(err: ServiceUnavailableError): boolean {
+  return err.cause instanceof Error && CALL_TIMEOUTS.has(err.cause.name);
+}
+
 /** Migration port over the service client, which sends programs-sites' invocation credential and, here, no user token. */
-export function createMigrationJobsPort(opts: { client: Pick<ServiceClient, 'request'> }): MigrationJobsPort {
+export function createMigrationJobsPort(opts: { client: Pick<ServiceClient, 'request'>; clock?: Clock }): MigrationJobsPort {
   const { client } = opts;
+  const clock = opts.clock ?? systemClock;
   return {
     async unitsTargetAuthoritative(units) {
       const ids = migrationUnits(units);
@@ -170,9 +179,10 @@ export function createMigrationJobsPort(opts: { client: Pick<ServiceClient, 'req
       return res.body.allTarget && ids.every((id) => res.body.units[id] === 'target');
     },
 
-    // coordination gap: migration/contracts/openapi.yaml declares legacyStepRun synchronous, with no start/status
-    // pair, so a legacy step outlasting SERVICE_CALL_TIMEOUT_MS fails closed as the client's ServiceUnavailableError.
+    // legacyStepRun is synchronous, so the call is bounded by the run's remaining budget, not the client's default.
     async runLegacyStep(req, deadlineAt) {
+      const remainingMs = deadlineAt.getTime() - clock.now().getTime();
+      if (remainingMs <= 0) throw new SiteMonitorDeadlineError(req.job, req.siteId);
       // The contract's body carries no units: migration derives the step's write set itself.
       const body: LegacyStepWireRequest = {
         step: req.job,
@@ -181,7 +191,22 @@ export function createMigrationJobsPort(opts: { client: Pick<ServiceClient, 'req
         deadlineAt: deadlineAt.toISOString(),
         ...withSite(req.siteId),
       };
-      const res = await client.request({ service: MIGRATION, method: 'POST', path: LEGACY_STEPS_PATH, json: body, userToken: null });
+      let res: ServiceResponse;
+      try {
+        res = await client.request({
+          service: MIGRATION,
+          method: 'POST',
+          path: LEGACY_STEPS_PATH,
+          json: body,
+          userToken: null,
+          timeoutMs: remainingMs,
+        });
+      } catch (err) {
+        if (err instanceof ServiceUnavailableError && (callTimedOut(err) || clock.now().getTime() >= deadlineAt.getTime())) {
+          throw new SiteMonitorDeadlineError(req.job, req.siteId, err);
+        }
+        throw err;
+      }
       if (res.status === 200) return;
       if (res.status === 504) throw new SiteMonitorDeadlineError(req.job, req.siteId);
       throw migrationFailure(`legacyStepRun(${req.job})`, res.status);

@@ -376,6 +376,8 @@ function identityFacade(core: CoreCalls): IdentityFacade {
     ...facade,
     currentSession: () => facade.call('get', '/v1/sessions/current'),
     sessionSites: () => facade.call('get', '/v1/sessions/current/sites'),
+    adminSessionState: () => facade.call('get', '/v1/sessions/current/admin-state'),
+    saveAdminSessionState: (state) => facade.call('post', '/v1/sessions/current/admin-state', { json: state }),
     csrfTokens: (contexts) => facade.call('post', '/v1/csrf/tokens', { json: { contexts } }),
   };
 }
@@ -386,6 +388,7 @@ function programsSitesFacade(core: CoreCalls): ProgramsSitesFacade {
     ...facade,
     listSites: (query) => facade.call('get', '/v1/sites', { query }),
     getSite: (siteId) => facade.call('get', '/v1/sites/{siteId}', { params: { siteId } }),
+    getShellSite: (siteId) => facade.call('get', '/v1/sites/{siteId}/shell', { params: { siteId } }),
   };
 }
 

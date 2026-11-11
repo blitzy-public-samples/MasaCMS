@@ -345,6 +345,7 @@ const SESSION_COLUMNS = [
   { name: 'created_at', type: 't' },
   { name: 'updated_at', type: 't' },
   { name: 'ended_at', type: 't' },
+  { name: 'admin_state', type: 's' },
 ] as const satisfies Columns;
 
 /** `identity.session`: browser sessions with their login-time snapshot and CSRF secret. */
@@ -533,7 +534,7 @@ export type GroupTrashRow = RowOf<
   typeof GROUP_TRASH_COLUMNS,
   'tenant_id' | 'objectid' | 'parentid' | 'siteid' | 'objectlabel' | 'objectclass' | 'objecttype' | 'objectsubtype' | 'deletedby'
 >;
-/** A `session` row; `login_snapshot` is the JSON text of a {@link LoginSnapshot}, and the int8 `epoch` a decimal string. */
+/** A `session` row; `login_snapshot` is the JSON text of a {@link LoginSnapshot}, `admin_state` that of the stored admin session values, and the int8 `epoch` a decimal string. */
 export type SessionRow = Override<
   RowOf<typeof SESSION_COLUMNS, 'tenant_id' | 'session_id' | 'epoch' | 'csrf_secret' | 'mode' | 'state' | 'created_at' | 'updated_at'>,
   { epoch: string; mode: SessionMode; state: SessionState }

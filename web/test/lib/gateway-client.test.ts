@@ -200,6 +200,7 @@ describe('routing', () => {
 
 describe('named operations', () => {
   const CSRF_CONTEXTS = ['B1D6A2C4-0E0A-4C47-9E3D2A1B0C9D8E7F', ''];
+  const ADMIN_STATE = { siteid: 'tenant-a', flash: { '3': { msg: 'Saved' } }, nextPreserveKey: 4 };
 
   it.each<{
     operation: string;
@@ -223,6 +224,21 @@ describe('named operations', () => {
       method: 'GET',
       service: 'identity',
       path: '/v1/sessions/current/sites',
+    },
+    {
+      operation: 'identity.adminSessionState',
+      invoke: (client) => client.identity.adminSessionState(),
+      method: 'GET',
+      service: 'identity',
+      path: '/v1/sessions/current/admin-state',
+    },
+    {
+      operation: 'identity.saveAdminSessionState',
+      invoke: (client) => client.identity.saveAdminSessionState(ADMIN_STATE),
+      method: 'POST',
+      service: 'identity',
+      path: '/v1/sessions/current/admin-state',
+      json: ADMIN_STATE,
     },
     {
       operation: 'identity.csrfTokens',
@@ -253,6 +269,13 @@ describe('named operations', () => {
       method: 'GET',
       service: 'programs-sites',
       path: '/v1/sites/tenant%20a%2Fb',
+    },
+    {
+      operation: 'programsSites.getShellSite',
+      invoke: (client) => client.programsSites.getShellSite('tenant a/b'),
+      method: 'GET',
+      service: 'programs-sites',
+      path: '/v1/sites/tenant%20a%2Fb/shell',
     },
   ])(
     'sends $operation as $method to $service at $path',

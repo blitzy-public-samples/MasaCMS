@@ -128,6 +128,15 @@ x-opt2-excluded:
     reason: Legacy-served; renders CFML.
   - key: 'page:saverate'
     reason: Legacy-served page render.
+  - key: 'admin:carch.displayobjectmodal'
+    reason: Legacy-served; includes theme and module display-object CFML.
+  - key: 'admin:carch.frontendconfigurator'
+    reason: Legacy-served; reads the CFML display-object registry and plugin display objects.
+  - key: 'admin:carch.loadrepomanager'
+    reason: Legacy-served; legacy answers the ColdFusion FW/1 viewNotFound 500 page, as the pin has no view for it.
+x-opt2-web-only-actions:
+  - action: carch.edittext
+    reason: Static compact view; web renders it without service data.
 security: [{userToken: [], invocationCredential: []}, {invocationCredential: []}]
 tags:
   - name: legacy-api
@@ -322,7 +331,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/responses/LegacySaveRejected'
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
@@ -486,7 +495,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/responses/LegacySaveRejected'
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
@@ -648,7 +657,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/responses/LegacySaveRejected'
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
@@ -808,7 +817,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/responses/LegacySaveRejected'
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
@@ -972,7 +981,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/responses/LegacySaveRejected'
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
@@ -1134,7 +1143,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/responses/LegacySaveRejected'
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
@@ -1423,7 +1432,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/responses/LegacySaveRejected'
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
@@ -1583,7 +1592,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/responses/LegacySaveRejected'
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
@@ -1741,7 +1750,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/responses/LegacySaveRejected'
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
@@ -2110,12 +2119,12 @@ paths:
       x-opt2-route-keys: *commentsProxyKeys
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
-        - $ref: '#/components/parameters/ProxyMethod'
+        - $ref: '#/components/parameters/ProxyMethodQuery'
         - $ref: '#/components/parameters/ProxyCommentId'
         - $ref: '#/components/parameters/ProxyContentId'
         - $ref: '#/components/parameters/SiteIdQuery'
       requestBody:
-        $ref: '#/components/requestBodies/LegacyForm'
+        $ref: '#/components/requestBodies/CommentsProxyForm'
       responses:
         '200':
           description: JSON text of the comment or content stats for `get` and `getContentStats`; empty after `flag`, which flags the comment.
@@ -2277,6 +2286,33 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /v1/sites/{siteid}/content/images:
+    parameters:
+      - $ref: '#/components/parameters/SiteIdPath'
+    get:
+      operationId: getSelectMediaModel
+      summary: Reads the image picker model of a content node.
+      description: The png, jpg, jpeg and svg files of the node, its children and its grandchildren, with their small-rendition URLs.
+      tags: [content]
+      x-opt2-transport: service
+      x-opt2-requires: [s2, site-admin, 'm:000']
+      x-opt2-legacy-actions: [carch.selectmedia]
+      security: [{userToken: [], invocationCredential: []}]
+      parameters:
+        - name: contentid
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          $ref: '#/components/responses/AdminView'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /v1/sites/{siteid}/content/{contentid}:
     parameters:
       - $ref: '#/components/parameters/SiteIdPath'
@@ -2415,6 +2451,28 @@ paths:
           $ref: '#/components/responses/AdminNotFound'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /v1/sites/{siteid}/content/versions/{contenthistid}/summary:
+    parameters:
+      - $ref: '#/components/parameters/SiteIdPath'
+      - $ref: '#/components/parameters/ContentHistIdPath'
+    get:
+      operationId: getContentVersionModel
+      summary: Reads a content version and its node stats.
+      description: The stats carry the node's `lockid`; an unknown version reads as a new node, as legacy `loadBy` does.
+      tags: [content]
+      x-opt2-transport: service
+      x-opt2-requires: [s2, site-admin, 'm:000']
+      x-opt2-legacy-actions: [carch.lockcheck, carch.relatedcontent]
+      security: [{userToken: [], invocationCredential: []}]
+      responses:
+        '200':
+          $ref: '#/components/responses/AdminView'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /v1/sites/{siteid}/content/versions/{contenthistid}/object-params:
     parameters:
       - $ref: '#/components/parameters/SiteIdPath'
@@ -2520,6 +2578,54 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/AdminNotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/sites/{siteid}/files/image-details:
+    parameters:
+      - $ref: '#/components/parameters/SiteIdPath'
+    get:
+      operationId: getImageDetailsModel
+      summary: Reads the image details screen model of one or more files.
+      description: Also copies each file's missing `_source` object from its original, as legacy `fileManager.touchSourceImage` does.
+      tags: [content]
+      x-opt2-transport: service
+      x-opt2-requires: [s2, site-admin, 'm:000']
+      x-opt2-legacy-actions: [carch.imagedetails]
+      security: [{userToken: [], invocationCredential: []}]
+      parameters:
+        - name: fileid
+          in: query
+          required: false
+          description: Comma-separated file ids; when omitted, the version's file attributes and its file.
+          schema:
+            type: string
+        - name: contenthistid
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: userid
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: imagesize
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: compactDisplay
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          $ref: '#/components/responses/AdminView'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
   /v1/sites/{siteid}/files/{fileid}/download-url:
@@ -3108,6 +3214,34 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /v1/sites/{siteid}/feeds/display-fields:
+    parameters:
+      - $ref: '#/components/parameters/SiteIdPath'
+    get:
+      operationId: getSelectFieldsModel
+      summary: Reads the selected and available display fields of a collection.
+      description: The available fields include the content extended attributes; the collection is built from the url fields, as legacy `feed.set(url)` builds it.
+      tags: [content]
+      x-opt2-transport: service
+      x-opt2-requires: [s2, site-admin, 'm:000']
+      x-opt2-legacy-actions: [carch.selectfields]
+      security: [{userToken: [], invocationCredential: []}]
+      parameters:
+        - name: displayList
+          in: query
+          required: false
+          schema:
+            type: string
+        - $ref: '#/components/parameters/RawParams'
+      responses:
+        '200':
+          $ref: '#/components/responses/AdminView'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /v1/sites/{siteid}/feeds/{feedid}:
     parameters:
       - $ref: '#/components/parameters/SiteIdPath'
@@ -3286,6 +3420,60 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/AdminNotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/sites/{siteid}/variation-targeting:
+    parameters:
+      - $ref: '#/components/parameters/SiteIdPath'
+    get:
+      operationId: getVariationTargetingModel
+      summary: Reads the variation node of a remote id and its targeting initialization JS.
+      description: The node is loaded by `remoteid`, then takes the request fields, as legacy `contentBean.set(rc)` does.
+      tags: [content]
+      x-opt2-transport: service
+      x-opt2-requires: [s2, site-admin, 'm:000']
+      x-opt2-legacy-actions: [carch.variationtargeting]
+      security: [{userToken: [], invocationCredential: []}]
+      parameters:
+        - name: remoteid
+          in: query
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/RawParams'
+      responses:
+        '200':
+          $ref: '#/components/responses/AdminView'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: saveVariationTargeting
+      summary: Saves a variation's targeting initialization JS, creating the variation node when new.
+      description: The result's `data` carries the node, whose remote URL the close-compact display opens.
+      tags: [content]
+      x-opt2-transport: service
+      x-opt2-requires: [s2, site-admin, 'm:000']
+      x-opt2-legacy-actions: [carch.variationtargeting]
+      x-opt2-csrf:
+        validation: none
+      security: [{userToken: [], invocationCredential: []}]
+      requestBody:
+        $ref: '#/components/requestBodies/LegacyForm'
+      responses:
+        '200':
+          $ref: '#/components/responses/AdminWritten'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
   /v1/sites/{siteid}/forms/import:
@@ -7536,7 +7724,18 @@ components:
       name: method
       in: query
       required: true
-      description: Remote method, also as a form field.
+      description: Remote method.
+      schema:
+        type: string
+        enum:
+          - get
+          - flag
+          - getContentStats
+    ProxyMethodQuery:
+      name: method
+      in: query
+      required: false
+      description: Remote method; required here or as the form field, and the url value wins over the form.
       schema:
         type: string
         enum:
@@ -7717,7 +7916,21 @@ components:
             $ref: '#/components/schemas/LegacyCallBody'
         application/json:
           schema:
-            $ref: '#/components/schemas/LegacyCallBody'
+            $ref: '#/components/schemas/LegacyCallJsonBody'
+          examples:
+            nestedValidate:
+              summary: validate with nested data and validations objects.
+              value:
+                method: validate
+                siteid: default
+                data:
+                  name: ''
+                  fields: ''
+                validations:
+                  properties:
+                    name:
+                      - required: true
+                        message: Name is required
     LegacyForm:
       required: false
       description: The legacy form fields under their legacy names.
@@ -7750,6 +7963,27 @@ components:
         multipart/form-data:
           schema:
             $ref: '#/components/schemas/RateFields'
+    CommentsProxyForm:
+      required: false
+      description: Form fields bound to the remote method's arguments.
+      content:
+        application/x-www-form-urlencoded:
+          schema:
+            $ref: '#/components/schemas/CommentsProxyFields'
+          example:
+            method: getContentStats
+            contentID: '00000000000000000000000000000000001'
+            siteid: default
+        multipart/form-data:
+          schema:
+            $ref: '#/components/schemas/CommentsProxyFields'
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CommentsProxyJsonBody'
+          examples:
+            urlSelectedCall:
+              summary: With `method` and its arguments in the url; the body is ignored.
+              value: {}
     FormImport:
       required: true
       content:
@@ -7787,7 +8021,7 @@ components:
           schema:
             $ref: '#/components/schemas/LegacyEnvelope'
     LegacySaveRejected:
-      description: A save or delete whose `data.errors` is non-empty, or a `siteid` other than the token's site.
+      description: A save or delete, including one a GET selects through `X-HTTP-Method-Override`, whose `data.errors` is non-empty, or a `siteid` other than the token's site.
       headers:
         Generator:
           $ref: '#/components/headers/Generator'
@@ -7805,6 +8039,45 @@ components:
             anyOf:
               - $ref: '#/components/schemas/LegacyEnvelope'
               - $ref: '#/components/schemas/LegacyError'
+          examples:
+            overrideSaveErrors:
+              summary: 'GET category with `X-HTTP-Method-Override: POST` and an empty `name`, as legacy answers it.'
+              value:
+                apiversion: v1
+                data:
+                  path: ''
+                  restrictgroups: ''
+                  errors:
+                    name: The property named 'name' is not valid
+                  links:
+                    all: 'http://localhost:25980/index.cfm/_api/json/v1/default/category'
+                    permissions: 'http://localhost:25980/index.cfm/_api/json/v1/default/category/FDA6FFE0-DA95-48F5-C46308FEC1707570/permissions'
+                    properties: 'http://localhost:25980/index.cfm/_api/json/v1/default/category/properties'
+                    self: 'http://localhost:25980/index.cfm/_api/json/v1/default/category/FDA6FFE0-DA95-48F5-C46308FEC1707570'
+                  isfeatureable: 1
+                  notes: ''
+                  lastupdate: '2026-11-11T21:43:17'
+                  sortby: orderno
+                  id: FDA6FFE0-DA95-48F5-C46308FEC1707570
+                  filename: ''
+                  sortdirection: asc
+                  saveerrors: ''
+                  categoryid: FDA6FFE0-DA95-48F5-C46308FEC1707570
+                  siteid: default
+                  isactive: 1
+                  name: ''
+                  remoteid: ''
+                  remotesourceurl: ''
+                  parentid: ''
+                  remotepubdate: ''
+                  lastupdateby: ''
+                  isopen: 1
+                  urltitle: ''
+                  isnew: 1
+                  datecreated: '2026-11-11T21:43:17'
+                  entityname: category
+                  isinterestgroup: 1
+                method: save
     BadRequest:
       description: 'Legacy 400: `invalidParameters` or `badRequest`.'
       headers:
@@ -8249,8 +8522,10 @@ components:
           type: string
         active:
           type: integer
+          description: A number, because the content bean declares the property numeric.
         approved:
           type: integer
+          description: A number, because the content bean declares the property numeric.
         title:
           type: string
         menutitle:
@@ -8269,6 +8544,7 @@ components:
           type: string
         display:
           type: integer
+          description: A number, because the content bean declares the property numeric.
         filename:
           type: string
         url:
@@ -8281,6 +8557,50 @@ components:
           type: string
         remoteurl:
           type: string
+      examples:
+        - id: '00000000000000000000000000000000001'
+          links:
+            all: 'http://localhost:8080/index.cfm/_api/json/v1/default/content'
+            site: 'http://localhost:8080/index.cfm/_api/json/v1/default/site'
+            permissions: 'http://localhost:8080/index.cfm/_api/json/v1/default/content/00000000000000000000000000000000001/permissions'
+            properties: 'http://localhost:8080/index.cfm/_api/json/v1/default/content/properties'
+            categoryassignments: 'http://localhost:8080/index.cfm/_api/json/v1/default/contentCategoryAssign?contenthistid=00000000000000000000000000000000001'
+            stats: 'http://localhost:8080/index.cfm/_api/json/v1/default/stats/00000000000000000000000000000000001'
+            relatedcontent: 'http://localhost:8080/index.cfm/_api/json/v1/default/content/00000000000000000000000000000000001/relatedcontent'
+            comments: 'http://localhost:8080/index.cfm/_api/json/v1/default/comment?contentid=00000000000000000000000000000000001'
+            self: 'http://localhost:8080/index.cfm/_api/json/v1/default/content/00000000000000000000000000000000001'
+            kids: 'http://localhost:8080/index.cfm/_api/json/v1/default/content?parentid=00000000000000000000000000000000001'
+            rendered: 'http://localhost:8080/index.cfm/_api/json/v1/default/content/_path/'
+            parent: 'http://localhost:8080/index.cfm/_api/json/v1/default/content/00000000000000000000000000000000END'
+            crumbs: 'http://localhost:8080/index.cfm/_api/json/v1/default/content/00000000000000000000000000000000001/crumbs'
+            entities: 'http://localhost:8080/index.cfm/_api/json/v1/default'
+            history: 'http://localhost:8080/index.cfm/_api/json/v1/default/content/00000000000000000000000000000000001/history'
+          images: {}
+          parentid: '00000000000000000000000000000000END'
+          moduleid: '00000000000000000000000000000000000'
+          path: '00000000000000000000000000000000001'
+          contentid: '00000000000000000000000000000000001'
+          contenthistid: '6300ED69-1320-5CC3-F922E3012E2C6BAE'
+          changesetid: ''
+          siteid: 'default'
+          active: 1
+          approved: 1
+          title: 'Home'
+          menutitle: 'Home'
+          summary: ''
+          tags: ''
+          type: 'Page'
+          subtype: 'Default'
+          displaystart: ''
+          displaystop: ''
+          display: 1
+          filename: ''
+          url: 'http://localhost:8080/'
+          assocurl: 'http://localhost:8080/'
+          isnew: 0
+          remoteid: ''
+          remoteurl: ''
+          entityname: 'content'
     ContentNavEntity:
       type: object
       description: A `contentnav` entity, served by the content bean; keys lower-cased.
@@ -8335,8 +8655,10 @@ components:
           type: string
         active:
           type: integer
+          description: A number, because the content bean declares the property numeric.
         approved:
           type: integer
+          description: A number, because the content bean declares the property numeric.
         title:
           type: string
         menutitle:
@@ -8355,6 +8677,7 @@ components:
           type: string
         display:
           type: integer
+          description: A number, because the content bean declares the property numeric.
         filename:
           type: string
         url:
@@ -8367,6 +8690,50 @@ components:
           type: string
         remoteurl:
           type: string
+      examples:
+        - id: '00000000000000000000000000000000001'
+          links:
+            all: 'http://localhost:8080/index.cfm/_api/json/v1/default/content'
+            site: 'http://localhost:8080/index.cfm/_api/json/v1/default/site'
+            permissions: 'http://localhost:8080/index.cfm/_api/json/v1/default/content/00000000000000000000000000000000001/permissions'
+            properties: 'http://localhost:8080/index.cfm/_api/json/v1/default/content/properties'
+            categoryassignments: 'http://localhost:8080/index.cfm/_api/json/v1/default/contentCategoryAssign?contenthistid=00000000000000000000000000000000001'
+            stats: 'http://localhost:8080/index.cfm/_api/json/v1/default/stats/00000000000000000000000000000000001'
+            relatedcontent: 'http://localhost:8080/index.cfm/_api/json/v1/default/content/00000000000000000000000000000000001/relatedcontent'
+            comments: 'http://localhost:8080/index.cfm/_api/json/v1/default/comment?contentid=00000000000000000000000000000000001'
+            self: 'http://localhost:8080/index.cfm/_api/json/v1/default/content/00000000000000000000000000000000001'
+            kids: 'http://localhost:8080/index.cfm/_api/json/v1/default/content?parentid=00000000000000000000000000000000001'
+            rendered: 'http://localhost:8080/index.cfm/_api/json/v1/default/content/_path/'
+            parent: 'http://localhost:8080/index.cfm/_api/json/v1/default/content/00000000000000000000000000000000END'
+            crumbs: 'http://localhost:8080/index.cfm/_api/json/v1/default/content/00000000000000000000000000000000001/crumbs'
+            entities: 'http://localhost:8080/index.cfm/_api/json/v1/default'
+            history: 'http://localhost:8080/index.cfm/_api/json/v1/default/content/00000000000000000000000000000000001/history'
+          images: {}
+          parentid: '00000000000000000000000000000000END'
+          moduleid: '00000000000000000000000000000000000'
+          path: '00000000000000000000000000000000001'
+          contentid: '00000000000000000000000000000000001'
+          contenthistid: '6300ED69-1320-5CC3-F922E3012E2C6BAE'
+          changesetid: ''
+          siteid: 'default'
+          active: 1
+          approved: 1
+          title: 'Home'
+          menutitle: 'Home'
+          summary: ''
+          tags: ''
+          type: 'Page'
+          subtype: 'Default'
+          displaystart: ''
+          displaystop: ''
+          display: 1
+          filename: ''
+          url: 'http://localhost:8080/'
+          assocurl: 'http://localhost:8080/'
+          isnew: 0
+          remoteid: ''
+          remoteurl: ''
+          entityname: 'content'
     CommentEntity:
       type: object
       description: A `comment` entity; keys lower-cased, `fields` and `expand` change the selection.
@@ -8431,6 +8798,25 @@ components:
           type: string
         csrf_token_expires:
           type: string
+    LegacyCallJsonBody:
+      type: object
+      description: JSON API parameters and entity values in a JSON body; values merge unchanged, so they may be objects and arrays.
+      additionalProperties: true
+      properties:
+        method:
+          type: string
+        entityname:
+          type: string
+        siteid:
+          type: string
+        csrf_token:
+          type: string
+        csrf_token_expires:
+          type: string
+        data:
+          description: 'validate input: an object or its JSON text, null reading as `{}`; booleans and non-JSON text answer 400, and other values `invalid`.'
+        validations:
+          description: 'validate rules: an object such as `{properties: {name: [{required: true}]}}` or its JSON text, null reading as `{}`; booleans and non-JSON text answer 400, and other values `invalid`.'
     LegacyFormFields:
       type: object
       description: Admin form fields under their legacy names, including the legacy `action` field where the action branches on it.
@@ -8456,6 +8842,25 @@ components:
           description: Rater id as the client posts it; legacy does not check it.
         rate:
           type: string
+    CommentsProxyFields:
+      type: object
+      additionalProperties: true
+      properties:
+        method:
+          type: string
+          description: Remote method when the url names none.
+          enum:
+            - get
+            - flag
+            - getContentStats
+        commentID:
+          type: string
+        contentID:
+          type: string
+        siteid:
+          type: string
+    CommentsProxyJsonBody:
+      description: Ignored; legacy neither selects the remote method nor binds its arguments from a JSON body, so both must be url fields.
     FormImportFields:
       type: object
       required: [formzip, title]

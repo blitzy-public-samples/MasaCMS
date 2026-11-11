@@ -16,7 +16,27 @@ AS
 BEGIN
 	SET NOCOUNT ON; SET XACT_ABORT ON;
 
+	DECLARE @rc int;
+	DECLARE @max_total numeric(19,4) = 999999999999999.9999;
+
 	BEGIN TRANSACTION;
+
+	-- One writer per program at a time, held to the end of the caller's transaction, so writes and their rollup rebuild never deadlock.
+	EXEC @rc = sp_getapplock @Resource = N'$(PROGRAM_SCHEMA).finance', @LockMode = N'Exclusive', @LockOwner = N'Transaction';
+	IF @rc < 0
+		THROW 50012, N'finance program lock not granted', 1;
+
+	-- Every per-state total of a period lies between its negative and positive sums, so bounding both keeps usp_finance_rollup within numeric(19,4).
+	IF EXISTS (
+		SELECT 1
+		FROM (
+			SELECT [amount] FROM [$(PROGRAM_SCHEMA)].[finance_record] WHERE [period] = @period
+			UNION ALL SELECT @amount
+		) AS [p]
+		HAVING SUM(CASE WHEN [p].[amount] > 0 THEN [p].[amount] ELSE 0 END) > @max_total
+			OR SUM(CASE WHEN [p].[amount] < 0 THEN [p].[amount] ELSE 0 END) < -@max_total
+	)
+		THROW 50020, N'finance period total out of range', 1;
 
 	INSERT INTO [$(PROGRAM_SCHEMA)].[finance_record] ([record_id], [siteID], [title], [amount], [period], [state], [version], [created], [createdByID], [lastUpdate], [lastUpdateByID])
 	VALUES (@record_id, @siteID, @title, @amount, @period, N'IN-PROGRESS', 1, @now, @actor_user_id, NULL, NULL);
@@ -58,8 +78,14 @@ BEGIN
 	DECLARE @to_state nvarchar(20);
 	DECLARE @error nvarchar(50);
 	DECLARE @held TABLE ([role] nvarchar(4000) NOT NULL);
+	DECLARE @rc int;
+	DECLARE @max_total numeric(19,4) = 999999999999999.9999;
 
 	BEGIN TRANSACTION;
+
+	EXEC @rc = sp_getapplock @Resource = N'$(PROGRAM_SCHEMA).finance', @LockMode = N'Exclusive', @LockOwner = N'Transaction';
+	IF @rc < 0
+		THROW 50012, N'finance program lock not granted', 1;
 
 	SELECT @state = [state], @version = [version], @cur_title = [title], @cur_amount = [amount], @cur_period = [period]
 	FROM [$(PROGRAM_SCHEMA)].[finance_record] WITH (UPDLOCK, HOLDLOCK)
@@ -99,7 +125,21 @@ BEGIN
 			SET @to_state = @new_state;
 
 			IF @action = N'edit'
+			BEGIN
 				SELECT @cur_title = COALESCE(@title, @cur_title), @cur_amount = COALESCE(@amount, @cur_amount), @cur_period = COALESCE(@period, @cur_period);
+
+				-- Other actions keep each record's period and amount, so only an edit can move a period's sums.
+				IF EXISTS (
+					SELECT 1
+					FROM (
+						SELECT [amount] FROM [$(PROGRAM_SCHEMA)].[finance_record] WHERE [period] = @cur_period AND [record_id] <> @record_id
+						UNION ALL SELECT @cur_amount
+					) AS [p]
+					HAVING SUM(CASE WHEN [p].[amount] > 0 THEN [p].[amount] ELSE 0 END) > @max_total
+						OR SUM(CASE WHEN [p].[amount] < 0 THEN [p].[amount] ELSE 0 END) < -@max_total
+				)
+					THROW 50020, N'finance period total out of range', 1;
+			END
 
 			UPDATE [$(PROGRAM_SCHEMA)].[finance_record]
 			SET [state] = @new_state, [title] = @cur_title, [amount] = @cur_amount, [period] = @cur_period,
@@ -124,7 +164,13 @@ AS
 BEGIN
 	SET NOCOUNT ON; SET XACT_ABORT ON;
 
+	DECLARE @rc int;
+
 	BEGIN TRANSACTION;
+
+	EXEC @rc = sp_getapplock @Resource = N'$(PROGRAM_SCHEMA).finance', @LockMode = N'Exclusive', @LockOwner = N'Transaction';
+	IF @rc < 0
+		THROW 50012, N'finance program lock not granted', 1;
 
 	DELETE FROM [$(PROGRAM_SCHEMA)].[finance_rollup] WITH (TABLOCKX, HOLDLOCK);
 

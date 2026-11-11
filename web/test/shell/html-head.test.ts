@@ -13,6 +13,7 @@ import {
   anonymousRequest,
   editorRequest,
   siteRecordFor,
+  unservedEditorRequest,
   type AdminRequestPartial,
 } from '../helpers/admin-request';
 import { useTestEnv } from '../helpers/env';
@@ -282,7 +283,7 @@ describe('renderHtmlHead', () => {
 
   it('assumes the installed theme when the site data is withheld', () => {
     useSettings({ MURA_CONTEXT: '/cms' });
-    const ctx = editorRequest();
+    const ctx = unservedEditorRequest();
     expect(ctx.site).toBeUndefined();
     expect(globals(portHead(ctx))).toContain("var themepath='/cms/themes/default';");
   });

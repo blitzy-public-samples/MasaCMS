@@ -4,9 +4,9 @@ import { resolveTenant, sha256Hex, type TenantSource } from '@opt2/platform/migr
 import { BridgeHashMismatchError, type LegacyFileBytes } from '../legacy/bridge.js';
 
 import {
-  readManifest,
   readSnapshotFileOwners,
   snapshotDatabase,
+  streamManifest,
   type FilesContext,
   type ManifestEntry,
   type ManifestKey,
@@ -123,23 +123,16 @@ function contentTypeOf(entry: ManifestEntry, type: FileType | undefined, flvRend
   return type.fileExt === FLV_EXT && ext === flvRenditionExt.toLowerCase() ? FLV_RENDITION_CONTENT_TYPE : OCTET_STREAM;
 }
 
-/**
- * Destination of each manifest object of snapshot `snapshotSeq`, in manifest order.
- * Orphans go to the umbrella tenant; an object in another directory than its row's site is `misplaced`.
- */
-export async function planObjects(
-  ctx: Pick<FilesContext, 'db' | 'legacy' | 'config'>,
-  snapshotSeq: number,
-  opts: PlanOptions = {},
-): Promise<PlannedObject[]> {
-  const only = opts.only === undefined ? undefined : new Set(opts.only.map(keyText));
-  const entries = (await readManifest(ctx, snapshotSeq)).filter((entry) => only?.has(keyText(entry)) ?? true);
-  const database = opts.database ?? (await snapshotDatabase(ctx, snapshotSeq));
+/** Planner of manifest entries against the `tfiles` owners and content types of `database`, each read once. */
+async function plannerFor(
+  ctx: Pick<FilesContext, 'legacy' | 'config'>,
+  database: string,
+): Promise<(entry: ManifestEntry) => PlannedObject> {
   const [owners, types] = await Promise.all([readSnapshotFileOwners(ctx, database), readSnapshotFileTypes(ctx, database)]);
   const lookups = { umbrellaSiteId: ctx.config.umbrellaSiteId };
   const { flvRenditionExt } = ctx.config.fileStore;
 
-  return entries.map((entry): PlannedObject => {
+  return (entry): PlannedObject => {
     const fileId = entry.fileId.toUpperCase();
     // A null site makes resolveTenant answer the umbrella tenant with `orphan: true`, as the `tfiles` backfill does.
     const siteID = entry.orphan ? null : (owners.get(fileId) ?? null);
@@ -155,18 +148,34 @@ export async function planObjects(
       status: misplaced ? 'misplaced' : 'transfer',
       orphan: resolved.orphan,
     };
-  });
+  };
 }
 
-/** Plan grouped by site directory, in first-appearance order. */
-function bySite(plan: readonly PlannedObject[]): Map<string, PlannedObject[]> {
-  const groups = new Map<string, PlannedObject[]>();
-  for (const planned of plan) {
-    const group = groups.get(planned.entry.siteId);
-    if (group === undefined) groups.set(planned.entry.siteId, [planned]);
-    else group.push(planned);
+/** Destinations of the snapshot's manifest objects kept by `opts.only`, in manifest order, read page by page. */
+async function* streamPlannedObjects(
+  ctx: Pick<FilesContext, 'db' | 'legacy' | 'config'>,
+  snapshotSeq: number,
+  opts: PlanOptions,
+): AsyncGenerator<PlannedObject, void, undefined> {
+  const only = opts.only === undefined ? undefined : new Set(opts.only.map(keyText));
+  const plan = await plannerFor(ctx, opts.database ?? (await snapshotDatabase(ctx, snapshotSeq)));
+  for await (const entry of streamManifest(ctx, snapshotSeq)) {
+    if (only?.has(keyText(entry)) ?? true) yield plan(entry);
   }
-  return groups;
+}
+
+/**
+ * Destination of each manifest object of snapshot `snapshotSeq`, in manifest order.
+ * Orphans go to the umbrella tenant; an object in another directory than its row's site is `misplaced`.
+ */
+export async function planObjects(
+  ctx: Pick<FilesContext, 'db' | 'legacy' | 'config'>,
+  snapshotSeq: number,
+  opts: PlanOptions = {},
+): Promise<PlannedObject[]> {
+  const planned: PlannedObject[] = [];
+  for await (const object of streamPlannedObjects(ctx, snapshotSeq, opts)) planned.push(object);
+  return planned;
 }
 
 /** Bytes of one object, which both the bridge's header and their own digest must match to the manifest hash. */
@@ -186,7 +195,8 @@ async function readVerified(ctx: Pick<FilesContext, 'bridge'>, entry: ManifestEn
 }
 
 /**
- * Sends each planned `transfer` object of snapshot `snapshotSeq` to strategies-content, one object at a time, site after site.
+ * Sends each planned `transfer` object of snapshot `snapshotSeq` to strategies-content, one object at a time, site after
+ * site, reading the manifest page by page.
  * @throws FileHashMismatchError when bytes read differ from the manifest; objects already sent stay stored, and a re-run
  *   answers them `unchanged`.
  */
@@ -195,41 +205,46 @@ export async function transferFiles(
   snapshotSeq: number,
   opts: PlanOptions = {},
 ): Promise<TransferResult> {
-  const plan = await planObjects(ctx, snapshotSeq, opts);
   const result: TransferResult = { snapshotSeq, transferred: 0, unchanged: 0, bytes: 0, orphans: [], misplaced: [] };
-
-  for (const [siteId, objects] of bySite(plan)) {
-    let transferred = 0;
-    let unchanged = 0;
-    for (const planned of objects) {
-      const { entry } = planned;
-      if (planned.orphan) result.orphans.push(keyOf(entry));
-      if (planned.status === 'misplaced') {
-        result.misplaced.push(keyOf(entry));
-        continue;
-      }
-      const bytes = await readVerified(ctx, entry);
-      const stored = await ctx.owners.putObject(
-        {
-          tenantId: planned.tenantId,
-          fileId: entry.fileId,
-          variant: entry.variant,
-          ext: entry.ext,
-          contentType: planned.contentType,
-          sha256: entry.sha256.toLowerCase(),
-        },
-        bytes,
-      );
-      if (stored.created) transferred += 1;
-      else unchanged += 1;
-      result.bytes += bytes.byteLength;
-    }
-    result.transferred += transferred;
-    result.unchanged += unchanged;
+  // The manifest is ordered by site id first, so each site's objects arrive together.
+  let site: { siteId: string; transferred: number; unchanged: number } | undefined;
+  const finishSite = (): void => {
+    if (site === undefined) return;
+    result.transferred += site.transferred;
+    result.unchanged += site.unchanged;
     ctx.logger.info(
-      `files of snapshot ${String(snapshotSeq)} site ${siteId} transferred: ` +
-        `${String(transferred)} stored, ${String(unchanged)} unchanged`,
+      `files of snapshot ${String(snapshotSeq)} site ${site.siteId} transferred: ` +
+        `${String(site.transferred)} stored, ${String(site.unchanged)} unchanged`,
     );
+  };
+
+  for await (const planned of streamPlannedObjects(ctx, snapshotSeq, opts)) {
+    const { entry } = planned;
+    if (site?.siteId !== entry.siteId) {
+      finishSite();
+      site = { siteId: entry.siteId, transferred: 0, unchanged: 0 };
+    }
+    if (planned.orphan) result.orphans.push(keyOf(entry));
+    if (planned.status === 'misplaced') {
+      result.misplaced.push(keyOf(entry));
+      continue;
+    }
+    const bytes = await readVerified(ctx, entry);
+    const stored = await ctx.owners.putObject(
+      {
+        tenantId: planned.tenantId,
+        fileId: entry.fileId,
+        variant: entry.variant,
+        ext: entry.ext,
+        contentType: planned.contentType,
+        sha256: entry.sha256.toLowerCase(),
+      },
+      bytes,
+    );
+    if (stored.created) site.transferred += 1;
+    else site.unchanged += 1;
+    result.bytes += bytes.byteLength;
   }
+  finishSite();
   return result;
 }

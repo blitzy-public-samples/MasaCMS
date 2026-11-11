@@ -59,7 +59,9 @@ beforeAll(async () => {
   const contract = parse(await readFile(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
     components: { schemas: Record<string, AnySchemaObject> };
   };
-  markUsedContract = new Ajv2020({ allErrors: true, strict: true }).compile(contract.components.schemas.MarkUsedRequest);
+  const schema = contract.components.schemas.MarkUsedRequest;
+  if (schema === undefined) throw new Error('contracts/openapi.yaml defines no components.schemas.MarkUsedRequest');
+  markUsedContract = new Ajv2020({ allErrors: true, strict: true }).compile(schema);
 });
 
 afterEach(async () => {

@@ -1,5 +1,6 @@
 // cloc size report of the pinned legacy source, measured on a `git archive` extraction outside the checkout.
-import { rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { z } from '@opt2/platform/service-kit';
 
@@ -7,7 +8,7 @@ import { isMainModule, parseFlags, runCli, UsageError, type CliOutcome } from '.
 import { defaultRunner, gitArchiveExtract } from '../lib/git.js';
 import { assertOutsideRepo, opt2Path, repoPath } from '../lib/paths.js';
 import { readPin, type Pin } from '../lib/pin.js';
-import { writeJsonReport, writeMarkdown } from '../lib/report.js';
+import { stableStringify, writeJsonReport, writeMarkdown } from '../lib/report.js';
 
 /** cloc release the planning figures were measured with. */
 export const CLOC_REQUIRED_VERSION = '1.98';
@@ -543,10 +544,12 @@ export interface GenerateClocOptions {
   /** Output directory for `cloc.json` and `cloc.md`; a relative path resolves against the repository root. */
   out?: string;
   runner?: ClocRunner;
-  /** Extracts the pinned tree into a new directory outside the checkout and returns its path. */
-  extract?: (sha: string) => Promise<string>;
+  /** Extracts the pinned tree into a new directory under `scratch`, an empty directory outside the checkout, and returns its path. */
+  extract?: (sha: string, scratch: string) => Promise<string>;
   clock?: () => Date;
   pin?: () => Pin;
+  /** Earlier `cloc.json` whose `measuredAt` is kept when it holds the same measurement; default `opt2/inventory/cloc.json`. */
+  reference?: string;
 }
 
 /** Paths written by {@link generateCloc}, the report body and its planning comparison. */
@@ -557,22 +560,82 @@ export interface ClocGeneration {
   planning: PlanningComparison;
 }
 
-/** Measures the pinned tree and writes `cloc.json` and `cloc.md`; the extraction is always removed. */
+/**
+ * `measuredAt` of the `cloc.json` at `file` when it holds the same measurement as `report`; undefined when the file
+ * is absent, not JSON, different or without a canonical ISO `measuredAt`. Other read errors are thrown.
+ */
+async function keptMeasuredAt(file: string, report: ClocReport): Promise<Date | undefined> {
+  let text: string;
+  try {
+    text = await readFile(file, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException | null)?.code === 'ENOENT') return undefined;
+    throw err;
+  }
+  let previous: unknown;
+  try {
+    previous = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  const at = (previous as { measuredAt?: unknown } | null)?.measuredAt;
+  if (typeof at !== 'string') return undefined;
+  const time = new Date(at);
+  if (Number.isNaN(time.getTime()) || time.toISOString() !== at) return undefined;
+  const body = (value: object): string => stableStringify({ ...value, measuredAt: undefined, generatedAt: undefined });
+  return body(previous as object) === body(report) ? time : undefined;
+}
+
+/** Signals that stop a measurement once its running step ends; a second one gets the default action. */
+const INTERRUPT_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
+
+/**
+ * Measures the pinned tree and writes `cloc.json` and `cloc.md`. The scratch extraction is removed on every path; after
+ * an interrupting signal the process then exits with 128 plus the signal number.
+ */
 export async function generateCloc(opts: GenerateClocOptions = {}): Promise<ClocGeneration> {
   const pin = (opts.pin ?? readPin)();
   const pinOf = (): Pin => pin;
-  const extract = opts.extract ?? ((sha: string) => gitArchiveExtract(sha));
-  const dir = assertOutsideRepo(await extract(pin.sha), 'cloc extraction');
-  const measuredAt = (opts.clock ?? (() => new Date()))();
+  const extract = opts.extract ?? ((sha: string, scratch: string) => gitArchiveExtract(sha, path.join(scratch, 'tree')));
+  let interrupted: NodeJS.Signals | undefined;
+  const release = (): void => {
+    for (const signal of INTERRUPT_SIGNALS) process.removeListener(signal, onSignal);
+  };
+  const onSignal = (signal: NodeJS.Signals): void => {
+    interrupted = signal;
+    release();
+  };
+  const stopIfInterrupted = (): void => {
+    if (interrupted !== undefined) throw new Error(`cloc measurement interrupted by ${interrupted}`);
+  };
+  for (const signal of INTERRUPT_SIGNALS) process.on(signal, onSignal);
+  let scratch: string | undefined;
+  let dir: string | undefined;
+  let clockTime: Date;
   let filtered: ClocResult;
   let unfiltered: ClocResult;
   try {
+    scratch = await mkdtemp(path.join(assertOutsideRepo(os.tmpdir(), 'cloc scratch root'), 'opt2-cloc-'));
+    dir = assertOutsideRepo(await extract(pin.sha, scratch), 'cloc extraction');
+    stopIfInterrupted();
+    clockTime = (opts.clock ?? (() => new Date()))();
     filtered = await runCloc(dir, { ...FILTERED_OPTIONS, runner: opts.runner });
+    stopIfInterrupted();
     unfiltered = await runCloc(dir, { ...UNFILTERED_OPTIONS, runner: opts.runner });
+    stopIfInterrupted();
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    // The listeners stay until the removal ends, so a first signal during it waits for the removal too.
+    try {
+      if (scratch !== undefined) await rm(scratch, { recursive: true, force: true });
+      if (dir !== undefined) await rm(dir, { recursive: true, force: true });
+    } finally {
+      release();
+    }
+    if (interrupted !== undefined) process.exit(128 + os.constants.signals[interrupted]);
   }
-  const report = buildClocReport(pin.sha, filtered, unfiltered, measuredAt);
+  const measured = buildClocReport(pin.sha, filtered, unfiltered, clockTime);
+  const measuredAt = (await keptMeasuredAt(opts.reference ?? opt2Path('inventory', 'cloc.json'), measured)) ?? clockTime;
+  const report: ClocReport = { ...measured, measuredAt: measuredAt.toISOString() };
   const planning = comparePlanning(report);
   const out = opts.out ?? opt2Path('inventory');
   const { path: jsonPath } = await writeJsonReport(path.join(out, 'cloc.json'), report, {
@@ -591,29 +654,32 @@ const HELP = `${USAGE} [--help]
 Measures the pinned legacy source with cloc and writes the size report cloc.json and cloc.md.
 
 Options:
-  --out <dir>  output directory for cloc.json and cloc.md; a relative path resolves against the repository root,
-               not the working directory (default: opt2/inventory)
+  --out <dir>  output directory for cloc.json and cloc.md; a relative path resolves against the working directory
+               (default: opt2/inventory)
   --help       print this help and exit 0
 
-The commit pinned in opt2/source-pin.json is extracted with git archive into a new opt2-archive-* directory under
-TMPDIR, measured with the full exclusions and again unfiltered, and removed. Figures or a cloc version that differ
-from the cloc ${CLOC_REQUIRED_VERSION} planning measurement are reported and noted in cloc.md, not failed.
+The commit pinned in opt2/source-pin.json is extracted with git archive into a new opt2-cloc-* directory under
+TMPDIR, measured with the full exclusions and again unfiltered, and removed, also when SIGINT, SIGTERM or SIGHUP
+interrupts the run. Figures or a cloc version that differ from the cloc ${CLOC_REQUIRED_VERSION} planning measurement are
+reported and noted in cloc.md, not failed. A measurement equal to the committed opt2/inventory/cloc.json keeps its
+measuredAt, so a rerun reproduces both files exactly.
 
 Requires: git and tar on PATH, a checkout that holds the pinned commit, cloc ${CLOC_REQUIRED_VERSION} on PATH (apt: cloc), and TMPDIR
 (default /tmp) outside the checkout.
 
 Output: one JSON summary line on stdout. Exit: 0 report written, 1 failure (cloc missing or failing, git, pin or
-write error), 2 usage error.
+write error), 2 usage error, 128 + signal number when interrupted.
 
 Examples (from harness/):
   npm run inventory:cloc
   TMPDIR=/path/to/scratch npm run --silent inventory:cloc -- --out /path/to/out`;
 
-/** CLI entry: writes the report and summarises the figures and any planning differences. */
-export async function main(argv: string[]): Promise<CliOutcome> {
+/** CLI entry: writes the report and summarises the figures and any planning differences; `deps` replaces the other inputs. */
+export async function main(argv: string[], deps: Omit<GenerateClocOptions, 'out'> = {}): Promise<CliOutcome> {
   const { values } = parseFlags(argv, { options: { out: { type: 'string' } }, usage: USAGE, help: HELP });
   if (values.out === '') throw new UsageError('--out needs a directory', USAGE);
-  const { jsonPath, mdPath, report, planning } = await generateCloc({ out: values.out });
+  const out = values.out === undefined ? undefined : path.resolve(values.out);
+  const { jsonPath, mdPath, report, planning } = await generateCloc({ ...deps, out });
   return {
     summary: {
       json: jsonPath,

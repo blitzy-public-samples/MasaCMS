@@ -2,6 +2,7 @@
 /** Read-only queries of schema `finance` in the fixture `finance.cfc` order; each runs in the caller's tenant transaction, whose RLS scopes the rows. */
 import { awaitReadable, qualified, type TableDefinition } from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
+import { moneyFromNumeric, type Money } from '../domain/money.js';
 import {
   FINANCE_ATTACHMENT,
   FINANCE_RECORD,
@@ -38,6 +39,12 @@ export type AttachmentObject = {
   legacy_program_id: number;
 };
 
+/** The records of one program period whose amounts are summed, optionally without record `excludeRecordId`. */
+export type PeriodScope = { programId: number; period: string; excludeRecordId?: string };
+
+/** Exact sums of a period's positive and of its negative amounts; 0n where there are none. */
+export type PeriodTotals = { positive: Money; negative: Money };
+
 /** The `finance.attachment` column behind each manifest field. */
 const MANIFEST_COLUMNS: { readonly [F in keyof AttachmentObject]: keyof FinanceAttachmentRow } = {
   attachment_id: 'attachment_id',
@@ -60,6 +67,7 @@ interface Statements {
   readonly rollups: string;
   readonly binding: string;
   readonly attachmentObjects: string;
+  readonly periodTotals: string;
 }
 
 /** The quoted catalogue columns of `def`, in catalogue order. */
@@ -91,6 +99,10 @@ function statementsFor(schema: string): Statements {
       ' ORDER BY "period" COLLATE "C", "state" COLLATE "C", "legacy_program_id"',
     binding: `SELECT ${columnList(PROGRAM_BINDING)} FROM ${qualified(schema, PROGRAM_BINDING.table)} ORDER BY "legacy_program_id" LIMIT 1`,
     attachmentObjects: `SELECT ${manifest} FROM ${qualified(schema, FINANCE_ATTACHMENT.table)} ORDER BY "attachment_id" COLLATE "C"`,
+    periodTotals:
+      `SELECT coalesce(sum("amount") FILTER (WHERE "amount" > 0), 0)::text AS "positive",` +
+      ` coalesce(sum("amount") FILTER (WHERE "amount" < 0), 0)::text AS "negative" FROM ${qualified(schema, FINANCE_RECORD.table)}` +
+      ' WHERE "legacy_program_id" = $1 AND "period" = $2 AND "record_id" IS DISTINCT FROM $3',
   });
 }
 
@@ -146,6 +158,18 @@ export async function listRollups(tx: TenantTx): Promise<FinanceRollupRow[]> {
   const statements = statementsFor(tx.schema);
   await awaitReadable(tx, [FINANCE_ROLLUP.unit]);
   return (await tx.query<FinanceRollupRow>(statements.rollups)).rows;
+}
+
+/** The exact positive and negative amount sums of the tenant's records in `scope`. */
+export async function periodTotals(tx: TenantTx, scope: PeriodScope): Promise<PeriodTotals> {
+  await awaitReadable(tx, [FINANCE_RECORD.unit]);
+  const { rows } = await tx.query<{ positive: string; negative: string }>(statementsFor(tx.schema).periodTotals, [
+    scope.programId,
+    scope.period,
+    scope.excludeRecordId ?? null,
+  ]);
+  const [{ positive, negative }] = rows as [{ positive: string; negative: string }];
+  return { positive: moneyFromNumeric(positive), negative: moneyFromNumeric(negative) };
 }
 
 /** The tenant's `Program_<id>` binding with the lowest program id, or null; `program_binding` has no unit gate. */

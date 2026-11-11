@@ -1,7 +1,18 @@
 /** Per-step routing of the site monitor: target tasks, legacy steps through migration, names, queues and deadlines. */
-import { describe, expect, it } from 'vitest';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
-import { ServiceUnavailableError, fixedClock, type Clock, type ServiceRequest, type ServiceResponse } from '@opt2/platform/service-kit';
+import {
+  ServiceUnavailableError,
+  UnknownServiceError,
+  createServiceClient,
+  fixedClock,
+  type Clock,
+  type ServiceClient,
+  type ServiceRequest,
+  type ServiceResponse,
+} from '@opt2/platform/service-kit';
 import {
   SITEMONITOR_QUEUE,
   InvalidTaskNameError,
@@ -385,13 +396,26 @@ describe('createMigrationJobsPort.runLegacyStep', () => {
     units: ['communications.email_stat'],
   };
 
+  const atRun = fixedClock(RUN_AT);
+  const completed: ServiceResponse = {
+    status: 200,
+    headers: {},
+    body: { step: 'trackBounces', completed: true, serverTime: '2026-06-30T09:15:01.000Z', siteId: 'tenant-a' },
+  };
+
+  /** Fake client failing with `error`, and a clock reading RUN_AT until the call and `endsAt` once it failed. */
+  function failingCall(error: Error, endsAt: Date): { client: Pick<ServiceClient, 'request'>; clock: Clock } {
+    let now = RUN_AT;
+    const { client } = fakeClient(() => {
+      now = endsAt;
+      return error;
+    });
+    return { client, clock: { now: () => now } };
+  }
+
   it('posts the contract body without units and as no user', async () => {
-    const { client, requests } = fakeClient(() => ({
-      status: 200,
-      headers: {},
-      body: { step: 'trackBounces', completed: true, serverTime: '2026-06-30T09:15:01.000Z', siteId: 'tenant-a' },
-    }));
-    await createMigrationJobsPort({ client }).runLegacyStep(req, DEADLINE_AT);
+    const { client, requests } = fakeClient(() => completed);
+    await createMigrationJobsPort({ client, clock: atRun }).runLegacyStep(req, DEADLINE_AT);
 
     expect(requests).toEqual([
       {
@@ -406,19 +430,76 @@ describe('createMigrationJobsPort.runLegacyStep', () => {
           siteId: 'tenant-a',
         },
         userToken: null,
+        timeoutMs: DEADLINE_AT.getTime() - RUN_AT.getTime(),
       },
     ]);
   });
 
+  it.each([
+    [450_000, 150_000],
+    [599_999, 1],
+  ])('bounds the call %i ms into the run by the remaining %i ms', async (elapsedMs, timeoutMs) => {
+    const { client, requests } = fakeClient(() => completed);
+    await createMigrationJobsPort({ client, clock: fixedClock(RUN_AT.getTime() + elapsedMs) }).runLegacyStep(req, DEADLINE_AT);
+    expect(requests[0]?.timeoutMs).toBe(timeoutMs);
+  });
+
+  it.each([0, 1])('throws SiteMonitorDeadlineError without a call %i ms past the deadline', async (pastMs) => {
+    const { client, requests } = fakeClient(() => completed);
+    const failure = createMigrationJobsPort({ client, clock: fixedClock(DEADLINE_AT.getTime() + pastMs) }).runLegacyStep(req, DEADLINE_AT);
+    await expect(failure).rejects.toBeInstanceOf(SiteMonitorDeadlineError);
+    await expect(failure).rejects.toMatchObject({ step: 'trackBounces', siteId: 'tenant-a', reason: 'sitemonitor-deadline', cause: undefined });
+    expect(requests).toEqual([]);
+  });
+
+  it.each([
+    ['its own TimeoutError before the deadline', new DOMException('The operation was aborted due to timeout', 'TimeoutError'), new Date(DEADLINE_AT.getTime() - 1)],
+    [
+      'its own HeadersTimeoutError before the deadline',
+      Object.assign(new Error('Headers Timeout Error'), { name: 'HeadersTimeoutError', code: 'UND_ERR_HEADERS_TIMEOUT' }),
+      new Date(DEADLINE_AT.getTime() - 1),
+    ],
+    [
+      'its own BodyTimeoutError before the deadline',
+      Object.assign(new Error('Body Timeout Error'), { name: 'BodyTimeoutError', code: 'UND_ERR_BODY_TIMEOUT' }),
+      new Date(DEADLINE_AT.getTime() - 1),
+    ],
+    ['ECONNRESET at the deadline', Object.assign(new Error('reset'), { code: 'ECONNRESET' }), DEADLINE_AT],
+  ])('turns the client ServiceUnavailableError from %s into SiteMonitorDeadlineError caused by it', async (_case, cause, endsAt) => {
+    const unavailable = new ServiceUnavailableError('migration', cause);
+    const { client, clock } = failingCall(unavailable, endsAt);
+    const err: unknown = await createMigrationJobsPort({ client, clock })
+      .runLegacyStep(req, DEADLINE_AT)
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(SiteMonitorDeadlineError);
+    expect(err).toBeInstanceOf(LegacyServiceUnavailableError);
+    expect(err).toMatchObject({ step: 'trackBounces', siteId: 'tenant-a', reason: 'sitemonitor-deadline' });
+    expect((err as SiteMonitorDeadlineError).cause).toBe(unavailable);
+  });
+
+  it.each([
+    ['an ECONNREFUSED ServiceUnavailableError before the deadline', new ServiceUnavailableError('migration', Object.assign(new Error('refused'), { code: 'ECONNREFUSED' })), new Date(DEADLINE_AT.getTime() - 1)],
+    [
+      'a ConnectTimeoutError ServiceUnavailableError before the deadline',
+      new ServiceUnavailableError('migration', Object.assign(new Error('Connect Timeout Error'), { name: 'ConnectTimeoutError', code: 'UND_ERR_CONNECT_TIMEOUT' })),
+      new Date(DEADLINE_AT.getTime() - 1),
+    ],
+    ['any other client error at the deadline', new UnknownServiceError('migration'), DEADLINE_AT],
+  ])('rethrows %s unchanged', async (_case, error, endsAt) => {
+    const { client, clock } = failingCall(error, endsAt);
+    await expect(createMigrationJobsPort({ client, clock }).runLegacyStep(req, DEADLINE_AT)).rejects.toBe(error);
+  });
+
   it('omits siteId for a run-wide step', async () => {
     const { client, requests } = fakeClient(() => ({ status: 200, headers: {}, body: {} }));
-    await createMigrationJobsPort({ client }).runLegacyStep({ job: 'setCursor', theTime: req.theTime, lastMonitored: req.lastMonitored, units: [] }, DEADLINE_AT);
+    await createMigrationJobsPort({ client, clock: atRun }).runLegacyStep({ job: 'setCursor', theTime: req.theTime, lastMonitored: req.lastMonitored, units: [] }, DEADLINE_AT);
     expect(requests[0]?.json).not.toHaveProperty('siteId');
   });
 
   it('maps 504 to SiteMonitorDeadlineError', async () => {
     const { client } = fakeClient(() => ({ status: 504, headers: {}, body: {} }));
-    await expect(createMigrationJobsPort({ client }).runLegacyStep(req, DEADLINE_AT)).rejects.toMatchObject({
+    await expect(createMigrationJobsPort({ client, clock: atRun }).runLegacyStep(req, DEADLINE_AT)).rejects.toMatchObject({
       name: 'SiteMonitorDeadlineError',
       step: 'trackBounces',
       siteId: 'tenant-a',
@@ -430,14 +511,63 @@ describe('createMigrationJobsPort.runLegacyStep', () => {
     [500, Error],
   ] as const)('rejects on status %i', async (status, type) => {
     const { client } = fakeClient(() => ({ status, headers: {}, body: {} }));
-    const failure = createMigrationJobsPort({ client }).runLegacyStep(req, DEADLINE_AT);
+    const failure = createMigrationJobsPort({ client, clock: atRun }).runLegacyStep(req, DEADLINE_AT);
     await expect(failure).rejects.toBeInstanceOf(type);
     await expect(failure).rejects.toThrow(`legacyStepRun(trackBounces)`);
   });
 
-  it('surfaces a transport failure as the client ServiceUnavailableError', async () => {
-    const unavailable = new ServiceUnavailableError('migration', Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }));
-    const { client } = fakeClient(() => unavailable);
-    await expect(createMigrationJobsPort({ client }).runLegacyStep(req, DEADLINE_AT)).rejects.toBe(unavailable);
+  describe('over the platform service client', () => {
+    const STEP_MS = 1_000;
+    const received: Array<{ method?: string; url?: string; body: unknown }> = [];
+    let server: Server;
+    let client: ServiceClient;
+
+    beforeAll(async () => {
+      server = createServer((request, response) => {
+        const chunks: Buffer[] = [];
+        request.on('data', (chunk: Buffer) => chunks.push(chunk));
+        request.on('end', () => {
+          received.push({ method: request.method, url: request.url, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) });
+          const timer = setTimeout(() => {
+            response.writeHead(200, { 'content-type': 'application/json' });
+            response.end(JSON.stringify(completed.body));
+          }, STEP_MS);
+          response.on('close', () => clearTimeout(timer));
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const { port } = server.address() as AddressInfo;
+      client = createServiceClient({
+        serviceUrls: { migration: `http://127.0.0.1:${String(port)}` },
+        self: 'programs-sites',
+        credentials: { headersFor: async () => ({}) },
+        timeoutMs: 200,
+      });
+    });
+
+    afterAll(async () => {
+      await client.close();
+      await new Promise<void>((resolve, reject) => server.close((err) => (err === undefined ? resolve() : reject(err))));
+    });
+
+    it('completes a step that outlasts the client timeout but not the run budget', async () => {
+      const started = Date.now();
+      await createMigrationJobsPort({ client }).runLegacyStep(req, new Date(started + 5_000));
+
+      expect(Date.now() - started).toBeGreaterThanOrEqual(STEP_MS);
+      expect(received).toEqual([{ method: 'POST', url: '/internal/v1/legacy-steps', body: expect.objectContaining({ step: 'trackBounces', siteId: 'tenant-a' }) }]);
+    });
+
+    it('throws SiteMonitorDeadlineError when the run budget ends before the step answers', async () => {
+      const started = Date.now();
+      const err: unknown = await createMigrationJobsPort({ client })
+        .runLegacyStep(req, new Date(started + 300))
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(SiteMonitorDeadlineError);
+      expect(err).toBeInstanceOf(LegacyServiceUnavailableError);
+      expect((err as SiteMonitorDeadlineError).cause).toBeInstanceOf(ServiceUnavailableError);
+      expect(Date.now() - started).toBeLessThan(STEP_MS);
+    });
   });
 });

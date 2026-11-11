@@ -14,7 +14,8 @@ import { FW1_HOME_ACTION } from './urls';
 
 type SessionUser = IdentityComponents['schemas']['SessionUser'];
 type SessionSite = IdentityComponents['schemas']['SessionSites']['sites'][number];
-type SiteRecord = ProgramsSitesComponents['schemas']['Site'];
+type StoredAdminState = IdentityComponents['schemas']['AdminSessionState'];
+type SiteRecord = ProgramsSitesComponents['schemas']['ShellSite'];
 
 /** Request header in which the gateway passes the browser's request target (path and query). */
 export const ORIGINAL_URL_HEADER = 'x-opt2-original-url';
@@ -116,12 +117,13 @@ export interface SiteData {
   readonly hasChangesets: boolean;
   readonly hasComments: boolean;
   readonly hasFeedManager: boolean;
+  /** settingsBean `getEmailBroadcaster()`: off while the global broadcaster is off. */
   readonly emailBroadcaster: boolean;
   readonly extranet: boolean;
   readonly cache: boolean;
   readonly enableLockdown: string;
   readonly lastDeployment: string | null;
-  /** The whole `tsettings` row, for values not named above. */
+  /** The `tsettings` values the admin layout reads, for those not named above. */
   readonly record: SiteRecord;
 }
 
@@ -498,28 +500,48 @@ function okBody<T>(response: CallResult<T>, operation: string): T {
   throw new Error(`${operation} answered HTTP ${response.status}`);
 }
 
-/** Session state identity holds: the user struct and the sites the user may administer. */
+/** Session state identity holds: the user struct, the sites the user may administer and the stored admin values. */
 interface IdentitySession {
   readonly mura: SessionUser;
   readonly sites: readonly SessionSite[];
+  readonly adminState: StoredAdminState;
 }
 
-// Identity's session API holds the user struct and the site list only, so every other admin session value starts at
-// its legacy default on each request and its changes reach `sessionWrites` for the caller to persist.
+// Every admin session value lives in identity's session; without a user token there is no session to read.
 async function loadIdentitySession(
   gateway: GatewayClient,
   auth: WebAuth,
   isLoggedIn: boolean,
   roles: readonly string[],
 ): Promise<IdentitySession> {
-  const [current, sites] = await Promise.all([
+  const [current, sites, adminState] = await Promise.all([
     auth.userToken === undefined ? undefined : gateway.identity.currentSession(),
     isLoggedIn && hasAnyRole(roles, [Roles.systemUser, Roles.s2]) ? gateway.identity.sessionSites() : undefined,
+    auth.userToken === undefined ? undefined : gateway.identity.adminSessionState(),
   ]);
   return {
     mura: current === undefined ? ANONYMOUS_USER : okBody(current, 'getCurrentSession').user,
     sites: sites === undefined ? [] : okBody(sites, 'listCurrentSessionSites').sites,
+    adminState: adminState === undefined ? {} : okBody(adminState, 'getAdminSessionState'),
   };
+}
+
+/**
+ * Persists the request's session writes, `alerts` excepted (identity keeps them on the user struct), in one identity
+ * call; sends nothing without a user token or a value to store.
+ * @throws Error When identity answers a non-2xx status.
+ */
+export async function saveSessionWrites(
+  gateway: GatewayClient,
+  auth: WebAuth,
+  writes: Readonly<AdminSessionWrites>,
+): Promise<void> {
+  const { paramArray, ...values } = Object.fromEntries(
+    Object.entries(writes).filter(([key]) => key !== 'alerts'),
+  ) as Omit<AdminSessionWrites, 'alerts'>;
+  const state: StoredAdminState = paramArray === undefined ? values : { ...values, paramArray: [...paramArray] };
+  if (auth.userToken === undefined || Object.keys(state).length === 0) return;
+  okBody(await gateway.identity.saveAdminSessionState(state), 'saveAdminSessionState');
 }
 
 const objectEntries = (value: unknown): Array<[string, unknown]> =>
@@ -540,7 +562,7 @@ function alertsOf(mura: SessionUser): Record<string, Record<string, AdminAlert>>
   );
 }
 
-/** Named view of a `tsettings` row; flags read as CFML truthiness of the stored integer. */
+/** Named view of the served site settings; flags read as CFML truthiness of the served integer. */
 function siteDataOf(record: SiteRecord, defaultLocale: string): SiteData {
   const flag = (value: number | null | undefined): boolean => (value ?? 0) !== 0;
   const text = (value: string | null | undefined): string => value ?? '';
@@ -582,7 +604,7 @@ async function readSite(
   siteId: string,
   defaultLocale: string,
 ): Promise<SiteLookup | undefined> {
-  const response = await gateway.programsSites.getSite(siteId);
+  const response = await gateway.programsSites.getShellSite(siteId);
   if (response.ok) {
     const { isNew, site } = response.body;
     return isNew === 1 ? { exists: false } : { exists: true, site: siteDataOf(site, defaultLocale) };
@@ -590,11 +612,11 @@ async function readSite(
   // The contract rejects an id longer than a tsettings SiteID, which names no site.
   if (response.status === 400) return { exists: false };
   if (response.status === 401 || response.status === 403) return undefined;
-  throw new Error(`getSite answered HTTP ${response.status}`);
+  throw new Error(`getShellSite answered HTTP ${response.status}`);
 }
 
-// programs-sites serves site data only to S2 users and site admins, for the token's site; any other site is known to
-// exist only through the identity-computed site list, and its locale falls back to the default locale.
+// Services serve only the token's site, so any other site is known to exist only through the identity-computed site
+// list, and its locale falls back to the default locale.
 /** Per-request site lookups, each site read at most once. */
 function siteLookups(
   gateway: GatewayClient,
@@ -660,36 +682,37 @@ type SessionDraft = { -readonly [K in Exclude<keyof AdminSessionState, 'dateKey'
 type WritableKey = keyof AdminSessionWrites;
 type SessionWriteLog = { -readonly [K in WritableKey]?: AdminSessionState[K] };
 
-/** The session scope before this request's set-up: identity's state plus the legacy `cfparam` defaults. */
+/** The session scope before this request's set-up: identity's stored values, else the legacy `cfparam` defaults. */
 function initialSession(identity: IdentitySession, sessionHistory: number): SessionDraft {
   const memberships = cfListToArray(identity.mura.memberships ?? '', ',');
+  const stored = identity.adminState;
   return {
-    siteid: '',
-    userFilesPath: '',
-    topID: '',
-    openSectionList: '',
-    moduleid: '',
-    keywords: '',
-    rb: '',
-    locale: '',
-    dateKeyFormat: '',
-    localeHasDayParts: true,
-    dashboardSpan: dashboardSpanFor(sessionHistory),
+    siteid: stored.siteid ?? '',
+    userFilesPath: stored.userFilesPath ?? '',
+    topID: stored.topID ?? '',
+    openSectionList: stored.openSectionList ?? '',
+    moduleid: stored.moduleid ?? '',
+    keywords: stored.keywords ?? '',
+    rb: stored.rb ?? '',
+    locale: stored.locale ?? '',
+    dateKeyFormat: stored.dateKeyFormat ?? '',
+    localeHasDayParts: stored.localeHasDayParts ?? true,
+    dashboardSpan: stored.dashboardSpan ?? dashboardSpanFor(sessionHistory),
     alerts: alertsOf(identity.mura),
-    paramArray: [],
-    paramCount: 0,
-    paramCircuit: '',
-    paramCategories: '',
-    paramGroups: '',
-    inActive: '',
-    membersOnly: 'false',
-    visitorStatus: 'All',
-    frontEndProxyLoc: '',
+    paramArray: stored.paramArray ?? [],
+    paramCount: stored.paramCount ?? 0,
+    paramCircuit: stored.paramCircuit ?? '',
+    paramCategories: stored.paramCategories ?? '',
+    paramGroups: stored.paramGroups ?? '',
+    inActive: stored.inActive ?? '',
+    membersOnly: stored.membersOnly ?? 'false',
+    visitorStatus: stored.visitorStatus ?? 'All',
+    frontEndProxyLoc: stored.frontEndProxyLoc ?? '',
     siteArray: identity.sites.map(({ siteID }) => siteID),
     s2IsPrivate: memberships.includes('S2IsPrivate'),
     mura: identity.mura,
-    flash: {},
-    nextPreserveKey: 1,
+    flash: stored.flash ?? {},
+    nextPreserveKey: stored.nextPreserveKey ?? 1,
   };
 }
 
@@ -733,10 +756,11 @@ export async function buildAdminRequest(input: AdminRequestInput): Promise<Admin
   const rcRb = rc.get('rb') ?? '';
   const pendingSetCookies = adminCookies(cookies, rcRb);
   if (rcRb !== '') write('rb', rcRb);
+  write('dashboardSpan', dashboardSpanFor(settings.sessionHistory));
 
   const lookup = siteLookups(
     gateway,
-    (siteId) => (isS2 || isSiteAdmin) && user?.site === siteId,
+    (siteId) => isLoggedIn && (isS2 || isSiteAdmin || roles.includes(Roles.systemUser)) && user?.site === siteId,
     session.siteArray,
     settings.defaultLocale,
   );

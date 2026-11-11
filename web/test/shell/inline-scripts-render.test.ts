@@ -9,7 +9,13 @@ import type { AdminRequest } from '@/lib/request-context';
 import { renderCompactScripts, renderMuraInit, renderTemplateScripts } from '@/shell/inline-scripts';
 import type { ShellContext, ShellLayout } from '@/shell/types';
 import { tenantASiteAdminSession } from '../fixtures/session';
-import { adminS2Request, editorRequest, siteAdminRequest, type AdminRequestPartial } from '../helpers/admin-request';
+import {
+  adminS2Request,
+  editorRequest,
+  siteAdminRequest,
+  unservedEditorRequest,
+  type AdminRequestPartial,
+} from '../helpers/admin-request';
 
 const LAYOUTS = fileURLToPath(new URL('../../../admin/common/layouts/', import.meta.url));
 
@@ -424,15 +430,24 @@ describe('renderMuraInit', () => {
       }),
     ],
     [
+      'an editor whose pooled session site is served',
+      {},
+      () => editorRequest({ site: { displayPoolID: 'umbrella', filePoolID: 'umbrella', record: { theme: 'default' } } }),
+      under('http://localhost', {
+        assetpath: 'http://localhost/sites/umbrella',
+        fileassetpath: 'http://localhost/sites/umbrella',
+      }),
+    ],
+    [
       'an editor whose session site is not served',
       {},
-      () => editorRequest(),
+      () => unservedEditorRequest(),
       under('http://localhost', { themepath: 'http://localhost/themes/' }),
     ],
     [
       'an unserved session site on another server name',
       { MURA_PORT: '8080' },
-      () => editorRequest({ httpHost: 'cms.example.com:8080', serverName: 'cms.example.com' }),
+      () => unservedEditorRequest({ httpHost: 'cms.example.com:8080', serverName: 'cms.example.com' }),
       under('http://cms.example.com:8080', { themepath: 'http://cms.example.com:8080/themes/' }),
     ],
     [
@@ -534,7 +549,7 @@ describe('renderTemplateScripts', () => {
   });
 
   it('sends an empty alert site and initialises the default site when the session holds no site', () => {
-    const ctx = editorRequest();
+    const ctx = unservedEditorRequest();
     const blank: AdminRequest = { ...ctx, session: { ...ctx.session, siteid: '' } };
     const markup = templateScripts(blank);
     expect(markup).toBe(

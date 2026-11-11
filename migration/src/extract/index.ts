@@ -33,7 +33,7 @@ export type { CanonicalRow, KeyValue, StreamOptions, StreamShape } from './strea
 export { migratableTables, partitionLegacyTables, DYNAMIC_TABLE_PATTERN } from './tables.js';
 export type { MigratableTable, SkippedTable, TablePartition } from './tables.js';
 
-export { streamFoldedRows, streamLegacyTable, describeLegacyTable, FoldShapeError } from './fold.js';
+export { streamFoldedRows, streamLegacyTable, describeLegacyTable, FoldShapeError, DEFAULT_MAX_OPEN_PARTS } from './fold.js';
 export type {
   FoldPart,
   FoldedStreamOptions,
