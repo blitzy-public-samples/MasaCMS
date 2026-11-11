@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { SITE_MONITOR_STEPS, TARGET_CAPABLE_STEPS, stepNamed } from '../../src/jobs/steps.js';
-import type { SiteMonitorStepName } from '../../src/jobs/steps.js';
+import type { SiteGate, SiteMonitorStepName } from '../../src/jobs/steps.js';
 
 interface InventoryStep {
   readonly step: string;
@@ -94,5 +94,22 @@ describe('site-monitor step table', () => {
       .filter((s) => s.targetMechanism.startsWith('/internal/v1/jobs/'))
       .map((s) => ({ step: s.step, targetPath: s.targetMechanism.replace(/\?.*$/, '') }));
     expect(inventoryRoutes).toEqual(routed.map((s) => ({ step: s.inventoryStep, targetPath: s.targetPath })));
+  });
+
+  it('runs only trackBounces, feedAutoImport and onSiteMonitor per site, gating trackBounces on EmailBroadcaster and feedAutoImport on FeedManager', () => {
+    const expected: readonly { step: SiteMonitorStepName; perSite: boolean; gate: SiteGate | null }[] = [
+      { step: 'sendReminders', perSite: false, gate: null },
+      { step: 'emailSend', perSite: false, gate: null },
+      { step: 'publishScheduledChangesets', perSite: false, gate: null },
+      { step: 'trackBounces', perSite: true, gate: 'EmailBroadcaster' }, // contentServer.cfc:689-691
+      { step: 'feedAutoImport', perSite: true, gate: 'FeedManager' }, // contentServer.cfc:689,697
+      { step: 'purgeDisplayWindow', perSite: false, gate: null },
+      { step: 'clearOldCommands', perSite: false, gate: null },
+      { step: 'onGlobalMonitor', perSite: false, gate: null },
+      { step: 'onSiteMonitor', perSite: true, gate: null }, // contentServer.cfc:741-743
+      { step: 'setCursor', perSite: false, gate: null },
+    ];
+    const actual = SITE_MONITOR_STEPS.map(({ step, perSite, gate }) => ({ step, perSite, gate: gate ?? null }));
+    expect(actual).toEqual(expected);
   });
 });
