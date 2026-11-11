@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { SYNTHETIC_ROLES, type Role } from '@opt2/platform/auth';
 import { isCfUuid } from '@opt2/platform/legacy-compat';
 import { z } from '@opt2/platform/service-kit';
+import { parseJson, printable } from './errors.js';
 
 /** Id of a seeded Masa site; the installed `default` site is never generated. */
 export type SiteKey = 'umbrella' | 'tenant-a' | 'tenant-b';
@@ -255,9 +256,12 @@ export function parseConfig(value: unknown): SeedConfig {
   return seedConfigSchema.parse(value);
 }
 
-/** Reads, parses and validates the seed configuration file at `path`. */
+/** Reads, parses and validates the seed configuration file at `path`; malformed JSON or a rejected key throws a usage error naming the file and each key. */
 export async function loadConfig(path: string): Promise<SeedConfig> {
-  return parseConfig(JSON.parse(await readFile(path, 'utf8')));
+  const parsed = seedConfigSchema.safeParse(parseJson(await readFile(path, 'utf8'), path, { usage: true }));
+  if (parsed.success) return parsed.data;
+  const issues = parsed.error.issues.map((issue) => `${issue.path.map(String).join('.') || '(top level)'}: ${issue.message}`);
+  throw printable(new Error(`${path} is not a valid seed configuration: ${issues.join('; ')}`, { cause: parsed.error }), { usage: true });
 }
 
 /** Site whose fixture schema is `Program_<programId>`; throws `RangeError` when none is. */

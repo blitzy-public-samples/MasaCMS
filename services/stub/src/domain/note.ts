@@ -1,7 +1,7 @@
-/** Note aggregate of the platform-proof stub: creation input, row mapping and the created-event payload. */
+/** Note aggregate of the platform-proof stub: creation input, list paging, row mapping and the created-event payload. */
 import { z, type Clock } from '@opt2/platform/service-kit';
 import { localTimestamp } from '@opt2/platform/outbox';
-import { cfUuid } from '@opt2/platform/legacy-compat';
+import { cfUuid, isCfUuid } from '@opt2/platform/legacy-compat';
 import type { StubNoteCreatedV1Payload } from '../generated/events/stub.note.created.v1.js';
 
 // pg reads `timestamp(3) without time zone` as a Date in the process zone; writes pass `localTimestamp` text.
@@ -74,6 +74,67 @@ export function noteFromRow(row: NoteRow): Note {
   };
 }
 
+/** Keyset position after a note: its `created` local `timestamp(3)` text and its CF UUID `noteId`. */
+export interface NoteCursor {
+  created: string;
+  noteId: string;
+}
+
+/** Page size of a note list without `limit`. */
+export const NOTE_PAGE_DEFAULT = 50;
+
+/** Largest page size of a note list. */
+export const NOTE_PAGE_MAX = 1000;
+
+const noteCursorSchema = z.strictObject({
+  created: z.string().refine(isLocalTimestampText),
+  noteId: z.string().refine(isCfUuid),
+});
+
+/** Validates a note list query; `limit` defaults to NOTE_PAGE_DEFAULT, `after` decodes to its cursor, and parameter names match ignoring case. */
+export const noteListQuerySchema = z.preprocess(
+  lowerCaseKeys,
+  z.object({
+    limit: z
+      .string()
+      .regex(/^(0|[1-9][0-9]{0,14})$/)
+      .transform(Number)
+      .pipe(z.number().min(1).max(NOTE_PAGE_MAX))
+      .default(NOTE_PAGE_DEFAULT),
+    after: z
+      .string()
+      .transform((text, ctx) => {
+        const cursor = parseNoteCursor(text);
+        if (cursor === null) ctx.addIssue({ code: 'custom', message: 'after is not a note page cursor' });
+        return cursor ?? z.NEVER;
+      })
+      .nullable()
+      .default(null),
+  }),
+);
+
+/** The cursor positioned after `row`. */
+export function noteCursorOf(row: NoteRow): NoteCursor {
+  return { created: timestampText(row.created), noteId: row.note_id };
+}
+
+/** Encodes `cursor` as a page's opaque `next` text: base64url of its JSON. */
+export function formatNoteCursor(cursor: NoteCursor): string {
+  return Buffer.from(JSON.stringify({ created: cursor.created, noteId: cursor.noteId }), 'utf8').toString('base64url');
+}
+
+/** Decodes a `formatNoteCursor` text; null when it is not base64url JSON of a cursor. */
+export function parseNoteCursor(text: string): NoteCursor | null {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(Buffer.from(text, 'base64url').toString('utf8'));
+  } catch {
+    return null;
+  }
+  const parsed = noteCursorSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+
 /** Payload of the `stub.note.created.v1` event of `note`. */
 export function noteCreatedPayload(note: Note): StubNoteCreatedV1Payload {
   return {
@@ -126,6 +187,12 @@ export function projectionFromRow(row: NoteProjectionRow): NoteProjection {
 
 function timestampText(value: TimestampValue): string {
   return value instanceof Date ? localTimestamp(value) : value;
+}
+
+// Only exact localTimestamp text of a real instant in years 0001-9999 passes; PostgreSQL has no year 0000, so a cursor's keyset cast to timestamp(3) cannot fail.
+function isLocalTimestampText(text: string): boolean {
+  const date = new Date(text.replace(' ', 'T'));
+  return /^(?!0000)\d{4}-/.test(text) && !Number.isNaN(date.getTime()) && localTimestamp(date) === text;
 }
 
 // The NoteCreate contract matches parameter names ignoring case, as legacy request scopes do; legacyParamsOf keeps the caller's spelling.

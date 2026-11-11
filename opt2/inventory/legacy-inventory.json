@@ -89962,6 +89962,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "windowed": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -90018,6 +90020,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "windowed": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -90069,6 +90073,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "windowed": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -90238,6 +90244,8 @@
         }
       ],
       "windowed": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -90347,6 +90355,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "windowed": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -90433,6 +90443,8 @@
       ],
       "unresolvedCalls": [],
       "windowed": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -90486,6 +90498,8 @@
       ],
       "unresolvedCalls": [],
       "windowed": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -90618,6 +90632,8 @@
         }
       ],
       "windowed": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -90750,6 +90766,8 @@
         }
       ],
       "windowed": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -90784,6 +90802,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "windowed": false,
+      "csrfContext": null,
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -91614,6 +91634,8 @@
         }
       ],
       "windowed": true,
+      "csrfContext": "editprofile",
+      "csrfValidation": "validates",
       "sessionEffects": "relogin",
       "expected": {
         "disposition": "legacy-served",
@@ -91673,6 +91695,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "windowed": false,
+      "csrfContext": null,
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -91742,6 +91766,8 @@
       ],
       "unresolvedCalls": [],
       "windowed": false,
+      "csrfContext": null,
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -92196,6 +92222,8 @@
         }
       ],
       "windowed": true,
+      "csrfContext": "login",
+      "csrfValidation": "validates",
       "sessionEffects": "relogin",
       "expected": {
         "disposition": "legacy-served",
@@ -92248,6 +92276,8 @@
       ],
       "unresolvedCalls": [],
       "windowed": false,
+      "csrfContext": null,
+      "csrfValidation": "validates",
       "sessionEffects": "logout",
       "expected": {
         "disposition": "legacy-served",
@@ -92372,6 +92402,8 @@
       ],
       "unresolvedCalls": [],
       "windowed": false,
+      "csrfContext": null,
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -92463,6 +92495,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "windowed": false,
+      "csrfContext": null,
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -92572,6 +92606,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "windowed": true,
+      "csrfContext": null,
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -93651,6 +93687,8 @@
         }
       ],
       "windowed": true,
+      "csrfContext": null,
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -93720,6 +93758,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "windowed": false,
+      "csrfContext": null,
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -93839,6 +93879,8 @@
       ],
       "unresolvedCalls": [],
       "windowed": false,
+      "csrfContext": null,
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -93895,6 +93937,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "windowed": false,
+      "csrfContext": null,
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -94705,6 +94749,8 @@
         }
       ],
       "windowed": true,
+      "csrfContext": "editprofile",
+      "csrfValidation": "validates",
       "sessionEffects": "relogin",
       "expected": {
         "disposition": "legacy-served",
@@ -94785,6 +94831,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "windowed": false,
+      "csrfContext": null,
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -95423,6 +95471,8 @@
         }
       ],
       "windowed": true,
+      "csrfContext": "getValue('formID')",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -96046,6 +96096,8 @@
         }
       ],
       "windowed": true,
+      "csrfContext": null,
+      "csrfValidation": "validates",
       "sessionEffects": "relogin",
       "expected": {
         "disposition": "legacy-served",
@@ -96705,6 +96757,8 @@
         }
       ],
       "windowed": true,
+      "csrfContext": "getValue('formID')",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -100255,6 +100309,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -100398,6 +100454,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -100523,6 +100581,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -100648,6 +100708,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -100764,6 +100826,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -100822,6 +100886,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -100861,6 +100927,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -100989,6 +101057,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -101173,6 +101243,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -101619,6 +101691,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -101695,6 +101769,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -101834,6 +101910,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -101959,6 +102037,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -102084,6 +102164,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -102209,6 +102291,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -102325,6 +102409,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -102383,6 +102469,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -102422,6 +102510,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -102550,6 +102640,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -102799,6 +102891,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -102857,6 +102951,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -102993,6 +103089,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -103118,6 +103216,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -103243,6 +103343,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -103368,6 +103470,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -103484,6 +103588,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -103542,6 +103648,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -103581,6 +103689,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -103709,6 +103819,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -104052,6 +104164,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -104110,6 +104224,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -104222,6 +104338,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -104347,6 +104465,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -104472,6 +104592,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -104597,6 +104719,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -104713,6 +104837,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -104771,6 +104897,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -104810,6 +104938,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -104938,6 +105068,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -105242,6 +105374,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -105300,6 +105434,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -105377,6 +105513,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": "",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -105495,6 +105633,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -105620,6 +105760,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -105745,6 +105887,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -105870,6 +106014,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -105986,6 +106132,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -106044,6 +106192,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -106083,6 +106233,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -106211,6 +106363,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -106593,6 +106747,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -106651,6 +106807,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -106766,6 +106924,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -106881,6 +107041,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -106996,6 +107158,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -107111,6 +107275,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -107226,6 +107392,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -107689,6 +107857,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -107814,6 +107984,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -107939,6 +108111,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -108064,6 +108238,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -108180,6 +108356,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -108238,6 +108416,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -108277,6 +108457,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -108405,6 +108587,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -109484,6 +109668,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -110656,6 +110842,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -111853,6 +112041,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -111936,6 +112126,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -112048,6 +112240,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -112173,6 +112367,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -112298,6 +112494,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -112423,6 +112621,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -112539,6 +112739,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -112597,6 +112799,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -112636,6 +112840,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -112764,6 +112970,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -113068,6 +113276,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -113126,6 +113336,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -113589,6 +113801,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -113714,6 +113928,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -113839,6 +114055,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -113964,6 +114182,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -114080,6 +114300,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -114138,6 +114360,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -114177,6 +114401,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -114305,6 +114531,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -115384,6 +115612,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -116556,6 +116786,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -117753,6 +117985,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -117836,6 +118070,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -118251,6 +118487,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -118382,6 +118620,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -118507,6 +118747,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -118632,6 +118874,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -118757,6 +119001,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -118873,6 +119119,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -118931,6 +119179,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -118970,6 +119220,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -119098,6 +119350,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -119307,6 +119561,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -119365,6 +119621,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -119477,6 +119735,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -119602,6 +119862,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -119727,6 +119989,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -119852,6 +120116,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -119968,6 +120234,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -120026,6 +120294,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -120065,6 +120335,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -120193,6 +120465,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -120549,6 +120823,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -120918,6 +121194,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -120976,6 +121254,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -121033,6 +121313,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": "addfolder",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -121087,6 +121369,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -121141,6 +121425,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": "children",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -121194,6 +121480,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -121247,6 +121535,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": "delete",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -121300,6 +121590,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": "duplicate",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -121353,6 +121645,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -121406,6 +121700,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": "move",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -121459,6 +121755,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": "processCrop",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -121512,6 +121810,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": "rename",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -121565,6 +121865,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": "resize",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -121618,6 +121920,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": "rotate",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -121671,6 +121975,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": "update",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -121724,6 +122030,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": "upload",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -121832,6 +122140,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -121957,6 +122267,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -122082,6 +122394,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -122207,6 +122521,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -122323,6 +122639,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -122381,6 +122699,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -122420,6 +122740,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -122548,6 +122870,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -122925,6 +123249,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -122983,6 +123309,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -123041,6 +123369,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -123166,6 +123496,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -123285,6 +123617,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -123413,6 +123747,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -123541,6 +123877,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -123599,6 +123937,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -123657,6 +123997,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -123877,6 +124219,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -124020,6 +124364,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -124145,6 +124491,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -124270,6 +124618,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -124386,6 +124736,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -124444,6 +124796,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -124483,6 +124837,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -124611,6 +124967,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -125133,6 +125491,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -125857,6 +126217,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -126605,6 +126967,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "decision",
@@ -126663,6 +127027,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -126869,6 +127235,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "login",
+      "csrfValidation": "validates",
       "sessionEffects": "relogin",
       "expected": {
         "disposition": "carry",
@@ -126927,6 +127295,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "logout",
       "expected": {
         "disposition": "carry",
@@ -128428,6 +128798,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "validates",
       "sessionEffects": "relogin",
       "expected": {
         "disposition": "legacy-served",
@@ -129100,6 +129472,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "getValue('formID')",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -129157,6 +129531,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -129282,6 +129658,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -129407,6 +129785,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -129532,6 +129912,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -129648,6 +130030,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -129706,6 +130090,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -129745,6 +130131,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -129873,6 +130261,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -130751,6 +131141,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -134174,6 +134566,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -134264,6 +134658,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -134323,6 +134719,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -134448,6 +134846,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -134573,6 +134973,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -134698,6 +135100,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -134814,6 +135218,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -134872,6 +135278,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -134911,6 +135319,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -135039,6 +135449,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -135115,6 +135527,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -135173,6 +135587,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -135212,6 +135628,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -135273,6 +135691,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -135524,6 +135944,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -135813,6 +136235,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "decision",
@@ -135938,6 +136362,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -136063,6 +136489,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -136188,6 +136616,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -136304,6 +136734,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -136362,6 +136794,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -136401,6 +136835,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -136529,6 +136965,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -137163,6 +137601,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "relogin",
       "expected": {
         "disposition": "carry",
@@ -137968,6 +138408,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -138835,6 +139277,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "relogin",
       "expected": {
         "disposition": "decision",
@@ -138893,6 +139337,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -138932,6 +139378,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -138990,6 +139438,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -139102,6 +139552,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -139227,6 +139679,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -139352,6 +139806,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -139477,6 +139933,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -139593,6 +140051,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -139651,6 +140111,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -139690,6 +140152,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -139818,6 +140282,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -140122,6 +140588,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -140180,6 +140648,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -140219,6 +140689,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -140254,6 +140726,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -140343,6 +140817,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -140378,6 +140854,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -140433,6 +140911,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -140468,6 +140948,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -140558,6 +141040,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -140593,6 +141077,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -140628,6 +141114,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -140663,6 +141151,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -140736,6 +141226,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -140846,6 +141338,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -140881,6 +141375,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -140916,6 +141412,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -140971,6 +141469,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141081,6 +141581,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141191,6 +141693,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141301,6 +141805,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141411,6 +141917,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141446,6 +141954,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141481,6 +141991,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141516,6 +142028,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141626,6 +142140,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141661,6 +142177,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141696,6 +142214,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141771,6 +142291,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141806,6 +142328,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141841,6 +142365,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141876,6 +142402,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141949,6 +142477,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -142004,6 +142534,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -142059,6 +142591,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -142114,6 +142648,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -142169,6 +142705,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -142204,6 +142742,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -142259,6 +142799,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -142382,6 +142924,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -142438,6 +142982,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -142473,6 +143019,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -142508,6 +143056,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -142543,6 +143093,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -142598,6 +143150,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -142672,6 +143226,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -142746,6 +143302,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -142820,6 +143378,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -142894,6 +143454,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -142968,6 +143530,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -143003,6 +143567,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -143038,6 +143604,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -143073,6 +143641,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -143256,6 +143826,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -143399,6 +143971,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -143524,6 +144098,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -143649,6 +144225,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -143765,6 +144343,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -143823,6 +144403,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -143862,6 +144444,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -143990,6 +144574,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -144174,6 +144760,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -144620,6 +145208,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -144696,6 +145286,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -144835,6 +145427,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -144960,6 +145554,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -145085,6 +145681,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -145210,6 +145808,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -145326,6 +145926,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -145384,6 +145986,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -145423,6 +146027,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -145551,6 +146157,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -145800,6 +146408,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -145858,6 +146468,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -145994,6 +146606,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -146119,6 +146733,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -146244,6 +146860,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -146369,6 +146987,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -146485,6 +147105,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -146543,6 +147165,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -146582,6 +147206,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -146710,6 +147336,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -147053,6 +147681,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -147111,6 +147741,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -147223,6 +147855,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -147348,6 +147982,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -147473,6 +148109,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -147598,6 +148236,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -147714,6 +148354,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -147772,6 +148414,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -147811,6 +148455,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -147939,6 +148585,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -148243,6 +148891,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -148301,6 +148951,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -148378,6 +149030,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": "",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -148496,6 +149150,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -148621,6 +149277,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -148746,6 +149404,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -148871,6 +149531,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -148987,6 +149649,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -149045,6 +149709,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -149084,6 +149750,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -149212,6 +149880,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -149594,6 +150264,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -149652,6 +150324,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -149767,6 +150441,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -149882,6 +150558,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -149997,6 +150675,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -150112,6 +150792,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -150227,6 +150909,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -150690,6 +151374,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -150815,6 +151501,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -150940,6 +151628,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -151065,6 +151755,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -151181,6 +151873,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -151239,6 +151933,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -151278,6 +151974,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -151406,6 +152104,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -152485,6 +153185,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -153657,6 +154359,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -154854,6 +155558,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -154937,6 +155643,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -155049,6 +155757,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -155174,6 +155884,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -155299,6 +156011,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -155424,6 +156138,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -155540,6 +156256,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -155598,6 +156316,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -155637,6 +156357,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -155765,6 +156487,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -156069,6 +156793,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -156127,6 +156853,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -156590,6 +157318,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -156715,6 +157445,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -156840,6 +157572,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -156965,6 +157699,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -157081,6 +157817,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -157139,6 +157877,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -157178,6 +157918,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -157306,6 +158048,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -158385,6 +159129,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -159557,6 +160303,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -160754,6 +161502,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -160837,6 +161587,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -161252,6 +162004,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -161383,6 +162137,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -161508,6 +162264,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -161633,6 +162391,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -161758,6 +162518,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -161874,6 +162636,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -161932,6 +162696,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -161971,6 +162737,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -162099,6 +162867,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -162308,6 +163078,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -162366,6 +163138,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -162478,6 +163252,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -162603,6 +163379,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -162728,6 +163506,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -162853,6 +163633,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -162969,6 +163751,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -163027,6 +163811,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -163066,6 +163852,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -163194,6 +163982,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -163550,6 +164340,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -163919,6 +164711,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -163977,6 +164771,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -164034,6 +164830,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": "addfolder",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -164088,6 +164886,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -164142,6 +164942,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": "children",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -164195,6 +164997,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -164248,6 +165052,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": "delete",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -164301,6 +165107,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": "duplicate",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -164354,6 +165162,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -164407,6 +165217,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": "move",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -164460,6 +165272,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": "processCrop",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -164513,6 +165327,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": "rename",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -164566,6 +165382,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": "resize",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -164619,6 +165437,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": "rotate",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -164672,6 +165492,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": "update",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -164725,6 +165547,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": "upload",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -164833,6 +165657,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -164958,6 +165784,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -165083,6 +165911,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -165208,6 +166038,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -165324,6 +166156,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -165382,6 +166216,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -165421,6 +166257,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -165549,6 +166387,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -165926,6 +166766,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -165984,6 +166826,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -166042,6 +166886,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -166167,6 +167013,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -166286,6 +167134,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -166414,6 +167264,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -166542,6 +167394,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -166600,6 +167454,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -166658,6 +167514,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -166878,6 +167736,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -167021,6 +167881,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -167146,6 +168008,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -167271,6 +168135,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -167387,6 +168253,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -167445,6 +168313,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -167484,6 +168354,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -167612,6 +168484,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -168134,6 +169008,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -168858,6 +169734,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -169606,6 +170484,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "decision",
@@ -169664,6 +170544,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -169856,6 +170738,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "login",
+      "csrfValidation": "validates",
       "sessionEffects": "relogin",
       "expected": {
         "disposition": "carry",
@@ -169914,6 +170798,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "logout",
       "expected": {
         "disposition": "carry",
@@ -171218,6 +172104,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -171890,6 +172778,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "getValue('formID')",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -171947,6 +172837,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -172072,6 +172964,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -172197,6 +173091,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -172322,6 +173218,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -172438,6 +173336,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -172496,6 +173396,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -172535,6 +173437,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -172663,6 +173567,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -173541,6 +174447,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -176964,6 +177872,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -177054,6 +177964,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -177113,6 +178025,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -177238,6 +178152,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -177363,6 +178279,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -177488,6 +178406,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -177604,6 +178524,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -177662,6 +178584,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -177701,6 +178625,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -177829,6 +178755,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -177905,6 +178833,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -177963,6 +178893,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -178002,6 +178934,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -178063,6 +178997,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -178314,6 +179250,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -178603,6 +179541,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "decision",
@@ -178728,6 +179668,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -178853,6 +179795,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -178978,6 +179922,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -179094,6 +180040,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -179152,6 +180100,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -179191,6 +180141,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -179319,6 +180271,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -179922,6 +180876,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -180727,6 +181683,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -181563,6 +182521,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "decision",
@@ -181621,6 +182581,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -181660,6 +182622,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -181718,6 +182682,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -181830,6 +182796,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -181955,6 +182923,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -182080,6 +183050,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -182205,6 +183177,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -182321,6 +183295,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -182379,6 +183355,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -182418,6 +183396,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -182546,6 +183526,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -182850,6 +183832,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": "arguments.id",
+      "csrfValidation": "bypassed",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -182908,6 +183892,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -182947,6 +183933,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": null,
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -183007,6 +183995,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -183067,6 +184057,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -183163,6 +184155,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -183256,6 +184250,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -183295,6 +184291,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": null,
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -183377,6 +184375,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -183439,6 +184439,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -183501,6 +184503,8 @@
       ],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -183602,6 +184606,8 @@
         }
       ],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -183641,6 +184647,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": null,
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -183680,6 +184688,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "carry",
@@ -183807,6 +184817,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "relogin",
       "expected": {
         "disposition": "carry",
@@ -183934,6 +184946,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "relogin",
       "expected": {
         "disposition": "carry",
@@ -183973,6 +184987,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "none",
       "expected": {
         "disposition": "legacy-served",
@@ -184012,6 +185028,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": null,
       "sessionEffects": "none",
       "expected": {
         "disposition": "retired",
@@ -184051,6 +185069,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": null,
       "sessionEffects": "none",
       "expected": {
         "disposition": "retired",
@@ -184090,6 +185110,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": null,
       "sessionEffects": "none",
       "expected": {
         "disposition": "retired",
@@ -184129,6 +185151,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": null,
       "sessionEffects": "none",
       "expected": {
         "disposition": "retired",
@@ -184168,6 +185192,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": null,
       "sessionEffects": "none",
       "expected": {
         "disposition": "retired",
@@ -184207,6 +185233,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": null,
       "sessionEffects": "none",
       "expected": {
         "disposition": "retired",
@@ -184246,6 +185274,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
+      "csrfContext": null,
+      "csrfValidation": null,
       "sessionEffects": "none",
       "expected": {
         "disposition": "retired",
@@ -184363,6 +185393,8 @@
         }
       ],
       "sessionless": true,
+      "csrfContext": null,
+      "csrfValidation": "none",
       "sessionEffects": "relogin",
       "expected": {
         "disposition": "carry",

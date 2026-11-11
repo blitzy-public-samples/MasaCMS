@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   AuthDenial,
   INVOCATION_HEADER,
+  collectRouteMatrix,
   type AuthOverrides,
   type TransportAuthenticator,
   type UserClaims,
@@ -281,6 +282,29 @@ describe('health, deny by default and legacy headers', () => {
       expect(res.headers['strict-transport-security']).toBe('max-age=1200');
       expect(res.headers['x-request-id']).toBeUndefined();
     }
+  });
+
+  const NOT_FOUND_BODY = legacyErrorResponse('invalidMethodCall', { method: 'findOne', mura404: true }).body;
+  const NOT_FOUND_HEAD = { status: 404, type: LEGACY_JSON_CONTENT_TYPE, body: NOT_FOUND_BODY, tag: etag(NOT_FOUND_BODY) };
+
+  it.each([
+    { label: 'a GET route', url: '/v1/get-only', methods: ['GET'], head: NOT_FOUND_HEAD },
+    { label: '/healthz', url: '/healthz', methods: ['GET'], head: NOT_FOUND_HEAD },
+    {
+      label: 'a route declaring HEAD',
+      url: '/v1/get-and-head',
+      methods: ['GET', 'HEAD'],
+      head: { status: 200, type: 'text/plain; charset=utf-8', body: 'listed', tag: undefined },
+    },
+  ])('registers only the methods $label declares and answers its HEAD with $head.status', async ({ url, methods, head }) => {
+    const { app } = await build();
+    app.get('/v1/get-only', { config: { opt2: { public: true } } }, () => 'listed');
+    app.route({ method: ['GET', 'HEAD'], url: '/v1/get-and-head', config: { opt2: { public: true } }, handler: () => 'listed' });
+    await app.ready();
+    const registered = collectRouteMatrix(app).routes.filter((route) => route.url === url);
+    expect(registered.map((route) => route.method)).toStrictEqual(methods);
+    const res = await app.inject({ method: 'HEAD', url: `${url}?method=findOne` });
+    expect({ status: res.statusCode, type: res.headers['content-type'], body: res.body, tag: res.headers.etag }).toStrictEqual(head);
   });
 
   it('fails start-up for a route without a config.opt2 declaration', async () => {

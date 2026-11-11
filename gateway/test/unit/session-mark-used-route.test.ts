@@ -1,9 +1,13 @@
 // Internal mark-used route: identity writes consumed CSRF tokens into the mapped legacy session's ledger.
+import { readFile } from 'node:fs/promises';
 import { INVOCATION_HEADER, recordedRoutes, rolesForService } from '@opt2/platform/auth';
+import { generateCsrfToken } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { ServiceUnavailableError, createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { mintServiceToken, testVerifier } from '@opt2/platform/testing';
-import { afterEach, describe, expect, it } from 'vitest';
+import { Ajv2020, type AnySchemaObject, type ValidateFunction } from 'ajv/dist/2020.js';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import type { BridgeClient, LegacyUsedToken } from '../../src/session/bridge-client.js';
 import type { JarCookie, JarCookies, JarRow, LegacyJar } from '../../src/session/jar.js';
 import { registerMarkUsedRoute } from '../../src/session/mark-used-route.js';
@@ -15,9 +19,11 @@ const LEGACY_SESSION_ID = 'OPT2TEST_1001_12345678';
 const HEX_ASC = '0123456789ABCDEF';
 const HEX_DESC = 'FEDCBA9876543210';
 const TOKENS: LegacyUsedToken[] = [
-  { token: `${HEX_ASC}${HEX_ASC.toLowerCase()}`, usedAt: '2026-06-30T12:00:00.123' },
-  { token: `${HEX_DESC}${HEX_DESC}`, usedAt: '2026-06-30T12:00:01' },
+  { token: `${HEX_ASC}${HEX_ASC.toLowerCase()}`.repeat(2), usedAt: '2026-06-30T12:00:00.123' },
+  { token: HEX_DESC.repeat(4), usedAt: '2026-06-30T12:00:01' },
 ];
+// A CF-format UUID, as legacy mints session.mura.csrfsecretkey.
+const CSRF_SECRET = [HEX_DESC.slice(0, 8), HEX_ASC.slice(0, 4), HEX_ASC.slice(4, 8), HEX_DESC].join('-');
 
 const cookie = (name: string, value: string): JarCookie => ({ name, value, attributes: 'path=/;HttpOnly' });
 const LIVE: JarCookies = { CFID: cookie('CFID', '1001'), CFTOKEN: cookie('CFTOKEN', '12345678') };
@@ -47,6 +53,14 @@ const unexpected = (op: string) => (): never => {
 };
 
 const apps: FastifyInstance[] = [];
+let markUsedContract: ValidateFunction;
+
+beforeAll(async () => {
+  const contract = parse(await readFile(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+    components: { schemas: Record<string, AnySchemaObject> };
+  };
+  markUsedContract = new Ajv2020({ allErrors: true, strict: true }).compile(contract.components.schemas.MarkUsedRequest);
+});
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.opt2.shutdown()));
@@ -136,6 +150,24 @@ describe('registerMarkUsedRoute', () => {
     ]);
   });
 
+  it('accepts a token generateCsrfToken issues, as the contract does, and hands it to the bridge unchanged', async () => {
+    const { token } = generateCsrfToken({ context: SESSION_ID, secret: CSRF_SECRET, now: NOW });
+    const tokens = [{ token, usedAt: '2026-06-30T12:00:00.123' }];
+    expect(markUsedContract({ tokens })).toBe(true);
+    const { app, calls } = await markUsedApp(jarRow());
+    const res = await app.inject({
+      method: 'POST',
+      url: markUsedUrl(SESSION_ID),
+      headers: await credentialOf('identity'),
+      payload: { tokens },
+    });
+    expect(res.statusCode).toBe(204);
+    expect(calls).toEqual([
+      ['jar.get', SESSION_ID],
+      ['bridge.markUsed', LIVE, tokens, { legacySessionId: LEGACY_SESSION_ID }],
+    ]);
+  });
+
   it.each<[string, JarRow | undefined]>([
     ['no jar', undefined],
     ['a jar without a legacy session id', jarRow({ legacySessionId: null })],
@@ -170,12 +202,14 @@ describe('registerMarkUsedRoute', () => {
   it.each<[string, object]>([
     ['a body without tokens', {}],
     ['an empty token list', { tokens: [] }],
-    ['a token that is not 32 hex digits', { tokens: [{ ...TOKENS[0], token: 'G'.repeat(32) }] }],
-    ['a short token', { tokens: [{ ...TOKENS[0], token: 'A'.repeat(31) }] }],
-    ['a token without usedAt', { tokens: [{ token: 'A'.repeat(32) }] }],
+    ['a token that is not 64 hex digits', { tokens: [{ ...TOKENS[0], token: 'G'.repeat(64) }] }],
+    ['a short token', { tokens: [{ ...TOKENS[0], token: 'A'.repeat(63) }] }],
+    ['an MD5-length 32-digit token', { tokens: [{ ...TOKENS[0], token: 'A'.repeat(32) }] }],
+    ['a token without usedAt', { tokens: [{ token: 'A'.repeat(64) }] }],
     ['a space-separated usedAt', { tokens: [{ ...TOKENS[0], usedAt: '2026-06-30 12:00:00' }] }],
     ['a usedAt with an offset', { tokens: [{ ...TOKENS[0], usedAt: '2026-06-30T12:00:00Z' }] }],
-  ])('rejects %s with 400 before reading the jar', async (_label, payload) => {
+  ])('rejects %s with 400 before reading the jar, as the contract does', async (_label, payload) => {
+    expect(markUsedContract(payload)).toBe(false);
     const { app, calls } = await markUsedApp(jarRow());
     const res = await app.inject({
       method: 'POST',

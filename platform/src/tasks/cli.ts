@@ -17,6 +17,24 @@ import { safeErrorMessage } from '../logging/safe-error.js';
 const USAGE =
   'usage: opt2-tasks reconcile [--queue <name>]... [--with-sitemonitor] [--include-local-only] [--as operator|migration]';
 
+const HELP = `${USAGE}
+
+Asks each creating service in OPT2_SERVICE_URLS to ensure the current slot's task of its recurring queues, one queue
+and creator at a time. Prints one JSON line per queue and creator.
+  --queue <name>            recurring queue to reconcile, repeatable (default: every outbox sweep queue)
+  --with-sitemonitor        also reconcile programs-sites-sitemonitor, which --queue may name only with this flag
+  --include-local-only      also reconcile the local-only stub outbox sweep (default: on when OPT2_ENV=local)
+  --as operator|migration   workload identity the calls are made as (default: operator)
+  -h, --help                print this help
+Environment:
+  OPT2_ENV                  local or cloud (required)
+  OPT2_SERVICE_URLS         JSON map of service name to base URL, naming at least one creator (required)
+  OPT2_STATE_DIR            local key pair directory, absolute and outside the checkout; read when OPT2_ENV=local
+                            (default: ~/.opt2/state)
+  GOOGLE_CLOUD_PROJECT      Google Cloud project (required when OPT2_ENV=cloud)
+Exit codes: 0 every chain ensured, 1 a chain failed, 2 usage or environment error.
+`;
+
 /** Workload identities the CLI may act as; each carries a role the queue-control routes accept. */
 const CALLERS = ['operator', 'migration'] as const;
 
@@ -52,12 +70,17 @@ const cliEnvSchema = baseEnvSchema
 
 type CliEnv = ReturnType<typeof cliEnvSchema.parse>;
 
-/** Runs `opt2-tasks` with the arguments after the script path; returns 0 when every chain is ensured, 1 on a failure, 2 on a usage or environment error. */
+/** Runs `opt2-tasks` with the arguments after the script path; returns 0 when every chain is ensured or help was printed, 1 on a failure, 2 on a usage or environment error. */
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   let args: ReconcileArgs;
   let env: CliEnv;
   try {
-    args = parseCommand(argv);
+    const command = parseCommand(argv);
+    if (command === 'help') {
+      await writeStdout(HELP);
+      return 0;
+    }
+    args = command;
     env = loadCliEnv(process.env);
   } catch (err) {
     if (err instanceof UsageError) {
@@ -117,8 +140,8 @@ async function reconcile(args: ReconcileArgs, env: CliEnv): Promise<number> {
   return results.every((result) => result.skipped !== undefined || result.ok) ? 0 : 1;
 }
 
-/** Parses the subcommand and its options. */
-function parseCommand(argv: string[]): ReconcileArgs {
+/** Parses the subcommand and its options; `'help'` when `--help` or `-h` is given. */
+function parseCommand(argv: string[]): ReconcileArgs | 'help' {
   let parsed;
   try {
     parsed = parseArgs({
@@ -130,12 +153,16 @@ function parseCommand(argv: string[]): ReconcileArgs {
         'with-sitemonitor': { type: 'boolean', default: false },
         'include-local-only': { type: 'boolean' },
         as: { type: 'string', default: 'operator' },
+        help: { type: 'boolean', short: 'h', default: false },
       },
     });
   } catch (err) {
     throw new UsageError(messageOf(err));
   }
   const { values, positionals } = parsed;
+  if (values.help) {
+    return 'help';
+  }
   if (positionals.length === 0) {
     throw new UsageError('missing subcommand');
   }

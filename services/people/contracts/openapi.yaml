@@ -2821,6 +2821,9 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
           description: A presented credential is invalid.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+          description: The verified user token's site differs from the supplied `siteid`.
 
 components:
   securitySchemes:

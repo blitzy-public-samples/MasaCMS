@@ -206,13 +206,29 @@ const ENTRY_POINT = {
   sessionEffects: oneOfValues(SESSION_EFFECTS),
 };
 
+const CSRF_FACTS = { csrfValidation: oneOfValues(CSRF_VALIDATIONS), csrfContext: nullable(TEXT) };
+
 const ACTION_VARIANT = objectWith({
   ...ENTRY_POINT,
-  csrfValidation: oneOfValues(CSRF_VALIDATIONS),
-  csrfContext: nullable(TEXT),
+  ...CSRF_FACTS,
   responseMode: oneOfValues(RESPONSE_MODES),
   contentType: nullable(NAME),
 });
+
+// A route records CSRF facts exactly when it has a route key.
+const ROUTE = {
+  ...objectWith({
+    ...ENTRY_POINT,
+    routeKey: nullable(NAME),
+    kind: oneOfValues(ROUTE_KINDS),
+    family: oneOfValues(ROUTE_FAMILIES),
+    csrfValidation: nullable(CSRF_FACTS.csrfValidation),
+    csrfContext: CSRF_FACTS.csrfContext,
+  }),
+  if: { properties: { routeKey: { type: 'null' } } },
+  then: { properties: { csrfValidation: { type: 'null' } } },
+  else: { properties: { csrfValidation: { type: 'string' } } },
+};
 
 const CONTROLLER = objectWith({
   id: NAME,
@@ -238,10 +254,8 @@ const WRITER = objectWith({
 const INVENTORY_FILE = objectWith({
   sourceSha: TEXT,
   controllers: arrayOf(CONTROLLER),
-  routes: arrayOf(
-    objectWith({ ...ENTRY_POINT, routeKey: nullable(NAME), kind: oneOfValues(ROUTE_KINDS), family: oneOfValues(ROUTE_FAMILIES) }),
-  ),
-  frontEnd: arrayOf(objectWith(ENTRY_POINT)),
+  routes: arrayOf(ROUTE),
+  frontEnd: arrayOf(objectWith({ ...ENTRY_POINT, ...CSRF_FACTS })),
   scheduledJobs: arrayOf(
     objectWith({
       ...ITEM,
@@ -527,13 +541,20 @@ export async function loadGroups(
   return readValidated(paths.groupsFile, groups, (doc) => [...pinViolations(doc, pin), ...partitionViolations(doc, ownership)]);
 }
 
-type CollectedFacts = Omit<RouteFacts, 'writeSet' | 'keyScope' | 'sessionEffects'> & {
+/** CSRF fact of a key no inventory item records one for, as csrf.ts treats an unlisted key. */
+const UNRECORDED_VALIDATION: CsrfValidation = 'validates';
+
+/** Precedence of CSRF facts recorded for one key by several items. */
+const CSRF_STRENGTH: Record<CsrfValidation, number> = { none: 0, bypassed: 1, validates: 2 };
+
+type CollectedFacts = Omit<RouteFacts, 'csrfValidation' | 'csrfContext' | 'writeSet' | 'keyScope' | 'sessionEffects'> & {
+  csrf?: Pick<RouteFacts, 'csrfValidation' | 'csrfContext'>;
   writeSet: Set<string>;
   keyScope: Set<string>;
   sessionEffects: Set<SessionEffect>;
 };
 
-/** Route facts per inventoried key, unioned over the entry points and table writers that carry it. */
+/** Route facts per inventoried key, unioned over the entry points and table writers that carry it; the strongest CSRF fact wins. */
 export async function loadInventoryFacts(
   paths: Pick<GatewayPaths, 'inventoryFile' | 'tableOwnershipFile' | 'sourcePinFile'>,
 ): Promise<InventoryFacts> {
@@ -543,7 +564,7 @@ export async function loadInventoryFacts(
     const route = normaliseRouteKey(routeKey);
     let facts = collected.get(route);
     if (facts === undefined) {
-      facts = { route, csrfValidation: 'none', writeSet: new Set(), keyScope: new Set(), sessionEffects: new Set() };
+      facts = { route, writeSet: new Set(), keyScope: new Set(), sessionEffects: new Set() };
       collected.set(route, facts);
     }
     return facts;
@@ -556,12 +577,15 @@ export async function loadInventoryFacts(
     for (const write of item.writeSet) facts.writeSet.add(write.unit);
     // An entry point's own effect counts too: logout is recorded on entry points, not on the table writers they reach.
     facts.sessionEffects.add(item.sessionEffects);
+    // The schema makes csrfValidation null only on items without a route key.
+    const csrfValidation = item.csrfValidation ?? UNRECORDED_VALIDATION;
+    if (facts.csrf === undefined || CSRF_STRENGTH[csrfValidation] > CSRF_STRENGTH[facts.csrf.csrfValidation]) {
+      facts.csrf = item.csrfContext === null ? { csrfValidation } : { csrfValidation, csrfContext: item.csrfContext };
+    }
   }
   for (const variant of actionVariants) {
     const facts = factsFor(variant.routeKey);
-    facts.csrfValidation = variant.csrfValidation;
     facts.responseMode = variant.responseMode;
-    if (variant.csrfContext !== null) facts.csrfContext = variant.csrfContext;
     if (variant.contentType !== null) facts.contentType = variant.contentType;
   }
   for (const table of inventory.tables) {
@@ -577,10 +601,11 @@ export async function loadInventoryFacts(
   const byRoute = new Map<string, RouteFacts>(
     [...collected.entries()]
       .sort(([a], [b]) => (a < b ? -1 : 1))
-      .map(([route, facts]) => [
+      .map(([route, { csrf = { csrfValidation: UNRECORDED_VALIDATION }, ...facts }]) => [
         route,
         {
           ...facts,
+          ...csrf,
           writeSet: [...facts.writeSet].sort(),
           keyScope: [...facts.keyScope].sort(),
           sessionEffects: [...facts.sessionEffects].sort(),

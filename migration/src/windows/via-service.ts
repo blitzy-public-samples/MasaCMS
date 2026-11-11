@@ -1,7 +1,7 @@
 // `opt2-migrate` client of the running migration service's write-window operations, called as `platform.operator`.
 import { randomUUID } from 'node:crypto';
 
-import { ServiceUnavailableError } from '@opt2/platform/service-kit';
+import { currentRequestContext, REQUEST_ID_HEADER, ServiceUnavailableError } from '@opt2/platform/service-kit';
 
 import type { MigrationContext } from '../context.js';
 import type { components, operations, paths } from '../generated/openapi.js';
@@ -87,10 +87,16 @@ function windowPath(operation: WindowOperation, windowId: string): string {
 }
 
 /** Sends one POST as `operator` without a user token; a 503 throws the legacy 503 error, any other non-2xx {@link WindowCallError}. */
-async function post<T>(ctx: WindowCallContext, operation: WindowOperation, path: string, json?: unknown): Promise<T> {
+async function post<T>(
+  ctx: WindowCallContext,
+  operation: WindowOperation,
+  path: string,
+  json?: unknown,
+  headers?: Record<string, string>,
+): Promise<T> {
   const response = await ctx
     .clientAs('operator')
-    .request<T>({ service: MIGRATION_SERVICE, method: 'POST', path, json, userToken: null });
+    .request<T>({ service: MIGRATION_SERVICE, method: 'POST', path, json, headers, userToken: null });
   if (response.status === HTTP_UNAVAILABLE) {
     const cause = Object.assign(new Error(`${MIGRATION_SERVICE} answered HTTP ${String(HTTP_UNAVAILABLE)}`), {
       code: `HTTP_${String(HTTP_UNAVAILABLE)}`,
@@ -108,14 +114,15 @@ async function post<T>(ctx: WindowCallContext, operation: WindowOperation, path:
  * @throws ServiceUnavailableError when the service refuses the window (503) or cannot be reached.
  */
 export async function openWindowViaService(ctx: WindowCallContext, input: OpenWindowInput): Promise<WindowOpenResponse> {
+  // The contract requires a request id and has no `kind`; the active request's id, else a fresh one, is also the X-Request-Id.
+  const requestId = currentRequestContext()?.requestId ?? randomUUID();
   const body = {
     routeKey: input.routeKey ?? STARTUP_ROUTE_KEY,
     units: input.units,
     scope: input.scope ?? { table: true },
-    // The contract requires a request id and has no `kind`; the CLI has no inbound request, so each open gets a fresh id.
-    requestId: randomUUID(),
+    requestId,
   } satisfies WindowOpenRequest;
-  return post<WindowOpenResponse>(ctx, OPERATIONS.open, OPERATIONS.open.path, body);
+  return post<WindowOpenResponse>(ctx, OPERATIONS.open, OPERATIONS.open.path, body, { [REQUEST_ID_HEADER]: requestId });
 }
 
 /** Reports the legacy outcome of an open window; the service imports legacy changes and closes it, or leaves it import-pending. */

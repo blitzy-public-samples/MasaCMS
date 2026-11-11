@@ -30,7 +30,7 @@ The tech spec's "Runtime" lists only Lucee 5 and ACF 2016 sandboxes; this run's 
 |---|---|---|---|
 | ColdFusion product version and level | `harness/legacy-baseline/cfml/run.cfm?info=1` (`server.coldfusion.productversion`, `productlevel`) | Adobe ColdFusion 2023 | pending-run |
 | ColdFusion edition | `harness/legacy-baseline/cfml/run.cfm?info=1` | Trial reverts to developer edition after 30 days | pending-run |
-| `cfpm` packages | `harness/legacy-baseline/cfml/run.cfm?info=1` package list | Includes the packages behind `cfspreadsheet` and `cfdocument` | pending-run |
+| `cfpm` packages | `harness/legacy-baseline/cfml/run.cfm?info=1` package list | Includes `spreadsheet` (`cfspreadsheet`) and `document` (`cfdocument`), plus `mail` and `scheduler`, which `legacy-fixtures/load-fixtures.sh` also checks | pending-run |
 | SQL Server | `SELECT @@VERSION` | SQL Server 2022 | pending-run |
 | PostgreSQL server | `SELECT version()` | 16.x (CI image `postgres:16.15`) | pending-run |
 | Mailpit | `GET /api/v1/info` on 127.0.0.1:8025 | SMTP 127.0.0.1:1025 | pending-run |

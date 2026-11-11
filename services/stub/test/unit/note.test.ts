@@ -1,17 +1,24 @@
-/** Note aggregate of the stub: create schema, row mapping and created-event payload. */
+/** Note aggregate of the stub: create schema, list paging, row mapping and created-event payload. */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { isCfUuid } from '@opt2/platform/legacy-compat';
 import { localTimestamp } from '@opt2/platform/outbox';
 import { fixedClock } from '@opt2/platform/testing';
 import {
+  NOTE_PAGE_DEFAULT,
+  NOTE_PAGE_MAX,
+  formatNoteCursor,
   newNote,
   noteCreateSchema,
   noteCreatedPayload,
+  noteCursorOf,
   noteFromRow,
+  noteListQuerySchema,
   noteToRow,
+  parseNoteCursor,
   projectionFromRow,
   type Note,
+  type NoteCursor,
   type NoteProjectionRow,
 } from '../../src/domain/note.js';
 import { noteCreatedValidator } from '../../src/events/topics.js';
@@ -151,6 +158,92 @@ describe('note rows', () => {
       lastEventId: EVENT_ID,
       projectedAt: PROJECTED,
     });
+  });
+});
+
+describe('note list paging', () => {
+  const CURSOR: NoteCursor = { created: CREATED, noteId: NOTE_ID };
+  const CURSOR_TEXT = formatNoteCursor(CURSOR);
+
+  function encoded(value: unknown): string {
+    return Buffer.from(typeof value === 'string' ? value : JSON.stringify(value), 'utf8').toString('base64url');
+  }
+
+  // Years a JS Date parses that lie outside the four-digit years 0001-9999.
+  const OUT_OF_RANGE_YEARS = [
+    { label: 'a created in year 0000', created: '0000-01-01 00:00:00.000' },
+    { label: 'a created with a signed expanded year', created: '+012026-01-02 03:04:05.678' },
+    { label: 'a created with a negative year', created: '-000001-01-01 00:00:00.000' },
+  ];
+
+  it('formatNoteCursor writes base64url JSON that parseNoteCursor reads back', () => {
+    expect(CURSOR_TEXT).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(JSON.parse(Buffer.from(CURSOR_TEXT, 'base64url').toString('utf8'))).toEqual(CURSOR);
+    expect(parseNoteCursor(CURSOR_TEXT)).toEqual(CURSOR);
+  });
+
+  it.each([
+    { label: 'a pg Date', created: CREATED_DATE },
+    { label: 'text', created: CREATED },
+  ])('noteCursorOf positions after a row whose created is $label', ({ created }) => {
+    expect(noteCursorOf({ tenant_id: TENANT_ID, note_id: NOTE_ID, title: 'T', body: '', created, row_version: '1' })).toEqual(CURSOR);
+  });
+
+  it.each([
+    { label: 'empty text', text: '' },
+    { label: 'non-base64url text', text: '!!!' },
+    { label: 'base64url of non-JSON', text: encoded('not json') },
+    { label: 'JSON null', text: encoded(null) },
+    { label: 'a JSON array', text: encoded([CREATED, NOTE_ID]) },
+    { label: 'a missing noteId', text: encoded({ created: CREATED }) },
+    { label: 'an extra key', text: encoded({ ...CURSOR, tenantId: TENANT_ID }) },
+    { label: 'an RFC UUID noteId', text: encoded({ created: CREATED, noteId: TENANT_ID }) },
+    { label: 'a numeric created', text: encoded({ created: 1, noteId: NOTE_ID }) },
+    { label: 'a created without milliseconds', text: encoded({ created: '2024-01-02 03:04:05', noteId: NOTE_ID }) },
+    { label: 'a created with a T separator', text: encoded({ created: '2024-01-02T03:04:05.678', noteId: NOTE_ID }) },
+    { label: 'a created on no calendar day', text: encoded({ created: '2024-02-30 03:04:05.678', noteId: NOTE_ID }) },
+    { label: 'a created in month 13', text: encoded({ created: '2024-13-02 03:04:05.678', noteId: NOTE_ID }) },
+    ...OUT_OF_RANGE_YEARS.map(({ label, created }) => ({ label, text: encoded({ created, noteId: NOTE_ID }) })),
+  ])('parseNoteCursor answers null for $label', ({ text }) => {
+    expect(parseNoteCursor(text)).toBeNull();
+  });
+
+  it.each(['0001-01-01 00:00:00.000', '9999-12-31 23:59:59.999'])('reads a cursor created at %s, a bound of the accepted years', (created) => {
+    const cursor: NoteCursor = { created, noteId: NOTE_ID };
+
+    expect(parseNoteCursor(formatNoteCursor(cursor))).toEqual(cursor);
+    expect(noteListQuerySchema.parse({ after: formatNoteCursor(cursor) })).toEqual({ limit: NOTE_PAGE_DEFAULT, after: cursor });
+  });
+
+  it('noteListQuerySchema reads an absent limit and after as the first page of NOTE_PAGE_DEFAULT notes', () => {
+    expect([NOTE_PAGE_DEFAULT, NOTE_PAGE_MAX]).toEqual([50, 1000]);
+    expect(noteListQuerySchema.parse({ siteid: 'default' })).toEqual({ limit: NOTE_PAGE_DEFAULT, after: null });
+  });
+
+  it.each([
+    { label: 'lower case', input: { limit: '1', after: CURSOR_TEXT }, limit: 1 },
+    { label: 'upper case', input: { LIMIT: '1000', AFTER: CURSOR_TEXT }, limit: NOTE_PAGE_MAX },
+  ])('noteListQuerySchema reads $label limit and after', ({ input, limit }) => {
+    expect(noteListQuerySchema.parse(input)).toEqual({ limit, after: CURSOR });
+  });
+
+  it.each([
+    { label: 'limit 0', input: { limit: '0' }, path: ['limit'] },
+    { label: 'limit 1001', input: { limit: '1001' }, path: ['limit'] },
+    { label: 'a signed limit', input: { limit: '+5' }, path: ['limit'] },
+    { label: 'a fractional limit', input: { limit: '1.5' }, path: ['limit'] },
+    { label: 'a repeated limit', input: { limit: ['1', '2'] }, path: ['limit'] },
+    { label: 'an empty after', input: { after: '' }, path: ['after'] },
+    { label: 'a malformed after', input: { after: 'not-a-cursor' }, path: ['after'] },
+    ...OUT_OF_RANGE_YEARS.map(({ label, created }) => ({
+      label: `an after with ${label}`,
+      input: { after: encoded({ created, noteId: NOTE_ID }) },
+      path: ['after'],
+    })),
+  ])('noteListQuerySchema rejects $label', ({ input, path }) => {
+    const result = noteListQuerySchema.safeParse(input);
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.map((issue) => issue.path)).toEqual([path]);
   });
 });
 

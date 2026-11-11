@@ -1,5 +1,6 @@
 // SYNTHETIC: seed - no Masa equivalent; legacy oracle in legacy-fixtures/
 import {
+  CanonicalEncodingError,
   MIGRATION_PATH_PREFIX,
   encodeRow,
   formatCanonicalTimestamp,
@@ -13,6 +14,7 @@ import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { sha256Hex, toHex } from './bytes.js';
 import { siteForProgram, type SeedConfig } from './config.js';
 import type { Dataset } from './dataset.js';
+import { failureText, idText, kindOf, nameText, printable } from './errors.js';
 import {
   FIXTURE_TABLE_SPECS,
   fixtureKey,
@@ -61,6 +63,7 @@ const APPLY_ORIGIN = 'backfill';
 const AUDIT_TABLE = 'audit_entry';
 const GENESIS_HASH = Buffer.alloc(32);
 const COLUMN_SPEC = /^([A-Za-z_]\w*)(?::([sitb]|d(\d+)))?$/;
+const MACHINE_CODE = /^[A-Za-z][\w.-]{0,63}$/;
 
 /** Columns of `list` (`name` or `name:<tag>`, `d<scale>` for decimals; untagged is `s`), frozen. */
 function parseColumns(table: string, list: string): readonly CanonicalColumn[] {
@@ -113,10 +116,10 @@ function columnsOf(table: string): readonly CanonicalColumn[] {
   return found;
 }
 
-/** Text value of `column`; throws naming the table and column for any other value. */
+/** Text value of `column`; throws naming the table, the column and the kind of any other value. */
 function textOf(key: string, row: FixtureRow, column: string): string {
   const value = row[column];
-  if (typeof value !== 'string') throw new TypeError(`direct: ${key} row needs text ${column}, got ${JSON.stringify(value) ?? 'nothing'}`);
+  if (typeof value !== 'string') throw printable(new TypeError(`direct: ${key} row needs text ${column}, got ${kindOf(value)}`));
   return value;
 }
 
@@ -160,8 +163,9 @@ function assertColumns(key: string, spec: FixtureTableSpec, catalog: readonly Ca
   const missing = catalog.filter(({ name }) => !Object.hasOwn(row, name)).map(({ name }) => name);
   const extra = Object.keys(row).filter((name) => !names.has(name));
   if (missing.length > 0 || extra.length > 0) {
-    throw new Error(
-      `direct: ${key} row ${spec.key}=${JSON.stringify(row[spec.key])} does not match its DDL columns (missing ${missing.join(',') || '-'}; extra ${extra.join(',') || '-'})`,
+    const extraNames = extra.map(nameText).join(',') || '-';
+    throw printable(
+      new Error(`direct: ${key} row ${spec.key}=${idText(row[spec.key])} does not match its DDL columns (missing ${missing.join(',') || '-'}; extra ${extraNames})`),
     );
   }
 }
@@ -189,10 +193,10 @@ function siteOf(
     const parentKey = parent === undefined ? rule.table : fixtureKey(parent, parent.scope === 'program' ? (programId ?? undefined) : undefined);
     const foreign = row[rule.foreignKey];
     site = foreign === null || foreign === undefined ? undefined : sites.get(parentKey)?.get(String(foreign));
-    source = `parent ${parentKey}.${rule.foreignKey}=${JSON.stringify(foreign) ?? 'nothing'}`;
+    source = `parent ${parentKey}.${rule.foreignKey}=${idText(foreign)}`;
   }
   if (typeof site !== 'string' || site === '') {
-    throw new Error(`direct: ${key} row ${spec.key}=${JSON.stringify(row[spec.key])} has no resolvable site (${source})`);
+    throw printable(new Error(`direct: ${key} row ${spec.key}=${idText(row[spec.key])} has no resolvable site (${source})`));
   }
   return site;
 }
@@ -202,7 +206,8 @@ function assertFixtureKeys(dataset: Dataset, keys: readonly string[]): void {
   const missing = keys.filter((key) => !Object.hasOwn(dataset.fixtures, key));
   const extra = Object.keys(dataset.fixtures).filter((key) => !keys.includes(key));
   if (missing.length > 0 || extra.length > 0) {
-    throw new Error(`direct: dataset fixture tables differ from the configuration (missing ${missing.join(',') || '-'}; extra ${extra.join(',') || '-'})`);
+    const extraKeys = extra.map(nameText).join(',') || '-';
+    throw printable(new Error(`direct: dataset fixture tables differ from the configuration (missing ${missing.join(',') || '-'}; extra ${extraKeys})`));
   }
 }
 
@@ -248,6 +253,14 @@ export function planDirectBatches(dataset: Dataset, config: SeedConfig): DirectB
   return batches;
 }
 
+/** Owning services of the configured fixture tables that hold rows in `dataset`, once each, in plan order. */
+export function directServices(dataset: Dataset, config: SeedConfig): OwningService[] {
+  const owners = fixtureKeys(config)
+    .filter((key) => (dataset.fixtures[key]?.length ?? 0) > 0)
+    .map((key) => specForKey(key).spec.service);
+  return [...new Set(owners)];
+}
+
 /** `ApplyRequest` of `batch`: rows canonically encoded over the table's catalog columns, upserted as a backfill. */
 export function applyRequestFor(batch: DirectBatch): ApplyRequest {
   const { spec } = specForKey(batch.legacyTable);
@@ -266,20 +279,20 @@ export function applyRequestFor(batch: DirectBatch): ApplyRequest {
       try {
         return { op: 'upsert' as const, row: encodeRow(catalog, input) };
       } catch (err) {
-        throw new Error(`direct: ${batch.legacyTable} row ${spec.key}=${JSON.stringify(row[spec.key])} does not encode: ${(err as Error).message}`, {
-          cause: err,
-        });
+        // Encoding errors name types and columns, never values; anything else is reduced to its class.
+        const reason = err instanceof CanonicalEncodingError ? err.message : failureText(err);
+        throw printable(new Error(`direct: ${batch.legacyTable} row ${spec.key}=${idText(row[spec.key])} does not encode: ${reason}`, { cause: err }));
       }
     }),
   };
 }
 
-/** `code: message` of a legacy error envelope body, or undefined for any other body. */
+/** Machine `code` of a legacy error envelope body, never its message; undefined for any other body or code. */
 function legacyErrorOf(body: unknown): string | undefined {
   const error = typeof body === 'object' && body !== null ? (body as { error?: unknown }).error : undefined;
   if (typeof error !== 'object' || error === null) return undefined;
-  const { code, message } = error as { code?: unknown; message?: unknown };
-  return `${String(code)}: ${String(message)}`;
+  const { code } = error as { code?: unknown };
+  return typeof code === 'string' && MACHINE_CODE.test(code) ? code : undefined;
 }
 
 /** Batch identity as failure messages name it. */
@@ -300,11 +313,11 @@ export async function runDirect(dataset: Dataset, options: DirectOptions): Promi
     try {
       response = await client.request<ApplyResponse>({ service: batch.service, method: 'POST', path: APPLY_PATH, json, userToken: null });
     } catch (err) {
-      throw new Error(`direct: ${describeBatch(batch)} failed: ${(err as Error).message}`, { cause: err });
+      throw printable(new Error(`direct: ${describeBatch(batch)} failed: ${failureText(err)}`, { cause: err }));
     }
     if (response.status < 200 || response.status > 299) {
       const legacyError = legacyErrorOf(response.body);
-      throw new Error(`direct: ${describeBatch(batch)} answered ${response.status}${legacyError === undefined ? '' : ` (${legacyError})`}`);
+      throw printable(new Error(`direct: ${describeBatch(batch)} answered ${response.status}${legacyError === undefined ? '' : ` (${legacyError})`}`));
     }
     result.batches += 1;
     result.rows += batch.rows.length;

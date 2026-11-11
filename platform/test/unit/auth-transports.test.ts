@@ -17,7 +17,7 @@ import {
   type JWTPayload,
   type JWTVerifyGetKey,
 } from 'jose';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import {
   AuthDenial,
   GOOGLE_SECURETOKEN_JWKS_URL,
@@ -236,16 +236,51 @@ class StalledCertsClient extends OAuth2Client {
   }
 }
 
-/** Runs `action` with every AbortSignal.timeout firing after 20 ms; returns the durations requested meanwhile. */
-async function withShortTimeouts(action: () => Promise<void>): Promise<number[]> {
-  const timeout = AbortSignal.timeout.bind(AbortSignal);
-  const spy = vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => timeout(20));
+/** AbortSignal.timeout signals held by the test: the durations requested and their explicit expiry. */
+interface HeldTimeouts {
+  /** Milliseconds each AbortSignal.timeout call requested, in call order. */
+  readonly requested: readonly number[];
+  /** Aborts every signal handed out so far with the TimeoutError AbortSignal.timeout raises. */
+  expire(): void;
+}
+
+/** Runs `action` while AbortSignal.timeout hands out signals only `expire` aborts; returns the durations requested. */
+async function withHeldTimeouts(action: (timeouts: HeldTimeouts) => Promise<void>): Promise<number[]> {
+  const requested: number[] = [];
+  const controllers: AbortController[] = [];
+  const spy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => {
+    requested.push(ms);
+    const controller = new AbortController();
+    controllers.push(controller);
+    return controller.signal;
+  });
+  const expire = (): void => {
+    for (const controller of controllers.splice(0)) {
+      controller.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+    }
+  };
   try {
-    await action();
-    return spy.mock.calls.map(([ms]) => ms);
+    await action({ requested, expire });
+    return requested;
   } finally {
     spy.mockRestore();
   }
+}
+
+/** Denial `verification` ends in once its timeout expires, after asserting it was pending on one new timeout. */
+async function denialOnExpiry(timeouts: HeldTimeouts, verification: () => Promise<unknown>): Promise<DenialShape> {
+  const before = timeouts.requested.length;
+  let settled = false;
+  const denial = denialOf(() =>
+    verification().finally(() => {
+      settled = true;
+    }),
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(settled).toBe(false);
+  expect(timeouts.requested).toHaveLength(before + 1);
+  timeouts.expire();
+  return denial;
 }
 
 /** GoogleAuth handing out the given ID-token clients instead of discovering credentials. */
@@ -296,6 +331,16 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await rm(stateDir, { recursive: true, force: true });
+});
+
+// Only Date is faked: every case reads the clock at NOW, while real timers, promises and I/O run on.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(NOW * 1000);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('AuthDenial', () => {
@@ -838,11 +883,9 @@ describe('createCloudInvocationVerifier', () => {
     const header = `Bearer ${await signToken(googleOidcClaims(), issuerKey)}`;
     const client = new StalledCertsClient();
     const verifier = createCloudInvocationVerifier({ project: PROJECT, audience: PEOPLE_URL, client });
-    const started = Date.now();
-    const timeouts = await withShortTimeouts(async () => {
-      expect(await denialOf(() => verifier.verify(header))).toEqual(INVALID_CREDENTIAL);
+    const timeouts = await withHeldTimeouts(async (held) => {
+      expect(await denialOnExpiry(held, () => verifier.verify(header))).toEqual(INVALID_CREDENTIAL);
     });
-    expect(Date.now() - started).toBeLessThan(1_000);
     expect(timeouts).toEqual([GOOGLE_AUTH_TIMEOUT_MS]);
   });
 });
@@ -1332,11 +1375,9 @@ describe.each([
   it('refuses as invalid-credential once a stalled certificate fetch outlasts the Google-auth timeout', async () => {
     const headers = { authorization: await invokerBearer() };
     const authenticator = create({ project: PROJECT, selfUrl: PEOPLE_URL, client: new StalledCertsClient() });
-    const started = Date.now();
-    const timeouts = await withShortTimeouts(async () => {
-      expect(await denialOf(() => authenticate(authenticator, route, headers))).toEqual(INVALID_CREDENTIAL);
+    const timeouts = await withHeldTimeouts(async (held) => {
+      expect(await denialOnExpiry(held, () => authenticate(authenticator, route, headers))).toEqual(INVALID_CREDENTIAL);
     });
-    expect(Date.now() - started).toBeLessThan(1_000);
     expect(timeouts).toEqual([GOOGLE_AUTH_TIMEOUT_MS]);
   });
 });
@@ -1802,13 +1843,17 @@ describe('createAuthFromEnv', () => {
       const service = await bearer();
       const push = await bearer({ aud: PUSH_ENDPOINT, email: PUBSUB_INVOKER_EMAIL });
       const task = await bearer({ aud: `${PEOPLE_URL}${TASK_PATH}`, email: TASKS_INVOKER_EMAIL });
-      const timeouts = await withShortTimeouts(async () => {
-        expect(await denialOf(() => auth.invocationVerifier.verify(service))).toEqual(INVALID_CREDENTIAL);
+      const timeouts = await withHeldTimeouts(async (held) => {
+        expect(await denialOnExpiry(held, () => auth.invocationVerifier.verify(service))).toEqual(INVALID_CREDENTIAL);
         expect(
-          await denialOf(() => authenticate(auth.transports['pubsub-push'], PUSH_PATH, { authorization: push })),
+          await denialOnExpiry(held, () =>
+            authenticate(auth.transports['pubsub-push'], PUSH_PATH, { authorization: push }),
+          ),
         ).toEqual(INVALID_CREDENTIAL);
         expect(
-          await denialOf(() => authenticate(auth.transports['cloud-tasks'], TASK_PATH, { authorization: task })),
+          await denialOnExpiry(held, () =>
+            authenticate(auth.transports['cloud-tasks'], TASK_PATH, { authorization: task }),
+          ),
         ).toEqual(INVALID_CREDENTIAL);
       });
       expect(timeouts).toEqual([GOOGLE_AUTH_TIMEOUT_MS, GOOGLE_AUTH_TIMEOUT_MS, GOOGLE_AUTH_TIMEOUT_MS]);

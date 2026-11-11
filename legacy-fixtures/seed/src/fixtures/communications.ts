@@ -1,5 +1,6 @@
 // SYNTHETIC: seed - no Masa equivalent; legacy oracle in legacy-fixtures/
 import { SITE_ORDER, type SiteKey } from '../config.js';
+import { printable } from '../errors.js';
 import {
   FIXTURE_TABLE_SPECS,
   fixtureKey,
@@ -162,7 +163,7 @@ function buildMessages(
     (user: UserRow) => user.siteID === siteID && user.email.endsWith(domain) && !ctx.index.isReserved(user.userID),
   );
   if (templates.length === 0 || senders.length === 0 || recipients.length === 0) {
-    throw new RangeError(`Site ${siteID} needs templates, ${SENDER_ROLE} actors and seed users for ${count} messages`);
+    throw printable(new RangeError(`Site ${siteID} needs templates, ${SENDER_ROLE} actors and seed users for ${count} messages`));
   }
   const siteName = ctx.index.site(siteID).site;
 

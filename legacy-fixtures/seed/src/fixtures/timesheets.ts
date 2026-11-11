@@ -1,5 +1,6 @@
 // SYNTHETIC: seed - no Masa equivalent; legacy oracle in legacy-fixtures/
 import { roleGroupName, siteForProgram, type SiteKey } from '../config.js';
+import { printable } from '../errors.js';
 import { fixtureKeys, specForKey, type FixtureContext, type FixtureRow, type FixtureTables } from '../fixture-tables.js';
 import { cfUuidFrom } from '../ids.js';
 import { formatUnits, units } from '../money.js';
@@ -146,13 +147,13 @@ function layout(ctx: FixtureContext, site: SiteKey): { perEmployee: number; pers
   if (timesheetDays === 0) return { perEmployee: 0, personIds: [] };
   const perEmployee = timesheetDays / daysPerTimesheet / timesheetEmployees;
   if (daysPerTimesheet !== PERIOD_WORKDAYS || !Number.isInteger(perEmployee)) {
-    throw new RangeError(
-      `Site ${site}: ${timesheetDays} days do not fill whole ${PERIOD_WORKDAYS}-day sheets for ${timesheetEmployees} employees`,
+    throw printable(
+      new RangeError(`Site ${site}: ${timesheetDays} days do not fill whole ${PERIOD_WORKDAYS}-day sheets for ${timesheetEmployees} employees`),
     );
   }
   const group = roleGroupName(ctx.config, EMPLOYEE);
   const personIds = ctx.index.membersOf(ctx.index.site(site).privateUserPoolID, group).slice(0, timesheetEmployees);
-  if (personIds.length < timesheetEmployees) throw new RangeError(`Site ${site} has fewer than ${timesheetEmployees} members of ${group}`);
+  if (personIds.length < timesheetEmployees) throw printable(new RangeError(`Site ${site} has fewer than ${timesheetEmployees} members of ${group}`));
   return { perEmployee, personIds };
 }
 

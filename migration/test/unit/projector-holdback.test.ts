@@ -1,4 +1,4 @@
-// Unit tests for the reverse projector's operation holdback: row dispositions, page splits, joint release and absence proofs.
+// Unit tests for the reverse projector's operation holdback: row dispositions, page splits, operation closures and absence proofs.
 import {
   CURSOR_START,
   compareXid,
@@ -18,7 +18,9 @@ import {
   type ChangesPageView,
   type HeldStreamState,
   type PageSplit,
+  type ParkedPart,
   type RowDisposition,
+  type WaitingOperation,
 } from '../../src/reverse/operations.js';
 
 type Tracker = OperationTracker<HeldStreamState, ChangeRow>;
@@ -86,14 +88,39 @@ function read(
 const PERSON_ROWS = [change(100, 1, OP_A), change(100, 2, OP_A), change(101, 3, null)];
 const PERSON_A = PERSON_ROWS.slice(0, 2);
 
-/** A person-only roster edit: people's stream parked at done operation A, identity wrote no row of it. */
+/** A person-only roster edit: people's stream parked at done operation A and fenced, identity wrote no row of it. */
 function personOnly(): Tracker {
   const t = tracker();
   read(t, 'people', TENANT, page(PERSON_ROWS, 102), CURSOR_START, { [OP_A]: 'done' });
+  t.noteFence(OP_A, 'people', '101');
   return t;
 }
 
 const readyIds = (t: Tracker): string[] => t.ready().map((operation) => operation.operationId);
+
+/** Notes `position` as every roster participant's fence of the operation. */
+function fenceAll(t: Tracker, operationId: string, position: string): void {
+  for (const owner of ROSTER_PARTICIPANTS) t.noteFence(operationId, owner, position);
+}
+
+/** A `waiting` entry whose gaps are empty unless given. */
+function waitingOn(
+  operationId: string,
+  status: OperationStatus | undefined,
+  gaps: Partial<Pick<WaitingOperation, 'missing' | 'incomplete' | 'unproven' | 'blockedBy'>> = {},
+): WaitingOperation {
+  return { operationId, status, missing: [], incomplete: [], unproven: [], blockedBy: [], ...gaps };
+}
+
+/** A released part's owner, tenant, rows and checkpoint. */
+const checkpoint = ({ owner, tenantId, rows, streamState }: ParkedPart<HeldStreamState, ChangeRow>): unknown[] => [
+  owner,
+  tenantId,
+  rows,
+  streamState.endCursor,
+  streamState.appliedHorizon,
+  streamState.complete,
+];
 
 describe('classifyRow', () => {
   it('passes over exactly the origins legacy already holds', () => {
@@ -309,24 +336,33 @@ describe('OperationTracker parts and statuses', () => {
     expect(t.statusOf(OP_A)).toBe(merged);
   });
 
-  it('releases an operation once both participants parked fully read parts, merging rows in (xid, seq) order', () => {
+  it('releases an operation once both participants are read past their fences, merging rows in (xid, seq) order', () => {
     const t = tracker();
     const account = change(101, 2, OP_A, ACCOUNT);
     read(t, 'identity', TENANT, page([account, change(105, 9, null, ACCOUNT)], 106), CURSOR_START, { [OP_A]: 'done' });
     const head = page([change(100, 1, OP_A)], 106, false);
     read(t, 'people', TENANT, head, CURSOR_START, { [OP_A]: 'done' });
     expect(t.ready()).toEqual([]);
-    expect(t.waiting()).toEqual([{ operationId: OP_A, status: 'done', missing: [], incomplete: ['people'], unproven: [] }]);
+    expect(t.fencesNeeded()).toEqual([
+      { operationId: OP_A, owner: 'people' },
+      { operationId: OP_A, owner: 'identity' },
+    ]);
+    expect(t.waiting()).toEqual([waitingOn(OP_A, 'done', { incomplete: ['people', 'identity'] })]);
+
+    t.noteFence(OP_A, 'people', '106');
+    t.noteFence(OP_A, 'identity', '105');
     expect(t.fencesNeeded()).toEqual([]);
+    expect(t.ready()).toEqual([]);
+    expect(t.waiting()).toEqual([waitingOn(OP_A, 'done', { incomplete: ['people'] })]);
 
     const rest = page([change(100, 3, OP_A), change(107, 10, null)], 108, false, head.cursor);
     read(t, 'people', TENANT, rest, head.cursor, { [OP_A]: 'done' });
     const [operation, ...others] = t.ready();
     expect(others).toEqual([]);
-    expect(operation?.operationId).toBe(OP_A);
-    expect(operation?.parts.map((part) => [part.owner, part.tenantId, part.streamState.complete])).toEqual([
-      ['identity', TENANT, true],
-      ['people', TENANT, true],
+    expect(operation?.operationIds).toEqual([OP_A]);
+    expect(operation?.parts.map(checkpoint)).toEqual([
+      ['identity', TENANT, [account], cursorOf(account), '105', true],
+      ['people', TENANT, [change(100, 1, OP_A), change(100, 3, OP_A)], cursor(100n, 3n), '107', true],
     ]);
     expect(operation?.rows).toEqual([change(100, 1, OP_A), change(100, 3, OP_A), account]);
     expect(t.waiting()).toEqual([]);
@@ -338,13 +374,17 @@ describe('OperationTracker parts and statuses', () => {
     read(t, 'identity', TENANT, page([account], 103), CURSOR_START);
     expect(t.ready()).toEqual([]);
     expect(t.fencesNeeded()).toEqual([]);
-    expect(t.waiting()).toEqual([{ operationId: OP_A, status: undefined, missing: ['people'], incomplete: [], unproven: ['people'] }]);
+    expect(t.waiting()).toEqual([waitingOn(OP_A, undefined, { missing: ['people'], incomplete: ['identity'], unproven: ['people'] })]);
 
     t.noteStatus(OP_A, 'done');
     expect(t.ready()).toEqual([]);
-    expect(t.fencesNeeded()).toEqual([{ operationId: OP_A, owner: 'people' }]);
+    expect(t.fencesNeeded()).toEqual([
+      { operationId: OP_A, owner: 'people' },
+      { operationId: OP_A, owner: 'identity' },
+    ]);
 
     read(t, 'people', TENANT, page(PERSON_ROWS, 103), CURSOR_START, { [OP_A]: 'done' });
+    fenceAll(t, OP_A, '102');
     expect(t.ready().map((operation) => [operation.operationId, operation.rows])).toEqual([[OP_A, [...PERSON_A, account]]]);
 
     t.release(OP_A);
@@ -358,13 +398,16 @@ describe('OperationTracker parts and statuses', () => {
     read(t, 'identity', TENANT, page([change(100, 4, OP_A, ACCOUNT)], 102), CURSOR_START, { [OP_A]: 'done' });
     expect(t.ready()).toEqual([]);
     expect(t.rolledBack()).toEqual([]);
-    expect(t.waiting()).toEqual([{ operationId: OP_A, status: 'open', missing: [], incomplete: [], unproven: [] }]);
+    expect(t.fencesNeeded()).toEqual([]);
+    expect(t.waiting()).toEqual([waitingOn(OP_A, 'open', { incomplete: ['people', 'identity'] })]);
   });
 
   it('lists a parked rolled-back operation for passing over, never as ready or waiting', () => {
     const t = personOnly();
     t.noteStatus(OP_A, 'rolled-back');
-    expect(t.rolledBack().map((operation) => [operation.operationId, operation.rows])).toEqual([[OP_A, PERSON_A]]);
+    expect(t.rolledBack().map((operation) => [operation.operationId, operation.operationIds, operation.rows])).toEqual([
+      [OP_A, [OP_A], PERSON_A],
+    ]);
     expect(t.ready()).toEqual([]);
     expect(t.waiting()).toEqual([]);
     expect(t.fencesNeeded()).toEqual([]);
@@ -381,27 +424,239 @@ describe('OperationTracker parts and statuses', () => {
     read(t, 'people', OTHER_TENANT, page([personB], 104), CURSOR_START, reports);
     read(t, 'identity', TENANT, page([accountA], 104), CURSOR_START, reports);
     read(t, 'identity', OTHER_TENANT, page([accountB], 104), CURSOR_START, reports);
+    fenceAll(t, OP_A, '103');
     expect(t.ready().map((operation) => [operation.operationId, operation.rows])).toEqual([[OP_A, [personA, accountA]]]);
 
     t.release(OP_A);
     expect(t.ready()).toEqual([]);
-    expect(t.waiting()).toEqual([{ operationId: OP_B, status: 'open', missing: [], incomplete: [], unproven: [] }]);
+    expect(t.waiting()).toEqual([waitingOn(OP_B, 'open', { incomplete: ['people', 'identity'] })]);
 
     t.clear();
     read(t, 'people', OTHER_TENANT, page([personB], 104), CURSOR_START, { [OP_B]: 'done' });
     read(t, 'identity', OTHER_TENANT, page([accountB], 104), CURSOR_START, { [OP_B]: 'done' });
+    fenceAll(t, OP_B, '103');
     expect(t.ready().map((operation) => [operation.operationId, operation.rows])).toEqual([[OP_B, [personB, accountB]]]);
+  });
+
+  it('waits while a parked run is missing from its stream scan, which a read from elsewhere replaced', () => {
+    const t = personOnly();
+    t.noteFence(OP_A, 'identity', '150');
+    read(t, 'identity', TENANT, page([], 200), CURSOR_START);
+    expect(readyIds(t)).toEqual([OP_A]);
+
+    const elsewhere = page([change(101, 3, null)], 200, true, cursor(100n, 2n));
+    t.noteScan('people', TENANT, cursor(100n, 2n), elsewhere, classifier(t));
+    expect(t.ready()).toEqual([]);
+    expect(t.waiting()).toEqual([waitingOn(OP_A, 'done', { missing: ['identity'], incomplete: ['people'] })]);
+
+    t.noteScan('people', TENANT, CURSOR_START, page(PERSON_ROWS, 102), classifier(t));
+    expect(readyIds(t)).toEqual([OP_A]);
+  });
+});
+
+describe('OperationTracker operation closures', () => {
+  it('waits for every transaction of the operation in both participants, then releases them with the rows between at once', () => {
+    const t = tracker();
+    const done: Record<string, OperationStatus> = { [OP_A]: 'done' };
+    const p1Head = change(101, 1, OP_A);
+    const p1Tail = change(101, 2, OP_A);
+    const personBetween = change(103, 3, null);
+    const p2 = change(105, 4, OP_A);
+    const i1 = change(100, 1, OP_A, ACCOUNT);
+    const accountBetween = change(102, 2, null, ACCOUNT);
+    const i2 = change(104, 3, OP_A, ACCOUNT);
+    const accountAfter = change(107, 4, null, ACCOUNT);
+
+    const peopleHead = page([p1Head], 108, false);
+    expect(read(t, 'people', TENANT, peopleHead, CURSOR_START, done).held?.complete).toBe(false);
+    read(t, 'people', TENANT, page([p1Tail, personBetween, p2], 108, true, peopleHead.cursor), peopleHead.cursor, done);
+    expect(t.ready()).toEqual([]);
+    expect(t.waiting()).toEqual([waitingOn(OP_A, 'done', { missing: ['identity'], incomplete: ['people'], unproven: ['identity'] })]);
+
+    const identityHead = page([i1, accountBetween], 108, false);
+    expect(read(t, 'identity', TENANT, identityHead, CURSOR_START, done).held?.complete).toBe(true);
+    expect(t.ready()).toEqual([]);
+    expect(t.fencesNeeded()).toEqual([
+      { operationId: OP_A, owner: 'people' },
+      { operationId: OP_A, owner: 'identity' },
+    ]);
+    expect(t.waiting()).toEqual([waitingOn(OP_A, 'done', { incomplete: ['people', 'identity'] })]);
+
+    fenceAll(t, OP_A, '106');
+    expect(t.ready()).toEqual([]);
+    expect(t.waiting()).toEqual([waitingOn(OP_A, 'done', { incomplete: ['identity'] })]);
+
+    const ahead = page([i2], 108, false, identityHead.cursor);
+    t.noteScan('identity', TENANT, identityHead.cursor, ahead, classifier(t));
+    expect(t.ready()).toEqual([]);
+    expect(t.waiting()).toEqual([waitingOn(OP_A, 'done', { incomplete: ['identity'] })]);
+
+    t.noteScan('identity', TENANT, ahead.cursor, page([accountAfter], 109, true, ahead.cursor), classifier(t));
+    const released = t.ready();
+    expect(released.map((operation) => [operation.operationId, operation.operationIds, operation.rows])).toEqual([
+      [OP_A, [OP_A], [i1, p1Head, p1Tail, accountBetween, personBetween, i2, p2]],
+    ]);
+    expect(released[0]?.parts.map(checkpoint)).toEqual([
+      ['people', TENANT, [p1Head, p1Tail, personBetween, p2], cursorOf(p2), '108', true],
+      ['identity', TENANT, [i1, accountBetween, i2], cursorOf(i2), '107', true],
+    ]);
+    expect(t.waiting()).toEqual([]);
+
+    for (const id of released[0]?.operationIds ?? []) t.release(id);
+    expect(t.ready()).toEqual([]);
+    expect(t.fencesNeeded()).toEqual([]);
+  });
+
+  it('holds interleaved operations sharing both streams until both are done and fenced, then releases them together', () => {
+    const t = tracker();
+    const i1A = change(100, 1, OP_A, ACCOUNT);
+    const i1B = change(101, 2, OP_B, ACCOUNT);
+    const personA = change(102, 1, OP_A);
+    const personB = change(103, 2, OP_B);
+    const i2A = change(104, 3, OP_A, ACCOUNT);
+    const i2B = change(105, 4, OP_B, ACCOUNT);
+    const readBoth = (reports: Record<string, OperationStatus>): void => {
+      read(t, 'people', TENANT, page([personA, personB], 110), CURSOR_START, reports);
+      read(t, 'identity', TENANT, page([i1A, i1B, i2A, i2B], 110), CURSOR_START, reports);
+    };
+
+    readBoth({ [OP_A]: 'done', [OP_B]: 'open' });
+    expect(t.fencesNeeded()).toEqual([
+      { operationId: OP_A, owner: 'people' },
+      { operationId: OP_A, owner: 'identity' },
+    ]);
+    fenceAll(t, OP_A, '106');
+    expect(t.ready()).toEqual([]);
+    expect(t.waiting()).toEqual([waitingOn(OP_A, 'done', { blockedBy: [OP_B] })]);
+
+    t.clear();
+    readBoth({ [OP_A]: 'done', [OP_B]: 'done' });
+    expect(t.fencesNeeded()).toEqual([
+      { operationId: OP_B, owner: 'people' },
+      { operationId: OP_B, owner: 'identity' },
+    ]);
+    expect(t.ready()).toEqual([]);
+    expect(t.waiting()).toEqual([waitingOn(OP_A, 'done', { blockedBy: [OP_B] })]);
+
+    fenceAll(t, OP_B, '106');
+    const released = t.ready();
+    expect(released.map((operation) => [operation.operationId, operation.operationIds, operation.rows])).toEqual([
+      [OP_A, [OP_A, OP_B], [i1A, i1B, personA, personB, i2A, i2B]],
+    ]);
+    expect(released[0]?.parts.map(checkpoint)).toEqual([
+      ['people', TENANT, [personA, personB], cursorOf(personB), '110', true],
+      ['identity', TENANT, [i1A, i1B, i2A, i2B], cursorOf(i2B), '110', true],
+    ]);
+    expect(t.waiting()).toEqual([]);
+
+    for (const id of released[0]?.operationIds ?? []) t.release(id);
+    expect(t.ready()).toEqual([]);
+    expect(t.fencesNeeded()).toEqual([]);
+  });
+
+  it.each<[string, Record<string, OperationStatus>, Record<string, OperationStatus>]>([
+    ['rolled back before the scan', { [OP_A]: 'done', [OP_B]: 'rolled-back' }, {}],
+    ['rolled back after the scan', { [OP_A]: 'done', [OP_B]: 'open' }, { [OP_B]: 'rolled-back' }],
+  ])('leaves the rows of an operation %s out of a release spanning them', (_label, reports, later) => {
+    const t = tracker();
+    const i1 = change(100, 1, OP_A, ACCOUNT);
+    const rolledBack = change(101, 2, OP_B, ACCOUNT);
+    const i2 = change(103, 3, OP_A, ACCOUNT);
+    const person = change(102, 1, OP_A);
+    read(t, 'people', TENANT, page([person], 105), CURSOR_START, reports);
+    read(t, 'identity', TENANT, page([i1, rolledBack, i2], 105), CURSOR_START, reports);
+    t.noteStatuses(later);
+    fenceAll(t, OP_A, '104');
+    expect(t.fencesNeeded()).toEqual([]);
+    const released = t.ready();
+    expect(released.map((operation) => [operation.operationIds, operation.rows])).toEqual([[[OP_A], [i1, person, i2]]]);
+    expect(released[0]?.parts.map(checkpoint)).toEqual([
+      ['people', TENANT, [person], cursorOf(person), '105', true],
+      ['identity', TENANT, [i1, i2], cursorOf(i2), '105', true],
+    ]);
+    expect(t.rolledBack()).toEqual([]);
+  });
+
+  it('waits behind a stream parked at a rolled-back operation until the projector passes over it', () => {
+    const t = tracker();
+    const rolledBack = change(100, 1, OP_B, ACCOUNT);
+    const person = change(101, 1, OP_A);
+    const account = change(102, 2, OP_A, ACCOUNT);
+    const reports: Record<string, OperationStatus> = { [OP_A]: 'done', [OP_B]: 'open' };
+    read(t, 'people', TENANT, page([person], 104), CURSOR_START, reports);
+    read(t, 'identity', TENANT, page([rolledBack, account], 104), CURSOR_START, reports);
+    t.noteStatus(OP_B, 'rolled-back');
+    fenceAll(t, OP_A, '103');
+    expect(t.ready()).toEqual([]);
+    expect(t.waiting()).toEqual([waitingOn(OP_A, 'done', { missing: ['identity'], unproven: ['identity'], blockedBy: [OP_B] })]);
+    expect(t.rolledBack().map((operation) => [operation.operationId, operation.operationIds, operation.rows])).toEqual([
+      [OP_B, [OP_B], [rolledBack]],
+    ]);
+
+    t.release(OP_B);
+    read(t, 'identity', TENANT, page([account], 104, true, cursorOf(rolledBack)), cursorOf(rolledBack), { [OP_A]: 'done' });
+    expect(t.ready().map((operation) => [operation.operationIds, operation.rows])).toEqual([[[OP_A], [person, account]]]);
+  });
+
+  it('releases a closure once per call, leaving a closure sharing its stream until that stream is read again', () => {
+    const t = tracker();
+    const accountA = change(100, 1, OP_A, ACCOUNT);
+    const personB = change(101, 1, OP_B);
+    const accountB = change(103, 2, OP_B, ACCOUNT);
+    const reports: Record<string, OperationStatus> = { [OP_A]: 'done', [OP_B]: 'done' };
+    read(t, 'identity', TENANT, page([accountA, accountB], 104), CURSOR_START, reports);
+    read(t, 'people', TENANT, page([personB], 104), CURSOR_START, reports);
+    fenceAll(t, OP_A, '103');
+    fenceAll(t, OP_B, '103');
+    const released = t.ready();
+    expect(released.map((operation) => [operation.operationIds, operation.rows])).toEqual([[[OP_A], [accountA]]]);
+    expect(released[0]?.parts.map(checkpoint)).toEqual([['identity', TENANT, [accountA], cursorOf(accountA), '103', true]]);
+    expect(t.waiting()).toEqual([waitingOn(OP_B, 'done', { missing: ['identity'], unproven: ['identity'], blockedBy: [OP_A] })]);
+
+    t.release(OP_A);
+    read(t, 'identity', TENANT, page([accountB], 104, true, cursorOf(accountA)), cursorOf(accountA), reports);
+    expect(t.ready().map((operation) => [operation.operationIds, operation.rows])).toEqual([[[OP_B], [personB, accountB]]]);
+  });
+
+  it('waits for the park of a stream whose first held operation only a read-ahead scan reached, then releases both', () => {
+    const t = personOnly();
+    const accountB = change(120, 8, OP_B, ACCOUNT);
+    const accountA = change(130, 9, OP_A, ACCOUNT);
+    const view = page([accountB, accountA], 200);
+    t.noteStatuses({ [OP_B]: 'done' });
+    t.noteScan('identity', TENANT, CURSOR_START, view, classifier(t));
+    t.noteFence(OP_A, 'identity', '150');
+    t.noteFence(OP_B, 'people', '101');
+    t.noteFence(OP_B, 'identity', '150');
+    expect(t.fencesNeeded()).toEqual([]);
+    expect(t.ready()).toEqual([]);
+    expect(t.waiting()).toEqual([waitingOn(OP_A, 'done', { missing: ['identity'], unproven: ['identity'], blockedBy: [OP_B] })]);
+
+    read(t, 'identity', TENANT, view, CURSOR_START);
+    const released = t.ready();
+    expect(released.map((operation) => [operation.operationIds, operation.rows])).toEqual([
+      [[OP_A, OP_B], [...PERSON_A, accountB, accountA]],
+    ]);
+    expect(released[0]?.parts.map(checkpoint)).toEqual([
+      ['people', TENANT, PERSON_A, cursor(100n, 2n), '101', true],
+      ['identity', TENANT, [accountB, accountA], cursorOf(accountA), '200', true],
+    ]);
   });
 });
 
 describe('OperationTracker absence proofs', () => {
-  it('asks for a fence of the partless participant of a person-only edit', () => {
-    const t = personOnly();
-    expect(t.fencesNeeded()).toEqual([{ operationId: OP_A, owner: 'identity' }]);
-    expect(t.waiting()).toEqual([{ operationId: OP_A, status: 'done', missing: ['identity'], incomplete: [], unproven: ['identity'] }]);
+  it('asks for a fence of every participant of a person-only edit, with or without a part', () => {
+    const t = tracker();
+    read(t, 'people', TENANT, page(PERSON_ROWS, 102), CURSOR_START, { [OP_A]: 'done' });
+    expect(t.fencesNeeded()).toEqual([
+      { operationId: OP_A, owner: 'people' },
+      { operationId: OP_A, owner: 'identity' },
+    ]);
+    expect(t.waiting()).toEqual([waitingOn(OP_A, 'done', { missing: ['identity'], incomplete: ['people'], unproven: ['identity'] })]);
+    t.noteFence(OP_A, 'people', '101');
     t.noteFence(OP_A, 'identity', '150');
     expect(t.fencesNeeded()).toEqual([]);
-    expect(t.waiting()).toEqual([{ operationId: OP_A, status: 'done', missing: ['identity'], incomplete: [], unproven: ['identity'] }]);
+    expect(t.waiting()).toEqual([waitingOn(OP_A, 'done', { missing: ['identity'], unproven: ['identity'] })]);
   });
 
   it.each<[string, string | undefined, Array<[string, Page]>, boolean]>([
@@ -455,10 +710,13 @@ describe('OperationTracker absence proofs', () => {
     read(t, 'people', TENANT, page(PERSON_ROWS, 102), CURSOR_START, { [OP_A]: 'done' });
     read(t, 'identity', TENANT, page([], 200), CURSOR_START);
     expect(t.ready()).toEqual([]);
-    expect(t.fencesNeeded()).toEqual([{ operationId: OP_A, owner: 'identity' }]);
+    expect(t.fencesNeeded()).toEqual([
+      { operationId: OP_A, owner: 'people' },
+      { operationId: OP_A, owner: 'identity' },
+    ]);
   });
 
-  it.each<OperationStatus>(['open', 'rolled-back'])('drops the fence when a later report raises the status to %s', (raised) => {
+  it.each<OperationStatus>(['open', 'rolled-back'])('drops the fences when a later report raises the status to %s', (raised) => {
     const t = personOnly();
     t.noteFence(OP_A, 'identity', '150');
     read(t, 'identity', TENANT, page([], 200), CURSOR_START);
@@ -469,7 +727,10 @@ describe('OperationTracker absence proofs', () => {
     read(t, 'people', TENANT, page(PERSON_ROWS, 102), CURSOR_START, { [OP_A]: 'done' });
     read(t, 'identity', TENANT, page([], 200), CURSOR_START);
     expect(t.ready()).toEqual([]);
-    expect(t.fencesNeeded()).toEqual([{ operationId: OP_A, owner: 'identity' }]);
+    expect(t.fencesNeeded()).toEqual([
+      { operationId: OP_A, owner: 'people' },
+      { operationId: OP_A, owner: 'identity' },
+    ]);
   });
 
   it('keeps fences across clear() but forgets scans', () => {
@@ -483,7 +744,7 @@ describe('OperationTracker absence proofs', () => {
     read(t, 'people', TENANT, page(PERSON_ROWS, 102), CURSOR_START, { [OP_A]: 'done' });
     expect(t.fencesNeeded()).toEqual([]);
     expect(t.ready()).toEqual([]);
-    expect(t.waiting()).toEqual([{ operationId: OP_A, status: 'done', missing: ['identity'], incomplete: [], unproven: ['identity'] }]);
+    expect(t.waiting()).toEqual([waitingOn(OP_A, 'done', { missing: ['identity'], unproven: ['identity'] })]);
     read(t, 'identity', TENANT, page([], 210), CURSOR_START);
     expect(readyIds(t)).toEqual([OP_A]);
   });
@@ -498,7 +759,10 @@ describe('OperationTracker absence proofs', () => {
     expect(t.waiting()).toEqual([]);
     expect(t.statusOf(OP_A)).toBe('done');
     read(t, 'people', TENANT, page(PERSON_ROWS, 102), CURSOR_START, { [OP_A]: 'done' });
-    expect(t.fencesNeeded()).toEqual([{ operationId: OP_A, owner: 'identity' }]);
+    expect(t.fencesNeeded()).toEqual([
+      { operationId: OP_A, owner: 'people' },
+      { operationId: OP_A, owner: 'identity' },
+    ]);
     expect(t.ready()).toEqual([]);
   });
 
@@ -542,7 +806,7 @@ describe('OperationTracker absence proofs', () => {
     expect(t.ready().map((operation) => operation.rows)).toEqual([[...PERSON_A, elsewhere]]);
   });
 
-  it('extends a contiguous scan, keeping its holds, and restarts a scan read from elsewhere', () => {
+  it('extends a contiguous scan, keeping its held rows, and restarts a scan read from elsewhere', () => {
     const t = personOnly();
     t.noteFence(OP_A, 'identity', '150');
     const blocked = page([change(120, 8, OP_B, ACCOUNT), change(130, 9, OP_A, ACCOUNT)], 140, false);
@@ -565,11 +829,13 @@ describe('OperationTracker absence proofs', () => {
     read(t, 'people', TENANT, peopleHead, CURSOR_START, { [OP_A]: 'done' });
     read(t, 'identity', TENANT, identityHead, CURSOR_START, { [OP_B]: 'done' });
     expect(t.fencesNeeded()).toEqual([
+      { operationId: OP_A, owner: 'people' },
       { operationId: OP_A, owner: 'identity' },
       { operationId: OP_B, owner: 'people' },
+      { operationId: OP_B, owner: 'identity' },
     ]);
-    t.noteFence(OP_A, 'identity', '106');
-    t.noteFence(OP_B, 'people', '106');
+    fenceAll(t, OP_A, '106');
+    fenceAll(t, OP_B, '106');
     expect(t.ready()).toEqual([]);
     expect(t.waiting().map((operation) => [operation.operationId, operation.unproven])).toEqual([
       [OP_A, ['identity']],

@@ -5,7 +5,7 @@ import { untilAborted } from '../auth/deadline.js';
 import { INVOCATION_HEADER, type InvocationMinter } from '../auth/index.js';
 import { LegacyServiceUnavailableError } from '../legacy-compat/index.js';
 import { injectHttpHeaders } from '../tracing/index.js';
-import { currentRequestContext } from './context.js';
+import { currentRequestContext, REQUEST_ID_HEADER } from './context.js';
 
 /** Upper bound of one service call, from credential acquisition to the last body byte. */
 export const SERVICE_CALL_TIMEOUT_MS = 10_000;
@@ -138,7 +138,8 @@ function mediaType(contentType: string | string[] | undefined): string {
   return (value?.split(';')[0] ?? '').trim().toLowerCase();
 }
 
-function decodeBody(raw: Buffer, contentType: string | string[] | undefined, callee: string): unknown {
+/** Decodes a body as the client does: JSON parsed (undefined when empty), `text/*` as UTF-8, else the bytes. */
+export function decodeServiceBody(raw: Buffer, contentType: string | string[] | undefined, callee: string): unknown {
   const type = mediaType(contentType);
   if (type === 'application/json' || type.endsWith('+json')) {
     if (raw.length === 0) return undefined;
@@ -151,7 +152,7 @@ function decodeBody(raw: Buffer, contentType: string | string[] | undefined, cal
   return type.startsWith('text/') ? raw.toString('utf8') : raw;
 }
 
-/** Creates the service-to-service client: user token in `Authorization`, invocation credential, trace context. */
+/** Creates the service-to-service client: user token in `Authorization`, invocation credential, request id, trace context. */
 export function createServiceClient(options: ServiceClientOptions): ServiceClient {
   const timeoutMs = options.timeoutMs ?? SERVICE_CALL_TIMEOUT_MS;
   const ownsDispatcher = options.dispatcher === undefined;
@@ -165,6 +166,9 @@ export function createServiceClient(options: ServiceClientOptions): ServiceClien
     appendAll(url.searchParams, req.query ?? {});
 
     const headers = lowerCased(req.headers ?? {});
+    // A caller's own request id wins; outside a request none is sent, so the callee establishes one.
+    const requestId = currentRequestContext()?.requestId;
+    if (headers[REQUEST_ID_HEADER] === undefined && requestId !== undefined) headers[REQUEST_ID_HEADER] = requestId;
     const body = encodeBody(req, headers);
     const userToken = req.userToken === undefined ? currentRequestContext()?.userToken : req.userToken;
     if (typeof userToken === 'string') headers.authorization = `Bearer ${userToken}`;
@@ -212,7 +216,7 @@ export function createServiceClient(options: ServiceClientOptions): ServiceClien
       if (value !== undefined) responseHeaders[name.toLowerCase()] = value;
     }
     const callee = `Service ${req.service} (called by ${options.self})`;
-    const decoded = req.rawBody === true ? raw : decodeBody(raw, responseHeaders['content-type'], callee);
+    const decoded = req.rawBody === true ? raw : decodeServiceBody(raw, responseHeaders['content-type'], callee);
     return { status: response.statusCode, headers: responseHeaders, body: decoded as T };
   }
 

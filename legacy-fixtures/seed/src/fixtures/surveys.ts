@@ -1,6 +1,7 @@
 // SYNTHETIC: seed - no Masa equivalent; legacy oracle in legacy-fixtures/
 import { sha256Hex } from '../bytes.js';
 import { SITE_ORDER, type SiteKey } from '../config.js';
+import { printable } from '../errors.js';
 import { FIXTURE_TABLE_SPECS, fixtureKey, type FixtureContext, type FixtureRow, type FixtureTables } from '../fixture-tables.js';
 import { cfUuidFrom } from '../ids.js';
 import type { SeedRandom } from '../random.js';
@@ -131,7 +132,7 @@ function buildSurveys(
 ): SurveyPlan[] {
   const { counts } = ctx.config.sites[siteID];
   const creators = ctx.index.actors(siteID, MANAGER_ROLE);
-  if (creators.length === 0) throw new RangeError(`Site ${siteID} has no ${MANAGER_ROLE} to create its surveys`);
+  if (creators.length === 0) throw printable(new RangeError(`Site ${siteID} has no ${MANAGER_ROLE} to create its surveys`));
   const ownGroups = groupNames(ctx, siteID);
   const partnerGroups = partner === null ? [] : groupNames(ctx, partner);
   const { historyDays } = ctx.config;
@@ -243,10 +244,10 @@ function buildResponses(
   const { counts } = ctx.config.sites[siteID];
   const own = counts.surveyResponses - counts.multiSiteResponses;
   if (own < 0) {
-    throw new RangeError(`Site ${siteID}: multiSiteResponses ${counts.multiSiteResponses} exceeds surveyResponses ${counts.surveyResponses}`);
+    throw printable(new RangeError(`Site ${siteID}: multiSiteResponses ${counts.multiSiteResponses} exceeds surveyResponses ${counts.surveyResponses}`));
   }
   if (counts.multiSiteResponses > 0 && partner === null) {
-    throw new RangeError(`Site ${siteID} has multi-site responses but no other site to answer from`);
+    throw printable(new RangeError(`Site ${siteID} has multi-site responses but no other site to answer from`));
   }
   const responding = plans.filter((plan): plan is LaunchedPlan => plan.launched !== null);
   const pools: ResponsePool[] = [{ siteID, users: respondents(ctx, siteID), perSurvey: allocate(rng, responding, own) }];

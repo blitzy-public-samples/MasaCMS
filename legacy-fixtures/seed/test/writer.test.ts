@@ -207,4 +207,29 @@ describe('readDataset', () => {
       new Error(`dataset digest mismatch in ${file}: recorded ${small.digest}, computed ${computed}`),
     );
   });
+
+  it.each<[string, () => string, ErrorConstructor, (file: string) => string]>([
+    ['JSON the parser would quote', () => '{"masa":{"users":[{"fname":Zelda,"email":"zelda.sentinel@example.com"}]}}', SyntaxError, (file) => `${file} is not valid JSON`],
+    [
+      'JSON broken beside a row',
+      () => '{"masa":{"users":[{"fname":"Zelda Sentinel","email":"zelda.sentinel@example.com"} x',
+      SyntaxError,
+      (file) => `${file} is not valid JSON at line 1 column 83`,
+    ],
+    ['JSON null', () => 'null', TypeError, (file) => `${file} does not hold a dataset`],
+    ['an object without the dataset keys', () => '{"users":[{"email":"zelda.sentinel@example.com"}]}', TypeError, (file) => `${file} does not hold a dataset`],
+    [
+      'a digest field that is not a digest',
+      () => JSON.stringify({ ...truncated(1), digest: 'zelda.sentinel@example.com' }),
+      Error,
+      (file) => `dataset digest mismatch in ${file}: recorded a value that is not a digest, computed ${truncated(1).digest}`,
+    ],
+  ])('throws naming the file, never its text, for %s', async (_label, text, type, message) => {
+    const dir = await freshDir('unreadable');
+    const file = join(dir, 'dataset.json');
+    await writeFile(file, text());
+    const error = await readDataset(dir).then(() => undefined, (err: unknown) => err);
+    expect(error).toBeInstanceOf(type);
+    expect([(error as Error).message, (error as Error).cause]).toEqual([message(file), undefined]);
+  });
 });

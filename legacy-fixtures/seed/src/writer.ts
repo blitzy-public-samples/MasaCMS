@@ -2,6 +2,7 @@
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { datasetDigest, type Dataset } from './dataset.js';
+import { parseJson, printable } from './errors.js';
 import type { FixtureTables } from './fixture-tables.js';
 import type { MasaData } from './masa.js';
 
@@ -36,6 +37,7 @@ const DATASET_FILE = 'dataset.json';
 const MANIFEST_FILE = 'manifest.json';
 const PART_FILE = /^dataset-\d{4}\.json$/;
 const MAX_PARTS = 9999;
+const DIGEST = /^[0-9a-f]{64}$/;
 
 // Mapped type: the compiler rejects a missing or extra MasaData key; literal order is MasaData order.
 const MASA_ORDER: { readonly [K in keyof MasaData]: null } = {
@@ -70,7 +72,7 @@ function compactJson(value: unknown): string {
 
 /** Writes `dataset.json`, one part file per `chunkRows` rows of each non-empty array, then `manifest.json`; returns the manifest. */
 export async function writeDataset(outDir: string, dataset: Dataset, chunkRows: number): Promise<Manifest> {
-  if (!Number.isInteger(chunkRows) || chunkRows < 1) throw new RangeError(`chunkRows must be a positive integer, got ${chunkRows}`);
+  if (!Number.isInteger(chunkRows) || chunkRows < 1) throw printable(new RangeError(`chunkRows must be a positive integer, got ${chunkRows}`));
   const { sourceSha, seed, businessDate, digest } = dataset;
   const counts: Record<string, number> = {};
   const parts: ManifestPart[] = [];
@@ -84,7 +86,7 @@ export async function writeDataset(outDir: string, dataset: Dataset, chunkRows: 
       bodies.push([file, { sourceSha, digest, array, offset, rows: slice }]);
     }
   }
-  if (parts.length > MAX_PARTS) throw new RangeError(`${parts.length} parts exceed ${MAX_PARTS}; raise chunkRows above ${chunkRows}`);
+  if (parts.length > MAX_PARTS) throw printable(new RangeError(`${parts.length} parts exceed ${MAX_PARTS}; raise chunkRows above ${chunkRows}`));
 
   await mkdir(outDir, { recursive: true });
   // Drop the previous manifest first so no reader pairs it with parts being rewritten.
@@ -99,13 +101,19 @@ export async function writeDataset(outDir: string, dataset: Dataset, chunkRows: 
   return manifest;
 }
 
-/** Reads `dataset.json` from `outDir`; throws when its recomputed digest differs from the recorded one. */
+/** Reads `dataset.json` from `outDir`; throws naming the file, never its content, when it is not JSON, not a dataset or not its recorded digest. */
 export async function readDataset(outDir: string): Promise<Dataset> {
   const file = join(outDir, DATASET_FILE);
-  const dataset = JSON.parse(await readFile(file, 'utf8')) as Dataset;
-  const computed = datasetDigest(dataset);
+  const dataset = parseJson(await readFile(file, 'utf8'), file) as Dataset;
+  let computed: string;
+  try {
+    computed = datasetDigest(dataset);
+  } catch {
+    throw printable(new TypeError(`${file} does not hold a dataset`));
+  }
   if (computed !== dataset.digest) {
-    throw new Error(`dataset digest mismatch in ${file}: recorded ${dataset.digest}, computed ${computed}`);
+    const recorded = typeof dataset.digest === 'string' && DIGEST.test(dataset.digest) ? dataset.digest : 'a value that is not a digest';
+    throw printable(new Error(`dataset digest mismatch in ${file}: recorded ${recorded}, computed ${computed}`));
   }
   return dataset;
 }

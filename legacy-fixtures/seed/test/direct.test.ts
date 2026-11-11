@@ -5,11 +5,12 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { decodeRow, type ApplyRequest, type ApplyResponse, type CanonicalValue } from '@opt2/platform/migration-kit';
+import { ServiceUnavailableError } from '@opt2/platform/service-kit';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { loadConfig, type SeedConfig } from '../src/config.js';
 import type { Dataset } from '../src/dataset.js';
-import { planDirectBatches, runDirect, type DirectClient, type DirectResult } from '../src/direct.js';
+import { directServices, planDirectBatches, runDirect, type DirectClient, type DirectResult } from '../src/direct.js';
 import { fixtureKeys, specForKey, type FixtureRow, type FixtureTables } from '../src/fixture-tables.js';
 import { run } from '../src/generate.js';
 import { stableId } from '../src/ids.js';
@@ -340,6 +341,24 @@ describe('batch ids', () => {
   });
 });
 
+describe('owners', () => {
+  it('lists the owner of each non-empty table once, in plan order', () => {
+    // synthetic.person_archive is left to the archive flow, so the seeded dataset gives people nothing to apply.
+    expect(directServices(dataset, config)).toEqual(SERVICES.filter((service) => service !== 'people'));
+    expect(directServices(dataset, config)).toEqual([...new Set(planDirectBatches(dataset, config).map(({ service }) => service))]);
+    const archived = { ...dataset.fixtures, 'synthetic.person_archive': [{ archive_id: stableId('owners', 1) }] };
+    expect(directServices({ ...dataset, fixtures: archived }, config)).toEqual(SERVICES);
+    const fixtures = only({
+      [AUDIT_KEY]: rowsOf(AUDIT_KEY),
+      'Program_2.finance_record_version': rowsOf('Program_2.finance_record_version'),
+      'Program_1.timesheet_day': rowsOf('Program_1.timesheet_day'),
+      'Program_2.timesheet_day': rowsOf('Program_2.timesheet_day'),
+    });
+    expect(directServices({ ...dataset, fixtures }, config)).toEqual(['timesheets', 'finance', 'e-signature']);
+    expect(directServices({ ...dataset, fixtures: only({}) }, config)).toEqual([]);
+  });
+});
+
 describe('audit chain', () => {
   it("chains each request's audit entries as usp_audit_append does", () => {
     const entries = sent.filter(({ body }) => body.legacyTable === AUDIT_KEY).flatMap(({ rows }) => rows);
@@ -371,7 +390,8 @@ describe('failures', () => {
     );
     expect(await run(directArgs(out), env, { client, log: quiet })).toBe(1);
     expect(requests).toHaveLength(1);
-    expect(stderr()).toMatch(/^seed: direct: \S+ \S+ site=\S+ chunk=0 batch=\S+ answered 500 \(server_error: stub failure\)\n$/);
+    expect(stderr()).toMatch(/^seed: direct: \S+ \S+ site=\S+ chunk=0 batch=\S+ answered 500 \(server_error\)\n$/);
+    expect(stderr()).not.toContain('stub failure');
   });
 
   it('exits 1 when --out holds no dataset', async () => {
@@ -412,6 +432,21 @@ describe('failures', () => {
       /synthetic\.message_template row template_id=\S+ does not match its DDL columns \(missing -; extra bogus\)/,
     ],
     [
+      'a row whose key and extra column are not identifiers',
+      () => only({ 'synthetic.message_template': [{ ...firstRow('synthetic.message_template'), template_id: 'Zelda Sentinel', 'zelda.sentinel@example.com': 'x' }] }),
+      /^direct: synthetic\.message_template row template_id=<string> does not match its DDL columns \(missing -; extra <name>\)$/,
+    ],
+    [
+      'a dataset table key that is not an identifier',
+      () => ({ ...dataset.fixtures, 'zelda.sentinel@example.com': [] }),
+      /^direct: dataset fixture tables differ from the configuration \(missing -; extra <name>\)$/,
+    ],
+    [
+      'a child row whose parent key is not an identifier',
+      () => only({ 'synthetic.survey_schedule': [{ ...firstRow('synthetic.survey_schedule'), survey_id: 'zelda.sentinel@example.com' }] }),
+      /^direct: synthetic\.survey_schedule row schedule_id="[0-9A-F-]{35}" has no resolvable site \(parent synthetic\.survey\.survey_id=<string>\)$/,
+    ],
+    [
       'a child row whose parent is absent',
       () => only({ 'synthetic.survey_schedule': [firstRow('synthetic.survey_schedule')] }),
       /synthetic\.survey_schedule row schedule_id=\S+ has no resolvable site \(parent synthetic\.survey\.survey_id=/,
@@ -432,16 +467,24 @@ describe('failures', () => {
     expect(requests).toHaveLength(0);
   });
 
-  it.each<[string, Answer, RegExp]>([
-    ['the client rejects', new Error('socket hang up'), / failed: socket hang up$/],
-    ['an owner answers a legacy error envelope', { status: 503, body: { error: { code: 'unavailable', message: 'gate closed' } } }, / answered 503 \(unavailable: gate closed\)$/],
-    ['an owner answers without an envelope', { status: 409, body: 'conflict' }, / answered 409$/],
-  ])('runDirect stops at the first batch when %s', async (_label, answer, message) => {
+  it.each<[string, Answer, RegExp, string]>([
+    ['the client rejects', new Error('socket hang up'), / failed: Error$/, 'socket hang up'],
+    [
+      'the owner is unreachable',
+      new ServiceUnavailableError('communications', Object.assign(new Error('connect refused by zelda.sentinel'), { code: 'ECONNREFUSED' })),
+      / failed: Service communications unavailable \(ECONNREFUSED\)$/,
+      'zelda',
+    ],
+    ['an owner answers a legacy error envelope', { status: 503, body: { error: { code: 'unavailable', message: 'gate closed' } } }, / answered 503 \(unavailable\)$/, 'gate closed'],
+    ['an envelope code is free text', { status: 500, body: { error: { code: 'row zelda.sentinel@example.com', message: 'x' } } }, / answered 500$/, 'zelda'],
+    ['an owner answers without an envelope', { status: 409, body: 'conflict' }, / answered 409$/, 'conflict'],
+  ])('runDirect stops at the first batch when %s, never quoting the answer', async (_label, answer, message, hidden) => {
     const { client, requests } = recordingClient(() => answer);
     const templates = rowsOf('synthetic.message_template');
     const pending = runDirect({ ...dataset, fixtures: only({ 'synthetic.message_template': templates }) }, { client, config, log: quiet });
     await expect(pending).rejects.toThrow(/^direct: communications synthetic\.message_template site=\S+ chunk=0 batch=\S+/);
     await expect(pending).rejects.toThrow(message);
+    await expect(pending).rejects.not.toThrow(hidden);
     expect(requests).toHaveLength(1);
   });
 });

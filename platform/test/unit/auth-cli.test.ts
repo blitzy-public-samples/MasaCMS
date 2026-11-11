@@ -126,14 +126,16 @@ afterEach(async () => {
 });
 
 describe('main', () => {
-  it.each([{ argv: ['--help'] }, { argv: ['matrix', '--app', 'app.mjs', '--help'] }])(
+  it.each([{ argv: ['--help'] }, { argv: ['-h'] }, { argv: ['matrix', '--app', 'app.mjs', '--help'] }])(
     'prints the help on stdout and exits 0 for $argv',
     async ({ argv }) => {
       expect(await main(argv)).toBe(0);
       expect(stdout.startsWith(`${USAGE}\n\n`)).toBe(true);
-      for (const flag of ['--app <module>', '--export <name>', '--options <json>', '--out <file>']) {
+      for (const flag of ['--app <module>', '--export <name>', '--options <json>', '--out <file>', '-h, --help']) {
         expect(stdout).toContain(`\n  ${flag} `);
       }
+      expect(stdout).toMatch(/\nEnvironment:\n {2}opt2-auth reads no variable itself\./);
+      expect(stdout).toMatch(/\nExit codes: 0 [^\n]+, 1 [^\n]+, 2 [^\n]+\n$/);
       expect(stderr).toBe('');
     },
   );

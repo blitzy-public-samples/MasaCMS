@@ -91,6 +91,8 @@ paths:
       security:
         - userToken: []
           invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/FixtureTitleQuery'
       requestBody:
         $ref: '#/components/requestBodies/FixtureCreateSurveyCall'
       responses:
@@ -195,6 +197,9 @@ paths:
       security:
         - userToken: []
           invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/FixtureLaunchAtQuery'
+        - $ref: '#/components/parameters/FixtureRemindersQuery'
       requestBody:
         $ref: '#/components/requestBodies/FixtureScheduleCall'
       responses:
@@ -252,6 +257,8 @@ paths:
       security:
         - userToken: []
           invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/FixtureTargetsQuery'
       requestBody:
         $ref: '#/components/requestBodies/FixtureBulkTargetCall'
       responses:
@@ -363,6 +370,8 @@ paths:
       security:
         - userToken: []
           invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/FixtureAnswersQuery'
       requestBody:
         $ref: '#/components/requestBodies/FixtureResponseCall'
       responses:
@@ -459,6 +468,215 @@ paths:
           $ref: '#/components/responses/FixtureForbidden'
         '404':
           $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /legacy-fixtures/cfml/api.cfm/surveys/surveys/{id}/launch:
+    parameters:
+      - $ref: '#/components/parameters/FixtureSurveyId'
+      - $ref: '#/components/parameters/FixtureSiteId'
+        description: Legacy site id, also read from the body; empty means the session site, which a task run lacks, and an unknown site answers `invalidParameters`.
+      - $ref: '#/components/parameters/UseDataNamespace'
+      - $ref: '#/components/parameters/MethodOverride'
+      - $ref: '#/components/parameters/FixtureTaskToken'
+    get:
+      operationId: fixtureLaunchCallback
+      summary: Launch task callback; marks the survey LAUNCHED the first time and returns its row.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security: []
+      responses:
+        '200':
+          description: The survey row; a repeated call returns it unchanged.
+          headers:
+            Generator:
+              $ref: '#/components/headers/Generator'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FixtureEnvelope'
+                  - type: object
+                    properties:
+                      method:
+                        type: string
+                        const: surveys.surveys.launch
+                      data:
+                        $ref: '#/components/schemas/FixtureSurvey'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+          description: The platform's refusal of a presented invalid credential.
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+          description: The task token is absent or does not match, or the survey is not scheduled in the site.
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: fixtureLaunchCallbackPost
+      summary: Launch task callback by POST; answers as GET does.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/FixtureLaunchCallbackCall'
+      responses:
+        '200':
+          description: The survey row; a repeated call returns it unchanged.
+          headers:
+            Generator:
+              $ref: '#/components/headers/Generator'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FixtureEnvelope'
+                  - type: object
+                    properties:
+                      method:
+                        type: string
+                        const: surveys.surveys.launch
+                      data:
+                        $ref: '#/components/schemas/FixtureSurvey'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+          description: The platform's refusal of a presented invalid credential.
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+          description: The task token is absent or does not match, or the survey is not scheduled in the site.
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /legacy-fixtures/cfml/api.cfm/surveys/surveys/{id}/remind:
+    parameters:
+      - $ref: '#/components/parameters/FixtureSurveyId'
+      - $ref: '#/components/parameters/FixtureSiteId'
+        description: Legacy site id, also read from the body; empty means the session site, which a task run lacks, and an unknown site answers `invalidParameters`.
+      - $ref: '#/components/parameters/UseDataNamespace'
+      - $ref: '#/components/parameters/MethodOverride'
+      - $ref: '#/components/parameters/FixtureTaskToken'
+      - $ref: '#/components/parameters/FixtureReminderQuery'
+    get:
+      operationId: fixtureRemindCallback
+      summary: Reminder task callback; stamps the reminder's `sent_at` the first time and returns its row.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security: []
+      responses:
+        '200':
+          description: The reminder row; a repeated call returns it unchanged.
+          headers:
+            Generator:
+              $ref: '#/components/headers/Generator'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FixtureEnvelope'
+                  - type: object
+                    properties:
+                      method:
+                        type: string
+                        const: surveys.surveys.remind
+                      data:
+                        $ref: '#/components/schemas/FixtureSurveyReminder'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+          description: 'Fixture 400 `invalidParameters` for an unknown site or, after the token check, an invalid `reminder`.'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+          description: The platform's refusal of a presented invalid credential.
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+          description: The task token is absent or does not match, or the survey is not scheduled in the site.
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+          description: The survey has no reminder of that ordinal.
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: fixtureRemindCallbackPost
+      summary: Reminder task callback by POST; answers as GET does.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/FixtureRemindCallbackCall'
+      responses:
+        '200':
+          description: The reminder row; a repeated call returns it unchanged.
+          headers:
+            Generator:
+              $ref: '#/components/headers/Generator'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FixtureEnvelope'
+                  - type: object
+                    properties:
+                      method:
+                        type: string
+                        const: surveys.surveys.remind
+                      data:
+                        $ref: '#/components/schemas/FixtureSurveyReminder'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+          description: 'Fixture 400 `invalidParameters` for an unknown site or, after the token check, an invalid `reminder`.'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+          description: The platform's refusal of a presented invalid credential.
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+          description: The task token is absent or does not match, or the survey is not scheduled in the site.
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+          description: The survey has no reminder of that ordinal.
         '500':
           $ref: '#/components/responses/FixtureServerError'
         '503':
@@ -1321,6 +1539,9 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
           description: A presented credential is invalid.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+          description: The verified user token's site differs from the supplied `siteid`.
 
 components:
   securitySchemes:
@@ -1428,9 +1649,10 @@ components:
       name: id
       in: path
       required: true
-      description: Survey id; an id outside the request site answers `notFound`.
+      description: Survey id, a CF UUID matched case-insensitively; any id outside the request site answers `notFound` (`forbidden` on the task callbacks).
       schema:
-        $ref: '#/components/schemas/CfUuid'
+        type: string
+        minLength: 1
     SurveyId:
       name: surveyId
       in: path
@@ -1446,6 +1668,59 @@ components:
       schema:
         type: integer
         minimum: 1
+    FixtureTaskToken:
+      name: opt2TaskToken
+      in: query
+      required: false
+      description: The schedule's task token, read from the query string only; absent or not matching answers `forbidden`.
+      schema:
+        type: string
+    FixtureReminderQuery:
+      name: reminder
+      in: query
+      required: false
+      description: Reminder ordinal, also read from the body, which wins; absent from both, or not an integer of at least 1, answers `invalidParameters`.
+      schema:
+        type: integer
+        minimum: 1
+    FixtureTitleQuery:
+      name: title
+      in: query
+      required: false
+      description: Survey title, also read from the body, which wins; absent from both, or blank, answers `invalidParameters`.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+    FixtureLaunchAtQuery:
+      name: launchAt
+      in: query
+      required: false
+      description: Launch time, also read from the body, which wins; absent from both, or invalid, answers `invalidParameters`.
+      schema:
+        $ref: '#/components/schemas/LocalSecondTimestamp'
+    FixtureRemindersQuery:
+      name: reminders
+      in: query
+      required: false
+      description: Reminders as JSON text, also read from the body, which wins; empty or absent schedules none.
+      schema:
+        type: string
+    FixtureTargetsQuery:
+      name: targets
+      in: query
+      required: false
+      description: Targets as JSON text, also read from the body, which wins; absent from both, or invalid, answers `invalidParameters`.
+      schema:
+        type: string
+    FixtureAnswersQuery:
+      name: answers
+      in: query
+      required: false
+      description: Answers text, also read from the body, which wins; absent from both, or empty, answers `invalidParameters`.
+      schema:
+        type: string
+        minLength: 1
     MigrationTenantId:
       name: tenantId
       in: query
@@ -1560,6 +1835,26 @@ components:
         application/x-www-form-urlencoded:
           schema:
             $ref: '#/components/schemas/FixtureSubmitResponseRequest'
+    FixtureLaunchCallbackCall:
+      required: false
+      description: Merged with the query string as the fixture merges url, form and a JSON body; later sources win.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/FixtureLaunchCallbackRequest'
+        application/x-www-form-urlencoded:
+          schema:
+            $ref: '#/components/schemas/FixtureLaunchCallbackRequest'
+    FixtureRemindCallbackCall:
+      required: false
+      description: Merged with the query string as the fixture merges url, form and a JSON body; later sources win.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/FixtureRemindCallbackRequest'
+        application/x-www-form-urlencoded:
+          schema:
+            $ref: '#/components/schemas/FixtureRemindCallbackRequest'
   responses:
     FixtureBadRequest:
       description: 'Fixture 400 `invalidParameters` (message `Invalid parameters`) for an unknown site or an invalid parameter.'
@@ -2241,29 +2536,26 @@ components:
           minimum: 0
     FixtureCreateSurveyRequest:
       type: object
-      description: Fields of a new survey; other parameters are ignored.
-      required:
-        - title
+      description: Fields of a new survey, each also accepted in the query string; other parameters are ignored.
       additionalProperties: true
       properties:
         siteid:
           $ref: '#/components/schemas/SiteId'
         title:
           type: string
-          description: Survey title; blank answers `invalidParameters`.
+          description: Survey title; absent from both the query and the body, or blank, answers `invalidParameters`.
           minLength: 1
           maxLength: 255
     FixtureScheduleRequest:
       type: object
-      description: Launch time and reminder offsets; other parameters are ignored.
-      required:
-        - launchAt
+      description: Launch time and reminder offsets, each also accepted in the query string; other parameters are ignored.
       additionalProperties: true
       properties:
         siteid:
           $ref: '#/components/schemas/SiteId'
         launchAt:
           $ref: '#/components/schemas/LocalSecondTimestamp'
+          description: Launch time; absent from both the query and the body, or invalid, answers `invalidParameters`.
         reminders:
           description: Reminders in ordinal order, as an array or its JSON text; empty or absent schedules none.
           oneOf:
@@ -2282,15 +2574,13 @@ components:
                       - string
     FixtureBulkTargetRequest:
       type: object
-      description: Targets passed to `usp_survey_bulk_target`; other parameters are ignored.
-      required:
-        - targets
+      description: Targets passed to `usp_survey_bulk_target`, also accepted in the query string; other parameters are ignored.
       additionalProperties: true
       properties:
         siteid:
           $ref: '#/components/schemas/SiteId'
         targets:
-          description: Targets as an array or its JSON text; each needs a non-empty `siteID`.
+          description: Targets as an array or its JSON text, each with a non-empty `siteID`; absent from both the query and the body answers `invalidParameters`.
           oneOf:
             - type: string
             - type: array
@@ -2311,17 +2601,34 @@ components:
                     maxLength: 255
     FixtureSubmitResponseRequest:
       type: object
-      description: A respondent's answers; other parameters are ignored.
-      required:
-        - answers
+      description: A respondent's answers, also accepted in the query string; other parameters are ignored.
       additionalProperties: true
       properties:
         siteid:
           $ref: '#/components/schemas/SiteId'
         answers:
           type: string
-          description: Answers text, stored as given.
+          description: Answers text, stored as given; absent from both the query and the body, or empty, answers `invalidParameters`.
           minLength: 1
+    FixtureLaunchCallbackRequest:
+      type: object
+      description: Body of a launch callback; a body `opt2TaskToken` and other parameters are ignored.
+      additionalProperties: true
+      properties:
+        siteid:
+          $ref: '#/components/schemas/SiteId'
+    FixtureRemindCallbackRequest:
+      type: object
+      description: Body of a reminder callback; a body `opt2TaskToken` and other parameters are ignored.
+      additionalProperties: true
+      properties:
+        siteid:
+          $ref: '#/components/schemas/SiteId'
+        reminder:
+          description: Reminder ordinal, overriding the query value; anything but an integer of at least 1 answers `invalidParameters`.
+          type:
+            - integer
+            - string
     Survey:
       type: object
       description: A survey of the site with its current schedule.

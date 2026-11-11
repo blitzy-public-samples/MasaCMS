@@ -193,12 +193,22 @@ describe('loadConfig failures', () => {
     await expect(loadConfig(fileURLToPath(new URL('../no-such-seed.config.json', import.meta.url)))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('propagates malformed JSON', async () => {
+  it.each<[string, () => string, ErrorConstructor, string]>([
+    ['malformed JSON', () => '{"seed": 20260601,', SyntaxError, 'is not valid JSON at line 1 column 19'],
+    [
+      'keys the schema rejects',
+      () => JSON.stringify({ ...raw, seed: 'abc', chunkRows: 0, seeds: 1 }),
+      Error,
+      'is not a valid seed configuration: seed: Invalid input: expected number, received string; chunkRows: Too small: expected number to be >0; (top level): Unrecognized key: "seeds"',
+    ],
+  ])('reports %s naming the file and any rejected key, never the text', async (_label, text, type, message) => {
     const dir = await mkdtemp(join(tmpdir(), 'seed-config-'));
     try {
       const path = join(dir, 'seed.config.json');
-      await writeFile(path, '{"seed": 20260601,');
-      await expect(loadConfig(path)).rejects.toBeInstanceOf(SyntaxError);
+      await writeFile(path, text());
+      const error = await loadConfig(path).then(() => undefined, (err: unknown) => err);
+      expect(error).toBeInstanceOf(type);
+      expect((error as Error).message).toBe(`${path} ${message}`);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -1,6 +1,7 @@
 // SYNTHETIC: seed - no Masa equivalent; legacy oracle in legacy-fixtures/
 import { pdfBytes, sha256Hex, toHex } from '../bytes.js';
 import { SITE_ORDER, type SiteKey } from '../config.js';
+import { printable } from '../errors.js';
 import { fixtureKeys, specForKey, type FixtureContext, type FixtureRow, type FixtureTables } from '../fixture-tables.js';
 import { cfUuidFrom } from '../ids.js';
 import type { SeedRandom } from '../random.js';
@@ -110,7 +111,7 @@ export function buildEsignatureFixtures(ctx: FixtureContext): FixtureTables {
     const count = ctx.config.sites[siteID].counts.signatureRequests;
     if (count === 0) continue;
     const signers = ctx.index.actors(siteID, SIGNER_ROLE);
-    if (signers.length === 0) throw new RangeError(`No ${SIGNER_ROLE} actor in site ${siteID}`);
+    if (signers.length === 0) throw printable(new RangeError(`No ${SIGNER_ROLE} actor in site ${siteID}`));
     const rng = ctx.random.fork(`${MODULE}/${siteID}`);
     const states = rng.shuffle(Array.from({ length: count }, (_, i) => i < signedCount(count)));
     const drafts = states

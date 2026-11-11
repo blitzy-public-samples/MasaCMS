@@ -27,6 +27,7 @@ export {
 } from './context.js';
 export {
   createServiceClient,
+  decodeServiceBody,
   SERVICE_CALL_TIMEOUT_MS,
   ServiceUnavailableError,
   UnknownServiceError,

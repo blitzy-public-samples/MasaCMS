@@ -236,11 +236,19 @@ export type InventoryRouteKind =
   | 'static'
   | 'soap';
 
-/** A route family, API entity or method, fixture or SOAP route; `routeKey` is null where no single key applies. */
+/** A route family, API entity or method, fixture or SOAP route; `routeKey` and `csrfValidation` are null where no key applies. */
 export interface InventoryRoute extends Omit<InventoryEntryPoint, 'routeKey'> {
   readonly routeKey: string | null;
   readonly kind: InventoryRouteKind;
   readonly family: RouteFamily;
+  readonly csrfValidation: CsrfValidation | null;
+  readonly csrfContext: string | null;
+}
+
+/** A public front-end entry point with the CSRF facts of its branch. */
+export interface InventoryFrontEndEntry extends InventoryEntryPoint {
+  readonly csrfValidation: CsrfValidation;
+  readonly csrfContext: string | null;
 }
 
 /** One step of a scheduled job, with its own write closure. */
@@ -285,7 +293,7 @@ export interface InventoryDoc {
   readonly sourceSha: string;
   readonly controllers: readonly InventoryController[];
   readonly routes: readonly InventoryRoute[];
-  readonly frontEnd: readonly InventoryEntryPoint[];
+  readonly frontEnd: readonly InventoryFrontEndEntry[];
   readonly scheduledJobs: readonly InventoryScheduledJob[];
   readonly tables: readonly InventoryTable[];
 }

@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { rlsSql, tenantIdForSite } from '../../src/tenancy/index.js';
+import { runCleanup } from '../../src/testing/cleanup.js';
 import {
   createThrowawaySchema,
   pgAvailable,
@@ -234,6 +235,17 @@ describe.skipIf(!available)('createThrowawaySchema lifecycle', () => {
     await handle.drop();
     expect(await residue(stemOf(handle))).toEqual([]);
     expect(() => handle.connect('app')).toThrow('has been dropped');
+  });
+
+  it('still drops the schema and roles through runCleanup when an earlier step rejects', async () => {
+    const handle = await createThrowawaySchema({ service: 'testing-schema' });
+    const closeFailure = new Error('close failed');
+
+    const failure = await runCleanup('lifecycle', [() => Promise.reject(closeFailure), () => handle.drop()]).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([closeFailure]);
+    expect(await residue(stemOf(handle))).toEqual([]);
   });
 
   it('gives concurrent calls distinct names within the identifier limit', async () => {

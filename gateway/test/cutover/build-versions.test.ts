@@ -271,8 +271,21 @@ function variant(routeKey: string, disposition: Disposition, owner: string | nul
 }
 
 function fixtureRoute(routeKey: string, owner: string, writes: InventoryWrite[] = []): InventoryRoute {
-  const { csrfValidation: _c, csrfContext: _x, responseMode: _r, contentType: _t, ...base } = variant(routeKey, 'carry', owner, writes);
-  return { ...base, kind: 'fixture', family: 'fixture' };
+  return {
+    id: `item:${routeKey}`,
+    source: SRC,
+    owningService: owner,
+    disposition: 'carry',
+    writeSet: writes,
+    conditionalWrites: [],
+    routeKey,
+    predicate: null,
+    sessionEffects: 'none',
+    csrfValidation: 'none',
+    csrfContext: null,
+    kind: 'fixture',
+    family: 'fixture',
+  };
 }
 
 function writer(table: string, fields: Partial<InventoryWriter>): InventoryTable {

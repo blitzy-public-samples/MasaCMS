@@ -19,6 +19,10 @@ topic with its original attributes and ordering key, then acks it. Prints one JS
   --max <n>              stop after n messages are replayed (default: 1000)
   --idle-seconds <n>     stop when no message arrived for n seconds (default: 10)
   --project <id>         Pub/Sub project (default: GOOGLE_CLOUD_PROJECT)
+  -h, --help             print this help
+Environment:
+  GOOGLE_CLOUD_PROJECT   Pub/Sub project when --project is not given
+  PUBSUB_EMULATOR_HOST   Pub/Sub emulator host:port, honoured by both clients; unset for Cloud Pub/Sub
 Exit codes: 0 done, 1 failed, 2 usage error.
 `;
 
@@ -86,7 +90,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 }
 
-/** Parses the subcommand and its options; `'help'` when `--help` is given. */
+/** Parses the subcommand and its options; `'help'` when `--help` or `-h` is given. */
 function parseCommand(argv: string[], env: NodeJS.ProcessEnv): ReplayOptions | 'help' {
   let parsed;
   try {
@@ -99,7 +103,7 @@ function parseCommand(argv: string[], env: NodeJS.ProcessEnv): ReplayOptions | '
         max: { type: 'string', default: String(DEFAULT_MAX) },
         'idle-seconds': { type: 'string', default: String(DEFAULT_IDLE_SECONDS) },
         project: { type: 'string' },
-        help: { type: 'boolean', default: false },
+        help: { type: 'boolean', short: 'h', default: false },
       },
     });
   } catch (err) {

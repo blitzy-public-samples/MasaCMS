@@ -61,6 +61,10 @@ paths:
       x-opt2-transport: service
       x-opt2-requires:
         - esignature.signer
+      parameters:
+        - $ref: '#/components/parameters/FixtureDocumentName'
+        - $ref: '#/components/parameters/FixtureDocumentBase64'
+        - $ref: '#/components/parameters/FixtureSignerUserId'
       requestBody:
         $ref: '#/components/requestBodies/CreateRequestForm'
       responses:
@@ -90,6 +94,8 @@ paths:
       x-opt2-transport: service
       x-opt2-requires:
         - esignature.signer
+      parameters:
+        - $ref: '#/components/parameters/FixtureTypedName'
       requestBody:
         $ref: '#/components/requestBodies/SignForm'
       responses:
@@ -182,6 +188,8 @@ paths:
       x-opt2-requires:
         - esignature.signer
         - esignature.auditor
+      parameters:
+        - $ref: '#/components/parameters/FixtureEntries'
       requestBody:
         $ref: '#/components/requestBodies/VerifySuppliedForm'
       responses:
@@ -776,6 +784,9 @@ paths:
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
           description: A presented credential is invalid.
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+          description: The verified user token's site differs from the supplied `siteid`.
 components:
   securitySchemes:
     userToken:
@@ -869,6 +880,50 @@ components:
       schema:
         type: string
         minLength: 1
+    FixtureDocumentName:
+      name: documentName
+      in: query
+      required: false
+      description: Document name, also read from the body, which wins.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+    FixtureDocumentBase64:
+      name: documentBase64
+      in: query
+      required: false
+      description: Base64 document bytes, also read from the body, which wins.
+      schema:
+        type: string
+        minLength: 1
+        contentEncoding: base64
+    FixtureSignerUserId:
+      name: signerUserId
+      in: query
+      required: false
+      description: Signer `UserID`, also read from the body, which wins.
+      schema:
+        type: string
+        minLength: 1
+    FixtureTypedName:
+      name: typedName
+      in: query
+      required: false
+      description: Typed name, also read from the body, which wins.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+        pattern: '\S'
+    FixtureEntries:
+      name: entries
+      in: query
+      required: false
+      description: Supplied chain copy as JSON text, also read from the body, which wins.
+      schema:
+        type: string
+        contentMediaType: application/json
     RequestId:
       name: id
       in: path
@@ -908,35 +963,35 @@ components:
         $ref: '#/components/schemas/DigitString'
   requestBodies:
     CreateRequestForm:
-      required: true
+      required: false
       description: Merged with the query string as legacy merges url, form and a JSON body; later sources win.
       content:
         application/x-www-form-urlencoded:
           schema:
-            $ref: '#/components/schemas/CreateRequestInput'
+            $ref: '#/components/schemas/FixtureCreateRequestInput'
         application/json:
           schema:
-            $ref: '#/components/schemas/CreateRequestInput'
+            $ref: '#/components/schemas/FixtureCreateRequestInput'
     SignForm:
-      required: true
+      required: false
       description: Merged with the query string as legacy merges url, form and a JSON body; later sources win.
       content:
         application/x-www-form-urlencoded:
           schema:
-            $ref: '#/components/schemas/SignInput'
+            $ref: '#/components/schemas/FixtureSignInput'
         application/json:
           schema:
-            $ref: '#/components/schemas/SignInput'
+            $ref: '#/components/schemas/FixtureSignInput'
     VerifySuppliedForm:
-      required: true
+      required: false
       description: Merged with the query string as legacy merges url, form and a JSON body; a form field carries `entries` as JSON text.
       content:
         application/x-www-form-urlencoded:
           schema:
-            $ref: '#/components/schemas/VerifySuppliedInput'
+            $ref: '#/components/schemas/FixtureVerifySuppliedInput'
         application/json:
           schema:
-            $ref: '#/components/schemas/VerifySuppliedInput'
+            $ref: '#/components/schemas/FixtureVerifySuppliedInput'
   responses:
     FixtureRequestList:
       description: One page of the site's requests.
@@ -1530,6 +1585,56 @@ components:
       type: object
       required:
         - entries
+      properties:
+        entries:
+          description: The chain copy in chain order, as an array or its JSON text; audit items POST back unchanged.
+          anyOf:
+            - type: array
+              items:
+                $ref: '#/components/schemas/SuppliedAuditEntry'
+            - type: string
+              contentMediaType: application/json
+        siteid:
+          type: string
+          minLength: 1
+          maxLength: 25
+    FixtureCreateRequestInput:
+      type: object
+      description: Fixture create fields, each also accepted in the query string; `documentName`, `documentBase64` or `signerUserId` absent from both answers `invalidParameters`.
+      properties:
+        documentName:
+          type: string
+          minLength: 1
+          maxLength: 255
+        documentBase64:
+          type: string
+          minLength: 1
+          contentEncoding: base64
+          description: The document bytes; they must decode to at least one byte.
+        signerUserId:
+          type: string
+          minLength: 1
+          description: '`UserID` of a user of the site''s public or private user pool; any other value answers 400.'
+        siteid:
+          type: string
+          minLength: 1
+          maxLength: 25
+    FixtureSignInput:
+      type: object
+      description: Fixture sign fields, each also accepted in the query string; `typedName` absent from both answers `invalidParameters`.
+      properties:
+        typedName:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '\S'
+        siteid:
+          type: string
+          minLength: 1
+          maxLength: 25
+    FixtureVerifySuppliedInput:
+      type: object
+      description: Fixture supplied-chain fields, each also accepted in the query string; `entries` absent from both answers `invalidParameters`.
       properties:
         entries:
           description: The chain copy in chain order, as an array or its JSON text; audit items POST back unchanged.

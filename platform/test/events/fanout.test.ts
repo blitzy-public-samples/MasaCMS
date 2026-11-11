@@ -34,6 +34,7 @@ import {
   pgAvailable,
   pubsubEmulatorAvailable,
   pushTo,
+  runCleanup,
   seedRegistry,
   testEnvelope,
   testVerifier,
@@ -212,11 +213,13 @@ describe('userPool fan-out against PostgreSQL and the Pub/Sub emulator', () => {
   });
 
   afterAll(async () => {
-    await app?.close();
-    await publisher?.close();
-    await subscription?.delete();
-    await topic?.delete();
-    await handle?.drop();
+    await runCleanup('fan-out suite', [
+      () => app?.close(),
+      () => publisher?.close(),
+      () => subscription?.delete(),
+      () => topic?.delete(),
+      () => handle?.drop(),
+    ]);
   });
 
   it('resolves user-pool fan-out tenants from the registry', async () => {

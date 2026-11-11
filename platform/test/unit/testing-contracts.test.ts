@@ -472,6 +472,22 @@ const cyclicProducer = {
   $defs: { a: { $ref: '#/$defs/b' }, b: { $ref: '#/$defs/a' } },
 };
 
+const arrayProducer = {
+  'x-opt2-kind': 'state',
+  type: 'object',
+  properties: {
+    ids: { type: 'array', items: { type: 'string', minLength: 1 } },
+    refIds: { type: 'array', items: { $ref: '#/$defs/id' } },
+    pooled: { allOf: [{ $ref: '#/$defs/idList' }, { items: { type: ['string', 'null'] } }] },
+    nested: { type: 'object', properties: { tags: { type: 'array', items: { type: 'string' } } } },
+    untyped: { type: 'array' },
+    anyItems: { type: 'array', items: {} },
+    mixed: { type: 'array', items: { type: ['string', 'number'] } },
+    either: { type: 'array', items: { anyOf: [{ type: 'string' }, { type: 'number' }] } },
+  },
+  $defs: { id: { type: 'string' }, idList: { type: 'array', items: { $ref: '#/$defs/id' } } },
+};
+
 const sample = { personId: 'P1', score: 3, address: { city: 'Springfield' } };
 
 describe('assertProducerConsumerCompatible', () => {
@@ -517,9 +533,35 @@ describe('assertProducerConsumerCompatible', () => {
     }
   });
 
-  it('reports an undeclared field once when it is both required and typed', () => {
+  const itemCases: { field: string; accepts: JsonType | JsonType[]; keyword?: string; message?: string }[] = [
+    { field: 'ids', accepts: 'string' },
+    { field: 'refIds', accepts: 'string' },
+    { field: 'pooled', accepts: 'string' },
+    { field: 'nested.tags', accepts: 'string' },
+    { field: 'mixed', accepts: ['number', 'string'] },
+    { field: 'refIds', accepts: 'number', keyword: 'type', message: 'is string but the consumer accepts number' },
+    { field: 'untyped', accepts: 'string', keyword: 'items', message: 'declares no items schema the consumer can rely on' },
+    { field: 'anyItems', accepts: 'string', keyword: 'type', message: 'declares no type the consumer can rely on' },
+    { field: 'either', accepts: 'string', keyword: 'type', message: 'declares no type the consumer can rely on' },
+    { field: 'mixed', accepts: 'string', keyword: 'type', message: 'is string|number but the consumer accepts string' },
+  ];
+
+  it.each(itemCases)('checks $field items as $accepts (violation: $keyword)', ({ field, accepts, keyword, message }) => {
+    const check = () => assertProducerConsumerCompatible(arrayProducer, { required: [], itemTypes: { [field]: accepts } });
+    if (keyword === undefined) {
+      expect(check).not.toThrow();
+    } else {
+      expect(caught(check).errors).toStrictEqual([{ instancePath: `/${field.split('.').join('/')}/items`, message, keyword }]);
+    }
+  });
+
+  it('reports an undeclared field once when it is required, typed and item-typed', () => {
     const error = caught(() =>
-      assertProducerConsumerCompatible(producerSchema, { required: ['missing'], types: { missing: 'string' } }),
+      assertProducerConsumerCompatible(producerSchema, {
+        required: ['missing'],
+        types: { missing: 'string' },
+        itemTypes: { missing: 'string' },
+      }),
     );
     expect(error.errors).toHaveLength(1);
   });

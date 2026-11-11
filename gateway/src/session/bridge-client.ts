@@ -7,7 +7,8 @@ export type { LegacyDescribe, LegacyDescribeUser, LegacyUsedToken } from './iden
 
 const SESSION_PAGE = '/gateway/legacy-bridge/cfml/session.cfm';
 const BRIDGE_SERVICE = 'legacy-bridge';
-const ASSERTION_TTL_SECONDS = 30;
+// The bridge refuses assertions expiring within 60 s of its JVM start, so a shorter TTL fails right after a legacy restart.
+const ASSERTION_TTL_SECONDS = 60;
 
 /** One legacy cookie: its value, or a jar entry carrying `value` and optionally the observed `name`. */
 export type LegacyCookieValue = string | { readonly name?: string; readonly value: string };

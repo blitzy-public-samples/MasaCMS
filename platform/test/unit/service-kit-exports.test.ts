@@ -53,7 +53,13 @@ const VALUE_EXPORTS = {
   ],
   './client.js': [
     client,
-    ['createServiceClient', 'SERVICE_CALL_TIMEOUT_MS', 'ServiceUnavailableError', 'UnknownServiceError'],
+    [
+      'createServiceClient',
+      'decodeServiceBody',
+      'SERVICE_CALL_TIMEOUT_MS',
+      'ServiceUnavailableError',
+      'UnknownServiceError',
+    ],
   ],
   './create-service.js': [
     createServiceModule,

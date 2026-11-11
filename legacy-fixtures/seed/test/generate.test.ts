@@ -1,15 +1,16 @@
 // SYNTHETIC: seed - no Masa equivalent; legacy oracle in legacy-fixtures/
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isCfUuid } from '@opt2/platform/legacy-compat';
 import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { loadConfig, roleGroupName, siteForProgram, SITE_ORDER, type SiteCounts, type SiteKey } from '../src/config.js';
 import { generateCredentials, type SeedCredentials } from '../src/credentials.js';
 import { datasetDigest, type Dataset } from '../src/dataset.js';
+import type { DirectClient } from '../src/direct.js';
 import { fixtureKeys, specForKey, type FixtureModule, type FixtureRow, type FixtureValue } from '../src/fixture-tables.js';
 import { run, type GenerateDeps } from '../src/generate.js';
 import { MASA_DEFAULT_MODULE_ID, MASA_HOME_CONTENT_ID } from '../src/ids.js';
@@ -89,7 +90,11 @@ const CLIENT_SECRET = /^[A-Za-z0-9_-]{43}$/;
 const TOKEN_RUN = /[A-Za-z0-9_-]{27,}/g;
 const SECRET_KEY = /"(password|clientsecret|secret)"\s*:/i;
 const URLS_ERROR = 'seed: --direct needs OPT2_SERVICE_URLS, a JSON object of service name to URL\n';
-const SERVICE_URLS = JSON.stringify({ people: 'http://127.0.0.1:9' });
+const URLS_INVALID = 'seed: OPT2_SERVICE_URLS is not a JSON object of service name to http(s) URL';
+const SERVICE_URL_MAP: Readonly<Record<string, string>> = Object.fromEntries(
+  ['people', 'timesheets', 'finance', 'surveys', 'reporting', 'communications', 'e-signature'].map((service) => [service, 'http://127.0.0.1:9']),
+);
+const SERVICE_URLS = JSON.stringify(SERVICE_URL_MAP);
 const EARLIEST_DAY = '1753-01-01';
 
 interface DdlColumn {
@@ -97,6 +102,12 @@ interface DdlColumn {
   type: string;
   size: string | undefined;
   nullable: boolean;
+}
+
+/** The parts of `seed.config.json` the CLI failure cases edit. */
+interface RawConfig {
+  businessDate: string;
+  sites: Record<'tenant-b', { counts: Record<string, number> }>;
 }
 
 interface Run {
@@ -800,10 +811,56 @@ describe('CLI', () => {
     expect([existsSync(state), existsSync(out)]).toEqual([false, false]);
   });
 
+  it.each([
+    ['--out beneath a symlink to the checkout', { target: REPO_ROOT, out: 'opt2-seed-link-out/seed', created: 'opt2-seed-link-out' }],
+    ['--out that is a symlink into the checkout', { target: join(REPO_ROOT, 'legacy-fixtures'), out: '', created: 'legacy-fixtures/manifest.json' }],
+    ['OPT2_STATE_DIR beneath a symlink to the checkout', { target: REPO_ROOT, state: '.opt2-seed-link-state', created: '.opt2-seed-link-state' }],
+    ['--out that is a dangling symlink into the checkout', { target: join(REPO_ROOT, 'opt2-seed-dangling'), out: '', created: 'opt2-seed-dangling' }],
+    ['--out beneath a relative dangling symlink into the checkout', { target: join(REPO_ROOT, 'opt2-seed-dangling'), relative: true, out: 'seed', created: 'opt2-seed-dangling' }],
+  ] as const)('refuses %s', async (_label, link) => {
+    const io = captureOutput();
+    const dir = await mkdtemp(join(root, 'linked-'));
+    const path = join(dir, 'link');
+    await symlink('relative' in link ? relative(dir, link.target) : link.target, path);
+    onTestFinished(() => rm(path));
+    const out = 'out' in link ? join(path, link.out) : join(dir, 'out');
+    const state = 'state' in link ? join(path, link.state) : join(dir, 'state');
+    expect(await run(['--out', out], { OPT2_STATE_DIR: state })).toBe(2);
+    expect(io.stderr()).toBe(`seed: ${'out' in link ? out : state} is inside the checkout ${REPO_ROOT}; choose a location outside it\n`);
+    expect(existsSync(join(REPO_ROOT, link.created))).toBe(false);
+    expect(await readdir(dir)).toEqual(['link']);
+  });
+
+  it.each([
+    ['a symlink to the dataset', () => first.out, '', /^seed: ENOENT: no such file or directory, open '[^']+token-signing-public\.pem'\n$/],
+    ['a symlink to the dataset parent', () => dirname(first.out), 'seed', /^seed: ENOENT: no such file or directory, open '[^']+token-signing-public\.pem'\n$/],
+    ['a dangling symlink', (path: string) => join(dirname(path), 'absent'), 'seed', /^seed: (?![^\n]*inside the checkout)[^\n]+\n$/],
+    ['a symlink loop', (path: string) => path, 'seed', /^seed: (?![^\n]*inside the checkout)[^\n]+\n$/],
+  ])('lets --direct --out through %s outside the checkout', async (_label, target, suffix, message) => {
+    const io = captureOutput();
+    const dir = await mkdtemp(join(root, 'linked-'));
+    const path = join(dir, 'link');
+    await symlink(target(path), path);
+    onTestFinished(() => rm(path));
+    const state = await mkdtemp(join(root, 'keyless-'));
+    expect(await run(['--direct', '--out', join(path, suffix)], { OPT2_STATE_DIR: state, OPT2_SERVICE_URLS: SERVICE_URLS })).toBe(1);
+    expect(io.stderr()).toMatch(message);
+  });
+
   it('defaults to <HOME>/.opt2/state, writing the dataset to seed/ and credentials to secrets/', () => {
     expect(first.code).toBe(0);
     expect(existsSync(join(root, 'home', '.opt2', 'state', 'seed', 'manifest.json'))).toBe(true);
     expect(existsSync(join(root, 'home', '.opt2', 'state', 'secrets', 'seed-credentials.json'))).toBe(true);
+  });
+
+  it('treats an empty OPT2_STATE_DIR as unset, defaulting to <HOME>/.opt2/state', async () => {
+    const io = captureOutput();
+    const home = await mkdtemp(join(root, 'empty-state-home-'));
+    const keyPath = join(home, '.opt2', 'state', 'secrets', 'token-signing-public.pem');
+    expect(await run(['--direct', '--out', first.out], { OPT2_STATE_DIR: '', HOME: home, OPT2_SERVICE_URLS: SERVICE_URLS })).toBe(1);
+    expect(io.stderr()).toBe(`seed: ENOENT: no such file or directory, open '${keyPath}'\n`);
+    expect(await readdir(home)).toEqual([]);
+    expect([existsSync(join(process.cwd(), 'seed')), existsSync(join(process.cwd(), 'secrets'))]).toEqual([false, false]);
   });
 
   it('reads --config and --pin and logs to stdout by default', async () => {
@@ -826,8 +883,17 @@ describe('CLI', () => {
 
   it.each([
     ['a missing config', { config: 'absent.json' }, /^seed: ENOENT: no such file or directory, open '[^']+absent\.json'\n$/],
-    ['a config that is not JSON', { config: 'bad.json', text: '{ seed' }, /^seed: [^\n]*JSON[^\n]*\n$/],
-    ['a config the schema rejects', { config: 'bad.json', patch: { chunkRows: 0 } }, /^seed: [^\n]*"chunkRows"[^\n]*\n$/],
+    ['a config that is not JSON', { config: 'bad.json', text: '{ seed' }, /^seed: [^\n]+bad\.json is not valid JSON at line 1 column 3 \(see --help\)\n$/],
+    [
+      'a config the schema rejects',
+      { config: 'bad.json', patch: { chunkRows: 0 } },
+      /^seed: [^\n]+bad\.json is not a valid seed configuration: chunkRows: Too small: expected number to be >0 \(see --help\)\n$/,
+    ],
+    [
+      'a config whose seed is text',
+      { config: 'bad.json', patch: { seed: 'abc' } },
+      /^seed: [^\n]+bad\.json is not a valid seed configuration: seed: Invalid input: expected number, received string \(see --help\)\n$/,
+    ],
     ['a missing pin', { pin: 'absent.json' }, /^seed: ENOENT: no such file or directory, open '[^']+absent\.json'\n$/],
     ['a pin without a lower-case SHA', { pin: 'pin.json', text: JSON.stringify({ sha: 'A'.repeat(40) }) }, /^seed: [^\n]+pin\.json has no sha of 40 lower-case hex characters\n$/],
   ] as const)('exits 1 on %s before writing', async (_label, input, message) => {
@@ -840,6 +906,54 @@ describe('CLI', () => {
     expect(await run([flag, path, '--out', join(dir, 'out')], { OPT2_STATE_DIR: join(dir, 'state') })).toBe(1);
     expect(io.stderr()).toMatch(message);
     expect([existsSync(join(dir, 'out')), existsSync(join(dir, 'state'))]).toEqual([false, false]);
+  });
+
+  it.each<[string, (raw: RawConfig) => void, RegExp]>([
+    ['too few groups for the role groups', (raw) => void (raw.sites['tenant-b'].counts.groups = 3), /^seed: Site tenant-b needs at least 10 groups for the role groups, got 3\n$/],
+    [
+      'more multi-site survey responses than responses',
+      (raw) => void (raw.sites['tenant-b'].counts.multiSiteResponses = 500),
+      /^seed: Site tenant-b: multiSiteResponses 500 exceeds surveyResponses 20\n$/,
+    ],
+    ['a history reaching before 1753', (raw) => void (raw.businessDate = '1753-01-02'), /^seed: generate failed \(RangeError\)\n$/],
+  ])('exits 1 naming the site and counts, or only the error class, on a config with %s', async (_label, edit, message) => {
+    const io = captureOutput();
+    const dir = await mkdtemp(join(root, 'unfillable-'));
+    const raw = await readJson<RawConfig>(CONFIG_PATH);
+    edit(raw);
+    const path = join(dir, 'seed.config.json');
+    await writeFile(path, JSON.stringify(raw));
+    expect(await run(['--config', path, '--out', join(dir, 'out')], { OPT2_STATE_DIR: join(dir, 'state') })).toBe(1);
+    expect(io.stderr()).toMatch(message);
+    expect([existsSync(join(dir, 'out')), existsSync(join(dir, 'state'))]).toEqual([false, false]);
+  });
+
+  it.each([
+    ['JSON the parser quotes', '{"masa":{"users":[{"fname":Zelda,"email":"zelda.sentinel@example.com"}]}}', true, /^seed: [^\n]+dataset\.json is not valid JSON\n$/],
+    [
+      'JSON broken beside a row',
+      '{"masa":{"users":[{"fname":"Zelda Sentinel","email":"zelda.sentinel@example.com"} x',
+      false,
+      /^seed: [^\n]+dataset\.json is not valid JSON at line 1 column 83\n$/,
+    ],
+    ['valid JSON that is not a dataset', '{"masa":{"users":[{"fname":"Zelda Sentinel","email":"zelda.sentinel@example.com"}]}}', false, /^seed: [^\n]+dataset\.json does not hold a dataset\n$/],
+  ])('keeps the rows of an unreadable dataset.json out of stdout and stderr: %s', async (_label, text, quoted, message) => {
+    const io = captureOutput();
+    const dir = await mkdtemp(join(root, 'unreadable-'));
+    await writeFile(join(dir, 'dataset.json'), text);
+    // V8's own message quotes the row here, so the case shows the CLI withholds it.
+    if (quoted) expect(() => JSON.parse(text) as unknown).toThrow(/Zelda/);
+    const requests: unknown[] = [];
+    const client: DirectClient = {
+      request: (req) => {
+        requests.push(req);
+        return Promise.reject(new Error('unexpected request'));
+      },
+    };
+    expect(await run(['--direct', '--out', dir], { OPT2_STATE_DIR: join(dir, 'state') }, { client })).toBe(1);
+    expect(io.stderr()).toMatch(message);
+    for (const sentinel of ['Zelda', 'zelda.sentinel', 'example.com']) expect(`${io.stdout()}${io.stderr()}`).not.toContain(sentinel);
+    expect(requests).toEqual([]);
   });
 
   it('runs as the entry module', async () => {
@@ -862,15 +976,37 @@ describe('CLI', () => {
 // Only run()'s own direct-mode environment checks live here; test/direct.test.ts covers the apply through an injected client.
 describe('CLI --direct without a client', () => {
   it.each([
-    ['unset', undefined],
-    ['not JSON', '{'],
-    ['not an object', JSON.stringify('http://127.0.0.1:9')],
-    ['not a map of URLs', JSON.stringify({ people: 'not a url' })],
-  ])('needs OPT2_SERVICE_URLS: %s', async (_label, urls) => {
+    ['unset', undefined, URLS_ERROR],
+    ['empty', '', URLS_ERROR],
+    ['blank', '  ', URLS_ERROR],
+    ['not JSON', '{', `${URLS_INVALID} (OPT2_SERVICE_URLS must be a JSON object)\n`],
+    ['not an object', JSON.stringify('http://127.0.0.1:9'), `${URLS_INVALID} (Invalid input: expected record, received string)\n`],
+    ['not a URL', JSON.stringify({ ...SERVICE_URL_MAP, people: 'not a url' }), `${URLS_INVALID} (people: Invalid URL)\n`],
+    ['an ftp:// URL', JSON.stringify({ ...SERVICE_URL_MAP, finance: 'ftp://127.0.0.1:9' }), `${URLS_INVALID} (finance: Invalid URL)\n`],
+    ['a key that is not a service name', JSON.stringify({ ...SERVICE_URL_MAP, Finance: 'http://127.0.0.1:9' }), `${URLS_INVALID} (Finance: Invalid key in record)\n`],
+    [
+      'several invalid entries, one keyed by its URL',
+      JSON.stringify({ surveys: 'mailto:ops@example.com', 'http://127.0.0.1:9': 'people' }),
+      `${URLS_INVALID} (surveys: Invalid URL; <name>: Invalid key in record)\n`,
+    ],
+  ])('needs OPT2_SERVICE_URLS: %s', async (_label, urls, message) => {
     const io = captureOutput();
-    const env: NodeJS.ProcessEnv = { OPT2_STATE_DIR: first.state, ...(urls === undefined ? {} : { OPT2_SERVICE_URLS: urls }) };
+    const state = await mkdtemp(join(root, 'urls-'));
+    const env: NodeJS.ProcessEnv = { OPT2_STATE_DIR: state, ...(urls === undefined ? {} : { OPT2_SERVICE_URLS: urls }) };
     expect(await run(['--direct', '--out', first.out], env)).toBe(2);
-    expect(io.stderr()).toBe(URLS_ERROR);
+    expect(io.stderr()).toBe(message);
+    expect([io.stdout(), await listing(state)]).toEqual(['', []]);
+  });
+
+  it.each([
+    ['an empty map', {}, 'timesheets, finance, surveys, reporting, communications, e-signature'],
+    ['a map missing one owner', Object.fromEntries(Object.entries(SERVICE_URL_MAP).filter(([service]) => service !== 'reporting')), 'reporting'],
+  ])('names each owner of a non-empty table that OPT2_SERVICE_URLS lacks, before reading the signing keys: %s', async (_label, urls, missing) => {
+    const io = captureOutput();
+    const state = await mkdtemp(join(root, 'unmapped-'));
+    expect(await run(['--direct', '--out', first.out], { OPT2_STATE_DIR: state, OPT2_SERVICE_URLS: JSON.stringify(urls) })).toBe(2);
+    expect(io.stderr()).toBe(`seed: OPT2_SERVICE_URLS has no URL for ${missing}\n`);
+    expect([io.stdout(), await listing(state)]).toEqual(['', []]);
   });
 
   it.each([

@@ -158,6 +158,7 @@ CREATE TABLE timesheets.timesheet (
   PRIMARY KEY (tenant_id, timesheet_id)
 );
 CREATE INDEX timesheet_person_idx ON timesheets.timesheet (tenant_id, person_id);
+CREATE INDEX timesheet_list_idx ON timesheets.timesheet (tenant_id, period_start, person_id COLLATE "C", timesheet_id COLLATE "C");
 ALTER TABLE timesheets.timesheet ENABLE ROW LEVEL SECURITY; ALTER TABLE timesheets.timesheet FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON timesheets.timesheet
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)

@@ -190,6 +190,15 @@ describe('reporting export file route', () => {
     assertContract(url, res);
   });
 
+  it('registers only GET on the file path and answers HEAD to a valid URL with the legacy 404', async () => {
+    const app = await fileRouteApp();
+    const methods = recordedRoutes(app).filter((route) => route.url.startsWith('/opt2/files/')).map((route) => route.method);
+    expect(methods).toEqual(['GET']);
+    const res = await app.inject({ method: 'HEAD', url: await storage.signedUrl(EXPORT_BUCKET, KEY_A) });
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request' } });
+  });
+
   it('answers the legacy 500 when the object cannot be read', async () => {
     const failing: LocalStorageAdapter = { ...storage, open: () => Promise.reject(new Error('disk failure')) };
     const app = await fileRouteApp(failing);

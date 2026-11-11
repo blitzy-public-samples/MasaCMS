@@ -62,6 +62,24 @@ vi.mock('../../src/service-kit/index.js', async (importOriginal) => ({
 }));
 
 const USAGE = 'usage: opt2-outbox replay --since <ISO-8601 timestamp> [--tenant <uuid>] [--schema <name>]';
+const SINCE_FORMAT = '--since must be an ISO-8601 timestamp with a date, time and zone, such as 2026-06-30T00:00:00Z';
+/** Every variable opt2-outbox reads, as its help lists them. */
+const REPLAY_VARIABLES = [
+  'OPT2_SERVICE_NAME',
+  'OPT2_ENV',
+  'TZ',
+  'OPT2_DB_AUTH',
+  'PG_DATABASE',
+  'PG_USER',
+  'PG_HOST',
+  'PG_PORT',
+  'PG_PASSWORD',
+  'CLOUD_SQL_INSTANCE',
+  'GOOGLE_CLOUD_PROJECT',
+  'PUBSUB_EMULATOR_HOST',
+];
+const ALL_UNSET: Record<string, undefined> = Object.fromEntries(Object.keys(baseEnvSchema.shape).map((key) => [key, undefined]));
+const IAM_INSTANCE = 'opt2-unit:europe-west2:main';
 const TENANT_A = tenantIdForSite('tenant-a');
 const TENANT_B = tenantIdForSite('tenant-b');
 const SINCE_ISO = '2026-06-01T09:30:00.000Z';
@@ -320,11 +338,40 @@ describe('opt2-outbox parseArgs', () => {
       expected: { since: SINCE, tenant: TENANT_A, schema: 'programs_sites' },
     },
     {
-      argv: ['--since=2026-06-01', 'replay', '--tenant', TENANT_B.toUpperCase()],
-      expected: { since: new Date('2026-06-01'), tenant: TENANT_B.toUpperCase() },
+      argv: ['--since=2026-06-01T00:00:00Z', 'replay', '--tenant', TENANT_B.toUpperCase()],
+      expected: { since: new Date(Date.UTC(2026, 5, 1)), tenant: TENANT_B.toUpperCase() },
     },
+    { argv: ['replay', '--since', '2026-06-30T12:00:00+05:30'], expected: { since: new Date(Date.UTC(2026, 5, 30, 6, 30)) } },
+    { argv: ['replay', '--since', '2026-06-30T23:30-04:00'], expected: { since: new Date(Date.UTC(2026, 6, 1, 3, 30)) } },
+    { argv: ['replay', '--since', '2026-06-30T12:00:00.25Z'], expected: { since: new Date(Date.UTC(2026, 5, 30, 12, 0, 0, 250)) } },
+    { argv: ['replay', '--since', '2028-02-29T23:59:59-00:00'], expected: { since: new Date(Date.UTC(2028, 1, 29, 23, 59, 59)) } },
   ])('parses $argv', ({ argv, expected }) => {
     expect(parseArgs(argv)).toStrictEqual(expected);
+  });
+
+  it.each([[['--help']], [['-h']], [['replay', '--since', 'soon', '-h']], [['sweep', '--help']]])(
+    'returns help for %j ahead of every other check',
+    (argv) => {
+      expect(parseArgs(argv)).toBe('help');
+    },
+  );
+
+  it.each([
+    'yesterday',
+    '1',
+    'March 7',
+    '2026-02-30',
+    '99999',
+    '2026-06-30 12:00',
+    '2026-06-01',
+    '2026-06-30T12:00:00',
+    '2026-02-30T00:00:00Z',
+    '2026-13-01T00:00:00Z',
+    '2026-06-30T24:00:00Z',
+    '2026-06-30T12:00:60Z',
+    '2026-06-30T12:00:00+24:00',
+  ])('rejects --since %j, which is not an ISO-8601 date-time with a zone that exists', (since) => {
+    expect(usageErrorOf(['replay', '--since', since]).message).toBe(`${SINCE_FORMAT}, got ${JSON.stringify(since)}`);
   });
 
   it.each([
@@ -335,7 +382,6 @@ describe('opt2-outbox parseArgs', () => {
     { argv: ['replay', '--since', SINCE_ISO, '--verbose'], message: /^Unknown option '--verbose'/ },
     { argv: ['replay', '--since'], message: /^Option '--since <value>' argument missing/ },
     { argv: ['replay'], message: /^missing --since$/ },
-    { argv: ['replay', '--since', 'yesterday'], message: /^--since must be an ISO-8601 timestamp, got "yesterday"$/ },
     {
       argv: ['replay', '--since', SINCE_ISO, '--tenant', 'tenant-a'],
       message: /^--tenant must be a tenant UUID, got "tenant-a"$/,
@@ -705,7 +751,7 @@ describe('opt2-outbox main', () => {
   it.each([
     { argv: [], message: 'missing subcommand' },
     { argv: ['replay'], message: 'missing --since' },
-    { argv: ['replay', '--since', 'soon'], message: '--since must be an ISO-8601 timestamp, got "soon"' },
+    { argv: ['replay', '--since', 'soon'], message: `${SINCE_FORMAT}, got "soon"` },
     { argv: ['replay', '--since', SINCE_ISO, '--tenant', 'default'], message: '--tenant must be a tenant UUID, got "default"' },
   ])('exits 2 with the usage line on stderr for $argv before reading the environment', async ({ argv, message }) => {
     stubEnv({ OPT2_SERVICE_NAME: undefined });
@@ -717,32 +763,115 @@ describe('opt2-outbox main', () => {
     expect(state.createPool).not.toHaveBeenCalled();
   });
 
-  it('exits 2 listing each missing base variable', async () => {
-    stubEnv(Object.fromEntries(Object.keys(baseEnvSchema.shape).map((key) => [key, undefined])));
+  it.each([[['--help']], [['-h']], [['replay', '--since', 'soon', '--help']]])(
+    'prints the help on stdout and exits 0 for %j without reading the environment',
+    async (argv) => {
+      stubEnv(ALL_UNSET);
+
+      expect(await main(argv)).toBe(0);
+
+      expect(stdout.startsWith(`${USAGE}\n\n`)).toBe(true);
+      for (const flag of ['--since <timestamp>', '--tenant <uuid>', '--schema <name>', '-h, --help']) {
+        expect(stdout).toContain(`\n  ${flag} `);
+      }
+      const environment = stdout.slice(stdout.indexOf('\nEnvironment:\n'));
+      for (const key of REPLAY_VARIABLES) expect(environment).toContain(`\n  ${key} `);
+      expect(environment).toMatch(/\nExit codes: 0 [^\n]+, 1 [^\n]+, 2 [^\n]+\n$/);
+      expect(stderr).toBe('');
+      expect(state.createPool).not.toHaveBeenCalled();
+      expect(state.createPublisher).not.toHaveBeenCalled();
+    },
+  );
+
+  const required = (keys: string[]) => keys.map((key) => `${key}: is required`);
+  const requiredWhen = (when: string, keys: string[]) => keys.map((key) => `${key}: is required when ${when}`);
+
+  it.each([
+    {
+      label: 'every variable is unset',
+      env: ALL_UNSET,
+      issues: required(['OPT2_SERVICE_NAME', 'OPT2_ENV', 'PG_DATABASE', 'OPT2_DB_AUTH', 'GOOGLE_CLOUD_PROJECT', 'TZ']),
+    },
+    {
+      label: 'only OPT2_DB_AUTH=password is set',
+      env: { ...ALL_UNSET, OPT2_DB_AUTH: 'password' },
+      issues: [
+        ...required(['OPT2_SERVICE_NAME', 'OPT2_ENV', 'PG_DATABASE', 'GOOGLE_CLOUD_PROJECT', 'TZ']),
+        ...requiredWhen('OPT2_DB_AUTH=password', ['PG_HOST', 'PG_PORT', 'PG_USER', 'PG_PASSWORD']),
+      ],
+    },
+    { label: 'OPT2_DB_AUTH is unset', env: { OPT2_DB_AUTH: undefined }, issues: required(['OPT2_DB_AUTH']) },
+    { label: 'GOOGLE_CLOUD_PROJECT is unset', env: { GOOGLE_CLOUD_PROJECT: undefined }, issues: required(['GOOGLE_CLOUD_PROJECT']) },
+    {
+      label: 'OPT2_DB_AUTH, PG_DATABASE and GOOGLE_CLOUD_PROJECT are unset',
+      env: { OPT2_DB_AUTH: undefined, PG_DATABASE: undefined, GOOGLE_CLOUD_PROJECT: undefined },
+      issues: required(['PG_DATABASE', 'OPT2_DB_AUTH', 'GOOGLE_CLOUD_PROJECT']),
+    },
+    {
+      label: 'OPT2_DB_AUTH is invalid, which leaves its rules unchecked',
+      env: { OPT2_DB_AUTH: 'Password', PG_HOST: undefined },
+      issues: ['OPT2_DB_AUTH: Invalid option: expected one of "password"|"iam"'],
+    },
+    {
+      label: 'OPT2_DB_AUTH=password runs in the cloud with the emulator',
+      env: { OPT2_ENV: 'cloud' },
+      issues: ['OPT2_ENV: must be local when OPT2_DB_AUTH=password', 'PUBSUB_EMULATOR_HOST: must be unset when OPT2_ENV=cloud'],
+    },
+    {
+      label: 'OPT2_DB_AUTH=iam runs locally with a password and no instance',
+      env: { OPT2_DB_AUTH: 'iam' },
+      issues: [
+        'CLOUD_SQL_INSTANCE: is required when OPT2_DB_AUTH=iam',
+        'PG_PASSWORD: must be unset when OPT2_DB_AUTH=iam',
+        'OPT2_ENV: must be cloud when OPT2_DB_AUTH=iam',
+      ],
+    },
+    {
+      label: 'OPT2_DB_AUTH=iam runs in the cloud without PG_USER, with the emulator',
+      env: { OPT2_ENV: 'cloud', OPT2_DB_AUTH: 'iam', CLOUD_SQL_INSTANCE: IAM_INSTANCE, PG_PASSWORD: undefined, PG_USER: undefined },
+      issues: ['PG_USER: is required when OPT2_DB_AUTH=iam', 'PUBSUB_EMULATOR_HOST: must be unset when OPT2_ENV=cloud'],
+    },
+    {
+      label: 'an invalid PUBSUB_EMULATOR_HOST is set in the cloud, which is reported once',
+      env: { OPT2_ENV: 'cloud', OPT2_DB_AUTH: 'iam', CLOUD_SQL_INSTANCE: IAM_INSTANCE, PG_PASSWORD: undefined, PUBSUB_EMULATOR_HOST: 'localhost:99999' },
+      issues: ['PUBSUB_EMULATOR_HOST: port must be from 1 to 65535'],
+    },
+  ])('exits 2 with one error listing every issue when $label', async ({ env, issues }) => {
+    stubEnv(env);
 
     expect(await main(['replay', '--since', SINCE_ISO])).toBe(2);
 
-    expect(stderr).toMatch(/^invalid environment\n/);
-    for (const key of ['PORT', 'OPT2_SERVICE_NAME', 'OPT2_ENV', 'OPT2_TOKEN_ISSUER', 'OPT2_TOKEN_AUDIENCE', 'TZ']) {
-      expect(stderr).toContain(`\n  ${key}: is required`);
-    }
+    expect(stderr).toBe(`opt2-outbox: invalid environment\n${issues.map((issue) => `  ${issue}\n`).join('')}`);
+    expect(stdout).toBe('');
     expect(state.createPool).not.toHaveBeenCalled();
   });
 
   it.each([
-    { unset: ['OPT2_DB_AUTH'], issues: ['OPT2_DB_AUTH'] },
-    { unset: ['GOOGLE_CLOUD_PROJECT'], issues: ['GOOGLE_CLOUD_PROJECT'] },
     {
-      unset: ['OPT2_DB_AUTH', 'PG_DATABASE', 'GOOGLE_CLOUD_PROJECT'],
-      issues: ['OPT2_DB_AUTH', 'PG_DATABASE', 'GOOGLE_CLOUD_PROJECT'],
+      label: 'PORT, OPT2_TOKEN_ISSUER, OPT2_TOKEN_AUDIENCE and OPT2_JWKS_URL unset',
+      env: { PORT: undefined, OPT2_TOKEN_ISSUER: undefined, OPT2_TOKEN_AUDIENCE: undefined, OPT2_JWKS_URL: undefined },
+      pool: { OPT2_DB_AUTH: 'password', PG_HOST: '127.0.0.1', PG_PORT: 5432, PG_PASSWORD: 'unused' },
+      emulatorHost: 'localhost:8085',
     },
-  ])('exits 2 naming $issues when a replay setting is unset', async ({ unset, issues }) => {
-    stubEnv(Object.fromEntries(unset.map((key) => [key, undefined])));
+    {
+      label: 'OPT2_DB_AUTH=iam in the cloud',
+      env: { OPT2_ENV: 'cloud', OPT2_DB_AUTH: 'iam', CLOUD_SQL_INSTANCE: IAM_INSTANCE, PG_PASSWORD: undefined, PUBSUB_EMULATOR_HOST: undefined },
+      pool: { OPT2_DB_AUTH: 'iam', CLOUD_SQL_INSTANCE: IAM_INSTANCE },
+      emulatorHost: undefined,
+    },
+  ])('replays with $label', async ({ env, pool, emulatorHost }) => {
+    stubEnv(env);
+    const order: string[] = [];
+    serve(fakeDb([], { registry: [] }), fakePublisher([], order), order);
 
-    expect(await main(['replay', '--since', SINCE_ISO])).toBe(2);
+    expect(await main(['replay', '--since', SINCE_ISO])).toBe(0);
 
-    expect(stderr).toBe(`people: invalid environment\n${issues.map((key) => `  ${key}: is required\n`).join('')}`);
-    expect(state.createPool).not.toHaveBeenCalled();
+    expect(stdout).toBe(`{"schema":"people","since":"${SINCE_ISO}","replayed":0,"failed":0,"skipped":0,"tenants":0}\n`);
+    expect(stderr).toBe('');
+    expect(state.createPool).toHaveBeenCalledWith(
+      expect.objectContaining({ env: expect.objectContaining({ ...pool, PG_DATABASE: 'masa_services_unit', PG_USER: 'people_app' }) }),
+    );
+    expect(state.createPublisher).toHaveBeenCalledWith({ projectId: 'opt2-unit', emulatorHost });
   });
 
   it('exits with the code of main when loaded as the opt2-outbox bin', async () => {
@@ -873,6 +1002,28 @@ describe('opt2-tasks reconcile', () => {
     expect(stdout).toBe('');
     expect(state.createServiceClient).not.toHaveBeenCalled();
   });
+
+  it.each([[['--help']], [['-h']], [['reconcile', '--as', 'root', '--help']]])(
+    'prints the help on stdout and exits 0 for %j without reading the environment or creating a client',
+    async (argv) => {
+      stubTasksEnv({ urls: null });
+      vi.stubEnv('OPT2_ENV', undefined);
+
+      expect(await tasksMain(argv)).toBe(0);
+
+      expect(stdout.startsWith(`${TASKS_USAGE}\n\n`)).toBe(true);
+      for (const flag of ['--queue <name>', '--with-sitemonitor', '--include-local-only', '--as operator|migration', '-h, --help']) {
+        expect(stdout).toContain(`\n  ${flag} `);
+      }
+      const environment = stdout.slice(stdout.indexOf('\nEnvironment:\n'));
+      for (const key of ['OPT2_ENV', 'OPT2_SERVICE_URLS', 'OPT2_STATE_DIR', 'GOOGLE_CLOUD_PROJECT']) {
+        expect(environment).toContain(`\n  ${key} `);
+      }
+      expect(environment).toMatch(/\nExit codes: 0 [^\n]+, 1 [^\n]+, 2 [^\n]+\n$/);
+      expect(stderr).toBe('');
+      expect(state.createServiceClient).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     { queues: ['surveys-launch'], message: 'Not a recurring task queue: surveys-launch' },

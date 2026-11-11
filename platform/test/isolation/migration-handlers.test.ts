@@ -42,6 +42,7 @@ import {
   mintServiceToken,
   mintUserToken,
   pgAvailable,
+  runCleanup,
   seedRegistry,
   testPgConfig,
   testVerifier,
@@ -185,8 +186,7 @@ describe('migration endpoints beside a gated target write route', () => {
   });
 
   afterAll(async () => {
-    await app?.close();
-    await handle?.drop();
+    await runCleanup('migration-handlers suite', [() => app?.close(), () => handle?.drop()]);
   });
 
   function post(route: string, payload: Record<string, unknown>): Promise<LightMyRequestResponse> {

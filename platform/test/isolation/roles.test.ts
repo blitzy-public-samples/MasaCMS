@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest';
 import { rlsSql, withTenant, type PoolClient } from '../../src/tenancy/index.js';
 import {
   TENANT_A,
@@ -56,6 +56,18 @@ async function onConnection<T>(role: ThrowawayRole, fn: (client: PoolClient) => 
   } finally {
     await pool.end();
   }
+}
+
+/** Runs `sql` as the owner role, through the migrator's SET ROLE. */
+function asOwner(sql: string): Promise<void> {
+  return onConnection('migrator', async (client) => {
+    await client.query(`SET ROLE ${handle.roles.owner}`);
+    try {
+      await client.query(sql);
+    } finally {
+      await client.query('RESET ROLE');
+    }
+  });
 }
 
 describe('database role chain', () => {
@@ -149,6 +161,7 @@ describe('database role chain', () => {
       await client.query(`SET ROLE ${owner}`);
       try {
         await client.query(`CREATE TABLE ${later} (id int)`);
+        onTestFinished(() => asOwner(`DROP TABLE ${later}`));
         return (await client.query<{ who: string }>('SELECT current_user::text AS who')).rows;
       } finally {
         await client.query('RESET ROLE');
@@ -169,6 +182,11 @@ describe('database role chain', () => {
 
   it('grants PUBLIC nothing on the schema or its tables', async () => {
     const { adminPool, schema } = handle;
+    const probe = `${schema}.public_probe`;
+    // A table the owner creates after bootstrap, so default privileges are checked too; dropped so no other case sees it.
+    await asOwner(`CREATE TABLE ${probe} (id int)`);
+    onTestFinished(() => asOwner(`DROP TABLE ${probe}`));
+
     const namespace = await adminPool.query<{ public_entries: number; usage: boolean }>(
       `SELECT (SELECT count(*)::int FROM aclexplode(n.nspacl) a WHERE a.grantee = 0) AS public_entries,
               has_schema_privilege('public'::name, n.nspname::text, 'USAGE') AS usage
@@ -180,13 +198,13 @@ describe('database role chain', () => {
     const tables = await adminPool.query<{ relname: string; public_entries: number }>(
       `SELECT c.relname::text AS relname, (SELECT count(*)::int FROM aclexplode(c.relacl) a WHERE a.grantee = 0) AS public_entries
          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = $1 AND c.relname IN ('note', 'later')
+        WHERE n.nspname = $1 AND c.relname IN ('note', 'public_probe')
         ORDER BY c.relname`,
       [schema],
     );
     expect(tables.rows).toEqual([
-      { relname: 'later', public_entries: 0 },
       { relname: 'note', public_entries: 0 },
+      { relname: 'public_probe', public_entries: 0 },
     ]);
   });
 });

@@ -41,7 +41,7 @@ Each subpath maps to `dist/<module>/index.js` and its `.d.ts` (AAP 0.5.5).
 
 | Subpath | Provides | Consumers |
 |---|---|---|
-| `service-kit` | `createService`: Fastify factory wiring auth, tenancy, logging, tracing, `/healthz`, legacy error mapping and graceful shutdown. `createServiceClient`: undici client, 10 s timeout, no automatic retries, forwards the caller's user token and trace context. Injectable clock; zod environment schema (`loadEnv`, [Configuration](#configuration)); `csrfPreHandler`, which calls identity `POST /internal/v1/csrf/consume` | gateway, all services, stub |
+| `service-kit` | `createService`: Fastify factory wiring auth, tenancy, logging, tracing, `/healthz`, legacy error mapping and graceful shutdown. `createServiceClient`: undici client, 10 s timeout, no automatic retries, forwards the caller's user token, request id and trace context. Injectable clock; zod environment schema (`loadEnv`, [Configuration](#configuration)); `csrfPreHandler`, which calls identity `POST /internal/v1/csrf/consume` | gateway, all services, stub |
 | `auth` | User-token verification: local RS256 via `OPT2_JWKS_URL`, or the cloud securetoken issuer. Invocation credentials in `X-Serverless-Authorization`. Per-transport schemes: service call, managed Pub/Sub push, managed Cloud Tasks. `config.opt2.requires` / `config.opt2.public`, deny by default. Role-matrix export | all services, gateway, web, migration |
 | `tenancy` | `tenantIdForSite` (UUIDv5, namespace `6f0a2c1e-5b7d-4e8a-9c3f-0d1e2f3a4b5c`); `withTenant`, whose first statement is `set_config('app.tenant_id', $1, true)`; pool, content-pool and `tenant_grant` resolution from the registry; RLS SQL helper; `tenant_registry` consumer of `programs-sites.site.changed.v1`; Cloud SQL IAM connections | all services, migration |
 | `outbox` | Writer inside the business transaction; in-request flush after commit; `/internal/v1/outbox/sweep` handler with recovery hooks and its self-rescheduling task; replay | every producer |
@@ -53,7 +53,7 @@ Each subpath maps to `dist/<module>/index.js` and its `.d.ts` (AAP 0.5.5).
 | `storage` | Storage port; Cloud Storage adapter (v4 signed URLs, 15 min); local HMAC adapter (`/opt2/files/<bucket>/…`); byte-stream helper for legacy file routes | strategies-content, reporting, finance, e-signature |
 | `migration-kit` | Mappings, including the `Program_<id>` fold; canonical encoding (AAP 0.8.4); changelog hook and commit-safe cursor (AAP 0.5.2); unit gates and open operations (AAP 0.5.4); `/internal/v1/migration/{apply,export,changes,position,watermark,gate}` handlers; `X-Opt2-Write-Position` | all services, migration |
 | `state-machine` | Transition-table runner; `generate-table.ts` (AAP 0.4.5) | finance, timesheets |
-| `testing` | Tenant fixtures A, B and umbrella; throwaway schema and roles; token minting; contract assertions; isolation and pooled-connection-reuse suites | all test suites |
+| `testing` | Tenant fixtures A, B and umbrella; throwaway schema and roles; suite cleanup (`runCleanup`) that runs every teardown step; token minting; contract assertions; isolation and pooled-connection-reuse suites | all test suites |
 
 ## Configuration
 
@@ -121,11 +121,11 @@ Loading:
 | CLI | Reads | Exit 0 | Exit 1 | Exit 2 |
 |---|---|---|---|---|
 | `opt2-auth` | No variable itself; the builder it imports may call `loadEnv` | Matrix written | Any other failure, including the builder's `EnvValidationError` | Usage only: unknown flag or subcommand, missing `--app`, invalid `--options` JSON, builder export not a function |
-| `opt2-outbox` | The full `loadEnv`, plus `OPT2_DB_AUTH`, `PG_DATABASE` and `GOOGLE_CLOUD_PROJECT` in either mode; `--schema` defaults to the schema of `OPT2_SERVICE_NAME` | Every row republished | A row failed or was skipped, or another error | Usage, or `EnvValidationError` |
+| `opt2-outbox` | Only `OPT2_SERVICE_NAME`, `OPT2_ENV`, `TZ` (the zone outbox timestamps are stored in), `OPT2_DB_AUTH`, `PG_DATABASE` and `GOOGLE_CLOUD_PROJECT` in either mode, plus the `PG_*`, `CLOUD_SQL_INSTANCE` and `PUBSUB_EMULATOR_HOST` rules of [Configuration](#configuration) for its `OPT2_DB_AUTH` and `OPT2_ENV`, all reported in one `EnvValidationError`; `--schema` defaults to the schema of `OPT2_SERVICE_NAME` | Every row republished | A row failed or was skipped, or another error | Usage, including a `--since` that is not an ISO-8601 date-time with a zone, or `EnvValidationError` |
 | `opt2-events` | Only `GOOGLE_CLOUD_PROJECT` (unless `--project`) and, through the Pub/Sub client, `PUBSUB_EMULATOR_HOST` | Done | Any other failure, such as a pull or republish error | Usage, including an invalid subscription name and no `--project` with `GOOGLE_CLOUD_PROJECT` unset |
 | `opt2-tasks` | Only `OPT2_ENV`, `OPT2_SERVICE_URLS` (at least one service), `OPT2_STATE_DIR` (the local signing key pair) and `GOOGLE_CLOUD_PROJECT` (in the cloud), each parsed as in [Configuration](#configuration) | Every selected chain ensured; without `--queue`, creators `OPT2_SERVICE_URLS` lacks are skipped | A chain failed, including a `--queue` whose creator `OPT2_SERVICE_URLS` lacks | Usage or `EnvValidationError`; a `--queue` the registry refuses; without `--queue`, `OPT2_SERVICE_URLS` naming none of the selected queues' creators |
 
-`npm ci` in a consumer links these into its `node_modules/.bin` from the committed `bin/` wrappers, which run the compiled `dist/<module>/cli.js` once the platform is built (the consumer's `postinstall` builds it). `node <path>/platform/dist/<module>/cli.js` runs the same CLI directly.
+`--help` (or `-h`) prints each CLI's usage, options and environment variables and exits 0 before any variable is read. `npm ci` in a consumer links these into its `node_modules/.bin` from the committed `bin/` wrappers, which run the compiled `dist/<module>/cli.js` once the platform is built (the consumer's `postinstall` builds it). `node <path>/platform/dist/<module>/cli.js` runs the same CLI directly.
 
 ## Value formats
 

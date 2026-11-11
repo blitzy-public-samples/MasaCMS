@@ -193,6 +193,8 @@ ALTER TABLE stub.note ENABLE ROW LEVEL SECURITY; ALTER TABLE stub.note FORCE ROW
 CREATE POLICY tenant_isolation ON stub.note
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+-- Keyset order of the note list pages; note_id collates as the list's ORDER BY does.
+CREATE INDEX note_created_idx ON stub.note (tenant_id, created, note_id COLLATE "C");
 
 -- Self-consumed projection of the note created event; apply_count counts applied deliveries.
 CREATE TABLE stub.note_projection (

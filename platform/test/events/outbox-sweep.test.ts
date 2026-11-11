@@ -15,7 +15,7 @@ import {
   type EventPublisher,
 } from '../../src/events/index.js';
 import { createLogger } from '../../src/logging/index.js';
-import { parseArgs, runReplay } from '../../src/outbox/cli.js';
+import { parseArgs, runReplay, type ReplayOptions } from '../../src/outbox/cli.js';
 import {
   createOutbox,
   outboxDrainCounts,
@@ -618,7 +618,7 @@ describe('outbox sweep, drain counts and replay', () => {
     const stampedBefore = await stamps();
     expect(Object.values(stampedBefore)).not.toContain(null);
 
-    const { since } = parseArgs(['replay', '--since', new Date(2026, 6, 1).toISOString()]);
+    const { since } = parseArgs(['replay', '--since', new Date(2026, 6, 1).toISOString()]) as ReplayOptions;
     const summary = await runReplay({ runtime: live, since });
 
     expect(summary).toEqual({ replayed: recent.length, failed: 0, skipped: 0, tenants: TENANT_LIST.length });

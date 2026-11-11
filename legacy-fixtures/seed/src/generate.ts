@@ -1,15 +1,17 @@
 // SYNTHETIC: seed - no Masa equivalent; legacy oracle in legacy-fixtures/
+import { readlinkSync, realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, resolve, sep } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { createLocalInvocationMinter, loadLocalSigningKeys } from '@opt2/platform/auth';
-import { createServiceClient, z, type ServiceClient } from '@opt2/platform/service-kit';
+import { baseEnvSchema, createServiceClient, z, type ServiceClient } from '@opt2/platform/service-kit';
 import { loadConfig } from './config.js';
 import { generateCredentials, writeCredentials } from './credentials.js';
 import { buildDataset } from './dataset.js';
-import { runDirect, type DirectClient } from './direct.js';
+import { directServices, runDirect, type DirectClient } from './direct.js';
+import { errorCategory, nameText, oneLine, parseJson, printable, printableMessage } from './errors.js';
 import { readDataset, writeDataset } from './writer.js';
 
 /** Collaborators `run` uses instead of its defaults: credential randomness, the direct-mode client and the log sink. */
@@ -54,41 +56,64 @@ dataset already in <out> to the synthetic services' migration apply endpoints in
 `;
 
 const pinSchema = z.object({ sha: z.string().regex(/^[0-9a-f]{40}$/) });
-const serviceUrlsSchema = z.record(z.string(), z.url());
 
 /** Writes `text` and a newline to stderr. */
 function fail(text: string): void {
   process.stderr.write(`${text}\n`);
 }
 
-/** Message of `err` on one line. */
-function oneLine(err: unknown): string {
-  return (err instanceof Error ? err.message : String(err)).replace(/\s*\n\s*/g, ' ');
+// Linux's MAXSYMLINKS: the most links one path lookup follows before it fails with ELOOP.
+const SYMLINK_HOPS = 40;
+
+/** Result of `fn`, or undefined when it throws. */
+function attempt<T>(fn: () => T): T | undefined {
+  try {
+    return fn();
+  } catch {
+    return undefined;
+  }
 }
 
-/** Whether `dir` is `root` or lies beneath it, compared as resolved paths. */
+/** Absolute `path` with every symlink followed, dangling ones included, and its missing tail kept, as `realpath -m` gives it. */
+function canonicalPath(path: string): string {
+  const missing: string[] = [];
+  let current = resolve(path);
+  for (let hops = 0; ; ) {
+    const real = attempt(() => realpathSync(current));
+    if (real !== undefined || dirname(current) === current) return join(real ?? current, ...missing);
+    const target = hops < SYMLINK_HOPS ? attempt(() => readlinkSync(current)) : undefined;
+    const parent = dirname(current);
+    if (target === undefined) {
+      missing.unshift(basename(current));
+      current = parent;
+    } else {
+      current = resolve(attempt(() => realpathSync(parent)) ?? parent, target);
+      hops += 1;
+    }
+  }
+}
+
+/** Whether `dir` is `root` or lies beneath it, compared as canonical paths. */
 function isWithin(dir: string, root: string): boolean {
-  return `${resolve(dir)}${sep}`.startsWith(`${resolve(root)}${sep}`);
+  return `${canonicalPath(dir)}${sep}`.startsWith(`${canonicalPath(root)}${sep}`);
 }
 
 /** Pinned source SHA from the pin file at `path`. */
 async function readPinnedSha(path: string): Promise<string> {
-  const parsed = pinSchema.safeParse(JSON.parse(await readFile(path, 'utf8')));
-  if (!parsed.success) throw new Error(`${path} has no sha of 40 lower-case hex characters`);
+  const parsed = pinSchema.safeParse(parseJson(await readFile(path, 'utf8'), path));
+  if (!parsed.success) throw printable(new Error(`${path} has no sha of 40 lower-case hex characters`));
   return parsed.data.sha;
 }
 
-/** Callee name to base URL from `OPT2_SERVICE_URLS`, or undefined when it is unset or not a JSON object of URLs. */
-function parseServiceUrls(raw: string | undefined): Record<string, string> | undefined {
-  if (raw === undefined) return undefined;
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    return undefined;
-  }
-  const parsed = serviceUrlsSchema.safeParse(value);
-  return parsed.success ? parsed.data : undefined;
+/** Callee name to base URL from `OPT2_SERVICE_URLS` by the platform's rule, or why it is unset or invalid, naming keys but never values. */
+function parseServiceUrls(raw: string | undefined): { urls: Record<string, string> } | { error: string } {
+  if (raw === undefined || raw.trim() === '') return { error: '--direct needs OPT2_SERVICE_URLS, a JSON object of service name to URL' };
+  const parsed = baseEnvSchema.shape.OPT2_SERVICE_URLS.safeParse(raw);
+  if (parsed.success) return { urls: parsed.data };
+  const issues = parsed.error.issues.map(({ path, message }) =>
+    path.length === 0 ? message : `${path.map((key) => nameText(String(key))).join('.')}: ${message}`,
+  );
+  return { error: `OPT2_SERVICE_URLS is not a JSON object of service name to http(s) URL (${issues.join('; ')})` };
 }
 
 /** Builds the dataset, writes it with its manifest, then writes fresh credentials for it. */
@@ -103,18 +128,23 @@ async function generate(paths: RunPaths, deps: GenerateDeps, log: (line: string)
   log(`seed counts ${Object.entries(manifest.counts).map(([array, count]) => `${array}=${count}`).join(' ')}`);
 }
 
-/** Sends the dataset already written to `paths.out` to its owners' migration apply endpoints. */
+/** Sends the dataset already written to `paths.out` to its owners' migration apply endpoints; returns the exit code. */
 async function direct(
   paths: RunPaths,
   serviceUrls: Record<string, string>,
   deps: GenerateDeps,
   log: (line: string) => void,
-): Promise<void> {
+): Promise<number> {
   const config = await loadConfig(paths.config);
   const dataset = await readDataset(paths.out);
   let client = deps.client;
   let owned: ServiceClient | undefined;
   if (client === undefined) {
+    const unmapped = directServices(dataset, config).filter((service) => !Object.hasOwn(serviceUrls, service));
+    if (unmapped.length > 0) {
+      fail(`seed: OPT2_SERVICE_URLS has no URL for ${unmapped.join(', ')}`);
+      return 2;
+    }
     const keys = await loadLocalSigningKeys(paths.stateDir, { requirePrivate: true });
     owned = createServiceClient({ serviceUrls, self: SELF, credentials: createLocalInvocationMinter({ keys, caller: SELF }) });
     client = owned;
@@ -126,6 +156,7 @@ async function direct(
   } finally {
     await owned?.close();
   }
+  return 0;
 }
 
 /** Runs the CLI; returns 0 on success, 1 when a run fails, 2 on a usage or environment error. */
@@ -143,7 +174,7 @@ export async function run(argv: string[], env: NodeJS.ProcessEnv, deps: Generate
     return 0;
   }
 
-  const stateDir = resolve(env.OPT2_STATE_DIR ?? join(env.HOME ?? homedir(), '.opt2', 'state'));
+  const stateDir = resolve(env.OPT2_STATE_DIR || join(env.HOME || homedir(), '.opt2', 'state'));
   const paths: RunPaths = {
     config: resolve(values.config ?? join(pkgRoot, 'seed.config.json')),
     out: resolve(values.out ?? join(stateDir, 'seed')),
@@ -161,20 +192,21 @@ export async function run(argv: string[], env: NodeJS.ProcessEnv, deps: Generate
   let serviceUrls: Record<string, string> = {};
   if (values.direct === true && deps.client === undefined) {
     const parsed = parseServiceUrls(env.OPT2_SERVICE_URLS);
-    if (parsed === undefined) {
-      fail('seed: --direct needs OPT2_SERVICE_URLS, a JSON object of service name to URL');
+    if ('error' in parsed) {
+      fail(`seed: ${parsed.error}`);
       return 2;
     }
-    serviceUrls = parsed;
+    serviceUrls = parsed.urls;
   }
 
   const log = deps.log ?? ((line: string) => void process.stdout.write(`${line}\n`));
   try {
-    if (values.direct === true) await direct(paths, serviceUrls, deps, log);
-    else await generate(paths, deps, log);
+    if (values.direct === true) return await direct(paths, serviceUrls, deps, log);
+    await generate(paths, deps, log);
     return 0;
   } catch (err) {
-    fail(`seed: ${oneLine(err)}`);
+    const mode = values.direct === true ? 'direct' : 'generate';
+    fail(`seed: ${printableMessage(err) ?? `${mode} failed (${errorCategory(err)})`}`);
     return 1;
   }
 }

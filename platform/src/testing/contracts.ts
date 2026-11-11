@@ -67,6 +67,8 @@ export type JsonType = 'string' | 'number' | 'integer' | 'boolean' | 'object' | 
 export interface ConsumerExpectation {
   required: string[];
   types?: Record<string, JsonType | JsonType[]>;
+  /** Element types of array fields, checked against the field's `items` schema. */
+  itemTypes?: Record<string, JsonType | JsonType[]>;
   /** Payloads the consumer is tested with; each must satisfy the producer schema. */
   samples?: unknown[];
   kind?: EventKind;
@@ -473,6 +475,21 @@ function typeViolation(path: string, nodes: readonly Json[], accepts: JsonType |
       };
 }
 
+// Types the `items` schemas of all the field's branches like a field; no `items` in any branch is a finding.
+function itemTypeViolation(
+  root: Json,
+  path: string,
+  nodes: readonly Json[],
+  accepts: JsonType | JsonType[],
+): ContractViolation | undefined {
+  const items = nodes.flatMap((node) => (node.items === undefined ? [] : [node.items]));
+  if (items.length === 0) {
+    const instancePath = `/${path.split('.').join('/')}/items`;
+    return { instancePath, message: 'declares no items schema the consumer can rely on', keyword: 'items' };
+  }
+  return typeViolation(`${path}.items`, items.flatMap((item) => branches(root, item)), accepts);
+}
+
 /** Checks that a producer's payload schema provides every field, type, sample and declaration a consumer relies on. */
 export function assertProducerConsumerCompatible(producerSchema: object, expectation: ConsumerExpectation): void {
   const root = producerSchema as Json;
@@ -487,6 +504,15 @@ export function assertProducerConsumerCompatible(producerSchema: object, expecta
     const field = producerField(root, path, false);
     const violation = Array.isArray(field) ? typeViolation(path, field, accepts) : field;
     // A field the required walk already reported as undeclared is not reported twice.
+    const reported = (error: ContractViolation): boolean =>
+      error.instancePath === violation?.instancePath && error.keyword === violation.keyword;
+    if (violation !== undefined && !errors.some(reported)) {
+      errors.push(violation);
+    }
+  }
+  for (const [path, accepts] of Object.entries(expectation.itemTypes ?? {})) {
+    const field = producerField(root, path, false);
+    const violation = Array.isArray(field) ? itemTypeViolation(root, path, field, accepts) : field;
     const reported = (error: ContractViolation): boolean =>
       error.instancePath === violation?.instancePath && error.keyword === violation.keyword;
     if (violation !== undefined && !errors.some(reported)) {

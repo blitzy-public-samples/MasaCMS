@@ -30,6 +30,7 @@ import type {
   InventoryDoc,
   InventoryFacts,
   OwnershipDoc,
+  RouteFacts,
   SourcePin,
   VariantsFile,
 } from '../../src/cutover/types.js';
@@ -172,13 +173,18 @@ const INVENTORY = {
       ],
     },
   ],
-  routes: [{ ...ENTRY_POINT, id: 'rte:/_api/json/v1', routeKey: null, writeSet: [], kind: 'api-family', family: 'api' }],
+  routes: [
+    { ...ENTRY_POINT, id: 'rte:/_api/json/v1', routeKey: null, writeSet: [], kind: 'api-family', family: 'api', csrfContext: null, csrfValidation: null },
+    { ...ENTRY_POINT, id: 'api:login', routeKey: 'api:login', writeSet: [], kind: 'api-method', family: 'api', csrfContext: 'login', csrfValidation: 'validates' },
+  ],
   frontEnd: [
     {
       ...ENTRY_POINT,
       routeKey: 'page:setreminder',
       disposition: 'decision',
       windowed: false,
+      csrfContext: null,
+      csrfValidation: 'validates',
       writeSet: [{ ...WRITE, unit: 'legacy:tcontenteventreminders', legacyTable: 'tcontenteventreminders' }],
       conditionalWrites: [{ kind: 'guarded', unit: null, legacyTable: null, op: null, via: [], source: SRC, guard: 'never holds' }],
     },
@@ -345,6 +351,11 @@ function withValue(doc: unknown, path: readonly (string | number)[], value: unkn
   return copy;
 }
 
+/** `doc` with each `[path, value]` change applied in order, as {@link withValue} applies one. */
+function withValues(doc: unknown, changes: ReadonlyArray<readonly [readonly (string | number)[], unknown]>): unknown {
+  return changes.reduce((copy, [path, value]) => withValue(copy, path, value), doc);
+}
+
 const INPUTS = {
   inventory: { doc: INVENTORY, file: 'inventoryFile', load: loadInventory },
   ownership: { doc: OWNERSHIP, file: 'tableOwnershipFile', load: loadTableOwnership },
@@ -386,6 +397,13 @@ describe('opt2 inputs', () => {
 
   it.each([
     ['an action variant csrfValidation "sometimes"', 'inventory', [...VARIANT_0, 'csrfValidation'], 'sometimes', ONE_OF],
+    ['a route without csrfValidation', 'inventory', ['routes', 1, 'csrfValidation'], undefined, "must have required property 'csrfValidation'"],
+    ['a route without csrfContext', 'inventory', ['routes', 0, 'csrfContext'], undefined, "must have required property 'csrfContext'"],
+    ['a route csrfValidation "sometimes"', 'inventory', ['routes', 1, 'csrfValidation'], 'sometimes', ONE_OF],
+    ['a routed route with csrfValidation null', 'inventory', ['routes', 1, 'csrfValidation'], null, '/routes/1/csrfValidation must be string'],
+    ['a route without a key recording csrfValidation', 'inventory', ['routes', 0, 'csrfValidation'], 'none', '/routes/0/csrfValidation must be null'],
+    ['a front-end csrfValidation null', 'inventory', ['frontEnd', 0, 'csrfValidation'], null, '/frontEnd/0/csrfValidation must be string'],
+    ['a front-end item without csrfContext', 'inventory', ['frontEnd', 0, 'csrfContext'], undefined, "must have required property 'csrfContext'"],
     ['an action variant responseMode "stream"', 'inventory', [...VARIANT_0, 'responseMode'], 'stream', ONE_OF],
     ['a writer trigger "cron"', 'inventory', ['tables', 0, 'writers', 0, 'trigger'], 'cron', ONE_OF],
     ['a front-end sessionEffects "reset"', 'inventory', ['frontEnd', 0, 'sessionEffects'], 'reset', ONE_OF],
@@ -549,6 +567,15 @@ describe('buildRoutingIndex', () => {
 describe('loadInventoryFacts', () => {
   const inventory = JSON.parse(readFileSync(committed.inventoryFile, 'utf8')) as InventoryDoc;
   const writersOf = (key: string) => inventory.tables.flatMap((table) => table.writers).filter((w) => w.routeKeys.includes(key));
+  /** The CSRF facts of a key, without the keys it omits. */
+  const csrfOf = (routeFacts: RouteFacts | undefined) =>
+    Object.fromEntries(Object.entries(routeFacts ?? {}).filter(([key]) => key.startsWith('csrf')));
+  /** The facts of a fixture inventory written beside the fixture inputs. */
+  const fixtureFacts = async (doc: unknown): Promise<InventoryFacts> => {
+    const file = join(await mkdtemp(join(dir, 'facts-')), 'legacy-inventory.json');
+    await writeFile(file, json(doc));
+    return loadInventoryFacts({ ...paths, inventoryFile: file });
+  };
   let facts: InventoryFacts;
 
   beforeAll(async () => {
@@ -573,11 +600,48 @@ describe('loadInventoryFacts', () => {
     expect(scope).toEqual(expected);
   });
 
-  it('defaults to no CSRF check and omits admin-only facts for non-admin routes', () => {
-    const login = facts.get('api:login');
-    expect(login?.csrfValidation).toBe('none');
-    expect(login).not.toHaveProperty('csrfContext');
-    expect(login).not.toHaveProperty('responseMode');
+  it.each([
+    ['api:login', { csrfValidation: 'validates', csrfContext: 'login' }],
+    ['api:content.save', { csrfValidation: 'validates', csrfContext: 'arguments.id' }],
+    ['api:content.findone', { csrfValidation: 'none' }],
+    ['rest:content.save', { csrfValidation: 'bypassed', csrfContext: 'arguments.id' }],
+    ['page:login', { csrfValidation: 'validates', csrfContext: 'login' }],
+    ['page:updateprofile', { csrfValidation: 'validates', csrfContext: 'editprofile' }],
+  ] as const)('takes the CSRF facts of %s from its inventory item', (key, expected) => {
+    expect(csrfOf(facts.get(key))).toStrictEqual(expected);
+  });
+
+  it('records a CSRF fact on every route and front-end item with a route key', () => {
+    const routed = [...inventory.routes, ...inventory.frontEnd].filter((item) => item.routeKey !== null);
+    expect(routed.length).toBeGreaterThan(0);
+    expect(routed.filter((item) => item.csrfValidation === null).map((item) => item.id)).toEqual([]);
+  });
+
+  it('keeps response facts admin-only', () => {
+    expect(facts.get('api:login')).not.toHaveProperty('responseMode');
+    expect(facts.get('api:login')).not.toHaveProperty('contentType');
+  });
+
+  it.each([
+    ['validates over none', ['validates', 'cusers'], ['none', null], { csrfValidation: 'validates', csrfContext: 'cusers' }],
+    ['bypassed over none', ['none', null], ['bypassed', 'approval'], { csrfValidation: 'bypassed', csrfContext: 'approval' }],
+    ["validates over bypassed, with the winner's null context", ['bypassed', 'approval'], ['validates', null], { csrfValidation: 'validates' }],
+  ] as const)('merges a key two items record as %s', async (_label, [variantValidation, variantContext], [routeValidation, routeContext], expected) => {
+    const doc = withValues(INVENTORY, [
+      [[...VARIANT_0, 'csrfValidation'], variantValidation],
+      [[...VARIANT_0, 'csrfContext'], variantContext],
+      [['routes', 1, 'routeKey'], ROSTER_ADD],
+      [['routes', 1, 'csrfValidation'], routeValidation],
+      [['routes', 1, 'csrfContext'], routeContext],
+    ]);
+    expect(csrfOf((await fixtureFacts(doc)).get(ROSTER_ADD))).toStrictEqual(expected);
+  });
+
+  it('treats a key only a table writer names as validating, without a context', async () => {
+    const doc = withValues(INVENTORY, [[['tables', 0, 'writers', 0, 'routeKeys'], [ROSTER_ADD, 'admin:cusers.unlisted']]]);
+    const unlisted = (await fixtureFacts(doc)).get('admin:cusers.unlisted');
+    expect(csrfOf(unlisted)).toStrictEqual({ csrfValidation: 'validates' });
+    expect(unlisted?.keyScope).toEqual(['userid']);
   });
 
   it("includes an entry point's own session effect", () => {

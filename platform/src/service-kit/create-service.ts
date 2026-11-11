@@ -267,6 +267,8 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
     bodyLimit: LEGACY_POST_LIMIT_BYTES,
     // In-flight requests finish on close instead of getting Fastify's non-legacy 503.
     return503OnClosing: false,
+    // Routes answer only the methods they register; a route serving HEAD declares it.
+    exposeHeadRoutes: false,
     routerOptions: { ignoreTrailingSlash: true },
   });
 

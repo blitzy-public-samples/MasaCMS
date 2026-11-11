@@ -8,9 +8,11 @@ import {
   TENANT_B,
   TENANT_UMBRELLA,
   assertEventMatches,
+  assertProducerConsumerCompatible,
   testEnvelope,
   withoutTenant,
   type ContractViolation,
+  type JsonType,
 } from '@opt2/platform/testing';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import { siteChangedPayload } from '../../src/domain/pools.js';
@@ -44,6 +46,25 @@ const FIELDS = [
   'contentPoolIds',
   'domains',
 ] as const satisfies readonly (keyof SiteChangedPayload)[];
+
+/** The element type the tenant registry consumer reads from each list field. */
+const ITEM_TYPES = {
+  contentPoolIds: 'string',
+  domains: 'string',
+} as const satisfies Partial<Record<keyof SiteChangedPayload, JsonType>>;
+
+/** The string-element check of `topicSchema`'s list fields. */
+function assertStringItems(topicSchema: object): void {
+  assertProducerConsumerCompatible(topicSchema, { required: [], itemTypes: ITEM_TYPES });
+}
+
+/** A copy of the payload schema with `field`'s `items` replaced, or removed when `items` is undefined. */
+function withItems(field: keyof typeof ITEM_TYPES, items: object | undefined): TopicSchemaFile {
+  const copy = structuredClone(schema);
+  const { items: _items, ...property } = copy.properties[field] as Record<string, unknown>;
+  copy.properties[field] = items === undefined ? property : { ...property, items };
+  return copy;
+}
 
 /** A stored `programs_sites.site` row: every site column NULL except `values`, which must name site columns. */
 function siteRow(values: Readonly<Record<string, string>>): SiteRow {
@@ -118,6 +139,29 @@ describe('programs-sites.site.changed.v1 payload schema', () => {
     expect(schema.additionalProperties).toBe(false);
   });
 
+  it('requires string elements in contentPoolIds and domains', () => {
+    expect(schema.properties).toMatchObject({
+      contentPoolIds: { type: 'array', items: { type: 'string' } },
+      domains: { type: 'array', items: { type: 'string' } },
+    });
+    expect(() => assertStringItems(schema)).not.toThrow();
+  });
+
+  const itemChanges: { change: string; items: object | undefined; keyword: string }[] = [
+    { change: 'removed', items: undefined, keyword: 'items' },
+    { change: 'of any type', items: {}, keyword: 'type' },
+    { change: 'widened to string or number', items: { anyOf: [{ type: 'string' }, { type: 'number' }] }, keyword: 'type' },
+  ];
+  const itemMutations = (['contentPoolIds', 'domains'] as const).flatMap((field) =>
+    itemChanges.map((change) => ({ field, ...change })),
+  );
+
+  it.each(itemMutations)('fails the string-element check when $field items are $change', ({ field, items, keyword }) => {
+    const error = contractErrorOf(() => assertStringItems(withItems(field, items)));
+
+    expect(error.errors).toStrictEqual([expect.objectContaining({ instancePath: `/${field}/items`, keyword })]);
+  });
+
   it('is a state event recording the pinned source SHA', () => {
     expect(schema['x-opt2-kind']).toBe('state');
     expect(schema.$comment).toBe(`source-sha: ${pin.sha}`);
@@ -182,6 +226,8 @@ describe('programs-sites.site.changed.v1 contract violations', () => {
     ['without domains', withoutDomains, 'payload', "'domains'"],
     ['with a legacy-cased extra key', { ...pooled, siteID: TENANT_A.siteId }, 'payload', '(siteID)'],
     ['with an empty pool id', { ...pooled, filePoolId: '' }, 'payload/filePoolId', 'fewer than 1'],
+    ['with a numeric content pool id', { ...pooled, contentPoolIds: [7] }, 'payload/contentPoolIds/0', 'must be string'],
+    ['with a null domain', { ...pooled, domains: [null] }, 'payload/domains/0', 'must be string'],
   ])('rejects a payload %s', (_case, payload, instancePath, message) => {
     const error = contractErrorOf(() => assertEventMatches(undefined, schema, envelopeOf(TENANT_A.siteId, payload)));
 

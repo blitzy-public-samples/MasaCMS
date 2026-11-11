@@ -123,12 +123,15 @@ afterEach(() => {
 });
 
 describe('opt2-events arguments', () => {
-  it.each([[['--help']], [['replay', '--help']]])('prints the help on stdout and exits 0 for %j', async (argv) => {
+  it.each([[['--help']], [['-h']], [['replay', '--help']]])('prints the help on stdout and exits 0 for %j', async (argv) => {
     expect(await main(argv)).toBe(0);
     expect(stdout.startsWith(`${USAGE}\n\n`)).toBe(true);
-    for (const flag of ['--subscription', '--max', '--idle-seconds', '--project']) {
+    for (const flag of ['--subscription', '--max', '--idle-seconds', '--project', '-h, --help']) {
       expect(stdout).toContain(`\n  ${flag} `);
     }
+    const environment = stdout.slice(stdout.indexOf('\nEnvironment:\n'));
+    for (const key of ['GOOGLE_CLOUD_PROJECT', 'PUBSUB_EMULATOR_HOST']) expect(environment).toContain(`\n  ${key} `);
+    expect(environment).toMatch(/\nExit codes: [^\n]+\n$/);
     expect(stderr).toBe('');
     expect(state.subscriptions).toHaveLength(0);
   });

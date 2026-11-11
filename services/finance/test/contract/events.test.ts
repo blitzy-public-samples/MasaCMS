@@ -9,6 +9,7 @@ import {
   assertProducerConsumerCompatible,
   testEnvelope,
   withoutTenant,
+  type ConsumerExpectation,
 } from '@opt2/platform/testing';
 import { SITE_CHANGED_TOPIC, tenantRegistryConsumer, type SiteChangedPayload } from '@opt2/platform/tenancy';
 import { SITE_CHANGED_SUBSCRIPTION, consumers } from '../../src/events/consumers.js';
@@ -60,6 +61,29 @@ const types = {
   domains: 'array',
 } as const satisfies Record<keyof SiteChangedPayload, 'string' | 'array'>;
 
+/** The element type the tenant registry consumer reads from each list field. */
+const itemTypes = {
+  contentPoolIds: 'string',
+  domains: 'string',
+} as const satisfies Partial<Record<keyof SiteChangedPayload, 'string'>>;
+
+const expectation: ConsumerExpectation = { required: [...required], types, itemTypes, samples: [sample], kind: 'state' };
+
+/**
+ * A copy of the producer schema with `field`'s `items` replaced, or removed when undefined.
+ * `$id` is dropped because the shared Ajv registry already holds the original under it.
+ */
+function withItems(field: keyof typeof itemTypes, items: object | undefined): object {
+  const copy = structuredClone(producerSchema) as unknown as {
+    $id?: string;
+    properties: Record<string, Record<string, unknown>>;
+  };
+  delete copy.$id;
+  const { items: _items, ...property } = copy.properties[field] ?? {};
+  copy.properties[field] = items === undefined ? property : { ...property, items };
+  return copy;
+}
+
 const envelope = testEnvelope({
   topic: SITE_CHANGED_TOPIC,
   tenantId: TENANT_A.tenantId,
@@ -88,9 +112,22 @@ describe('finance consumer expectation of programs-sites.site.changed.v1', () =>
   });
 
   it('producer schema carries every field the tenant registry consumer reads', () => {
-    expect(() =>
-      assertProducerConsumerCompatible(producerSchema, { required: [...required], types, samples: [sample], kind: 'state' }),
-    ).not.toThrow();
+    expect(() => assertProducerConsumerCompatible(producerSchema, expectation)).not.toThrow();
+  });
+
+  const itemChanges: { change: string; items: object | undefined; keyword: string }[] = [
+    { change: 'removed', items: undefined, keyword: 'items' },
+    { change: 'of any type', items: {}, keyword: 'type' },
+    { change: 'widened to string or number', items: { anyOf: [{ type: 'string' }, { type: 'number' }] }, keyword: 'type' },
+  ];
+  const itemMutations = (['contentPoolIds', 'domains'] as const).flatMap((field) =>
+    itemChanges.map((change) => ({ field, ...change })),
+  );
+
+  it.each(itemMutations)('rejects a producer schema whose $field items are $change', ({ field, items, keyword }) => {
+    const error = contractErrorOf(() => assertProducerConsumerCompatible(withItems(field, items), expectation));
+
+    expect(error.errors).toContainEqual(expect.objectContaining({ instancePath: `/${field}/items`, keyword }));
   });
 
   it('does not carry the tenant id in the payload', () => {

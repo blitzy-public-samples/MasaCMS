@@ -2,6 +2,7 @@
 import { Roles, SYNTHETIC_ROLES, type Role } from '@opt2/platform/auth';
 import { pdfBytes, pngBytes, sha256Hex, toBase64 } from './bytes.js';
 import { SITE_ORDER, roleGroupName, type SeedConfig, type SiteKey } from './config.js';
+import { printable } from './errors.js';
 import { MASA_DEFAULT_MODULE_ID, MASA_HOME_CONTENT_ID, cfUuidFrom } from './ids.js';
 import type { SeedRandom } from './random.js';
 import type { Calendar } from './time.js';
@@ -299,7 +300,7 @@ function buildGroups(b: Build, site: SiteRow): GroupRow[] {
   if (count === 0) return [];
   const roleNames = SYNTHETIC_ROLES.map((role) => roleGroupName(b.config, role));
   if (count < roleNames.length) {
-    throw new RangeError(`Site ${site.siteID} needs at least ${roleNames.length} groups for the role groups, got ${count}`);
+    throw printable(new RangeError(`Site ${site.siteID} needs at least ${roleNames.length} groups for the role groups, got ${count}`));
   }
   const rng = fork(b, site.siteID, 'groups');
   const taken = new Set([ADMIN_GROUP, ...roleNames]);
@@ -363,7 +364,7 @@ function buildStaff(b: Build, site: SiteRow): SiteStaff | null {
   const reservedIds = rehearsal.site === site.siteID ? rehearsal.persons : [];
   const fixed = 2 + SYNTHETIC_ROLES.length + counts.oauthClients + reservedIds.length;
   if (counts.systemUsers < fixed) {
-    throw new RangeError(`Site ${site.siteID} needs at least ${fixed} system users, got ${counts.systemUsers}`);
+    throw printable(new RangeError(`Site ${site.siteID} needs at least ${fixed} system users, got ${counts.systemUsers}`));
   }
   const rng = fork(b, site.siteID, 'users');
   const pool = site.privateUserPoolID;
@@ -415,7 +416,7 @@ function buildMemberships(b: Build, site: SiteRow, staff: SiteStaff, groups: rea
     const size = employees ? counts.timesheetEmployees : ROLE_GROUP_SIZE[site.siteID];
     const extra = size - fixed.length;
     if (extra < 0 || cursor + extra > candidates.length) {
-      throw new RangeError(`Site ${site.siteID} cannot fill group ${group.groupname} with ${size} members`);
+      throw printable(new RangeError(`Site ${site.siteID} cannot fill group ${group.groupname} with ${size} members`));
     }
     for (const user of [...fixed, ...candidates.slice(cursor, cursor + extra)]) join(user, group.groupID, group.groupname);
     cursor += extra;
@@ -468,8 +469,10 @@ function buildContent(b: Build, site: SiteRow, categories: readonly CategoryRow[
   if (counts.contentNodes === 0) return [];
   const slots = b.config.historyDays * MINUTES_PER_DAY;
   if (counts.maxVersionsPerNode > slots) {
-    throw new RangeError(
-      `Site ${site.siteID} allows ${counts.maxVersionsPerNode} versions per node, but a ${b.config.historyDays}-day history has only ${slots} distinct minutes`,
+    throw printable(
+      new RangeError(
+        `Site ${site.siteID} allows ${counts.maxVersionsPerNode} versions per node, but a ${b.config.historyDays}-day history has only ${slots} distinct minutes`,
+      ),
     );
   }
   const rng = fork(b, site.siteID, 'content');

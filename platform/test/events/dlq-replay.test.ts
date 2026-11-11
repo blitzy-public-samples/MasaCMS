@@ -1,9 +1,10 @@
 // Dead-letter classification of the push route, `publishDeadLetter` and `opt2-events replay` against PostgreSQL and the Pub/Sub emulator.
+import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PubSub, type Message } from '@google-cloud/pubsub';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { replayDeadLetters } from '../../src/events/cli.js';
+import { ReplayError, replayDeadLetters, type ReplaySummary } from '../../src/events/cli.js';
 import {
   DEAD_LETTER_REASONS,
   DEAD_LETTER_REASON_ATTRIBUTE,
@@ -20,6 +21,7 @@ import {
   publishDeadLetter,
   registerPushSubscription,
   subscriptionName,
+  topicName,
   topicOfSubscription,
   type ConsumerDefinition,
   type DeadLetterReason,
@@ -34,11 +36,10 @@ import { rlsSql, tenantRegistrySql, withTenant } from '../../src/tenancy/index.j
 import {
   TENANT_A,
   TENANT_B,
-  createTestSubscription,
-  createTestTopic,
   createThrowawaySchema,
   isAck,
   pgAvailable,
+  publishToEmulator,
   pubsubEmulatorAvailable,
   pushTo,
   seedRegistry,
@@ -46,8 +47,6 @@ import {
   testVerifier,
   withoutTenant,
   type TenantlessEnvelope,
-  type TestSubscription,
-  type TestTopic,
   type ThrowawaySchema,
 } from '../../src/testing/index.js';
 
@@ -94,20 +93,26 @@ interface Received {
   orderingKey?: string;
 }
 
+/** Cases of the suite, each with its own {@link Fixture}. */
+const CASES = ['reasons', 'nack', 'replay', 'apply', 'direct', 'publish-failure'] as const;
+type CaseKey = (typeof CASES)[number];
+
+/** One case's push route and dead-letter resources; its original topic exists only once the case calls {@link openTopic}. */
+interface Fixture {
+  key: CaseKey;
+  topic: string;
+  subscription: string;
+  dlqTopic: string;
+  dlqObserver: string;
+  failApply: boolean;
+}
+
 let handle: ThrowawaySchema;
 let pubsub: PubSub;
 let publisher: EventPublisher;
 let app: FastifyInstance;
-let topic: TestTopic;
-let topicObserver: TestSubscription;
-let subscription: string;
-let dlqTopic: string;
-let dlqObserver: string;
-let failApply = false;
-let mismatchEventId: string;
+const fixtures = new Map<CaseKey, Fixture>();
 const cleanups: Array<() => Promise<unknown>> = [];
-const deadLetters: Received[] = [];
-const replayedCopies: Received[] = [];
 
 /** Receives from `name` until `count` messages arrived and SETTLE_MS passed without another, or `deadlineMs` elapsed; acks each. */
 async function pullUntil(name: string, count: number, deadlineMs = 10_000): Promise<Received[]> {
@@ -144,9 +149,10 @@ async function pullUntil(name: string, count: number, deadlineMs = 10_000): Prom
   return received;
 }
 
-/** A contract-valid envelope on the test topic for `aggregateId`. */
-function envelopeFor(aggregateId: string, tenantId = TENANT_A.tenantId, payload: unknown = { value: aggregateId }): EventEnvelope {
-  return testEnvelope({ topic: topic.name, tenantId, aggregateId, payload });
+/** A contract-valid envelope on the fixture's topic for its aggregate `name`, whose id carries the case key. */
+function envelopeFor(fixture: Fixture, name: string, tenantId = TENANT_A.tenantId, payload?: unknown): EventEnvelope {
+  const aggregateId = `${fixture.key}.${name}`;
+  return testEnvelope({ topic: fixture.topic, tenantId, aggregateId, payload: payload ?? { value: aggregateId } });
 }
 
 /** The attributes pushTo mirrors from `envelope`, without absent ones. */
@@ -177,10 +183,10 @@ function rowsFor(table: 'test_effect' | 'inbox', tenantId: string, eventIds: rea
   });
 }
 
-/** The process consumer of the test topic: the aggregate must exist under the envelope tenant, and the effect is one row. */
-function noteConsumer(topicName: string): ConsumerDefinition<NotePayload> {
+/** The process consumer of the fixture's topic: the aggregate must exist under the envelope tenant, and the effect is one row. */
+function noteConsumer(fixture: Fixture): ConsumerDefinition<NotePayload> {
   return {
-    topic: topicName,
+    topic: fixture.topic,
     kind: 'process',
     async checkTenant(tx, envelope) {
       const { rowCount } = await tx.query(`SELECT 1 FROM ${handle.schema}.test_aggregate WHERE aggregate_id = $1`, [
@@ -189,7 +195,7 @@ function noteConsumer(topicName: string): ConsumerDefinition<NotePayload> {
       return rowCount === 1;
     },
     async apply(tx, envelope) {
-      if (failApply) throw new Error('effect store unavailable');
+      if (fixture.failApply) throw new Error('effect store unavailable');
       await tx.query(`INSERT INTO ${handle.schema}.test_effect (tenant_id, event_id, aggregate_id) VALUES ($1, $2, $3)`, [
         tx.tenantId,
         envelope.eventId,
@@ -197,6 +203,67 @@ function noteConsumer(topicName: string): ConsumerDefinition<NotePayload> {
       ]);
     },
   };
+}
+
+/** Creates case `key`'s DLQ topic with its `.dlq.replay` and observer subscriptions and mounts its push route. */
+async function createFixture(key: CaseKey): Promise<Fixture> {
+  const topic = topicName(SERVICE, `${key}-${randomBytes(4).toString('hex')}`, 'event', 1);
+  const subscription = subscriptionName(SERVICE, topic);
+  const dlqTopic = dlqTopicName(subscription);
+  const fixture: Fixture = { key, topic, subscription, dlqTopic, dlqObserver: `${dlqTopic}.observer`, failApply: false };
+  const [deadLetterTopic] = await pubsub.createTopic(dlqTopic);
+  cleanups.push(() => deadLetterTopic.delete());
+  for (const name of [dlqReplaySubscriptionName(subscription), fixture.dlqObserver]) {
+    const [created] = await deadLetterTopic.createSubscription(name, { enableMessageOrdering: true });
+    cleanups.push(() => created.delete());
+  }
+  registerPushSubscription(app, {
+    subscription,
+    topic,
+    consumer: noteConsumer(fixture),
+    payloadSchema: PAYLOAD_SCHEMA,
+    publisher,
+    db: handle.app,
+  });
+  return fixture;
+}
+
+/** The fixture of case `key`. */
+function fixtureOf(key: CaseKey): Fixture {
+  const fixture = fixtures.get(key);
+  if (fixture === undefined) throw new Error(`The DLQ replay suite has no fixture for case ${key}`);
+  return fixture;
+}
+
+/** Creates the fixture's original topic with an observer subscription; resolves to the observer's name. */
+async function openTopic(fixture: Fixture): Promise<string> {
+  const [created] = await pubsub.createTopic(fixture.topic);
+  cleanups.push(() => created.delete());
+  const observer = subscriptionName('observer', fixture.topic);
+  const [subscription] = await created.createSubscription(observer, { enableMessageOrdering: true });
+  cleanups.push(() => subscription.delete());
+  return observer;
+}
+
+/** Runs `opt2-events replay` in-process for the fixture's subscription. */
+function replay(fixture: Fixture): Promise<ReplaySummary> {
+  return replayDeadLetters({ subscription: fixture.subscription, projectId: PROJECT, ...REPLAY });
+}
+
+/** Pushes one envelope per dead-letter reason to the fixture's route, expecting 204 for each; resolves to each reason with its envelope. */
+async function pushRejected(fixture: Fixture): Promise<Array<[DeadLetterReason, TenantlessEnvelope]>> {
+  const mismatch = envelopeFor(fixture, 'foreign');
+  await storeAggregate(TENANT_B.tenantId, mismatch.aggregateId);
+  const rejected: Array<[DeadLetterReason, TenantlessEnvelope]> = [
+    ['missing-tenant', withoutTenant(envelopeFor(fixture, 'missing'))],
+    ['invalid-tenant', { ...envelopeFor(fixture, 'invalid'), tenantId: TENANT_A.siteId }],
+    ['schema-invalid', envelopeFor(fixture, 'schema', TENANT_A.tenantId, { value: 'x', unexpected: true })],
+    ['tenant-mismatch', mismatch],
+  ];
+  for (const [, envelope] of rejected) {
+    expect((await pushTo(app, fixture.subscription, envelope)).statusCode).toBe(204);
+  }
+  return rejected;
 }
 
 beforeAll(async () => {
@@ -227,20 +294,6 @@ beforeAll(async () => {
 
   pubsub = new PubSub({ projectId: PROJECT, apiEndpoint: process.env.PUBSUB_EMULATOR_HOST, emulatorMode: true });
   cleanups.push(() => pubsub.close());
-  topic = await createTestTopic(SERVICE);
-  cleanups.push(() => topic.delete());
-  subscription = subscriptionName(SERVICE, topic.name);
-  dlqTopic = dlqTopicName(subscription);
-  dlqObserver = `${dlqTopic}.observer`;
-  const [deadLetterTopic] = await pubsub.createTopic(dlqTopic);
-  cleanups.push(() => deadLetterTopic.delete());
-  for (const name of [dlqReplaySubscriptionName(subscription), dlqObserver]) {
-    const [created] = await deadLetterTopic.createSubscription(name, { enableMessageOrdering: true });
-    cleanups.push(() => created.delete());
-  }
-  topicObserver = await createTestSubscription(topic, { consumer: 'observer' });
-  cleanups.push(() => topicObserver.delete());
-
   publisher = createPublisher({ projectId: PROJECT, emulatorHost: process.env.PUBSUB_EMULATOR_HOST });
   cleanups.push(() => publisher.close());
   app = await createService({
@@ -260,14 +313,10 @@ beforeAll(async () => {
     verifierOverride: testVerifier(SERVICE),
   });
   cleanups.push(() => app.opt2.shutdown());
-  registerPushSubscription(app, {
-    subscription,
-    topic: topic.name,
-    consumer: noteConsumer(topic.name),
-    payloadSchema: PAYLOAD_SCHEMA,
-    publisher,
-    db: handle.app,
-  });
+  // Push routes must be mounted before the first inject readies the app, so every case's fixture is created here.
+  for (const key of CASES) {
+    fixtures.set(key, await createFixture(key));
+  }
 });
 
 afterAll(async () => {
@@ -284,20 +333,10 @@ afterAll(async () => {
 
 describe('dead letters and opt2-events replay against the Pub/Sub emulator', () => {
   it('dead-letters each tenant and schema failure with its reason and acks', async () => {
-    await storeAggregate(TENANT_B.tenantId, 'agg-foreign');
-    const mismatch = envelopeFor('agg-foreign');
-    mismatchEventId = mismatch.eventId;
-    const cases: Array<[DeadLetterReason, TenantlessEnvelope]> = [
-      ['missing-tenant', withoutTenant(envelopeFor('agg-missing'))],
-      ['invalid-tenant', { ...envelopeFor('agg-invalid'), tenantId: TENANT_A.siteId }],
-      ['schema-invalid', envelopeFor('agg-schema', TENANT_A.tenantId, { value: 'x', unexpected: true })],
-      ['tenant-mismatch', mismatch],
-    ];
-    for (const [, envelope] of cases) {
-      expect((await pushTo(app, subscription, envelope)).statusCode).toBe(204);
-    }
+    const fixture = fixtureOf('reasons');
+    const cases = await pushRejected(fixture);
 
-    const letters = await pullUntil(dlqObserver, cases.length);
+    const letters = await pullUntil(fixture.dlqObserver, cases.length);
     expect(letters).toHaveLength(cases.length);
     for (const [reason, envelope] of cases) {
       const letter = letters.find((candidate) => candidate.attributes.eventId === envelope.eventId);
@@ -317,15 +356,15 @@ describe('dead letters and opt2-events replay against the Pub/Sub emulator', () 
       ),
     );
     expect(stored).toEqual([0, 0, 0, 0]);
-    deadLetters.push(...letters);
   });
 
   it('nacks a processing error without dead-lettering', async () => {
-    await storeAggregate(TENANT_A.tenantId, 'agg-ok');
-    const failing = envelopeFor('agg-ok');
-    failApply = true;
-    const response = await pushTo(app, subscription, failing).finally(() => {
-      failApply = false;
+    const fixture = fixtureOf('nack');
+    const failing = envelopeFor(fixture, 'ok');
+    await storeAggregate(TENANT_A.tenantId, failing.aggregateId);
+    fixture.failApply = true;
+    const response = await pushTo(app, fixture.subscription, failing).finally(() => {
+      fixture.failApply = false;
     });
     expect(isAck(response)).toBe(false);
     expect([
@@ -333,16 +372,19 @@ describe('dead letters and opt2-events replay against the Pub/Sub emulator', () 
       await rowsFor('inbox', TENANT_A.tenantId, [failing.eventId]),
     ]).toEqual([0, 0]);
 
-    const sentinel = withoutTenant(envelopeFor('agg-sentinel'));
-    expect((await pushTo(app, subscription, sentinel)).statusCode).toBe(204);
-    const letters = await pullUntil(dlqObserver, 1);
+    const sentinel = withoutTenant(envelopeFor(fixture, 'sentinel'));
+    expect((await pushTo(app, fixture.subscription, sentinel)).statusCode).toBe(204);
+    const letters = await pullUntil(fixture.dlqObserver, 1);
     expect(letters.map((letter) => letter.attributes.eventId)).toEqual([sentinel.eventId]);
-    deadLetters.push(...letters);
   });
 
-  it('replays each dead letter once to the original topic', async () => {
-    const forwarded = envelopeFor('agg-forwarded');
-    await pubsub.topic(dlqTopic).publishMessage({
+  it('replays each dead letter once to the original topic, so a second replay republishes nothing', async () => {
+    const fixture = fixtureOf('replay');
+    const { subscription } = fixture;
+    const observer = await openTopic(fixture);
+    const rejected = await pushRejected(fixture);
+    const forwarded = envelopeFor(fixture, 'forwarded');
+    await pubsub.topic(fixture.dlqTopic).publishMessage({
       data: encodeEnvelope(forwarded),
       attributes: {
         ...sentAttributes(forwarded),
@@ -350,10 +392,10 @@ describe('dead letters and opt2-events replay against the Pub/Sub emulator', () 
         [DEAD_LETTER_SOURCE_DELIVERY_COUNT_ATTRIBUTE]: '5',
       },
     });
-    deadLetters.push(...(await pullUntil(dlqObserver, 1)));
-    expect(deadLetters).toHaveLength(6);
+    const deadLetters = await pullUntil(fixture.dlqObserver, rejected.length + 1);
+    expect(deadLetters).toHaveLength(rejected.length + 1);
 
-    const summary = await replayDeadLetters({ subscription, projectId: PROJECT, ...REPLAY });
+    const summary = await replay(fixture);
     expect(summary).toEqual({
       subscription,
       source: dlqReplaySubscriptionName(subscription),
@@ -361,9 +403,9 @@ describe('dead letters and opt2-events replay against the Pub/Sub emulator', () 
       replayed: deadLetters.length,
       stoppedBy: 'idle',
     });
-    expect(summary.topic).toBe(topic.name);
+    expect(summary.topic).toBe(fixture.topic);
 
-    const copies = await pullUntil(topicObserver.name, deadLetters.length);
+    const copies = await pullUntil(observer, deadLetters.length);
     expect(copies).toHaveLength(deadLetters.length);
     for (const letter of deadLetters) {
       const matching = copies.filter((copy) => copy.data.equals(letter.data));
@@ -377,29 +419,61 @@ describe('dead letters and opt2-events replay against the Pub/Sub emulator', () 
       attributes: sentAttributes(forwarded),
       orderingKey: forwarded.aggregateId,
     });
-    replayedCopies.push(...copies);
-  });
 
-  it('acks each dead letter only after republishing it, so a second replay republishes nothing', async () => {
-    const summary = await replayDeadLetters({ subscription, projectId: PROJECT, ...REPLAY });
-    expect(summary).toMatchObject({ replayed: 0, stoppedBy: 'idle' });
-
-    const sentinel = envelopeFor('agg-topic-sentinel');
-    await topic.topic.publishMessage({
-      data: encodeEnvelope(sentinel),
-      attributes: sentAttributes(sentinel),
-      orderingKey: sentinel.aggregateId,
-    });
-    const received = await pullUntil(topicObserver.name, 1);
+    expect(await replay(fixture)).toMatchObject({ replayed: 0, stoppedBy: 'idle' });
+    const sentinel = envelopeFor(fixture, 'topic-sentinel');
+    await publishToEmulator(fixture.topic, sentinel);
+    const received = await pullUntil(observer, 1);
     expect(received.map((message) => message.attributes.eventId)).toEqual([sentinel.eventId]);
   });
 
+  it('withholds the ack when republishing fails, so the next replay republishes the dead letter once', async () => {
+    const fixture = fixtureOf('publish-failure');
+    const { subscription } = fixture;
+    const letter = envelopeFor(fixture, 'unpublished');
+    await publishDeadLetter(publisher, {
+      subscription,
+      data: encodeEnvelope(letter),
+      attributes: sentAttributes(letter),
+      orderingKey: letter.aggregateId,
+      reason: 'tenant-mismatch',
+    });
+
+    // The original topic does not exist yet, so the emulator rejects the republication.
+    const failure = await replay(fixture).catch((err: unknown) => err);
+    expect(failure).toBeInstanceOf(ReplayError);
+    expect(failure).toMatchObject({ replayed: 0 });
+    expect((failure as ReplayError).message).toContain(`publish to ${fixture.topic} failed`);
+
+    const observer = await openTopic(fixture);
+    expect(await replay(fixture)).toEqual({
+      subscription,
+      source: dlqReplaySubscriptionName(subscription),
+      topic: fixture.topic,
+      replayed: 1,
+      stoppedBy: 'idle',
+    });
+    expect(await pullUntil(observer, 1)).toEqual([
+      { data: encodeEnvelope(letter), attributes: sentAttributes(letter), orderingKey: letter.aggregateId },
+    ]);
+    expect(await replay(fixture)).toMatchObject({ replayed: 0, stoppedBy: 'idle' });
+  });
+
   it('applies a replayed message once when its delivery repeats', async () => {
-    const copy = replayedCopies.find((candidate) => candidate.attributes.eventId === mismatchEventId);
-    expect(copy).toBeDefined();
-    const envelope = decodeEnvelopeData(copy?.data ?? '') as EventEnvelope<NotePayload>;
+    const fixture = fixtureOf('apply');
+    const { subscription } = fixture;
+    const observer = await openTopic(fixture);
+    const mismatch = envelopeFor(fixture, 'foreign');
+    await storeAggregate(TENANT_B.tenantId, mismatch.aggregateId);
+    expect((await pushTo(app, subscription, mismatch)).statusCode).toBe(204);
+    expect(await replay(fixture)).toMatchObject({ replayed: 1, stoppedBy: 'idle' });
+    const copies = await pullUntil(observer, 1);
+    expect(copies.map((candidate) => candidate.attributes.eventId)).toEqual([mismatch.eventId]);
+    const [copy] = copies as [Received];
+
+    const envelope = decodeEnvelopeData(copy.data) as EventEnvelope<NotePayload>;
     await storeAggregate(TENANT_A.tenantId, envelope.aggregateId);
-    const options = { attributes: copy?.attributes ?? {}, orderingKey: copy?.orderingKey };
+    const options = { attributes: copy.attributes, orderingKey: copy.orderingKey };
 
     expect((await pushTo(app, subscription, envelope, options)).statusCode).toBe(204);
     expect(await rowsFor('test_effect', TENANT_A.tenantId, [envelope.eventId])).toBe(1);
@@ -412,16 +486,17 @@ describe('dead letters and opt2-events replay against the Pub/Sub emulator', () 
   });
 
   it('publishes a direct dead letter unchanged to the subscription DLQ topic with its reason', async () => {
+    const fixture = fixtureOf('direct');
     const data = Buffer.from('not an envelope', 'utf8');
     const messageId = await publishDeadLetter(publisher, {
-      subscription,
+      subscription: fixture.subscription,
       data,
       attributes: { origin: 'direct' },
       reason: 'schema-invalid',
     });
     expect(messageId).toEqual(expect.any(String));
 
-    expect(await pullUntil(dlqObserver, 1)).toEqual([
+    expect(await pullUntil(fixture.dlqObserver, 1)).toEqual([
       { data, attributes: { origin: 'direct', [DEAD_LETTER_REASON_ATTRIBUTE]: 'schema-invalid' } },
     ]);
   });

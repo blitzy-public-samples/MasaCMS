@@ -32,6 +32,7 @@ import {
   TENANT_UMBRELLA,
   createThrowawaySchema,
   pgAvailable,
+  runCleanup,
   seedRegistry,
   testPgConfig,
   writeTestSecrets,
@@ -100,11 +101,11 @@ describe('local tasks adapter on PostgreSQL', () => {
     };
   }
 
-  /** Tenant ids of the rows of `relation` matching `column = value`, read through the bootstrap pool one tenant scope at a time. */
+  /** Tenant ids of the rows of `relation` matching `column = value`, read through the app role one tenant scope at a time. */
   async function holders(relation: string, column: 'name' | 'queue', value: string): Promise<string[]> {
     const found: string[] = [];
     for (const tenant of PROBE_TENANTS) {
-      const client = await handle.adminPool.connect();
+      const client = await handle.appPool.connect();
       try {
         await client.query('BEGIN');
         await client.query('SELECT set_config($1, $2, true)', [TENANT_SETTING, tenant]);
@@ -118,9 +119,9 @@ describe('local tasks adapter on PostgreSQL', () => {
     return found;
   }
 
-  /** Rows of `relation` visible to the bootstrap pool with no tenant set. */
+  /** Rows of `relation` visible to the app role with no tenant set. */
   async function unscopedCount(relation: string): Promise<number> {
-    const { rows } = await handle.adminPool.query<{ n: number }>(`SELECT count(*)::int AS n FROM ${relation}`);
+    const { rows } = await handle.appPool.query<{ n: number }>(`SELECT count(*)::int AS n FROM ${relation}`);
     return rows[0]?.n ?? 0;
   }
 
@@ -163,11 +164,13 @@ describe('local tasks adapter on PostgreSQL', () => {
   });
 
   afterAll(async () => {
-    await shutdownTracing();
-    await adapter?.close();
-    await receiver?.close();
-    if (stateDir) await rm(stateDir, { recursive: true, force: true });
-    await handle?.drop();
+    await runCleanup('local tasks adapter suite', [
+      () => shutdownTracing(),
+      () => adapter?.close(),
+      () => receiver?.close(),
+      () => (stateDir ? rm(stateDir, { recursive: true, force: true }) : undefined),
+      () => handle?.drop(),
+    ]);
   });
 
   beforeEach(() => {
@@ -246,20 +249,25 @@ describe('local tasks adapter on PostgreSQL', () => {
     const name = 'iso-paused';
     expect(await adapter.queueState(QUEUE)).toEqual({ queue: QUEUE, paused: false });
     await adapter.pauseQueue(QUEUE);
-    expect(await adapter.queueState(QUEUE)).toEqual({ queue: QUEUE, paused: true });
-    expect(await holders(stateTable, 'queue', QUEUE)).toEqual([SYSTEM_TENANT_ID]);
+    try {
+      expect(await adapter.queueState(QUEUE)).toEqual({ queue: QUEUE, paused: true });
+      expect(await holders(stateTable, 'queue', QUEUE)).toEqual([SYSTEM_TENANT_ID]);
 
-    expect(await adapter.create(exportTask(name, TENANT_B.tenantId))).toEqual({ name, created: true });
-    expect(await adapter.dispatchDue()).toBe(0);
-    advance(60_000);
-    expect(await adapter.dispatchDue()).toBe(0);
-    expect(deliveries).toEqual([]);
+      expect(await adapter.create(exportTask(name, TENANT_B.tenantId))).toEqual({ name, created: true });
+      expect(await adapter.dispatchDue()).toBe(0);
+      advance(60_000);
+      expect(await adapter.dispatchDue()).toBe(0);
+      expect(deliveries).toEqual([]);
 
-    await adapter.resumeQueue(QUEUE);
-    expect(await adapter.queueState(QUEUE)).toEqual({ queue: QUEUE, paused: false });
-    expect(await adapter.dispatchDue()).toBe(1);
-    expect(deliveredNames()).toEqual([name]);
-    expect(await rowOf(TENANT_B.tenantId, name)).toMatchObject({ status: 'done', attempts: 1, last_status: 204 });
+      await adapter.resumeQueue(QUEUE);
+      expect(await adapter.queueState(QUEUE)).toEqual({ queue: QUEUE, paused: false });
+      expect(await adapter.dispatchDue()).toBe(1);
+      expect(deliveredNames()).toEqual([name]);
+      expect(await rowOf(TENANT_B.tenantId, name)).toMatchObject({ status: 'done', attempts: 1, last_status: 204 });
+    } finally {
+      await adapter.delete(QUEUE, name, { tenantId: TENANT_B.tenantId });
+      await adapter.resumeQueue(QUEUE);
+    }
   });
 
   it('POSTs a due task once with its wire body, Cloud Tasks headers, stored traceparent and a tasks-invoker token for its target', async () => {

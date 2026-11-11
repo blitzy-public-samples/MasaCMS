@@ -3,6 +3,7 @@ import type { InvocationMinter } from '@opt2/platform/auth';
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import {
   createServiceClient,
+  decodeServiceBody,
   REQUEST_ID_HEADER,
   ServiceUnavailableError,
   type ServiceClient,
@@ -43,6 +44,8 @@ export type WebServiceName = (typeof WEB_SERVICE_NAMES)[number];
 // The gateway is the platform client's only callee, so the invocation credential's audience is always the gateway.
 const GATEWAY_CALLEE = 'gateway';
 const WEB_CALLER = 'web';
+// The platform client's own callee label, so decode errors read as they would from the client.
+const GATEWAY_LABEL = `Service ${GATEWAY_CALLEE} (called by ${WEB_CALLER})`;
 const FORM_CONTENT_TYPE = 'application/x-www-form-urlencoded';
 const UNAVAILABLE_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
 
@@ -266,17 +269,21 @@ async function send<T>(
     headers,
     // Web has no request context, so null keeps an anonymous call anonymous instead of falling back to one.
     userToken: ctx.userToken ?? null,
-    rawBody,
+    // Bytes always, so an unavailable status fails closed whatever its body; decoded below otherwise.
+    rawBody: true,
   };
-  let response: ServiceResponse<T>;
+  let response: ServiceResponse<Buffer>;
   try {
-    response = await withInboundTrace(ctx.inbound, headers, () => processServiceClient().request<T>(request));
+    response = await withInboundTrace(ctx.inbound, headers, () => processServiceClient().request<Buffer>(request));
   } catch (error) {
     if (error instanceof ServiceUnavailableError) throw new GatewayUnavailableError(service, undefined, error);
     throw error;
   }
   if (UNAVAILABLE_STATUSES.has(response.status)) throw new GatewayUnavailableError(service, response.status);
-  return toGatewayResponse(response);
+  const decoded = rawBody
+    ? response.body
+    : decodeServiceBody(response.body, response.headers['content-type'], GATEWAY_LABEL);
+  return toGatewayResponse({ ...response, body: decoded as T });
 }
 
 type LowerMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';

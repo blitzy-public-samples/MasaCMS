@@ -56,11 +56,12 @@ Implemented on the TypeScript side by [`platform/src/legacy-compat/bridge-assert
 | `op` | string | Must equal `<page basename>.<url.op>`, or `jobs.<url.job>` for `jobs.cfm`, compared case-sensitively. Examples: `session.hydrate`, `jobs.purgeCache`, `files.put` |
 | `sid` | string | Legacy session id for session ops, when known (see `session.cfm`); `""` otherwise |
 | `sub` | string | Masa `UserID` that `session.hydrate` installs; `""` otherwise |
-| `siteId` | string | When non-empty, the URL parameter `siteid` must be present and equal to it |
+| `siteId` | string | Must equal the URL parameter `siteid`, compared case-sensitively; an absent `siteid` counts as `""` |
 | `exp` | integer | Epoch seconds (UTC). Accepted when `now < exp <= now + 60` |
-| `nonce` | string | Non-empty; single use within 120 s (application-scoped store). The signer emits 32 lowercase hex characters |
+| `nonce` | string | Non-empty; single use within 120 s (in-memory ledger in the ColdFusion process; see the restart rule below). The signer emits 32 lowercase hex characters |
 
 - A missing or empty `OPT2_BRIDGE_HMAC_KEY` in the ColdFusion process rejects every request.
+- The nonce ledger lives in the ColdFusion process, so a restart empties it. After a restart, an assertion whose `exp` is at or before the JVM start time + 60 s is refused (log reason `preStart`), because the previous process may have accepted it. A signer with a TTL under 60 s is therefore refused for the first 60 − TTL seconds after the JVM starts, so the gateway session client and the migration client both sign with 60 s.
 - The MAC comparison is constant-time.
 - The verified payload is available to the page as `request.opt2Bridge`.
 

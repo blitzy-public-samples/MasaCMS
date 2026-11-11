@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import {
   context,
   ROOT_CONTEXT,
@@ -9,10 +11,12 @@ import {
   type Context,
   type ContextManager,
 } from '@opentelemetry/api';
+import type { FastifyInstance } from 'fastify';
 import { errors, MockAgent } from 'undici';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INVOCATION_HEADER, type InvocationMinter, type InvocationTarget } from '../../src/auth/index.js';
 import { LegacyServiceUnavailableError } from '../../src/legacy-compat/index.js';
+import { createLogger } from '../../src/logging/index.js';
 import {
   createServiceClient,
   SERVICE_CALL_TIMEOUT_MS,
@@ -22,7 +26,15 @@ import {
   type ServiceClientOptions,
   type ServiceRequest,
 } from '../../src/service-kit/client.js';
-import { newRequestContext, runWithRequestContext } from '../../src/service-kit/context.js';
+import {
+  currentRequestContext,
+  newRequestContext,
+  REQUEST_ID_HEADER,
+  runWithRequestContext,
+} from '../../src/service-kit/context.js';
+import { createService } from '../../src/service-kit/create-service.js';
+import { baseEnvSchema, loadEnv } from '../../src/service-kit/env.js';
+import { testVerifier } from '../../src/testing/index.js';
 import {
   activeSpanIds,
   MemorySpanExporter,
@@ -34,6 +46,7 @@ import {
 
 const IDENTITY = 'http://identity.test';
 const TRACEPARENT = /^00-([0-9a-f]{32})-([0-9a-f]{16})-0[01]$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function stubMinter(): InvocationMinter & { headersFor: ReturnType<typeof vi.fn> } {
   return {
@@ -141,13 +154,26 @@ describe('createServiceClient with a MockAgent', () => {
     expect(callCount()).toBe(0);
   });
 
-  it('forwards the request context token and adds no request id or X-OPT2 headers', async () => {
+  it('forwards the request context token and adds no X-OPT2 headers', async () => {
     replyOk();
     const store = { ...newRequestContext({ requestId: 'req-1' }), userToken: 'ctx-token', tenantId: 't-1', site: 'a' };
     await runWithRequestContext(store, () => client.request({ service: 'identity', method: 'GET', path: '/internal/v1/x' }));
     const headers = lastCall().headers ?? {};
     expect(headers.authorization).toBe('Bearer ctx-token');
-    expect(Object.keys(headers).filter((name) => /^x-(request-id|opt2-)/i.test(name))).toEqual([]);
+    expect(Object.keys(headers).filter((name) => /^x-opt2-/i.test(name))).toEqual([]);
+  });
+
+  it.each<[string, Record<string, string> | undefined, boolean, string | undefined]>([
+    ['sends the active request id', undefined, true, 'req-1'],
+    ['keeps a caller-supplied one over the active request id', { 'X-Request-Id': 'caller-7' }, true, 'caller-7'],
+    ['keeps a caller-supplied one outside a request', { 'x-request-id': 'cli-1' }, false, 'cli-1'],
+    ['sends none outside a request', undefined, false, undefined],
+  ])('request id: %s', async (_label, headers, inRequest, expected) => {
+    replyOk();
+    const run = () => client.request({ service: 'identity', method: 'GET', path: '/internal/v1/x', headers });
+    await (inRequest ? runWithRequestContext(newRequestContext({ requestId: 'req-1' }), run) : run());
+    const sent = Object.entries(lastCall().headers ?? {}).filter(([name]) => name.toLowerCase() === REQUEST_ID_HEADER);
+    expect(sent).toEqual(expected === undefined ? [] : [[REQUEST_ID_HEADER, expected]]);
   });
 
   it.each<[string, Partial<ServiceRequest>, string | undefined]>([
@@ -501,5 +527,62 @@ describe('createServiceClient with its own Agent', () => {
       expect(traceId).toBe(caller?.traceId);
       expect(parentId).not.toBe(caller?.spanId);
     });
+  });
+});
+
+describe('createService client across one hop', () => {
+  let callee: Server;
+  let app: FastifyInstance;
+  const received: string[][] = [];
+
+  beforeAll(async () => {
+    callee = createServer((req, res) => {
+      received.push(req.rawHeaders.filter((_, i, raw) => i % 2 === 1 && raw[i - 1]?.toLowerCase() === REQUEST_ID_HEADER));
+      res.setHeader('content-type', 'application/json');
+      res.end('{}');
+    });
+    await new Promise<void>((resolve) => callee.listen(0, '127.0.0.1', resolve));
+    const env = loadEnv(baseEnvSchema, {
+      PORT: '26112',
+      OPT2_SERVICE_NAME: 'people',
+      OPT2_ENV: 'local',
+      OPT2_JWKS_URL: 'http://127.0.0.1:9/jwks',
+      OPT2_TOKEN_ISSUER: 'opt2-local-identity',
+      OPT2_TOKEN_AUDIENCE: 'opt2-local',
+      OPT2_SERVICE_URLS: JSON.stringify({ identity: `http://127.0.0.1:${String((callee.address() as AddressInfo).port)}` }),
+      OPT2_STATE_DIR: path.join(tmpdir(), 'opt2-service-kit-client-state'),
+      TZ: 'UTC',
+    });
+    const logger = createLogger({ service: 'people', version: '1.0.0', env: 'local', destination: { write: () => undefined } });
+    app = await createService({ name: 'people', version: '1.0.0', env, verifierOverride: testVerifier('people'), logger });
+    app.get('/hop', { config: { opt2: { public: true } } }, async () => {
+      await app.opt2.client.request({ service: 'identity', method: 'GET', path: '/internal/v1/x' });
+      return { requestId: currentRequestContext()?.requestId };
+    });
+  });
+
+  afterAll(async () => {
+    await app.opt2.shutdown();
+    callee.closeAllConnections();
+    await new Promise<void>((resolve) => {
+      callee.close(() => {
+        resolve();
+      });
+    });
+  });
+
+  beforeEach(() => {
+    received.length = 0;
+  });
+
+  it.each<[string, Record<string, string>, string | undefined]>([
+    ['the inbound X-Request-Id', { 'X-Request-Id': 'r-hop-1' }, 'r-hop-1'],
+    ['the id the caller generated', {}, undefined],
+  ])('carries %s to the callee', async (_label, headers, inbound) => {
+    const res = await app.inject({ method: 'GET', url: '/hop', headers });
+    expect(res.statusCode).toBe(200);
+    const { requestId } = res.json<{ requestId: string }>();
+    expect(requestId).toEqual(inbound ?? expect.stringMatching(UUID));
+    expect(received).toEqual([[requestId]]);
   });
 });

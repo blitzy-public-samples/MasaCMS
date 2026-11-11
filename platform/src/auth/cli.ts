@@ -16,6 +16,11 @@ Builds the Fastify app with the module's export, waits for ready (never listens)
   --export <name>    builder export, called with the options; returns the app or { app } (default: buildApp)
   --options <json>   JSON value passed to the builder (default: {})
   --out <file>       output file, parent directories created (default: stdout)
+  -h, --help         print this help
+Environment:
+  opt2-auth reads no variable itself. The builder runs in this process and sees its environment, so set what the app
+  needs to build.
+Exit codes: 0 done, 1 failed, 2 usage error.
 `;
 
 /** Invalid command-line usage; answered on stderr with the usage line and exit code 2. */
@@ -49,7 +54,7 @@ export async function main(argv: string[]): Promise<number> {
   }
 }
 
-/** Parses the subcommand and its options; `'help'` when `--help` is given. */
+/** Parses the subcommand and its options; `'help'` when `--help` or `-h` is given. */
 function parseCommand(argv: string[]): MatrixArgs | 'help' {
   let parsed;
   try {
@@ -62,7 +67,7 @@ function parseCommand(argv: string[]): MatrixArgs | 'help' {
         export: { type: 'string', default: 'buildApp' },
         options: { type: 'string', default: '{}' },
         out: { type: 'string' },
-        help: { type: 'boolean', default: false },
+        help: { type: 'boolean', short: 'h', default: false },
       },
     });
   } catch (err) {

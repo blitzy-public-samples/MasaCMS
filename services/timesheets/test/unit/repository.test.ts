@@ -14,7 +14,7 @@ import {
 import { cfUuid } from '@opt2/platform/legacy-compat';
 import { tenantIdForSite, type TenantTx } from '@opt2/platform/tenancy';
 import { businessClock, createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
-import { createTimesheetsRepository, type TimesheetsRepository } from '../../src/repo/repository.js';
+import { MAX_SHEETS_PER_PAGE, createTimesheetsRepository, type SheetFilter, type TimesheetsRepository } from '../../src/repo/repository.js';
 import { TIMESHEETS_UNITS, type ApprovalActionRow, type BlackoutRow, type TimesheetDayRow, type TimesheetRow } from '../../src/repo/tables.js';
 
 const NOW = new Date(2026, 5, 30, 12, 0, 0, 0);
@@ -22,8 +22,11 @@ const ACTOR = cfUuid();
 const P1 = 'AAAAAAAA-0000-0000-0000000000000001';
 const P2 = '00000000-0000-0000-0000000000000002';
 const SHORT_BUDGET = { budgetMs: 300 };
+const FIRST_PAGE = { pageIndex: 1, itemsPerPage: MAX_SHEETS_PER_PAGE };
 
 type New<R> = Omit<R, 'tenant_id'>;
+type SheetMatch = Omit<SheetFilter, 'pageIndex' | 'itemsPerPage'>;
+type Statement = { text: string; values: unknown[] };
 
 function sheet(overrides: Partial<TimesheetRow> = {}): New<TimesheetRow> {
   return {
@@ -81,6 +84,20 @@ function signal(): { promise: Promise<void>; fire: () => void } {
   return { promise, fire };
 }
 
+/** `tx` with every statement it runs appended to `seen`. */
+function recording(tx: TenantTx, seen: Statement[]): TenantTx {
+  const query = ((text, values) => {
+    seen.push({ text: typeof text === 'string' ? text : text.text, values: values ?? [] });
+    return tx.query(text, values);
+  }) as TenantTx['query'];
+  return { ...tx, query };
+}
+
+/** Whether `statement` is the page query of `listSheets`. */
+function isSheetPage(statement: Statement): boolean {
+  return statement.text.endsWith(' LIMIT $3 OFFSET $4');
+}
+
 describe('timesheets repository identity', () => {
   it('extends the platform repository of the owned tables on schema timesheets', () => {
     const repository = createTimesheetsRepository();
@@ -93,6 +110,18 @@ describe('timesheets repository identity', () => {
   it('answers no day ids without a query', async () => {
     const tx = { query: () => Promise.reject(new Error('queried')) } as unknown as TenantTx;
     await expect(createTimesheetsRepository().blackoutsOfDays(tx, [])).resolves.toEqual([]);
+  });
+
+  it.each<[string, Pick<SheetFilter, 'pageIndex' | 'itemsPerPage'>]>([
+    ['pageIndex 0', { pageIndex: 0, itemsPerPage: 50 }],
+    ['a fractional pageIndex', { pageIndex: 1.5, itemsPerPage: 50 }],
+    ['a pageIndex beyond the safe integers', { pageIndex: 2 ** 53, itemsPerPage: 50 }],
+    ['itemsPerPage 0', { pageIndex: 1, itemsPerPage: 0 }],
+    ['a fractional itemsPerPage', { pageIndex: 1, itemsPerPage: 2.5 }],
+    [`itemsPerPage ${MAX_SHEETS_PER_PAGE + 1}`, { pageIndex: 1, itemsPerPage: MAX_SHEETS_PER_PAGE + 1 }],
+  ])('rejects a sheet page with %s with RangeError before any query', async (_name, paging) => {
+    const tx = { query: () => Promise.reject(new Error('queried')) } as unknown as TenantTx;
+    await expect(createTimesheetsRepository().listSheets(tx, paging)).rejects.toBeInstanceOf(RangeError);
   });
 });
 
@@ -258,13 +287,51 @@ describe.skipIf(!available)('timesheets repository against PostgreSQL', () => {
 
     it('lists sheets by period start, person and sheet id, filtered by site and person', async () => {
       await inTenant(async (tx) => {
-        const ids = async (filter: Parameters<TimesheetsRepository['listSheets']>[1]) =>
-          (await repository.listSheets(tx, filter)).map((row) => row.timesheet_id);
+        const ids = async (filter: SheetMatch) => (await repository.listSheets(tx, { ...filter, ...FIRST_PAGE })).rows.map((row) => row.timesheet_id);
         expect(await ids({ siteid: 'tenant-a' })).toEqual([s3, s4, s2, s1].map((row) => row.timesheet_id));
         expect(await ids({})).toEqual([elsewhere, s3, s4, s2, s1].map((row) => row.timesheet_id));
         expect(await ids({ siteid: 'tenant-a', personId: P2 })).toEqual([s3.timesheet_id]);
         expect(await repository.getSheet(tx, s1.timesheet_id)).toMatchObject({ timesheet_id: s1.timesheet_id, person_id: P1 });
         expect(await repository.getSheet(tx, cfUuid())).toBeNull();
+      });
+    });
+
+    it.each<[string, SheetMatch, number, New<TimesheetRow>[][]]>([
+      ['every site', {}, 2, [[elsewhere, s3], [s4, s2], [s1]]],
+      ['site tenant-a', { siteid: 'tenant-a' }, 3, [[s3, s4, s2], [s1]]],
+      ['site tenant-a and person P1', { siteid: 'tenant-a', personId: P1 }, 2, [[s4, s2], [s1]]],
+    ])('pages the sheets of %s in fixture order with the count of every match', async (_name, filter, itemsPerPage, pages) => {
+      const total = pages.flat().length;
+      await inTenant(async (tx) => {
+        for (const [index, page] of pages.entries()) {
+          const { rows, total: counted } = await repository.listSheets(tx, { ...filter, pageIndex: index + 1, itemsPerPage });
+          expect({ ids: rows.map((row) => row.timesheet_id), total: counted }).toEqual({ ids: page.map((row) => row.timesheet_id), total });
+        }
+      });
+    });
+
+    it.each<[string, SheetFilter, number]>([
+      ['a page past the last', { pageIndex: 4, itemsPerPage: 2 }, 5],
+      ['a page starting at the count', { pageIndex: 2, itemsPerPage: 5 }, 5],
+      ['a filtered page past the last', { siteid: 'tenant-a', personId: P2, pageIndex: 2, itemsPerPage: 1 }, 1],
+      ['a filter matching nothing', { siteid: 'tenant-z', pageIndex: 1, itemsPerPage: 50 }, 0],
+    ])('answers %s with no rows and the true count, without a page query', async (_name, filter, total) => {
+      const seen: Statement[] = [];
+      await expect(inTenant((tx) => repository.listSheets(recording(tx, seen), filter))).resolves.toEqual({ rows: [], total });
+      expect(seen.filter(isSheetPage)).toEqual([]);
+    });
+
+    it('reads a sheet page in timesheet_list_idx order without a sort', async () => {
+      await inTenant(async (tx) => {
+        const seen: Statement[] = [];
+        expect((await repository.listSheets(recording(tx, seen), { siteid: 'tenant-a', pageIndex: 2, itemsPerPage: 2 })).rows).toHaveLength(2);
+        const page = seen.find(isSheetPage) ?? expect.unreachable('listSheets ran no page query');
+        await tx.query('SET LOCAL enable_seqscan = off');
+        await tx.query('SET LOCAL enable_sort = off');
+        const { rows } = await tx.query<{ 'QUERY PLAN': string }>(`EXPLAIN (COSTS OFF) ${page.text}`, page.values);
+        const plan = rows.map((row) => row['QUERY PLAN']).join('\n');
+        expect(plan).toContain('Index Scan using timesheet_list_idx');
+        expect(plan).not.toContain('Sort');
       });
     });
 
@@ -298,7 +365,7 @@ describe.skipIf(!available)('timesheets repository against PostgreSQL', () => {
 
     it('shows another tenant none of these rows through any read', async () => {
       await inTenant(async (tx) => {
-        expect(await repository.listSheets(tx, {})).toEqual([]);
+        expect(await repository.listSheets(tx, FIRST_PAGE)).toEqual({ rows: [], total: 0 });
         expect(await repository.getSheet(tx, s1.timesheet_id)).toBeNull();
         expect(await repository.daysOfSheet(tx, s2.timesheet_id)).toEqual([]);
         expect(await repository.dayWithBlackout(tx, blackedOut.day_id)).toBeNull();

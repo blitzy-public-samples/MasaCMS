@@ -199,9 +199,11 @@ paths:
           invocationCredential: []
       parameters:
         - $ref: '#/components/parameters/AsOf'
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
       responses:
         '200':
-          description: The tenant's sheets.
+          description: One page of the tenant's sheets and their count.
           content:
             application/json:
               schema:
@@ -696,6 +698,9 @@ paths:
                 $ref: '#/components/schemas/Health'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+          description: The verified user token's site differs from the supplied `siteid`.
 components:
   securitySchemes:
     userToken:
@@ -1659,12 +1664,17 @@ components:
       type: object
       required:
         - items
+        - total
       additionalProperties: false
       properties:
         items:
           type: array
           items:
             $ref: '#/components/schemas/Timesheet'
+        total:
+          type: integer
+          minimum: 0
+          description: Count of every sheet of the tenant.
     SheetStatusRow:
       type: object
       description: A `tvf_timesheet_status` row.

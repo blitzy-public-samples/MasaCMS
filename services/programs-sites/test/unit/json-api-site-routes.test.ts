@@ -290,7 +290,7 @@ describe('JSON_API_SITE_PATHS', () => {
 
 describe('route declarations', () => {
   it('declare GET and POST on every path as the public contract operations whose site check the handler runs', () => {
-    const declared = collectRouteMatrix(app).routes.filter((route) => route.method !== 'HEAD');
+    const declared = collectRouteMatrix(app).routes;
     const expected = Object.entries(OPENAPI.paths)
       .filter(([template]) => template.endsWith('/site'))
       .flatMap(([template, operations]) =>

@@ -221,16 +221,35 @@ describe('tenant registry and grants against PostgreSQL', () => {
     });
   });
 
-  // Runs last: it registers a fourth site, which the fixture-only assertions above would see.
+  // Own seeded registry, so the site it registers never reaches the fixture-only assertions.
   describe('site.changed consumer', () => {
+    let registry: ThrowawaySchema | undefined;
+
+    /** The consumer case's registry database, created in beforeAll. */
+    function db(): ThrowawaySchema['app'] {
+      if (registry === undefined) {
+        throw new Error('beforeAll did not create the consumer registry schema');
+      }
+      return registry.app;
+    }
+
+    beforeAll(async () => {
+      registry = await createThrowawaySchema({ service: SERVICE, extraSql: [tenantRegistrySql(SERVICE)] });
+      await seedRegistry(registry.app);
+    });
+
+    afterAll(async () => {
+      await registry?.drop();
+    });
+
     /** Applies `event` in the tenant transaction of the site it describes. */
     function apply(event: SiteChangedEvent): Promise<void> {
-      return withTenant(handle.app, TENANT_C, (tx) => tenantRegistryConsumer.apply(tx, event));
+      return withTenant(db(), TENANT_C, (tx) => tenantRegistryConsumer.apply(tx, event));
     }
 
     it('inserts a new site, applies its newer version and ignores a stale one', async () => {
       await apply(siteChangedC(1, SITE_C));
-      expect(await registryEntryForTenant(handle.app, TENANT_C)).toMatchObject({
+      expect(await registryEntryForTenant(db(), TENANT_C)).toMatchObject({
         siteId: SITE_C,
         tenantId: TENANT_C,
         publicUserPoolTenant: TENANT_C,
@@ -242,15 +261,15 @@ describe('tenant registry and grants against PostgreSQL', () => {
 
       const newer = { filePoolId: TENANT_UMBRELLA.siteId, filePoolTenant: UMBRELLA, aggregateVersion: 2 };
       await apply(siteChangedC(2, TENANT_UMBRELLA.siteId));
-      expect(await registryEntryForTenant(handle.app, TENANT_C)).toMatchObject(newer);
+      expect(await registryEntryForTenant(db(), TENANT_C)).toMatchObject(newer);
 
       await apply(siteChangedC(1, SITE_C));
-      expect(await registryEntryForTenant(handle.app, TENANT_C)).toMatchObject(newer);
-      const { rows } = await withMetadata(handle.app, (tx) =>
+      expect(await registryEntryForTenant(db(), TENANT_C)).toMatchObject(newer);
+      const { rows } = await withMetadata(db(), (tx) =>
         tx.query(`SELECT file_pool_id, aggregate_version FROM ${tx.schema}.tenant_registry WHERE site_id = $1`, [SITE_C]),
       );
       expect(rows).toEqual([{ file_pool_id: TENANT_UMBRELLA.siteId, aggregate_version: '2' }]);
-      expect(await siteForTenant(handle.app, TENANT_C)).toBe(SITE_C);
+      expect(await siteForTenant(db(), TENANT_C)).toBe(SITE_C);
     });
   });
 });

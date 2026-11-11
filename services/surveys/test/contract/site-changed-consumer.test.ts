@@ -29,9 +29,16 @@ const REGISTRY_FIELD_TYPES = {
   domains: 'array',
 } as const satisfies Record<keyof SiteChangedPayload, JsonType>;
 
+/** The element type the registry consumer relies on in each list field. */
+const REGISTRY_ITEM_TYPES = {
+  contentPoolIds: 'string',
+  domains: 'string',
+} as const satisfies Partial<Record<keyof SiteChangedPayload, JsonType>>;
+
 const expectation: ConsumerExpectation = {
   required: Object.keys(REGISTRY_FIELD_TYPES),
   types: REGISTRY_FIELD_TYPES,
+  itemTypes: REGISTRY_ITEM_TYPES,
   samples: registryPayloads(),
   kind: 'state',
 };
@@ -59,6 +66,34 @@ function renamed(field: string, to: string): (schema: Record<string, unknown>) =
   };
 }
 
+/** Replaces `field`'s `items` schema, or removes it when `items` is undefined. */
+function withItems(field: string, items: object | undefined): (schema: Record<string, unknown>) => void {
+  return (schema) => {
+    const properties = schema.properties as Record<string, Record<string, unknown>>;
+    const { items: _items, ...property } = properties[field] ?? {};
+    properties[field] = items === undefined ? property : { ...property, items };
+  };
+}
+
+type ItemMutation = [
+  string,
+  (schema: Record<string, unknown>) => void,
+  ContractViolation['instancePath'],
+  ContractViolation['keyword'],
+];
+
+/** Removing or widening the `items` of each list field, with the finding each must produce. */
+const itemMutations = Object.keys(REGISTRY_ITEM_TYPES).flatMap((field): ItemMutation[] => [
+  [`${field} items removed`, withItems(field, undefined), `/${field}/items`, 'items'],
+  [`${field} items of any type`, withItems(field, {}), `/${field}/items`, 'type'],
+  [
+    `${field} items widened to string or number`,
+    withItems(field, { anyOf: [{ type: 'string' }, { type: 'number' }] }),
+    `/${field}/items`,
+    'type',
+  ],
+]);
+
 function thrownBy(run: () => void): unknown {
   try {
     run();
@@ -77,6 +112,7 @@ describe('programs-sites.site.changed.v1 consumed by the surveys site registry',
     ['a pool field the producer no longer requires', withoutRequired('publicUserPoolId'), '/publicUserPoolId', 'required'],
     ['a renamed pool field', renamed('categoryPoolId', 'categoryPoolID'), '/categoryPoolId', 'properties'],
     ['a process kind', (schema) => void (schema['x-opt2-kind'] = 'process'), '', 'x-opt2-kind'],
+    ...itemMutations,
   ])('rejects a producer schema with %s', (_case, mutate, instancePath, keyword) => {
     const error = thrownBy(() => assertProducerConsumerCompatible(mutatedProducer(mutate), expectation));
 

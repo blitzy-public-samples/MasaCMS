@@ -656,6 +656,28 @@ describe('answers', () => {
     expect(fake.requests).toHaveLength(1);
   });
 
+  it.each<{ status: number; label: string; body: string }>(
+    [502, 503, 504].flatMap((status) => [
+      { status, label: 'malformed JSON', body: '{"truncated":' },
+      { status, label: 'an HTML page labelled JSON', body: '<html><body><h1>Service Unavailable</h1></body></html>' },
+    ]),
+  )('fails closed on HTTP $status with $label without decoding it', async ({ status, body }) => {
+    route('GET', 'timesheets', '/v1/timesheets/sheets', {
+      status,
+      headers: { 'content-type': 'application/json' },
+      body,
+    });
+
+    const error = await createGatewayClient(ANONYMOUS)
+      .get('timesheets', '/v1/timesheets/sheets')
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(GatewayUnavailableError);
+    expect(error).toMatchObject({ service: 'timesheets', status });
+    expect(isUnavailable(error)).toBe(true);
+    expect(fake.requests).toHaveLength(1);
+  });
+
   it('fails closed when the gateway refuses the connection', async () => {
     await fake.refuse();
 
@@ -750,7 +772,7 @@ describe('setServiceClientForTests', () => {
       body: undefined,
       headers: { [REQUEST_ID_HEADER]: 'req-anonymous' },
       userToken: null,
-      rawBody: false,
+      rawBody: true,
     });
     expect(relayed.body).toEqual({ ok: true });
     expect(fake.requests).toHaveLength(1);

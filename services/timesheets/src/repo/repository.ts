@@ -17,10 +17,21 @@ export interface DayStateUpdate {
   lastupdatebyid: TimesheetDayRow['lastupdatebyid'];
 }
 
-/** Filters of `listSheets`; an absent filter matches every sheet of the tenant. */
+/** The largest `itemsPerPage` of a sheet page, as envelope.cfc `page()` bounds it. */
+export const MAX_SHEETS_PER_PAGE = 1000;
+
+/** Filters and page of `listSheets`; an absent filter matches every sheet; `pageIndex` is from 1, `itemsPerPage` 1 to `MAX_SHEETS_PER_PAGE`. */
 export interface SheetFilter {
   siteid?: string;
   personId?: string;
+  pageIndex: number;
+  itemsPerPage: number;
+}
+
+/** One page of the tenant's matching sheets and the count of all of them. */
+export interface SheetPage {
+  rows: TimesheetRow[];
+  total: number;
 }
 
 /** A day, the sheet columns its checks read, and whether a blackout closes it. */
@@ -47,8 +58,8 @@ export type TimesheetsRepository = Repository & {
    * @returns true when a row was inserted, false when the day was already blacked out.
    */
   insertBlackoutIfAbsent(tx: TenantTx, row: NewRow<BlackoutRow>, ctx?: WriteContext): Promise<boolean>;
-  /** The tenant's sheets matching `filter`, by period start, person and sheet id, as `usp_timesheet_status_list` orders them. */
-  listSheets(tx: TenantTx, filter: SheetFilter): Promise<TimesheetRow[]>;
+  /** One page of the tenant's sheets matching `filter`, as `usp_timesheet_status_list` pages them, and their count; RangeError for paging out of bounds. */
+  listSheets(tx: TenantTx, filter: SheetFilter): Promise<SheetPage>;
   /** The sheet `timesheetId`, or null. */
   getSheet(tx: TenantTx, timesheetId: string): Promise<TimesheetRow | null>;
   /** The days of sheet `timesheetId`, by work date, then day id. */
@@ -78,14 +89,16 @@ function statementsFor(schema: string) {
   const dayColumns = columnList(TIMESHEET_DAY.columns, 'd');
   const daySheet = `${days} d JOIN ${sheets} t ON t."tenant_id" = d."tenant_id" AND t."timesheet_id" = d."timesheet_id"`;
   const dayBlackout = `SELECT 1 FROM ${blackouts} b WHERE b."tenant_id" = d."tenant_id" AND b."day_id" = d."day_id"`;
+  const sheetFilter = ` WHERE ($1::text IS NULL OR t."siteid" = $1::text) AND ($2::bpchar IS NULL OR t."person_id" = $2::bpchar)`;
   // Ids are fixed-format uppercase CF UUIDs, so byte order ("C") equals the fixture's Latin1_General_BIN2 and its default collation;
   // bpchar casts compare ids as the char(35) columns store them, without truncating a longer argument.
   return Object.freeze({
     blackoutOfDay: `SELECT 1 FROM ${blackouts} WHERE "day_id" = $1::bpchar`,
+    countSheets: `SELECT count(*)::integer AS "total" FROM ${sheets} t${sheetFilter}`,
+    // timesheet_list_idx carries the tenant and this order, so a page is read in index order.
     sheets:
-      `SELECT ${sheetColumns} FROM ${sheets} t WHERE ($1::text IS NULL OR t."siteid" = $1::text)` +
-      ` AND ($2::bpchar IS NULL OR t."person_id" = $2::bpchar)` +
-      ' ORDER BY t."period_start", t."person_id" COLLATE "C", t."timesheet_id" COLLATE "C"',
+      `SELECT ${sheetColumns} FROM ${sheets} t${sheetFilter}` +
+      ' ORDER BY t."period_start", t."person_id" COLLATE "C", t."timesheet_id" COLLATE "C" LIMIT $3 OFFSET $4',
     sheet: `SELECT ${sheetColumns} FROM ${sheets} t WHERE t."timesheet_id" = $1::bpchar`,
     daysOfSheet: `SELECT ${dayColumns} FROM ${days} d WHERE d."timesheet_id" = $1::bpchar ORDER BY d."work_date", d."day_id" COLLATE "C"`,
     lockDay: `SELECT 1 FROM ${days} WHERE "day_id" = $1::bpchar FOR UPDATE`,
@@ -132,9 +145,16 @@ export function createTimesheetsRepository(options: { clock?: Clock; schema?: st
     return true;
   }
 
-  async function listSheets(tx: TenantTx, { siteid, personId }: SheetFilter): Promise<TimesheetRow[]> {
+  async function listSheets(tx: TenantTx, { siteid, personId, pageIndex, itemsPerPage }: SheetFilter): Promise<SheetPage> {
+    if (!Number.isSafeInteger(pageIndex) || pageIndex < 1 || !Number.isInteger(itemsPerPage) || itemsPerPage < 1 || itemsPerPage > MAX_SHEETS_PER_PAGE) {
+      throw new RangeError(`Sheet page out of range: pageIndex ${pageIndex}, itemsPerPage ${itemsPerPage}`);
+    }
     await awaitReadable(tx, [TIMESHEET.unit]);
-    return (await tx.query<TimesheetRow>(sql.sheets, [siteid ?? null, personId ?? null])).rows;
+    const filter = [siteid ?? null, personId ?? null];
+    const [{ total }] = (await tx.query<{ total: number }>(sql.countSheets, filter)).rows as [{ total: number }];
+    const offset = (pageIndex - 1) * itemsPerPage;
+    if (offset >= total) return { rows: [], total };
+    return { rows: (await tx.query<TimesheetRow>(sql.sheets, [...filter, itemsPerPage, offset])).rows, total };
   }
 
   async function getSheet(tx: TenantTx, timesheetId: string): Promise<TimesheetRow | null> {

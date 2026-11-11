@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PubSub, type Message, type Subscription, type Topic } from '@google-cloud/pubsub';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   INBOX_TABLE,
   consumeEnvelope,
@@ -116,6 +116,16 @@ const applyErrors: unknown[] = [];
 /** Thrown by the next process apply instead of writing, then cleared. */
 let injectedFailure: Error | undefined;
 
+/** Pauses the held consumer's first apply of `eventId`: it calls `entered`, then waits for `released`. */
+interface ApplyHold {
+  eventId: string;
+  entered: () => void;
+  released: Promise<void>;
+}
+
+/** Taken, and cleared, by the first held apply of its event; later applies run straight through. */
+let applyHold: ApplyHold | undefined;
+
 /** Counts one apply call of `envelope`. */
 function countCall(envelope: ValueEnvelope): void {
   applyCalls.set(envelope.eventId, (applyCalls.get(envelope.eventId) ?? 0) + 1);
@@ -142,6 +152,7 @@ let stateSub: string;
 let processSub: string;
 let supersedesSub: string;
 let checkedSub: string;
+let heldSub: string;
 
 /** The throwaway schema's tenant database. */
 function db(): ThrowawaySchema['app'] {
@@ -201,6 +212,16 @@ function aggregate(tenantId: string, aggregateId: string): Promise<AggregateRow 
     );
     return rows[0];
   });
+}
+
+/** Backends of the app role waiting for a lock. */
+async function lockWaiters(): Promise<number> {
+  if (handle === undefined) throw new Error('beforeAll did not create the throwaway schema');
+  const { rows } = await handle.adminPool.query<{ n: number }>(
+    "SELECT count(*)::int AS n FROM pg_stat_activity WHERE usename = $1 AND wait_event_type = 'Lock'",
+    [handle.roles.app],
+  );
+  return rows[0]?.n ?? 0;
 }
 
 /** Pulls and acks messages from emulator subscription `name` until `count` arrive or `deadlineMs` passes. */
@@ -331,6 +352,24 @@ function checkedConsumerFor(topic: string): ConsumerDefinition<ValuePayload> {
   };
 }
 
+/** Process consumer whose first apply of the held event waits inside its transaction until released. */
+function heldConsumerFor(topic: string): ConsumerDefinition<ValuePayload> {
+  return {
+    topic,
+    kind: 'process',
+    async apply(tx, envelope) {
+      countCall(envelope);
+      const hold = applyHold;
+      if (hold !== undefined && hold.eventId === envelope.eventId) {
+        applyHold = undefined;
+        hold.entered();
+        await hold.released;
+      }
+      await insertEffect(tx, envelope);
+    },
+  };
+}
+
 describe('event consumer idempotency through push delivery', () => {
   beforeAll(async () => {
     const missing = REQUIRED_ENV.filter((name) => !process.env[name]);
@@ -369,10 +408,12 @@ describe('event consumer idempotency through push delivery', () => {
     const processTopic = await topicFor('stub-process');
     const supersedesTopic = await topicFor('stub-supersedes');
     const checkedTopic = await topicFor('stub-checked');
+    const heldTopic = await topicFor('stub-held');
     stateSub = subscriptionName(SERVICE, stateTopic);
     processSub = subscriptionName(SERVICE, processTopic);
     supersedesSub = subscriptionName(SERVICE, supersedesTopic);
     checkedSub = subscriptionName(SERVICE, checkedTopic);
+    heldSub = subscriptionName(SERVICE, heldTopic);
 
     pubsub = new PubSub({ projectId: PROJECT, apiEndpoint: process.env.PUBSUB_EMULATOR_HOST, emulatorMode: true });
     [dlqTopic] = await pubsub.createTopic(dlqTopicName(checkedSub));
@@ -405,6 +446,7 @@ describe('event consumer idempotency through push delivery', () => {
         payloadSchema: payloadSchema('process', true),
       },
       { subscription: checkedSub, consumer: checkedConsumerFor(checkedTopic), payloadSchema: payloadSchema('process') },
+      { subscription: heldSub, consumer: heldConsumerFor(heldTopic), payloadSchema: payloadSchema('process') },
     ];
     for (const registration of registrations) {
       registerPushSubscription(app, { ...registration, publisher, db: handle.app });
@@ -435,6 +477,53 @@ describe('event consumer idempotency through push delivery', () => {
     ]);
     expect(await inboxRows(TENANT_A.tenantId, [envelope.eventId])).toEqual({ [envelope.eventId]: 'applied' });
     expect(applyCalls.get(envelope.eventId)).toBe(1);
+  });
+
+  it('applies overlapping duplicate deliveries once, the second waiting on the first receipt', async () => {
+    const envelope = envelopeOn(topicOfSubscription(heldSub));
+    const messageId = randomUUID();
+    let release = (): void => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      applyHold = { eventId: envelope.eventId, entered: resolve, released };
+    });
+    let secondWaited = false;
+
+    try {
+      const first = pushTo(service(), heldSub, envelope, { messageId, deliveryAttempt: 1 });
+      const firstSettled = first.then(() => 'settled' as const);
+      expect(await Promise.race([entered.then(() => 'entered' as const), firstSettled])).toBe('entered');
+
+      let secondSettled = false;
+      const second = pushTo(service(), heldSub, envelope, { messageId, deliveryAttempt: 2 });
+      const markSettled = (): void => {
+        secondSettled = true;
+      };
+      second.then(markSettled, markSettled);
+      // The second delivery either blocks behind the held transaction or finishes inside it; only then is the first released.
+      await vi.waitFor(
+        async () => {
+          if (!secondSettled) expect(await lockWaiters()).toBe(1);
+        },
+        { timeout: 5_000, interval: 10 },
+      );
+      secondWaited = !secondSettled;
+
+      release();
+      expect(statuses(await Promise.all([first, second]))).toEqual([204, 204]);
+    } finally {
+      applyHold = undefined;
+      release();
+    }
+
+    expect(await effects(TENANT_A.tenantId, envelope.aggregateId)).toEqual([
+      { eventId: envelope.eventId, version: 1, value: 'v1', superseded: false },
+    ]);
+    expect(await inboxRows(TENANT_A.tenantId, [envelope.eventId])).toEqual({ [envelope.eventId]: 'applied' });
+    expect(applyCalls.get(envelope.eventId)).toBe(1);
+    expect(secondWaited).toBe(true);
   });
 
   it('ignores state versions at or below the last applied one and applies a gapped one', async () => {

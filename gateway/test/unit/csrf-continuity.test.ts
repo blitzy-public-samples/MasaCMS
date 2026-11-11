@@ -1,6 +1,8 @@
 // CSRF continuity for legacy-bound requests: token extraction, identity claims before legacy and settlement after it.
-import { cfDateTimeFormat, type RouteKeyResult } from '@opt2/platform/legacy-compat';
-import { describe, expect, it } from 'vitest';
+import { cfDateTimeFormat, routeKeyForRequest, type RouteKeyResult, type VariantDeclaration } from '@opt2/platform/legacy-compat';
+import { beforeAll, describe, expect, it } from 'vitest';
+import { loadInventoryFacts, loadVariants } from '../../src/cutover/loader.js';
+import { resolveGatewayPaths } from '../../src/cutover/paths.js';
 import type { CsrfValidation, RouteFacts } from '../../src/cutover/types.js';
 import type { LegacyUsedToken } from '../../src/session/bridge-client.js';
 import {
@@ -623,5 +625,128 @@ describe('createCsrfContinuity afterLegacy', () => {
     expect(onlyCall(h, 'identity.settle')).toStrictEqual([
       { sessionId: SESSION_ID, consumed: [TOKEN.toLowerCase()], released: [] },
     ]);
+  });
+});
+
+describe('createCsrfContinuity on the committed inventory facts', () => {
+  const committed = resolveGatewayPaths({});
+  let committedRoutes: Map<string, RouteFacts>;
+  let variants: readonly VariantDeclaration[];
+
+  beforeAll(async () => {
+    const [facts, variantsFile] = await Promise.all([loadInventoryFacts(committed), loadVariants(committed)]);
+    committedRoutes = new Map(facts.routes().map((route) => [route, facts.get(route) as RouteFacts]));
+    variants = variantsFile.variants;
+  });
+
+  interface LegacyCall {
+    method: string;
+    path: string;
+    query: Record<string, string>;
+    form: Record<string, string>;
+    headers: Record<string, string>;
+  }
+
+  /** A harness over the committed facts, and the request with the route key the gateway computes for it. */
+  function committedCall(call: LegacyCall): { h: Harness; req: SessionRequestInput; route: RouteKeyResult } {
+    const h = harness();
+    h.routes = committedRoutes;
+    const headers = { 'user-agent': USER_AGENT, ...call.headers };
+    const route = routeKeyForRequest({ method: call.method, path: call.path, query: call.query, form: call.form, headers }, { variants });
+    const req = request({ path: call.path, httpMethod: call.method, headers, query: call.query, params: { ...call.query, ...call.form } });
+    return { h, req, route };
+  }
+
+  const JSON_SAVE: LegacyCall = {
+    method: 'POST',
+    path: '/_api/json/v1/default/content/',
+    query: {},
+    form: { title: 'Home' },
+    headers: { 'x-csrf_token': HEADER_VALUE, 'x-csrf_token_expires': HEADER_EXPIRES },
+  };
+  const PUBLIC_LOGIN: LegacyCall = {
+    method: 'POST',
+    path: '/',
+    query: {},
+    form: { doaction: 'login', username: 'qa_editor', csrf_token: TOKEN, csrf_token_expires: EXPIRES },
+    headers: {},
+  };
+
+  interface ValidatingCase {
+    name: string;
+    call: LegacyCall;
+    key: string;
+    token: string;
+    expires: string;
+    context: string;
+  }
+
+  const VALIDATING: ValidatingCase[] = [
+    { name: 'a JSON API save', call: JSON_SAVE, key: 'api:content.save', token: HEADER_VALUE, expires: HEADER_EXPIRES, context: 'arguments.id' },
+    { name: 'a public login form post', call: PUBLIC_LOGIN, key: 'page:login', token: TOKEN, expires: EXPIRES, context: 'login' },
+  ];
+
+  it.each(VALIDATING.flatMap((c) => [true, false].map((consumed) => ({ ...c, consumed }))))(
+    'claims the token of $name pending-legacy and settles it (consumed by legacy: $consumed)',
+    async ({ call, key, token, expires, context, consumed }) => {
+      const { h, req, route } = committedCall(call);
+      expect(route.key).toBe(key);
+      const handle = await h.continuity.beforeLegacy(req, route, 'target-primary');
+
+      expect(onlyCall(h, 'identity.claim')).toStrictEqual([{ sessionId: SESSION_ID, token, expires, context }]);
+      expect(handle?.claimedTokens).toEqual([token]);
+
+      h.ledger = consumed ? [{ token, usedAt: WIRE_NOW }] : [];
+      await h.continuity.afterLegacy(handle);
+      expect(onlyCall(h, 'identity.settle')).toStrictEqual([
+        { sessionId: SESSION_ID, consumed: consumed ? [token] : [], released: consumed ? [] : [token] },
+      ]);
+    },
+  );
+
+  it.each(VALIDATING)('puts the token of $name that identity already holds as used into the legacy ledger before forwarding', async ({ call, token }) => {
+    const { h, req, route } = committedCall(call);
+    h.claimState = 'used';
+    const handle = await h.continuity.beforeLegacy(req, route, 'target-primary');
+
+    expect(h.ops()).toEqual(['facts.get', 'sessions.resolveLegacyBound', 'jar.get', 'identity.claim', 'bridge.markUsed']);
+    expect(onlyCall(h, 'bridge.markUsed')).toStrictEqual([LIVE, [{ token, usedAt: WIRE_NOW }], CALL]);
+    expect(handle?.claimedTokens).toEqual([]);
+
+    await h.continuity.afterLegacy(handle);
+    expect(h.ops().slice(-1)).toEqual(['bridge.usedSince']);
+  });
+
+  it.each<{ name: string; call: LegacyCall; key: string }>([
+    {
+      name: 'a JSON API read carrying X-csrf_token',
+      call: {
+        method: 'GET',
+        path: '/_api/json/v1/default/content/00000000000000000000000000000000001',
+        query: {},
+        form: {},
+        headers: { 'x-csrf_token': HEADER_VALUE, 'x-csrf_token_expires': HEADER_EXPIRES },
+      },
+      key: 'api:content.findone',
+    },
+    {
+      name: 'the approvalaction bypass',
+      call: {
+        method: 'POST',
+        path: '/admin/',
+        query: { muraAction: 'cArch.approvalaction' },
+        form: { csrf_token: TOKEN, csrf_token_expires: EXPIRES },
+        headers: {},
+      },
+      key: 'admin:carch.approvalaction',
+    },
+  ])('takes no claim for $name, leaving the token usable', async ({ call, key }) => {
+    const { h, req, route } = committedCall(call);
+    expect(route.key).toBe(key);
+    const handle = await h.continuity.beforeLegacy(req, route, 'target-primary');
+
+    expect(h.ops()).toEqual(['facts.get', 'sessions.resolveLegacyBound', 'jar.get']);
+    expect(onlyCall(h, 'sessions.resolveLegacyBound')[1]).toMatchObject({ adopt: false });
+    expect(handle?.claimedTokens).toEqual([]);
   });
 });

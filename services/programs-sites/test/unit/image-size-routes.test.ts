@@ -148,9 +148,7 @@ function expectNoDomainCall(): void {
 
 describe('route declarations', () => {
   it('match the contract operations', () => {
-    const declared = collectRouteMatrix(app).routes.filter(
-      (route) => route.method !== 'HEAD' && route.url.startsWith('/v1/sites/'),
-    );
+    const declared = collectRouteMatrix(app).routes.filter((route) => route.url.startsWith('/v1/sites/'));
     const expected = SIZE_PATHS.flatMap((template) =>
       Object.entries(OPENAPI.paths[template] ?? {})
         .filter(([method]) => method !== 'parameters')

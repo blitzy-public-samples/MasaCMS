@@ -136,6 +136,11 @@ component extends="muraWRM.Application" output="false" {
 		if (payload.exp > nowS + 60) {
 			return {reason: "tooFar"};
 		}
+		// A restart empties the ledger, so an assertion that a previous process could have accepted is refused.
+		var startS = int(createObject("java", "java.lang.management.ManagementFactory").getRuntimeMXBean().getStartTime() / 1000);
+		if (payload.exp <= startS + 60) {
+			return {reason: "preStart"};
+		}
 
 		var replayed = false;
 		lock name="opt2BridgeNonce" type="exclusive" timeout="10" {
@@ -160,14 +165,17 @@ component extends="muraWRM.Application" output="false" {
 			|| compare(payload.op, base & "." & url[opParam]) != 0) {
 			return {reason: "opMismatch"};
 		}
-		if (len(payload.siteId) && (!structKeyExists(url, "siteid") || compare(url.siteid, payload.siteId) != 0)) {
+		if (compare(structKeyExists(url, "siteid") ? url.siteid : "", payload.siteId) != 0) {
 			return {reason: "siteMismatch"};
 		}
 		return {reason: "", payload: payload};
 	}
 
-	// Decodes the base64url payload part into its claims, or {} when a claim is missing, the nonce empty or exp not a whole number.
+	// Decodes the unpadded base64url payload part into its claims, or {} when a claim is missing or mistyped, the nonce empty or exp not a whole number.
 	private struct function decodePayload(required string part) {
+		if (!reFind("^[A-Za-z0-9_-]+$", arguments.part)) {
+			return {};
+		}
 		try {
 			var b64 = replace(replace(arguments.part, "-", "+", "all"), "_", "/", "all");
 			b64 &= repeatString("=", (4 - len(b64) % 4) % 4);
@@ -179,12 +187,19 @@ component extends="muraWRM.Application" output="false" {
 			if (!isStruct(claims)) {
 				return {};
 			}
+			// deserializeJSON merges names that differ only in case; a strict parse counts them apart.
+			if (createObject("java", "com.fasterxml.jackson.databind.ObjectMapper").init().readTree(javaCast("string", json)).size() != structCount(claims)) {
+				return {};
+			}
+			// Struct keys ignore case, so exact names are matched in the key list; JSON null keeps its key but has no value.
+			var names = structKeyArray(claims);
 			for (var name in ["aud", "op", "sid", "sub", "siteId", "exp", "nonce"]) {
-				if (!structKeyExists(claims, name) || !isSimpleValue(claims[name])) {
+				if (!arrayFind(names, name) || isNull(claims[name])
+					|| !isInstanceOf(claims[name], name == "exp" ? "java.lang.Number" : "java.lang.String")) {
 					return {};
 				}
 			}
-			if (!len(claims.nonce) || !isNumeric(claims.exp) || claims.exp != int(claims.exp)) {
+			if (!len(claims.nonce) || claims.exp != int(claims.exp)) {
 				return {};
 			}
 			return claims;

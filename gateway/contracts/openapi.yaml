@@ -48,6 +48,12 @@ paths:
                   status:
                     type: string
                     const: ok
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+          description: A presented credential is invalid.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+          description: The verified user token's site differs from the supplied `siteid`.
   /internal/v1/cutover/activate:
     post:
       operationId: cutoverActivate
@@ -826,8 +832,9 @@ components:
               - usedAt
             properties:
               token:
+                description: 64 hex digits, the SHA-256 ColdFusion hash() legacy issues; either case, as submitted.
                 type: string
-                pattern: '^[0-9A-Fa-f]{32}$'
+                pattern: '^[0-9A-Fa-f]{64}$'
               usedAt:
                 description: Legacy server local time, without an offset.
                 type: string

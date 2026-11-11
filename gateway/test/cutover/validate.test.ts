@@ -13,7 +13,7 @@ import type {
   GroupsFile,
   InventoryActionVariant,
   InventoryDoc,
-  InventoryEntryPoint,
+  InventoryFrontEndEntry,
   InventoryRoute,
   InventoryTable,
   InventoryWrite,
@@ -76,7 +76,7 @@ function entryPoint(
   disposition: Disposition,
   owningService: string | null,
   writeSet: InventoryWrite[] = [],
-): InventoryEntryPoint {
+): InventoryFrontEndEntry {
   return {
     id: `item:${routeKey}`,
     source: SRC,
@@ -86,6 +86,8 @@ function entryPoint(
     conditionalWrites: [],
     routeKey,
     predicate: null,
+    csrfContext: null,
+    csrfValidation: 'none',
     sessionEffects: 'none',
   };
 }
@@ -113,7 +115,13 @@ function route(
   owningService: string | null,
   writeSet: InventoryWrite[] = [],
 ): InventoryRoute {
-  return { ...entryPoint(routeKey ?? '-', disposition, owningService, writeSet), routeKey, kind, family };
+  return {
+    ...entryPoint(routeKey ?? '-', disposition, owningService, writeSet),
+    routeKey,
+    kind,
+    family,
+    csrfValidation: routeKey === null ? null : 'none',
+  };
 }
 
 function writer(fields: Partial<InventoryWriter> & Pick<InventoryWriter, 'component' | 'trigger'>): InventoryWriter {

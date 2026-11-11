@@ -23,6 +23,7 @@ import {
   TENANT_UMBRELLA,
   createThrowawaySchema,
   pgAvailable,
+  runCleanup,
   seedRegistry,
   testPgConfig,
   type TenantFixture,
@@ -153,8 +154,7 @@ describe('withTenant against PostgreSQL', () => {
   });
 
   afterAll(async () => {
-    await Promise.all(extraPools.map((pool) => pool.end()));
-    await handle?.drop();
+    await runCleanup('with-tenant suite', [...extraPools.map((pool) => () => pool.end()), () => handle?.drop()]);
   });
 
   it('sets app.tenant_id to the tenant inside the transaction', async () => {

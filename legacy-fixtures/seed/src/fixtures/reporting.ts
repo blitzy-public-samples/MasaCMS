@@ -1,6 +1,7 @@
 // SYNTHETIC: seed - no Masa equivalent; legacy oracle in legacy-fixtures/
 import { csvBytes, pdfBytes, sha256Hex, toHex, xlsxBytes, type TableRows } from '../bytes.js';
 import { SITE_ORDER, type SiteKey } from '../config.js';
+import { printable } from '../errors.js';
 import {
   FIXTURE_TABLE_SPECS,
   fixtureKey,
@@ -169,7 +170,7 @@ function buildJobs(ctx: FixtureContext, siteID: SiteKey, rng: SeedRandom, defs: 
   if (count === 0) return [];
   const exporters = ctx.index.actors(siteID, EXPORTER);
   if (exporters.length === 0 || defs.valid.length === 0) {
-    throw new RangeError(`Site ${siteID} needs a ${EXPORTER} actor and a valid export definition for its ${count} export jobs`);
+    throw printable(new RangeError(`Site ${siteID} needs a ${EXPORTER} actor and a valid export definition for its ${count} export jobs`));
   }
   const people = ctx.index.actors(siteID, EMPLOYEE).filter((id) => !ctx.index.isReserved(id));
   const { calendar } = ctx;

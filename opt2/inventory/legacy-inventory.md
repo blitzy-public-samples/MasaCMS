@@ -307,539 +307,539 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 
 ## Route families
 
-| Id | Route key | Owner | Disposition (step) | Notes |
-| --- | --- | --- | --- | --- |
-| `rte:/_api/ajax/v1` | — | — | carry (5) | — |
-| `rte:/_api/asset/render` | `asset:render` | strategies-content | legacy-served (4) | — |
-| `rte:/_api/asset/upload` | `asset:upload` | strategies-content | legacy-served (4) | — |
-| `rte:/_api/email/trackopen` | `trackopen:open` | communications | legacy-served (4) | — |
-| `rte:/_api/feed/v1` | `feed:v1` | strategies-content | carry (5) | — |
-| `rte:/_api/json/v1` | — | — | carry (5) | — |
-| `rte:/_api/render/file` | `render:file` | strategies-content | carry (5) | — |
-| `rte:/_api/render/medium` | `render:medium` | strategies-content | carry (5) | — |
-| `rte:/_api/render/small` | `render:small` | strategies-content | carry (5) | — |
-| `rte:/_api/resource/variation` | `variation:js` | strategies-content | carry (5) | — |
-| `rte:/_api/rest/v1` | — | — | carry (5) | — |
-| `rte:/_api/sitemonitor` | `sitemonitor:run` | programs-sites | carry (5) | — |
-| `rte:/tasks/widgets` | `widgets:redirect` | — | legacy-served (4) | — |
+| Id | Route key | Owner | Disposition (step) | CSRF | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `rte:/_api/ajax/v1` | — | — | carry (5) | — | — |
+| `rte:/_api/asset/render` | `asset:render` | strategies-content | legacy-served (4) | none | — |
+| `rte:/_api/asset/upload` | `asset:upload` | strategies-content | legacy-served (4) | none | — |
+| `rte:/_api/email/trackopen` | `trackopen:open` | communications | legacy-served (4) | none | — |
+| `rte:/_api/feed/v1` | `feed:v1` | strategies-content | carry (5) | none | — |
+| `rte:/_api/json/v1` | — | — | carry (5) | — | — |
+| `rte:/_api/render/file` | `render:file` | strategies-content | carry (5) | none | — |
+| `rte:/_api/render/medium` | `render:medium` | strategies-content | carry (5) | none | — |
+| `rte:/_api/render/small` | `render:small` | strategies-content | carry (5) | none | — |
+| `rte:/_api/resource/variation` | `variation:js` | strategies-content | carry (5) | none | — |
+| `rte:/_api/rest/v1` | — | — | carry (5) | — | — |
+| `rte:/_api/sitemonitor` | `sitemonitor:run` | programs-sites | carry (5) | none | — |
+| `rte:/tasks/widgets` | `widgets:redirect` | — | legacy-served (4) | none | — |
 
 ## JSON API entities and methods
 
-| Id | Route key | Owner | Disposition (step) | Notes |
-| --- | --- | --- | --- | --- |
-| `api:address.delete` | `api:address.delete` | spans people, strategies-content | decision (3) (corrected; expected carry) | `opt2/decision-list.json#api:address.delete` |
-| `api:address.findall` | `api:address.findall` | people | carry (5) | — |
-| `api:address.findmany` | `api:address.findmany` | people | carry (5) | — |
-| `api:address.findnew` | `api:address.findnew` | people | carry (5) | — |
-| `api:address.findone` | `api:address.findone` | people | carry (5) | — |
-| `api:address.findpermissions` | `api:address.findpermissions` | people | carry (5) | — |
-| `api:address.findproperties` | `api:address.findproperties` | people | carry (5) | — |
-| `api:address.findquery` | `api:address.findquery` | people | carry (5) | — |
-| `api:address.save` | `api:address.save` | people | carry (5) | — |
-| `api:address.save{extdata}` | `api:address.save{extdata}` | spans people, strategies-content | decision (3) (corrected; expected carry) | `opt2/decision-list.json#api:address.save{extdata}` |
-| `api:address.validate` | `api:address.validate` | people | carry (5) | — |
-| `api:category.delete` | `api:category.delete` | strategies-content | carry (5) | — |
-| `api:category.findall` | `api:category.findall` | strategies-content | carry (5) | — |
-| `api:category.findmany` | `api:category.findmany` | strategies-content | carry (5) | — |
-| `api:category.findnew` | `api:category.findnew` | strategies-content | carry (5) | — |
-| `api:category.findone` | `api:category.findone` | strategies-content | carry (5) | — |
-| `api:category.findpermissions` | `api:category.findpermissions` | strategies-content | carry (5) | — |
-| `api:category.findproperties` | `api:category.findproperties` | strategies-content | carry (5) | — |
-| `api:category.findquery` | `api:category.findquery` | strategies-content | carry (5) | — |
-| `api:category.save` | `api:category.save` | strategies-content | carry (5) | — |
-| `api:category.validate` | `api:category.validate` | strategies-content | carry (5) | — |
-| `api:changeset.delete` | `api:changeset.delete` | strategies-content | carry (5) | — |
-| `api:changeset.findall` | `api:changeset.findall` | strategies-content | carry (5) | — |
-| `api:changeset.findmany` | `api:changeset.findmany` | strategies-content | carry (5) | — |
-| `api:changeset.findnew` | `api:changeset.findnew` | strategies-content | carry (5) | — |
-| `api:changeset.findone` | `api:changeset.findone` | strategies-content | carry (5) | — |
-| `api:changeset.findpermissions` | `api:changeset.findpermissions` | strategies-content | carry (5) | — |
-| `api:changeset.findproperties` | `api:changeset.findproperties` | strategies-content | carry (5) | — |
-| `api:changeset.findquery` | `api:changeset.findquery` | strategies-content | carry (5) | — |
-| `api:changeset.save` | `api:changeset.save` | strategies-content | carry (5) | — |
-| `api:changeset.validate` | `api:changeset.validate` | strategies-content | carry (5) | — |
-| `api:changesetcategoryassignment.delete` | `api:changesetcategoryassignment.delete` | strategies-content | carry (5) | — |
-| `api:changesetcategoryassignment.findall` | `api:changesetcategoryassignment.findall` | strategies-content | carry (5) | — |
-| `api:changesetcategoryassignment.findmany` | `api:changesetcategoryassignment.findmany` | strategies-content | carry (5) | — |
-| `api:changesetcategoryassignment.findnew` | `api:changesetcategoryassignment.findnew` | strategies-content | carry (5) | — |
-| `api:changesetcategoryassignment.findone` | `api:changesetcategoryassignment.findone` | strategies-content | carry (5) | — |
-| `api:changesetcategoryassignment.findpermissions` | `api:changesetcategoryassignment.findpermissions` | strategies-content | carry (5) | — |
-| `api:changesetcategoryassignment.findproperties` | `api:changesetcategoryassignment.findproperties` | strategies-content | carry (5) | — |
-| `api:changesetcategoryassignment.findquery` | `api:changesetcategoryassignment.findquery` | strategies-content | carry (5) | — |
-| `api:changesetcategoryassignment.save` | `api:changesetcategoryassignment.save` | strategies-content | carry (5) | — |
-| `api:changesetcategoryassignment.validate` | `api:changesetcategoryassignment.validate` | strategies-content | carry (5) | — |
-| `api:checkschema` | `api:checkschema` | — | decision (2) (corrected; expected legacy-served) | `opt2/decision-list.json#tentity-declared:*` |
-| `api:comment.delete` | `api:comment.delete` | strategies-content | carry (5) | — |
-| `api:comment.findall` | `api:comment.findall` | strategies-content | carry (5) | — |
-| `api:comment.findmany` | `api:comment.findmany` | strategies-content | carry (5) | — |
-| `api:comment.findnew` | `api:comment.findnew` | strategies-content | carry (5) | — |
-| `api:comment.findone` | `api:comment.findone` | strategies-content | carry (5) | — |
-| `api:comment.findpermissions` | `api:comment.findpermissions` | strategies-content | carry (5) | — |
-| `api:comment.findproperties` | `api:comment.findproperties` | strategies-content | carry (5) | — |
-| `api:comment.findquery` | `api:comment.findquery` | strategies-content | carry (5) | — |
-| `api:comment.save` | `api:comment.save` | strategies-content | carry (5) | — |
-| `api:comment.validate` | `api:comment.validate` | strategies-content | carry (5) | — |
-| `api:comment.~delete` | `api:comment.~delete` | strategies-content | carry (5) | — |
-| `api:comment.~flag` | `api:comment.~flag` | strategies-content | carry (5) | — |
-| `api:comment.~markasspam` | `api:comment.~markasspam` | strategies-content | carry (5) | — |
-| `api:comment.~undelete` | `api:comment.~undelete` | strategies-content | carry (5) | — |
-| `api:comment.~unmarkasspam` | `api:comment.~unmarkasspam` | strategies-content | carry (5) | — |
-| `api:content.delete` | `api:content.delete` | strategies-content | carry (5) | — |
-| `api:content.findall` | `api:content.findall` | strategies-content | carry (5) | — |
-| `api:content.findmany` | `api:content.findmany` | strategies-content | carry (5) | — |
-| `api:content.findnew` | `api:content.findnew` | strategies-content | carry (5) | — |
-| `api:content.findone` | `api:content.findone` | strategies-content | carry (5) | — |
-| `api:content.findpermissions` | `api:content.findpermissions` | strategies-content | carry (5) | — |
-| `api:content.findproperties` | `api:content.findproperties` | strategies-content | carry (5) | — |
-| `api:content.findquery` | `api:content.findquery` | strategies-content | carry (5) | — |
-| `api:content.save` | `api:content.save` | strategies-content | carry (5) | — |
-| `api:content.save{approved=1}` | `api:content.save{approved=1}` | spans identity, strategies-content | decision (2) (corrected; expected carry) | `opt2/decision-list.json#tcontenteventreminders` |
-| `api:content.save{notify}` | `api:content.save{notify}` | spans identity, strategies-content | decision (2) (corrected; expected carry) | `opt2/decision-list.json#tcontenteventreminders` |
-| `api:content.validate` | `api:content.validate` | strategies-content | carry (5) | — |
-| `api:contentcategoryassign.delete` | `api:contentcategoryassign.delete` | strategies-content | carry (5) | — |
-| `api:contentcategoryassign.findall` | `api:contentcategoryassign.findall` | strategies-content | carry (5) | — |
-| `api:contentcategoryassign.findmany` | `api:contentcategoryassign.findmany` | strategies-content | carry (5) | — |
-| `api:contentcategoryassign.findnew` | `api:contentcategoryassign.findnew` | strategies-content | carry (5) | — |
-| `api:contentcategoryassign.findone` | `api:contentcategoryassign.findone` | strategies-content | carry (5) | — |
-| `api:contentcategoryassign.findpermissions` | `api:contentcategoryassign.findpermissions` | strategies-content | carry (5) | — |
-| `api:contentcategoryassign.findproperties` | `api:contentcategoryassign.findproperties` | strategies-content | carry (5) | — |
-| `api:contentcategoryassign.findquery` | `api:contentcategoryassign.findquery` | strategies-content | carry (5) | — |
-| `api:contentcategoryassign.save` | `api:contentcategoryassign.save` | strategies-content | carry (5) | — |
-| `api:contentcategoryassign.validate` | `api:contentcategoryassign.validate` | strategies-content | carry (5) | — |
-| `api:contentnav.delete` | `api:contentnav.delete` | strategies-content | carry (5) | — |
-| `api:contentnav.findall` | `api:contentnav.findall` | strategies-content | carry (5) | — |
-| `api:contentnav.findmany` | `api:contentnav.findmany` | strategies-content | carry (5) | — |
-| `api:contentnav.findnew` | `api:contentnav.findnew` | strategies-content | carry (5) | — |
-| `api:contentnav.findone` | `api:contentnav.findone` | strategies-content | carry (5) | — |
-| `api:contentnav.findpermissions` | `api:contentnav.findpermissions` | strategies-content | carry (5) | — |
-| `api:contentnav.findproperties` | `api:contentnav.findproperties` | strategies-content | carry (5) | — |
-| `api:contentnav.findquery` | `api:contentnav.findquery` | strategies-content | carry (5) | — |
-| `api:contentnav.save` | `api:contentnav.save` | strategies-content | carry (5) | — |
-| `api:contentnav.save{approved=1}` | `api:contentnav.save{approved=1}` | spans identity, strategies-content | decision (2) (corrected; expected carry) | `opt2/decision-list.json#tcontenteventreminders` |
-| `api:contentnav.save{notify}` | `api:contentnav.save{notify}` | spans identity, strategies-content | decision (2) (corrected; expected carry) | `opt2/decision-list.json#tcontenteventreminders` |
-| `api:contentnav.validate` | `api:contentnav.validate` | strategies-content | carry (5) | — |
-| `api:declareentity` | `api:declareentity` | programs-sites | decision (2) (corrected; expected legacy-served) | `opt2/decision-list.json#tentity` |
-| `api:feed.delete` | `api:feed.delete` | strategies-content | carry (5) | — |
-| `api:feed.findall` | `api:feed.findall` | strategies-content | carry (5) | — |
-| `api:feed.findmany` | `api:feed.findmany` | strategies-content | carry (5) | — |
-| `api:feed.findnew` | `api:feed.findnew` | strategies-content | carry (5) | — |
-| `api:feed.findone` | `api:feed.findone` | strategies-content | carry (5) | — |
-| `api:feed.findpermissions` | `api:feed.findpermissions` | strategies-content | carry (5) | — |
-| `api:feed.findproperties` | `api:feed.findproperties` | strategies-content | carry (5) | — |
-| `api:feed.findquery` | `api:feed.findquery` | strategies-content | carry (5) | — |
-| `api:feed.save` | `api:feed.save` | strategies-content | carry (5) | — |
-| `api:feed.validate` | `api:feed.validate` | strategies-content | carry (5) | — |
-| `api:file.delete` | `api:file.delete` | strategies-content | carry (5) | — |
-| `api:file.findall` | `api:file.findall` | strategies-content | carry (5) | — |
-| `api:file.findmany` | `api:file.findmany` | strategies-content | carry (5) | — |
-| `api:file.findnew` | `api:file.findnew` | strategies-content | carry (5) | — |
-| `api:file.findone` | `api:file.findone` | strategies-content | carry (5) | — |
-| `api:file.findpermissions` | `api:file.findpermissions` | strategies-content | carry (5) | — |
-| `api:file.findproperties` | `api:file.findproperties` | strategies-content | carry (5) | — |
-| `api:file.findquery` | `api:file.findquery` | strategies-content | carry (5) | — |
-| `api:file.save` | `api:file.save` | strategies-content | carry (5) | — |
-| `api:file.save{upload=image}` | `api:file.save{upload=image}` | strategies-content | carry (5) | `EX-FILE-RENDITION` |
-| `api:file.validate` | `api:file.validate` | strategies-content | carry (5) | — |
-| `api:filebrowser.~addfolder` | `api:filebrowser.~addfolder` | strategies-content | legacy-served (4) | — |
-| `api:filebrowser.~browse` | `api:filebrowser.~browse` | strategies-content | legacy-served (4) | — |
-| `api:filebrowser.~children` | `api:filebrowser.~children` | strategies-content | legacy-served (4) | — |
-| `api:filebrowser.~ckeditor_quick_upload` | `api:filebrowser.~ckeditor_quick_upload` | strategies-content | legacy-served (4) | — |
-| `api:filebrowser.~delete` | `api:filebrowser.~delete` | strategies-content | legacy-served (4) | — |
-| `api:filebrowser.~duplicate` | `api:filebrowser.~duplicate` | strategies-content | legacy-served (4) | — |
-| `api:filebrowser.~edit` | `api:filebrowser.~edit` | strategies-content | legacy-served (4) | — |
-| `api:filebrowser.~move` | `api:filebrowser.~move` | strategies-content | legacy-served (4) | — |
-| `api:filebrowser.~processcrop` | `api:filebrowser.~processcrop` | strategies-content | legacy-served (4) | — |
-| `api:filebrowser.~rename` | `api:filebrowser.~rename` | strategies-content | legacy-served (4) | — |
-| `api:filebrowser.~resize` | `api:filebrowser.~resize` | strategies-content | legacy-served (4) | — |
-| `api:filebrowser.~rotate` | `api:filebrowser.~rotate` | strategies-content | legacy-served (4) | — |
-| `api:filebrowser.~update` | `api:filebrowser.~update` | strategies-content | legacy-served (4) | — |
-| `api:filebrowser.~upload` | `api:filebrowser.~upload` | strategies-content | legacy-served (4) | — |
-| `api:filemetadata.delete` | `api:filemetadata.delete` | strategies-content | carry (5) | — |
-| `api:filemetadata.findall` | `api:filemetadata.findall` | strategies-content | carry (5) | — |
-| `api:filemetadata.findmany` | `api:filemetadata.findmany` | strategies-content | carry (5) | — |
-| `api:filemetadata.findnew` | `api:filemetadata.findnew` | strategies-content | carry (5) | — |
-| `api:filemetadata.findone` | `api:filemetadata.findone` | strategies-content | carry (5) | — |
-| `api:filemetadata.findpermissions` | `api:filemetadata.findpermissions` | strategies-content | carry (5) | — |
-| `api:filemetadata.findproperties` | `api:filemetadata.findproperties` | strategies-content | carry (5) | — |
-| `api:filemetadata.findquery` | `api:filemetadata.findquery` | strategies-content | carry (5) | — |
-| `api:filemetadata.save` | `api:filemetadata.save` | strategies-content | carry (5) | — |
-| `api:filemetadata.validate` | `api:filemetadata.validate` | strategies-content | carry (5) | — |
-| `api:findcalendaritems` | `api:findcalendaritems` | strategies-content | carry (5) | — |
-| `api:findcrumbarray` | `api:findcrumbarray` | strategies-content | carry (5) | — |
-| `api:findcurrentuser` | `api:findcurrentuser` | identity | carry (5) | — |
-| `api:findrelatedcontent` | `api:findrelatedcontent` | strategies-content | carry (5) | — |
-| `api:findversionhistory` | `api:findversionhistory` | strategies-content | carry (5) | — |
-| `api:generatecsrftokens` | `api:generatecsrftokens` | identity | carry (5) | — |
-| `api:geturlforimage` | `api:geturlforimage` | strategies-content | carry (5) | — |
-| `api:group.delete` | `api:group.delete` | spans identity, strategies-content | decision (3) (corrected; expected carry) | `opt2/decision-list.json#api:group.delete` |
-| `api:group.findall` | `api:group.findall` | identity | carry (5) | — |
-| `api:group.findmany` | `api:group.findmany` | identity | carry (5) | — |
-| `api:group.findnew` | `api:group.findnew` | identity | carry (5) | — |
-| `api:group.findone` | `api:group.findone` | identity | carry (5) | — |
-| `api:group.findpermissions` | `api:group.findpermissions` | identity | carry (5) | — |
-| `api:group.findproperties` | `api:group.findproperties` | identity | carry (5) | — |
-| `api:group.findquery` | `api:group.findquery` | identity | carry (5) | — |
-| `api:group.save` | `api:group.save` | identity | carry (5) | — |
-| `api:group.save{extdata}` | `api:group.save{extdata}` | spans identity, strategies-content | decision (3) (corrected; expected carry) | `opt2/decision-list.json#api:group.save{extdata}` |
-| `api:group.save{photo}` | `api:group.save{photo}` | identity | decision (3) | `opt2/decision-list.json#api:group.save{photo}` |
-| `api:group.validate` | `api:group.validate` | identity | carry (5) | — |
-| `api:login` | `api:login` | identity | carry (5) | — |
-| `api:logout` | `api:logout` | identity | carry (5) | — |
-| `api:processasyncobject` | `api:processasyncobject` | spans communications, identity, people, programs-sites, strategies-content | decision (3) (corrected; expected legacy-served) | `opt2/decision-list.json#api:processasyncobject` |
-| `api:processasyncobject{saveform}` | `api:processasyncobject{saveform}` | spans identity, strategies-content | decision (3) (corrected; expected legacy-served) | `opt2/decision-list.json#api:processasyncobject{saveform}` |
-| `api:site.delete` | `api:site.delete` | programs-sites | carry (5) | — |
-| `api:site.findall` | `api:site.findall` | programs-sites | carry (5) | — |
-| `api:site.findmany` | `api:site.findmany` | programs-sites | carry (5) | — |
-| `api:site.findnew` | `api:site.findnew` | programs-sites | carry (5) | — |
-| `api:site.findone` | `api:site.findone` | programs-sites | carry (5) | — |
-| `api:site.findpermissions` | `api:site.findpermissions` | programs-sites | carry (5) | — |
-| `api:site.findproperties` | `api:site.findproperties` | programs-sites | carry (5) | — |
-| `api:site.findquery` | `api:site.findquery` | programs-sites | carry (5) | — |
-| `api:site.save` | `api:site.save` | spans communications, identity, people, programs-sites, strategies-content | decision (2) (corrected; expected carry) | `opt2/decision-list.json#trazunasettings` |
-| `api:site.save{bundle}` | `api:site.save{bundle}` | spans communications, identity, people, programs-sites, strategies-content | decision (2) (corrected; expected carry) | `opt2/decision-list.json#tplugindisplayobjects` |
-| `api:site.validate` | `api:site.validate` | programs-sites | carry (5) | — |
-| `api:stats.delete` | `api:stats.delete` | strategies-content | carry (5) | — |
-| `api:stats.findall` | `api:stats.findall` | strategies-content | carry (5) | — |
-| `api:stats.findmany` | `api:stats.findmany` | strategies-content | carry (5) | — |
-| `api:stats.findnew` | `api:stats.findnew` | strategies-content | carry (5) | — |
-| `api:stats.findone` | `api:stats.findone` | strategies-content | carry (5) | — |
-| `api:stats.findpermissions` | `api:stats.findpermissions` | strategies-content | carry (5) | — |
-| `api:stats.findproperties` | `api:stats.findproperties` | strategies-content | carry (5) | — |
-| `api:stats.findquery` | `api:stats.findquery` | strategies-content | carry (5) | — |
-| `api:stats.save` | `api:stats.save` | strategies-content | carry (5) | — |
-| `api:stats.validate` | `api:stats.validate` | strategies-content | carry (5) | — |
-| `api:submitform` | `api:submitform` | strategies-content | retired (1) (corrected; expected carry) | — |
-| `api:swagger` | `api:swagger` | — | legacy-served (4) | — |
-| `api:undeclareentity` | `api:undeclareentity` | programs-sites | decision (2) (corrected; expected legacy-served) | `opt2/decision-list.json#tentity` |
-| `api:user.delete` | `api:user.delete` | people | decision (3) | `opt2/decision-list.json#api:user.delete` |
-| `api:user.findall` | `api:user.findall` | people | carry (5) | — |
-| `api:user.findmany` | `api:user.findmany` | people | carry (5) | — |
-| `api:user.findnew` | `api:user.findnew` | people | carry (5) | — |
-| `api:user.findone` | `api:user.findone` | people | carry (5) | — |
-| `api:user.findpermissions` | `api:user.findpermissions` | people | carry (5) | — |
-| `api:user.findproperties` | `api:user.findproperties` | people | carry (5) | — |
-| `api:user.findquery` | `api:user.findquery` | people | carry (5) | — |
-| `api:user.save` | `api:user.save` | people | carry (5) | — |
-| `api:user.save{extdata}` | `api:user.save{extdata}` | spans identity, people, strategies-content | decision (3) (corrected; expected carry) | `opt2/decision-list.json#api:user.save{extdata}` |
-| `api:user.save{photo}` | `api:user.save{photo}` | people | decision (3) | `opt2/decision-list.json#api:user.save{photo}` |
-| `api:user.validate` | `api:user.validate` | people | carry (5) | — |
-| `api:user.~pollstate` | `api:user.~pollstate` | people | carry (5) | — |
-| `api:validateemail` | `api:validateemail` | identity | carry (5) | — |
-| `api:variationtargeting.delete` | `api:variationtargeting.delete` | strategies-content | carry (5) | — |
-| `api:variationtargeting.findall` | `api:variationtargeting.findall` | strategies-content | carry (5) | — |
-| `api:variationtargeting.findmany` | `api:variationtargeting.findmany` | strategies-content | carry (5) | — |
-| `api:variationtargeting.findnew` | `api:variationtargeting.findnew` | strategies-content | carry (5) | — |
-| `api:variationtargeting.findone` | `api:variationtargeting.findone` | strategies-content | carry (5) | — |
-| `api:variationtargeting.findpermissions` | `api:variationtargeting.findpermissions` | strategies-content | carry (5) | — |
-| `api:variationtargeting.findproperties` | `api:variationtargeting.findproperties` | strategies-content | carry (5) | — |
-| `api:variationtargeting.findquery` | `api:variationtargeting.findquery` | strategies-content | carry (5) | — |
-| `api:variationtargeting.save` | `api:variationtargeting.save` | strategies-content | carry (5) | — |
-| `api:variationtargeting.validate` | `api:variationtargeting.validate` | strategies-content | carry (5) | — |
-| `rest:address.delete` | `rest:address.delete` | spans people, strategies-content | decision (3) (corrected; expected carry) | `opt2/decision-list.json#api:address.delete` |
-| `rest:address.findall` | `rest:address.findall` | people | carry (5) | — |
-| `rest:address.findmany` | `rest:address.findmany` | people | carry (5) | — |
-| `rest:address.findnew` | `rest:address.findnew` | people | carry (5) | — |
-| `rest:address.findone` | `rest:address.findone` | people | carry (5) | — |
-| `rest:address.findpermissions` | `rest:address.findpermissions` | people | carry (5) | — |
-| `rest:address.findproperties` | `rest:address.findproperties` | people | carry (5) | — |
-| `rest:address.findquery` | `rest:address.findquery` | people | carry (5) | — |
-| `rest:address.save` | `rest:address.save` | people | carry (5) | — |
-| `rest:address.save{extdata}` | `rest:address.save{extdata}` | spans people, strategies-content | decision (3) (corrected; expected carry) | `opt2/decision-list.json#api:address.save{extdata}` |
-| `rest:address.validate` | `rest:address.validate` | people | carry (5) | — |
-| `rest:category.delete` | `rest:category.delete` | strategies-content | carry (5) | — |
-| `rest:category.findall` | `rest:category.findall` | strategies-content | carry (5) | — |
-| `rest:category.findmany` | `rest:category.findmany` | strategies-content | carry (5) | — |
-| `rest:category.findnew` | `rest:category.findnew` | strategies-content | carry (5) | — |
-| `rest:category.findone` | `rest:category.findone` | strategies-content | carry (5) | — |
-| `rest:category.findpermissions` | `rest:category.findpermissions` | strategies-content | carry (5) | — |
-| `rest:category.findproperties` | `rest:category.findproperties` | strategies-content | carry (5) | — |
-| `rest:category.findquery` | `rest:category.findquery` | strategies-content | carry (5) | — |
-| `rest:category.save` | `rest:category.save` | strategies-content | carry (5) | — |
-| `rest:category.validate` | `rest:category.validate` | strategies-content | carry (5) | — |
-| `rest:changeset.delete` | `rest:changeset.delete` | strategies-content | carry (5) | — |
-| `rest:changeset.findall` | `rest:changeset.findall` | strategies-content | carry (5) | — |
-| `rest:changeset.findmany` | `rest:changeset.findmany` | strategies-content | carry (5) | — |
-| `rest:changeset.findnew` | `rest:changeset.findnew` | strategies-content | carry (5) | — |
-| `rest:changeset.findone` | `rest:changeset.findone` | strategies-content | carry (5) | — |
-| `rest:changeset.findpermissions` | `rest:changeset.findpermissions` | strategies-content | carry (5) | — |
-| `rest:changeset.findproperties` | `rest:changeset.findproperties` | strategies-content | carry (5) | — |
-| `rest:changeset.findquery` | `rest:changeset.findquery` | strategies-content | carry (5) | — |
-| `rest:changeset.save` | `rest:changeset.save` | strategies-content | carry (5) | — |
-| `rest:changeset.validate` | `rest:changeset.validate` | strategies-content | carry (5) | — |
-| `rest:changesetcategoryassignment.delete` | `rest:changesetcategoryassignment.delete` | strategies-content | carry (5) | — |
-| `rest:changesetcategoryassignment.findall` | `rest:changesetcategoryassignment.findall` | strategies-content | carry (5) | — |
-| `rest:changesetcategoryassignment.findmany` | `rest:changesetcategoryassignment.findmany` | strategies-content | carry (5) | — |
-| `rest:changesetcategoryassignment.findnew` | `rest:changesetcategoryassignment.findnew` | strategies-content | carry (5) | — |
-| `rest:changesetcategoryassignment.findone` | `rest:changesetcategoryassignment.findone` | strategies-content | carry (5) | — |
-| `rest:changesetcategoryassignment.findpermissions` | `rest:changesetcategoryassignment.findpermissions` | strategies-content | carry (5) | — |
-| `rest:changesetcategoryassignment.findproperties` | `rest:changesetcategoryassignment.findproperties` | strategies-content | carry (5) | — |
-| `rest:changesetcategoryassignment.findquery` | `rest:changesetcategoryassignment.findquery` | strategies-content | carry (5) | — |
-| `rest:changesetcategoryassignment.save` | `rest:changesetcategoryassignment.save` | strategies-content | carry (5) | — |
-| `rest:changesetcategoryassignment.validate` | `rest:changesetcategoryassignment.validate` | strategies-content | carry (5) | — |
-| `rest:checkschema` | `rest:checkschema` | — | decision (2) (corrected; expected legacy-served) | `opt2/decision-list.json#tentity-declared:*` |
-| `rest:comment.delete` | `rest:comment.delete` | strategies-content | carry (5) | — |
-| `rest:comment.findall` | `rest:comment.findall` | strategies-content | carry (5) | — |
-| `rest:comment.findmany` | `rest:comment.findmany` | strategies-content | carry (5) | — |
-| `rest:comment.findnew` | `rest:comment.findnew` | strategies-content | carry (5) | — |
-| `rest:comment.findone` | `rest:comment.findone` | strategies-content | carry (5) | — |
-| `rest:comment.findpermissions` | `rest:comment.findpermissions` | strategies-content | carry (5) | — |
-| `rest:comment.findproperties` | `rest:comment.findproperties` | strategies-content | carry (5) | — |
-| `rest:comment.findquery` | `rest:comment.findquery` | strategies-content | carry (5) | — |
-| `rest:comment.save` | `rest:comment.save` | strategies-content | carry (5) | — |
-| `rest:comment.validate` | `rest:comment.validate` | strategies-content | carry (5) | — |
-| `rest:comment.~delete` | `rest:comment.~delete` | strategies-content | carry (5) | — |
-| `rest:comment.~flag` | `rest:comment.~flag` | strategies-content | carry (5) | — |
-| `rest:comment.~markasspam` | `rest:comment.~markasspam` | strategies-content | carry (5) | — |
-| `rest:comment.~undelete` | `rest:comment.~undelete` | strategies-content | carry (5) | — |
-| `rest:comment.~unmarkasspam` | `rest:comment.~unmarkasspam` | strategies-content | carry (5) | — |
-| `rest:content.delete` | `rest:content.delete` | strategies-content | carry (5) | — |
-| `rest:content.findall` | `rest:content.findall` | strategies-content | carry (5) | — |
-| `rest:content.findmany` | `rest:content.findmany` | strategies-content | carry (5) | — |
-| `rest:content.findnew` | `rest:content.findnew` | strategies-content | carry (5) | — |
-| `rest:content.findone` | `rest:content.findone` | strategies-content | carry (5) | — |
-| `rest:content.findpermissions` | `rest:content.findpermissions` | strategies-content | carry (5) | — |
-| `rest:content.findproperties` | `rest:content.findproperties` | strategies-content | carry (5) | — |
-| `rest:content.findquery` | `rest:content.findquery` | strategies-content | carry (5) | — |
-| `rest:content.save` | `rest:content.save` | strategies-content | carry (5) | — |
-| `rest:content.save{approved=1}` | `rest:content.save{approved=1}` | spans identity, strategies-content | decision (2) (corrected; expected carry) | `opt2/decision-list.json#tcontenteventreminders` |
-| `rest:content.save{notify}` | `rest:content.save{notify}` | spans identity, strategies-content | decision (2) (corrected; expected carry) | `opt2/decision-list.json#tcontenteventreminders` |
-| `rest:content.validate` | `rest:content.validate` | strategies-content | carry (5) | — |
-| `rest:contentcategoryassign.delete` | `rest:contentcategoryassign.delete` | strategies-content | carry (5) | — |
-| `rest:contentcategoryassign.findall` | `rest:contentcategoryassign.findall` | strategies-content | carry (5) | — |
-| `rest:contentcategoryassign.findmany` | `rest:contentcategoryassign.findmany` | strategies-content | carry (5) | — |
-| `rest:contentcategoryassign.findnew` | `rest:contentcategoryassign.findnew` | strategies-content | carry (5) | — |
-| `rest:contentcategoryassign.findone` | `rest:contentcategoryassign.findone` | strategies-content | carry (5) | — |
-| `rest:contentcategoryassign.findpermissions` | `rest:contentcategoryassign.findpermissions` | strategies-content | carry (5) | — |
-| `rest:contentcategoryassign.findproperties` | `rest:contentcategoryassign.findproperties` | strategies-content | carry (5) | — |
-| `rest:contentcategoryassign.findquery` | `rest:contentcategoryassign.findquery` | strategies-content | carry (5) | — |
-| `rest:contentcategoryassign.save` | `rest:contentcategoryassign.save` | strategies-content | carry (5) | — |
-| `rest:contentcategoryassign.validate` | `rest:contentcategoryassign.validate` | strategies-content | carry (5) | — |
-| `rest:contentnav.delete` | `rest:contentnav.delete` | strategies-content | carry (5) | — |
-| `rest:contentnav.findall` | `rest:contentnav.findall` | strategies-content | carry (5) | — |
-| `rest:contentnav.findmany` | `rest:contentnav.findmany` | strategies-content | carry (5) | — |
-| `rest:contentnav.findnew` | `rest:contentnav.findnew` | strategies-content | carry (5) | — |
-| `rest:contentnav.findone` | `rest:contentnav.findone` | strategies-content | carry (5) | — |
-| `rest:contentnav.findpermissions` | `rest:contentnav.findpermissions` | strategies-content | carry (5) | — |
-| `rest:contentnav.findproperties` | `rest:contentnav.findproperties` | strategies-content | carry (5) | — |
-| `rest:contentnav.findquery` | `rest:contentnav.findquery` | strategies-content | carry (5) | — |
-| `rest:contentnav.save` | `rest:contentnav.save` | strategies-content | carry (5) | — |
-| `rest:contentnav.save{approved=1}` | `rest:contentnav.save{approved=1}` | spans identity, strategies-content | decision (2) (corrected; expected carry) | `opt2/decision-list.json#tcontenteventreminders` |
-| `rest:contentnav.save{notify}` | `rest:contentnav.save{notify}` | spans identity, strategies-content | decision (2) (corrected; expected carry) | `opt2/decision-list.json#tcontenteventreminders` |
-| `rest:contentnav.validate` | `rest:contentnav.validate` | strategies-content | carry (5) | — |
-| `rest:declareentity` | `rest:declareentity` | programs-sites | decision (2) (corrected; expected legacy-served) | `opt2/decision-list.json#tentity` |
-| `rest:feed.delete` | `rest:feed.delete` | strategies-content | carry (5) | — |
-| `rest:feed.findall` | `rest:feed.findall` | strategies-content | carry (5) | — |
-| `rest:feed.findmany` | `rest:feed.findmany` | strategies-content | carry (5) | — |
-| `rest:feed.findnew` | `rest:feed.findnew` | strategies-content | carry (5) | — |
-| `rest:feed.findone` | `rest:feed.findone` | strategies-content | carry (5) | — |
-| `rest:feed.findpermissions` | `rest:feed.findpermissions` | strategies-content | carry (5) | — |
-| `rest:feed.findproperties` | `rest:feed.findproperties` | strategies-content | carry (5) | — |
-| `rest:feed.findquery` | `rest:feed.findquery` | strategies-content | carry (5) | — |
-| `rest:feed.save` | `rest:feed.save` | strategies-content | carry (5) | — |
-| `rest:feed.validate` | `rest:feed.validate` | strategies-content | carry (5) | — |
-| `rest:file.delete` | `rest:file.delete` | strategies-content | carry (5) | — |
-| `rest:file.findall` | `rest:file.findall` | strategies-content | carry (5) | — |
-| `rest:file.findmany` | `rest:file.findmany` | strategies-content | carry (5) | — |
-| `rest:file.findnew` | `rest:file.findnew` | strategies-content | carry (5) | — |
-| `rest:file.findone` | `rest:file.findone` | strategies-content | carry (5) | — |
-| `rest:file.findpermissions` | `rest:file.findpermissions` | strategies-content | carry (5) | — |
-| `rest:file.findproperties` | `rest:file.findproperties` | strategies-content | carry (5) | — |
-| `rest:file.findquery` | `rest:file.findquery` | strategies-content | carry (5) | — |
-| `rest:file.save` | `rest:file.save` | strategies-content | carry (5) | — |
-| `rest:file.save{upload=image}` | `rest:file.save{upload=image}` | strategies-content | carry (5) | `EX-FILE-RENDITION` |
-| `rest:file.validate` | `rest:file.validate` | strategies-content | carry (5) | — |
-| `rest:filebrowser.~addfolder` | `rest:filebrowser.~addfolder` | strategies-content | legacy-served (4) | — |
-| `rest:filebrowser.~browse` | `rest:filebrowser.~browse` | strategies-content | legacy-served (4) | — |
-| `rest:filebrowser.~children` | `rest:filebrowser.~children` | strategies-content | legacy-served (4) | — |
-| `rest:filebrowser.~ckeditor_quick_upload` | `rest:filebrowser.~ckeditor_quick_upload` | strategies-content | legacy-served (4) | — |
-| `rest:filebrowser.~delete` | `rest:filebrowser.~delete` | strategies-content | legacy-served (4) | — |
-| `rest:filebrowser.~duplicate` | `rest:filebrowser.~duplicate` | strategies-content | legacy-served (4) | — |
-| `rest:filebrowser.~edit` | `rest:filebrowser.~edit` | strategies-content | legacy-served (4) | — |
-| `rest:filebrowser.~move` | `rest:filebrowser.~move` | strategies-content | legacy-served (4) | — |
-| `rest:filebrowser.~processcrop` | `rest:filebrowser.~processcrop` | strategies-content | legacy-served (4) | — |
-| `rest:filebrowser.~rename` | `rest:filebrowser.~rename` | strategies-content | legacy-served (4) | — |
-| `rest:filebrowser.~resize` | `rest:filebrowser.~resize` | strategies-content | legacy-served (4) | — |
-| `rest:filebrowser.~rotate` | `rest:filebrowser.~rotate` | strategies-content | legacy-served (4) | — |
-| `rest:filebrowser.~update` | `rest:filebrowser.~update` | strategies-content | legacy-served (4) | — |
-| `rest:filebrowser.~upload` | `rest:filebrowser.~upload` | strategies-content | legacy-served (4) | — |
-| `rest:filemetadata.delete` | `rest:filemetadata.delete` | strategies-content | carry (5) | — |
-| `rest:filemetadata.findall` | `rest:filemetadata.findall` | strategies-content | carry (5) | — |
-| `rest:filemetadata.findmany` | `rest:filemetadata.findmany` | strategies-content | carry (5) | — |
-| `rest:filemetadata.findnew` | `rest:filemetadata.findnew` | strategies-content | carry (5) | — |
-| `rest:filemetadata.findone` | `rest:filemetadata.findone` | strategies-content | carry (5) | — |
-| `rest:filemetadata.findpermissions` | `rest:filemetadata.findpermissions` | strategies-content | carry (5) | — |
-| `rest:filemetadata.findproperties` | `rest:filemetadata.findproperties` | strategies-content | carry (5) | — |
-| `rest:filemetadata.findquery` | `rest:filemetadata.findquery` | strategies-content | carry (5) | — |
-| `rest:filemetadata.save` | `rest:filemetadata.save` | strategies-content | carry (5) | — |
-| `rest:filemetadata.validate` | `rest:filemetadata.validate` | strategies-content | carry (5) | — |
-| `rest:findcalendaritems` | `rest:findcalendaritems` | strategies-content | carry (5) | — |
-| `rest:findcrumbarray` | `rest:findcrumbarray` | strategies-content | carry (5) | — |
-| `rest:findcurrentuser` | `rest:findcurrentuser` | identity | carry (5) | — |
-| `rest:findrelatedcontent` | `rest:findrelatedcontent` | strategies-content | carry (5) | — |
-| `rest:findversionhistory` | `rest:findversionhistory` | strategies-content | carry (5) | — |
-| `rest:generatecsrftokens` | `rest:generatecsrftokens` | identity | carry (5) | — |
-| `rest:geturlforimage` | `rest:geturlforimage` | strategies-content | carry (5) | — |
-| `rest:group.delete` | `rest:group.delete` | spans identity, strategies-content | decision (3) (corrected; expected carry) | `opt2/decision-list.json#api:group.delete` |
-| `rest:group.findall` | `rest:group.findall` | identity | carry (5) | — |
-| `rest:group.findmany` | `rest:group.findmany` | identity | carry (5) | — |
-| `rest:group.findnew` | `rest:group.findnew` | identity | carry (5) | — |
-| `rest:group.findone` | `rest:group.findone` | identity | carry (5) | — |
-| `rest:group.findpermissions` | `rest:group.findpermissions` | identity | carry (5) | — |
-| `rest:group.findproperties` | `rest:group.findproperties` | identity | carry (5) | — |
-| `rest:group.findquery` | `rest:group.findquery` | identity | carry (5) | — |
-| `rest:group.save` | `rest:group.save` | identity | carry (5) | — |
-| `rest:group.save{extdata}` | `rest:group.save{extdata}` | spans identity, strategies-content | decision (3) (corrected; expected carry) | `opt2/decision-list.json#api:group.save{extdata}` |
-| `rest:group.save{photo}` | `rest:group.save{photo}` | identity | decision (3) | `opt2/decision-list.json#api:group.save{photo}` |
-| `rest:group.validate` | `rest:group.validate` | identity | carry (5) | — |
-| `rest:login` | `rest:login` | identity | carry (5) | — |
-| `rest:logout` | `rest:logout` | identity | carry (5) | — |
-| `rest:processasyncobject` | `rest:processasyncobject` | spans identity, people, strategies-content | decision (3) (corrected; expected legacy-served) | `opt2/decision-list.json#api:processasyncobject` |
-| `rest:processasyncobject{saveform}` | `rest:processasyncobject{saveform}` | spans identity, strategies-content | decision (3) (corrected; expected legacy-served) | `opt2/decision-list.json#api:processasyncobject{saveform}` |
-| `rest:site.delete` | `rest:site.delete` | programs-sites | carry (5) | — |
-| `rest:site.findall` | `rest:site.findall` | programs-sites | carry (5) | — |
-| `rest:site.findmany` | `rest:site.findmany` | programs-sites | carry (5) | — |
-| `rest:site.findnew` | `rest:site.findnew` | programs-sites | carry (5) | — |
-| `rest:site.findone` | `rest:site.findone` | programs-sites | carry (5) | — |
-| `rest:site.findpermissions` | `rest:site.findpermissions` | programs-sites | carry (5) | — |
-| `rest:site.findproperties` | `rest:site.findproperties` | programs-sites | carry (5) | — |
-| `rest:site.findquery` | `rest:site.findquery` | programs-sites | carry (5) | — |
-| `rest:site.save` | `rest:site.save` | spans communications, identity, people, programs-sites, strategies-content | decision (2) (corrected; expected carry) | `opt2/decision-list.json#trazunasettings` |
-| `rest:site.save{bundle}` | `rest:site.save{bundle}` | spans communications, identity, people, programs-sites, strategies-content | decision (2) (corrected; expected carry) | `opt2/decision-list.json#tplugindisplayobjects` |
-| `rest:site.validate` | `rest:site.validate` | programs-sites | carry (5) | — |
-| `rest:stats.delete` | `rest:stats.delete` | strategies-content | carry (5) | — |
-| `rest:stats.findall` | `rest:stats.findall` | strategies-content | carry (5) | — |
-| `rest:stats.findmany` | `rest:stats.findmany` | strategies-content | carry (5) | — |
-| `rest:stats.findnew` | `rest:stats.findnew` | strategies-content | carry (5) | — |
-| `rest:stats.findone` | `rest:stats.findone` | strategies-content | carry (5) | — |
-| `rest:stats.findpermissions` | `rest:stats.findpermissions` | strategies-content | carry (5) | — |
-| `rest:stats.findproperties` | `rest:stats.findproperties` | strategies-content | carry (5) | — |
-| `rest:stats.findquery` | `rest:stats.findquery` | strategies-content | carry (5) | — |
-| `rest:stats.save` | `rest:stats.save` | strategies-content | carry (5) | — |
-| `rest:stats.validate` | `rest:stats.validate` | strategies-content | carry (5) | — |
-| `rest:submitform` | `rest:submitform` | strategies-content | retired (1) (corrected; expected carry) | — |
-| `rest:swagger` | `rest:swagger` | — | legacy-served (4) | — |
-| `rest:undeclareentity` | `rest:undeclareentity` | programs-sites | decision (2) (corrected; expected legacy-served) | `opt2/decision-list.json#tentity` |
-| `rest:user.delete` | `rest:user.delete` | people | decision (3) | `opt2/decision-list.json#api:user.delete` |
-| `rest:user.findall` | `rest:user.findall` | people | carry (5) | — |
-| `rest:user.findmany` | `rest:user.findmany` | people | carry (5) | — |
-| `rest:user.findnew` | `rest:user.findnew` | people | carry (5) | — |
-| `rest:user.findone` | `rest:user.findone` | people | carry (5) | — |
-| `rest:user.findpermissions` | `rest:user.findpermissions` | people | carry (5) | — |
-| `rest:user.findproperties` | `rest:user.findproperties` | people | carry (5) | — |
-| `rest:user.findquery` | `rest:user.findquery` | people | carry (5) | — |
-| `rest:user.save` | `rest:user.save` | people | carry (5) | — |
-| `rest:user.save{extdata}` | `rest:user.save{extdata}` | spans identity, people, strategies-content | decision (3) (corrected; expected carry) | `opt2/decision-list.json#api:user.save{extdata}` |
-| `rest:user.save{photo}` | `rest:user.save{photo}` | people | decision (3) | `opt2/decision-list.json#api:user.save{photo}` |
-| `rest:user.validate` | `rest:user.validate` | people | carry (5) | — |
-| `rest:user.~pollstate` | `rest:user.~pollstate` | people | carry (5) | — |
-| `rest:validateemail` | `rest:validateemail` | identity | carry (5) | — |
-| `rest:variationtargeting.delete` | `rest:variationtargeting.delete` | strategies-content | carry (5) | — |
-| `rest:variationtargeting.findall` | `rest:variationtargeting.findall` | strategies-content | carry (5) | — |
-| `rest:variationtargeting.findmany` | `rest:variationtargeting.findmany` | strategies-content | carry (5) | — |
-| `rest:variationtargeting.findnew` | `rest:variationtargeting.findnew` | strategies-content | carry (5) | — |
-| `rest:variationtargeting.findone` | `rest:variationtargeting.findone` | strategies-content | carry (5) | — |
-| `rest:variationtargeting.findpermissions` | `rest:variationtargeting.findpermissions` | strategies-content | carry (5) | — |
-| `rest:variationtargeting.findproperties` | `rest:variationtargeting.findproperties` | strategies-content | carry (5) | — |
-| `rest:variationtargeting.findquery` | `rest:variationtargeting.findquery` | strategies-content | carry (5) | — |
-| `rest:variationtargeting.save` | `rest:variationtargeting.save` | strategies-content | carry (5) | — |
-| `rest:variationtargeting.validate` | `rest:variationtargeting.validate` | strategies-content | carry (5) | — |
+| Id | Route key | Owner | Disposition (step) | CSRF | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `api:address.delete` | `api:address.delete` | spans people, strategies-content | decision (3) (corrected; expected carry) | validates `arguments.id` | `opt2/decision-list.json#api:address.delete` |
+| `api:address.findall` | `api:address.findall` | people | carry (5) | none | — |
+| `api:address.findmany` | `api:address.findmany` | people | carry (5) | none | — |
+| `api:address.findnew` | `api:address.findnew` | people | carry (5) | none | — |
+| `api:address.findone` | `api:address.findone` | people | carry (5) | none | — |
+| `api:address.findpermissions` | `api:address.findpermissions` | people | carry (5) | none | — |
+| `api:address.findproperties` | `api:address.findproperties` | people | carry (5) | none | — |
+| `api:address.findquery` | `api:address.findquery` | people | carry (5) | none | — |
+| `api:address.save` | `api:address.save` | people | carry (5) | validates `arguments.id` | — |
+| `api:address.save{extdata}` | `api:address.save{extdata}` | spans people, strategies-content | decision (3) (corrected; expected carry) | validates `arguments.id` | `opt2/decision-list.json#api:address.save{extdata}` |
+| `api:address.validate` | `api:address.validate` | people | carry (5) | none | — |
+| `api:category.delete` | `api:category.delete` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:category.findall` | `api:category.findall` | strategies-content | carry (5) | none | — |
+| `api:category.findmany` | `api:category.findmany` | strategies-content | carry (5) | none | — |
+| `api:category.findnew` | `api:category.findnew` | strategies-content | carry (5) | none | — |
+| `api:category.findone` | `api:category.findone` | strategies-content | carry (5) | none | — |
+| `api:category.findpermissions` | `api:category.findpermissions` | strategies-content | carry (5) | none | — |
+| `api:category.findproperties` | `api:category.findproperties` | strategies-content | carry (5) | none | — |
+| `api:category.findquery` | `api:category.findquery` | strategies-content | carry (5) | none | — |
+| `api:category.save` | `api:category.save` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:category.validate` | `api:category.validate` | strategies-content | carry (5) | none | — |
+| `api:changeset.delete` | `api:changeset.delete` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:changeset.findall` | `api:changeset.findall` | strategies-content | carry (5) | none | — |
+| `api:changeset.findmany` | `api:changeset.findmany` | strategies-content | carry (5) | none | — |
+| `api:changeset.findnew` | `api:changeset.findnew` | strategies-content | carry (5) | none | — |
+| `api:changeset.findone` | `api:changeset.findone` | strategies-content | carry (5) | none | — |
+| `api:changeset.findpermissions` | `api:changeset.findpermissions` | strategies-content | carry (5) | none | — |
+| `api:changeset.findproperties` | `api:changeset.findproperties` | strategies-content | carry (5) | none | — |
+| `api:changeset.findquery` | `api:changeset.findquery` | strategies-content | carry (5) | none | — |
+| `api:changeset.save` | `api:changeset.save` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:changeset.validate` | `api:changeset.validate` | strategies-content | carry (5) | none | — |
+| `api:changesetcategoryassignment.delete` | `api:changesetcategoryassignment.delete` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:changesetcategoryassignment.findall` | `api:changesetcategoryassignment.findall` | strategies-content | carry (5) | none | — |
+| `api:changesetcategoryassignment.findmany` | `api:changesetcategoryassignment.findmany` | strategies-content | carry (5) | none | — |
+| `api:changesetcategoryassignment.findnew` | `api:changesetcategoryassignment.findnew` | strategies-content | carry (5) | none | — |
+| `api:changesetcategoryassignment.findone` | `api:changesetcategoryassignment.findone` | strategies-content | carry (5) | none | — |
+| `api:changesetcategoryassignment.findpermissions` | `api:changesetcategoryassignment.findpermissions` | strategies-content | carry (5) | none | — |
+| `api:changesetcategoryassignment.findproperties` | `api:changesetcategoryassignment.findproperties` | strategies-content | carry (5) | none | — |
+| `api:changesetcategoryassignment.findquery` | `api:changesetcategoryassignment.findquery` | strategies-content | carry (5) | none | — |
+| `api:changesetcategoryassignment.save` | `api:changesetcategoryassignment.save` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:changesetcategoryassignment.validate` | `api:changesetcategoryassignment.validate` | strategies-content | carry (5) | none | — |
+| `api:checkschema` | `api:checkschema` | — | decision (2) (corrected; expected legacy-served) | validates | `opt2/decision-list.json#tentity-declared:*` |
+| `api:comment.delete` | `api:comment.delete` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:comment.findall` | `api:comment.findall` | strategies-content | carry (5) | none | — |
+| `api:comment.findmany` | `api:comment.findmany` | strategies-content | carry (5) | none | — |
+| `api:comment.findnew` | `api:comment.findnew` | strategies-content | carry (5) | none | — |
+| `api:comment.findone` | `api:comment.findone` | strategies-content | carry (5) | none | — |
+| `api:comment.findpermissions` | `api:comment.findpermissions` | strategies-content | carry (5) | none | — |
+| `api:comment.findproperties` | `api:comment.findproperties` | strategies-content | carry (5) | none | — |
+| `api:comment.findquery` | `api:comment.findquery` | strategies-content | carry (5) | none | — |
+| `api:comment.save` | `api:comment.save` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:comment.validate` | `api:comment.validate` | strategies-content | carry (5) | none | — |
+| `api:comment.~delete` | `api:comment.~delete` | strategies-content | carry (5) | none | — |
+| `api:comment.~flag` | `api:comment.~flag` | strategies-content | carry (5) | none | — |
+| `api:comment.~markasspam` | `api:comment.~markasspam` | strategies-content | carry (5) | none | — |
+| `api:comment.~undelete` | `api:comment.~undelete` | strategies-content | carry (5) | none | — |
+| `api:comment.~unmarkasspam` | `api:comment.~unmarkasspam` | strategies-content | carry (5) | none | — |
+| `api:content.delete` | `api:content.delete` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:content.findall` | `api:content.findall` | strategies-content | carry (5) | none | — |
+| `api:content.findmany` | `api:content.findmany` | strategies-content | carry (5) | none | — |
+| `api:content.findnew` | `api:content.findnew` | strategies-content | carry (5) | none | — |
+| `api:content.findone` | `api:content.findone` | strategies-content | carry (5) | none | — |
+| `api:content.findpermissions` | `api:content.findpermissions` | strategies-content | carry (5) | none | — |
+| `api:content.findproperties` | `api:content.findproperties` | strategies-content | carry (5) | none | — |
+| `api:content.findquery` | `api:content.findquery` | strategies-content | carry (5) | none | — |
+| `api:content.save` | `api:content.save` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:content.save{approved=1}` | `api:content.save{approved=1}` | spans identity, strategies-content | decision (2) (corrected; expected carry) | validates `arguments.id` | `opt2/decision-list.json#tcontenteventreminders` |
+| `api:content.save{notify}` | `api:content.save{notify}` | spans identity, strategies-content | decision (2) (corrected; expected carry) | validates `arguments.id` | `opt2/decision-list.json#tcontenteventreminders` |
+| `api:content.validate` | `api:content.validate` | strategies-content | carry (5) | none | — |
+| `api:contentcategoryassign.delete` | `api:contentcategoryassign.delete` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:contentcategoryassign.findall` | `api:contentcategoryassign.findall` | strategies-content | carry (5) | none | — |
+| `api:contentcategoryassign.findmany` | `api:contentcategoryassign.findmany` | strategies-content | carry (5) | none | — |
+| `api:contentcategoryassign.findnew` | `api:contentcategoryassign.findnew` | strategies-content | carry (5) | none | — |
+| `api:contentcategoryassign.findone` | `api:contentcategoryassign.findone` | strategies-content | carry (5) | none | — |
+| `api:contentcategoryassign.findpermissions` | `api:contentcategoryassign.findpermissions` | strategies-content | carry (5) | none | — |
+| `api:contentcategoryassign.findproperties` | `api:contentcategoryassign.findproperties` | strategies-content | carry (5) | none | — |
+| `api:contentcategoryassign.findquery` | `api:contentcategoryassign.findquery` | strategies-content | carry (5) | none | — |
+| `api:contentcategoryassign.save` | `api:contentcategoryassign.save` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:contentcategoryassign.validate` | `api:contentcategoryassign.validate` | strategies-content | carry (5) | none | — |
+| `api:contentnav.delete` | `api:contentnav.delete` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:contentnav.findall` | `api:contentnav.findall` | strategies-content | carry (5) | none | — |
+| `api:contentnav.findmany` | `api:contentnav.findmany` | strategies-content | carry (5) | none | — |
+| `api:contentnav.findnew` | `api:contentnav.findnew` | strategies-content | carry (5) | none | — |
+| `api:contentnav.findone` | `api:contentnav.findone` | strategies-content | carry (5) | none | — |
+| `api:contentnav.findpermissions` | `api:contentnav.findpermissions` | strategies-content | carry (5) | none | — |
+| `api:contentnav.findproperties` | `api:contentnav.findproperties` | strategies-content | carry (5) | none | — |
+| `api:contentnav.findquery` | `api:contentnav.findquery` | strategies-content | carry (5) | none | — |
+| `api:contentnav.save` | `api:contentnav.save` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:contentnav.save{approved=1}` | `api:contentnav.save{approved=1}` | spans identity, strategies-content | decision (2) (corrected; expected carry) | validates `arguments.id` | `opt2/decision-list.json#tcontenteventreminders` |
+| `api:contentnav.save{notify}` | `api:contentnav.save{notify}` | spans identity, strategies-content | decision (2) (corrected; expected carry) | validates `arguments.id` | `opt2/decision-list.json#tcontenteventreminders` |
+| `api:contentnav.validate` | `api:contentnav.validate` | strategies-content | carry (5) | none | — |
+| `api:declareentity` | `api:declareentity` | programs-sites | decision (2) (corrected; expected legacy-served) | validates | `opt2/decision-list.json#tentity` |
+| `api:feed.delete` | `api:feed.delete` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:feed.findall` | `api:feed.findall` | strategies-content | carry (5) | none | — |
+| `api:feed.findmany` | `api:feed.findmany` | strategies-content | carry (5) | none | — |
+| `api:feed.findnew` | `api:feed.findnew` | strategies-content | carry (5) | none | — |
+| `api:feed.findone` | `api:feed.findone` | strategies-content | carry (5) | none | — |
+| `api:feed.findpermissions` | `api:feed.findpermissions` | strategies-content | carry (5) | none | — |
+| `api:feed.findproperties` | `api:feed.findproperties` | strategies-content | carry (5) | none | — |
+| `api:feed.findquery` | `api:feed.findquery` | strategies-content | carry (5) | none | — |
+| `api:feed.save` | `api:feed.save` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:feed.validate` | `api:feed.validate` | strategies-content | carry (5) | none | — |
+| `api:file.delete` | `api:file.delete` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:file.findall` | `api:file.findall` | strategies-content | carry (5) | none | — |
+| `api:file.findmany` | `api:file.findmany` | strategies-content | carry (5) | none | — |
+| `api:file.findnew` | `api:file.findnew` | strategies-content | carry (5) | none | — |
+| `api:file.findone` | `api:file.findone` | strategies-content | carry (5) | none | — |
+| `api:file.findpermissions` | `api:file.findpermissions` | strategies-content | carry (5) | none | — |
+| `api:file.findproperties` | `api:file.findproperties` | strategies-content | carry (5) | none | — |
+| `api:file.findquery` | `api:file.findquery` | strategies-content | carry (5) | none | — |
+| `api:file.save` | `api:file.save` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:file.save{upload=image}` | `api:file.save{upload=image}` | strategies-content | carry (5) | validates `arguments.id` | `EX-FILE-RENDITION` |
+| `api:file.validate` | `api:file.validate` | strategies-content | carry (5) | none | — |
+| `api:filebrowser.~addfolder` | `api:filebrowser.~addfolder` | strategies-content | legacy-served (4) | validates `addfolder` | — |
+| `api:filebrowser.~browse` | `api:filebrowser.~browse` | strategies-content | legacy-served (4) | none | — |
+| `api:filebrowser.~children` | `api:filebrowser.~children` | strategies-content | legacy-served (4) | validates `children` | — |
+| `api:filebrowser.~ckeditor_quick_upload` | `api:filebrowser.~ckeditor_quick_upload` | strategies-content | legacy-served (4) | none | — |
+| `api:filebrowser.~delete` | `api:filebrowser.~delete` | strategies-content | legacy-served (4) | validates `delete` | — |
+| `api:filebrowser.~duplicate` | `api:filebrowser.~duplicate` | strategies-content | legacy-served (4) | validates `duplicate` | — |
+| `api:filebrowser.~edit` | `api:filebrowser.~edit` | strategies-content | legacy-served (4) | none | — |
+| `api:filebrowser.~move` | `api:filebrowser.~move` | strategies-content | legacy-served (4) | validates `move` | — |
+| `api:filebrowser.~processcrop` | `api:filebrowser.~processcrop` | strategies-content | legacy-served (4) | validates `processCrop` | — |
+| `api:filebrowser.~rename` | `api:filebrowser.~rename` | strategies-content | legacy-served (4) | validates `rename` | — |
+| `api:filebrowser.~resize` | `api:filebrowser.~resize` | strategies-content | legacy-served (4) | validates `resize` | — |
+| `api:filebrowser.~rotate` | `api:filebrowser.~rotate` | strategies-content | legacy-served (4) | validates `rotate` | — |
+| `api:filebrowser.~update` | `api:filebrowser.~update` | strategies-content | legacy-served (4) | validates `update` | — |
+| `api:filebrowser.~upload` | `api:filebrowser.~upload` | strategies-content | legacy-served (4) | validates `upload` | — |
+| `api:filemetadata.delete` | `api:filemetadata.delete` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:filemetadata.findall` | `api:filemetadata.findall` | strategies-content | carry (5) | none | — |
+| `api:filemetadata.findmany` | `api:filemetadata.findmany` | strategies-content | carry (5) | none | — |
+| `api:filemetadata.findnew` | `api:filemetadata.findnew` | strategies-content | carry (5) | none | — |
+| `api:filemetadata.findone` | `api:filemetadata.findone` | strategies-content | carry (5) | none | — |
+| `api:filemetadata.findpermissions` | `api:filemetadata.findpermissions` | strategies-content | carry (5) | none | — |
+| `api:filemetadata.findproperties` | `api:filemetadata.findproperties` | strategies-content | carry (5) | none | — |
+| `api:filemetadata.findquery` | `api:filemetadata.findquery` | strategies-content | carry (5) | none | — |
+| `api:filemetadata.save` | `api:filemetadata.save` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:filemetadata.validate` | `api:filemetadata.validate` | strategies-content | carry (5) | none | — |
+| `api:findcalendaritems` | `api:findcalendaritems` | strategies-content | carry (5) | none | — |
+| `api:findcrumbarray` | `api:findcrumbarray` | strategies-content | carry (5) | none | — |
+| `api:findcurrentuser` | `api:findcurrentuser` | identity | carry (5) | none | — |
+| `api:findrelatedcontent` | `api:findrelatedcontent` | strategies-content | carry (5) | none | — |
+| `api:findversionhistory` | `api:findversionhistory` | strategies-content | carry (5) | none | — |
+| `api:generatecsrftokens` | `api:generatecsrftokens` | identity | carry (5) | none | — |
+| `api:geturlforimage` | `api:geturlforimage` | strategies-content | carry (5) | none | — |
+| `api:group.delete` | `api:group.delete` | spans identity, strategies-content | decision (3) (corrected; expected carry) | validates `arguments.id` | `opt2/decision-list.json#api:group.delete` |
+| `api:group.findall` | `api:group.findall` | identity | carry (5) | none | — |
+| `api:group.findmany` | `api:group.findmany` | identity | carry (5) | none | — |
+| `api:group.findnew` | `api:group.findnew` | identity | carry (5) | none | — |
+| `api:group.findone` | `api:group.findone` | identity | carry (5) | none | — |
+| `api:group.findpermissions` | `api:group.findpermissions` | identity | carry (5) | none | — |
+| `api:group.findproperties` | `api:group.findproperties` | identity | carry (5) | none | — |
+| `api:group.findquery` | `api:group.findquery` | identity | carry (5) | none | — |
+| `api:group.save` | `api:group.save` | identity | carry (5) | validates `arguments.id` | — |
+| `api:group.save{extdata}` | `api:group.save{extdata}` | spans identity, strategies-content | decision (3) (corrected; expected carry) | validates `arguments.id` | `opt2/decision-list.json#api:group.save{extdata}` |
+| `api:group.save{photo}` | `api:group.save{photo}` | identity | decision (3) | validates `arguments.id` | `opt2/decision-list.json#api:group.save{photo}` |
+| `api:group.validate` | `api:group.validate` | identity | carry (5) | none | — |
+| `api:login` | `api:login` | identity | carry (5) | validates `login` | — |
+| `api:logout` | `api:logout` | identity | carry (5) | none | — |
+| `api:processasyncobject` | `api:processasyncobject` | spans communications, identity, people, programs-sites, strategies-content | decision (3) (corrected; expected legacy-served) | validates | `opt2/decision-list.json#api:processasyncobject` |
+| `api:processasyncobject{saveform}` | `api:processasyncobject{saveform}` | spans identity, strategies-content | decision (3) (corrected; expected legacy-served) | validates `getValue('formID')` | `opt2/decision-list.json#api:processasyncobject{saveform}` |
+| `api:site.delete` | `api:site.delete` | programs-sites | carry (5) | validates `arguments.id` | — |
+| `api:site.findall` | `api:site.findall` | programs-sites | carry (5) | none | — |
+| `api:site.findmany` | `api:site.findmany` | programs-sites | carry (5) | none | — |
+| `api:site.findnew` | `api:site.findnew` | programs-sites | carry (5) | none | — |
+| `api:site.findone` | `api:site.findone` | programs-sites | carry (5) | none | — |
+| `api:site.findpermissions` | `api:site.findpermissions` | programs-sites | carry (5) | none | — |
+| `api:site.findproperties` | `api:site.findproperties` | programs-sites | carry (5) | none | — |
+| `api:site.findquery` | `api:site.findquery` | programs-sites | carry (5) | none | — |
+| `api:site.save` | `api:site.save` | spans communications, identity, people, programs-sites, strategies-content | decision (2) (corrected; expected carry) | validates `arguments.id` | `opt2/decision-list.json#trazunasettings` |
+| `api:site.save{bundle}` | `api:site.save{bundle}` | spans communications, identity, people, programs-sites, strategies-content | decision (2) (corrected; expected carry) | validates `arguments.id` | `opt2/decision-list.json#tplugindisplayobjects` |
+| `api:site.validate` | `api:site.validate` | programs-sites | carry (5) | none | — |
+| `api:stats.delete` | `api:stats.delete` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:stats.findall` | `api:stats.findall` | strategies-content | carry (5) | none | — |
+| `api:stats.findmany` | `api:stats.findmany` | strategies-content | carry (5) | none | — |
+| `api:stats.findnew` | `api:stats.findnew` | strategies-content | carry (5) | none | — |
+| `api:stats.findone` | `api:stats.findone` | strategies-content | carry (5) | none | — |
+| `api:stats.findpermissions` | `api:stats.findpermissions` | strategies-content | carry (5) | none | — |
+| `api:stats.findproperties` | `api:stats.findproperties` | strategies-content | carry (5) | none | — |
+| `api:stats.findquery` | `api:stats.findquery` | strategies-content | carry (5) | none | — |
+| `api:stats.save` | `api:stats.save` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:stats.validate` | `api:stats.validate` | strategies-content | carry (5) | none | — |
+| `api:submitform` | `api:submitform` | strategies-content | retired (1) (corrected; expected carry) | none | — |
+| `api:swagger` | `api:swagger` | — | legacy-served (4) | none | — |
+| `api:undeclareentity` | `api:undeclareentity` | programs-sites | decision (2) (corrected; expected legacy-served) | validates | `opt2/decision-list.json#tentity` |
+| `api:user.delete` | `api:user.delete` | people | decision (3) | validates `arguments.id` | `opt2/decision-list.json#api:user.delete` |
+| `api:user.findall` | `api:user.findall` | people | carry (5) | none | — |
+| `api:user.findmany` | `api:user.findmany` | people | carry (5) | none | — |
+| `api:user.findnew` | `api:user.findnew` | people | carry (5) | none | — |
+| `api:user.findone` | `api:user.findone` | people | carry (5) | none | — |
+| `api:user.findpermissions` | `api:user.findpermissions` | people | carry (5) | none | — |
+| `api:user.findproperties` | `api:user.findproperties` | people | carry (5) | none | — |
+| `api:user.findquery` | `api:user.findquery` | people | carry (5) | none | — |
+| `api:user.save` | `api:user.save` | people | carry (5) | validates `arguments.id` | — |
+| `api:user.save{extdata}` | `api:user.save{extdata}` | spans identity, people, strategies-content | decision (3) (corrected; expected carry) | validates `arguments.id` | `opt2/decision-list.json#api:user.save{extdata}` |
+| `api:user.save{photo}` | `api:user.save{photo}` | people | decision (3) | validates `arguments.id` | `opt2/decision-list.json#api:user.save{photo}` |
+| `api:user.validate` | `api:user.validate` | people | carry (5) | none | — |
+| `api:user.~pollstate` | `api:user.~pollstate` | people | carry (5) | none | — |
+| `api:validateemail` | `api:validateemail` | identity | carry (5) | none | — |
+| `api:variationtargeting.delete` | `api:variationtargeting.delete` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:variationtargeting.findall` | `api:variationtargeting.findall` | strategies-content | carry (5) | none | — |
+| `api:variationtargeting.findmany` | `api:variationtargeting.findmany` | strategies-content | carry (5) | none | — |
+| `api:variationtargeting.findnew` | `api:variationtargeting.findnew` | strategies-content | carry (5) | none | — |
+| `api:variationtargeting.findone` | `api:variationtargeting.findone` | strategies-content | carry (5) | none | — |
+| `api:variationtargeting.findpermissions` | `api:variationtargeting.findpermissions` | strategies-content | carry (5) | none | — |
+| `api:variationtargeting.findproperties` | `api:variationtargeting.findproperties` | strategies-content | carry (5) | none | — |
+| `api:variationtargeting.findquery` | `api:variationtargeting.findquery` | strategies-content | carry (5) | none | — |
+| `api:variationtargeting.save` | `api:variationtargeting.save` | strategies-content | carry (5) | validates `arguments.id` | — |
+| `api:variationtargeting.validate` | `api:variationtargeting.validate` | strategies-content | carry (5) | none | — |
+| `rest:address.delete` | `rest:address.delete` | spans people, strategies-content | decision (3) (corrected; expected carry) | bypassed `arguments.id` | `opt2/decision-list.json#api:address.delete` |
+| `rest:address.findall` | `rest:address.findall` | people | carry (5) | none | — |
+| `rest:address.findmany` | `rest:address.findmany` | people | carry (5) | none | — |
+| `rest:address.findnew` | `rest:address.findnew` | people | carry (5) | none | — |
+| `rest:address.findone` | `rest:address.findone` | people | carry (5) | none | — |
+| `rest:address.findpermissions` | `rest:address.findpermissions` | people | carry (5) | none | — |
+| `rest:address.findproperties` | `rest:address.findproperties` | people | carry (5) | none | — |
+| `rest:address.findquery` | `rest:address.findquery` | people | carry (5) | none | — |
+| `rest:address.save` | `rest:address.save` | people | carry (5) | bypassed `arguments.id` | — |
+| `rest:address.save{extdata}` | `rest:address.save{extdata}` | spans people, strategies-content | decision (3) (corrected; expected carry) | bypassed `arguments.id` | `opt2/decision-list.json#api:address.save{extdata}` |
+| `rest:address.validate` | `rest:address.validate` | people | carry (5) | none | — |
+| `rest:category.delete` | `rest:category.delete` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:category.findall` | `rest:category.findall` | strategies-content | carry (5) | none | — |
+| `rest:category.findmany` | `rest:category.findmany` | strategies-content | carry (5) | none | — |
+| `rest:category.findnew` | `rest:category.findnew` | strategies-content | carry (5) | none | — |
+| `rest:category.findone` | `rest:category.findone` | strategies-content | carry (5) | none | — |
+| `rest:category.findpermissions` | `rest:category.findpermissions` | strategies-content | carry (5) | none | — |
+| `rest:category.findproperties` | `rest:category.findproperties` | strategies-content | carry (5) | none | — |
+| `rest:category.findquery` | `rest:category.findquery` | strategies-content | carry (5) | none | — |
+| `rest:category.save` | `rest:category.save` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:category.validate` | `rest:category.validate` | strategies-content | carry (5) | none | — |
+| `rest:changeset.delete` | `rest:changeset.delete` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:changeset.findall` | `rest:changeset.findall` | strategies-content | carry (5) | none | — |
+| `rest:changeset.findmany` | `rest:changeset.findmany` | strategies-content | carry (5) | none | — |
+| `rest:changeset.findnew` | `rest:changeset.findnew` | strategies-content | carry (5) | none | — |
+| `rest:changeset.findone` | `rest:changeset.findone` | strategies-content | carry (5) | none | — |
+| `rest:changeset.findpermissions` | `rest:changeset.findpermissions` | strategies-content | carry (5) | none | — |
+| `rest:changeset.findproperties` | `rest:changeset.findproperties` | strategies-content | carry (5) | none | — |
+| `rest:changeset.findquery` | `rest:changeset.findquery` | strategies-content | carry (5) | none | — |
+| `rest:changeset.save` | `rest:changeset.save` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:changeset.validate` | `rest:changeset.validate` | strategies-content | carry (5) | none | — |
+| `rest:changesetcategoryassignment.delete` | `rest:changesetcategoryassignment.delete` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:changesetcategoryassignment.findall` | `rest:changesetcategoryassignment.findall` | strategies-content | carry (5) | none | — |
+| `rest:changesetcategoryassignment.findmany` | `rest:changesetcategoryassignment.findmany` | strategies-content | carry (5) | none | — |
+| `rest:changesetcategoryassignment.findnew` | `rest:changesetcategoryassignment.findnew` | strategies-content | carry (5) | none | — |
+| `rest:changesetcategoryassignment.findone` | `rest:changesetcategoryassignment.findone` | strategies-content | carry (5) | none | — |
+| `rest:changesetcategoryassignment.findpermissions` | `rest:changesetcategoryassignment.findpermissions` | strategies-content | carry (5) | none | — |
+| `rest:changesetcategoryassignment.findproperties` | `rest:changesetcategoryassignment.findproperties` | strategies-content | carry (5) | none | — |
+| `rest:changesetcategoryassignment.findquery` | `rest:changesetcategoryassignment.findquery` | strategies-content | carry (5) | none | — |
+| `rest:changesetcategoryassignment.save` | `rest:changesetcategoryassignment.save` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:changesetcategoryassignment.validate` | `rest:changesetcategoryassignment.validate` | strategies-content | carry (5) | none | — |
+| `rest:checkschema` | `rest:checkschema` | — | decision (2) (corrected; expected legacy-served) | bypassed | `opt2/decision-list.json#tentity-declared:*` |
+| `rest:comment.delete` | `rest:comment.delete` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:comment.findall` | `rest:comment.findall` | strategies-content | carry (5) | none | — |
+| `rest:comment.findmany` | `rest:comment.findmany` | strategies-content | carry (5) | none | — |
+| `rest:comment.findnew` | `rest:comment.findnew` | strategies-content | carry (5) | none | — |
+| `rest:comment.findone` | `rest:comment.findone` | strategies-content | carry (5) | none | — |
+| `rest:comment.findpermissions` | `rest:comment.findpermissions` | strategies-content | carry (5) | none | — |
+| `rest:comment.findproperties` | `rest:comment.findproperties` | strategies-content | carry (5) | none | — |
+| `rest:comment.findquery` | `rest:comment.findquery` | strategies-content | carry (5) | none | — |
+| `rest:comment.save` | `rest:comment.save` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:comment.validate` | `rest:comment.validate` | strategies-content | carry (5) | none | — |
+| `rest:comment.~delete` | `rest:comment.~delete` | strategies-content | carry (5) | none | — |
+| `rest:comment.~flag` | `rest:comment.~flag` | strategies-content | carry (5) | none | — |
+| `rest:comment.~markasspam` | `rest:comment.~markasspam` | strategies-content | carry (5) | none | — |
+| `rest:comment.~undelete` | `rest:comment.~undelete` | strategies-content | carry (5) | none | — |
+| `rest:comment.~unmarkasspam` | `rest:comment.~unmarkasspam` | strategies-content | carry (5) | none | — |
+| `rest:content.delete` | `rest:content.delete` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:content.findall` | `rest:content.findall` | strategies-content | carry (5) | none | — |
+| `rest:content.findmany` | `rest:content.findmany` | strategies-content | carry (5) | none | — |
+| `rest:content.findnew` | `rest:content.findnew` | strategies-content | carry (5) | none | — |
+| `rest:content.findone` | `rest:content.findone` | strategies-content | carry (5) | none | — |
+| `rest:content.findpermissions` | `rest:content.findpermissions` | strategies-content | carry (5) | none | — |
+| `rest:content.findproperties` | `rest:content.findproperties` | strategies-content | carry (5) | none | — |
+| `rest:content.findquery` | `rest:content.findquery` | strategies-content | carry (5) | none | — |
+| `rest:content.save` | `rest:content.save` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:content.save{approved=1}` | `rest:content.save{approved=1}` | spans identity, strategies-content | decision (2) (corrected; expected carry) | bypassed `arguments.id` | `opt2/decision-list.json#tcontenteventreminders` |
+| `rest:content.save{notify}` | `rest:content.save{notify}` | spans identity, strategies-content | decision (2) (corrected; expected carry) | bypassed `arguments.id` | `opt2/decision-list.json#tcontenteventreminders` |
+| `rest:content.validate` | `rest:content.validate` | strategies-content | carry (5) | none | — |
+| `rest:contentcategoryassign.delete` | `rest:contentcategoryassign.delete` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:contentcategoryassign.findall` | `rest:contentcategoryassign.findall` | strategies-content | carry (5) | none | — |
+| `rest:contentcategoryassign.findmany` | `rest:contentcategoryassign.findmany` | strategies-content | carry (5) | none | — |
+| `rest:contentcategoryassign.findnew` | `rest:contentcategoryassign.findnew` | strategies-content | carry (5) | none | — |
+| `rest:contentcategoryassign.findone` | `rest:contentcategoryassign.findone` | strategies-content | carry (5) | none | — |
+| `rest:contentcategoryassign.findpermissions` | `rest:contentcategoryassign.findpermissions` | strategies-content | carry (5) | none | — |
+| `rest:contentcategoryassign.findproperties` | `rest:contentcategoryassign.findproperties` | strategies-content | carry (5) | none | — |
+| `rest:contentcategoryassign.findquery` | `rest:contentcategoryassign.findquery` | strategies-content | carry (5) | none | — |
+| `rest:contentcategoryassign.save` | `rest:contentcategoryassign.save` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:contentcategoryassign.validate` | `rest:contentcategoryassign.validate` | strategies-content | carry (5) | none | — |
+| `rest:contentnav.delete` | `rest:contentnav.delete` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:contentnav.findall` | `rest:contentnav.findall` | strategies-content | carry (5) | none | — |
+| `rest:contentnav.findmany` | `rest:contentnav.findmany` | strategies-content | carry (5) | none | — |
+| `rest:contentnav.findnew` | `rest:contentnav.findnew` | strategies-content | carry (5) | none | — |
+| `rest:contentnav.findone` | `rest:contentnav.findone` | strategies-content | carry (5) | none | — |
+| `rest:contentnav.findpermissions` | `rest:contentnav.findpermissions` | strategies-content | carry (5) | none | — |
+| `rest:contentnav.findproperties` | `rest:contentnav.findproperties` | strategies-content | carry (5) | none | — |
+| `rest:contentnav.findquery` | `rest:contentnav.findquery` | strategies-content | carry (5) | none | — |
+| `rest:contentnav.save` | `rest:contentnav.save` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:contentnav.save{approved=1}` | `rest:contentnav.save{approved=1}` | spans identity, strategies-content | decision (2) (corrected; expected carry) | bypassed `arguments.id` | `opt2/decision-list.json#tcontenteventreminders` |
+| `rest:contentnav.save{notify}` | `rest:contentnav.save{notify}` | spans identity, strategies-content | decision (2) (corrected; expected carry) | bypassed `arguments.id` | `opt2/decision-list.json#tcontenteventreminders` |
+| `rest:contentnav.validate` | `rest:contentnav.validate` | strategies-content | carry (5) | none | — |
+| `rest:declareentity` | `rest:declareentity` | programs-sites | decision (2) (corrected; expected legacy-served) | bypassed | `opt2/decision-list.json#tentity` |
+| `rest:feed.delete` | `rest:feed.delete` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:feed.findall` | `rest:feed.findall` | strategies-content | carry (5) | none | — |
+| `rest:feed.findmany` | `rest:feed.findmany` | strategies-content | carry (5) | none | — |
+| `rest:feed.findnew` | `rest:feed.findnew` | strategies-content | carry (5) | none | — |
+| `rest:feed.findone` | `rest:feed.findone` | strategies-content | carry (5) | none | — |
+| `rest:feed.findpermissions` | `rest:feed.findpermissions` | strategies-content | carry (5) | none | — |
+| `rest:feed.findproperties` | `rest:feed.findproperties` | strategies-content | carry (5) | none | — |
+| `rest:feed.findquery` | `rest:feed.findquery` | strategies-content | carry (5) | none | — |
+| `rest:feed.save` | `rest:feed.save` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:feed.validate` | `rest:feed.validate` | strategies-content | carry (5) | none | — |
+| `rest:file.delete` | `rest:file.delete` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:file.findall` | `rest:file.findall` | strategies-content | carry (5) | none | — |
+| `rest:file.findmany` | `rest:file.findmany` | strategies-content | carry (5) | none | — |
+| `rest:file.findnew` | `rest:file.findnew` | strategies-content | carry (5) | none | — |
+| `rest:file.findone` | `rest:file.findone` | strategies-content | carry (5) | none | — |
+| `rest:file.findpermissions` | `rest:file.findpermissions` | strategies-content | carry (5) | none | — |
+| `rest:file.findproperties` | `rest:file.findproperties` | strategies-content | carry (5) | none | — |
+| `rest:file.findquery` | `rest:file.findquery` | strategies-content | carry (5) | none | — |
+| `rest:file.save` | `rest:file.save` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:file.save{upload=image}` | `rest:file.save{upload=image}` | strategies-content | carry (5) | bypassed `arguments.id` | `EX-FILE-RENDITION` |
+| `rest:file.validate` | `rest:file.validate` | strategies-content | carry (5) | none | — |
+| `rest:filebrowser.~addfolder` | `rest:filebrowser.~addfolder` | strategies-content | legacy-served (4) | validates `addfolder` | — |
+| `rest:filebrowser.~browse` | `rest:filebrowser.~browse` | strategies-content | legacy-served (4) | none | — |
+| `rest:filebrowser.~children` | `rest:filebrowser.~children` | strategies-content | legacy-served (4) | validates `children` | — |
+| `rest:filebrowser.~ckeditor_quick_upload` | `rest:filebrowser.~ckeditor_quick_upload` | strategies-content | legacy-served (4) | none | — |
+| `rest:filebrowser.~delete` | `rest:filebrowser.~delete` | strategies-content | legacy-served (4) | validates `delete` | — |
+| `rest:filebrowser.~duplicate` | `rest:filebrowser.~duplicate` | strategies-content | legacy-served (4) | validates `duplicate` | — |
+| `rest:filebrowser.~edit` | `rest:filebrowser.~edit` | strategies-content | legacy-served (4) | none | — |
+| `rest:filebrowser.~move` | `rest:filebrowser.~move` | strategies-content | legacy-served (4) | validates `move` | — |
+| `rest:filebrowser.~processcrop` | `rest:filebrowser.~processcrop` | strategies-content | legacy-served (4) | validates `processCrop` | — |
+| `rest:filebrowser.~rename` | `rest:filebrowser.~rename` | strategies-content | legacy-served (4) | validates `rename` | — |
+| `rest:filebrowser.~resize` | `rest:filebrowser.~resize` | strategies-content | legacy-served (4) | validates `resize` | — |
+| `rest:filebrowser.~rotate` | `rest:filebrowser.~rotate` | strategies-content | legacy-served (4) | validates `rotate` | — |
+| `rest:filebrowser.~update` | `rest:filebrowser.~update` | strategies-content | legacy-served (4) | validates `update` | — |
+| `rest:filebrowser.~upload` | `rest:filebrowser.~upload` | strategies-content | legacy-served (4) | validates `upload` | — |
+| `rest:filemetadata.delete` | `rest:filemetadata.delete` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:filemetadata.findall` | `rest:filemetadata.findall` | strategies-content | carry (5) | none | — |
+| `rest:filemetadata.findmany` | `rest:filemetadata.findmany` | strategies-content | carry (5) | none | — |
+| `rest:filemetadata.findnew` | `rest:filemetadata.findnew` | strategies-content | carry (5) | none | — |
+| `rest:filemetadata.findone` | `rest:filemetadata.findone` | strategies-content | carry (5) | none | — |
+| `rest:filemetadata.findpermissions` | `rest:filemetadata.findpermissions` | strategies-content | carry (5) | none | — |
+| `rest:filemetadata.findproperties` | `rest:filemetadata.findproperties` | strategies-content | carry (5) | none | — |
+| `rest:filemetadata.findquery` | `rest:filemetadata.findquery` | strategies-content | carry (5) | none | — |
+| `rest:filemetadata.save` | `rest:filemetadata.save` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:filemetadata.validate` | `rest:filemetadata.validate` | strategies-content | carry (5) | none | — |
+| `rest:findcalendaritems` | `rest:findcalendaritems` | strategies-content | carry (5) | none | — |
+| `rest:findcrumbarray` | `rest:findcrumbarray` | strategies-content | carry (5) | none | — |
+| `rest:findcurrentuser` | `rest:findcurrentuser` | identity | carry (5) | none | — |
+| `rest:findrelatedcontent` | `rest:findrelatedcontent` | strategies-content | carry (5) | none | — |
+| `rest:findversionhistory` | `rest:findversionhistory` | strategies-content | carry (5) | none | — |
+| `rest:generatecsrftokens` | `rest:generatecsrftokens` | identity | carry (5) | none | — |
+| `rest:geturlforimage` | `rest:geturlforimage` | strategies-content | carry (5) | none | — |
+| `rest:group.delete` | `rest:group.delete` | spans identity, strategies-content | decision (3) (corrected; expected carry) | bypassed `arguments.id` | `opt2/decision-list.json#api:group.delete` |
+| `rest:group.findall` | `rest:group.findall` | identity | carry (5) | none | — |
+| `rest:group.findmany` | `rest:group.findmany` | identity | carry (5) | none | — |
+| `rest:group.findnew` | `rest:group.findnew` | identity | carry (5) | none | — |
+| `rest:group.findone` | `rest:group.findone` | identity | carry (5) | none | — |
+| `rest:group.findpermissions` | `rest:group.findpermissions` | identity | carry (5) | none | — |
+| `rest:group.findproperties` | `rest:group.findproperties` | identity | carry (5) | none | — |
+| `rest:group.findquery` | `rest:group.findquery` | identity | carry (5) | none | — |
+| `rest:group.save` | `rest:group.save` | identity | carry (5) | bypassed `arguments.id` | — |
+| `rest:group.save{extdata}` | `rest:group.save{extdata}` | spans identity, strategies-content | decision (3) (corrected; expected carry) | bypassed `arguments.id` | `opt2/decision-list.json#api:group.save{extdata}` |
+| `rest:group.save{photo}` | `rest:group.save{photo}` | identity | decision (3) | bypassed `arguments.id` | `opt2/decision-list.json#api:group.save{photo}` |
+| `rest:group.validate` | `rest:group.validate` | identity | carry (5) | none | — |
+| `rest:login` | `rest:login` | identity | carry (5) | validates `login` | — |
+| `rest:logout` | `rest:logout` | identity | carry (5) | none | — |
+| `rest:processasyncobject` | `rest:processasyncobject` | spans identity, people, strategies-content | decision (3) (corrected; expected legacy-served) | validates | `opt2/decision-list.json#api:processasyncobject` |
+| `rest:processasyncobject{saveform}` | `rest:processasyncobject{saveform}` | spans identity, strategies-content | decision (3) (corrected; expected legacy-served) | validates `getValue('formID')` | `opt2/decision-list.json#api:processasyncobject{saveform}` |
+| `rest:site.delete` | `rest:site.delete` | programs-sites | carry (5) | bypassed `arguments.id` | — |
+| `rest:site.findall` | `rest:site.findall` | programs-sites | carry (5) | none | — |
+| `rest:site.findmany` | `rest:site.findmany` | programs-sites | carry (5) | none | — |
+| `rest:site.findnew` | `rest:site.findnew` | programs-sites | carry (5) | none | — |
+| `rest:site.findone` | `rest:site.findone` | programs-sites | carry (5) | none | — |
+| `rest:site.findpermissions` | `rest:site.findpermissions` | programs-sites | carry (5) | none | — |
+| `rest:site.findproperties` | `rest:site.findproperties` | programs-sites | carry (5) | none | — |
+| `rest:site.findquery` | `rest:site.findquery` | programs-sites | carry (5) | none | — |
+| `rest:site.save` | `rest:site.save` | spans communications, identity, people, programs-sites, strategies-content | decision (2) (corrected; expected carry) | bypassed `arguments.id` | `opt2/decision-list.json#trazunasettings` |
+| `rest:site.save{bundle}` | `rest:site.save{bundle}` | spans communications, identity, people, programs-sites, strategies-content | decision (2) (corrected; expected carry) | bypassed `arguments.id` | `opt2/decision-list.json#tplugindisplayobjects` |
+| `rest:site.validate` | `rest:site.validate` | programs-sites | carry (5) | none | — |
+| `rest:stats.delete` | `rest:stats.delete` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:stats.findall` | `rest:stats.findall` | strategies-content | carry (5) | none | — |
+| `rest:stats.findmany` | `rest:stats.findmany` | strategies-content | carry (5) | none | — |
+| `rest:stats.findnew` | `rest:stats.findnew` | strategies-content | carry (5) | none | — |
+| `rest:stats.findone` | `rest:stats.findone` | strategies-content | carry (5) | none | — |
+| `rest:stats.findpermissions` | `rest:stats.findpermissions` | strategies-content | carry (5) | none | — |
+| `rest:stats.findproperties` | `rest:stats.findproperties` | strategies-content | carry (5) | none | — |
+| `rest:stats.findquery` | `rest:stats.findquery` | strategies-content | carry (5) | none | — |
+| `rest:stats.save` | `rest:stats.save` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:stats.validate` | `rest:stats.validate` | strategies-content | carry (5) | none | — |
+| `rest:submitform` | `rest:submitform` | strategies-content | retired (1) (corrected; expected carry) | none | — |
+| `rest:swagger` | `rest:swagger` | — | legacy-served (4) | none | — |
+| `rest:undeclareentity` | `rest:undeclareentity` | programs-sites | decision (2) (corrected; expected legacy-served) | bypassed | `opt2/decision-list.json#tentity` |
+| `rest:user.delete` | `rest:user.delete` | people | decision (3) | bypassed `arguments.id` | `opt2/decision-list.json#api:user.delete` |
+| `rest:user.findall` | `rest:user.findall` | people | carry (5) | none | — |
+| `rest:user.findmany` | `rest:user.findmany` | people | carry (5) | none | — |
+| `rest:user.findnew` | `rest:user.findnew` | people | carry (5) | none | — |
+| `rest:user.findone` | `rest:user.findone` | people | carry (5) | none | — |
+| `rest:user.findpermissions` | `rest:user.findpermissions` | people | carry (5) | none | — |
+| `rest:user.findproperties` | `rest:user.findproperties` | people | carry (5) | none | — |
+| `rest:user.findquery` | `rest:user.findquery` | people | carry (5) | none | — |
+| `rest:user.save` | `rest:user.save` | people | carry (5) | bypassed `arguments.id` | — |
+| `rest:user.save{extdata}` | `rest:user.save{extdata}` | spans identity, people, strategies-content | decision (3) (corrected; expected carry) | bypassed `arguments.id` | `opt2/decision-list.json#api:user.save{extdata}` |
+| `rest:user.save{photo}` | `rest:user.save{photo}` | people | decision (3) | bypassed `arguments.id` | `opt2/decision-list.json#api:user.save{photo}` |
+| `rest:user.validate` | `rest:user.validate` | people | carry (5) | none | — |
+| `rest:user.~pollstate` | `rest:user.~pollstate` | people | carry (5) | none | — |
+| `rest:validateemail` | `rest:validateemail` | identity | carry (5) | none | — |
+| `rest:variationtargeting.delete` | `rest:variationtargeting.delete` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:variationtargeting.findall` | `rest:variationtargeting.findall` | strategies-content | carry (5) | none | — |
+| `rest:variationtargeting.findmany` | `rest:variationtargeting.findmany` | strategies-content | carry (5) | none | — |
+| `rest:variationtargeting.findnew` | `rest:variationtargeting.findnew` | strategies-content | carry (5) | none | — |
+| `rest:variationtargeting.findone` | `rest:variationtargeting.findone` | strategies-content | carry (5) | none | — |
+| `rest:variationtargeting.findpermissions` | `rest:variationtargeting.findpermissions` | strategies-content | carry (5) | none | — |
+| `rest:variationtargeting.findproperties` | `rest:variationtargeting.findproperties` | strategies-content | carry (5) | none | — |
+| `rest:variationtargeting.findquery` | `rest:variationtargeting.findquery` | strategies-content | carry (5) | none | — |
+| `rest:variationtargeting.save` | `rest:variationtargeting.save` | strategies-content | carry (5) | bypassed `arguments.id` | — |
+| `rest:variationtargeting.validate` | `rest:variationtargeting.validate` | strategies-content | carry (5) | none | — |
 
 ## OAuth, SOAP and fixture routes
 
-| Id | Route key | Owner | Disposition (step) | Notes |
-| --- | --- | --- | --- | --- |
-| `fix:communications/messages/{id}@get` | `fixture:communications/messages/{id}@get` | communications | carry (5) | — |
-| `fix:communications/messages@get` | `fixture:communications/messages@get` | communications | carry (5) | — |
-| `fix:communications/messages@post` | `fixture:communications/messages@post` | communications | carry (5) | — |
-| `fix:communications/templates@get` | `fixture:communications/templates@get` | communications | carry (5) | — |
-| `fix:communications/templates@post` | `fixture:communications/templates@post` | communications | carry (5) | — |
-| `fix:esignature/requests/{id}/audit@get` | `fixture:esignature/requests/{id}/audit@get` | e-signature | carry (5) | — |
-| `fix:esignature/requests/{id}/sign@post` | `fixture:esignature/requests/{id}/sign@post` | e-signature | carry (5) | — |
-| `fix:esignature/requests/{id}/verify@get` | `fixture:esignature/requests/{id}/verify@get` | e-signature | carry (5) | — |
-| `fix:esignature/requests/{id}/verify@post` | `fixture:esignature/requests/{id}/verify@post` | e-signature | carry (5) | — |
-| `fix:esignature/requests@get` | `fixture:esignature/requests@get` | e-signature | carry (5) | — |
-| `fix:esignature/requests@post` | `fixture:esignature/requests@post` | e-signature | carry (5) | — |
-| `fix:finance/records/{id}/approve@post` | `fixture:finance/records/{id}/approve@post` | finance | carry (5) | — |
-| `fix:finance/records/{id}/attachments/{id}@get` | `fixture:finance/records/{id}/attachments/{id}@get` | finance | carry (5) | — |
-| `fix:finance/records/{id}/attachments@get` | `fixture:finance/records/{id}/attachments@get` | finance | carry (5) | — |
-| `fix:finance/records/{id}/attachments@post` | `fixture:finance/records/{id}/attachments@post` | finance | carry (5) | — |
-| `fix:finance/records/{id}/edit@post` | `fixture:finance/records/{id}/edit@post` | finance | carry (5) | — |
-| `fix:finance/records/{id}/reject@post` | `fixture:finance/records/{id}/reject@post` | finance | carry (5) | — |
-| `fix:finance/records/{id}/resubmit@post` | `fixture:finance/records/{id}/resubmit@post` | finance | carry (5) | — |
-| `fix:finance/records/{id}/submit@post` | `fixture:finance/records/{id}/submit@post` | finance | carry (5) | — |
-| `fix:finance/records/{id}/versions@get` | `fixture:finance/records/{id}/versions@get` | finance | carry (5) | — |
-| `fix:finance/records/{id}@get` | `fixture:finance/records/{id}@get` | finance | carry (5) | — |
-| `fix:finance/records@get` | `fixture:finance/records@get` | finance | carry (5) | — |
-| `fix:finance/records@post` | `fixture:finance/records@post` | finance | carry (5) | — |
-| `fix:finance/rollups@get` | `fixture:finance/rollups@get` | finance | carry (5) | — |
-| `fix:people/persons/{id}/archive@get` | `fixture:people/persons/{id}/archive@get` | people | carry (5) | — |
-| `fix:people/persons/{id}/archive@post` | `fixture:people/persons/{id}/archive@post` | people | carry (5) | — |
-| `fix:reporting/exports/{id}/download@get` | `fixture:reporting/exports/{id}/download@get` | reporting | carry (5) | — |
-| `fix:reporting/exports/{id}@get` | `fixture:reporting/exports/{id}@get` | reporting | carry (5) | — |
-| `fix:reporting/exports@get` | `fixture:reporting/exports@get` | reporting | carry (5) | — |
-| `fix:reporting/exports@post` | `fixture:reporting/exports@post` | reporting | carry (5) | — |
-| `fix:surveys/surveys/{id}/launch@get` | `fixture:surveys/surveys/{id}/launch@get` | surveys | carry (5) | — |
-| `fix:surveys/surveys/{id}/launch@post` | `fixture:surveys/surveys/{id}/launch@post` | surveys | carry (5) | — |
-| `fix:surveys/surveys/{id}/remind@get` | `fixture:surveys/surveys/{id}/remind@get` | surveys | carry (5) | — |
-| `fix:surveys/surveys/{id}/remind@post` | `fixture:surveys/surveys/{id}/remind@post` | surveys | carry (5) | — |
-| `fix:surveys/surveys/{id}/responses@get` | `fixture:surveys/surveys/{id}/responses@get` | surveys | carry (5) | — |
-| `fix:surveys/surveys/{id}/responses@post` | `fixture:surveys/surveys/{id}/responses@post` | surveys | carry (5) | — |
-| `fix:surveys/surveys/{id}/schedule@post` | `fixture:surveys/surveys/{id}/schedule@post` | surveys | carry (5) | — |
-| `fix:surveys/surveys/{id}/targets/bulk@post` | `fixture:surveys/surveys/{id}/targets/bulk@post` | surveys | carry (5) | — |
-| `fix:surveys/surveys/{id}/tasks@get` | `fixture:surveys/surveys/{id}/tasks@get` | surveys | carry (5) | — |
-| `fix:surveys/surveys/{id}@get` | `fixture:surveys/surveys/{id}@get` | surveys | carry (5) | — |
-| `fix:surveys/surveys@get` | `fixture:surveys/surveys@get` | surveys | carry (5) | — |
-| `fix:surveys/surveys@post` | `fixture:surveys/surveys@post` | surveys | carry (5) | — |
-| `fix:timesheets/days/{id}/primary-approve@post` | `fixture:timesheets/days/{id}/primary-approve@post` | timesheets | carry (5) | — |
-| `fix:timesheets/days/{id}/resubmit@post` | `fixture:timesheets/days/{id}/resubmit@post` | timesheets | carry (5) | — |
-| `fix:timesheets/days/{id}/return@post` | `fixture:timesheets/days/{id}/return@post` | timesheets | carry (5) | — |
-| `fix:timesheets/days/{id}/secondary-approve@post` | `fixture:timesheets/days/{id}/secondary-approve@post` | timesheets | carry (5) | — |
-| `fix:timesheets/days/{id}/submit@post` | `fixture:timesheets/days/{id}/submit@post` | timesheets | carry (5) | — |
-| `fix:timesheets/sheets/{id}/status@get` | `fixture:timesheets/sheets/{id}/status@get` | timesheets | carry (5) | — |
-| `fix:timesheets/sheets/{id}@get` | `fixture:timesheets/sheets/{id}@get` | timesheets | carry (5) | — |
-| `fix:timesheets/sheets@get` | `fixture:timesheets/sheets@get` | timesheets | carry (5) | — |
-| `rte:/oauth` | `rest:oauth` | identity | carry (5) | — |
-| `rte:/oauth2` | `rest:oauth2` | identity | carry (5) | — |
-| `rte:soap:bundle` | — | — | retired (1) | — |
-| `rte:soap:category` | — | — | retired (1) | — |
-| `rte:soap:content` | — | — | retired (1) | — |
-| `rte:soap:feed` | — | — | retired (1) | — |
-| `rte:soap:muraProxy` | — | — | retired (1) | — |
-| `rte:soap:service` | — | — | retired (1) | — |
-| `rte:soap:user` | — | — | retired (1) | — |
-| `rte:tokeninfo` | `rest:tokeninfo` | identity | carry (5) | — |
+| Id | Route key | Owner | Disposition (step) | CSRF | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `fix:communications/messages/{id}@get` | `fixture:communications/messages/{id}@get` | communications | carry (5) | none | — |
+| `fix:communications/messages@get` | `fixture:communications/messages@get` | communications | carry (5) | none | — |
+| `fix:communications/messages@post` | `fixture:communications/messages@post` | communications | carry (5) | none | — |
+| `fix:communications/templates@get` | `fixture:communications/templates@get` | communications | carry (5) | none | — |
+| `fix:communications/templates@post` | `fixture:communications/templates@post` | communications | carry (5) | none | — |
+| `fix:esignature/requests/{id}/audit@get` | `fixture:esignature/requests/{id}/audit@get` | e-signature | carry (5) | none | — |
+| `fix:esignature/requests/{id}/sign@post` | `fixture:esignature/requests/{id}/sign@post` | e-signature | carry (5) | none | — |
+| `fix:esignature/requests/{id}/verify@get` | `fixture:esignature/requests/{id}/verify@get` | e-signature | carry (5) | none | — |
+| `fix:esignature/requests/{id}/verify@post` | `fixture:esignature/requests/{id}/verify@post` | e-signature | carry (5) | none | — |
+| `fix:esignature/requests@get` | `fixture:esignature/requests@get` | e-signature | carry (5) | none | — |
+| `fix:esignature/requests@post` | `fixture:esignature/requests@post` | e-signature | carry (5) | none | — |
+| `fix:finance/records/{id}/approve@post` | `fixture:finance/records/{id}/approve@post` | finance | carry (5) | none | — |
+| `fix:finance/records/{id}/attachments/{id}@get` | `fixture:finance/records/{id}/attachments/{id}@get` | finance | carry (5) | none | — |
+| `fix:finance/records/{id}/attachments@get` | `fixture:finance/records/{id}/attachments@get` | finance | carry (5) | none | — |
+| `fix:finance/records/{id}/attachments@post` | `fixture:finance/records/{id}/attachments@post` | finance | carry (5) | none | — |
+| `fix:finance/records/{id}/edit@post` | `fixture:finance/records/{id}/edit@post` | finance | carry (5) | none | — |
+| `fix:finance/records/{id}/reject@post` | `fixture:finance/records/{id}/reject@post` | finance | carry (5) | none | — |
+| `fix:finance/records/{id}/resubmit@post` | `fixture:finance/records/{id}/resubmit@post` | finance | carry (5) | none | — |
+| `fix:finance/records/{id}/submit@post` | `fixture:finance/records/{id}/submit@post` | finance | carry (5) | none | — |
+| `fix:finance/records/{id}/versions@get` | `fixture:finance/records/{id}/versions@get` | finance | carry (5) | none | — |
+| `fix:finance/records/{id}@get` | `fixture:finance/records/{id}@get` | finance | carry (5) | none | — |
+| `fix:finance/records@get` | `fixture:finance/records@get` | finance | carry (5) | none | — |
+| `fix:finance/records@post` | `fixture:finance/records@post` | finance | carry (5) | none | — |
+| `fix:finance/rollups@get` | `fixture:finance/rollups@get` | finance | carry (5) | none | — |
+| `fix:people/persons/{id}/archive@get` | `fixture:people/persons/{id}/archive@get` | people | carry (5) | none | — |
+| `fix:people/persons/{id}/archive@post` | `fixture:people/persons/{id}/archive@post` | people | carry (5) | none | — |
+| `fix:reporting/exports/{id}/download@get` | `fixture:reporting/exports/{id}/download@get` | reporting | carry (5) | none | — |
+| `fix:reporting/exports/{id}@get` | `fixture:reporting/exports/{id}@get` | reporting | carry (5) | none | — |
+| `fix:reporting/exports@get` | `fixture:reporting/exports@get` | reporting | carry (5) | none | — |
+| `fix:reporting/exports@post` | `fixture:reporting/exports@post` | reporting | carry (5) | none | — |
+| `fix:surveys/surveys/{id}/launch@get` | `fixture:surveys/surveys/{id}/launch@get` | surveys | carry (5) | none | — |
+| `fix:surveys/surveys/{id}/launch@post` | `fixture:surveys/surveys/{id}/launch@post` | surveys | carry (5) | none | — |
+| `fix:surveys/surveys/{id}/remind@get` | `fixture:surveys/surveys/{id}/remind@get` | surveys | carry (5) | none | — |
+| `fix:surveys/surveys/{id}/remind@post` | `fixture:surveys/surveys/{id}/remind@post` | surveys | carry (5) | none | — |
+| `fix:surveys/surveys/{id}/responses@get` | `fixture:surveys/surveys/{id}/responses@get` | surveys | carry (5) | none | — |
+| `fix:surveys/surveys/{id}/responses@post` | `fixture:surveys/surveys/{id}/responses@post` | surveys | carry (5) | none | — |
+| `fix:surveys/surveys/{id}/schedule@post` | `fixture:surveys/surveys/{id}/schedule@post` | surveys | carry (5) | none | — |
+| `fix:surveys/surveys/{id}/targets/bulk@post` | `fixture:surveys/surveys/{id}/targets/bulk@post` | surveys | carry (5) | none | — |
+| `fix:surveys/surveys/{id}/tasks@get` | `fixture:surveys/surveys/{id}/tasks@get` | surveys | carry (5) | none | — |
+| `fix:surveys/surveys/{id}@get` | `fixture:surveys/surveys/{id}@get` | surveys | carry (5) | none | — |
+| `fix:surveys/surveys@get` | `fixture:surveys/surveys@get` | surveys | carry (5) | none | — |
+| `fix:surveys/surveys@post` | `fixture:surveys/surveys@post` | surveys | carry (5) | none | — |
+| `fix:timesheets/days/{id}/primary-approve@post` | `fixture:timesheets/days/{id}/primary-approve@post` | timesheets | carry (5) | none | — |
+| `fix:timesheets/days/{id}/resubmit@post` | `fixture:timesheets/days/{id}/resubmit@post` | timesheets | carry (5) | none | — |
+| `fix:timesheets/days/{id}/return@post` | `fixture:timesheets/days/{id}/return@post` | timesheets | carry (5) | none | — |
+| `fix:timesheets/days/{id}/secondary-approve@post` | `fixture:timesheets/days/{id}/secondary-approve@post` | timesheets | carry (5) | none | — |
+| `fix:timesheets/days/{id}/submit@post` | `fixture:timesheets/days/{id}/submit@post` | timesheets | carry (5) | none | — |
+| `fix:timesheets/sheets/{id}/status@get` | `fixture:timesheets/sheets/{id}/status@get` | timesheets | carry (5) | none | — |
+| `fix:timesheets/sheets/{id}@get` | `fixture:timesheets/sheets/{id}@get` | timesheets | carry (5) | none | — |
+| `fix:timesheets/sheets@get` | `fixture:timesheets/sheets@get` | timesheets | carry (5) | none | — |
+| `rte:/oauth` | `rest:oauth` | identity | carry (5) | none | — |
+| `rte:/oauth2` | `rest:oauth2` | identity | carry (5) | none | — |
+| `rte:soap:bundle` | — | — | retired (1) | — | — |
+| `rte:soap:category` | — | — | retired (1) | — | — |
+| `rte:soap:content` | — | — | retired (1) | — | — |
+| `rte:soap:feed` | — | — | retired (1) | — | — |
+| `rte:soap:muraProxy` | — | — | retired (1) | — | — |
+| `rte:soap:service` | — | — | retired (1) | — | — |
+| `rte:soap:user` | — | — | retired (1) | — | — |
+| `rte:tokeninfo` | `rest:tokeninfo` | identity | carry (5) | none | — |
 
 ## Public front end
 
-| Id | Entry | Owner | Disposition (step) | Windowed | Session effects |
-| --- | --- | --- | --- | --- | --- |
-| `fe:appreload` | application reload by ?\<appreloadkey> (default appreload) or the Global Config reload link; start-up converts tcontent URL data | strategies-content | legacy-served (4) `EX-SEC-APPRELOAD` | yes | none |
-| `fe:cfm:/core/modules/v1/favorites/ajax/deletefavorite.cfm` | favorites ajax endpoint: deletes a favorite by favoriteID | people | carry (5) | no | none |
-| `fe:cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm` | favorites ajax endpoint: deletes a user's RSS favorites | people | carry (5) | no | none |
-| `fe:cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm` | favorites ajax endpoint: saves a favorite and returns it as JSON | people | carry (5) | no | none |
-| `fe:cfm:/core/modules/v1/rater/ajax/saverate.cfm` | rater ajax endpoint: saves a rating for the posted contentID, siteID and userID and returns the average as JSON | strategies-content | carry (5) | no | none |
-| `fe:commentsproxy.flag` | commentsProxy.flag remote method | strategies-content | carry (5) | no | none |
-| `fe:commentsproxy.get` | commentsProxy.get remote method | strategies-content | carry (5) | no | none |
-| `fe:commentsproxy.getContentStats` | commentsProxy.getContentStats remote method | strategies-content | carry (5) | no | none |
-| `fe:commentsproxy.renderCommentsPage` | commentsProxy.renderCommentsPage remote method | strategies-content | legacy-served (4) | no | none |
-| `fe:doaction=contactsend` | doaction=contactsend: case commented out at the pin, so the value only renders the page | — | retired (1) (corrected; expected legacy-served) | no | none |
-| `fe:doaction=createprofile` | doaction=createprofile: public registration through userBean.save, then login mail or loginByUserID | spans identity, people, strategies-content | decision (3) (corrected; expected legacy-served) | yes | relogin |
-| `fe:doaction=forward` | doaction=forward: email forward link; no handler acts on it, so the page renders | communications | legacy-served (4) | no | none |
-| `fe:doaction=forwardEmail` | doaction=forwardEmail: forward an email to up to five addresses | communications | legacy-served (4) | no | none |
-| `fe:doaction=login` | doaction=login: challenge attempt or username and password login | identity | legacy-served (4) | yes | relogin |
-| `fe:doaction=logout` | doaction=logout: logout and post-logout handler | identity | legacy-served (4) | no | logout |
-| `fe:doaction=masterSubscribe` | doaction=masterSubscribe: master mailing list subscribe | communications | legacy-served (4) | no | none |
-| `fe:doaction=return` | doaction=return: email return-click tracking | communications | legacy-served (4) | no | none |
-| `fe:doaction=saveRate` | doaction=saveRate: rater display object saves the rating; not a doAction case | strategies-content | legacy-served (4) | yes | none |
-| `fe:doaction=sendlogin` | doaction=sendlogin: login display object sends the forgot-password mail | identity | legacy-served (4) | yes | none |
-| `fe:doaction=setReminder` | doaction=setReminder: event reminder create | communications | decision (2) (corrected; expected legacy-served) | no | none |
-| `fe:doaction=subscribe` | doaction=subscribe: mailing list member create after the human check | communications | legacy-served (4) | no | none |
-| `fe:doaction=unsubscribe` | doaction=unsubscribe: mailing list member delete | communications | legacy-served (4) | no | none |
-| `fe:doaction=updateprofile` | doaction=updateprofile: address create, update or delete, or userManager.update then loginByUserID | spans identity, people, strategies-content | decision (3) (corrected; expected legacy-served) | yes | relogin |
-| `fe:doaction=validateMember` | doaction=validateMember: master mailing list display object validates a member | communications | legacy-served (4) | no | none |
-| `fe:processasyncobject{saveform}` | processAsyncObject rendering the form display object with saveform | spans identity, strategies-content | decision (3) (corrected; expected legacy-served) | yes | none |
-| `fe:render` | page render through handleRootRequest; session tracking writes tsessiontracking | spans communications, identity, people, programs-sites, reporting, strategies-content | decision (3) (corrected; expected legacy-served) | yes | relogin |
-| `fe:saveform` | form display object submits through dataCollectionBean.submit while rendering | spans identity, strategies-content | decision (3) (corrected; expected legacy-served) | yes | none |
+| Id | Entry | Owner | Disposition (step) | CSRF | Windowed | Session effects |
+| --- | --- | --- | --- | --- | --- | --- |
+| `fe:appreload` | application reload by ?\<appreloadkey> (default appreload) or the Global Config reload link; start-up converts tcontent URL data | strategies-content | legacy-served (4) `EX-SEC-APPRELOAD` | none | yes | none |
+| `fe:cfm:/core/modules/v1/favorites/ajax/deletefavorite.cfm` | favorites ajax endpoint: deletes a favorite by favoriteID | people | carry (5) | none | no | none |
+| `fe:cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm` | favorites ajax endpoint: deletes a user's RSS favorites | people | carry (5) | none | no | none |
+| `fe:cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm` | favorites ajax endpoint: saves a favorite and returns it as JSON | people | carry (5) | none | no | none |
+| `fe:cfm:/core/modules/v1/rater/ajax/saverate.cfm` | rater ajax endpoint: saves a rating for the posted contentID, siteID and userID and returns the average as JSON | strategies-content | carry (5) | none | no | none |
+| `fe:commentsproxy.flag` | commentsProxy.flag remote method | strategies-content | carry (5) | none | no | none |
+| `fe:commentsproxy.get` | commentsProxy.get remote method | strategies-content | carry (5) | none | no | none |
+| `fe:commentsproxy.getContentStats` | commentsProxy.getContentStats remote method | strategies-content | carry (5) | none | no | none |
+| `fe:commentsproxy.renderCommentsPage` | commentsProxy.renderCommentsPage remote method | strategies-content | legacy-served (4) | none | no | none |
+| `fe:doaction=contactsend` | doaction=contactsend: case commented out at the pin, so the value only renders the page | — | retired (1) (corrected; expected legacy-served) | validates | no | none |
+| `fe:doaction=createprofile` | doaction=createprofile: public registration through userBean.save, then login mail or loginByUserID | spans identity, people, strategies-content | decision (3) (corrected; expected legacy-served) | validates `editprofile` | yes | relogin |
+| `fe:doaction=forward` | doaction=forward: email forward link; no handler acts on it, so the page renders | communications | legacy-served (4) | validates | no | none |
+| `fe:doaction=forwardEmail` | doaction=forwardEmail: forward an email to up to five addresses | communications | legacy-served (4) | validates | no | none |
+| `fe:doaction=login` | doaction=login: challenge attempt or username and password login | identity | legacy-served (4) | validates `login` | yes | relogin |
+| `fe:doaction=logout` | doaction=logout: logout and post-logout handler | identity | legacy-served (4) | validates | no | logout |
+| `fe:doaction=masterSubscribe` | doaction=masterSubscribe: master mailing list subscribe | communications | legacy-served (4) | validates | no | none |
+| `fe:doaction=return` | doaction=return: email return-click tracking | communications | legacy-served (4) | validates | no | none |
+| `fe:doaction=saveRate` | doaction=saveRate: rater display object saves the rating; not a doAction case | strategies-content | legacy-served (4) | validates | yes | none |
+| `fe:doaction=sendlogin` | doaction=sendlogin: login display object sends the forgot-password mail | identity | legacy-served (4) | validates | yes | none |
+| `fe:doaction=setReminder` | doaction=setReminder: event reminder create | communications | decision (2) (corrected; expected legacy-served) | validates | no | none |
+| `fe:doaction=subscribe` | doaction=subscribe: mailing list member create after the human check | communications | legacy-served (4) | validates | no | none |
+| `fe:doaction=unsubscribe` | doaction=unsubscribe: mailing list member delete | communications | legacy-served (4) | validates | no | none |
+| `fe:doaction=updateprofile` | doaction=updateprofile: address create, update or delete, or userManager.update then loginByUserID | spans identity, people, strategies-content | decision (3) (corrected; expected legacy-served) | validates `editprofile` | yes | relogin |
+| `fe:doaction=validateMember` | doaction=validateMember: master mailing list display object validates a member | communications | legacy-served (4) | validates | no | none |
+| `fe:processasyncobject{saveform}` | processAsyncObject rendering the form display object with saveform | spans identity, strategies-content | decision (3) (corrected; expected legacy-served) | validates `getValue('formID')` | yes | none |
+| `fe:render` | page render through handleRootRequest; session tracking writes tsessiontracking | spans communications, identity, people, programs-sites, reporting, strategies-content | decision (3) (corrected; expected legacy-served) | validates | yes | relogin |
+| `fe:saveform` | form display object submits through dataCollectionBean.submit while rendering | spans identity, strategies-content | decision (3) (corrected; expected legacy-served) | validates `getValue('formID')` | yes | none |
 
 ## Site monitor
 

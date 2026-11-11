@@ -161,7 +161,7 @@ async function send(
 
 describe('route declarations', () => {
   it('match the contract operations', async () => {
-    const declared = collectRouteMatrix(app).routes.filter((route) => route.method !== 'HEAD');
+    const declared = collectRouteMatrix(app).routes;
     const expected = SITE_PATHS.flatMap((template) =>
       Object.entries(OPENAPI.paths[template] ?? {})
         .filter(([method]) => method !== 'parameters')

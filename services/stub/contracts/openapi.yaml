@@ -74,7 +74,7 @@ paths:
           $ref: '#/components/responses/Unavailable'
     get:
       operationId: listNotes
-      summary: Lists the notes of the token's tenant ordered by creation time, then note id.
+      summary: Lists one page of the notes of the token's tenant ordered by creation time, then note id.
       tags:
         - notes
       x-opt2-transport: service
@@ -85,9 +85,25 @@ paths:
         - s2
       parameters:
         - $ref: '#/components/parameters/SiteIdQuery'
+        - name: limit
+          in: query
+          required: false
+          description: Page size, 1 to 1000; 50 when omitted.
+          schema:
+            $ref: '#/components/schemas/DigitString'
+        - name: after
+          in: query
+          required: false
+          description: The previous page's `next` cursor; a malformed cursor answers 400.
+          schema:
+            type: string
+            minLength: 1
       responses:
         '200':
           $ref: '#/components/responses/NoteListRead'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: 'Legacy 400 `invalidParameters`: a `limit` outside 1 to 1000, or a malformed `after` cursor.'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -805,7 +821,7 @@ components:
           schema:
             $ref: '#/components/schemas/NoteSaveEnvelope'
     NoteListRead:
-      description: The tenant's notes in the legacy envelope.
+      description: One page of the tenant's notes in the legacy envelope.
       headers:
         Generator:
           $ref: '#/components/headers/Generator'
@@ -1085,7 +1101,7 @@ components:
             data:
               $ref: '#/components/schemas/Note'
     NoteListEnvelope:
-      description: Legacy envelope of the tenant's notes.
+      description: Legacy envelope of one page of the tenant's notes.
       allOf:
         - $ref: '#/components/schemas/LegacyEnvelope'
         - type: object
@@ -1152,15 +1168,22 @@ components:
           $ref: '#/components/schemas/PositiveDigits'
     NoteList:
       type: object
-      description: The tenant's notes ordered by `created`, then `noteid`.
+      description: One page of the tenant's notes ordered by `created`, then `noteid`; `next` is null after the last page.
       required:
         - items
+        - next
       additionalProperties: false
       properties:
         items:
           type: array
+          maxItems: 1000
           items:
             $ref: '#/components/schemas/Note'
+        next:
+          description: Cursor of the following page, sent back as `after`.
+          type:
+            - string
+            - 'null'
     NoteProjection:
       type: object
       description: A `stub.note_projection` row as the legacy serializer emits it, keys lower-cased.
