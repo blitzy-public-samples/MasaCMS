@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="source-sha" content="696383140578f8dea3ece26f80cd7bfb370ddf0f">
+  <title>OPT-2 Migration - Executive Summary</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=Fira+Code:wght@400;500&display=swap">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+  <!-- Blitzy reveal.js theme, inline -->
+  <style>
+    :root {
+      --blitzy-primary: #5B39F3;
+      --blitzy-primary-dark: #2D1C77;
+      --blitzy-primary-navy: #1A105F;
+      --blitzy-primary-light: #7A6DEC;
+      --blitzy-primary-deep: #4101DB;
+      --blitzy-accent-teal: #94FAD5;
+      --blitzy-surface-0: #FFFFFF;
+      --blitzy-surface-1: #F4EFF6;
+      --blitzy-surface-2: #F2F0FE;
+      --blitzy-surface-3: #F5F5F5;
+      --blitzy-border: #D9D9D9;
+      --blitzy-border-soft: rgba(91, 57, 243, 0.18);
+      --blitzy-text: #333333;
+      --blitzy-text-muted: #999999;
+      --blitzy-text-invert: #FFFFFF;
+      --ff-body: 'Inter', system-ui, sans-serif;
+      --ff-display: 'Space Grotesk', 'Inter', sans-serif;
+      --ff-mono: 'Fira Code', 'Courier New', monospace;
+      --gradient-hero: linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%);
+      --gradient-divider: linear-gradient(135deg, #2D1C77 0%, #5B39F3 100%);
+      --gradient-accent-bar: linear-gradient(90deg, #5B39F3 0%, #94FAD5 100%);
+    }
+
+    .reveal-viewport { background-color: var(--blitzy-surface-0); }
+    .reveal { font-family: var(--ff-body); font-size: 30px; font-weight: 400; color: var(--blitzy-text); }
+    .reveal .slides { text-align: left; }
+    .reveal .slides > section { box-sizing: border-box; padding: 0 120px; line-height: 1.35; }
+    .reveal h1, .reveal h2, .reveal h3 {
+      font-family: var(--ff-display); font-weight: 700; line-height: 1.1;
+      letter-spacing: -0.01em; color: var(--blitzy-primary-dark); margin: 0 0 28px;
+    }
+    .reveal h1 { font-size: 112px; }
+    .reveal h2 { font-size: 64px; }
+    .reveal h3 { font-size: 34px; font-weight: 600; margin-bottom: 16px; }
+    .reveal p { margin: 0 0 20px; }
+    .reveal ul { margin: 0; padding-left: 1.1em; }
+    .reveal li { margin: 0 0 14px; }
+    .reveal li::marker { color: var(--blitzy-primary); }
+    .reveal strong { font-weight: 600; color: var(--blitzy-primary-dark); }
+    .reveal code {
+      font-family: var(--ff-mono); font-size: 0.85em; color: var(--blitzy-primary-dark);
+      background: var(--blitzy-surface-2); padding: 2px 10px; border-radius: 6px;
+    }
+    .reveal .controls { color: var(--blitzy-primary); }
+    .reveal .progress { color: var(--blitzy-accent-teal); }
+
+    .reveal .slides > section.slide-title,
+    .reveal .slides > section.slide-divider,
+    .reveal .slides > section.slide-closing { color: var(--blitzy-text-invert); }
+    .reveal .slides > section.slide-title { background: var(--gradient-hero); }
+    .reveal .slides > section.slide-divider { background: var(--blitzy-primary-dark); text-align: center; }
+    .reveal .slides > section.slide-closing { background: var(--blitzy-primary-navy); }
+    /* Full-bleed: the reveal.js background layer paints these colours beyond the canvas. */
+    .reveal .slides > section[data-background-gradient],
+    .reveal .slides > section[data-background-color] { background: transparent; }
+    .reveal .slide-title h1, .reveal .slide-title h2,
+    .reveal .slide-divider h1, .reveal .slide-divider h2,
+    .reveal .slide-closing h1, .reveal .slide-closing h2 { color: var(--blitzy-text-invert); }
+    .reveal .slide-divider h2 { font-size: 96px; margin: 0; }
+    .reveal .slide-title li::marker, .reveal .slide-closing li::marker { color: var(--blitzy-accent-teal); }
+
+    .reveal .eyebrow {
+      font-family: var(--ff-mono); font-size: 22px; font-weight: 500; text-transform: uppercase;
+      letter-spacing: 0.14em; color: var(--blitzy-primary); margin: 0 0 24px;
+    }
+    .slide-title .eyebrow, .slide-divider .eyebrow, .slide-closing .eyebrow { color: var(--blitzy-accent-teal); }
+    .eyebrow .sha { text-transform: none; }
+    .title-layout { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 80px; }
+    .title-layout .subtitle { font-family: var(--ff-display); font-size: 44px; font-weight: 500; margin-bottom: 36px; }
+    .title-layout .audience { font-size: 28px; opacity: 0.88; margin: 0; }
+
+    .hero-icon { display: block; width: 160px; height: 160px; color: var(--blitzy-accent-teal); stroke-width: 1.5; }
+    .slide-title .hero-icon { width: 260px; height: 260px; color: var(--blitzy-text-invert); stroke-width: 1.25; }
+    .slide-divider .hero-icon { margin: 0 auto 48px; }
+
+    .kpi-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; }
+    .kpi-card {
+      display: flex; flex-direction: column; gap: 10px; box-sizing: border-box;
+      background: var(--blitzy-surface-0); border: 1px solid var(--blitzy-border-soft);
+      border-radius: 20px; padding: 30px 36px; box-shadow: 0 10px 28px rgba(45, 28, 119, 0.08);
+    }
+    .kpi-icon { width: 56px; height: 56px; color: var(--blitzy-primary); }
+    .kpi-value {
+      font-family: var(--ff-display); font-weight: 700; font-size: 72px; line-height: 1;
+      color: var(--blitzy-primary);
+    }
+    .kpi-value.pending { font-size: 54px; color: var(--blitzy-primary-dark); }
+    .kpi-label { font-family: var(--ff-body); font-weight: 500; font-size: 26px; line-height: 1.3; color: var(--blitzy-text-muted); }
+    .kpi-note { font-family: var(--ff-mono); font-size: 18px; color: var(--blitzy-primary-light); }
+    .reveal .footnote { font-size: 22px; color: var(--blitzy-text-muted); margin: 40px 0 0; }
+    .reveal .caption { font-size: 26px; color: var(--blitzy-text); margin: 32px 0 0; }
+
+    .accent-bar { height: 12px; background: var(--gradient-accent-bar); border-radius: 6px; }
+    .slide-closing .accent-bar { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 0; }
+    .closing-body { height: 1080px; display: flex; flex-direction: column; justify-content: center; }
+    .slide-closing ul { margin-bottom: 64px; }
+    .brand-lockup { display: flex; align-items: center; gap: 20px; }
+    .brand-lockup .brand-mark { width: 56px; height: 56px; color: var(--blitzy-accent-teal); }
+    .brand-lockup .brand-word { font-family: var(--ff-display); font-weight: 700; font-size: 52px; letter-spacing: -0.01em; }
+    .brand-lockup .brand-desc {
+      font-family: var(--ff-mono); font-size: 22px; text-transform: uppercase; letter-spacing: 0.14em;
+      color: var(--blitzy-accent-teal); padding-left: 20px; border-left: 2px solid var(--blitzy-border-soft);
+    }
+
+    .icon-row { display: flex; gap: 32px; margin: 8px 0 40px; }
+    .icon-row > div {
+      flex: 1; box-sizing: border-box; padding: 28px 28px 24px; border-radius: 20px;
+      background: var(--blitzy-surface-0); border: 1px solid var(--blitzy-border-soft);
+      box-shadow: 0 10px 28px rgba(45, 28, 119, 0.08);
+    }
+    .icon-row svg, .icon-row i { width: 64px; height: 64px; color: var(--blitzy-primary); margin-bottom: 16px; }
+    .icon-row h3 { font-size: 30px; margin-bottom: 12px; }
+    .icon-row p { font-size: 24px; margin: 0; }
+
+    .mermaid-container {
+      display: flex; justify-content: center; align-items: center; box-sizing: border-box;
+      background: var(--blitzy-surface-0); border: 1px solid var(--blitzy-border-soft);
+      border-radius: 20px; padding: 28px 36px; max-height: 760px; overflow: hidden;
+    }
+    .reveal pre.mermaid {
+      width: 100%; margin: 0; padding: 0; background: transparent; border: 0; box-shadow: none;
+      font-family: var(--ff-body); font-size: 16px; text-align: center; white-space: pre;
+    }
+    .reveal pre.mermaid:not([data-processed]) { color: transparent; }
+    .mermaid-container svg { width: 100%; max-width: 100% !important; height: auto; max-height: 700px; }
+    .mermaid-container.compact svg { max-height: 300px; }
+    .mermaid-container.timeline svg { max-height: 560px; }
+
+    .deck-table { width: 100%; border-collapse: collapse; font-size: 26px; line-height: 1.3; }
+    .deck-table th {
+      background: var(--blitzy-primary); color: var(--blitzy-text-invert); font-family: var(--ff-display);
+      font-weight: 600; text-align: left; padding: 14px 20px;
+    }
+    .deck-table td { padding: 12px 20px; border-bottom: 1px solid var(--blitzy-border); vertical-align: top; }
+    .deck-table tbody tr:nth-child(even) td { background: var(--blitzy-surface-1); }
+    .deck-table.compact { font-size: 22px; }
+    .deck-table.compact th, .deck-table.compact td { padding: 10px 14px; }
+    .deck-table code, .nowrap { white-space: nowrap; }
+    .deck-table .count { font-family: var(--ff-display); font-weight: 600; color: var(--blitzy-primary-dark); white-space: nowrap; }
+    .pill {
+      display: inline-block; padding: 3px 16px; border-radius: 999px; font-family: var(--ff-mono);
+      font-size: 0.8em; font-weight: 500; white-space: nowrap; border: 1px solid var(--blitzy-border-soft);
+      background: var(--blitzy-surface-2); color: var(--blitzy-primary);
+    }
+    .pill-carry { background: rgba(148, 250, 213, 0.5); color: var(--blitzy-primary-dark); border-color: rgba(148, 250, 213, 0.9); }
+    .pill-new { background: var(--blitzy-primary-light); color: var(--blitzy-text-invert); border-color: var(--blitzy-primary-light); }
+    .pill-pending { background: var(--blitzy-surface-2); color: var(--blitzy-primary); }
+    .pill-halted { background: var(--blitzy-primary-dark); color: var(--blitzy-text-invert); border-color: var(--blitzy-primary-dark); }
+    .pill-neutral { background: var(--blitzy-surface-3); color: var(--blitzy-text); border-color: var(--blitzy-border); }
+
+    .chip-row { display: flex; flex-wrap: wrap; align-items: center; gap: 18px; margin: 28px 0 0; font-size: 24px; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 10px; padding: 8px 22px; border-radius: 999px;
+      background: var(--blitzy-surface-2); border: 1px solid var(--blitzy-border-soft); color: var(--blitzy-primary-dark);
+    }
+    .chip b { font-family: var(--ff-display); font-weight: 700; color: var(--blitzy-primary); }
+    .chip-label { font-weight: 600; color: var(--blitzy-primary-dark); }
+    .chip svg, .chip i { width: 28px; height: 28px; color: var(--blitzy-primary); }
+    .split { display: grid; grid-template-columns: 1fr 1.25fr; gap: 40px; align-items: start; }
+    .flow-detail { display: grid; grid-template-columns: 560px 1fr; gap: 48px; align-items: center; margin-top: 32px; }
+  </style>
+</head>
+<body>
+  <div class="reveal">
+    <div class="slides">
+
+      <section class="slide-title" data-background-gradient="linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%)">
+        <div class="title-layout">
+          <div>
+            <p class="eyebrow">OPT-2 Migration | Source <span class="sha">696383140578f8dea3ece26f80cd7bfb370ddf0f</span></p>
+            <h1>MasaCMS to OPT-2</h1>
+            <p class="subtitle">Ten cloud services, one gateway, unchanged behaviour</p>
+            <p class="audience">Executive summary for leadership: scope, value, risk, readiness</p>
+          </div>
+          <i data-lucide="layers" class="hero-icon"></i>
+        </div>
+      </section>
+
+      <section>
+        <h2>Headline numbers</h2>
+        <div class="kpi-grid">
+          <div class="kpi-card" data-source="opt2/inventory/cloc.json#totals.code">
+            <i data-lucide="file-code" class="kpi-icon"></i>
+            <div class="kpi-value">228,839</div>
+            <div class="kpi-label">Legacy code lines across 1,179 files</div>
+            <div class="kpi-note">cloc 1.98, measured at the pin</div>
+          </div>
+          <div class="kpi-card" data-source="opt2/reports/test-all.json#serviceMatrix">
+            <i data-lucide="boxes" class="kpi-icon"></i>
+            <div class="kpi-value">10</div>
+            <div class="kpi-label">Independently deployable domain services</div>
+            <div class="kpi-note">4 migrated, 6 synthetic</div>
+          </div>
+          <div class="kpi-card" data-source="opt2/table-ownership.json#counts.liveStatic">
+            <i data-lucide="database" class="kpi-icon"></i>
+            <div class="kpi-value">73</div>
+            <div class="kpi-label">Legacy tables, every one assigned an owner</div>
+            <div class="kpi-note">108 target units, one writer each</div>
+          </div>
+          <div class="kpi-card" data-source="opt2/reports/baseline.json#expected.totals.specs">
+            <i data-lucide="list-checks" class="kpi-icon"></i>
+            <div class="kpi-value">683</div>
+            <div class="kpi-label">Legacy specs expected: 662 pass, 21 known failures</div>
+            <div class="kpi-note">expected; diagnostic run pending</div>
+          </div>
+          <div class="kpi-card" data-source="opt2/reports/parity.json#status">
+            <i data-lucide="scale" class="kpi-icon"></i>
+            <div class="kpi-value pending">Pending run</div>
+            <div class="kpi-label">Parity of new services against legacy</div>
+            <div class="kpi-note">replay not yet run</div>
+          </div>
+          <div class="kpi-card" data-source="opt2/decision-list.json#tables+actionVariants">
+            <i data-lucide="gavel" class="kpi-icon"></i>
+            <div class="kpi-value">46</div>
+            <div class="kpi-label">Decisions awaiting your approval</div>
+            <div class="kpi-note">12 tables, 34 action variants</div>
+          </div>
+        </div>
+        <p class="footnote">Counts are taken at the pinned source; the baseline is the expected figure. Run results read Pending run until <code>harness/repro/test-all.sh</code> completes.</p>
+      </section>
+
+      <section>
+        <h2>What changed architecturally</h2>
+        <div class="mermaid-container">
+          <pre class="mermaid">
+flowchart LR
+  subgraph BEFORE["Before: one monolith"]
+    direction TB
+    B1["Browser"] --> B2["Masa CMS on Adobe ColdFusion 2023"]
+    B2 --> B3[("SQL Server 2022")]
+  end
+  subgraph AFTER["After: OPT-2 on Google Cloud"]
+    direction LR
+    A1["Browser"] --> A2["Gateway and cut-over table"]
+    A2 --> A3["Next.js admin"]
+    A2 --> A4["Ten domain services"]
+    A2 -->|unmoved routes| A5["Legacy Masa"]
+    A4 --> A6[("PostgreSQL schema per service")]
+    A4 --> A7["Pub/Sub events"]
+    A4 --> A8["Cloud Tasks"]
+    A4 --> A9["Cloud Storage"]
+  end
+  BEFORE ~~~ AFTER
+          </pre>
+        </div>
+        <p class="caption">The gateway moves one route at a time; every unmoved route still reaches legacy unchanged.</p>
+      </section>
+
+      <section class="slide-divider" data-background-color="#2D1C77">
+        <i data-lucide="map" class="hero-icon"></i>
+        <p class="eyebrow">Part 1 of 5</p>
+        <h2>Scope and mapping</h2>
+      </section>
+
+      <section>
+        <h2>What moved where</h2>
+        <table class="deck-table">
+          <thead>
+            <tr><th>Domain</th><th>Service</th><th>Origin</th><th>Disposition</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Identity: login, groups, permissions, OAuth</td><td><code>identity</code></td><td>Migrated from Masa</td><td><span class="pill pill-carry">Carry</span></td></tr>
+            <tr><td>People: user roster, profiles, archive</td><td><code>people</code></td><td>Migrated from Masa</td><td><span class="pill pill-carry">Carry</span></td></tr>
+            <tr><td>Programs and sites: site settings, site monitor</td><td><code>programs-sites</code></td><td>Migrated from Masa</td><td><span class="pill pill-carry">Carry</span></td></tr>
+            <tr><td>Strategies and content: content, approvals, files, feeds</td><td><code>strategies-content</code></td><td>Migrated from Masa</td><td><span class="pill pill-carry">Carry</span></td></tr>
+            <tr><td>Communications, reporting, surveys, timesheets, finance, <span class="nowrap">e-signature</span></td><td>Six services</td><td>Synthetic, legacy fixture oracle</td><td><span class="pill pill-new">New module</span></td></tr>
+          </tbody>
+        </table>
+        <div class="chip-row" data-source="opt2/inventory/legacy-inventory.json#counts.dispositions">
+          <span class="chip-label">Inventory items:</span>
+          <span class="chip"><i data-lucide="arrow-right"></i>Carry <b>757</b></span>
+          <span class="chip"><i data-lucide="server"></i>Legacy-served <b>147</b></span>
+          <span class="chip"><i data-lucide="clipboard-list"></i>Withheld <b>136</b></span>
+          <span class="chip"><i data-lucide="archive"></i>Retired <b>21</b></span>
+        </div>
+        <p class="caption">Why: each domain deploys, scales to zero and fails independently; users keep the same screens and data.</p>
+      </section>
+
+      <section class="slide-divider" data-background-color="#2D1C77">
+        <i data-lucide="database" class="hero-icon"></i>
+        <p class="eyebrow">Part 2 of 5</p>
+        <h2>Data migration and reconciliation</h2>
+      </section>
+
+      <section>
+        <h2>Moving data safely</h2>
+        <div class="mermaid-container compact">
+          <pre class="mermaid">
+flowchart LR
+  M1["Consistent snapshot"] --> M2["Backfill"]
+  M2 --> M3["Change feed"]
+  M3 --> M4["Zero-tolerance reconciliation"]
+  M4 --> M5["Reverse projection to legacy"]
+          </pre>
+        </div>
+        <div class="flow-detail">
+          <div class="kpi-card" data-source="opt2/reports/reconciliation/summary.md#Result">
+            <i data-lucide="scale" class="kpi-icon"></i>
+            <div class="kpi-value pending">Pending run</div>
+            <div class="kpi-label">Reconciliation differences (tolerance zero)</div>
+            <div class="kpi-note">11 checkpoints, all pending</div>
+          </div>
+          <ul>
+            <li>Checked after backfill, each feed, six injected faults, cut-over and rollback</li>
+            <li>The people roster rollback is rehearsed in the same run</li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="slide-divider" data-background-color="#2D1C77">
+        <i data-lucide="scale" class="hero-icon"></i>
+        <p class="eyebrow">Part 3 of 5</p>
+        <h2>Parity evidence</h2>
+      </section>
+
+      <section>
+        <h2>Same answers as legacy</h2>
+        <table class="deck-table">
+          <thead>
+            <tr><th>Result</th><th>Meaning</th><th>Count</th><th>Planned cases</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><span class="pill pill-carry">Pass</span></td><td>Output matches the legacy capture</td><td class="count" data-source="opt2/reports/parity.json#summary.pass">Pending run</td><td>Every other golden scenario</td></tr>
+            <tr><td><span class="pill pill-neutral">Fail</span></td><td>Unlisted difference; never accepted</td><td class="count" data-source="opt2/reports/parity.json#summary.fail">Pending run</td><td>None allowed</td></tr>
+            <tr><td><span class="pill">Excepted</span></td><td>Difference recorded on the exceptions list</td><td class="count" data-source="opt2/reports/parity.json#summary.excepted">Pending run</td><td>None planned</td></tr>
+            <tr><td><span class="pill pill-halted">Halted</span></td><td>Equivalence impossible; case stays on legacy</td><td class="count" data-source="opt2/reports/parity.json#summary.halted">Pending run</td><td>GS-CO-07, <code>EX-FILE-RENDITION</code> (image renditions)</td></tr>
+            <tr><td><span class="pill">Known issue</span></td><td>Legacy defect reproduced as-is</td><td class="count" data-source="opt2/reports/parity.json#summary.knownIssue">Pending run</td><td>Four listed legacy issues</td></tr>
+            <tr><td><span class="pill pill-pending">Withheld</span></td><td>Awaits your decision; legacy still serves it</td><td class="count" data-source="opt2/reports/parity.json#summary.withheld">Pending run</td><td>15 scenarios, such as GS-ID-05 and GS-PS-01</td></tr>
+          </tbody>
+        </table>
+        <p class="caption">Every moved route replays outputs captured from legacy.</p>
+      </section>
+
+      <section class="slide-divider" data-background-color="#2D1C77">
+        <i data-lucide="shield-alert" class="hero-icon"></i>
+        <p class="eyebrow">Part 4 of 5</p>
+        <h2>Risks and mitigations</h2>
+      </section>
+
+      <section>
+        <h2>Risks we carry</h2>
+        <table class="deck-table">
+          <thead>
+            <tr><th>Risk</th><th>Mitigation</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Cloud paths are untested without cloud credentials</td><td>Adapters tested on recorded exchanges; Terraform plan proves wiring; gap reported</td></tr>
+            <tr><td>An unknown legacy writer changes moved data outside a window</td><td>Known writers prevented; overrides reviewed; every reconciliation detects divergence</td></tr>
+            <tr><td>Long legacy writes, such as bundle deploys, hold windows open</td><td>Target waits or fails closed; windows over 5 s are flagged</td></tr>
+            <tr><td>Withheld variants and halted cases leave scenarios unmet</td><td>Reported per scenario; the decision list awaits your approval</td></tr>
+            <tr><td>ColdFusion developer-edition IP limit after the trial</td><td>All traffic reaches ColdFusion from <code>127.0.0.1</code></td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="slide-divider" data-background-color="#2D1C77">
+        <i data-lucide="rocket" class="hero-icon"></i>
+        <p class="eyebrow">Part 5 of 5</p>
+        <h2>Onboarding and continuation</h2>
+      </section>
+
+      <section>
+        <h2>How the team continues</h2>
+        <div class="icon-row">
+          <div>
+            <i data-lucide="terminal"></i>
+            <h3>Start and prove</h3>
+            <p><code>harness/repro/up.sh</code>, then <code>harness/repro/test-all.sh</code></p>
+          </div>
+          <div>
+            <i data-lucide="book-open"></i>
+            <h3>Read per service</h3>
+            <p><code>README.md</code> and <code>TRACEABILITY.md</code></p>
+          </div>
+          <div>
+            <i data-lucide="file-code"></i>
+            <h3>Build to contracts</h3>
+            <p><code>contracts/openapi.yaml</code> and event schemas</p>
+          </div>
+          <div>
+            <i data-lucide="workflow"></i>
+            <h3>Trust CI</h3>
+            <p><code>contracts</code>, <code>services</code>, <code>terraform</code> and <code>security</code> workflows</p>
+          </div>
+        </div>
+        <ul>
+          <li>Routes move one cut-over version at a time</li>
+          <li>Terraform is plan-only, never applied</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Cut-over sequence</h2>
+        <div class="mermaid-container timeline">
+          <pre class="mermaid">
+flowchart TB
+  subgraph PROVE["Prove the foundation"]
+    direction LR
+    S0["0 Pin check"] --> S1["1 Legacy baseline"]
+    S1 --> S2["2 Platform on stub"]
+    S2 --> S3["3 Ten services"]
+    S3 --> S4["4 Migration"]
+  end
+  subgraph MOVE["Move and prove"]
+    direction LR
+    S5["5 Golden capture"] --> S6["6 Cut-over v0002"]
+    S6 --> S7["7 Equivalence"]
+    S7 --> S8["8 Rollback v0003"]
+    S8 --> S9["9 Reports"]
+  end
+  PROVE -->|stage 4 to stage 5| MOVE
+          </pre>
+        </div>
+        <p class="caption">Each stage must pass before the next starts; no calendar dates are set.</p>
+      </section>
+
+      <section>
+        <h2>Decisions awaiting you</h2>
+        <div class="split">
+          <div>
+            <h3>Withheld tables</h3>
+            <table class="deck-table compact" data-source="opt2/decision-list.json#tables">
+              <thead>
+                <tr><th>Tables</th><th>Proposed owner</th><th>Status</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Plugin tables (4)</td><td>Retire</td><td><span class="pill pill-pending">Pending</span></td></tr>
+                <tr><td>Cluster tables (2)</td><td>Retire</td><td><span class="pill pill-pending">Pending</span></td></tr>
+                <tr><td><code>tentity</code> and declared entities (2)</td><td><code>programs-sites</code></td><td><span class="pill pill-pending">Pending</span></td></tr>
+                <tr><td><code>tremotepointer</code></td><td><code>strategies-content</code></td><td><span class="pill pill-pending">Pending</span></td></tr>
+                <tr><td><code>trazunasettings</code></td><td><code>strategies-content</code></td><td><span class="pill pill-pending">Pending</span></td></tr>
+                <tr><td><code>tcontenteventreminders</code></td><td><code>communications</code></td><td><span class="pill pill-pending">Pending</span></td></tr>
+                <tr><td><code>fb_*</code> form-builder tables</td><td><code>strategies-content</code></td><td><span class="pill pill-pending">Pending</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <h3>Withheld actions</h3>
+            <table class="deck-table compact" data-source="opt2/decision-list.json#actionVariants">
+              <thead>
+                <tr><th>Actions</th><th>Proposal</th><th>Status</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>User, group and address deletes (6)</td><td>Owner deletes; partners remove their parts</td><td><span class="pill pill-pending">Pending</span></td></tr>
+                <tr><td>Photo saves (4)</td><td>Owner saves; content service stores the photo</td><td><span class="pill pill-pending">Pending</span></td></tr>
+                <tr><td>File-type attribute uploads (8)</td><td>Owner saves; content service stores the files</td><td><span class="pill pill-pending">Pending</span></td></tr>
+                <tr><td>Site add, delete and copy (4)</td><td><code>programs-sites</code> orchestrates every owner</td><td><span class="pill pill-pending">Pending</span></td></tr>
+                <tr><td>Class extensions and trash (2)</td><td><code>programs-sites</code> hosts; each item's owner writes</td><td><span class="pill pill-pending">Pending</span></td></tr>
+                <tr><td>Permissions, content copy, notifications (3)</td><td>Owning service coordinates the partner's part</td><td><span class="pill pill-pending">Pending</span></td></tr>
+                <tr><td>Untyped user save (1)</td><td>Owner chosen from the stored record type</td><td><span class="pill pill-pending">Pending</span></td></tr>
+                <tr><td>Public pages and display objects (6)</td><td>Stay legacy-rendered; owners take over their writes</td><td><span class="pill pill-pending">Pending</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <p class="caption">All 46 items are withheld; each keeps running on legacy until you decide.</p>
+      </section>
+
+      <section class="slide-closing" data-background-color="#1A105F">
+        <div class="closing-body">
+          <h2>Behaviour kept, platform modernised</h2>
+          <ul>
+            <li>Approve or reject the decision list</li>
+            <li>Run <code>harness/repro/test-all.sh</code> for final evidence</li>
+            <li>Review the Terraform plan; never apply</li>
+          </ul>
+          <div class="brand-lockup">
+            <i data-lucide="sparkles" class="brand-mark"></i>
+            <span class="brand-word">Blitzy</span>
+            <span class="brand-desc">OPT-2 Migration</span>
+          </div>
+        </div>
+        <div class="accent-bar"></div>
+      </section>
+
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.min.js"></script>
+  <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+  <script>
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'base',
+      themeVariables: {
+        primaryColor: '#F2F0FE',
+        primaryTextColor: '#333333',
+        primaryBorderColor: '#5B39F3',
+        lineColor: '#999999',
+        secondaryColor: '#F4EFF6'
+      },
+      // SVG labels: HTML labels are measured with getBoundingClientRect, which reveal.js's canvas scaling shrinks.
+      htmlLabels: false,
+      flowchart: { htmlLabels: false }
+    });
+
+    /** Renders the Mermaid diagrams and Lucide icons of the visible slide; diagrams render only when visible to get real sizes. */
+    function renderVisuals(slide) {
+      const rendered = mermaid.run({ nodes: slide.querySelectorAll('pre.mermaid:not([data-processed])') });
+      lucide.createIcons();
+      return rendered;
+    }
+
+    Reveal.on('ready', event => renderVisuals(event.currentSlide));
+    Reveal.on('slidechanged', event => renderVisuals(event.currentSlide));
+
+    Reveal.initialize({
+      hash: true,
+      transition: 'slide',
+      controlsTutorial: false,
+      width: 1920,
+      height: 1080
+    });
+  </script>
+</body>
+</html>
