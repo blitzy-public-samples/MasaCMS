@@ -1,0 +1,2563 @@
+# SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
+openapi: 3.1.0
+info:
+  title: reporting
+  version: 1.0.0
+  description: 'SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/'
+  x-source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f
+servers:
+  - url: http://127.0.0.1:8116
+    description: local
+x-opt2-calls: [finance, timesheets]
+tags:
+  - name: fixture
+    description: Fixture routes, answered as `legacy-fixtures/cfml/modules/reporting.cfc` answers them.
+  - name: v1
+    description: JSON API of the OPT-2 reporting screens; a breaking change takes a /v2/ prefix.
+  - name: files
+    description: Local signed-URL downloads of export objects.
+  - name: tasks
+    description: Managed Cloud Tasks deliveries and queue control.
+  - name: events
+    description: Pub/Sub push deliveries of the consumed topics.
+  - name: migration
+    description: Migration-kit endpoints of the owned units.
+  - name: platform
+    description: Platform health probe.
+paths:
+  /legacy-fixtures/cfml/api.cfm/reporting/exports:
+    get:
+      operationId: fixtureListExports
+      summary: Lists one page of the site's export jobs, without output, ordered by creation time and job id.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - reporting.exporter
+      x-opt2-site-check: false
+      x-opt2-route-keys: ['fixture:reporting/exports@get']
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/FixtureSiteId'
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+        - $ref: '#/components/parameters/UseDataNamespace'
+        - $ref: '#/components/parameters/MethodOverride'
+      responses:
+        '200':
+          description: One page of export jobs.
+          headers:
+            Generator:
+              $ref: '#/components/headers/Generator'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json;charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/FixtureExportListEnvelope'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: fixtureCreateExport
+      summary: Queues an export job for a definition of the site, starts its run and returns the job as queued.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - reporting.exporter
+      x-opt2-site-check: false
+      x-opt2-route-keys: ['fixture:reporting/exports@post']
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/FixtureSiteId'
+        - $ref: '#/components/parameters/UseDataNamespace'
+        - $ref: '#/components/parameters/MethodOverride'
+      requestBody:
+        $ref: '#/components/requestBodies/FixtureCreateExportCall'
+      responses:
+        '200':
+          description: The queued job.
+          headers:
+            Generator:
+              $ref: '#/components/headers/Generator'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json;charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/FixtureExportJobEnvelope'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+          description: The `definitionId` names no definition of the site.
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /legacy-fixtures/cfml/api.cfm/reporting/exports/{id}:
+    parameters:
+      - $ref: '#/components/parameters/FixtureExportId'
+    get:
+      operationId: fixtureGetExport
+      summary: Reads one export job of the site, without output.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - reporting.exporter
+      x-opt2-site-check: false
+      x-opt2-route-keys: ['fixture:reporting/exports/{id}@get']
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/FixtureSiteId'
+        - $ref: '#/components/parameters/UseDataNamespace'
+        - $ref: '#/components/parameters/MethodOverride'
+      responses:
+        '200':
+          description: The job.
+          headers:
+            Generator:
+              $ref: '#/components/headers/Generator'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json;charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/FixtureExportJobEnvelope'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /legacy-fixtures/cfml/api.cfm/reporting/exports/{id}/download:
+    parameters:
+      - $ref: '#/components/parameters/FixtureExportId'
+    get:
+      operationId: fixtureDownloadExport
+      summary: Downloads a done job's output as an attachment.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - reporting.exporter
+      x-opt2-site-check: false
+      x-opt2-route-keys: ['fixture:reporting/exports/{id}/download@get']
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/FixtureSiteId'
+        - $ref: '#/components/parameters/UseDataNamespace'
+        - $ref: '#/components/parameters/MethodOverride'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureExportFile'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '409':
+          $ref: '#/components/responses/FixtureNotReady'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/reporting/exports:
+    get:
+      operationId: listExports
+      summary: Lists the tenant's export jobs, ordered by creation time and job id, for the export job list screen.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - reporting.exporter
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: One page of jobs and the count of every job.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - total
+                additionalProperties: false
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ExportJob'
+                  total:
+                    type: integer
+                    minimum: 0
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: createExport
+      summary: Queues an export job for a definition of the tenant and returns the job as queued.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - reporting.exporter
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateExportRequest'
+      responses:
+        '200':
+          description: The queued job.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportJobBody'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+          description: The `definitionId` names no definition of the tenant.
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/reporting/exports/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ExportId'
+    get:
+      operationId: getExport
+      summary: Reads one export job of the tenant.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - reporting.exporter
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+      responses:
+        '200':
+          description: The job.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportJobBody'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/reporting/exports/{id}/download-url:
+    parameters:
+      - $ref: '#/components/parameters/ExportId'
+    get:
+      operationId: getExportDownloadUrl
+      summary: Issues a time-limited download URL for a done job's output.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - reporting.exporter
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+      responses:
+        '200':
+          description: The signed download URL.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                additionalProperties: false
+                properties:
+                  data:
+                    $ref: '#/components/schemas/SignedUrl'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /opt2/files/reporting-exports/{tenantId}/{objectName}:
+    parameters:
+      - name: tenantId
+        in: path
+        required: true
+        description: First segment of the object key `<tenantId>/<jobId>.<format>`.
+        schema:
+          type: string
+          format: uuid
+      - name: objectName
+        in: path
+        required: true
+        description: Second segment of the object key, the job's CF id and format extension.
+        schema:
+          type: string
+          pattern: '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}\.(xlsx|csv|pdf)$'
+    get:
+      operationId: downloadExportObject
+      summary: Serves an export object of the local storage adapter through its signed URL.
+      description: The signature is the credential, checked with `verifySignedUrl` of `@opt2/platform/storage`; only the local adapter issues these URLs.
+      tags:
+        - files
+      x-opt2-transport: service
+      x-opt2-public: true
+      security: []
+      parameters:
+        - name: expires
+          in: query
+          required: true
+          description: Expiry in epoch seconds.
+          schema:
+            type: integer
+            minimum: 0
+        - name: sig
+          in: query
+          required: true
+          description: Lowercase hex HMAC-SHA256 over the bucket, key, expiry and any disposition.
+          schema:
+            type: string
+            pattern: '^[0-9a-f]{64}$'
+        - name: disposition
+          in: query
+          required: false
+          description: Signed Content-Disposition of the download.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The object bytes under their stored content type.
+          headers:
+            Content-Disposition:
+              description: The signed `disposition`, when the URL carries one.
+              schema:
+                type: string
+          content:
+            '*/*':
+              schema:
+                type: string
+                format: binary
+        '403':
+          $ref: '#/components/responses/Forbidden'
+          description: The signature is malformed, wrong or expired.
+        '404':
+          $ref: '#/components/responses/NotFound'
+          description: No object is stored under the key.
+  /internal/v1/tasks/exports/{exportId}/run:
+    parameters:
+      - name: exportId
+        in: path
+        required: true
+        description: Id of the export job the task runs.
+        schema:
+          $ref: '#/components/schemas/CfUuid'
+    post:
+      operationId: runExportTask
+      summary: Runs one export job through running to done or failed; a job already past queued is left unchanged.
+      tags:
+        - tasks
+      x-opt2-transport: cloud-tasks
+      x-opt2-requires:
+        - service:tasks-invoker
+      security:
+        - tasksInvokerOidc: []
+      parameters:
+        - $ref: '#/components/parameters/CloudTasksTaskName'
+        - $ref: '#/components/parameters/CloudTasksQueueName'
+        - $ref: '#/components/parameters/CloudTasksRetryCount'
+        - $ref: '#/components/parameters/CloudTasksExecutionCount'
+        - $ref: '#/components/parameters/CloudTasksEta'
+      requestBody:
+        required: true
+        description: Task wire body of a tenant-scoped export task.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExportTaskWireBody'
+      responses:
+        '200':
+          description: The job's state after the run; a `failed` job is a finished task, not a retry.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportTaskResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: A malformed task body, or a tenant under which the job is not visible.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: The task failed, so Cloud Tasks retries it.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: A unit gate is closed or a dependency is unavailable, so Cloud Tasks retries the task.
+  /internal/v1/task-queues/{queue}/pause:
+    parameters:
+      - $ref: '#/components/parameters/Queue'
+    post:
+      operationId: pauseTaskQueue
+      summary: Pauses dispatch from a queue this service creates tasks on.
+      tags:
+        - tasks
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+        - platform.operator
+      security:
+        - invocationCredential: []
+      responses:
+        '200':
+          $ref: '#/components/responses/QueueControlled'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: The queue is not one this service creates tasks on.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/task-queues/{queue}/resume:
+    parameters:
+      - $ref: '#/components/parameters/Queue'
+    post:
+      operationId: resumeTaskQueue
+      summary: Resumes dispatch from a queue this service creates tasks on.
+      tags:
+        - tasks
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+        - platform.operator
+      security:
+        - invocationCredential: []
+      responses:
+        '200':
+          $ref: '#/components/responses/QueueControlled'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: The queue is not one this service creates tasks on.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/task-queues/{queue}/ensure:
+    parameters:
+      - $ref: '#/components/parameters/Queue'
+    post:
+      operationId: ensureTaskQueue
+      summary: Ensures a recurring chain this service creates has a live task.
+      tags:
+        - tasks
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+        - platform.operator
+      security:
+        - invocationCredential: []
+      responses:
+        '200':
+          $ref: '#/components/responses/QueueControlled'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: The queue is not a recurring chain this service creates; `reporting-export-run` is not recurring.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/events/reporting.programs-sites.site.changed.v1:
+    post:
+      operationId: pushSiteChanged
+      summary: Receives push deliveries of `programs-sites.site.changed.v1` into this service's tenant registry.
+      tags:
+        - events
+      x-opt2-transport: pubsub-push
+      x-opt2-requires:
+        - service:pubsub-invoker
+      security:
+        - pubsubPushOidc: []
+        - localPushKey: []
+      parameters:
+        - $ref: '#/components/parameters/PushKey'
+      requestBody:
+        $ref: '#/components/requestBodies/Push'
+      responses:
+        '204':
+          description: Acknowledged; the delivery was applied, already applied, or dead-lettered.
+        '400':
+          description: Not a push body; a nack.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: Processing failed; a nack, redelivered by Pub/Sub.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: A unit gate or the database is unavailable; a nack, redelivered by Pub/Sub.
+  /internal/v1/migration/apply:
+    post:
+      operationId: migrationApply
+      summary: Applies one batch of canonical legacy rows to the owned units, once per batch id.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyRequest'
+      responses:
+        '200':
+          description: The batch outcome; a repeated batch id is a no-op reported as `duplicate`.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/export:
+    get:
+      operationId: migrationExport
+      summary: Exports one page of a unit's rows in canonical legacy form, with the unit's `reporting-exports` object manifest on the first page.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: unit
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - $ref: '#/components/parameters/MigrationTenantId'
+        - $ref: '#/components/parameters/MigrationSiteId'
+        - name: programId
+          in: query
+          required: false
+          description: Restricts a folded unit to one `Program_<id>` schema.
+          schema:
+            $ref: '#/components/schemas/DigitString'
+        - name: after
+          in: query
+          required: false
+          description: The previous page's `next` cursor.
+          schema:
+            type: string
+            minLength: 1
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: One export page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/changes:
+    get:
+      operationId: migrationChanges
+      summary: Reads the tenant's changelog after a cursor, below the commit-safe horizon.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/MigrationTenantId'
+        - $ref: '#/components/parameters/MigrationSiteId'
+        - name: after
+          in: query
+          required: false
+          description: Cursor `<xid>:<seq>`; `0:0` when omitted.
+          schema:
+            type: string
+            pattern: '^(0|[1-9][0-9]*):(0|[1-9][0-9]*)$'
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: One page of changes with their legacy projections.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChangesResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/position:
+    get:
+      operationId: migrationPosition
+      summary: Reports the current write position and the outbox and inbox drain counts.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: eventIds
+          in: query
+          required: false
+          description: Comma-separated event ids whose inbox receipts are reported.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The owner's position.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PositionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/watermark:
+    get:
+      operationId: migrationWatermarkGet
+      summary: Lists feed watermarks, optionally for one legacy table or direction.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: legacyTable
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+        - name: direction
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/WatermarkDirection'
+      responses:
+        '200':
+          description: Watermarks ordered by legacy table and direction.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WatermarkRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: migrationWatermarkPost
+      summary: Records the feed watermark of one legacy table and direction.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WatermarkInput'
+      responses:
+        '200':
+          description: The stored watermark.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatermarkRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/gate:
+    post:
+      operationId: migrationGate
+      summary: Closes, re-phases, opens or reads the unit gates of this owner.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GateRequest'
+      responses:
+        '200':
+          description: The gates after the operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Another holder owns a gate, so the compare-and-set was refused.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GateConflict'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: The gates could not close within the wait budget.
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Liveness probe.
+      tags:
+        - platform
+      x-opt2-transport: service
+      x-opt2-public: true
+      security: []
+      responses:
+        '200':
+          description: The service is running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+          description: A presented credential is invalid.
+components:
+  securitySchemes:
+    userToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Site-scoped user token in `Authorization`, minted by identity and attached by the gateway.
+    invocationCredential:
+      type: apiKey
+      in: header
+      name: X-Serverless-Authorization
+      description: Caller's invocation credential; a Google-signed ID token in the cloud, a local service token locally.
+    pubsubPushOidc:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: OIDC token of `pubsub-invoker` in `Authorization`, addressed to the push endpoint.
+    localPushKey:
+      type: apiKey
+      in: query
+      name: key
+      description: Local emulator push key, compared in constant time.
+    tasksInvokerOidc:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: OIDC token of `tasks-invoker` in `Authorization` in the cloud; a local `tasks-invoker` service token locally.
+  headers:
+    Generator:
+      description: Legacy generator header.
+      schema:
+        type: string
+        const: Masa CMS 7.6.1
+    StrictTransportSecurity:
+      description: Legacy HSTS header.
+      schema:
+        type: string
+        const: max-age=1200
+    ETag:
+      description: Uppercase hex SHA-256 of the exact body, unquoted, as ColdFusion `hash()` computes it.
+      schema:
+        type: string
+        pattern: '^[0-9A-F]{64}$'
+    WWWAuthenticate:
+      description: Challenge legacy sets before an authentication failure.
+      schema:
+        type: string
+    XOpt2WritePosition:
+      description: Committed write positions `<owner>=<xid>[,<owner>=<xid>…]`; the gateway strips it from client responses.
+      schema:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9-]*=[0-9]+(,[a-z0-9][a-z0-9-]*=[0-9]+)*$'
+    ContentDisposition:
+      description: '`attachment; filename="<name>"`, with backslashes and double quotes in the name escaped by a backslash.'
+      schema:
+        type: string
+        pattern: '^attachment; filename=".*"$'
+  parameters:
+    FixtureSiteId:
+      name: siteid
+      in: query
+      required: false
+      description: Legacy site id, also read from the body; the session user's site when empty, and an unknown site answers `invalidParameters`.
+      schema:
+        $ref: '#/components/schemas/SiteId'
+    SiteIdQuery:
+      name: siteid
+      in: query
+      required: false
+      description: Legacy site id, equal to the token's `site` (403 otherwise); the token's site when absent.
+      schema:
+        $ref: '#/components/schemas/SiteId'
+    PageIndex:
+      name: pageIndex
+      in: query
+      required: false
+      description: Page number; an empty value means 1 and any other non-integer or value below 1 answers `invalidParameters`.
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    ItemsPerPage:
+      name: itemsPerPage
+      in: query
+      required: false
+      description: Page size up to 1000; an empty value means 50 and any value outside 1 to 1000 answers `invalidParameters`.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 50
+    Page:
+      name: page
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+    PageSize:
+      name: pageSize
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+    UseDataNamespace:
+      name: useDataNamespace
+      in: query
+      required: false
+      description: A CFML boolean; false moves the `data` keys to the envelope's top level.
+      schema:
+        type: string
+        examples:
+          - 'false'
+    MethodOverride:
+      name: X-HTTP-Method-Override
+      in: header
+      required: false
+      description: HTTP method the fixture dispatches on instead of the request method.
+      schema:
+        type: string
+    FixtureExportId:
+      name: id
+      in: path
+      required: true
+      description: Export job id, a CF UUID; any id outside the site answers `notFound`.
+      schema:
+        type: string
+        minLength: 1
+    ExportId:
+      name: id
+      in: path
+      required: true
+      description: Export job id, a CF UUID; any id outside the tenant answers 404.
+      schema:
+        type: string
+        minLength: 1
+    MigrationTenantId:
+      name: tenantId
+      in: query
+      required: false
+      description: Tenant UUID; exactly one of `tenantId` and `siteId` is required.
+      schema:
+        type: string
+        format: uuid
+        pattern: '^([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-8][0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}|00000000-0000-0000-0000-000000000000|[Ff]{8}-[Ff]{4}-[Ff]{4}-[Ff]{4}-[Ff]{12})$'
+    MigrationSiteId:
+      name: siteId
+      in: query
+      required: false
+      description: Legacy site id resolved to its tenant; exactly one of `tenantId` and `siteId` is required.
+      schema:
+        type: string
+        minLength: 1
+    PageLimit:
+      name: limit
+      in: query
+      required: false
+      description: Page size, 1 to 10000; 1000 when omitted.
+      schema:
+        $ref: '#/components/schemas/DigitString'
+    PushKey:
+      name: key
+      in: query
+      required: false
+      description: Local emulator push key; absent in the cloud.
+      schema:
+        type: string
+    CloudTasksTaskName:
+      name: X-CloudTasks-TaskName
+      in: header
+      required: false
+      description: Task id; the body's `name` when absent.
+      schema:
+        type: string
+    CloudTasksQueueName:
+      name: X-CloudTasks-QueueName
+      in: header
+      required: false
+      description: Queue name; the body's `queue` when absent.
+      schema:
+        type: string
+    CloudTasksRetryCount:
+      name: X-CloudTasks-TaskRetryCount
+      in: header
+      required: false
+      schema:
+        type: string
+        pattern: '^[0-9]+$'
+    CloudTasksExecutionCount:
+      name: X-CloudTasks-TaskExecutionCount
+      in: header
+      required: false
+      schema:
+        type: string
+        pattern: '^[0-9]+$'
+    CloudTasksEta:
+      name: X-CloudTasks-TaskETA
+      in: header
+      required: false
+      description: Scheduled time in epoch seconds.
+      schema:
+        type: string
+    Queue:
+      name: queue
+      in: path
+      required: true
+      description: A queue this service creates tasks on.
+      schema:
+        type: string
+        enum:
+          - reporting-export-run
+  requestBodies:
+    FixtureCreateExportCall:
+      required: false
+      description: Merged with the query string as the fixture merges url, form and a JSON body; later sources win.
+      content:
+        application/x-www-form-urlencoded:
+          schema:
+            $ref: '#/components/schemas/CreateExportRequest'
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CreateExportRequest'
+    Push:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PushBody'
+  responses:
+    FixtureExportFile:
+      description: The job's output bytes under the job's `content_type`, without an ETag.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        Content-Disposition:
+          $ref: '#/components/headers/ContentDisposition'
+      content:
+        application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+          schema:
+            type: string
+            format: binary
+        text/csv:
+          schema:
+            type: string
+            format: binary
+        application/pdf:
+          schema:
+            type: string
+            format: binary
+    FixtureBadRequest:
+      description: 'Fixture 400 `invalidParameters`: an unknown site, a site without a program, an invalid `format` or `asOf`, or invalid paging.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureError'
+              - type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        const: invalid_request
+                      message:
+                        const: Invalid parameters
+    FixtureUnauthorized:
+      description: 'Fixture 401 `authorization` without a logged-in session user, or the platform''s refusal of a presented credential.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        WWW-Authenticate:
+          $ref: '#/components/headers/WWWAuthenticate'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            anyOf:
+              - allOf:
+                  - $ref: '#/components/schemas/FixtureError'
+                  - type: object
+                    properties:
+                      error:
+                        type: object
+                        properties:
+                          code:
+                            const: invalid_request
+                          message:
+                            const: Insufficient Account Permissions
+              - $ref: '#/components/schemas/LegacyErrorEnvelope'
+    FixtureForbidden:
+      description: Fixture 403 `forbidden`; the session user holds no `reporting.exporter` group in the site's private user pool.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            anyOf:
+              - allOf:
+                  - $ref: '#/components/schemas/FixtureError'
+                  - type: object
+                    properties:
+                      error:
+                        type: object
+                        properties:
+                          code:
+                            const: invalid_request
+                          message:
+                            const: Insufficient Account Permissions
+              - $ref: '#/components/schemas/LegacyErrorEnvelope'
+    FixtureNotFound:
+      description: Fixture 404 `notFound` for a job or definition outside the site.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureError'
+              - type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        const: invalid_request
+                      message:
+                        const: Not Found
+    FixtureNotReady:
+      description: Fixture 409 `conflict` with message `not-ready` while the job is not `done`.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureError'
+              - type: object
+                properties:
+                  method:
+                    const: reporting.exports.download
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        const: invalid_request
+                      message:
+                        const: not-ready
+    FixtureServerError:
+      description: Fixture 500 `server_error` for an unhandled exception or a control character in the output file name.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureError'
+              - type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        const: server_error
+                      message:
+                        const: Unhandled Exception
+    QueueControlled:
+      description: The queue's state after the operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/QueueControlResult'
+    BadRequest:
+      description: 'Legacy 400: `invalidParameters` or `badRequest`.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyErrorEnvelope'
+    Unauthorized:
+      description: 'Legacy 401: `authorization` without a qualifying identity, or `invalidAccessToken`/`accessTokenExpired` for a bad credential.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        WWW-Authenticate:
+          $ref: '#/components/headers/WWWAuthenticate'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyErrorEnvelope'
+    Forbidden:
+      description: The identity holds none of the required roles, or a supplied `siteid` differs from the token's site.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyErrorEnvelope'
+    NotFound:
+      description: 404 in the legacy error envelope.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyErrorEnvelope'
+    Conflict:
+      description: 409 in the legacy error envelope with message `not-ready`; the job is not `done`.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyErrorEnvelope'
+    ServerError:
+      description: Legacy 500 `server_error`.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyErrorEnvelope'
+    Unavailable:
+      description: Legacy-shaped 503 after a fail-closed or wait-timeout condition.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyUnavailable'
+  schemas:
+    CfUuid:
+      type: string
+      description: ColdFusion `createUUID()` id.
+      minLength: 35
+      maxLength: 35
+      pattern: '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}$'
+    SiteId:
+      type: string
+      description: Legacy site id, as `tsettings.SiteID`.
+      maxLength: 25
+      examples:
+        - tenant-a
+    DigitString:
+      type: string
+      description: Non-negative decimal integer without leading zeros.
+      pattern: '^(0|[1-9][0-9]{0,14})$'
+    LocalTimestamp:
+      type: string
+      description: Wall-clock time in the legacy server's zone, without an offset.
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}$'
+      examples:
+        - '2026-06-30T09:15:00.000'
+    FixtureTimestamp:
+      type: string
+      description: A `datetime` column as the fixture emits it, in the legacy server's zone, to the second and without an offset.
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}$'
+      examples:
+        - '2026-06-30T09:15:00'
+    EmptyString:
+      type: string
+      description: A NULL column as the fixture emits it.
+      maxLength: 0
+    WallClock:
+      type: string
+      description: Wall-clock time without a zone, `YYYY-MM-DD HH:MM[:SS[.fff]]` with a space or `T`.
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?$'
+    LegacyErrorEnvelope:
+      type: object
+      description: 'Legacy JSON API error envelope; types map to status and code as authorization 401, invalidAccessToken and accessTokenExpired 401 invalid_token, disabled, invalidParameters, invalidEntityCall, invalidMethodCall, badRequest and invalidTokens 400 invalid_request, server_error 500.'
+      required:
+        - apiversion
+        - method
+        - error
+      additionalProperties: true
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          type: string
+        params:
+          type: object
+        error:
+          type: object
+          required:
+            - message
+            - code
+          additionalProperties: true
+          properties:
+            message:
+              type: string
+            code:
+              type: string
+              enum:
+                - invalid_request
+                - invalid_token
+                - server_error
+    LegacyUnavailable:
+      type: object
+      description: Legacy JSON API `server_error` envelope sent with status 503.
+      required:
+        - apiversion
+        - method
+        - error
+      additionalProperties: false
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          type: string
+        params:
+          type: object
+        error:
+          type: object
+          required:
+            - message
+            - code
+          additionalProperties: false
+          properties:
+            message:
+              type: string
+              const: Unhandled Exception
+            code:
+              type: string
+              const: server_error
+    FixtureMethod:
+      type: string
+      description: Envelope method, `<module>.<resource>[.<action>]` of the fixture path.
+      enum:
+        - reporting.exports
+        - reporting.exports.download
+    FixtureEnvelope:
+      type: object
+      description: Fixture success envelope as Masa serializes it; `params` is absent under `suppressAPIParams`, and `data` keys move to the top level when `useDataNamespace` is false.
+      required:
+        - apiversion
+        - method
+      additionalProperties: true
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          $ref: '#/components/schemas/FixtureMethod'
+        params:
+          type: object
+        data: {}
+    FixtureError:
+      type: object
+      description: Fixture error envelope; `stacktrace` is present only with debugging enabled.
+      required:
+        - apiversion
+        - method
+        - error
+      additionalProperties: false
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          $ref: '#/components/schemas/FixtureMethod'
+        params:
+          type: object
+        error:
+          type: object
+          required:
+            - code
+            - message
+          additionalProperties: false
+          properties:
+            code:
+              type: string
+              enum:
+                - invalid_request
+                - server_error
+            message:
+              type: string
+            stacktrace: {}
+    FixtureList:
+      type: object
+      description: One page of a fixture list; an empty list reports `startindex` 1, `endindex` 0 and `totalpages` 0.
+      required:
+        - items
+        - startindex
+        - endindex
+        - itemsperpage
+        - totalitems
+        - totalpages
+        - pageindex
+      properties:
+        items:
+          type: array
+        startindex:
+          type: integer
+          minimum: 1
+        endindex:
+          type: integer
+          minimum: 0
+        itemsperpage:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        totalitems:
+          type: integer
+          minimum: 0
+        totalpages:
+          type: integer
+          minimum: 0
+        pageindex:
+          type: integer
+          minimum: 1
+    ExportFormat:
+      type: string
+      description: Output format of an export job.
+      enum:
+        - xlsx
+        - csv
+        - pdf
+    ExportState:
+      type: string
+      description: Export job state; a job moves queued, running, then done or failed.
+      enum:
+        - queued
+        - running
+        - done
+        - failed
+    ExportError:
+      type: string
+      description: Failure reason of a `failed` job.
+      enum:
+        - source-unavailable
+        - export-failed
+    ExportContentType:
+      type: string
+      description: Content type of a `done` job's output, by format.
+      enum:
+        - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+        - text/csv
+        - application/pdf
+    ExportJob:
+      type: object
+      description: A `synthetic.export_job` row without `output`, with lower-cased column names in catalog order; NULL columns are empty strings.
+      required:
+        - job_id
+        - siteid
+        - definition_id
+        - format
+        - state
+        - requested_by_id
+        - created
+        - started_at
+        - finished_at
+        - error
+        - file_name
+        - content_type
+        - output_sha256
+      additionalProperties: false
+      properties:
+        job_id:
+          $ref: '#/components/schemas/CfUuid'
+        siteid:
+          $ref: '#/components/schemas/SiteId'
+        definition_id:
+          $ref: '#/components/schemas/CfUuid'
+        format:
+          $ref: '#/components/schemas/ExportFormat'
+        state:
+          $ref: '#/components/schemas/ExportState'
+        requested_by_id:
+          $ref: '#/components/schemas/CfUuid'
+        created:
+          $ref: '#/components/schemas/FixtureTimestamp'
+        started_at:
+          description: Time the job started running; empty while queued.
+          anyOf:
+            - $ref: '#/components/schemas/FixtureTimestamp'
+            - $ref: '#/components/schemas/EmptyString'
+        finished_at:
+          description: Time the job reached done or failed; empty before then.
+          anyOf:
+            - $ref: '#/components/schemas/FixtureTimestamp'
+            - $ref: '#/components/schemas/EmptyString'
+        error:
+          description: Failure reason; empty unless the job failed.
+          anyOf:
+            - $ref: '#/components/schemas/ExportError'
+            - $ref: '#/components/schemas/EmptyString'
+        file_name:
+          description: Download name `export-<job_id>.<format>`; empty unless the job is done.
+          anyOf:
+            - type: string
+              pattern: '^export-[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}\.(xlsx|csv|pdf)$'
+            - $ref: '#/components/schemas/EmptyString'
+        content_type:
+          description: Output content type; empty unless the job is done.
+          anyOf:
+            - $ref: '#/components/schemas/ExportContentType'
+            - $ref: '#/components/schemas/EmptyString'
+        output_sha256:
+          description: Lowercase hex SHA-256 of the output; empty unless the job is done.
+          anyOf:
+            - type: string
+              pattern: '^[0-9a-f]{64}$'
+            - $ref: '#/components/schemas/EmptyString'
+    ExportJobList:
+      description: One page of export jobs.
+      allOf:
+        - $ref: '#/components/schemas/FixtureList'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/ExportJob'
+      unevaluatedProperties: false
+    FixtureExportListEnvelope:
+      description: Fixture envelope of one page of export jobs.
+      allOf:
+        - $ref: '#/components/schemas/FixtureEnvelope'
+        - type: object
+          properties:
+            method:
+              const: reporting.exports
+            data:
+              $ref: '#/components/schemas/ExportJobList'
+    FixtureExportJobEnvelope:
+      description: Fixture envelope of one export job.
+      allOf:
+        - $ref: '#/components/schemas/FixtureEnvelope'
+        - type: object
+          properties:
+            method:
+              const: reporting.exports
+            data:
+              $ref: '#/components/schemas/ExportJob'
+    ExportDefinition:
+      type: object
+      description: A `synthetic.export_definition` row, the source and column list a job exports.
+      required:
+        - definition_id
+        - siteid
+        - name
+        - source
+        - columns
+      additionalProperties: false
+      properties:
+        definition_id:
+          $ref: '#/components/schemas/CfUuid'
+        siteid:
+          $ref: '#/components/schemas/SiteId'
+        name:
+          type: string
+          maxLength: 100
+        source:
+          type: string
+          description: Rows exported; `broken` always fails the job with `source-unavailable`.
+          enum:
+            - timesheets.sheets
+            - finance.records
+            - broken
+        columns:
+          type: array
+          description: Source column names in output order, stored as JSON text.
+          items:
+            type: string
+    CreateExportRequest:
+      type: object
+      description: An export of one definition; parameter names match case-insensitively, as a CFML scope reads them.
+      additionalProperties: true
+      properties:
+        siteid:
+          $ref: '#/components/schemas/SiteId'
+        definitionId:
+          description: Id of an `ExportDefinition` of the site; an absent or foreign id answers `notFound`.
+          type: string
+        format:
+          description: Output format; any other value answers `invalidParameters`.
+          $ref: '#/components/schemas/ExportFormat'
+        asOf:
+          type: string
+          format: date
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+          description: Business date of a `timesheets.sheets` export, a real date from 1753 on; today when absent, otherwise `invalidParameters`.
+          examples:
+            - '2026-06-30'
+    ExportJobBody:
+      type: object
+      required:
+        - data
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/ExportJob'
+    SignedUrl:
+      type: object
+      description: A download URL valid for 900 s; a v4 signed Cloud Storage URL in the cloud, a path-only HMAC URL under `/opt2/files/reporting-exports/` locally.
+      required:
+        - url
+        - expiresAt
+      additionalProperties: false
+      properties:
+        url:
+          type: string
+          minLength: 1
+        expiresAt:
+          type: string
+          format: date-time
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,3})?Z$'
+    TaskWireBody:
+      type: object
+      description: JSON body both task adapters post; `tenantId` is null on system tasks.
+      required:
+        - queue
+        - name
+        - tenantId
+      additionalProperties: true
+      properties:
+        queue:
+          type: string
+          minLength: 1
+        name:
+          type: string
+          minLength: 1
+        tenantId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        payload: {}
+    ExportTaskPayload:
+      type: object
+      description: The export job a `reporting-export-run` task runs and the business date its source is read as of.
+      required:
+        - jobId
+        - asOf
+      additionalProperties: false
+      properties:
+        jobId:
+          $ref: '#/components/schemas/CfUuid'
+          description: Equal to the path's `exportId`.
+        asOf:
+          type: string
+          format: date
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+    ExportTaskWireBody:
+      description: Task wire body of an export task, which names the tenant of its job.
+      allOf:
+        - $ref: '#/components/schemas/TaskWireBody'
+        - type: object
+          required:
+            - tenantId
+            - payload
+          properties:
+            queue:
+              const: reporting-export-run
+            tenantId:
+              type: string
+              format: uuid
+            payload:
+              $ref: '#/components/schemas/ExportTaskPayload'
+    ExportTaskResult:
+      type: object
+      description: The job and the state it holds after the run.
+      required:
+        - jobId
+        - state
+      additionalProperties: false
+      properties:
+        jobId:
+          $ref: '#/components/schemas/CfUuid'
+        state:
+          $ref: '#/components/schemas/ExportState'
+    PushBody:
+      type: object
+      description: Pub/Sub push wrapper; `data` is the base64 event envelope whose payload is a `programs-sites.site.changed.v1` site.
+      required:
+        - message
+        - subscription
+      additionalProperties: true
+      properties:
+        message:
+          type: object
+          additionalProperties: true
+          properties:
+            data:
+              type: string
+              contentEncoding: base64
+            attributes:
+              type: object
+              additionalProperties:
+                type: string
+            messageId:
+              type: string
+            message_id:
+              type: string
+            publishTime:
+              type: string
+            publish_time:
+              type: string
+            orderingKey:
+              type: string
+          allOf:
+            - anyOf:
+                - required:
+                    - messageId
+                  properties:
+                    messageId:
+                      minLength: 1
+                - required:
+                    - message_id
+                  properties:
+                    message_id:
+                      minLength: 1
+        subscription:
+          type: string
+          minLength: 1
+          description: Usually `projects/<project>/subscriptions/<subscription>`, where the subscription is `reporting.<topic>`.
+        deliveryAttempt:
+          type: integer
+    EnsureRecurringResult:
+      type: object
+      required:
+        - queue
+        - name
+        - created
+        - reason
+      additionalProperties: false
+      properties:
+        queue:
+          type: string
+        name:
+          type: string
+        created:
+          type: boolean
+        reason:
+          type: string
+          enum:
+            - live
+            - created-current
+            - created-next
+    QueueControlResult:
+      type: object
+      description: The queue's paused state after pause or resume, or the chain task `ensure` found or created.
+      required:
+        - queue
+        - service
+      additionalProperties: false
+      properties:
+        queue:
+          type: string
+        service:
+          type: string
+          const: reporting
+        paused:
+          type: boolean
+        ensured:
+          $ref: '#/components/schemas/EnsureRecurringResult'
+    CanonicalType:
+      type: string
+      description: Canonical encoding tag.
+      enum:
+        - s
+        - i
+        - f
+        - d
+        - t
+        - b
+    CanonicalColumn:
+      type: object
+      required:
+        - name
+        - type
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+        type:
+          $ref: '#/components/schemas/CanonicalType'
+        scale:
+          type: integer
+          minimum: 0
+    WatermarkDirection:
+      type: string
+      enum:
+        - forward
+        - reverse
+    WatermarkFields:
+      type: object
+      required:
+        - direction
+        - finishedAt
+      properties:
+        direction:
+          $ref: '#/components/schemas/WatermarkDirection'
+        snapshotSeq:
+          type: integer
+          minimum: 0
+        backupLsn:
+          type: string
+          pattern: '^[0-9]{1,25}$'
+        finishedAt:
+          $ref: '#/components/schemas/WallClock'
+    ApplyRequest:
+      type: object
+      description: One batch of canonical legacy rows for one legacy table and tenant; exactly one of `tenantId` and `siteId` is required.
+      required:
+        - batchId
+        - origin
+        - legacyTable
+        - columns
+        - rows
+      oneOf:
+        - required:
+            - tenantId
+        - required:
+            - siteId
+      additionalProperties: false
+      properties:
+        batchId:
+          type: string
+          minLength: 1
+        origin:
+          type: string
+          enum:
+            - backfill
+            - migration-feed
+            - legacy-window
+        legacyTable:
+          type: string
+          minLength: 1
+        tenantId:
+          type: string
+          format: uuid
+          pattern: '^([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-8][0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}|00000000-0000-0000-0000-000000000000|[Ff]{8}-[Ff]{4}-[Ff]{4}-[Ff]{4}-[Ff]{12})$'
+        siteId:
+          type: string
+          minLength: 1
+        legacyProgramId:
+          type: integer
+          minimum: 0
+        columns:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/CanonicalColumn'
+        units:
+          type: array
+          items:
+            type: string
+            minLength: 1
+        holderId:
+          type: string
+          minLength: 1
+        rows:
+          type: array
+          items:
+            type: object
+            required:
+              - op
+              - row
+            additionalProperties: false
+            properties:
+              op:
+                type: string
+                enum:
+                  - upsert
+                  - delete
+                  - insert
+              row:
+                type: string
+              discriminator:
+                type:
+                  - string
+                  - number
+        watermark:
+          allOf:
+            - $ref: '#/components/schemas/WatermarkFields'
+          unevaluatedProperties: false
+    ApplyResponse:
+      type: object
+      required:
+        - batchId
+        - duplicate
+        - applied
+        - skipped
+      additionalProperties: false
+      properties:
+        batchId:
+          type: string
+        duplicate:
+          type: boolean
+        applied:
+          type: integer
+          minimum: 0
+        skipped:
+          type: integer
+          minimum: 0
+    ObjectManifestEntry:
+      type: object
+      required:
+        - key
+        - size
+        - sha256
+      additionalProperties: false
+      properties:
+        key:
+          type: string
+        size:
+          type: integer
+          minimum: 0
+        sha256:
+          type: string
+        contentType:
+          type: string
+        legacyPath:
+          type: string
+    ExportRow:
+      type: object
+      description: One row in legacy form; `key` is the whole-row encoding for keyless tables.
+      required:
+        - key
+        - row
+        - hash
+      additionalProperties: false
+      properties:
+        key:
+          type: string
+        row:
+          type: string
+        hash:
+          type: string
+        legacyProgramId:
+          type: integer
+    ExportTable:
+      type: object
+      required:
+        - unit
+        - legacyTable
+        - targetTable
+        - keyless
+        - columns
+        - rows
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        legacyTable:
+          type: string
+        targetTable:
+          type: string
+        keyless:
+          type: boolean
+        columns:
+          type: array
+          items:
+            $ref: '#/components/schemas/CanonicalColumn'
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExportRow'
+    ExportResponse:
+      type: object
+      description: One export page; `next` is null after the last page, and `objects` comes with the first page only.
+      required:
+        - unit
+        - tenantId
+        - tables
+        - next
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        tenantId:
+          type: string
+          format: uuid
+        tables:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExportTable'
+        next:
+          type:
+            - string
+            - 'null'
+        objects:
+          type: array
+          items:
+            $ref: '#/components/schemas/ObjectManifestEntry'
+    ChangeOp:
+      type: string
+      enum:
+        - insert
+        - update
+        - delete
+    ChangeOrigin:
+      type: string
+      enum:
+        - target
+        - legacy-window
+        - migration-feed
+        - backfill
+    NullableString:
+      type:
+        - string
+        - 'null'
+    LegacyChange:
+      type: object
+      description: A changelog row in the legacy form of one mapping; `columns` are legacy names.
+      required:
+        - unit
+        - legacyTable
+        - key
+        - before
+        - after
+        - columns
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        legacyTable:
+          type: string
+        key:
+          type: string
+        before:
+          $ref: '#/components/schemas/NullableString'
+        after:
+          $ref: '#/components/schemas/NullableString'
+        columns:
+          type: array
+          items:
+            type: string
+        legacyProgramId:
+          type: integer
+    ProjectedChangeRow:
+      type: object
+      description: One changelog row; `xid` and `seq` are decimal strings, `at` is `YYYY-MM-DD HH:MM:SS.mmm`.
+      required:
+        - xid
+        - seq
+        - table
+        - op
+        - key
+        - before
+        - after
+        - columns
+        - origin
+        - actorUserId
+        - actorService
+        - at
+        - requestId
+        - operationId
+        - legacy
+      additionalProperties: false
+      properties:
+        xid:
+          type: string
+          pattern: '^[0-9]+$'
+        seq:
+          type: string
+          pattern: '^[0-9]+$'
+        table:
+          type: string
+        op:
+          $ref: '#/components/schemas/ChangeOp'
+        key:
+          type: string
+        before:
+          $ref: '#/components/schemas/NullableString'
+        after:
+          $ref: '#/components/schemas/NullableString'
+        columns:
+          type: array
+          items:
+            type: string
+        origin:
+          $ref: '#/components/schemas/ChangeOrigin'
+        actorUserId:
+          $ref: '#/components/schemas/NullableString'
+        actorService:
+          $ref: '#/components/schemas/NullableString'
+        at:
+          type: string
+        requestId:
+          $ref: '#/components/schemas/NullableString'
+        operationId:
+          $ref: '#/components/schemas/NullableString'
+        legacy:
+          type: array
+          items:
+            $ref: '#/components/schemas/LegacyChange'
+    OperationStatus:
+      type: string
+      enum:
+        - open
+        - done
+        - rolled-back
+    ChangesResponse:
+      type: object
+      description: Rows below `horizon` in `(xid, seq)` order; `horizon` counts as applied only when `complete`.
+      required:
+        - rows
+        - cursor
+        - horizon
+        - complete
+        - operations
+      additionalProperties: false
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectedChangeRow'
+        cursor:
+          type: string
+          pattern: '^[0-9]+:[0-9]+$'
+        horizon:
+          type: string
+          pattern: '^[0-9]+$'
+        complete:
+          type: boolean
+        operations:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/OperationStatus'
+    TenantDrainCount:
+      type: object
+      required:
+        - tenantId
+        - unpublished
+        - held
+      additionalProperties: false
+      properties:
+        tenantId:
+          type: string
+        unpublished:
+          type: integer
+          minimum: 0
+        held:
+          type: integer
+          minimum: 0
+    OutboxDrainCounts:
+      type: object
+      required:
+        - tenants
+        - unpublished
+        - held
+      additionalProperties: false
+      properties:
+        tenants:
+          type: array
+          items:
+            $ref: '#/components/schemas/TenantDrainCount'
+        unpublished:
+          type: integer
+          minimum: 0
+        held:
+          type: integer
+          minimum: 0
+    InboxCounts:
+      type: object
+      description: Inbox receipts over every registered tenant; `receipts` maps each asked event id to the tenants that applied it.
+      required:
+        - total
+        - bySubscription
+      additionalProperties: false
+      properties:
+        total:
+          type: integer
+          minimum: 0
+        bySubscription:
+          type: object
+          additionalProperties:
+            type: integer
+        receipts:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+    PositionResponse:
+      type: object
+      description: The latest assigned xid and the drain counts; `outbox` or `inbox` is null where the service has no such table.
+      required:
+        - owner
+        - position
+        - outbox
+        - inbox
+      additionalProperties: false
+      properties:
+        owner:
+          type: string
+          const: reporting
+        position:
+          type: string
+          pattern: '^[0-9]+$'
+        outbox:
+          oneOf:
+            - $ref: '#/components/schemas/OutboxDrainCounts'
+            - type: 'null'
+        inbox:
+          oneOf:
+            - $ref: '#/components/schemas/InboxCounts'
+            - type: 'null'
+    WatermarkRecord:
+      type: object
+      required:
+        - legacyTable
+        - direction
+        - snapshotSeq
+        - backupLsn
+        - finishedAt
+      additionalProperties: false
+      properties:
+        legacyTable:
+          type: string
+        direction:
+          $ref: '#/components/schemas/WatermarkDirection'
+        snapshotSeq:
+          type:
+            - integer
+            - 'null'
+        backupLsn:
+          $ref: '#/components/schemas/NullableString'
+        finishedAt:
+          $ref: '#/components/schemas/LocalTimestamp'
+    WatermarkInput:
+      description: A watermark to record for one legacy table.
+      allOf:
+        - $ref: '#/components/schemas/WatermarkFields'
+        - type: object
+          required:
+            - legacyTable
+          properties:
+            legacyTable:
+              type: string
+              minLength: 1
+      unevaluatedProperties: false
+    GateState:
+      type: string
+      enum:
+        - legacy
+        - open
+        - closed
+    GatePhase:
+      type: string
+      enum:
+        - quiet
+        - executing
+        - importing
+        - import-pending
+    UnitList:
+      type: array
+      minItems: 1
+      items:
+        type: string
+        minLength: 1
+    GateRequest:
+      description: One gate operation, selected by `op`.
+      oneOf:
+        - $ref: '#/components/schemas/GateClose'
+        - $ref: '#/components/schemas/GatePhaseChange'
+        - $ref: '#/components/schemas/GateOpen'
+        - $ref: '#/components/schemas/GateStatus'
+      discriminator:
+        propertyName: op
+        mapping:
+          close: '#/components/schemas/GateClose'
+          phase: '#/components/schemas/GatePhaseChange'
+          open: '#/components/schemas/GateOpen'
+          status: '#/components/schemas/GateStatus'
+    GateClose:
+      type: object
+      description: Closes the units' gates for a holder; `allowLegacy` lets a transition close units still `legacy`.
+      required:
+        - op
+        - units
+        - holderId
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: close
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+        phase:
+          $ref: '#/components/schemas/GatePhase'
+        allowLegacy:
+          type: boolean
+        timeoutMs:
+          type: integer
+          minimum: 1
+          maximum: 30000
+    GatePhaseChange:
+      type: object
+      description: Sets the phase of gates the holder closed.
+      required:
+        - op
+        - units
+        - holderId
+        - phase
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: phase
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+        phase:
+          $ref: '#/components/schemas/GatePhase'
+    GateOpen:
+      type: object
+      description: Reopens the holder's gates as `open`, or sets them to `legacy`.
+      required:
+        - op
+        - units
+        - holderId
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: open
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+        state:
+          type: string
+          enum:
+            - open
+            - legacy
+    GateStatus:
+      type: object
+      description: Reads the gates; every unit of this owner when `units` is omitted.
+      required:
+        - op
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: status
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+    UnitGate:
+      type: object
+      required:
+        - unit
+        - state
+        - holderId
+        - phase
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        state:
+          $ref: '#/components/schemas/GateState'
+        holderId:
+          $ref: '#/components/schemas/NullableString'
+        phase:
+          $ref: '#/components/schemas/GatePhase'
+    GateResponse:
+      type: object
+      required:
+        - units
+      additionalProperties: false
+      properties:
+        units:
+          type: array
+          items:
+            $ref: '#/components/schemas/UnitGate'
+    GateConflict:
+      type: object
+      description: The units whose gate another holder owns.
+      required:
+        - error
+        - units
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          const: gate-conflict
+        units:
+          type: array
+          items:
+            type: string
+    Health:
+      type: object
+      required:
+        - status
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          const: ok

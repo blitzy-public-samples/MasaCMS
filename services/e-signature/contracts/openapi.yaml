@@ -1,0 +1,2241 @@
+openapi: 3.1.0
+info:
+  title: e-signature
+  version: 1.0.0
+  description: 'SYNTHETIC: e-signature - no Masa equivalent; legacy oracle in legacy-fixtures/. Typed-name document signing with a SHA-256 hash-chained audit trail and chain verification.'
+  license:
+    name: GPL-2.0-only
+    identifier: GPL-2.0-only
+  x-source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f
+servers:
+  - url: http://127.0.0.1:8120
+    description: local
+x-opt2-calls:
+  - people
+security:
+  - userToken: []
+    invocationCredential: []
+tags:
+  - name: fixture
+    description: Fixture routes, answered byte-shaped like `legacy-fixtures/cfml/modules/esignature.cfc`.
+  - name: v1
+    description: JSON API of the OPT-2 e-signature screens; a breaking change takes a /v2/ prefix.
+  - name: migration
+    description: Migration-kit endpoints of the owned units.
+  - name: platform
+    description: Push delivery of consumed topics and the liveness probe.
+paths:
+  /legacy-fixtures/cfml/api.cfm/esignature/requests:
+    parameters:
+      - $ref: '#/components/parameters/SiteId'
+      - $ref: '#/components/parameters/UseDataNamespace'
+    get:
+      operationId: fixtureListRequests
+      summary: Lists the site's signature requests in creation order, without document bytes.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - esignature.signer
+      parameters:
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureRequestList'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    post:
+      operationId: fixtureCreateRequest
+      summary: Creates a PENDING request for one signer and appends its `created` audit entry.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - esignature.signer
+      requestBody:
+        $ref: '#/components/requestBodies/CreateRequestForm'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureRequestCreated'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /legacy-fixtures/cfml/api.cfm/esignature/requests/{id}/sign:
+    parameters:
+      - $ref: '#/components/parameters/FixtureRequestId'
+      - $ref: '#/components/parameters/SiteId'
+      - $ref: '#/components/parameters/UseDataNamespace'
+    post:
+      operationId: fixtureSignRequest
+      summary: Signs a PENDING request with the signer's typed name and appends its `signed` audit entry.
+      description: Only the request's designated signer may sign; the typed name is stored as sent.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - esignature.signer
+      requestBody:
+        $ref: '#/components/requestBodies/SignForm'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureRequestSigned'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '409':
+          $ref: '#/components/responses/FixtureConflict'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /legacy-fixtures/cfml/api.cfm/esignature/requests/{id}/audit:
+    parameters:
+      - $ref: '#/components/parameters/FixtureRequestId'
+      - $ref: '#/components/parameters/SiteId'
+      - $ref: '#/components/parameters/UseDataNamespace'
+    get:
+      operationId: fixtureGetAudit
+      summary: Lists one page of the request's audit entries in `seq` order.
+      description: An auditor reads any request of the site, a signer only requests addressed to them; items POST back to verify unchanged.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - esignature.signer
+        - esignature.auditor
+      parameters:
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureAuditChain'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /legacy-fixtures/cfml/api.cfm/esignature/requests/{id}/verify:
+    parameters:
+      - $ref: '#/components/parameters/FixtureRequestId'
+      - $ref: '#/components/parameters/SiteId'
+      - $ref: '#/components/parameters/UseDataNamespace'
+    get:
+      operationId: fixtureVerifyStored
+      summary: Recomputes the request's stored audit chain and reports whether it is intact.
+      description: An auditor verifies any request of the site, a signer only requests addressed to them.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - esignature.signer
+        - esignature.auditor
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureVerifyResult'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    post:
+      operationId: fixtureVerifySupplied
+      summary: Recomputes a supplied copy of the request's audit chain and reports whether it is intact.
+      description: The copy is hashed in array order against the stored request id, so a tampered copy reports the `seq` of its first broken entry; nothing is stored.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - esignature.signer
+        - esignature.auditor
+      requestBody:
+        $ref: '#/components/requestBodies/VerifySuppliedForm'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureVerifyResult'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /v1/esignature/requests:
+    parameters:
+      - $ref: '#/components/parameters/SiteId'
+    get:
+      operationId: listSignatureRequests
+      summary: Lists the tenant's signature requests in creation order for the signing request screen.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - esignature.signer
+      parameters:
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+      responses:
+        '200':
+          description: One page of the tenant's requests.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignatureRequestList'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    post:
+      operationId: createSignatureRequest
+      summary: Creates a PENDING request for one signer and appends its `created` audit entry.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - esignature.signer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRequestInput'
+      responses:
+        '200':
+          description: The created request.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignatureRequest'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /v1/esignature/requests/{id}:
+    parameters:
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/SiteId'
+    get:
+      operationId: getSignatureRequest
+      summary: Reads one request with its signature for the signing request screen.
+      description: An auditor reads any request of the tenant, a signer only requests addressed to them.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - esignature.signer
+        - esignature.auditor
+      responses:
+        '200':
+          description: The request detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignatureRequestDetail'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /v1/esignature/requests/{id}/sign:
+    parameters:
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/SiteId'
+    post:
+      operationId: signRequest
+      summary: Signs a PENDING request with the signer's typed name and appends its `signed` audit entry.
+      description: Only the request's designated signer may sign; the typed name is stored as sent.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - esignature.signer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignInput'
+      responses:
+        '200':
+          description: The request, now SIGNED.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignatureRequest'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '409':
+          $ref: '#/components/responses/FixtureConflict'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /v1/esignature/requests/{id}/audit:
+    parameters:
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/SiteId'
+    get:
+      operationId: getAuditChain
+      summary: Lists one page of the request's audit entries in `seq` order for the audit chain screen.
+      description: An auditor reads any request of the tenant, a signer only requests addressed to them.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - esignature.signer
+        - esignature.auditor
+      parameters:
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+      responses:
+        '200':
+          description: One page of the request's audit chain.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditChain'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /v1/esignature/requests/{id}/verify:
+    parameters:
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/SiteId'
+    get:
+      operationId: verifyChain
+      summary: Recomputes the request's stored audit chain for the verify screen.
+      description: An auditor verifies any request of the tenant, a signer only requests addressed to them.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - esignature.signer
+        - esignature.auditor
+      responses:
+        '200':
+          description: The verification verdict.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyResult'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    post:
+      operationId: verifySuppliedChain
+      summary: Recomputes a supplied copy of the request's audit chain for the verify screen.
+      description: The copy is hashed in array order against the stored request id; nothing is stored.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - esignature.signer
+        - esignature.auditor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifySuppliedInput'
+      responses:
+        '200':
+          description: The verification verdict of the supplied copy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyResult'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /internal/v1/events/e-signature.programs-sites.site.changed.v1:
+    post:
+      operationId: pushSiteChanged
+      summary: Receives push deliveries of `programs-sites.site.changed.v1` into this service's tenant registry.
+      tags:
+        - platform
+      x-opt2-transport: pubsub-push
+      x-opt2-requires:
+        - service:pubsub-invoker
+      security:
+        - pubsubPushOidc: []
+        - localPushKey: []
+      parameters:
+        - $ref: '#/components/parameters/PushKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PushBody'
+      responses:
+        '204':
+          description: Acknowledged; the delivery was applied, already applied, or dead-lettered.
+        '400':
+          description: Not a push body; a nack.
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+          description: Processing failed; a nack, redelivered by Pub/Sub.
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+          description: A unit gate or the database is unavailable; a nack, redelivered by Pub/Sub.
+  /internal/v1/migration/apply:
+    post:
+      operationId: migrationApply
+      summary: Applies one batch of canonical legacy rows to the owned units, once per batch id.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyRequest'
+      responses:
+        '200':
+          description: The batch outcome; a repeated batch id is a no-op reported as `duplicate`.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplyResponse'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /internal/v1/migration/export:
+    get:
+      operationId: migrationExport
+      summary: Exports one page of a unit's rows in canonical legacy form.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: unit
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - $ref: '#/components/parameters/MigrationTenantId'
+        - $ref: '#/components/parameters/MigrationSiteId'
+        - name: programId
+          in: query
+          required: false
+          description: Restricts a folded unit to one `Program_<id>` schema.
+          schema:
+            $ref: '#/components/schemas/DigitString'
+        - name: after
+          in: query
+          required: false
+          description: The previous page's `next` cursor.
+          schema:
+            type: string
+            minLength: 1
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: One export page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportResponse'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /internal/v1/migration/changes:
+    get:
+      operationId: migrationChanges
+      summary: Reads the tenant's changelog after a cursor, below the commit-safe horizon.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/MigrationTenantId'
+        - $ref: '#/components/parameters/MigrationSiteId'
+        - name: after
+          in: query
+          required: false
+          description: Cursor `<xid>:<seq>`; `0:0` when omitted.
+          schema:
+            type: string
+            pattern: '^(0|[1-9][0-9]*):(0|[1-9][0-9]*)$'
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: One page of changes with their legacy projections.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChangesResponse'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /internal/v1/migration/position:
+    get:
+      operationId: migrationPosition
+      summary: Reports the current write position and the outbox and inbox drain counts.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: eventIds
+          in: query
+          required: false
+          description: Comma-separated event ids whose inbox receipts are reported.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The owner's position.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PositionResponse'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /internal/v1/migration/watermark:
+    get:
+      operationId: migrationWatermarkGet
+      summary: Lists feed watermarks, optionally for one legacy table or direction.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: legacyTable
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+        - name: direction
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/WatermarkDirection'
+      responses:
+        '200':
+          description: Watermarks ordered by legacy table and direction.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WatermarkRecord'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    post:
+      operationId: migrationWatermarkPost
+      summary: Records the feed watermark of one legacy table and direction.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WatermarkInput'
+      responses:
+        '200':
+          description: The stored watermark.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatermarkRecord'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /internal/v1/migration/gate:
+    post:
+      operationId: migrationGate
+      summary: Closes, re-phases, opens or reads the unit gates of this owner.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GateRequest'
+      responses:
+        '200':
+          description: The gates after the operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GateResponse'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '409':
+          description: Another holder owns a gate, so the compare-and-set was refused.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GateConflict'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+          description: The gates could not close within the wait budget.
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Liveness probe.
+      tags:
+        - platform
+      x-opt2-transport: service
+      x-opt2-public: true
+      security: []
+      responses:
+        '200':
+          description: The service is running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+          description: A presented credential is invalid.
+components:
+  securitySchemes:
+    userToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Site-scoped user token in `Authorization`, minted by identity and attached by the gateway.
+    invocationCredential:
+      type: apiKey
+      in: header
+      name: X-Serverless-Authorization
+      description: Caller's invocation credential; a Google-signed ID token in the cloud, a local service token locally.
+    pubsubPushOidc:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: OIDC token of `pubsub-invoker` in `Authorization`, addressed to the push endpoint.
+    localPushKey:
+      type: apiKey
+      in: query
+      name: key
+      description: Local emulator push key, compared in constant time.
+  headers:
+    Generator:
+      description: Legacy generator header.
+      schema:
+        type: string
+        const: Masa CMS 7.6.1
+    StrictTransportSecurity:
+      description: Legacy HSTS header.
+      schema:
+        type: string
+        const: max-age=1200
+    ETag:
+      description: Uppercase hex SHA-256 of the exact body, unquoted, as ColdFusion `hash()` computes it.
+      schema:
+        type: string
+        pattern: '^[0-9A-F]{64}$'
+    WWWAuthenticate:
+      description: Challenge sent with the refusal of a presented credential.
+      schema:
+        type: string
+    XOpt2WritePosition:
+      description: Committed write positions `<owner>=<xid>[,<owner>=<xid>…]`; the gateway strips it from client responses.
+      schema:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9-]*=[0-9]+(,[a-z0-9][a-z0-9-]*=[0-9]+)*$'
+  parameters:
+    SiteId:
+      name: siteid
+      in: query
+      required: false
+      description: Legacy site id, also accepted as a form or JSON body field; the session or token site when omitted, and it must equal the token's `site`.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 25
+        examples:
+          - tenant-a
+    UseDataNamespace:
+      name: useDataNamespace
+      in: query
+      required: false
+      description: '`false` moves the keys of a struct `data` to the envelope root.'
+      schema:
+        type: string
+        examples:
+          - 'false'
+    PageIndex:
+      name: pageIndex
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    ItemsPerPage:
+      name: itemsPerPage
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 50
+    FixtureRequestId:
+      name: id
+      in: path
+      required: true
+      description: Signature request id; an id matching no request of the caller's site answers 404.
+      schema:
+        type: string
+        minLength: 1
+    RequestId:
+      name: id
+      in: path
+      required: true
+      description: Signature request id; a malformed id answers 400, one matching no request of the caller's tenant 404.
+      schema:
+        type: string
+        pattern: '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}$'
+    PushKey:
+      name: key
+      in: query
+      required: false
+      description: Local emulator push key; absent in the cloud.
+      schema:
+        type: string
+    MigrationTenantId:
+      name: tenantId
+      in: query
+      required: false
+      description: Tenant UUID; exactly one of `tenantId` and `siteId` is required.
+      schema:
+        $ref: '#/components/schemas/TenantId'
+    MigrationSiteId:
+      name: siteId
+      in: query
+      required: false
+      description: Legacy site id resolved to its tenant; exactly one of `tenantId` and `siteId` is required.
+      schema:
+        type: string
+        minLength: 1
+    PageLimit:
+      name: limit
+      in: query
+      required: false
+      description: Page size, 1 to 10000; 1000 when omitted.
+      schema:
+        $ref: '#/components/schemas/DigitString'
+  requestBodies:
+    CreateRequestForm:
+      required: true
+      description: Merged with the query string as legacy merges url, form and a JSON body; later sources win.
+      content:
+        application/x-www-form-urlencoded:
+          schema:
+            $ref: '#/components/schemas/CreateRequestInput'
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CreateRequestInput'
+    SignForm:
+      required: true
+      description: Merged with the query string as legacy merges url, form and a JSON body; later sources win.
+      content:
+        application/x-www-form-urlencoded:
+          schema:
+            $ref: '#/components/schemas/SignInput'
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SignInput'
+    VerifySuppliedForm:
+      required: true
+      description: Merged with the query string as legacy merges url, form and a JSON body; a form field carries `entries` as JSON text.
+      content:
+        application/x-www-form-urlencoded:
+          schema:
+            $ref: '#/components/schemas/VerifySuppliedInput'
+        application/json:
+          schema:
+            $ref: '#/components/schemas/VerifySuppliedInput'
+  responses:
+    FixtureRequestList:
+      description: One page of the site's requests.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureEnvelope'
+              - properties:
+                  method:
+                    const: esignature.requests
+                  data:
+                    $ref: '#/components/schemas/SignatureRequestList'
+    FixtureRequestCreated:
+      description: The created request, PENDING.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        X-Opt2-Write-Position:
+          $ref: '#/components/headers/XOpt2WritePosition'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureEnvelope'
+              - properties:
+                  method:
+                    const: esignature.requests
+                  data:
+                    $ref: '#/components/schemas/SignatureRequest'
+    FixtureRequestSigned:
+      description: The request, now SIGNED.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        X-Opt2-Write-Position:
+          $ref: '#/components/headers/XOpt2WritePosition'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureEnvelope'
+              - properties:
+                  method:
+                    const: esignature.requests.sign
+                  data:
+                    $ref: '#/components/schemas/SignatureRequest'
+    FixtureAuditChain:
+      description: One page of the request's audit entries.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureEnvelope'
+              - properties:
+                  method:
+                    const: esignature.requests.audit
+                  data:
+                    $ref: '#/components/schemas/AuditChain'
+    FixtureVerifyResult:
+      description: The verification verdict.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureEnvelope'
+              - properties:
+                  method:
+                    const: esignature.requests.verify
+                  data:
+                    $ref: '#/components/schemas/VerifyResult'
+    FixtureBadRequest:
+      description: '`invalidParameters` (`Invalid parameters`): an unknown site, invalid paging, document, signer, typed name, supplied chain or migration input; or `badRequest` (`Bad Request`) for a rejected migration batch.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/FixtureErrorEnvelope'
+    FixtureUnauthorized:
+      description: '`authorization` (`Insufficient Account Permissions`): no logged-in user or user token; `invalid_token` codes come from a rejected token.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        WWW-Authenticate:
+          $ref: '#/components/headers/WWWAuthenticate'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/FixtureErrorEnvelope'
+    FixtureForbidden:
+      description: '`forbidden` (`Insufficient Account Permissions`): the user holds none of the required roles, is not the request''s signer, or supplied another site.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/FixtureErrorEnvelope'
+    FixtureNotFound:
+      description: '`notFound` (`Not Found`): no such request in the caller''s site.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/FixtureErrorEnvelope'
+    FixtureConflict:
+      description: '`conflict` with message `already-signed`: the request is no longer PENDING.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/FixtureErrorEnvelope'
+          example:
+            apiversion: v1
+            method: esignature.requests.sign
+            error:
+              code: invalid_request
+              message: already-signed
+    FixtureServerError:
+      description: '`server_error` (`Unhandled Exception`): an unhandled exception.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/FixtureErrorEnvelope'
+    LegacyUnavailable503:
+      description: Legacy-shaped 503 after a fail-closed or wait-timeout condition.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyUnavailable'
+  schemas:
+    CfUuid:
+      type: string
+      description: ColdFusion `createUUID()` id minted by this service or its oracle.
+      minLength: 35
+      maxLength: 35
+      pattern: '^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$'
+    LegacyUserId:
+      type: string
+      description: Masa `UserID`; a ColdFusion `createUUID()` id, or the installed admin's sentinel id.
+      minLength: 35
+      maxLength: 35
+      pattern: '^([0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}|0{34}1)$'
+    TenantId:
+      type: string
+      format: uuid
+      pattern: '^([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-8][0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}|00000000-0000-0000-0000-000000000000|[Ff]{8}-[Ff]{4}-[Ff]{4}-[Ff]{4}-[Ff]{12})$'
+    Sha256Hex:
+      type: string
+      description: Lowercase hex SHA-256.
+      pattern: '^[0-9a-f]{64}$'
+    LegacyDateTime:
+      type: string
+      description: Wall-clock time in the legacy server's zone, without an offset, as the fixture serializes dates.
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}$'
+      examples:
+        - '2026-06-30T09:15:00'
+    LocalTimestamp:
+      type: string
+      description: Wall-clock time in the legacy server's zone, without an offset.
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}$'
+      examples:
+        - '2026-06-30T09:15:00.000'
+    DigitString:
+      type: string
+      description: Non-negative decimal integer without leading zeros.
+      pattern: '^(0|[1-9][0-9]{0,14})$'
+    WallClock:
+      type: string
+      description: Wall-clock time without a zone, `YYYY-MM-DD HH:MM[:SS[.fff]]` with a space or `T`.
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?$'
+    NullableString:
+      type:
+        - string
+        - 'null'
+    FixtureEnvelope:
+      type: object
+      description: Masa JSON API envelope with lower-cased keys; `params` is absent under `suppressAPIParams`, and `useDataNamespace=false` moves the keys of a struct `data` to the root.
+      required:
+        - apiversion
+        - method
+      additionalProperties: true
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          type: string
+        params:
+          type: object
+        data: {}
+    FixtureError:
+      type: object
+      required:
+        - code
+        - message
+      additionalProperties: true
+      properties:
+        code:
+          type: string
+          examples:
+            - invalid_request
+            - invalid_token
+            - server_error
+        message:
+          type: string
+          examples:
+            - Invalid parameters
+            - Bad Request
+            - Insufficient Account Permissions
+            - Not Found
+            - already-signed
+            - Unhandled Exception
+    FixtureErrorEnvelope:
+      description: Masa JSON API error envelope.
+      allOf:
+        - $ref: '#/components/schemas/FixtureEnvelope'
+        - type: object
+          required:
+            - error
+          properties:
+            error:
+              $ref: '#/components/schemas/FixtureError'
+    LegacyUnavailable:
+      type: object
+      description: Legacy JSON API `server_error` envelope sent with status 503.
+      required:
+        - apiversion
+        - method
+        - error
+      additionalProperties: false
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          type: string
+        params:
+          type: object
+        error:
+          type: object
+          required:
+            - message
+            - code
+          additionalProperties: false
+          properties:
+            message:
+              type: string
+              const: Unhandled Exception
+            code:
+              type: string
+              const: server_error
+    FixtureList:
+      type: object
+      description: One page in Masa's paged-list shape; `endindex` is below `startindex` on a page past the end.
+      required:
+        - items
+        - startindex
+        - endindex
+        - itemsperpage
+        - totalitems
+        - totalpages
+        - pageindex
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+        startindex:
+          type: integer
+          minimum: 1
+        endindex:
+          type: integer
+          minimum: 0
+        itemsperpage:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        totalitems:
+          type: integer
+          minimum: 0
+        totalpages:
+          type: integer
+          minimum: 0
+        pageindex:
+          type: integer
+          minimum: 1
+    RequestState:
+      type: string
+      enum:
+        - PENDING
+        - SIGNED
+    AuditAction:
+      type: string
+      enum:
+        - created
+        - signed
+    SignatureRequestFields:
+      type: object
+      description: A `signature_request` row without its document bytes, with lower-cased column names in catalog order.
+      required:
+        - request_id
+        - siteid
+        - document_name
+        - document_sha256
+        - signer_user_id
+        - state
+        - created
+        - createdbyid
+      properties:
+        request_id:
+          $ref: '#/components/schemas/CfUuid'
+        siteid:
+          type: string
+          minLength: 1
+          maxLength: 25
+        document_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        document_sha256:
+          $ref: '#/components/schemas/Sha256Hex'
+        signer_user_id:
+          $ref: '#/components/schemas/LegacyUserId'
+        state:
+          $ref: '#/components/schemas/RequestState'
+        created:
+          $ref: '#/components/schemas/LegacyDateTime'
+        createdbyid:
+          $ref: '#/components/schemas/LegacyUserId'
+    SignatureRequest:
+      allOf:
+        - $ref: '#/components/schemas/SignatureRequestFields'
+      unevaluatedProperties: false
+    SignatureRequestList:
+      description: One page of requests ordered by `created`, then `request_id`.
+      allOf:
+        - $ref: '#/components/schemas/FixtureList'
+        - properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/SignatureRequest'
+    Signature:
+      type: object
+      description: A `signature` row with lower-cased column names in catalog order.
+      required:
+        - signature_id
+        - request_id
+        - typed_name
+        - signer_user_id
+        - signed_at
+      additionalProperties: false
+      properties:
+        signature_id:
+          $ref: '#/components/schemas/CfUuid'
+        request_id:
+          $ref: '#/components/schemas/CfUuid'
+        typed_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        signer_user_id:
+          $ref: '#/components/schemas/LegacyUserId'
+        signed_at:
+          $ref: '#/components/schemas/LegacyDateTime'
+    SignatureRequestDetail:
+      description: A request with its signature; `signature` is null while the request is PENDING.
+      allOf:
+        - $ref: '#/components/schemas/SignatureRequestFields'
+        - type: object
+          required:
+            - signature
+          properties:
+            signature:
+              oneOf:
+                - $ref: '#/components/schemas/Signature'
+                - type: 'null'
+      unevaluatedProperties: false
+    AuditEntry:
+      type: object
+      description: An `audit_entry` row in `seq` order; `at` is the hashed text form and both hashes are lowercase hex, `prev_hash` all zeros for `seq` 1.
+      required:
+        - entry_id
+        - request_id
+        - seq
+        - action
+        - actor_user_id
+        - detail
+        - at
+        - prev_hash
+        - entry_hash
+      additionalProperties: false
+      properties:
+        entry_id:
+          $ref: '#/components/schemas/CfUuid'
+        request_id:
+          $ref: '#/components/schemas/CfUuid'
+        seq:
+          type: integer
+          minimum: 1
+        action:
+          $ref: '#/components/schemas/AuditAction'
+        actor_user_id:
+          $ref: '#/components/schemas/LegacyUserId'
+        detail:
+          type: string
+          description: The document SHA-256 for `created`, the typed name for `signed`.
+        at:
+          $ref: '#/components/schemas/LocalTimestamp'
+        prev_hash:
+          $ref: '#/components/schemas/Sha256Hex'
+        entry_hash:
+          $ref: '#/components/schemas/Sha256Hex'
+    AuditChain:
+      description: One page of the request's audit entries ordered by `seq`.
+      allOf:
+        - $ref: '#/components/schemas/FixtureList'
+        - properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/AuditEntry'
+    VerifyResult:
+      type: object
+      description: '`brokenat` is the `seq` of the first entry, in chain order, whose position, link or hash fails; 0 when `valid`.'
+      required:
+        - valid
+        - entries
+        - brokenat
+      additionalProperties: false
+      properties:
+        valid:
+          type: boolean
+        entries:
+          type: integer
+          minimum: 0
+        brokenat:
+          type: integer
+          minimum: 0
+    CreateRequestInput:
+      type: object
+      required:
+        - documentName
+        - documentBase64
+        - signerUserId
+      properties:
+        documentName:
+          type: string
+          minLength: 1
+          maxLength: 255
+        documentBase64:
+          type: string
+          minLength: 1
+          contentEncoding: base64
+          description: The document bytes; they must decode to at least one byte.
+        signerUserId:
+          type: string
+          minLength: 1
+          description: '`UserID` of a user of the site''s public or private user pool; any other value answers 400.'
+        siteid:
+          type: string
+          minLength: 1
+          maxLength: 25
+    SignInput:
+      type: object
+      required:
+        - typedName
+      properties:
+        typedName:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '\S'
+        siteid:
+          type: string
+          minLength: 1
+          maxLength: 25
+    SuppliedAuditEntry:
+      type: object
+      description: One entry of a supplied chain copy; other keys, such as `entry_id`, are ignored.
+      required:
+        - seq
+        - action
+        - actor_user_id
+        - detail
+        - at
+        - prev_hash
+        - entry_hash
+      properties:
+        seq:
+          anyOf:
+            - type: integer
+              minimum: 1
+              maximum: 999999999
+            - type: string
+              pattern: '^[1-9][0-9]{0,8}$'
+        action:
+          type:
+            - string
+            - number
+            - boolean
+        actor_user_id:
+          type:
+            - string
+            - number
+            - boolean
+        detail:
+          type:
+            - string
+            - number
+            - boolean
+        at:
+          type: string
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}$'
+        prev_hash:
+          type: string
+          pattern: '^[0-9A-Fa-f]{64}$'
+        entry_hash:
+          type: string
+          pattern: '^[0-9A-Fa-f]{64}$'
+    VerifySuppliedInput:
+      type: object
+      required:
+        - entries
+      properties:
+        entries:
+          description: The chain copy in chain order, as an array or its JSON text; audit items POST back unchanged.
+          anyOf:
+            - type: array
+              items:
+                $ref: '#/components/schemas/SuppliedAuditEntry'
+            - type: string
+              contentMediaType: application/json
+        siteid:
+          type: string
+          minLength: 1
+          maxLength: 25
+    PushBody:
+      type: object
+      description: Pub/Sub push wrapper; `data` is the base64 event envelope.
+      required:
+        - message
+        - subscription
+      additionalProperties: true
+      properties:
+        message:
+          type: object
+          additionalProperties: true
+          properties:
+            data:
+              type: string
+              contentEncoding: base64
+            attributes:
+              type: object
+              additionalProperties:
+                type: string
+            messageId:
+              type: string
+            message_id:
+              type: string
+            publishTime:
+              type: string
+            publish_time:
+              type: string
+            orderingKey:
+              type: string
+          allOf:
+            - anyOf:
+                - required:
+                    - messageId
+                  properties:
+                    messageId:
+                      minLength: 1
+                - required:
+                    - message_id
+                  properties:
+                    message_id:
+                      minLength: 1
+        subscription:
+          type: string
+          minLength: 1
+          description: Usually `projects/<project>/subscriptions/e-signature.programs-sites.site.changed.v1`.
+        deliveryAttempt:
+          type: integer
+    CanonicalType:
+      type: string
+      description: Canonical encoding tag.
+      enum:
+        - s
+        - i
+        - f
+        - d
+        - t
+        - b
+    CanonicalColumn:
+      type: object
+      required:
+        - name
+        - type
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+        type:
+          $ref: '#/components/schemas/CanonicalType'
+        scale:
+          type: integer
+          minimum: 0
+    WatermarkDirection:
+      type: string
+      enum:
+        - forward
+        - reverse
+    WatermarkFields:
+      type: object
+      required:
+        - direction
+        - finishedAt
+      properties:
+        direction:
+          $ref: '#/components/schemas/WatermarkDirection'
+        snapshotSeq:
+          type: integer
+          minimum: 0
+        backupLsn:
+          type: string
+          pattern: '^[0-9]{1,25}$'
+        finishedAt:
+          $ref: '#/components/schemas/WallClock'
+    ApplyRequest:
+      type: object
+      description: One batch of canonical legacy rows for one legacy table and tenant; exactly one of `tenantId` and `siteId` is required.
+      required:
+        - batchId
+        - origin
+        - legacyTable
+        - columns
+        - rows
+      oneOf:
+        - required:
+            - tenantId
+        - required:
+            - siteId
+      additionalProperties: false
+      properties:
+        batchId:
+          type: string
+          minLength: 1
+        origin:
+          type: string
+          enum:
+            - backfill
+            - migration-feed
+            - legacy-window
+        legacyTable:
+          type: string
+          minLength: 1
+        tenantId:
+          type: string
+          format: uuid
+          pattern: '^([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-8][0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}|00000000-0000-0000-0000-000000000000|[Ff]{8}-[Ff]{4}-[Ff]{4}-[Ff]{4}-[Ff]{12})$'
+        siteId:
+          type: string
+          minLength: 1
+        legacyProgramId:
+          type: integer
+          minimum: 0
+        columns:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/CanonicalColumn'
+        units:
+          type: array
+          items:
+            type: string
+            minLength: 1
+        holderId:
+          type: string
+          minLength: 1
+        rows:
+          type: array
+          items:
+            type: object
+            required:
+              - op
+              - row
+            additionalProperties: false
+            properties:
+              op:
+                type: string
+                enum:
+                  - upsert
+                  - delete
+                  - insert
+              row:
+                type: string
+              discriminator:
+                type:
+                  - string
+                  - number
+        watermark:
+          allOf:
+            - $ref: '#/components/schemas/WatermarkFields'
+          unevaluatedProperties: false
+    ApplyResponse:
+      type: object
+      required:
+        - batchId
+        - duplicate
+        - applied
+        - skipped
+      additionalProperties: false
+      properties:
+        batchId:
+          type: string
+        duplicate:
+          type: boolean
+        applied:
+          type: integer
+          minimum: 0
+        skipped:
+          type: integer
+          minimum: 0
+    ObjectManifestEntry:
+      type: object
+      required:
+        - key
+        - size
+        - sha256
+      additionalProperties: false
+      properties:
+        key:
+          type: string
+        size:
+          type: integer
+          minimum: 0
+        sha256:
+          type: string
+        contentType:
+          type: string
+        legacyPath:
+          type: string
+    ExportRow:
+      type: object
+      description: One row in legacy form; `key` is the whole-row encoding for keyless tables.
+      required:
+        - key
+        - row
+        - hash
+      additionalProperties: false
+      properties:
+        key:
+          type: string
+        row:
+          type: string
+        hash:
+          type: string
+        legacyProgramId:
+          type: integer
+    ExportTable:
+      type: object
+      required:
+        - unit
+        - legacyTable
+        - targetTable
+        - keyless
+        - columns
+        - rows
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        legacyTable:
+          type: string
+        targetTable:
+          type: string
+        keyless:
+          type: boolean
+        columns:
+          type: array
+          items:
+            $ref: '#/components/schemas/CanonicalColumn'
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExportRow'
+    ExportResponse:
+      type: object
+      description: One export page; `next` is null after the last page, and `objects` comes with the first page only.
+      required:
+        - unit
+        - tenantId
+        - tables
+        - next
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        tenantId:
+          type: string
+          format: uuid
+        tables:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExportTable'
+        next:
+          type:
+            - string
+            - 'null'
+        objects:
+          type: array
+          items:
+            $ref: '#/components/schemas/ObjectManifestEntry'
+    ChangeOp:
+      type: string
+      enum:
+        - insert
+        - update
+        - delete
+    ChangeOrigin:
+      type: string
+      enum:
+        - target
+        - legacy-window
+        - migration-feed
+        - backfill
+    LegacyChange:
+      type: object
+      description: A changelog row in the legacy form of one mapping; `columns` are legacy names.
+      required:
+        - unit
+        - legacyTable
+        - key
+        - before
+        - after
+        - columns
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        legacyTable:
+          type: string
+        key:
+          type: string
+        before:
+          $ref: '#/components/schemas/NullableString'
+        after:
+          $ref: '#/components/schemas/NullableString'
+        columns:
+          type: array
+          items:
+            type: string
+        legacyProgramId:
+          type: integer
+    ChangeRow:
+      type: object
+      description: One changelog row; `xid` and `seq` are decimal strings, `at` is `YYYY-MM-DD HH:MM:SS.mmm`.
+      required:
+        - xid
+        - seq
+        - table
+        - op
+        - key
+        - before
+        - after
+        - columns
+        - origin
+        - actorUserId
+        - actorService
+        - at
+        - requestId
+        - operationId
+      properties:
+        xid:
+          type: string
+          pattern: '^[0-9]+$'
+        seq:
+          type: string
+          pattern: '^[0-9]+$'
+        table:
+          type: string
+        op:
+          $ref: '#/components/schemas/ChangeOp'
+        key:
+          type: string
+        before:
+          $ref: '#/components/schemas/NullableString'
+        after:
+          $ref: '#/components/schemas/NullableString'
+        columns:
+          type: array
+          items:
+            type: string
+        origin:
+          $ref: '#/components/schemas/ChangeOrigin'
+        actorUserId:
+          $ref: '#/components/schemas/NullableString'
+        actorService:
+          $ref: '#/components/schemas/NullableString'
+        at:
+          type: string
+        requestId:
+          $ref: '#/components/schemas/NullableString'
+        operationId:
+          $ref: '#/components/schemas/NullableString'
+    ProjectedChangeRow:
+      type: object
+      description: A changelog row with one legacy projection per mapping of its table.
+      allOf:
+        - $ref: '#/components/schemas/ChangeRow'
+        - type: object
+          required:
+            - legacy
+          properties:
+            legacy:
+              type: array
+              items:
+                $ref: '#/components/schemas/LegacyChange'
+      unevaluatedProperties: false
+    OperationStatus:
+      type: string
+      enum:
+        - open
+        - done
+        - rolled-back
+    ChangesResponse:
+      type: object
+      description: Rows below `horizon` in `(xid, seq)` order; `horizon` counts as applied only when `complete`.
+      required:
+        - rows
+        - cursor
+        - horizon
+        - complete
+        - operations
+      additionalProperties: false
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectedChangeRow'
+        cursor:
+          type: string
+          pattern: '^[0-9]+:[0-9]+$'
+        horizon:
+          type: string
+          pattern: '^[0-9]+$'
+        complete:
+          type: boolean
+        operations:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/OperationStatus'
+    TenantDrainCount:
+      type: object
+      required:
+        - tenantId
+        - unpublished
+        - held
+      additionalProperties: false
+      properties:
+        tenantId:
+          type: string
+        unpublished:
+          type: integer
+          minimum: 0
+        held:
+          type: integer
+          minimum: 0
+    OutboxDrainCounts:
+      type: object
+      required:
+        - tenants
+        - unpublished
+        - held
+      additionalProperties: false
+      properties:
+        tenants:
+          type: array
+          items:
+            $ref: '#/components/schemas/TenantDrainCount'
+        unpublished:
+          type: integer
+          minimum: 0
+        held:
+          type: integer
+          minimum: 0
+    InboxCounts:
+      type: object
+      description: Inbox receipts over every registered tenant; `receipts` maps each asked event id to the tenants that applied it.
+      required:
+        - total
+        - bySubscription
+      additionalProperties: false
+      properties:
+        total:
+          type: integer
+          minimum: 0
+        bySubscription:
+          type: object
+          additionalProperties:
+            type: integer
+        receipts:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+    PositionResponse:
+      type: object
+      description: The latest assigned xid and the drain counts; `outbox` or `inbox` is null where the service has no such table.
+      required:
+        - owner
+        - position
+        - outbox
+        - inbox
+      additionalProperties: false
+      properties:
+        owner:
+          type: string
+          const: e-signature
+        position:
+          type: string
+          pattern: '^[0-9]+$'
+        outbox:
+          oneOf:
+            - $ref: '#/components/schemas/OutboxDrainCounts'
+            - type: 'null'
+        inbox:
+          oneOf:
+            - $ref: '#/components/schemas/InboxCounts'
+            - type: 'null'
+    WatermarkRecord:
+      type: object
+      required:
+        - legacyTable
+        - direction
+        - snapshotSeq
+        - backupLsn
+        - finishedAt
+      additionalProperties: false
+      properties:
+        legacyTable:
+          type: string
+        direction:
+          $ref: '#/components/schemas/WatermarkDirection'
+        snapshotSeq:
+          type:
+            - integer
+            - 'null'
+        backupLsn:
+          $ref: '#/components/schemas/NullableString'
+        finishedAt:
+          $ref: '#/components/schemas/LocalTimestamp'
+    WatermarkInput:
+      description: A watermark to record for one legacy table.
+      allOf:
+        - $ref: '#/components/schemas/WatermarkFields'
+        - type: object
+          required:
+            - legacyTable
+          properties:
+            legacyTable:
+              type: string
+              minLength: 1
+      unevaluatedProperties: false
+    GateState:
+      type: string
+      enum:
+        - legacy
+        - open
+        - closed
+    GatePhase:
+      type: string
+      enum:
+        - quiet
+        - executing
+        - importing
+        - import-pending
+    UnitList:
+      type: array
+      minItems: 1
+      items:
+        type: string
+        minLength: 1
+    GateRequest:
+      description: One gate operation, selected by `op`.
+      oneOf:
+        - $ref: '#/components/schemas/GateClose'
+        - $ref: '#/components/schemas/GatePhaseChange'
+        - $ref: '#/components/schemas/GateOpen'
+        - $ref: '#/components/schemas/GateStatus'
+      discriminator:
+        propertyName: op
+        mapping:
+          close: '#/components/schemas/GateClose'
+          phase: '#/components/schemas/GatePhaseChange'
+          open: '#/components/schemas/GateOpen'
+          status: '#/components/schemas/GateStatus'
+    GateClose:
+      type: object
+      description: Closes the units' gates for a holder; `allowLegacy` lets a transition close units still `legacy`.
+      required:
+        - op
+        - units
+        - holderId
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: close
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+        phase:
+          $ref: '#/components/schemas/GatePhase'
+        allowLegacy:
+          type: boolean
+        timeoutMs:
+          type: integer
+          minimum: 1
+          maximum: 30000
+    GatePhaseChange:
+      type: object
+      description: Sets the phase of gates the holder closed.
+      required:
+        - op
+        - units
+        - holderId
+        - phase
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: phase
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+        phase:
+          $ref: '#/components/schemas/GatePhase'
+    GateOpen:
+      type: object
+      description: Reopens the holder's gates as `open`, or sets them to `legacy`.
+      required:
+        - op
+        - units
+        - holderId
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: open
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+        state:
+          type: string
+          enum:
+            - open
+            - legacy
+    GateStatus:
+      type: object
+      description: Reads the gates; every unit of this owner when `units` is omitted.
+      required:
+        - op
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: status
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+    UnitGate:
+      type: object
+      required:
+        - unit
+        - state
+        - holderId
+        - phase
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        state:
+          $ref: '#/components/schemas/GateState'
+        holderId:
+          $ref: '#/components/schemas/NullableString'
+        phase:
+          $ref: '#/components/schemas/GatePhase'
+    GateResponse:
+      type: object
+      required:
+        - units
+      additionalProperties: false
+      properties:
+        units:
+          type: array
+          items:
+            $ref: '#/components/schemas/UnitGate'
+    GateConflict:
+      type: object
+      description: The units whose gate another holder owns.
+      required:
+        - error
+        - units
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          const: gate-conflict
+        units:
+          type: array
+          items:
+            type: string
+    Health:
+      type: object
+      required:
+        - status
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          const: ok

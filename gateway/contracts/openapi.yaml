@@ -662,16 +662,20 @@ components:
             - 'null'
           minimum: 0
         inflight:
+          description: In-flight writes grouped by instance, route and side; rows of an instance not live in `instances` are orphans.
           type: array
           items:
             type: object
             additionalProperties: false
             required:
+              - instanceId
               - route
               - side
               - count
               - oldestStartedAt
             properties:
+              instanceId:
+                type: string
               route:
                 type: string
                 pattern: '^[a-z0-9-]+:\S+$'

@@ -1,0 +1,57 @@
+{
+  "routes": [
+    {
+      "method": "GET",
+      "url": "/healthz",
+      "transport": "service",
+      "public": true,
+      "siteCheck": true
+    },
+    {
+      "method": "POST",
+      "url": "/internal/v1/events/people.programs-sites.site.changed.v1",
+      "transport": "pubsub-push",
+      "requires": [
+        "service:pubsub-invoker"
+      ],
+      "siteCheck": true
+    },
+    {
+      "method": "POST",
+      "url": "/internal/v1/outbox/sweep",
+      "transport": "cloud-tasks",
+      "requires": [
+        "service:tasks-invoker"
+      ],
+      "siteCheck": true
+    },
+    {
+      "method": "GET",
+      "url": "/internal/v1/persons/:userId/contact",
+      "transport": "service",
+      "requires": [
+        "service:identity"
+      ],
+      "siteCheck": true
+    },
+    {
+      "method": "POST",
+      "url": "/legacy-fixtures/cfml/api.cfm/people/persons/:userId/archive",
+      "transport": "service",
+      "requires": [
+        "s2",
+        "site-admin"
+      ],
+      "siteCheck": true
+    },
+    {
+      "method": "GET",
+      "url": "/v1/users",
+      "transport": "service",
+      "requires": [
+        "m:008"
+      ],
+      "siteCheck": true
+    }
+  ]
+}

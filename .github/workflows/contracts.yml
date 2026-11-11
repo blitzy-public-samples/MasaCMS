@@ -1,0 +1,187 @@
+name: contracts
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  contract-tests:
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request' || github.ref_name == github.event.repository.default_branch
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - platform
+          - gateway
+          - migration
+          - services/identity
+          - services/people
+          - services/programs-sites
+          - services/strategies-content
+          - services/communications
+          - services/reporting
+          - services/surveys
+          - services/timesheets
+          - services/finance
+          - services/e-signature
+          - services/stub
+    defaults:
+      run:
+        working-directory: ${{ matrix.package }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22.23.4
+      - name: Install npm
+        run: npm install -g npm@11.21.0
+      - name: Verify toolchain
+        run: |
+          test "$(node -v)" = "v22.23.4"
+          test "$(npm -v)" = "11.21.0"
+      - name: Install
+        run: npm ci
+      - name: Contract tests
+        run: npm run test:contract
+
+  lint:
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request' || github.ref_name == github.event.repository.default_branch
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22.23.4
+      - name: Install npm
+        run: npm install -g npm@11.21.0
+      - name: Verify toolchain
+        run: |
+          test "$(node -v)" = "v22.23.4"
+          test "$(npm -v)" = "11.21.0"
+      - name: Install platform
+        working-directory: platform
+        run: npm ci
+      - name: Lint OpenAPI
+        run: |
+          mapfile -t files < <(git ls-files -- ':(glob)**/contracts/openapi.yaml')
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no tracked contracts/openapi.yaml found"
+            exit 1
+          fi
+          npx --yes @redocly/cli@2.72.1 lint "${files[@]}"
+      - name: Compile schemas
+        run: |
+          mapfile -t files < <(git ls-files -- ':(glob)**/contracts/events/*.json' ':(glob)platform/contracts/*.json')
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no tracked event or platform contract schema found"
+            exit 1
+          fi
+          node - "${files[@]}" <<'EOF'
+          const fs = require('fs');
+          const path = require('path');
+
+          const ajvDir = path.resolve('platform/node_modules/ajv');
+          const { version } = JSON.parse(fs.readFileSync(path.join(ajvDir, 'package.json'), 'utf8'));
+          if (version !== '8.20.0') {
+            console.error(`::error::ajv ${version} in platform/node_modules, expected 8.20.0`);
+            process.exit(1);
+          }
+
+          const DRAFT_2020 = 'https://json-schema.org/draft/2020-12/schema';
+          const options = { strict: true, validateFormats: false, allowUnionTypes: true };
+          const draft2020 = new (require(ajvDir + '/dist/2020').default)(options);
+          const draft07 = new (require(ajvDir).default)(options);
+          const ajvFor = (schema) => (schema.$schema === DRAFT_2020 ? draft2020 : draft07);
+
+          const failures = [];
+          const fail = (file, err) => failures.push(`FAIL ${file}: ${err.message}`);
+
+          // Strict mode rejects unknown keywords, so every x- annotation becomes a keyword.
+          const annotations = new Set();
+          const collect = (node) => {
+            if (Array.isArray(node)) return node.forEach(collect);
+            if (node === null || typeof node !== 'object') return;
+            for (const [key, value] of Object.entries(node)) {
+              if (key.startsWith('x-')) annotations.add(key);
+              collect(value);
+            }
+          };
+
+          const schemas = new Map();
+          for (const file of process.argv.slice(2)) {
+            try {
+              const schema = JSON.parse(fs.readFileSync(file, 'utf8'));
+              collect(schema);
+              schemas.set(file, schema);
+            } catch (err) {
+              fail(file, err);
+            }
+          }
+          for (const ajv of [draft2020, draft07]) {
+            for (const keyword of annotations) ajv.addKeyword(keyword);
+          }
+
+          const added = [];
+          for (const [file, schema] of schemas) {
+            try {
+              ajvFor(schema).addSchema(schema, file);
+              added.push(file);
+            } catch (err) {
+              fail(file, err);
+            }
+          }
+          let compiled = 0;
+          for (const file of added) {
+            try {
+              ajvFor(schemas.get(file)).getSchema(file);
+              compiled += 1;
+            } catch (err) {
+              fail(file, err);
+            }
+          }
+
+          failures.forEach((line) => console.error(line));
+          if (failures.length > 0) process.exit(1);
+          console.log(`compiled ${compiled} schemas`);
+          EOF
+
+  checks:
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request' || github.ref_name == github.event.repository.default_branch
+    defaults:
+      run:
+        working-directory: harness
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          # check-pin.ts lists the files tracked at the pinned commit.
+          fetch-depth: 0
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22.23.4
+      - name: Install npm
+        run: npm install -g npm@11.21.0
+      - name: Verify toolchain
+        run: |
+          test "$(node -v)" = "v22.23.4"
+          test "$(npm -v)" = "11.21.0"
+      - name: Install
+        run: npm ci
+      - name: Check source pin
+        run: npx tsx src/reporting/check-pin.ts
+      - name: Check synthetic labels
+        run: npx tsx src/reporting/check-synthetic.ts
