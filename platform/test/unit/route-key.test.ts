@@ -15,6 +15,7 @@ import {
   routeKeyForEntryPoint,
   routeKeyForRequest,
 } from '../../src/legacy-compat/route-key.js';
+import { routeKeyCaseOptions, routeKeyConflictCases } from '../../src/testing/route-key-cases.js';
 
 const UUID = 'A1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
 const RFC_UUID = '0f8fad5b-d9cb-469f-a165-70867728950e';
@@ -43,6 +44,12 @@ function keyOf(method: string, url: string, extra: Partial<RouteKeyRequest> = {}
 function basicAuth(user: string, password: string): string {
   return `Basic ${Buffer.from(`${user}:${password}`).toString('base64')}`;
 }
+
+describe('routeKeyConflictCases', () => {
+  it.each(routeKeyConflictCases)('$name', ({ request: req, expectedKey }) => {
+    expect(routeKeyForRequest(req, routeKeyCaseOptions).key).toBe(expectedKey);
+  });
+});
 
 describe('path normalisation', () => {
   it.each([
@@ -89,7 +96,7 @@ describe('path normalisation', () => {
 });
 
 describe('path decoding', () => {
-  // The root front controller urlDecodes the container-decoded path again (contentServer.cfc:167).
+  // The root front controller urlDecodes the container-decoded path again.
   it.each([
     ['splits an API path on a double-encoded slash', `${API}/content%252Fnew`, 'api:content.findnew'],
     ['decodes twice behind index.cfm', `/index.cfm${API}/content%252Fnew`, 'api:content.findnew'],
@@ -120,7 +127,7 @@ describe('path decoding', () => {
     expect([spaced.key, spaced.params.siteid]).toEqual(['api:!invalidparameters', 'de fault']);
   });
 
-  // Admin reads cgi.path_info as the container decoded it (framework.cfc:21-24).
+  // Admin reads cgi.path_info as the container decoded it.
   it.each([
     ['keeps + in an admin action', '/admin/index.cfm/cu+sers/list', 'admin:cu+sers.list'],
     ['decodes an admin action once', '/admin/index.cfm/cusers%252Flist', 'admin:cusers%2flist.default'],

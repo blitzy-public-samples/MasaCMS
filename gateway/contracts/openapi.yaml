@@ -1,0 +1,888 @@
+openapi: 3.1.0
+info:
+  title: gateway
+  version: 1.0.0
+  summary: 'Gateway and compatibility dispatcher: health, cut-over control, orphan clearing, legacy-session mark-used, the web relay and the dispatched edge.'
+  license:
+    name: GPL-2.0-only
+    url: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+  x-source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f
+x-opt2-calls:
+  - identity
+  - people
+  - programs-sites
+  - strategies-content
+  - communications
+  - reporting
+  - surveys
+  - timesheets
+  - finance
+  - e-signature
+  - web
+  - migration
+  - stub
+servers:
+  - url: 'http://127.0.0.1:8100'
+    description: local
+security:
+  - invocationCredential: []
+paths:
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Liveness probe.
+      x-opt2-transport: service
+      x-opt2-public: true
+      security: []
+      responses:
+        '200':
+          description: The gateway is running.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                required:
+                  - status
+                properties:
+                  status:
+                    type: string
+                    const: ok
+  /internal/v1/cutover/activate:
+    post:
+      operationId: cutoverActivate
+      summary: Validates a cut-over version file, requires its `previous` to equal the active version, and commits it with a new epoch in `gateway.cutover_state`.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CutoverActivateRequest'
+      responses:
+        '200':
+          description: The version is active.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - tableVersion
+                  - epoch
+                properties:
+                  tableVersion:
+                    type: string
+                    pattern: '^v[0-9]{4}$'
+                  epoch:
+                    type: integer
+                    minimum: 0
+        '400':
+          $ref: '#/components/responses/CutoverRejected'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: 'Rule `previous-mismatch`: the file''s `previous` is not the active version (null before the first activation).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationFindings'
+  /internal/v1/cutover/freeze:
+    post:
+      operationId: cutoverFreeze
+      summary: Freezes entries of the active version and commits a new epoch; where each entry routes is unchanged.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.operator
+      requestBody:
+        $ref: '#/components/requestBodies/CutoverRoutes'
+      responses:
+        '200':
+          $ref: '#/components/responses/CutoverStatusRead'
+        '400':
+          $ref: '#/components/responses/CutoverRejected'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /internal/v1/cutover/unfreeze:
+    post:
+      operationId: cutoverUnfreeze
+      summary: Unfreezes entries of the active version and commits a new epoch; where each entry routes is unchanged.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.operator
+      requestBody:
+        $ref: '#/components/requestBodies/CutoverRoutes'
+      responses:
+        '200':
+          $ref: '#/components/responses/CutoverStatusRead'
+        '400':
+          $ref: '#/components/responses/CutoverRejected'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /internal/v1/cutover/status:
+    get:
+      operationId: cutoverStatus
+      summary: Reports the active version, epoch, group authority, freezes, instance acknowledgements, in-flight writes and session mode.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.operator
+        - platform.migration
+      responses:
+        '200':
+          $ref: '#/components/responses/CutoverStatusRead'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  '/internal/v1/inflight:clear-orphans':
+    post:
+      operationId: inflightClearOrphans
+      summary: Deletes `gateway.inflight` rows of dead instances that started before `evidence.at`; only evidence clears an orphan, never time.
+      description: '`legacy-restart` clears legacy-side rows; `gates-closed` clears target-side rows whose route units all appear in `evidence.units`.'
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.operator
+        - platform.migration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InflightClearRequest'
+      responses:
+        '200':
+          description: Rows cleared.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InflightClearResponse'
+        '400':
+          $ref: '#/components/responses/MalformedRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  '/internal/v1/legacy-sessions/{sid}:mark-used':
+    parameters:
+      - name: sid
+        in: path
+        required: true
+        description: Identity session id.
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 255
+    post:
+      operationId: legacySessionMarkUsed
+      summary: Marks CSRF tokens used in the legacy session mapped to `sid`, through the bridge's `session.cfm?op=markUsed` with the legacy cookies `gateway.legacy_jar` holds.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - 'service:identity'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MarkUsedRequest'
+      responses:
+        '204':
+          description: The tokens are in the legacy session's ledger.
+        '400':
+          $ref: '#/components/responses/MalformedRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No legacy session is mapped to `sid`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyError'
+        '503':
+          description: The legacy bridge is unreachable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyUnavailable'
+  /internal/v1/relay/{service}/{path}:
+    description: Web's service calls; the user token passes on only with web's invocation credential, the gateway adds its own, and `X-Opt2-Write-Position` is recorded in `gateway.session_barrier` and stripped from the response.
+    parameters:
+      - name: service
+        in: path
+        required: true
+        description: Callee service folder name.
+        schema:
+          type: string
+          enum:
+            - identity
+            - people
+            - programs-sites
+            - strategies-content
+            - communications
+            - reporting
+            - surveys
+            - timesheets
+            - finance
+            - e-signature
+      - name: path
+        in: path
+        required: true
+        description: Remainder of the callee path; may contain `/`.
+        schema:
+          type: string
+    get:
+      operationId: relayGet
+      summary: Relays a web GET to the service.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - 'service:web'
+      security:
+        - invocationCredential: []
+          userToken: []
+        - invocationCredential: []
+      responses:
+        '2XX':
+          $ref: '#/components/responses/PassThrough'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/UnknownService'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        default:
+          $ref: '#/components/responses/PassThrough'
+    post:
+      operationId: relayPost
+      summary: Relays a web POST to the service.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - 'service:web'
+      security:
+        - invocationCredential: []
+          userToken: []
+        - invocationCredential: []
+      requestBody:
+        $ref: '#/components/requestBodies/PassThroughBody'
+      responses:
+        '2XX':
+          $ref: '#/components/responses/PassThrough'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/UnknownService'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        default:
+          $ref: '#/components/responses/PassThrough'
+    put:
+      operationId: relayPut
+      summary: Relays a web PUT to the service.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - 'service:web'
+      security:
+        - invocationCredential: []
+          userToken: []
+        - invocationCredential: []
+      requestBody:
+        $ref: '#/components/requestBodies/PassThroughBody'
+      responses:
+        '2XX':
+          $ref: '#/components/responses/PassThrough'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/UnknownService'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        default:
+          $ref: '#/components/responses/PassThrough'
+    patch:
+      operationId: relayPatch
+      summary: Relays a web PATCH to the service.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - 'service:web'
+      security:
+        - invocationCredential: []
+          userToken: []
+        - invocationCredential: []
+      requestBody:
+        $ref: '#/components/requestBodies/PassThroughBody'
+      responses:
+        '2XX':
+          $ref: '#/components/responses/PassThrough'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/UnknownService'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        default:
+          $ref: '#/components/responses/PassThrough'
+    delete:
+      operationId: relayDelete
+      summary: Relays a web DELETE to the service.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - 'service:web'
+      security:
+        - invocationCredential: []
+          userToken: []
+        - invocationCredential: []
+      responses:
+        '2XX':
+          $ref: '#/components/responses/PassThrough'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/UnknownService'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        default:
+          $ref: '#/components/responses/PassThrough'
+  /{path}:
+    description: Documentation only; every client request is dispatched by the active cut-over version to a target service, web or legacy.
+    parameters:
+      - name: path
+        in: path
+        required: true
+        description: Request path; may contain `/` and may be empty.
+        schema:
+          type: string
+    get:
+      operationId: edgeGet
+      summary: Dispatches a client GET by the active cut-over version.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-edge: true
+      security: []
+      responses:
+        '2XX':
+          $ref: '#/components/responses/PassThrough'
+        '4XX':
+          $ref: '#/components/responses/PassThrough'
+        '503':
+          $ref: '#/components/responses/EdgeUnavailable'
+        default:
+          $ref: '#/components/responses/PassThrough'
+    head:
+      operationId: edgeHead
+      summary: Dispatches a client HEAD by the active cut-over version.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-edge: true
+      security: []
+      responses:
+        '2XX':
+          $ref: '#/components/responses/PassThrough'
+        '4XX':
+          $ref: '#/components/responses/PassThrough'
+        '503':
+          $ref: '#/components/responses/EdgeUnavailable'
+        default:
+          $ref: '#/components/responses/PassThrough'
+    post:
+      operationId: edgePost
+      summary: Dispatches a client POST by the active cut-over version.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-edge: true
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/PassThroughBody'
+      responses:
+        '2XX':
+          $ref: '#/components/responses/PassThrough'
+        '4XX':
+          $ref: '#/components/responses/PassThrough'
+        '503':
+          $ref: '#/components/responses/EdgeUnavailable'
+        default:
+          $ref: '#/components/responses/PassThrough'
+    put:
+      operationId: edgePut
+      summary: Dispatches a client PUT by the active cut-over version.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-edge: true
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/PassThroughBody'
+      responses:
+        '2XX':
+          $ref: '#/components/responses/PassThrough'
+        '4XX':
+          $ref: '#/components/responses/PassThrough'
+        '503':
+          $ref: '#/components/responses/EdgeUnavailable'
+        default:
+          $ref: '#/components/responses/PassThrough'
+    patch:
+      operationId: edgePatch
+      summary: Dispatches a client PATCH by the active cut-over version.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-edge: true
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/PassThroughBody'
+      responses:
+        '2XX':
+          $ref: '#/components/responses/PassThrough'
+        '4XX':
+          $ref: '#/components/responses/PassThrough'
+        '503':
+          $ref: '#/components/responses/EdgeUnavailable'
+        default:
+          $ref: '#/components/responses/PassThrough'
+    delete:
+      operationId: edgeDelete
+      summary: Dispatches a client DELETE by the active cut-over version.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-edge: true
+      security: []
+      responses:
+        '2XX':
+          $ref: '#/components/responses/PassThrough'
+        '4XX':
+          $ref: '#/components/responses/PassThrough'
+        '503':
+          $ref: '#/components/responses/EdgeUnavailable'
+        default:
+          $ref: '#/components/responses/PassThrough'
+    options:
+      operationId: edgeOptions
+      summary: Dispatches a client OPTIONS by the active cut-over version.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-edge: true
+      security: []
+      responses:
+        '2XX':
+          $ref: '#/components/responses/PassThrough'
+        '4XX':
+          $ref: '#/components/responses/PassThrough'
+        '503':
+          $ref: '#/components/responses/EdgeUnavailable'
+        default:
+          $ref: '#/components/responses/PassThrough'
+components:
+  securitySchemes:
+    invocationCredential:
+      type: apiKey
+      in: header
+      name: X-Serverless-Authorization
+      description: Caller's invocation credential; a Google-signed ID token in the cloud, a local service token locally.
+    userToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Site-scoped user token in `Authorization`, passed on to the callee unchanged.
+  requestBodies:
+    CutoverRoutes:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CutoverRoutesRequest'
+    PassThroughBody:
+      required: false
+      description: Forwarded unchanged.
+      content:
+        '*/*':
+          schema: {}
+  responses:
+    CutoverStatusRead:
+      description: Cut-over status after any new epoch is committed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CutoverStatus'
+    CutoverRejected:
+      description: Validation findings, such as an unknown version file or route key, or a malformed body.
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/ValidationFindings'
+              - $ref: '#/components/schemas/LegacyError'
+    MalformedRequest:
+      description: Malformed body or parameter.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LegacyError'
+    Unauthorized:
+      description: No valid invocation credential.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LegacyError'
+    Forbidden:
+      description: The caller holds none of the required roles.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LegacyError'
+    UnknownService:
+      description: Unknown service.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LegacyError'
+    ServiceUnavailable:
+      description: The callee is unavailable; the relay fails closed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LegacyUnavailable'
+    EdgeUnavailable:
+      description: The owning service is unavailable; API routes answer the JSON envelope, admin routes the legacy error page.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LegacyUnavailable'
+        text/html:
+          schema:
+            type: string
+    PassThrough:
+      description: Origin response, passed through.
+      content:
+        '*/*':
+          schema: {}
+  schemas:
+    CutoverActivateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - tableVersion
+      properties:
+        tableVersion:
+          type: string
+          pattern: '^v[0-9]{4}$'
+    CutoverRoutesRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - routes
+      properties:
+        routes:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            pattern: '^[a-z0-9-]+:\S+$'
+    CutoverStatus:
+      type: object
+      additionalProperties: false
+      required:
+        - tableVersion
+        - previous
+        - epoch
+        - groupAuthority
+        - frozen
+        - instances
+        - acknowledgedEpoch
+        - inflight
+        - sessionMode
+      properties:
+        tableVersion:
+          type:
+            - string
+            - 'null'
+          pattern: '^v[0-9]{4}$'
+        previous:
+          type:
+            - string
+            - 'null'
+          pattern: '^v[0-9]{4}$'
+        epoch:
+          type: integer
+          minimum: 0
+        groupAuthority:
+          type: object
+          additionalProperties:
+            type: string
+            enum:
+              - legacy
+              - target
+        frozen:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            pattern: '^[a-z0-9-]+:\S+$'
+        instances:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - instanceId
+              - seenEpoch
+              - heartbeatAt
+              - live
+            properties:
+              instanceId:
+                type: string
+              seenEpoch:
+                type: integer
+                minimum: 0
+              heartbeatAt:
+                type: string
+                pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$'
+              live:
+                type: boolean
+        acknowledgedEpoch:
+          description: Lowest epoch seen by a live instance; null when none is live.
+          type:
+            - integer
+            - 'null'
+          minimum: 0
+        inflight:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - route
+              - side
+              - count
+              - oldestStartedAt
+            properties:
+              route:
+                type: string
+                pattern: '^[a-z0-9-]+:\S+$'
+              side:
+                type: string
+                enum:
+                  - legacy
+                  - target
+              count:
+                type: integer
+                minimum: 1
+              oldestStartedAt:
+                type: string
+                pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$'
+        sessionMode:
+          type: string
+          enum:
+            - legacy-primary
+            - target-primary
+    ValidationFindings:
+      type: object
+      additionalProperties: false
+      required:
+        - findings
+      properties:
+        findings:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - rule
+              - message
+            properties:
+              rule:
+                description: A cut-over validator rule id, or `unknown-version`, `previous-mismatch` or `unknown-route`.
+                type: string
+              route:
+                type: string
+              unit:
+                type: string
+              group:
+                type: string
+              message:
+                type: string
+    InflightClearRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - side
+        - evidence
+      properties:
+        side:
+          type: string
+          enum:
+            - legacy
+            - target
+        evidence:
+          type: object
+          additionalProperties: false
+          required:
+            - kind
+            - holderId
+            - at
+          properties:
+            kind:
+              type: string
+              enum:
+                - legacy-restart
+                - gates-closed
+            holderId:
+              description: Lease holder, a window or transition, that produced the evidence.
+              type: string
+              minLength: 1
+            at:
+              description: Rows that started before this time are cleared.
+              type: string
+              pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$'
+            units:
+              description: Target-table units `<schema>.<table>` whose gates closed.
+              type: array
+              minItems: 1
+              uniqueItems: true
+              items:
+                type: string
+                pattern: '^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$'
+        instanceIds:
+          description: Limits clearing to these dead instances; absent means every dead instance.
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+      allOf:
+        - if:
+            required:
+              - side
+            properties:
+              side:
+                const: target
+          then:
+            properties:
+              evidence:
+                type: object
+                required:
+                  - units
+                properties:
+                  kind:
+                    const: gates-closed
+                  units:
+                    type: array
+        - if:
+            required:
+              - side
+            properties:
+              side:
+                const: legacy
+          then:
+            properties:
+              evidence:
+                type: object
+                properties:
+                  kind:
+                    const: legacy-restart
+    InflightClearResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - cleared
+      properties:
+        cleared:
+          type: integer
+          minimum: 0
+    MarkUsedRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - tokens
+      properties:
+        tokens:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - token
+              - usedAt
+            properties:
+              token:
+                type: string
+                pattern: '^[0-9A-Fa-f]{32}$'
+              usedAt:
+                description: Legacy server local time, without an offset.
+                type: string
+                pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?$'
+    LegacyError:
+      type: object
+      additionalProperties: false
+      required:
+        - apiversion
+        - method
+        - error
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          type: string
+        params:
+          type: object
+          additionalProperties: true
+        error:
+          type: object
+          additionalProperties: false
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            stacktrace: {}
+    LegacyUnavailable:
+      type: object
+      additionalProperties: false
+      required:
+        - apiversion
+        - method
+        - error
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          type: string
+        params:
+          type: object
+          additionalProperties: true
+        error:
+          type: object
+          additionalProperties: false
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              const: server_error
+            message:
+              type: string
+              const: Unhandled Exception
+            stacktrace: {}

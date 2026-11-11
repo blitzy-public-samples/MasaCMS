@@ -1,7 +1,7 @@
 // Unit tests for the reverse projector's operation holdback: row dispositions, page splits, joint release and absence proofs.
 import {
-  APPLY_ORIGINS,
   CURSOR_START,
+  compareXid,
   formatCursor,
   type ChangeRow,
   type OperationStatus,
@@ -97,8 +97,7 @@ const readyIds = (t: Tracker): string[] => t.ready().map((operation) => operatio
 
 describe('classifyRow', () => {
   it('passes over exactly the origins legacy already holds', () => {
-    expect([...SKIPPED_ORIGINS].sort()).toEqual([...APPLY_ORIGINS].sort());
-    expect(SKIPPED_ORIGINS.has('target')).toBe(false);
+    expect([...SKIPPED_ORIGINS].sort()).toEqual(['backfill', 'legacy-window', 'migration-feed']);
   });
 
   it.each<[string, Partial<ChangeRow>, boolean, OperationStatus | undefined, RowDisposition]>([
@@ -108,6 +107,7 @@ describe('classifyRow', () => {
     ['row outside target units', { operationId: OP_A }, false, 'done', 'skip-unit'],
     ['row outside any operation', {}, true, undefined, 'apply'],
     ['row of a rolled-back operation', { operationId: OP_A }, true, 'rolled-back', 'skip-rolled-back'],
+    // A done operation's rows still wait for the tracker's joint release of every participant's rows.
     ['row of a done operation', { operationId: OP_A }, true, 'done', 'hold'],
     ['row of an open operation', { operationId: OP_A }, true, 'open', 'hold'],
     ['row of an unreported operation', { operationId: OP_A }, true, undefined, 'hold'],
@@ -139,6 +139,35 @@ describe('splitAtHold', () => {
       page([], 120, true, cursor(90n, 4n)),
       cursor(90n, 4n),
       { applicable: [], skipped: 0, endCursor: cursor(90n, 4n), appliedHorizon: '120' },
+    ],
+    [
+      'consumes applied and skipped rows before the held row and nothing after it',
+      page(
+        [
+          change(100, 1, null),
+          change(101, 2, null, { origin: 'legacy-window' }),
+          change(102, 3, null),
+          change(103, 4, OP_A),
+          change(104, 5, null),
+        ],
+        110,
+      ),
+      CURSOR_START,
+      {
+        applicable: [change(100, 1, null), change(102, 3, null)],
+        skipped: 1,
+        endCursor: cursor(102n, 3n),
+        appliedHorizon: '103',
+        held: {
+          operationId: OP_A,
+          xid: '103',
+          rows: [change(103, 4, OP_A)],
+          skipped: 0,
+          complete: true,
+          endCursor: cursor(103n, 4n),
+          appliedHorizon: '104',
+        },
+      },
     ],
     [
       'holds from the first held row, keeping the stored cursor when nothing before it was consumed',
@@ -241,7 +270,13 @@ describe('splitAtHold', () => {
       },
     ],
   ])('%s', (_label, view, stored, expected) => {
-    expect(splitAtHold(view, classify, stored)).toEqual(expected);
+    const split = splitAtHold(view, classify, stored);
+    expect(split).toEqual(expected);
+    if (split.held === undefined) return;
+    // The batch checkpoint never claims the held transaction or any row from the held row on.
+    expect(compareXid(split.appliedHorizon, split.held.xid)).toBeLessThanOrEqual(0);
+    const firstHeld = view.rows.findIndex((row) => classify(row) === 'hold');
+    expect(view.rows.findIndex((row) => cursorOf(row) === split.endCursor)).toBeLessThan(firstHeld);
   });
 
   it('rejects a held row that carries no operationId', () => {
@@ -297,6 +332,26 @@ describe('OperationTracker parts and statuses', () => {
     expect(t.waiting()).toEqual([]);
   });
 
+  it('holds an unreported operation, then a done one missing a participant, and forgets it once released', () => {
+    const t = tracker();
+    const account = change(102, 1, OP_A, ACCOUNT);
+    read(t, 'identity', TENANT, page([account], 103), CURSOR_START);
+    expect(t.ready()).toEqual([]);
+    expect(t.fencesNeeded()).toEqual([]);
+    expect(t.waiting()).toEqual([{ operationId: OP_A, status: undefined, missing: ['people'], incomplete: [], unproven: ['people'] }]);
+
+    t.noteStatus(OP_A, 'done');
+    expect(t.ready()).toEqual([]);
+    expect(t.fencesNeeded()).toEqual([{ operationId: OP_A, owner: 'people' }]);
+
+    read(t, 'people', TENANT, page(PERSON_ROWS, 103), CURSOR_START, { [OP_A]: 'done' });
+    expect(t.ready().map((operation) => [operation.operationId, operation.rows])).toEqual([[OP_A, [...PERSON_A, account]]]);
+
+    t.release(OP_A);
+    expect(t.ready()).toEqual([]);
+    expect(t.waiting()).toEqual([]);
+  });
+
   it('keeps an open operation waiting', () => {
     const t = tracker();
     read(t, 'people', TENANT, page(PERSON_ROWS, 102), CURSOR_START, { [OP_A]: 'open' });
@@ -313,6 +368,29 @@ describe('OperationTracker parts and statuses', () => {
     expect(t.ready()).toEqual([]);
     expect(t.waiting()).toEqual([]);
     expect(t.fencesNeeded()).toEqual([]);
+  });
+
+  it('releases interleaved operations of different tenants independently', () => {
+    const t = tracker();
+    const personA = change(100, 1, OP_A);
+    const personB = change(101, 1, OP_B);
+    const accountA = change(102, 1, OP_A, ACCOUNT);
+    const accountB = change(103, 1, OP_B, ACCOUNT);
+    const reports: Record<string, OperationStatus> = { [OP_A]: 'done', [OP_B]: 'open' };
+    read(t, 'people', TENANT, page([personA], 104), CURSOR_START, reports);
+    read(t, 'people', OTHER_TENANT, page([personB], 104), CURSOR_START, reports);
+    read(t, 'identity', TENANT, page([accountA], 104), CURSOR_START, reports);
+    read(t, 'identity', OTHER_TENANT, page([accountB], 104), CURSOR_START, reports);
+    expect(t.ready().map((operation) => [operation.operationId, operation.rows])).toEqual([[OP_A, [personA, accountA]]]);
+
+    t.release(OP_A);
+    expect(t.ready()).toEqual([]);
+    expect(t.waiting()).toEqual([{ operationId: OP_B, status: 'open', missing: [], incomplete: [], unproven: [] }]);
+
+    t.clear();
+    read(t, 'people', OTHER_TENANT, page([personB], 104), CURSOR_START, { [OP_B]: 'done' });
+    read(t, 'identity', OTHER_TENANT, page([accountB], 104), CURSOR_START, { [OP_B]: 'done' });
+    expect(t.ready().map((operation) => [operation.operationId, operation.rows])).toEqual([[OP_B, [personB, accountB]]]);
   });
 });
 

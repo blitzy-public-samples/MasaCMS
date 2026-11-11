@@ -1,4 +1,24 @@
-import { describe, expect, it } from 'vitest';
+import { fastify, type FastifyInstance } from 'fastify';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  DEFAULT_UMBRELLA_SITE_ID,
+  InvalidWritePositionError,
+  WRITE_POSITION_HEADER,
+  WRITE_POSITION_HEADER_LC,
+  compareXid,
+  formatWritePosition,
+  hasWritePositionHeader,
+  mergeWritePosition,
+  parseWritePosition,
+  recordWritePositionsFrom,
+  registerWritePositionHeader,
+  resolveTenant,
+  type ResolvedTenant,
+  type TenantSource,
+  type WritePositions,
+} from '../../src/migration-kit/index.js';
+import { currentRequestContext, newRequestContext, recordWritePosition, runWithRequestContext } from '../../src/service-kit/index.js';
+import { TENANT_A, TENANT_UMBRELLA } from '../../src/testing/index.js';
 import {
   CHANGELOG_TABLE,
   CHANGE_OPS,
@@ -293,3 +313,256 @@ describe.each(GENERATORS)('%s schema identifier', (_name, generate) => {
     expect(() => generate(name)).toThrow(new TypeError(`Invalid schema identifier: ${JSON.stringify(name)}`));
   });
 });
+
+// Mapping rules are tested in mapping.test.ts; this block only binds resolveTenant to the shared tenant fixtures.
+describe('resolveTenant against the tenant fixtures', () => {
+  const lookups = {
+    umbrellaSiteId: DEFAULT_UMBRELLA_SITE_ID,
+    parentSiteId: (table: string, key: Record<string, unknown>) =>
+      table === 'tusers' && key.UserID === 'U-A' ? TENANT_A.siteId : null,
+  };
+  const parent: TenantSource = { kind: 'parent', parentLegacyTable: 'tusers', columns: { UserID: 'UserID' } };
+  const inTenantA: ResolvedTenant = { tenantId: TENANT_A.tenantId, siteId: TENANT_A.siteId, orphan: false };
+  const orphan: ResolvedTenant = { tenantId: TENANT_UMBRELLA.tenantId, siteId: TENANT_UMBRELLA.siteId, orphan: true };
+
+  it.each<readonly [string, TenantSource, Record<string, unknown>, ResolvedTenant]>([
+    ['a siteID row of tenant-a to TENANT_A', { kind: 'site', column: 'SiteID' }, { SiteID: 'tenant-a' }, inTenantA],
+    ['a child row without siteID to its tenant-a parent', parent, { UserID: 'U-A' }, inTenantA],
+    ['a child row of an unknown parent to the umbrella as an orphan', parent, { UserID: 'U-missing' }, orphan],
+  ])('resolves %s', (_case, source, row, expected) => {
+    expect(resolveTenant(source, row, lookups)).toEqual(expected);
+  });
+});
+
+function thrownBy(fn: () => unknown): unknown {
+  try {
+    fn();
+  } catch (error) {
+    return error;
+  }
+  return undefined;
+}
+
+describe('write-position header name', () => {
+  it('is X-Opt2-Write-Position, lower-cased for header maps', () => {
+    expect(WRITE_POSITION_HEADER).toBe('X-Opt2-Write-Position');
+    expect(WRITE_POSITION_HEADER_LC).toBe('x-opt2-write-position');
+  });
+});
+
+describe('compareXid', () => {
+  it.each<readonly [string | bigint, string | bigint, -1 | 0 | 1]>([
+    ['9', '10', -1],
+    ['10', '9', 1],
+    ['10', '10', 0],
+    ['007', '7', 0],
+    [9n, '10', -1],
+    ['9007199254740993', '9007199254740992', 1],
+  ])('compares %s with %s as %d', (left, right, expected) => {
+    expect(compareXid(left, right)).toBe(expected);
+  });
+});
+
+describe('formatWritePosition', () => {
+  it.each<readonly [string, WritePositions | Record<string, string>, string]>([
+    ['a map', new Map([['people', '10'], ['identity', '9']]), 'identity=9,people=10'],
+    ['a record', { 'strategies-content': '5', identity: '3' }, 'identity=3,strategies-content=5'],
+    ['no positions', new Map(), ''],
+  ])('formats %s with entries sorted by owner', (_case, positions, expected) => {
+    expect(formatWritePosition(positions)).toBe(expected);
+  });
+});
+
+describe('parseWritePosition', () => {
+  it('round-trips a formatted header value', () => {
+    const positions = parseWritePosition('identity=9,people=10');
+    expect([...positions]).toEqual([
+      ['identity', '9'],
+      ['people', '10'],
+    ]);
+    expect(formatWritePosition(positions)).toBe('identity=9,people=10');
+  });
+
+  it.each<readonly [string, string | string[] | undefined, readonly (readonly [string, string])[]]>([
+    ['an absent header', undefined, []],
+    ['an empty value', '', []],
+    ['empty elements and surrounding whitespace', ' people=10 , ,identity=9,', [['people', '10'], ['identity', '9']]],
+    ['a repeated owner, keeping the highest xid', 'people=10,people=9,people=11', [['people', '11']]],
+    ['the values of a repeated header', ['people=10', 'identity=9,people=12'], [['people', '12'], ['identity', '9']]],
+    ['leading zeros as a plain decimal', 'people=007', [['people', '7']]],
+  ])('parses %s', (_case, value, expected) => {
+    expect([...parseWritePosition(value)]).toEqual(expected);
+  });
+
+  it.each(['people', 'people=abc', '=1', 'people=', 'People=1', '-people=1', 'people=-1', 'people=1.5', 'people=1=2'])(
+    'throws InvalidWritePositionError naming the malformed entry %j',
+    (entry) => {
+      const error = thrownBy(() => parseWritePosition(`identity=9, ${entry}`));
+      expect(error).toBeInstanceOf(InvalidWritePositionError);
+      expect(error).toMatchObject({
+        name: 'InvalidWritePositionError',
+        entry,
+        message: `Invalid X-Opt2-Write-Position entry: ${JSON.stringify(entry)}`,
+      });
+    },
+  );
+});
+
+describe('mergeWritePosition', () => {
+  it.each([
+    ['9', '10', '10'],
+    ['10', '9', '10'],
+    ['9007199254740993', '9007199254740992', '9007199254740993'],
+    ['9007199254740992', '9007199254740993', '9007199254740993'],
+  ])('keeps the higher of %s and %s by BigInt value: %s', (first, second, expected) => {
+    expect([...mergeWritePosition(new Map([['people', first]]), new Map([['people', second]]))]).toEqual([['people', expected]]);
+  });
+
+  it('unions owners, skips undefined sets and leaves its inputs unchanged', () => {
+    const people: WritePositions = new Map([['people', '10']]);
+    const identity: WritePositions = new Map([
+      ['identity', '9'],
+      ['people', '3'],
+    ]);
+    const merged = mergeWritePosition(people, undefined, identity);
+    expect(formatWritePosition(merged)).toBe('identity=9,people=10');
+    expect(merged).not.toBe(people);
+    expect([...people]).toEqual([['people', '10']]);
+    expect([...identity]).toEqual([
+      ['identity', '9'],
+      ['people', '3'],
+    ]);
+    expect(mergeWritePosition().size).toBe(0);
+  });
+});
+
+describe('recordWritePositionsFrom', () => {
+  it('records every position of a downstream header in the active request context, keeping the highest', () => {
+    const store = newRequestContext({ requestId: 'write-position-unit' });
+    runWithRequestContext(store, () => {
+      recordWritePosition('people', '12');
+      recordWritePositionsFrom(['identity=9,people=10', 'people=11']);
+    });
+    expect([...store.writePositions]).toEqual([
+      ['people', '12'],
+      ['identity', '9'],
+    ]);
+  });
+
+  it('is a no-op outside a request', () => {
+    expect(currentRequestContext()).toBeUndefined();
+    expect(() => recordWritePositionsFrom('people=10')).not.toThrow();
+  });
+
+  it('rejects a malformed header inside and outside a request', () => {
+    expect(() => recordWritePositionsFrom('people=abc')).toThrow(InvalidWritePositionError);
+    expect(() => runWithRequestContext(newRequestContext(), () => recordWritePositionsFrom('people=abc'))).toThrow(
+      InvalidWritePositionError,
+    );
+  });
+});
+
+describe('registerWritePositionHeader', () => {
+  const apps: FastifyInstance[] = [];
+  const publicRoute = { config: { opt2: { public: true } } } as const;
+
+  afterEach(async () => {
+    await Promise.all(apps.splice(0).map((app) => app.close()));
+  });
+
+  function bareApp(): FastifyInstance {
+    const app = fastify();
+    apps.push(app);
+    return app;
+  }
+
+  function contextApp(): FastifyInstance {
+    const app = bareApp();
+    app.addHook('onRequest', (request, _reply, done) => {
+      runWithRequestContext(newRequestContext({ requestId: request.id }), () => done());
+    });
+    registerWritePositionHeader(app);
+    app.get('/write', publicRoute, async () => {
+      recordWritePosition('people', '42');
+      return { ok: true };
+    });
+    app.get('/roster-write', publicRoute, async () => {
+      recordWritePosition('people', '10');
+      recordWritePosition('identity', '9');
+      recordWritePosition('people', '8');
+      return { ok: true };
+    });
+    app.get('/read', publicRoute, async () => ({ ok: true }));
+    return app;
+  }
+
+  it.each([
+    ['/write', 'people=42'],
+    ['/roster-write', 'identity=9,people=10'],
+    ['/read', undefined],
+  ])('answers %s with write position %s', async (url, expected) => {
+    const res = await contextApp().inject({ method: 'GET', url });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true });
+    expect(res.headers[WRITE_POSITION_HEADER_LC]).toBe(expected);
+  });
+
+  it('emits no header for a request served without a request context', async () => {
+    const app = bareApp();
+    registerWritePositionHeader(app);
+    app.get('/read', publicRoute, async () => ({ ok: true }));
+    const res = await app.inject({ method: 'GET', url: '/read' });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers).not.toHaveProperty(WRITE_POSITION_HEADER_LC);
+  });
+
+  it('adds its onSend hook once per app instance', () => {
+    const app = bareApp();
+    const addHook = vi.spyOn(app, 'addHook');
+    registerWritePositionHeader(app);
+    registerWritePositionHeader(app);
+    expect(addHook).toHaveBeenCalledTimes(1);
+    expect(addHook).toHaveBeenCalledWith('onSend', expect.any(Function));
+  });
+});
+
+describe('hasWritePositionHeader', () => {
+  const apps: FastifyInstance[] = [];
+
+  afterEach(async () => {
+    await Promise.all(apps.splice(0).map((app) => app.close()));
+  });
+
+  async function withChild(registerOn: 'root' | 'child'): Promise<{ root: FastifyInstance; child: FastifyInstance }> {
+    const root = fastify();
+    apps.push(root);
+    let child: FastifyInstance | undefined;
+    if (registerOn === 'root') registerWritePositionHeader(root);
+    await root.register(async (instance) => {
+      child = instance;
+      if (registerOn === 'child') registerWritePositionHeader(instance);
+    });
+    await root.ready();
+    if (child === undefined) throw new Error('plugin did not load');
+    return { root, child };
+  }
+
+  it('is false for an app without the hook', () => {
+    const app = fastify();
+    apps.push(app);
+    expect(hasWritePositionHeader(app)).toBe(false);
+  });
+
+  it('is true for the registering app and every instance encapsulated from it', async () => {
+    const { root, child } = await withChild('root');
+    expect(hasWritePositionHeader(root)).toBe(true);
+    expect(hasWritePositionHeader(child)).toBe(true);
+  });
+
+  it('is true for an encapsulated registrant but not for its parent', async () => {
+    const { root, child } = await withChild('child');
+    expect(hasWritePositionHeader(child)).toBe(true);
+    expect(hasWritePositionHeader(root)).toBe(false);
+  });
+});
+

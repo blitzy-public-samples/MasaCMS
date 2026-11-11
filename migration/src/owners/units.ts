@@ -54,6 +54,8 @@ export interface UnitCatalog {
   legacyTablesOf(unitId: string): readonly string[];
   /** Generic entry name and program id of `Program_<id>.<table>`; any other name comes back with `programId: null`. */
   foldProgramTable(table: string): ProgramFold;
+  /** Owner the ownership file records for the table. @throws UnknownLegacyTableError */
+  legacyTableOwner(table: string): LegacyTableOwner;
   /** Targets of the table; empty for a table that does not migrate. @throws UnknownLegacyTableError */
   unitsForLegacyTable(table: string): readonly LegacyTableTarget[];
   /** True when the table has targets, never for decision-list or retired tables. @throws UnknownLegacyTableError */
@@ -308,6 +310,8 @@ export function loadUnitCatalog(tableOwnershipPath: string, options: LoadUnitCat
     unitsOfOwner: (owner: string) => byOwner.get(owner) ?? EMPTY_UNITS,
     legacyTablesOf: (unitId: string) => unit(unitId).legacyTables,
     foldProgramTable,
+    // The load rejects any owner outside data owners, coordination owners, split, decision-list and retired.
+    legacyTableOwner: (table: string) => resolve(table).owner as LegacyTableOwner,
     unitsForLegacyTable: (table: string) => resolve(table).targets,
     isMigratable: (table: string) => resolve(table).targets.length > 0,
     isSplit: (table: string) => resolve(table).split,
