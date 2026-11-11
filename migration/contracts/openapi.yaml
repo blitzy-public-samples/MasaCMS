@@ -1,0 +1,1187 @@
+openapi: 3.1.0
+info:
+  title: migration
+  version: 1.0.0
+  description: 'Internal API of the OPT-2 migration service: write windows, projection await, unit authority, legacy steps, gates, transitions, scheduler state, background control and faults.'
+  x-source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f
+servers:
+  - url: http://127.0.0.1:8102
+    description: local
+x-opt2-calls:
+  - identity
+  - people
+  - programs-sites
+  - strategies-content
+  - communications
+  - reporting
+  - surveys
+  - timesheets
+  - finance
+  - e-signature
+  - gateway
+security:
+  - invocationCredential: []
+paths:
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Liveness probe.
+      x-opt2-transport: service
+      x-opt2-public: true
+      security: []
+      responses:
+        '200':
+          description: The service is running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+          description: A presented credential is invalid.
+  /internal/v1/windows:
+    post:
+      operationId: windowOpen
+      summary: Opens a write window for a legacy-write request.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:gateway
+        - platform.operator
+      x-opt2-site-check: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WindowOpenRequest'
+      responses:
+        '201':
+          description: Gates closed and projection current; legacy may execute.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WindowOpenResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: Leases or gates not taken within 30 s, or an owner unavailable.
+  /internal/v1/windows/{windowId}:
+    parameters:
+      - $ref: '#/components/parameters/WindowId'
+    get:
+      operationId: windowGet
+      summary: Reads a write window.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.operator
+        - service:gateway
+      responses:
+        '200':
+          description: The window.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WriteWindow'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /internal/v1/windows/{windowId}:complete:
+    parameters:
+      - $ref: '#/components/parameters/WindowId'
+    post:
+      operationId: windowComplete
+      summary: Reports the legacy outcome, imports legacy changes and closes the window.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:gateway
+        - platform.operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WindowCompleteRequest'
+      responses:
+        '200':
+          description: Window state after completion; `unknown` for an id that names no window.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WindowCompleteResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /internal/v1/windows/{windowId}:resolve:
+    parameters:
+      - $ref: '#/components/parameters/WindowId'
+    post:
+      operationId: windowResolve
+      summary: Imports and closes an import-pending window after operator review.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.operator
+      responses:
+        '200':
+          description: The resolved window.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WriteWindow'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+          description: The window is not import-pending.
+  /internal/v1/projection/await:
+    post:
+      operationId: projectionAwait
+      summary: Waits until the reverse projector has applied the given write positions.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:gateway
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectionAwaitRequest'
+      responses:
+        '200':
+          description: Every position is applied in legacy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectionAwaitResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: '`timeoutMs` elapsed before every position was applied.'
+  /internal/v1/authority:
+    get:
+      operationId: unitAuthority
+      summary: Reports the write authority of units under the active cut-over version.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:programs-sites
+        - service:gateway
+        - platform.operator
+      parameters:
+        - $ref: '#/components/parameters/UnitsRequired'
+      responses:
+        '200':
+          description: Authority per unit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnitAuthorityResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: Malformed or unknown unit id.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /internal/v1/legacy-steps:
+    post:
+      operationId: legacyStepRun
+      summary: Runs one site-monitor step on legacy through the bridge, inside a write window when needed.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:programs-sites
+      x-opt2-site-check: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LegacyStepRequest'
+      responses:
+        '200':
+          description: The step completed on legacy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyStepResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: The window could not open, or the bridge step did not complete.
+        '504':
+          description: '`deadlineAt` passed before the step completed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyUnavailable'
+  /internal/v1/gates:
+    get:
+      operationId: gatesList
+      summary: Lists unit leases and owner gate states.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.operator
+      parameters:
+        - $ref: '#/components/parameters/UnitsFilter'
+      responses:
+        '200':
+          description: Leases and gates per unit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatesResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /internal/v1/transitions:
+    post:
+      operationId: transitionStart
+      summary: Starts the transition to a cut-over version.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransitionStartRequest'
+      responses:
+        '202':
+          description: The transition is running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transition'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: Unknown version, or the version fails validation.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+          description: A transition is already running.
+  /internal/v1/transitions/{transitionId}:
+    parameters:
+      - $ref: '#/components/parameters/TransitionId'
+    get:
+      operationId: transitionGet
+      summary: Reads a transition.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.operator
+      responses:
+        '200':
+          description: The transition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transition'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /internal/v1/scheduler/state:
+    get:
+      operationId: schedulerStateGet
+      summary: Reads the captured scheduler state and the site-monitor hand-off.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.operator
+      responses:
+        '200':
+          description: The scheduler state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulerState'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /internal/v1/scheduler/state:import:
+    post:
+      operationId: schedulerStateImport
+      summary: Imports the native scheduled tasks and `ping` captured before the first restart.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SchedulerImportRequest'
+      responses:
+        '200':
+          description: The scheduler state after the import.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulerState'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /internal/v1/background:suspend:
+    post:
+      operationId: backgroundSuspend
+      summary: Suspends the projector, the tasks reconcile and the bridge poll.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.operator
+      responses:
+        '200':
+          description: Background work is suspended.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackgroundState'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /internal/v1/background:resume:
+    post:
+      operationId: backgroundResume
+      summary: Resumes suspended background work.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.operator
+      responses:
+        '200':
+          description: Background work is running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackgroundState'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /internal/v1/faults/{name}:
+    parameters:
+      - $ref: '#/components/parameters/FaultName'
+    put:
+      operationId: faultSet
+      summary: Arms a named fault.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FaultRequest'
+      responses:
+        '204':
+          description: The fault is armed.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+          description: Unknown fault.
+    delete:
+      operationId: faultClear
+      summary: Disarms a named fault.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.operator
+      responses:
+        '204':
+          description: The fault is disarmed.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+          description: Unknown fault.
+components:
+  securitySchemes:
+    invocationCredential:
+      type: apiKey
+      in: header
+      name: X-Serverless-Authorization
+      description: Google-signed ID token in the cloud; local service token locally.
+  parameters:
+    WindowId:
+      name: windowId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/CfId'
+    TransitionId:
+      name: transitionId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/CfId'
+    FaultName:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^[a-z][a-z0-9-]*$'
+        examples:
+          - projector-delay
+    UnitsRequired:
+      name: units
+      in: query
+      required: true
+      schema:
+        $ref: '#/components/schemas/UnitList'
+    UnitsFilter:
+      name: units
+      in: query
+      required: false
+      description: Units to list; every unit when omitted.
+      schema:
+        $ref: '#/components/schemas/UnitList'
+  responses:
+    BadRequest:
+      description: Malformed request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LegacyError'
+    Unauthorized:
+      description: Missing or invalid invocation credential.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LegacyError'
+    Forbidden:
+      description: The caller holds none of the required roles.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LegacyError'
+    NotFound:
+      description: Unknown resource.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LegacyError'
+    Conflict:
+      description: The resource's state does not allow the action.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LegacyError'
+    Unavailable:
+      description: Legacy-shaped 503.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LegacyUnavailable'
+  schemas:
+    CfId:
+      type: string
+      description: ColdFusion `createUUID()` id.
+      minLength: 35
+      maxLength: 35
+      pattern: '^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$'
+    UnitId:
+      type: string
+      description: '`<schema>.<table>` unit id of opt2/table-ownership.json.'
+      pattern: '^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$'
+      examples:
+        - people.person
+    UnitList:
+      type: string
+      description: Comma-separated unit ids.
+      pattern: '^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*(,[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*)*$'
+      examples:
+        - people.person,content.content
+    XidString:
+      type: string
+      description: PostgreSQL xid8 as a decimal string.
+      pattern: '^[0-9]{1,20}$'
+    OwnerName:
+      type: string
+      enum:
+        - identity
+        - people
+        - programs-sites
+        - strategies-content
+        - communications
+        - reporting
+        - surveys
+        - timesheets
+        - finance
+        - e-signature
+        - stub
+    VersionId:
+      type: string
+      description: Cut-over table version.
+      pattern: '^v[0-9]{4}$'
+    WindowScope:
+      description: The writers' keyScope values, or `table` when any value is missing.
+      oneOf:
+        - type: object
+          required:
+            - table
+          additionalProperties: false
+          properties:
+            table:
+              type: boolean
+              const: true
+        - type: object
+          required:
+            - keys
+          additionalProperties: false
+          properties:
+            keys:
+              type: object
+              minProperties: 1
+              additionalProperties:
+                type: string
+    WindowOpenRequest:
+      type: object
+      required:
+        - routeKey
+        - units
+        - scope
+        - requestId
+      additionalProperties: false
+      properties:
+        routeKey:
+          type: string
+          minLength: 1
+          description: Canonical route key.
+          examples:
+            - admin:cusers.update{type=2,action=delete}
+        units:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/UnitId'
+        scope:
+          $ref: '#/components/schemas/WindowScope'
+        requestId:
+          type: string
+          minLength: 1
+    WindowOpenResponse:
+      type: object
+      required:
+        - windowId
+        - state
+        - phase
+      additionalProperties: false
+      properties:
+        windowId:
+          $ref: '#/components/schemas/CfId'
+        state:
+          type: string
+          const: open
+        phase:
+          type: string
+          const: executing
+    WindowCompleteRequest:
+      type: object
+      required:
+        - forwarded
+      additionalProperties: false
+      properties:
+        forwarded:
+          type: boolean
+        legacyStatus:
+          type: integer
+          minimum: 100
+          maximum: 599
+    WindowCompleteResponse:
+      type: object
+      required:
+        - state
+      additionalProperties: false
+      properties:
+        state:
+          type: string
+          enum:
+            - closed
+            - import-pending
+            - unknown
+    WriteWindow:
+      type: object
+      required:
+        - windowId
+        - routeKey
+        - units
+        - scope
+        - state
+        - phase
+        - phases
+        - rowsImported
+        - outcome
+      additionalProperties: false
+      properties:
+        windowId:
+          $ref: '#/components/schemas/CfId'
+        routeKey:
+          type: string
+          minLength: 1
+        units:
+          type: array
+          items:
+            $ref: '#/components/schemas/UnitId'
+        scope:
+          $ref: '#/components/schemas/WindowScope'
+        state:
+          type: string
+          enum:
+            - opening
+            - open
+            - import-pending
+            - closed
+            - aborted
+        phase:
+          type: string
+          description: Last gate phase reached.
+          enum:
+            - quiet
+            - executing
+            - importing
+            - import-pending
+        phases:
+          type: array
+          items:
+            type: object
+            required:
+              - phase
+              - at
+            additionalProperties: false
+            properties:
+              phase:
+                type: string
+                enum:
+                  - quiet
+                  - executing
+                  - importing
+                  - import-pending
+                  - closed
+                  - aborted
+              at:
+                type: string
+                format: date-time
+        rowsImported:
+          type: integer
+          minimum: 0
+        outcome:
+          type: string
+          enum:
+            - pending
+            - imported
+            - not-forwarded
+            - aborted
+            - resolved
+    ProjectionAwaitRequest:
+      description: Write positions to await, or owners whose current write positions are read and awaited.
+      oneOf:
+        - type: object
+          required:
+            - positions
+          additionalProperties: false
+          properties:
+            positions:
+              type: object
+              minProperties: 1
+              propertyNames:
+                $ref: '#/components/schemas/OwnerName'
+              additionalProperties:
+                $ref: '#/components/schemas/XidString'
+            timeoutMs:
+              type: integer
+              minimum: 1
+              maximum: 30000
+              default: 5000
+        - type: object
+          required:
+            - owners
+          additionalProperties: false
+          properties:
+            owners:
+              type: array
+              minItems: 1
+              uniqueItems: true
+              items:
+                $ref: '#/components/schemas/OwnerName'
+            timeoutMs:
+              type: integer
+              minimum: 1
+              maximum: 30000
+              default: 5000
+    ProjectionAwaitResponse:
+      type: object
+      required:
+        - applied
+        - positions
+      additionalProperties: false
+      properties:
+        applied:
+          type: boolean
+          const: true
+        positions:
+          type: object
+          description: The awaited positions; for an owners request, those read at call time.
+          propertyNames:
+            $ref: '#/components/schemas/OwnerName'
+          additionalProperties:
+            $ref: '#/components/schemas/XidString'
+    UnitAuthorityResponse:
+      type: object
+      required:
+        - tableVersion
+        - units
+        - allTarget
+      additionalProperties: false
+      properties:
+        tableVersion:
+          type:
+            - string
+            - 'null'
+          description: Active cut-over version; null before any version is active.
+          pattern: '^v[0-9]{4}$'
+        units:
+          type: object
+          propertyNames:
+            $ref: '#/components/schemas/UnitId'
+          additionalProperties:
+            type: string
+            enum:
+              - legacy
+              - target
+        allTarget:
+          type: boolean
+    LegacyStepName:
+      type: string
+      description: Site-monitor step, also the bridge `job` value.
+      enum:
+        - sendReminders
+        - emailSend
+        - publishScheduledChangesets
+        - trackBounces
+        - feedAutoImport
+        - purgeDisplayWindow
+        - clearOldCommands
+        - onGlobalMonitor
+        - onSiteMonitor
+        - setCursor
+    LegacyStepRequest:
+      type: object
+      required:
+        - step
+        - theTime
+        - lastMonitored
+        - deadlineAt
+      additionalProperties: false
+      properties:
+        step:
+          $ref: '#/components/schemas/LegacyStepName'
+        theTime:
+          type: string
+          minLength: 1
+          description: Run time in the legacy time mask, passed to the bridge unchanged.
+        lastMonitored:
+          type: string
+          minLength: 1
+          description: Monitor cursor in the legacy time mask, passed to the bridge unchanged.
+        deadlineAt:
+          type: string
+          format: date-time
+        siteId:
+          type: string
+          minLength: 1
+          description: Legacy site id; required for trackBounces, feedAutoImport and onSiteMonitor.
+    LegacyStepResponse:
+      type: object
+      required:
+        - step
+        - completed
+        - serverTime
+      additionalProperties: false
+      properties:
+        step:
+          $ref: '#/components/schemas/LegacyStepName'
+        completed:
+          type: boolean
+          const: true
+        serverTime:
+          type: string
+          format: date-time
+        siteId:
+          type: string
+          minLength: 1
+        windowId:
+          $ref: '#/components/schemas/CfId'
+          description: Present when the step ran inside a write window.
+    GatesResponse:
+      type: object
+      required:
+        - units
+      additionalProperties: false
+      properties:
+        units:
+          type: array
+          items:
+            type: object
+            required:
+              - unit
+              - owner
+            additionalProperties: false
+            properties:
+              unit:
+                $ref: '#/components/schemas/UnitId'
+              owner:
+                $ref: '#/components/schemas/OwnerName'
+              lease:
+                type: object
+                required:
+                  - holderId
+                  - kind
+                  - acquiredAt
+                additionalProperties: false
+                properties:
+                  holderId:
+                    type: string
+                    minLength: 1
+                  kind:
+                    type: string
+                    enum:
+                      - window
+                      - transition
+                  acquiredAt:
+                    type: string
+                    format: date-time
+              gate:
+                type: object
+                description: Absent when the owner is unreachable or holds no gate row.
+                required:
+                  - state
+                  - holderId
+                  - phase
+                additionalProperties: false
+                properties:
+                  state:
+                    type: string
+                    enum:
+                      - legacy
+                      - open
+                      - closed
+                  holderId:
+                    type:
+                      - string
+                      - 'null'
+                  phase:
+                    type:
+                      - string
+                      - 'null'
+                    enum:
+                      - quiet
+                      - executing
+                      - importing
+                      - import-pending
+                      - null
+    TransitionStartRequest:
+      type: object
+      required:
+        - toVersion
+      additionalProperties: false
+      properties:
+        toVersion:
+          $ref: '#/components/schemas/VersionId'
+    Transition:
+      type: object
+      required:
+        - transitionId
+        - fromVersion
+        - toVersion
+        - state
+        - step
+        - units
+        - frozenRoutes
+        - startedAt
+      additionalProperties: false
+      properties:
+        transitionId:
+          $ref: '#/components/schemas/CfId'
+        fromVersion:
+          $ref: '#/components/schemas/VersionId'
+        toVersion:
+          $ref: '#/components/schemas/VersionId'
+        state:
+          type: string
+          enum:
+            - running
+            - completed
+            - aborted
+        step:
+          type: integer
+          minimum: 1
+          maximum: 8
+        units:
+          type: array
+          items:
+            $ref: '#/components/schemas/UnitId'
+        frozenRoutes:
+          type: array
+          items:
+            type: string
+            minLength: 1
+        startedAt:
+          type: string
+          format: date-time
+        reconciliation:
+          type: object
+          required:
+            - report
+            - differences
+          additionalProperties: true
+          properties:
+            report:
+              type: string
+              minLength: 1
+              description: Repository-relative path under opt2/reports/reconciliation/.
+            differences:
+              type: integer
+              minimum: 0
+        error:
+          type: object
+          required:
+            - step
+            - message
+          additionalProperties: true
+          properties:
+            step:
+              type: integer
+              minimum: 1
+              maximum: 8
+            message:
+              type: string
+        finishedAt:
+          type: string
+          format: date-time
+    NativeTask:
+      type: object
+      required:
+        - name
+        - status
+      additionalProperties: true
+      properties:
+        name:
+          type: string
+          minLength: 1
+        status:
+          type: string
+          enum:
+            - captured
+            - paused
+            - active
+            - deleted
+        url:
+          type: string
+        interval:
+          type:
+            - integer
+            - string
+        requestTimeOut:
+          type:
+            - integer
+            - string
+        startDate:
+          type: string
+        startTime:
+          type: string
+    SchedulerImportRequest:
+      type: object
+      required:
+        - nativeTasks
+        - ping
+      additionalProperties: false
+      properties:
+        nativeTasks:
+          type: array
+          description: Scheduled-task entries as `box cfconfig export` writes them.
+          items:
+            type: object
+            additionalProperties: true
+        ping:
+          type:
+            - boolean
+            - 'null'
+          description: The original `ping` setting.
+    BackgroundState:
+      type: object
+      required:
+        - suspended
+      additionalProperties: false
+      properties:
+        suspended:
+          type: boolean
+        since:
+          type: string
+          format: date-time
+    SchedulerState:
+      type: object
+      required:
+        - ping
+        - nativeTaskExisted
+        - siteMonitor
+        - tasks
+        - fixtureTasks
+        - background
+      additionalProperties: false
+      properties:
+        ping:
+          type:
+            - boolean
+            - 'null'
+        nativeTaskExisted:
+          type: boolean
+        siteMonitor:
+          type: object
+          required:
+            - state
+          additionalProperties: false
+          properties:
+            state:
+              type: string
+              enum:
+                - none
+                - captured
+                - paused
+                - active
+                - handed-off
+            handedOffAt:
+              type: string
+              format: date-time
+            lastMonitored:
+              type: string
+        tasks:
+          type: array
+          description: The native `siteMonitor` task.
+          items:
+            $ref: '#/components/schemas/NativeTask'
+        fixtureTasks:
+          type: array
+          description: The fixture `opt2-survey-*` tasks.
+          items:
+            $ref: '#/components/schemas/NativeTask'
+        background:
+          $ref: '#/components/schemas/BackgroundState'
+    FaultRequest:
+      type: object
+      required:
+        - params
+      additionalProperties: false
+      properties:
+        params:
+          type: object
+          additionalProperties: true
+      examples:
+        - params:
+            delayMs: 3000
+    LegacyUnavailable:
+      type: object
+      description: Legacy JSON API `server_error` envelope.
+      required:
+        - apiversion
+        - method
+        - error
+      additionalProperties: false
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          type: string
+        params:
+          type: object
+        error:
+          type: object
+          required:
+            - code
+            - message
+          additionalProperties: false
+          properties:
+            message:
+              type: string
+              const: Unhandled Exception
+            code:
+              type: string
+              const: server_error
+    LegacyError:
+      type: object
+      description: Legacy JSON API error envelope.
+      required:
+        - apiversion
+        - error
+      additionalProperties: true
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          type: string
+        params:
+          type: object
+        error:
+          type: object
+          required:
+            - message
+          additionalProperties: true
+          properties:
+            message:
+              type: string
+            code:
+              type: string
+            type:
+              type: string
+    Health:
+      type: object
+      required:
+        - status
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          const: ok
