@@ -1,0 +1,291 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "generatedBy": "harness/src/reporting/check-reviewability.ts",
+  "generatedAt": null,
+  "status": "pending-run",
+  "inventory": "opt2/inventory/legacy-inventory.json",
+  "passCondition": "README.md, TRACEABILITY.md and contracts present with the pinned SHA; every inventory item the service carries or owns has a traceability row",
+  "services": [
+    {
+      "service": "identity",
+      "readme": {
+        "path": "services/identity/README.md",
+        "present": null,
+        "sha": null
+      },
+      "traceability": {
+        "path": "services/identity/TRACEABILITY.md",
+        "present": null,
+        "sha": null,
+        "rows": null
+      },
+      "contracts": {
+        "openapi": {
+          "path": "services/identity/contracts/openapi.yaml",
+          "present": null,
+          "sha": null
+        },
+        "events": []
+      },
+      "inventoryItems": {
+        "carriedOrOwned": null,
+        "covered": null,
+        "missing": []
+      },
+      "result": "pending-run"
+    },
+    {
+      "service": "people",
+      "readme": {
+        "path": "services/people/README.md",
+        "present": null,
+        "sha": null
+      },
+      "traceability": {
+        "path": "services/people/TRACEABILITY.md",
+        "present": null,
+        "sha": null,
+        "rows": null
+      },
+      "contracts": {
+        "openapi": {
+          "path": "services/people/contracts/openapi.yaml",
+          "present": null,
+          "sha": null
+        },
+        "events": []
+      },
+      "inventoryItems": {
+        "carriedOrOwned": null,
+        "covered": null,
+        "missing": []
+      },
+      "result": "pending-run"
+    },
+    {
+      "service": "programs-sites",
+      "readme": {
+        "path": "services/programs-sites/README.md",
+        "present": null,
+        "sha": null
+      },
+      "traceability": {
+        "path": "services/programs-sites/TRACEABILITY.md",
+        "present": null,
+        "sha": null,
+        "rows": null
+      },
+      "contracts": {
+        "openapi": {
+          "path": "services/programs-sites/contracts/openapi.yaml",
+          "present": null,
+          "sha": null
+        },
+        "events": []
+      },
+      "inventoryItems": {
+        "carriedOrOwned": null,
+        "covered": null,
+        "missing": []
+      },
+      "result": "pending-run"
+    },
+    {
+      "service": "strategies-content",
+      "readme": {
+        "path": "services/strategies-content/README.md",
+        "present": null,
+        "sha": null
+      },
+      "traceability": {
+        "path": "services/strategies-content/TRACEABILITY.md",
+        "present": null,
+        "sha": null,
+        "rows": null
+      },
+      "contracts": {
+        "openapi": {
+          "path": "services/strategies-content/contracts/openapi.yaml",
+          "present": null,
+          "sha": null
+        },
+        "events": []
+      },
+      "inventoryItems": {
+        "carriedOrOwned": null,
+        "covered": null,
+        "missing": []
+      },
+      "result": "pending-run"
+    },
+    {
+      "service": "communications",
+      "readme": {
+        "path": "services/communications/README.md",
+        "present": null,
+        "sha": null
+      },
+      "traceability": {
+        "path": "services/communications/TRACEABILITY.md",
+        "present": null,
+        "sha": null,
+        "rows": null
+      },
+      "contracts": {
+        "openapi": {
+          "path": "services/communications/contracts/openapi.yaml",
+          "present": null,
+          "sha": null
+        },
+        "events": []
+      },
+      "inventoryItems": {
+        "carriedOrOwned": null,
+        "covered": null,
+        "missing": []
+      },
+      "result": "pending-run"
+    },
+    {
+      "service": "reporting",
+      "readme": {
+        "path": "services/reporting/README.md",
+        "present": null,
+        "sha": null
+      },
+      "traceability": {
+        "path": "services/reporting/TRACEABILITY.md",
+        "present": null,
+        "sha": null,
+        "rows": null
+      },
+      "contracts": {
+        "openapi": {
+          "path": "services/reporting/contracts/openapi.yaml",
+          "present": null,
+          "sha": null
+        },
+        "events": []
+      },
+      "inventoryItems": {
+        "carriedOrOwned": null,
+        "covered": null,
+        "missing": []
+      },
+      "result": "pending-run"
+    },
+    {
+      "service": "surveys",
+      "readme": {
+        "path": "services/surveys/README.md",
+        "present": null,
+        "sha": null
+      },
+      "traceability": {
+        "path": "services/surveys/TRACEABILITY.md",
+        "present": null,
+        "sha": null,
+        "rows": null
+      },
+      "contracts": {
+        "openapi": {
+          "path": "services/surveys/contracts/openapi.yaml",
+          "present": null,
+          "sha": null
+        },
+        "events": []
+      },
+      "inventoryItems": {
+        "carriedOrOwned": null,
+        "covered": null,
+        "missing": []
+      },
+      "result": "pending-run"
+    },
+    {
+      "service": "timesheets",
+      "readme": {
+        "path": "services/timesheets/README.md",
+        "present": null,
+        "sha": null
+      },
+      "traceability": {
+        "path": "services/timesheets/TRACEABILITY.md",
+        "present": null,
+        "sha": null,
+        "rows": null
+      },
+      "contracts": {
+        "openapi": {
+          "path": "services/timesheets/contracts/openapi.yaml",
+          "present": null,
+          "sha": null
+        },
+        "events": []
+      },
+      "inventoryItems": {
+        "carriedOrOwned": null,
+        "covered": null,
+        "missing": []
+      },
+      "result": "pending-run"
+    },
+    {
+      "service": "finance",
+      "readme": {
+        "path": "services/finance/README.md",
+        "present": null,
+        "sha": null
+      },
+      "traceability": {
+        "path": "services/finance/TRACEABILITY.md",
+        "present": null,
+        "sha": null,
+        "rows": null
+      },
+      "contracts": {
+        "openapi": {
+          "path": "services/finance/contracts/openapi.yaml",
+          "present": null,
+          "sha": null
+        },
+        "events": []
+      },
+      "inventoryItems": {
+        "carriedOrOwned": null,
+        "covered": null,
+        "missing": []
+      },
+      "result": "pending-run"
+    },
+    {
+      "service": "e-signature",
+      "readme": {
+        "path": "services/e-signature/README.md",
+        "present": null,
+        "sha": null
+      },
+      "traceability": {
+        "path": "services/e-signature/TRACEABILITY.md",
+        "present": null,
+        "sha": null,
+        "rows": null
+      },
+      "contracts": {
+        "openapi": {
+          "path": "services/e-signature/contracts/openapi.yaml",
+          "present": null,
+          "sha": null
+        },
+        "events": []
+      },
+      "inventoryItems": {
+        "carriedOrOwned": null,
+        "covered": null,
+        "missing": []
+      },
+      "result": "pending-run"
+    }
+  ],
+  "result": "pending-run"
+}
