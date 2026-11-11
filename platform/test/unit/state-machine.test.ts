@@ -252,9 +252,9 @@ describe('lifecycleRoles', () => {
   });
 });
 
-const ILLEGAL = { code: 'illegalTransition', message: 'Illegal state transition' };
+const ILLEGAL = { code: 'illegalTransition', message: 'illegalTransition' };
 const FORBIDDEN = { code: 'authorization', message: 'Insufficient Account Permissions' };
-const BLACKOUT = { code: 'blackout', message: 'Illegal state transition: blackout' };
+const BLACKOUT = { code: 'blackout', message: 'blackout' };
 const SEED = 20260630;
 
 type Key = readonly [guard: string | null, from: string, action: string, role: string];
@@ -291,7 +291,7 @@ describe('transitionError', () => {
     { code: 'illegalTransition', body: ILLEGAL },
     { code: 'authorization', body: FORBIDDEN },
     { code: 'blackout', body: BLACKOUT },
-  ])('returns the fixed legacy message for $code', ({ code, body }) => {
+  ])('keeps the label $code and returns the fixture message', ({ code, body }) => {
     expect(transitionError(code)).toStrictEqual(body);
   });
 });
@@ -446,12 +446,49 @@ describe('transitionErrorEnvelope', () => {
       method: 'edit',
       params: { id: 'r-1' },
     });
-    expect(envelope).toStrictEqual({ apiversion: 'v1', method: 'edit', params: { id: 'r-1' }, error: ILLEGAL });
+    expect(envelope).toStrictEqual({
+      apiversion: 'v1',
+      method: 'edit',
+      params: { id: 'r-1' },
+      error: { code: 'invalid_request', message: 'illegalTransition' },
+    });
   });
 
   it('omits params when the context has none', () => {
     const envelope = transitionErrorEnvelope(rejectionFor(request('DRAFT', 'submit', ['approver'])), { method: 'submit' });
-    expect(envelope).toStrictEqual({ apiversion: 'v1', method: 'submit', error: FORBIDDEN });
+    expect(envelope).toStrictEqual({
+      apiversion: 'v1',
+      method: 'submit',
+      error: { code: 'invalid_request', message: 'Insufficient Account Permissions' },
+    });
+  });
+
+  // Expected values are the fixture oracle's (legacy-fixtures/cfml/lib/envelope.cfc errorMap forbidden and conflict).
+  it.each([
+    {
+      case: 'an illegal state',
+      input: request('SUBMITTED', 'submit', ['author']),
+      status: 409,
+      error: { code: 'invalid_request', message: 'illegalTransition' },
+    },
+    {
+      case: 'a wrong role',
+      input: request('SUBMITTED', 'approve', ['author']),
+      status: 403,
+      error: { code: 'invalid_request', message: 'Insufficient Account Permissions' },
+    },
+    {
+      case: 'a blackout',
+      input: request('DRAFT', 'submit', ['author'], 'blackout'),
+      status: 409,
+      error: { code: 'invalid_request', message: 'blackout' },
+    },
+  ])('answers $case with the fixture status, code and message, code first', ({ input, status, error }) => {
+    const rejection = rejectionFor(input);
+    const envelope = transitionErrorEnvelope(rejection, { method: input.action });
+    expect(rejection.status).toBe(status);
+    expect(envelope.error).toStrictEqual(error);
+    expect(Object.keys(envelope.error ?? {})).toEqual(['code', 'message']);
   });
 });
 

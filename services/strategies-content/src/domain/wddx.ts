@@ -439,4 +439,3 @@ class PacketReader {
     while (this.pos < this.src.length && ' \t\r\n'.includes(this.src.charAt(this.pos))) this.pos++;
   }
 }
-

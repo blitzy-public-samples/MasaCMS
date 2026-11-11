@@ -27,8 +27,8 @@ export interface TopicMeta {
   supersedes?: boolean;
 }
 
-/** Validation outcome; errors are `"<instancePath> <message>"` strings. */
-export type ValidationResult<T> = { ok: true; value: T } | { ok: false; errors: string[] };
+/** Validation outcome; errors are `"<instancePath> <message>"` strings, schemaPaths the distinct failing schema locations, free of instance data. */
+export type ValidationResult<T> = { ok: true; value: T } | { ok: false; errors: string[]; schemaPaths: string[] };
 
 /** A compiled topic payload schema with its declarations. */
 export interface TopicValidator<P = unknown> {
@@ -103,7 +103,8 @@ function resultOf<T>(validate: ValidateFunction, value: unknown): ValidationResu
   if (validate(value)) {
     return { ok: true, value: value as T };
   }
-  return { ok: false, errors: (validate.errors ?? []).map(formatError) };
+  const errors = validate.errors ?? [];
+  return { ok: false, errors: errors.map(formatError), schemaPaths: [...new Set(errors.map((error) => error.schemaPath))] };
 }
 
 function isOneOf<T extends string>(allowed: readonly T[], value: unknown): value is T {

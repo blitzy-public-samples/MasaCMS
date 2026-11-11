@@ -1,4 +1,5 @@
 /** Pub/Sub push delivery: the `/internal/v1/events/<subscription>` route, its body codec and dead-letter classification. */
+import { validate as validateUuid } from 'uuid';
 import { PUBSUB_INVOKER_ROLE } from '../auth/index.js';
 import type { Logger } from '../logging/index.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from '../service-kit/index.js';
@@ -99,7 +100,9 @@ export interface RegisterConsumersOptions {
 /** Why a delivery is dead-lettered instead of consumed. */
 interface Rejection {
   reason: DeadLetterReason;
+  /** Fixed text naming the failed check; never message content, which stays in the dead letter. */
   detail: string;
+  /** Only a UUID. */
   eventId?: string;
 }
 
@@ -248,22 +251,23 @@ function classify<P>(push: DecodedPush, expected: Expectation<P>): Classified<P>
   }
   // JSON that is not an object is no envelope at all, so it is schema-invalid rather than missing a tenant.
   if (!isRecord(decoded)) return reject('schema-invalid', 'message data is not a JSON object');
-  const eventId = optionalString(decoded.eventId);
+  const eventId = typeof decoded.eventId === 'string' && validateUuid(decoded.eventId) ? decoded.eventId : undefined;
   const { tenantId } = decoded;
   if (tenantId === undefined || tenantId === null || tenantId === '') {
     return reject('missing-tenant', 'envelope has no tenantId', eventId);
   }
   if (!isTenantId(tenantId)) return reject('invalid-tenant', 'envelope tenantId is not a UUID', eventId);
   const checked = validateEnvelope(decoded);
-  if (!checked.ok) return reject('schema-invalid', checked.errors.join('; '), eventId);
+  if (!checked.ok) return reject('schema-invalid', `envelope fails ${checked.schemaPaths.join(', ')}`, eventId);
   const envelope = checked.value;
-  const major = Number(envelope.schemaVersion.split('.', 1)[0]);
-  if (envelope.eventType !== expected.eventType || major !== expected.major) {
-    const found = `${envelope.eventType} ${envelope.schemaVersion}`;
-    return reject('schema-invalid', `envelope ${found} does not belong to topic ${expected.topic}`, eventId);
+  if (envelope.eventType !== expected.eventType) {
+    return reject('schema-invalid', `envelope eventType does not belong to topic ${expected.topic}`, eventId);
+  }
+  if (Number(envelope.schemaVersion.split('.', 1)[0]) !== expected.major) {
+    return reject('schema-invalid', `envelope schemaVersion major does not belong to topic ${expected.topic}`, eventId);
   }
   const payload = expected.validator.validatePayload(envelope.payload);
-  if (!payload.ok) return reject('schema-invalid', `payload: ${payload.errors.join('; ')}`, eventId);
+  if (!payload.ok) return reject('schema-invalid', `payload fails ${payload.schemaPaths.join(', ')}`, eventId);
   const attributeTenant = push.attributes.tenantId;
   // UUIDs compare case-insensitively; the validated envelope tenant is already lower case.
   if (attributeTenant !== undefined && attributeTenant.toLowerCase() !== envelope.tenantId) {
@@ -318,7 +322,8 @@ export function registerPushSubscription<P>(app: FastifyInstance, opts: PushSubs
     } catch (err) {
       // Only a classified delivery is acked; every other error nacks through the service-kit error handler.
       if (!(err instanceof DeadLetterError)) throw err;
-      await deadLetter(push, { reason: err.reason, detail: err.detail ?? err.message, eventId: envelope.eventId }, logger);
+      // The error's detail can carry tenant ids or stored values, so only its reason is logged.
+      await deadLetter(push, { reason: err.reason, detail: 'rejected by the consumer', eventId: envelope.eventId }, logger);
     }
     return reply.code(204).send();
   };

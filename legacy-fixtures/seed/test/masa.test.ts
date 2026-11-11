@@ -244,4 +244,20 @@ describe('masa determinism', () => {
     fewGroups.sites['tenant-b'].counts.groups = 3;
     expect(() => build(fewGroups)).toThrow(RangeError);
   });
+  it('rejects more versions per node than the history has minutes', () => {
+    const over = structuredClone(config);
+    over.sites['tenant-a'].counts.maxVersionsPerNode = config.historyDays * 1440 + 1;
+    expect(() => build(over)).toThrow(RangeError);
+    const full = structuredClone(config);
+    full.historyDays = 1;
+    for (const site of ['tenant-a', 'tenant-b'] as const) {
+      Object.assign(full.sites[site].counts, { contentNodes: 1, maxVersionsPerNode: 1440 });
+    }
+    const { content } = build(full);
+    expect(content).toHaveLength(2);
+    for (const c of content) {
+      expect(c.versions.length).toBeLessThanOrEqual(1440);
+      for (let i = 1; i < c.versions.length; i += 1) expect(c.versions[i - 1]!.lastUpdate < c.versions[i]!.lastUpdate).toBe(true);
+    }
+  });
 });

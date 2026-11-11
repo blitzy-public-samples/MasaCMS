@@ -649,21 +649,29 @@ describe('validateEnvelope', () => {
     expect(result.ok && result.value).toBe(envelope);
   });
 
-  it.each<readonly [string, unknown, string[]]>([
-    ['a non-object', 'text', ['/ must be object']],
+  it.each<readonly [string, unknown, string[], string[]]>([
+    ['a non-object', 'text', ['/ must be object'], ['#/type']],
     [
       'a missing field',
       Object.fromEntries(Object.entries(envelope).filter(([key]) => key !== 'eventId')),
       ["/ must have required property 'eventId'"],
+      ['#/required'],
     ],
-    ['an unknown field', { ...envelope, extra: 1 }, ['/ must NOT have additional properties (extra)']],
+    [
+      'two missing fields under one schema path',
+      Object.fromEntries(Object.entries(envelope).filter(([key]) => key !== 'eventId' && key !== 'tenantId')),
+      ["/ must have required property 'eventId'", "/ must have required property 'tenantId'"],
+      ['#/required'],
+    ],
+    ['an unknown field', { ...envelope, extra: 1 }, ['/ must NOT have additional properties (extra)'], ['#/additionalProperties']],
     [
       'every invalid field at once',
       { ...envelope, aggregateVersion: 0, payload: [] },
       ['/aggregateVersion must be >= 1', '/payload must be object'],
+      ['#/properties/aggregateVersion/minimum', '#/properties/payload/type'],
     ],
-  ])('reports %s as "<instancePath> <message>" errors', (_label, value, errors) => {
-    expect(validateEnvelope(value)).toEqual({ ok: false, errors });
+  ])('reports %s as "<instancePath> <message>" errors and distinct schema paths', (_label, value, errors, schemaPaths) => {
+    expect(validateEnvelope(value)).toEqual({ ok: false, errors, schemaPaths });
   });
 });
 
@@ -735,14 +743,24 @@ describe('compileTopicSchema', () => {
     expect(sample.validatePayload(payload).ok).toBe(true);
   });
 
-  it.each<readonly [string, unknown, string[]]>([
-    ['a missing property', { id: EVENT_ID }, ["/ must have required property 'at'"]],
-    ['an unknown property', { ...SAMPLE_PAYLOAD, extra: true }, ['/ must NOT have additional properties (extra)']],
-    ['a value that is not a UUID', { ...SAMPLE_PAYLOAD, id: 'person-1' }, ['/id must match format "uuid"']],
-    ['a calendar-invalid date-time', { ...SAMPLE_PAYLOAD, at: '2026-02-29T12:00:00Z' }, ['/at must match format "date-time"']],
-    ['a date without a time', { ...SAMPLE_PAYLOAD, at: '2026-06-30' }, ['/at must match format "date-time"']],
-  ])('reports %s', (_label, payload, errors) => {
-    expect(sample.validatePayload(payload)).toEqual({ ok: false, errors });
+  it.each<readonly [string, unknown, string[], string[]]>([
+    ['a missing property', { id: EVENT_ID }, ["/ must have required property 'at'"], ['#/required']],
+    [
+      'an unknown property',
+      { ...SAMPLE_PAYLOAD, extra: true },
+      ['/ must NOT have additional properties (extra)'],
+      ['#/additionalProperties'],
+    ],
+    ['a value that is not a UUID', { ...SAMPLE_PAYLOAD, id: 'person-1' }, ['/id must match format "uuid"'], ['#/properties/id/format']],
+    [
+      'a calendar-invalid date-time',
+      { ...SAMPLE_PAYLOAD, at: '2026-02-29T12:00:00Z' },
+      ['/at must match format "date-time"'],
+      ['#/properties/at/format'],
+    ],
+    ['a date without a time', { ...SAMPLE_PAYLOAD, at: '2026-06-30' }, ['/at must match format "date-time"'], ['#/properties/at/format']],
+  ])('reports %s', (_label, payload, errors, schemaPaths) => {
+    expect(sample.validatePayload(payload)).toEqual({ ok: false, errors, schemaPaths });
   });
 
   it('reuses the validator of a $id registered with the same content', () => {
@@ -769,7 +787,11 @@ describe('compileTopicSchema', () => {
     expect(() => compileTopicSchema(broken)).toThrow('schema is invalid');
     const fixed = compileTopicSchema({ ...broken, properties: { n: { type: 'integer' } } });
     expect(fixed.validatePayload({ n: 1 }).ok).toBe(true);
-    expect(fixed.validatePayload({ n: 'one' })).toEqual({ ok: false, errors: ['/n must be integer'] });
+    expect(fixed.validatePayload({ n: 'one' })).toEqual({
+      ok: false,
+      errors: ['/n must be integer'],
+      schemaPaths: ['#/properties/n/type'],
+    });
   });
 
   it('compiles a schema without $id repeatedly, leaving schemaId unset', () => {

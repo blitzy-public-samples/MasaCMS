@@ -16,7 +16,7 @@ import {
   registerPushSubscription,
   type PushSubscriptionOptions,
 } from '../../src/events/push.js';
-import { createLogger } from '../../src/logging/index.js';
+import { createLogger, validateLogRecord } from '../../src/logging/index.js';
 import { createService } from '../../src/service-kit/create-service.js';
 import { loadEnv } from '../../src/service-kit/env.js';
 import type { TenantDb, TenantTx } from '../../src/tenancy/index.js';
@@ -257,20 +257,42 @@ describe('push delivery route', () => {
     expect(linesMatching(lines, new RegExp(`^malformed push body on ${SUBSCRIPTION.replaceAll('.', '\\.')}: `))).toHaveLength(1);
   });
 
-  it.each<[string, string, Record<string, string>, DeadLetterReason, string | undefined]>([
-    ['message data that is not JSON', 'not json', envelopeAttributesOf(), 'schema-invalid', undefined],
-    ['empty message data', '', envelopeAttributesOf(), 'schema-invalid', undefined],
-    ['JSON that is not an object', '[1,2,3]', envelopeAttributesOf(), 'schema-invalid', undefined],
-    ['an envelope without tenantId', JSON.stringify(envelopeJson({ tenantId: undefined })), {}, 'missing-tenant', EVENT_ID],
-    ['an empty tenantId', JSON.stringify(envelopeJson({ tenantId: '' })), {}, 'missing-tenant', EVENT_ID],
-    ['a null tenantId', JSON.stringify(envelopeJson({ tenantId: null })), {}, 'missing-tenant', EVENT_ID],
-    ['a tenantId that is not a UUID', JSON.stringify(envelopeJson({ tenantId: 'tenant-a' })), {}, 'invalid-tenant', EVENT_ID],
-    ['a tenantId of another type', JSON.stringify(envelopeJson({ tenantId: 42 })), {}, 'invalid-tenant', EVENT_ID],
+  it.each<[string, string, Record<string, string>, DeadLetterReason, string, string | undefined]>([
+    ['message data that is not JSON', 'not json', envelopeAttributesOf(), 'schema-invalid', 'message data is not JSON', undefined],
+    ['empty message data', '', envelopeAttributesOf(), 'schema-invalid', 'message data is not JSON', undefined],
+    ['JSON that is not an object', '[1,2,3]', envelopeAttributesOf(), 'schema-invalid', 'message data is not a JSON object', undefined],
+    [
+      'an envelope without tenantId',
+      JSON.stringify(envelopeJson({ tenantId: undefined })),
+      {},
+      'missing-tenant',
+      'envelope has no tenantId',
+      EVENT_ID,
+    ],
+    ['an empty tenantId', JSON.stringify(envelopeJson({ tenantId: '' })), {}, 'missing-tenant', 'envelope has no tenantId', EVENT_ID],
+    ['a null tenantId', JSON.stringify(envelopeJson({ tenantId: null })), {}, 'missing-tenant', 'envelope has no tenantId', EVENT_ID],
+    [
+      'a tenantId that is not a UUID',
+      JSON.stringify(envelopeJson({ tenantId: 'tenant-a' })),
+      {},
+      'invalid-tenant',
+      'envelope tenantId is not a UUID',
+      EVENT_ID,
+    ],
+    [
+      'a tenantId of another type',
+      JSON.stringify(envelopeJson({ tenantId: 42 })),
+      {},
+      'invalid-tenant',
+      'envelope tenantId is not a UUID',
+      EVENT_ID,
+    ],
     [
       'an envelope breaking the envelope contract',
       JSON.stringify(envelopeJson({ aggregateVersion: 0 })),
       envelopeAttributesOf(),
       'schema-invalid',
+      'envelope fails #/properties/aggregateVersion/minimum',
       EVENT_ID,
     ],
     [
@@ -278,6 +300,7 @@ describe('push delivery route', () => {
       JSON.stringify(envelopeJson({ eventType: 'stub.note.deleted' })),
       envelopeAttributesOf(),
       'schema-invalid',
+      `envelope eventType does not belong to topic ${TOPIC}`,
       EVENT_ID,
     ],
     [
@@ -285,6 +308,7 @@ describe('push delivery route', () => {
       JSON.stringify(envelopeJson({ schemaVersion: '2.0.0' })),
       envelopeAttributesOf(),
       'schema-invalid',
+      `envelope schemaVersion major does not belong to topic ${TOPIC}`,
       EVENT_ID,
     ],
     [
@@ -292,6 +316,7 @@ describe('push delivery route', () => {
       JSON.stringify(envelopeJson({ payload: { noteId: '' } })),
       envelopeAttributesOf(),
       'schema-invalid',
+      'payload fails #/required, #/properties/noteId/minLength',
       EVENT_ID,
     ],
     [
@@ -299,9 +324,10 @@ describe('push delivery route', () => {
       JSON.stringify(envelopeJson()),
       envelopeAttributesOf({ tenantId: TENANT_B.tenantId }),
       'tenant-mismatch',
+      'tenantId attribute differs from the envelope tenantId',
       EVENT_ID,
     ],
-  ])('dead-letters %s with its reason and acks with 204', async (_name, data, attributes, reason, eventId) => {
+  ])('dead-letters %s with its reason and acks with 204', async (_name, data, attributes, reason, detail, eventId) => {
     const { app, lines, publisher, consumer } = await mounted();
     const response = await deliver(app, pushBodyFor(data, attributes));
 
@@ -313,8 +339,10 @@ describe('push delivery route', () => {
       attributes: { ...attributes, reason },
       orderingKey: ORDERING_KEY,
     });
-    const warnings = linesMatching(lines, new RegExp(`^delivery ${MESSAGE_ID} on .+ dead-lettered as ${reason}: `));
-    expect(warnings).toHaveLength(1);
+    const warnings = linesMatching(lines, / dead-lettered as /);
+    expect(warnings.map((line) => line.message)).toEqual([
+      `delivery ${MESSAGE_ID} on ${SUBSCRIPTION} dead-lettered as ${reason}: ${detail}`,
+    ]);
     expect(warnings[0]?.eventId).toBe(eventId);
   });
 
@@ -323,19 +351,19 @@ describe('push delivery route', () => {
       'the effect throws with a detail',
       { apply: () => Promise.reject(new DeadLetterError('invalid-tenant', 'site not registered')) },
       'invalid-tenant',
-      /dead-lettered as invalid-tenant: site not registered$/,
+      /dead-lettered as invalid-tenant: rejected by the consumer$/,
     ],
     [
       'the effect throws without a detail',
       { apply: () => Promise.reject(new DeadLetterError('schema-invalid')) },
       'schema-invalid',
-      /dead-lettered as schema-invalid: Dead letter: schema-invalid$/,
+      /dead-lettered as schema-invalid: rejected by the consumer$/,
     ],
     [
       'the tenant re-check fails',
       { checkTenant: () => false },
       'tenant-mismatch',
-      /dead-lettered as tenant-mismatch: destination tenant /,
+      /dead-lettered as tenant-mismatch: rejected by the consumer$/,
     ],
   ])('dead-letters a DeadLetterError raised while consuming when %s', async (_name, overrides, reason, logged) => {
     const { app, lines, publisher } = await mounted({ consumer: noteConsumer(overrides) });
@@ -352,6 +380,94 @@ describe('push delivery route', () => {
     const warnings = linesMatching(lines, logged);
     expect(warnings).toHaveLength(1);
     expect(warnings[0]?.eventId).toBe(EVENT_ID);
+  });
+
+  const PERSONAL_DATA = /jane|smith|example\.org/i;
+
+  it.each<{
+    name: string;
+    data: string;
+    attributes: Record<string, string>;
+    consumer?: Partial<ConsumerDefinition<NotePayload>>;
+    reason: DeadLetterReason;
+    detail: string;
+    eventId: string | undefined;
+  }>([
+    {
+      name: 'a name as eventId without a tenantId',
+      data: JSON.stringify(envelopeJson({ eventId: 'Jane Smith', tenantId: undefined })),
+      attributes: {},
+      reason: 'missing-tenant',
+      detail: 'envelope has no tenantId',
+      eventId: undefined,
+    },
+    {
+      name: 'an email address as eventId and a name as tenantId',
+      data: JSON.stringify(envelopeJson({ eventId: 'jane.doe@example.org', tenantId: 'Jane Smith' })),
+      attributes: {},
+      reason: 'invalid-tenant',
+      detail: 'envelope tenantId is not a UUID',
+      eventId: undefined,
+    },
+    {
+      name: 'an envelope property named after a person',
+      data: JSON.stringify(envelopeJson({ 'Jane Smith': 'jane.doe@example.org' })),
+      attributes: envelopeAttributesOf(),
+      reason: 'schema-invalid',
+      detail: 'envelope fails #/additionalProperties',
+      eventId: EVENT_ID,
+    },
+    {
+      name: 'a payload property named after a person and a value breaking the schema',
+      data: JSON.stringify(
+        envelopeJson({ payload: { noteId: ORDERING_KEY, text: { name: 'Jane Smith' }, 'Jane Smith': 'jane.doe@example.org' } }),
+      ),
+      attributes: envelopeAttributesOf(),
+      reason: 'schema-invalid',
+      detail: 'payload fails #/additionalProperties, #/properties/text/type',
+      eventId: EVENT_ID,
+    },
+    {
+      name: 'an eventType made of a name',
+      data: JSON.stringify(envelopeJson({ eventType: 'jane.smith.created' })),
+      attributes: envelopeAttributesOf(),
+      reason: 'schema-invalid',
+      detail: `envelope eventType does not belong to topic ${TOPIC}`,
+      eventId: EVENT_ID,
+    },
+    {
+      name: 'a consumer DeadLetterError detail naming a person',
+      data: JSON.stringify(envelopeJson()),
+      attributes: envelopeAttributesOf(),
+      consumer: {
+        apply: () => Promise.reject(new DeadLetterError('tenant-mismatch', 'person Jane Smith <jane.doe@example.org> is elsewhere')),
+      },
+      reason: 'tenant-mismatch',
+      detail: 'rejected by the consumer',
+      eventId: EVENT_ID,
+    },
+  ])('keeps personal data of $name out of every log line', async ({ data, attributes, consumer, reason, detail, eventId }) => {
+    const { app, lines, publisher } = await mounted({ consumer: noteConsumer(consumer) });
+    const response = await deliver(app, pushBodyFor(data, attributes));
+
+    expect(response.statusCode).toBe(204);
+    expect(publisher.publishRaw).toHaveBeenCalledTimes(1);
+    expect(publisher.publishRaw).toHaveBeenCalledWith(DLQ_TOPIC, {
+      data: Buffer.from(data, 'utf8'),
+      attributes: { ...attributes, reason },
+      orderingKey: ORDERING_KEY,
+    });
+    expect(lines).not.toHaveLength(0);
+    for (const line of lines) {
+      expect(JSON.stringify(line)).not.toMatch(PERSONAL_DATA);
+      expect(validateLogRecord(line)).toEqual({ valid: true, errors: [] });
+    }
+    const warnings = linesMatching(lines, / dead-lettered as /);
+    expect(warnings.map((line) => line.message)).toEqual([
+      `delivery ${MESSAGE_ID} on ${SUBSCRIPTION} dead-lettered as ${reason}: ${detail}`,
+    ]);
+    expect(Object.hasOwn(warnings[0] ?? {}, 'eventId')).toBe(eventId !== undefined);
+    expect(warnings[0]?.eventId).toBe(eventId);
   });
 
   it('nacks with 500 when the dead letter cannot be published', async () => {

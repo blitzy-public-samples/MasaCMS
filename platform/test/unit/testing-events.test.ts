@@ -190,7 +190,11 @@ describe('envelope tenant helpers', () => {
     expect(tenantless).not.toHaveProperty('tenantId');
     expect({ ...tenantless, tenantId: envelope.tenantId }).toStrictEqual(envelope);
     expect(envelope.tenantId).toBe(TENANT_A.tenantId);
-    expect(validateEnvelope(tenantless)).toEqual({ ok: false, errors: ["/ must have required property 'tenantId'"] });
+    expect(validateEnvelope(tenantless)).toEqual({
+      ok: false,
+      errors: ["/ must have required property 'tenantId'"],
+      schemaPaths: ['#/required'],
+    });
   });
 
   it.each([

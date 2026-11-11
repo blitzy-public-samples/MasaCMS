@@ -170,38 +170,44 @@ describe('site.changed payload validator', () => {
     expect(siteChangedValidator.validatePayload(payload)).toStrictEqual({ ok: true, value: payload });
   });
 
-  it.each<{ name: string; payload: Record<string, unknown>; errors: string[] }>([
+  it.each<{ name: string; payload: Record<string, unknown>; errors: string[]; schemaPaths: string[] }>([
     {
       name: 'a property the contract does not declare',
       payload: { ...sitePayload(), tenantId: 'tenant-a' },
       errors: ['/ must NOT have additional properties (tenantId)'],
+      schemaPaths: ['#/additionalProperties'],
     },
     ...REQUIRED_FIELDS.map((field) => ({
       name: `a payload without ${field}`,
       payload: withoutField(field),
       errors: [`/ must have required property '${field}'`],
+      schemaPaths: ['#/required'],
     })),
     {
       name: 'an empty site id',
       payload: sitePayload({ siteId: '' }),
       errors: ['/siteId must NOT have fewer than 1 characters'],
+      schemaPaths: ['#/properties/siteId/minLength'],
     },
     {
       name: 'an empty content pool id',
       payload: sitePayload({ contentPoolIds: ['tenant-a', ''] }),
       errors: ['/contentPoolIds/1 must NOT have fewer than 1 characters'],
+      schemaPaths: ['#/properties/contentPoolIds/items/minLength'],
     },
     {
       name: "Masa's comma-separated contentPoolID text instead of a list",
       payload: sitePayload({ contentPoolIds: 'tenant-a,umbrella' }),
       errors: ['/contentPoolIds must be array'],
+      schemaPaths: ['#/properties/contentPoolIds/type'],
     },
     {
       name: 'a null pool id',
       payload: sitePayload({ filePoolId: null }),
       errors: ['/filePoolId must be string'],
+      schemaPaths: ['#/properties/filePoolId/type'],
     },
-  ])('rejects $name', ({ payload, errors }) => {
-    expect(siteChangedValidator.validatePayload(payload)).toStrictEqual({ ok: false, errors });
+  ])('rejects $name', ({ payload, errors, schemaPaths }) => {
+    expect(siteChangedValidator.validatePayload(payload)).toStrictEqual({ ok: false, errors, schemaPaths });
   });
 });

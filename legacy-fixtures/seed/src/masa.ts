@@ -253,7 +253,7 @@ function takeUsername(b: Build, fname: string, lname: string): string {
   return name;
 }
 
-/** `n` distinct ascending timestamps within the history window, all before the business date. */
+/** `n` distinct ascending timestamps within the history window, all before the business date; `n` is at most the window's minutes. */
 function instants(b: Build, rng: SeedRandom, n: number): string[] {
   const minutes = new Set<number>();
   while (minutes.size < n) {
@@ -466,6 +466,12 @@ function buildCategories(b: Build, site: SiteRow, existing: readonly CategoryRow
 function buildContent(b: Build, site: SiteRow, categories: readonly CategoryRow[]): ContentRow[] {
   const counts = b.config.sites[site.siteID].counts;
   if (counts.contentNodes === 0) return [];
+  const slots = b.config.historyDays * MINUTES_PER_DAY;
+  if (counts.maxVersionsPerNode > slots) {
+    throw new RangeError(
+      `Site ${site.siteID} allows ${counts.maxVersionsPerNode} versions per node, but a ${b.config.historyDays}-day history has only ${slots} distinct minutes`,
+    );
+  }
   const rng = fork(b, site.siteID, 'content');
   const { faker } = rng;
   const pooled = categories.filter((row) => row.siteID === site.categoryPoolID).map((row) => row.categoryID);

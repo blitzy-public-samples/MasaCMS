@@ -15,7 +15,7 @@ export class WddxRecordset {
   ) {}
 }
 
-/** A value cfml2wddx serializes; null and undefined stand for CFML empty strings. */
+/** A value cfml2wddx serializes; null and undefined stand for a Java null, written <null/>. */
 export type WddxValue =
   | string
   | number
@@ -37,7 +37,6 @@ export const WDDX_STRUCT_OPEN = '<struct>';
 const PACKET_OPEN = "<wddxPacket version='1.0'><header/><data>";
 const PACKET_CLOSE = '</data></wddxPacket>';
 const RECORDSET_TYPE = 'coldfusion.sql.QueryTable';
-const EMPTY_STRING = '<string></string>';
 
 /** Serializes a struct to the packet ACF's cfml2wddx produces, byte for byte. */
 export function cfml2wddx(values: WddxStruct): string {
@@ -45,8 +44,8 @@ export function cfml2wddx(values: WddxStruct): string {
 }
 
 function element(v: WddxValue): string {
-  // ACF runs without null support, so a query NULL reaches cfwddx as an empty string.
-  if (v === null || v === undefined) return EMPTY_STRING;
+  // A query NULL or never-set cell reaches cfwddx as a Java null, as does a null struct member or array item.
+  if (v === null || v === undefined) return '<null/>';
   if (typeof v === 'string') return `<string>${escapeText(v, false)}</string>`;
   if (typeof v === 'number') return `<number>${javaDoubleString(v)}</number>`;
   if (typeof v === 'boolean') return `<boolean value='${v}'/>`;
@@ -96,8 +95,6 @@ function describe(v: unknown): string {
 /** Escapes one UTF-16 code unit as ACF's UTF8Converter tables do; undefined when it is written as is. */
 function escapeUnit(code: number, attribute: boolean): string | undefined {
   if (code < 0x20) return `<char code='${code.toString(16).padStart(2, '0')}'/>`;
-  // Every unit from 0x80 up becomes a character reference, so a surrogate pair is written as two.
-  if (code >= 0x80) return `&#x${code.toString(16)};`;
   switch (code) {
     case 0x26:
       return '&amp;';
@@ -114,7 +111,7 @@ function escapeUnit(code: number, attribute: boolean): string | undefined {
   }
 }
 
-/** Escapes element text (& < > as entities) or a name attribute (also ' and "); units below 0x20 become <char code='xx'/>, from 0x80 &#x<hex>;. */
+/** Escapes element text (& < > as entities) or a name attribute (also ' and "); units below 0x20 become <char code='xx'/>; non-ASCII units stay as is. */
 function escapeText(s: string, attribute: boolean): string {
   let out = '';
   let start = 0;

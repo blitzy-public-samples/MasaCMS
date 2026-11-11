@@ -5,20 +5,20 @@ import { buildEnvelope, LEGACY_ERROR_MAP, type LegacyEnvelope } from '../legacy-
 /** Error codes of an illegal and of a forbidden transition; an active guard answers with its own name instead. */
 export const TRANSITION_ERROR_CODES = { illegal: 'illegalTransition', forbidden: 'authorization' } as const;
 
-/** The `error` member of a rejected transition's legacy envelope. */
+/** A rejection's internal outcome label and the message the legacy fixture answers it with. */
 export interface TransitionErrorBody {
   code: string;
   message: string;
 }
 
-const ILLEGAL_MESSAGE = 'Illegal state transition';
-
-/** Error body for `code`; the messages are fixed because the legacy fixtures emit the same strings. */
+/** Error body for `code`; the message is the code itself, except the fixture's forbidden message for `authorization`. */
 export function transitionError(code: string): TransitionErrorBody {
-  if (code === TRANSITION_ERROR_CODES.illegal) return { code, message: ILLEGAL_MESSAGE };
   if (code === TRANSITION_ERROR_CODES.forbidden) return { code, message: LEGACY_ERROR_MAP.authorization.message };
-  return { code, message: `${ILLEGAL_MESSAGE}: ${code}` };
+  return { code, message: code };
 }
+
+// Code of the legacy fixture's 403 forbidden and 409 conflict error-map entries.
+const REJECTION_ENVELOPE_CODE = LEGACY_ERROR_MAP.authorization.code;
 
 /** Outcome of one transition request. */
 export type TransitionDecision<S extends string, R extends string> =
@@ -94,7 +94,7 @@ export function transitionErrorEnvelope(rejection: TransitionRejection, ctx: Env
   return buildEnvelope({
     method: ctx.method,
     params: ctx.params,
-    error: { code: rejection.error.code, message: rejection.error.message },
+    error: { code: REJECTION_ENVELOPE_CODE, message: rejection.error.message },
   });
 }
 
