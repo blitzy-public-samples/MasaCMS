@@ -96,11 +96,15 @@ The ColdFusion process also reads these variables on its start command:
 
 ### `seed.cfm`
 
-- `POST /legacy-fixtures/cfml/seed.cfm?part=<part>[&offset=<n>][&limit=<n>][&fixtures=false]`, with a dataset part file as the JSON body (`rows`, `offset`, and `credentials` for parts that need them).
+- `POST /legacy-fixtures/cfml/seed.cfm?part=<part>[&offset=<n>][&limit=<n>][&businessDate=<yyyy-mm-dd>][&fixtures=false]`, with a dataset part file as the JSON body (`rows`, `offset`, and `credentials` for parts that need them).
 - Only an S2 session from loopback is admitted (otherwise 401); any other method answers 400 `invalidMethodCall`.
-- Masa parts `sites`, `groups`, `users`, `memberships`, `categories`, `content`, `files` and `oauthClients` go through Masa managers. Fixture parts `fixtures:<schema>.<table>` go through the module's `usp_seed_*` procedure.
+- Masa parts `sites`, `groups`, `users`, `memberships`, `categories`, `content`, `files` and `oauthClients` (bare or `masa.<name>`) go through Masa managers. Fixture parts `fixtures.<schema>.<table>` or `fixtures:<schema>.<table>` go through the module's `usp_seed_*` procedure.
+- `offset` is a dataset-wide row index, as in `manifest.json` and the part file. It defaults to the body's `offset`; one outside the part answers 400 `invalidParameters`. `limit` defaults to the rest of the part.
+- Finance parts (`Program_<id>.finance_record`, `finance_record_version`, `finance_attachment`) require `businessDate`, the dataset's `businessDate` in `manifest.json` (`2026-06-30` with the committed `seed.config.json`). It is the `@now` of the `usp_finance_rollup` run that follows in the same transaction. Missing or malformed, it answers 400 `invalidParameters`. Other parts ignore it.
+- Example, the second of `tenant-a`'s three 1,000-row finance-record parts (`chunkRows: 1000`): `POST /legacy-fixtures/cfml/seed.cfm?part=fixtures.Program_1.finance_record&offset=1000&limit=1000&businessDate=2026-06-30`, with that part file (`array: fixtures.Program_1.finance_record`, `offset: 1000`) as the body.
 - With `fixtures=false`, fixture parts answer 400 `badRequest`.
 - The response reports `{part, offset, limit, total, inserted}`, so a repeated part inserts nothing new. Credentials are never echoed.
+- `harness/repro/lib/seed-legacy.mjs` posts every `manifest.json` part in order (fixture parts are skipped under `--fixtures false`), with `part`, `offset`, `limit`, `businessDate` from `manifest.json`, and `fixtures`.
 
 ## Routes
 
@@ -187,7 +191,7 @@ The callbacks authorise by the per-schedule task token, whose SHA-256 is stored 
 | GET | `esignature/requests` | `esignature.signer` | — | Paged, without document bytes |
 | POST | `esignature/requests` | `esignature.signer` | `usp_audit_append` | `documentName`, `documentBase64`, `signerUserId` |
 | POST | `esignature/requests/{id}/sign` | `esignature.signer`, and the request's signer | `usp_audit_append` | `typedName`; 409 `already-signed` |
-| GET | `esignature/requests/{id}/audit` | `esignature.auditor`, or the request's signer | — | Hash chain ordered by `seq` |
+| GET | `esignature/requests/{id}/audit` | `esignature.auditor`, or `esignature.signer` held by the request's signer | — | Hash chain ordered by `seq` |
 | GET | `esignature/requests/{id}/verify` | as audit | — | Recomputes the stored chain: `{valid, entries, brokenat}` |
 | POST | `esignature/requests/{id}/verify` | as audit | — | `entries`: verifies a supplied copy (tamper detection) |
 
@@ -233,7 +237,7 @@ There is no `esignature/requests/{id}` read route; it answers 404.
 
 `seed/` generates the one dataset both sides start from (AAP 0.8.6): legacy through `cfml/seed.cfm`, the target only through backfill or `--direct`.
 
-- `seed/seed.config.json` fixes `seed: 20260601` and `businessDate: 2026-06-30`, which is the `asOf` date of every scenario.
+- `seed/seed.config.json` fixes `seed: 20260601` and `businessDate: 2026-06-30`, the default `${asOf}` of golden scenarios. A binding named `asOf` or a step's literal `asOf` overrides it; GS-TS-04, for example, also requests `2026-09-30` and `2026-03-31`.
 - `reserved.rehearsal` reserves 10 `tenant-a` persons with open timesheet days and the usernames `rh-create-01` to `rh-create-10`. Only GS-PE-RH-01/02/03 may use them; `harness/src/golden/coverage.ts` fails on any other use.
 
 | Site (tenant) | Pools | Size |
@@ -249,7 +253,10 @@ Commands, from `seed/`:
 |---|---|
 | `npm ci && npm run build && npm test` | Install (the `postinstall` builds `../../platform`), compile, run the tests with coverage |
 | `npm run generate` | Writes `dataset.json`, its part files and `manifest.json` to `${OPT2_STATE_DIR}/seed/` (`--out` overrides), plus `credentials.json` there and in `${OPT2_STATE_DIR}/secrets/seed-credentials.json` |
-| `npm run generate:direct` | `--direct`: sends the dataset already generated to the owning services' `/internal/v1/migration/apply` (people, timesheets, finance, surveys, reporting, communications, e-signature) through `OPT2_SERVICE_URLS`, as the migration workload |
+| `npm run generate:direct` | `--direct`: sends the `dataset.json` that `npm run generate` wrote (same `--out` default) to the owning services' `/internal/v1/migration/apply` through `OPT2_SERVICE_URLS`, signed as the `migration` workload with the local key pair. The owning services must be running |
 
 - The dataset is identical on every run; credentials are random per run, written with mode 0600 and never committed.
-- Both commands refuse an output directory inside the checkout.
+- `OPT2_SERVICE_URLS` is a JSON object of owning service name to base URL, with the keys `people`, `timesheets`, `finance`, `surveys`, `reporting`, `communications` and `e-signature`. With the ports in `harness/repro/ports.env`: `{"people":"http://127.0.0.1:8112","timesheets":"http://127.0.0.1:8118","finance":"http://127.0.0.1:8119","surveys":"http://127.0.0.1:8117","reporting":"http://127.0.0.1:8116","communications":"http://127.0.0.1:8115","e-signature":"http://127.0.0.1:8120"}`. A service missing from the map fails its first batch.
+- The local key pair is `${OPT2_STATE_DIR}/secrets/token-signing-private.pem` and `token-signing-public.pem`, generated by the secrets step of `harness/repro/up.sh`. `npm run generate` writes credentials only, never these keys; without them direct mode fails before its first batch.
+- Both commands refuse an output directory inside the checkout; `generate` also refuses an `OPT2_STATE_DIR` inside it.
+- Exit status: 0 when done; 1 when a run fails (in direct mode a missing or altered dataset, a missing key, or an owner's error answer or transport failure, which stops the run at that batch); 2 on a usage error, a missing or invalid `OPT2_SERVICE_URLS`, or a refused directory.

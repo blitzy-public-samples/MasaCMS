@@ -98,7 +98,7 @@ export interface SecretStore {
 export interface SeedStore {
   /** Row (or reserved scalar) `ref` selects, its `where` values already resolved; throws GoldenConfigError. */
   select(ref: SeedRef): unknown;
-  /** The dataset's `businessDate`, the `asOf` of every scenario. */
+  /** The dataset's `businessDate`, the fallback for `${asOf}` when no binding supplies it. */
   businessDate(): string;
 }
 
