@@ -1533,7 +1533,7 @@ components:
           type: string
           minLength: 1
           maxLength: 255
-          pattern: '\S'
+          pattern: '[^\p{Z}\p{Cf}\p{Cc}]'
         siteid:
           type: string
           minLength: 1

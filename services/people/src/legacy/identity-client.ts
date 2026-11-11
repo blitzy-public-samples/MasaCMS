@@ -76,49 +76,6 @@ export interface ActingUser {
   lname: string;
 }
 
-/** A read people needs that identity's contract does not provide, with the legacy code that performed it. */
-export interface IdentityReadGap {
-  method: string;
-  legacySource: string;
-  reason: string;
-}
-
-const GAPS = {
-  readAccount: {
-    method: 'readAccount',
-    legacySource: 'core/mura/user/userDAO.cfc:78',
-    reason: "identity's contract has no read of a Type=2 account's account, credential and login-state columns",
-  },
-  readAccounts: {
-    method: 'readAccounts',
-    legacySource: 'core/mura/user/userGateway.cfc:124-164',
-    reason: "identity's contract has no batch read of Type=2 accounts for the user list, search and download screens",
-  },
-  siteGroups: {
-    method: 'siteGroups',
-    legacySource: 'core/mura/user/userGateway.cfc:594-622',
-    reason:
-      "identity lists site groups only per user (listUserMemberships, without SiteID, isPublic or Perm) or as the cusers.list projection (listGroups, which reads ispublic as 1 for callers that are neither S2 nor site admin)",
-  },
-  photoFileExt: {
-    method: 'photoFileExt',
-    legacySource: 'core/mura/user/userDAO.cfc:78',
-    reason: "tfiles.fileEXT belongs to strategies-content, which people's contract does not call (x-opt2-calls: identity)",
-  },
-} as const satisfies Record<string, IdentityReadGap>;
-
-/** The reads identity's contract does not back: `photoFileExt` answers `''`, every other listed method throws IdentityReadNotProvidedError. */
-export const IDENTITY_READ_GAPS: readonly IdentityReadGap[] = Object.freeze(Object.values(GAPS));
-
-/** A read identity's contract does not provide; renders as the legacy 503 rather than reaching identity's data any other way. */
-export class IdentityReadNotProvidedError extends ServiceUnavailableError {
-  override readonly name: string = 'IdentityReadNotProvidedError';
-
-  constructor(readonly gap: IdentityReadGap) {
-    super(IDENTITY_SERVICE, Object.assign(new Error(gap.reason), { code: `${gap.method} not provided` }));
-  }
-}
-
 /** People's calls into identity. */
 export interface IdentityClient {
   /** `prepareAccountOperation`: validates and records the account part and closes the user. */
@@ -133,15 +90,15 @@ export interface IdentityClient {
   revert(userId: string, operationId: string): Promise<void>;
   /** `getAccountOperation`: the operation's state; undefined when identity never prepared it. */
   operationState(userId: string, operationId: string): Promise<AccountOperationState | undefined>;
-  /** The user's account columns; undefined for a missing user. */
+  /** `getAccount`: the user's account columns; undefined for a missing user, a group or a `pending` account. */
   readAccount(userId: string): Promise<AccountView | undefined>;
-  /** The account columns of many users in one call, keyed by user id. */
+  /** `lookupAccounts`: the account columns of many users in one call, keyed by user id; an empty list makes no call. */
   readAccounts(userIds: readonly string[]): Promise<Map<string, AccountView>>;
   /** `listUserMemberships`: the site's groups and the user's memberships; `siteId` defaults to the token's site. */
   userMemberships(userId: string, siteId?: string): Promise<UserMemberships>;
   /** Ids of the groups the user belongs to, in identity's `readMembershipIDs` order. */
   membershipGroupIds(userId: string): Promise<string[]>;
-  /** The groups of the site's private (`isPublic` 0) or public (1) user pool. */
+  /** `listSiteGroups`: the groups of the site's private (`isPublic` 0) or public (1) user pool, in identity's order. */
   siteGroups(siteId: string, isPublic: number): Promise<GroupSummary[]>;
   /** `listGroups`: the `cusers.list` group rows, by `Perm` descending, then group name. */
   userGroups(siteId: string, isPublic: number): Promise<UserGroupRow[]>;
@@ -165,13 +122,17 @@ const OPS = {
   abort: { operationId: 'abortAccountOperation', method: 'POST', path: `${OPERATIONS_PATH}:abort` },
   finish: { operationId: 'finishAccountOperation', method: 'POST', path: `${OPERATIONS_PATH}:finish` },
   revert: { operationId: 'revertAccountOperation', method: 'POST', path: `${OPERATIONS_PATH}:revert` },
+  readAccount: { operationId: 'getAccount', method: 'GET', path: '/internal/v1/accounts/{userId}' },
+  readAccounts: { operationId: 'lookupAccounts', method: 'POST', path: '/internal/v1/accounts:lookup' },
   userMemberships: { operationId: 'listUserMemberships', method: 'GET', path: '/v1/users/{userId}/memberships' },
+  siteGroups: { operationId: 'listSiteGroups', method: 'GET', path: '/internal/v1/groups' },
   userGroups: { operationId: 'listGroups', method: 'GET', path: '/v1/groups' },
   currentSession: { operationId: 'getCurrentSession', method: 'GET', path: '/v1/sessions/current' },
 } as const satisfies Record<string, IdentityOperation>;
 
 const HTTP_OK = 200;
 const HTTP_BAD_REQUEST = 400;
+const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
 
 /** The legacy-shaped 503 for an identity answer outside the operation's handled statuses. */
@@ -201,6 +162,30 @@ function isLegacyErrors(body: unknown): body is LegacyErrors {
 /** Whether a step's 409 reports an operation identity never prepared, so there is nothing to undo. */
 function neverPrepared(response: ServiceResponse<AccountOperation | undefined>): boolean {
   return response.status === HTTP_CONFLICT && response.body?.state === 'unknown';
+}
+
+/** Identity's account record as people's account view. */
+function accountView(record: Schemas['AccountRecord']): AccountView {
+  return {
+    userId: record.UserID,
+    siteId: record.SiteID,
+    username: record.UserName,
+    s2: record.S2,
+    isPublic: record.isPublic,
+    inactive: record.InActive,
+    type: record.Type,
+    perm: record.Perm,
+    admin: record.Admin,
+    remoteId: record.remoteID,
+    lastLogin: record.LastLogin,
+    passwordCreated: record.PasswordCreated,
+    tablist: record.tablist,
+  };
+}
+
+/** One `listSiteGroups` row as a group summary. */
+function groupSummary(group: Schemas['SiteGroup']): GroupSummary {
+  return { groupId: group.UserID, groupName: group.GroupName, siteId: group.SiteID, isPublic: group.isPublic, perm: group.Perm };
 }
 
 function userGroupRow(item: Schemas['GroupListItem']): UserGroupRow {
@@ -281,9 +266,22 @@ export function createIdentityClient(client: ServiceClient): IdentityClient {
       return operation.state === 'unknown' ? undefined : operation.state;
     },
 
-    readAccount: () => Promise.reject(new IdentityReadNotProvidedError(GAPS.readAccount)),
+    async readAccount(userId) {
+      const op = OPS.readAccount;
+      const response = await send<Schemas['AccountRecord']>(op, fillPath(op.path, userId));
+      if (response.status === HTTP_NOT_FOUND) return undefined;
+      return accountView(okBody(op, response));
+    },
 
-    readAccounts: () => Promise.reject(new IdentityReadNotProvidedError(GAPS.readAccounts)),
+    async readAccounts(userIds) {
+      const accounts = new Map<string, AccountView>();
+      const lookup: Schemas['AccountLookupRequest'] = { userIds: [...new Set(userIds)] };
+      if (lookup.userIds.length === 0) return accounts;
+      const op = OPS.readAccounts;
+      const { items } = okBody(op, await send<Schemas['AccountList']>(op, op.path, { json: lookup }));
+      for (const record of items) accounts.set(record.UserID, accountView(record));
+      return accounts;
+    },
 
     userMemberships,
 
@@ -291,7 +289,11 @@ export function createIdentityClient(client: ServiceClient): IdentityClient {
       return (await userMemberships(userId)).groupIds;
     },
 
-    siteGroups: () => Promise.reject(new IdentityReadNotProvidedError(GAPS.siteGroups)),
+    async siteGroups(siteId, isPublic) {
+      const op = OPS.siteGroups;
+      const query = { siteid: siteId, ispublic: String(isPublic) };
+      return okBody(op, await send<Schemas['SiteGroupList']>(op, op.path, { query })).items.map(groupSummary);
+    },
 
     async userGroups(siteId, isPublic) {
       const op = OPS.userGroups;
@@ -307,10 +309,4 @@ export function createIdentityClient(client: ServiceClient): IdentityClient {
       return { userId: current.user.userID, fname: current.user.fname ?? '', lname: current.user.lname ?? '' };
     },
   };
-}
-
-// tfiles.fileEXT is strategies-content data, which people does not call; '' is legacy's value for a user without a photo.
-/** The extension of a user's photo file, which people cannot read; always `''` (see IDENTITY_READ_GAPS). */
-export async function photoFileExt(_photoFileId?: string | null): Promise<string> {
-  return '';
 }

@@ -318,6 +318,14 @@ export type AccountOperationPatch = Partial<Pick<AccountOperationRow, 'pending_c
 /** Lookup of an open operation by user id, by username (case-insensitive), or either. */
 export type OpenOperationLookup = { userId: string; username?: string | null } | { userId?: string | null; username: string };
 
+/** A Type=2 account with its `passwordcreated` and `lastlogin`; `closed` while an account operation on the user is open. */
+export type AccountRecordRow = Omit<UserAccountRow, 'tenant_id'> &
+  Pick<CredentialRow, 'passwordcreated'> &
+  Pick<LoginStateRow, 'lastlogin'> & { closed: boolean };
+
+/** One group of a user pool as `getPrivateGroups`/`getPublicGroups` list it. */
+export type PoolGroupRow = Pick<GroupAccountRow, 'userid' | 'groupname' | 'perm'> & { siteid: string; ispublic: 0 | 1 };
+
 /** A person-contact projection row to store; `updated_at` defaults to now. */
 export type PersonContactInput = Omit<PersonContactRow, 'tenant_id' | 'aggregate_version' | 'updated_at'> & {
   aggregate_version: number | string;
@@ -335,6 +343,8 @@ export interface IdentityRepository extends Repository {
   findAccountByUsername(tx: TenantTx, username: string, poolSiteId?: string): Promise<UserAccountRow | null>;
   /** The account `userId`; a `pending` account only with `includePending`. */
   findAccountById(tx: TenantTx, userId: string, opts?: { includePending?: boolean }): Promise<UserAccountRow | null>;
+  /** The Type=2 accounts among `userIds`, pending ones included, with their credential and login-state columns, by userid, in one statement. */
+  readAccountRecords(tx: TenantTx, userIds: readonly string[]): Promise<AccountRecordRow[]>;
   /** Whether another Type=2 account, pending ones included, holds `trim(username)` [legacy: core/mura/user/userBean.cfc:411-424]. */
   isUsernameTaken(tx: TenantTx, username: string, exceptUserId: string): Promise<boolean>;
   /** Inserts an account with the DAO NULL rules. */
@@ -362,6 +372,8 @@ export interface IdentityRepository extends Repository {
   findGroupByName(tx: TenantTx, name: string, opts: { siteId: string; isPublic?: boolean }): Promise<GroupAccountRow | null>;
   /** Type=1 groups of `poolSiteId` with that visibility, by name then userid [legacy: core/mura/permission.cfc:600-621]. */
   listGroups(tx: TenantTx, poolSiteId: string, isPublic: boolean | number, opts?: { excludeAdmin?: boolean }): Promise<GroupAccountRow[]>;
+  /** Type=1 groups of `poolSiteId` with `ispublic` = `isPublic`, by Perm descending, then name [legacy: core/mura/user/userGateway.cfc:594-622]. */
+  listPoolGroups(tx: TenantTx, poolSiteId: string, isPublic: 0 | 1): Promise<PoolGroupRow[]>;
   /** Inserts a group as `userDAO.create` does [legacy: core/mura/user/userDAO.cfc:300-346]. */
   insertGroup(tx: TenantTx, input: GroupInput, actor: AuditActor | null, ctx?: WriteContext): Promise<GroupAccountRow>;
   /** Updates a group as `userDAO.update` does and adds 1 to `row_version` [legacy: core/mura/user/userDAO.cfc:404-456]; null when absent. */
@@ -588,6 +600,8 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
   const base = createRepository({ owner: OWNER, schema, tables: OWNED_TABLES, clock });
   const name = (table: { table: string }): string => qualified(schema, table.table);
   const userAccount = name(USER_ACCOUNT);
+  const credential = name(CREDENTIAL);
+  const loginState = name(LOGIN_STATE);
   const groupAccount = name(GROUP_ACCOUNT);
   const membership = name(MEMBERSHIP);
   const permission = name(PERMISSION);
@@ -615,6 +629,14 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
   const usernameHolderSql =
     `SELECT userid FROM ${userAccount} WHERE tenant_id = $1 AND type = 2` +
     ' AND lower(rtrim(username)) = lower(rtrim($2)) AND userid <> $3 LIMIT 1';
+  // One statement, so the open-operation flag and the column values come from the same snapshot.
+  const accountRecordsSql =
+    'SELECT u.userid, u.username, u.type, u.admin, u.s2, u.perm, u.inactive, u.ispublic, u.siteid, u.remoteid, u.tablist, u.opt2_state,' +
+    ' c.passwordcreated, l.lastlogin,' +
+    ` EXISTS (SELECT 1 FROM ${accountOperation} o WHERE o.tenant_id = u.tenant_id AND o.user_id = u.userid AND o.state = ANY($3::text[])) AS closed` +
+    ` FROM ${userAccount} u LEFT JOIN ${credential} c ON c.tenant_id = u.tenant_id AND c.userid = u.userid` +
+    ` LEFT JOIN ${loginState} l ON l.tenant_id = u.tenant_id AND l.userid = u.userid` +
+    ' WHERE u.tenant_id = $1 AND u.type = 2 AND u.userid = ANY($2::text[]) ORDER BY u.userid';
   const groupsByIdsSql = `SELECT * FROM ${groupAccount} WHERE tenant_id = $1 AND userid = ANY($2::text[]) ORDER BY userid`;
   const groupByNameSql =
     `SELECT * FROM ${groupAccount} WHERE tenant_id = $1 AND type = 1 AND lower(rtrim(groupname)) = lower(rtrim($2))` +
@@ -623,6 +645,10 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
   const listGroupsSql =
     `SELECT * FROM ${groupAccount} WHERE tenant_id = $1 AND type = 1 AND ispublic = $2 AND siteid = $3` +
     " AND (NOT $4::boolean OR lower(rtrim(groupname)) <> 'admin') ORDER BY lower(groupname) ASC NULLS FIRST, userid";
+  // SQL Server sorts NULL lowest: last under Perm DESC, first under GroupName ASC.
+  const poolGroupsSql =
+    `SELECT userid, groupname, siteid, ispublic, perm FROM ${groupAccount} WHERE tenant_id = $1 AND type = 1 AND ispublic = $2 AND siteid = $3` +
+    ' ORDER BY perm DESC NULLS LAST, lower(groupname) ASC NULLS FIRST, userid';
   const lockGroupSql = `SELECT * FROM ${groupAccount} WHERE tenant_id = $1 AND userid = $2 FOR UPDATE`;
   const addressesSql = `SELECT * FROM ${address} WHERE tenant_id = $1 AND userid = $2 ORDER BY isprimary DESC NULLS LAST, addressid`;
   const lockAddressIdsSql = `SELECT addressid FROM ${address} WHERE tenant_id = $1 AND userid = $2 ORDER BY addressid FOR UPDATE`;
@@ -745,6 +771,11 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     return row !== null && (row.opt2_state === 'active' || opts.includePending === true) ? row : null;
   }
 
+  function readAccountRecords(tx: TenantTx, userIds: readonly string[]): Promise<AccountRecordRow[]> {
+    const units = [USER_ACCOUNT.unit, CREDENTIAL.unit, LOGIN_STATE.unit];
+    return readUnits<AccountRecordRow>(tx, units, accountRecordsSql, [tx.tenantId, [...userIds], [...OPEN_OPERATION_STATES]]);
+  }
+
   async function isUsernameTaken(tx: TenantTx, username: string, exceptUserId: string): Promise<boolean> {
     const holders = await readUnits(tx, USER_ACCOUNT.unit, usernameHolderSql, [tx.tenantId, cfTrim(username), cfTrim(exceptUserId)]);
     return holders.length > 0;
@@ -835,6 +866,10 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
   ): Promise<GroupAccountRow[]> {
     const params = [tx.tenantId, flag(isPublic) ? 1 : 0, poolSiteId, opts.excludeAdmin === true];
     return readUnits<GroupAccountRow>(tx, GROUP_ACCOUNT.unit, listGroupsSql, params);
+  }
+
+  function listPoolGroups(tx: TenantTx, poolSiteId: string, isPublic: 0 | 1): Promise<PoolGroupRow[]> {
+    return readUnits<PoolGroupRow>(tx, GROUP_ACCOUNT.unit, poolGroupsSql, [tx.tenantId, isPublic, poolSiteId]);
   }
 
   /** The person contact naming an actor that has no login snapshot, read in this transaction's tenant. */
@@ -1567,6 +1602,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     findAccountsByUsername,
     findAccountByUsername,
     findAccountById,
+    readAccountRecords,
     isUsernameTaken,
     insertAccount,
     updateAccount,
@@ -1580,6 +1616,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     findGroupsByIds,
     findGroupByName,
     listGroups,
+    listPoolGroups,
     insertGroup,
     updateGroup,
     deleteGroupRow,

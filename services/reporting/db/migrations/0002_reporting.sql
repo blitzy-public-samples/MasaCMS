@@ -35,6 +35,8 @@ CREATE TABLE reporting.export_job (
   PRIMARY KEY (tenant_id, job_id)
 );
 CREATE INDEX export_job_state_idx ON reporting.export_job (tenant_id, state);
+CREATE INDEX export_job_created_idx ON reporting.export_job (tenant_id, created, job_id COLLATE "C");
+CREATE INDEX export_job_object_idx ON reporting.export_job (tenant_id, job_id COLLATE "C") WHERE object_key IS NOT NULL;
 ALTER TABLE reporting.export_job ENABLE ROW LEVEL SECURITY; ALTER TABLE reporting.export_job FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON reporting.export_job
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)

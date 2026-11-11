@@ -630,6 +630,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
+        "communications.scheduled_task",
         "communications.trash"
       ],
       "disposition": "legacy-served"
@@ -4235,6 +4236,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
+        "communications.scheduled_task",
         "communications.trash"
       ],
       "disposition": "legacy-served"
@@ -4255,6 +4257,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
+        "communications.scheduled_task",
         "communications.trash"
       ],
       "disposition": "legacy-served"
@@ -4275,6 +4278,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
+        "communications.scheduled_task",
         "communications.trash"
       ],
       "disposition": "legacy-served"
@@ -4295,6 +4299,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
+        "communications.scheduled_task",
         "communications.trash"
       ],
       "disposition": "legacy-served"
@@ -4315,6 +4320,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
+        "communications.scheduled_task",
         "communications.trash"
       ],
       "disposition": "legacy-served"
@@ -4335,6 +4341,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
+        "communications.scheduled_task",
         "communications.trash"
       ],
       "disposition": "legacy-served"
@@ -4355,6 +4362,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
+        "communications.scheduled_task",
         "communications.trash"
       ],
       "disposition": "legacy-served"
@@ -5458,6 +5466,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
+        "communications.scheduled_task",
         "communications.trash"
       ],
       "disposition": "legacy-served"
@@ -5478,6 +5487,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
+        "communications.scheduled_task",
         "communications.trash"
       ],
       "disposition": "legacy-served"
@@ -5498,6 +5508,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
+        "communications.scheduled_task",
         "communications.trash"
       ],
       "disposition": "legacy-served"
@@ -5518,6 +5529,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
+        "communications.scheduled_task",
         "communications.trash"
       ],
       "disposition": "legacy-served"
@@ -15475,6 +15487,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
+        "communications.scheduled_task",
         "communications.trash"
       ],
       "disposition": "carry"
@@ -15495,6 +15508,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
+        "communications.scheduled_task",
         "communications.trash"
       ],
       "disposition": "carry"
@@ -15528,6 +15542,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
+        "communications.scheduled_task",
         "communications.trash"
       ],
       "disposition": "carry"
@@ -16252,6 +16267,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
+        "communications.scheduled_task",
         "communications.trash"
       ],
       "disposition": "carry"
@@ -16433,6 +16449,7 @@
         "communications.mailing_list_member",
         "communications.message",
         "communications.message_template",
+        "communications.scheduled_task",
         "communications.trash"
       ],
       "disposition": "legacy-served"

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { SeedRef, SessionSpec } from '../../src/golden/catalogue.js';
+import { loadCatalogue, scenarioById, type SeedRef, type SessionSpec } from '../../src/golden/catalogue.js';
 import { GoldenConfigError, MissingSecretError } from '../../src/golden/errors.js';
 import {
   DEFAULT_SESSION,
@@ -10,6 +10,7 @@ import {
   GENERATED_SECRETS_FILE,
   SEED_CONFIG_PATH,
   SEED_CREDENTIALS_FILE,
+  appReloadKey,
   createScenarioContext,
   loadSecretStore,
   loadSeedStore,
@@ -24,6 +25,7 @@ import {
   type SecretStore,
   type SeedStore,
 } from '../../src/golden/session.js';
+import { inventoryRouteKeyForRequest } from '../../src/inventory/route-keys.js';
 import type { FetchLike } from '../../src/lib/http.js';
 import type { EnvLike } from '../../src/lib/paths.js';
 
@@ -41,6 +43,13 @@ const SHARED_PW = 'FIXTURE-PW-GRACE';
 const MEMBER_PW = 'FIXTURE-PW-ALAN';
 const OAUTH_CLIENT = 'FIXTURE-CLIENT-0001';
 const OAUTH_SECRET = 'FIXTURE-OAUTH-SECRET';
+const RELOAD_KEY = 'fixture-reload-key';
+// Synthetic secrets holding URL-reserved and non-ASCII characters, with their Java URLEncoder forms.
+const RESERVED_PW = 'FIXTURE pw&=#%+ü';
+const RESERVED_PW_ENCODED = 'FIXTURE+pw%26%3D%23%25%2B%C3%BC';
+const RESERVED_KEY = 'fixture key&=#%+/?ü';
+const RESERVED_KEY_ENCODED = 'fixture+key%26%3D%23%25%2B%2F%3F%C3%BC';
+const MASK = '<secret>';
 const BUSINESS_DATE = '2026-03-02';
 const NO_LOGIN: SessionSpec = { login: 'none', via: 'admin' };
 const GENERATED_VALUE = /^[A-Za-z0-9_-]{24}a1A$/;
@@ -158,6 +167,15 @@ function thrown(fn: () => unknown): unknown {
     return err;
   }
   throw new Error('expected a throw');
+}
+
+/** Message, stack and MissingSecretError placeholder of `err` and of every cause below it. */
+function errorText(err: unknown): string {
+  const parts: string[] = [];
+  for (let e: unknown = err; e instanceof Error; e = e.cause) {
+    parts.push(e.message, e.stack ?? '', e instanceof MissingSecretError ? e.placeholder : '');
+  }
+  return parts.join('\n');
 }
 
 interface Call {
@@ -385,7 +403,7 @@ describe('loadSecretStore', () => {
       expect(err).toMatchObject({
         message:
           `unknown secret placeholder \${secret:${name}}; ` +
-          'expected secret:admin, qa_editor, seed:<username>, oauth:<clientId> or generated:<name>',
+          'expected secret:admin, qa_editor, appreload, seed:<username>, oauth:<clientId> or generated:<name>',
       });
     },
   );
@@ -502,6 +520,34 @@ describe('loadSecretStore', () => {
     store.secret(`oauth:${OAUTH_CLIENT}`);
     store.secret('admin');
     expect(store.values()).toEqual([ADMIN_PASSWORD, OAUTH_SECRET]);
+  });
+
+  it.each<[string, string | undefined, string, string[]]>([
+    ['configured', RELOAD_KEY, RELOAD_KEY, [RELOAD_KEY]],
+    ['unset', undefined, 'appreload', []],
+    ['empty', '', 'appreload', []],
+  ])(
+    'resolves appreload with MURA_APPRELOADKEY %s to the effective key, listed only when configured',
+    (_label, configured, key, listed) => {
+      const vars = { ...env, MURA_APPRELOADKEY: configured };
+      const store = loadSecretStore(vars);
+      expect(appReloadKey(vars)).toBe(key);
+      expect(store.secret('appreload')).toBe(key);
+      store.secret('admin');
+      expect(store.values()).toEqual([...listed, ADMIN_PASSWORD]);
+    },
+  );
+
+  it.each<[string, EnvLike, new (...args: never[]) => Error]>([
+    ['vault:FIXTURE-KEY', {}, GoldenConfigError],
+    ['admin', { MURA_ADMIN_PASSWORD: '' }, MissingSecretError],
+    [`seed:${MEMBER}`, {}, MissingSecretError],
+  ])('keeps a resolved reload key out of the error for secret %s', (name, vars, type) => {
+    const store = loadSecretStore({ ...env, ...vars, MURA_APPRELOADKEY: RELOAD_KEY });
+    expect(store.secret('appreload')).toBe(RELOAD_KEY);
+    const err = thrown(() => store.secret(name));
+    expect(err).toBeInstanceOf(type);
+    expect(`${(err as Error).message} ${JSON.stringify(err)}`).not.toContain(RELOAD_KEY);
   });
 });
 
@@ -683,6 +729,9 @@ describe('resolvePlaceholders', () => {
     ['flag=${create.data.flag}', 'flag=true'],
     ['${matrix.site}', 'tenant-a'],
     ['${asOf}', BUSINESS_DATE],
+    ['${nodash:${create-form.userid}}', 'FIXTUREUSER0009'],
+    ['p${nodash:${seed.editor.userID}}', 'pFIXTUREUSER0002'],
+    ['${nodash:no-dash-left}', 'nodashleft'],
     ['plain text', 'plain text'],
     ['cost $5 {braces} $', 'cost $5 {braces} $'],
     ['${secret:admin', '${secret:admin'],
@@ -718,6 +767,75 @@ describe('resolvePlaceholders', () => {
     });
     expect(output.when).toBe(when);
     expect(input).toEqual(snapshot);
+  });
+
+  it.each<[string, Record<string, unknown>, Record<string, unknown>]>([
+    [
+      'a dashless permission field name',
+      { 'p${nodash:${seed.editor.userID}}': 'author', chainID: '', siteid: '${seed.editor.siteID}' },
+      { pFIXTUREUSER0002: 'author', chainID: '', siteid: 'tenant-a' },
+    ],
+    [
+      'a whole-placeholder key',
+      { '${create-form.userid}': '${create.data.id}', plain: 'x' },
+      { 'FIXTURE-USER-0009': 'FIXTURE-ID-1', plain: 'x' },
+    ],
+    [
+      'keys of nested objects',
+      { form: { 'id-${matrix.site}': ['${asOf}'] }, list: [{ '${matrix.site}': 1 }] },
+      { form: { 'id-tenant-a': [BUSINESS_DATE] }, list: [{ 'tenant-a': 1 }] },
+    ],
+    ['an unclosed opener in a key as text', { '${open': 'x', '': 'y' }, { '${open': 'x', '': 'y' }],
+  ])('resolves %s, keeping key order', (_label, input, expected) => {
+    const output = resolvePlaceholders(input, resolvingContext());
+    expect(output).toEqual(expected);
+    expect(Object.keys(output)).toEqual(Object.keys(expected));
+  });
+
+  it.each<[Record<string, unknown>, string]>([
+    [
+      { 'p${nodash:${create-form.userid}}': 'author', pFIXTUREUSER0009: 'none' },
+      'keys p${nodash:${create-form.userid}} and pFIXTUREUSER0009 both resolve to pFIXTUREUSER0009',
+    ],
+    [
+      { '${matrix.site}': 'a', '${seed.editor.siteID}': 'b' },
+      'keys ${matrix.site} and ${seed.editor.siteID} both resolve to tenant-a',
+    ],
+    [{ '${create.data.none}': 'x' }, 'key ${create.data.none} does not resolve to a non-empty string'],
+    [{ '${create.data.count}': 'x' }, 'key ${create.data.count} does not resolve to a non-empty string'],
+    [{ '${seed.editor}': 'x' }, 'key ${seed.editor} does not resolve to a non-empty string'],
+    [{ '${nodash:-}': 'x' }, 'key ${nodash:-} does not resolve to a non-empty string'],
+  ])('rejects keys %j with the scenario id', (input, message) => {
+    const err = thrown(() => resolvePlaceholders({ form: input }, resolvingContext()));
+    expect(err).toBeInstanceOf(GoldenConfigError);
+    expect(err).toMatchObject({ message: `${SCENARIO}: ${message}` });
+  });
+
+  it.each([
+    ['${nodash:}', 'nodash:'],
+    ['p${nodash:${create.data.none}}', 'nodash:'],
+    ['${urlencode:}', 'urlencode:'],
+    ['/?${urlencode:${create.data.none}}', 'urlencode:'],
+  ])('rejects %s, as a value and as a key', (template, prefix) => {
+    const ctx = resolvingContext();
+    for (const value of [template, { [template]: 'x' }]) {
+      const err = thrown(() => resolvePlaceholders(value, ctx));
+      expect(err).toBeInstanceOf(GoldenConfigError);
+      expect(err).toMatchObject({ message: `${SCENARIO}: \${${prefix}} has no value` });
+    }
+  });
+
+  it.each<[string, string]>([
+    ['a&b=c#d%e f+g', 'a%26b%3Dc%23d%25e+f%2Bg'],
+    ['/?${x}', '%2F%3F%24%7Bx%7D'],
+    ['café ü', 'caf%C3%A9+%C3%BC'],
+    ['\u{1F600}', '%F0%9F%98%80'],
+    ['Az09.-*_', 'Az09.-*_'],
+  ])('encodes %j through ${urlencode:…} as legacy esapiEncode("url") does, to %j', (raw, encoded) => {
+    const ctx = resolvingContext();
+    ctx.bindings.set('value.raw', raw);
+    expect(resolvePlaceholders('/?${urlencode:${value.raw}}', ctx)).toBe(`/?${encoded}`);
+    expect(resolvePlaceholders({ 'p${urlencode:${value.raw}}': 1 }, ctx)).toEqual({ [`p${encoded}`]: 1 });
   });
 
   it('posts the same generated secret in capture and replay contexts of one run', () => {
@@ -769,6 +887,79 @@ describe('resolvePlaceholders', () => {
     expect((err as Error).cause).toBeInstanceOf(GoldenConfigError);
   });
 
+  describe('with a secret holding reserved characters', () => {
+    function maskingContext(): ScenarioContext {
+      env = { ...env, MURA_ADMIN_PASSWORD: RESERVED_PW };
+      const ctx = resolvingContext();
+      ctx.bindings.set(`echo.${RESERVED_PW}`, null);
+      return ctx;
+    }
+
+    function expectMasked(err: unknown): void {
+      expect(errorText(err)).not.toContain(RESERVED_PW);
+      expect(errorText(err)).not.toContain(RESERVED_PW_ENCODED);
+    }
+
+    it.each<[string, unknown, string]>([
+      [
+        'an unknown secret named by a secret',
+        '${secret:${secret:admin}}',
+        `unknown secret placeholder \${secret:${MASK}};`,
+      ],
+      [
+        'an unresolved placeholder naming a secret',
+        'x ${foo:${secret:admin}}',
+        `unresolved placeholder \${foo:${MASK}}`,
+      ],
+      [
+        'an unresolved placeholder naming an encoded secret',
+        '${foo:${urlencode:${secret:admin}}}',
+        `unresolved placeholder \${foo:${MASK}}`,
+      ],
+      [
+        'a key that does not resolve',
+        { password: '${secret:admin}', [`\${echo.${RESERVED_PW}}`]: 'x' },
+        `key \${echo.${MASK}} does not resolve to a non-empty string`,
+      ],
+      [
+        'a key collision',
+        { '${secret:admin}': 'a', [RESERVED_PW]: 'b' },
+        `keys \${secret:admin} and ${MASK} both resolve to ${MASK}`,
+      ],
+    ])('masks it in %s', (_label, input, message) => {
+      const err = thrown(() => resolvePlaceholders(input, maskingContext()));
+      expect(err).toBeInstanceOf(GoldenConfigError);
+      expect((err as Error).message.startsWith(`${SCENARIO}: ${message}`)).toBe(true);
+      expect((err as Error).cause).toBeUndefined();
+      expectMasked(err);
+    });
+
+    it.each([
+      ['${secret:seed:${secret:admin}}', `\${secret:seed:${MASK}}`],
+      ['${secret:oauth:${urlencode:${secret:admin}}}', `\${secret:oauth:${MASK}}`],
+    ])('masks it in the MissingSecretError placeholder of %s', (template, placeholder) => {
+      const err = thrown(() => resolvePlaceholders(template, maskingContext()));
+      const file = secretsPath(SEED_CREDENTIALS_FILE);
+      expect(err).toBeInstanceOf(MissingSecretError);
+      const message = `Secret ${placeholder} has no unique value in ${file}`;
+      expect(err).toMatchObject({ placeholder, source: file, message });
+      expectMasked(err);
+    });
+
+    it('masks it in a seedRef failure and drops the cause that quotes it', () => {
+      env = { ...env, MURA_ADMIN_PASSWORD: RESERVED_PW };
+      const file = writeSeedDataset();
+      const where = { username: '${secret:admin}' };
+      const seedRefs: SeedRef[] = [{ as: 'x', source: 'dataset', path: 'masa.users', where }];
+      const err = thrown(() => contextFor({ id: SCENARIO, seedRefs }));
+      const message = `${SCENARIO}: seedRef x: no row at index 0 among the 0 rows of masa.users matching`;
+      expect(err).toBeInstanceOf(GoldenConfigError);
+      expect(err).toMatchObject({ message: `${message} {"username":"${MASK}"}`, path: file });
+      expect((err as Error).cause).toBeUndefined();
+      expectMasked(err);
+    });
+  });
+
   it('prefixes a missing businessDate for asOf with the scenario id', () => {
     const file = writeSeedDataset({ ...DATASET, businessDate: undefined });
     const err = thrown(() => resolvePlaceholders('${asOf}', contextFor()));
@@ -795,8 +986,23 @@ describe('placeholderNames', () => {
     ]);
   });
 
+  it('lists the placeholders of object keys, each key before its value', () => {
+    const value = {
+      'p${nodash:${seed.group.groupID}}': 'author',
+      chainID: '',
+      nested: [{ '${matrix.site}': '${asOf}' }],
+    };
+    expect(placeholderNames(value)).toEqual([
+      'nodash:${seed.group.groupID}',
+      'seed.group.groupID',
+      'matrix.site',
+      'asOf',
+    ]);
+  });
+
   it.each<unknown>([
     'plain text',
+    { '${unclosed': 'text', plain: '' },
     '${unclosed',
     '${outer ${inner',
     'cost $5 {braces}',
@@ -840,4 +1046,51 @@ describe('secretValues', () => {
     expect(secretValues(ctx)).toEqual([SITE_ADMIN_PW, ADMIN_PASSWORD, OAUTH_SECRET]);
     expect(secretValues(ctx)).toEqual(ctx.secrets.values());
   });
+
+  /** Route key of a GET of `route` under legacy reload parameter `key`. */
+  async function routeKeyOf(route: string, key: string): Promise<string> {
+    const url = new URL(route, LEGACY_URL);
+    const query = Object.fromEntries(url.searchParams);
+    const req = { method: 'GET', path: url.pathname, query, headers: {} };
+    return (await inventoryRouteKeyForRequest(req, { appReloadKey: key })).key;
+  }
+
+  /** Decoded query parameter names of `route`. */
+  function queryNames(route: string): string[] {
+    return [...new URL(route, LEGACY_URL).searchParams.keys()];
+  }
+
+  it.each<[string, EnvLike, string, string, string[], boolean]>([
+    ['configured', { MURA_APPRELOADKEY: RELOAD_KEY }, RELOAD_KEY, RELOAD_KEY, [RELOAD_KEY], false],
+    [
+      'configured reserved-character',
+      { MURA_APPRELOADKEY: RESERVED_KEY },
+      RESERVED_KEY,
+      RESERVED_KEY_ENCODED,
+      [RESERVED_KEY, RESERVED_KEY_ENCODED],
+      false,
+    ],
+    ['default', {}, 'appreload', 'appreload', [], true],
+  ])(
+    'resolves the GS-PS-04 routes with the %s reload key to URL-encoded reload:application requests',
+    async (_label, vars, key, encoded, listed, literalReloads) => {
+      const scenario = scenarioById(await loadCatalogue(), 'GS-PS-04');
+      const secrets = loadSecretStore({ ...env, ...vars });
+      const seed = loadSeedStore(env);
+      const ctx = createScenarioContext(scenario, { origin: 'legacy', env, secrets, seed, fetch: fakeFetch().fetch });
+      const requested = scenario.steps.map((step) => step.route);
+      const routes = resolvePlaceholders(requested, ctx);
+
+      expect(routes).toEqual([`/?${encoded}`, `/admin/?${encoded}&reload=${encoded}`]);
+      expect(secretValues(ctx)).toEqual(listed);
+      expect(scenario.covers).toEqual(['reload:application']);
+      expect(routes.map(queryNames)).toEqual([[key], [key, 'reload']]);
+      expect(new URL(routes[1] ?? '', LEGACY_URL).searchParams.get('reload')).toBe(key);
+      expect(queryNames(`/?${key}`).includes(key)).toBe(key === encoded);
+      for (const route of routes) expect(await routeKeyOf(route, key)).toBe('reload:application');
+      expect((await routeKeyOf('/?appreload', key)) === 'reload:application').toBe(literalReloads);
+      const err = thrown(() => resolvePlaceholders('/?${secret:appreload}&${public-reload.missing}', ctx));
+      expect(err).toMatchObject({ message: 'GS-PS-04: unresolved placeholder ${public-reload.missing}' });
+    },
+  );
 });

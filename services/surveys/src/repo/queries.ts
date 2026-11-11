@@ -29,6 +29,12 @@ export interface SurveyPage {
   total: number;
 }
 
+/** One page of a survey's responses and the count of all its responses. */
+export interface SurveyResponsePage {
+  rows: SurveyResponseRow[];
+  total: number;
+}
+
 const SCHEDULE_VIEW_COLUMNS = ['schedule_id', 'survey_id', 'launch_at', 'schedule_version', 'task_name', 'created'] as const;
 const REMINDER_VIEW_COLUMNS = ['reminder_id', 'survey_id', 'offset_minutes', 'remind_at', 'task_name', 'sent_at'] as const;
 const TARGET_VIEW_COLUMNS = ['target_id', 'survey_id', 'siteid', 'group_name', 'created'] as const;
@@ -68,7 +74,8 @@ interface SchemaReads {
   readonly reminderViews: string;
   readonly targets: string;
   readonly targetViews: string;
-  readonly responses: string;
+  readonly countResponses: string;
+  readonly responsePage: string;
 }
 
 const readsBySchema = new Map<string, SchemaReads>();
@@ -90,7 +97,8 @@ function prepareReads(schema: string): SchemaReads {
     reminderViews: `SELECT ${REMINDER_VIEW_COLUMNS.join(', ')} FROM ${reminder} WHERE survey_id = $1 ${REMINDER_ORDER}`,
     targets: `SELECT * FROM ${target} WHERE survey_id = $1 ${TARGET_ORDER}`,
     targetViews: `SELECT ${TARGET_VIEW_COLUMNS.join(', ')} FROM ${target} WHERE survey_id = $1 ${TARGET_ORDER}`,
-    responses: `SELECT * FROM ${response} WHERE survey_id = $1 ORDER BY created, response_id`,
+    countResponses: `SELECT count(*)::integer AS total FROM ${response} WHERE survey_id = $1`,
+    responsePage: `SELECT * FROM ${response} WHERE survey_id = $1 ORDER BY created, response_id OFFSET $2 LIMIT $3`,
   });
 }
 
@@ -166,12 +174,21 @@ export function listTargets(tx: TenantTx, surveyId: string): Promise<SurveyTarge
   return reads.repository.read(tx, SURVEY_TARGET.unit, async () => (await tx.query<SurveyTargetRow>(reads.targets, [surveyId])).rows);
 }
 
-/** The survey's stored response rows by creation time and id, `answers` exactly as stored. */
-export function listResponses(tx: TenantTx, surveyId: string): Promise<SurveyResponseRow[]> {
+/** One page of the survey's stored responses by creation time and id, `answers` exactly as stored, with their total; omitting `page` reads every row. */
+export function listResponses(
+  tx: TenantTx,
+  surveyId: string,
+  page?: { pageIndex: number; itemsPerPage: number },
+): Promise<SurveyResponsePage> {
   const reads = readsFor(tx);
-  return reads.repository.read(
-    tx,
-    SURVEY_RESPONSE.unit,
-    async () => (await tx.query<SurveyResponseRow>(reads.responses, [surveyId])).rows,
-  );
+  return reads.repository.read(tx, SURVEY_RESPONSE.unit, async () => {
+    const counted = await tx.query<{ total: number }>(reads.countResponses, [surveyId]);
+    const total = counted.rows[0]?.total ?? 0;
+    const offset = page === undefined ? 0 : (page.pageIndex - 1) * page.itemsPerPage;
+    if (offset >= total) {
+      return { rows: [], total };
+    }
+    const { rows } = await tx.query<SurveyResponseRow>(reads.responsePage, [surveyId, offset, page?.itemsPerPage ?? null]);
+    return { rows, total };
+  });
 }

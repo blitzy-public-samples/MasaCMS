@@ -9,6 +9,7 @@ import {
   type Scenario,
 } from '../catalogue.js';
 import { GoldenConfigError } from '../errors.js';
+import { originBaseUrl, type Origin } from '../session.js';
 import { repoPath, type EnvLike } from '../../lib/paths.js';
 import { pinnedSha } from '../../lib/pin.js';
 
@@ -102,11 +103,13 @@ const routeKeyRef = z
   .string()
   .regex(/^(?:\*|[a-z][a-z0-9]*:[^\sA-Z]+)$/, 'must be * or a canonical lower-case route key <family>:<body>');
 
+const sessionOrigin = z.enum(['legacy', 'gateway']) satisfies z.ZodType<Origin>;
+
 const originsSchema = z.strictObject({
   id: ruleId,
   placeholder,
   values: nonEmptyNames,
-  defaults: z.record(z.string().regex(/^[A-Z_][A-Z0-9_]*$/, 'must be an environment variable name'), z.string().min(1)),
+  defaults: z.record(z.string().regex(/^[A-Z_][A-Z0-9_]*$/, 'must be an environment variable name'), sessionOrigin),
   hostAliases: names,
   schemes: z.array(z.enum(['http', 'https'])).min(1),
   match: z.array(z.enum(['scheme-origin', 'host-port', 'percent-encoded-host-port'])).min(1),
@@ -572,24 +575,32 @@ function describeIssues(error: z.ZodError): string {
 
 const TEMPLATE_VARIABLE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
-// Environment values win over the document's defaults; defaults may themselves name variables.
+// Environment values win; an unset variable takes the session origin its default names, as requests do.
 function resolveOrigins(origins: OriginRules, env: EnvLike, file: string): string[] {
-  const fail = (message: string, index: number): never => {
+  const fail = (message: string, index: number, cause?: unknown): never => {
     throw new GoldenConfigError(`normalise rules ${file}: origins.values.${index}: ${message}`, {
       path: pointer(file, ['origins', 'values', index]),
+      cause,
     });
   };
-  const expand = (template: string, chain: readonly string[], index: number): string =>
+  const sessionBaseUrl = (origin: Origin, name: string, index: number): string => {
+    try {
+      return originBaseUrl(origin, env);
+    } catch (err) {
+      if (!(err instanceof GoldenConfigError)) throw err;
+      return fail(`\${${name}} is not set and its ${origin} session origin is unresolved: ${err.message}`, index, err);
+    }
+  };
+  const expand = (template: string, index: number): string =>
     template.replace(TEMPLATE_VARIABLE, (_match, name: string) => {
-      if (chain.includes(name)) return fail(`\${${name}} refers to itself through ${[...chain, name].join(' -> ')}`, index);
       const fromEnv = env[name];
       if (fromEnv !== undefined && fromEnv !== '') return fromEnv;
       const fallback = origins.defaults[name];
       if (fallback === undefined) return fail(`\${${name}} is not set and has no default`, index);
-      return expand(fallback, [...chain, name], index);
+      return sessionBaseUrl(fallback, name, index);
     });
   return origins.values.map((template, index) => {
-    const value = expand(template, [], index);
+    const value = expand(template, index);
     let url: URL | undefined;
     try {
       url = new URL(value);

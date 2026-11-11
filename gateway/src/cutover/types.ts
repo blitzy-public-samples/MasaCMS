@@ -303,6 +303,8 @@ export interface OwnershipUnit {
   readonly unit: string;
   readonly owner: string;
   readonly legacyTables: readonly string[];
+  /** A target-only unit's group anchor: it takes the group of this unit and never names one. */
+  readonly joinsUnit?: string;
 }
 
 /** A target table a legacy table maps to, with the rows and columns it owns. */

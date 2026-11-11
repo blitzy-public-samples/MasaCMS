@@ -1,5 +1,5 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Surveys read helpers against a throwaway `surveys` schema: fixture order, paging and columns, tenant isolation and window gates. */
+/** Surveys read helpers against a throwaway `surveys` schema: fixture order, paging, columns and list indexes, tenant isolation and window gates. */
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { UnitReadBlockedError, ensureUnitGates, withGatedTenant } from '@opt2/platform/migration-kit';
@@ -63,6 +63,15 @@ describe.skipIf(!available)('surveys queries against PostgreSQL', () => {
 
   function inTenant<T>(tenant: string, fn: (tx: TenantTx) => Promise<T>): Promise<T> {
     return handle.app.withTenant(tenant, fn);
+  }
+
+  /** Wraps `tx` so every statement text it runs is appended to `seen`. */
+  function recording(tx: TenantTx, seen: string[]): TenantTx {
+    const query = ((text: string, values?: unknown[]) => {
+      seen.push(text);
+      return tx.query(text, values);
+    }) as TenantTx['query'];
+    return { ...tx, query };
   }
 
   async function insert(tx: TenantTx, table: string, row: Record<string, unknown>): Promise<void> {
@@ -161,6 +170,111 @@ describe.skipIf(!available)('surveys queries against PostgreSQL', () => {
     });
   });
 
+  describe('listResponses', () => {
+    const surveyId = cfId(70);
+    const isPageRead = (text: string): boolean => /\bsurvey_response\b.*\bOFFSET\b/.test(text);
+
+    beforeEach(async () => {
+      await inTenant(tenantA, async (tx) => {
+        for (const [responseId, responseSurvey, minutes] of [
+          [63, surveyId, 5],
+          [61, surveyId, 5],
+          [64, surveyId, 1],
+          [62, surveyId, 9],
+          [65, cfId(71), 0],
+        ] as const) {
+          await insert(tx, 'survey_response', {
+            response_id: cfId(responseId),
+            survey_id: responseSurvey,
+            siteid: 'tenant-a',
+            respondentsiteid: 'tenant-a',
+            respondent_user_id: USER_ID,
+            answers: ANSWERS,
+            created: at(minutes),
+          });
+        }
+      });
+    });
+
+    it.each<[string, { pageIndex: number; itemsPerPage: number } | undefined, number[]]>([
+      ['every row unpaged', undefined, [64, 61, 63, 62]],
+      ['the first page', { pageIndex: 1, itemsPerPage: 2 }, [64, 61]],
+      ['the second page', { pageIndex: 2, itemsPerPage: 2 }, [63, 62]],
+      ['a short last page', { pageIndex: 2, itemsPerPage: 3 }, [62]],
+      ['no rows for a page starting at the total', { pageIndex: 3, itemsPerPage: 2 }, []],
+      ['no rows for a page starting after the total', { pageIndex: 6, itemsPerPage: 1 }, []],
+    ])('reads %s by creation time and id with the survey total', async (_name, page, expected) => {
+      const seen: string[] = [];
+      const result = await inTenant(tenantA, (tx) => listResponses(recording(tx, seen), surveyId, page));
+
+      expect(result.total).toBe(4);
+      expect(result.rows.map((row) => row.response_id)).toEqual(expected.map(cfId));
+      expect(seen.filter(isPageRead)).toHaveLength(expected.length === 0 ? 0 : 1);
+    });
+
+    it('counts nothing for a survey without responses and reads no page', async () => {
+      const seen: string[] = [];
+
+      expect(await inTenant(tenantA, (tx) => listResponses(recording(tx, seen), cfId(72)))).toEqual({ rows: [], total: 0 });
+      expect(seen.filter(isPageRead)).toEqual([]);
+    });
+  });
+
+  it('indexes the survey list and response pages in their order, with statistics for the site expression', async () => {
+    const indexes = await handle.adminPool.query<{ indexname: string; indexdef: string }>(
+      'SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = $1 AND indexname = ANY($2) ORDER BY indexname',
+      [handle.schema, ['survey_list_idx', 'survey_response_survey_idx', 'survey_site_idx']],
+    );
+    const statistics = await handle.adminPool.query<{ definition: string }>(
+      'SELECT pg_get_statisticsobjdef(oid) AS definition FROM pg_statistic_ext WHERE stxnamespace = $1::regnamespace',
+      [handle.schema],
+    );
+
+    expect(indexes.rows).toEqual([
+      {
+        indexname: 'survey_list_idx',
+        indexdef: `CREATE INDEX survey_list_idx ON ${handle.schema}.survey USING btree (tenant_id, created, survey_id) INCLUDE (siteid)`,
+      },
+      {
+        indexname: 'survey_response_survey_idx',
+        indexdef: `CREATE INDEX survey_response_survey_idx ON ${handle.schema}.survey_response USING btree (tenant_id, survey_id, created, response_id)`,
+      },
+    ]);
+    expect(statistics.rows).toEqual([
+      { definition: `CREATE STATISTICS ${handle.schema}.survey_site_key_stats ON lower(rtrim(siteid::text)) FROM ${handle.schema}.survey` },
+    ]);
+  });
+
+  it('plans the survey and response pages on their list indexes', async () => {
+    const plans = await inTenant(tenantA, async (tx) => {
+      await insertSurvey(tx, cfId(80), 'tenant-a', at(0));
+      await insert(tx, 'survey_response', {
+        response_id: cfId(81),
+        survey_id: cfId(80),
+        siteid: 'tenant-a',
+        respondentsiteid: 'tenant-a',
+        respondent_user_id: USER_ID,
+        answers: ANSWERS,
+        created: at(1),
+      });
+      const seen: string[] = [];
+      await listSurveys(recording(tx, seen), { siteId: 'tenant-a', pageIndex: 1, itemsPerPage: 2 });
+      await listResponses(recording(tx, seen), cfId(80), { pageIndex: 1, itemsPerPage: 2 });
+      await tx.query('SET LOCAL enable_seqscan = off');
+      const explain = async (text: string | undefined, key: string): Promise<string> =>
+        (await tx.query<{ 'QUERY PLAN': string }>(`EXPLAIN ${text ?? ''}`, [key, 0, 2])).rows.map((row) => row['QUERY PLAN']).join('\n');
+      return [
+        await explain(seen.find((text) => /\bsurvey\b.*\bOFFSET\b/.test(text)), 'tenant-a'),
+        await explain(seen.find((text) => /\bsurvey_response\b.*\bOFFSET\b/.test(text)), cfId(80)),
+      ];
+    });
+
+    expect(plans[0]).toMatch(/Limit[\s\S]*Index Scan using survey_list_idx/);
+    expect(plans[0]).not.toMatch(/Sort/);
+    expect(plans[1]).toMatch(/Limit[\s\S]*Index Scan using survey_response_survey_idx/);
+    expect(plans[1]).not.toMatch(/Sort/);
+  });
+
   it('returns the detail in the fixture columns and order', async () => {
     const surveyId = cfId(20);
     await inTenant(tenantA, (tx) => seedDetail(tx, surveyId));
@@ -200,8 +314,9 @@ describe.skipIf(!available)('surveys queries against PostgreSQL', () => {
     expect(reminders.map((reminder) => reminder.offset_minutes)).toEqual([10, 20, 600]);
     expect(targets.map((target) => target.target_id)).toEqual([43, 44, 42, 41].map(cfId));
     expect(targets[0]).toMatchObject({ tenant_id: tenantA, group_name: null });
-    expect(responses.map((response) => response.response_id)).toEqual([51, 52, 50].map(cfId));
-    expect(responses.map((response) => response.answers)).toEqual([ANSWERS, ANSWERS, ANSWERS]);
+    expect(responses.total).toBe(3);
+    expect(responses.rows.map((response) => response.response_id)).toEqual([51, 52, 50].map(cfId));
+    expect(responses.rows.map((response) => response.answers)).toEqual([ANSWERS, ANSWERS, ANSWERS]);
   });
 
   it("hides another tenant's rows", async () => {
@@ -217,7 +332,7 @@ describe.skipIf(!available)('surveys queries against PostgreSQL', () => {
       await listResponses(tx, cfId(20)),
     ]);
 
-    expect(seen).toEqual([{ rows: [], total: 0 }, null, null, null, [], [], []]);
+    expect(seen).toEqual([{ rows: [], total: 0 }, null, null, null, [], [], { rows: [], total: 0 }]);
     expect(await inTenant(tenantB, (tx) => findSurvey(tx, cfId(20)))).toMatchObject({ tenant_id: tenantB });
   });
 

@@ -66,6 +66,33 @@ const ORACLE_INIT = [
 
 const ORACLE_SETTINGS = { MURA_PORT: '8080', MURA_SITEIDINURLS: 'false', MURA_INDEXFILEINURLS: 'false' } as const;
 
+/** `Mura.init` as a legacy instance on port 22380 with `fileAssetPath=//files.c23.test/assets` printed it. */
+const FILE_ASSET_ORACLE_INIT = [
+  'Mura.init({',
+  '\t\t\t\tinAdmin:true,',
+  "\t\t\t\tcontext:'',",
+  "\t\t\t\tthemepath:'http\\x3A\\x2F\\x2Flocalhost\\x3A22380\\x2Fthemes\\x2Fdefault',",
+  "\t\t\t\tsiteid:'default',",
+  "\t\t\t\tassetpath:'http\\x3A\\x2F\\x2Flocalhost\\x3A22380\\x2Fsites\\x2Fdefault',",
+  "\t\t\t\tsitespath:'',",
+  "\t\t\t\tcorepath:'http\\x3A\\x2F\\x2Flocalhost\\x3A22380\\x2Fcore',",
+  "\t\t\t\tfileassetpath:'\\x2F\\x2Ffiles.c23.test\\x2Fassets\\x2Fdefault',",
+  "\t\t\t\tadminpath:'http\\x3A\\x2F\\x2Flocalhost\\x3A22380\\x2Fadmin',",
+  "\t\t\t\tthemepath:'http\\x3A\\x2F\\x2Flocalhost\\x3A22380\\x2Fthemes\\x2Fdefault',",
+  "\t\t\t\tpluginspath:'http\\x3A\\x2F\\x2Flocalhost\\x3A22380\\x2Fplugins',",
+  "\t\t\t\trootpath:'http\\x3A\\x2F\\x2Flocalhost\\x3A22380',",
+  '\t\t\t\tindexfileinapi: true',
+  '\t\t\t});',
+].join('\n');
+
+const FILE_ASSET_ORACLE_SETTINGS = {
+  MURA_PORT: '22380',
+  MURA_SITEIDINURLS: 'true',
+  MURA_INDEXFILEINURLS: 'true',
+  MURA_LEGACYINDEXFILELOCATION: 'true',
+  MURA_FILEASSETPATH: '//files.c23.test/assets',
+} as const;
+
 /** settingsBean getters `Mura.init` calls, by the name after `get`. */
 const GETTERS: Readonly<Record<string, (init: InitValues) => string>> = {
   ThemeAssetPath: (init) => init.themepath,
@@ -203,9 +230,20 @@ afterEach(() => {
 });
 
 describe('renderMuraInit', () => {
-  it('prints the statement the legacy oracle printed for the installed admin', () => {
-    useSettings(ORACLE_SETTINGS);
-    expect(renderMuraInit(shellContext(installed()))).toBe(ORACLE_INIT);
+  it.each<[string, Record<string, string>, AdminRequestPartial, string]>([
+    ['the installed admin', ORACLE_SETTINGS, {}, ORACLE_INIT],
+    [
+      'the installed admin under a file asset path',
+      FILE_ASSET_ORACLE_SETTINGS,
+      {
+        httpHost: 'localhost:22380',
+        site: { record: { domainAlias: 'alias.c23.test', enforcePrimaryDomain: 1 } },
+      },
+      FILE_ASSET_ORACLE_INIT,
+    ],
+  ])('prints the statement the legacy oracle printed for %s', (_, settings, partial, expected) => {
+    useSettings(settings);
+    expect(renderMuraInit(shellContext(installed(partial)))).toBe(expected);
   });
 
   const ADMIN_DOMAIN = { MURA_PORT: '8080', MURA_ADMINDOMAIN: 'admin.example.com' } as const;
@@ -216,6 +254,10 @@ describe('renderMuraInit', () => {
   } as const;
   const remote = { isremote: 1, remotecontext: '/remote', remoteport: 8443 } as const;
   const resourceSite = { ...remote, resourceDomain: 'static.example.com' } as const;
+  const CDN_PATHS = {
+    MURA_COREPATH: 'https://cdn.example.com/core',
+    MURA_PLUGINSPATH: 'https://cdn.example.com/plugins',
+  } as const;
 
   it.each<[string, Record<string, string>, () => AdminRequest, InitValues]>([
     ['the installed site on the request host', {}, () => installed(), under('http://localhost')],
@@ -428,6 +470,39 @@ describe('renderMuraInit', () => {
         adminpath: 'https://CMS.Example.com:8080/admin',
         pluginspath: 'https://CMS.Example.com:8080/plugins',
       }),
+    ],
+    [
+      'a file asset path over a shared file pool',
+      { MURA_FILEASSETPATH: '//files.c23.test/assets' },
+      () => installed({ site: { filePoolID: 'tenant-b' } }),
+      under('http://localhost', { fileassetpath: '//files.c23.test/assets/tenant-b' }),
+    ],
+    [
+      'core and plugins paths configured with an admin domain',
+      { ...ADMIN_DOMAIN, ...CDN_PATHS },
+      () => installed(onAdminHost),
+      under('http://localhost:8080', {
+        corepath: CDN_PATHS.MURA_COREPATH,
+        adminpath: 'http://admin.example.com:8080/admin',
+        pluginspath: CDN_PATHS.MURA_PLUGINSPATH,
+      }),
+    ],
+    [
+      'core and plugins paths configured with an admin domain, off the admin host',
+      { ...ADMIN_DOMAIN, ...CDN_PATHS },
+      () => installed({ httpHost: 'www.example.com', serverName: 'www.example.com' }),
+      under('http://localhost:8080', {
+        corepath: CDN_PATHS.MURA_COREPATH,
+        adminpath: 'http://www.example.com:8080/admin',
+        pluginspath: CDN_PATHS.MURA_PLUGINSPATH,
+      }),
+    ],
+    ['core and plugins paths configured without an admin domain', CDN_PATHS, () => installed(), under('http://localhost')],
+    [
+      'core and plugins paths configured for a remote site with a resource domain',
+      { ...ADMIN_DOMAIN, ...CDN_PATHS },
+      () => installed({ site: { record: resourceSite }, ...onAdminHost }),
+      under('http://static.example.com:8080'),
     ],
     [
       'an editor whose pooled session site is served',

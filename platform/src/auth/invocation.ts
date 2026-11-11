@@ -2,7 +2,7 @@
 import type { KeyObject } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { GoogleAuth, OAuth2Client, type IdTokenClient } from 'google-auth-library';
+import { GoogleAuth, IdTokenClient, Impersonated, OAuth2Client } from 'google-auth-library';
 import {
   SignJWT,
   calculateJwkThumbprint,
@@ -184,11 +184,41 @@ export function createLocalInvocationMinter(opts: {
   };
 }
 
-/** Minter attaching a Google-signed ID token whose audience is the callee's origin. */
-export function createCloudInvocationMinter(opts: { auth?: GoogleAuth } = {}): InvocationMinter {
+const CLOUD_PLATFORM_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
+
+/** ID-token provider impersonating `serviceAccount` through IAM Credentials, or undefined when ADC's own principal is that account. */
+async function impersonatingProvider(auth: GoogleAuth, serviceAccount: string): Promise<Impersonated | undefined> {
+  const { client_email: principal } = await auth.getCredentials();
+  if (principal === serviceAccount) {
+    return undefined;
+  }
+  return new Impersonated({
+    sourceClient: await auth.getClient(),
+    targetPrincipal: serviceAccount,
+    targetScopes: [CLOUD_PLATFORM_SCOPE],
+    delegates: [],
+  });
+}
+
+/** Minter attaching a Google-signed ID token for the callee's origin, as ADC's principal or, when given, as `serviceAccount`. */
+export function createCloudInvocationMinter(opts: { auth?: GoogleAuth; serviceAccount?: string } = {}): InvocationMinter {
   const auth = opts.auth ?? new GoogleAuth();
+  const { serviceAccount } = opts;
   // One library client per audience; token caching and refresh stay inside IdTokenClient.
   const clients = new Map<string, IdTokenClient>();
+  // ADC's principal is looked up at the first call and once only; a failed lookup is retried at the next.
+  let impersonation: Promise<Impersonated | undefined> | undefined;
+  const providerFor = (account: string): Promise<Impersonated | undefined> =>
+    (impersonation ??= impersonatingProvider(auth, account).catch((error: unknown) => {
+      impersonation = undefined;
+      throw error;
+    }));
+  const clientFor = async (audience: string): Promise<IdTokenClient> => {
+    const idTokenProvider = serviceAccount === undefined ? undefined : await providerFor(serviceAccount);
+    return idTokenProvider === undefined
+      ? auth.getIdTokenClient(audience)
+      : new IdTokenClient({ targetAudience: audience, idTokenProvider });
+  };
   return {
     async headersFor(target, opts) {
       if (target.url === undefined) {
@@ -198,7 +228,7 @@ export function createCloudInvocationMinter(opts: { auth?: GoogleAuth } = {}): I
       const acquire = async (): Promise<Record<string, string>> => {
         let client = clients.get(audience);
         if (client === undefined) {
-          client = await auth.getIdTokenClient(audience);
+          client = await clientFor(audience);
           clients.set(audience, client);
         }
         const authorization = (await client.getRequestHeaders()).get('authorization');

@@ -1,9 +1,18 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** The only write path of schema `surveys`: the platform repository plus the row writes the fixture `surveys.cfc` performs. */
-import { RepositoryError, createRepository, qualified, type Repository, type WriteContext } from '@opt2/platform/migration-kit';
+import {
+  RepositoryError,
+  acquireWriteGates,
+  createRepository,
+  qualified,
+  type Repository,
+  type RepositoryRow,
+  type WriteContext,
+} from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import type { Clock } from '@opt2/platform/service-kit';
 import { cfUuid } from '@opt2/platform/legacy-compat';
+import { collated, grantSurveyResponses, lockSurveyGrants, lockTargetKey, syncSurveyResponseGrants } from './grants.js';
 import {
   OWNED_TABLES,
   SURVEY,
@@ -82,7 +91,7 @@ export interface NewResponse {
   answers: string;
 }
 
-/** The platform repository of schema `surveys` plus the fixture's writes; every helper takes the caller's open tenant transaction. */
+/** The platform repository of schema `surveys`, whose generic `survey_target` writes keep response grants in step, plus the fixture's writes; every helper takes the caller's open tenant transaction. */
 export interface SurveysRepository extends Repository {
   /** Locks the survey row FOR UPDATE until the transaction ends and returns it, as the fixture's task callbacks and the status, schedule, reminder and target writes lock it before any child row; null when absent. */
   lockSurvey(tx: TenantTx, surveyId: string): Promise<SurveyRow | null>;
@@ -114,17 +123,15 @@ export interface SurveysRepositoryOptions {
   schema?: string;
 }
 
-/** SQL Server's default collation compares text case-insensitively and ignores trailing spaces. */
-function collated(value: string): string {
-  return value.replace(/ +$/, '').toLowerCase();
-}
+/** The survey and site of a stored target. */
+type TargetSite = Pick<SurveyTargetRow, 'survey_id' | 'siteid'>;
 
 /** Comparison key of a target; a NULL group matches only another NULL group. */
 function targetKey(siteId: string, groupName: string | null): string {
   return JSON.stringify([collated(siteId), groupName === null ? null : collated(groupName)]);
 }
 
-/** Builds the surveys repository over the platform repository of `OWNED_TABLES`. */
+/** Builds the surveys repository over the platform repository of `OWNED_TABLES`; fixture helpers write through that base directly. */
 export function createSurveysRepository({ clock, schema = SCHEMA }: SurveysRepositoryOptions): SurveysRepository {
   const base = createRepository({ owner: OWNER, schema, tables: OWNED_TABLES, clock });
   const lockSurveySql = `SELECT * FROM ${qualified(schema, SURVEY.table)} WHERE survey_id = $1 FOR UPDATE`;
@@ -133,6 +140,9 @@ export function createSurveysRepository({ clock, schema = SCHEMA }: SurveysRepos
   const remindersSql = `SELECT reminder_id FROM ${reminderTable} WHERE survey_id = $1 ORDER BY length(task_name), task_name, reminder_id`;
   const reminderByTaskSql = `SELECT * FROM ${reminderTable} WHERE survey_id = $1 AND task_name = $2`;
   const targetsSql = `SELECT siteid, group_name FROM ${qualified(schema, SURVEY_TARGET.table)} WHERE survey_id = $1`;
+  // Grant upkeep reads raw, not through base.read: migration applies skip the unit gate, and a gated read would wait out their own window.
+  const lockTargetSql = `SELECT survey_id, siteid FROM ${qualified(schema, SURVEY_TARGET.table)} WHERE target_id = $1 FOR UPDATE`;
+  const targetSitesSql = `SELECT siteid FROM ${qualified(schema, SURVEY_TARGET.table)} WHERE survey_id = $1`;
 
   /** Locks the survey row before any child row, the order the fixture locks them in; null when absent. */
   function lockSurvey(tx: TenantTx, surveyId: string): Promise<SurveyRow | null> {
@@ -253,6 +263,7 @@ export function createSurveysRepository({ clock, schema = SCHEMA }: SurveysRepos
     ctx: WriteContext = {},
   ): Promise<TargetInsertResult> {
     const survey = await lockParent(tx, surveyId, SURVEY_TARGET.table);
+    await lockSurveyGrants(tx, [survey.survey_id]);
     const existing = await base.read(
       tx,
       SURVEY_TARGET.unit,
@@ -320,8 +331,104 @@ export function createSurveysRepository({ clock, schema = SCHEMA }: SurveysRepos
     return base.update<SurveyReminderRow>(tx, SURVEY_REMINDER.table, { reminder_id: reminder.reminder_id }, { sent_at: at }, ctx);
   }
 
+  /** Takes a live write's target gate; a live write gates before any lock, as base does, so it never holds one while waiting out a window. */
+  async function gateTarget(tx: TenantTx, ctx: WriteContext): Promise<void> {
+    if (ctx.authority === undefined) {
+      await acquireWriteGates(tx, [SURVEY_TARGET.unit]);
+    }
+  }
+
+  /** Locks target `targetId`, stored or not, and returns its survey and site, or null when absent. */
+  async function lockTarget(tx: TenantTx, targetId: unknown, ctx: WriteContext): Promise<TargetSite | null> {
+    await gateTarget(tx, ctx);
+    await lockTargetKey(tx, targetId);
+    return (await tx.query<TargetSite>(lockTargetSql, [targetId])).rows[0] ?? null;
+  }
+
+  /** Re-derives the survey's response grants from all its stored targets, under its grant lock. */
+  async function resyncGrants(tx: TenantTx, surveyId: string): Promise<void> {
+    await lockSurveyGrants(tx, [surveyId]);
+    const { rows } = await tx.query<Pick<SurveyTargetRow, 'siteid'>>(targetSitesSql, [surveyId]);
+    await syncSurveyResponseGrants(
+      tx,
+      surveyId,
+      rows.map((row) => row.siteid),
+    );
+  }
+
+  /** Grants for a target written over `before`: a new or unmoved target grants its site, a moved one re-syncs both surveys. */
+  async function regrantTarget(tx: TenantTx, before: TargetSite | null, after: TargetSite): Promise<void> {
+    if (before === null || (before.survey_id === after.survey_id && collated(before.siteid) === collated(after.siteid))) {
+      await lockSurveyGrants(tx, [after.survey_id]);
+      await grantSurveyResponses(tx, after.survey_id, [after.siteid]);
+      return;
+    }
+    await resyncGrants(tx, before.survey_id);
+    if (after.survey_id !== before.survey_id) {
+      await resyncGrants(tx, after.survey_id);
+    }
+  }
+
+  async function insert<R = RepositoryRow>(tx: TenantTx, table: string, row: RepositoryRow, ctx: WriteContext = {}): Promise<R> {
+    if (table !== SURVEY_TARGET.table) {
+      return base.insert<R>(tx, table, row, ctx);
+    }
+    const before = await lockTarget(tx, row.target_id, ctx);
+    await lockSurveyGrants(tx, [row.survey_id, before?.survey_id]);
+    const stored = await base.insert<SurveyTargetRow>(tx, table, row, ctx);
+    await regrantTarget(tx, before, stored);
+    return stored as R;
+  }
+
+  async function update<R = RepositoryRow>(
+    tx: TenantTx,
+    table: string,
+    key: RepositoryRow,
+    patch: RepositoryRow,
+    ctx: WriteContext = {},
+  ): Promise<R | null> {
+    if (table !== SURVEY_TARGET.table) {
+      return base.update<R>(tx, table, key, patch, ctx);
+    }
+    const before = await lockTarget(tx, key.target_id, ctx);
+    await lockSurveyGrants(tx, [patch.survey_id, before?.survey_id]);
+    const after = await base.update<SurveyTargetRow>(tx, table, key, patch, ctx);
+    if (after !== null) {
+      await regrantTarget(tx, before, after);
+    }
+    return after as R | null;
+  }
+
+  async function upsert<R = RepositoryRow>(tx: TenantTx, table: string, row: RepositoryRow, ctx: WriteContext = {}): Promise<R> {
+    if (table !== SURVEY_TARGET.table) {
+      return base.upsert<R>(tx, table, row, ctx);
+    }
+    const before = await lockTarget(tx, row.target_id, ctx);
+    await lockSurveyGrants(tx, [row.survey_id, before?.survey_id]);
+    const after = await base.upsert<SurveyTargetRow>(tx, table, row, ctx);
+    await regrantTarget(tx, before, after);
+    return after as R;
+  }
+
+  async function remove<R = RepositoryRow>(tx: TenantTx, table: string, key: RepositoryRow, ctx: WriteContext = {}): Promise<R | null> {
+    if (table !== SURVEY_TARGET.table) {
+      return base.delete<R>(tx, table, key, ctx);
+    }
+    const before = await lockTarget(tx, key.target_id, ctx);
+    await lockSurveyGrants(tx, [before?.survey_id]);
+    const removed = await base.delete<SurveyTargetRow>(tx, table, key, ctx);
+    if (removed !== null) {
+      await resyncGrants(tx, removed.survey_id);
+    }
+    return removed as R | null;
+  }
+
   return Object.freeze({
     ...base,
+    insert,
+    update,
+    upsert,
+    delete: remove,
     lockSurvey,
     insertSurvey,
     setSurveyStatus,

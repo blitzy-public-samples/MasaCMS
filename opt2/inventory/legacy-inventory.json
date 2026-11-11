@@ -140927,8 +140927,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/esignature.cfc",
         "lines": [
-          144,
-          164
+          145,
+          165
         ]
       },
       "owningService": "e-signature",
@@ -140965,7 +140965,7 @@
         "path": "legacy-fixtures/cfml/modules/esignature.cfc",
         "lines": [
           101,
-          142
+          143
         ]
       },
       "owningService": "e-signature",
@@ -141012,8 +141012,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/esignature.cfc",
             "lines": [
-              117,
-              117
+              118,
+              118
             ]
           },
           "condition": null,
@@ -141029,8 +141029,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/esignature.cfc",
             "lines": [
-              129,
-              129
+              130,
+              130
             ]
           },
           "condition": null,
@@ -141056,8 +141056,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/esignature.cfc",
         "lines": [
-          166,
-          183
+          167,
+          184
         ]
       },
       "owningService": "e-signature",
@@ -141093,8 +141093,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/esignature.cfc",
         "lines": [
-          185,
-          218
+          186,
+          219
         ]
       },
       "owningService": "e-signature",
@@ -142280,8 +142280,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              178,
-              178
+              180,
+              180
             ]
           },
           "condition": null,
@@ -142308,7 +142308,7 @@
         "path": "legacy-fixtures/cfml/modules/reporting.cfc",
         "lines": [
           118,
-          131
+          134
         ]
       },
       "owningService": "reporting",
@@ -142466,8 +142466,8 @@
           "source": {
             "path": "legacy-fixtures/sql/reporting/200_usp_export_job_transition.sql",
             "lines": [
-              47,
-              47
+              50,
+              50
             ]
           },
           "condition": "runs in a cfthread after the request returns",
@@ -143197,8 +143197,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              144,
-              144
+              146,
+              146
             ]
           },
           "condition": null,
@@ -143215,8 +143215,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              140,
-              140
+              142,
+              142
             ]
           },
           "condition": null,
@@ -143273,8 +143273,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              144,
-              144
+              146,
+              146
             ]
           },
           "condition": null,
@@ -143291,8 +143291,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              140,
-              140
+              142,
+              142
             ]
           },
           "condition": null,
@@ -143349,8 +143349,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              144,
-              144
+              146,
+              146
             ]
           },
           "condition": null,
@@ -143367,8 +143367,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              140,
-              140
+              142,
+              142
             ]
           },
           "condition": null,
@@ -143425,8 +143425,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              144,
-              144
+              146,
+              146
             ]
           },
           "condition": null,
@@ -143443,8 +143443,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              140,
-              140
+              142,
+              142
             ]
           },
           "condition": null,
@@ -143501,8 +143501,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              144,
-              144
+              146,
+              146
             ]
           },
           "condition": null,
@@ -143519,8 +143519,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              140,
-              140
+              142,
+              142
             ]
           },
           "condition": null,
@@ -185471,8 +185471,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              144,
-              144
+              146,
+              146
             ]
           },
           "op": "insert",
@@ -185554,8 +185554,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              178,
-              178
+              180,
+              180
             ]
           },
           "op": "insert",
@@ -186090,8 +186090,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              140,
-              140
+              142,
+              142
             ]
           },
           "op": "update",
@@ -186475,7 +186475,7 @@
           ],
           "trigger": "thread",
           "sessionEffects": "none",
-          "condition": "the opt2-export-<jobId> cfthread runs runExport (reporting.cfc:133-172), which moves the job to running and then done or failed only through synthetic.usp_export_job_transition",
+          "condition": "the opt2-export-<jobId> cfthread runs runExport (reporting.cfc:136-175), which moves the job to running and then done or failed only through synthetic.usp_export_job_transition",
           "override": "harness/inventory/writer-overrides.yaml#wov:fixture-export-threads"
         },
         {
@@ -186484,8 +186484,8 @@
           "source": {
             "path": "legacy-fixtures/sql/reporting/200_usp_export_job_transition.sql",
             "lines": [
-              47,
-              47
+              50,
+              50
             ]
           },
           "op": "update",
@@ -186936,8 +186936,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/esignature.cfc",
             "lines": [
-              129,
-              129
+              130,
+              130
             ]
           },
           "op": "insert",
@@ -187037,8 +187037,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/esignature.cfc",
             "lines": [
-              117,
-              117
+              118,
+              118
             ]
           },
           "op": "update",

@@ -194,8 +194,12 @@ describe('site home link', () => {
     ['a context on port 80', { MURA_SITEIDINURLS: 'true', MURA_CONTEXT: '/ctx', MURA_PORT: '80' }, {}, 'http://localhost/ctx/default/'],
     ['an empty event site', { MURA_SITEIDINURLS: 'true', MURA_INDEXFILEINURLS: 'true' }, { rc: { siteid: '' } }, 'http://localhost:8080/index.cfm//'],
     ['a host that is no site domain', {}, { serverName: 'other.test' }, 'http://localhost:8080/'],
-    ['a domain alias host', {}, { serverName: 'ALIAS.test', site: { record: { domainAlias: 'x.test\r\nalias.test' } } }, 'http://ALIAS.test:8080/'],
+    ['a domain alias host', {}, { httpHost: 'ALIAS.test:8080', serverName: 'ALIAS.test', site: { record: { domainAlias: 'x.test\r\nalias.test' } } }, 'http://ALIAS.test:8080/'],
     ['an enforced primary domain', {}, { serverName: 'alias.test', site: { record: { domainAlias: 'alias.test', enforcePrimaryDomain: 1 } } }, 'http://localhost:8080/'],
+    ['a preview alias over an enforced primary domain', {}, { httpHost: 'alias.test:8080', serverName: 'alias.test', site: { record: { domainAlias: 'alias.test', enforcePrimaryDomain: 1 } } }, 'http://alias.test:8080/'],
+    ['a site without a domain on an alias server name', {}, { httpHost: 'other.test', serverName: 'alias.test', site: { domain: '', record: { domainAlias: 'alias.test' } } }, 'http://alias.test:8080/'],
+    ['a site without a domain that enforces it', {}, { httpHost: 'other.test', serverName: 'alias.test', site: { domain: '', record: { domainAlias: 'alias.test', enforcePrimaryDomain: 1 } } }, 'http://:8080/'],
+    ['a remote site on a preview alias', { MURA_SITEIDINURLS: 'true' }, { httpHost: 'alias.test:8443', serverName: 'alias.test', site: { domain: 'remote.test', record: { isremote: 1, remoteport: 8443, remotecontext: '/r', domainAlias: 'alias.test' } } }, 'http://alias.test:8443/r/'],
     ['an empty host', {}, { serverName: '' }, 'http://localhost:8080/'],
     ['an SSL site', {}, { site: { record: { useSSL: 1 } } }, 'https://localhost:8080/'],
     ['an extranet SSL site', {}, { site: { record: { useSSL: null, ExtranetSSL: 1 } } }, 'https://localhost:8080/'],
@@ -207,6 +211,49 @@ describe('site home link', () => {
   ])('links the home page for %s', (_, vars, partial, href) => {
     useSettings(vars);
     expect(load(render(shellFor(adminS2Request(partial))))('#select-site-btn').attr('href')).toBe(href);
+  });
+
+  it.each<[string, string, string, string, string]>([
+    ['false', 'false', 'false', '', '/'],
+    ['false', 'false', 'true', '', '/'],
+    ['false', 'true', 'false', '', '/'],
+    ['false', 'true', 'true', '', '/'],
+    ['true', 'false', 'false', '', '/default/'],
+    ['true', 'false', 'true', '', '/default/'],
+    ['true', 'true', 'false', '', '/index.cfm/default/'],
+    ['true', 'true', 'true', '', '/sites/default/'],
+    ['true', 'true', 'true', 'content', '/content/default/'],
+    ['true', 'true', 'false', 'content', '/index.cfm/default/'],
+  ])(
+    'stems siteIDInURLS=%s indexFileInURLS=%s legacyIndexFileLocation=%s siteDir=%j as %s',
+    (siteIDInURLS, indexFileInURLS, legacyIndexFileLocation, siteDir, stem) => {
+      useSettings({
+        MURA_SITEIDINURLS: siteIDInURLS,
+        MURA_INDEXFILEINURLS: indexFileInURLS,
+        MURA_LEGACYINDEXFILELOCATION: legacyIndexFileLocation,
+        ...(siteDir === '' ? {} : { MURA_SITEDIR: siteDir }),
+      });
+      expect(load(render(shellFor(adminS2Request())))('#select-site-btn').attr('href')).toBe(`http://localhost:8080${stem}`);
+    },
+  );
+
+  // Captured from a legacy instance on port 22380 whose default site enforces its domain and has one alias.
+  it.each([
+    ['localhost:22380', 'http://localhost:22380/sites/default/'],
+    ['alias.c23.test:22380', 'http://alias.c23.test:22380/sites/default/'],
+  ])('links the home page as the legacy oracle did on host %s', (httpHost, href) => {
+    useSettings({
+      MURA_PORT: '22380',
+      MURA_SITEIDINURLS: 'true',
+      MURA_INDEXFILEINURLS: 'true',
+      MURA_LEGACYINDEXFILELOCATION: 'true',
+    });
+    const ctx = adminS2Request({
+      httpHost,
+      serverName: httpHost.split(':')[0],
+      site: { record: { domainAlias: 'alias.c23.test', enforcePrimaryDomain: 1 } },
+    });
+    expect(load(render(shellFor(ctx)))('#select-site-btn').attr('href')).toBe(href);
   });
 
   it('HTML-edit-formats the link', () => {

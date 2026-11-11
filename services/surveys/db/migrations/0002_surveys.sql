@@ -17,7 +17,9 @@ ALTER TABLE surveys.survey ENABLE ROW LEVEL SECURITY; ALTER TABLE surveys.survey
 CREATE POLICY tenant_isolation ON surveys.survey
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
-CREATE INDEX survey_site_idx ON surveys.survey (tenant_id, siteid);
+-- Forced RLS keeps the non-leakproof site expression from being an index condition, so it is carried as planner statistics and an included column.
+CREATE INDEX survey_list_idx ON surveys.survey (tenant_id, created, survey_id) INCLUDE (siteid);
+CREATE STATISTICS surveys.survey_site_key_stats ON (lower(rtrim(siteid))) FROM surveys.survey;
 
 -- Launch schedule of a survey, at most one per survey; row_version is its scheduled event's aggregate version.
 CREATE TABLE surveys.survey_schedule (
@@ -88,4 +90,4 @@ ALTER TABLE surveys.survey_response ENABLE ROW LEVEL SECURITY; ALTER TABLE surve
 CREATE POLICY tenant_isolation ON surveys.survey_response
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
-CREATE INDEX survey_response_survey_idx ON surveys.survey_response (tenant_id, survey_id);
+CREATE INDEX survey_response_survey_idx ON surveys.survey_response (tenant_id, survey_id, created, response_id);

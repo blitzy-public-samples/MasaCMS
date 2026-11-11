@@ -1,0 +1,43 @@
+<!-- Legacy oracle capture (Masa 7.6.1, site default), trimmed: cPerm.main renders no group id without approval chains, so the ids come from the cUsers.list group links of the same session. -->
+<section data-route="/admin/?muraAction=cPerm.main&amp;siteid=default&amp;contentid=00000000000000000000000000000000001&amp;parentid=00000000000000000000000000000000END&amp;topid=00000000000000000000000000000000001&amp;moduleid=00000000000000000000000000000000000">
+		    <h2>System Groups</h2>
+		    <table class="mura-table-grid no-stripe">
+		      <tr>
+		        
+		        <th>Editor</th>
+		        <th>Author</th>
+		        <th>Read Only</th>
+		        <th>Deny</th>
+		        <th class="var-width">Group</th>
+		      </tr>
+
+		      
+		            <tr>
+		            
+		            <td><input name="pAF23F22FD28ECBBD5A2FF00600256C68" type="radio" class="checkbox" value="editor" checked></td>
+		            <td><input name="pAF23F22FD28ECBBD5A2FF00600256C68" type="radio" class="checkbox" value="author" ></td>
+		            <td><input name="pAF23F22FD28ECBBD5A2FF00600256C68" type="radio" class="checkbox" value="read" ></td>
+		            <td><input name="pAF23F22FD28ECBBD5A2FF00600256C68" type="radio" class="checkbox" value="deny" ></td>
+		            <td nowrap class="var-width">Editor</td>
+		            </tr>
+		        
+		    </table>
+</section>
+<section data-route="/admin/?muraAction=cUsers.list&amp;siteid=default&amp;ispublic=0">
+<table>
+<tr>
+								<td class="var-width">
+									<a href="/admin/index.cfm?muraAction=cusers.editgroup&userid=AF184251-EEE8-E89D-AA68474781CA792B&siteid=default" onclick="actionModal();">
+										Admin</a>
+									(0)
+								</td>
+</tr>
+<tr>
+								<td class="var-width">
+									<a href="/admin/index.cfm?muraAction=cusers.editgroup&userid=AF23F22F-D28E-CBBD-5A2FF00600256C68&siteid=default" onclick="actionModal();">
+										Editor</a>
+									(1)
+								</td>
+</tr>
+</table>
+</section>

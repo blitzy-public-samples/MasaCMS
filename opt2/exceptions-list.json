@@ -34,6 +34,21 @@
         "replay": "opt2/reports/parity.json#GS-PS-04"
       },
       "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-SHELL-THEMEPATH",
+      "scenario": "GS-CO-01",
+      "routeKey": "admin:carch.list",
+      "appliesTo": [],
+      "difference": "Legacy `settingsBean.getThemeAssetPath` (core/mura/settings/settingsBean.cfc:821-849) returns the first existing theme directory on the legacy web root (`<siteDir>/<displayPoolID>/themes/<theme>`, then `<siteDir>/<displayPoolID>/includes/themes/<theme>`, then `<webroot>/themes/<theme>`, else the site asset path), printed as `themepath` by admin/common/layouts/includes/html_head.cfm:125 and by `Mura.init` in admin/common/layouts/template.cfm:544,551 and admin/common/layouts/compact.cfm:288,295. Web cannot read the legacy web root and no owner contract carries the layout, so the admin shell prints the `<webroot>/themes/<theme>` form.",
+      "decision": "preserve",
+      "reason": "The target matches legacy for every site of this deployment, whose themes are under `<webroot>/themes` (Masa 7.6.1 installs themes/default there and legacy-fixtures/cfml/seed.cfm:121-122 gives seeded sites the default site's theme). A deployment whose session site keeps its theme under its site directory, under `includes/themes`, or has no theme directory keeps its admin page routes legacy (the entry becomes `halted` for it) until an owner contract supplies the resolved layout; the DOM comparison excludes scripts, so this entry is the record of that case.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-CO-01.json",
+        "replay": "opt2/reports/parity.json#GS-CO-01"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
     }
   ]
 }

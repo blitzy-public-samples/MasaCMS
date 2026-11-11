@@ -12,6 +12,7 @@ export interface SiteRow {
   siteID: SiteKey;
   site: string;
   domain: string;
+  domainAlias: string;
   programId: number | null;
   orderNo: number;
   publicUserPoolID: SiteKey;
@@ -181,6 +182,8 @@ const SYSTEM_USER = 'system-user';
 const INSTALLED_USERNAMES: readonly string[] = ['admin', 'qa_editor'];
 const OAUTH_CLIENT_NAME = 'OPT-2 Seed REST Client';
 const OAUTH_CLIENT_DESCRIPTION = 'Seeded client_credentials client for the REST golden scenarios.';
+/** Loopback host: parent of each seeded site's domain and its alias, so admin pages on it call Mura.js on their own origin. */
+const LOOPBACK_HOST = 'localhost';
 // Column widths of core/setup/db/mssql.sql.
 const MAX = { site: 50, person: 50, wide: 255, title: 255, category: 50, filename: 200 } as const;
 // Members of each role group other than `timesheets.employee`, whose size is `counts.timesheetEmployees`.
@@ -281,7 +284,8 @@ function buildSite(config: SeedConfig, siteID: SiteKey, position: number): SiteR
   return {
     siteID,
     site: clip(site, MAX.site),
-    domain: `${siteID}.${config.emailDomain}`,
+    domain: `${siteID}.${LOOPBACK_HOST}`,
+    domainAlias: LOOPBACK_HOST,
     programId,
     // The installed `default` site keeps orderNo 1.
     orderNo: position + 2,

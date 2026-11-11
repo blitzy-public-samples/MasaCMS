@@ -358,13 +358,29 @@ const CHARACTER_CASES: Case[] = [
   },
   emojiCase('flags a hexadecimal reference to an emoji at its line', withMarkup('<p>Fixture\n          &#x1F680; launch</p>'), [['U+1F680', '&#x1F680;']], 7),
   emojiCase('flags a decimal reference to an emoji', withMarkup('<p>Fixture &#128640; launch</p>'), [['U+1F680', '&#128640;']], 7),
+  {
+    name: 'accepts text-presentation symbols without FE0F, literal or referenced, and an FE0F after a non-pictograph',
+    html: withMarkup(
+      '<p title="&copy; \u2122">Fixture \u00A9 &copy; \u00AE &reg; \u2122 &trade; \u2194 &harr; \u25B6 &#x25B6; \u203C &#x203C; \u2139 &#x2139; x\uFE0F y&#xFE0F; notice</p>',
+    ),
+    expected: [],
+  },
   emojiCase(
-    'flags named references to pictographs',
-    withMarkup('<p>Fixture &copy; &reg; &trade; notice</p>'),
+    'flags a text-default pictograph with FE0F as one sequence, literal or completed by references',
+    withMarkup('<p>Fixture \u2764\uFE0F and\n          \u00A9&#xFE0F; and\n          &copy;&#xFE0F; marks</p>'),
     [
-      ['U+00A9', '&copy;'],
-      ['U+00AE', '&reg;'],
-      ['U+2122', '&trade;'],
+      ['U+2764 U+FE0F', '\u2764\uFE0F'],
+      ['U+00A9 U+FE0F', '\u00A9&#xFE0F;'],
+      ['U+00A9 U+FE0F', '&copy;&#xFE0F;'],
+    ],
+    7,
+  ),
+  emojiCase(
+    'reports a literal emoji that a referenced FE0F follows once, whether or not the decoding maps onto the source',
+    withMarkup('<p title="&copy2024 \u2B50&#xFE0F;">Fixture\n          \u2B50&#xFE0F; mark</p>'),
+    [
+      ['U+2B50', '\u2B50'],
+      ['U+2B50', '\u2B50&#xFE0F; mark'],
     ],
     7,
   ),

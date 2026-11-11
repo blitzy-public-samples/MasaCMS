@@ -193,7 +193,13 @@ export const EXPORT_OUTPUT_FIELD = 'output';
 export type ExportJobApplyRow = Omit<ExportJobRow, 'tenant_id' | 'object_key' | 'row_version'> &
   Partial<Pick<ExportJobRow, 'tenant_id' | 'object_key' | 'row_version'>> & { [EXPORT_OUTPUT_FIELD]: Buffer | null };
 
-/** `reporting-exports` key `<tenantId>/<jobId>.<ext>`; throws when `jobId` is not a CF UUID. */
-export function exportObjectKey(tenantId: string, jobId: string, ext: ExportFormat): string {
-  return objectKey({ tenantId, id: jobId, ext });
+/** Output slots of a migrated job output; an apply writes the slot its committed row does not name. */
+export const OUTPUT_SLOTS = Object.freeze(['a', 'b'] as const);
+
+/** One output slot. */
+export type OutputSlot = (typeof OUTPUT_SLOTS)[number];
+
+/** `reporting-exports` key `<tenantId>/<jobId>.<ext>`, or with `slot` the output-slot key `<tenantId>/<jobId>.<slot>.<ext>`; throws when `jobId` is not a CF UUID. */
+export function exportObjectKey(tenantId: string, jobId: string, ext: ExportFormat, slot?: OutputSlot): string {
+  return objectKey({ tenantId, id: jobId, ext: slot === undefined ? ext : `${slot}.${ext}` });
 }

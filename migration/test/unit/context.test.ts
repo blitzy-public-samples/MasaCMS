@@ -5,7 +5,13 @@ import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
-import { INVOCATION_HEADER, rolesForService, verifyLocalServiceToken } from '@opt2/platform/auth';
+import {
+  INVOCATION_HEADER,
+  createCloudRunInvocationReader,
+  hasAnyRole,
+  rolesForService,
+  verifyLocalServiceToken,
+} from '@opt2/platform/auth';
 import type { Logger } from '@opt2/platform/logging';
 import { fixedClock, systemClock, type ServiceClient } from '@opt2/platform/service-kit';
 import type { TenantDb } from '@opt2/platform/tenancy';
@@ -57,6 +63,36 @@ vi.mock('@opt2/platform/service-kit', async (importOriginal) => {
   };
 });
 
+/** Options of every cloud minter the context creates, in creation order. */
+const cloudMinters = vi.hoisted(() => ({ options: [] as { serviceAccount?: string }[] }));
+
+// Each cloud minter answers with the Google ID token of its requested account in the shape Cloud Run forwards.
+vi.mock('@opt2/platform/auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@opt2/platform/auth')>();
+  const encode = (part: object): string => Buffer.from(JSON.stringify(part)).toString('base64url');
+  return {
+    ...actual,
+    createCloudInvocationMinter: (opts: Parameters<typeof actual.createCloudInvocationMinter>[0] = {}) => {
+      cloudMinters.options.push(opts);
+      return {
+        headersFor: async (target: { name: string; url?: string }) => {
+          const now = Math.floor(Date.now() / 1000);
+          const claims = {
+            iss: 'https://accounts.google.com',
+            aud: actual.invocationAudience(target.url ?? ''),
+            email: opts.serviceAccount,
+            email_verified: true,
+            iat: now,
+            exp: now + 3600,
+          };
+          const token = `${encode({ alg: 'RS256', typ: 'JWT' })}.${encode(claims)}.${actual.SIGNATURE_REMOVED_MARKER}`;
+          return { [actual.INVOCATION_HEADER]: `Bearer ${token}` };
+        },
+      };
+    },
+  };
+});
+
 vi.mock('../../src/legacy/legacy-db.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/legacy/legacy-db.js')>();
   return {
@@ -103,6 +139,15 @@ function envSource(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 }
 
 const envWith = (overrides: NodeJS.ProcessEnv = {}): MigrationEnv => loadMigrationEnv(envSource(overrides));
+
+/** Overrides turning `envSource` into a cloud environment with IAM database authentication. */
+const CLOUD_OVERRIDES: NodeJS.ProcessEnv = {
+  OPT2_ENV: 'cloud',
+  PUBSUB_EMULATOR_HOST: '',
+  OPT2_DB_AUTH: 'iam',
+  CLOUD_SQL_INSTANCE: 'opt2-unit:us-central1:opt2',
+  PG_PASSWORD: '',
+};
 
 const silentLogger = (): Logger => ({}) as Logger;
 
@@ -154,6 +199,7 @@ afterAll(async () => {
 afterEach(() => {
   closes.order.length = 0;
   closes.failing.clear();
+  cloudMinters.options.length = 0;
   vi.restoreAllMocks();
 });
 
@@ -237,6 +283,11 @@ describe('createMigrationContext', () => {
       options: () => ({ env: envWith(), db: fakeDb('people') }),
       error: new TypeError('The migration context needs the migration schema pool, got people'),
     },
+    {
+      name: 'a cloud environment names no project',
+      options: () => ({ env: { ...envWith(CLOUD_OVERRIDES), GOOGLE_CLOUD_PROJECT: undefined }, db: fakeDb() }),
+      error: new Error('GOOGLE_CLOUD_PROJECT is required when OPT2_ENV=cloud'),
+    },
   ])('rejects without opening anything when $name', async ({ options, error }) => {
     await expect(createMigrationContext({ logger: silentLogger(), ...options() })).rejects.toThrow(error);
     expect(closes.order).toEqual([]);
@@ -319,5 +370,47 @@ describe('createMigrationContext', () => {
       name: 'operator',
       roles: rolesForService('operator'),
     });
+  });
+
+  it("calls as each caller's own service account in the cloud: owner calls as migration, cut-over calls as operator", async () => {
+    const seen: { path: string; credential: string }[] = [];
+    const { base, close } = await probeServer(seen);
+    try {
+      const env = envWith({
+        ...CLOUD_OVERRIDES,
+        OPT2_GATEWAY_URL: base,
+        OPT2_SERVICE_URLS: JSON.stringify({ 'strategies-content': base }),
+      });
+      const ctx = await createMigrationContext({ env, logger: silentLogger(), db: fakeDb() });
+      await ctx.client.request({
+        service: 'strategies-content',
+        method: 'GET',
+        path: '/internal/v1/migration/position',
+        userToken: null,
+      });
+      await ctx.clientAs('operator').request({
+        service: 'gateway',
+        method: 'POST',
+        path: '/internal/v1/cutover/freeze',
+        json: { routes: [] },
+        userToken: null,
+      });
+      await ctx.close();
+    } finally {
+      await close();
+    }
+
+    const migrationAccount = 'opt2-migration@opt2-unit.iam.gserviceaccount.com';
+    const operatorAccount = 'opt2-operator@opt2-unit.iam.gserviceaccount.com';
+    expect(cloudMinters.options).toEqual([{ serviceAccount: migrationAccount }, { serviceAccount: operatorAccount }]);
+    expect(seen.map(({ path: requested }) => requested)).toEqual(['/internal/v1/migration/position', '/internal/v1/cutover/freeze']);
+    const reader = createCloudRunInvocationReader({ project: 'opt2-unit' });
+    const owner = await reader.verify(seen[0]?.credential ?? '');
+    const operator = await reader.verify(seen[1]?.credential ?? '');
+    expect(owner).toEqual({ name: 'migration', roles: rolesForService('migration'), email: migrationAccount });
+    expect(operator).toEqual({ name: 'operator', roles: rolesForService('operator'), email: operatorAccount });
+    expect(hasAnyRole(owner.roles, ['platform.migration'])).toBe(true);
+    expect(hasAnyRole(owner.roles, ['platform.operator'])).toBe(false);
+    expect(hasAnyRole(operator.roles, ['platform.operator'])).toBe(true);
   });
 });

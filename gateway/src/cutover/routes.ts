@@ -139,8 +139,14 @@ export async function registerCutoverRoutes(app: FastifyInstance, { state, infli
       const actor = actorOf(request.opt2Auth);
       // The store's `routes` narrowing is in-process only; the contract body carries no routes.
       const { side, evidence, instanceIds } = request.body;
-      const { cleared, rows } = await inflight.clearOrphans({ side, evidence, instanceIds });
-      request.log.info({ side, evidence, instanceIds, cleared, rows, actor }, 'in-flight orphans cleared');
+      const { cleared } = await inflight.clearOrphans({ side, evidence, instanceIds });
+      // The platform logger keeps only log-record.v1 fields, so the cleanup context is in the message.
+      const units = evidence.units === undefined ? '' : ` units=${JSON.stringify(evidence.units)}`;
+      const instances = instanceIds === undefined ? '' : ` instances=${JSON.stringify(instanceIds)}`;
+      request.log.info(
+        `in-flight orphans cleared: count=${cleared} side=${side} evidence=${evidence.kind} holder=${evidence.holderId}` +
+          `${units}${instances} actor=${actor}`,
+      );
       return { cleared };
     },
   );

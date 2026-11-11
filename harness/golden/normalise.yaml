@@ -6,9 +6,10 @@ origins:
   id: origin
   placeholder: "<origin>"
   values: ["${CAPTURE_ORIGIN}", "${REPLAY_ORIGIN}"]
+  # An unset variable takes the session origin it names, as requests do (session.ts originBaseUrl).
   defaults:
-    CAPTURE_ORIGIN: "http://127.0.0.1:${PORT}"
-    REPLAY_ORIGIN: "http://127.0.0.1:8100"
+    CAPTURE_ORIGIN: legacy
+    REPLAY_ORIGIN: gateway
   # Masa redirects 127.0.0.1 to localhost and renders absolute URLs with the request host.
   hostAliases: ["127.0.0.1", "localhost"]
   schemes: [http, https]

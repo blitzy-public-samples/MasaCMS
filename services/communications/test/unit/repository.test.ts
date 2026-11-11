@@ -2,7 +2,13 @@
 /** Communications repository helpers against a throwaway `communications` schema: fixture row writes, one changelog row per write, gates and write positions. */
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { GateClosedError, UnitNotAuthoritativeError, ensureUnitGates, withGatedTenant } from '@opt2/platform/migration-kit';
+import {
+  GateClosedError,
+  UnitNotAuthoritativeError,
+  ensureUnitGates,
+  requestMigrationAuthority,
+  withGatedTenant,
+} from '@opt2/platform/migration-kit';
 import { tenantIdForSite, withMetadata, type TenantTx } from '@opt2/platform/tenancy';
 import { newRequestContext, runWithRequestContext } from '@opt2/platform/service-kit';
 import { createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
@@ -11,11 +17,12 @@ import {
   SCHEMA,
   createCommunicationsRepository,
   type CommunicationsRepository,
+  type NewAdoptedScheduledTask,
   type NewMessage,
   type NewScheduledTask,
   type NewTemplate,
 } from '../../src/repo/repository.js';
-import { OWNED_TABLES, UNITS, type MessageRow } from '../../src/repo/tables.js';
+import { OWNED_TABLES, UNITS, type MessageRow, type ScheduledTaskRow } from '../../src/repo/tables.js';
 
 const NOW = new Date(2026, 5, 30, 14, 5, 9, 123);
 const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
@@ -55,6 +62,11 @@ function launchTask(over: Partial<NewScheduledTask> = {}): NewScheduledTask {
     origin: 'event',
     ...over,
   };
+}
+
+function adoptedTask(over: Partial<NewAdoptedScheduledTask> = {}): NewAdoptedScheduledTask {
+  const { origin: _origin, ...task } = launchTask(over);
+  return task;
 }
 
 describe('communications repository identity', () => {
@@ -261,16 +273,192 @@ describe.skipIf(!available)('communications repository writes against PostgreSQL
     expect(await changelog()).toEqual([]);
   });
 
-  it('rejects writes to legacy units while scheduled tasks, which have no unit, stay writable', async () => {
+  it('rejects writes to legacy units, scheduled tasks included', async () => {
+    const [task] = await inTenant((tx) => repository.insertScheduledTasks(tx, [launchTask()]));
+    const taskId = task?.scheduled_task_id ?? '';
     await setGates('legacy');
 
     await expect(newMessage()).rejects.toBeInstanceOf(UnitNotAuthoritativeError);
     await expect(inTenant((tx) => repository.insertTemplate(tx, TEMPLATE))).rejects.toBeInstanceOf(UnitNotAuthoritativeError);
-    await expect(inTenant((tx) => repository.insertScheduledTasks(tx, [launchTask()]))).resolves.toHaveLength(1);
+    await expect(inTenant((tx) => repository.insertScheduledTasks(tx, [launchTask()]))).rejects.toBeInstanceOf(
+      UnitNotAuthoritativeError,
+    );
+    await expect(inTenant((tx) => repository.setScheduledTaskStatus(tx, taskId, 'cancelled'))).rejects.toBeInstanceOf(
+      UnitNotAuthoritativeError,
+    );
+    await expect(inTenant((tx) => repository.stampEnqueued(tx, taskId))).rejects.toBeInstanceOf(UnitNotAuthoritativeError);
+    await expect(inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask()]))).rejects.toBeInstanceOf(UnitNotAuthoritativeError);
+  });
+
+  it.each(['closed', 'legacy'] as const)('lets scheduled-task writes of a platform.migration request pass a %s gate', async (state) => {
+    await setGates(state);
+    const service = { name: 'migration', roles: ['platform.migration'] };
+    const store = { ...newRequestContext({ requestId: `req-adopt-${state}` }), service };
+
+    const cancelled = await runWithRequestContext(store, () =>
+      inTenant(async (tx) => {
+        const ctx = { authority: requestMigrationAuthority() };
+        const [adopted] = await repository.insertScheduledTasks(tx, [launchTask({ origin: 'adopted' })], ctx);
+        return repository.setScheduledTaskStatus(tx, adopted?.scheduled_task_id ?? '', 'cancelled', ctx);
+      }),
+    );
+
+    expect(cancelled).toMatchObject({ origin: 'adopted', status: 'cancelled' });
+    expect((await changelog()).map((change) => [change.op, change.table, change.request_id])).toEqual([
+      ['insert', 'scheduled_task', `req-adopt-${state}`],
+      ['update', 'scheduled_task', `req-adopt-${state}`],
+    ]);
+  });
+
+  function adoptedRows(tenant = tenantId): Promise<Pick<ScheduledTaskRow, 'scheduled_task_id' | 'task_name' | 'status'>[]> {
+    return handle.app.withTenant(tenant, async (tx) => {
+      const { rows } = await tx.query<Pick<ScheduledTaskRow, 'scheduled_task_id' | 'task_name' | 'status'>>(
+        `SELECT scheduled_task_id, task_name, status FROM ${handle.schema}.scheduled_task WHERE origin = 'adopted' ORDER BY task_name`,
+      );
+      return rows;
+    });
+  }
+
+  it('adopts a task name once: a repeat, in a later call or the same one, returns the stored row unchanged', async () => {
+    const [first] = await inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask()]));
+    const again = await inTenant((tx) =>
+      repository.adoptScheduledTasks(tx, [adoptedTask({ queueTaskName: 'opt2-survey-S1-launch-v2', scheduleVersion: 2 }), adoptedTask()]),
+    );
+
+    expect(first).toMatchObject({ created: true, row: { origin: 'adopted', status: 'scheduled', queue_task_name: 'opt2-survey-S1-launch-v1' } });
+    expect(first?.row.scheduled_task_id).toMatch(CF_UUID);
+    expect(again).toEqual([
+      { created: false, row: first?.row },
+      { created: false, row: first?.row },
+    ]);
+    expect(await adoptedRows()).toHaveLength(1);
+    expect(ops(await changelog())).toEqual(['insert scheduled_task']);
+  });
+
+  it('gives the second occurrence of a name within one call the row the first created', async () => {
+    const [first, second] = await inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask(), adoptedTask()]));
+
+    expect([first?.created, second?.created]).toEqual([true, false]);
+    expect(second?.row).toEqual(first?.row);
+    expect(ops(await changelog())).toEqual(['insert scheduled_task']);
+  });
+
+  it('creates one row when two tenant transactions adopt the same task concurrently', async () => {
+    const adopt = (): Promise<{ created: boolean; id: string }> =>
+      inTenant(async (tx) => {
+        const [adopted] = await repository.adoptScheduledTasks(tx, [adoptedTask()]);
+        // Holding the name lock past the other transaction's start makes it wait for this commit.
+        await tx.query('SELECT pg_sleep(0.2)');
+        return { created: adopted?.created ?? false, id: adopted?.row.scheduled_task_id ?? '' };
+      });
+
+    const results = await Promise.all([adopt(), adopt()]);
+
+    expect(results.map((result) => result.created).sort()).toEqual([false, true]);
+    expect(new Set(results.map((result) => result.id)).size).toBe(1);
+    expect(await adoptedRows()).toHaveLength(1);
+    expect(ops(await changelog())).toEqual(['insert scheduled_task']);
+  });
+
+  it('reactivates a cancelled adoption in place with the new schedule and cleared stamps', async () => {
+    const [adopted] = await inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask()]));
+    const taskId = adopted?.row.scheduled_task_id ?? '';
+    await inTenant(async (tx) => {
+      await repository.stampEnqueued(tx, taskId);
+      await repository.setScheduledTaskStatus(tx, taskId, 'cancelled');
+      await repository.stampDequeued(tx, taskId);
+    });
+    const next = {
+      queueTaskName: 'opt2-survey-S1-launch-v2',
+      scheduleTime: new Date(2026, 6, 2, 9, 0, 0),
+      targetRoute: '/internal/v1/tasks/surveys/S1/launch?v=2',
+      scheduleVersion: 2,
+    };
+
+    const [reactivated] = await inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask(next)]));
+
+    expect(reactivated).toMatchObject({
+      created: true,
+      row: {
+        scheduled_task_id: taskId,
+        origin: 'adopted',
+        status: 'scheduled',
+        queue_task_name: next.queueTaskName,
+        target_route: next.targetRoute,
+        schedule_version: 2,
+        enqueued_at: null,
+        dequeued_at: null,
+      },
+    });
+    expect(reactivated?.row.schedule_time.getTime()).toBe(next.scheduleTime.getTime());
+    expect(await adoptedRows()).toEqual([{ scheduled_task_id: taskId, task_name: 'opt2-survey-S1-launch', status: 'scheduled' }]);
+    expect(ops(await changelog())).toEqual([
+      'insert scheduled_task',
+      'update scheduled_task',
+      'update scheduled_task',
+      'update scheduled_task',
+      'update scheduled_task',
+    ]);
+  });
+
+  it.each(['done', 'superseded'] as const)('returns a %s adoption unchanged', async (status) => {
+    const [adopted] = await inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask()]));
+    const stored = await inTenant((tx) => repository.setScheduledTaskStatus(tx, adopted?.row.scheduled_task_id ?? '', status));
+
+    const [again] = await inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask({ scheduleVersion: 2 })]));
+
+    expect(again).toEqual({ created: false, row: stored });
+    expect(ops(await changelog())).toEqual(['insert scheduled_task', 'update scheduled_task']);
+  });
+
+  it('adopts the same task name independently per tenant', async () => {
+    const otherTenant = tenantIdForSite(`communications-repository-${tenants}-other`);
+
+    const [mine, theirs] = await Promise.all([
+      inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask()])),
+      handle.app.withTenant(otherTenant, (tx) => repository.adoptScheduledTasks(tx, [adoptedTask()])),
+    ]);
+
+    expect([mine[0]?.created, theirs[0]?.created]).toEqual([true, true]);
+    expect(mine[0]?.row.scheduled_task_id).not.toBe(theirs[0]?.row.scheduled_task_id);
+    expect(await adoptedRows()).toHaveLength(1);
+    expect(await adoptedRows(otherTenant)).toHaveLength(1);
+  });
+
+  it('routes adopted tasks of insertScheduledTasks through adoption, so a repeat reuses the row', async () => {
+    const [first] = await inTenant((tx) => repository.insertScheduledTasks(tx, [launchTask({ origin: 'adopted' })]));
+    const [event, again] = await inTenant((tx) =>
+      repository.insertScheduledTasks(tx, [
+        launchTask({ queueTaskName: 'opt2-survey-S1-launch-event-v1' }),
+        launchTask({ origin: 'adopted', queueTaskName: 'opt2-survey-S1-launch-v2' }),
+      ]),
+    );
+
+    expect(again).toEqual(first);
+    expect(event).toMatchObject({ origin: 'event', task_name: 'opt2-survey-S1-launch' });
+    expect(await adoptedRows()).toHaveLength(1);
+    expect(ops(await changelog())).toEqual(['insert scheduled_task', 'insert scheduled_task']);
+  });
+
+  it('rejects a second adopted row with the same task name in the schema itself', async () => {
+    await inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask()]));
+
+    await expect(
+      inTenant((tx) =>
+        tx.query(
+          `INSERT INTO ${handle.schema}.scheduled_task (tenant_id, scheduled_task_id, task_name, queue, queue_task_name, kind, source_type,` +
+            ' source_id, schedule_time, status, target_route, schedule_version, origin, created_at, updated_at)' +
+            ` SELECT tenant_id, $1, task_name, queue, queue_task_name || '-copy', kind, source_type, source_id, schedule_time, status,` +
+            ` target_route, schedule_version, origin, created_at, updated_at FROM ${handle.schema}.scheduled_task`,
+          [MISSING_ID],
+        ),
+      ),
+    ).rejects.toMatchObject({ code: '23505', constraint: 'scheduled_task_adopted_name_key' });
   });
 
   it.each<[string, (messageId: string) => (tx: TenantTx) => Promise<unknown>]>([
     ['insertTemplate', (_id: string) => (tx: TenantTx) => repository.insertTemplate(tx, TEMPLATE)],
+    ['insertScheduledTasks', (_id: string) => (tx: TenantTx) => repository.insertScheduledTasks(tx, [launchTask()])],
     ['setMessageState', (id: string) => (tx: TenantTx) => repository.setMessageState(tx, { messageId: id, state: 'sent' })],
     ['appendDeliveryStatus', (id: string) => (tx: TenantTx) => repository.appendDeliveryStatus(tx, { messageId: id, state: 'sent', source: 'send' })],
   ])('%s waits on a closed gate, then fails with GateClosedError', async (_name, write) => {

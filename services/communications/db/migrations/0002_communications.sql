@@ -16,6 +16,9 @@ ALTER TABLE communications.message_template ENABLE ROW LEVEL SECURITY; ALTER TAB
 CREATE POLICY tenant_isolation ON communications.message_template
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+-- Site list order. Under RLS the non-leakproof lower(rtrim(siteid)) match can only filter it, never bound the scan; the statistics estimate that filter.
+CREATE INDEX message_template_site_created_idx ON communications.message_template (tenant_id, created, template_id) INCLUDE (siteid);
+CREATE STATISTICS communications.message_template_site_stat ON (lower(rtrim(siteid))) FROM communications.message_template;
 
 -- synthetic.message: outbound messages; source, event_id and row_version are target-only.
 CREATE TABLE communications.message (
@@ -41,6 +44,11 @@ ALTER TABLE communications.message ENABLE ROW LEVEL SECURITY; ALTER TABLE commun
 CREATE POLICY tenant_isolation ON communications.message
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+-- Site list order, as for message_template.
+CREATE INDEX message_site_created_idx ON communications.message (tenant_id, created, message_id) INCLUDE (siteid);
+CREATE STATISTICS communications.message_site_stat ON (lower(rtrim(siteid))) FROM communications.message;
+-- Login-mail recovery batches.
+CREATE INDEX message_login_mail_queued_idx ON communications.message (tenant_id, created, message_id) WHERE source = 'login-mail' AND state = 'queued';
 
 -- synthetic.delivery_status: append-only delivery history per message; source is target-only.
 CREATE TABLE communications.delivery_status (
@@ -58,6 +66,7 @@ ALTER TABLE communications.delivery_status ENABLE ROW LEVEL SECURITY; ALTER TABL
 CREATE POLICY tenant_isolation ON communications.delivery_status
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+CREATE INDEX delivery_status_message_idx ON communications.delivery_status (tenant_id, message_id, recorded_at, status_id);
 
 -- Survey launch and reminder tasks, from survey.scheduled events or adopted ACF tasks; no legacy table.
 CREATE TABLE communications.scheduled_task (
@@ -87,6 +96,13 @@ CREATE POLICY tenant_isolation ON communications.scheduled_task
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 CREATE INDEX scheduled_task_source_idx ON communications.scheduled_task (tenant_id, source_type, source_id);
+-- Stamp recovery batches.
+CREATE INDEX scheduled_task_unstamped_idx ON communications.scheduled_task (tenant_id, created_at, scheduled_task_id)
+  WHERE (status = 'scheduled' AND enqueued_at IS NULL) OR (status IN ('superseded', 'cancelled') AND dequeued_at IS NULL);
+-- Adopted-task batches.
+CREATE INDEX scheduled_task_adopted_idx ON communications.scheduled_task (tenant_id, created_at, scheduled_task_id) WHERE origin = 'adopted' AND status = 'scheduled';
+-- One adopted row per ACF task name.
+CREATE UNIQUE INDEX scheduled_task_adopted_name_key ON communications.scheduled_task (tenant_id, task_name) WHERE origin = 'adopted';
 
 -- temails (mapping-only; cemail is legacy-served).
 CREATE TABLE communications.email (

@@ -2,7 +2,14 @@
 // Liveness and stored timestamps come from the database clock; the injected clock only bounds in-process waits.
 import { LegacyServiceUnavailableError, normaliseRouteKey } from '@opt2/platform/legacy-compat';
 import type { Clock } from '@opt2/platform/service-kit';
-import { withMetadata, type MetadataTx, type TenantDb } from '@opt2/platform/tenancy';
+import {
+  withMetadata,
+  type MetadataTx,
+  type QueryConfig,
+  type QueryResult,
+  type QueryResultRow,
+  type TenantDb,
+} from '@opt2/platform/tenancy';
 import type { components, operations } from '../generated/openapi.js';
 import { INSTANCE_LIVENESS_SECONDS, createInflightStore } from './inflight.js';
 import { CutoverSchemaError, buildRoutingIndex, loadGroups, loadVersion } from './loader.js';
@@ -27,6 +34,12 @@ export const POLL_INTERVAL_MS = 250;
 
 /** Default wait of a frozen entry's request before it answers the legacy 503, in milliseconds. */
 export const DEFAULT_FREEZE_WAIT_MS = 30_000;
+
+/** Age of the last successful refresh at which cached routing and freezes stop serving, in milliseconds; below instance liveness. */
+export const SNAPSHOT_MAX_AGE_MS = 2 * REFRESH_INTERVAL_MS;
+
+/** Heartbeat age, in seconds, after which `start` removes an instance row that holds no in-flight write. */
+export const INSTANCE_RETENTION_SECONDS = 3600;
 
 function describeFindings(findings: readonly CutoverFinding[]): string {
   return findings.map((finding) => `${finding.rule}: ${finding.message}`).join('; ');
@@ -73,19 +86,19 @@ export interface CutoverStateOptions {
 
 /** The active cut-over version of one gateway instance, and the operations that change it. */
 export interface CutoverState {
-  /** Applies the stored state once, then refreshes and heartbeats every second until `stop`. */
+  /** Applies the stored state once and prunes long-dead instances, then refreshes and heartbeats every second until `stop`. */
   start(): Promise<void>;
   /** Stops the background refresh. */
   stop(): void;
-  /** Cached routing index for reads, at most one refresh old; undefined while no version is active. */
+  /** Cached routing index for reads; undefined while no version is active or the cached state has reached `SNAPSHOT_MAX_AGE_MS`. */
   active(): RoutingIndex | undefined;
   /** Epoch of the cached state. */
   epoch(): number;
   /** Reads the stored epoch before a write is routed; throws `LegacyServiceUnavailableError` while no version is active. */
   readEpochForWrite(): Promise<{ epoch: number; index: RoutingIndex }>;
-  /** Whether the route key is frozen in the cached state. */
+  /** Whether the route key is frozen in the cached state; true while that state is stale, as for `active`. */
   isFrozen(route: string): boolean;
-  /** Resolves true once the route is unfrozen, false after `ms`. */
+  /** Resolves true once a current state shows the route unfrozen, false after `ms`. */
   waitUnfrozen(route: string, ms?: number): Promise<boolean>;
   /** Validates `tableVersion` in activation mode and commits it with a new epoch when its `previous` is the active version. */
   activate(input: { tableVersion: string; actor: string }): Promise<ActivationResult>;
@@ -132,6 +145,62 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
+/** Outcome of one poll check: it passed, it failed, or the wait's deadline came first. */
+type CheckOutcome = 'passed' | 'failed' | 'expired';
+
+const SET_STATEMENT_TIMEOUT_SQL = "SELECT set_config('statement_timeout', $1, true)";
+// SQLSTATE query_canceled, which PostgreSQL raises when statement_timeout ends a statement.
+const QUERY_CANCELED = '57014';
+
+/** A poll check's statement was due after the wait's deadline, so it was never sent. */
+class CheckExpired extends Error {
+  override readonly name = 'CheckExpired';
+
+  constructor() {
+    super('the wait deadline passed before the check could query');
+  }
+}
+
+/** A poll check was still running at the wait's deadline, so its signal ended its transaction. */
+class CheckOutlasted extends Error {
+  override readonly name = 'CheckOutlasted';
+
+  constructor() {
+    super('the wait deadline passed while the check was running');
+  }
+}
+
+/** True for an error that ended a check because its deadline passed. */
+function isExpiry(error: unknown): boolean {
+  return (
+    error instanceof CheckExpired ||
+    error instanceof CheckOutlasted ||
+    (typeof error === 'object' && error !== null && 'code' in error && error.code === QUERY_CANCELED)
+  );
+}
+
+/** Settles with `check`'s outcome, or `expired` once `ms` passes first and aborts the check's signal; a later settlement of `check` is absorbed. */
+function within(ms: number, check: (signal: AbortSignal) => Promise<boolean>): Promise<CheckOutcome> {
+  const controller = new AbortController();
+  let timer: NodeJS.Timeout | undefined;
+  const expiry = new Promise<CheckOutcome>((resolve) => {
+    timer = setTimeout(() => {
+      resolve('expired');
+      controller.abort(new CheckOutlasted());
+    }, ms);
+  });
+  const work = check(controller.signal).then(
+    (passed): CheckOutcome => (passed ? 'passed' : 'failed'),
+    (error: unknown): CheckOutcome => {
+      if (isExpiry(error)) return 'expired';
+      throw error;
+    },
+  );
+  return Promise.race([work, expiry]).finally(() => {
+    clearTimeout(timer);
+  });
+}
+
 function isMissingFile(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
 }
@@ -154,12 +223,17 @@ export function createCutoverState(opts: CutoverStateOptions): CutoverState {
   const stateTable = `${schema}.cutover_state`;
   const freezeTable = `${schema}.cutover_freeze`;
   const instanceTable = `${schema}.instance`;
+  const inflightTable = `${schema}.inflight`;
   // Version files are immutable, so each parsed version and its index is kept for the life of the process.
   const tables = new Map<string, Promise<CutoverTable>>();
   const indexes = new Map<string, Promise<RoutingIndex>>();
   const groupsFiles = new Map<string, Promise<GroupsFile>>();
   if (opts.groups !== undefined) groupsFiles.set(paths.groupsFile, Promise.resolve(opts.groups));
   let snapshot: Snapshot = { loaded: false, epoch: 0, index: undefined, frozen: new Set() };
+  // Start time of the latest-started refresh that succeeded; refreshes started later win even under a clock step.
+  let refreshesStarted = 0;
+  let freshSequence = 0;
+  let freshSince: number | undefined;
   let running = false;
   let loops = 0;
   let timer: NodeJS.Timeout | undefined;
@@ -182,25 +256,60 @@ export function createCutoverState(opts: CutoverStateOptions): CutoverState {
     return row;
   };
 
-  const refresh = (): Promise<Snapshot> =>
-    withMetadata(db, async (tx) => {
-      const row = await readStateRow(tx);
-      const epoch = Number(row.epoch);
-      if (!snapshot.loaded || epoch > snapshot.epoch) {
-        const { rows } = await tx.query<{ route: string }>(`SELECT route FROM ${freezeTable}`);
-        const index = row.table_version === null ? undefined : await indexFor(row.table_version);
-        // A slower concurrent refresh never replaces a newer snapshot, so a seen freeze cannot be lost again.
+  /** `tx` with each statement's `statement_timeout` set to what is left until `until`; none is sent once nothing is left. */
+  const boundedTx = (tx: MetadataTx, until: number): MetadataTx => ({
+    ...tx,
+    query: async <R extends QueryResultRow = QueryResultRow>(text: string | QueryConfig, values?: unknown[]): Promise<QueryResult<R>> => {
+      const left = Math.ceil(until - clock.now().getTime());
+      if (left <= 0) throw new CheckExpired();
+      await tx.query(SET_STATEMENT_TIMEOUT_SQL, [String(left)]);
+      return tx.query<R>(text, values);
+    },
+  });
+
+  /** Applies a newer stored state and heartbeats; `until` and `signal`, set only by poll checks, end its statements and transaction at their deadline. */
+  const refresh = async (until?: number, signal?: AbortSignal): Promise<Snapshot> => {
+    refreshesStarted += 1;
+    const sequence = refreshesStarted;
+    // Taken before the transaction begins, so it never follows the heartbeat_at that other instances judge liveness by.
+    const startedAt = clock.now().getTime();
+    const applied = await withMetadata(
+      db,
+      async (base) => {
+        const tx = until === undefined ? base : boundedTx(base, until);
+        const row = await readStateRow(tx);
+        const epoch = Number(row.epoch);
         if (!snapshot.loaded || epoch > snapshot.epoch) {
-          snapshot = { loaded: true, epoch, index, frozen: new Set(rows.map((frozen) => frozen.route)) };
+          const { rows } = await tx.query<{ route: string }>(`SELECT route FROM ${freezeTable}`);
+          const index = row.table_version === null ? undefined : await indexFor(row.table_version);
+          // A slower concurrent refresh never replaces a newer snapshot, so a seen freeze cannot be lost again.
+          if (!snapshot.loaded || epoch > snapshot.epoch) {
+            snapshot = { loaded: true, epoch, index, frozen: new Set(rows.map((frozen) => frozen.route)) };
+          }
         }
-      }
-      await tx.query(
-        `INSERT INTO ${instanceTable} (instance_id, seen_epoch, started_at, heartbeat_at) VALUES ($1, $2, now(), now()) ` +
-          `ON CONFLICT (instance_id) DO UPDATE SET seen_epoch = EXCLUDED.seen_epoch, heartbeat_at = now()`,
-        [instanceId, snapshot.epoch],
-      );
-      return snapshot;
-    });
+        await tx.query(
+          `INSERT INTO ${instanceTable} (instance_id, seen_epoch, started_at, heartbeat_at) VALUES ($1, $2, now(), now()) ` +
+            `ON CONFLICT (instance_id) DO UPDATE SET seen_epoch = EXCLUDED.seen_epoch, heartbeat_at = now()`,
+          [instanceId, snapshot.epoch],
+        );
+        return snapshot;
+      },
+      signal === undefined ? undefined : { signal },
+    );
+    if (sequence > freshSequence) {
+      freshSequence = sequence;
+      freshSince = startedAt;
+    }
+    return applied;
+  };
+
+  /** The snapshot while its last successful refresh started less than `SNAPSHOT_MAX_AGE_MS` ago; undefined once it is stale. */
+  const current = (): Snapshot | undefined => {
+    if (freshSince === undefined) return undefined;
+    const age = clock.now().getTime() - freshSince;
+    // A negative age means the clock stepped back; the next refresh re-establishes freshness.
+    return age >= 0 && age < SNAPSHOT_MAX_AGE_MS ? snapshot : undefined;
+  };
 
   // A tick still running across stop() and start() belongs to the old loop and must not reschedule beside the new one.
   const scheduleRefresh = (delay: number, loop: number): void => {
@@ -208,7 +317,7 @@ export function createCutoverState(opts: CutoverStateOptions): CutoverState {
       const startedAt = clock.now().getTime();
       void refresh()
         .catch((error: unknown) => {
-          logger.error({ err: error, instanceId }, 'cut-over state refresh failed');
+          logger.error({ err: error }, `cut-over state refresh failed: instance=${instanceId}`);
         })
         .finally(() => {
           const elapsed = clock.now().getTime() - startedAt;
@@ -218,28 +327,49 @@ export function createCutoverState(opts: CutoverStateOptions): CutoverState {
     timer.unref();
   };
 
-  /** Resolves true once `check` passes after a poll, false once `ms` has elapsed by the clock or by the poll timers. */
-  const poll = async (ms: number, check: () => Promise<boolean>): Promise<boolean> => {
+  /**
+   * Checks now and after each poll; resolves true once `check` passes, false once `ms` has elapsed by the clock or by the poll timers,
+   * or when a check outlasts what is left of `ms`. `check` receives the clock time its work must end by and the signal that aborts it then.
+   */
+  const poll = async (ms: number, check: (until: number, signal: AbortSignal) => Promise<boolean>): Promise<boolean> => {
     const deadline = clock.now().getTime() + ms;
     let budget = ms;
-    for (;;) {
-      const remaining = Math.min(budget, deadline - clock.now().getTime());
-      if (remaining <= 0) return false;
-      const step = Math.min(POLL_INTERVAL_MS, remaining);
+    const left = (): number => Math.min(budget, deadline - clock.now().getTime());
+    for (let remaining = left(); remaining > 0; remaining = left()) {
+      const until = clock.now().getTime() + remaining;
+      const outcome = await within(remaining, (signal) => check(until, signal));
+      if (outcome !== 'failed') return outcome === 'passed';
+      const step = Math.min(POLL_INTERVAL_MS, left());
+      if (step <= 0) return false;
       await sleep(step);
       budget -= step;
-      if (await check()) return true;
     }
+    return false;
   };
 
-  const allInstancesSeen = (epoch: number): Promise<boolean> =>
-    withMetadata(db, async (tx) => {
-      const { rows } = await tx.query<{ lagging: number }>(
-        `SELECT count(*)::int AS lagging FROM ${instanceTable} WHERE ${LIVE} AND seen_epoch < $1`,
-        [epoch],
-      );
-      return rows[0]?.lagging === 0;
-    });
+  const allInstancesSeen = (epoch: number, until: number, signal: AbortSignal): Promise<boolean> =>
+    withMetadata(
+      db,
+      async (base) => {
+        const tx = boundedTx(base, until);
+        const { rows } = await tx.query<{ lagging: number }>(
+          `SELECT count(*)::int AS lagging FROM ${instanceTable} WHERE ${LIVE} AND seen_epoch < $1`,
+          [epoch],
+        );
+        return rows[0]?.lagging === 0;
+      },
+      { signal },
+    );
+
+  /** Deletes instances whose heartbeat is older than `INSTANCE_RETENTION_SECONDS` and that hold no in-flight row; in-flight rows stay. */
+  const pruneInstances = (): Promise<unknown> =>
+    withMetadata(db, (tx) =>
+      tx.query(
+        `DELETE FROM ${instanceTable} AS g WHERE g.heartbeat_at < now() - make_interval(secs => $1) ` +
+          `AND NOT EXISTS (SELECT 1 FROM ${inflightTable} AS i WHERE i.instance_id = g.instance_id)`,
+        [INSTANCE_RETENTION_SECONDS],
+      ),
+    );
 
   const requestedTable = async (tableVersion: string): Promise<CutoverTable> => {
     try {
@@ -327,7 +457,12 @@ export function createCutoverState(opts: CutoverStateOptions): CutoverState {
       }
       return Number(row.epoch);
     });
-    logger.info({ routes: keys, epoch, actor, instanceId }, op === 'freeze' ? 'cut-over routes frozen' : 'cut-over routes unfrozen');
+    // The platform logger keeps only log-record.v1 fields, so the operation context is in the message.
+    logger.info(
+      {},
+      `cut-over routes ${op === 'freeze' ? 'frozen' : 'unfrozen'}: count=${keys.length} epoch=${epoch} actor=${actor} ` +
+        `instance=${instanceId} routes=${JSON.stringify(keys)}`,
+    );
     await refresh();
     return status();
   };
@@ -344,6 +479,9 @@ export function createCutoverState(opts: CutoverStateOptions): CutoverState {
         if (loop === loops) running = false;
         throw error;
       }
+      await pruneInstances().catch((error: unknown) => {
+        logger.error({ err: error }, `cut-over instance pruning failed: instance=${instanceId}`);
+      });
       if (running && loop === loops) scheduleRefresh(REFRESH_INTERVAL_MS, loop);
     },
 
@@ -353,7 +491,7 @@ export function createCutoverState(opts: CutoverStateOptions): CutoverState {
       timer = undefined;
     },
 
-    active: () => snapshot.index,
+    active: () => current()?.index,
 
     epoch: () => snapshot.epoch,
 
@@ -365,12 +503,13 @@ export function createCutoverState(opts: CutoverStateOptions): CutoverState {
       return { epoch, index };
     },
 
-    isFrozen: (route) => snapshot.frozen.has(normaliseRouteKey(route)),
+    isFrozen: (route) => current()?.frozen.has(normaliseRouteKey(route)) ?? true,
 
     async waitUnfrozen(route, ms = DEFAULT_FREEZE_WAIT_MS) {
       const key = normaliseRouteKey(route);
-      if (!snapshot.frozen.has(key)) return true;
-      return poll(ms, async () => !(await refresh()).frozen.has(key));
+      const cachedState = current();
+      if (cachedState !== undefined && !cachedState.frozen.has(key)) return true;
+      return poll(ms, async (until, signal) => !(await refresh(until, signal)).frozen.has(key));
     },
 
     async activate({ tableVersion, actor }) {
@@ -406,7 +545,10 @@ export function createCutoverState(opts: CutoverStateOptions): CutoverState {
         ]);
       }
       const epoch = Number(committed.epoch);
-      logger.info({ tableVersion, previous: active, epoch, actor, instanceId }, 'cut-over version activated');
+      logger.info(
+        {},
+        `cut-over version activated: tableVersion=${tableVersion} previous=${active ?? 'null'} epoch=${epoch} actor=${actor} instance=${instanceId}`,
+      );
       await refresh();
       return { tableVersion, epoch };
     },
@@ -415,10 +557,7 @@ export function createCutoverState(opts: CutoverStateOptions): CutoverState {
 
     unfreeze: (routes, actor) => changeFreezes('unfreeze', routes, actor),
 
-    async awaitVisible(epoch, timeoutMs) {
-      if (await allInstancesSeen(epoch)) return true;
-      return poll(timeoutMs, () => allInstancesSeen(epoch));
-    },
+    awaitVisible: (epoch, timeoutMs) => poll(timeoutMs, (until, signal) => allInstancesSeen(epoch, until, signal)),
 
     status,
   };

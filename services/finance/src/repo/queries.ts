@@ -16,28 +16,29 @@ import {
   type ProgramBindingRow,
 } from './tables.js';
 
-/** A record list page as envelope.cfc `page()` validates it: `pageIndex` from 1, `itemsPerPage` from 1 to 1000. */
+/** A list page as envelope.cfc `page()` validates it: `pageIndex` from 1, `itemsPerPage` from 1 to 1000. */
 export interface RecordPaging {
   pageIndex: number;
   itemsPerPage: number;
 }
 
-/** One page of the tenant's records and the count of all of them. */
-export interface RecordPage {
-  rows: FinanceRecordRow[];
+/** One page of a list and the count of all its rows. */
+export interface Page<R> {
+  rows: R[];
   total: number;
 }
 
-/** One stored attachment object of the migration export manifest; `size` is the row's `size_bytes`. */
-export type AttachmentObject = {
-  attachment_id: string;
-  record_id: string;
-  object_key: string;
-  size: number;
-  sha256: string;
-  content_type: string;
-  legacy_program_id: number;
-};
+/** One page of the tenant's records and the count of all of them. */
+export type RecordPage = Page<FinanceRecordRow>;
+
+/** Attachment rows read per page of the object manifest's keyset iteration. */
+export const MANIFEST_PAGE_SIZE = 1000;
+
+/** The `finance.attachment` columns the object manifest reads. */
+const MANIFEST_COLUMNS = ['attachment_id', 'object_key', 'legacy_program_id'] as const satisfies readonly (keyof FinanceAttachmentRow)[];
+
+/** One attachment row of the object manifest; the object's size, hash and type come from storage, not from the row. */
+export type AttachmentObject = Pick<FinanceAttachmentRow, (typeof MANIFEST_COLUMNS)[number]>;
 
 /** The records of one program period whose amounts are summed, optionally without record `excludeRecordId`. */
 export type PeriodScope = { programId: number; period: string; excludeRecordId?: string };
@@ -45,28 +46,21 @@ export type PeriodScope = { programId: number; period: string; excludeRecordId?:
 /** Exact sums of a period's positive and of its negative amounts; 0n where there are none. */
 export type PeriodTotals = { positive: Money; negative: Money };
 
-/** The `finance.attachment` column behind each manifest field. */
-const MANIFEST_COLUMNS: { readonly [F in keyof AttachmentObject]: keyof FinanceAttachmentRow } = {
-  attachment_id: 'attachment_id',
-  record_id: 'record_id',
-  object_key: 'object_key',
-  size: 'size_bytes',
-  sha256: 'sha256',
-  content_type: 'content_type',
-  legacy_program_id: 'legacy_program_id',
-};
-
 interface Statements {
   readonly record: string;
   readonly recordForUpdate: string;
   readonly countRecords: string;
   readonly recordPage: string;
-  readonly versions: string;
-  readonly attachments: string;
+  readonly countVersions: string;
+  readonly versionPage: string;
+  readonly countAttachments: string;
+  readonly attachmentPage: string;
   readonly attachment: string;
-  readonly rollups: string;
+  readonly countRollups: string;
+  readonly rollupPage: string;
   readonly binding: string;
-  readonly attachmentObjects: string;
+  readonly manifestFirst: string;
+  readonly manifestAfter: string;
   readonly periodTotals: string;
 }
 
@@ -80,30 +74,53 @@ function statementsFor(schema: string): Statements {
   const record = `SELECT ${columnList(FINANCE_RECORD)} FROM ${qualified(schema, FINANCE_RECORD.table)}`;
   const version = `SELECT ${columnList(FINANCE_RECORD_VERSION)} FROM ${qualified(schema, FINANCE_RECORD_VERSION.table)}`;
   const attachment = `SELECT ${columnList(FINANCE_ATTACHMENT)} FROM ${qualified(schema, FINANCE_ATTACHMENT.table)}`;
-  const manifest = Object.entries(MANIFEST_COLUMNS)
-    .map(([field, column]) => (field === column ? `"${column}"` : `"${column}" AS "${field}"`))
-    .join(', ');
+  const count = (def: TableDefinition): string => `SELECT count(*)::integer AS "total" FROM ${qualified(schema, def.table)}`;
+  const manifest = `SELECT ${MANIFEST_COLUMNS.map((column) => `"${column}"`).join(', ')} FROM ${qualified(schema, FINANCE_ATTACHMENT.table)}`;
   // The fixture's siteID filter is the tenant's own site, so RLS alone scopes rows; ids match exactly, as stored CF UUIDs.
   // CF UUIDs are fixed-format uppercase hex, so byte order matches SQL Server's case-insensitive order on ids;
   // COLLATE "C" on period and state matches the fixture's Latin1_General_BIN2.
+  // The manifest keyset keeps the primary key's own collation, so that index serves every page.
   return Object.freeze({
     record: `${record} WHERE "record_id" = $1`,
     recordForUpdate: `${record} WHERE "record_id" = $1 FOR UPDATE`,
-    countRecords: `SELECT count(*)::integer AS "total" FROM ${qualified(schema, FINANCE_RECORD.table)}`,
+    countRecords: count(FINANCE_RECORD),
     recordPage: `${record} ORDER BY "created", "record_id" COLLATE "C" LIMIT $1 OFFSET $2`,
-    versions: `${version} WHERE "record_id" = $1 ORDER BY "version"`,
-    attachments: `${attachment} WHERE "record_id" = $1 ORDER BY "created", "attachment_id" COLLATE "C"`,
+    countVersions: `${count(FINANCE_RECORD_VERSION)} WHERE "record_id" = $1`,
+    versionPage: `${version} WHERE "record_id" = $1 ORDER BY "version" LIMIT $2 OFFSET $3`,
+    countAttachments: `${count(FINANCE_ATTACHMENT)} WHERE "record_id" = $1`,
+    attachmentPage: `${attachment} WHERE "record_id" = $1 ORDER BY "created", "attachment_id" COLLATE "C" LIMIT $2 OFFSET $3`,
     attachment: `${attachment} WHERE "record_id" = $1 AND "attachment_id" = $2`,
-    rollups:
+    countRollups: count(FINANCE_ROLLUP),
+    rollupPage:
       `SELECT ${columnList(FINANCE_ROLLUP)} FROM ${qualified(schema, FINANCE_ROLLUP.table)}` +
-      ' ORDER BY "period" COLLATE "C", "state" COLLATE "C", "legacy_program_id"',
+      ' ORDER BY "period" COLLATE "C", "state" COLLATE "C", "legacy_program_id" LIMIT $1 OFFSET $2',
     binding: `SELECT ${columnList(PROGRAM_BINDING)} FROM ${qualified(schema, PROGRAM_BINDING.table)} ORDER BY "legacy_program_id" LIMIT 1`,
-    attachmentObjects: `SELECT ${manifest} FROM ${qualified(schema, FINANCE_ATTACHMENT.table)} ORDER BY "attachment_id" COLLATE "C"`,
+    manifestFirst: `${manifest} ORDER BY "attachment_id" LIMIT $1`,
+    manifestAfter: `${manifest} WHERE "attachment_id" > $1 ORDER BY "attachment_id" LIMIT $2`,
     periodTotals:
       `SELECT coalesce(sum("amount") FILTER (WHERE "amount" > 0), 0)::text AS "positive",` +
       ` coalesce(sum("amount") FILTER (WHERE "amount" < 0), 0)::text AS "negative" FROM ${qualified(schema, FINANCE_RECORD.table)}` +
       ' WHERE "legacy_program_id" = $1 AND "period" = $2 AND "record_id" IS DISTINCT FROM $3',
   });
+}
+
+/**
+ * One page of `sql.page` and the row count of `sql.count`, read as envelope.cfc `queryPage()` reads them: the count first,
+ * then the page only when it starts before that count. Both bind `params`; the page then binds LIMIT and OFFSET.
+ */
+async function queryPage<R extends Record<string, unknown>>(
+  tx: TenantTx,
+  sql: { count: string; page: string },
+  params: readonly unknown[],
+  paging: RecordPaging,
+): Promise<Page<R>> {
+  const [{ total }] = (await tx.query<{ total: number }>(sql.count, [...params])).rows as [{ total: number }];
+  const offset = (paging.pageIndex - 1) * paging.itemsPerPage;
+  if (offset >= total) {
+    return { rows: [], total };
+  }
+  const { rows } = await tx.query<R>(sql.page, [...params, paging.itemsPerPage, offset]);
+  return { rows, total };
 }
 
 /** The record `id`, or null; `forUpdate` row-locks it so transitions on one record serialise. */
@@ -122,27 +139,21 @@ export async function findRecord(
 export async function listRecords(tx: TenantTx, paging: RecordPaging): Promise<RecordPage> {
   const statements = statementsFor(tx.schema);
   await awaitReadable(tx, [FINANCE_RECORD.unit]);
-  const [{ total }] = (await tx.query<{ total: number }>(statements.countRecords)).rows as [{ total: number }];
-  const offset = (paging.pageIndex - 1) * paging.itemsPerPage;
-  if (offset >= total) {
-    return { rows: [], total };
-  }
-  const { rows } = await tx.query<FinanceRecordRow>(statements.recordPage, [paging.itemsPerPage, offset]);
-  return { rows, total };
+  return queryPage<FinanceRecordRow>(tx, { count: statements.countRecords, page: statements.recordPage }, [], paging);
 }
 
-/** Every version row of record `recordId`, by version. */
-export async function listVersions(tx: TenantTx, recordId: string): Promise<FinanceRecordVersionRow[]> {
+/** One page of record `recordId`'s version rows by version, and their total. */
+export async function listVersions(tx: TenantTx, recordId: string, paging: RecordPaging): Promise<Page<FinanceRecordVersionRow>> {
   const statements = statementsFor(tx.schema);
   await awaitReadable(tx, [FINANCE_RECORD_VERSION.unit]);
-  return (await tx.query<FinanceRecordVersionRow>(statements.versions, [recordId])).rows;
+  return queryPage<FinanceRecordVersionRow>(tx, { count: statements.countVersions, page: statements.versionPage }, [recordId], paging);
 }
 
-/** Every attachment row of record `recordId`, by `created`, then id. */
-export async function listAttachments(tx: TenantTx, recordId: string): Promise<FinanceAttachmentRow[]> {
+/** One page of record `recordId`'s attachment rows by `created`, then id, and their total. */
+export async function listAttachments(tx: TenantTx, recordId: string, paging: RecordPaging): Promise<Page<FinanceAttachmentRow>> {
   const statements = statementsFor(tx.schema);
   await awaitReadable(tx, [FINANCE_ATTACHMENT.unit]);
-  return (await tx.query<FinanceAttachmentRow>(statements.attachments, [recordId])).rows;
+  return queryPage<FinanceAttachmentRow>(tx, { count: statements.countAttachments, page: statements.attachmentPage }, [recordId], paging);
 }
 
 /** The attachment `attachmentId` of record `recordId`, or null when either id does not match. */
@@ -153,11 +164,11 @@ export async function findAttachment(tx: TenantTx, recordId: string, attachmentI
   return rows[0] ?? null;
 }
 
-/** Every rollup row of the tenant, by period, then state, in binary order. */
-export async function listRollups(tx: TenantTx): Promise<FinanceRollupRow[]> {
+/** One page of the tenant's rollup rows by period, then state, in binary order, and their total. */
+export async function listRollups(tx: TenantTx, paging: RecordPaging): Promise<Page<FinanceRollupRow>> {
   const statements = statementsFor(tx.schema);
   await awaitReadable(tx, [FINANCE_ROLLUP.unit]);
-  return (await tx.query<FinanceRollupRow>(statements.rollups)).rows;
+  return queryPage<FinanceRollupRow>(tx, { count: statements.countRollups, page: statements.rollupPage }, [], paging);
 }
 
 /** The exact positive and negative amount sums of the tenant's records in `scope`. */
@@ -178,8 +189,15 @@ export async function findProgramBinding(tx: TenantTx): Promise<ProgramBindingRo
   return rows[0] ?? null;
 }
 
-/** The tenant's attachment object manifest, by attachment id. */
-export async function listAttachmentObjects(tx: TenantTx): Promise<AttachmentObject[]> {
+/** The tenant's attachment object rows by attachment id, read in keyset pages of `MANIFEST_PAGE_SIZE` rows. */
+export async function* attachmentObjects(tx: TenantTx): AsyncGenerator<AttachmentObject> {
   // No read gate: the migration export reads this while a write window imports the unit, and waiting would stall that window.
-  return (await tx.query<AttachmentObject>(statementsFor(tx.schema).attachmentObjects)).rows;
+  const statements = statementsFor(tx.schema);
+  let page = (await tx.query<AttachmentObject>(statements.manifestFirst, [MANIFEST_PAGE_SIZE])).rows;
+  for (;;) {
+    yield* page;
+    const last = page.at(-1);
+    if (page.length < MANIFEST_PAGE_SIZE || last === undefined) return;
+    page = (await tx.query<AttachmentObject>(statements.manifestAfter, [last.attachment_id, MANIFEST_PAGE_SIZE])).rows;
+  }
 }

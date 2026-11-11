@@ -121,7 +121,7 @@ component output="false" hint="Masa-shaped JSON envelope and value formats for t
 		};
 	}
 
-	public void function listResponse(required string method, struct params={}, required struct listResult) hint="Writes one page of a list() or queryPage() result in Masa's paged-list shape and ends the request; a result with totalItems already holds only its page." {
+	public void function listResponse(required string method, struct params={}, required struct listResult) hint="Writes one page of a list() or queryPage() result and ends the request: items, startindex (pageIndex - 1) * itemsPerPage + 1, endindex min(startindex + itemsPerPage - 1, totalitems), itemsperpage, totalitems, totalpages and the requested pageindex; unlike Masa, no entityname or links and no reset to page 1. A result with totalItems already holds only its page." {
 		local.paged = structKeyExists(arguments.listResult, 'totalItems');
 		local.totalItems = local.paged ? arguments.listResult.totalItems : arrayLen(arguments.listResult.list);
 		local.pageIndex = arguments.listResult.pageIndex;
@@ -137,8 +137,9 @@ component output="false" hint="Masa-shaped JSON envelope and value formats for t
 		} else {
 			local.data['items'] = arraySlice(arguments.listResult.list, local.startIndex, local.endIndex - local.startIndex + 1);
 		}
-		local.data['startindex'] = local.startIndex;
-		local.data['endindex'] = local.endIndex;
+		// Longs, because ACF writes doubles from 1E12 up in E notation.
+		local.data['startindex'] = javaCast('long', local.startIndex);
+		local.data['endindex'] = javaCast('long', local.endIndex);
 		local.data['itemsperpage'] = local.itemsPerPage;
 		local.data['totalitems'] = local.totalItems;
 		local.data['totalpages'] = ceiling(local.totalItems / local.itemsPerPage);
@@ -147,16 +148,36 @@ component output="false" hint="Masa-shaped JSON envelope and value formats for t
 		success(arguments.method, arguments.params, local.data);
 	}
 
-	public void function sendFile(required binary bytes, required string contentType, required string fileName, string method="", struct params={}) hint="Streams bytes as an attachment download with status 200, the filename as an escaped quoted-string, and ends the request; a control character in the filename answers server_error." {
+	public void function sendFile(required binary bytes, required string contentType, required string fileName, string method="", struct params={}) hint="Streams bytes as a status-200 attachment with Content-Type exactly contentType and its Content-Length, and ends the request. The filename is a quoted-string with \ and the double quote backslash-escaped; a non-ASCII name puts _ there for each non-ASCII code point and adds filename*=UTF-8'' with its UTF-8 bytes, each byte outside RFC 5987 attr-char as uppercase %XX. A control character in the filename answers server_error." {
 		if (reFind("[[:cntrl:]]", arguments.fileName)) {
 			fail("server_error", arguments.method, arguments.params);
 		}
-		cfheader(name="Content-Disposition", value='attachment; filename="' & replace(replace(arguments.fileName, "\", "\\", "all"), '"', '\"', "all") & '"');
-		cfcontent(type=arguments.contentType, variable=arguments.bytes, reset=true);
+		local.fallback = arguments.fileName.replaceAll("[^\x00-\x7F]", "_");
+		local.disposition = 'attachment; filename="' & replace(replace(local.fallback, "\", "\\", "all"), '"', '\"', "all") & '"';
+		if (compare(local.fallback, arguments.fileName) != 0) {
+			local.hex = binaryEncode(charsetDecode(arguments.fileName, "utf-8"), "hex");
+			local.encoded = "";
+			for (local.i = 1; local.i < len(local.hex); local.i += 2) {
+				local.pair = mid(local.hex, local.i, 2);
+				local.char = chr(inputBaseN(local.pair, 16));
+				local.encoded &= reFind("[A-Za-z0-9!##$&+.^_`|~-]", local.char) ? local.char : "%" & local.pair;
+			}
+			local.disposition &= "; filename*=UTF-8''" & local.encoded;
+		}
+		cfheader(name="Content-Disposition", value=local.disposition);
+		cfcontent(reset=true);
+		// Undertow appends the request charset to a servlet-set type and rewrites a charset parameter, so the type goes on the exchange as is.
+		local.requestContext = createObject("java", "io.undertow.servlet.handlers.ServletRequestContext").current();
+		local.response = local.requestContext.getOriginalResponse();
+		local.response.setContentLength(javaCast("int", arrayLen(arguments.bytes)));
+		local.requestContext.getExchange().getResponseHeaders().put(createObject("java", "io.undertow.util.Headers").CONTENT_TYPE, arguments.contentType);
+		local.out = local.response.getOutputStream();
+		local.out.write(arguments.bytes);
+		local.out.flush();
 		abort;
 	}
 
-	public array function rows(required query qry, string include="") hint="Converts a query to an array of row structs: NULL as empty string, dates as yyyy-mm-ddTHH:nn:ss, decimals as plain strings; binary columns are dropped unless listed in include." {
+	public array function rows(required query qry, string include="") hint="Converts a query to an array of row structs: NULL as the empty string ACF reads, dates as yyyy-mm-ddTHH:nn:ss, decimals as plain strings; binary columns are dropped unless listed in include." {
 		local.columns = [];
 		for (local.meta in getMetadata(arguments.qry)) {
 			local.type = lcase(listFirst(local.meta.TypeName, ' '));
@@ -171,9 +192,7 @@ component output="false" hint="Masa-shaped JSON envelope and value formats for t
 			local.row = [:];
 			for (local.column in local.columns) {
 				local.value = arguments.qry[local.column.name][local.i];
-				if (isNull(local.value)) {
-					local.value = "";
-				} else if (listFind('date,datetime,datetime2,smalldatetime', local.column.type) && len(local.value)) {
+				if (listFind('date,datetime,datetime2,smalldatetime', local.column.type) && len(local.value)) {
 					local.value = dateTimeFormat(local.value, "yyyy-mm-dd'T'HH:nn:ss");
 				} else if (isInstanceOf(local.value, "java.math.BigDecimal")) {
 					local.value = local.value.toPlainString();

@@ -1,6 +1,6 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Fixture envelope, error map, paging and handler of the surveys fixture routes (legacy-fixtures/cfml/lib/envelope.cfc). */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   cfHash,
   LEGACY_ERROR_MAP,
@@ -10,7 +10,7 @@ import {
   LegacyServiceUnavailableError,
   type SerializedLegacyResponse,
 } from '@opt2/platform/legacy-compat';
-import { createLogger } from '@opt2/platform/logging';
+import { createLogger, serializeError } from '@opt2/platform/logging';
 import { createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { testVerifier } from '@opt2/platform/testing';
 import {
@@ -286,6 +286,14 @@ describe('fixtureErrorResponse', () => {
 
 describe('fixture routes', () => {
   const logLines: string[] = [];
+  /** Spies on each request logger's `error`, holding the calls as made, before the logger serializes them. */
+  const errorSpies: { mock: { calls: unknown[][] } }[] = [];
+  const secret = 'secret-value';
+  /** An unhandled database-style error whose message, detail, where and cause carry row data. */
+  const unhandled = Object.assign(new Error(`duplicate key value: Key (answers)=(${secret})`, { cause: new Error(secret) }), {
+    detail: `Key (answers)=(${secret})`,
+    where: `SQL statement "INSERT INTO surveys.response VALUES ('${secret}')"`,
+  });
   const surveys = ['1', '2', '3'].map((n) => ({ surveyid: `S${n}`, title: `Survey ${n}` }));
   const responses = ['R1', 'R2', 'R3'].map((responseid) => ({ responseid, respondentsiteid: 'tenant-b' }));
   const listResults: Record<'paged' | 'past' | 'memory', FixtureListResult> = {
@@ -297,7 +305,7 @@ describe('fixture routes', () => {
     notFound: () => new FixtureApiError('notFound'),
     conflict: () => new FixtureApiError('conflict', 'Survey is already scheduled'),
     authorization: () => new LegacyApiError('authorization'),
-    error: () => new Error('database down'),
+    error: () => unhandled,
     unavailable: () => new LegacyServiceUnavailableError(),
   };
   const survey = { surveyid: SURVEY_ID, title: 'Pulse', version: '2', overdue: 'no', reminders: [{ offset_minutes: '30' }] };
@@ -331,6 +339,9 @@ describe('fixture routes', () => {
         env: 'local',
         destination: { write: (line: string) => void logLines.push(line) },
       }),
+    });
+    app.addHook('onRequest', async (request) => {
+      errorSpies.push(vi.spyOn(request.log, 'error'));
     });
     app.get(
       ROUTE,
@@ -380,24 +391,28 @@ describe('fixture routes', () => {
     await app.opt2.shutdown();
   });
 
-  /** Injects one request and returns its wire view plus whether it logged an unhandled fixture exception. */
+  /** Injects one request and returns its wire view, its log lines and logger `error` calls, and whether it logged an unhandled fixture exception. */
   async function call(
     url: string,
     opts: { method?: 'GET' | 'POST'; payload?: string; contentType?: string } = {},
-  ): Promise<Wire & { logged: boolean }> {
+  ): Promise<Wire & { logged: boolean; lines: string[]; errorCalls: unknown[][] }> {
     const before = logLines.length;
+    const spiesBefore = errorSpies.length;
     const res = await app.inject({
       method: opts.method ?? 'GET',
       url,
       ...(opts.payload === undefined ? {} : { payload: opts.payload }),
       ...(opts.contentType === undefined ? {} : { headers: { 'content-type': opts.contentType } }),
     });
+    const lines = logLines.slice(before);
     return {
       status: res.statusCode,
       contentType: res.headers['content-type'],
       etag: res.headers['etag'],
       body: res.body,
-      logged: logLines.slice(before).some((line) => line.includes('Unhandled fixture exception')),
+      logged: lines.some((line) => line.includes('Unhandled fixture exception')),
+      lines,
+      errorCalls: errorSpies.slice(spiesBefore).flatMap((spy) => spy.mock.calls),
     };
   }
 
@@ -489,11 +504,18 @@ describe('fixture routes', () => {
       ['conflict', 409, 'invalid_request', 'Survey is already scheduled', false],
       ['authorization', 401, 'invalid_request', 'Insufficient Account Permissions', false],
       ['error', 500, 'server_error', 'Unhandled Exception', true],
-    ])('answers a thrown %s with the fixture envelope at %i', async (kind, status, code, message, logged) => {
+    ])('answers a thrown %s with the fixture envelope at %i, logging only an unhandled error, serialized', async (kind, status, code, message, logged) => {
       const res = await call(`${ROUTE}/${SURVEY_ID}/launch?kind=${kind}`);
+      const record = serializeError(unhandled);
 
       expectFixtureResponse(res, status, errorBody('surveys.surveys.launch', code, message));
       expect(res.logged).toBe(logged);
+      expect(res.errorCalls).toStrictEqual(logged ? [[{ error: record }, 'Unhandled fixture exception']] : []);
+      expect(res.lines.filter((line) => line.includes('Unhandled fixture exception')).map((line) => JSON.parse(line).error)).toStrictEqual(
+        logged ? [record] : [],
+      );
+      expect(Object.keys(record).sort()).toEqual(['message', 'stack', 'type']);
+      expect(res.lines.join('\n')).not.toContain(secret);
     });
 
     it('propagates LegacyServiceUnavailableError, so service-kit answers the legacy 503', async () => {

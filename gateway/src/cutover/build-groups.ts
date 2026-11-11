@@ -238,27 +238,32 @@ class UnitSets {
   }
 }
 
-/** Computes groups.json: one group per set of units joined by the closures of carry entry points and carried job steps. */
+/** Computes groups.json: one group per set of units joined by carry entry points and carried job steps, plus the units joining it. */
 export function buildGroups(input: BuildGroupsInput): GroupsFile {
   const closure = createWriteClosure(input.inventory, input.ownership);
   const allUnits = [...new Set(input.ownership.units.map((unit) => unit.unit))].sort(byCodeUnit);
-  const sets = new UnitSets(allUnits);
+  const joins = new Map(
+    input.ownership.units.flatMap(({ unit, joinsUnit }) => (joinsUnit === undefined ? [] : [[unit, joinsUnit] as const])),
+  );
+  // A joining unit stands in for the unit it joins, so it never names a group.
+  const anchor = (unit: string): string => joins.get(unit) ?? unit;
+  const sets = new UnitSets(allUnits.filter((unit) => !joins.has(unit)));
   const entries = carryWriteEntries(input, closure);
-  for (const units of entries.values()) sets.union(units);
+  for (const units of entries.values()) sets.union(units.map(anchor));
   for (const job of input.inventory.scheduledJobs) {
-    for (const step of job.steps) if (step.disposition === 'carry') sets.union(closure(step));
+    for (const step of job.steps) if (step.disposition === 'carry') sets.union(closure(step).map(anchor));
   }
 
   const entriesByRoot = new Map<string, Set<string>>();
   for (const [key, units] of entries) {
     for (const unit of units) {
-      const root = sets.find(unit);
+      const root = sets.find(anchor(unit));
       entriesByRoot.set(root, (entriesByRoot.get(root) ?? new Set<string>()).add(key));
     }
   }
   const unitsByRoot = new Map<string, string[]>();
   for (const unit of allUnits) {
-    const root = sets.find(unit);
+    const root = sets.find(anchor(unit));
     const members = unitsByRoot.get(root);
     if (members === undefined) unitsByRoot.set(root, [unit]);
     else members.push(unit);

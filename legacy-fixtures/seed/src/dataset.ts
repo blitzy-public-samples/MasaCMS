@@ -97,7 +97,7 @@ export function datasetDigest(d: Pick<Dataset, 'seed' | 'businessDate' | 'masa' 
   return sha256Hex(canonicalJson({ seed, businessDate, masa, fixtures }));
 }
 
-/** Generates the dataset for `config`; equal configs yield identical datasets and digests. */
+/** Generates the dataset for `config`, recording `sourceSha`; equal config and `sourceSha` yield identical datasets, and the digest depends on `config` alone. */
 export function buildDataset(config: SeedConfig, sourceSha: string): Dataset {
   const { seed, businessDate } = config;
   const random = createRandom(seed);

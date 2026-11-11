@@ -1,8 +1,9 @@
 // Admin header bar of the full layout: sidebar toggles, site selector, header search and user tools (server-only).
-import { cfEq, cfToBoolean } from '@opt2/platform/legacy-compat';
+import { cfEq } from '@opt2/platform/legacy-compat';
 import { legacySettings } from '@/lib/env';
 import { encodeHtmlAttr, html, raw, type SafeHtml } from '@/lib/html';
-import type { AdminRequest, SiteData } from '@/lib/request-context';
+import type { AdminRequest } from '@/lib/request-context';
+import { siteBeanOf, sitePaths } from '@/lib/site-paths';
 import type { ShellContext, UserPrompts } from './types';
 
 const CONTENT_MODULE_ID = '00000000000000000000000000000000000';
@@ -38,13 +39,6 @@ export function userPromptTally(prompts: UserPrompts): number {
   return PROMPT_COUNTS.reduce((tally, key) => (prompts[key] > 0 ? tally + prompts[key] : tally), 0);
 }
 
-type SiteRecord = SiteData['record'];
-
-/** CFML truthiness of a site flag: SQL NULL and `''` read as the bean's 0, else CFML boolean conversion. */
-function flag(value: unknown): boolean {
-  return value === null || value === undefined || value === '' ? false : cfToBoolean(value);
-}
-
 /** ACF `HTMLEditFormat`: drops CR and escapes `&`, `"`, `<` and `>`. */
 function htmlEditFormat(s: string): string {
   return s
@@ -55,46 +49,19 @@ function htmlEditFormat(s: string): string {
     .replaceAll('>', '&gt;');
 }
 
-/** settingsBean `isValidDomain(domain, mode='complete')`: the site domain or one of its CR/LF-separated aliases. */
-function isValidDomain(site: SiteData, domain: string): boolean {
-  if (cfEq(domain, site.domain)) return true;
-  return (site.record.domainAlias ?? '')
-    .split(/[\r\n]/)
-    .some((alias) => alias !== '' && cfEq(domain, alias));
-}
-
-/** settingsBean `getUseSSL()` of a read row: a stored `useSSL` also sets `extranetSSL`; NULL leaves it as read. */
-function siteUseSSL(record: SiteRecord): boolean {
-  return record.useSSL === null || record.useSSL === undefined ? flag(record.ExtranetSSL) : flag(record.useSSL);
-}
-
-/** settingsBean `getWebPath(complete=1)`: scheme, domain, port and context of the site. */
-function siteWebPath(ctx: AdminRequest, site: SiteData): string {
-  const { serverPort, context } = legacySettings();
-  const { record } = site;
-  const isRemote = flag(record.isremote);
-  const domain =
-    !isRemote && ctx.serverName !== '' && !flag(record.enforcePrimaryDomain) && isValidDomain(site, ctx.serverName)
-      ? ctx.serverName
-      : site.domain;
-  const remotePort = record.remoteport ?? 80;
-  const port = !isRemote ? serverPort : remotePort === 80 || remotePort === 443 ? '' : `:${remotePort}`;
-  const path = isRemote ? (record.remotecontext ?? '') : context;
-  return `${siteUseSSL(record) || ctx.https ? 'https' : 'http'}://${domain}${port}${path}`;
-}
-
 /** contentServer `getURLStem(siteid, '')`; a non-empty remote event site's renderer turns both URL flags off. */
 function homeStem(siteId: string, isRemote: boolean): string {
-  const { siteIDInURLS, indexFileInURLS } = legacySettings();
+  const { siteIDInURLS, indexFileInURLS, legacyIndexFileLocation, siteAssetPath } = legacySettings();
   if ((siteId !== '' && isRemote) || !siteIDInURLS) return '/';
-  return indexFileInURLS ? `/index.cfm/${siteId}/` : `/${siteId}/`;
+  if (!indexFileInURLS) return `/${siteId}/`;
+  return legacyIndexFileLocation ? `${siteAssetPath}/${siteId}/` : `/index.cfm/${siteId}/`;
 }
 
 /** `rc.$.createHref(filename='', complete=1)`: the complete home URL of the event site, HTML-edit-formatted. */
 function siteHomeUrl(ctx: AdminRequest): string {
-  const { site } = ctx;
-  if (site !== undefined) {
-    return htmlEditFormat(siteWebPath(ctx, site) + homeStem(ctx.rc.siteid ?? '', flag(site.record.isremote)));
+  if (ctx.site !== undefined) {
+    const site = siteBeanOf(ctx.site);
+    return htmlEditFormat(sitePaths(ctx, site).webPath() + homeStem(ctx.rc.siteid ?? '', site.isRemote));
   }
   // programs-sites served no site data for this request, so the request host stands in for the site domain.
   const { serverPort, context } = legacySettings();

@@ -14,6 +14,7 @@ import {
   type LegacyJsonSerializer,
   type SerializedLegacyResponse,
 } from '@opt2/platform/legacy-compat';
+import { serializeError } from '@opt2/platform/logging';
 import { legacyParamsOf, sendLegacyResponse, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
 
 /** Merged fixture request params: URL, then form, then a JSON body object. */
@@ -290,7 +291,7 @@ export function fixtureHandler<R extends FastifyRequest = FastifyRequest>(
       return await fn(request, reply, ctx);
     } catch (error) {
       const response = fixtureErrorResponse(error, ctx);
-      if (!(error instanceof LegacyApiError)) request.log.error({ error }, 'Unhandled fixture exception');
+      if (!(error instanceof LegacyApiError)) request.log.error({ error: serializeError(error) }, 'Unhandled fixture exception');
       return sendLegacyResponse(reply, response);
     }
   };

@@ -370,17 +370,17 @@ paths:
       - name: tenantId
         in: path
         required: true
-        description: First segment of the object key `<tenantId>/<jobId>.<format>`.
+        description: First segment of the object key `<tenantId>/<jobId>.<format>` or `<tenantId>/<jobId>.<slot>.<format>`.
         schema:
           type: string
           format: uuid
       - name: objectName
         in: path
         required: true
-        description: Second segment of the object key, the job's CF id and format extension.
+        description: Second segment of the object key, the job's CF id, for a migrated output its slot `a` or `b`, and the format extension.
         schema:
           type: string
-          pattern: '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}\.(xlsx|csv|pdf)$'
+          pattern: '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}(\.[ab])?\.(xlsx|csv|pdf)$'
     get:
       operationId: downloadExportObject
       summary: Serves an export object of the local storage adapter through its signed URL.
@@ -633,7 +633,7 @@ paths:
   /internal/v1/migration/export:
     get:
       operationId: migrationExport
-      summary: Exports one page of a unit's rows in canonical legacy form, with the unit's `reporting-exports` object manifest on the first page.
+      summary: Exports one page of a unit's rows in canonical legacy form, with one page of the unit's `reporting-exports` object manifest.
       tags:
         - migration
       x-opt2-transport: service
@@ -2125,7 +2125,7 @@ components:
             $ref: '#/components/schemas/ExportRow'
     ExportResponse:
       type: object
-      description: One export page; `next` is null after the last page, and `objects` comes with the first page only.
+      description: One export page; `next` is null after the last page. `reporting.export_job` pages its `objects` manifest across the export pages, one manifest page per export page, until `next` is null; other units carry an empty `objects` on the first page only.
       required:
         - unit
         - tenantId

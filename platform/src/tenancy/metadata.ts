@@ -1,5 +1,11 @@
 import type { Pool } from 'pg';
-import { runTransaction, type TxBase, type TenantDb, type TransactionRunnerOptions } from './transaction.js';
+import {
+  runTransaction,
+  type TxBase,
+  type TenantDb,
+  type TransactionCallOptions,
+  type TransactionRunnerOptions,
+} from './transaction.js';
 
 /** The closed list of service-schema tables that hold tenant metadata, never tenant data, and carry no RLS. */
 export const NON_TENANT_TABLES = ['tenant_registry', 'tenant_grant', 'unit_gate', 'open_operation', 'migration_watermark'] as const;
@@ -24,11 +30,12 @@ export function runMetadataTransaction<T>(
   pool: Pool,
   opts: TransactionRunnerOptions,
   fn: (tx: MetadataTx) => Promise<T>,
+  options?: TransactionCallOptions,
 ): Promise<T> {
-  return runTransaction(pool, opts, '', (base): MetadataTx => ({ ...base, kind: 'metadata' }), fn);
+  return runTransaction(pool, opts, '', (base): MetadataTx => ({ ...base, kind: 'metadata' }), fn, options);
 }
 
 /** Runs `fn` in a transaction that acts for no tenant; the gateway and migration use it for their coordination tables. */
-export function withMetadata<T>(db: TenantDb, fn: (tx: MetadataTx) => Promise<T>): Promise<T> {
-  return db.withMetadata(fn);
+export function withMetadata<T>(db: TenantDb, fn: (tx: MetadataTx) => Promise<T>, options?: TransactionCallOptions): Promise<T> {
+  return options === undefined ? db.withMetadata(fn) : db.withMetadata(fn, options);
 }

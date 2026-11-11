@@ -1,14 +1,13 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Bulk survey targeting as the fixture `surveys.cfc` and `usp_survey_bulk_target` apply it, plus the response grants of the targeted sites. */
 import { withGatedTenant } from '@opt2/platform/migration-kit';
-import { tenantForRegisteredSite, writeGrant, type TenantTx } from '@opt2/platform/tenancy';
 import { LegacyApiError } from '@opt2/platform/legacy-compat';
 import { requireSurvey, type DomainDeps } from './surveys.js';
 import { listTargets } from '../repo/queries.js';
+import { collated, grantSurveyResponses } from '../repo/grants.js';
 import type { TargetInsertResult, TargetPair } from '../repo/repository.js';
 
-/** Grant kind that lets a targeted site's tenant respond to the grantor's survey. */
-export const SURVEY_RESPONSE_GRANT = 'survey-response' as const;
+export { SURVEY_RESPONSE_GRANT } from '../repo/grants.js';
 
 /** One item of the fixture's `targets` array; a null or absent `groupName` targets the whole site. */
 export type BulkTargetInputItem = { siteID: string; groupName?: string | null };
@@ -33,12 +32,7 @@ export interface ApplyBulkTargetInput {
 const SITE_ID_LENGTH = 25;
 const GROUP_NAME_LENGTH = 255;
 
-/** SQL Server's default collation compares text case-insensitively and ignores trailing spaces, as the repository does. */
-function collated(value: string): string {
-  return value.replace(/ +$/, '').toLowerCase();
-}
-
-/** Comparison key of a target under that collation; a NULL group equals only another NULL group. */
+/** Comparison key of a target under SQL Server's default collation; a NULL group equals only another NULL group. */
 function pairKey(siteid: string, groupName: string | null): string {
   return JSON.stringify([collated(siteid), groupName === null ? null : collated(groupName)]);
 }
@@ -120,24 +114,6 @@ export function bulkTarget(existing: ReadonlyArray<{ siteid: string; group_name:
   return planTargets(existing, parseBulkTargets(input));
 }
 
-/** Grants `survey-response` on the survey to the tenant of each distinct targeted site the registry knows, other than the grantor. */
-async function grantResponses(tx: TenantTx, surveyId: string, pairs: readonly BulkTargetPair[]): Promise<void> {
-  const sites = new Map<string, string>();
-  for (const { siteid } of pairs) {
-    const key = collated(siteid);
-    // The fixture's response check matches the site with `=`, which ignores trailing spaces; the registry lookup does not.
-    if (!sites.has(key)) sites.set(key, siteid.replace(/ +$/, ''));
-  }
-  const granted = new Set<string>();
-  for (const siteId of sites.values()) {
-    const grantee = await tenantForRegisteredSite(tx, siteId);
-    if (grantee !== null && grantee !== tx.tenantId && !granted.has(grantee)) {
-      granted.add(grantee);
-      await writeGrant(tx, { grantee, kind: SURVEY_RESPONSE_GRANT, resourceId: surveyId });
-    }
-  }
-}
-
 /** Adds the survey's missing targets in one gated transaction, grants the targeted sites its responses and returns `{inserted, total}`. */
 export function applyBulkTarget(deps: DomainDeps, { tenantId, surveyId, input }: ApplyBulkTargetInput): Promise<BulkTargetResult> {
   return withGatedTenant(deps.db, tenantId, async (tx) => {
@@ -148,7 +124,7 @@ export function applyBulkTarget(deps: DomainDeps, { tenantId, surveyId, input }:
     const rows: TargetPair[] = plan.toInsert.map(({ siteid, groupName }) => ({ siteId: siteid, groupName }));
     // insertTargets re-checks under the survey row lock and fills target_id and created, so its counts are the ones returned.
     const { inserted, total } = await deps.repository.insertTargets(tx, survey.survey_id, rows);
-    await grantResponses(tx, survey.survey_id, pairs);
+    await grantSurveyResponses(tx, survey.survey_id, pairs.map(({ siteid }) => siteid));
     return { inserted, total };
   });
 }

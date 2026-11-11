@@ -62,20 +62,62 @@ export interface QueueTaskName {
   queueTaskName: string;
 }
 
+/** Rows a recovery or adoption read returns when the caller sets no limit. */
+export const RECOVERY_BATCH_SIZE = 100;
+
+/** Largest limit a recovery or adoption read accepts. */
+export const MAX_RECOVERY_BATCH_SIZE = 1000;
+
+/** Keyset position of a batch read: the last row's creation time and id. */
+export interface BatchCursor {
+  at: Date;
+  id: string;
+}
+
+/** One batch of a recovery or adoption read: at most `limit` rows (default RECOVERY_BATCH_SIZE), after `after` when given. */
+export interface RecoveryBatch {
+  limit?: number;
+  after?: BatchCursor;
+}
+
+/** The cursor that continues a message batch after `row`. */
+export function messageCursor(row: MessageRow): BatchCursor {
+  return { at: row.created, id: row.message_id };
+}
+
+/** The cursor that continues a scheduled-task batch after `row`. */
+export function taskCursor(row: ScheduledTaskRow): BatchCursor {
+  return { at: row.created_at, id: row.scheduled_task_id };
+}
+
 const LOGIN_MAIL: MessageSource = 'login-mail';
 const QUEUED: MessageState = 'queued';
 const SCHEDULED: ScheduledTaskStatus = 'scheduled';
 const SUPERSEDED: ScheduledTaskStatus = 'superseded';
 const DEQUEUE_PENDING: readonly ScheduledTaskStatus[] = ['superseded', 'cancelled'];
 const ADOPTED: ScheduledTaskOrigin = 'adopted';
-
-// scheduled_task has no unit gate (see tables.ts), so its reads only check the tenant transaction.
-const UNGATED: readonly string[] = [];
+const ADOPTED_SCHEDULED = `origin = '${ADOPTED}' AND status = '${SCHEDULED}'`;
 
 // SQL Server's default collation compares text case-insensitively and ignores trailing spaces.
 const SITE_MATCH = 'lower(rtrim(siteid)) = lower(rtrim($1))';
 // The contract's ScheduledTaskList order; reminder offsets are never negative, so a launch precedes its reminders.
 const TASK_ORDER = 'ORDER BY schedule_time, kind, reminder_n NULLS FIRST, scheduled_task_id';
+const MESSAGE_KEY = 'created, message_id';
+const TASK_KEY = 'created_at, scheduled_task_id';
+
+/** The first-batch and after-cursor statements of one keyset read. */
+interface BatchReads {
+  readonly first: string;
+  readonly after: string;
+}
+
+/** Keyset variants of `sql`, whose own parameters end before `$next`; the cursor's parameters, then the limit, follow them. */
+function batchReads(sql: string, key: string, next: number): BatchReads {
+  return {
+    first: `${sql} ORDER BY ${key} LIMIT $${next}`,
+    after: `${sql} AND (${key}) > ($${next}, $${next + 1}) ORDER BY ${key} LIMIT $${next + 2}`,
+  };
+}
 
 interface SchemaReads {
   readonly repository: Repository;
@@ -87,10 +129,10 @@ interface SchemaReads {
   readonly messageByEventId: string;
   readonly currentTasks: string;
   readonly taskByName: string;
-  readonly adoptedTasks: string;
-  readonly adoptedTasksNamed: string;
-  readonly queuedLoginMail: string;
-  readonly unstampedTasks: string;
+  readonly adoptedTasks: BatchReads;
+  readonly adoptedTasksNamed: BatchReads;
+  readonly queuedLoginMail: BatchReads;
+  readonly unstampedTasks: BatchReads;
 }
 
 const readsBySchema = new Map<string, SchemaReads>();
@@ -114,13 +156,21 @@ function prepareReads(schema: string): SchemaReads {
       `SELECT * FROM ${task} WHERE source_type = $1 AND source_id = $2 AND status <> $3` +
       ` AND schedule_version = (SELECT max(schedule_version) FROM ${task} WHERE source_type = $1 AND source_id = $2) ${TASK_ORDER}`,
     taskByName: `SELECT * FROM ${task} WHERE queue = $1 AND queue_task_name = $2`,
-    adoptedTasks: `SELECT * FROM ${task} WHERE origin = $1 AND status = $2 ORDER BY created_at, scheduled_task_id`,
-    adoptedTasksNamed: `SELECT * FROM ${task} WHERE origin = $1 AND status = $2 AND task_name = ANY($3::text[]) ORDER BY created_at, scheduled_task_id`,
-    queuedLoginMail: `SELECT * FROM ${message} WHERE source = $1 AND state = $2 AND created < $3 ORDER BY created, message_id`,
+    // Constants are literals so the partial indexes' predicates are provable from the statement text.
+    adoptedTasks: batchReads(`SELECT * FROM ${task} WHERE ${ADOPTED_SCHEDULED}`, TASK_KEY, 1),
+    adoptedTasksNamed: batchReads(`SELECT * FROM ${task} WHERE ${ADOPTED_SCHEDULED} AND task_name = ANY($1::text[])`, TASK_KEY, 2),
+    queuedLoginMail: batchReads(
+      `SELECT * FROM ${message} WHERE source = '${LOGIN_MAIL}' AND state = '${QUEUED}' AND created < $1`,
+      MESSAGE_KEY,
+      2,
+    ),
     // A dequeue is due from the status change, which sets updated_at; an enqueue from the insert.
-    unstampedTasks:
-      `SELECT * FROM ${task} WHERE (status = $1 AND enqueued_at IS NULL AND created_at < $3)` +
-      ` OR (status = ANY($2::text[]) AND dequeued_at IS NULL AND updated_at < $3) ORDER BY created_at, scheduled_task_id`,
+    unstampedTasks: batchReads(
+      `SELECT * FROM ${task} WHERE ((status = '${SCHEDULED}' AND enqueued_at IS NULL AND created_at < $1)` +
+        ` OR (status IN (${DEQUEUE_PENDING.map((s) => `'${s}'`).join(', ')}) AND dequeued_at IS NULL AND updated_at < $1))`,
+      TASK_KEY,
+      2,
+    ),
   });
 }
 
@@ -199,7 +249,7 @@ export function listScheduledTasksBySource(tx: TenantTx, source: ScheduledTaskSo
   const reads = readsFor(tx);
   return reads.repository.read(
     tx,
-    UNGATED,
+    SCHEDULED_TASK.unit,
     async () => (await tx.query<ScheduledTaskRow>(reads.currentTasks, [source.sourceType, source.sourceId, SUPERSEDED])).rows,
   );
 }
@@ -214,42 +264,64 @@ export function findScheduledTaskByName(tx: TenantTx, name: QueueTaskName): Prom
   const reads = readsFor(tx);
   return reads.repository.read(
     tx,
-    UNGATED,
+    SCHEDULED_TASK.unit,
     async () => (await tx.query<ScheduledTaskRow>(reads.taskByName, [name.queue, name.queueTaskName])).rows[0] ?? null,
   );
 }
 
-/** Adopted tasks still `scheduled`, limited to the fixture task names in `taskNames` when given, by creation time and id. */
-export function listAdoptedScheduledTasks(tx: TenantTx, taskNames?: readonly string[]): Promise<ScheduledTaskRow[]> {
-  const reads = readsFor(tx);
-  return reads.repository.read(tx, UNGATED, async () => {
-    const result =
-      taskNames === undefined
-        ? await tx.query<ScheduledTaskRow>(reads.adoptedTasks, [ADOPTED, SCHEDULED])
-        : await tx.query<ScheduledTaskRow>(reads.adoptedTasksNamed, [ADOPTED, SCHEDULED, [...taskNames]]);
-    return result.rows;
-  });
+/** The batch limit; throws RangeError unless it is an integer from 1 to MAX_RECOVERY_BATCH_SIZE. */
+function batchLimit(limit: number = RECOVERY_BATCH_SIZE): number {
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_RECOVERY_BATCH_SIZE) {
+    throw new RangeError(`batch limit must be an integer from 1 to ${MAX_RECOVERY_BATCH_SIZE}, got ${limit}`);
+  }
+  return limit;
 }
 
-/** Login-mail messages still `queued` that were created before `cutoff`, by creation time and id. */
-export function queuedLoginMailOlderThan(tx: TenantTx, cutoff: Date): Promise<MessageRow[]> {
+/** One batch of `statements` with the read's own `values`. */
+async function readBatch<R extends Record<string, unknown>>(
+  tx: TenantTx,
+  statements: BatchReads,
+  values: unknown[],
+  limit: number,
+  after: BatchCursor | undefined,
+): Promise<R[]> {
+  const result =
+    after === undefined
+      ? await tx.query<R>(statements.first, [...values, limit])
+      : await tx.query<R>(statements.after, [...values, after.at, after.id, limit]);
+  return result.rows;
+}
+
+/** One batch of adopted tasks still `scheduled`, limited to the fixture task names in `taskNames` when given, by creation time and id. */
+export async function listAdoptedScheduledTasks(
+  tx: TenantTx,
+  taskNames?: readonly string[],
+  batch: RecoveryBatch = {},
+): Promise<ScheduledTaskRow[]> {
+  const limit = batchLimit(batch.limit);
   const reads = readsFor(tx);
-  return reads.repository.read(
-    tx,
-    MESSAGE.unit,
-    async () => (await tx.query<MessageRow>(reads.queuedLoginMail, [LOGIN_MAIL, QUEUED, cutoff])).rows,
+  return reads.repository.read(tx, SCHEDULED_TASK.unit, () =>
+    taskNames === undefined
+      ? readBatch<ScheduledTaskRow>(tx, reads.adoptedTasks, [], limit, batch.after)
+      : readBatch<ScheduledTaskRow>(tx, reads.adoptedTasksNamed, [[...taskNames]], limit, batch.after),
   );
 }
 
+/** One batch of login-mail messages still `queued` that were created before `cutoff`, by creation time and id. */
+export async function queuedLoginMailOlderThan(tx: TenantTx, cutoff: Date, batch: RecoveryBatch = {}): Promise<MessageRow[]> {
+  const limit = batchLimit(batch.limit);
+  const reads = readsFor(tx);
+  return reads.repository.read(tx, MESSAGE.unit, () => readBatch<MessageRow>(tx, reads.queuedLoginMail, [cutoff], limit, batch.after));
+}
+
 /**
- * Tasks whose queue side effect is overdue: `scheduled` without `enqueued_at` created before `cutoff`, and
+ * One batch of tasks whose queue side effect is overdue: `scheduled` without `enqueued_at` created before `cutoff`, and
  * `superseded` or `cancelled` without `dequeued_at` changed before `cutoff`; by creation time and id.
  */
-export function unstampedScheduledTasksOlderThan(tx: TenantTx, cutoff: Date): Promise<ScheduledTaskRow[]> {
+export async function unstampedScheduledTasksOlderThan(tx: TenantTx, cutoff: Date, batch: RecoveryBatch = {}): Promise<ScheduledTaskRow[]> {
+  const limit = batchLimit(batch.limit);
   const reads = readsFor(tx);
-  return reads.repository.read(
-    tx,
-    UNGATED,
-    async () => (await tx.query<ScheduledTaskRow>(reads.unstampedTasks, [SCHEDULED, [...DEQUEUE_PENDING], cutoff])).rows,
+  return reads.repository.read(tx, SCHEDULED_TASK.unit, () =>
+    readBatch<ScheduledTaskRow>(tx, reads.unstampedTasks, [cutoff], limit, batch.after),
   );
 }

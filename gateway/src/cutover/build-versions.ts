@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { normaliseRouteKey, routeKeyForEntryPoint } from '@opt2/platform/legacy-compat';
+import { baseEnvSchema, optionalEnvString } from '@opt2/platform/service-kit';
 import { carryWriteEntries, createWriteClosure, legacyWriteExceptionKeys, lineDiff, type WriteClosure } from './build-groups.js';
 import { CutoverSchemaError, FILE_STORE_TABLE, loadVersion } from './loader.js';
 import { resolveGatewayPaths, type GatewayPaths } from './paths.js';
@@ -439,7 +440,7 @@ export function servesSyntheticRoutes(table: CutoverTable): boolean {
 /** `--fixtures` value. */
 export type FixturesMode = 'available' | 'unavailable' | 'auto';
 
-/** Environment `main` reads for `--fixtures auto`. */
+/** Environment `main` reads for `--fixtures auto`; a blank value counts as unset. */
 export interface BuildVersionsEnv {
   readonly OPT2_STATE_DIR?: string;
   readonly HOME?: string;
@@ -462,11 +463,18 @@ async function readIfPresent(file: string): Promise<string | undefined> {
   }
 }
 
+/** `OPT2_STATE_DIR`, default `<HOME>/.opt2/state`, checked by the shared environment schema; throws `CutoverBuildError`. */
+function stateDirOf(env: BuildVersionsEnv): string {
+  const dir = optionalEnvString().parse(env.OPT2_STATE_DIR) ?? join(env.HOME ?? homedir(), '.opt2', 'state');
+  const result = baseEnvSchema.shape.OPT2_STATE_DIR.safeParse(dir);
+  if (result.success) return result.data;
+  throw new CutoverBuildError(`OPT2_STATE_DIR: ${result.error.issues.map((issue) => issue.message).join('; ')} (${dir})`);
+}
+
 /** Fixture availability: `${OPT2_STATE_DIR}/fixtures.json`, else as the committed v0002 was built, else available. */
 export async function resolveFixtures(mode: FixturesMode, paths: GatewayPaths, env: BuildVersionsEnv): Promise<boolean> {
   if (mode !== 'auto') return mode === 'available';
-  const stateDir = env.OPT2_STATE_DIR ?? join(env.HOME ?? homedir(), '.opt2', 'state');
-  const file = join(stateDir, 'fixtures.json');
+  const file = join(stateDirOf(env), 'fixtures.json');
   const status = await readIfPresent(file);
   if (status !== undefined) {
     const { available } = JSON.parse(status) as Partial<FixtureStatus>;

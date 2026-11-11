@@ -72,7 +72,7 @@ function buildTenantDb(pool: pg.Pool, opts: TenantDbOptions): TenantDb {
   const db: TenantDb = {
     schema: opts.schema,
     withTenant: (tenantId, fn) => runTenantTransaction(pool, runnerOpts, tenantId, fn),
-    withMetadata: (fn) => runMetadataTransaction(pool, runnerOpts, fn),
+    withMetadata: (fn, options) => runMetadataTransaction(pool, runnerOpts, fn, options),
     end: async () => {
       try {
         await pool.end();

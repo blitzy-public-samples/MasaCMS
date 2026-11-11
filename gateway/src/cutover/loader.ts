@@ -270,7 +270,7 @@ const INVENTORY_FILE = objectWith({
 
 const OWNERSHIP_FILE = objectWith({
   sourceSha: TEXT,
-  units: arrayOf(objectWith({ unit: NAME, owner: NAME, legacyTables: arrayOf(NAME) })),
+  units: arrayOf(objectWith({ unit: NAME, owner: NAME, legacyTables: arrayOf(NAME), joinsUnit: NAME }, ['joinsUnit'])),
   tables: arrayOf(
     objectWith({
       table: NAME,
@@ -382,13 +382,22 @@ function pinViolations(document: { readonly sourceSha: string }, pin: SourcePin)
   return document.sourceSha === pin.sha ? [] : [['/sourceSha', `must equal the pinned sha ${pin.sha}`]];
 }
 
-/** Duplicate ownership units and table targets naming no ownership unit. */
+/** Duplicate units, targets naming no unit, and `joinsUnit` anchors that are unknown, self, joining or on a unit with legacy tables. */
 function ownershipViolations(ownership: OwnershipDoc): Violation[] {
   const units = new Set<string>();
   const violations: Violation[] = [];
   ownership.units.forEach(({ unit }, i) => {
     if (units.has(unit)) violations.push([`/units/${i}/unit`, `duplicates unit ${unit}`]);
     units.add(unit);
+  });
+  const joining = new Set(ownership.units.flatMap(({ unit, joinsUnit }) => (joinsUnit === undefined ? [] : [unit])));
+  ownership.units.forEach(({ unit, legacyTables, joinsUnit }, i) => {
+    if (joinsUnit === undefined) return;
+    const at = `/units/${i}/joinsUnit`;
+    if (joinsUnit === unit) violations.push([at, `unit ${unit} joins itself`]);
+    else if (!units.has(joinsUnit)) violations.push([at, `unit ${joinsUnit} is not in /units`]);
+    else if (joining.has(joinsUnit)) violations.push([at, `unit ${joinsUnit} joins another unit itself`]);
+    if (legacyTables.length > 0) violations.push([at, `unit ${unit} joins another unit's group, so it must list no legacy tables`]);
   });
   ownership.tables.forEach((table, i) => {
     table.targets.forEach(({ unit }, j) => {

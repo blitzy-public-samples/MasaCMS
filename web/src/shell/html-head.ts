@@ -1,7 +1,8 @@
 // Global admin scripts of `admin/common/layouts/includes/html_head.cfm`, which both layouts include (server-only).
 import { legacySettings } from '@/lib/env';
 import { encodeJs, html, raw, type SafeHtml } from '@/lib/html';
-import type { AdminRequest, SiteData } from '@/lib/request-context';
+import type { AdminRequest } from '@/lib/request-context';
+import { siteBeanOf, sitePaths } from '@/lib/site-paths';
 import { adminAssetUrl, assetUrl, type AssetUrlOptions } from '@/lib/urls';
 import type { ShellContext } from './types';
 
@@ -10,23 +11,11 @@ const INSTALLED_THEME = 'default';
 
 const COREVERSION: AssetUrlOptions = { coreversion: true };
 
-const isOn = (flag: number | null | undefined): boolean => (flag ?? 0) !== 0;
-
-/** settingsBean `getResourcePath()` of `site`, not complete. */
-function resourcePath({ record }: SiteData, https: boolean): string {
-  const { context, serverPort } = legacySettings();
-  if (!isOn(record.isremote)) return context;
-  if (!record.resourceDomain) return record.remotecontext ?? '';
-  const scheme = isOn(record.resourceSSL) || isOn(record.useSSL) || https ? 'https' : 'http';
-  return `${scheme}://${record.resourceDomain}${serverPort}${context}`;
-}
-
-// settingsBean `getThemeAssetPath` probes the legacy file tree, which web cannot read. Masa 7 keeps themes in the web
-// root, so that branch is reproduced; when programs-sites withholds the site data, the installed theme is assumed.
-/** `getThemeAssetPath()` of the request's site. */
-function themeAssetPath({ site, https }: AdminRequest): string {
-  if (site === undefined) return `${legacySettings().context}/themes/${INSTALLED_THEME}`;
-  return `${resourcePath(site, https)}/themes/${site.record.theme ?? ''}`;
+/** `getThemeAssetPath()` of the request's site; the installed theme when programs-sites withholds the site data. */
+function themeAssetPath(ctx: AdminRequest): string {
+  if (ctx.site === undefined) return `${legacySettings().context}/themes/${INSTALLED_THEME}`;
+  // Web cannot reach legacy theme directories; a Masa 7.6.1 install keeps them in the web root (EX-SHELL-THEMEPATH).
+  return sitePaths(ctx, siteBeanOf(ctx.site)).themeAssetPath('webRoot', false);
 }
 
 /** The `html_head.cfm` output: favicons, admin and vendor script tags, and the admin JavaScript globals. */

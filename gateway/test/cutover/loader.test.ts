@@ -447,6 +447,26 @@ describe('opt2 inputs', () => {
     expect((error as CutoverSchemaError).message).toContain(`${file} does not match its cut-over schema:`);
     expect((error as CutoverSchemaError).message).toContain(expected);
   });
+
+  const JOINER = { unit: 'communications.scheduled_task', owner: 'communications', legacyTables: [] as string[] };
+  it.each([
+    ['an unknown unit', [{ ...JOINER, joinsUnit: 'surveys.ghost' }], '/units/5/joinsUnit unit surveys.ghost is not in /units'],
+    ['itself', [{ ...JOINER, joinsUnit: JOINER.unit }], `/units/5/joinsUnit unit ${JOINER.unit} joins itself`],
+    [
+      'a unit that joins another',
+      [{ ...JOINER, unit: 'communications.message', joinsUnit: 'people.person' }, { ...JOINER, joinsUnit: 'communications.message' }],
+      '/units/6/joinsUnit unit communications.message joins another unit itself',
+    ],
+    [
+      'a unit while listing legacy tables',
+      [{ ...JOINER, legacyTables: ['tusers'], joinsUnit: 'people.person' }],
+      `/units/5/joinsUnit unit ${JOINER.unit} joins another unit's group, so it must list no legacy tables`,
+    ],
+  ])('rejects an ownership unit joining %s with CutoverSchemaError', async (_label, joiners, expected) => {
+    const { error } = await rejection('ownership', ['units'], [...OWNERSHIP.units, ...joiners]);
+    expect(error).toBeInstanceOf(CutoverSchemaError);
+    expect((error as CutoverSchemaError).message).toContain(expected);
+  });
 });
 
 describe.runIf(existsSync(committed.inventoryFile))('committed opt2 inputs', () => {

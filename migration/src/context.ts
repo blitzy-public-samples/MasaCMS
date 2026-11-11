@@ -3,6 +3,7 @@ import {
   createCloudInvocationMinter,
   createLocalInvocationMinter,
   loadLocalSigningKeys,
+  serviceAccountEmail,
   type InvocationMinter,
   type LocalSigningKeys,
 } from '@opt2/platform/auth';
@@ -71,12 +72,13 @@ function serviceUrlsOf(env: MigrationEnv): Record<string, string> {
   };
 }
 
-/** Invocation minter per caller: local service tokens signed with the state-directory key pair, or Google ID tokens in the cloud. */
+/** Invocation minter per caller: local service tokens signed with the state-directory key pair, or in the cloud Google ID tokens of the caller's service account. */
 function invocationMinters(env: MigrationEnv): (caller: ServiceCaller) => InvocationMinter {
   if (env.OPT2_ENV === 'cloud') {
-    // The cloud credential is this process's service account whatever the caller, so operator calls need an operator account.
-    const cloud = createCloudInvocationMinter();
-    return () => cloud;
+    const project = env.GOOGLE_CLOUD_PROJECT;
+    if (project === undefined) throw new Error('GOOGLE_CLOUD_PROJECT is required when OPT2_ENV=cloud');
+    // Called once per caller, since clientAs keeps each caller's client; a caller other than ADC's account is impersonated.
+    return (caller) => createCloudInvocationMinter({ serviceAccount: serviceAccountEmail(caller, project) });
   }
   // Keys load at the first call, so building a context reads no secret; a failed load is not cached.
   let keys: Promise<LocalSigningKeys> | undefined;

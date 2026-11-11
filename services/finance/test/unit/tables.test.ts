@@ -5,13 +5,14 @@ import { describe, expect, it } from 'vitest';
 import { canonicalTypeForPostgres, canonicalTypeForSqlServer, createRepository } from '@opt2/platform/migration-kit';
 import { BUCKETS, InvalidObjectKeyError, objectKey } from '@opt2/platform/storage';
 import { cfUuid } from '@opt2/platform/legacy-compat';
+import { rlsSql } from '@opt2/platform/tenancy';
 import {
   ATTACHMENT_BUCKET,
   ATTACHMENT_CONTENT_FIELD,
   FINANCE_ATTACHMENT,
+  NON_UNIT_TABLES,
   OWNED_TABLES,
   OWNER,
-  PROGRAM_BINDING,
   SCHEMA,
   UNITS,
   attachmentObjectKey,
@@ -25,7 +26,10 @@ interface DdlColumn {
 const read = (relative: string): string => readFileSync(new URL(relative, import.meta.url), 'utf8');
 const TARGET_DDL = read('../../db/migrations/0001_finance.sql');
 const FIXTURE_DDL = read('../../../../legacy-fixtures/sql/finance/110_tables.program.sql');
-const OWNERSHIP = JSON.parse(read('../../../../opt2/table-ownership.json')) as { units: { unit: string; owner: string }[] };
+const OWNERSHIP = JSON.parse(read('../../../../opt2/table-ownership.json')) as {
+  units: { unit: string; owner: string }[];
+  newTables: { table: string; owner: string }[];
+};
 
 /** Columns the target adds to every folded fixture table. */
 const TARGET_ONLY = ['tenant_id', 'object_key', 'legacy_program_id', 'row_version'];
@@ -62,7 +66,7 @@ function fixtureTable(table: string): DdlColumn[] {
 
 const canonical = ({ name, type, scale }: { name: string; type: string; scale?: number | undefined }) => ({ name, type, scale });
 
-describe.each([...OWNED_TABLES, PROGRAM_BINDING].map((definition) => [definition.table, definition] as const))('finance.%s', (table, definition) => {
+describe.each([...OWNED_TABLES, ...NON_UNIT_TABLES].map((definition) => [definition.table, definition] as const))('finance.%s', (table, definition) => {
   it('lists the target DDL columns in catalog order with their canonical tags', () => {
     expect(definition.columns.map(canonical)).toEqual(
       targetTable(table).columns.map((column) => canonical({ name: column.name, ...canonicalTypeForPostgres(column.type) })),
@@ -71,6 +75,10 @@ describe.each([...OWNED_TABLES, PROGRAM_BINDING].map((definition) => [definition
 
   it('keys on the target primary key without tenant_id', () => {
     expect(targetTable(table).primaryKey).toEqual(['tenant_id', ...(definition.key ?? [])]);
+  });
+
+  it('carries the platform tenant-isolation policy', () => {
+    expect(TARGET_DDL).toContain(rlsSql(SCHEMA, table));
   });
 
   it('is frozen', () => {
@@ -101,9 +109,15 @@ describe('finance tables', () => {
     expect(Object.isFrozen(OWNED_TABLES) && Object.isFrozen(UNITS)).toBe(true);
   });
 
-  it('keeps program_binding out of the gated repository', () => {
-    expect('unit' in PROGRAM_BINDING).toBe(false);
-    expect(() => createRepository({ owner: OWNER, schema: SCHEMA, tables: [PROGRAM_BINDING] })).toThrow(/key/);
+  it('declares the tables without a unit to the repository beside the units, and to the ownership file as new finance tables', () => {
+    expect(NON_UNIT_TABLES.every((definition) => !('unit' in definition))).toBe(true);
+    const repository = createRepository({ owner: OWNER, schema: SCHEMA, tables: [...OWNED_TABLES, ...NON_UNIT_TABLES] });
+    expect(repository.units()).toEqual([...UNITS]);
+    expect(NON_UNIT_TABLES.map((definition) => repository.definition(definition.table).unit)).toEqual(NON_UNIT_TABLES.map(() => undefined));
+    expect(OWNERSHIP.newTables.filter((entry) => entry.owner === OWNER).map((entry) => entry.table)).toEqual(
+      NON_UNIT_TABLES.map((definition) => `${SCHEMA}.${definition.table}`),
+    );
+    expect(Object.isFrozen(NON_UNIT_TABLES)).toBe(true);
   });
 
   it('stores attachment bytes in a platform bucket, not in a column', () => {

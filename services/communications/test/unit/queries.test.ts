@@ -16,9 +16,15 @@ import {
   listMessages,
   listScheduledTasksBySource,
   listTemplates,
+  MAX_RECOVERY_BATCH_SIZE,
+  messageCursor,
   queuedLoginMailOlderThan,
+  RECOVERY_BATCH_SIZE,
+  taskCursor,
   unstampedScheduledTasksOlderThan,
+  type BatchCursor,
   type ListPage,
+  type RecoveryBatch,
   type SiteListFilters,
 } from '../../src/repo/queries.js';
 import { UNITS, type ScheduledTaskRow } from '../../src/repo/tables.js';
@@ -324,6 +330,149 @@ describe.skipIf(!available)('communications queries against PostgreSQL', () => {
     expect(ids(stale)).toEqual([4, 1, 5].map(cfId));
   });
 
+  const SEEDED = 300;
+  const NAMED = (n: number): string => `opt2-survey-${SURVEY_ID}-reminder-${n}`;
+
+  /** A row of a batch read: its id and the cursor that continues after it. */
+  type Batched = { id: string; cursor: BatchCursor };
+
+  /** One recovery or adoption read: `seed` writes eligible rows among ineligible ones and returns the eligible ids in read order. */
+  interface BatchCase {
+    /** The seed has more eligible rows than RECOVERY_BATCH_SIZE, so the default batch is cut short. */
+    bounded: boolean;
+    seed: (tx: TenantTx) => Promise<string[]>;
+    read: (tx: TenantTx, batch?: RecoveryBatch) => Promise<Batched[]>;
+  }
+
+  /** Ids of `rows` by creation time, then id, as the reads order them. */
+  function inReadOrder(rows: ReadonlyArray<{ n: number; created: Date }>): string[] {
+    return [...rows].sort((a, b) => a.created.getTime() - b.created.getTime() || a.n - b.n).map((row) => cfId(row.n));
+  }
+
+  /** Seeds SEEDED adopted and event tasks with mixed statuses; returns the adopted, still scheduled ones `named` keeps. */
+  async function seedAdopted(tx: TenantTx, named: (n: number) => boolean): Promise<string[]> {
+    const eligible: Array<{ n: number; created: Date }> = [];
+    for (let n = 1; n <= SEEDED; n += 1) {
+      const origin = n % 3 === 0 ? 'event' : 'adopted';
+      const status = n % 4 === 0 ? 'cancelled' : 'scheduled';
+      const created = at(n % 13);
+      await insertTask(tx, { id: n, n, origin, status, createdAt: created });
+      if (origin === 'adopted' && status === 'scheduled' && named(n)) {
+        eligible.push({ n, created });
+      }
+    }
+    return inReadOrder(eligible);
+  }
+
+  const tasks = (rows: ScheduledTaskRow[]): Batched[] => rows.map((row) => ({ id: row.scheduled_task_id, cursor: taskCursor(row) }));
+
+  const BATCH_CASES: ReadonlyArray<[string, BatchCase]> = [
+    [
+      'stale queued login mail',
+      {
+        bounded: true,
+        seed: async (tx) => {
+          const eligible: Array<{ n: number; created: Date }> = [];
+          for (let n = 1; n <= SEEDED; n += 1) {
+            const source = n % 5 === 0 ? 'send' : 'login-mail';
+            const state = n % 4 === 0 ? 'sent' : 'queued';
+            const created = at(n % 13);
+            await insertMessage(tx, cfId(n), 'tenant-a', created, { source, state });
+            if (source === 'login-mail' && state === 'queued' && created < at(10)) {
+              eligible.push({ n, created });
+            }
+          }
+          return inReadOrder(eligible);
+        },
+        read: async (tx, batch) =>
+          (await queuedLoginMailOlderThan(tx, at(10), batch)).map((row) => ({ id: row.message_id, cursor: messageCursor(row) })),
+      },
+    ],
+    [
+      'overdue unstamped tasks',
+      {
+        bounded: true,
+        seed: async (tx) => {
+          const eligible: Array<{ n: number; created: Date }> = [];
+          for (let n = 1; n <= SEEDED; n += 1) {
+            const created = at(n % 13);
+            const updated = at(n % 11);
+            const variant = n % 6;
+            const status = (['scheduled', 'done', 'scheduled', 'superseded', 'cancelled', 'superseded'] as const)[variant];
+            const enqueuedAt = variant === 0 ? at(0) : null;
+            const dequeuedAt = variant === 5 ? at(5) : null;
+            await insertTask(tx, { id: n, n, status, createdAt: created, updatedAt: updated, enqueuedAt, dequeuedAt });
+            if ((variant === 2 && created < at(10)) || ((variant === 3 || variant === 4) && updated < at(10))) {
+              eligible.push({ n, created });
+            }
+          }
+          return inReadOrder(eligible);
+        },
+        read: async (tx, batch) => tasks(await unstampedScheduledTasksOlderThan(tx, at(10), batch)),
+      },
+    ],
+    [
+      'scheduled adopted tasks',
+      {
+        bounded: true,
+        seed: (tx) => seedAdopted(tx, () => true),
+        read: async (tx, batch) => tasks(await listAdoptedScheduledTasks(tx, undefined, batch)),
+      },
+    ],
+    [
+      'scheduled adopted tasks by name',
+      {
+        bounded: false,
+        seed: (tx) => seedAdopted(tx, (n) => n % 2 === 0),
+        read: async (tx, batch) =>
+          tasks(await listAdoptedScheduledTasks(tx, [...Array.from({ length: SEEDED / 2 }, (_, i) => NAMED(2 * (i + 1))), 'opt2-unknown'], batch)),
+      },
+    ],
+  ];
+
+  it.each(BATCH_CASES)('reads %s in bounded batches that a cursor walks in order without gaps or repeats', async (_read, c) => {
+    const expected = await inTenant(tenantA, c.seed);
+    const step = 7;
+
+    const [byDefault, limited, widest] = await inTenant(tenantA, async (tx) => [
+      await c.read(tx),
+      await c.read(tx, { limit: step }),
+      await c.read(tx, { limit: MAX_RECOVERY_BATCH_SIZE }),
+    ]);
+    const walked: string[] = [];
+    let batches = 0;
+    let after: BatchCursor | undefined;
+    for (;;) {
+      const batch = await inTenant(tenantA, (tx) => c.read(tx, after === undefined ? { limit: step } : { limit: step, after }));
+      batches += 1;
+      walked.push(...batch.map((row) => row.id));
+      if (batch.length < step) {
+        break;
+      }
+      after = batch.at(-1)?.cursor;
+    }
+
+    expect(expected.length).toBeGreaterThan(step * 2);
+    expect(expected.length > RECOVERY_BATCH_SIZE).toBe(c.bounded);
+    expect(byDefault.map((row) => row.id)).toEqual(expected.slice(0, RECOVERY_BATCH_SIZE));
+    expect(limited.map((row) => row.id)).toEqual(expected.slice(0, step));
+    expect(widest.map((row) => row.id)).toEqual(expected);
+    expect(walked).toEqual(expected);
+    expect(batches).toBe(Math.floor(expected.length / step) + 1);
+  });
+
+  it.each([0, -1, 1.5, MAX_RECOVERY_BATCH_SIZE + 1, Number.NaN])('rejects a batch limit of %s with RangeError', async (limit) => {
+    const reads: Array<(tx: TenantTx) => Promise<unknown>> = [
+      (tx) => queuedLoginMailOlderThan(tx, at(10), { limit }),
+      (tx) => unstampedScheduledTasksOlderThan(tx, at(10), { limit }),
+      (tx) => listAdoptedScheduledTasks(tx, undefined, { limit }),
+      (tx) => listAdoptedScheduledTasks(tx, [NAMED(1)], { limit }),
+    ];
+    for (const read of reads) {
+      await expect(inTenant(tenantA, read)).rejects.toBeInstanceOf(RangeError);
+    }
+  });
+
   it("hides another tenant's rows, and a pooled connection after a tenant transaction sees none", async () => {
     await inTenant(tenantB, async (tx) => {
       await insertTemplate(tx, cfId(1), 'tenant-a', at(0));
@@ -370,12 +519,14 @@ describe.skipIf(!available)('communications queries against PostgreSQL', () => {
   });
 
   it.each(['executing', 'importing', 'import-pending'])('blocks reads of a unit in a window %s phase, and only that unit', async (phase) => {
-    await withMetadata(handle.app, (tx) =>
-      tx.query(`UPDATE ${handle.schema}.unit_gate SET state = 'closed', holder_id = 'window-1', phase = $1 WHERE unit = $2`, [
-        phase,
-        'communications.delivery_status',
-      ]),
-    );
+    const closeInPhase = (unit: string) =>
+      withMetadata(handle.app, (tx) =>
+        tx.query(`UPDATE ${handle.schema}.unit_gate SET state = 'closed', holder_id = 'window-1', phase = $1 WHERE unit = $2`, [
+          phase,
+          unit,
+        ]),
+      );
+    await closeInPhase('communications.delivery_status');
     const budget = { budgetMs: 300 };
 
     await expect(withGatedTenant(handle.app, tenantA, (tx) => getMessageDetail(tx, cfId(1)), budget)).rejects.toBeInstanceOf(
@@ -383,5 +534,15 @@ describe.skipIf(!available)('communications queries against PostgreSQL', () => {
     );
     expect(await withGatedTenant(handle.app, tenantA, (tx) => listMessages(tx, { siteId: 'tenant-a' }), budget)).toEqual({ items: [], total: 0 });
     expect(await withGatedTenant(handle.app, tenantA, (tx) => listAdoptedScheduledTasks(tx), budget)).toEqual([]);
+
+    await closeInPhase('communications.scheduled_task');
+    const taskReads: Array<(tx: TenantTx) => Promise<unknown>> = [
+      (tx) => listScheduledTasksBySource(tx, { sourceType: 'survey', sourceId: SURVEY_ID }),
+      (tx) => findScheduledTask(tx, cfId(1)),
+      (tx) => listAdoptedScheduledTasks(tx),
+    ];
+    for (const read of taskReads) {
+      await expect(withGatedTenant(handle.app, tenantA, read, budget)).rejects.toBeInstanceOf(UnitReadBlockedError);
+    }
   });
 });

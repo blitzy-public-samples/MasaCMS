@@ -8,6 +8,7 @@ export const UNITS = [
   'communications.message_template',
   'communications.message',
   'communications.delivery_status',
+  'communications.scheduled_task',
   'communications.email',
   'communications.email_stat',
   'communications.email_return_stat',
@@ -124,10 +125,9 @@ export const DELIVERY_STATUS: CommunicationsTableDefinition = {
   unit: 'communications.delivery_status',
 };
 
-// No unit: scheduled_task has no legacy table and no cut-over group, so a gate for it would stay `legacy`
-// and reject every seam-2 consumer and adoption write; units are only the target tables opt2/table-ownership.json splits.
+// Moves with the surveys group (joinsUnit); adoption and cancellation use requestMigrationAuthority(): hand-off precedes reopening gates.
 /** `communications.scheduled_task`: survey launch and reminder tasks; no legacy table, never mapped. */
-export const SCHEDULED_TASK: TableDefinition = {
+export const SCHEDULED_TASK: CommunicationsTableDefinition = {
   table: 'scheduled_task',
   columns: [
     TENANT_ID,
@@ -150,6 +150,7 @@ export const SCHEDULED_TASK: TableDefinition = {
     { name: 'updated_at', type: 't' },
   ],
   key: ['scheduled_task_id'],
+  unit: 'communications.scheduled_task',
 };
 
 /** `communications.email`, from Masa `temails`; mapping-only. */

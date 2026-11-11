@@ -13,6 +13,7 @@ import { encodeKey, encodeRow, sha256Hex, type CanonicalColumn } from '../../src
 import { migrationKitSql } from '../../src/migration-kit/ddl.js';
 import { GATE_WAIT_MS, endOperation, isMigrationAuthority } from '../../src/migration-kit/gates.js';
 import {
+  DEFAULT_EXPORT_LIMIT,
   MIGRATION_PATH_PREFIX,
   registerMigrationHandlers,
   type AppliedChange,
@@ -21,6 +22,7 @@ import {
   type ExportRow,
   type MigrationHandlerOptions,
   type ObjectManifestEntry,
+  type ObjectManifestPage,
   type OperationStatus,
   type PositionResponse,
   type WatermarkRecord,
@@ -816,6 +818,15 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
     ['a cursor key beyond the range of its integer key column', { unit: 'mk.score', siteId: 'tenant-a', after: cursorText({ table: 'score', key: ['99999999999', 's1'] }) }],
     ['a cursor key with an unpaired surrogate for a text key column', { unit: 'mk.item', siteId: 'tenant-a', after: cursorText({ table: 'item', key: ['\uD800'] }) }],
     ['a cursor key with a NUL character for a text key column', { unit: 'mk.item', siteId: 'tenant-a', after: cursorText({ table: 'item', key: ['a\u0000b'] }) }],
+    ['a manifest cursor for a unit that returns its whole manifest', { unit: 'mk.item', siteId: 'tenant-a', after: cursorText({ objects: 'p1' }) }],
+    [
+      'a row cursor with a manifest position for a unit that returns its whole manifest',
+      { unit: 'mk.item', siteId: 'tenant-a', after: cursorText({ table: 'item', key: ['i1'], objects: 'p1' }) },
+    ],
+    ['a manifest cursor with an empty position', { unit: 'mk.item', siteId: 'tenant-a', after: cursorText({ objects: '' }) }],
+    ['a manifest cursor whose position is not text', { unit: 'mk.item', siteId: 'tenant-a', after: cursorText({ objects: 1 }) }],
+    ['a manifest cursor with an unknown field', { unit: 'mk.item', siteId: 'tenant-a', after: cursorText({ objects: 'p1', page: 1 }) }],
+    ['a manifest position beside a table without its key', { unit: 'mk.item', siteId: 'tenant-a', after: cursorText({ table: 'item', objects: 'p1' }) }],
     ['a limit of 0', { unit: 'mk.item', siteId: 'tenant-a', limit: '0' }],
     ['a limit above 10000', { unit: 'mk.item', siteId: 'tenant-a', limit: '10001' }],
     ['an unknown parameter', { unit: 'mk.item', siteId: 'tenant-a', page: '1' }],
@@ -1196,5 +1207,144 @@ describe.skipIf(!available)('migration endpoints of a service without outbox, in
         { unit: 'mk.tag_member', state: 'legacy', holderId: null, phase: 'quiet' },
       ],
     });
+  });
+
+  it.each([
+    ['a manifest cursor', { objects: 'p1' }],
+    ['a row cursor with a manifest position', { table: 'item', key: ['i1'], objects: 'p1' }],
+  ])('rejects %s as invalidParameters when the owner has no object manifest', async (_label, cursor) => {
+    const res = await app.inject({ method: 'GET', url: `${MIGRATION_PATH_PREFIX}/export`, headers, query: { unit: 'mk.item', siteId: 'tenant-a', after: cursorText(cursor) } });
+    expectRejected(res);
+  });
+});
+
+describe.skipIf(!available)('migration endpoints of a service paging its object manifest', () => {
+  type ManifestScope = Parameters<NonNullable<MigrationHandlerOptions['exportObjects']>>[1];
+  let handle: ThrowawaySchema;
+  let app: FastifyInstance;
+  let headers: Record<string, string>;
+  let sites = 0;
+  const manifests = new Map<string, ObjectManifestEntry[]>();
+  const calls: ManifestScope[] = [];
+
+  /** Up to `limit` of the tenant's manifest entries after the entry keyed `after`; `next` is the last key while entries remain. */
+  function manifestPage(scope: ManifestScope): ObjectManifestPage {
+    const entries = manifests.get(scope.tenantId) ?? [];
+    const from = scope.after === undefined ? 0 : entries.findIndex((entry) => entry.key === scope.after) + 1;
+    const objects = entries.slice(from, from + (scope.limit ?? DEFAULT_EXPORT_LIMIT));
+    return { objects, next: from + objects.length < entries.length ? (objects.at(-1)?.key ?? null) : null };
+  }
+
+  beforeAll(async () => {
+    handle = await createThrowawaySchema({ service: `${OWNER}-paged`, schemaName: BASE, extraSql: [migrationKitSql(BASE), ITEM_SQL] });
+    app = await serviceApp(handle.app);
+    registerWritePositionHeader(app);
+    registerMigrationHandlers(app, {
+      owner: OWNER,
+      repository: createRepository({ owner: OWNER, schema: handle.schema, tables: TABLES }),
+      mappings: [ITEM_MAPPING],
+      units: ['mk.item'],
+      exportObjects: (_tx, scope) => {
+        calls.push(scope);
+        return Promise.resolve(manifestPage(scope));
+      },
+    });
+    await app.ready();
+    headers = await authHeadersFor(subject('service:migration'), { audience: OWNER });
+  });
+
+  afterAll(async () => {
+    await app?.close();
+    await handle?.drop();
+  });
+
+  /** `list` cut into consecutive pieces of `sizes`; a null size stands for a page without rows and stays null. */
+  function chunks<T>(list: readonly T[], sizes: readonly (number | null)[]): (T[] | null)[] {
+    let from = 0;
+    return sizes.map((size) => {
+      if (size === null) return null;
+      from += size;
+      return list.slice(from - size, from);
+    });
+  }
+
+  it.each([
+    {
+      ending: 'before the rows',
+      rowCount: 5,
+      objectCount: 3,
+      limit: 2,
+      rowPages: [2, 2, 1],
+      objectPages: [2, 1, null],
+      cursors: (ids: string[], keys: string[]) => [{ table: 'item', key: [ids[1]], objects: keys[1] }, { table: 'item', key: [ids[3]] }, null],
+      afters: (keys: string[]) => [undefined, keys[1]],
+    },
+    {
+      ending: 'after the rows',
+      rowCount: 3,
+      objectCount: 7,
+      limit: 2,
+      rowPages: [2, 1, null, null],
+      objectPages: [2, 2, 2, 1],
+      cursors: (ids: string[], keys: string[]) => [{ table: 'item', key: [ids[1]], objects: keys[1] }, { objects: keys[3] }, { objects: keys[5] }, null],
+      afters: (keys: string[]) => [undefined, keys[1], keys[3], keys[5]],
+    },
+    {
+      ending: 'with the first page of a unit without rows',
+      rowCount: 0,
+      objectCount: 3,
+      limit: undefined,
+      rowPages: [0],
+      objectPages: [3],
+      cursors: () => [null],
+      afters: () => [undefined],
+    },
+  ])('delivers a paged manifest across the export pages, ending $ending', async ({ rowCount, objectCount, limit, rowPages, objectPages, cursors, afters }) => {
+    sites += 1;
+    const site = `paged-${sites}`;
+    const tenantId = tenantIdForSite(site);
+    const values = Array.from({ length: rowCount }, (_, n) => item(`i${n}`, site, `Item ${n}`, n));
+    if (rowCount > 0) {
+      const res = await app.inject({
+        method: 'POST',
+        url: `${MIGRATION_PATH_PREFIX}/apply`,
+        headers,
+        payload: { batchId: `${site}-rows`, origin: 'backfill', legacyTable: 'tItems', siteId: site, columns: ITEM_LEGACY, rows: rowsOf(ITEM_LEGACY, values.map((v): [RowOp, LegacyValues] => ['upsert', v])) },
+      });
+      expect(res.statusCode, res.body).toBe(200);
+    }
+    const manifest = Array.from({ length: objectCount }, (_, n) => ({ key: `${tenantId}/obj-${n}`, size: n, sha256: sha256Hex(`obj-${n}`), contentType: 'text/plain' }));
+    manifests.set(tenantId, manifest);
+
+    const pages: ExportResponse[] = [];
+    let after: string | null = null;
+    do {
+      const query = { unit: 'mk.item', siteId: site, ...(limit === undefined ? {} : { limit: String(limit) }), ...(after === null ? {} : { after }) };
+      const res = await app.inject({ method: 'GET', url: `${MIGRATION_PATH_PREFIX}/export`, headers, query });
+      expect(res.statusCode, res.body).toBe(200);
+      pages.push(res.json<ExportResponse>());
+      after = pages.at(-1)?.next ?? null;
+    } while (after !== null && pages.length < 10);
+
+    const ids = values.map((v) => String(v.ItemID));
+    const keys = manifest.map((entry) => entry.key);
+    const rows = values.map((v) => exported(ITEM_LEGACY, ['ItemID'], v));
+    expect(pages.map((page) => (page.tables.length === 0 ? null : page.tables.flatMap((table) => table.rows)))).toEqual(chunks(rows, rowPages));
+    expect(pages.map((page) => ('objects' in page ? page.objects : null))).toEqual(chunks(manifest, objectPages));
+    expect(pages.flatMap((page) => page.objects ?? [])).toEqual(manifest);
+    expect(pages.map((page) => page.next)).toEqual(cursors(ids, keys).map((cursor) => (cursor === null ? null : cursorText(cursor))));
+    expect(calls.filter((call) => call.tenantId === tenantId)).toEqual(
+      afters(keys).map((position) => ({ unit: 'mk.item', tenantId, limit: limit ?? DEFAULT_EXPORT_LIMIT, ...(position === undefined ? {} : { after: position }) })),
+    );
+  });
+
+  it.each([
+    ['a manifest cursor with an empty position', { objects: '' }],
+    ['a row cursor naming a table of no unit', { table: 'score', key: ['1', 's1'], objects: 'p1' }],
+  ])('rejects %s as invalidParameters without asking for the manifest', async (_label, cursor) => {
+    calls.length = 0;
+    const res = await app.inject({ method: 'GET', url: `${MIGRATION_PATH_PREFIX}/export`, headers, query: { unit: 'mk.item', siteId: 'tenant-a', after: cursorText(cursor) } });
+    expectRejected(res);
+    expect(calls).toEqual([]);
   });
 });

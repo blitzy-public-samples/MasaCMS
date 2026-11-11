@@ -106,7 +106,8 @@ component output="false" hint="SYNTHETIC e-signature fixture: typed-name signing
 			variables.envelope.raise("forbidden");
 		}
 		local.typedName = textParam(arguments.route.params, "typedName");
-		if (!len(trim(local.typedName)) || len(local.typedName) > 255) {
+		// Blank means nothing is left once Unicode separator, format and control characters are removed.
+		if (!len(javaCast("string", local.typedName).replaceAll("[\p{Z}\p{Cf}\p{Cc}]", "")) || len(local.typedName) > 255) {
 			variables.envelope.raise("invalidParameters");
 		}
 

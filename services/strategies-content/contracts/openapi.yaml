@@ -159,6 +159,8 @@ tags:
     description: Form import.
   - name: raw
     description: Legacy fragment, JSON and download responses relayed unchanged by web.
+  - name: internal
+    description: Calls from other services.
   - name: migration
     description: Owner endpoints the migration service calls.
   - name: events
@@ -6747,6 +6749,37 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/RawUnavailable'
+  /internal/v1/files:lookup:
+    post:
+      operationId: lookupFileExtensions
+      summary: Reads the `fileEXT` of stored files by `fileID`, for the user photos of the people screens.
+      description: Matches `fileID` alone, as legacy's `LEFT JOIN tfiles` does, ignoring trailing spaces and the case of the single-case stored CF UUIDs, in the file pools of the token's site's public and private user pools; a NULL `fileEXT` answers null.
+      tags: [internal]
+      x-opt2-transport: service
+      x-opt2-requires: ['service:people']
+      x-opt2-fastify-path: /internal/v1/files::lookup
+      security: [{userToken: [], invocationCredential: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FileLookupRequest'
+      responses:
+        '200':
+          description: The listed ids that name a stored file; the others are left out.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileExtensionList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /internal/v1/migration/apply:
     post:
       operationId: migrationApply
@@ -8971,6 +9004,37 @@ components:
           pattern: ^[0-9a-f]{64}$
         created:
           type: boolean
+    FileLookupRequest:
+      type: object
+      required: [fileIds]
+      additionalProperties: false
+      properties:
+        fileIds:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/LegacyId'
+    FileExtension:
+      type: object
+      description: The `fileEXT` of the `tfiles` row a listed id names.
+      required: [fileId, fileExt]
+      additionalProperties: false
+      properties:
+        fileId:
+          description: The id as the request lists it.
+          $ref: '#/components/schemas/LegacyId'
+        fileExt:
+          $ref: '#/components/schemas/NullableString'
+    FileExtensionList:
+      type: object
+      required: [items]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/FileExtension'
     TaskWireBody:
       type: object
       description: JSON body both task adapters post; `tenantId` is null on system tasks.

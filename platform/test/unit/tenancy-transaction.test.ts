@@ -505,6 +505,231 @@ describe('transaction context helpers', () => {
   });
 });
 
+/** A FakeClient whose `stalls` statements never answer; destroying it rejects them as pg's ended connection does. */
+class StallingClient extends FakeClient {
+  readonly stalls = new Set<string>();
+  readonly #pending: ((err: Error) => void)[] = [];
+
+  override query(text: string | QueryConfig, values?: unknown[]): Promise<QueryResult> {
+    const sql = typeof text === 'string' ? text : text.text;
+    if (!this.stalls.has(sql)) {
+      return super.query(text, values);
+    }
+    this.calls.push([sql, values]);
+    this.events.push(sql);
+    return new Promise((_resolve, reject) => this.#pending.push(reject));
+  }
+
+  override release(err?: Error | boolean): void {
+    super.release(err);
+    if (err instanceof Error) {
+      for (const reject of this.#pending.splice(0)) reject(new Error('Connection terminated'));
+    }
+  }
+}
+
+describe('abortable metadata transactions', () => {
+  const unhandled = vi.fn();
+  const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+  afterEach(() => {
+    process.off('unhandledRejection', unhandled);
+    unhandled.mockReset();
+  });
+
+  const watchRejections = (): void => {
+    process.on('unhandledRejection', unhandled);
+  };
+
+  it.each([
+    ['no signal', () => undefined],
+    ['a signal that never aborts', () => new AbortController().signal],
+  ])('with %s run BEGIN, the setting, the work and COMMIT, then release once', async (_label, signal) => {
+    const h = setup();
+    const committed = vi.fn();
+
+    const result = await runTransaction(
+      h.pool,
+      h.opts,
+      '',
+      asMetadata,
+      async (tx) => {
+        tx.onCommit(committed);
+        await tx.query('SELECT 1');
+        return 'value';
+      },
+      { signal: signal() },
+    );
+
+    expect(result).toBe('value');
+    expect(h.events).toEqual(['BEGIN', SET_TENANT, 'SELECT 1', 'COMMIT', 'release']);
+    expect(h.client.releases).toEqual([undefined]);
+    expect(committed).toHaveBeenCalledOnce();
+  });
+
+  it('rejects with the reason of an already aborted signal without connecting', async () => {
+    const h = setup();
+    const reason = new Error('deadline passed');
+    const fn = vi.fn(() => Promise.resolve());
+
+    await expect(runTransaction(h.pool, h.opts, '', asMetadata, fn, { signal: AbortSignal.abort(reason) })).rejects.toBe(reason);
+    expect(h.connect).not.toHaveBeenCalled();
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['hands a client over', true],
+    ['fails', false],
+  ])('rejects at once when aborted during a pending checkout that later %s, and never queries', async (_label, arrives) => {
+    watchRejections();
+    const h = setup();
+    let deliver: () => void = () => undefined;
+    h.connect.mockImplementationOnce(
+      () =>
+        new Promise<FakeClient>((resolve, reject) => {
+          deliver = () => (arrives ? resolve(h.client) : reject(new Error('connect failed')));
+        }),
+    );
+    const controller = new AbortController();
+    const reason = new Error('deadline passed');
+    const fn = vi.fn(() => Promise.resolve());
+
+    const run = runTransaction(h.pool, h.opts, '', asMetadata, fn, { signal: controller.signal });
+    expect(h.connect).toHaveBeenCalledOnce();
+    controller.abort(reason);
+    await expect(run).rejects.toBe(reason);
+    deliver();
+    await flush();
+
+    expect(h.client.calls).toEqual([]);
+    expect(h.client.releases).toEqual(arrives ? [undefined] : []);
+    expect(fn).not.toHaveBeenCalled();
+    expect(unhandled).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['BEGIN', ['BEGIN'], new Error('deadline passed')],
+    [SET_TENANT, ['BEGIN', SET_TENANT], new Error('deadline passed')],
+    ['the callback', ['BEGIN', SET_TENANT, 'SELECT 1'], new Error('deadline passed')],
+    ['COMMIT', ['BEGIN', SET_TENANT, 'SELECT 1', 'COMMIT'], 'deadline passed'],
+  ] as const)('when aborted during %s, destroys the client once, discards commit callbacks and rejects with the reason', async (phase, issued, reason) => {
+    watchRejections();
+    const h = setup();
+    const client = new StallingClient(h.events);
+    h.connect.mockImplementation(() => Promise.resolve(client));
+    client.stalls.add(phase);
+    const controller = new AbortController();
+    const reached = gate();
+    const resume = gate();
+    const committed = vi.fn();
+    let late: { query: unknown; onCommit: unknown; current: unknown } | undefined;
+
+    const run = runTransaction(
+      h.pool,
+      h.opts,
+      '',
+      asMetadata,
+      async (tx) => {
+        tx.onCommit(committed);
+        await tx.query('SELECT 1');
+        if (phase === 'the callback') {
+          reached.open();
+          await resume.promise;
+          late = {
+            query: await tx.query('SELECT 2').catch((err: unknown) => err),
+            onCommit: (() => {
+              try {
+                tx.onCommit(committed);
+                return undefined;
+              } catch (err) {
+                return err;
+              }
+            })(),
+            current: currentTransaction(),
+          };
+        }
+        return 'value';
+      },
+      { signal: controller.signal },
+    );
+    if (phase === 'the callback') {
+      await reached.promise;
+    } else {
+      await vi.waitFor(() => expect(client.calls.map(([text]) => text)).toContain(phase));
+    }
+    controller.abort(reason);
+
+    await expect(run).rejects.toBe(reason);
+    expect(client.releases).toEqual([reason instanceof Error ? reason : new Error(reason)]);
+    resume.open();
+    await flush();
+    await flush();
+
+    expect(client.calls.map(([text]) => text)).toEqual(issued);
+    expect(client.releases).toHaveLength(1);
+    expect(committed).not.toHaveBeenCalled();
+    if (phase === 'the callback') {
+      expect(late?.query).toBeInstanceOf(TransactionEndedError);
+      expect(late?.onCommit).toBeInstanceOf(TransactionEndedError);
+      expect(late?.current).toBeUndefined();
+    }
+    expect(unhandled).not.toHaveBeenCalled();
+  });
+
+  it('discards commit callbacks when the abort lands after COMMIT answers but before the connection is released', async () => {
+    const h = setup();
+    const controller = new AbortController();
+    const reason = new Error('deadline passed');
+    const query = h.client.query.bind(h.client);
+    vi.spyOn(h.client, 'query').mockImplementation((text, values) => {
+      if (text === 'COMMIT') queueMicrotask(() => controller.abort(reason));
+      return query(text, values);
+    });
+    const committed = vi.fn();
+
+    await expect(
+      runTransaction(
+        h.pool,
+        h.opts,
+        '',
+        asMetadata,
+        (tx) => {
+          tx.onCommit(committed);
+          return Promise.resolve('value');
+        },
+        { signal: controller.signal },
+      ),
+    ).rejects.toBe(reason);
+    expect(h.client.releases).toEqual([reason]);
+    expect(committed).not.toHaveBeenCalled();
+  });
+
+  it('ignores an abort once the connection is back in the pool and still runs every commit callback', async () => {
+    const h = setup();
+    const controller = new AbortController();
+    const second = vi.fn();
+
+    const result = await runTransaction(
+      h.pool,
+      h.opts,
+      '',
+      asMetadata,
+      (tx) => {
+        tx.onCommit(() => {
+          controller.abort(new Error('late'));
+        });
+        tx.onCommit(second);
+        return Promise.resolve('value');
+      },
+      { signal: controller.signal },
+    );
+
+    expect(result).toBe('value');
+    expect(h.client.releases).toEqual([undefined]);
+    expect(second).toHaveBeenCalledOnce();
+  });
+});
+
 describe('withTenant', () => {
   it('runs the callback through the TenantDb', async () => {
     const h = setup();

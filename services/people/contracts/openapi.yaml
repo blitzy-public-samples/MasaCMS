@@ -13,9 +13,12 @@ servers:
     description: local
 x-opt2-calls:
   - identity
+  - strategies-content
 tags:
   - name: legacy-api
     description: Masa JSON, AJAX and REST API routes of the `user` and `address` entities people serves once cut over.
+  - name: favorites
+    description: Favorites AJAX templates of the legacy front end, which people serves once cut over; their query field names match ignoring case.
   - name: fixtures
     description: The people fixture route of the legacy oracle, which people serves once cut over.
   - name: users
@@ -31,6 +34,161 @@ tags:
   - name: health
     description: Liveness probe.
 paths:
+  /_api/json/v1:
+    get:
+      operationId: jsonSitelessRootGet
+      summary: Calls the user or address operation the `method` parameter names through the JSON API for the site a `siteid` form or url field names, else `default`.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      tags: [legacy-api]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys-excluded:
+        - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
+        - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      parameters:
+        - $ref: '#/components/parameters/SitelessSiteIdQuery'
+        - $ref: '#/components/parameters/LegacyMethod'
+        - $ref: '#/components/parameters/LegacyEntityName'
+        - $ref: '#/components/parameters/MethodOverrideHeader'
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+      responses:
+        '200':
+          $ref: '#/components/responses/LegacyOk'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/LegacyUnauthorized'
+        '403':
+          $ref: '#/components/responses/LegacyForbidden'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/LegacyServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: jsonSitelessRootPost
+      summary: Calls the user or address operation the `method` parameter names through the JSON API for the site a `siteid` form or url field names, else `default`.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      tags: [legacy-api]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys-excluded:
+        - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
+        - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      parameters:
+        - $ref: '#/components/parameters/SitelessSiteIdQuery'
+        - $ref: '#/components/parameters/LegacyMethod'
+        - $ref: '#/components/parameters/LegacyEntityName'
+        - $ref: '#/components/parameters/MethodOverrideHeader'
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+      requestBody:
+        $ref: '#/components/requestBodies/LegacyCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/LegacyOk'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/LegacyUnauthorized'
+        '403':
+          $ref: '#/components/responses/LegacyForbidden'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/LegacyServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: jsonSitelessRootPut
+      summary: Calls the user or address operation the `method` parameter names through the JSON API for the site a `siteid` form or url field names, else `default`.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      tags: [legacy-api]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys-excluded:
+        - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
+        - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      parameters:
+        - $ref: '#/components/parameters/SitelessSiteIdQuery'
+        - $ref: '#/components/parameters/LegacyMethod'
+        - $ref: '#/components/parameters/LegacyEntityName'
+        - $ref: '#/components/parameters/MethodOverrideHeader'
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+      requestBody:
+        $ref: '#/components/requestBodies/LegacyCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/LegacyOk'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/LegacyUnauthorized'
+        '403':
+          $ref: '#/components/responses/LegacyForbidden'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/LegacyServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: jsonSitelessRootDelete
+      summary: Calls the user or address operation the `method` parameter names through the JSON API for the site a `siteid` form or url field names, else `default`.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      tags: [legacy-api]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys-excluded:
+        - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
+        - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      parameters:
+        - $ref: '#/components/parameters/SitelessSiteIdQuery'
+        - $ref: '#/components/parameters/LegacyMethod'
+        - $ref: '#/components/parameters/LegacyEntityName'
+        - $ref: '#/components/parameters/MethodOverrideHeader'
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+      requestBody:
+        $ref: '#/components/requestBodies/LegacyCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/LegacyOk'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/LegacyUnauthorized'
+        '403':
+          $ref: '#/components/responses/LegacyForbidden'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/LegacyServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /_api/json/v1/{siteid}:
     parameters:
       - $ref: '#/components/parameters/LegacySiteId'
@@ -621,6 +779,161 @@ paths:
         - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
       security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
       parameters:
+        - $ref: '#/components/parameters/MethodOverrideHeader'
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+      requestBody:
+        $ref: '#/components/requestBodies/LegacyCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/LegacyOk'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/LegacyUnauthorized'
+        '403':
+          $ref: '#/components/responses/LegacyForbidden'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/LegacyServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /_api/ajax/v1:
+    get:
+      operationId: ajaxSitelessRootGet
+      summary: Calls the user or address operation the `method` parameter names through the AJAX API for the site a `siteid` form or url field names, else `default`.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      tags: [legacy-api]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys-excluded:
+        - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
+        - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      parameters:
+        - $ref: '#/components/parameters/SitelessSiteIdQuery'
+        - $ref: '#/components/parameters/LegacyMethod'
+        - $ref: '#/components/parameters/LegacyEntityName'
+        - $ref: '#/components/parameters/MethodOverrideHeader'
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+      responses:
+        '200':
+          $ref: '#/components/responses/LegacyOk'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/LegacyUnauthorized'
+        '403':
+          $ref: '#/components/responses/LegacyForbidden'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/LegacyServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: ajaxSitelessRootPost
+      summary: Calls the user or address operation the `method` parameter names through the AJAX API for the site a `siteid` form or url field names, else `default`.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      tags: [legacy-api]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys-excluded:
+        - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
+        - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      parameters:
+        - $ref: '#/components/parameters/SitelessSiteIdQuery'
+        - $ref: '#/components/parameters/LegacyMethod'
+        - $ref: '#/components/parameters/LegacyEntityName'
+        - $ref: '#/components/parameters/MethodOverrideHeader'
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+      requestBody:
+        $ref: '#/components/requestBodies/LegacyCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/LegacyOk'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/LegacyUnauthorized'
+        '403':
+          $ref: '#/components/responses/LegacyForbidden'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/LegacyServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: ajaxSitelessRootPut
+      summary: Calls the user or address operation the `method` parameter names through the AJAX API for the site a `siteid` form or url field names, else `default`.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      tags: [legacy-api]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys-excluded:
+        - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
+        - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      parameters:
+        - $ref: '#/components/parameters/SitelessSiteIdQuery'
+        - $ref: '#/components/parameters/LegacyMethod'
+        - $ref: '#/components/parameters/LegacyEntityName'
+        - $ref: '#/components/parameters/MethodOverrideHeader'
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+      requestBody:
+        $ref: '#/components/requestBodies/LegacyCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/LegacyOk'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/LegacyUnauthorized'
+        '403':
+          $ref: '#/components/responses/LegacyForbidden'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/LegacyServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: ajaxSitelessRootDelete
+      summary: Calls the user or address operation the `method` parameter names through the AJAX API for the site a `siteid` form or url field names, else `default`.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      tags: [legacy-api]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: ['api:address.findall', 'api:address.findmany', 'api:address.findnew', 'api:address.findone', 'api:address.findpermissions', 'api:address.findproperties', 'api:address.findquery', 'api:address.save', 'api:address.validate', 'api:user.findall', 'api:user.findmany', 'api:user.findnew', 'api:user.findone', 'api:user.findpermissions', 'api:user.findproperties', 'api:user.findquery', 'api:user.save', 'api:user.validate', 'api:user.~pollstate']
+      x-opt2-route-keys-excluded:
+        - {key: 'api:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'api:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
+        - {key: 'api:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
+        - {key: 'api:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      parameters:
+        - $ref: '#/components/parameters/SitelessSiteIdQuery'
+        - $ref: '#/components/parameters/LegacyMethod'
+        - $ref: '#/components/parameters/LegacyEntityName'
         - $ref: '#/components/parameters/MethodOverrideHeader'
         - $ref: '#/components/parameters/CsrfTokenHeader'
         - $ref: '#/components/parameters/CsrfExpiresHeader'
@@ -1251,6 +1564,153 @@ paths:
           $ref: '#/components/responses/LegacyServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /_api/rest/v1:
+    get:
+      operationId: restSitelessRootGet
+      summary: Calls the user or address operation the `method` parameter names through the sessionless REST API for the site a `siteid` form or url field names, else `default`.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      tags: [legacy-api]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
+      x-opt2-route-keys-excluded:
+        - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'rest:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
+        - {key: 'rest:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      parameters:
+        - $ref: '#/components/parameters/SitelessSiteIdQuery'
+        - $ref: '#/components/parameters/LegacyMethod'
+        - $ref: '#/components/parameters/LegacyEntityName'
+        - $ref: '#/components/parameters/MethodOverrideHeader'
+      responses:
+        '200':
+          $ref: '#/components/responses/LegacyOk'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/LegacyUnauthorized'
+        '403':
+          $ref: '#/components/responses/LegacyForbidden'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/LegacyServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: restSitelessRootPost
+      summary: Calls the user or address operation the `method` parameter names through the sessionless REST API for the site a `siteid` form or url field names, else `default`.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      tags: [legacy-api]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
+      x-opt2-route-keys-excluded:
+        - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'rest:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
+        - {key: 'rest:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      parameters:
+        - $ref: '#/components/parameters/SitelessSiteIdQuery'
+        - $ref: '#/components/parameters/LegacyMethod'
+        - $ref: '#/components/parameters/LegacyEntityName'
+        - $ref: '#/components/parameters/MethodOverrideHeader'
+      requestBody:
+        $ref: '#/components/requestBodies/LegacyCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/LegacyOk'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/LegacyUnauthorized'
+        '403':
+          $ref: '#/components/responses/LegacyForbidden'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/LegacyServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: restSitelessRootPut
+      summary: Calls the user or address operation the `method` parameter names through the sessionless REST API for the site a `siteid` form or url field names, else `default`.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      tags: [legacy-api]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
+      x-opt2-route-keys-excluded:
+        - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'rest:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
+        - {key: 'rest:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      parameters:
+        - $ref: '#/components/parameters/SitelessSiteIdQuery'
+        - $ref: '#/components/parameters/LegacyMethod'
+        - $ref: '#/components/parameters/LegacyEntityName'
+        - $ref: '#/components/parameters/MethodOverrideHeader'
+      requestBody:
+        $ref: '#/components/requestBodies/LegacyCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/LegacyOk'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/LegacyUnauthorized'
+        '403':
+          $ref: '#/components/responses/LegacyForbidden'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/LegacyServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: restSitelessRootDelete
+      summary: Calls the user or address operation the `method` parameter names through the sessionless REST API for the site a `siteid` form or url field names, else `default`.
+      description: A withheld key answers 503 without executing, and a key of an entity people does not own answers the legacy 404 envelope.
+      tags: [legacy-api]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: ['rest:address.findall', 'rest:address.findmany', 'rest:address.findnew', 'rest:address.findone', 'rest:address.findpermissions', 'rest:address.findproperties', 'rest:address.findquery', 'rest:address.save', 'rest:address.validate', 'rest:user.findall', 'rest:user.findmany', 'rest:user.findnew', 'rest:user.findone', 'rest:user.findpermissions', 'rest:user.findproperties', 'rest:user.findquery', 'rest:user.save', 'rest:user.validate', 'rest:user.~pollstate']
+      x-opt2-route-keys-excluded:
+        - {key: 'rest:address.delete', reason: 'Withheld and served by legacy; an address delete writes people and strategies-content units.'}
+        - {key: 'rest:address.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes people and strategies-content units.'}
+        - {key: 'rest:user.delete', reason: 'Withheld and served by legacy; a user delete writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save{extdata}', reason: 'Withheld and served by legacy; a save with extended attributes writes identity, people and strategies-content units.'}
+        - {key: 'rest:user.save{photo}', reason: 'Withheld and served by legacy; a save that sets or removes a photo writes identity, people and strategies-content units.'}
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      parameters:
+        - $ref: '#/components/parameters/SitelessSiteIdQuery'
+        - $ref: '#/components/parameters/LegacyMethod'
+        - $ref: '#/components/parameters/LegacyEntityName'
+        - $ref: '#/components/parameters/MethodOverrideHeader'
+      requestBody:
+        $ref: '#/components/requestBodies/LegacyCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/LegacyOk'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/LegacyUnauthorized'
+        '403':
+          $ref: '#/components/responses/LegacyForbidden'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/LegacyServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /_api/rest/v1/{siteid}:
     parameters:
       - $ref: '#/components/parameters/LegacySiteId'
@@ -1829,6 +2289,266 @@ paths:
           $ref: '#/components/responses/LegacyServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /core/modules/v1/favorites/ajax/saveFavorite.cfm:
+    parameters:
+      - $ref: '#/components/parameters/FavoriteUserId'
+      - $ref: '#/components/parameters/FavoriteSiteId'
+      - $ref: '#/components/parameters/FavoriteName'
+      - $ref: '#/components/parameters/FavoriteLocation'
+      - $ref: '#/components/parameters/FavoriteType'
+      - $ref: '#/components/parameters/FavoriteColumnNumber'
+      - $ref: '#/components/parameters/FavoriteRowNumber'
+      - $ref: '#/components/parameters/FavoriteMaxRssItems'
+    get:
+      operationId: favoritesSaveGet
+      summary: Saves a favorite for the user and answers its id and list link as JSON text.
+      description: Legacy runs the template the same way for every method but TRACE, reading query fields only.
+      tags: [favorites]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: &saveFavoriteKeys ['cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm']
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      responses: &saveFavoriteResponses
+        '200':
+          description: The saved favorite as legacy `jsonencode` text.
+          headers:
+            Generator:
+              $ref: '#/components/headers/Generator'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            text/html;charset=UTF-8:
+              schema:
+                $ref: '#/components/schemas/FavoriteSaved'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+          description: A presented credential is invalid.
+        '500':
+          $ref: '#/components/responses/ErrorPage'
+          description: A missing `userID`, `siteid`, `favoriteName`, `favoriteLocation` or `favoriteType` field.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: favoritesSavePost
+      summary: Saves a favorite for the user and answers its id and list link as JSON text.
+      description: Legacy runs the template the same way for every method but TRACE, reading query fields only.
+      tags: [favorites]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: *saveFavoriteKeys
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      responses: *saveFavoriteResponses
+    put:
+      operationId: favoritesSavePut
+      summary: Saves a favorite for the user and answers its id and list link as JSON text.
+      description: Legacy runs the template the same way for every method but TRACE, reading query fields only.
+      tags: [favorites]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: *saveFavoriteKeys
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      responses: *saveFavoriteResponses
+    delete:
+      operationId: favoritesSaveDelete
+      summary: Saves a favorite for the user and answers its id and list link as JSON text.
+      description: Legacy runs the template the same way for every method but TRACE, reading query fields only.
+      tags: [favorites]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: *saveFavoriteKeys
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      responses: *saveFavoriteResponses
+    patch:
+      operationId: favoritesSavePatch
+      summary: Saves a favorite for the user and answers its id and list link as JSON text.
+      description: Legacy runs the template the same way for every method but TRACE, reading query fields only.
+      tags: [favorites]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: *saveFavoriteKeys
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      responses: *saveFavoriteResponses
+    options:
+      operationId: favoritesSaveOptions
+      summary: Saves a favorite for the user and answers its id and list link as JSON text.
+      description: Legacy runs the template the same way for every method but TRACE, reading query fields only.
+      tags: [favorites]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: *saveFavoriteKeys
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      responses: *saveFavoriteResponses
+  /core/modules/v1/favorites/ajax/deleteFavorite.cfm:
+    parameters:
+      - $ref: '#/components/parameters/FavoriteId'
+    get:
+      operationId: favoritesDeleteGet
+      summary: Deletes a favorite and answers a removal notice.
+      description: Legacy runs the template the same way for every method but TRACE, reading query fields only.
+      tags: [favorites]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: &deleteFavoriteKeys ['cfm:/core/modules/v1/favorites/ajax/deletefavorite.cfm']
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      responses: &deleteFavoriteResponses
+        '200':
+          description: The removal notice, also for an id that names no favorite.
+          headers:
+            Generator:
+              $ref: '#/components/headers/Generator'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            text/html;charset=UTF-8:
+              schema:
+                $ref: '#/components/schemas/FavoriteRemoved'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+          description: A presented credential is invalid.
+        '500':
+          $ref: '#/components/responses/ErrorPage'
+          description: A missing `favoriteID` field.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: favoritesDeletePost
+      summary: Deletes a favorite and answers a removal notice.
+      description: Legacy runs the template the same way for every method but TRACE, reading query fields only.
+      tags: [favorites]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: *deleteFavoriteKeys
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      responses: *deleteFavoriteResponses
+    put:
+      operationId: favoritesDeletePut
+      summary: Deletes a favorite and answers a removal notice.
+      description: Legacy runs the template the same way for every method but TRACE, reading query fields only.
+      tags: [favorites]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: *deleteFavoriteKeys
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      responses: *deleteFavoriteResponses
+    delete:
+      operationId: favoritesDeleteDelete
+      summary: Deletes a favorite and answers a removal notice.
+      description: Legacy runs the template the same way for every method but TRACE, reading query fields only.
+      tags: [favorites]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: *deleteFavoriteKeys
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      responses: *deleteFavoriteResponses
+    patch:
+      operationId: favoritesDeletePatch
+      summary: Deletes a favorite and answers a removal notice.
+      description: Legacy runs the template the same way for every method but TRACE, reading query fields only.
+      tags: [favorites]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: *deleteFavoriteKeys
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      responses: *deleteFavoriteResponses
+    options:
+      operationId: favoritesDeleteOptions
+      summary: Deletes a favorite and answers a removal notice.
+      description: Legacy runs the template the same way for every method but TRACE, reading query fields only.
+      tags: [favorites]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: *deleteFavoriteKeys
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      responses: *deleteFavoriteResponses
+  /core/modules/v1/favorites/ajax/deleteRSSFavorite.cfm:
+    parameters:
+      - $ref: '#/components/parameters/FavoriteUserId'
+      - $ref: '#/components/parameters/RssFavoriteSiteId'
+    get:
+      operationId: favoritesDeleteRssGet
+      summary: Deletes the user's RSS favorites in the site and answers an empty body.
+      description: Legacy runs the template the same way for every method but TRACE, reading query fields only.
+      tags: [favorites]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: &deleteRssFavoriteKeys ['cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm']
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      responses: &deleteRssFavoriteResponses
+        '200':
+          description: An empty body.
+          headers:
+            Generator:
+              $ref: '#/components/headers/Generator'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            text/html;charset=UTF-8:
+              schema:
+                $ref: '#/components/schemas/EmptyBody'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+          description: A presented credential is invalid.
+        '500':
+          $ref: '#/components/responses/ErrorPage'
+          description: A missing `userID` or `siteID` field.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: favoritesDeleteRssPost
+      summary: Deletes the user's RSS favorites in the site and answers an empty body.
+      description: Legacy runs the template the same way for every method but TRACE, reading query fields only.
+      tags: [favorites]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: *deleteRssFavoriteKeys
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      responses: *deleteRssFavoriteResponses
+    put:
+      operationId: favoritesDeleteRssPut
+      summary: Deletes the user's RSS favorites in the site and answers an empty body.
+      description: Legacy runs the template the same way for every method but TRACE, reading query fields only.
+      tags: [favorites]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: *deleteRssFavoriteKeys
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      responses: *deleteRssFavoriteResponses
+    delete:
+      operationId: favoritesDeleteRssDelete
+      summary: Deletes the user's RSS favorites in the site and answers an empty body.
+      description: Legacy runs the template the same way for every method but TRACE, reading query fields only.
+      tags: [favorites]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: *deleteRssFavoriteKeys
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      responses: *deleteRssFavoriteResponses
+    patch:
+      operationId: favoritesDeleteRssPatch
+      summary: Deletes the user's RSS favorites in the site and answers an empty body.
+      description: Legacy runs the template the same way for every method but TRACE, reading query fields only.
+      tags: [favorites]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: *deleteRssFavoriteKeys
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      responses: *deleteRssFavoriteResponses
+    options:
+      operationId: favoritesDeleteRssOptions
+      summary: Deletes the user's RSS favorites in the site and answers an empty body.
+      description: Legacy runs the template the same way for every method but TRACE, reading query fields only.
+      tags: [favorites]
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-route-keys: *deleteRssFavoriteKeys
+      security: [{}, {invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      responses: *deleteRssFavoriteResponses
   /legacy-fixtures/cfml/api.cfm/people/persons/{userId}/archive:
     parameters:
       - $ref: '#/components/parameters/PersonId'
@@ -2910,6 +3630,15 @@ components:
         minLength: 1
         examples:
           - default
+    SitelessSiteIdQuery:
+      name: siteid
+      in: query
+      required: false
+      description: Site of a site-less call; a form `siteid` wins over this field, a missing value or one naming no site serves `default`, and the served site must equal the token's `site` when a user is present (403 otherwise).
+      schema:
+        type: string
+        examples:
+          - default
     LegacySegment:
       name: segment
       in: path
@@ -3111,6 +3840,79 @@ components:
         examples:
           - '0'
           - '1'
+    FavoriteUserId:
+      name: userID
+      in: query
+      required: true
+      description: User the favorite belongs to; legacy does not check it against the session.
+      schema:
+        type: string
+    FavoriteSiteId:
+      name: siteid
+      in: query
+      required: true
+      description: Site of the favorite and of its content link.
+      schema:
+        type: string
+        examples:
+          - default
+    FavoriteName:
+      name: favoriteName
+      in: query
+      required: true
+      description: Text of the favorite's link.
+      schema:
+        type: string
+    FavoriteLocation:
+      name: favoriteLocation
+      in: query
+      required: true
+      description: Content id the favorite links to.
+      schema:
+        type: string
+    FavoriteType:
+      name: favoriteType
+      in: query
+      required: true
+      schema:
+        type: string
+        examples:
+          - Page
+          - RSS
+    FavoriteColumnNumber:
+      name: columnNumber
+      in: query
+      required: false
+      schema:
+        type: string
+    FavoriteRowNumber:
+      name: rowNumber
+      in: query
+      required: false
+      schema:
+        type: string
+    FavoriteMaxRssItems:
+      name: maxRssItems
+      in: query
+      required: false
+      schema:
+        type: string
+    FavoriteId:
+      name: favoriteID
+      in: query
+      required: true
+      description: Favorite to delete.
+      schema:
+        type: string
+    RssFavoriteSiteId:
+      name: siteID
+      in: query
+      required: true
+      description: Site whose RSS favorites of the user are deleted.
+      schema:
+        type: string
+        examples:
+          - default
     PersonId:
       name: userId
       in: path
@@ -3336,6 +4138,17 @@ components:
         application/json;charset=utf-8:
           schema:
             $ref: '#/components/schemas/LegacyUnavailable'
+    ErrorPage:
+      description: The ColdFusion error page.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+      content:
+        text/html;charset=UTF-8:
+          schema:
+            $ref: '#/components/schemas/LegacyHtml'
     BadRequest:
       description: 'Legacy 400: `invalidParameters`, `badRequest` or `invalidTokens`.'
       headers:
@@ -4490,7 +5303,7 @@ components:
         type: string
     SerializedUserKey:
       type: string
-      description: A key the JSON API may emit for a user or address; serialization removes the credential and internal keys listed here.
+      description: A key the JSON API may emit for a user; serialization removes the credential and internal keys listed here.
       not:
         enum:
           - password
@@ -4500,6 +5313,22 @@ components:
           - extendsetid
           - extenddata
           - addresses
+    SerializedKeys:
+      description: Key rule of a serialized entity; a user omits every key SerializedUserKey excludes, an address `password` and `extenddata`.
+      propertyNames:
+        not:
+          enum:
+            - password
+            - extenddata
+      if:
+        required:
+          - entityname
+        properties:
+          entityname:
+            const: user
+      then:
+        propertyNames:
+          $ref: '#/components/schemas/SerializedUserKey'
     PeopleEnvelope:
       description: Legacy envelope of a user or address operation; neither `data` nor a collection item carries a removed key.
       allOf:
@@ -4507,13 +5336,12 @@ components:
         - type: object
           properties:
             data:
-              propertyNames:
-                $ref: '#/components/schemas/SerializedUserKey'
+              allOf:
+                - $ref: '#/components/schemas/SerializedKeys'
               properties:
                 items:
                   items:
-                    propertyNames:
-                      $ref: '#/components/schemas/SerializedUserKey'
+                    $ref: '#/components/schemas/SerializedKeys'
               anyOf:
                 - $ref: '#/components/schemas/UserCollection'
                 - $ref: '#/components/schemas/AddressCollection'
@@ -4751,6 +5579,19 @@ components:
       type: object
       description: Result of `findProperties`, `findPermissions` or `validate` on the user or address entity.
       additionalProperties: true
+    LegacyHtml:
+      type: string
+      description: Markup exactly as legacy renders it.
+    FavoriteSaved:
+      type: string
+      description: 'Legacy `jsonencode` text of the favorite: lower-cased keys, `lid` the id without hyphens, `link` the remove and content anchors, and JavaScript string escapes such as `\''`.'
+      pattern: '^\{"lid":("[0-9A-F]{32}"|[0-9]{32}),"favoriteid":"[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}","link":"(?:[^"\\]|\\.)*"\}$'
+    FavoriteRemoved:
+      type: string
+      const: Your favorite has been removed.
+    EmptyBody:
+      type: string
+      maxLength: 0
     FixtureTimestamp:
       type: string
       description: Fixture date-time `yyyy-mm-ddTHH:nn:ss` in the legacy server's zone.

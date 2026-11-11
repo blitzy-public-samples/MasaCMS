@@ -209,8 +209,8 @@ const INLINE_TAGS = new Set([
   'a', 'abbr', 'b', 'bdi', 'bdo', 'cite', 'code', 'data', 'dfn', 'em', 'i', 'kbd', 'mark',
   'q', 's', 'samp', 'small', 'span', 'strong', 'sub', 'sup', 'time', 'u', 'var', 'wbr',
 ]);
-// A keycap or a flag (regional-indicator pair) is one emoji; so is each other pictograph, emoji-presentation character or FE0F.
-const EMOJI = /[0-9#*]\u{FE0F}?\u{20E3}|\p{Regional_Indicator}{2}|[\p{Extended_Pictographic}\p{Emoji_Presentation}\u{FE0F}]/gu;
+// A keycap, a flag, a pictograph with FE0F, or an emoji-presentation character; text symbols such as © are not emoji.
+const EMOJI = /[0-9#*]\u{FE0F}?\u{20E3}|\p{Regional_Indicator}{2}|\p{Extended_Pictographic}\u{FE0F}|\p{Emoji_Presentation}/gu;
 // A character reference, or a bare `&`, taken whole so it decodes alone as the parser decodes it in text.
 const REFERENCE = /&[#\w]*;?/g;
 const FENCE = /`{3,}/g;
@@ -768,29 +768,41 @@ function referencedEmoji(
   if (found.length === 0) return [];
   const raw = html.slice(start, end);
   const referenceAt = new Map<number, number>();
+  // Where in `text` the literal scan's hits on this span fall.
+  const literalHits: { from: number; to: number }[] = [];
   let text = '';
   let last = 0;
+  const addLiteral = (segment: string): void => {
+    const normalised = segment.replace(/\r\n?/g, '\n');
+    for (const m of normalised.matchAll(EMOJI)) {
+      literalHits.push({ from: text.length + m.index, to: text.length + m.index + m[0].length });
+    }
+    text += normalised;
+  };
   for (const m of raw.matchAll(REFERENCE)) {
-    text += raw.slice(last, m.index).replace(/\r\n?/g, '\n');
+    addLiteral(raw.slice(last, m.index));
     const decoded = decode(m[0]);
     for (let i = 0; i < decoded.length; i++) referenceAt.set(text.length + i, start + m.index);
     text += decoded;
     last = m.index + m[0].length;
   }
-  text += raw.slice(last).replace(/\r\n?/g, '\n');
+  addLiteral(raw.slice(last));
   // The parser drops the newline opening a <pre>, <textarea> or <listing> but keeps it in the span.
   const skip = text.length - value.length;
   if (text.endsWith(value)) {
     return found.flatMap((m) => {
       const units = Array.from({ length: m[0].length }, (_, i) => referenceAt.get(skip + m.index + i));
       const at = units.find((offset) => offset !== undefined);
-      return at === undefined ? [] : [{ at, label: codePoints(m[0]) }];
+      // A sequence a reference completes around a literal hit is that hit, already reported.
+      const from = skip + m.index;
+      const reported = literalHits.some((hit) => hit.from >= from && hit.to <= from + m[0].length);
+      return at === undefined || reported ? [] : [{ at, label: codePoints(m[0]) }];
     });
   }
   // The decoding does not map onto the span: each hit its literal characters do not account for is placed at its start.
   const literal = [...raw.matchAll(EMOJI)].map((m) => m[0]);
   return found.flatMap((m) => {
-    const i = literal.indexOf(m[0]);
+    const i = literal.findIndex((hit) => m[0].includes(hit));
     if (i === -1) return [{ at: start, label: codePoints(m[0]) }];
     literal.splice(i, 1);
     return [];

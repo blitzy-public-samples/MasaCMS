@@ -145,6 +145,7 @@ CREATE POLICY tenant_isolation ON finance.record
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 CREATE INDEX record_state_idx ON finance.record (tenant_id, state);
 CREATE INDEX record_period_idx ON finance.record (tenant_id, period);
+CREATE INDEX record_list_idx ON finance.record (tenant_id, created, record_id COLLATE "C");
 
 -- One row per create, edit and transition of a record; its UNIQUE key also serves lookups by record
 CREATE TABLE finance.record_version (
@@ -189,7 +190,7 @@ ALTER TABLE finance.attachment ENABLE ROW LEVEL SECURITY; ALTER TABLE finance.at
 CREATE POLICY tenant_isolation ON finance.attachment
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
-CREATE INDEX attachment_record_idx ON finance.attachment (tenant_id, record_id);
+CREATE INDEX attachment_record_idx ON finance.attachment (tenant_id, record_id, created, attachment_id COLLATE "C");
 
 -- Record count and total amount per program, period and state
 CREATE TABLE finance.rollup (
@@ -208,14 +209,29 @@ CREATE POLICY tenant_isolation ON finance.rollup
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 
--- Program_<id> schema each tenant's rows were folded from
+-- Program_<id> schema each tenant's rows were folded from, one per tenant
 CREATE TABLE finance.program_binding (
-  tenant_id uuid NOT NULL PRIMARY KEY,
+  tenant_id uuid NOT NULL UNIQUE,
   site_id text NOT NULL,
   legacy_program_id integer NOT NULL UNIQUE,
-  updated_at timestamp(3) without time zone NOT NULL
+  updated_at timestamp(3) without time zone NOT NULL,
+  PRIMARY KEY (tenant_id, legacy_program_id)
 );
 ALTER TABLE finance.program_binding ENABLE ROW LEVEL SECURITY; ALTER TABLE finance.program_binding FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON finance.program_binding
+  USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+
+-- Attachment objects an uncommitted apply stored, or a committed one replaced, until their collection
+CREATE TABLE finance.staged_object (
+  tenant_id uuid NOT NULL,
+  object_key text NOT NULL,
+  attachment_id char(35) NOT NULL,
+  state text NOT NULL CHECK (state IN ('staged','superseded')),
+  recorded_at timestamp(3) without time zone NOT NULL,
+  PRIMARY KEY (tenant_id, object_key)
+);
+ALTER TABLE finance.staged_object ENABLE ROW LEVEL SECURITY; ALTER TABLE finance.staged_object FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON finance.staged_object
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);

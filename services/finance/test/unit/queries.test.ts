@@ -8,17 +8,19 @@ import { UnitReadBlockedError, closeGates, ensureUnitGates, openGates, withGated
 import type { TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
+  attachmentObjects,
   findAttachment,
   findProgramBinding,
   findRecord,
-  listAttachmentObjects,
   listAttachments,
   listRecords,
   listRollups,
   listVersions,
   periodTotals,
+  type Page,
+  type RecordPaging,
 } from '../../src/repo/queries.js';
-import { FINANCE_ATTACHMENT, FINANCE_RECORD, UNITS } from '../../src/repo/tables.js';
+import { FINANCE_ATTACHMENT, FINANCE_RECORD, FINANCE_RECORD_VERSION, FINANCE_ROLLUP, UNITS } from '../../src/repo/tables.js';
 
 let handle: ThrowawaySchema;
 
@@ -65,6 +67,15 @@ function recording(tx: TenantTx, seen: string[]): TenantTx {
   }) as TenantTx['query'];
   return { ...tx, query };
 }
+
+/** Every item `items` yields, in order. */
+async function collect<T>(items: AsyncIterable<T>): Promise<T[]> {
+  const out: T[] = [];
+  for await (const item of items) out.push(item);
+  return out;
+}
+
+const FIRST_PAGE: RecordPaging = { pageIndex: 1, itemsPerPage: 50 };
 
 /** Fixture order of records: `created`, then id. */
 function fixtureOrder(rows: readonly { id: string; created: string }[]): string[] {
@@ -133,14 +144,38 @@ describe.skipIf(!(await pgAvailable()))('finance read queries', () => {
     });
   });
 
-  it('lists versions by version, attachments by created then id, and rollups by period then state in binary order', async () => {
+  it.each<[string, (tx: TenantTx, paging: RecordPaging) => Promise<Page<Record<string, unknown>>>, (row: Record<string, unknown>) => unknown, unknown[]]>([
+    ['versions by version', (tx, paging) => listVersions(tx, RECORD_WITH_CHILDREN, paging), (row) => row.version, [1, 2]],
+    [
+      'attachments by created then id',
+      (tx, paging) => listAttachments(tx, RECORD_WITH_CHILDREN, paging),
+      (row) => row.attachment_id,
+      [A_ATTACHMENT_EARLIER, A_ATTACHMENT_LATER],
+    ],
+    [
+      'rollups by period then state in binary order',
+      (tx, paging) => listRollups(tx, paging),
+      (row) => `${String(row.period)}/${String(row.state)}`,
+      ['2026-05/SUBMITTED', '2026-06/RE-SUBMITTED', '2026-06/REJECTED'],
+    ],
+  ])('pages %s with the total, and counts alone past the end', async (_, list, key, expected) => {
     await handle.app.withTenant(TENANT_A.tenantId, async (tx) => {
-      expect((await listVersions(tx, RECORD_WITH_CHILDREN)).map((row) => row.version)).toEqual([1, 2]);
-      expect((await listAttachments(tx, RECORD_WITH_CHILDREN)).map((row) => row.attachment_id)).toEqual([A_ATTACHMENT_EARLIER, A_ATTACHMENT_LATER]);
-      expect(await listAttachments(tx, cfId('A', 3))).toEqual([]);
-      const rollups = await listRollups(tx);
-      expect(rollups.map((row) => `${row.period}/${row.state}`)).toEqual(['2026-05/SUBMITTED', '2026-06/RE-SUBMITTED', '2026-06/REJECTED']);
-      expect(rollups[0]?.total_amount).toBe('3.0000');
+      const pages: Page<Record<string, unknown>>[] = [];
+      for (let pageIndex = 1; pageIndex <= expected.length; pageIndex++) pages.push(await list(tx, { pageIndex, itemsPerPage: 1 }));
+      expect(pages.map((page) => [page.rows.length, page.total])).toEqual(expected.map(() => [1, expected.length]));
+      expect(pages.flatMap((page) => page.rows.map(key))).toEqual(expected);
+      expect((await list(tx, FIRST_PAGE)).rows.map(key)).toEqual(expected);
+      const seen: string[] = [];
+      expect(await list(recording(tx, seen), { pageIndex: 2, itemsPerPage: expected.length })).toEqual({ rows: [], total: expected.length });
+      expect(seen.at(-1)).toMatch(/^SELECT count\(\*\)/);
+      expect(seen.filter((text) => text.includes('OFFSET'))).toEqual([]);
+    });
+  });
+
+  it('keeps rollup money as four-decimal text and answers an empty page for a record without attachments', async () => {
+    await handle.app.withTenant(TENANT_A.tenantId, async (tx) => {
+      expect((await listRollups(tx, FIRST_PAGE)).rows[0]?.total_amount).toBe('3.0000');
+      expect(await listAttachments(tx, cfId('A', 3), FIRST_PAGE)).toEqual({ rows: [], total: 0 });
     });
   });
 
@@ -151,22 +186,23 @@ describe.skipIf(!(await pgAvailable()))('finance read queries', () => {
     });
   });
 
-  it('lists the attachment object manifest by attachment id', async () => {
-    const objects = await handle.app.withTenant(TENANT_B.tenantId, (tx) => listAttachmentObjects(tx));
-    expect(objects).toEqual([
-      { attachment_id: B_ATTACHMENT, record_id: B_RECORD, object_key: 'k-b', size: 5, sha256: 'c'.repeat(64), content_type: 'application/pdf', legacy_program_id: 2 },
-    ]);
+  it('yields the attachment object rows by attachment id', async () => {
+    const objects = await handle.app.withTenant(TENANT_B.tenantId, (tx) => collect(attachmentObjects(tx)));
+    expect(objects).toEqual([{ attachment_id: B_ATTACHMENT, object_key: 'k-b', legacy_program_id: 2 }]);
   });
 
   it('hides tenant B rows from a tenant A transaction', async () => {
     await handle.app.withTenant(TENANT_A.tenantId, async (tx) => {
       expect(await findRecord(tx, B_RECORD)).toBeNull();
-      expect((await listRecords(tx, { pageIndex: 1, itemsPerPage: 50 })).rows.map((row) => row.record_id)).not.toContain(B_RECORD);
-      expect((await listAttachmentObjects(tx)).map((row) => row.attachment_id)).toEqual([A_ATTACHMENT_LATER, A_ATTACHMENT_EARLIER]);
+      expect((await listRecords(tx, FIRST_PAGE)).rows.map((row) => row.record_id)).not.toContain(B_RECORD);
+      expect(await listAttachments(tx, B_RECORD, FIRST_PAGE)).toEqual({ rows: [], total: 0 });
+      expect((await collect(attachmentObjects(tx))).map((row) => row.attachment_id)).toEqual([A_ATTACHMENT_LATER, A_ATTACHMENT_EARLIER]);
       expect(await findProgramBinding(tx)).toMatchObject({ site_id: TENANT_A.siteId, legacy_program_id: 1 });
     });
     await handle.app.withTenant(TENANT_B.tenantId, async (tx) => {
       expect(await findRecord(tx, RECORD_WITH_CHILDREN)).toBeNull();
+      expect(await listVersions(tx, RECORD_WITH_CHILDREN, FIRST_PAGE)).toEqual({ rows: [], total: 0 });
+      expect(await listRollups(tx, FIRST_PAGE)).toEqual({ rows: [], total: 0 });
       expect(await findProgramBinding(tx)).toMatchObject({ site_id: TENANT_B.siteId, legacy_program_id: 2 });
     });
   });
@@ -181,10 +217,11 @@ describe.skipIf(!(await pgAvailable()))('finance read queries', () => {
     });
   });
 
-  it('answers no binding and an empty page for a tenant without rows', async () => {
+  it('answers no binding and empty pages for a tenant without rows', async () => {
     await handle.app.withTenant(TENANT_UMBRELLA.tenantId, async (tx) => {
       expect(await findProgramBinding(tx)).toBeNull();
-      expect(await listRecords(tx, { pageIndex: 1, itemsPerPage: 50 })).toEqual({ rows: [], total: 0 });
+      expect(await listRecords(tx, FIRST_PAGE)).toEqual({ rows: [], total: 0 });
+      expect(await collect(attachmentObjects(tx))).toEqual([]);
     });
   });
 
@@ -212,15 +249,17 @@ describe.skipIf(!(await pgAvailable()))('finance read queries', () => {
   it.each<GatePhase>(['executing', 'importing', 'import-pending'])(
     'makes user reads wait out the %s phase and fail with the legacy 503, but never the export manifest or binding',
     async (phase) => {
-      const units = [FINANCE_RECORD.unit, FINANCE_ATTACHMENT.unit];
+      const units = [FINANCE_RECORD.unit, FINANCE_RECORD_VERSION.unit, FINANCE_ATTACHMENT.unit, FINANCE_ROLLUP.unit];
       const holderId = `window-${randomUUID()}`;
       await closeGates(handle.app, { units, holderId, phase, allowLegacy: true });
       try {
         const reads: ((tx: TenantTx) => Promise<unknown>)[] = [
           (tx) => findRecord(tx, RECORD_WITH_CHILDREN),
           (tx) => listRecords(tx, { pageIndex: 1, itemsPerPage: 2 }),
-          (tx) => listAttachments(tx, RECORD_WITH_CHILDREN),
+          (tx) => listVersions(tx, RECORD_WITH_CHILDREN, FIRST_PAGE),
+          (tx) => listAttachments(tx, RECORD_WITH_CHILDREN, FIRST_PAGE),
           (tx) => findAttachment(tx, RECORD_WITH_CHILDREN, A_ATTACHMENT_LATER),
+          (tx) => listRollups(tx, FIRST_PAGE),
         ];
         for (const read of reads) {
           const started = Date.now();
@@ -230,7 +269,7 @@ describe.skipIf(!(await pgAvailable()))('finance read queries', () => {
           expect(Date.now() - started).toBeGreaterThanOrEqual(250);
         }
         const started = Date.now();
-        const objects = await withGatedTenant(handle.app, TENANT_A.tenantId, (tx) => listAttachmentObjects(tx), { budgetMs: 300 });
+        const objects = await withGatedTenant(handle.app, TENANT_A.tenantId, (tx) => collect(attachmentObjects(tx)), { budgetMs: 300 });
         expect(objects).toHaveLength(2);
         expect(await handle.app.withTenant(TENANT_A.tenantId, (tx) => findProgramBinding(tx))).not.toBeNull();
         expect(Date.now() - started).toBeLessThan(250);

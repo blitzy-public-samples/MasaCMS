@@ -274,6 +274,19 @@ describe('tenantDbFromPool', () => {
     expect(pool.client.releases).toEqual([undefined]);
   });
 
+  it.each([
+    ['an aborted signal before connecting', () => AbortSignal.abort(new Error('deadline passed')), 0, []],
+    ['a live signal through the transaction', () => new AbortController().signal, 1, ['BEGIN', SET_TENANT, 'SELECT 1', 'COMMIT']],
+  ])('passes withMetadata options to the transaction: %s', async (_label, signal, connects, issued) => {
+    const { pool, db } = fakeDb();
+    const options = { signal: signal() };
+    const run = withMetadata(db, (tx) => tx.query('SELECT 1'), options);
+
+    await (connects === 0 ? expect(run).rejects.toBe(options.signal.reason) : run);
+    expect(pool.connects).toBe(connects);
+    expect(statements(pool)).toEqual(issued);
+  });
+
   it('rethrows the callback error and destroys the connection when ROLLBACK fails with a non-Error value', async () => {
     const { pool, db } = fakeDb();
     const failure = new Error('boom');

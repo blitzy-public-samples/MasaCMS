@@ -23,15 +23,6 @@ export const MODULE_IDS = Object.freeze({
   m099: '00000000000000000000000000000000099',
 });
 
-/** `application.appReloadKey` default (`settings.template.cfm` 2); web's legacy settings carry no reload key. */
-export const APP_RELOAD_KEY: string = 'appreload';
-
-/** configBean `javaEnabled` default (`configBean.cfc` 217). */
-export const JAVA_ENABLED: boolean = true;
-
-/** configBean `fileDir` default (`configBean.cfc` 119). */
-export const FILE_DIR: string = '';
-
 /** One entry of the OPT-2 nav group: a synthetic module's landing screen and the roles that see it. */
 export interface Opt2NavModule {
   readonly module: string;
@@ -472,11 +463,16 @@ function updateCore(n: NavState): SafeHtml {
 /** configBean `allowAutoUpdates`; the CSRF-renderer check of the legacy condition always holds. */
 const allowsCoreUpdates = (): boolean => legacySettings().allowAutoUpdates;
 
+/** ACF `expandPath`: roots every path at the web root, an `s3://` URL included (`s3://b` gives `<webroot>/s3:/b`). */
+const expandPath = (path: string): string => `${legacySettings().webroot}/${path}`.replace(/[/\\]+/g, '/');
+
 /** Global Settings menu for S2 users (`nav.cfm` 308-342). */
 function globalSettings(n: NavState): SafeHtml | null {
   if (!n.ctx.isS2) return null;
   const inSettingsList = is(n.oc, 'cSettings') && is(n.of, 'list');
-  const reloadKey = encodeUrl(APP_RELOAD_KEY);
+  const { appReloadKey, fileDir } = legacySettings();
+  const reloadKey = encodeUrl(appReloadKey);
+  const s3FileDir = is(cfListToArray(expandPath(fileDir), ':')[0] ?? '', 's3');
   const copySite = (): SafeHtml => html`
 	                                <li>
 	                                    <a${when(is(n.oc, 'cSettings') && is(n.of, 'siteCopySelect'), ACTIVE)} href="${adminHref(n, 'cSettings.sitecopyselect')}"><i class="mi-copy"></i><span class="sidebar-mini-hide">${label(n, 'layout.sitecopytool')}</span></a>
@@ -490,7 +486,7 @@ function globalSettings(n: NavState): SafeHtml | null {
                                 </li>
                                 <li>
                                     <a${when(hasUrl(n, 'addsite'), ACTIVE)} href="${adminHref(n, 'cSettings.editSite&amp;siteid=&amp;addsite')}"><i class="mi-plus-circle"></i><span class="sidebar-mini-hide">${label(n, 'layout.addsite')}</span></a>
-                                </li>${is(cfListToArray(FILE_DIR, ':')[0] ?? '', 's3') ? null : copySite()}
+                                </li>${s3FileDir ? null : copySite()}
                                 <li>
                                     <a${when(inSettingsList && hasUrl(n, 'plugins'), ACTIVE)} href="${adminHref(n, 'cSettings.list&plugins#tabPlugins')}"><i class="mi-plug"></i><span class="sidebar-mini-hide">${label(n, 'layout.globalsettings-plugins')}</span></a>
                                 </li>${allowsCoreUpdates() ? updateCore(n) : null}
@@ -564,7 +560,7 @@ function serverRows(n: NavState): SafeHtml | null {
   return html`
                             <li>
                                 <a class="no-link" href="#"> <span><strong>${label(n, 'version.appserver')}</strong> ${raw(appServer)} (${raw(server.appServerVersion)})</span></a>
-                            </li>${JAVA_ENABLED ? database() : null}${server.osName === '' ? null : os()}`;
+                            </li>${legacySettings().javaEnabled ? database() : null}${server.osName === '' ? null : os()}`;
 }
 
 /** Last Deployment row of a staging install; `Never` where legacy's date formatting fails (`nav.cfm` 409-420). */

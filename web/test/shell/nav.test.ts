@@ -8,7 +8,7 @@ import { resetLegacySettingsForTests } from '@/lib/env';
 import { isSafeHtml, raw, toString } from '@/lib/html';
 import { ORIGINAL_URL_HEADER, type AdminRequest } from '@/lib/request-context';
 import { rbFor, type RbLookup } from '@/lib/resource-bundles/rb';
-import { APP_RELOAD_KEY, FILE_DIR, JAVA_ENABLED, MODULE_IDS, OPT2_NAV_MODULES, renderNav } from '@/shell/nav';
+import { MODULE_IDS, OPT2_NAV_MODULES, renderNav } from '@/shell/nav';
 import type { LegacyServerInfo, ShellContext, ShellData, ShellView } from '@/shell/types';
 import {
   adminS2Request,
@@ -149,10 +149,6 @@ describe('exports', () => {
       m099: `${Z}099`,
     });
     expect(Object.isFrozen(MODULE_IDS)).toBe(true);
-  });
-
-  it('keeps the legacy defaults of the settings web does not carry', () => {
-    expect([APP_RELOAD_KEY, JAVA_ENABLED, FILE_DIR]).toEqual(['appreload', true, '']);
   });
 
   it('lists the OPT-2 screens in nav order, one per synthetic module, covering every synthetic role', () => {
@@ -428,6 +424,18 @@ describe('visibility', () => {
     const ctx = adminOn({ circuit: 'cSettings', item: 'exportHtml', site: { record: { exportLocation: '/tmp' } } });
     expect(marks(render(shell(ctx, { exportLocationExists: true })))).toEqual([...SITE_CONFIG_MARKS, 'a.active #']);
   });
+
+  // ACF expandPath roots an s3:// fileDir at the web root, so only a web root read as `s3:` hides Copy Site.
+  it.each<[Record<string, string>, boolean]>([
+    [{}, true],
+    [{ MURA_FILEDIR: '/srv/masa/sites' }, true],
+    [{ MURA_FILEDIR: 's3://bucket/assets' }, true],
+    [{ MURA_S3ASSETS: 's3://bucket', MURA_FILEDIR: '/srv/masa/sites' }, true],
+    [{ MURA_WEBROOT: 's3:' }, false],
+  ])('shows Copy Site for %j: %s', (vars, shown) => {
+    for (const [key, value] of Object.entries(vars)) vi.stubEnv(key, value);
+    expect(linksTo(render(shell(adminOn({ circuit: 'cArch', item: 'list' }))), 'cSettings.sitecopyselect')).toBe(shown);
+  });
 });
 
 describe('OPT-2 group', () => {
@@ -488,6 +496,22 @@ describe('version box', () => {
     ]);
   });
 
+  it.each<[string | undefined, boolean]>([
+    [undefined, true],
+    ['false', false],
+    ['no', false],
+  ])('shows the DB Server and Java rows for MURA_JAVAENABLED=%j: %s', (javaEnabled, shown) => {
+    vi.stubEnv('MURA_JAVAENABLED', javaEnabled);
+    const server = { ...ORACLE_SERVER, javaVersion: '17.0.21' };
+    const javaRows = ['DB Server Microsoft SQL Server (Microsoft SQL Server 2022 - 16.0.4305.5)', 'Java Version 17.0.21'];
+    expect(versionLinks(shell(editorRequest(), { server }))).toEqual([
+      'Core Version 7.6.1',
+      'App Server ColdFusion (2023,0,26,331018)',
+      ...(shown ? javaRows : []),
+      'OS Version UNIX (6.12.105+)',
+    ]);
+  });
+
   it.each<[string, string | null, string]>([
     // The session mask MM/DD/YYYY prints the day of the year, the known legacy date-mask defect.
     ['a deployment time', '2026-06-29T14:05:00', 'Last Deployment 06/180/2026 2:05 PM'],
@@ -515,6 +539,17 @@ describe('links and encoding', () => {
     const hrefs = links(markup).map((link) => link.split(' -> ')[1] ?? '');
     expect(hrefs.filter((href) => href.includes('muraAction=')).every((href) => href.startsWith('/masa/manage/?muraAction='))).toBe(
       true,
+    );
+  });
+
+  it.each<[string | undefined, string]>([
+    [undefined, 'appreload'],
+    ['cfg-key&x', 'cfg-key%26x'],
+    ['', ''],
+  ])('links Reload Application with MURA_APPRELOADKEY=%j URL-encoded as %j', (key, encoded) => {
+    vi.stubEnv('MURA_APPRELOADKEY', key);
+    expect(render(shell(adminOn({ circuit: 'cArch', item: 'list' })))).toContain(
+      `<a href="/admin/?${encoded}&amp;reload=${encoded}" onclick="return actionModal(this.href);">`,
     );
   });
 

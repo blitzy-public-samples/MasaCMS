@@ -41,10 +41,10 @@ describe('masa counts', () => {
     expect(masa.users).toHaveLength(3200);
     expect(masa.files).toHaveLength(20);
     expect(masa.oauthClients).toHaveLength(1);
-    expect(masa.sites.map((s) => [s.siteID, s.orderNo, s.domain, s.programId])).toEqual([
-      ['umbrella', 2, 'umbrella.seed.opt2.test', null],
-      ['tenant-a', 3, 'tenant-a.seed.opt2.test', 1],
-      ['tenant-b', 4, 'tenant-b.seed.opt2.test', 2],
+    expect(masa.sites.map((s) => [s.siteID, s.orderNo, s.domain, s.domainAlias, s.programId])).toEqual([
+      ['umbrella', 2, 'umbrella.localhost', 'localhost', null],
+      ['tenant-a', 3, 'tenant-a.localhost', 'localhost', 1],
+      ['tenant-b', 4, 'tenant-b.localhost', 'localhost', 2],
     ]);
     const a = index.site('tenant-a');
     expect([a.publicUserPoolID, a.categoryPoolID, a.filePoolID, a.displayPoolID, a.privateUserPoolID, a.contentPoolID]).toEqual([

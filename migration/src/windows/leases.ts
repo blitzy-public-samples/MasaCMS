@@ -30,6 +30,10 @@ export interface AcquireLeasesInput {
 export const LEASE_RETRY_INTERVAL_MS = 200;
 
 const UNIQUE_VIOLATION = '23505';
+const QUERY_CANCELED = '57014';
+const LOCK_NOT_AVAILABLE = '55P03';
+const RETRYABLE_CODES: ReadonlySet<unknown> = new Set([UNIQUE_VIOLATION, QUERY_CANCELED, LOCK_NOT_AVAILABLE]);
+const SET_STATEMENT_TIMEOUT_SQL = "SELECT set_config('statement_timeout', $1, true)";
 const LEASE_TABLE = 'unit_lease';
 const COLUMNS = 'unit, holder_id, kind, acquired_at';
 
@@ -70,12 +74,17 @@ function byUnit(a: LeaseRow, b: LeaseRow): number {
   return a.unit < b.unit ? -1 : a.unit > b.unit ? 1 : 0;
 }
 
-function isUniqueViolation(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && 'code' in error && error.code === UNIQUE_VIOLATION;
+// 23505: another holder committed a requested unit; 57014: the statement timeout ended the wait on one held uncommitted;
+// 55P03: a lock_timeout the role or database sets ended it.
+function isRetryable(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && RETRYABLE_CODES.has(error.code);
 }
 
-/** One attempt in one transaction: keeps the units `holderId` already holds and inserts the rest, or fails whole with 23505. */
-function tryAcquire(ctx: AcquireContext, units: string[], input: AcquireLeasesInput): Promise<LeaseRow[]> {
+/**
+ * One attempt in one transaction: keeps the units `holderId` already holds and inserts the rest, or fails whole with 23505,
+ * 57014 or 55P03. `remaining` returns the budget left in ms, which bounds the insert's whole wait on other transactions.
+ */
+function tryAcquire(ctx: AcquireContext, units: string[], input: AcquireLeasesInput, remaining: () => number): Promise<LeaseRow[]> {
   return ctx.db.withMetadata(async (tx) => {
     const table = leaseTable(tx);
     const held = await tx.query<LeaseRecord>(
@@ -85,6 +94,8 @@ function tryAcquire(ctx: AcquireContext, units: string[], input: AcquireLeasesIn
     const heldUnits = new Set(held.rows.map((row) => row.unit));
     const missing = units.filter((unit) => !heldUnits.has(unit));
     if (missing.length === 0) return held.rows.map(toLeaseRow).sort(byUnit);
+    // statement_timeout 0 disables the timeout, so an exhausted budget still gets the shortest positive one.
+    await tx.query(SET_STATEMENT_TIMEOUT_SQL, [`${Math.max(1, Math.ceil(remaining()))}ms`]);
     // Rows go in in the caller's sorted order, so holders contend in one order and cannot deadlock. No ON CONFLICT:
     // a unit another holder owns fails the whole statement, so nothing partial is ever held.
     const inserted = await tx.query<LeaseRecord>(
@@ -117,13 +128,14 @@ export async function acquireLeases(ctx: AcquireContext, input: AcquireLeasesInp
   const units = [...new Set(input.units)].sort();
   const sleep = input.sleep ?? ((ms: number) => delay(ms));
   const startedAt = ctx.clock.now().getTime();
+  const remaining = (): number => input.budgetMs - (ctx.clock.now().getTime() - startedAt);
   for (;;) {
     try {
-      return await tryAcquire(ctx, units, input);
+      return await tryAcquire(ctx, units, input, remaining);
     } catch (error) {
-      if (!isUniqueViolation(error)) throw error;
+      if (!isRetryable(error)) throw error;
     }
-    const remainingMs = input.budgetMs - (ctx.clock.now().getTime() - startedAt);
+    const remainingMs = remaining();
     if (remainingMs <= 0) break;
     await sleep(Math.min(LEASE_RETRY_INTERVAL_MS, remainingMs));
   }

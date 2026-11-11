@@ -12,7 +12,6 @@ export { surveyReminderMapping } from './survey-reminder.js';
 export { surveyTargetMapping } from './survey-target.js';
 export { surveyResponseMapping } from './survey-response.js';
 
-// No survey-response grant hook: the migration handlers offer no in-apply callback, so backfilled cross-site targets get no tenant_grant until re-targeted.
 /** The surveys mappings, parent before children, one per unit in `UNITS` order. */
 export const MAPPINGS: readonly Mapping[] = Object.freeze([
   surveyMapping,

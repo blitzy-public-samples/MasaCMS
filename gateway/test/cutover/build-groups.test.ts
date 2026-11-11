@@ -221,12 +221,13 @@ describe('committed inputs', () => {
     });
   });
 
-  it('puts every ownership unit in exactly one group, named by its smallest unit', () => {
+  it('puts every ownership unit in exactly one group, named by its smallest non-joining unit', () => {
     const units = built.groups.flatMap((group) => group.units);
+    const joining = new Set(input.ownership.units.filter((unit) => unit.joinsUnit !== undefined).map((unit) => unit.unit));
     expect([...units].sort()).toEqual(input.ownership.units.map((unit) => unit.unit).sort());
     expect(new Set(units).size).toBe(units.length);
     for (const group of built.groups) {
-      expect(group.id).toBe(`grp:${[...group.units].sort()[0]}`);
+      expect(group.id).toBe(`grp:${group.units.filter((unit) => !joining.has(unit)).sort()[0]}`);
       expect(group.units).toEqual([...group.units].sort());
       expect(group.writeEntries).toEqual([...group.writeEntries].sort());
       expect(group.hasCarryWrite).toBe(group.writeEntries.length > 0);
@@ -300,6 +301,23 @@ describe('buildGroups', () => {
       units: ['identity.group_account', 'identity.membership', 'people.person'],
       writeEntries: ['admin:cusers.addtogroup', 'admin:cusers.update{type=1}', 'admin:cusers.update{type=2,action=update}'],
     });
+  });
+
+  it('places a joining unit in the carry group of the unit it joins, whose id stays named by its own units', () => {
+    const joiner = { unit: 'communications.scheduled_task', owner: 'communications', legacyTables: [], joinsUnit: 'people.person' };
+    const built = buildGroups(
+      fixture(
+        { variants: [variant('admin:cusers.update{type=2,action=add}', ['people.person', 'identity.user_account'])] },
+        { ...OWNERSHIP, units: [...OWNERSHIP.units, joiner] },
+      ),
+    );
+    expect(groupOf(built, joiner.unit)).toEqual({
+      id: 'grp:identity.user_account',
+      units: ['communications.scheduled_task', 'identity.user_account', 'people.person'],
+      writeEntries: ['admin:cusers.update{type=2,action=add}'],
+      hasCarryWrite: true,
+    });
+    expect(built.groups).toHaveLength(OWNERSHIP.units.length - 1);
   });
 
   it.each([

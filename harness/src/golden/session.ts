@@ -7,6 +7,7 @@ import {
   CSRF_FIELD_TOKEN,
   CSRF_HEADER_EXPIRES,
   CSRF_HEADER_TOKEN,
+  esapiUrlEncode,
   isLegacySessionCookie,
   parseCookieHeader,
 } from '@opt2/platform/legacy-compat';
@@ -45,11 +46,25 @@ export const LOGIN_CSRF_CONTEXT = 'login';
 /** Placeholder read from the dataset's `businessDate` unless a binding of the same name exists. */
 const AS_OF = 'asOf';
 
+/** `${<prefix><value>}` forms: `nodash:` drops `-` (legacy `replacelist`), `urlencode:` is `esapiEncode('url')`. */
+const DERIVED: ReadonlyArray<readonly [prefix: string, derive: (value: string) => string]> = [
+  ['nodash:', (value) => value.replaceAll('-', '')],
+  ['urlencode:', esapiUrlEncode],
+];
+
+/** Stands in for a secret value in diagnostics. */
+const SECRET_MASK = '<secret>';
+
 const ENV_SECRETS: Readonly<Record<string, string>> = {
   admin: 'MURA_ADMIN_PASSWORD',
   qa_editor: 'MASA_TEST_EDITOR_PASSWORD',
 };
-const SECRET_FORMS = 'admin, qa_editor, seed:<username>, oauth:<clientId> or generated:<name>';
+/** `${secret:appreload}`, the legacy reload parameter; a secret only when `MURA_APPRELOADKEY` configures it. */
+const APP_RELOAD_SECRET = 'appreload';
+const APP_RELOAD_KEY_VARIABLE = 'MURA_APPRELOADKEY';
+/** application.appReloadKey when no key is configured (onApplicationStart_include.cfm:80). */
+const DEFAULT_APP_RELOAD_KEY = 'appreload';
+const SECRET_FORMS = 'admin, qa_editor, appreload, seed:<username>, oauth:<clientId> or generated:<name>';
 const GENERATED_BYTES = 18;
 // Guarantees a digit, a lower-case and an upper-case letter, as seeded passwords do.
 const GENERATED_SUFFIX = 'a1A';
@@ -182,13 +197,31 @@ export function originBaseUrl(origin: Origin, env: EnvLike = process.env): strin
   return `http://127.0.0.1:${port}`;
 }
 
-/** Rethrows a GoldenConfigError from `fn` with the scenario id in front of its message. */
-function inScenario<T>(ctx: Pick<ScenarioContext, 'scenarioId'>, fn: () => T): T {
+/** `text` with every value {@link secretValues} lists for `ctx` replaced by `<secret>`, longest first. */
+function maskSecrets(ctx: Pick<ScenarioContext, 'secrets'>, text: string): string {
+  const values = secretValues(ctx).sort((a, b) => b.length - a.length);
+  return values.reduce((masked, value) => masked.replaceAll(value, SECRET_MASK), text);
+}
+
+/** GoldenConfigError `<scenario id>: <message>` with its secret values masked. */
+function scenarioError(ctx: Pick<ScenarioContext, 'scenarioId' | 'secrets'>, message: string): GoldenConfigError {
+  return new GoldenConfigError(maskSecrets(ctx, `${ctx.scenarioId}: ${message}`));
+}
+
+/** Rethrows a GoldenConfigError from `fn` prefixed with the scenario id, and a MissingSecretError, secrets masked. */
+function inScenario<T>(ctx: Pick<ScenarioContext, 'scenarioId' | 'secrets'>, fn: () => T): T {
   try {
     return fn();
   } catch (err) {
     if (err instanceof GoldenConfigError) {
-      throw new GoldenConfigError(`${ctx.scenarioId}: ${err.message}`, { path: err.path, cause: err });
+      const message = `${ctx.scenarioId}: ${err.message}`;
+      const masked = maskSecrets(ctx, message);
+      // A cause quoting a secret would carry it past the masked message.
+      throw new GoldenConfigError(masked, { path: err.path, cause: masked === message ? err : undefined });
+    }
+    if (err instanceof MissingSecretError) {
+      const placeholder = maskSecrets(ctx, err.placeholder);
+      if (placeholder !== err.placeholder) throw new MissingSecretError(placeholder, err.source);
     }
     throw err;
   }
@@ -275,10 +308,16 @@ function writeSecretFile(file: string, body: Record<string, unknown>): void {
   chmodSync(file, 0o600);
 }
 
+/** Legacy reload parameter: `MURA_APPRELOADKEY` when set and non-empty, else Masa's default `appreload`. */
+export function appReloadKey(env: EnvLike = process.env): string {
+  return envValue(env, APP_RELOAD_KEY_VARIABLE) ?? DEFAULT_APP_RELOAD_KEY;
+}
+
 /**
- * Secret store over `env` and `seed-credentials.json`, read once on first use. `seed:<username>` needs one
- * distinct password across sites; `generated:<name>` falls back to {@link GENERATED_SECRETS_FILE}, created on
- * first use so capture and replay of one run post the same value.
+ * Secret store over `env` and `seed-credentials.json`, read once on first use. `appreload` is {@link appReloadKey},
+ * listed by `values()` only when configured; `seed:<username>` needs one distinct password across sites;
+ * `generated:<name>` falls back to {@link GENERATED_SECRETS_FILE}, created on first use so capture and replay of
+ * one run post the same value.
  */
 export function loadSecretStore(env: EnvLike = process.env): SecretStore {
   let credentials: Record<string, unknown> | null | undefined;
@@ -327,6 +366,7 @@ export function loadSecretStore(env: EnvLike = process.env): SecretStore {
   const lookup = (name: string): string => {
     const placeholder = `\${secret:${name}}`;
     if (Object.hasOwn(ENV_SECRETS, name)) return fromEnv(ENV_SECRETS[name] as string, placeholder);
+    if (name === APP_RELOAD_SECRET) return appReloadKey(env);
     const colon = name.indexOf(':');
     const key = colon < 0 ? '' : name.slice(colon + 1);
     if (key !== '') {
@@ -347,7 +387,8 @@ export function loadSecretStore(env: EnvLike = process.env): SecretStore {
   return {
     secret(name) {
       const value = lookup(name);
-      returned.add(value);
+      // Masa's default reload key is public, so it is not listed for redaction.
+      if (name !== APP_RELOAD_SECRET || envValue(env, APP_RELOAD_KEY_VARIABLE) !== undefined) returned.add(value);
       return value;
     },
     username(site, role) {
@@ -482,6 +523,52 @@ export function loadSeedStore(env: EnvLike = process.env, opts: SeedStoreOptions
   };
 }
 
+/** A seedRef {@link checkSeedRefs} could not resolve. */
+export interface SeedRefFinding {
+  scenarioId: string;
+  /** The ref's `as`. */
+  alias: string;
+  message: string;
+}
+
+/** Stores {@link checkSeedRefs} resolves against; `env` defaults to `process.env`. */
+export interface SeedRefCheckOptions {
+  seed: SeedStore;
+  secrets: SecretStore;
+  env?: EnvLike;
+}
+
+/**
+ * Resolves every scenario's seedRefs offline, in declaration order, as {@link createScenarioContext} does, so a
+ * later `where` reads earlier rows. Returns one finding per ref that raises GoldenConfigError or MissingSecretError.
+ */
+export function checkSeedRefs(scenarios: readonly ScenarioInput[], opts: SeedRefCheckOptions): SeedRefFinding[] {
+  const findings: SeedRefFinding[] = [];
+  for (const scenario of scenarios) {
+    const ctx: ScenarioContext = {
+      origin: 'legacy',
+      baseUrl: '',
+      scenarioId: scenario.id,
+      sessions: new Map(),
+      bindings: new Map(),
+      seedRows: new Map(),
+      secrets: opts.secrets,
+      seed: opts.seed,
+      env: opts.env ?? process.env,
+    };
+    for (const ref of scenario.seedRefs ?? []) {
+      try {
+        const where = ref.where === undefined ? undefined : resolvePlaceholders(ref.where, ctx);
+        ctx.seedRows.set(ref.as, inScenario(ctx, () => ctx.seed.select({ ...ref, where })));
+      } catch (err) {
+        if (!(err instanceof GoldenConfigError || err instanceof MissingSecretError)) throw err;
+        findings.push({ scenarioId: scenario.id, alias: ref.as, message: err.message });
+      }
+    }
+  }
+  return findings;
+}
+
 
 /** Literal text, or a placeholder whose name may itself hold placeholders. */
 type TemplatePart = string | { readonly parts: readonly TemplatePart[] };
@@ -570,6 +657,13 @@ function lookup(name: string, ctx: ScenarioContext): unknown {
   if (name.startsWith('secret:')) return inScenario(ctx, () => ctx.secrets.secret(name.slice('secret:'.length)));
   const user = /^user:([^:]+):(.+)$/s.exec(name);
   if (user !== null) return inScenario(ctx, () => ctx.secrets.username(user[1] as string, user[2] as string));
+  const derived = DERIVED.find(([prefix]) => name.startsWith(prefix));
+  if (derived !== undefined) {
+    const [prefix, derive] = derived;
+    const text = name.slice(prefix.length);
+    if (text === '') throw scenarioError(ctx, `\${${prefix}} has no value`);
+    return derive(text);
+  }
   if (!name.startsWith('user:')) {
     const segments = pathSegments(name);
     const [head, as, ...field] = segments;
@@ -582,7 +676,7 @@ function lookup(name: string, ctx: ScenarioContext): unknown {
       if (name === AS_OF) return inScenario(ctx, () => ctx.seed.businessDate());
     }
   }
-  throw new GoldenConfigError(`${ctx.scenarioId}: unresolved placeholder \${${name}}`);
+  throw scenarioError(ctx, `unresolved placeholder \${${name}}`);
 }
 
 function render(parts: readonly TemplatePart[], ctx: ScenarioContext): string {
@@ -598,25 +692,49 @@ function resolveString(text: string, ctx: ScenarioContext): unknown {
   return render(parts, ctx);
 }
 
+/** Object key `key` with its placeholders resolved; it must name a non-empty string. */
+function resolveKey(key: string, ctx: ScenarioContext): string {
+  if (!key.includes('${')) return key;
+  const name = resolveString(key, ctx);
+  if (typeof name !== 'string' || name === '') {
+    throw scenarioError(ctx, `key ${key} does not resolve to a non-empty string`);
+  }
+  return name;
+}
+
 function resolveValue(value: unknown, ctx: ScenarioContext): unknown {
   if (typeof value === 'string') return resolveString(value, ctx);
   if (Array.isArray(value)) return value.map((item) => resolveValue(item, ctx));
   if (isPlainObject(value)) {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, resolveValue(item, ctx)]));
+    const written = new Map<string, string>();
+    const entries: [string, unknown][] = [];
+    for (const [key, item] of Object.entries(value)) {
+      const name = resolveKey(key, ctx);
+      const earlier = written.get(name);
+      if (earlier !== undefined) {
+        throw scenarioError(ctx, `keys ${earlier} and ${key} both resolve to ${name}`);
+      }
+      written.set(name, key);
+      entries.push([name, resolveValue(item, ctx)]);
+    }
+    return Object.fromEntries(entries);
   }
   return value;
 }
 
 /**
- * Copy of `value` with every `${…}` in its strings resolved, inner first: `secret:*`, `user:<site>:<role>`,
- * `seed.<as>[.<field>]`, bindings (`<step>.<binding>[.<path>]`, `matrix.<var>`), then `asOf`. A string that is
- * exactly one placeholder keeps the value's type. Throws GoldenConfigError or MissingSecretError when unresolved.
+ * Copy of `value` with every `${…}` in its strings and object keys resolved, inner first: `secret:*`,
+ * `user:<site>:<role>`, `nodash:<value>`, `urlencode:<value>`, `seed.<as>[.<field>]`, bindings
+ * (`<step>.<binding>[.<path>]`, `matrix.<var>`), then `asOf`. A string that is exactly one placeholder keeps the
+ * value's type; keys must resolve to distinct non-empty strings. Throws GoldenConfigError or MissingSecretError when
+ * unresolved, with every secret value masked as `<secret>`.
+ * `${secret:appreload}` without `MURA_APPRELOADKEY` is Masa's default key, which {@link secretValues} leaves out.
  */
 export function resolvePlaceholders<T>(value: T, ctx: ScenarioContext): T {
   return resolveValue(value, ctx) as T;
 }
 
-/** Distinct placeholder names in `value`'s strings, as written, outer before inner, in order of appearance. */
+/** Distinct placeholder names in `value`'s strings and keys, as written, outer before inner, in order of appearance. */
 export function placeholderNames(value: unknown): string[] {
   const names = new Set<string>();
   const visitParts = (parts: readonly TemplatePart[]): void => {
@@ -629,15 +747,20 @@ export function placeholderNames(value: unknown): string[] {
   const visit = (item: unknown): void => {
     if (typeof item === 'string') visitParts(parseTemplate(item));
     else if (Array.isArray(item)) item.forEach(visit);
-    else if (isPlainObject(item)) Object.values(item).forEach(visit);
+    else if (isPlainObject(item)) {
+      for (const [key, entry] of Object.entries(item)) {
+        visitParts(parseTemplate(key));
+        visit(entry);
+      }
+    }
   };
   visit(value);
   return [...names];
 }
 
-/** Every secret value `ctx` resolved so far, for redaction before anything is written. */
-export function secretValues(ctx: ScenarioContext): string[] {
-  return ctx.secrets.values();
+/** Secret values `ctx` resolved so far, each then its URL-encoded form if different, for redaction before writing. */
+export function secretValues(ctx: Pick<ScenarioContext, 'secrets'>): string[] {
+  return [...new Set(ctx.secrets.values().flatMap((value) => [value, esapiUrlEncode(value)]))];
 }
 
 /** Path of `url`, for messages: queries can carry tokens. */

@@ -95,6 +95,12 @@ export interface ObjectManifestEntry {
   legacyPath?: string;
 }
 
+/** One page of an owner's object manifest; `next` is the owner's position after it, null after the last page. */
+export interface ObjectManifestPage {
+  objects: ObjectManifestEntry[];
+  next: string | null;
+}
+
 /** One target write an apply performed; `table` is the repository table, rows are as pg returns them. */
 export interface AppliedChange {
   unit: string;
@@ -113,8 +119,11 @@ export interface MigrationHandlerOptions {
   mappings: readonly Mapping[];
   units: readonly string[];
   db?: TenantDb;
-  /** Object manifest of a unit, returned with the first export page. */
-  exportObjects?(tx: TenantTx, scope: { unit: string; tenantId: string }): Promise<ObjectManifestEntry[]>;
+  /** Object manifest of a unit: an array is the whole manifest, returned with the first export page; a page is one manifest page, and the following pages ride on the following export pages. */
+  exportObjects?(
+    tx: TenantTx,
+    scope: { unit: string; tenantId: string; after?: string; limit?: number },
+  ): Promise<ObjectManifestEntry[] | ObjectManifestPage>;
   /**
    * Writes the `state` events of one applied change in the apply transaction; `write` is the apply's own write
    * context (origin and migration authority), so the service's audited writes for the event pass the unit gate.
@@ -295,7 +304,11 @@ const gateBodySchema = z.discriminatedUnion('op', [
   z.strictObject({ op: z.literal('status'), units: gateUnits.optional(), holderId: nonEmpty.optional() }),
 ]);
 
-const exportCursorSchema = z.strictObject({ table: nonEmpty, key: z.array(z.string()).min(1) });
+// A row cursor, with the manifest position while a paged manifest continues, or the manifest position alone once the rows are done.
+const exportCursorSchema = z.union([
+  z.strictObject({ table: nonEmpty, key: z.array(z.string()).min(1), objects: nonEmpty.optional() }),
+  z.strictObject({ objects: nonEmpty }),
+]);
 
 /** Body of `POST /apply`. */
 export type ApplyRequest = z.input<typeof applyBodySchema>;
@@ -325,6 +338,13 @@ interface ExportSource {
   readonly orderExprs: readonly string[];
   readonly hasProgramColumn: boolean;
   readonly mappings: PreparedMapping[];
+}
+
+/** Where an export page resumes: the source index and key it reads after, and the manifest position while a paged manifest continues. */
+interface ExportStart {
+  readonly index: number;
+  readonly key: string[] | undefined;
+  readonly objects: string | undefined;
 }
 
 /** A malformed request parameter detected after schema validation. */
@@ -447,12 +467,19 @@ function handlerDb(app: FastifyInstance, options: MigrationHandlerOptions): Tena
   return db;
 }
 
-function encodeExportCursor(table: string, key: readonly string[]): string {
-  return Buffer.from(JSON.stringify({ table, key }), 'utf8').toString('base64url');
+/** Cursor of the following export page from the row and manifest positions; null when neither continues. */
+function encodeExportCursor(rows: { table: string; key: readonly string[] } | null, objects: string | null): string | null {
+  if (rows === null && objects === null) return null;
+  // Without a manifest position the cursor is the plain row cursor, so owners returning a whole manifest keep their cursors.
+  const cursor = { ...rows, ...(objects === null ? {} : { objects }) };
+  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
 }
 
-/** Position of an export cursor among the unit's tables; throws InvalidRequestError when it does not fit them. */
-function parseExportCursor(text: string, sources: readonly ExportSource[]): { index: number; key: string[] } {
+/**
+ * Position of an export cursor among the unit's tables and in its paged manifest; throws InvalidRequestError when it
+ * does not fit them, or carries a manifest position for an owner without a manifest.
+ */
+function parseExportCursor(text: string, sources: readonly ExportSource[], hasManifest: boolean): ExportStart {
   let raw: unknown;
   try {
     raw = JSON.parse(Buffer.from(text, 'base64url').toString('utf8'));
@@ -460,6 +487,8 @@ function parseExportCursor(text: string, sources: readonly ExportSource[]): { in
     throw new InvalidRequestError('export cursor is not base64url JSON');
   }
   const cursor = exportCursorSchema.parse(raw);
+  if (cursor.objects !== undefined && !hasManifest) throw new InvalidRequestError('export cursor carries a manifest position, but the owner has no object manifest');
+  if (!('table' in cursor)) return { index: sources.length, key: undefined, objects: cursor.objects };
   const index = sources.findIndex((source) => source.table === cursor.table);
   if (index < 0 || sources[index]?.keyColumns.length !== cursor.key.length) {
     throw new InvalidRequestError('export cursor does not name a table of this unit');
@@ -470,7 +499,7 @@ function parseExportCursor(text: string, sources: readonly ExportSource[]): { in
   } catch (err) {
     throw err instanceof CanonicalEncodingError ? new InvalidRequestError('export cursor key does not fit its key column types') : err;
   }
-  return { index, key: cursor.key };
+  return { index, key: cursor.key, objects: cursor.objects };
 }
 
 /** Up to `limit` rows of one table after the keyset position `after`, each with its key values as text. */
@@ -683,13 +712,17 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
     if (programId !== undefined && sources.some((source) => !source.hasProgramColumn)) {
       throw new InvalidRequestError(`unit ${query.unit} is not folded from per-program tables`);
     }
-    const start = query.after === undefined ? { index: 0, key: undefined } : parseExportCursor(query.after, sources);
-    let remaining = query.limit ?? DEFAULT_EXPORT_LIMIT;
+    const start: ExportStart =
+      query.after === undefined
+        ? { index: 0, key: undefined, objects: undefined }
+        : parseExportCursor(query.after, sources, options.exportObjects !== undefined);
+    const limit = query.limit ?? DEFAULT_EXPORT_LIMIT;
+    let remaining = limit;
 
     // No gate wait: exports run while a window or transition holds the unit's gates.
     return withTenant(db, tenantId, async (tx) => {
       const tables: ExportTable[] = [];
-      let next: string | null = null;
+      let rowsNext: { table: string; key: string[] } | null = null;
       for (let index = start.index; index < sources.length && remaining > 0; index += 1) {
         const source = sources[index] as ExportSource;
         const rows = await selectExportRows(tx, source, index === start.index ? start.key : undefined, programId, remaining);
@@ -705,12 +738,22 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
         }
         remaining -= rows.length;
         const last = rows.at(-1);
-        if (remaining === 0 && last !== undefined) next = encodeExportCursor(source.table, last[EXPORT_CURSOR_COLUMN] as string[]);
+        if (remaining === 0 && last !== undefined) rowsNext = { table: source.table, key: last[EXPORT_CURSOR_COLUMN] as string[] };
       }
-      const page: ExportResponse = { unit: query.unit, tenantId, tables, next };
-      if (query.after === undefined && options.exportObjects !== undefined) {
-        page.objects = await options.exportObjects(tx, { unit: query.unit, tenantId });
+      const page: ExportResponse = { unit: query.unit, tenantId, tables, next: null };
+      let objectsNext: string | null = null;
+      if (options.exportObjects !== undefined && (query.after === undefined || start.objects !== undefined)) {
+        const scope = { unit: query.unit, tenantId, limit, ...(start.objects === undefined ? {} : { after: start.objects }) };
+        const manifest = await options.exportObjects(tx, scope);
+        if (Array.isArray(manifest)) {
+          if (start.objects !== undefined) throw new InvalidRequestError('export cursor carries a manifest position, but the unit returns its whole manifest');
+          page.objects = manifest;
+        } else {
+          page.objects = manifest.objects;
+          objectsNext = manifest.next;
+        }
       }
+      page.next = encodeExportCursor(rowsNext, objectsNext);
       return page;
     });
   }

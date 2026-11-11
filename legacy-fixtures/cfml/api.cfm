@@ -104,6 +104,9 @@
 		variables.route.siteid = variables.auth.resolveSite(variables.route.params);
 		variables.module = createObject("component", "modules." & variables.route.module).init(envelope = variables.envelope, auth = variables.auth);
 		variables.result = variables.module.handle(variables.route);
+		if (structKeyExists(variables.result, "file")) {
+			variables.envelope.sendFile(variables.result.file.bytes, variables.result.file.contentType, variables.result.file.fileName, variables.route.method, variables.route.params);
+		}
 	} catch (opt2fixture e) {
 		variables.failure = {"type" = listLast(e.type, "."), "message" = e.message};
 	} catch (any e) {
@@ -115,9 +118,6 @@
 		variables.failure.method = variables.route.method;
 		variables.failure.params = variables.route.params;
 		variables.envelope.fail(argumentCollection = variables.failure);
-	}
-	if (structKeyExists(variables.result, "file")) {
-		variables.envelope.sendFile(variables.result.file.bytes, variables.result.file.contentType, variables.result.file.fileName, variables.route.method, variables.route.params);
 	}
 	if (structKeyExists(variables.result, "list")) {
 		variables.envelope.listResponse(variables.route.method, variables.route.params, variables.result);

@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { SERVICE_ACCOUNT_PREFIX, serviceAccountEmail } from '@opt2/platform/auth';
 import { z } from '@opt2/platform/service-kit';
+import { iamDbUser } from '@opt2/platform/tenancy';
 import { CONFIG_PATH, packagePath } from './paths.js';
 
 const PROJECTOR_DELAY_FAULT = 'projector-delay';
@@ -8,6 +10,11 @@ const PROJECTOR_DELAY_FAULT = 'projector-delay';
 const text = () => z.string().min(1);
 const positiveInt = () => z.number().int().positive();
 const relativePath = () => text().refine((value) => !path.isAbsolute(value), 'must be relative to migration/');
+
+// The cloud naming keys restate the platform's service-account naming, so they must equal it.
+const probeEmail = serviceAccountEmail('probe', 'probe-project');
+const IAM_USER_SUFFIX = probeEmail.slice(iamDbUser(probeEmail).length);
+const platformNaming = (value: string) => z.literal(value, `must equal the platform value "${value}"`);
 
 const ownerSchema = z
   .object({
@@ -99,7 +106,12 @@ export const migrationConfigSchema = z
       .min(1)
       .refine((names) => new Set(names).size === names.length, 'must not repeat an owner'),
     cloud: z
-      .object({ iamUserSuffixTrim: text(), serviceAccountPrefix: text(), bootstrapAccount: text(), adminUser: text() })
+      .object({
+        iamUserSuffixTrim: platformNaming(IAM_USER_SUFFIX),
+        serviceAccountPrefix: platformNaming(SERVICE_ACCOUNT_PREFIX),
+        bootstrapAccount: text(),
+        adminUser: text(),
+      })
       .strict(),
   })
   .strict();

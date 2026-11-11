@@ -174,6 +174,8 @@ The callbacks authorise by the per-schedule task token, whose SHA-256 is stored 
 | GET | `reporting/exports/{id}` | `reporting.exporter` | — | — |
 | GET | `reporting/exports/{id}/download` | `reporting.exporter` | — | Output file; 409 `not-ready` before done |
 
+PDF text is drawn in cfdocument's built-in Times fonts with WinAnsiEncoding: characters outside Windows-1252, such as CJK, emoji, combining marks and C1 controls, are absent from it, and a no-break space or soft hyphen extracts as a space or hyphen. CSV and XLSX keep every character. The target reproduces the PDF rule with pdfkit's standard fonts.
+
 ### communications → `services/communications`
 
 | Method | Path | Required group | Procedure | Notes |
@@ -190,7 +192,7 @@ The callbacks authorise by the per-schedule task token, whose SHA-256 is stored 
 |---|---|---|---|---|
 | GET | `esignature/requests` | `esignature.signer` | — | Paged, without document bytes |
 | POST | `esignature/requests` | `esignature.signer` | `usp_audit_append` | `documentName`, `documentBase64`, `signerUserId` |
-| POST | `esignature/requests/{id}/sign` | `esignature.signer`, and the request's signer | `usp_audit_append` | `typedName`; 409 `already-signed` |
+| POST | `esignature/requests/{id}/sign` | `esignature.signer`, and the request's signer | `usp_audit_append` | `typedName`, holding a character other than a Unicode space, format or control character; 409 `already-signed` |
 | GET | `esignature/requests/{id}/audit` | `esignature.auditor`, or `esignature.signer` held by the request's signer | — | Hash chain ordered by `seq` |
 | GET | `esignature/requests/{id}/verify` | as audit | — | Recomputes the stored chain: `{valid, entries, brokenat}` |
 | POST | `esignature/requests/{id}/verify` | as audit | — | `entries`: verifies a supplied copy (tamper detection) |
@@ -229,9 +231,16 @@ There is no `esignature/requests/{id}` read route; it answers 404.
 | 409 | `conflict` | `invalid_request` | Illegal state; the message names it, for example `blackout`, `already-signed`, `not-ready` |
 | 500 | `server_error` | `server_error` | Unhandled exception, logged as a `log-record.v1` line without request values |
 
-- Lists use Masa's paged shape (`items`, `startindex`, `endindex`, `itemsperpage`, `totalitems`, `totalpages`, `pageindex`), with `pageIndex` and `itemsPerPage` (default 50, at most 1000).
+- Lists answer `items`, `startindex`, `endindex`, `itemsperpage`, `totalitems`, `totalpages` and `pageindex`, paged by `pageIndex` and `itemsPerPage` (default 50, at most 1000). `startindex` is `(pageIndex - 1) * itemsPerPage + 1`, `endindex` is `min(startindex + itemsPerPage - 1, totalitems)`, `totalpages` is `ceiling(totalitems / itemsPerPage)` and `pageindex` is the requested page; all six numbers are written as integers, for example `startindex` `2147483646001` for page 2147483647 at 1000 per page. These are the fixture's own semantics, which the target services copy. They depart from Masa's paged list (`core/mura/client/api/json/v1/jsonApiUtility.cfc:288-366`) in three ways:
+  - There is no `entityname` and no `links`.
+  - A page past the end keeps its `pageindex` and answers `items: []` with `endindex` equal to `totalitems`, so `startindex` exceeds `endindex` (page 8 at 150 per page over 1,000 rows gives 1051 and 1000). Masa resets the page to 1 when `(pageIndex - 1) * itemsPerPage` exceeds the total (`core/mura/iterator/queryIterator.cfc:219-226`).
+  - An empty list answers `startindex` from the formula (1 on page 1), `endindex` 0, `totalpages` 0 and the requested `pageindex`. Masa answers 0 for `startindex`, `endindex` and `pageindex`.
 - Ids are 35-character CF UUIDs. Amounts are four-decimal strings (`numeric(19,4)`). Timestamps are `yyyy-mm-ddTHH:nn:ss` (the e-signature audit chain keeps milliseconds) in the legacy server's time zone, and NULL is an empty string (AAP 0.5.5).
-- Downloads (finance attachments, reporting exports) stream as `Content-Disposition: attachment`.
+- Downloads (finance attachments, reporting exports) answer 200 with the stored bytes, `Content-Length`, no `ETag` and `Content-Disposition: attachment`. These are the fixture's own wire rules, which the target services copy:
+  - `Content-Type` is the stored type exactly, with its parameters as stored and no charset added.
+  - An ASCII name is sent as `attachment; filename="<name>"`, with `\` and `"` backslash-escaped.
+  - A name with any non-ASCII character is sent as `attachment; filename="<fallback>"; filename*=UTF-8''<encoded>` (RFC 6266, RFC 5987), so the header stays ASCII. `<fallback>` is the name with each non-ASCII code point (a surrogate pair counts as one) replaced by `_`, then escaped as above. `<encoded>` is the name's UTF-8 bytes, each written as `%XX` in uppercase hex unless it is an attr-char: `A-Z`, `a-z`, `0-9` or one of ``!#$&+-.^_`|~``. For example, `résumé-€.txt` gives `filename="r_sum_-_.txt"; filename*=UTF-8''r%C3%A9sum%C3%A9-%E2%82%AC.txt`.
+  - A control character in the name answers `server_error`.
 
 ## Seed
 
@@ -239,6 +248,7 @@ There is no `esignature/requests/{id}` read route; it answers 404.
 
 - `seed/seed.config.json` fixes `seed: 20260601` and `businessDate: 2026-06-30`, the default `${asOf}` of golden scenarios. A binding named `asOf` or a step's literal `asOf` overrides it; GS-TS-04, for example, also requests `2026-09-30` and `2026-03-31`.
 - `reserved.rehearsal` reserves 10 `tenant-a` persons with open timesheet days and the usernames `rh-create-01` to `rh-create-10`. Only GS-PE-RH-01/02/03 may use them; `harness/src/golden/coverage.ts` fails on any other use.
+- Each seeded site has the domain `<siteID>.localhost` and the alias `localhost`. Public requests to `<siteID>.localhost` bind to the site; its admin pages served on `localhost` call the JSON API on their own origin. Host `localhost` still binds to `default`, whose `orderNo` is 1.
 
 | Site (tenant) | Pools | Size |
 |---|---|---|

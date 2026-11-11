@@ -322,7 +322,7 @@ describe.skipIf(!available)('surveys repository writes against PostgreSQL', () =
     ['insertTargets', 'survey_target', (r: SurveysRepository, tx: TenantTx, id: string) => r.insertTargets(tx, id, [])],
   ] as const)('%s refuses a survey the tenant cannot see', async (_method, table, call) => {
     const survey = await newSurvey(tenantIdForSite('tenant-a'));
-    const err = await inTenant((tx) => call(repository, tx, survey.survey_id)).catch((e: unknown) => e);
+    const err = await inTenant<unknown>((tx) => call(repository, tx, survey.survey_id)).catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(RepositoryError);
     expect(err).toMatchObject({ table, message: `${table}: survey ${survey.survey_id} does not exist` });

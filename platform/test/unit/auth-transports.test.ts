@@ -2,7 +2,7 @@ import { createSecretKey, randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { GoogleAuth, IdTokenClient, OAuth2Client } from 'google-auth-library';
+import { GoogleAuth, IdTokenClient, OAuth2Client, gaxios, type CredentialBody } from 'google-auth-library';
 import { CertificateFormat } from 'google-auth-library/build/src/auth/oauth2client.js';
 import {
   SignJWT,
@@ -43,6 +43,7 @@ import {
   createLocalPubSubPushTransport,
   createServiceTransport,
   createUserTokenVerifier,
+  hasAnyRole,
   invocationAudience,
   loadLocalSigningKeys,
   localSecretPath,
@@ -91,6 +92,8 @@ const GOOGLE_ISSUER = 'https://accounts.google.com';
 const GATEWAY_EMAIL = 'opt2-gateway@proj.iam.gserviceaccount.com';
 const PUBSUB_INVOKER_EMAIL = 'opt2-pubsub-invoker@proj.iam.gserviceaccount.com';
 const TASKS_INVOKER_EMAIL = 'opt2-tasks-invoker@proj.iam.gserviceaccount.com';
+const MIGRATION_EMAIL = 'opt2-migration@proj.iam.gserviceaccount.com';
+const OPERATOR_EMAIL = 'opt2-operator@proj.iam.gserviceaccount.com';
 const BASIC_HEADER = 'Basic dXNlcg==';
 const BEARER_CHALLENGE = 'Bearer error="invalid_access_token"';
 
@@ -308,6 +311,52 @@ class StalledGoogleAuth extends GoogleAuth {
 class HeaderlessIdTokenClient extends IdTokenClient {
   override getRequestHeaders(): Promise<Headers> {
     return Promise.resolve(new Headers());
+  }
+}
+
+/** InMemoryGoogleAuth whose ADC principal is `principal` and ADC client `source`; the first `failures` principal lookups reject. */
+class PrincipalGoogleAuth extends InMemoryGoogleAuth {
+  credentialLookups = 0;
+
+  constructor(
+    clientFor: (audience: string) => IdTokenClient,
+    private readonly principal: string,
+    private readonly source: OAuth2Client,
+    private failures = 0,
+  ) {
+    super(clientFor);
+  }
+
+  override getCredentials(): Promise<CredentialBody> {
+    this.credentialLookups += 1;
+    if (this.failures > 0) {
+      this.failures -= 1;
+      return Promise.reject(new Error('metadata server unavailable'));
+    }
+    return Promise.resolve({ client_email: this.principal });
+  }
+
+  override getClient(): Promise<OAuth2Client> {
+    return Promise.resolve(this.source);
+  }
+}
+
+/** Impersonation source credential recording each IAM Credentials request and answering with an ID token for its audience. */
+class RecordingSourceClient extends OAuth2Client {
+  readonly requests: { url: string; method: string | undefined; data: unknown }[] = [];
+
+  constructor(private readonly idTokenFor: (audience: string, opts: gaxios.GaxiosOptions) => Promise<string>) {
+    super();
+  }
+
+  override getAccessToken(): Promise<{ token: string }> {
+    return Promise.resolve({ token: 'source-access-token' });
+  }
+
+  override async request<T>(opts: gaxios.GaxiosOptions): gaxios.GaxiosPromise<T> {
+    this.requests.push({ url: String(opts.url), method: opts.method, data: opts.data });
+    const { audience } = opts.data as { audience: string };
+    return { data: { token: await this.idTokenFor(audience, opts) } } as unknown as gaxios.GaxiosResponse<T>;
   }
 }
 
@@ -1024,6 +1073,116 @@ describe('createCloudInvocationMinter', () => {
       [INVOCATION_HEADER]: `Bearer ${token}`,
     });
     expect(auth.requestedAudiences).toEqual([PEOPLE_URL]);
+  });
+
+  /** ADC running as the migration account: its own ID tokens through getIdTokenClient, operator ones through `source`. */
+  async function migrationAdc(failures = 0): Promise<{ auth: PrincipalGoogleAuth; source: RecordingSourceClient }> {
+    const adcToken = await signToken(googleOidcClaims({ email: MIGRATION_EMAIL }), issuerKey);
+    const source = new RecordingSourceClient((audience) =>
+      signToken(googleOidcClaims({ aud: audience, email: OPERATOR_EMAIL }), issuerKey),
+    );
+    const auth = new PrincipalGoogleAuth(
+      (targetAudience) =>
+        new IdTokenClient({ targetAudience, idTokenProvider: { fetchIdToken: () => Promise.resolve(adcToken) } }),
+      MIGRATION_EMAIL,
+      source,
+      failures,
+    );
+    return { auth, source };
+  }
+
+  it.each([
+    {
+      caller: 'migration',
+      via: "ADC's own ID-token client",
+      serviceAccount: MIGRATION_EMAIL,
+      adcAudiences: [PEOPLE_URL],
+      exchanges: [],
+      admitted: 'platform.migration',
+      refused: 'platform.operator',
+    },
+    {
+      caller: 'operator',
+      via: 'a recorded IAM generateIdToken exchange',
+      serviceAccount: OPERATOR_EMAIL,
+      adcAudiences: [],
+      exchanges: [
+        {
+          url: `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${OPERATOR_EMAIL}:generateIdToken`,
+          method: 'POST',
+          data: { delegates: [], audience: PEOPLE_URL, includeEmail: true, useEmailAzp: true },
+        },
+      ],
+      admitted: 'platform.operator',
+      refused: 'platform.migration',
+    },
+  ])(
+    'mints as the $caller account from migration ADC through $via',
+    async ({ caller, serviceAccount, adcAudiences, exchanges, admitted, refused }) => {
+      const { auth, source } = await migrationAdc();
+      const headers = await createCloudInvocationMinter({ auth, serviceAccount }).headersFor({
+        name: 'people',
+        url: `${PEOPLE_URL}/internal/v1/people`,
+      });
+      expect(auth.requestedAudiences).toEqual(adcAudiences);
+      expect(source.requests).toEqual(exchanges);
+      const verifier = createCloudInvocationVerifier({ project: PROJECT, audience: PEOPLE_URL, client: googleClient });
+      const identity = await verifier.verify(headers[INVOCATION_HEADER] ?? '');
+      expect(identity).toEqual({ name: caller, roles: rolesForService(caller), email: serviceAccount });
+      expect(hasAnyRole(identity.roles, [admitted])).toBe(true);
+      expect(hasAnyRole(identity.roles, [refused])).toBe(false);
+    },
+  );
+
+  it('looks up the ADC principal at the first call, once, retrying a failed lookup at the next call', async () => {
+    const { auth, source } = await migrationAdc(1);
+    const minter = createCloudInvocationMinter({ auth, serviceAccount: OPERATOR_EMAIL });
+    expect(auth.credentialLookups).toBe(0);
+    await expect(minter.headersFor({ name: 'people', url: PEOPLE_URL })).rejects.toThrow('metadata server unavailable');
+    await expect(minter.headersFor({ name: 'people', url: PEOPLE_URL })).resolves.toHaveProperty(INVOCATION_HEADER);
+    await expect(minter.headersFor({ name: 'finance', url: FINANCE_URL })).resolves.toHaveProperty(INVOCATION_HEADER);
+    expect(auth.credentialLookups).toBe(2);
+    expect(source.requests.map(({ data }) => (data as { audience: string }).audience)).toEqual([PEOPLE_URL, FINANCE_URL]);
+  });
+
+  it('fails closed on a TokenCreator denial, without ADC fallback, and retries the exchange at the next call', async () => {
+    // IAM Credentials' answer when ADC's account lacks roles/iam.serviceAccountTokenCreator on the target.
+    const denial = {
+      error: {
+        code: 403,
+        message: "Permission 'iam.serviceAccounts.getOpenIdToken' denied on resource (or it may not exist).",
+        status: 'PERMISSION_DENIED',
+      },
+    };
+    // gaxios turns the recorded 403 into its own GaxiosError, as on the wire.
+    const source = new RecordingSourceClient((_audience, opts) =>
+      new gaxios.Gaxios()
+        .request<{ token: string }>({
+          ...opts,
+          fetchImplementation: () => Promise.resolve(Response.json(denial, { status: 403 })),
+        })
+        .then(({ data }) => data.token),
+    );
+    const auth = new PrincipalGoogleAuth(
+      (targetAudience) =>
+        new IdTokenClient({ targetAudience, idTokenProvider: { fetchIdToken: () => Promise.resolve('adc-id-token') } }),
+      MIGRATION_EMAIL,
+      source,
+    );
+    const minter = createCloudInvocationMinter({ auth, serviceAccount: OPERATOR_EMAIL });
+    const attempt = (): Promise<unknown> =>
+      minter.headersFor({ name: 'people', url: PEOPLE_URL }).catch((e: unknown) => e);
+    for (const err of [await attempt(), await attempt()]) {
+      expect(err).toBeInstanceOf(gaxios.GaxiosError);
+      expect(err).toMatchObject({ message: denial.error.message, status: 403, response: { status: 403, data: denial } });
+    }
+    const exchange = {
+      url: `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${OPERATOR_EMAIL}:generateIdToken`,
+      method: 'POST',
+      data: { delegates: [], audience: PEOPLE_URL, includeEmail: true, useEmailAzp: true },
+    };
+    expect(source.requests).toEqual([exchange, exchange]);
+    expect(auth.requestedAudiences).toEqual([]);
   });
 });
 

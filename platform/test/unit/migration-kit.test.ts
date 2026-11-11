@@ -12,11 +12,14 @@ import {
   parseWritePosition,
   recordWritePositionsFrom,
   registerWritePositionHeader,
+  requestMigrationAuthority,
   resolveTenant,
   type ResolvedTenant,
   type TenantSource,
   type WritePositions,
 } from '../../src/migration-kit/index.js';
+import { isMigrationAuthority } from '../../src/migration-kit/gates.js';
+import { Roles, type ServiceIdentity } from '../../src/auth/index.js';
 import { currentRequestContext, newRequestContext, recordWritePosition, runWithRequestContext } from '../../src/service-kit/index.js';
 import { TENANT_A, TENANT_UMBRELLA } from '../../src/testing/index.js';
 import {
@@ -566,3 +569,18 @@ describe('hasWritePositionHeader', () => {
   });
 });
 
+
+describe('requestMigrationAuthority', () => {
+  it.each<[string, ServiceIdentity | null, boolean]>([
+    ['outside a request', null, false],
+    ['for a calling service without platform.migration', { name: 'surveys', roles: ['service:surveys'] }, false],
+    ['for a platform.migration caller', { name: 'migration', roles: ['service:migration', Roles.platformMigration] }, true],
+  ])('issues an authority only to a verified migration caller: %s', (_label, service, issued) => {
+    const authority =
+      service === null
+        ? requestMigrationAuthority()
+        : runWithRequestContext({ ...newRequestContext(), service }, () => requestMigrationAuthority());
+    expect(isMigrationAuthority(authority)).toBe(issued);
+    expect(authority === undefined).toBe(!issued);
+  });
+});

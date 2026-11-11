@@ -57,7 +57,7 @@ export interface ExportParams {
   tenantId: string;
   /** One program of a unit folded from `Program_<id>` tables. */
   programId?: number;
-  /** `next` of the previous page; absent for the first page, which alone carries the object manifest. */
+  /** `next` of the previous page; absent for the first page, which carries the object manifest or, for an owner paging it, its first page. */
   after?: string;
   limit?: number;
 }

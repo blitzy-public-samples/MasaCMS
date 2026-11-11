@@ -4,6 +4,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { OPEN_OPERATION_TABLE, UNIT_GATE_TABLE, qualified, type GatePhase, type GateState } from './ddl.js';
 import { withMetadata, withTenant, type MetadataTx, type Queryable, type TenantDb, type TenantTx } from '../tenancy/index.js';
 import { LegacyServiceUnavailableError } from '../legacy-compat/index.js';
+import { Roles } from '../auth/index.js';
+import { currentRequestContext } from '../service-kit/index.js';
 
 /** Longest a write, read, operation start or gate close waits on a gate. */
 export const GATE_WAIT_MS = 30_000;
@@ -152,7 +154,7 @@ export interface MigrationAuthority {
   readonly holderId?: string;
 }
 
-/** Issues a migration authority; only the migration handlers call it, after the `platform.migration` role check. */
+/** Issues a migration authority; only the migration handlers and `requestMigrationAuthority` call it, after the `platform.migration` role check. */
 export function createMigrationAuthority(ids: { batchId?: string; holderId?: string } = {}): MigrationAuthority {
   const authority: MigrationAuthority = Object.freeze({
     [migrationAuthorityBrand]: true as const,
@@ -161,6 +163,11 @@ export function createMigrationAuthority(ids: { batchId?: string; holderId?: str
   });
   issuedAuthorities.add(authority);
   return authority;
+}
+
+/** A migration authority when the request's verified calling service carries `platform.migration`; otherwise undefined, so the write stays gated. */
+export function requestMigrationAuthority(): MigrationAuthority | undefined {
+  return currentRequestContext()?.service?.roles.includes(Roles.platformMigration) === true ? createMigrationAuthority() : undefined;
 }
 
 /** True only for an authority `createMigrationAuthority` issued. */

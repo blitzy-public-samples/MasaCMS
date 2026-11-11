@@ -12,7 +12,7 @@ import { mailingListMapping, mailingListMemberMapping } from '../../src/migratio
 import { messageTemplateMapping } from '../../src/migration/mappings/message-template.js';
 import { messageMapping } from '../../src/migration/mappings/message.js';
 import { trashMapping } from '../../src/migration/mappings/trash.js';
-import { OWNED_TABLES, TARGET_ONLY_COLUMNS, TRASH, UNITS } from '../../src/repo/tables.js';
+import { OWNED_TABLES, SCHEDULED_TASK, TARGET_ONLY_COLUMNS, TRASH, UNITS } from '../../src/repo/tables.js';
 
 interface ClassMapEntry {
   classes: string[];
@@ -73,7 +73,7 @@ describe('communications mapping registry', () => {
     expect(Object.isFrozen(registry.MAPPINGS)).toBe(true);
     expect(registry.MAPPINGS).toHaveLength(Object.keys(MODULE_MAPPINGS).length);
     Object.values(MODULE_MAPPINGS).forEach((mapping, i) => expect(registry.MAPPINGS[i]).toBe(mapping));
-    expect(registry.MAPPINGS.map((mapping) => mapping.unit)).toStrictEqual([...UNITS]);
+    expect(registry.MAPPINGS.map((mapping) => mapping.unit)).toStrictEqual(UNITS.filter((unit) => unit !== SCHEDULED_TASK.unit));
   });
 
   it('re-exports each mapping module export under its own name', () => {

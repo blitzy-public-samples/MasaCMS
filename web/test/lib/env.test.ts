@@ -183,6 +183,9 @@ describe('legacySettings', () => {
         ['siteIDInURLS', 'siteidinurls', 'false', false],
         ['indexFileInURLS', 'indexfileinurls', 'true', true],
         ['serverPort', 'port', '${cgi.SERVER_PORT}', ''],
+        ['appReloadKey', 'appreloadkey', 'appreload', 'appreload'],
+        ['javaEnabled', 'javaenabled', 'true', true],
+        ['fileDir', 'filedir', '', ''],
       ] as const
     ).map(([field, key, raw, expected]) => ({
       field,
@@ -206,10 +209,28 @@ describe('legacySettings', () => {
         ['webroot', 'webroot', '', 85],
         ['assetPath', 'assetpath', '/sites', 2172],
         ['version', 'version', '7.6.1', 81],
+        ['corePath', 'corepath', '', 122],
+        ['pluginsPath', 'pluginspath', '', 123],
+        ['fileAssetPath', 'fileassetpath', '', 1744],
       ] as const
     ).map(([field, key, expected, line]) => ({ field, key, expected, shown: JSON.stringify(expected), line })),
   )('configBean.cfc:$line gives $field $shown when the template lacks or blanks $key', ({ field, key, expected }) => {
     expect(TEMPLATE.get(key)?.value ?? '').toBe('');
+    expect(legacySettings()[field]).toBe(expected);
+  });
+
+  it.each<[keyof LegacySettings, string | undefined, LegacySettings[keyof LegacySettings]]>([
+    ['legacyIndexFileLocation', undefined, false],
+    ['legacyIndexFileLocation', 'true', true],
+    ['legacyIndexFileLocation', 'yes', true],
+    ['legacyIndexFileLocation', '0', false],
+    ['legacyIndexFileLocation', 'maybe', false],
+    ['fileAssetPath', '//files.example.test/assets', '//files.example.test/assets'],
+    ['corePath', 'https://cdn.example.test/core/', 'https://cdn.example.test/core/'],
+    ['pluginsPath', 'https://cdn.example.test/plugins', 'https://cdn.example.test/plugins'],
+  ])('reads the template-less MURA_<KEY> of %s=%j as %j', (field, value, expected) => {
+    expect(TEMPLATE.has(field.toLowerCase())).toBe(false);
+    vi.stubEnv(`MURA_${field.toUpperCase()}`, value);
     expect(legacySettings()[field]).toBe(expected);
   });
 
@@ -261,6 +282,17 @@ describe('legacySettings', () => {
     [{ MURA_HTMLEDITORTYPE: 'ckeditor' }, 'htmlEditorType', 'ckeditor'],
     [{ MURA_EXPIREPASSWORDS: '90' }, 'expirePasswords', 90],
     [{ MURA_FILEDELIM: '\\' }, 'fileDelim', '\\'],
+    [{ MURA_APPRELOADKEY: 'cfg-key' }, 'appReloadKey', 'cfg-key'],
+    [{ MURA_APPRELOADKEY: '' }, 'appReloadKey', ''],
+    [{ MURA_JAVAENABLED: 'false' }, 'javaEnabled', false],
+    [{ MURA_JAVAENABLED: 'no' }, 'javaEnabled', false],
+    [{ MURA_JAVAENABLED: 'maybe' }, 'javaEnabled', true],
+    [{ MURA_FILEDIR: '/srv/masa/sites/' }, 'fileDir', '/srv/masa/sites'],
+    [{ MURA_FILEDIR: 's3://bucket/assets' }, 'fileDir', 's3://bucket/assets'],
+    [{ MURA_S3ASSETS: 's3://bucket', MURA_FILEDIR: '/srv/masa/sites' }, 'fileDir', 's3://bucket/masa/sites'],
+    [{ MURA_S3ASSETS: 's3://bucket/', MURA_FILEDIR: 'sites/' }, 'fileDir', 's3://bucket'],
+    [{ MURA_S3ASSETS: 's3://bucket' }, 'fileDir', 's3://bucket'],
+    [{ MURA_S3ASSETS: '', MURA_FILEDIR: '/srv/masa/sites' }, 'fileDir', '/srv/masa/sites'],
     [{ MURA_INDEXFILEINURLS: 'false' }, 'indexFileInAPI', false],
     [{ MURA_INDEXFILEINURLS: 'true' }, 'indexFileInAPI', true],
     [{ MURA_INDEXFILEINAPI: 'false' }, 'indexFileInAPI', false],
@@ -275,5 +307,18 @@ describe('legacySettings', () => {
   ])('reads %j as %s %j', (vars, field, expected) => {
     for (const [key, value] of Object.entries(vars)) vi.stubEnv(key, value);
     expect(legacySettings()[field]).toBe(expected);
+  });
+
+  it.each<[string | undefined, number]>([
+    [undefined, 0],
+    ['0', 0],
+    ['5', 5],
+    ['1.5', 1.5],
+    ['5abc', 0],
+    ['', 0],
+    ['abc', 0],
+  ])('reads MURA_EXPIREPASSWORDS=%j as expirePasswords %j, non-numeric values as never expiring', (value, expected) => {
+    vi.stubEnv('MURA_EXPIREPASSWORDS', value);
+    expect(legacySettings().expirePasswords).toBe(expected);
   });
 });

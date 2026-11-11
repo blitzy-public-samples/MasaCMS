@@ -1,4 +1,6 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
+import { parse } from 'yaml';
 import {
   newRequestContext,
   runWithRequestContext,
@@ -8,14 +10,14 @@ import {
   type ServiceRequest,
   type ServiceResponse,
 } from '@opt2/platform/service-kit';
+import { assertResponseMatchesOpenApi, findOperation } from '@opt2/platform/testing';
 import {
   createIdentityClient,
-  IDENTITY_READ_GAPS,
-  IdentityReadNotProvidedError,
-  photoFileExt,
   type AccountPrepareRequest,
   type IdentityClient,
 } from '../../src/legacy/identity-client.js';
+
+const IDENTITY_CONTRACT = parse(readFileSync(new URL('../../../identity/contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
 
 const USER_ID = 'A1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
 const OPERATION_ID = '0F1E2D3C-4B5A-6978-8796A5B4C3D2E1F0';
@@ -272,33 +274,172 @@ describe('identity reads', () => {
     expect(requests).toEqual([{ service: 'identity', method: 'GET', path: '/v1/sessions/current' }]);
   });
 
-  const gapCalls: Record<string, (identity: IdentityClient) => Promise<unknown>> = {
-    readAccount: (identity) => identity.readAccount(USER_ID),
-    readAccounts: (identity) => identity.readAccounts([USER_ID]),
-    siteGroups: (identity) => identity.siteGroups('tenant-a', 0),
+});
+
+/** Checks a stub reply against the identity operation the request called. */
+function assertIdentityReply(req: ServiceRequest | undefined, reply: Reply): void {
+  if (req === undefined) throw new Error('identity was not called');
+  const { method, path } = req;
+  assertResponseMatchesOpenApi(IDENTITY_CONTRACT, { method, path, status: reply.status, contentType: 'application/json', body: reply.body });
+}
+
+/** Checks a request's JSON body against the `requestBody` of the identity operation it calls. */
+function assertIdentityRequestBody(req: ServiceRequest | undefined): void {
+  if (req === undefined) throw new Error('identity was not called');
+  const { template, operation } = findOperation(IDENTITY_CONTRACT, req.method, req.path);
+  // The request body object has a response object's `content` shape, so the response checker validates it.
+  const probe = { ...IDENTITY_CONTRACT, paths: { [template]: { [req.method.toLowerCase()]: { responses: { '200': operation['requestBody'] } } } } };
+  assertResponseMatchesOpenApi(probe, { method: req.method, path: req.path, status: 200, contentType: 'application/json', body: req.json });
+}
+
+describe('account and site-group reads', () => {
+  const OTHER_ID = 'B1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
+  const MISSING_ID = 'C1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
+  const GROUP_ID = 'D1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
+  const OTHER_GROUP_ID = 'E1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
+
+  const record = {
+    UserID: USER_ID,
+    SiteID: 'tenant-a',
+    UserName: 'jdoe',
+    Type: 2,
+    Admin: null,
+    S2: 0,
+    Perm: 0,
+    InActive: 0,
+    isPublic: 0,
+    remoteID: null,
+    PasswordCreated: '2026-06-01T09:15:00.000',
+    LastLogin: null,
+    tablist: null,
+  };
+  const view = {
+    userId: USER_ID,
+    siteId: 'tenant-a',
+    username: 'jdoe',
+    s2: 0,
+    isPublic: 0,
+    inactive: 0,
+    type: 2,
+    perm: 0,
+    admin: null,
+    remoteId: null,
+    lastLogin: null,
+    passwordCreated: '2026-06-01T09:15:00.000',
+    tablist: null,
+  };
+  const otherRecord = {
+    ...record,
+    UserID: OTHER_ID,
+    SiteID: 'umbrella',
+    UserName: 'member',
+    Admin: 0,
+    S2: 1,
+    Perm: 1,
+    InActive: 1,
+    isPublic: 1,
+    remoteID: 'R-9',
+    PasswordCreated: null,
+    LastLogin: '2026-06-30T09:15:00.000',
+    tablist: 'Basic,Publishing',
+  };
+  const otherView = {
+    userId: OTHER_ID,
+    siteId: 'umbrella',
+    username: 'member',
+    s2: 1,
+    isPublic: 1,
+    inactive: 1,
+    type: 2,
+    perm: 1,
+    admin: 0,
+    remoteId: 'R-9',
+    lastLogin: '2026-06-30T09:15:00.000',
+    passwordCreated: null,
+    tablist: 'Basic,Publishing',
+  };
+  const groups = [
+    { UserID: GROUP_ID, GroupName: 'Admin', SiteID: 'tenant-a', isPublic: 0, Perm: 1 },
+    { UserID: OTHER_GROUP_ID, GroupName: null, SiteID: 'tenant-a', isPublic: 0, Perm: null },
+  ];
+  const notFound = { apiversion: 'v1', method: 'invalid', error: { message: 'Not Found', code: 'invalid_request' } };
+  const errorBodies: Record<number, unknown> = {
+    403: { apiversion: 'v1', method: 'invalid', error: { message: 'Insufficient Account Permissions', code: 'invalid_request' } },
+    503: { apiversion: 'v1', method: 'invalid', error: { message: 'Unhandled Exception', code: 'server_error' } },
   };
 
-  it.each(IDENTITY_READ_GAPS.filter((gap) => gap.method !== 'photoFileExt').map((gap) => [gap.method, gap] as const))(
-    '%s fails closed without calling identity',
-    async (method, gap) => {
-      const { identity, requests } = identityWith();
-      const call = gapCalls[method];
-      expect(call).toBeDefined();
-      const failure = call?.(identity);
-      await expect(failure).rejects.toBeInstanceOf(IdentityReadNotProvidedError);
+  it('reads one account on getAccount and maps its columns', async () => {
+    const reply = { status: 200, body: record };
+    const { identity, requests } = identityWith(reply);
+    await expect(identity.readAccount(USER_ID)).resolves.toEqual(view);
+    expect(requests).toEqual([{ service: 'identity', method: 'GET', path: `/internal/v1/accounts/${USER_ID}` }]);
+    assertIdentityReply(requests[0], reply);
+  });
+
+  it('reads an account identity does not find (404) as undefined', async () => {
+    const reply = { status: 404, body: notFound };
+    const { identity, requests } = identityWith(reply);
+    await expect(identity.readAccount(MISSING_ID)).resolves.toBeUndefined();
+    assertIdentityReply(requests[0], reply);
+  });
+
+  it('reads many accounts in one lookupAccounts call, each id once, keyed by user id', async () => {
+    const reply = { status: 200, body: { items: [record, otherRecord] } };
+    const { identity, requests } = identityWith(reply);
+    const accounts = await identity.readAccounts([USER_ID, OTHER_ID, MISSING_ID, USER_ID]);
+    expect([...accounts]).toEqual([
+      [USER_ID, view],
+      [OTHER_ID, otherView],
+    ]);
+    expect(requests).toEqual([
+      { service: 'identity', method: 'POST', path: '/internal/v1/accounts:lookup', json: { userIds: [USER_ID, OTHER_ID, MISSING_ID] } },
+    ]);
+    assertIdentityRequestBody(requests[0]);
+    assertIdentityReply(requests[0], reply);
+  });
+
+  it('reads an empty id list as an empty map without calling identity', async () => {
+    const { identity, requests } = identityWith();
+    await expect(identity.readAccounts([])).resolves.toEqual(new Map());
+    expect(requests).toEqual([]);
+  });
+
+  it.each([0, 1])('lists the site groups of pool visibility %i on listSiteGroups', async (isPublic) => {
+    const items = groups.map((group) => ({ ...group, isPublic }));
+    const reply = { status: 200, body: { items } };
+    const { identity, requests } = identityWith(reply);
+    await expect(identity.siteGroups('tenant-a', isPublic)).resolves.toEqual([
+      { groupId: GROUP_ID, groupName: 'Admin', siteId: 'tenant-a', isPublic, perm: 1 },
+      { groupId: OTHER_GROUP_ID, groupName: null, siteId: 'tenant-a', isPublic, perm: null },
+    ]);
+    expect(requests).toEqual([
+      { service: 'identity', method: 'GET', path: '/internal/v1/groups', query: { siteid: 'tenant-a', ispublic: String(isPublic) } },
+    ]);
+    assertIdentityReply(requests[0], reply);
+  });
+
+  type Read = (identity: IdentityClient) => Promise<unknown>;
+  const reads = [
+    ['readAccount', 'getAccount', ((identity) => identity.readAccount(USER_ID)) as Read, record],
+    ['readAccounts', 'lookupAccounts', ((identity) => identity.readAccounts([USER_ID])) as Read, { items: [record] }],
+    ['siteGroups', 'listSiteGroups', ((identity) => identity.siteGroups('tenant-a', 0)) as Read, { items: groups }],
+  ] as const;
+
+  it.each(reads.flatMap(([method, operationId, call]) => [403, 503].map((status) => [method, status, operationId, call] as const)))(
+    '%s fails closed when identity answers %i',
+    async (_method, status, operationId, call) => {
+      const reply = { status, body: errorBodies[status] };
+      const { identity, requests } = identityWith(reply);
+      const failure = call(identity);
       await expect(failure).rejects.toBeInstanceOf(ServiceUnavailableError);
-      await expect(failure).rejects.toMatchObject({ gap, service: 'identity', name: 'IdentityReadNotProvidedError' });
-      expect(requests).toEqual([]);
+      await expect(failure).rejects.toThrow(`${operationId} HTTP_${status}`);
+      assertIdentityReply(requests[0], reply);
     },
   );
 
-  it('lists every gap with its legacy source', () => {
-    expect(IDENTITY_READ_GAPS.map((gap) => gap.method)).toEqual(['readAccount', 'readAccounts', 'siteGroups', 'photoFileExt']);
-    expect(IDENTITY_READ_GAPS.find((gap) => gap.method === 'photoFileExt')?.legacySource).toBe('core/mura/user/userDAO.cfc:78');
-    expect(Object.isFrozen(IDENTITY_READ_GAPS)).toBe(true);
-  });
-
-  it.each([undefined, null, 'F1'])('answers an empty photo extension for %s', async (photoFileId) => {
-    await expect(photoFileExt(photoFileId)).resolves.toBe('');
+  it.each(reads)("%s records identity's write positions in the request context", async (_method, _operationId, call, body) => {
+    const { identity } = identityWith({ status: 200, body, headers: { 'x-opt2-write-position': 'identity=7' } });
+    const { store } = await inContext(() => call(identity));
+    expect(store.writePositions.get('identity')).toBe('7');
   });
 });

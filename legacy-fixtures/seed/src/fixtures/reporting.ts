@@ -60,6 +60,9 @@ interface RowDraw {
 
 const millis = (rng: SeedRandom): number => rng.int(0, 99) * 10;
 
+/** Calendar timestamp `ts` in the runner's datetime form, `yyyy-MM-ddTHH:mm:ss` truncated to seconds. */
+const runnerDateTime = (ts: string): string => ts.slice(0, 19);
+
 /** One consistent `tvf_timesheet_status` row, every value as the runner's string form. */
 function sheetRow(d: RowDraw) {
   const { rng, ctx } = d;
@@ -71,7 +74,7 @@ function sheetRow(d: RowDraw) {
   return {
     timesheet_id: cfUuidFrom(rng),
     person_id: rng.pick(d.people),
-    period_start: ctx.calendar.localDate(ctx.calendar.mondayOnOrBefore(d.dayOffset - rng.int(0, 56))),
+    period_start: runnerDateTime(ctx.calendar.localTimestamp(ctx.calendar.mondayOnOrBefore(d.dayOffset - rng.int(0, 56)), 0)),
     status,
     overdue: status === 'DRAFT' && rng.bool() ? '1' : '0',
     day_count: String(dayCount),
@@ -95,8 +98,8 @@ function financeRow(d: RowDraw) {
     period,
     state,
     version: String(state === 'IN-PROGRESS' ? 1 : rng.int(2, 5)),
-    created,
-    lastUpdate: ctx.calendar.addMinutes(created, rng.int(60, 7 * MINUTES_PER_DAY)),
+    created: runnerDateTime(created),
+    lastUpdate: runnerDateTime(ctx.calendar.addMinutes(created, rng.int(60, 7 * MINUTES_PER_DAY))),
   };
 }
 

@@ -1,4 +1,4 @@
-/** Public surface of `@opt2/platform/migration-kit`: canonical encoding, write positions, DDL, mappings, unit gates, changelog cursor, repositories and migration endpoints; issuing a gate-bypass authority stays internal to the migration handlers. */
+/** Public surface of `@opt2/platform/migration-kit`: canonical encoding, write positions, DDL, mappings, unit gates, changelog cursor, repositories and migration endpoints; a gate-bypass authority is issued only to `platform.migration` callers (`requestMigrationAuthority`) or inside the migration handlers. */
 export {
   CanonicalEncodingError,
   roundToSqlServerDatetime,
@@ -111,6 +111,7 @@ export {
   closeGates,
   setGatePhase,
   openGates,
+  requestMigrationAuthority,
 } from './gates.js';
 export type {
   UnitGate,
@@ -148,6 +149,7 @@ export type {
   ApplyOrigin,
   OperationStatus,
   ObjectManifestEntry,
+  ObjectManifestPage,
   AppliedChange,
   MigrationHandlerOptions,
   ApplyResponse,

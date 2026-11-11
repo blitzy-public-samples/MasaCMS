@@ -238,14 +238,15 @@ export function planDirectBatches(dataset: Dataset, config: SeedConfig): DirectB
       const tenantId = tenantIdForSite(siteID);
       for (let chunkIndex = 0; chunkIndex * config.chunkRows < siteRows.length; chunkIndex += 1) {
         const start = chunkIndex * config.chunkRows;
+        const chunk = siteRows.slice(start, start + config.chunkRows);
         batches.push({
           service: spec.service,
           legacyTable: key,
           siteID,
           tenantId,
           chunkIndex,
-          batchId: stableId(dataset.digest, key, siteID, chunkIndex),
-          rows: siteRows.slice(start, start + config.chunkRows),
+          batchId: stableId(dataset.digest, key, siteID, start, chunk.length),
+          rows: chunk,
         });
       }
     }

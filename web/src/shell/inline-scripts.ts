@@ -1,27 +1,9 @@
 // Inline scripts of the full and compact admin layouts, `template.cfm` 326-557 and `compact.cfm` 139-300 (server-only).
-import { cfEq, cfListToArray } from '@opt2/platform/legacy-compat';
 import { legacySettings } from '@/lib/env';
 import { encodeJs, raw, type SafeHtml } from '@/lib/html';
-import type { AdminRequest, SiteData } from '@/lib/request-context';
-import { adminPath } from '@/lib/urls';
+import type { AdminRequest } from '@/lib/request-context';
+import { siteBeanOf, sitePaths, type SiteBean } from '@/lib/site-paths';
 import type { ShellContext } from './types';
-
-/** settingsBean values the complete-path getters read; NULL columns keep the bean defaults. */
-interface SiteBean {
-  readonly siteId: string;
-  readonly domain: string;
-  readonly domainAliases: readonly string[];
-  readonly enforcePrimaryDomain: boolean;
-  readonly useSSL: boolean;
-  readonly isRemote: boolean;
-  readonly remoteContext: string;
-  readonly remotePort: number;
-  readonly resourceSSL: boolean;
-  readonly resourceDomain: string;
-  readonly displayPoolID: string;
-  readonly filePoolID: string;
-  readonly theme: string;
-}
 
 /** Site values of the `Mura.init` call. */
 interface MuraInitSite {
@@ -33,29 +15,6 @@ interface MuraInitSite {
   readonly adminPath: string;
   readonly pluginsPath: string;
   readonly rootPath: string;
-}
-
-/** A stored integer flag; SQL NULL reads as the bean default 0. */
-const flag = (value: number | null | undefined): boolean => (value ?? 0) !== 0;
-
-/** The bean of a served `tsettings` row; `setUseSSL` also sets `extranetSSL`, which a NULL `useSSL` leaves as read. */
-function siteBeanOf(site: SiteData): SiteBean {
-  const { record } = site;
-  return {
-    siteId: site.siteid,
-    domain: site.domain,
-    domainAliases: (record.domainAlias ?? '').split(/[\r\n]/).filter((alias) => alias !== ''),
-    enforcePrimaryDomain: flag(record.enforcePrimaryDomain),
-    useSSL: record.useSSL === null || record.useSSL === undefined ? flag(record.ExtranetSSL) : flag(record.useSSL),
-    isRemote: flag(record.isremote),
-    remoteContext: record.remotecontext ?? '',
-    remotePort: record.remoteport ?? 80,
-    resourceSSL: flag(record.resourceSSL),
-    resourceDomain: record.resourceDomain ?? '',
-    displayPoolID: site.displayPoolID,
-    filePoolID: site.filePoolID,
-    theme: record.theme ?? '',
-  };
 }
 
 // programs-sites serves site data to private admin users for their token's site only; otherwise the session site is
@@ -80,57 +39,19 @@ function unreadSiteBean(ctx: AdminRequest): SiteBean {
   };
 }
 
-/** settingsBean `get<X>Path(complete=1)` of `site` for an admin request (`settingsBean.cfc` 743-851, 1416-1530). */
+/** settingsBean `get<X>Path(complete=1)` of `site` for an admin request. */
 function muraInitSite(ctx: AdminRequest, site: SiteBean): MuraInitSite {
-  const settings = legacySettings();
-  const isValidDomain = (domain: string): boolean =>
-    cfEq(domain, site.domain) || site.domainAliases.some((alias) => cfEq(domain, alias));
-  const hostName = cfListToArray(ctx.httpHost, ':')[0] ?? '';
-  // request.muraPreviewDomain, which admin/Application.cfc sets on every admin request.
-  const requestedPreview = hostName !== '' ? hostName : ctx.serverName;
-  const previewDomain = isValidDomain(requestedPreview) ? requestedPreview : site.domain;
-  const remoteResource = site.isRemote && site.resourceDomain !== '';
-  const remotePort = site.remotePort === 80 || site.remotePort === 443 ? '' : `:${site.remotePort}`;
-  const port = site.isRemote ? remotePort : settings.serverPort;
-  const context = site.isRemote ? site.remoteContext : settings.context;
-
-  // getWebPath repeats these domain rules, which change nothing once getResourcePath has applied them.
-  const resourcePath = (domain: string): string => {
-    if (remoteResource) {
-      const scheme = site.resourceSSL || site.useSSL || ctx.https ? 'https' : 'http';
-      return `${scheme}://${site.resourceDomain}${settings.serverPort}${settings.context}`;
-    }
-    let host = previewDomain !== '' && isValidDomain(previewDomain) ? previewDomain : domain;
-    if (host === '') {
-      const serverNameValid = ctx.serverName !== '' && !site.enforcePrimaryDomain && isValidDomain(ctx.serverName);
-      host = serverNameValid ? ctx.serverName : site.domain;
-    }
-    return `${site.useSSL || ctx.https ? 'https' : 'http'}://${host}${port}${context}`;
-  };
-
-  const adminDomains = cfListToArray(settings.adminDomain, ',').map((domain) => domain.toLowerCase());
-  const currentAdminDomain = adminDomains.includes(hostName.toLowerCase()) ? hostName : ctx.httpHost;
-  const onAdminDomain = !remoteResource && settings.adminDomain !== '';
-  // configBean getCorePath/getPluginsPath; their corepath/pluginspath overrides are not settings.ini keys, so stay ''.
-  const adminDomainPath = (suffix: string): string => {
-    if (!cfEq(ctx.httpHost, currentAdminDomain)) return `${settings.context}${suffix}`;
-    const scheme = site.useSSL || settings.adminSSL || ctx.https ? 'https' : 'http';
-    return `${scheme}://${currentAdminDomain}${settings.serverPort}${settings.context}${suffix}`;
-  };
-
+  const paths = sitePaths(ctx, site);
   return {
     siteId: site.siteId,
-    // getThemeAssetPath takes the first theme directory found on the legacy host, which web cannot inspect; the
-    // web-root themes/<theme> a Masa 7 install uses is assumed.
-    themeAssetPath: `${resourcePath(site.domain)}/themes/${site.theme}`,
-    assetPath: `${resourcePath(site.domain)}${settings.siteAssetPath}/${site.displayPoolID}`,
-    corePath: onAdminDomain ? adminDomainPath('/core') : `${resourcePath('')}/core`,
-    fileAssetPath: `${resourcePath(site.domain)}${settings.siteAssetPath}/${site.filePoolID}`,
-    adminPath: onAdminDomain
-      ? adminPath({ domain: currentAdminDomain, https: ctx.https, httpHost: ctx.httpHost })
-      : `${resourcePath(settings.adminDomain !== '' ? currentAdminDomain : '')}${settings.adminDir}`,
-    pluginsPath: onAdminDomain ? adminDomainPath('/plugins') : `${resourcePath('')}/plugins`,
-    rootPath: resourcePath(''),
+    // Web cannot reach legacy theme directories; a Masa 7.6.1 install keeps them in the web root (EX-SHELL-THEMEPATH).
+    themeAssetPath: paths.themeAssetPath('webRoot', true),
+    assetPath: paths.assetPath(true),
+    corePath: paths.corePath(true),
+    fileAssetPath: paths.fileAssetPath(true),
+    adminPath: paths.adminPath(true),
+    pluginsPath: paths.pluginsPath(true),
+    rootPath: paths.rootPath(true),
   };
 }
 

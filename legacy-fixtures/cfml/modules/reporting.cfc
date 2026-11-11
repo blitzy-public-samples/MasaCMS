@@ -115,7 +115,7 @@ component output="false" hint="SYNTHETIC reporting fixture: asynchronous XLSX, C
 		return {"data" = local.job[1]};
 	}
 
-	private struct function download(required struct route) hint="Returns a done job's output as a file result; raises notFound outside the site and conflict not-ready before done." {
+	private struct function download(required struct route) hint="Returns a done job's output as a file result; raises notFound outside the site, conflict not-ready before done and server_error when the output is not binary." {
 		authorize();
 		local.qry = queryExecute(
 			"SELECT [state], [file_name], [content_type], [output] FROM synthetic.export_job WHERE [job_id] = :jobId AND [siteID] = :siteid",
@@ -126,6 +126,9 @@ component output="false" hint="SYNTHETIC reporting fixture: asynchronous XLSX, C
 		}
 		if (compare(local.qry.state[1], "done") != 0) {
 			variables.envelope.raise("conflict", "not-ready");
+		}
+		if (!isBinary(local.qry.output[1])) {
+			variables.envelope.raise("server_error");
 		}
 		return {"file" = {"bytes" = local.qry.output[1], "contentType" = local.qry.content_type[1], "fileName" = local.qry.file_name[1]}};
 	}
@@ -304,7 +307,7 @@ component output="false" hint="SYNTHETIC reporting fixture: asynchronous XLSX, C
 		return charsetDecode(local.out.toString(), "utf-8");
 	}
 
-	private binary function pdfBytes(required array table, required string title) hint="Returns a PDF of an h1 with the definition name and a table whose first row is the th header row." {
+	private binary function pdfBytes(required array table, required string title) hint="Returns a PDF of an h1 with the definition name and a table whose first row is the th header row, drawn in cfdocument's built-in Times fonts with WinAnsiEncoding, so characters outside Windows-1252 are not drawn and are absent from its text." {
 		local.html = createObject("java", "java.lang.StringBuilder").init(javaCast("string", "<h1>" & encodeForHTML(arguments.title) & "</h1><table>"));
 		for (local.i = 1; local.i <= arrayLen(arguments.table); local.i++) {
 			local.cell = local.i == 1 ? "th" : "td";

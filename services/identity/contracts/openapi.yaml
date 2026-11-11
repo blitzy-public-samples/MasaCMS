@@ -3001,6 +3001,102 @@ paths:
           $ref: '#/components/responses/AccountOperationConflict'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /internal/v1/accounts/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      operationId: getAccount
+      summary: Reads the identity columns of a `Type=2` account in the user pools of the token's site, for `userDAO.read`.
+      tags: [internal]
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:people
+      security: [{userToken: [], invocationCredential: []}]
+      responses:
+        '200':
+          description: The account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+          description: No such account in the user pools of the token's site, a group, or a `pending` account.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: The user stayed closed by an open account operation for 10 s, or a legacy write window executed or imported on an account unit for 30 s.
+  /internal/v1/accounts:lookup:
+    post:
+      operationId: lookupAccounts
+      summary: Reads the `getAccount` columns of many users in one call, for the user list, search and download screens.
+      tags: [internal]
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:people
+      x-opt2-fastify-path: /internal/v1/accounts::lookup
+      security: [{userToken: [], invocationCredential: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountLookupRequest'
+      responses:
+        '200':
+          description: The listed users that `getAccount` finds, in request order; the others are left out.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: A listed user stayed closed by an open account operation for 10 s, or a legacy write window executed or imported on an account unit for 30 s.
+  /internal/v1/groups:
+    get:
+      operationId: listSiteGroups
+      summary: Lists the groups of the site's private or public user pool, as `getPrivateGroups` and `getPublicGroups` do.
+      tags: [internal]
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:people
+      security: [{userToken: [], invocationCredential: []}]
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+        - name: ispublic
+          in: query
+          required: true
+          description: '`0` for the private pool''s system groups, `1` for the public pool''s member groups.'
+          schema:
+            type: string
+            enum:
+              - '0'
+              - '1'
+      responses:
+        '200':
+          description: The groups, by `Perm` descending, then group name; none when the pool site's own pool of that kind is another site, as legacy's settings join gives.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteGroupList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: A legacy write window executed or imported on `identity.group_account` for 30 s.
   /internal/v1/migration/apply:
     post:
       operationId: migrationApply
@@ -5847,6 +5943,108 @@ components:
             - aborted
             - finished
             - reverted
+    AccountRecord:
+      type: object
+      description: The identity-owned columns of a `Type=2` `tusers` row, in bootstrap column casing.
+      required:
+        - UserID
+        - SiteID
+        - UserName
+        - Type
+        - Admin
+        - S2
+        - Perm
+        - InActive
+        - isPublic
+        - remoteID
+        - PasswordCreated
+        - LastLogin
+        - tablist
+      additionalProperties: false
+      properties:
+        UserID:
+          $ref: '#/components/schemas/CfUuid'
+        SiteID:
+          $ref: '#/components/schemas/SiteId'
+        UserName:
+          $ref: '#/components/schemas/NullableString'
+        Type:
+          type: integer
+          const: 2
+        Admin:
+          $ref: '#/components/schemas/NullableInteger'
+        S2:
+          $ref: '#/components/schemas/NullableInteger'
+        Perm:
+          $ref: '#/components/schemas/NullableInteger'
+        InActive:
+          $ref: '#/components/schemas/NullableInteger'
+        isPublic:
+          $ref: '#/components/schemas/NullableInteger'
+        remoteID:
+          $ref: '#/components/schemas/NullableString'
+        PasswordCreated:
+          $ref: '#/components/schemas/NullableTimestamp'
+        LastLogin:
+          $ref: '#/components/schemas/NullableTimestamp'
+        tablist:
+          $ref: '#/components/schemas/NullableString'
+    AccountLookupRequest:
+      type: object
+      required:
+        - userIds
+      additionalProperties: false
+      properties:
+        userIds:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/CfUuid'
+    AccountList:
+      type: object
+      required:
+        - items
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AccountRecord'
+    SiteGroup:
+      type: object
+      description: One `Type=1` row of a site's user pool.
+      required:
+        - UserID
+        - GroupName
+        - SiteID
+        - isPublic
+        - Perm
+      additionalProperties: false
+      properties:
+        UserID:
+          $ref: '#/components/schemas/CfUuid'
+        GroupName:
+          $ref: '#/components/schemas/NullableString'
+        SiteID:
+          $ref: '#/components/schemas/SiteId'
+        isPublic:
+          type: integer
+          enum:
+            - 0
+            - 1
+        Perm:
+          $ref: '#/components/schemas/NullableInteger'
+    SiteGroupList:
+      type: object
+      required:
+        - items
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SiteGroup'
     TaskWireBody:
       type: object
       description: JSON body both task adapters post; `tenantId` is null on system tasks.

@@ -1,6 +1,6 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Read-only queries of schema `reporting` in the fixture `reporting.cfc` order; each runs in the caller's tenant transaction, whose RLS scopes the rows. */
-import { awaitReadable, qualified, type TableDefinition } from '@opt2/platform/migration-kit';
+import { DEFAULT_EXPORT_LIMIT, MAX_EXPORT_LIMIT, awaitReadable, qualified, type TableDefinition } from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import { EXPORT_DEFINITION, EXPORT_JOB, type ExportDefinitionRow, type ExportJobRow } from './tables.js';
 
@@ -26,6 +26,18 @@ export interface JobObject {
   size?: number;
   sha256: string;
   contentType?: string;
+}
+
+/** A manifest page request: the job id the previous page ended at, and the page size from 1, capped at `MAX_EXPORT_LIMIT`. */
+export interface JobObjectPaging {
+  after?: string | null;
+  limit?: number;
+}
+
+/** One manifest page by job id; `next` is the cursor of the following page, or null after the last one. */
+export interface JobObjectPage {
+  objects: JobObject[];
+  next: string | null;
 }
 
 /** An `export_job` row naming a stored object; the repository stores one only after its SHA-256 matched `output_sha256`. */
@@ -57,9 +69,11 @@ function statementsFor(schema: string): Statements {
     definition: `SELECT ${columnList(EXPORT_DEFINITION)} FROM ${qualified(schema, EXPORT_DEFINITION.table)} WHERE "definition_id" = $1`,
     countJobs: `SELECT count(*)::integer AS "total" FROM ${jobTable}`,
     jobPage: `${job} ORDER BY "created", "job_id" COLLATE "C" LIMIT $1 OFFSET $2`,
+    // job_id is char(35), so the cursor is compared as bpchar to keep the (tenant_id, job_id COLLATE "C") index usable.
     jobObjects:
       `SELECT "job_id", "object_key", "output_sha256", "content_type" FROM ${jobTable}` +
-      ' WHERE "object_key" IS NOT NULL ORDER BY "job_id" COLLATE "C"',
+      ' WHERE "object_key" IS NOT NULL AND ($1::bpchar IS NULL OR "job_id" COLLATE "C" > $1::bpchar)' +
+      ' ORDER BY "job_id" COLLATE "C" LIMIT $2',
   });
 }
 
@@ -97,14 +111,27 @@ export async function listJobs(tx: TenantTx, paging: JobPaging): Promise<JobPage
   return { ...page, rows };
 }
 
-/** The tenant's export output object manifest, by job id. */
-export async function listJobObjects(tx: TenantTx): Promise<JobObject[]> {
+/** One page of the tenant's export output object manifest, by job id after `paging.after`. */
+export async function listJobObjects(tx: TenantTx, paging: JobObjectPaging = {}): Promise<JobObjectPage> {
+  const limit = Math.min(paging.limit ?? DEFAULT_EXPORT_LIMIT, MAX_EXPORT_LIMIT);
   // No read gate: the migration export reads this while a write window imports the unit, and waiting would stall that window.
-  const { rows } = await tx.query<StoredOutputRow>(statementsFor(tx.schema).jobObjects);
-  return rows.map((row) => ({
+  // One row past the page tells whether another page follows.
+  const { rows } = await tx.query<StoredOutputRow>(statementsFor(tx.schema).jobObjects, [paging.after ?? null, limit + 1]);
+  const objects = rows.slice(0, limit).map((row) => ({
     jobId: row.job_id,
     objectKey: row.object_key,
     sha256: row.output_sha256,
     ...(row.content_type === null ? {} : { contentType: row.content_type }),
   }));
+  return { objects, next: rows.length > limit ? (objects.at(-1)?.jobId ?? null) : null };
+}
+
+/** Every stored output of the tenant's manifest in job-id order, read `pageSize` at a time so one page is held at once. */
+export async function* iterateJobObjects(tx: TenantTx, pageSize?: number): AsyncGenerator<JobObject, void, undefined> {
+  let after: string | null = null;
+  do {
+    const page: JobObjectPage = await listJobObjects(tx, { after, limit: pageSize });
+    yield* page.objects;
+    after = page.next;
+  } while (after !== null);
 }

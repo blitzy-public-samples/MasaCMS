@@ -3,7 +3,7 @@ SET ANSI_NULLS ON;
 SET QUOTED_IDENTIFIER ON;
 GO
 
--- Applies one legal export-job state move; returns one row (outcome: legal|illegal-state|not-found, state).
+-- Applies one legal export-job state move; returns one row (outcome: legal|illegal-state|not-found, state). Throws 50020 for done without output, file name, content type or SHA-256.
 CREATE OR ALTER PROCEDURE [synthetic].[usp_export_job_transition]
 	@job_id char(35), @to_state nvarchar(10), @now datetime,
 	@error nvarchar(max) = NULL, @file_name nvarchar(255) = NULL,
@@ -43,6 +43,9 @@ BEGIN
 		SELECT CAST(N'illegal-state' AS nvarchar(20)) AS [outcome], @current AS [state];
 		RETURN;
 	END
+
+	IF @next = N'done' AND (@output IS NULL OR @file_name IS NULL OR @content_type IS NULL OR @output_sha256 IS NULL)
+		THROW 50020, N'usp_export_job_transition: done requires output', 1;
 
 	UPDATE [synthetic].[export_job]
 	SET [state] = @next,

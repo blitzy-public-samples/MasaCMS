@@ -22,6 +22,7 @@ const HMAC_KEY = 'reporting-files-test-hmac-key';
 const JOB_ID = 'ABCDEF01-2345-6789-ABCDEF0123456789';
 const BYTES = Buffer.from('id,name\r\n1,"Ada, \u00e9"\r\n\u0000\u00ff', 'utf8');
 const KEY_A = exportObjectKey(TENANT_A.tenantId, JOB_ID, 'csv');
+const KEY_A_SLOT = exportObjectKey(TENANT_A.tenantId, JOB_ID, 'xlsx', 'b');
 const FORBIDDEN = {
   apiversion: 'v1',
   method: 'invalid',
@@ -36,6 +37,7 @@ beforeAll(async () => {
   stateDir = await mkdtemp(path.join(tmpdir(), 'opt2-reporting-files-'));
   storage = await createLocalStorageAdapter({ stateDir, hmacKey: HMAC_KEY, now: () => NOW });
   await storage.put(EXPORT_BUCKET, KEY_A, BYTES, { contentType: 'text/csv;charset=utf-8' });
+  await storage.put(EXPORT_BUCKET, KEY_A_SLOT, BYTES, { contentType: 'text/csv;charset=utf-8' });
 });
 
 afterEach(async () => {
@@ -95,9 +97,16 @@ describe('reporting export file route', () => {
     expect(operation).toMatchObject({ operationId: 'downloadExportObject', 'x-opt2-public': true, 'x-opt2-transport': 'service' });
   });
 
-  it('streams the stored bytes under the stored content type and length', async () => {
+  it.each([
+    ['a runner key', KEY_A],
+    ['an output-slot key', KEY_A_SLOT],
+  ])('streams the stored bytes of %s under the stored content type and length', async (_case, key) => {
+    const objectName = (
+      OPENAPI as { paths: Record<string, { parameters: { name: string; schema: { pattern: string } }[] }> }
+    ).paths['/opt2/files/reporting-exports/{tenantId}/{objectName}']?.parameters.find((parameter) => parameter.name === 'objectName');
+    expect(key.split('/')[1]).toMatch(new RegExp(objectName?.schema.pattern ?? '^$'));
     const app = await fileRouteApp();
-    const url = await storage.signedUrl(EXPORT_BUCKET, KEY_A, { expiresS: 900 });
+    const url = await storage.signedUrl(EXPORT_BUCKET, key, { expiresS: 900 });
     const res = await app.inject({ method: 'GET', url });
     expect(res.statusCode).toBe(200);
     expect(res.rawPayload.equals(BYTES)).toBe(true);

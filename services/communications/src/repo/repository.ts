@@ -30,6 +30,28 @@ export const SCHEMA = 'communications';
 
 // The fixture's nextInstant: statuses of one message stay at least 10 ms apart, so datetime's 1/300 s rounding keeps their order.
 const STATUS_SPACING_MS = 10;
+const ADOPTED: ScheduledTaskOrigin = 'adopted';
+const ADVISORY_LOCK_SQL = 'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))';
+
+/** Columns a new or reactivated task takes from its schedule: `scheduled`, not yet enqueued or dequeued. */
+function scheduleColumns(
+  task: NewAdoptedScheduledTask,
+): Omit<ScheduledTaskRow, 'tenant_id' | 'scheduled_task_id' | 'task_name' | 'origin' | 'created_at' | 'updated_at'> {
+  return {
+    queue: task.queue,
+    queue_task_name: task.queueTaskName,
+    kind: task.kind,
+    source_type: task.sourceType,
+    source_id: task.sourceId,
+    reminder_n: task.n ?? null,
+    schedule_time: task.scheduleTime,
+    status: 'scheduled',
+    target_route: task.targetRoute,
+    schedule_version: task.scheduleVersion,
+    enqueued_at: null,
+    dequeued_at: null,
+  };
+}
 
 /** Columns of a new template that the caller supplies; `siteId` is the token's `site`. */
 export interface NewTemplate {
@@ -89,6 +111,15 @@ export interface NewScheduledTask {
   origin: ScheduledTaskOrigin;
 }
 
+/** One captured ACF task to adopt; adoption sets `origin = 'adopted'`. */
+export type NewAdoptedScheduledTask = Omit<NewScheduledTask, 'origin'>;
+
+/** The adopted row of a task name; `created` is false when an existing adoption was returned unchanged. */
+export interface AdoptedScheduledTask {
+  row: ScheduledTaskRow;
+  created: boolean;
+}
+
 /** Domain writes of schema `communications`; each runs in the caller's open tenant transaction and never opens one. */
 export interface CommunicationsWrites {
   /** Inserts a template created now, with `lastupdate` equal to `created` as the fixture writes it. */
@@ -99,8 +130,10 @@ export interface CommunicationsWrites {
   setMessageState(tx: TenantTx, change: MessageStateChange, ctx?: WriteContext): Promise<MessageRow | null>;
   /** Appends one history row, recorded now or 10 ms after the message's latest status when that is closer. */
   appendDeliveryStatus(tx: TenantTx, input: NewDeliveryStatus, ctx?: WriteContext): Promise<DeliveryStatusRow>;
-  /** Inserts every task as `scheduled`, not yet enqueued or dequeued; returns the rows in input order. */
+  /** Inserts every event task as `scheduled`, not yet enqueued or dequeued, and adopts adopted ones by name; returns the rows in input order. */
   insertScheduledTasks(tx: TenantTx, tasks: readonly NewScheduledTask[], ctx?: WriteContext): Promise<ScheduledTaskRow[]>;
+  /** Adopts each task once per task name: inserts it, reactivates a cancelled adoption, or returns the existing row; in input order. */
+  adoptScheduledTasks(tx: TenantTx, tasks: readonly NewAdoptedScheduledTask[], ctx?: WriteContext): Promise<AdoptedScheduledTask[]>;
   /** Sets a task's `status`; null when the task is absent. */
   setScheduledTaskStatus(tx: TenantTx, taskId: string, status: ScheduledTaskStatus, ctx?: WriteContext): Promise<ScheduledTaskRow | null>;
   /** Stamps `enqueued_at` now, once the task port has created the queue task; null when the task is absent. */
@@ -123,6 +156,7 @@ export function createCommunicationsRepository({ clock, schema = SCHEMA }: Commu
   const base = createRepository({ owner: OWNER, schema, tables: OWNED_TABLES, clock });
   const lockMessageSql = `SELECT * FROM ${qualified(schema, MESSAGE.table)} WHERE message_id = $1 FOR UPDATE`;
   const lastStatusSql = `SELECT max(recorded_at) AS last FROM ${qualified(schema, DELIVERY_STATUS.table)} WHERE message_id = $1`;
+  const adoptedByNameSql = `SELECT * FROM ${qualified(schema, SCHEDULED_TASK.table)} WHERE origin = '${ADOPTED}' AND task_name = $1 FOR UPDATE`;
 
   /** Recorded time of the message's next status, as the fixture's `nextInstant` computes it. */
   async function nextInstant(tx: TenantTx, messageId: string): Promise<Date> {
@@ -204,36 +238,77 @@ export function createCommunicationsRepository({ clock, schema = SCHEMA }: Commu
     return base.insert<DeliveryStatusRow>(tx, DELIVERY_STATUS.table, row, ctx);
   }
 
+  /** Inserts `task` as a new row created at `now`. */
+  function insertScheduledTask(tx: TenantTx, task: NewScheduledTask, now: Date, ctx: WriteContext): Promise<ScheduledTaskRow> {
+    const row: Omit<ScheduledTaskRow, 'tenant_id'> = {
+      scheduled_task_id: cfUuid(),
+      task_name: task.taskName,
+      origin: task.origin,
+      ...scheduleColumns(task),
+      created_at: now,
+      updated_at: now,
+    };
+    return base.insert<ScheduledTaskRow>(tx, SCHEDULED_TASK.table, row, ctx);
+  }
+
+  /** Serialises adoptions of the same task names in the tenant; names are locked in sorted order so adopters never deadlock. */
+  async function lockAdoptedNames(tx: TenantTx, taskNames: readonly string[]): Promise<void> {
+    for (const taskName of [...new Set(taskNames)].sort()) {
+      await tx.query(ADVISORY_LOCK_SQL, [`${schema}.${SCHEDULED_TASK.table}:adopted:${tx.tenantId}:${taskName}`]);
+    }
+  }
+
+  /** Adopts one task whose name the caller has locked. */
+  async function adoptScheduledTask(
+    tx: TenantTx,
+    task: NewAdoptedScheduledTask,
+    now: Date,
+    ctx: WriteContext,
+  ): Promise<AdoptedScheduledTask> {
+    const current = await base.read(
+      tx,
+      SCHEDULED_TASK.unit,
+      async () => (await tx.query<ScheduledTaskRow>(adoptedByNameSql, [task.taskName])).rows[0],
+    );
+    if (current === undefined) {
+      return { row: await insertScheduledTask(tx, { ...task, origin: ADOPTED }, now, ctx), created: true };
+    }
+    if (current.status !== 'cancelled') {
+      return { row: current, created: false };
+    }
+    // Restoration cancelled this adoption; the name keeps one adopted row, so the same row is scheduled again.
+    const row = await updateScheduledTask(tx, current.scheduled_task_id, scheduleColumns(task), ctx);
+    return { row: row as ScheduledTaskRow, created: true };
+  }
+
   async function insertScheduledTasks(
     tx: TenantTx,
     tasks: readonly NewScheduledTask[],
     ctx: WriteContext = {},
   ): Promise<ScheduledTaskRow[]> {
+    await lockAdoptedNames(tx, tasks.filter((task) => task.origin === ADOPTED).map((task) => task.taskName));
     const now = clock.now();
     const stored: ScheduledTaskRow[] = [];
     for (const task of tasks) {
-      const row: Omit<ScheduledTaskRow, 'tenant_id'> = {
-        scheduled_task_id: cfUuid(),
-        task_name: task.taskName,
-        queue: task.queue,
-        queue_task_name: task.queueTaskName,
-        kind: task.kind,
-        source_type: task.sourceType,
-        source_id: task.sourceId,
-        reminder_n: task.n ?? null,
-        schedule_time: task.scheduleTime,
-        status: 'scheduled',
-        target_route: task.targetRoute,
-        schedule_version: task.scheduleVersion,
-        origin: task.origin,
-        enqueued_at: null,
-        dequeued_at: null,
-        created_at: now,
-        updated_at: now,
-      };
-      stored.push(await base.insert<ScheduledTaskRow>(tx, SCHEDULED_TASK.table, row, ctx));
+      stored.push(
+        task.origin === ADOPTED ? (await adoptScheduledTask(tx, task, now, ctx)).row : await insertScheduledTask(tx, task, now, ctx),
+      );
     }
     return stored;
+  }
+
+  async function adoptScheduledTasks(
+    tx: TenantTx,
+    tasks: readonly NewAdoptedScheduledTask[],
+    ctx: WriteContext = {},
+  ): Promise<AdoptedScheduledTask[]> {
+    await lockAdoptedNames(tx, tasks.map((task) => task.taskName));
+    const now = clock.now();
+    const adopted: AdoptedScheduledTask[] = [];
+    for (const task of tasks) {
+      adopted.push(await adoptScheduledTask(tx, task, now, ctx));
+    }
+    return adopted;
   }
 
   /** Sets `patch` and `updated_at` on one scheduled task; null when it is absent. */
@@ -271,6 +346,7 @@ export function createCommunicationsRepository({ clock, schema = SCHEMA }: Commu
     setMessageState,
     appendDeliveryStatus,
     insertScheduledTasks,
+    adoptScheduledTasks,
     setScheduledTaskStatus,
     stampEnqueued,
     stampDequeued,

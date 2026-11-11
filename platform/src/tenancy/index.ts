@@ -10,7 +10,7 @@ export {
   TransactionEndedError,
   TransactionRolledBackError,
 } from './transaction.js';
-export type { TenantDb, TenantTx, TxBase, Queryable, CommitCallback, CommitErrorHandler } from './transaction.js';
+export type { TenantDb, TenantTx, TxBase, Queryable, CommitCallback, CommitErrorHandler, TransactionCallOptions } from './transaction.js';
 export { withMetadata, NON_TENANT_TABLES, isNonTenantTable } from './metadata.js';
 export type { MetadataTx, NonTenantTable } from './metadata.js';
 export { createPool, tenantDbFromPool, iamDbUser } from './pool.js';

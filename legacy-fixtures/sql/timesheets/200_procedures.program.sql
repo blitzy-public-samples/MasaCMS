@@ -85,6 +85,7 @@ BEGIN
 	SET NOCOUNT ON; SET XACT_ABORT ON;
 
 	DECLARE @state nvarchar(20);
+	DECLARE @stored_day_id char(35);
 	DECLARE @role nvarchar(50);
 	DECLARE @outcome nvarchar(15);
 	DECLARE @status nvarchar(3);
@@ -94,7 +95,8 @@ BEGIN
 
 	BEGIN TRANSACTION;
 
-	SELECT @state = [state]
+	-- The lookup is case-insensitive; the audit row takes the stored id so it joins case-exactly.
+	SELECT @state = [state], @stored_day_id = [day_id]
 	FROM [$(PROGRAM_SCHEMA)].[timesheet_day] WITH (UPDLOCK, HOLDLOCK)
 	WHERE [day_id] = @day_id;
 
@@ -142,7 +144,7 @@ BEGIN
 				WHERE [day_id] = @day_id;
 
 				INSERT INTO [$(PROGRAM_SCHEMA)].[approval_action] ([action_id], [day_id], [action], [role], [from_state], [to_state], [actor_user_id], [comment], [created])
-				VALUES (ISNULL(@action_id, STUFF(CONVERT(char(36), NEWID()), 24, 1, '')), @day_id, @action, @role, @state, @to_state, @actor_user_id, @comment, @now);
+				VALUES (ISNULL(@action_id, STUFF(CONVERT(char(36), NEWID()), 24, 1, '')), @stored_day_id, @action, @role, @state, @to_state, @actor_user_id, @comment, @now);
 			END
 		END
 	END

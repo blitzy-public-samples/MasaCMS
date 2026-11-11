@@ -3,7 +3,7 @@
 # Step: name, method, route, as, auth, csrf, csrfFrom, headers, form | body | multipart{fields, files[{field, fixture, filename, contentType}]}, extract, poll, settle, matrix, knownIssue, expected, decisionListRef, exceptionId, compare, candidates.
 # auth: session | anonymous | basic:<user>:<secret> | bearer:<token>; csrf: fetch-form | json-api:<context> | none; extract: {from: body | header:<Name> | dom | location-query, path | selector, attr, param}.
 # seedRefs index is 0-based and negative from the end; a reserved ref resolves to a scalar, read as ${seed.<as>}.
-# Placeholders: ${secret:admin|qa_editor|seed:<user>|oauth:<clientId>|generated:<name>}, ${user:<site>:<role>}, ${seed.<as>.<field>}, ${<step>.<binding>}, ${matrix.<var>}, ${asOf}.
+# Placeholders: ${secret:admin|qa_editor|appreload|seed:<user>|oauth:<clientId>|generated:<name>}, ${user:<site>:<role>}, ${seed.<as>.<field>}, ${<step>.<binding>}, ${matrix.<var>}, ${asOf}, ${nodash:<value>} (<value> without '-'), ${urlencode:<value>} (legacy esapiEncode('url')); keys resolve like values.
 sourceSha: 696383140578f8dea3ece26f80cd7bfb370ddf0f
 version: 1
 defaults:
@@ -484,7 +484,7 @@ scenarios:
         csrf: fetch-form
         csrfFrom: node
         form:
-          p${seed.group.groupID}: author
+          p${nodash:${seed.group.groupID}}: author
           chainID: ''
           siteid: tenant-a
           topid: '00000000000000000000000000000000001'
@@ -502,7 +502,7 @@ scenarios:
         csrf: fetch-form
         csrfFrom: node-after
         form:
-          p${seed.group.groupID}: none
+          p${nodash:${seed.group.groupID}}: none
           chainID: ''
           siteid: tenant-a
           topid: '00000000000000000000000000000000001'
@@ -628,6 +628,7 @@ scenarios:
     normalisationOverrides: {}
     covers:
       - admin:cwebservice.list
+      - admin:cwebservice.edit
       - admin:cwebservice.save
       - admin:cwebservice.delete
       - rest:oauth2
@@ -838,13 +839,17 @@ scenarios:
           contact: '0'
           csrf_token: ${profile-form.csrfToken}
           csrf_token_expires: ${profile-form.csrfExpires}
-      - name: approval-tokens
+      - name: approval-form
         method: GET
-        route: /_api/json/v1/tenant-a/generateCSRFTokens?context=approvalaction
+        route: /admin/?muraAction=cEditProfile.edit
         as: admin
         extract:
-          csrfToken: {from: body, path: data.csrf_token}
-          csrfExpires: {from: body, path: data.csrf_token_expires}
+          csrfToken: {from: dom, selector: 'form[name=form1] input[name=csrf_token]', attr: value}
+          csrfExpires: {from: dom, selector: 'form[name=form1] input[name=csrf_token_expires]', attr: value}
+          fname: {from: dom, selector: 'form[name=form1] input[name=fname]', attr: value}
+          lname: {from: dom, selector: 'form[name=form1] input[name=lname]', attr: value}
+          email: {from: dom, selector: 'form[name=form1] input[name=email]', attr: value}
+          username: {from: dom, selector: 'form[name=form1] input[name=usernameNoCache]', attr: value}
       - name: approval-bypass
         method: POST
         route: /admin/?muraAction=carch.approvalaction
@@ -854,19 +859,39 @@ scenarios:
           action: reject
           comment: GS-ID-09
           siteid: tenant-a
-          csrf_token: ${approval-tokens.csrfToken}
-          csrf_token_expires: ${approval-tokens.csrfExpires}
-      - name: approval-token-reused
+          csrf_token: ${approval-form.csrfToken}
+          csrf_token_expires: ${approval-form.csrfExpires}
+      - name: bypassed-token-accepted-on-carried-form
         method: POST
-        route: /admin/?muraAction=carch.approvalaction
+        route: /admin/?muraAction=cEditProfile.update
         as: admin
         form:
-          requestid: ''
-          action: reject
-          comment: GS-ID-09 again
-          siteid: tenant-a
-          csrf_token: ${approval-tokens.csrfToken}
-          csrf_token_expires: ${approval-tokens.csrfExpires}
+          fname: ${approval-form.fname}
+          lname: ${approval-form.lname}
+          email: ${approval-form.email}
+          usernameNoCache: ${approval-form.username}
+          type: '2'
+          action: ''
+          contact: '0'
+          csrf_token: ${approval-form.csrfToken}
+          csrf_token_expires: ${approval-form.csrfExpires}
+      - name: consumed-token-rejected-on-legacy-variant
+        method: POST
+        route: /admin/?muraAction=cEditProfile.update
+        as: admin
+        form:
+          fname: ${approval-form.fname}
+          lname: ${approval-form.lname}
+          email: ${approval-form.email}
+          usernameNoCache: ${approval-form.username}
+          type: '2'
+          action: ''
+          contact: '0'
+          extendSetID: gs-id-09-no-extend-set
+          csrf_token: ${approval-form.csrfToken}
+          csrf_token_expires: ${approval-form.csrfExpires}
+        expected: withheld
+        decisionListRef: admin:ceditprofile.update{extdata}
       - name: carried-logout
         method: GET
         route: /admin/?muraAction=cLogin.logout
@@ -909,6 +934,7 @@ scenarios:
       - admin:cemail.update
       - admin:ceditprofile.update
       - admin:carch.approvalaction
+      - admin:ceditprofile.update{extdata}
       - admin:clogin.logout
       - page:logout
   - id: GS-PE-01
@@ -1404,12 +1430,12 @@ scenarios:
     steps:
       - name: public-reload
         method: GET
-        route: /?appreload
+        route: /?${urlencode:${secret:appreload}}
         as: anon
         auth: anonymous
       - name: global-config-reload
         method: GET
-        route: /admin/?appreload&reload=appreload
+        route: /admin/?${urlencode:${secret:appreload}}&reload=${urlencode:${secret:appreload}}
         as: admin
     compare: [status, headers, auth]
     normalisationOverrides: {}
@@ -2109,6 +2135,9 @@ scenarios:
       - api:content.findnew
       - api:content.findproperties
       - api:content.findpermissions
+      - api:content.findcrumbarray
+      - api:content.findrelatedcontent
+      - api:content.findversionhistory
       - api:findcrumbarray
       - api:findrelatedcontent
       - api:findversionhistory
@@ -2294,7 +2323,7 @@ scenarios:
         exceptionId: EX-FILE-RENDITION
       - name: uploaded-image
         method: GET
-        route: /_api/json/v1/tenant-a/content/${image-form.contentid}
+        route: /_api/json/v1/tenant-a/content/${image-form.contentid}?fields=fileid
         as: admin
         extract:
           fileid: {from: body, path: data.fileid}
@@ -2415,8 +2444,7 @@ scenarios:
     sessions:
       admin: {login: admin, via: admin}
       approver: {login: 'seed:tenant-a:site-admin', via: admin}
-    seedRefs:
-      - {as: adminGroup, source: dataset, path: masa.groups, where: {siteID: tenant-a, groupname: Admin}, index: 0}
+    seedRefs: []
     steps:
       - name: chains
         method: GET
@@ -2428,6 +2456,7 @@ scenarios:
         as: admin
         extract:
           chainID: {from: dom, selector: 'form input[name=chainID]', attr: value}
+          adminGroupID: {from: dom, selector: '#groupAvailableListSort li:contains("Admin") input[name=availableID]', attr: value}
       - name: save-chain
         method: POST
         route: /admin/?muraAction=cChain.save
@@ -2439,7 +2468,7 @@ scenarios:
           siteid: tenant-a
           name: GS-CO-09 Chain
           description: ''
-          groupID: ${seed.adminGroup.groupID}
+          groupID: ${new-chain.adminGroupID}
       - name: chain-update-view
         method: GET
         route: /admin/?muraAction=cChain.update&siteid=tenant-a&chainID=${new-chain.chainID}
@@ -2632,6 +2661,7 @@ scenarios:
     normalisationOverrides: {}
     covers:
       - admin:cchain.list
+      - admin:cchain.edit
       - admin:cchain.save
       - admin:cchain.update
       - admin:carch.edit
@@ -2641,6 +2671,7 @@ scenarios:
       - admin:carch.update{approved=1}
       - admin:carch.statusmodal
       - admin:cchain.pending
+      - api:content.findversionhistory
       - api:generatecsrftokens
       - admin:carch.approvalaction{action=approve}
       - admin:carch.approvalaction
@@ -2790,7 +2821,7 @@ scenarios:
           comments: GS-CO-11 comment
           isApproved: '0'
         extract:
-          commentid: {from: body, path: data.commentid}
+          commentid: {from: body, path: data.id}
       - name: moderation
         method: GET
         route: /admin/?muraAction=cComments.default&siteid=tenant-a
@@ -3234,6 +3265,8 @@ scenarios:
       - rest:user.findall
       - api:content.save
       - api:content.findquery
+      - api:!invalidparameters
+      - api:!invalidmethodcall
   - id: GS-PUB-01
     title: Public front-end login failure and success
     service: identity
@@ -3779,8 +3812,7 @@ scenarios:
     sessions:
       admin: {login: admin, via: admin}
       newUser: {login: none, via: admin}
-    seedRefs:
-      - {as: adminGroup, source: dataset, path: masa.groups, where: {siteID: tenant-a, groupname: Admin}, index: 0}
+    seedRefs: []
     replayFaults:
       - {fault: projector-delay, ms: 3000, command: opt2-migrate fault projector-delay --ms 3000}
     steps:
@@ -3826,6 +3858,7 @@ scenarios:
         as: admin
         extract:
           userid: {from: dom, selector: 'form[name=form1]', attr: action, param: userid}
+          adminGroupID: {from: dom, selector: '#privateGroupsList label.checkbox:contains("Admin") input[name=groupid]', attr: value}
       - name: user
         method: POST
         route: /admin/?muraAction=cUsers.update&userid=${user-form.userid}&routeid=
@@ -3845,7 +3878,7 @@ scenarios:
           subscribe: '0'
           passwordNoCache: ${secret:generated:gs-br-01}
           password2: ${secret:generated:gs-br-01}
-          groupid: ${seed.adminGroup.groupID}
+          groupid: ${user-form.adminGroupID}
       - name: new-user-login-form
         method: GET
         route: /admin/?muraAction=clogin.main
@@ -5004,7 +5037,7 @@ scenarios:
         method: GET
         route: /legacy-fixtures/cfml/api.cfm/communications/messages/${send.id}?siteid=tenant-a
         as: sender
-        poll: {until: {path: data.status, equals: delivered}, intervalMs: 1000, timeoutMs: 60000}
+        poll: {until: {path: data.state, equals: delivered}, intervalMs: 1000, timeoutMs: 60000}
       - name: list
         method: GET
         route: /legacy-fixtures/cfml/api.cfm/communications/messages?siteid=tenant-a&itemsPerPage=5

@@ -6,7 +6,7 @@ import { UnitNotAuthoritativeError, closeGates, ensureUnitGates, openGates } fro
 import { TransitionRejectedError } from '@opt2/platform/state-machine';
 import { isCfUuid } from '@opt2/platform/legacy-compat';
 import type { StoragePort } from '@opt2/platform/storage';
-import { tenantIdForSite, type TenantTx } from '@opt2/platform/tenancy';
+import { tenantDbFromPool, tenantIdForSite, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import type { FinanceAction } from '../../src/domain/lifecycle.transitions.js';
 import {
@@ -32,6 +32,7 @@ const SITE_B = 'records-b';
 const ACTOR_A: FinanceActor = { userId: '11111111-2222-3333-4444555566667777', siteId: SITE_A };
 const ACTOR_B: FinanceActor = { userId: '22222222-2222-3333-4444555566667777', siteId: SITE_B };
 const TRAVEL: RecordInput = { title: 'Travel', amount: 125050000n, period: '2026-06' };
+const ALL_VERSIONS = { pageIndex: 1, itemsPerPage: 1000 };
 // 999999999999999.9999, the largest numeric(19,4) value.
 const MAX = 9_999_999_999_999_999_999n;
 
@@ -62,6 +63,7 @@ describe.skipIf(!available)('finance record domain against PostgreSQL', () => {
   const tenantA = tenantIdForSite(SITE_A);
   const tenantB = tenantIdForSite(SITE_B);
   let handle: ThrowawaySchema;
+  let stagingDb: TenantDb;
   let deps: FinanceDomainDeps;
 
   /** Binds `tenantId` to `Program_<programId>`, as a migration apply does. */
@@ -81,6 +83,7 @@ describe.skipIf(!available)('finance record domain against PostgreSQL', () => {
       service: 'finance',
       migrationsDir: fileURLToPath(new URL('../../db/migrations', import.meta.url)),
     });
+    stagingDb = tenantDbFromPool(handle.connect('app', { max: 1 }), { schema: handle.schema });
     await ensureUnitGates(handle.app, UNITS);
     await bind(tenantA, SITE_A, 1);
     await bind(tenantB, SITE_B, 2);
@@ -94,7 +97,7 @@ describe.skipIf(!available)('finance record domain against PostgreSQL', () => {
     await setGates('open');
     const storage = unusedStorage();
     const clock = fixedClock(NOW);
-    deps = { repository: createFinanceRepository({ db: handle.app, storage, clock }), storage, clock };
+    deps = { repository: createFinanceRepository({ db: handle.app, stagingDb, storage, clock }), storage, clock };
   });
 
   /** Moves every finance gate to `state` through the holder compare-and-set. */
@@ -211,8 +214,9 @@ describe.skipIf(!available)('finance record domain against PostgreSQL', () => {
       expect(result.record.lastupdate?.getTime()).toBe(NOW.getTime());
       expect(result.version).toMatchObject({ record_id: record.record_id, version, state: to, action, actor_user_id: ACTOR_A.userId });
     }
-    const history = await inTenant((tx) => listVersions(tx, record.record_id));
-    expect(history.map((row) => [row.version, row.action])).toEqual([[1, 'create'], ...steps.map(([action], index) => [index + 2, action])]);
+    const history = await inTenant((tx) => listVersions(tx, record.record_id, ALL_VERSIONS));
+    expect(history.total).toBe(steps.length + 1);
+    expect(history.rows.map((row) => [row.version, row.action])).toEqual([[1, 'create'], ...steps.map(([action], index) => [index + 2, action])]);
   });
 
   it('edit sets only the fields present and snapshots the result; other actions ignore input', async () => {
@@ -271,7 +275,7 @@ describe.skipIf(!available)('finance record domain against PostgreSQL', () => {
     await expect(transition(record.record_id, 'edit', PREPARER, input)).rejects.toMatchObject({ name: 'FinanceDomainError', type: 'invalidParameters' });
     expect(await count('changelog')).toBe(before);
     expect(await inTenant((tx) => getRecord(tx, record.record_id))).toMatchObject({ period, amount: record.amount, version: 1 });
-    expect(await inTenant((tx) => listVersions(tx, record.record_id))).toHaveLength(1);
+    expect((await inTenant((tx) => listVersions(tx, record.record_id, ALL_VERSIONS))).rows).toHaveLength(1);
   });
 
   it('excludes the edited record from its own period sum and accepts an edit that fits exactly', async () => {
@@ -354,7 +358,7 @@ describe.skipIf(!available)('finance record domain against PostgreSQL', () => {
 
   it('getRecord and listVersions answer notFound for a missing record', async () => {
     await expect(inTenant((tx) => getRecord(tx, MISSING_ID))).rejects.toBeInstanceOf(FinanceDomainError);
-    await expect(inTenant((tx) => listVersions(tx, MISSING_ID))).rejects.toMatchObject({ type: 'notFound' });
+    await expect(inTenant((tx) => listVersions(tx, MISSING_ID, ALL_VERSIONS))).rejects.toMatchObject({ type: 'notFound' });
   });
 
   it('listRecords returns the requested page and the total', async () => {
@@ -373,9 +377,24 @@ describe.skipIf(!available)('finance record domain against PostgreSQL', () => {
     expect(await inTenant((tx) => listRecords(tx, { pageIndex: 3, itemsPerPage: 2 }), tenant)).toEqual({ rows: [], total: 3 });
   });
 
+  it('listVersions returns the requested page of versions by version and the total', async () => {
+    const { record } = await create();
+    for (let edit = 0; edit < 4; edit++) await transition(record.record_id, 'edit', PREPARER);
+    const page = (pageIndex: number) => inTenant((tx) => listVersions(tx, record.record_id, { pageIndex, itemsPerPage: 2 }));
+    const pages = [await page(1), await page(2), await page(3)];
+    expect(pages.map(({ rows, total }) => [rows.map((row) => row.version), total])).toEqual([
+      [[1, 2], 5],
+      [[3, 4], 5],
+      [[5], 5],
+    ]);
+    expect(await page(4)).toEqual({ rows: [], total: 5 });
+    await expect(inTenant((tx) => listVersions(tx, MISSING_ID, { pageIndex: 4, itemsPerPage: 2 }))).rejects.toMatchObject({ type: 'notFound' });
+  });
+
   it('keeps a tenant-A record out of reach of a tenant-B transaction', async () => {
     const { record } = await create();
     await expect(inTenant((tx) => getRecord(tx, record.record_id), tenantB)).rejects.toMatchObject({ type: 'notFound' });
+    await expect(inTenant((tx) => listVersions(tx, record.record_id, ALL_VERSIONS), tenantB)).rejects.toMatchObject({ type: 'notFound' });
     await expect(
       inTenant((tx) => transitionRecord(tx, deps, { id: record.record_id, action: 'submit', roles: PREPARER }, ACTOR_B), tenantB),
     ).rejects.toMatchObject({ type: 'notFound' });
@@ -397,6 +416,6 @@ describe.skipIf(!available)('finance record domain against PostgreSQL', () => {
     ]);
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
     expect(results.find((result) => result.status === 'rejected')).toMatchObject({ reason: { statusCode: 409 } });
-    expect((await inTenant((tx) => listVersions(tx, record.record_id))).map((row) => row.version)).toEqual([1, 2]);
+    expect((await inTenant((tx) => listVersions(tx, record.record_id, ALL_VERSIONS))).rows.map((row) => row.version)).toEqual([1, 2]);
   });
 });

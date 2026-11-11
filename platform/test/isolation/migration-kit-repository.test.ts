@@ -10,10 +10,12 @@ import {
   UnitReadBlockedError,
   createMigrationAuthority,
   ensureUnitGates,
+  requestMigrationAuthority,
   setGatePhase,
   withGatedTenant,
   type MigrationAuthority,
 } from '../../src/migration-kit/gates.js';
+import { Roles } from '../../src/auth/index.js';
 import {
   RepositoryError,
   createRepository,
@@ -677,6 +679,20 @@ describe.skipIf(!available)('repository writes against PostgreSQL', () => {
     expect((await changelog(tenant)).map((change) => [change.table, change.origin])).toEqual([
       ['item', 'backfill'],
       ['tag_member', 'migration-feed'],
+    ]);
+  });
+
+  it('lets a write with the authority of a platform.migration request pass a closed gate', async () => {
+    const tenant = freshTenant();
+    await setGate(ITEM_UNIT, 'closed');
+    const store = { ...newRequestContext({ requestId: 'req-adopt' }), service: { name: 'migration', roles: [Roles.platformMigration] } };
+    await runWithRequestContext(store, () =>
+      handle.app.withTenant(tenant, (tx) =>
+        repo.insert(tx, 'item', { item_id: 'r1', name: 'R', qty: 1 }, { authority: requestMigrationAuthority() }),
+      ),
+    );
+    expect((await changelog(tenant)).map((change) => [change.table, change.actor_service, change.request_id])).toEqual([
+      ['item', 'migration', 'req-adopt'],
     ]);
   });
 

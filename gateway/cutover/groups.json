@@ -2,8 +2,8 @@
   "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
   "generatedBy": "gateway/src/cutover/build-groups.ts",
   "inputs": {
-    "inventorySha256": "60d981c1d92e7929769fb68bfd91810fdf0b0b7b2b1b9af5e7589e6b7dd088d3",
-    "tableOwnershipSha256": "e2961c444acc1641d6c81f58a255ecdcf5d200ea9c184020e2c6bdc53313a4df"
+    "inventorySha256": "e02aeb4f28f10120d2885894f938f06b62e2e2c2764b44016398a681531f82c1",
+    "tableOwnershipSha256": "2b00ce2dfd25c42a94340161baefcedafe12bb85e9311c31cce9ef254eee88d1"
   },
   "groups": [
     {
@@ -599,6 +599,7 @@
     {
       "id": "grp:surveys.survey",
       "units": [
+        "communications.scheduled_task",
         "surveys.survey",
         "surveys.survey_reminder",
         "surveys.survey_schedule"

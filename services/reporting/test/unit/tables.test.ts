@@ -10,12 +10,15 @@ import {
   EXPORT_DEFINITION,
   EXPORT_JOB,
   EXPORT_OUTPUT_FIELD,
+  OUTPUT_SLOTS,
   OWNED_TABLES,
   OWNER,
   SCHEMA,
   TSESSIONTRACKING,
   UNITS,
   exportObjectKey,
+  type ExportFormat,
+  type OutputSlot,
 } from '../../src/repo/tables.js';
 
 interface DdlColumn {
@@ -143,11 +146,23 @@ describe('exportObjectKey', () => {
   const tenantId = '0b0e9c1c-6a3b-5d8e-9f10-112233445566';
   const jobId = cfUuid();
 
-  it.each(['xlsx', 'csv', 'pdf'] as const)('keys a %s export as <tenantId>/<jobId>.<format>', (format) => {
-    expect(exportObjectKey(tenantId, jobId, format)).toBe(`${tenantId}/${jobId}.${format}`);
+  it.each<[ExportFormat, OutputSlot | undefined, string]>([
+    ['xlsx', undefined, 'xlsx'],
+    ['csv', undefined, 'csv'],
+    ['pdf', undefined, 'pdf'],
+    ['xlsx', 'a', 'a.xlsx'],
+    ['csv', 'a', 'a.csv'],
+    ['pdf', 'b', 'b.pdf'],
+  ])('keys a %s export in slot %s as <tenantId>/<jobId>.%s', (format, slot, name) => {
+    expect(exportObjectKey(tenantId, jobId, format, slot)).toBe(`${tenantId}/${jobId}.${name}`);
   });
 
-  it('rejects a job id that is not a CF UUID', () => {
-    expect(() => exportObjectKey(tenantId, 'JOB', 'csv')).toThrow(InvalidObjectKeyError);
+  it('declares exactly the output slots a and b', () => {
+    expect(OUTPUT_SLOTS).toEqual(['a', 'b']);
+    expect(Object.isFrozen(OUTPUT_SLOTS)).toBe(true);
+  });
+
+  it.each([undefined, ...OUTPUT_SLOTS])('rejects a job id that is not a CF UUID in slot %s', (slot) => {
+    expect(() => exportObjectKey(tenantId, 'JOB', 'csv', slot)).toThrow(InvalidObjectKeyError);
   });
 });

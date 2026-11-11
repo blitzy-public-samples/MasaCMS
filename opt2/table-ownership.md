@@ -25,7 +25,7 @@ Source SHA: 696383140578f8dea3ece26f80cd7bfb370ddf0f
 | Tables with a `siteID` column | 55 | Includes `tcontentfilemetadata` (`siteID` from `beanORMVersioned`) and `tremotepointer` (created lazily), so a fresh live catalog shows 54 |
 | Bootstrap tables without a primary key | 10 | 8 live: `tsettings` gains its key in `core/mura/dbUpdates/6.1.cfm:120-122` and `tglobals` is retired |
 | Fixture, dynamic-pattern, test-suite and OPT-2 tables | 26, 2, 2, 1 | Listed under Owners and Fixture tables |
-| Units | 108 | Listed under Units |
+| Units | 109 | Listed under Units |
 
 The keyless bootstrap tables are `tcontentdisplaytitleapprovals`, `tcontenteventreminders`, `tcontentpublicsubmissionapprovals`, `temailreturnstats`, `temailstats`, `tglobals`, `tmailinglist`, `tmailinglistmembers`, `tsettings` and `tsystemobjects`; keyless live tables match as a multiset of full-row encodings, with `legacy_row_hash` and an occurrence number on each target row.
 
@@ -85,7 +85,7 @@ Pool columns: `core/mura/settings/settingsBean.cfc:119-124,328-344`; every pool 
 
 ## Units
 
-Each unit is one target table; `newTables` in the JSON lists target-only tables, which hold no legacy rows and are not units.
+Each unit is one target table; `newTables` in the JSON lists target-only tables, which hold no legacy rows and are not units. The one target-only unit, `communications.scheduled_task`, has no legacy tables and joins the group of `surveys.survey_schedule` (`joinsUnit`), whose entry points write it through seam 2 and whose transition adopts or cancels its tasks.
 
 | Owner | Unit | Legacy tables |
 |---|---|---|
@@ -177,6 +177,7 @@ Each unit is one target table; `newTables` in the JSON lists target-only tables,
 | communications | `communications.mailing_list_member` | `tmailinglistmembers` |
 | communications | `communications.message` | `synthetic.message` |
 | communications | `communications.message_template` | `synthetic.message_template` |
+| communications | `communications.scheduled_task` | None; joins the group of `surveys.survey_schedule` |
 | communications | `communications.trash` | `ttrash` |
 | reporting | `reporting.export_definition` | `synthetic.export_definition` |
 | reporting | `reporting.export_job` | `synthetic.export_job` |

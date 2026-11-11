@@ -54,7 +54,7 @@ writers:
     keyScope: table
     trigger: thread
     sessionEffects: none
-    condition: "the opt2-export-<jobId> cfthread runs runExport (reporting.cfc:133-172), which moves the job to running and then done or failed only through synthetic.usp_export_job_transition"
+    condition: "the opt2-export-<jobId> cfthread runs runExport (reporting.cfc:136-175), which moves the job to running and then done or failed only through synthetic.usp_export_job_transition"
     preventedBy: fixture-export-threads
     reason: "The writes run in a cfthread that outlives the request that queued the job, so that request's closure cannot carry them."
 

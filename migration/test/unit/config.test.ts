@@ -5,7 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { SERVICE_ACCOUNT_PREFIX, serviceAccountEmail } from '@opt2/platform/auth';
 import { EnvValidationError } from '@opt2/platform/service-kit';
+import { iamDbUser } from '@opt2/platform/tenancy';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -115,6 +117,16 @@ describe('migration.config.json', () => {
     expect(paths).toBeDefined();
     expect(loadConfig()).toBe(first);
     expect(loadConfig({ path: CONFIG_PATH })).toBe(first);
+  });
+
+  it('restates the platform service-account naming in its cloud keys', () => {
+    const { cloud } = loadConfig();
+    const email = serviceAccountEmail('people', 'opt2-unit');
+
+    expect(cloud.serviceAccountPrefix).toBe(SERVICE_ACCOUNT_PREFIX);
+    expect(cloud.iamUserSuffixTrim).toBe('.gserviceaccount.com');
+    expect(email.startsWith(cloud.serviceAccountPrefix)).toBe(true);
+    expect(`${iamDbUser(email)}${cloud.iamUserSuffixTrim}`).toBe(email);
   });
 
   it('rejects an unknown top-level key', () => {
@@ -384,6 +396,20 @@ describe('loadConfig with a fixture file', () => {
         config.reportsDir = path.join(os.tmpdir(), 'reports');
       },
       'reportsDir: must be relative to migration/',
+    ],
+    [
+      'a service-account prefix other than the platform one',
+      (config) => {
+        config.cloud.serviceAccountPrefix = 'acme-';
+      },
+      `cloud.serviceAccountPrefix: must equal the platform value "${SERVICE_ACCOUNT_PREFIX}"`,
+    ],
+    [
+      'an IAM user suffix other than the one the platform trims',
+      (config) => {
+        config.cloud.iamUserSuffixTrim = '.example.com';
+      },
+      'cloud.iamUserSuffixTrim: must equal the platform value ".gserviceaccount.com"',
     ],
   ])('reports %s as a key.path issue', async (_case, mutate, issue) => {
     const file = await writeVariant(mutate);

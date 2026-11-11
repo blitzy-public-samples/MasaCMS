@@ -1,13 +1,22 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Reporting read queries against a throwaway `reporting` schema: fixture order and paging, value forms, tenant isolation and window read gates. */
+/** Reporting read queries against a throwaway `reporting` schema: fixture order and paging, manifest pages, index plans, value forms, isolation, read gates. */
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
-import { UnitReadBlockedError, closeGates, ensureUnitGates, openGates, withGatedTenant, type GatePhase } from '@opt2/platform/migration-kit';
+import {
+  DEFAULT_EXPORT_LIMIT,
+  MAX_EXPORT_LIMIT,
+  UnitReadBlockedError,
+  closeGates,
+  ensureUnitGates,
+  openGates,
+  withGatedTenant,
+  type GatePhase,
+} from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
-import { findDefinition, findJob, listJobObjects, listJobs } from '../../src/repo/queries.js';
+import { findDefinition, findJob, iterateJobObjects, listJobObjects, listJobs } from '../../src/repo/queries.js';
 import { EXPORT_DEFINITION, EXPORT_JOB, UNITS } from '../../src/repo/tables.js';
 
 let handle: ThrowawaySchema;
@@ -35,6 +44,26 @@ const A_JOBS: SeedJob[] = [
   { id: cfId('A', 1), created: '2026-07-01 08:00:00.000' },
 ];
 const B_JOB: SeedJob = { id: cfId('B', 2), created: '2026-01-01 00:00:00.000', objectKey: 'k-b2', sha: 'c'.repeat(64), contentType: 'application/pdf' };
+
+/** Tenant whose manifest spans several pages; the lowercase id sorts after the uppercase ones in byte (C) order. */
+const PAGED_TENANT = randomUUID();
+const PAGED_SITE = 'paged-site';
+const PAGED_DEFINITION = cfId('D', 3);
+const PAGED_JOBS: SeedJob[] = [
+  ...['C', 'a', 'B', 'D', 'A'].map((prefix, n) => ({
+    id: cfId(prefix, n + 1),
+    created: '2026-03-01 12:00:00.000',
+    objectKey: `k-p${n + 1}`,
+    sha: String(n + 1).repeat(64),
+    contentType: 'text/csv',
+  })),
+  { id: cfId('B', 9), created: '2026-03-01 12:00:00.000' },
+];
+/** Manifest of `PAGED_TENANT` in byte order of job id. */
+const PAGED_MANIFEST = PAGED_JOBS.filter((job) => job.objectKey !== undefined)
+  .sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0))
+  .map((job) => ({ jobId: job.id, objectKey: job.objectKey, sha256: job.sha, contentType: 'text/csv' }));
+const PAGED_IDS = PAGED_MANIFEST.map((object) => object.jobId);
 
 /** Inserts one export definition of the transaction tenant. */
 async function insertDefinition(tx: TenantTx, definitionId: string, siteId: string): Promise<void> {
@@ -68,14 +97,34 @@ async function insertJob(tx: TenantTx, job: SeedJob, definitionId: string, siteI
   );
 }
 
-/** Wraps `tx` so every statement text it runs is appended to `seen`. */
-function recording(tx: TenantTx, seen: string[]): TenantTx {
+/** One statement a recorded transaction ran. */
+interface Statement {
+  text: string;
+  values?: unknown[];
+}
+
+/** Wraps `tx` so every statement it runs is appended to `seen`. */
+function recording(tx: TenantTx, seen: Statement[]): TenantTx {
   const query = ((text: string, values?: unknown[]) => {
-    seen.push(text);
+    seen.push({ text, values });
     return tx.query(text, values);
   }) as TenantTx['query'];
   return { ...tx, query };
 }
+
+/** The plan of the last statement `read` runs, planned with sequential scans and sorts disabled. */
+async function planOf(tx: TenantTx, read: (tx: TenantTx) => Promise<unknown>): Promise<string> {
+  const seen: Statement[] = [];
+  await read(recording(tx, seen));
+  const last = seen.at(-1) as Statement;
+  await tx.query('SET LOCAL enable_seqscan = off');
+  await tx.query('SET LOCAL enable_sort = off');
+  const { rows } = await tx.query<{ 'QUERY PLAN': string }>(`EXPLAIN ${last.text}`, last.values);
+  return rows.map((row) => row['QUERY PLAN']).join('\n');
+}
+
+/** The manifest page statements among `seen`. */
+const manifestReads = (seen: readonly Statement[]): Statement[] => seen.filter((statement) => /"object_key" IS NOT NULL/.test(statement.text));
 
 /** Fixture order of jobs: `created`, then id. */
 function fixtureOrder(rows: readonly SeedJob[]): string[] {
@@ -94,6 +143,10 @@ describe.skipIf(!(await pgAvailable()))('reporting read queries', () => {
     await handle.app.withTenant(TENANT_B.tenantId, async (tx) => {
       await insertDefinition(tx, B_DEFINITION, TENANT_B.siteId);
       await insertJob(tx, B_JOB, B_DEFINITION, TENANT_B.siteId);
+    });
+    await handle.app.withTenant(PAGED_TENANT, async (tx) => {
+      await insertDefinition(tx, PAGED_DEFINITION, PAGED_SITE);
+      for (const job of PAGED_JOBS) await insertJob(tx, job, PAGED_DEFINITION, PAGED_SITE);
     });
   });
 
@@ -132,10 +185,104 @@ describe.skipIf(!(await pgAvailable()))('reporting read queries', () => {
 
   it('lists the stored output manifest by job id, without jobs that have no object', async () => {
     await handle.app.withTenant(TENANT_A.tenantId, async (tx) => {
-      expect(await listJobObjects(tx)).toEqual([
-        { jobId: cfId('A', 5), objectKey: 'k-a5', sha256: 'a'.repeat(64), contentType: 'text/csv' },
-        { jobId: cfId('A', 9), objectKey: 'k-a9', sha256: 'b'.repeat(64) },
-      ]);
+      expect(await listJobObjects(tx)).toEqual({
+        objects: [
+          { jobId: cfId('A', 5), objectKey: 'k-a5', sha256: 'a'.repeat(64), contentType: 'text/csv' },
+          { jobId: cfId('A', 9), objectKey: 'k-a9', sha256: 'b'.repeat(64) },
+        ],
+        next: null,
+      });
+    });
+  });
+
+  it.each([
+    { limit: 2, pages: [PAGED_IDS.slice(0, 2), PAGED_IDS.slice(2, 4), PAGED_IDS.slice(4)] },
+    { limit: 4, pages: [PAGED_IDS.slice(0, 4), PAGED_IDS.slice(4)] },
+    { limit: 5, pages: [PAGED_IDS] },
+    { limit: 6, pages: [PAGED_IDS] },
+  ])('pages the manifest $limit at a time in byte order, each next cursor naming the last id of a page that has a successor', async ({ limit, pages }) => {
+    await handle.app.withTenant(PAGED_TENANT, async (tx) => {
+      const read: { ids: string[]; next: string | null }[] = [];
+      let after: string | null = null;
+      do {
+        const page = await listJobObjects(tx, { after, limit });
+        read.push({ ids: page.objects.map((object) => object.jobId), next: page.next });
+        after = page.next;
+      } while (after !== null);
+      expect(read).toEqual(pages.map((ids, index) => ({ ids, next: index === pages.length - 1 ? null : ids.at(-1) })));
+    });
+  });
+
+  it.each([
+    { after: PAGED_IDS[1] as string, ids: PAGED_IDS.slice(2) },
+    { after: cfId('B', 9), ids: PAGED_IDS.slice(2) },
+    { after: cfId('A', 0), ids: PAGED_IDS },
+    { after: cfId('Z', 9), ids: PAGED_IDS.slice(4) },
+    { after: PAGED_IDS.at(-1) as string, ids: [] },
+  ])('lists only manifest objects whose job id sorts after $after in byte order', async ({ after, ids }) => {
+    await handle.app.withTenant(PAGED_TENANT, async (tx) => {
+      const page = await listJobObjects(tx, { after });
+      expect(page).toEqual({ objects: PAGED_MANIFEST.filter((object) => ids.includes(object.jobId)), next: null });
+      expect(page.objects.map((object) => object.jobId)).toEqual(ids);
+    });
+  });
+
+  it.each([
+    { limit: undefined, fetched: DEFAULT_EXPORT_LIMIT + 1 },
+    { limit: 3, fetched: 4 },
+    { limit: MAX_EXPORT_LIMIT, fetched: MAX_EXPORT_LIMIT + 1 },
+    { limit: MAX_EXPORT_LIMIT * 5, fetched: MAX_EXPORT_LIMIT + 1 },
+  ])('reads a manifest page of limit $limit with one row past it, never more than MAX_EXPORT_LIMIT', async ({ limit, fetched }) => {
+    const seen: Statement[] = [];
+    await handle.app.withTenant(PAGED_TENANT, async (tx) => {
+      await listJobObjects(recording(tx, seen), { limit });
+    });
+    expect(manifestReads(seen).map((statement) => statement.values)).toEqual([[null, fetched]]);
+  });
+
+  it.each([
+    { pageSize: 1, reads: 5 },
+    { pageSize: 2, reads: 3 },
+    { pageSize: 5, reads: 1 },
+    { pageSize: undefined, reads: 1 },
+  ])('iterates every manifest object in byte order, $pageSize per page, one page read at a time', async ({ pageSize, reads }) => {
+    const seen: Statement[] = [];
+    await handle.app.withTenant(PAGED_TENANT, async (tx) => {
+      const objects = iterateJobObjects(recording(tx, seen), pageSize);
+      const first = await objects.next();
+      expect(manifestReads(seen)).toHaveLength(1);
+      const rest = [];
+      for await (const object of objects) rest.push(object);
+      expect([first.value, ...rest]).toEqual(PAGED_MANIFEST);
+    });
+    expect(manifestReads(seen)).toHaveLength(reads);
+  });
+
+  it.each<{ name: string; index: string; read: (tx: TenantTx) => Promise<unknown>; cond: RegExp }>([
+    {
+      name: 'a job list page',
+      index: 'export_job_created_idx',
+      read: (tx) => listJobs(tx, { pageIndex: 2, itemsPerPage: 2 }),
+      cond: /Index Cond: \(tenant_id = /,
+    },
+    {
+      name: 'the first manifest page',
+      index: 'export_job_object_idx',
+      read: (tx) => listJobObjects(tx, { limit: 2 }),
+      cond: /Index Cond: \(tenant_id = /,
+    },
+    {
+      name: 'a manifest page after a cursor',
+      index: 'export_job_object_idx',
+      read: (tx) => listJobObjects(tx, { after: PAGED_IDS[1] as string, limit: 2 }),
+      cond: /Index Cond: \(\(tenant_id = .*\) AND \(.*job_id.* > '/,
+    },
+  ])('reads $name in index order from $index, without a sort', async ({ index, read, cond }) => {
+    await handle.app.withTenant(PAGED_TENANT, async (tx) => {
+      const plan = await planOf(tx, read);
+      expect(plan).toMatch(new RegExp(`Index Scan using ${index} on `));
+      expect(plan).toMatch(cond);
+      expect(plan).not.toMatch(/Sort/);
     });
   });
 
@@ -149,7 +296,12 @@ describe.skipIf(!(await pgAvailable()))('reporting read queries', () => {
       const page = await listJobs(tx, { pageIndex: 1, itemsPerPage: 50 });
       expect(page.total).toBe(1);
       expect(page.rows.map((row) => row.job_id)).toEqual([B_JOB.id]);
-      expect(await listJobObjects(tx)).toEqual([{ jobId: B_JOB.id, objectKey: 'k-b2', sha256: 'c'.repeat(64), contentType: 'application/pdf' }]);
+      const manifest = [{ jobId: B_JOB.id, objectKey: 'k-b2', sha256: 'c'.repeat(64), contentType: 'application/pdf' }];
+      expect(await listJobObjects(tx)).toEqual({ objects: manifest, next: null });
+      expect(await listJobObjects(tx, { after: cfId('A', 0), limit: 1 })).toEqual({ objects: manifest, next: null });
+      const iterated = [];
+      for await (const object of iterateJobObjects(tx, 1)) iterated.push(object);
+      expect(iterated).toEqual(manifest);
       expect(await findJob(tx, cfId('A', 5))).toBeNull();
     });
   });
@@ -157,18 +309,21 @@ describe.skipIf(!(await pgAvailable()))('reporting read queries', () => {
   it('answers an empty page and manifest for a tenant without jobs', async () => {
     await handle.app.withTenant(TENANT_UMBRELLA.tenantId, async (tx) => {
       expect(await listJobs(tx, { pageIndex: 1, itemsPerPage: 50 })).toEqual({ rows: [], total: 0, pageIndex: 1, itemsPerPage: 50 });
-      expect(await listJobObjects(tx)).toEqual([]);
+      expect(await listJobObjects(tx)).toEqual({ objects: [], next: null });
+      const iterated = [];
+      for await (const object of iterateJobObjects(tx)) iterated.push(object);
+      expect(iterated).toEqual([]);
     });
   });
 
   it('row-locks the job only when asked for update', async () => {
-    const seen: string[] = [];
+    const seen: Statement[] = [];
     const jobId = cfId('A', 5);
     await handle.app.withTenant(TENANT_A.tenantId, async (tx) => {
       await findJob(recording(tx, seen), jobId);
-      expect(seen.at(-1)).not.toMatch(/FOR UPDATE/);
+      expect(seen.at(-1)?.text).not.toMatch(/FOR UPDATE/);
       expect((await findJob(recording(tx, seen), jobId, { forUpdate: true }))?.job_id).toBe(jobId);
-      expect(seen.at(-1)).toMatch(/FOR UPDATE$/);
+      expect(seen.at(-1)?.text).toMatch(/FOR UPDATE$/);
       const other = await handle.appPool.connect();
       try {
         await other.query('BEGIN');
@@ -203,8 +358,19 @@ describe.skipIf(!(await pgAvailable()))('reporting read queries', () => {
           expect(Date.now() - started).toBeGreaterThanOrEqual(250);
         }
         const started = Date.now();
-        const objects = await withGatedTenant(handle.app, TENANT_A.tenantId, (tx) => listJobObjects(tx), { budgetMs: 300 });
-        expect(objects).toHaveLength(2);
+        const page = await withGatedTenant(handle.app, TENANT_A.tenantId, (tx) => listJobObjects(tx, { limit: 1 }), { budgetMs: 300 });
+        expect(page.objects).toHaveLength(1);
+        const iterated = await withGatedTenant(
+          handle.app,
+          TENANT_A.tenantId,
+          async (tx) => {
+            const objects = [];
+            for await (const object of iterateJobObjects(tx, 1)) objects.push(object);
+            return objects;
+          },
+          { budgetMs: 300 },
+        );
+        expect(iterated).toHaveLength(2);
         expect(Date.now() - started).toBeLessThan(250);
       } finally {
         await openGates(handle.app, { units, holderId, state: 'legacy' });

@@ -39,7 +39,7 @@
     "withSiteIdStatic": 55,
     "noPrimaryKeyBootstrap": 10,
     "noPrimaryKeyAfterMigrations": 8,
-    "units": 108
+    "units": 109
   },
   "countNotes": {
     "withSiteIdStatic": "Counts tcontentfilemetadata, whose siteID comes from the beanORMVersioned base, and tremotepointer, which an install creates lazily, so a fresh live catalog shows 54.",
@@ -109,6 +109,16 @@
       "table": "message_template",
       "legacyTables": ["synthetic.message_template"],
       "tenantOwned": true
+    },
+    {
+      "unit": "communications.scheduled_task",
+      "owner": "communications",
+      "schema": "communications",
+      "table": "scheduled_task",
+      "legacyTables": [],
+      "tenantOwned": true,
+      "joinsUnit": "surveys.survey_schedule",
+      "notes": "Target-only survey task ledger, written through seam 2 by the entry points that write surveys.survey_schedule and adopted or cancelled in the transition that moves the surveys units, so it shares that unit's group."
     },
     {
       "unit": "communications.trash",
@@ -5615,6 +5625,16 @@
       "table": "programs_sites.sitemonitor_state",
       "owner": "programs-sites",
       "kind": "site-monitor cursor"
+    },
+    {
+      "table": "finance.program_binding",
+      "owner": "finance",
+      "kind": "Program_<id> fold binding"
+    },
+    {
+      "table": "finance.staged_object",
+      "owner": "finance",
+      "kind": "staged attachment object ledger"
     },
     {
       "table": "<schema>.tenant_registry",

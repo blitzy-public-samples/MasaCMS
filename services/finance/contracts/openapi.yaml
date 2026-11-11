@@ -651,7 +651,7 @@ paths:
       - name: objectName
         in: path
         required: true
-        description: Second segment of the object key, the attachment's CF id and extension.
+        description: Second segment of the object key, a CF id (the attachment's, or a new one for each changed version of migrated bytes) and extension.
         schema:
           type: string
           pattern: '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}\.[^/]+$'

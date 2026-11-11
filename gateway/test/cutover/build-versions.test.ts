@@ -609,6 +609,17 @@ describe('main', () => {
       stderr: [`build-versions: ${other} does not match its cut-over schema: /sourceSha must equal the pinned sha ${SHA}`],
     });
   });
+
+  it.each([
+    ['state', 'must be an absolute path'],
+    [join(committed.packageRoot, '.opt2-state'), 'must be outside the repository checkout'],
+  ])('rejects OPT2_STATE_DIR %j with exit 1', async (value, reason) => {
+    expect(await run(['--fixtures', 'auto'], { OPT2_STATE_DIR: value })).toEqual({
+      code: 1,
+      stdout: [],
+      stderr: [`build-versions: OPT2_STATE_DIR: ${reason} (${value})`],
+    });
+  });
 });
 
 describe('resolveFixtures', () => {
@@ -628,5 +639,13 @@ describe('resolveFixtures', () => {
     expect(await resolveFixtures('auto', paths, env)).toBe(false);
     await writeFile(join(paths.versionsDir, 'v0002.json'), '{}');
     await expect(resolveFixtures('auto', paths, env)).rejects.toThrow(/does not match its cut-over schema/);
+  });
+
+  it.each(['', '  '])('reads <HOME>/.opt2/state/fixtures.json when OPT2_STATE_DIR is %j', async (blank) => {
+    const home = await tempDir();
+    await mkdir(join(home, '.opt2', 'state'), { recursive: true });
+    await writeFile(join(home, '.opt2', 'state', 'fixtures.json'), JSON.stringify({ available: false }));
+    const empty = resolveGatewayPaths({ OPT2_CUTOVER_DIR: await tempDir() });
+    expect(await resolveFixtures('auto', empty, { OPT2_STATE_DIR: blank, HOME: home })).toBe(false);
   });
 });

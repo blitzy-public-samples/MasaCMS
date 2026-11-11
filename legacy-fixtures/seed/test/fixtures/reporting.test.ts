@@ -14,6 +14,8 @@ const CONFIG_PATH = fileURLToPath(new URL('../../seed.config.json', import.meta.
 const DDL_PATH = fileURLToPath(new URL('../../../sql/reporting/100_tables.sql', import.meta.url));
 const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
 const TS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}$/;
+// Datetime form of the fixture export runner (cfml/lib/envelope.cfc rows), seconds without milliseconds.
+const RUNNER_TS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/;
 const DEFINITIONS = 'synthetic.export_definition';
 const JOBS = 'synthetic.export_job';
 const FORMAT_CYCLE = ['xlsx', 'csv', 'pdf'] as const;
@@ -88,8 +90,11 @@ const COLUMN_CHECKS: Readonly<Record<string, (row: SourceRow, jobCreated: string
   timesheet_id: (row) => expect(row.timesheet_id).toMatch(CF_UUID),
   person_id: (row, _jobCreated, employees) => expect(employees).toContain(row.person_id),
   period_start: (row, jobCreated) => {
-    expect(ctx.calendar.weekday(ctx.calendar.dayOffsetOf(String(row.period_start)))).toBe(1);
-    expect(String(row.period_start) <= jobCreated.slice(0, 10)).toBe(true);
+    expect(row.period_start).toMatch(RUNNER_TS);
+    const [date = '', time] = String(row.period_start).split('T');
+    expect(time).toBe('00:00:00');
+    expect(ctx.calendar.weekday(ctx.calendar.dayOffsetOf(date))).toBe(1);
+    expect(date <= jobCreated.slice(0, 10)).toBe(true);
   },
   status: (row) => expect(SHEET_STATUSES).toContain(row.status),
   overdue: (row) => expect(row.overdue === '0' || (row.overdue === '1' && row.status === 'DRAFT')).toBe(true),
@@ -119,11 +124,11 @@ const COLUMN_CHECKS: Readonly<Record<string, (row: SourceRow, jobCreated: string
     else expect(['2', '3', '4', '5']).toContain(row.version);
   },
   created: (row, jobCreated) => {
-    expect(row.created).toMatch(TS);
+    expect(row.created).toMatch(RUNNER_TS);
     expect(minutesBetween(String(row.created), jobCreated)).toBeGreaterThan(0);
   },
   lastUpdate: (row) => {
-    expect(row.lastUpdate).toMatch(TS);
+    expect(row.lastUpdate).toMatch(RUNNER_TS);
     expect(minutesBetween(String(row.created), String(row.lastUpdate))).toSatisfy((m: number) => m >= 60 && m <= 7 * 1440);
   },
 };

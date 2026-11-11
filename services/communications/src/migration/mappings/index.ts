@@ -14,9 +14,9 @@ export { emailMapping, emailStatMapping, emailReturnStatMapping } from './email.
 export { mailingListMapping, mailingListMemberMapping } from './mailing-list.js';
 export { trashMapping } from './trash.js';
 
-// communications.trash is a unit (this service's objectClass share of ttrash), so it is mapped like every other unit;
-// scheduled_task has no legacy table and is never mapped.
-/** The communications mappings, parents before children, one per unit in `UNITS` order. */
+// communications.trash is a unit (this service's objectClass share of ttrash), so it is mapped like every other legacy-fed unit;
+// the scheduled_task unit has no legacy table and is never mapped.
+/** The communications mappings, parents before children, one per mapped unit in `UNITS` order. */
 export const MAPPINGS: readonly Mapping[] = Object.freeze([
   messageTemplateMapping,
   messageMapping,

@@ -128,6 +128,7 @@
 				"siteID" = local.row.siteID,
 				"site" = local.row.site,
 				"domain" = rowValue(local.row, "domain"),
+				"domainAlias" = rowValue(local.row, "domainAlias"),
 				"orderNo" = rowValue(local.row, "orderNo", 0),
 				"theme" = local.theme,
 				"publicUserPoolID" = local.row.publicUserPoolID,

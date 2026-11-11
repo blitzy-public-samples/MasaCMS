@@ -54,10 +54,24 @@ export interface LegacySettings {
   readonly siteIDInURLS: boolean;
   /** configBean `indexFileInURLS`: site URL stems carry `/index.cfm`. */
   readonly indexFileInURLS: boolean;
+  /** `legacyIndexFileLocation`: index-file URL stems sit under `<siteAssetPath>/<siteid>`. */
+  readonly legacyIndexFileLocation: boolean;
+  /** configBean `fileAssetPath`: when set, site file asset URLs are `<fileAssetPath>/<filePoolID>`. */
+  readonly fileAssetPath: string;
+  /** configBean `corepath`: when set, the core URL on an admin domain. */
+  readonly corePath: string;
+  /** configBean `pluginspath`: when set, the plugins URL on an admin domain. */
+  readonly pluginsPath: string;
   readonly indexFileInAPI: boolean;
   /** Days; 0 means passwords never expire. */
   readonly expirePasswords: number;
   readonly webroot: string;
+  /** `application.appReloadKey`: the URL parameter that reloads the application. */
+  readonly appReloadKey: string;
+  /** configBean `javaEnabled`. */
+  readonly javaEnabled: boolean;
+  /** configBean `fileDir` with `s3assets` applied; `''` when unset, where configBean derives a path under the web root. */
+  readonly fileDir: string;
   /** configBean `assetPath`, e.g. `/sites`; the admin session's `userFilesPath` is built from it. */
   readonly assetPath: string;
   /** configBean `getSiteAssetPath()`: `/<siteDir>`, or `''` with no site directory; site asset URLs are built from it. */
@@ -107,6 +121,9 @@ function cfVal(value: string): number {
 /** configBean `cleanFilePath`: drops one trailing `/` or `\`. */
 const cleanFilePath = (path: string): string => (/[/\\]$/.test(path) ? path.slice(0, -1) : path);
 
+/** CFML `listRest(list, '/')`: the list after its first element. */
+const listRest = (list: string): string => list.replace(/^\/*[^/]*\/*/, '');
+
 /** Masa start-up evaluates `${expr}` and `{{expr}}` values as CFML; web cannot, so they resolve to `''`. */
 const literalValue = (value: string): string =>
   (value.startsWith('${') && value.endsWith('}')) || (value.startsWith('{{') && value.endsWith('}}')) ? '' : value;
@@ -125,7 +142,7 @@ interface SettingRule<T> {
   readonly apply: (value: string) => T | undefined;
 }
 
-type RuledSettings = Omit<LegacySettings, 'indexFileInAPI' | 'assetPath' | 'siteAssetPath' | 'version'>;
+type RuledSettings = Omit<LegacySettings, 'indexFileInAPI' | 'assetPath' | 'siteAssetPath' | 'version' | 'fileDir'>;
 
 const SETTING_RULES: { readonly [K in keyof RuledSettings]: SettingRule<RuledSettings[K]> } = {
   title: { key: 'title', template: 'Masa CMS', fallback: 'Masa CMS', apply: asIs },
@@ -177,9 +194,21 @@ const SETTING_RULES: { readonly [K in keyof RuledSettings]: SettingRule<RuledSet
   },
   siteIDInURLS: { key: 'siteidinurls', template: 'false', fallback: true, apply: cfBoolean },
   indexFileInURLS: { key: 'indexfileinurls', template: 'true', fallback: true, apply: cfBoolean },
-  expirePasswords: { key: 'expirepasswords', fallback: 0, apply: cfVal },
+  // Not a configBean property; contentServer reads it with defaultValue=false.
+  legacyIndexFileLocation: { key: 'legacyindexfilelocation', fallback: false, apply: cfBoolean },
+  fileAssetPath: { key: 'fileassetpath', fallback: '', apply: asIs },
+  corePath: { key: 'corepath', fallback: '', apply: asIs },
+  pluginsPath: { key: 'pluginspath', fallback: '', apply: asIs },
+  // The layout, passwordsExpire() and getPasswordExpired() all treat a non-numeric value as never expiring.
+  expirePasswords: {
+    key: 'expirepasswords',
+    fallback: 0,
+    apply: (value) => (isCfNumeric(value) ? Number(value) : undefined),
+  },
   // Masa sets it to expandPath('/muraWRM'), which only the legacy host knows.
   webroot: { key: 'webroot', fallback: '', apply: cleanFilePath },
+  appReloadKey: { key: 'appreloadkey', template: 'appreload', fallback: 'appreload', apply: asIs },
+  javaEnabled: { key: 'javaenabled', template: 'true', fallback: true, apply: cfBoolean },
 };
 
 /** The value of `key` in `source`, else `template`, with unevaluable expressions blanked. */
@@ -204,6 +233,10 @@ function resolveLegacySettings(source: NodeJS.ProcessEnv): LegacySettings {
   const siteDir = sourceValue(source, 'sitedir') ?? 'sites';
   const siteAssetPath = siteDir === '' ? '' : `/${siteDir}`;
   const assetPath = cleanFilePath(sourceValue(source, 'assetpath', '') ?? '');
+  // configBean.set puts a non-empty s3assets in place of fileDir's first element before setFileDir cleans it.
+  const fileDir = sourceValue(source, 'filedir', '') ?? '';
+  const s3Assets = sourceValue(source, 's3assets') ?? '';
+  const s3Prefix = s3Assets === '' || s3Assets.endsWith('/') ? s3Assets : `${s3Assets}/`;
   return {
     ...ruled,
     indexFileInAPI:
@@ -212,6 +245,7 @@ function resolveLegacySettings(source: NodeJS.ProcessEnv): LegacySettings {
         : (cfBoolean(indexFileInAPI) ?? true),
     assetPath: assetPath !== '' ? assetPath : siteAssetPath,
     siteAssetPath,
+    fileDir: cleanFilePath(s3Prefix === '' ? fileDir : s3Prefix + listRest(fileDir)),
     version: CORE_VERSION,
   };
 }

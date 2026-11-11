@@ -95,8 +95,8 @@ describe.each(OWNED_TABLES.map((definition) => [definition.table, definition] as
     expect(targetTable(table).primaryKey).toEqual(definition.key === null ? KEYLESS_KEY : ['tenant_id', ...definition.key]);
   });
 
-  it('is gated by its own unit, except the ungated scheduled_task', () => {
-    expect(definition.unit).toBe(table === SCHEDULED_TASK.table ? undefined : `communications.${table}`);
+  it('is gated by its own unit', () => {
+    expect(definition.unit).toBe(`communications.${table}`);
   });
 });
 

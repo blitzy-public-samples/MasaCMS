@@ -15,6 +15,7 @@ import {
   periodTotals,
   listRecords as queryRecordPage,
   listVersions as queryVersions,
+  type Page,
   type PeriodScope,
   type RecordPage,
   type RecordPaging,
@@ -182,8 +183,8 @@ export function listRecords(tx: TenantTx, paging: RecordPaging): Promise<RecordP
   return queryRecordPage(tx, paging);
 }
 
-/** Every version row of record `recordId` by version; throws `notFound` when the record is missing. */
-export async function listVersions(tx: TenantTx, recordId: string): Promise<FinanceRecordVersionRow[]> {
+/** One page of record `recordId`'s version rows by version, with their total; throws `notFound` when the record is missing. */
+export async function listVersions(tx: TenantTx, recordId: string, paging: RecordPaging): Promise<Page<FinanceRecordVersionRow>> {
   await getRecord(tx, recordId);
-  return queryVersions(tx, recordId);
+  return queryVersions(tx, recordId, paging);
 }

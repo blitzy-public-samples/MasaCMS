@@ -121,7 +121,7 @@ export const FINANCE_ROLLUP = frozen<FinanceTableDefinition<'finance.rollup'>>({
   unit: 'finance.rollup',
 });
 
-/** `finance.program_binding`, the `Program_<id>` schema a tenant's rows were folded from; not a unit, so never gated, changelogged or migrated. */
+/** `finance.program_binding`, the `Program_<id>` schema a tenant's rows were folded from, one per tenant. */
 export const PROGRAM_BINDING = frozen<TableDefinition & { key: string[] }>({
   table: 'program_binding',
   columns: [
@@ -130,8 +130,20 @@ export const PROGRAM_BINDING = frozen<TableDefinition & { key: string[] }>({
     LEGACY_PROGRAM_ID,
     { name: 'updated_at', type: 't' },
   ],
-  // The primary key is tenant_id alone: one binding per tenant.
-  key: [],
+  key: ['legacy_program_id'],
+});
+
+/** `finance.staged_object`, the ledger of attachment objects an uncommitted apply stored or a committed one replaced, until collected. */
+export const STAGED_OBJECT = frozen<TableDefinition & { key: string[] }>({
+  table: 'staged_object',
+  columns: [
+    TENANT_ID,
+    { name: 'object_key', type: 's' },
+    { name: 'attachment_id', type: 's' },
+    { name: 'state', type: 's' },
+    { name: 'recorded_at', type: 't' },
+  ],
+  key: ['object_key'],
 });
 
 /** Table definitions position for position with the unit tuple `T`. */
@@ -144,6 +156,9 @@ export const OWNED_TABLES: TablesForUnits<typeof UNITS> = Object.freeze([
   FINANCE_ATTACHMENT,
   FINANCE_ROLLUP,
 ] as const);
+
+/** Finance tables without a unit: never migrated, projected or gated, but still written with changelog rows. */
+export const NON_UNIT_TABLES = Object.freeze([PROGRAM_BINDING, STAGED_OBJECT] as const);
 
 // Row shapes are type aliases, not interfaces, so they stay assignable to the repository's Record<string, unknown> rows.
 
@@ -221,6 +236,15 @@ export type ProgramBindingRow = {
   updated_at: Date;
 };
 
+/** A `finance.staged_object` row as pg returns it: `staged` while its apply is open or after it rolled back, `superseded` once replaced. */
+export type StagedObjectRow = {
+  tenant_id: string;
+  object_key: string;
+  attachment_id: string;
+  state: 'staged' | 'superseded';
+  recorded_at: Date;
+};
+
 /** Transient apply-row field carrying the legacy `varbinary(max)` attachment bytes. */
 export const ATTACHMENT_CONTENT_FIELD = 'content';
 
@@ -233,11 +257,11 @@ const OBJECT_EXTENSION = /^[a-z0-9]+$/;
 const FALLBACK_EXTENSION = 'bin';
 
 /**
- * Deterministic `finance-attachments` key `<tenantId>/<attachmentId>.<ext>`, `ext` being the lower-cased text after the last `.`
- * of `fileName`, or `bin` when there is none or it holds characters outside `[a-z0-9]`; throws when `attachmentId` is not a CF UUID.
+ * `finance-attachments` key `<tenantId>/<id>.<ext>` for an attachment id or an object version id, `ext` being the lower-cased text after
+ * the last `.` of `fileName`, or `bin` when there is none or it holds characters outside `[a-z0-9]`; throws when `id` is not a CF UUID.
  */
-export function attachmentObjectKey(tenantId: string, attachmentId: string, fileName: string): string {
+export function attachmentObjectKey(tenantId: string, id: string, fileName: string): string {
   const dot = fileName.lastIndexOf('.');
   const ext = dot === -1 ? '' : fileName.slice(dot + 1).toLowerCase();
-  return objectKey({ tenantId, id: attachmentId, ext: OBJECT_EXTENSION.test(ext) ? ext : FALLBACK_EXTENSION });
+  return objectKey({ tenantId, id, ext: OBJECT_EXTENSION.test(ext) ? ext : FALLBACK_EXTENSION });
 }

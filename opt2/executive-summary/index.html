@@ -38,7 +38,7 @@
     .reveal-viewport { background-color: var(--blitzy-surface-0); }
     .reveal { font-family: var(--ff-body); font-size: 30px; font-weight: 400; color: var(--blitzy-text); }
     .reveal .slides { text-align: left; }
-    .reveal .slides > section { box-sizing: border-box; padding: 0 120px; line-height: 1.35; }
+    .reveal .slides section { box-sizing: border-box; padding: 0 120px; line-height: 1.35; }
     .reveal h1, .reveal h2, .reveal h3 {
       font-family: var(--ff-display); font-weight: 700; line-height: 1.1;
       letter-spacing: -0.01em; color: var(--blitzy-primary-dark); margin: 0 0 28px;
@@ -58,15 +58,15 @@
     .reveal .controls { color: var(--blitzy-primary); }
     .reveal .progress { color: var(--blitzy-accent-teal); }
 
-    .reveal .slides > section.slide-title,
-    .reveal .slides > section.slide-divider,
-    .reveal .slides > section.slide-closing { color: var(--blitzy-text-invert); }
-    .reveal .slides > section.slide-title { background: var(--gradient-hero); }
-    .reveal .slides > section.slide-divider { background: var(--blitzy-primary-dark); text-align: center; }
-    .reveal .slides > section.slide-closing { background: var(--blitzy-primary-navy); }
+    .reveal .slides section.slide-title,
+    .reveal .slides section.slide-divider,
+    .reveal .slides section.slide-closing { color: var(--blitzy-text-invert); }
+    .reveal .slides section.slide-title { background: var(--gradient-hero); }
+    .reveal .slides section.slide-divider { background: var(--blitzy-primary-dark); text-align: center; }
+    .reveal .slides section.slide-closing { background: var(--blitzy-primary-navy); }
     /* Full-bleed: the reveal.js background layer paints these colours beyond the canvas. */
-    .reveal .slides > section[data-background-gradient],
-    .reveal .slides > section[data-background-color] { background: transparent; }
+    .reveal .slides section[data-background-gradient],
+    .reveal .slides section[data-background-color] { background: transparent; }
     .reveal .slide-title h1, .reveal .slide-title h2,
     .reveal .slide-divider h1, .reveal .slide-divider h2,
     .reveal .slide-closing h1, .reveal .slide-closing h2 { color: var(--blitzy-text-invert); }
@@ -209,7 +209,7 @@
             <i data-lucide="database" class="kpi-icon"></i>
             <div class="kpi-value">73</div>
             <div class="kpi-label">Legacy tables inventoried: <span class="nowrap">51 one owner,</span> 12 split, 10 withheld</div>
-            <div class="kpi-note">108 target units, one writer each</div>
+            <div class="kpi-note">109 target units, one writer each</div>
           </div>
           <div class="kpi-card" data-source="opt2/reports/baseline.json#expected.totals.specs">
             <i data-lucide="list-checks" class="kpi-icon"></i>
@@ -518,15 +518,29 @@ flowchart TB
       flowchart: { htmlLabels: false }
     });
 
-    /** Renders the visible slide's Mermaid diagrams and Lucide icons, then re-centres it; diagrams render only when visible to get real sizes. */
+    /** Renders the visible slide's Mermaid diagrams and Lucide icons, then re-centres it outside scroll view, whose layout() re-fires slidechanged; diagrams render only when visible to get real sizes. */
     function renderVisuals(slide) {
-      const rendered = mermaid.run({ nodes: slide.querySelectorAll('pre.mermaid:not([data-processed])') }).then(() => Reveal.layout());
+      const rendered = mermaid.run({ nodes: slide.querySelectorAll('pre.mermaid:not([data-processed])') }).then(() => { if (!Reveal.isScrollView()) Reveal.layout(); });
       lucide.createIcons();
       return rendered;
     }
 
     Reveal.on('ready', event => renderVisuals(event.currentSlide));
     Reveal.on('slidechanged', event => renderVisuals(event.currentSlide));
+
+    // reveal.js 5.1.0 scroll view lands short of later slides, sends End to slide -1, and replaces a linked hash with slide 0 or its stored scroll position, so slide changes there scroll here.
+    let openingSlide = performance.getEntriesByType('navigation')[0]?.type === 'navigate' ? /^#\/?(\d+)/.exec(location.hash)?.[1] : undefined;
+    Reveal.on('beforeslidechange', event => {
+      const target = openingSlide === undefined ? event.indexh : Number(openingSlide);
+      const pages = document.querySelectorAll('.reveal .scroll-page');
+      const page = Reveal.isScrollView() && pages[target < 0 ? pages.length - 1 : target];
+      if (page) {
+        if (openingSlide !== undefined) sessionStorage.removeItem('reveal-scroll-top');
+        event.preventDefault();
+        page.scrollIntoView();
+      }
+      openingSlide = undefined;
+    });
 
     Reveal.initialize({
       hash: true,
