@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { OAuth2Client, type TokenPayload } from 'google-auth-library';
 import type { CryptoKey } from 'jose';
 import { AuthDenial, TRANSPORTS, type ServiceIdentity, type Transport, type UserClaims } from './claims.js';
+import { createGoogleIdTokenClient, verifyGoogleIdToken } from './deadline.js';
 import { PUBSUB_INVOKER_ROLE, TASKS_INVOKER_ROLE } from './roles.js';
 import {
   LOCAL_USER_TOKEN,
@@ -184,7 +185,7 @@ function createCloudManagedTransport(
   role: string,
   opts: { project: string; selfUrl: string; client?: OAuth2Client },
 ): TransportAuthenticator {
-  const client = opts.client ?? new OAuth2Client();
+  const client = opts.client ?? createGoogleIdTokenClient();
   const email = serviceAccountEmail(invoker, opts.project);
   return {
     transport,
@@ -193,7 +194,7 @@ function createCloudManagedTransport(
       const audience = managedAudience(opts.selfUrl, req.path);
       let payload: TokenPayload | undefined;
       try {
-        payload = (await client.verifyIdToken({ idToken, audience })).getPayload();
+        payload = await verifyGoogleIdToken(client, idToken, audience);
       } catch {
         throw AuthDenial.unauthenticated('invalid-credential');
       }
@@ -357,7 +358,7 @@ function cloudDefaults(env: AuthEnv, trust: 'cloud-run' | 'verify'): AuthDefault
   const tokenDefaults = cloudUserTokenSettings(project);
   let client: OAuth2Client | undefined;
   // One client for every Google ID-token check, so the library's certificate cache is shared.
-  const googleClient = (): OAuth2Client => (client ??= new OAuth2Client());
+  const googleClient = (): OAuth2Client => (client ??= createGoogleIdTokenClient());
   const managed = () => ({ project, selfUrl: selfUrlOf(env), client: googleClient() });
   return {
     userVerifier: () =>

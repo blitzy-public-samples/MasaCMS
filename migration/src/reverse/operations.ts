@@ -3,6 +3,8 @@ import {
   APPLY_ORIGINS,
   compareXid,
   formatCursor,
+  isApplied,
+  parseCursor,
   type ChangeOrigin,
   type ChangeRow,
   type ChangesResponse,
@@ -99,13 +101,13 @@ export function splitAtHold<R extends ChangeRow>(
     else skipped += 1;
     consumed = row;
   }
-  const last: ChangeRow | undefined = page.rows.at(-1);
-  return {
-    applicable,
-    skipped,
-    endCursor: page.cursor,
-    appliedHorizon: page.complete || last === undefined ? page.horizon : last.xid,
-  };
+  return { applicable, skipped, endCursor: page.cursor, appliedHorizon: readHorizon(page) };
+}
+
+/** Horizon below which a page returned every row: its horizon when complete, else its last row's xid. */
+function readHorizon(page: ChangesPageView<ChangeRow>): string {
+  const last = page.rows.at(-1);
+  return page.complete || last === undefined ? page.horizon : last.xid;
 }
 
 /** Collects the run of rows sharing the held row's operation and transaction. */
@@ -153,12 +155,30 @@ export interface TrackedOperation<S extends HeldStreamState = HeldStreamState, R
   rows: R[];
 }
 
-/** A parked operation not yet ready: participants with no part, and owners whose part is not fully read. */
+/**
+ * A parked operation not yet ready: participants with no part, owners whose part is not fully read,
+ * and partless participants not yet proven to hold no unread rows of it.
+ */
 export interface WaitingOperation {
   operationId: string;
   status: OperationStatus | undefined;
   missing: string[];
   incomplete: string[];
+  unproven: string[];
+}
+
+/** A partless participant of a done operation whose `/position` the projector must read for `noteFence`. */
+export interface FenceRequest {
+  operationId: string;
+  owner: string;
+}
+
+/** A cycle's contiguous read of one tenant stream from its checkpoint: end cursor, read horizon and held operation ids. */
+interface StreamScan {
+  owner: string;
+  end: string;
+  horizon: string;
+  holds: Set<string>;
 }
 
 /** Settings of `OperationTracker`; an `OperationStatus` names no participants, so they come from here, default `ROSTER_PARTICIPANTS`. */
@@ -168,11 +188,18 @@ export interface OperationTrackerOptions {
 
 const STATUS_RANK: Readonly<Record<OperationStatus, number>> = { done: 0, open: 1, 'rolled-back': 2 };
 
-/** Parks streams stopped at multi-participant operations and tells when their rows may be applied or passed over. */
+/**
+ * Parks streams stopped at multi-participant operations and tells when their rows may be applied or passed over.
+ * Per cycle: `park` and `noteStatuses` for each stopped stream, `noteScan` for every page read, then for each
+ * `fencesNeeded` entry read that owner's `/position` into `noteFence`, then `ready`, `rolledBack`, `release`, and `clear`.
+ * A participant with no part is proven absent by a fence and, in each tenant of the parts, a scan past it holding none of its rows.
+ */
 export class OperationTracker<S extends HeldStreamState = HeldStreamState, R extends ChangeRow = ProjectedChangeRow> {
   readonly participants: readonly string[];
   readonly #statuses = new Map<string, OperationStatus>();
   readonly #parked = new Map<string, Map<string, ParkedPart<S, R>>>();
+  readonly #fences = new Map<string, Map<string, string>>();
+  readonly #scans = new Map<string, StreamScan>();
 
   constructor({ participants = ROSTER_PARTICIPANTS }: OperationTrackerOptions = {}) {
     this.participants = Object.freeze([...new Set(participants)]);
@@ -185,7 +212,7 @@ export class OperationTracker<S extends HeldStreamState = HeldStreamState, R ext
       parts = new Map();
       this.#parked.set(operationId, parts);
     }
-    const key = JSON.stringify([owner, tenantId]);
+    const key = streamKey(owner, tenantId);
     const part = parts.get(key);
     if (part === undefined) {
       parts.set(key, { owner, tenantId, rows: [...rows], streamState });
@@ -195,10 +222,14 @@ export class OperationTracker<S extends HeldStreamState = HeldStreamState, R ext
     }
   }
 
-  /** Records a reported status; rolled-back outranks open, which outranks done, so done needs every report to agree. */
+  /**
+   * Records a reported status; rolled-back outranks open, which outranks done, so done needs every report to agree.
+   * A merged status other than done drops the operation's fences.
+   */
   noteStatus(operationId: string, status: OperationStatus): void {
     const known = this.#statuses.get(operationId);
     if (known === undefined || STATUS_RANK[status] > STATUS_RANK[known]) this.#statuses.set(operationId, status);
+    if (this.#statuses.get(operationId) !== 'done') this.#fences.delete(operationId);
   }
 
   /** Records every status of a changes page's `operations` map. */
@@ -211,12 +242,54 @@ export class OperationTracker<S extends HeldStreamState = HeldStreamState, R ext
     return this.#statuses.get(operationId);
   }
 
-  /** Done operations whose every participant has a parked part and whose every part is fully read. */
+  /**
+   * Records a page read of the owner's tenant stream: it extends the cycle's scan when `after` is that scan's end cursor,
+   * otherwise it starts a fresh scan, whose `after` must be the stream's checkpoint cursor.
+   */
+  noteScan(owner: string, tenantId: string, after: string, page: ChangesPageView<R>, classify: (row: R) => RowDisposition): void {
+    const key = streamKey(owner, tenantId);
+    const previous = this.#scans.get(key);
+    const holds = previous?.end === after ? previous.holds : new Set<string>();
+    for (const row of page.rows) {
+      if (row.operationId !== null && classify(row) === 'hold') holds.add(row.operationId);
+    }
+    this.#scans.set(key, { owner, end: page.cursor, horizon: readHorizon(page), holds });
+  }
+
+  /** Partless participants of parked done operations that have no fence yet. */
+  fencesNeeded(): FenceRequest[] {
+    return [...this.#parked].flatMap(([operationId, parts]) => {
+      if (this.#statuses.get(operationId) !== 'done') return [];
+      const fenced = this.#fences.get(operationId);
+      return this.#gaps(operationId, parts)
+        .missing.filter((owner) => fenced?.has(owner) !== true)
+        .map((owner) => ({ operationId, owner }));
+    });
+  }
+
+  /**
+   * Records `owner`'s `/position`, read after `operationId` was reported done, as the bound of that owner's xids for it;
+   * ignored unless the merged status is done; the lowest fence is kept.
+   * @throws TypeError when `position` is not a canonical decimal xid8.
+   */
+  noteFence(operationId: string, owner: string, position: string): void {
+    const xid = canonicalXid(position);
+    if (this.#statuses.get(operationId) !== 'done') return;
+    let fences = this.#fences.get(operationId);
+    if (fences === undefined) {
+      fences = new Map();
+      this.#fences.set(operationId, fences);
+    }
+    const known = fences.get(owner);
+    if (known === undefined || compareXid(xid, known) < 0) fences.set(owner, xid);
+  }
+
+  /** Done operations whose every part is fully read and whose every partless participant is proven absent. */
   ready(): TrackedOperation<S, R>[] {
     return this.#tracked((operationId, parts) => {
       if (this.#statuses.get(operationId) !== 'done') return false;
-      const { missing, incomplete } = this.#gaps(parts);
-      return missing.length === 0 && incomplete.length === 0;
+      const { incomplete, unproven } = this.#gaps(operationId, parts);
+      return incomplete.length === 0 && unproven.length === 0;
     });
   }
 
@@ -230,28 +303,47 @@ export class OperationTracker<S extends HeldStreamState = HeldStreamState, R ext
     const pending = new Set([...this.ready(), ...this.rolledBack()].map((operation) => operation.operationId));
     return [...this.#parked]
       .filter(([operationId]) => !pending.has(operationId))
-      .map(([operationId, parts]) => ({ operationId, status: this.#statuses.get(operationId), ...this.#gaps(parts) }));
+      .map(([operationId, parts]) => ({ operationId, status: this.#statuses.get(operationId), ...this.#gaps(operationId, parts) }));
   }
 
-  /** Forgets the parked parts of an operation once its streams moved past it; its status stays known for the cycle. */
+  /** Forgets the parked parts and fences of an operation once its streams moved past it; its status stays known for the cycle. */
   release(operationId: string): void {
     this.#parked.delete(operationId);
+    this.#fences.delete(operationId);
   }
 
-  /** Forgets every part and status at the end of a cycle. */
+  /** Forgets every part, status and scan at the end of a cycle; fences of done operations stay valid and are kept. */
   clear(): void {
     this.#parked.clear();
     this.#statuses.clear();
+    this.#scans.clear();
   }
 
-  #gaps(parts: ReadonlyMap<string, ParkedPart<S, R>>): { missing: string[]; incomplete: string[] } {
+  #gaps(operationId: string, parts: ReadonlyMap<string, ParkedPart<S, R>>): Omit<WaitingOperation, 'operationId' | 'status'> {
     const owners = new Set<string>();
+    const tenants = new Set<string>();
     const incomplete = new Set<string>();
     for (const part of parts.values()) {
       owners.add(part.owner);
+      tenants.add(part.tenantId);
       if (!part.streamState.complete) incomplete.add(part.owner);
     }
-    return { missing: this.participants.filter((owner) => !owners.has(owner)), incomplete: [...incomplete] };
+    const missing = this.participants.filter((owner) => !owners.has(owner));
+    const unproven = missing.filter((owner) => !this.#provenAbsent(operationId, owner, tenants));
+    return { missing, incomplete: [...incomplete], unproven };
+  }
+
+  /** True when `owner` has a fence and, in every tenant, a scan past it; no scan of `owner` may hold the operation. */
+  #provenAbsent(operationId: string, owner: string, tenants: ReadonlySet<string>): boolean {
+    const fence = this.#fences.get(operationId)?.get(owner);
+    if (fence === undefined) return false;
+    for (const scan of this.#scans.values()) {
+      if (scan.owner === owner && scan.holds.has(operationId)) return false;
+    }
+    return [...tenants].every((tenantId) => {
+      const scan = this.#scans.get(streamKey(owner, tenantId));
+      return scan !== undefined && isApplied(fence, scan.horizon);
+    });
   }
 
   #tracked(select: (operationId: string, parts: ReadonlyMap<string, ParkedPart<S, R>>) => boolean): TrackedOperation<S, R>[] {
@@ -262,6 +354,19 @@ export class OperationTracker<S extends HeldStreamState = HeldStreamState, R ext
         const rows = list.flatMap((part) => part.rows).sort(byPosition);
         return { operationId, parts: list, rows };
       });
+  }
+}
+
+function streamKey(owner: string, tenantId: string): string {
+  return JSON.stringify([owner, tenantId]);
+}
+
+/** Returns `text` as a canonical decimal xid8; throws TypeError otherwise. */
+function canonicalXid(text: string): string {
+  try {
+    return parseCursor(`${text}:0`).xid.toString();
+  } catch (error) {
+    throw new TypeError(`Invalid xid ${JSON.stringify(text)}`, { cause: error });
   }
 }
 

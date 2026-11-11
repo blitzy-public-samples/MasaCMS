@@ -14,6 +14,7 @@ const LOCK_NOT_AVAILABLE = '55P03';
 const READ_BLOCKING_PHASES: ReadonlySet<GatePhase> = new Set<GatePhase>(['executing', 'importing', 'import-pending']);
 const GATE_COLUMNS = 'unit, state, holder_id, phase';
 const SET_LOCK_TIMEOUT_SQL = "SELECT set_config('lock_timeout', $1, true)";
+const READ_FENCE_SAVEPOINT = 'opt2_read_fence';
 
 /** One `unit_gate` row. */
 export interface UnitGate {
@@ -187,6 +188,8 @@ interface TxGates {
 }
 
 const acquiredGates = new WeakMap<TenantTx, TxGates>();
+/** Units whose gates `awaitReadable` share-locked in each transaction. */
+const fencedReads = new WeakMap<TenantTx | MetadataTx, Set<string>>();
 const budgetScope = new AsyncLocalStorage<{ readonly deadline: number }>();
 
 function gateTable(schema: string): string {
@@ -326,6 +329,30 @@ async function lockOpenGates(q: Queryable, schema: string, units: string[], dead
   }
 }
 
+/** Share-locks `units`' gates in a savepoint; returns [] keeping the locks, or the locked or read-blocking units after releasing them. */
+async function fenceReadable(q: Queryable, schema: string, units: string[]): Promise<string[]> {
+  await q.query(`SAVEPOINT ${READ_FENCE_SAVEPOINT}`);
+  let blocked: string[];
+  try {
+    // FOR SHARE reads the latest committed phase; NOWAIT keeps a read from queueing behind, or deadlocking with, a phase change.
+    const { rows } = await q.query<{ unit: string; phase: GatePhase }>(
+      `SELECT unit, phase FROM ${gateTable(schema)} WHERE unit = ANY($1::text[]) ORDER BY unit FOR SHARE NOWAIT`,
+      [units],
+    );
+    blocked = rows.filter((row) => READ_BLOCKING_PHASES.has(row.phase)).map((row) => row.unit);
+  } catch (err) {
+    if (!isLockNotAvailable(err)) {
+      throw err;
+    }
+    blocked = units;
+  }
+  if (blocked.length > 0) {
+    await q.query(`ROLLBACK TO SAVEPOINT ${READ_FENCE_SAVEPOINT}`);
+  }
+  await q.query(`RELEASE SAVEPOINT ${READ_FENCE_SAVEPOINT}`);
+  return blocked;
+}
+
 /** Inserts a `legacy` gate for every unit that has none. */
 export async function ensureUnitGates(db: TenantDb, units: readonly string[]): Promise<void> {
   const wanted = distinct(units);
@@ -355,7 +382,7 @@ export async function acquireWriteGates(tx: TenantTx, units: readonly string[], 
   }
   const { deadline } = state;
   // Waiting while holding FOR SHARE on a gate would block the closer's FOR UPDATE behind this transaction.
-  const holding = state.units.size > 0;
+  const holding = state.units.size > 0 || (fencedReads.get(tx)?.size ?? 0) > 0;
   await waitFor(
     deadline,
     async () => {
@@ -386,20 +413,37 @@ export function withGatedTenant<T>(
   );
 }
 
-/** Waits until no unit of `units` is in a window's executing or import phase; throws UnitReadBlockedError after the budget. */
-export async function awaitReadable(source: GateSource, units: readonly string[], opts: GateBudgetOptions = {}): Promise<void> {
-  const wanted = distinct(units);
+/** Waits out a window's executing or import phase on `units`, then share-locks their gates until `tx` ends; throws UnitReadBlockedError after the budget. */
+export async function awaitReadable(tx: TenantTx | MetadataTx, units: readonly string[], opts: GateBudgetOptions = {}): Promise<void> {
+  const written = tx.kind === 'tenant' ? acquiredGates.get(tx)?.units : undefined;
+  const fenced = fencedReads.get(tx) ?? new Set<string>();
+  const wanted = distinct(units).filter((unit) => !fenced.has(unit) && !(written?.has(unit) ?? false));
   if (wanted.length === 0) {
     return;
   }
+  // Waiting while holding FOR SHARE on a gate would block the window's phase change behind this transaction.
+  const holding = fenced.size > 0 || (written?.size ?? 0) > 0;
   await waitFor(
     deadlineFor(opts),
     async () => {
-      const gates = await readGates(source, wanted);
-      return gates.filter((gate) => READ_BLOCKING_PHASES.has(gate.phase)).map((gate) => gate.unit);
+      // An unlocked look first, so a read waiting out a window holds no share lock the window's next phase change must wait for.
+      const gates = await readGates(tx, wanted);
+      const pending = gates.filter((gate) => READ_BLOCKING_PHASES.has(gate.phase)).map((gate) => gate.unit);
+      const blocked = pending.length > 0 ? pending : await fenceReadable(tx, tx.schema, wanted);
+      if (holding && blocked.length > 0) {
+        throw new GateRaceError(
+          blocked,
+          `Legacy write window in progress for ${blocked.join(', ')} while the unit of work held gate locks; it must roll back and re-run`,
+        );
+      }
+      return blocked;
     },
     (blocked) => new UnitReadBlockedError(blocked),
   );
+  for (const unit of wanted) {
+    fenced.add(unit);
+  }
+  fencedReads.set(tx, fenced);
 }
 
 /** Registers a multi-transaction operation on open units and commits it before the operation's first write. */
@@ -509,15 +553,28 @@ export async function closeGates(db: TenantDb, opts: CloseGatesOptions): Promise
   );
 }
 
-/** Sets the phase of gates `holderId` holds; throws GateConflictError, changing nothing, unless it holds every unit. */
+/** Sets the phase of gates `holderId` holds once fenced reads end; throws GateConflictError, changing nothing, unless it holds every unit. */
 export async function setGatePhase(db: TenantDb, opts: SetGatePhaseOptions): Promise<UnitGate[]> {
   const units = distinct(opts.units);
   return withMetadata(db, async (tx) => {
-    const { rows } = await tx.query<{ unit: string }>(
-      `UPDATE ${gateTable(tx.schema)} SET phase = $3, updated_at = localtimestamp(3)
-        WHERE unit = ANY($1::text[]) AND holder_id = $2 RETURNING unit`,
-      [units, opts.holderId, opts.phase],
-    );
+    // Fenced reads hold FOR SHARE on their gates until they commit, so the UPDATE waits for them within the gate budget.
+    await setLockTimeout(tx, GATE_WAIT_MS);
+    let rows: { unit: string }[];
+    try {
+      ({ rows } = await tx.query<{ unit: string }>(
+        `UPDATE ${gateTable(tx.schema)} SET phase = $3, updated_at = localtimestamp(3)
+          WHERE unit = ANY($1::text[]) AND holder_id = $2 RETURNING unit`,
+        [units, opts.holderId, opts.phase],
+      ));
+    } catch (err) {
+      if (isLockNotAvailable(err)) {
+        throw new OperationBlockedError(
+          units,
+          `Unit gate phase could not change to ${opts.phase} within ${GATE_WAIT_MS} ms past reads of ${units.join(', ')}`,
+        );
+      }
+      throw err;
+    }
     const updated = new Set(rows.map((row) => row.unit));
     const refused = units.filter((unit) => !updated.has(unit));
     if (refused.length > 0) {

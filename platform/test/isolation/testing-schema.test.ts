@@ -1,5 +1,7 @@
 import { randomBytes } from 'node:crypto';
+import { once } from 'node:events';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createServer, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pg from 'pg';
@@ -15,9 +17,19 @@ import {
 
 const ROLES = { owner: 'r_owner', app: 'r_app', migrator: 'r_migrator' };
 const TENANT_A = tenantIdForSite('tenant-a');
+const SYNTHETIC_PG = { PG_HOST: 'h', PG_USER: 'u', PG_PASSWORD: 'p', PG_DATABASE: 'd' };
 const available = await pgAvailable();
 
 const NOTE_DDL = 'CREATE TABLE tschema.note (tenant_id uuid NOT NULL, id serial PRIMARY KEY, body text)';
+
+/** A loopback port that a listener held a moment ago and nothing listens on now. */
+async function closedPort(): Promise<number> {
+  const server = createServer().listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const { port } = server.address() as AddressInfo;
+  await once(server.close(), 'close');
+  return port;
+}
 
 /** Rows of `pg_roles` and `pg_namespace` whose names contain `stem`. */
 async function residue(stem: string): Promise<string[]> {
@@ -78,29 +90,43 @@ describe('rewriteMigrationSql', () => {
 
 describe('testPgConfig', () => {
   it('names every missing required variable', () => {
-    expect(() => testPgConfig({ PG_PORT: '5432' })).toThrow('PG_HOST, PG_USER, PG_DATABASE');
+    expect(() => testPgConfig({ PG_PORT: '5432' })).toThrow('PG_HOST, PG_USER, PG_PASSWORD, PG_DATABASE');
+  });
+
+  it.each([undefined, ''])('rejects PG_PASSWORD %j', (password) => {
+    expect(() => testPgConfig({ ...SYNTHETIC_PG, PG_PASSWORD: password })).toThrow('need PG_PASSWORD in the environment');
+  });
+
+  it.each(['abc', '54.32', '0', '65536'])('rejects PG_PORT %j', (port) => {
+    expect(() => testPgConfig({ ...SYNTHETIC_PG, PG_PORT: port })).toThrow(`PG_PORT to be an integer from 1 to 65535, got "${port}"`);
   });
 
   it.each([
     [undefined, 5432],
+    ['', 5432],
     ['6543', 6543],
-  ])('reads PG_PORT %s as port %d', (port, expected) => {
-    const config = testPgConfig({ PG_HOST: 'h', PG_USER: 'u', PG_PASSWORD: 'p', PG_DATABASE: 'd', PG_PORT: port });
+  ])('reads PG_PORT %j as port %d', (port, expected) => {
+    const config = testPgConfig({ ...SYNTHETIC_PG, PG_PORT: port });
     expect(config).toEqual({ host: 'h', port: expected, user: 'u', password: 'p', database: 'd' });
   });
 });
 
 describe('pgAvailable', () => {
-  it('resolves false when PG_HOST is unset', async () => {
-    const saved = process.env.PG_HOST;
-    delete process.env.PG_HOST;
-    try {
-      await expect(pgAvailable()).resolves.toBe(false);
-    } finally {
-      if (saved !== undefined) {
-        process.env.PG_HOST = saved;
-      }
-    }
+  it.each([
+    ['PG_HOST is unset', { ...SYNTHETIC_PG, PG_HOST: undefined }, 'need PG_HOST in the environment'],
+    ['PG_PORT is invalid', { ...SYNTHETIC_PG, PG_PORT: 'abc' }, 'need PG_PORT to be an integer from 1 to 65535, got "abc"'],
+  ])('rejects naming the variable when %s', async (_label, env, message) => {
+    await expect(pgAvailable(env)).rejects.toThrow(message);
+  });
+
+  it('resolves false when nothing listens on the port', async () => {
+    const port = await closedPort();
+    await expect(pgAvailable({ ...SYNTHETIC_PG, PG_HOST: '127.0.0.1', PG_PORT: String(port) })).resolves.toBe(false);
+  });
+
+  it.skipIf(!available)('rejects with the server error on a wrong PG_PASSWORD', async () => {
+    const wrong = randomBytes(12).toString('hex');
+    await expect(pgAvailable({ ...process.env, PG_PASSWORD: wrong })).rejects.toMatchObject({ code: '28P01' });
   });
 });
 

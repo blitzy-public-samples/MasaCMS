@@ -60,22 +60,38 @@ export interface ToolResult {
   stderr: string;
 }
 
-/** Runs `command` without a shell; resolves on any exit status, rejects only when it cannot run (`ENOENT`: not installed). */
-export type ToolRunner = (command: string, args: readonly string[], opts: { cwd: string }) => Promise<ToolResult>;
+/** Runs `command` without a shell; resolves on any exit, rejects when it cannot run (`ENOENT`) or times out (`ETIMEDOUT`). */
+export type ToolRunner = (
+  command: string,
+  args: readonly string[],
+  opts: { cwd: string; timeoutMs?: number },
+) => Promise<ToolResult>;
+
+// Departs from Rule "WIP - Minimal Change 2" (no timeouts), which does not bind this refactor: a hung tool would otherwise block the summary.
+/** Longest wait for an osv-scanner or gitleaks version probe. */
+export const VERSION_PROBE_TIMEOUT_MS = 60_000;
+
+/** Longest wait for one osv-scanner or gitleaks scan, and the default budget of {@link defaultToolRunner}. */
+export const SCAN_TIMEOUT_MS = 15 * 60_000;
 
 // osv-scanner JSON for every OPT-2 lockfile runs to several MiB once advisories accumulate.
 const MAX_BUFFER = 256 * 1024 * 1024;
 
-/** `execFile` runner with UTF-8 output and a 256 MiB output limit. */
+/** `execFile` runner with UTF-8 output, a 256 MiB output limit, and SIGKILL of the tool once `timeoutMs` expires. */
 export const defaultToolRunner: ToolRunner = (command, args, opts) =>
   new Promise((resolve, reject) => {
+    const timeoutMs = opts.timeoutMs ?? SCAN_TIMEOUT_MS;
     execFile(
       command,
       [...args],
-      { cwd: opts.cwd, encoding: 'utf8', maxBuffer: MAX_BUFFER, shell: false },
+      { cwd: opts.cwd, encoding: 'utf8', maxBuffer: MAX_BUFFER, shell: false, timeout: timeoutMs, killSignal: 'SIGKILL' },
       (error, stdout, stderr) => {
         if (error === null) {
           resolve({ code: 0, stdout, stderr });
+        } else if (error.killed === true && error.code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+          // execFile kills the tool itself only when the timeout expires or, excluded here, the output limit is passed.
+          const timedOut = new Error(`${command} timed out after ${timeoutMs} ms`, { cause: error });
+          reject(Object.assign(timedOut, { code: 'ETIMEDOUT' }));
         } else if (typeof error.code === 'number') {
           resolve({ code: error.code, stdout, stderr });
         } else {
@@ -331,12 +347,20 @@ function lastLines(text: string): string {
 
 type Attempt = { result: ToolResult } | { error: string };
 
-async function attempt(run: ToolRunner, command: string, args: readonly string[], cwd: string): Promise<Attempt> {
+async function attempt(
+  run: ToolRunner,
+  command: string,
+  args: readonly string[],
+  cwd: string,
+  timeoutMs: number,
+): Promise<Attempt> {
   try {
-    return { result: await run(command, args, { cwd }) };
+    return { result: await run(command, args, { cwd, timeoutMs }) };
   } catch (err) {
     const code = (err as NodeJS.ErrnoException | null)?.code;
-    return { error: code === 'ENOENT' ? `${command}: tool missing` : `${command}: cannot run: ${messageOf(err)}` };
+    if (code === 'ENOENT') return { error: `${command}: tool missing` };
+    if (code === 'ETIMEDOUT') return { error: `${command}: timed out after ${timeoutMs} ms` };
+    return { error: `${command}: cannot run: ${messageOf(err)}` };
   }
 }
 
@@ -348,7 +372,7 @@ async function checkVersion(
   expected: string,
   cwd: string,
 ): Promise<{ version: string | null; error?: string }> {
-  const outcome = await attempt(run, command, args, cwd);
+  const outcome = await attempt(run, command, args, cwd, VERSION_PROBE_TIMEOUT_MS);
   if ('error' in outcome) return { version: null, error: outcome.error };
   const { code, stdout, stderr } = outcome.result;
   if (code !== 0) {
@@ -379,7 +403,7 @@ async function scanDependencies(
   repoRoot: string,
   reportPath: string,
 ): Promise<{ advisories: Advisory[] } | { error: string }> {
-  const outcome = await attempt(run, 'osv-scanner', osvArgs(), repoRoot);
+  const outcome = await attempt(run, 'osv-scanner', osvArgs(), repoRoot, SCAN_TIMEOUT_MS);
   if ('error' in outcome) return outcome;
   const { code, stdout, stderr } = outcome.result;
   if (code !== 0 && code !== 1) return { error: `osv-scanner exited ${code}: ${lastLines(stderr)}` };
@@ -397,7 +421,7 @@ async function scanSecrets(
   repoRoot: string,
   reportPath: string,
 ): Promise<{ count: number; items: SecretFinding[] } | { error: string }> {
-  const outcome = await attempt(run, 'gitleaks', gitleaksArgs(reportPath), repoRoot);
+  const outcome = await attempt(run, 'gitleaks', gitleaksArgs(reportPath), repoRoot, SCAN_TIMEOUT_MS);
   if ('error' in outcome) return outcome;
   const { code, stderr } = outcome.result;
   if (code !== 0 && code !== 1) return { error: `gitleaks exited ${code}: ${lastLines(stderr)}` };

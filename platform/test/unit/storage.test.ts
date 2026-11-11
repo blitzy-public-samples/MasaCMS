@@ -5,11 +5,10 @@ import path from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import type { Storage } from '@google-cloud/storage';
 import { fastify, type FastifyInstance } from 'fastify';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCloudStorageAdapter } from '../../src/storage/cloud-adapter.js';
 import { legacyFileHeaders, legacyHeaderValue, sendLegacyFile } from '../../src/storage/legacy-stream.js';
 import {
-  META_DIR,
   STORAGE_DIR,
   createLocalStorageAdapter,
   loadStorageHmacKey,
@@ -50,6 +49,19 @@ const ANY_SIG = 'a'.repeat(64);
 const LAST_MODIFIED = new Date(Date.UTC(2025, 5, 1, 8, 30, 0));
 const LAST_MODIFIED_HTTP = 'Sun, 01 Jun 2025 08:30:00 GMT';
 
+const fsFaults = vi.hoisted((): { rename?: Error } => ({}));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    rename: async (...args: Parameters<typeof actual.rename>) => {
+      if (fsFaults.rename) throw fsFaults.rename;
+      return actual.rename(...args);
+    },
+  };
+});
+
 const stateDirs: string[] = [];
 
 async function newStateDir(): Promise<string> {
@@ -59,6 +71,7 @@ async function newStateDir(): Promise<string> {
 }
 
 afterEach(async () => {
+  delete fsFaults.rename;
   await Promise.all(stateDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -68,6 +81,12 @@ function sha256Hex(bytes: Buffer): string {
 
 function hmacHex(signed: string, key: Buffer = HMAC_KEY): string {
   return createHmac('sha256', key).update(signed, 'utf8').digest('hex');
+}
+
+function trailer(json: string, length = Buffer.byteLength(json), marker = 'OPT2OBJ1'): Buffer {
+  const lengthBytes = Buffer.alloc(4);
+  lengthBytes.writeUInt32BE(length);
+  return Buffer.concat([Buffer.from(json, 'utf8'), lengthBytes, Buffer.from(marker, 'latin1')]);
 }
 
 async function readAll(stream: Readable): Promise<Buffer> {
@@ -129,17 +148,25 @@ describe('storage keys and constants', () => {
     ['an omitted variant and an upper-case extension', { ext: 'JPG' }, 'F1.jpg'],
     ['the source rendition', { variant: '_source', ext: 'Png' }, 'F1_source.png'],
     ['a custom image-size name', { variant: '_hero-wide_2', ext: 'webp' }, 'F1_hero-wide_2.webp'],
+    ['a width and height rendition', { variant: '_W100_H50', ext: 'jpg' }, 'F1_W100_H50.jpg'],
+    ['a decimal width with an automatic height', { variant: '_W200.5_HAUTO', ext: 'png' }, 'F1_W200.5_HAUTO.png'],
+    ['a unicode image-size name', { variant: '_größe-ü', ext: 'gif' }, 'F1_größe-ü.gif'],
+    ['a mixed-case variant', { variant: '_Small', ext: 'jpg' }, 'F1_Small.jpg'],
+    ['a dotted variant', { variant: '_a.b', ext: 'jpg' }, 'F1_a.b.jpg'],
   ])('builds the content-file key for %s', (_case, parts, expectedName) => {
     expect(contentFileKey({ tenantId: TENANT_A.tenantId, fileId: 'F1', ...parts })).toBe(
       `${TENANT_A.tenantId}/${expectedName}`,
     );
   });
 
-  it.each(['_Small', 'small', '_', '_a/b', '_a.b'])('rejects the content-file variant %j', (variant) => {
-    expect(() =>
-      contentFileKey({ tenantId: TENANT_A.tenantId, fileId: 'F1', variant: variant as ContentFileVariant, ext: 'jpg' }),
-    ).toThrow(InvalidObjectKeyError);
-  });
+  it.each(['small', '_', '_a/b', '_a\\b', '_a\0b', '_a\u001fb', '_a\u007fb'])(
+    'rejects the content-file variant %j',
+    (variant) => {
+      expect(() =>
+        contentFileKey({ tenantId: TENANT_A.tenantId, fileId: 'F1', variant: variant as ContentFileVariant, ext: 'jpg' }),
+      ).toThrow(InvalidObjectKeyError);
+    },
+  );
 
   it('generates a fresh 35-character CF UUID for an object key without an id', () => {
     const first = objectKey({ tenantId: TENANT_A.tenantId, ext: 'pdf' });
@@ -193,17 +220,15 @@ describe('local storage adapter', () => {
     adapter = await createLocalStorageAdapter({ stateDir, hmacKey: HMAC_KEY, now: () => NOW_MS });
   });
 
-  it('stores the bytes under <stateDir>/storage/<bucket>/<key> with metadata under storage/.meta', async () => {
+  it('stores one file at <stateDir>/storage/<bucket>/<key>: the bytes, then the trailer', async () => {
     const result = await adapter.put(bucket, key, pdf, { contentType: 'application/pdf' });
 
     expect(adapter.kind).toBe('local');
     expect(result).toEqual({ size: pdf.length, sha256: sha256Hex(pdf) });
-    expect(await readFile(path.join(stateDir, STORAGE_DIR, bucket, TENANT_A.tenantId, `${FILE_ID}.pdf`))).toEqual(pdf);
-    const meta = await readFile(
-      path.join(stateDir, STORAGE_DIR, META_DIR, bucket, TENANT_A.tenantId, `${FILE_ID}.pdf.json`),
-      'utf8',
+    expect(await readFile(path.join(stateDir, STORAGE_DIR, bucket, TENANT_A.tenantId, `${FILE_ID}.pdf`))).toEqual(
+      Buffer.concat([pdf, trailer(JSON.stringify({ contentType: 'application/pdf', sha256: sha256Hex(pdf) }))]),
     );
-    expect(JSON.parse(meta)).toEqual({ contentType: 'application/pdf', sha256: sha256Hex(pdf), size: pdf.length });
+    expect(await readdir(path.join(stateDir, STORAGE_DIR))).toEqual([bucket]);
   });
 
   it('reports size, SHA-256 and content type from head, and returns the bytes from get and stream', async () => {
@@ -226,12 +251,22 @@ describe('local storage adapter', () => {
       () => Readable.from([Buffer.from('first '), Buffer.from('second')]),
       Buffer.from('first second'),
     ],
+    ['an empty Buffer', () => Buffer.alloc(0), Buffer.alloc(0)],
   ])('hashes and stores %s body', async (_kind, body, bytes) => {
     expect(await adapter.put(bucket, key, body(), { contentType: 'application/octet-stream' })).toEqual({
       size: bytes.length,
       sha256: sha256Hex(bytes),
     });
+    expect(await adapter.head(bucket, key)).toEqual({
+      size: bytes.length,
+      sha256: sha256Hex(bytes),
+      contentType: 'application/octet-stream',
+    });
     expect(await adapter.get(bucket, key)).toEqual(bytes);
+    expect(await readAll(await adapter.stream(bucket, key))).toEqual(bytes);
+    const opened = await adapter.open(bucket, key);
+    expect(opened.head).toEqual(await adapter.head(bucket, key));
+    expect(await readAll(opened.body)).toEqual(bytes);
   });
 
   it('replaces the previous version on put', async () => {
@@ -247,23 +282,113 @@ describe('local storage adapter', () => {
     });
   });
 
-  it('keeps the previous version and leaves no partial file when the body fails mid-write', async () => {
-    await adapter.put(bucket, key, pdf, { contentType: 'application/pdf' });
-    const failing = Readable.from(
-      (async function* () {
-        yield Buffer.from('partial bytes');
-        throw new Error('upstream body failed');
-      })(),
-    );
-
-    await expect(adapter.put(bucket, key, failing, { contentType: 'text/plain' })).rejects.toThrow(
+  it.each<[string, () => PutBody, string]>([
+    [
+      'the body fails mid-write',
+      () =>
+        Readable.from(
+          (function* () {
+            yield Buffer.from('partial bytes');
+            throw new Error('upstream body failed');
+          })(),
+        ),
       'upstream body failed',
-    );
+    ],
+    [
+      'the commit rename fails',
+      () => {
+        fsFaults.rename = new Error('rename failed');
+        return Buffer.from('replacement bytes');
+      },
+      'rename failed',
+    ],
+  ])('keeps the previous version and leaves no partial file when %s', async (_case, body, message) => {
+    await adapter.put(bucket, key, pdf, { contentType: 'application/pdf' });
+
+    await expect(adapter.put(bucket, key, body(), { contentType: 'text/plain' })).rejects.toThrow(message);
+    delete fsFaults.rename;
+    expect(await adapter.head(bucket, key)).toEqual({
+      size: pdf.length,
+      sha256: sha256Hex(pdf),
+      contentType: 'application/pdf',
+    });
     expect(await adapter.get(bucket, key)).toEqual(pdf);
-    expect(await adapter.head(bucket, key)).toMatchObject({ contentType: 'application/pdf' });
-    const objectDir = await readdir(path.join(stateDir, STORAGE_DIR, bucket, TENANT_A.tenantId));
-    const metaDir = await readdir(path.join(stateDir, STORAGE_DIR, META_DIR, bucket, TENANT_A.tenantId));
-    expect([...objectDir, ...metaDir].filter((name) => name.endsWith('.partial'))).toEqual([]);
+    expect(await readAll(await adapter.stream(bucket, key))).toEqual(pdf);
+    expect(await readdir(path.join(stateDir, STORAGE_DIR, bucket, TENANT_A.tenantId))).toEqual([`${FILE_ID}.pdf`]);
+  });
+
+  it('leaves head, get and stream on one version after concurrent puts to one key', async () => {
+    const type = (i: number): string => `application/x-gen-${String(i)}`;
+    for (let round = 0; round < 20; round++) {
+      const bodies = Array.from({ length: 8 }, (_, i) => Buffer.alloc(1024 * (i + 1) + round, i));
+      await Promise.all(bodies.map((b, i) => adapter.put(bucket, key, b, { contentType: type(i) })));
+
+      const bytes = await adapter.get(bucket, key);
+      const gen = bytes[0] ?? -1;
+      expect(bytes).toEqual(bodies[gen]);
+      expect(await adapter.head(bucket, key)).toEqual({
+        size: bytes.length,
+        sha256: sha256Hex(bytes),
+        contentType: type(gen),
+      });
+      expect(await readAll(await adapter.stream(bucket, key))).toEqual(bytes);
+    }
+  });
+
+  it('pairs every open racing concurrent puts with the head of the version it reads', async () => {
+    const type = (i: number): string => `application/x-gen-${String(i)}`;
+    await adapter.put(bucket, key, Buffer.alloc(16, 0), { contentType: type(0) });
+    for (let round = 0; round < 10; round++) {
+      const bodies = Array.from({ length: 8 }, (_, i) => Buffer.alloc(1024 * (i + 1) + round, i));
+      const [, opens] = await Promise.all([
+        Promise.all(bodies.map((b, i) => adapter.put(bucket, key, b, { contentType: type(i) }))),
+        Promise.all(bodies.map(() => adapter.open(bucket, key))),
+      ]);
+
+      for (const { head, body } of opens) {
+        const bytes = await readAll(body);
+        expect(head).toEqual({ size: bytes.length, sha256: sha256Hex(bytes), contentType: type(bytes[0] ?? -1) });
+      }
+    }
+  });
+
+  it('keeps a stream or open made before a replacing put on the old version, and head and get on the new', async () => {
+    const old = Buffer.alloc(256 * 1024, 0x61);
+    const csv = Buffer.from('a,b\n1,2\n');
+    await adapter.put(bucket, key, old, { contentType: 'application/pdf' });
+
+    const opened = await adapter.stream(bucket, key);
+    const openedWithHead = await adapter.open(bucket, key);
+    await adapter.put(bucket, key, csv, { contentType: 'text/csv' });
+
+    expect(await adapter.head(bucket, key)).toEqual({
+      size: csv.length,
+      sha256: sha256Hex(csv),
+      contentType: 'text/csv',
+    });
+    expect(await readAll(opened)).toEqual(old);
+    expect(await adapter.get(bucket, key)).toEqual(csv);
+    expect(openedWithHead.head).toEqual({ size: old.length, sha256: sha256Hex(old), contentType: 'application/pdf' });
+    expect(await readAll(openedWithHead.body)).toEqual(old);
+  });
+
+  it.each<[string, Buffer]>([
+    ['bytes without a trailer', Buffer.from('%PDF-1.7 written around the adapter\n')],
+    ['fewer bytes than a trailer', Buffer.from('OPT2OBJ1')],
+    ['a trailer with another marker', trailer('{"contentType":"text/plain","sha256":""}', undefined, 'OPT2OBJ0')],
+    ['a trailer length beyond the file', trailer('{}', 0xffffffff)],
+    ['an unparsable trailer', Buffer.concat([pdf, trailer('{"contentType":')])],
+    ['a trailer without a content type', Buffer.concat([pdf, trailer(JSON.stringify({ sha256: sha256Hex(pdf) }))])],
+  ])('rejects an object file holding %s, naming its bucket and key', async (_case, bytes) => {
+    const file = path.join(stateDir, STORAGE_DIR, bucket, ...key.split('/'));
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, bytes);
+    const message = `Storage object has no valid trailer: ${bucket}/${key}`;
+
+    await expect(adapter.head(bucket, key)).rejects.toThrow(message);
+    await expect(adapter.get(bucket, key)).rejects.toThrow(message);
+    await expect(adapter.stream(bucket, key)).rejects.toThrow(message);
+    await expect(adapter.open(bucket, key)).rejects.toThrow(message);
   });
 
   it('deletes the object and its metadata, and deleting it again is not an error', async () => {
@@ -285,19 +410,24 @@ describe('local storage adapter', () => {
       message: `Storage object not found: ${bucket}/${key}`,
     });
     await expect(adapter.stream(bucket, key)).rejects.toBeInstanceOf(StorageObjectNotFoundError);
+    await expect(adapter.open(bucket, key)).rejects.toMatchObject({ name: 'StorageObjectNotFoundError', bucket, key });
   });
 
-  it('reports a key below an existing object as absent', async () => {
-    await adapter.put(bucket, 'parent', pdf, { contentType: 'application/pdf' });
+  it.each<[string, string, string]>([
+    ['a key below an existing object', 'parent', 'parent/child'],
+    ['a key naming a directory of other objects', 'parent/child', 'parent'],
+  ])('reports %s as absent', async (_case, stored, queried) => {
+    await adapter.put(bucket, stored, pdf, { contentType: 'application/pdf' });
 
-    expect(await adapter.head(bucket, 'parent/child')).toBeNull();
-    await expect(adapter.get(bucket, 'parent/child')).rejects.toBeInstanceOf(StorageObjectNotFoundError);
-    await expect(adapter.stream(bucket, 'parent/child')).rejects.toBeInstanceOf(StorageObjectNotFoundError);
+    expect(await adapter.head(bucket, queried)).toBeNull();
+    await expect(adapter.get(bucket, queried)).rejects.toBeInstanceOf(StorageObjectNotFoundError);
+    await expect(adapter.stream(bucket, queried)).rejects.toBeInstanceOf(StorageObjectNotFoundError);
   });
 
   it.each<[string, (a: LocalStorageAdapter, k: string) => Promise<unknown>]>([
     ['get', (a, k) => a.get(bucket, k)],
     ['stream', (a, k) => a.stream(bucket, k)],
+    ['open', (a, k) => a.open(bucket, k)],
     ['head', (a, k) => a.head(bucket, k)],
     ['put', (a, k) => a.put(bucket, k, Buffer.from('x'), { contentType: 'text/plain' })],
   ])('%s propagates a filesystem error other than a missing path', async (_op, run) => {
@@ -506,9 +636,10 @@ interface FakeCall {
   bucket: string;
   name: string;
   args: unknown[];
+  generation?: number | string;
 }
 
-/** In-memory stand-in for the `Storage` client surface the cloud adapter calls. */
+/** In-memory stand-in for the `Storage` client surface the cloud adapter calls; a pinned generation reads only while current. */
 function fakeStorage() {
   const objects = new Map<string, StoredObject>();
   const calls: FakeCall[] = [];
@@ -516,15 +647,17 @@ function fakeStorage() {
   const bucketNames: string[] = [];
   let generation = 0;
 
-  const fileOf = (bucket: string, name: string) => {
+  const fileOf = (bucket: string, name: string, pinned?: number | string) => {
     const id = `${bucket}/${name}`;
     const record = (op: string, args: unknown[]): void => {
-      calls.push({ op, bucket, name, args });
+      calls.push({ op, bucket, name, args, ...(pinned === undefined ? {} : { generation: pinned }) });
       if (failures.has(op)) throw failures.get(op);
     };
     const stored = (): StoredObject => {
       const found = objects.get(id);
-      if (!found) throw Object.assign(new Error(`No such object: ${id}`), { code: 404 });
+      if (!found || (pinned !== undefined && found.generation !== Number(pinned))) {
+        throw Object.assign(new Error(`No such object: ${id}`), { code: 404 });
+      }
       return found;
     };
     const file = {
@@ -567,12 +700,29 @@ function fakeStorage() {
       },
       createReadStream() {
         record('createReadStream', []);
-        return Readable.from([stored().bytes]);
+        // Like the client, the media request goes out when the stream is first read.
+        return new Readable({
+          read() {
+            try {
+              this.push(stored().bytes);
+              this.push(null);
+            } catch (err) {
+              this.destroy(err as Error);
+            }
+          },
+        });
       },
       async getMetadata() {
         record('getMetadata', []);
         const found = stored();
-        return [{ size: String(found.bytes.length), contentType: found.contentType, metadata: found.metadata }];
+        return [
+          {
+            size: String(found.bytes.length),
+            contentType: found.contentType,
+            metadata: found.metadata,
+            generation: found.generation,
+          },
+        ];
       },
       async delete(opts: { ignoreNotFound?: boolean }) {
         record('delete', [opts]);
@@ -589,7 +739,9 @@ function fakeStorage() {
   const storage = {
     bucket(name: string) {
       bucketNames.push(name);
-      return { file: (fileName: string) => fileOf(name, fileName) };
+      return {
+        file: (fileName: string, opts?: { generation?: number | string }) => fileOf(name, fileName, opts?.generation),
+      };
     },
   };
   return { storage: storage as unknown as Storage, objects, calls, failures, bucketNames };
@@ -718,6 +870,44 @@ describe('Cloud Storage adapter', () => {
     expect(fake.calls.map((c) => c.op)).toEqual(['getMetadata', 'createReadStream']);
   });
 
+  it('opens the head and the bytes of the generation it read, pinning the read stream to that generation', async () => {
+    const fake = fakeStorage();
+    const adapter = createCloudStorageAdapter({ storage: fake.storage });
+    await adapter.put(bucket, key, pdf, { contentType: 'application/pdf' });
+    fake.calls.length = 0;
+
+    const opened = await adapter.open(bucket, key);
+
+    expect(opened.head).toEqual({ size: pdf.length, sha256: sha256Hex(pdf), contentType: 'application/pdf' });
+    expect(await readAll(opened.body)).toEqual(pdf);
+    expect(fake.calls).toEqual([
+      { op: 'getMetadata', bucket, name: key, args: [] },
+      { op: 'createReadStream', bucket, name: key, args: [], generation: 1 },
+    ]);
+  });
+
+  it('fails a pinned read with a 404 once a put replaces the generation it opened', async () => {
+    const fake = fakeStorage();
+    const adapter = createCloudStorageAdapter({ storage: fake.storage });
+    const csv = Buffer.from('a,b\n1,2\n');
+    await adapter.put(bucket, key, pdf, { contentType: 'application/pdf' });
+
+    const opened = await adapter.open(bucket, key);
+    await adapter.put(bucket, key, csv, { contentType: 'text/csv' });
+
+    expect(opened.head).toEqual({ size: pdf.length, sha256: sha256Hex(pdf), contentType: 'application/pdf' });
+    await expect(readAll(opened.body)).rejects.toMatchObject({ code: 404 });
+    expect(await adapter.get(bucket, key)).toEqual(csv);
+  });
+
+  it('maps a 404 on open to StorageObjectNotFoundError without opening a read stream', async () => {
+    const fake = fakeStorage();
+    const adapter = createCloudStorageAdapter({ storage: fake.storage });
+
+    await expect(adapter.open(bucket, key)).rejects.toMatchObject({ name: 'StorageObjectNotFoundError', bucket, key });
+    expect(fake.calls.map((c) => c.op)).toEqual(['getMetadata']);
+  });
+
   it('maps a 404 to absent: head returns null, get and stream throw StorageObjectNotFoundError', async () => {
     const fake = fakeStorage();
     const adapter = createCloudStorageAdapter({ storage: fake.storage });
@@ -737,6 +927,7 @@ describe('Cloud Storage adapter', () => {
       (a) => a.stream(bucket, key),
       Object.assign(new Error('Backend'), { code: 503 }),
     ],
+    ['open', 'a 503', 'getMetadata', (a) => a.open(bucket, key), Object.assign(new Error('Backend'), { code: 503 })],
     ['get', 'a 500', 'download', (a) => a.get(bucket, key), Object.assign(new Error('Internal'), { code: 500 })],
     ['get', 'a non-Error rejection', 'download', (a) => a.get(bucket, key), 'socket hang up'],
   ])('%s propagates %s from %s', async (_op, _failure, failingCall, run, failure) => {
@@ -917,6 +1108,26 @@ describe('sendLegacyFile', () => {
       'strict-transport-security': 'max-age=1200',
       'last-modified': [LAST_MODIFIED_HTTP, LAST_MODIFIED_HTTP],
     });
+  });
+
+  it('sends the Content-Length of the version it streams when a put replaces the object right after open', async () => {
+    const old = Buffer.alloc(64 * 1024, 0x25);
+    const replacement = Buffer.from('%PDF-1.7\nreplacement\n');
+    await storage.put('content-files', key, old, { contentType: 'application/pdf' });
+    const open = storage.open.bind(storage);
+    vi.spyOn(storage, 'open').mockImplementationOnce(async (bucket, k) => {
+      const opened = await open(bucket, k);
+      await storage.put(bucket, k, replacement, { contentType: 'application/pdf' });
+      return opened;
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/_api/render/file/', query: { key } });
+
+    expect(routeError).toBeUndefined();
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-length']).toBe(String(old.length));
+    expect(res.rawPayload).toEqual(old);
+    expect(await storage.get('content-files', key)).toEqual(replacement);
   });
 
   it('rejects a missing object with StorageObjectNotFoundError before any legacy header is set', async () => {

@@ -3,7 +3,7 @@ import cookie from '@fastify/cookie';
 import formbody from '@fastify/formbody';
 import multipart, { type MultipartFile, type MultipartValue } from '@fastify/multipart';
 import { trace } from '@opentelemetry/api';
-import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
+import Fastify, { errorCodes, type FastifyError, type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import {
   AuthDenial,
   createAuthFromEnv,
@@ -69,7 +69,7 @@ export interface Opt2Runtime<E extends BaseEnv = BaseEnv> {
   readonly auth: AuthSetup;
   readonly client: ServiceClient;
   readonly db?: TenantDb;
-  /** Closes the server, the service client and the pool, then stops tracing; runs once. */
+  /** Closes the server, the service client and the pool, then stops tracing; runs once, attempts every step, rejects with the failure or an AggregateError. */
   shutdown(): Promise<void>;
 }
 
@@ -106,11 +106,14 @@ interface LegacyResponse {
 
 const CONTEXT = Symbol('opt2.service-kit.context');
 const FILES = Symbol('opt2.service-kit.files');
+const BODY_LIMIT = Symbol('opt2.service-kit.body-limit');
 
 /** Per-request state kept on module-private symbols. */
 interface KitRequestState {
   [CONTEXT]: RequestContextStore | null;
   [FILES]: MultipartFile[] | null;
+  /** The body-limit error that aborted the request's multipart parse. */
+  [BODY_LIMIT]: FastifyError | null;
 }
 
 const ADMIN_PREFIXES: readonly string[] = ['/admin/', '/admin-actions/', '/admin-raw/'];
@@ -270,16 +273,24 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
   let closing: Promise<void> | undefined;
   const shutdown = (): Promise<void> =>
     (closing ??= (async () => {
-      await app.close();
-      await client.close();
-      await db?.end();
-      await shutdownTracing();
+      const failures: unknown[] = [];
+      // Each step runs even when an earlier one fails, so no owned handle stays open.
+      for (const step of [() => app.close(), () => client.close(), () => db?.end(), () => shutdownTracing()]) {
+        try {
+          await step();
+        } catch (err) {
+          failures.push(err);
+        }
+      }
+      if (failures.length > 1) throw new AggregateError(failures, `Shutdown of ${name} failed in several steps`);
+      if (failures.length === 1) throw failures[0];
     })());
   const runtime: Opt2Runtime<E> = Object.freeze({ name, version, env, clock, logger, auth, client, db, shutdown });
   app.decorate('opt2', runtime);
   app.decorateRequest('opt2', null, []);
   app.decorateRequest(CONTEXT, null, []);
   app.decorateRequest(FILES, null, []);
+  app.decorateRequest(BODY_LIMIT, null, []);
 
   await app.register(cookie);
   await app.register(formbody);
@@ -287,10 +298,46 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
     attachFieldsToBody: true,
     limits: { fileSize: LEGACY_POST_LIMIT_BYTES, fieldSize: LEGACY_POST_LIMIT_BYTES },
     async onFile(part) {
-      part.value = await part.toBuffer();
       const state = stateOf(this);
+      try {
+        part.value = await part.toBuffer();
+      } catch (err) {
+        // A file the body limit destroyed reports a premature close; the limit is the request's error.
+        throw state[BODY_LIMIT] ?? err;
+      }
       (state[FILES] ??= []).push(part);
     },
+  });
+  // Multipart reads the raw request past bodyLimit, so its bytes are counted against the same limit here.
+  app.addHook('preParsing', (request, reply, payload, done) => {
+    if (request.mediaType !== 'multipart/form-data') {
+      done(null, payload);
+      return;
+    }
+    const tooLarge = (): FastifyError => {
+      reply.header('connection', 'close');
+      return new errorCodes.FST_ERR_CTP_BODY_TOO_LARGE();
+    };
+    if (Number(request.headers['content-length']) > LEGACY_POST_LIMIT_BYTES) {
+      done(tooLarge());
+      return;
+    }
+    const raw = request.raw;
+    let received = 0;
+    const count = (chunk: Buffer): void => {
+      received += chunk.length;
+      if (received <= LEGACY_POST_LIMIT_BYTES) return;
+      raw.removeListener('data', count);
+      raw.unpipe();
+      const error = tooLarge();
+      stateOf(request)[BODY_LIMIT] = error;
+      // Fails the multipart parse, which listens for errors on the raw request.
+      raw.emit('error', error);
+    };
+    // Paused first, so the listener does not start the stream; multipart's pipe resumes it.
+    raw.pause();
+    raw.on('data', count);
+    done(null, payload);
   });
   const parseJson = app.getDefaultJsonParser('remove', 'remove') as (
     request: FastifyRequest,
@@ -299,10 +346,17 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
   ) => void;
   app.removeContentTypeParser('application/json');
   // Legacy ignores a body that is not JSON, so an empty or invalid one parses to undefined; prototype keys are dropped.
-  app.addContentTypeParser<string>('application/json', { parseAs: 'string' }, (request, body, done) => {
-    parseJson(request, body, (err, value) => done(null, err === null ? value : undefined));
+  const parseLegacyJson: typeof parseJson = (request, body, done) => {
+    parseJson(request, body, (err, value) => {
+      done(null, err === null ? value : undefined);
+    });
+  };
+  app.addContentTypeParser<string>('application/json', { parseAs: 'string' }, parseLegacyJson);
+  // Legacy reads any type starting with `application/json` as JSON; every other type stays a raw Buffer.
+  app.addContentTypeParser<Buffer>('*', { parseAs: 'buffer' }, (request, body, done) => {
+    if (isJsonRequest(request)) parseLegacyJson(request, body.toString('utf8'), done);
+    else done(null, body);
   });
-  app.addContentTypeParser<Buffer>('*', { parseAs: 'buffer' }, (_request, body, done) => done(null, body));
 
   // Registered before auth, so the auth hooks and the handler run inside the request context.
   app.addHook('onRequest', (request, _reply, done) => {
@@ -417,7 +471,8 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
 
   const onSigterm = (): void => {
     shutdown().catch((err: unknown) => {
-      logger.error({ error: serializeError(err) }, 'shutdown failed');
+      const failures: unknown[] = err instanceof AggregateError ? err.errors : [err];
+      for (const failure of failures) logger.error({ error: serializeError(failure) }, 'shutdown failed');
       process.exitCode = 1;
     });
   };

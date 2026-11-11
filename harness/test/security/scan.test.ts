@@ -14,6 +14,8 @@ import {
   GITLEAKS_VERSION,
   OPT2_LOCKFILES,
   OSV_SCANNER_VERSION,
+  SCAN_TIMEOUT_MS,
+  VERSION_PROBE_TIMEOUT_MS,
   defaultToolRunner,
   gitleaksArgs,
   isDevOnly,
@@ -171,6 +173,11 @@ function exited(code: number, stdout = '', stderr = ''): ToolResult {
 
 function errno(code: string, command: string): Error {
   return Object.assign(new Error(`spawn ${command} ${code}`), { code });
+}
+
+/** Rejection of a runner whose tool outlived its budget. */
+function timedOut(command: string): Error {
+  return Object.assign(new Error(`${command} timed out after 1 ms`), { code: 'ETIMEDOUT' });
 }
 
 function osvPrints(report: unknown, code: number): Step {
@@ -582,10 +589,10 @@ describe('runSecurityScan', () => {
   it('checks both versions, then scans from the repository root and writes a clean summary', async () => {
     const { result, run, osvReport, gitleaksReport } = await scan();
     expect(run.mock.calls).toEqual([
-      ['osv-scanner', ['--version'], { cwd: repo }],
-      ['gitleaks', ['version'], { cwd: repo }],
-      ['osv-scanner', osvArgs(), { cwd: repo }],
-      ['gitleaks', gitleaksArgs(gitleaksReport), { cwd: repo }],
+      ['osv-scanner', ['--version'], { cwd: repo, timeoutMs: VERSION_PROBE_TIMEOUT_MS }],
+      ['gitleaks', ['version'], { cwd: repo, timeoutMs: VERSION_PROBE_TIMEOUT_MS }],
+      ['osv-scanner', osvArgs(), { cwd: repo, timeoutMs: SCAN_TIMEOUT_MS }],
+      ['gitleaks', gitleaksArgs(gitleaksReport), { cwd: repo, timeoutMs: SCAN_TIMEOUT_MS }],
     ]);
     expect(result.code).toBe(0);
     expect(result.summary).toEqual({
@@ -847,8 +854,53 @@ describe('runSecurityScan', () => {
     const result = await runSecurityScan({ run });
     expect(result.code).toBe(0);
     expect(result.summaryPath).toBe(path.join(state, 'security', 'summary.json'));
-    expect(run).toHaveBeenCalledTimes(4);
-    for (const call of run.mock.calls) expect(call[2]).toEqual({ cwd: REPO_ROOT });
+    expect(run.mock.calls.map((call) => call[2])).toEqual([
+      { cwd: REPO_ROOT, timeoutMs: VERSION_PROBE_TIMEOUT_MS },
+      { cwd: REPO_ROOT, timeoutMs: VERSION_PROBE_TIMEOUT_MS },
+      { cwd: REPO_ROOT, timeoutMs: SCAN_TIMEOUT_MS },
+      { cwd: REPO_ROOT, timeoutMs: SCAN_TIMEOUT_MS },
+    ]);
+  });
+
+  it.each<[keyof Script, string, number]>([
+    ['osvVersion', 'osv-scanner: timed out after 60000 ms', 2],
+    ['gitleaksVersion', 'gitleaks: timed out after 60000 ms', 2],
+    ['osvScan', 'osv-scanner: timed out after 900000 ms', 4],
+    ['gitleaksScan', 'gitleaks: timed out after 900000 ms', 4],
+  ])('writes an error summary naming the budget when the %s step times out', async (step, error, calls) => {
+    const { result, run } = await scan({ [step]: { reject: timedOut(step.startsWith('osv') ? 'osv-scanner' : 'gitleaks') } });
+    expect(run).toHaveBeenCalledTimes(calls);
+    expect(result.code).toBe(2);
+    expect(result.summary).toMatchObject({ verdict: 'error', exitCode: 2, error });
+    expect((await writtenSummary(result)).body).toEqual(result.summary);
+  });
+
+  it('settles with an error summary when a real tool stalls past its budget', async () => {
+    const bin = await mkdtemp(path.join(root, 'bin-'));
+    await writeFile(
+      path.join(bin, 'osv-scanner'),
+      `#!/bin/sh\nif [ "$1" = --version ]; then echo 'osv-scanner version: ${OSV_SCANNER_VERSION}'; else echo '{"results":[]}'; fi\n`,
+      { mode: 0o755 },
+    );
+    await writeFile(
+      path.join(bin, 'gitleaks'),
+      `#!/bin/sh\nif [ "$1" = version ]; then echo '${GITLEAKS_VERSION}'; else exec sleep 600; fi\n`,
+      { mode: 0o755 },
+    );
+    const state = await mkdtemp(path.join(root, 'state-'));
+    const run: ToolRunner = (command, args, opts) => defaultToolRunner(path.join(bin, command), args, { ...opts, timeoutMs: 2_000 });
+    const started = Date.now();
+    const result = await runSecurityScan({ run, env: { OPT2_STATE_DIR: state }, repoRoot: repo });
+    expect(Date.now() - started).toBeLessThan(15_000);
+    expect(result.code).toBe(2);
+    expect(result.summary).toMatchObject({
+      tools: { osvScanner: OSV_SCANNER_VERSION, gitleaks: GITLEAKS_VERSION },
+      verdict: 'error',
+      exitCode: 2,
+      error: `gitleaks: timed out after ${SCAN_TIMEOUT_MS} ms`,
+    });
+    expect(await readFile(path.join(state, 'security', 'osv.json'), 'utf8')).toBe('{"results":[]}\n');
+    expect((await writtenSummary(result)).body).toEqual(result.summary);
   });
 });
 
@@ -911,5 +963,17 @@ describe('defaultToolRunner', () => {
     await expect(
       defaultToolRunner(node, ['-e', "process.kill(process.pid, 'SIGKILL')"], { cwd: root }),
     ).rejects.toMatchObject({ signal: 'SIGKILL' });
+  });
+
+  it('kills a tool that outlives timeoutMs and rejects with ETIMEDOUT', async () => {
+    const started = Date.now();
+    await expect(
+      defaultToolRunner(node, ['-e', 'setInterval(() => {}, 1000)'], { cwd: root, timeoutMs: 200 }),
+    ).rejects.toMatchObject({
+      code: 'ETIMEDOUT',
+      message: `${node} timed out after 200 ms`,
+      cause: { killed: true, signal: 'SIGKILL' },
+    });
+    expect(Date.now() - started).toBeLessThan(10_000);
   });
 });

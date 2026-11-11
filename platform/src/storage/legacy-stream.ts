@@ -1,6 +1,6 @@
 import type { FastifyReply } from 'fastify';
 import { legacyHeaders } from '../legacy-compat/index.js';
-import { StorageObjectNotFoundError, type BucketName, type StoragePort } from './port.js';
+import type { BucketName, StoragePort } from './port.js';
 
 /** Charset ACF's servlet container appends to a `cfcontent` type that names none. */
 const LEGACY_RESPONSE_CHARSET = 'UTF-8';
@@ -62,9 +62,7 @@ export function legacyFileHeaders(p: {
 export async function sendLegacyFile(reply: FastifyReply, opts: LegacyFileOptions): Promise<FastifyReply> {
   // If-Modified-Since is not consulted: ACF 2023 never exposes it as cgi.http_if_modified_since,
   // so streamFile's 304 branch never runs and legacy always answers 200 with the full body.
-  const head = await opts.storage.head(opts.bucket, opts.key);
-  if (head === null) throw new StorageObjectNotFoundError(opts.bucket, opts.key);
-  const body = await opts.storage.stream(opts.bucket, opts.key);
+  const { head, body } = await opts.storage.open(opts.bucket, opts.key);
   const headers = legacyFileHeaders({
     contentType: opts.contentType,
     fileName: opts.fileName,

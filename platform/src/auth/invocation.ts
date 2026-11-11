@@ -15,6 +15,7 @@ import {
   type CryptoKey,
 } from 'jose';
 import { AuthDenial, type ServiceIdentity } from './claims.js';
+import { createGoogleIdTokenClient, untilAborted, verifyGoogleIdToken } from './deadline.js';
 import { rolesForService, serviceRole } from './roles.js';
 
 /** Header carrying the caller's invocation credential; header names are compared lower-cased. */
@@ -160,7 +161,8 @@ export interface InvocationTarget {
 
 /** Produces the invocation-credential header for a call to `target`. */
 export interface InvocationMinter {
-  headersFor(target: InvocationTarget): Promise<Record<string, string>>;
+  /** Rejects with the signal's reason once `opts.signal` aborts. */
+  headersFor(target: InvocationTarget, opts?: { signal?: AbortSignal }): Promise<Record<string, string>>;
 }
 
 /** Minter signing a fresh local service token per call, addressed to the callee's service name. */
@@ -188,21 +190,25 @@ export function createCloudInvocationMinter(opts: { auth?: GoogleAuth } = {}): I
   // One library client per audience; token caching and refresh stay inside IdTokenClient.
   const clients = new Map<string, IdTokenClient>();
   return {
-    async headersFor(target) {
+    async headersFor(target, opts) {
       if (target.url === undefined) {
         throw new TypeError(`No URL for invocation target ${target.name}`);
       }
       const audience = invocationAudience(target.url);
-      let client = clients.get(audience);
-      if (client === undefined) {
-        client = await auth.getIdTokenClient(audience);
-        clients.set(audience, client);
-      }
-      const authorization = (await client.getRequestHeaders()).get('authorization');
-      if (authorization === null) {
-        throw new Error(`ID token client for ${audience} returned no Authorization header`);
-      }
-      return { [INVOCATION_HEADER]: authorization };
+      const acquire = async (): Promise<Record<string, string>> => {
+        let client = clients.get(audience);
+        if (client === undefined) {
+          client = await auth.getIdTokenClient(audience);
+          clients.set(audience, client);
+        }
+        const authorization = (await client.getRequestHeaders()).get('authorization');
+        if (authorization === null) {
+          throw new Error(`ID token client for ${audience} returned no Authorization header`);
+        }
+        return { [INVOCATION_HEADER]: authorization };
+      };
+      // Google's metadata and token requests take no signal: an abort abandons them, and they may still fill the cache.
+      return untilAborted(acquire(), opts?.signal);
     },
   };
 }
@@ -276,14 +282,14 @@ export function createCloudInvocationVerifier(opts: {
   audience: string;
   client?: OAuth2Client;
 }): InvocationVerifier {
-  const client = opts.client ?? new OAuth2Client();
+  const client = opts.client ?? createGoogleIdTokenClient();
   const audience = invocationAudience(opts.audience);
   return {
     async verify(headerValue) {
       const idToken = bearerToken(headerValue);
       let identity: ServiceIdentity | null = null;
       try {
-        const payload = (await client.verifyIdToken({ idToken, audience })).getPayload();
+        const payload = await verifyGoogleIdToken(client, idToken, audience);
         if (payload?.email_verified === true && typeof payload.email === 'string') {
           identity = serviceIdentityFromEmail(payload.email, opts.project);
         }

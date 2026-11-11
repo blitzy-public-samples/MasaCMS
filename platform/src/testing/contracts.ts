@@ -2,6 +2,7 @@
 import { Ajv2020, type AnySchemaObject, type ErrorObject, type ValidateFunction } from 'ajv/dist/2020.js';
 import {
   compileTopicSchema,
+  envelopeSchema,
   eventTypeOf,
   isTopicName,
   schemaVersionOf,
@@ -83,14 +84,53 @@ interface LocatedOperation extends OperationMatch {
   pointer: string[];
 }
 
+/** The envelope contract's calendar-valid RFC 3339 date-time pattern, accepting lower-case `t` and `z`. */
+function envelopeDateTime(): RegExp {
+  const pattern = at(envelopeSchema(), ['$defs', 'rfc3339DateTime', 'pattern']);
+  if (typeof pattern !== 'string') {
+    throw new Error('event-envelope.v1.json has no $defs.rfc3339DateTime.pattern');
+  }
+  return new RegExp(pattern, 'iu');
+}
+
+const DATE_TIME = envelopeDateTime();
+const FULL_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const FULL_TIME = /^([01]\d|2[0-3]):([0-5]\d):([0-5]\d|60)(?:\.\d+)?(?:z|([+-])([01]\d|2[0-3]):([0-5]\d))$/i;
+
+/** RFC 3339 full-date on a real calendar day. */
+function isFullDate(value: string): boolean {
+  return FULL_DATE.test(value) && DATE_TIME.test(`${value}T00:00:00Z`);
+}
+
+/** RFC 3339 full-time; second 60 is valid only at 23:59 UTC. */
+function isFullTime(value: string): boolean {
+  const match = FULL_TIME.exec(value);
+  if (match === null) {
+    return false;
+  }
+  const [, hour, minute, second, sign, offsetHour, offsetMinute] = match;
+  if (second !== '60') {
+    return true;
+  }
+  const offset = (sign === '-' ? -1 : 1) * (Number(offsetHour ?? 0) * 60 + Number(offsetMinute ?? 0));
+  return (Number(hour) * 60 + Number(minute) - offset + 1440) % 1440 === 1439;
+}
+
+/** RFC 3339 date-time: a full-date, `T` or `t`, then a full-time. */
+function isDateTime(value: string): boolean {
+  return (value[10] === 'T' || value[10] === 't') && isFullDate(value.slice(0, 10)) && isFullTime(value.slice(11));
+}
+
 const ajv = new Ajv2020({
   strict: false,
   allErrors: true,
   validateFormats: true,
   formats: {
     uuid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
-    'date-time': /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})$/,
-    date: /^\d{4}-\d{2}-\d{2}$/,
+    // Calendar dates from the envelope pattern; RFC 3339 time grammar with unbounded fractions and 23:59 UTC leap seconds.
+    'date-time': isDateTime,
+    date: isFullDate,
+    time: isFullTime,
     email: /^[^\s@]+@[^\s@]+$/,
     uri: /^[a-z][a-z0-9+.-]*:\S*$/i,
     int32: true,
@@ -480,4 +520,3 @@ export function assertProducerConsumerCompatible(producerSchema: object, expecta
     throw new ContractAssertionError(`producer ${schemaLabel(producerSchema)}`, errors);
   }
 }
-

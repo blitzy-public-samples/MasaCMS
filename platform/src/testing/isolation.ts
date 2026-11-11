@@ -29,6 +29,7 @@ import {
   requireTenantTx,
   tenantDbFromPool,
   withTenant,
+  type Pool,
   type TenantDb,
   type TenantTx,
 } from '../tenancy/index.js';
@@ -314,6 +315,10 @@ export interface IsolationSuiteOptions {
   writeAs(tx: TenantTx, table: string, tenant: TenantFixture): Promise<void>;
   /** Reads every row of `table` visible in `tx`, through service code or a plain SELECT. */
   readAs(tx: TenantTx, table: string): Promise<unknown[]>;
+  /** Column values of a fresh row of `table` for `tenant` that meets every constraint; the suite sets `tenant_id` itself. */
+  rowFor(table: string, tenant: TenantFixture): Record<string, unknown>;
+  /** Tenant id owning a row readAs returned, or undefined when unknown; defaults to its `tenant_id` or `tenantId`. */
+  tenantOf?(table: string, row: unknown): string | undefined;
   event?: IsolationEventOptions;
   fanout?: IsolationFanoutOptions;
   grant?: IsolationGrantOptions;
@@ -369,6 +374,54 @@ async function sqlStateOf(work: Promise<unknown>): Promise<string> {
   } catch (err) {
     const code = typeof err === 'object' && err !== null ? (err as { code?: unknown }).code : undefined;
     return typeof code === 'string' ? code : `non-SQL error: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+/** Parameterised SQL text and its values. */
+interface Statement {
+  text: string;
+  values: unknown[];
+}
+
+/** The INSERT of `row` into `<schema>.<table>` with `tenant_id` = `tenantId`; throws TypeError naming non-snake columns. */
+function insertOf(schema: string, table: string, row: Record<string, unknown>, tenantId: string): Statement {
+  const columns = Object.keys(row).filter((column) => column !== 'tenant_id');
+  const invalid = columns.filter((column) => !IDENTIFIER.test(column));
+  if (invalid.length > 0) {
+    throw new TypeError(`defineIsolationSuite: rowFor(${JSON.stringify(table)}) returned non-snake columns ${JSON.stringify(invalid)}`);
+  }
+  const names = ['tenant_id', ...columns].map((column) => `"${column}"`);
+  const placeholders = names.map((_, index) => `$${String(index + 1)}`);
+  return {
+    text: `INSERT INTO ${quoted(schema, table)} (${names.join(', ')}) VALUES (${placeholders.join(', ')})`,
+    values: [tenantId, ...columns.map((column) => row[column])],
+  };
+}
+
+/** The SQLSTATE of `statement` in `tx`, or 'no error'; a savepoint rolls its effects back and keeps `tx` usable. */
+async function probe(tx: TenantTx, statement: Statement): Promise<string> {
+  await tx.query('SAVEPOINT isolation_probe');
+  const outcome = await sqlStateOf(tx.query(statement.text, statement.values));
+  await tx.query('ROLLBACK TO SAVEPOINT isolation_probe');
+  return outcome;
+}
+
+/** The backend pid and SQLSTATE of `statement` run between BEGIN and ROLLBACK on a client of `pool`, outside any tenant. */
+async function probeOutsideTenant(pool: Pool, statement: Statement): Promise<{ pid: number | undefined; state: string }> {
+  const client = await pool.connect();
+  let failure: Error | undefined;
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+    const state = await sqlStateOf(client.query(statement.text, statement.values));
+    await client.query('ROLLBACK');
+    return { pid: rows[0]?.pid, state };
+  } catch (err) {
+    // A client that failed mid-transaction may still hold it, so pg must destroy it.
+    failure = err instanceof Error ? err : new Error(String(err));
+    throw err;
+  } finally {
+    client.release(failure);
   }
 }
 
@@ -436,6 +489,8 @@ interface SuiteContext {
 function registerReadCases({ api, options, tables, ready }: SuiteContext): void {
   const { expect } = api;
   for (const table of tables) {
+    const ownerOf = (row: unknown): string | undefined =>
+      options.tenantOf === undefined ? rowTenant(row) : options.tenantOf(table, row)?.toLowerCase();
     for (const tenant of TENANT_LIST) {
       const who = tenantLabel(tenant);
       api.it(`${who} sees only its own rows in ${table}`, async () => {
@@ -447,15 +502,15 @@ function registerReadCases({ api, options, tables, ready }: SuiteContext): void 
           expect(foreign, `rows of other tenants visible to ${who} in ${table}`).toEqual([]);
           expect(counts.get(tenant.tenantId) ?? 0, `seeded rows of ${who} in ${table}`).toBeGreaterThanOrEqual(1);
           expect(visible.length, `rows readAs returned for ${who} in ${table}`).toBeGreaterThanOrEqual(1);
-          const mislabelled = visible.map(rowTenant).filter((tenantId) => tenantId !== undefined && tenantId !== tenant.tenantId);
-          expect(mislabelled, `tenant ids of rows readAs returned for ${who} in ${table}`).toEqual([]);
+          const notOwn = visible.map(ownerOf).filter((owner) => owner !== tenant.tenantId).map((owner) => owner ?? 'no tenant');
+          expect(notOwn, `owners other than ${who} of rows readAs returned in ${table}`).toEqual([]);
         });
       });
     }
   }
 }
 
-function registerWriteCases({ api, tables, ready }: SuiteContext): void {
+function registerWriteCases({ api, options, tables, ready }: SuiteContext): void {
   const { expect } = api;
   for (const table of tables) {
     for (const { writer, reader } of crossTenantPairs()) {
@@ -463,19 +518,18 @@ function registerWriteCases({ api, tables, ready }: SuiteContext): void {
       api.it(`${as} cannot insert, move into, update or delete rows of ${other} in ${table}`, async () => {
         const db = await ready();
         const target = quoted(db.schema, table);
-        const asWriter = <T>(fn: (tx: TenantTx) => Promise<T>): Promise<T> => withTenant(db.app, writer.tenantId, fn);
-        const inserted = await sqlStateOf(
-          asWriter((tx) => tx.query(`INSERT INTO ${target} (tenant_id) VALUES ($1)`, [reader.tenantId])),
-        );
-        expect(inserted, `INSERT of a ${other} row as ${as} in ${table}`).toBe(RLS_VIOLATION);
-        const moved = await sqlStateOf(
-          asWriter((tx) =>
-            tx.query(`UPDATE ${target} SET tenant_id = $1 WHERE tenant_id = $2`, [reader.tenantId, writer.tenantId]),
-          ),
-        );
-        expect(moved, `UPDATE moving rows of ${as} to ${other} in ${table}`).toBe(RLS_VIOLATION);
-        // Asserted inside the transaction, so an UPDATE or DELETE that did reach rows is rolled back.
-        await asWriter(async (tx) => {
+        const row = options.rowFor(table, writer);
+        const own = insertOf(db.schema, table, row, writer.tenantId);
+        const foreign = insertOf(db.schema, table, row, reader.tenantId);
+        const move = {
+          text: `UPDATE ${target} SET tenant_id = $1 WHERE tenant_id = $2`,
+          values: [reader.tenantId, writer.tenantId],
+        };
+        await withTenant(db.app, writer.tenantId, async (tx) => {
+          expect(await probe(tx, own), `INSERT of a complete ${as} row as ${as} in ${table}`).toBe('no error');
+          expect(await probe(tx, foreign), `INSERT of the same row as a ${other} row as ${as} in ${table}`).toBe(RLS_VIOLATION);
+          expect(await probe(tx, move), `UPDATE moving rows of ${as} to ${other} in ${table}`).toBe(RLS_VIOLATION);
+          // Asserted inside the transaction, so an UPDATE or DELETE that did reach rows is rolled back.
           const updated = await tx.query(`UPDATE ${target} SET tenant_id = tenant_id WHERE tenant_id = $1`, [reader.tenantId]);
           const deleted = await tx.query(`DELETE FROM ${target} WHERE tenant_id = $1`, [reader.tenantId]);
           expect(updated.rowCount, `rows of ${other} updated as ${as} in ${table}`).toBe(0);
@@ -486,12 +540,13 @@ function registerWriteCases({ api, tables, ready }: SuiteContext): void {
   }
 }
 
-function registerPoolReuseCases({ api, tables, ready }: SuiteContext): void {
+function registerPoolReuseCases({ api, options, tables, ready }: SuiteContext): void {
   const { expect } = api;
   for (const table of tables) {
     api.it(`a pooled connection reused after a tenant A transaction sees no rows of ${table} and cannot write it`, async () => {
       const db = await ready();
       const target = quoted(db.schema, table);
+      const insert = insertOf(db.schema, table, options.rowFor(table, TENANT_A), TENANT_A.tenantId);
       const pool = db.connect('app', { max: 1 });
       const reused = tenantDbFromPool(pool, { schema: db.schema });
       try {
@@ -499,16 +554,17 @@ function registerPoolReuseCases({ api, tables, ready }: SuiteContext): void {
           const { rows } = await tx.query<{ pid: number; n: number }>(
             `SELECT pg_backend_pid() AS pid, (SELECT count(*)::int FROM ${target}) AS n`,
           );
-          return rows[0];
+          return { row: rows[0], control: await probe(tx, insert) };
         });
         const after = await pool.query<{ pid: number; tenant: string; n: number }>(
           `SELECT pg_backend_pid() AS pid, coalesce(current_setting($1, true), '') AS tenant, (SELECT count(*)::int FROM ${target}) AS n`,
           [TENANT_SETTING],
         );
-        const inserted = await sqlStateOf(pool.query(`INSERT INTO ${target} (tenant_id) VALUES ($1)`, [TENANT_A.tenantId]));
-        expect(inside?.n ?? 0, `rows of tenant A in ${table} inside its transaction`).toBeGreaterThanOrEqual(1);
-        expect(after.rows[0], `the same connection after the transaction, in ${table}`).toEqual({ pid: inside?.pid, tenant: '', n: 0 });
-        expect(inserted, `INSERT into ${table} on the reused connection`).toBe(RLS_VIOLATION);
+        const outside = await probeOutsideTenant(pool, insert);
+        expect(inside.row?.n ?? 0, `rows of tenant A in ${table} inside its transaction`).toBeGreaterThanOrEqual(1);
+        expect(inside.control, `INSERT of a complete tenant A row into ${table} inside its transaction`).toBe('no error');
+        expect(after.rows[0], `the same connection after the transaction, in ${table}`).toEqual({ pid: inside.row?.pid, tenant: '', n: 0 });
+        expect(outside, `INSERT of the same row into ${table} on the reused connection`).toEqual({ pid: inside.row?.pid, state: RLS_VIOLATION });
       } finally {
         await reused.end();
       }
@@ -653,4 +709,3 @@ export function defineIsolationSuite(api: SuiteApi, options: IsolationSuiteOptio
     if (options.grant !== undefined) registerGrantCase(context, options.grant);
   });
 }
-

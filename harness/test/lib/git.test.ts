@@ -1,9 +1,11 @@
+import { execFile, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  DEFAULT_TIMEOUT_MS,
   catFileExists,
   commitSubject,
   defaultRunner,
@@ -22,6 +24,12 @@ vi.mock(import('../../src/lib/paths.js'), async (importOriginal) => {
   return { ...actual, assertOutsideRepo: vi.fn(actual.assertOutsideRepo) };
 });
 
+// Pass-through spy on execFile, so tests can see the options defaultRunner passes and the child it starts.
+vi.mock(import('node:child_process'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, execFile: vi.fn(actual.execFile) as unknown as typeof actual.execFile };
+});
+
 const SHA = '696383140578f8dea3ece26f80cd7bfb370ddf0f';
 const PIN_SUBJECT = 'Increase version to 7.6.1 in package files and configuration';
 const MISSING_SHA = '0'.repeat(40);
@@ -30,6 +38,11 @@ const pinPresent = await catFileExists(SHA);
 // Never created or entered: only fake runners receive it.
 const FAKE_CWD = path.join(os.tmpdir(), 'opt2-git-test-fake-cwd');
 const guard = vi.mocked(assertOutsideRepo);
+const execFileSpy = vi.mocked(execFile);
+// Deadline for the expiry cases; the escalation grace equals it below five seconds.
+const BUDGET_MS = 1000;
+// Slack for child start-up and exit on a loaded host beyond the deadline plus both graces.
+const MARGIN_MS = 2000;
 
 /** Committed contents of the scratch repository; the names exercise NUL splitting. */
 const COMMITTED: Record<string, string> = {
@@ -62,13 +75,56 @@ function recorder(answer: (call: Call) => string | Promise<string> = () => ''): 
   return { run, calls };
 }
 
+/** Recorder that runs each call through defaultRunner. */
+function passThrough(): { run: ProcessRunner; calls: Call[] } {
+  return recorder(async (call) => (await defaultRunner(call.file, call.args, { cwd: call.cwd })).stdout);
+}
+
+/** The `--output=` path of a recorded call, if it has one. */
+function outputOf(call: Call): string | undefined {
+  return call.args.find((arg) => arg.startsWith('--output='))?.slice('--output='.length);
+}
+
+const UUID_TAR_SUFFIX = /^\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tar$/;
+
+/** The first recorded `--output` tar, asserted to be a per-call `<target>.<uuid>.tar` beside `target`. */
+function archiveTar(calls: readonly Call[], target: string): string {
+  const tar = calls.map(outputOf).find((output) => output !== undefined) ?? '';
+  expect(tar.slice(0, target.length)).toBe(target);
+  expect(tar.slice(target.length)).toMatch(UUID_TAR_SUFFIX);
+  return tar;
+}
+
 /** Fake archive side effects: `git` writes its `--output` tar, `tar` writes one file into its working directory. */
 async function fakeArchiveStep(call: Call): Promise<void> {
   if (call.file === 'git') {
-    const output = call.args.find((arg) => arg.startsWith('--output='));
-    if (output !== undefined) await writeFile(output.slice('--output='.length), 'placeholder tar');
+    const output = outputOf(call);
+    if (output !== undefined) await writeFile(output, 'placeholder tar');
   } else {
     await writeFile(path.join(call.cwd, 'extracted.txt'), 'placeholder file');
+  }
+}
+
+/** The child process the latest execFile call started. */
+function lastChild(): ChildProcess {
+  const result = execFileSpy.mock.results.at(-1);
+  if (result?.type !== 'return') throw new Error('execFile started no child');
+  return result.value;
+}
+
+/** Asserts that no process with `pid` exists any more. */
+function expectGone(pid: number | undefined): void {
+  expect(pid).toBeGreaterThan(0);
+  expect(() => process.kill(pid ?? 0, 0)).toThrowError(expect.objectContaining({ code: 'ESRCH' }));
+}
+
+/** SIGKILLs `pid` unless it is not a positive pid or that process is already gone; pid 0 would name this process group. */
+function killIfAlive(pid: number): void {
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
   }
 }
 
@@ -157,8 +213,89 @@ describe('defaultRunner', () => {
     ['a non-zero exit with its numeric status', 'git', ['cat-file', '-e', `${MISSING_SHA}^{commit}`], {}, 128],
     ['a missing executable with ENOENT', 'opt2-no-such-executable', [], {}, 'ENOENT'],
     ['output beyond opts.maxBuffer', process.execPath, ['-e', "process.stdout.write('x'.repeat(4096))"], { maxBuffer: 1024 }, 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'],
-  ])('rejects on %s', async (_label, file, args, opts, code) => {
-    await expect(defaultRunner(file, args, { cwd: REPO_ROOT, ...opts })).rejects.toMatchObject({ code });
+  ])('rejects on %s, carrying the output read so far', async (_label, file, args, opts, code) => {
+    const error: unknown = await defaultRunner(file, args, { cwd: REPO_ROOT, ...opts }).catch((err: unknown) => err);
+    expect(error).toMatchObject({ code });
+    expect(error).toHaveProperty('stdout', expect.any(String));
+    expect(error).toHaveProperty('stderr', expect.any(String));
+  });
+
+  it('defaults the deadline to ten minutes', () => {
+    expect(DEFAULT_TIMEOUT_MS).toBe(10 * 60 * 1000);
+  });
+
+  it.each<[string, { timeoutMs?: number }, number]>([
+    ['DEFAULT_TIMEOUT_MS when opts.timeoutMs is omitted', {}, DEFAULT_TIMEOUT_MS],
+    ['opts.timeoutMs when given', { timeoutMs: 45_000 }, 45_000],
+  ])('runs execFile without a shell or Node timeout, arming and then clearing its own deadline of %s', async (_label, opts, deadline) => {
+    execFileSpy.mockClear();
+    const armed = vi.spyOn(globalThis, 'setTimeout');
+    const cleared = vi.spyOn(globalThis, 'clearTimeout');
+    try {
+      await expect(defaultRunner('git', ['--version'], { cwd: repo, ...opts })).resolves.toMatchObject({ stderr: '' });
+      expect(execFileSpy.mock.calls).toEqual([
+        ['git', ['--version'], { cwd: repo, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, shell: false }, expect.any(Function)],
+      ]);
+      const index = armed.mock.calls.findIndex((call) => call[1] === deadline);
+      expect(index).toBeGreaterThanOrEqual(0);
+      expect(cleared).toHaveBeenCalledWith(armed.mock.results[index]?.value);
+    } finally {
+      armed.mockRestore();
+      cleared.mockRestore();
+    }
+  });
+
+  it.each<[string, string, Record<string, unknown> | undefined]>([
+    ['dies of SIGTERM', '', { killed: true, code: null, signal: 'SIGTERM' }],
+    ['exits with a status on SIGTERM', "process.on('SIGTERM', () => process.exit(3));", { killed: true, code: 3 }],
+    ['exits 0 on SIGTERM', "process.on('SIGTERM', () => process.exit(0));", undefined],
+    ['ignores SIGTERM', "process.on('SIGTERM', () => {});", { killed: true, code: null, signal: 'SIGKILL' }],
+  ])('rejects with ETIMEDOUT naming the executable, and ends the child, when a child outliving opts.timeoutMs %s', async (_label, onTerm, cause) => {
+    execFileSpy.mockClear();
+    const started = Date.now();
+    const error: unknown = await defaultRunner(process.execPath, ['-e', `${onTerm}setInterval(() => {}, 1000);`], {
+      cwd: root,
+      timeoutMs: BUDGET_MS,
+    }).catch((err: unknown) => err);
+    expect(Date.now() - started).toBeLessThan(3 * BUDGET_MS + MARGIN_MS);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({ code: 'ETIMEDOUT', message: `${process.execPath} timed out after ${BUDGET_MS} ms` });
+    expect((error as Error).cause).toEqual(cause === undefined ? undefined : expect.objectContaining(cause));
+    expectGone(lastChild().pid);
+  });
+
+  it('rejects with ETIMEDOUT when a grandchild keeps the output pipes open after the child is killed', async () => {
+    execFileSpy.mockClear();
+    const script = [
+      "process.on('SIGTERM', () => {});",
+      "const grandchild = require('node:child_process').spawn('sleep', ['600'], { stdio: 'inherit' });",
+      'process.stdout.write(String(grandchild.pid));',
+      'setInterval(() => {}, 1000);',
+    ].join('');
+    const started = Date.now();
+    const pending = defaultRunner(process.execPath, ['-e', script], { cwd: root, timeoutMs: BUDGET_MS }).catch(
+      (err: unknown) => err,
+    );
+    const child = lastChild();
+    let printed = '';
+    child.stdout?.on('data', (chunk: string) => {
+      printed += chunk;
+    });
+    try {
+      const error = await pending;
+      expect(Date.now() - started).toBeLessThan(3 * BUDGET_MS + MARGIN_MS);
+      expect(error).toBeInstanceOf(Error);
+      expect(error).toMatchObject({ code: 'ETIMEDOUT', message: `${process.execPath} timed out after ${BUDGET_MS} ms` });
+      // execFile never called back, so there is no execFile error to carry.
+      expect((error as Error).cause).toBeUndefined();
+      expectGone(child.pid);
+      // The grandchild still holds the pipes, so the call settled without them closing.
+      const grandchildPid = Number(printed);
+      expect(grandchildPid).toBeGreaterThan(0);
+      expect(process.kill(grandchildPid, 0)).toBe(true);
+    } finally {
+      killIfAlive(Number(printed));
+    }
   });
 });
 
@@ -292,6 +429,7 @@ describe('catFileExists', () => {
 
   it.each<[string, unknown]>([
     ['a spawn failure with code ENOENT', Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' })],
+    ['a deadline expiry with code ETIMEDOUT', Object.assign(new Error('git timed out after 600000 ms'), { code: 'ETIMEDOUT' })],
     ['a numeric-looking string code', Object.assign(new Error('git failed'), { code: '128' })],
     ['an error without a code', new Error('runner failed')],
     ['a thrown null', null],
@@ -323,11 +461,12 @@ describe('this checkout, through defaultRunner and REPO_ROOT', () => {
   });
 
   it('gitArchiveExtract extracts HEAD into a new directory under os.tmpdir()', async () => {
-    const target = await gitArchiveExtract('HEAD');
+    const { run, calls } = passThrough();
+    const target = await gitArchiveExtract('HEAD', undefined, { run });
     extracted.push(target);
     expect(path.dirname(target)).toBe(path.resolve(os.tmpdir()));
     expect(existsSync(path.join(target, 'core', 'tests', 'runner.cfm'))).toBe(true);
-    expect(existsSync(`${target}.tar`)).toBe(false);
+    expect(existsSync(archiveTar(calls, target))).toBe(false);
   });
 });
 
@@ -411,17 +550,21 @@ describe('gitArchiveExtract with a fake runner', () => {
     { mode: 'a new opt2-archive-* directory under tmpRoot', explicit: false, precreate: false, cwd: FAKE_CWD },
     { mode: 'an absent explicit directory', explicit: true, precreate: false, cwd: undefined },
     { mode: 'an existing empty explicit directory', explicit: true, precreate: true, cwd: undefined },
-  ])('checks its paths, archives to <target>.tar, extracts into $mode and removes the tar', async ({ explicit, precreate, cwd }) => {
+  ])('checks its paths, archives to a reserved <target>.<uuid>.tar, extracts into $mode and removes the tar', async ({ explicit, precreate, cwd }) => {
     const tmpRoot = await caseDir();
     const dir = explicit ? path.join(tmpRoot, 'out', 'nested') : undefined;
     if (dir !== undefined && precreate) await mkdir(dir, { recursive: true });
+    const reservedAtArchive: string[] = [];
     const { run, calls } = recorder(async (call) => {
+      const output = outputOf(call);
+      if (output !== undefined) reservedAtArchive.push(await readFile(output, 'utf8'));
       await fakeArchiveStep(call);
       return '';
     });
 
     const target = await gitArchiveExtract(SHA, dir, { run, cwd, tmpRoot });
-    const tar = `${target}.tar`;
+    const tar = archiveTar(calls, target);
+    expect(reservedAtArchive).toEqual(['']);
 
     if (dir === undefined) {
       expect(path.dirname(target)).toBe(tmpRoot);
@@ -504,6 +647,30 @@ describe('gitArchiveExtract with a fake runner', () => {
     for (const name of await readdir(tmpRoot)) remaining[name] = await readdir(path.join(tmpRoot, name));
     expect(remaining).toEqual(left);
   });
+
+  it('gives concurrent extractions into one target their own tar and removes both', async () => {
+    const parent = await caseDir();
+    const dir = path.join(parent, 'out');
+    let release = (): void => {};
+    const bothArchiving = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { run, calls } = recorder(async (call) => {
+      if (call.file === 'git') {
+        // Hold each archive step until both calls have passed the emptiness check and reserved their tar.
+        if (calls.filter((recorded) => recorded.file === 'git').length === 2) release();
+        await bothArchiving;
+      }
+      await fakeArchiveStep(call);
+      return '';
+    });
+
+    await expect(Promise.all([gitArchiveExtract(SHA, dir, { run }), gitArchiveExtract(SHA, dir, { run })])).resolves.toEqual([dir, dir]);
+
+    const tars = calls.filter((call) => call.file === 'git').map((call) => archiveTar([call], dir));
+    expect(new Set(tars).size).toBe(2);
+    expect(await readdir(parent)).toEqual(['out']);
+  });
 });
 
 describe('gitArchiveExtract on a scratch repository, through defaultRunner', () => {
@@ -523,15 +690,36 @@ describe('gitArchiveExtract on a scratch repository, through defaultRunner', () 
   });
 
   it('defaults tmpRoot to os.tmpdir()', async () => {
-    const target = await gitArchiveExtract(head, undefined, { cwd: repo });
+    const { run, calls } = passThrough();
+    const target = await gitArchiveExtract(head, undefined, { run, cwd: repo });
     try {
       expect(path.dirname(target)).toBe(path.resolve(os.tmpdir()));
       expect(path.basename(target)).toMatch(/^opt2-archive-/);
-      expect(existsSync(`${target}.tar`)).toBe(false);
+      expect(existsSync(archiveTar(calls, target))).toBe(false);
       expect(await contentsUnder(target)).toEqual(COMMITTED);
     } finally {
       await rm(target, { recursive: true, force: true });
     }
+  });
+
+  it.each<[string, () => string, string | number, Record<string, string>]>([
+    ['a successful extraction', () => head, 'resolved', COMMITTED],
+    ['a failing extraction', () => MISSING_SHA, 128, {}],
+  ])('leaves a pre-existing <target>.tar byte-for-byte through %s', async (_label, rev, outcome, extracted) => {
+    const parent = await caseDir();
+    const dir = path.join(parent, 'out');
+    const bytes = Buffer.concat([Buffer.from([0x00, 0xfe, 0xff]), Buffer.from('unrelated sibling archive\n')]);
+    await writeFile(`${dir}.tar`, bytes);
+
+    const settled = await gitArchiveExtract(rev(), dir, { cwd: repo }).then(
+      () => 'resolved',
+      (err: { code?: unknown }) => err.code,
+    );
+
+    expect(settled).toBe(outcome);
+    expect(await readFile(`${dir}.tar`)).toEqual(bytes);
+    expect(sorted(await readdir(parent))).toEqual(['out', 'out.tar']);
+    expect(await contentsUnder(dir)).toEqual(extracted);
   });
 
   it('removes its own directory and the tar when git cannot archive the revision', async () => {

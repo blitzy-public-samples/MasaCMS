@@ -471,4 +471,3 @@ export function diffCoverage(
   const have = indexCoverage(actual);
   return { missing: absentColumns(want, have), extra: absentColumns(have, want) };
 }
-

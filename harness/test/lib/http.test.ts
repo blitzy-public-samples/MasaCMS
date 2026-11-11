@@ -1,7 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { CookieJar } from 'tough-cookie';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createHttpSession, type FetchLike, type HttpRequest, type MultipartFile } from '../../src/lib/http.js';
+import {
+  createHttpSession,
+  HttpRequestError,
+  type FetchLike,
+  type HttpRequest,
+  type MultipartFile,
+} from '../../src/lib/http.js';
 
 // No listener on this port; every request goes to an injected fetch stub.
 const BASE = 'http://127.0.0.1:8500/';
@@ -75,8 +81,59 @@ function redirectChain(redirects: number): { fetch: FetchLike; calls: Call[] } {
   return { fetch, calls };
 }
 
+/** Fetch stub running the next step per call and ignoring the signal, as a misbehaving fetch would. */
+function stepped(...steps: (() => Promise<Response>)[]): { fetch: FetchLike; calls: Call[] } {
+  const calls: Call[] = [];
+  const fetch: FetchLike = (url, init) => {
+    calls.push({ url, init });
+    const next = steps.shift();
+    return next === undefined ? Promise.reject(new Error(`Unscripted request: ${url}`)) : next();
+  };
+  return { fetch, calls };
+}
+
+const never = (): Promise<Response> => new Promise<Response>(() => undefined);
+
+/** Step answering `make()` after `ms`. */
+function after(ms: number, make: () => Response): () => Promise<Response> {
+  return () => new Promise<Response>((resolve) => setTimeout(() => resolve(make()), ms));
+}
+
+/** Body stream holding one chunk that never ends; `cancelled()` gives the reason it was cancelled with. */
+function endlessBody(): { stream: ReadableStream<Uint8Array>; cancelled: () => unknown } {
+  let reason: unknown;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('partial'));
+    },
+    cancel(why) {
+      reason = why;
+    },
+  });
+  return { stream, cancelled: () => reason };
+}
+
+/** The value `promise` rejects with; fails when it resolves. */
+function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
+  return promise.then(
+    () => expect.unreachable('expected a rejection'),
+    (err: unknown) => err,
+  );
+}
+
+/** The value `fn` throws; fails when it returns. */
+function thrownBy(fn: () => unknown): unknown {
+  try {
+    fn();
+  } catch (err) {
+    return err;
+  }
+  return expect.unreachable('expected a throw');
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe('set-cookie-login fixture', () => {
@@ -128,12 +185,17 @@ describe('createHttpSession request building', () => {
     expect(result.hops.map((hop) => hop.url)).toEqual([expected]);
   });
 
-  it('sends GET by default, with manual redirects, no body and the caller signal', async () => {
+  it('sends GET by default, with manual redirects, no body and a signal following the caller signal', async () => {
     const { fetch, calls } = scripted(reply());
-    const { signal } = new AbortController();
-    await createHttpSession({ baseUrl: BASE, fetch }).request({ path: '/', signal });
+    const controller = new AbortController();
+    await createHttpSession({ baseUrl: BASE, fetch }).request({ path: '/', signal: controller.signal });
 
-    expect(calls[0]?.init).toEqual({ method: 'GET', headers: {}, body: undefined, redirect: 'manual', signal });
+    const { signal, ...init } = calls[0]?.init ?? {};
+    expect(init).toEqual({ method: 'GET', headers: {}, body: undefined, redirect: 'manual' });
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal?.aborted).toBe(false);
+    controller.abort();
+    expect(signal?.aborted).toBe(true);
   });
 
   it.each<{ label: string; abortBeforeCall: number }>([
@@ -151,7 +213,7 @@ describe('createHttpSession request building', () => {
       createHttpSession({ baseUrl: BASE, fetch: aborting }).get('/', { signal: controller.signal }),
     ).rejects.toMatchObject({ name: 'AbortError' });
     expect(calls).toHaveLength(abortBeforeCall + 1);
-    expect(calls.every((call) => call.init.signal === controller.signal)).toBe(true);
+    expect(calls.every((call) => call.init.signal?.aborted === true)).toBe(true);
   });
 
   it('upper-cases the method and lower-cases header names, request headers over defaults', async () => {
@@ -288,12 +350,23 @@ describe('createHttpSession responses', () => {
     expect(result.json<{ data: { id: number } }>().data.id).toBe(1);
   });
 
-  it('throws from json() on a non-JSON body', async () => {
+  it('throws HttpRequestError from json() on a non-JSON body, keeping the parse error as the cause only', async () => {
     const { fetch } = scripted(reply({ headers: [['content-type', 'text/html']], body: '<html>Masa</html>' }));
     const result = await createHttpSession({ baseUrl: BASE, fetch }).get('/');
 
     expect(result.text).toBe('<html>Masa</html>');
-    expect(() => result.json()).toThrow(SyntaxError);
+    const err = thrownBy(() => result.json());
+    expect(err).toBeInstanceOf(HttpRequestError);
+    expect(err).toMatchObject({
+      name: 'HttpRequestError',
+      message: 'response body is not JSON: GET http://127.0.0.1:8500/ (hop 1, status 200)',
+      method: 'GET',
+      target: BASE,
+      hop: 1,
+      status: 200,
+    });
+    expect((err as Error).cause).toBeInstanceOf(SyntaxError);
+    expect((err as Error).message).not.toMatch(/html|Masa/);
   });
 
   it('gives set-cookie as an empty array when the response sets none', async () => {
@@ -480,10 +553,14 @@ describe('createHttpSession redirects', () => {
   it.each<{ status: number; method: string; next: string; keepsBody: boolean }>([
     { status: 301, method: 'POST', next: 'GET', keepsBody: false },
     { status: 302, method: 'POST', next: 'GET', keepsBody: false },
-    { status: 302, method: 'DELETE', next: 'GET', keepsBody: false },
     { status: 303, method: 'POST', next: 'GET', keepsBody: false },
-    { status: 303, method: 'GET', next: 'GET', keepsBody: false },
-    { status: 303, method: 'HEAD', next: 'GET', keepsBody: false },
+    { status: 303, method: 'PUT', next: 'GET', keepsBody: false },
+    { status: 303, method: 'DELETE', next: 'GET', keepsBody: false },
+    { status: 301, method: 'PUT', next: 'PUT', keepsBody: true },
+    { status: 302, method: 'PATCH', next: 'PATCH', keepsBody: true },
+    { status: 302, method: 'DELETE', next: 'DELETE', keepsBody: true },
+    { status: 303, method: 'GET', next: 'GET', keepsBody: true },
+    { status: 303, method: 'HEAD', next: 'HEAD', keepsBody: true },
     { status: 301, method: 'GET', next: 'GET', keepsBody: true },
     { status: 302, method: 'HEAD', next: 'HEAD', keepsBody: true },
     { status: 307, method: 'POST', next: 'POST', keepsBody: true },
@@ -572,6 +649,7 @@ describe('createHttpSession redirects', () => {
     { label: 'a Location on 201', status: 201, location: '/created' },
     { label: 'a Location on 300', status: 300, location: '/choice' },
     { label: 'a Location on 304', status: 304, location: '/cached' },
+    { label: 'a 500 without Location', status: 500 },
   ])('stops at $label', async ({ status, location }) => {
     const { fetch, calls } = scripted(reply({ status, headers: location === undefined ? [] : [['location', location]] }));
     const result = await createHttpSession({ baseUrl: BASE, fetch }).get('/');
@@ -592,16 +670,285 @@ describe('createHttpSession redirects', () => {
     const { fetch, calls } = redirectChain(redirects);
     const session = createHttpSession({ baseUrl: BASE, fetch, ...(maxRedirects === undefined ? {} : { maxRedirects }) });
     const limit = maxRedirects ?? 20;
+    const query = { csrf_token: 'q1' };
 
     if (throws) {
-      await expect(session.get('/loop')).rejects.toThrow(`Too many redirects (maxRedirects=${limit}) from ${BASE}loop`);
+      const err = await rejectionOf(session.get('/loop', { query }));
+      const last = limit === 0 ? `${BASE}loop` : `${BASE}r${limit}`;
+      expect(err).toBeInstanceOf(HttpRequestError);
+      expect(err).toMatchObject({
+        message: `Too many redirects (maxRedirects=${limit}): GET ${last} (hop ${limit + 1}, status 302)`,
+        target: last,
+        hop: limit + 1,
+        status: 302,
+      });
+      expect((err as Error).message).not.toContain('q1');
       expect(calls).toHaveLength(limit + 1);
     } else {
-      const result = await session.get('/loop');
+      const result = await session.get('/loop', { query });
       expect(result.status).toBe(200);
       expect(result.hops).toHaveLength(redirects + 1);
       expect(result.url).toBe(`${BASE}r${redirects}`);
     }
+  });
+});
+
+describe('createHttpSession cross-origin redirects', () => {
+  const credentials = {
+    Authorization: 'Bearer a1',
+    'Proxy-Authorization': 'Basic p1',
+    'X-Serverless-Authorization': 'Bearer s1',
+    Cookie: 'explicit=c1',
+    'X-Keep': '1',
+  };
+  const sentCredentials = {
+    authorization: 'Bearer a1',
+    'proxy-authorization': 'Basic p1',
+    'x-serverless-authorization': 'Bearer s1',
+    cookie: 'explicit=c1',
+    'x-keep': '1',
+  };
+
+  it.each<{ label: string; status: number; method: string; destination: string; next: string }>([
+    { label: 'host', status: 302, method: 'GET', destination: 'http://localhost:8500/next', next: 'GET' },
+    { label: 'port', status: 307, method: 'GET', destination: 'http://127.0.0.1:8501/next', next: 'GET' },
+    { label: 'scheme', status: 308, method: 'HEAD', destination: 'https://127.0.0.1:8500/next', next: 'HEAD' },
+    { label: 'host', status: 303, method: 'POST', destination: 'http://localhost:8500/next', next: 'GET' },
+  ])('follows $status after $method to another $label without credential headers', async (row) => {
+    const { status, method, destination, next } = row;
+    const { fetch, calls } = scripted(reply({ status, headers: [['location', destination]] }), reply());
+    const session = createHttpSession({ baseUrl: BASE, fetch });
+    await session.jar.setCookie('dest=1; Path=/', destination);
+    const result = await session.request({
+      method,
+      path: '/start',
+      headers: credentials,
+      ...(method === 'POST' ? { form: { a: '1' } } : {}),
+    });
+
+    expect(result.status).toBe(200);
+    expect(calls.map((call) => [call.init.method, call.url])).toEqual([
+      [method, `${BASE}start`],
+      [next, destination],
+    ]);
+    expect(calls[0]?.init.headers).toMatchObject(sentCredentials);
+    expect(calls[1]?.init.body).toBeUndefined();
+    expect(calls[1]?.init.headers).toEqual({ 'x-keep': '1', cookie: 'dest=1' });
+  });
+
+  it('keeps credential headers on a same-origin redirect', async () => {
+    const { fetch, calls } = scripted(reply({ status: 302, headers: [['location', '/next']] }), reply());
+    await createHttpSession({ baseUrl: BASE, fetch }).get('/start', { headers: credentials });
+
+    expect(calls.map((call) => call.init.headers)).toEqual([sentCredentials, sentCredentials]);
+  });
+
+  it('does not restore credential headers when a later redirect returns to the first origin', async () => {
+    const { fetch, calls } = scripted(
+      reply({ status: 302, headers: [['location', 'http://localhost:8500/b']] }),
+      reply({ status: 302, headers: [['location', `${BASE}a`]] }),
+      reply(),
+    );
+    await createHttpSession({ baseUrl: BASE, fetch }).get('/start', { headers: credentials });
+
+    expect(calls.map((call) => [call.url, call.init.headers])).toEqual([
+      [`${BASE}start`, sentCredentials],
+      ['http://localhost:8500/b', { 'x-keep': '1' }],
+      [`${BASE}a`, { 'x-keep': '1' }],
+    ]);
+  });
+
+  it.each<{ status: number; method: string }>([
+    { status: 307, method: 'POST' },
+    { status: 308, method: 'PUT' },
+    { status: 302, method: 'PATCH' },
+  ])('refuses to resend a $method body to another origin on $status', async ({ status, method }) => {
+    const location = 'http://localhost:8500/upload';
+    const { fetch, calls } = scripted(reply({ status, headers: [['location', location]] }), reply());
+    const err = await rejectionOf(
+      createHttpSession({ baseUrl: BASE, fetch }).request({ method, path: '/upload?k=q1', form: { password: 'p1' } }),
+    );
+
+    expect(err).toBeInstanceOf(HttpRequestError);
+    expect(err).toMatchObject({
+      message: `refusing to resend the request body to another origin: ${method} ${BASE}upload (hop 1, status ${status})`,
+      hop: 1,
+      status,
+    });
+    expect((err as Error).message).not.toMatch(/q1|p1/);
+    expect(calls).toHaveLength(1);
+  });
+});
+
+describe('createHttpSession deadline', () => {
+  type Steps = (body: ReadableStream<Uint8Array>) => (() => Promise<Response>)[];
+  /** 302 to `/next` whose body's cancel() never settles. */
+  const stalledRedirect = async (): Promise<Response> =>
+    reply({
+      status: 302,
+      headers: [['location', '/next']],
+      body: new ReadableStream<Uint8Array>({ cancel: () => new Promise<void>(() => undefined) }),
+    });
+
+  it.each<{ label: string; timeoutMs: number; steps: Steps; expected: string; cancelsBody: boolean }>([
+    {
+      label: 'a response that never arrives',
+      timeoutMs: 30,
+      steps: () => [never],
+      expected: `timed out after 30 ms: GET ${BASE}admin/ (hop 1)`,
+      cancelsBody: false,
+    },
+    {
+      label: 'a body that never ends',
+      timeoutMs: 30,
+      steps: (body) => [async () => new Response(body)],
+      expected: `timed out after 30 ms: GET ${BASE}admin/ (hop 1, status 200)`,
+      cancelsBody: true,
+    },
+    {
+      label: 'hops that each fit but together outlast it',
+      timeoutMs: 60,
+      steps: () => [after(40, () => reply({ status: 302, headers: [['location', '/next']] })), after(40, () => reply())],
+      expected: `timed out after 60 ms: GET ${BASE}next (hop 2)`,
+      cancelsBody: false,
+    },
+    {
+      label: 'a redirect body cancel that never settles',
+      timeoutMs: 30,
+      steps: () => [stalledRedirect],
+      expected: `timed out after 30 ms: GET ${BASE}admin/ (hop 1, status 302)`,
+      cancelsBody: false,
+    },
+  ])('rejects with HttpRequestError on $label', async ({ timeoutMs, steps, expected, cancelsBody }) => {
+    const body = endlessBody();
+    const { fetch, calls } = stepped(...steps(body.stream));
+    const err = await rejectionOf(createHttpSession({ baseUrl: BASE, fetch }).get('/admin/', { timeoutMs }));
+
+    expect(err).toBeInstanceOf(HttpRequestError);
+    expect((err as Error).message).toBe(expected);
+    expect((err as Error).cause).toMatchObject({ name: 'TimeoutError' });
+    expect(body.cancelled()).toBe(cancelsBody ? (err as Error).cause : undefined);
+    expect(calls).toHaveLength((err as HttpRequestError).hop);
+  });
+
+  it.each<{ label: string; session?: number; request?: number; expected: number }>([
+    { label: 'the 300 s default when neither sets one', expected: 300_000 },
+    { label: 'the session timeoutMs when the request sets none', session: 1_000, expected: 1_000 },
+    { label: 'the request timeoutMs over the session one', session: 1_000, request: 2_000, expected: 2_000 },
+  ])('takes the deadline from $label', async ({ session, request, expected }) => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const { fetch } = scripted(reply());
+    await createHttpSession({ baseUrl: BASE, fetch, ...(session === undefined ? {} : { timeoutMs: session }) }).get(
+      '/',
+      request === undefined ? {} : { timeoutMs: request },
+    );
+
+    expect(timeout.mock.calls).toEqual([[expected]]);
+  });
+
+  it.each<{ label: string; steps: Steps }>([
+    { label: 'waiting for the response', steps: () => [never] },
+    { label: 'reading the body', steps: (body) => [async () => new Response(body)] },
+    { label: 'cancelling a redirect body', steps: () => [stalledRedirect] },
+  ])('rejects with the caller abort reason when the caller aborts first, while $label', async ({ steps }) => {
+    const controller = new AbortController();
+    const body = endlessBody();
+    const { fetch } = stepped(...steps(body.stream));
+    setTimeout(() => controller.abort(), 10);
+    const err = await rejectionOf(
+      createHttpSession({ baseUrl: BASE, fetch }).get('/', { signal: controller.signal, timeoutMs: 5_000 }),
+    );
+
+    expect(err).toMatchObject({ name: 'AbortError' });
+    expect(err).toBe(controller.signal.reason);
+  });
+});
+
+describe('createHttpSession failures', () => {
+  const socketError = (): Error => Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' });
+
+  it.each<{ label: string; path: string; cause: Error; expected: string }>([
+    {
+      label: 'a refused connection',
+      path: '/admin/?csrf_token=s3cr3t',
+      cause: new TypeError('fetch failed', {
+        cause: Object.assign(new Error('connect ECONNREFUSED s3cr3t'), { code: 'ECONNREFUSED' }),
+      }),
+      expected: `request failed (ECONNREFUSED): GET ${BASE}admin/ (hop 1)`,
+    },
+    {
+      label: 'a socket error on a URL with userinfo and a fragment',
+      path: 'http://user:s3cr3t@127.0.0.1:8500/admin/#s3cr3t',
+      cause: new TypeError('fetch failed', { cause: socketError() }),
+      expected: `request failed (UND_ERR_SOCKET): GET ${BASE}admin/ (hop 1)`,
+    },
+    {
+      label: 'an error without a system code',
+      path: '/admin/',
+      cause: Object.assign(new Error('s3cr3t'), { code: 's3cr3t' }),
+      expected: `request failed: GET ${BASE}admin/ (hop 1)`,
+    },
+  ])('reports $label with method, origin, path and hop only', async ({ path, cause, expected }) => {
+    const fetch: FetchLike = () => Promise.reject(cause);
+    const err = await rejectionOf(
+      createHttpSession({ baseUrl: BASE, fetch }).get(path, { headers: { Authorization: 'Bearer s3cr3t' } }),
+    );
+
+    expect(err).toBeInstanceOf(HttpRequestError);
+    expect(err).toMatchObject({ message: expected, method: 'GET', target: `${BASE}admin/`, hop: 1, status: undefined });
+    expect((err as Error).cause).toBe(cause);
+    expect((err as Error).message).not.toContain('s3cr3t');
+  });
+
+  it('reports the hop that failed after a redirect', async () => {
+    const cause = new TypeError('fetch failed', { cause: socketError() });
+    const { fetch } = stepped(
+      async () => reply({ status: 302, headers: [['location', '/next?k=s3cr3t']] }),
+      () => Promise.reject(cause),
+    );
+    const err = await rejectionOf(createHttpSession({ baseUrl: BASE, fetch }).get('/start'));
+
+    expect(err).toBeInstanceOf(HttpRequestError);
+    expect(err).toMatchObject({ message: `request failed (UND_ERR_SOCKET): GET ${BASE}next (hop 2)`, hop: 2 });
+    expect((err as Error).cause).toBe(cause);
+  });
+
+  it.each<{ label: string; status: number; headers: [string, string][]; what: string }>([
+    { label: 'a body read failure', status: 502, headers: [], what: 'response body read failed' },
+    {
+      label: 'a failed redirect body cancel',
+      status: 302,
+      headers: [['location', '/next']],
+      what: 'redirect body cancel failed',
+    },
+  ])('reports $label with the response status', async ({ status, headers, what }) => {
+    const cause = new TypeError('terminated s3cr3t', { cause: socketError() });
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(cause);
+      },
+    });
+    const { fetch, calls } = scripted(new Response(stream, { status, headers }), reply());
+    const err = await rejectionOf(createHttpSession({ baseUrl: BASE, fetch }).get('/admin/?csrf_token=s3cr3t'));
+
+    expect(err).toBeInstanceOf(HttpRequestError);
+    expect(err).toMatchObject({
+      message: `${what} (UND_ERR_SOCKET): GET ${BASE}admin/ (hop 1, status ${status})`,
+      hop: 1,
+      status,
+    });
+    expect((err as Error).cause).toBe(cause);
+    expect((err as Error).message).not.toContain('s3cr3t');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('rejects an unparsable redirect Location with the hop that returned it', async () => {
+    const { fetch, calls } = scripted(reply({ status: 302, headers: [['location', 'http://[::1']] }));
+    const err = await rejectionOf(createHttpSession({ baseUrl: BASE, fetch }).get('/start'));
+
+    expect(err).toBeInstanceOf(HttpRequestError);
+    expect((err as Error).message).toBe(`invalid redirect location: GET ${BASE}start (hop 1, status 302)`);
+    expect(calls).toHaveLength(1);
   });
 });
 

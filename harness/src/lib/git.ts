@@ -1,30 +1,68 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, mkdtemp, open, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { REPO_ROOT, assertOutsideRepo } from './paths.js';
 
 /** Runs `file` with `args` directly, without a shell, and resolves with its decoded output. */
 export type ProcessRunner = (
   file: string,
   args: readonly string[],
-  opts: { cwd: string; maxBuffer?: number },
+  opts: { cwd: string; maxBuffer?: number; timeoutMs?: number },
 ) => Promise<{ stdout: string; stderr: string }>;
 
 const DEFAULT_MAX_BUFFER = 64 * 1024 * 1024;
-const execFileAsync = promisify(execFile);
+// Departs from Rule "WIP - Minimal Change 2" (no timeouts), which does not bind this refactor: a hung child would otherwise block its caller.
+/** Deadline `defaultRunner` applies when `opts.timeoutMs` is omitted. */
+export const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
+/** Longest wait after each escalation step past the deadline, capped at the deadline itself. */
+const KILL_GRACE_MS = 5_000;
 
-/** `execFile` runner with UTF-8 output and a 64 MiB default output limit; rejects on a non-zero exit. */
-export const defaultRunner: ProcessRunner = async (file, args, opts) => {
-  const { stdout, stderr } = await execFileAsync(file, [...args], {
-    cwd: opts.cwd,
-    encoding: 'utf8',
-    maxBuffer: opts.maxBuffer ?? DEFAULT_MAX_BUFFER,
-    shell: false,
+/** `execFile` runner (UTF-8, 64 MiB and `DEFAULT_TIMEOUT_MS` defaults); rejects on a non-zero exit, or with code `ETIMEDOUT` once past its deadline. */
+export const defaultRunner: ProcessRunner = (file, args, opts) =>
+  new Promise((resolve, reject) => {
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const grace = Math.min(KILL_GRACE_MS, timeoutMs);
+    let timedOut = false;
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+    const settle = (error: Error | null, stdout: string, stderr: string): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (timedOut) {
+        const expired = new Error(`${file} timed out after ${timeoutMs} ms`, error === null ? {} : { cause: error });
+        reject(Object.assign(expired, { code: 'ETIMEDOUT' }));
+      } else if (error === null) {
+        resolve({ stdout, stderr });
+      } else {
+        reject(Object.assign(error, { stdout, stderr }));
+      }
+    };
+    const after = (ms: number, step: () => void): void => {
+      if (!settled) timer = setTimeout(step, ms);
+    };
+    const child = execFile(
+      file,
+      [...args],
+      { cwd: opts.cwd, encoding: 'utf8', maxBuffer: opts.maxBuffer ?? DEFAULT_MAX_BUFFER, shell: false },
+      settle,
+    );
+    // git removes its lock files on SIGTERM, so SIGKILL follows only a child still running after the grace.
+    after(timeoutMs, () => {
+      timedOut = true;
+      child.kill('SIGTERM');
+      after(grace, () => {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+        after(grace, () => {
+          // A grandchild holding the output pipes open keeps execFile from ever calling back.
+          for (const stream of child.stdio) stream?.destroy();
+          settle(null, '', '');
+        });
+      });
+    });
   });
-  return { stdout, stderr };
-};
 
 /** Injectable runner and repository directory; `cwd` defaults to `REPO_ROOT`. */
 export interface GitDeps {
@@ -84,7 +122,7 @@ export async function commitSubject(sha: string, deps: GitDeps = {}): Promise<st
 
 /**
  * Whether `sha` names a commit in the repository.
- * Resolves false only when git exits with a status code; a failure to run git at all (for example ENOENT) is rethrown.
+ * Resolves false only when git exits with a status code; any other failure (for example ENOENT or ETIMEDOUT) is rethrown.
  */
 export async function catFileExists(sha: string, deps: GitDeps = {}): Promise<boolean> {
   assertRevision(sha);
@@ -100,7 +138,8 @@ export async function catFileExists(sha: string, deps: GitDeps = {}): Promise<bo
 /**
  * Extracts the tree of `sha` into `dir`, or into a new `opt2-archive-*` directory under `tmpRoot` (default
  * `os.tmpdir()`), and returns its absolute path. The target must lie outside the checkout and be absent or empty;
- * the intermediate `<dir>.tar` is always removed, and a directory this call created is removed when extraction fails.
+ * the archive goes to a newly reserved `<dir>.<uuid>.tar` that is always removed, and a directory this call created
+ * is removed when extraction fails.
  */
 export async function gitArchiveExtract(
   sha: string,
@@ -112,21 +151,26 @@ export async function gitArchiveExtract(
   const target = created
     ? await mkdtemp(path.join(assertOutsideRepo(deps.tmpRoot ?? os.tmpdir(), 'archive tmpRoot'), 'opt2-archive-'))
     : assertOutsideRepo(dir, 'archive target');
-  const tarPath = assertOutsideRepo(`${target}.tar`, 'archive tar');
+  const tarPath = assertOutsideRepo(`${target}.${randomUUID()}.tar`, 'archive tar');
 
   await mkdir(target, { recursive: true });
   if ((await readdir(target)).length > 0) {
     throw new Error(`archive target ${target} must be empty`);
   }
 
+  let reserved = false;
   try {
+    // 'wx' fails rather than reuse an existing file, so only a file this call created is overwritten and removed.
+    const handle = await open(tarPath, 'wx');
+    reserved = true;
+    await handle.close();
     await git(['archive', '--format=tar', `--output=${tarPath}`, sha], deps);
     await (deps.run ?? defaultRunner)('tar', ['-xf', tarPath, '-C', target], { cwd: target });
   } catch (error) {
     if (created) await rm(target, { recursive: true, force: true });
     throw error;
   } finally {
-    await rm(tarPath, { force: true });
+    if (reserved) await rm(tarPath, { force: true });
   }
   return target;
 }

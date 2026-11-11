@@ -137,6 +137,8 @@ describe('committed harness/repro/ports.env', () => {
     const out = execFileSync('bash', ['-c', script, PORTS_ENV_PATH, ...names], {
       encoding: 'utf8',
       env: { PATH: process.env.PATH ?? '' },
+      timeout: 10_000,
+      killSignal: 'SIGKILL',
     });
     expect(out).toBe(
       [

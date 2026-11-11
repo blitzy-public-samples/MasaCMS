@@ -73,7 +73,7 @@ export interface Repository {
     afterContentRow: RepositoryRow,
     ctx?: WriteContext,
   ): Promise<R | null>;
-  /** Runs `fn` once no unit of `units` is in a write window's executing or import phase. */
+  /** Runs `fn` once no unit of `units` is in a write window's executing or import phase; that phase cannot start until `tx` ends. */
   read<T>(tx: TenantTx, units: string | readonly string[], fn: () => Promise<T>): Promise<T>;
   /** The row with `key`, read behind its unit's window phase; null when absent. */
   findByKey<R = RepositoryRow>(tx: TenantTx, table: string, key: RepositoryRow): Promise<R | null>;
@@ -508,4 +508,3 @@ export function createRepository({ owner, schema, tables, clock = systemClock }:
     findByKey,
   });
 }
-

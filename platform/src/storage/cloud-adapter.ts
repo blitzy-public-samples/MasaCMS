@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { Storage, type File } from '@google-cloud/storage';
+import { Storage, type File, type FileMetadata, type FileOptions } from '@google-cloud/storage';
 import {
   assertBucket,
   assertObjectKey,
@@ -25,18 +25,27 @@ function isNotFound(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 404;
 }
 
-async function headOf(file: File): Promise<ObjectHead | null> {
+async function metadataOf(file: File): Promise<FileMetadata | null> {
   try {
     const [md] = await file.getMetadata();
-    return {
-      size: Number(md.size),
-      sha256: String(md.metadata?.[SHA256_METADATA_KEY] ?? ''),
-      contentType: md.contentType ?? 'application/octet-stream',
-    };
+    return md;
   } catch (err) {
     if (isNotFound(err)) return null;
     throw err;
   }
+}
+
+function headFrom(md: FileMetadata): ObjectHead {
+  return {
+    size: Number(md.size),
+    sha256: String(md.metadata?.[SHA256_METADATA_KEY] ?? ''),
+    contentType: md.contentType ?? 'application/octet-stream',
+  };
+}
+
+async function headOf(file: File): Promise<ObjectHead | null> {
+  const md = await metadataOf(file);
+  return md === null ? null : headFrom(md);
 }
 
 /** Creates the Cloud Storage `StoragePort`, authenticated by Application Default Credentials. */
@@ -45,10 +54,10 @@ export function createCloudStorageAdapter(opts: CloudStorageOptions = {}): Stora
   const bucketName = opts.bucketName ?? ((b: BucketName) => b);
   const now = opts.now ?? Date.now;
 
-  const fileOf = (bucket: BucketName, key: string): File => {
+  const fileOf = (bucket: BucketName, key: string, fileOpts?: FileOptions): File => {
     const logical = assertBucket(bucket);
     const name = assertObjectKey(key);
-    return storage.bucket(bucketName(logical)).file(name);
+    return storage.bucket(bucketName(logical)).file(name, fileOpts);
   };
 
   return {
@@ -100,6 +109,14 @@ export function createCloudStorageAdapter(opts: CloudStorageOptions = {}): Stora
       const file = fileOf(bucket, key);
       if ((await headOf(file)) === null) throw new StorageObjectNotFoundError(bucket, key);
       return file.createReadStream();
+    },
+
+    async open(bucket, key) {
+      const md = await metadataOf(fileOf(bucket, key));
+      if (md === null) throw new StorageObjectNotFoundError(bucket, key);
+      // Pinned to the generation `head` describes; once replaced it reads as 404, as buckets keep no old versions.
+      const body = fileOf(bucket, key, { generation: md.generation }).createReadStream();
+      return { head: headFrom(md), body };
     },
 
     async delete(bucket, key) {

@@ -37,6 +37,12 @@ export interface ObjectHead {
   contentType: string;
 }
 
+/** Object metadata with a read stream of that same stored version. */
+export interface OpenedObject {
+  head: ObjectHead;
+  body: Readable;
+}
+
 /** `expiresS` defaults to `SIGNED_URL_TTL_S`; `disposition` is the download's Content-Disposition. */
 export interface SignedUrlOptions {
   expiresS?: number;
@@ -52,6 +58,8 @@ export interface StoragePort {
   get(bucket: BucketName, key: string): Promise<Buffer>;
   /** Opens a read stream; throws `StorageObjectNotFoundError` when the object is absent. */
   stream(bucket: BucketName, key: string): Promise<Readable>;
+  /** Opens a read stream together with the metadata of the version it reads; throws `StorageObjectNotFoundError` when the object is absent. */
+  open(bucket: BucketName, key: string): Promise<OpenedObject>;
   /** Deletes the object; a missing object is not an error. */
   delete(bucket: BucketName, key: string): Promise<void>;
   /** Returns the stored metadata, or `null` when the object is absent. */
@@ -126,16 +134,16 @@ export function assertObjectKey(key: string): string {
   return key;
 }
 
-/** Rendition suffix of a content file: none, `_source`, `_small`, `_medium` or a custom image-size name. */
+/** Rendition suffix of a content file: none, `_source`, `_small`, `_medium`, or an on-demand `_<size name>` or `_W<w>_H<h>`. */
 export type ContentFileVariant = '' | '_source' | '_small' | '_medium' | `_${string}`;
 
-const CONTENT_FILE_VARIANT = /^_[a-z0-9_-]+$/;
+const CONTENT_FILE_VARIANT = /^_[^/\\\u0000-\u001F\u007F]+$/;
 
 /** `content-files` key `<tenantId>/<fileId><variant>.<ext>` with a lower-cased extension; pooled files take the umbrella tenant's id. */
 export function contentFileKey(p: { tenantId: string; fileId: string; variant?: ContentFileVariant; ext: string }): string {
   const variant = p.variant ?? '';
   if (variant !== '' && !CONTENT_FILE_VARIANT.test(variant)) {
-    throw new InvalidObjectKeyError(variant, 'variant must be empty or match _[a-z0-9_-]+');
+    throw new InvalidObjectKeyError(variant, 'variant must be empty or "_" followed by characters other than "/", "\\" and control characters');
   }
   return `${p.tenantId}/${p.fileId}${variant}.${p.ext.toLowerCase()}`;
 }

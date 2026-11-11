@@ -2,7 +2,7 @@
 // Legacy file store bridge: lists, reads, writes and deletes <fileDir>/<siteid>/cache/file/ objects with Masa's path rules and file writer.
 app = request.opt2BridgeApp;
 op = url.op;
-namePattern = "^[A-Za-z0-9-]{35}(_source|_small|_medium)?\.[A-Za-z0-9]+$";
+namePattern = "^[A-Za-z0-9-]{35}(_[^/\\[:cntrl:]]+)?\.[A-Za-z0-9]+$";
 fileIdPattern = "^[A-Za-z0-9-]{35}$";
 body = {};
 bytes = "";
@@ -16,13 +16,14 @@ function requireParam(required string key, required string pattern) {
 	return url[arguments.key];
 }
 
-// Splits a name that matches namePattern into {name, fileId, variant, ext}.
+// Splits a name that matches namePattern into {name, fileId, variant, ext}; ext follows the last dot.
 function parseName(required string name) {
+	var ext = listLast(arguments.name, ".");
 	return {
 		"name": arguments.name,
 		"fileId": left(arguments.name, 35),
-		"variant": mid(arguments.name, 36, find(".", arguments.name) - 36),
-		"ext": listLast(arguments.name, ".")
+		"variant": mid(arguments.name, 36, len(arguments.name) - len(ext) - 36),
+		"ext": ext
 	};
 }
 
@@ -46,7 +47,7 @@ try {
 	dir = application.configBean.getFileDir() & "/" & url.siteid & "/cache/file/";
 
 	switch (op) {
-		// Every name-rule file in the directory, so variants are found rather than assumed.
+		// Every file whose name starts with a fileID and meets the name rule, so variants are found rather than assumed.
 		case "list":
 			files = [];
 			if (store == "fileDir" && directoryExists(dir)) {

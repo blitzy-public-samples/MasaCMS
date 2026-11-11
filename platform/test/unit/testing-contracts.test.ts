@@ -117,6 +117,7 @@ const doc = {
           uuid: { type: 'string', format: 'uuid' },
           at: { type: 'string', format: 'date-time' },
           day: { type: 'string', format: 'date' },
+          clock: { type: 'string', format: 'time' },
           email: { type: 'string', format: 'email' },
           link: { type: 'string', format: 'uri' },
           count: { type: 'integer', format: 'int64' },
@@ -281,6 +282,49 @@ describe('assertResponseMatchesOpenApi', () => {
       '/email format',
       '/link format',
     ]);
+  });
+
+  it.each([
+    ['at', '2028-02-29T12:00:00Z'],
+    ['at', '2000-02-29T00:00:00Z'],
+    ['at', '2026-03-31T23:59:59.123456+05:30'],
+    ['at', '2026-01-01t00:00:00z'],
+    ['at', '2026-11-30T16:00:00-08:00'],
+    ['at', '2026-01-01T12:00:00.1234567890Z'],
+    ['at', '2016-12-31T23:59:60Z'],
+    ['at', '2016-12-31T18:59:60-05:00'],
+    ['day', '2028-02-29'],
+    ['clock', '23:59:59Z'],
+    ['clock', '12:00:00+05:30'],
+    ['clock', '12:00:00.1234567890+05:30'],
+    ['clock', '23:59:60Z'],
+  ])('accepts the RFC 3339 %s value %s', (field, value) => {
+    const body = { [field]: value };
+    expect(assertResponseMatchesOpenApi(doc, respond({ method: 'POST', path: '/v1/formats', body }))).toBe(body);
+  });
+
+  it.each([
+    ['at', '2026-02-30T12:00:00Z'],
+    ['at', '2026-99-99T99:99:99Z'],
+    ['at', '2026-13-01T00:00:00Z'],
+    ['at', '2026-04-31T00:00:00Z'],
+    ['at', '2100-02-29T00:00:00Z'],
+    ['at', '2026-01-01T24:00:00Z'],
+    ['at', '2026-01-01T12:60:00Z'],
+    ['at', '2026-01-01T12:00:00+24:00'],
+    ['at', '2026-01-01T12:00:60Z'],
+    ['at', '2016-12-31T23:59:60+01:00'],
+    ['at', '2026-01-01 12:00:00Z'],
+    ['day', '2026-02-30'],
+    ['day', '2026-00-10'],
+    ['clock', '24:00:00Z'],
+    ['clock', '12:00:00'],
+    ['clock', '12:00:60Z'],
+    ['clock', '12:00:00.Z'],
+  ])('rejects the invalid %s value %s', (field, value) => {
+    const response = respond({ method: 'POST', path: '/v1/formats', body: { [field]: value } });
+    const error = caught(() => assertResponseMatchesOpenApi(doc, response));
+    expect(error.errors.map((e) => `${e.instancePath} ${e.keyword}`)).toEqual([`/${field} format`]);
   });
 
   it('keeps separate registrations for distinct documents', () => {

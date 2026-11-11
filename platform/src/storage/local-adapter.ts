@@ -1,8 +1,9 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
+import { mkdir, open, readFile, rename, rm, type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
+import { buffer } from 'node:stream/consumers';
 import { pipeline } from 'node:stream/promises';
 import {
   LOCAL_SIGNED_URL_PREFIX,
@@ -13,6 +14,7 @@ import {
   isBucketName,
   type BucketName,
   type ObjectHead,
+  type OpenedObject,
   type PutBody,
   type PutResult,
   type StoragePort,
@@ -21,14 +23,13 @@ import {
 /** Directory under the state directory that holds every bucket. */
 export const STORAGE_DIR = 'storage';
 
-/** Directory under `STORAGE_DIR` holding `<bucket>/<key>.json` metadata, kept apart from the object bytes. */
-export const META_DIR = '.meta';
-
 const SECRETS_DIR = 'secrets';
 const HMAC_KEY_FILE = 'storage-hmac-key';
 const URL_BASE = 'http://opt2.local';
 const SIG_HEX = /^[0-9a-f]{64}$/;
 const DECIMAL = /^\d+$/;
+const TRAILER_MARKER = Buffer.from('OPT2OBJ1', 'latin1');
+const TRAILER_FIXED_BYTES = 4 + TRAILER_MARKER.length;
 
 /** `now` returns epoch ms; `hmacKey` replaces the key file `<stateDir>/secrets/storage-hmac-key`. */
 export interface LocalStorageOptions {
@@ -70,66 +71,54 @@ export async function createLocalStorageAdapter(opts: LocalStorageOptions): Prom
   const root = path.join(opts.stateDir, STORAGE_DIR);
   const objectPath = (bucket: BucketName, key: string): string =>
     path.join(root, assertBucket(bucket), ...assertObjectKey(key).split('/'));
-  const metaPath = (bucket: BucketName, key: string): string =>
-    `${path.join(root, META_DIR, assertBucket(bucket), ...assertObjectKey(key).split('/'))}.json`;
+  const openPayload = async (bucket: BucketName, key: string): Promise<OpenedObject> => {
+    const opened = await openObject(objectPath(bucket, key), bucket, key);
+    if (opened === null) throw new StorageObjectNotFoundError(bucket, key);
+    const { handle, head } = opened;
+    if (head.size === 0) {
+      await handle.close();
+      return { head, body: Readable.from([], { objectMode: false }) };
+    }
+    return { head, body: handle.createReadStream({ start: 0, end: head.size - 1 }) };
+  };
 
   return {
     kind: 'local',
 
     async put(bucket, key, body, putOpts) {
       const file = objectPath(bucket, key);
-      const meta = metaPath(bucket, key);
-      await Promise.all([mkdir(path.dirname(file), { recursive: true }), mkdir(path.dirname(meta), { recursive: true })]);
-      const suffix = randomBytes(8).toString('hex');
-      const fileTmp = partialPath(file, suffix);
-      const metaTmp = partialPath(meta, suffix);
+      await mkdir(path.dirname(file), { recursive: true });
+      const partial = partialPath(file, randomBytes(8).toString('hex'));
       try {
-        const { size, sha256 } = await writeHashed(body, fileTmp);
-        await writeFile(metaTmp, JSON.stringify({ contentType: putOpts.contentType, sha256, size }));
-        await rename(fileTmp, file);
-        await rename(metaTmp, meta);
-        return { size, sha256 };
+        const result = await writeObject(body, putOpts.contentType, partial);
+        await rename(partial, file);
+        return result;
       } catch (err) {
         // Cleanup is best effort: the write error is the one worth reporting.
-        await Promise.all([rm(fileTmp, { force: true }), rm(metaTmp, { force: true })]).catch(() => undefined);
+        await rm(partial, { force: true }).catch(() => undefined);
         throw err;
       }
     },
 
     async head(bucket, key) {
-      const meta = metaPath(bucket, key);
-      let text: string;
-      try {
-        text = await readFile(meta, 'utf8');
-      } catch (err) {
-        if (isAbsent(err)) return null;
-        throw err;
-      }
-      const m = JSON.parse(text) as ObjectHead;
-      return { size: m.size, sha256: m.sha256, contentType: m.contentType };
+      const opened = await openObject(objectPath(bucket, key), bucket, key);
+      if (opened === null) return null;
+      await opened.handle.close();
+      return opened.head;
     },
 
     async get(bucket, key) {
-      const file = objectPath(bucket, key);
-      try {
-        return await readFile(file);
-      } catch (err) {
-        throw isAbsent(err) ? new StorageObjectNotFoundError(bucket, key) : err;
-      }
+      return buffer((await openPayload(bucket, key)).body);
     },
 
     async stream(bucket, key) {
-      const file = objectPath(bucket, key);
-      try {
-        await stat(file);
-      } catch (err) {
-        throw isAbsent(err) ? new StorageObjectNotFoundError(bucket, key) : err;
-      }
-      return createReadStream(file);
+      return (await openPayload(bucket, key)).body;
     },
 
+    open: openPayload,
+
     async delete(bucket, key) {
-      await Promise.all([rm(objectPath(bucket, key), { force: true }), rm(metaPath(bucket, key), { force: true })]);
+      await rm(objectPath(bucket, key), { force: true });
     },
 
     async signedUrl(bucket, key, signOpts = {}) {
@@ -211,20 +200,82 @@ function partialPath(file: string, suffix: string): string {
   return path.join(path.dirname(file), `.${path.basename(file)}.${suffix}.partial`);
 }
 
-/** Streams `body` into `file`, hashing and counting the bytes as they pass. */
-async function writeHashed(body: PutBody, file: string): Promise<PutResult> {
+/** Streams `body` then its trailer into `file`, hashing and counting the payload as it passes; syncs before closing. */
+async function writeObject(body: PutBody, contentType: string, file: string): Promise<PutResult> {
   const hash = createHash('sha256');
   let size = 0;
+  let sha256 = '';
   const hasher = new Transform({
     transform(chunk: Buffer, _encoding, callback) {
       hash.update(chunk);
       size += chunk.length;
       callback(null, chunk);
     },
+    flush(callback) {
+      sha256 = hash.digest('hex');
+      callback(null, encodeTrailer(contentType, sha256));
+    },
   });
   const source = ArrayBuffer.isView(body) ? Readable.from([body]) : body;
-  await pipeline(source, hasher, createWriteStream(file));
-  return { size, sha256: hash.digest('hex') };
+  await pipeline(source, hasher, createWriteStream(file, { flush: true }));
+  return { size, sha256 };
+}
+
+/** Object file suffix: UTF-8 JSON `{contentType, sha256}`, its byte length as uint32 BE, then `TRAILER_MARKER`. */
+function encodeTrailer(contentType: string, sha256: string): Buffer {
+  const json = Buffer.from(JSON.stringify({ contentType, sha256 }), 'utf8');
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(json.length);
+  return Buffer.concat([json, length, TRAILER_MARKER]);
+}
+
+/** Opens `file` and reads its trailer; `null` when it is absent or not a regular file. The caller closes `handle`. */
+async function openObject(
+  file: string,
+  bucket: BucketName,
+  key: string,
+): Promise<{ handle: FileHandle; head: ObjectHead } | null> {
+  let handle: FileHandle;
+  try {
+    handle = await open(file, 'r');
+  } catch (err) {
+    if (isAbsent(err)) return null;
+    throw err;
+  }
+  let head: ObjectHead | null = null;
+  try {
+    const stats = await handle.stat();
+    if (stats.isFile()) head = await readTrailer(handle, stats.size, bucket, key);
+  } finally {
+    if (head === null) await handle.close();
+  }
+  return head === null ? null : { handle, head };
+}
+
+/** Metadata from the trailer of an object file of `fileSize` bytes; `size` is the payload length before it. */
+async function readTrailer(handle: FileHandle, fileSize: number, bucket: BucketName, key: string): Promise<ObjectHead> {
+  const invalid = new Error(`Storage object has no valid trailer: ${bucket}/${key}`);
+  if (fileSize < TRAILER_FIXED_BYTES) throw invalid;
+  const fixed = await readAt(handle, fileSize - TRAILER_FIXED_BYTES, TRAILER_FIXED_BYTES);
+  const jsonLength = fixed.readUInt32BE(0);
+  const size = fileSize - TRAILER_FIXED_BYTES - jsonLength;
+  if (!fixed.subarray(4).equals(TRAILER_MARKER) || size < 0) throw invalid;
+  const json = (await readAt(handle, size, jsonLength)).toString('utf8');
+  let meta: Partial<Record<keyof ObjectHead, unknown>> | null;
+  try {
+    meta = JSON.parse(json) as typeof meta;
+  } catch {
+    throw invalid;
+  }
+  if (typeof meta?.contentType !== 'string' || typeof meta.sha256 !== 'string') throw invalid;
+  return { size, sha256: meta.sha256, contentType: meta.contentType };
+}
+
+/** `length` bytes of the file at `position`, zero-filled past its end, leaving the file offset unchanged. */
+async function readAt(handle: FileHandle, position: number, length: number): Promise<Buffer> {
+  const bytes = Buffer.alloc(length);
+  await handle.read(bytes, 0, length, position);
+  return bytes;
 }
 
 /** Whether a filesystem error means the path, or one of its parents, does not exist. */

@@ -4,11 +4,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { FastifyInstance, LightMyRequestResponse } from 'fastify';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { recordedRoutes } from '../../src/auth/hooks.js';
 import { LOCAL_USER_TOKEN, Roles } from '../../src/auth/index.js';
 import { inboxSql } from '../../src/events/index.js';
-import { createLogger, type Logger } from '../../src/logging/index.js';
+import { REDACTED, createLogger, type Logger } from '../../src/logging/index.js';
 import { encodeKey, encodeRow, sha256Hex, type CanonicalColumn } from '../../src/migration-kit/canonical.js';
 import { migrationKitSql } from '../../src/migration-kit/ddl.js';
 import { GATE_WAIT_MS, endOperation } from '../../src/migration-kit/gates.js';
@@ -678,20 +678,68 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
         ]),
       }),
     ).toMatchObject({ applied: 2, skipped: 1 });
-    expect(
-      await applied({ ...notes, batchId: `${site}-n2`, units: ['mk.item'], rows: rowsOf(NOTE_LEGACY, [['upsert', { NoteID: 'n4', Type: 'Memo', Body: 'x' }]]) }),
-    ).toMatchObject({ applied: 0, skipped: 1 });
+    const misrouted = {
+      ...notes,
+      batchId: `${site}-n2`,
+      rows: rowsOf(NOTE_LEGACY, [['upsert', { NoteID: 'n4', Type: 'Memo', Body: 'x' }]]),
+      watermark: { direction: 'forward', snapshotSeq: 3, finishedAt: '2026-06-30 14:00:00' },
+    };
+    expectRejected(await post('/apply', { origin: 'backfill', ...misrouted, units: ['mk.item'] }));
+    expect((await batches(site)).map((batch) => batch.batch_id)).toEqual([`${site}-n1`]);
+    expect(await watermarks({ legacyTable: 'tNotes' })).toEqual([]);
+    expect(await applied({ ...misrouted, units: ['mk.memo'] })).toEqual({ batchId: `${site}-n2`, duplicate: false, applied: 1, skipped: 0 });
+    expect((await watermarks({ legacyTable: 'tNotes' })).map((mark) => [mark.direction, mark.snapshotSeq])).toEqual([['forward', 3]]);
     expect((await stored(site, 'memo', 'note_id')).map((row) => [row.note_id, row.body])).toEqual([
       ['n1', 'kept'],
       ['n3', 'padded'],
+      ['n4', 'x'],
     ]);
 
-    const rows = [exported(MEMO_LEGACY, ['NoteID'], { NoteID: 'n1', Body: 'kept' }), exported(MEMO_LEGACY, ['NoteID'], { NoteID: 'n3', Body: 'padded' })];
+    const rows = [
+      exported(MEMO_LEGACY, ['NoteID'], { NoteID: 'n1', Body: 'kept' }),
+      exported(MEMO_LEGACY, ['NoteID'], { NoteID: 'n3', Body: 'padded' }),
+      exported(MEMO_LEGACY, ['NoteID'], { NoteID: 'n4', Body: 'x' }),
+    ];
     const page = await exportPage({ unit: 'mk.memo', tenantId });
     expect(page.tables).toEqual([
       { unit: 'mk.memo', legacyTable: 'tNotes', targetTable: 'mk.memo', keyless: false, columns: MEMO_LEGACY, rows },
       { unit: 'mk.memo', legacyTable: 'tNoteArchive', targetTable: 'mk.memo', keyless: false, columns: MEMO_LEGACY, rows },
     ]);
+  });
+
+  /** A one-row Scores batch of a fresh site for `Program_<programId>`, carrying a forward watermark. */
+  function scoresBatch(programId: number): Record<string, unknown> & { legacyTable: string; siteId: string } {
+    const site = freshSite();
+    return {
+      batchId: `${site}-units`,
+      legacyTable: `Program_${programId}.Scores`,
+      siteId: site,
+      columns: SCORE_LEGACY,
+      rows: rowsOf(SCORE_LEGACY, [['upsert', { ScoreID: 's1', Points: 1 }]]),
+      watermark: { direction: 'forward', snapshotSeq: programId, finishedAt: '2026-06-30 15:00:00' },
+    };
+  }
+
+  it.each([
+    ['an undeclared unit', 23, ['mk.scroe']],
+    ['a unit of another owner', 24, ['people.person']],
+    ['a unit of another legacy table', 25, ['mk.item']],
+    ['a unit of another legacy table beside its own', 26, ['mk.score', 'mk.memo']],
+  ] as [string, number, string[]][])('rejects an apply naming %s without recording its batch or watermark, so its corrected retry applies', async (_label, programId, units) => {
+    const batch = scoresBatch(programId);
+    expectRejected(await post('/apply', { origin: 'backfill', ...batch, units }));
+    expect(await batches(batch.siteId)).toEqual([]);
+    expect(await watermarks({ legacyTable: batch.legacyTable })).toEqual([]);
+    expect(await applied({ ...batch, units: ['mk.score'] })).toEqual({ batchId: batch.batchId, duplicate: false, applied: 1, skipped: 0 });
+    expect((await watermarks({ legacyTable: batch.legacyTable })).map((mark) => mark.snapshotSeq)).toEqual([programId]);
+  });
+
+  it('applies an empty units list as an empty subset, recording the batch and watermark with every row skipped', async () => {
+    const batch = scoresBatch(27);
+    expect(await applied({ ...batch, units: [] })).toEqual({ batchId: batch.batchId, duplicate: false, applied: 0, skipped: 1 });
+    expect(await stored(batch.siteId, 'score', 'score_id')).toEqual([]);
+    expect(await batches(batch.siteId)).toEqual([{ batch_id: batch.batchId, legacy_table: 'Program_27.Scores', origin: 'backfill', row_count: 1 }]);
+    expect((await watermarks({ legacyTable: batch.legacyTable })).map((mark) => mark.snapshotSeq)).toEqual([27]);
   });
 
   it('folds Program_<id> tables into one target table and exports it whole or per program', async () => {
@@ -1054,6 +1102,36 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
     );
     expect(JSON.stringify(logLines)).not.toContain('secret-row');
   });
+
+  it.each([
+    ['a malformed changes cursor', 'InvalidCursorError', ['opt2-secret-cursor'], () => get('/changes', { siteId: REJECTED_SITE, after: 'opt2-secret-cursor' })],
+    ['an apply with an unknown field', 'ZodError', ['opt2SecretField'], () => post('/apply', { ...applyBase, opt2SecretField: true })],
+    [
+      'an apply row that fails its mapping',
+      'MappingError',
+      ['opt2-secret-row', 'SiteID'],
+      () => post('/apply', { ...applyBase, rows: rowsOf(ITEM_LEGACY, [['upsert', item('opt2-secret-row', 'tenant-b', 'N', 1)]]) }),
+    ],
+  ] as [string, string, string[], () => Promise<LightMyRequestResponse>][])(
+    'passes the logger only the sanitized error of %s and answers the legacy 400',
+    async (_label, type, supplied, send) => {
+      // Spies on the call arguments, ahead of the logger's own emission-time sanitizing.
+      const warn = vi.spyOn(app.log, 'warn');
+      try {
+        const res = await send();
+        expectRejected(res);
+        const rejected = warn.mock.calls.filter((call) => call[1] === 'migration request rejected');
+        const stack = expect.stringMatching(new RegExp(`^${type}: \\[REDACTED\\](?:\\n\\s+at \\S.*)*$`));
+        expect(rejected).toEqual([[{ error: { type, message: REDACTED, stack } }, 'migration request rejected']]);
+        for (const text of supplied) {
+          expect(JSON.stringify(rejected)).not.toContain(text);
+          expect(res.body).not.toContain(text);
+        }
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
 });
 
 describe.skipIf(!available)('migration endpoints of a service without outbox, inbox or object manifest', () => {

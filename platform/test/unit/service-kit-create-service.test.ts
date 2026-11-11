@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import type { DestinationStream } from 'pino';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -140,6 +141,40 @@ function multipartBody(boundary: string, parts: Array<{ name: string; value: str
     return `--${boundary}\r\n${disposition}${contentType}\r\n\r\n${value}\r\n`;
   });
   return `${sections.join('')}--${boundary}--\r\n`;
+}
+
+const MIB = 1024 * 1024;
+
+/** A lazily generated multipart body of `count` file or field parts of `mib` MiB each, with its length and the bytes pulled from it so far. */
+function lazyMultipartBody(
+  boundary: string,
+  kind: 'file' | 'field',
+  count: number,
+  mib: number,
+): { body: Readable; length: number; pulled: () => number } {
+  const chunk = Buffer.alloc(MIB, 'x');
+  const crlf = Buffer.from('\r\n');
+  const tail = Buffer.from(`--${boundary}--\r\n`);
+  const heads = Array.from({ length: count }, (_, i) => {
+    const name = `part${String(i)}`;
+    const filename = kind === 'file' ? `; filename="${name}.bin"` : '';
+    return Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"${filename}\r\n\r\n`);
+  });
+  let pulled = 0;
+  const take = (piece: Buffer): Buffer => {
+    pulled += piece.length;
+    return piece;
+  };
+  function* pieces(): Generator<Buffer> {
+    for (const head of heads) {
+      yield take(head);
+      for (let n = 0; n < mib; n += 1) yield take(chunk);
+      yield take(crlf);
+    }
+    yield take(tail);
+  }
+  const length = heads.reduce((sum, head) => sum + head.length + mib * MIB + crlf.length, tail.length);
+  return { body: Readable.from(pieces()), length, pulled: () => pulled };
 }
 
 afterEach(async () => {
@@ -447,24 +482,31 @@ describe('body parsing and legacy params', () => {
   }
 
   it.each([
-    ['invalid JSON', '{not json'],
-    ['an empty JSON body', ''],
-  ])('hands %s to the handler as undefined', async (_label, payload) => {
+    ['invalid JSON', 'application/json', '{not json'],
+    ['an empty JSON body', 'application/json', ''],
+    ['invalid JSON', 'application/json-patch+json', '{not json'],
+    ['an empty JSON body', 'APPLICATION/JSONX; charset=utf-8', ''],
+  ])('hands %s sent as %s to the handler as undefined', async (_label, contentType, payload) => {
     const app = await echo();
-    const res = await app.inject({ method: 'POST', url: '/echo?a=1', headers: { 'content-type': 'application/json' }, payload });
+    const res = await app.inject({ method: 'POST', url: '/echo?a=1', headers: { 'content-type': contentType }, payload });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ bodyIsUndefined: true, params: { a: '1' } });
+    expect(res.json()).toStrictEqual({ bodyIsUndefined: true, isBuffer: false, params: { a: '1' }, files: [] });
   });
 
-  it('merges a JSON body over the query: scalars as strings, null as empty, objects kept', async () => {
+  it.each([
+    'application/json; charset=utf-8',
+    'application/json-patch+json',
+    'application/jsonx',
+    'APPLICATION/JSON-PATCH+JSON; charset=utf-8',
+  ])('merges a JSON body sent as %s over the query: scalars as strings, null as empty, objects kept', async (contentType) => {
     const app = await echo();
     const res = await app.inject({
       method: 'POST',
       url: '/echo?N=1&siteid=default',
-      headers: { 'content-type': 'application/json; charset=utf-8' },
+      headers: { 'content-type': contentType },
       payload: '{"n":5,"flag":true,"nil":null,"obj":{"a":1},"arr":[1,2],"__proto__":{"polluted":true}}',
     });
-    expect(res.json().params).toStrictEqual({
+    expect(res.json<{ params: unknown }>().params).toStrictEqual({
       siteid: 'default',
       n: '5',
       flag: 'true',
@@ -511,6 +553,52 @@ describe('body parsing and legacy params', () => {
         { field: 'newFile', filename: 'c.gif', mimetype: 'image/gif', data: 'gif-bytes' },
       ],
     });
+  });
+
+  it.each([
+    { sent: 'with its Content-Length', kind: 'file', count: 4, mib: 75, declared: true, pulled: [0, 0] },
+    { sent: 'chunked, as files', kind: 'file', count: 4, mib: 75, declared: false, pulled: [LEGACY_POST_LIMIT_BYTES, LEGACY_POST_LIMIT_BYTES + 4 * MIB] },
+    { sent: 'chunked, as fields', kind: 'field', count: 300, mib: 1, declared: false, pulled: [LEGACY_POST_LIMIT_BYTES, LEGACY_POST_LIMIT_BYTES + 4 * MIB] },
+  ] as const)(
+    'answers a multipart body over the post limit sent $sent with badRequest, reading no further than the limit',
+    async ({ kind, count, mib, declared, pulled: [least, most] }) => {
+      const app = await echo();
+      const boundary = 'opt2boundary';
+      const { body, length, pulled } = lazyMultipartBody(boundary, kind, count, mib);
+      expect(length).toBeGreaterThan(LEGACY_POST_LIMIT_BYTES);
+      const res = await app.inject({
+        method: 'POST',
+        url: '/echo',
+        headers: {
+          'content-type': `multipart/form-data; boundary=${boundary}`,
+          ...(declared ? { 'content-length': String(length) } : {}),
+        },
+        payload: body,
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.headers.connection).toBe('close');
+      expect(res.body).toBe(legacyErrorResponse('badRequest').body);
+      expect(pulled()).toBeGreaterThanOrEqual(least);
+      expect(pulled()).toBeLessThanOrEqual(most);
+    },
+  );
+
+  it('still buffers every file of a multipart body just under the post limit', async () => {
+    const { app } = await build();
+    app.post('/sizes', { config: { opt2: { public: true } } }, (request) =>
+      multipartFilesOf(request).map(({ filename, data }) => ({ filename, size: data.length })),
+    );
+    const boundary = 'opt2boundary';
+    const { body, length } = lazyMultipartBody(boundary, 'file', 3, 33);
+    expect(length).toBeLessThan(LEGACY_POST_LIMIT_BYTES);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sizes',
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}`, 'content-length': String(length) },
+      payload: body,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toStrictEqual(['part0.bin', 'part1.bin', 'part2.bin'].map((filename) => ({ filename, size: 33 * MIB })));
   });
 
   it('hands other content types to the handler as a raw Buffer', async () => {
@@ -687,6 +775,39 @@ describe('graceful shutdown', () => {
     expect(db.end.mock.invocationCallOrder[0]).toBeLessThan(traced.mock.invocationCallOrder[0] ?? 0);
   });
 
+  it('still closes the client, the pool and tracing, in order, when closing the app fails', async () => {
+    const hookError = new Error('hook failed');
+    const db = fakeDb(() => Promise.resolve());
+    const { app } = await build({ pool: db });
+    app.addHook('onClose', (_instance, done) => {
+      done(hookError);
+    });
+    const clientClose = vi.spyOn(app.opt2.client, 'close');
+    await expect(app.opt2.shutdown()).rejects.toBe(hookError);
+    const traced = vi.mocked(shutdownTracing);
+    expect(clientClose).toHaveBeenCalledTimes(1);
+    expect(db.end.mock.calls).toHaveLength(1);
+    expect(traced).toHaveBeenCalledTimes(1);
+    expect(clientClose.mock.invocationCallOrder[0]).toBeLessThan(db.end.mock.invocationCallOrder[0] ?? 0);
+    expect(db.end.mock.invocationCallOrder[0]).toBeLessThan(traced.mock.invocationCallOrder[0] ?? 0);
+  });
+
+  it('rejects with an AggregateError of every failed step, in step order, and still stops tracing', async () => {
+    const hookError = new Error('hook failed');
+    const poolError = new Error('pool stuck');
+    const { app } = await build({ pool: fakeDb(() => Promise.reject(poolError)) });
+    app.addHook('onClose', (_instance, done) => {
+      done(hookError);
+    });
+    const failure: unknown = await app.opt2.shutdown().catch((err: unknown) => err);
+    expect(failure).toBeInstanceOf(AggregateError);
+    const errors: unknown[] = (failure as AggregateError).errors;
+    expect(errors).toHaveLength(2);
+    expect(errors[0]).toBe(hookError);
+    expect(errors[1]).toBe(poolError);
+    expect(vi.mocked(shutdownTracing)).toHaveBeenCalledTimes(1);
+  });
+
   it('shuts down on SIGTERM and removes its listener once closed', async () => {
     const before = process.listeners('SIGTERM');
     const db = fakeDb(async () => undefined);
@@ -708,15 +829,27 @@ describe('graceful shutdown', () => {
     expect(process.listeners('SIGTERM')).not.toContain(added[0]);
   });
 
-  it('logs a failed SIGTERM shutdown and sets a failing exit code', async () => {
+  it.each([
+    { failing: 'the pool', hookFails: false, types: ['Error'] },
+    { failing: 'the app and the pool', hookFails: true, types: ['RangeError', 'Error'] },
+  ])('logs each failure of a SIGTERM shutdown ($failing) and sets a failing exit code', async ({ hookFails, types }) => {
     const previousExitCode = process.exitCode;
     const before = process.listeners('SIGTERM');
     const { app, lines } = await build({ pool: fakeDb(async () => Promise.reject(new Error('pool stuck'))) });
+    if (hookFails) {
+      app.addHook('onClose', (_instance, done) => {
+        done(new RangeError('hook failed'));
+      });
+    }
     const added = process.listeners('SIGTERM').filter((listener) => !before.includes(listener));
     try {
       added[0]?.('SIGTERM');
-      await vi.waitFor(() => expect(process.exitCode).toBe(1));
-      expect(lines.find((line) => line.message === 'shutdown failed')).toMatchObject({ severity: 'ERROR' });
+      await vi.waitFor(() => {
+        expect(process.exitCode).toBe(1);
+      });
+      const failed = lines.filter((line) => line.message === 'shutdown failed');
+      expect(failed.map((line) => line.severity)).toStrictEqual(types.map(() => 'ERROR'));
+      expect(failed.map((line) => (line.error as { type?: unknown } | undefined)?.type)).toStrictEqual(types);
       expect(app.server.listening).toBe(false);
     } finally {
       process.exitCode = previousExitCode;

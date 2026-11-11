@@ -1,13 +1,14 @@
 import { isTenantId } from '@opt2/platform/tenancy';
 
-// Same language as files.cfm's namePattern (fileDAO.cfc:153-199); rendition caches such as `_W<w>_H<h>` stay excluded.
+// Same language as files.cfm's namePattern: fileDAO.cfc:153-199 variants plus the on-demand `_<size name>` and
+// `_W<w>_H<h>` renditions of processImgCfimage.cfc:190-201; `ext` follows the last dot.
 /** Name of a stored file-store object, `<fileID><variant>.<ext>`; groups are fileId, variant and ext. */
-export const STORED_NAME_PATTERN = /^([A-Za-z0-9-]{35})(_source|_small|_medium)?\.([A-Za-z0-9]+)$/;
+export const STORED_NAME_PATTERN = /^([A-Za-z0-9-]{35})(_[^/\\\u0000-\u001F\u007F]+)?\.([A-Za-z0-9]+)$/;
 
 /** Suffix distinguishing an original (`''`) from its image renditions. */
-export type StoredVariant = '' | '_source' | '_small' | '_medium';
+export type StoredVariant = '' | '_source' | '_small' | '_medium' | `_${string}`;
 
-/** Every stored variant, original first. */
+/** The variants Masa's fileDAO writes, original first. */
 export const STORED_VARIANTS: readonly StoredVariant[] = ['', '_source', '_small', '_medium'];
 
 /** Parts of a stored name, kept exactly as found. */
@@ -36,10 +37,13 @@ export function parseStoredName(name: string): StoredName | null {
   return { fileId, variant: variant as StoredVariant, ext };
 }
 
-/** Joins parts into `<fileId><variant>.<ext>`; throws InvalidStoredNameError when the result is not a stored name. */
+/** Joins parts into `<fileId><variant>.<ext>`; throws InvalidStoredNameError unless the result parses back to `parts`. */
 export function formatStoredName(parts: StoredName): string {
   const name = `${parts.fileId}${parts.variant}.${parts.ext}`;
-  if (!STORED_NAME_PATTERN.test(name)) throw new InvalidStoredNameError(name);
+  const parsed = parseStoredName(name);
+  if (parsed?.fileId !== parts.fileId || parsed.variant !== parts.variant || parsed.ext !== parts.ext) {
+    throw new InvalidStoredNameError(name);
+  }
   return name;
 }
 

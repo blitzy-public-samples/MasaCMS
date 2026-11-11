@@ -27,7 +27,10 @@ export interface HttpRequest {
   body?: string | Uint8Array;
   /** Defaults to true. */
   followRedirects?: boolean;
+  /** Caller cancellation, combined with the deadline; it cannot extend it, so a long run sets `timeoutMs`. */
   signal?: AbortSignal;
+  /** Deadline in ms for every hop and the final body; overrides the session's. */
+  timeoutMs?: number;
 }
 
 /** One request/response exchange; `setCookie` keeps every raw line, including lines the jar rejected. */
@@ -71,12 +74,42 @@ export interface HttpSessionOptions {
   jar?: CookieJar;
   defaultHeaders?: Record<string, string>;
   maxRedirects?: number;
+  /** Default request deadline in ms (default {@link DEFAULT_TIMEOUT_MS}). */
+  timeoutMs?: number;
+}
+
+/** Default whole-exchange deadline, in ms. */
+export const DEFAULT_TIMEOUT_MS = 300_000;
+
+/** A failed exchange; `target` is the URL's origin and path only, never its query, fragment or userinfo. */
+export class HttpRequestError extends Error {
+  override readonly name: string = 'HttpRequestError';
+  readonly method: string;
+  readonly target: string;
+  /** 1-based index of the hop being attempted or read. */
+  readonly hop: number;
+  readonly status?: number;
+
+  constructor(what: string, method: string, url: string, hop: number, status?: number, options?: ErrorOptions) {
+    const { origin, pathname } = new URL(url);
+    const target = `${origin}${pathname}`;
+    const suffix = status === undefined ? '' : `, status ${status}`;
+    super(`${what}: ${method} ${target} (hop ${hop}${suffix})`, options);
+    this.method = method;
+    this.target = target;
+    this.hop = hop;
+    this.status = status;
+  }
 }
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const BODY_KINDS = ['form', 'json', 'multipart', 'body'] as const;
 // Fetch-standard request-body-header names, removed when a redirect drops the body.
 const BODY_HEADERS = ['content-type', 'content-encoding', 'content-language', 'content-location'];
+// Removed for the rest of the exchange once a redirect leaves the current origin.
+const CREDENTIAL_HEADERS = ['authorization', 'proxy-authorization', 'cookie', 'x-serverless-authorization'];
+const ERROR_CODE = /^[A-Z][A-Z0-9_]*$/;
+const MAX_CAUSE_DEPTH = 8;
 
 interface EncodedBody {
   body?: string | Uint8Array;
@@ -155,25 +188,79 @@ function decodeText(bytes: Uint8Array, contentType: string | null): string {
   return new TextDecoder('utf-8').decode(bytes);
 }
 
+/** ` (CODE)` for the first system error code on `err`'s cause chain, such as `ECONNREFUSED`, else ''. */
+function errorCode(err: unknown): string {
+  let current = err;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === 'object' && current !== null; depth += 1) {
+    const { code, cause } = current as { code?: unknown; cause?: unknown };
+    if (typeof code === 'string' && ERROR_CODE.test(code)) return ` (${code})`;
+    current = cause;
+  }
+  return '';
+}
+
+/** Settles as `promise` does, or rejects with `signal.reason` once `signal` aborts, even if `promise` won't. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(signal.reason);
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
+}
+
+/** Reads the whole body; an abort cancels the stream and rejects with `signal.reason`. */
+async function readBody(res: Response, signal: AbortSignal): Promise<Uint8Array> {
+  signal.throwIfAborted();
+  if (res.body === null) return new Uint8Array();
+  const reader = res.body.getReader();
+  const onAbort = (): void => {
+    reader.cancel(signal.reason).catch(() => undefined);
+  };
+  signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    const chunks: Uint8Array[] = [];
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+    }
+    // A read pending at cancellation resolves as done, so the abort surfaces here.
+    signal.throwIfAborted();
+    return new Uint8Array(await new Blob(chunks).arrayBuffer());
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
+function withoutHeaders(headers: Record<string, string>, names: readonly string[]): Record<string, string> {
+  return Object.fromEntries(Object.entries(headers).filter(([name]) => !names.includes(name)));
+}
+
 /**
  * Creates a session with its own cookie jar that follows redirects by hand, recording every hop.
- * A 303, or a 301/302 answering anything but GET/HEAD, is followed as a bodiless GET; 307/308 keep
- * method and body. Throws once more than `maxRedirects` redirects would be followed.
+ * As in Fetch, a 301/302 after POST, or a 303 after anything but GET/HEAD, is followed as a bodiless GET;
+ * other redirects keep method and body. A cross-origin hop drops credential headers and refuses to resend
+ * a body. Throws {@link HttpRequestError} on a failed or timed-out exchange, or past `maxRedirects`; a caller
+ * abort rejects with the caller's reason.
  */
 export function createHttpSession(options: HttpSessionOptions): HttpSession {
   const { baseUrl, defaultHeaders = {}, maxRedirects = 20 } = options;
+  const sessionTimeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const fetchImpl: FetchLike = options.fetch ?? globalThis.fetch;
   const jar =
     options.jar ??
     new CookieJar(undefined, { looseMode: true, rejectPublicSuffixes: false, allowSpecialUseDomain: true });
 
   async function request(req: HttpRequest): Promise<HttpResult> {
+    const timeoutMs = req.timeoutMs ?? sessionTimeoutMs;
+    const deadline = AbortSignal.timeout(timeoutMs);
+    const signal = req.signal ? AbortSignal.any([req.signal, deadline]) : deadline;
     const encoded = await encodeBody(req);
     const follow = req.followRedirects ?? true;
     const hops: HttpHop[] = [];
     let method = (req.method ?? 'GET').toUpperCase();
-    const startUrl = buildUrl(baseUrl, req.path, req.query);
-    let url = startUrl;
+    let url = buildUrl(baseUrl, req.path, req.query);
     let body = encoded.body;
     let headers: Record<string, string> = {
       ...lowerKeys(defaultHeaders),
@@ -181,13 +268,28 @@ export function createHttpSession(options: HttpSessionOptions): HttpSession {
       ...lowerKeys(req.headers),
     };
 
+    /** The caller's abort reason unchanged, else an {@link HttpRequestError} for `hop`. */
+    const failure = (err: unknown, what: string, hop: number, status?: number): unknown => {
+      if (req.signal?.aborted) return req.signal.reason;
+      const reason = deadline.aborted ? `timed out after ${timeoutMs} ms` : `${what}${errorCode(err)}`;
+      return new HttpRequestError(reason, method, url, hop, status, { cause: err });
+    };
+
     for (;;) {
+      const hop = hops.length + 1;
       const sent = { ...headers };
       if (sent.cookie === undefined) {
         const cookie = await jar.getCookieString(url);
         if (cookie) sent.cookie = cookie;
       }
-      const res = await fetchImpl(url, { method, headers: sent, body, redirect: 'manual', signal: req.signal });
+      let res: Response;
+      try {
+        signal.throwIfAborted();
+        const init: RequestInit = { method, headers: sent, body, redirect: 'manual', signal };
+        res = await untilAborted(fetchImpl(url, init), signal);
+      } catch (err) {
+        throw failure(err, 'request failed', hop);
+      }
       const setCookie = res.headers.getSetCookie();
       for (const line of setCookie) await jar.setCookie(line, url, { ignoreError: true });
       const responseHeaders = collectHeaders(res.headers, setCookie);
@@ -203,30 +305,55 @@ export function createHttpSession(options: HttpSessionOptions): HttpSession {
       });
 
       if (!follow || location === null || !REDIRECT_STATUSES.has(res.status)) {
-        const bytes = new Uint8Array(await res.arrayBuffer());
+        let bytes: Uint8Array;
+        try {
+          bytes = await readBody(res, signal);
+        } catch (err) {
+          throw failure(err, 'response body read failed', hop, res.status);
+        }
         const text = decodeText(bytes, res.headers.get('content-type'));
+        const { status } = res;
         return {
-          status: res.status,
+          status,
           url,
           headers: responseHeaders,
           bytes,
           text,
-          json: <T = unknown>(): T => JSON.parse(text) as T,
+          json: <T = unknown>(): T => {
+            try {
+              return JSON.parse(text) as T;
+            } catch (err) {
+              // The parse error quotes the body, so it is kept as the cause only.
+              throw new HttpRequestError('response body is not JSON', method, url, hop, status, { cause: err });
+            }
+          },
           hops,
         };
       }
 
-      await res.body?.cancel();
-      if (hops.length > maxRedirects) {
-        throw new Error(`Too many redirects (maxRedirects=${maxRedirects}) from ${startUrl}`);
+      try {
+        await untilAborted(res.body?.cancel() ?? Promise.resolve(), signal);
+      } catch (err) {
+        throw failure(err, 'redirect body cancel failed', hop, res.status);
       }
-      const keepsMethod = method === 'GET' || method === 'HEAD';
-      if (res.status === 303 || ((res.status === 301 || res.status === 302) && !keepsMethod)) {
+      const redirectError = (what: string): HttpRequestError =>
+        new HttpRequestError(what, method, url, hop, res.status);
+      if (hops.length > maxRedirects) throw redirectError(`Too many redirects (maxRedirects=${maxRedirects})`);
+      if (!URL.canParse(location, url)) throw redirectError('invalid redirect location');
+      const next = new URL(location, url);
+      const rewritesToGet =
+        ((res.status === 301 || res.status === 302) && method === 'POST') ||
+        (res.status === 303 && method !== 'GET' && method !== 'HEAD');
+      if (rewritesToGet) {
         method = 'GET';
         body = undefined;
-        headers = Object.fromEntries(Object.entries(headers).filter(([name]) => !BODY_HEADERS.includes(name)));
+        headers = withoutHeaders(headers, BODY_HEADERS);
       }
-      url = new URL(location, url).href;
+      if (next.origin !== new URL(url).origin) {
+        if (body !== undefined) throw redirectError('refusing to resend the request body to another origin');
+        headers = withoutHeaders(headers, CREDENTIAL_HEADERS);
+      }
+      url = next.href;
     }
   }
 

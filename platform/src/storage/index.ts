@@ -20,6 +20,7 @@ export type {
   PutOptions,
   PutResult,
   ObjectHead,
+  OpenedObject,
   SignedUrlOptions,
   StoragePort,
   StorageEnv,

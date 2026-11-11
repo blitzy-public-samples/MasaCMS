@@ -65,6 +65,7 @@ import { INBOX_TABLE } from '../events/index.js';
 import { Roles, type Opt2RouteConfig } from '../auth/index.js';
 import { z, type FastifyInstance, type FastifyRequest } from '../service-kit/index.js';
 import { LegacyApiError } from '../legacy-compat/index.js';
+import { serializeError } from '../logging/index.js';
 
 /** Path prefix of every migration endpoint a service exposes. */
 export const MIGRATION_PATH_PREFIX = '/internal/v1/migration';
@@ -352,15 +353,14 @@ function rejectionOf(err: unknown, rows: boolean): 'invalidParameters' | 'badReq
   return err instanceof RepositoryError ? 'badRequest' : undefined;
 }
 
-/** Runs a handler body, answering request problems with the legacy 400 and logging their reason. */
+/** Runs a handler body, answering request problems with the legacy 400 and logging their sanitized error. */
 async function handle<T>(request: FastifyRequest, fn: () => T | Promise<T>, rows = false): Promise<T> {
   try {
     return await fn();
   } catch (err) {
     const type = rejectionOf(err, rows);
     if (type === undefined) throw err;
-    const { name, message } = err as Error;
-    request.log.warn({ error: { type: name, message } }, 'migration request rejected');
+    request.log.warn({ error: serializeError(err) }, 'migration request rejected');
     // An empty params echo keeps a rejected batch's rows out of the error body.
     throw new LegacyApiError(type, { params: {} });
   }
@@ -619,6 +619,8 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
     if (legacyProgramId !== undefined && candidates.some((entry) => entry.mapping.fold === undefined)) {
       throw new InvalidRequestError(`${legacyTable} is not a per-program table`);
     }
+    const unmapped = body.units?.find((unit) => !candidates.some((entry) => entry.mapping.unit === unit));
+    if (unmapped !== undefined) throw new InvalidRequestError(`${owner} maps ${legacyTable} to no unit ${unmapped}`);
     const allowed = body.units === undefined ? undefined : new Set(body.units);
     const writable = candidates.filter((entry) => allowed === undefined || allowed.has(entry.mapping.unit));
     for (const entry of writable) assertEncodedColumns(entry.mapping, body.columns);

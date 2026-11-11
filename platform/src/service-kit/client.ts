@@ -1,12 +1,13 @@
 // Service-to-service HTTP client of @opt2/platform/service-kit: one undici call per request, bounded by one timeout.
 import { channel } from 'node:diagnostics_channel';
 import { Agent, errors, request, type Dispatcher } from 'undici';
+import { untilAborted } from '../auth/deadline.js';
 import { INVOCATION_HEADER, type InvocationMinter } from '../auth/index.js';
 import { LegacyServiceUnavailableError } from '../legacy-compat/index.js';
 import { injectHttpHeaders } from '../tracing/index.js';
 import { currentRequestContext } from './context.js';
 
-/** Upper bound of one service call, from connect to the last body byte. */
+/** Upper bound of one service call, from credential acquisition to the last body byte. */
 export const SERVICE_CALL_TIMEOUT_MS = 10_000;
 
 /** One call to another OPT-2 service. */
@@ -166,11 +167,23 @@ export function createServiceClient(options: ServiceClientOptions): ServiceClien
     else if (userToken === null) delete headers.authorization;
     // Only this workload's own credential for this callee is ever sent, never one a caller passed along.
     delete headers[INVOCATION_HEADER];
-    Object.assign(headers, lowerCased(await options.credentials.headersFor({ name: req.service, url: base })));
-    if (!undiciRequestCreated.hasSubscribers) injectHttpHeaders(headers);
 
     // undici's parser timers fire up to ~500 ms late and a MockAgent ignores them, so the signal bounds the whole call.
     const deadline = AbortSignal.timeout(timeoutMs);
+    let credential: Record<string, string>;
+    try {
+      // Bounded here too, since a minter may ignore the signal.
+      credential = await untilAborted(
+        options.credentials.headersFor({ name: req.service, url: base }, { signal: deadline }),
+        deadline,
+      );
+    } catch (err) {
+      if (deadline.aborted) throw new ServiceUnavailableError(req.service, err);
+      throw err;
+    }
+    Object.assign(headers, lowerCased(credential));
+    if (!undiciRequestCreated.hasSubscribers) injectHttpHeaders(headers);
+
     let response: Dispatcher.ResponseData;
     let raw: Buffer;
     try {

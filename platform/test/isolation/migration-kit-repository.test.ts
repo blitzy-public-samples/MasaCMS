@@ -5,10 +5,12 @@ import { encodeKey, encodeRow, legacyRowHash, type CanonicalColumn } from '../..
 import { migrationKitSql, type GatePhase, type GateState } from '../../src/migration-kit/ddl.js';
 import {
   GateClosedError,
+  GateRaceError,
   UnitNotAuthoritativeError,
   UnitReadBlockedError,
   createMigrationAuthority,
   ensureUnitGates,
+  setGatePhase,
   withGatedTenant,
   type MigrationAuthority,
 } from '../../src/migration-kit/gates.js';
@@ -703,6 +705,79 @@ describe.skipIf(!available)('repository writes against PostgreSQL', () => {
     expect(found).toEqual(stored);
     expect(read).toBe('read');
   });
+
+  it('holds a phase change behind a gated read until the reader commits, so the read returns the pre-window value', async () => {
+    const tenant = freshTenant();
+    await handle.app.withTenant(tenant, (tx) => repo.insert(tx, 'item', { item_id: 'w1', name: 'Before', qty: 1 }));
+    await setGate(ITEM_UNIT, 'closed');
+    let release = (): void => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let signalFenced = (): void => undefined;
+    const fenced = new Promise<void>((resolve) => {
+      signalFenced = resolve;
+    });
+    const reader = handle.app.withTenant(tenant, (tx) =>
+      repo.read(tx, ITEM_UNIT, async () => {
+        signalFenced();
+        await released;
+        const { rows } = await tx.query<{ name: string }>(`SELECT name FROM ${handle.schema}.item WHERE item_id = 'w1'`);
+        return rows[0]?.name;
+      }),
+    );
+    await fenced;
+    const phaseChange = setGatePhase(handle.app, { units: [ITEM_UNIT], holderId: 'test-window', phase: 'executing' });
+    try {
+      await untilLockWait();
+      expect(await Promise.race([phaseChange.then(() => 'changed'), sleep(200).then(() => 'waiting')])).toBe('waiting');
+    } finally {
+      release();
+    }
+    expect(await reader).toBe('Before');
+    expect(await phaseChange).toEqual([{ unit: ITEM_UNIT, state: 'closed', holderId: 'test-window', phase: 'executing' }]);
+  });
+
+  it.each(['executing', 'importing', 'import-pending'] as const)(
+    'holds a read started in phase %s until the gate reopens, then returns the imported value',
+    async (phase) => {
+      const tenant = freshTenant();
+      await handle.app.withTenant(tenant, (tx) => repo.insert(tx, 'item', { item_id: 'p1', name: 'Superseded', qty: 1 }));
+      await setGate(ITEM_UNIT, 'closed', phase);
+      const read = withGatedTenant(handle.app, tenant, (tx) => repo.findByKey(tx, 'item', { item_id: 'p1' }), { budgetMs: 10_000 });
+      expect(await Promise.race([read.then(() => 'read'), sleep(300).then(() => 'waiting')])).toBe('waiting');
+      const authority = createMigrationAuthority({ holderId: 'test-window' });
+      await handle.app.withTenant(tenant, (tx) =>
+        repo.update(tx, 'item', { item_id: 'p1' }, { name: 'Imported' }, { authority, origin: 'legacy-window' }),
+      );
+      await setGate(ITEM_UNIT, 'open');
+      expect(await read).toMatchObject({ item_id: 'p1', name: 'Imported' });
+    },
+  );
+
+  const findH1 = (tx: TenantTx): Promise<unknown> => repo.findByKey(tx, 'item', { item_id: 'h1' });
+  it.each([
+    ['a write then a read', 'executing', (tx: TenantTx) => repo.insert(tx, 'tag_member', { label: 'held', weight: 1 }), findH1],
+    ['a read then a read', 'executing', (tx: TenantTx) => repo.read(tx, TAG_UNIT, () => Promise.resolve()), findH1],
+    ['a read then a write', 'quiet', findH1, (tx: TenantTx) => repo.update(tx, 'item', { item_id: 'h1' }, { qty: 2 })],
+  ] as [string, GatePhase, (tx: TenantTx) => Promise<unknown>, (tx: TenantTx) => Promise<unknown>][])(
+    'fails %s fast with GateRaceError once the transaction holds gate locks and the item gate is closed in phase %s',
+    async (_steps, phase, first, next) => {
+      const tenant = freshTenant();
+      await handle.app.withTenant(tenant, (tx) => repo.insert(tx, 'item', { item_id: 'h1', name: 'H', qty: 1 }));
+      await setGate(ITEM_UNIT, 'closed', phase);
+      const started = Date.now();
+      const err = await failure(() =>
+        handle.app.withTenant(tenant, async (tx) => {
+          await first(tx);
+          await next(tx);
+        }),
+      );
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(err).toBeInstanceOf(GateRaceError);
+      expect(err).toMatchObject({ units: [ITEM_UNIT], reason: 'unit-gate-race' });
+    },
+  );
 
   it('reads a table without a unit without consulting any gate', async () => {
     const tenant = freshTenant();

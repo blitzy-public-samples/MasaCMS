@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import pg from 'pg';
+import { envPort, optionalEnvString } from '../service-kit/index.js';
 import { tenantDbFromPool, type TenantDb } from '../tenancy/index.js';
 
 /** PostgreSQL connection settings of the bootstrap user, read from `PG_*`. */
@@ -9,7 +10,7 @@ export interface PgConfig {
   host: string;
   port: number;
   user: string;
-  password: string | undefined;
+  password: string;
   database: string;
 }
 
@@ -62,34 +63,43 @@ const LONGEST_ROLE_SUFFIX = '_migrator';
 const MAX_BASE_LENGTH = MAX_IDENTIFIER_BYTES - 1 - SUFFIX_BYTES * 2 - LONGEST_ROLE_SUFFIX.length;
 const PASSWORD_BYTES = 24;
 const CONNECT_TIMEOUT_MS = 2000;
+const PG_PORT = optionalEnvString(envPort());
+const DEFAULT_PG_PORT = 5432;
 // Concurrent GRANT/REVOKE on the same pg_database row fail with "tuple concurrently updated".
 const BOOTSTRAP_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext('opt2.testing.throwaway-schema'))";
 
-/** Reads the bootstrap user's connection settings; throws naming every missing required variable. */
+/** Reads the bootstrap user's connection settings; throws naming every missing required variable or an invalid PG_PORT. */
 export function testPgConfig(env: NodeJS.ProcessEnv = process.env): PgConfig {
-  const missing = (['PG_HOST', 'PG_USER', 'PG_DATABASE'] as const).filter((name) => !env[name]);
+  const missing = (['PG_HOST', 'PG_USER', 'PG_PASSWORD', 'PG_DATABASE'] as const).filter((name) => !env[name]);
   if (missing.length > 0) {
     throw new Error(`Throwaway test schemas need ${missing.join(', ')} in the environment`);
   }
+  const port = PG_PORT.safeParse(env.PG_PORT);
+  if (!port.success) {
+    throw new Error(`Throwaway test schemas need PG_PORT to be an integer from 1 to 65535, got ${JSON.stringify(env.PG_PORT)}`);
+  }
   return {
     host: env.PG_HOST as string,
-    port: env.PG_PORT ? Number(env.PG_PORT) : 5432,
+    port: port.data ?? DEFAULT_PG_PORT,
     user: env.PG_USER as string,
-    password: env.PG_PASSWORD,
+    password: env.PG_PASSWORD as string,
     database: env.PG_DATABASE as string,
   };
 }
 
-/** True when the `PG_*` server accepts a connection within 2 s; suites use it with `describe.skipIf`. */
-export async function pgAvailable(): Promise<boolean> {
+/** True when the `PG_*` server accepts a connection within 2 s, false when unreachable; rejects on bad settings or server errors. */
+export async function pgAvailable(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  const client = new pg.Client({ ...testPgConfig(env), connectionTimeoutMillis: CONNECT_TIMEOUT_MS });
   try {
-    const client = new pg.Client({ ...testPgConfig(), connectionTimeoutMillis: CONNECT_TIMEOUT_MS });
     await client.connect();
-    await client.end();
-    return true;
-  } catch {
+  } catch (err) {
+    if (err instanceof pg.DatabaseError) {
+      throw err;
+    }
     return false;
   }
+  await client.end();
+  return true;
 }
 
 /**

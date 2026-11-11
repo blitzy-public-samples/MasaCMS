@@ -70,7 +70,7 @@ function groupAttr(required string group) {
 	return compareNoCase(arguments.group, "default") == 0 ? "" : arguments.group;
 }
 
-// Scheme, host and port of OPT2_GATEWAY_ORIGIN; port "80" when the origin names none, as Masa defaults.
+// Scheme, host and port of OPT2_GATEWAY_ORIGIN; when the origin names no port, "443" for https and "80" for http.
 function gatewayOrigin() {
 	var origin = createObject("java", "java.lang.System").getenv("OPT2_GATEWAY_ORIGIN");
 	if (isNull(origin) || !len(origin)) {
@@ -80,7 +80,8 @@ function gatewayOrigin() {
 	if (isNull(uri.getScheme()) || isNull(uri.getHost())) {
 		app.raise(500, "serverError", "OPT2_GATEWAY_ORIGIN invalid");
 	}
-	return {scheme: uri.getScheme(), host: uri.getHost(), port: uri.getPort() == -1 ? "80" : toString(uri.getPort())};
+	var port = uri.getPort() != -1 ? toString(uri.getPort()) : (compareNoCase(uri.getScheme(), "https") == 0 ? "443" : "80");
+	return {scheme: uri.getScheme(), host: uri.getHost(), port: port};
 }
 
 // taskUrl with the origin's scheme and host and no port, keeping its path and query; the port attribute carries the port.

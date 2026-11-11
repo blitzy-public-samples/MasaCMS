@@ -156,8 +156,8 @@ export interface SiteRefreshResult {
   serverTime: string;
 }
 
-/** File-store variant suffix of a cached Masa file. */
-export type LegacyFileVariant = '' | '_source' | '_small' | '_medium';
+/** File-store variant suffix of a cached Masa file: fileDAO's `_source`, `_small`, `_medium`, or an on-demand `_<size name>` or `_W<w>_H<h>`. */
+export type LegacyFileVariant = '' | '_source' | '_small' | '_medium' | `_${string}`;
 
 /** One file of `<fileDir>/<siteid>/cache/file/`; `sha256` is lowercase hex and `lastModified` a wire time. */
 export interface LegacyFileEntry {
@@ -400,4 +400,3 @@ function parseBody(text: string): unknown {
     return text;
   }
 }
-

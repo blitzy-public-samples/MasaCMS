@@ -20,6 +20,7 @@ import {
 } from 'jose';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { AuthDenial, TRANSPORTS, type AuthDenialReason, type AuthDenialType } from '../../src/auth/claims.js';
+import { GOOGLE_AUTH_TIMEOUT_MS } from '../../src/auth/deadline.js';
 import {
   INVOCATION_HEADER,
   LOCAL_SECRET_FILES,
@@ -208,6 +209,25 @@ class InMemoryCertsClient extends OAuth2Client {
   }
 }
 
+/** OAuth2Client whose certificate fetch never settles, as when Google's certificate endpoint stalls. */
+class StalledCertsClient extends OAuth2Client {
+  override getFederatedSignonCertsAsync(): Promise<FederatedCerts> {
+    return new Promise(() => undefined);
+  }
+}
+
+/** Runs `action` with every AbortSignal.timeout firing after 20 ms; returns the durations requested meanwhile. */
+async function withShortTimeouts(action: () => Promise<void>): Promise<number[]> {
+  const timeout = AbortSignal.timeout.bind(AbortSignal);
+  const spy = vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => timeout(20));
+  try {
+    await action();
+    return spy.mock.calls.map(([ms]) => ms);
+  } finally {
+    spy.mockRestore();
+  }
+}
+
 /** GoogleAuth handing out the given ID-token clients instead of discovering credentials. */
 class InMemoryGoogleAuth extends GoogleAuth {
   readonly requestedAudiences: string[] = [];
@@ -219,6 +239,13 @@ class InMemoryGoogleAuth extends GoogleAuth {
   override getIdTokenClient(targetAudience: string): Promise<IdTokenClient> {
     this.requestedAudiences.push(targetAudience);
     return Promise.resolve(this.clientFor(targetAudience));
+  }
+}
+
+/** GoogleAuth whose ID-token client discovery never settles, as when the metadata server stalls. */
+class StalledGoogleAuth extends GoogleAuth {
+  override getIdTokenClient(): Promise<IdTokenClient> {
+    return new Promise(() => undefined);
   }
 }
 
@@ -790,6 +817,18 @@ describe('createCloudInvocationVerifier', () => {
     const verifier = createCloudInvocationVerifier({ project: PROJECT, audience: PEOPLE_URL });
     expect(await denialOf(() => verifier.verify(BASIC_HEADER))).toEqual(WRONG_SCHEME);
   });
+
+  it('refuses as invalid-credential once a stalled certificate fetch outlasts the Google-auth timeout', async () => {
+    const header = `Bearer ${await signToken(googleOidcClaims(), issuerKey)}`;
+    const client = new StalledCertsClient();
+    const verifier = createCloudInvocationVerifier({ project: PROJECT, audience: PEOPLE_URL, client });
+    const started = Date.now();
+    const timeouts = await withShortTimeouts(async () => {
+      expect(await denialOf(() => verifier.verify(header))).toEqual(INVALID_CREDENTIAL);
+    });
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(timeouts).toEqual([GOOGLE_AUTH_TIMEOUT_MS]);
+  });
 });
 
 describe('createCloudInvocationMinter', () => {
@@ -868,6 +907,64 @@ describe('createCloudInvocationMinter', () => {
     await expect(createCloudInvocationMinter({ auth }).headersFor({ name: 'people', url: PEOPLE_URL })).rejects.toThrow(
       `ID token client for ${PEOPLE_URL} returned no Authorization header`,
     );
+  });
+
+  /** GoogleAuth whose ID-token clients fetch `token` once `ready` settles. */
+  function tokenAuthAfter(ready: Promise<unknown>, token: () => string): InMemoryGoogleAuth {
+    return new InMemoryGoogleAuth(
+      (targetAudience) =>
+        new IdTokenClient({
+          targetAudience,
+          idTokenProvider: {
+            fetchIdToken: async () => {
+              await ready;
+              return token();
+            },
+          },
+        }),
+    );
+  }
+
+  it.each([
+    { stage: 'a stalled client discovery', auth: () => new StalledGoogleAuth(), signal: () => AbortSignal.timeout(20) },
+    {
+      stage: 'a stalled token fetch',
+      auth: () => tokenAuthAfter(new Promise(() => undefined), () => 'never'),
+      signal: () => AbortSignal.timeout(20),
+    },
+    {
+      stage: 'an acquisition under an already aborted signal',
+      auth: () => tokenAuthAfter(Promise.resolve(), () => 'token'),
+      signal: () => AbortSignal.abort(new Error('deadline passed')),
+    },
+  ])('rejects with the signal reason when it aborts during $stage', async ({ auth, signal }) => {
+    const aborting = signal();
+    const err = await createCloudInvocationMinter({ auth: auth() })
+      .headersFor({ name: 'people', url: PEOPLE_URL }, { signal: aborting })
+      .catch((e: unknown) => e);
+    expect(aborting.aborted).toBe(true);
+    expect(err).toBe(aborting.reason as unknown);
+  });
+
+  it('keeps the ID-token client an abandoned acquisition discovered', async () => {
+    const token = await signToken(googleOidcClaims(), issuerKey);
+    let release = (): void => undefined;
+    const auth = tokenAuthAfter(
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+      () => token,
+    );
+    const minter = createCloudInvocationMinter({ auth });
+    const aborting = new AbortController();
+    const abandoned = minter.headersFor({ name: 'people', url: PEOPLE_URL }, { signal: aborting.signal });
+    aborting.abort(new Error('deadline passed'));
+    await expect(abandoned).rejects.toThrow('deadline passed');
+    release();
+    await expect(minter.headersFor({ name: 'people', url: PEOPLE_URL })).resolves.toEqual({
+      [INVOCATION_HEADER]: `Bearer ${token}`,
+    });
+    expect(auth.requestedAudiences).toEqual([PEOPLE_URL]);
   });
 });
 
@@ -1193,6 +1290,17 @@ describe.each([
   }) => {
     const authenticator = create({ project: PROJECT, selfUrl: PEOPLE_URL });
     expect(await denialOf(() => authenticate(authenticator, route, { authorization: header }))).toEqual(expected);
+  });
+
+  it('refuses as invalid-credential once a stalled certificate fetch outlasts the Google-auth timeout', async () => {
+    const headers = { authorization: await invokerBearer() };
+    const authenticator = create({ project: PROJECT, selfUrl: PEOPLE_URL, client: new StalledCertsClient() });
+    const started = Date.now();
+    const timeouts = await withShortTimeouts(async () => {
+      expect(await denialOf(() => authenticate(authenticator, route, headers))).toEqual(INVALID_CREDENTIAL);
+    });
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(timeouts).toEqual([GOOGLE_AUTH_TIMEOUT_MS]);
   });
 });
 
@@ -1545,6 +1653,32 @@ describe('createAuthFromEnv', () => {
       expect(fetchSpy).toHaveBeenCalledWith(jwksUrl, expect.anything());
       const refused = await signToken(userClaims({ iss: refusedIss, aud }), issuerKey);
       expect(await denialOf(() => auth.userVerifier.verify(refused))).toEqual(INVALID_ACCESS_TOKEN);
+    });
+
+    it('bounds every Google ID-token check with one shared client whose certificate requests time out', async () => {
+      const clients = new Set<OAuth2Client>();
+      vi.spyOn(OAuth2Client.prototype, 'getFederatedSignonCertsAsync').mockImplementation(function (this: OAuth2Client) {
+        clients.add(this);
+        return new Promise(() => undefined);
+      });
+      const auth = await createAuthFromEnv(cloudEnv(), { invocationTrust: 'verify' });
+      const bearer = async (overrides: Record<string, unknown> = {}): Promise<string> =>
+        `Bearer ${await signToken(googleOidcClaims(overrides), issuerKey)}`;
+      const service = await bearer();
+      const push = await bearer({ aud: PUSH_ENDPOINT, email: PUBSUB_INVOKER_EMAIL });
+      const task = await bearer({ aud: `${PEOPLE_URL}${TASK_PATH}`, email: TASKS_INVOKER_EMAIL });
+      const timeouts = await withShortTimeouts(async () => {
+        expect(await denialOf(() => auth.invocationVerifier.verify(service))).toEqual(INVALID_CREDENTIAL);
+        expect(
+          await denialOf(() => authenticate(auth.transports['pubsub-push'], PUSH_PATH, { authorization: push })),
+        ).toEqual(INVALID_CREDENTIAL);
+        expect(
+          await denialOf(() => authenticate(auth.transports['cloud-tasks'], TASK_PATH, { authorization: task })),
+        ).toEqual(INVALID_CREDENTIAL);
+      });
+      expect(timeouts).toEqual([GOOGLE_AUTH_TIMEOUT_MS, GOOGLE_AUTH_TIMEOUT_MS, GOOGLE_AUTH_TIMEOUT_MS]);
+      expect(clients.size).toBe(1);
+      expect([...clients][0]?.transporter.defaults.timeout).toBe(GOOGLE_AUTH_TIMEOUT_MS);
     });
 
     it('mints with the Google ID-token minter, which needs the callee URL', async () => {

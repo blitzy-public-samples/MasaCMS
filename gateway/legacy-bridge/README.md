@@ -26,8 +26,13 @@ Every endpoint is `${LEGACY_ORIGIN}/gateway/legacy-bridge/cfml/<page>.cfm?op=<op
 - Guard order in the overridden `onRequestStart`:
   1. **Allow-list.** Only `session.cfm`, `jobs.cfm`, `scheduler.cfm`, `site.cfm` and `files.cfm` are served, matched case-sensitively. Anything else gets 404 with an empty body.
   2. **Assertion.** Any verification failure gets 403 with an empty body. Masa never runs for a rejected request.
-  3. **Reload key.** The URL key named by `application.appReloadKey` (default `appreload`, `core/appcfc/onApplicationStart_include.cfm:80`) is deleted, so a bridge call can never trigger a Masa reload (start-up guard, AAP 0.5.4).
+  3. **Reload flag.** When the URL carries the key named by `application.appReloadKey` (default `appreload`, `core/appcfc/onApplicationStart_include.cfm:80`), the guard sets `request.muraAppreloaded = true`, Masa's own "already reloaded in this request" flag (`core/appcfc/onApplicationStart_include.cfm:88`). Deleting the key first could not stop the reload: Masa re-decodes `url` with `setEncoding` (`core/appcfc/onRequestStart_include.cfm:82`) before its reload check.
   4. Masa's `onRequestStart` runs: session defaults, session cookies, `Generator` and HSTS headers.
+  5. **Reload key.** The key is then deleted from `url`, so the page never sees it.
+- The flag suppresses only a reload asked for by that key on a bridge call, never genuine initialisation:
+  - Masa resets the flag to `false` and runs `onApplicationStart_include.cfm` when the application is not initialised or fails its start-up check, and still reloads on the key while setup is incomplete (`core/appcfc/onRequestStart_include.cfm:92-136`).
+  - ColdFusion's own application start, after a restart or application expiry, runs Masa's `onApplicationStart` before the guard.
+  - The start-up guard (AAP 0.5.4) closes those paths; the bridge does not.
 
 ### Reachability
 
@@ -72,7 +77,7 @@ mac           8c7859b0af8d3c07a627b6fb7f1968d9ae7020f06e86108dd7288f996a1d6a09
 header value  <b64>.<mac>
 ```
 
-- `gateway/test` reproduces this vector with `@opt2/platform/legacy-compat`: `verifyBridgeAssertion(value, key, new MemoryNonceStore(), new Date(1782820800 * 1000))` returns the payload, and recomputing the HMAC over `<b64>` gives `<mac>`.
+- With `@opt2/platform/legacy-compat`, `verifyBridgeAssertion(value, key, new MemoryNonceStore(), new Date(1782820800 * 1000))` returns `{ ok: true, payload }`, with `payload` equal to the payload JSON (`aud` included), and recomputing the HMAC over `<b64>` gives `<mac>`.
 - The CFML verifier must accept the vector with its clock set to `now`.
 - Shell check: `printf '%s' '<b64>' | openssl dgst -sha256 -hmac 'opt2-bridge-test-vector-key-0001'` prints `<mac>`; `printf '%s' '<b64>' | basenc --base64url -d` prints the payload JSON (this `<b64>` is 272 characters, so it needs no padding).
 
@@ -85,7 +90,9 @@ header value  <b64>.<mac>
   - Parsers also accept a space instead of `T` and missing or shorter milliseconds.
   - Applies to `theTime`, `lastMonitored`, `value`, `since`, `usedAt`, `lastModified`, `lastlogin`, `passwordCreated` and `serverTime`.
   - The programs-sites orchestrator formats with `LEGACY_TIME_MASK = 'yyyy-MM-dd HH:nn:ss.lll'` (`formatLegacyTime` in `services/programs-sites/src/jobs/dispatch.ts`, legacy-compat `cfDateTimeFormat` letters: `M` month, `n` minutes, `l` milliseconds), which gives the space-separated form, for example `2026-06-30 12:00:00.000`.
-- **Errors.** Body `{error, message, serverTime}`. `message` never carries secrets; for 500 it is the exception type only. The guard's 403 and 404 have empty bodies.
+- **Errors.** Body `{error, message, serverTime}`. `message` never carries secrets. The guard's 403 and 404 have empty bodies.
+  - For an uncaught error, each page's `catch (any e)` answers 500 `serverError` with `message` = the exception type (`e.type`) only.
+  - The other 500s carry a fixed `message`: `OPT2_GATEWAY_ORIGIN unset` or `OPT2_GATEWAY_ORIGIN invalid` (`scheduler.cfm` `repoint`, and `restore` with `repoint: true`), and `opt2bridge.writeVerification` (`files.cfm` `put`, when the re-read file does not hash to the written bytes).
 
 | Status | `error` | When |
 |---|---|---|
@@ -95,7 +102,7 @@ header value  <b64>.<mac>
 | 409 | `sessionMismatch` | Assertion `sid` differs from `session.sessionid` |
 | 409 | `subjectMismatch` | `hydrate` `snapshot.user.userID` differs from assertion `sub` |
 | 409 | `unsupportedFileStore` | `files.get`, `files.put` or `files.delete` when the store is not `fileDir` |
-| 500 | `serverError` | Uncaught error |
+| 500 | `serverError` | Uncaught error; `OPT2_GATEWAY_ORIGIN` unset or invalid; `files.put` write verification failed |
 
 - **Logging.** The key, assertion values, CSRF secret keys, used tokens and password hashes are never logged. The guard logs only a rejection reason.
 - **User-Agent.** Masa turns session tracking off and sets a 2-second session timeout for empty or bot-like user agents, such as `java`, `coldfusion`, `cfschedule`, `python`, `go-http-client`, `ping` or anything matching `bot\b` (`core/appcfc/applicationSettings.cfm:240-312`).
@@ -194,9 +201,9 @@ Caller: the migration service, `migration/src/scheduler/`, and `opt2-ops` (AAP 0
 - **`repoint`** recreates the native task with Masa's attributes (`:562-575`), then resumes it:
   - the task name (default `siteMonitorTask`), operation `HTTPRequest`, `startTime` 00:15, `interval` 900, `requestTimeOut` 600, `publish` No;
   - `startDate` from the captured definition, else today;
-  - the URL `OPT2_GATEWAY_ORIGIN` + `/index.cfm/_api/sitemonitor/`, with host and port split as Masa splits them (`:549-553`, `:563`): the URL carries no port, `port` carries it, and a missing port is 80.
+  - the URL `OPT2_GATEWAY_ORIGIN` + `/index.cfm/_api/sitemonitor/`, with host and port split as Masa splits them (`:549-553`, `:563`): the URL carries no port, `port` carries it, and a missing port is 443 for `https` and 80 for `http`.
 - **`pause`, `resume`, `delete`** select tasks whose name equals an entry of `tasks`, or starts with `prefix` (case-sensitive; for example `opt2-survey-`). At least one of the two is required. An empty selection answers `tasks: []`.
-- **`restore`** recreates each task exactly as given. With `repoint: true` only the scheme, host and port move to `OPT2_GATEWAY_ORIGIN`; path and query are kept. With `paused: true` each task is paused after creation. The input shape is the `describe` task shape, so migration can round-trip `${OPT2_PRISTINE_DIR}/native-tasks.json` after converting it.
+- **`restore`** recreates each task exactly as given. With `repoint: true` only the scheme, host and port move to `OPT2_GATEWAY_ORIGIN`, a missing port defaulting as in `repoint`; path and query are kept. With `paused: true` each task is paused after creation. The input shape is the `describe` task shape, so migration can round-trip `${OPT2_PRISTINE_DIR}/native-tasks.json` after converting it.
 
 ### `site.cfm?op=refresh&siteid=…`
 
@@ -211,8 +218,14 @@ Caller: the migration reverse projector, after a batch touching `tsettings`, poo
 Caller: the migration service, `migration/src/files/` and the reverse projector (AAP 0.8.1, 0.8.3). Assertion op `files.<op>`, `siteId` equal to `siteid`.
 
 - Layout follows `core/mura/content/file/fileDAO.cfc:153-199`: `<configBean.getFileDir()>/<siteid>/cache/file/<fileID><variant>.<ext>`.
-  - Variants are `""`, `_source`, `_small` and `_medium`. Masa writes the last three only for `png`, `gif`, `jpg` and `jpeg`; for `flv`, `_small` and `_medium` are `.jpg`.
-- `name` must match `^[A-Za-z0-9-]{35}(_source|_small|_medium)?\.[A-Za-z0-9]+$` and `fileId` must match `^[A-Za-z0-9-]{35}$`, else 400. `siteid` must be a registered site, else 404.
+  - fileDAO writes the variants `""`, `_source`, `_small` and `_medium`, the last three only for `png`, `gif`, `jpg` and `jpeg`; for `flv`, `_small` and `_medium` are `.jpg`.
+  - Image rendering adds on-demand renditions `_<size name>` and `_W<w>_H<h>`, where `w` and `h` are numbers or `AUTO`/`auto` (`core/mura/content/file/processImgCfimage.cfc:190-201`).
+- `name` is `<fileID><variant>.<ext>` and must match `^[A-Za-z0-9-]{35}(_[^/\\[:cntrl:]]+)?\.[A-Za-z0-9]+$`, else 400:
+  - the fileID is 35 characters of `[A-Za-z0-9-]`;
+  - a variant is `_` and one or more characters other than `/`, `\` and ASCII control characters, dots included (`_W200.5_HAUTO`);
+  - `ext` is the segment after the last dot.
+  - A name has no separator and starts with the fileID, so it cannot leave the directory: a traversal, `/`, `%2F` or a backslash answers 400. With Masa's script protection on (the default, `core/mura/configBean.cfc:160`), `%00` is removed from parameters before the check (`core/mura/Portcullis.cfc:619-622`); otherwise the control-character rule rejects it.
+- `fileId` must match `^[A-Za-z0-9-]{35}$`, else 400. `siteid` must be a registered site, else 404.
 - Parameters are URL query parameters.
 - When the store (`configBean.getFileStore()`) is not `fileDir`, `list` answers `files: []`, and `get`, `put` and `delete` answer 409 `unsupportedFileStore`. Migration records the halt (AAP 0.8.1).
 
@@ -224,7 +237,7 @@ Caller: the migration service, `migration/src/files/` and the reverse projector 
 | `delete` | POST | `siteid`, and `name` or `fileId` | — | `{deleted:[<names>], serverTime}` |
 
 - `sha256` and `X-Opt2-Sha256` are lowercase hex SHA-256 of the raw bytes. `size` is the byte count.
-- **`list`** returns every file in the directory whose name matches the name rule, so variants are found, not assumed. A missing directory gives `files: []`.
+- **`list`** returns every file in the directory whose name starts with a fileID and matches the name rule, so variants are found, not assumed. A missing directory gives `files: []`.
 - **`get`** answers 404 for a missing file.
 - **`put`** checks the body against `X-Opt2-Sha256` (missing header 400, mismatch 400 `hashMismatch`), then writes through Masa's `fileWriter.writeFile(mode="774", …)`, overwriting an existing file as Masa's cache writes do.
 - **`delete`** by `name` removes that file; by `fileId` it removes every `<fileId>*` file, as `deleteCachedFile` does (`fileDAO.cfc:382-402`). It reads no `tfiles` row and announces no plugin event. Nothing found gives `deleted: []`.

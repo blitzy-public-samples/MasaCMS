@@ -9,6 +9,9 @@ export const MAILPIT_CONFIRM_ATTEMPTS = 10;
 /** Pause between consecutive Mailpit lookups. */
 export const MAILPIT_CONFIRM_INTERVAL_MS = 500;
 
+/** Longest one Mailpit lookup may take, response body included; a slower lookup is a miss. */
+export const MAILPIT_LOOKUP_TIMEOUT_MS = 250;
+
 /** Port that tells whether a sent message reached the mail store. */
 export interface DeliveryStatusSource {
   /** Returns the Mailpit `ID` of the message whose communications.message id is `messageId`, or null when not found. */
@@ -35,10 +38,10 @@ export function mailpitSearchUrl(baseUrl: string, messageId: string): string {
   return `${base}/api/v1/search?query=${encodeURIComponent(`message-id:${messageId}@${MESSAGE_ID_DOMAIN}`)}`;
 }
 
-/** One search request; any failure or empty result is a miss (null). */
+/** One bounded search request; any failure, expiry or empty result is a miss (null). */
 async function lookup(url: string): Promise<string | null> {
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(MAILPIT_LOOKUP_TIMEOUT_MS) });
     if (!res.ok) {
       await res.body?.cancel();
       return null;

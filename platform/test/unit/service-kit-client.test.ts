@@ -170,7 +170,10 @@ describe('createServiceClient with a MockAgent', () => {
       path: '/internal/v1/x',
       headers: { 'X-Serverless-Authorization': 'Bearer forwarded' },
     });
-    expect(minter.headersFor).toHaveBeenCalledWith({ name: 'identity', url: IDENTITY });
+    expect(minter.headersFor).toHaveBeenCalledWith(
+      { name: 'identity', url: IDENTITY },
+      { signal: expect.any(AbortSignal) as unknown },
+    );
     expect(lastCall().headers?.[INVOCATION_HEADER]).toBe('Bearer svc-identity');
     expect(Object.keys(lastCall().headers ?? {}).filter((n) => n.toLowerCase() === INVOCATION_HEADER)).toHaveLength(1);
   });
@@ -281,6 +284,62 @@ describe('createServiceClient with a MockAgent', () => {
     minter.headersFor.mockRejectedValueOnce(failure);
     await expect(client.request({ service: 'identity', method: 'GET', path: '/x' })).rejects.toBe(failure);
     expect(callCount()).toBe(0);
+  });
+
+  it.each<[string, (signal: AbortSignal) => Promise<Record<string, string>>]>([
+    ['ignores the signal', () => new Promise(() => undefined)],
+    [
+      'honours the signal',
+      (signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            reject(new Error('minter aborted'));
+          });
+        }),
+    ],
+  ])('cuts a stalled minter that %s at the deadline as ServiceUnavailableError without sending', async (_label, stall) => {
+    let given: AbortSignal | undefined;
+    const stalled: InvocationMinter = {
+      headersFor: (_target, opts) => {
+        given = opts?.signal;
+        return given === undefined ? Promise.reject(new Error('no signal')) : stall(given);
+      },
+    };
+    client = makeClient({ timeoutMs: 50, credentials: stalled });
+    replyOk('/x');
+    const started = Date.now();
+    const err = await client.request({ service: 'identity', method: 'GET', path: '/x' }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ServiceUnavailableError);
+    expect(err).toMatchObject({ service: 'identity', reason: 'service-unavailable', surface: 'auto' });
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(given?.aborted).toBe(true);
+    expect(given?.reason).toMatchObject({ name: 'TimeoutError' });
+    expect(callCount()).toBe(0);
+  });
+
+  it('charges credential acquisition and the reply to one deadline', async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    try {
+      let given: AbortSignal | undefined;
+      const slow: InvocationMinter = {
+        async headersFor(target, opts) {
+          given = opts?.signal;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          return { 'X-Serverless-Authorization': `Bearer svc-${target.name}` };
+        },
+      };
+      client = makeClient({ timeoutMs: 200, credentials: slow });
+      agent.get(IDENTITY).intercept({ path: '/x' }).reply(200, 'late').delay(2_000);
+      const err = await client.request({ service: 'identity', method: 'GET', path: '/x' }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ServiceUnavailableError);
+      expect(callCount()).toBe(1);
+      expect(timeout).toHaveBeenCalledTimes(1);
+      expect(timeout).toHaveBeenCalledWith(200);
+      expect(given).toBe(timeout.mock.results[0]?.value);
+      expect(given?.aborted).toBe(true);
+    } finally {
+      timeout.mockRestore();
+    }
   });
 
   it('leaves an injected dispatcher open on close', async () => {

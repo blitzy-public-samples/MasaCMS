@@ -772,6 +772,8 @@ paths:
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
           $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
         '503':
           $ref: '#/components/responses/LegacyUnavailable503'
   /internal/v1/migration/export:
@@ -821,6 +823,8 @@ paths:
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
           $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
         '503':
           $ref: '#/components/responses/LegacyUnavailable503'
   /internal/v1/migration/changes:
@@ -858,6 +862,8 @@ paths:
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
           $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
         '503':
           $ref: '#/components/responses/LegacyUnavailable503'
   /internal/v1/migration/position:
@@ -891,6 +897,8 @@ paths:
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
           $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
         '503':
           $ref: '#/components/responses/LegacyUnavailable503'
   /internal/v1/migration/watermark:
@@ -931,6 +939,8 @@ paths:
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
           $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
         '503':
           $ref: '#/components/responses/LegacyUnavailable503'
     post:
@@ -962,6 +972,8 @@ paths:
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
           $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
         '503':
           $ref: '#/components/responses/LegacyUnavailable503'
   /internal/v1/migration/gate:
@@ -1000,6 +1012,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GateConflict'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
         '503':
           $ref: '#/components/responses/LegacyUnavailable503'
           description: The gates could not close within the wait budget.
@@ -1144,6 +1158,7 @@ components:
       schema:
         type: string
         format: uuid
+        pattern: '^([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-8][0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}|00000000-0000-0000-0000-000000000000|[Ff]{8}-[Ff]{4}-[Ff]{4}-[Ff]{4}-[Ff]{12})$'
     MigrationSiteId:
       name: siteId
       in: query
@@ -1481,11 +1496,23 @@ components:
       examples:
         - '1250.5000'
     MoneyInput:
-      type:
-        - string
-        - number
-      description: An amount of at most 15 integer digits and 4 decimals.
-      pattern: '^-?[0-9]{1,15}(\.[0-9]{1,4})?$'
+      description: An amount of at most 15 integer digits and 4 decimals. A fractional JSON number must be below 10^12 in magnitude and, below 10^7, a multiple of 0.0001; ACF rounds numbers to 12 significant digits before the check.
+      anyOf:
+        - type: string
+          pattern: '^-?[0-9]{1,15}(\.[0-9]{1,4})?$'
+        - type: integer
+          minimum: -999999999999999
+          maximum: 999999999999999
+        - type: number
+          exclusiveMinimum: -10000000
+          exclusiveMaximum: 10000000
+          multipleOf: 0.0001
+        - type: number
+          minimum: 10000000
+          exclusiveMaximum: 1000000000000
+        - type: number
+          exclusiveMinimum: -1000000000000
+          maximum: -10000000
     Period:
       type: string
       description: Accounting month `YYYY-MM`.
@@ -1915,8 +1942,21 @@ components:
               type: string
             orderingKey:
               type: string
+          allOf:
+            - anyOf:
+                - required:
+                    - messageId
+                  properties:
+                    messageId:
+                      minLength: 1
+                - required:
+                    - message_id
+                  properties:
+                    message_id:
+                      minLength: 1
         subscription:
           type: string
+          minLength: 1
           description: Usually `projects/<project>/subscriptions/finance.programs-sites.site.changed.v1`.
         deliveryAttempt:
           type: integer
@@ -1975,6 +2015,11 @@ components:
         - legacyTable
         - columns
         - rows
+      oneOf:
+        - required:
+            - tenantId
+        - required:
+            - siteId
       additionalProperties: false
       properties:
         batchId:
@@ -1991,7 +2036,8 @@ components:
           minLength: 1
         tenantId:
           type: string
-          minLength: 1
+          format: uuid
+          pattern: '^([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-8][0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}|00000000-0000-0000-0000-000000000000|[Ff]{8}-[Ff]{4}-[Ff]{4}-[Ff]{4}-[Ff]{12})$'
         siteId:
           type: string
           minLength: 1

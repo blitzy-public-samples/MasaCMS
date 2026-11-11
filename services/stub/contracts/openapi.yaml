@@ -203,6 +203,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
   /internal/v1/migration/export:
@@ -252,6 +254,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
   /internal/v1/migration/changes:
@@ -289,6 +293,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
   /internal/v1/migration/position:
@@ -322,6 +328,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
   /internal/v1/migration/watermark:
@@ -362,6 +370,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
     post:
@@ -393,6 +403,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
   /internal/v1/migration/gate:
@@ -431,6 +443,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GateConflict'
+        '500':
+          $ref: '#/components/responses/ServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
           description: The gates could not close within the wait budget.
@@ -692,6 +706,7 @@ components:
       schema:
         type: string
         format: uuid
+        pattern: '^([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-8][0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}|00000000-0000-0000-0000-000000000000|[Ff]{8}-[Ff]{4}-[Ff]{4}-[Ff]{4}-[Ff]{12})$'
     MigrationSiteId:
       name: siteId
       in: query
@@ -1269,8 +1284,21 @@ components:
               type: string
             orderingKey:
               type: string
+          allOf:
+            - anyOf:
+                - required:
+                    - messageId
+                  properties:
+                    messageId:
+                      minLength: 1
+                - required:
+                    - message_id
+                  properties:
+                    message_id:
+                      minLength: 1
         subscription:
           type: string
+          minLength: 1
           description: Usually `projects/<project>/subscriptions/<subscription>`, the subscription the path names.
         deliveryAttempt:
           type: integer
@@ -1403,6 +1431,11 @@ components:
         - legacyTable
         - columns
         - rows
+      oneOf:
+        - required:
+            - tenantId
+        - required:
+            - siteId
       additionalProperties: false
       properties:
         batchId:
@@ -1419,7 +1452,8 @@ components:
           minLength: 1
         tenantId:
           type: string
-          minLength: 1
+          format: uuid
+          pattern: '^([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-8][0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}|00000000-0000-0000-0000-000000000000|[Ff]{8}-[Ff]{4}-[Ff]{4}-[Ff]{4}-[Ff]{12})$'
         siteId:
           type: string
           minLength: 1
