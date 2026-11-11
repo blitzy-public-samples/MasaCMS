@@ -65,36 +65,57 @@ export function alertBox(message: string | SafeHtml, kind: AlertKind = 'error'):
   return html`<div${ALERT_CLASS[kind]}><span>${message}</span></div>`;
 }
 
-/** Labelled form control row. */
-export function controlGroup(label: string, control: SafeHtml): SafeHtml {
-  return html`<div class="mura-control-group"><label>${label}</label>${control}</div>`;
+/** Id of each control built by textInput, select or textarea, read by controlGroup. */
+const CONTROL_IDS = new WeakMap<SafeHtml, string>();
+
+/** Records `id` as the id of `control` and returns `control`. */
+function withControlId(control: SafeHtml, id: string): SafeHtml {
+  CONTROL_IDS.set(control, id);
+  return control;
 }
 
-/** Single-line input; a `file` input carries no value. */
+/** Labelled form control row whose label targets `controlId`, else the id textInput, select or textarea gave `control`. */
+export function controlGroup(label: string, control: SafeHtml, controlId?: string): SafeHtml {
+  const target = controlId ?? CONTROL_IDS.get(control);
+  return html`<div class="mura-control-group"><label${attr('for', target)}>${label}</label>${control}</div>`;
+}
+
+/** Single-line input with id `opts.id`, default `name`; a `file` input carries no value. */
 export function textInput(
   name: string,
   value = '',
-  opts: { type?: 'text' | 'date' | 'number' | 'file'; maxlength?: number; required?: boolean } = {},
+  opts: { type?: 'text' | 'date' | 'number' | 'file'; maxlength?: number; required?: boolean; id?: string } = {},
 ): SafeHtml {
   const type = opts.type ?? 'text';
-  return html`<input${attr('name', name)}${attr('type', type)}${attr('value', type === 'file' ? null : value)}${attr(
-    'maxlength',
-    opts.maxlength,
-  )}${attr('required', opts.required === true ? 'true' : null)}>`;
+  const id = opts.id ?? name;
+  return withControlId(
+    html`<input${attr('name', name)}${attr('id', id)}${attr('type', type)}${attr(
+      'value',
+      type === 'file' ? null : value,
+    )}${attr('maxlength', opts.maxlength)}${attr('required', opts.required === true ? 'true' : null)}>`,
+    id,
+  );
 }
 
-/** Drop-down list with the option whose value equals `selected` marked selected. */
-export function select(name: string, options: readonly SelectOption[], selected?: string): SafeHtml {
+/** Drop-down list with id `opts.id`, default `name`, and the option whose value equals `selected` marked selected. */
+export function select(
+  name: string,
+  options: readonly SelectOption[],
+  selected?: string,
+  opts: { id?: string } = {},
+): SafeHtml {
+  const id = opts.id ?? name;
   const items = options.map(
     (option) =>
       html`<option${attr('value', option.value)}${attr('selected', option.value === selected)}>${option.label}</option>`,
   );
-  return html`<select${attr('name', name)}>${items}</select>`;
+  return withControlId(html`<select${attr('name', name)}${attr('id', id)}>${items}</select>`, id);
 }
 
-/** Multi-line text input. */
-export function textarea(name: string, value = '', rows = 6): SafeHtml {
-  return html`<textarea${attr('name', name)}${attr('rows', rows)}>${value}</textarea>`;
+/** Multi-line text input with id `opts.id`, default `name`. */
+export function textarea(name: string, value = '', rows = 6, opts: { id?: string } = {}): SafeHtml {
+  const id = opts.id ?? name;
+  return withControlId(html`<textarea${attr('name', name)}${attr('id', id)}${attr('rows', rows)}>${value}</textarea>`, id);
 }
 
 /** Hidden form field. */

@@ -1,3 +1,4 @@
+import * as cheerio from 'cheerio';
 import { describe, expect, it } from 'vitest';
 import { isSafeHtml, raw, toString, type SafeHtml } from '@/lib/html';
 import {
@@ -106,23 +107,64 @@ describe('markup', () => {
         '<div class="mura-control-group"><label>A&amp;B</label><input></div>',
       );
     });
+
+    it.each<[string, SafeHtml, string | undefined, string, string]>([
+      ['a text input', textInput('name'), undefined, 'input', 'name'],
+      ['a select', select('status', OPTIONS), undefined, 'select', 'status'],
+      ['a textarea', textarea('notes'), undefined, 'textarea', 'notes'],
+      ['a text input with an explicit id', textInput('name', '', { id: 'person-name' }), undefined, 'input', 'person-name'],
+      ['a select with an explicit id', select('status', OPTIONS, 'open', { id: 'sheet-status' }), undefined, 'select', 'sheet-status'],
+      ['a textarea with an explicit id', textarea('notes', '', 6, { id: 'day-notes' }), undefined, 'textarea', 'day-notes'],
+      ['foreign markup passed with its id', raw('<input type="checkbox" id="agree" name="agree">'), 'agree', 'input', 'agree'],
+    ])('targets the id of %s from its label', (_, control, controlId, tag, id) => {
+      const $ = cheerio.load(toString(controlGroup('Label', control, controlId)));
+      const label = $('div.mura-control-group > label');
+      const field = $(`div.mura-control-group > ${tag}`);
+      expect(field.attr('id')).toBe(id);
+      expect(label.attr('for')).toBe(id);
+      expect(field.prev().get(0)).toBe(label.get(0));
+    });
+
+    it.each<Case>([
+      [
+        'a text input',
+        controlGroup('Name', textInput('n', '', { id: 'a"b' })),
+        '<div class="mura-control-group"><label for="a&quot;b">Name</label><input name="n" id="a&quot;b" type="text" value=""></div>',
+      ],
+      [
+        'a select',
+        controlGroup('Name', select('n', [], undefined, { id: 'a"b' })),
+        '<div class="mura-control-group"><label for="a&quot;b">Name</label><select name="n" id="a&quot;b"></select></div>',
+      ],
+      [
+        'a textarea',
+        controlGroup('Name', textarea('n', '', 6, { id: 'a"b' })),
+        '<div class="mura-control-group"><label for="a&quot;b">Name</label><textarea name="n" id="a&quot;b" rows="6"></textarea></div>',
+      ],
+    ])('attribute-encodes an explicit id of %s on label and control', (_, markup, expected) => {
+      expect(toString(markup)).toBe(expected);
+    });
   });
 
   describe('textInput', () => {
     it.each<Case>([
-      ['a default text input', textInput('title'), '<input name="title" type="text" value="">'],
-      ['an encoded value', textInput('q', 'a "b"'), '<input name="q" type="text" value="a&#x20;&quot;b&quot;">'],
+      ['a default text input', textInput('title'), '<input name="title" id="title" type="text" value="">'],
+      ['an encoded value', textInput('q', 'a "b"'), '<input name="q" id="q" type="text" value="a&#x20;&quot;b&quot;">'],
       [
         'maxlength and required',
         textInput('amount', '12.5', { type: 'number', maxlength: 10, required: true }),
-        '<input name="amount" type="number" value="12.5" maxlength="10" required="true">',
+        '<input name="amount" id="amount" type="number" value="12.5" maxlength="10" required="true">',
       ],
       [
         'a date input that is not required',
         textInput('due', '2026-10-29', { type: 'date', required: false }),
-        '<input name="due" type="date" value="2026-10-29">',
+        '<input name="due" id="due" type="date" value="2026-10-29">',
       ],
-      ['a file input without its value', textInput('upload', 'x.pdf', { type: 'file' }), '<input name="upload" type="file">'],
+      [
+        'a file input without its value',
+        textInput('upload', 'x.pdf', { type: 'file' }),
+        '<input name="upload" id="upload" type="file">',
+      ],
     ])('renders %s', (_, markup, expected) => {
       expect(toString(markup)).toBe(expected);
     });
@@ -133,12 +175,12 @@ describe('markup', () => {
       [
         'the selected option',
         select('status', OPTIONS, 'closed'),
-        '<select name="status"><option value="open">Open</option><option value="closed" selected>Closed &amp; done</option></select>',
+        '<select name="status" id="status"><option value="open">Open</option><option value="closed" selected>Closed &amp; done</option></select>',
       ],
       [
         'no selection',
         select('status', OPTIONS),
-        '<select name="status"><option value="open">Open</option><option value="closed">Closed &amp; done</option></select>',
+        '<select name="status" id="status"><option value="open">Open</option><option value="closed">Closed &amp; done</option></select>',
       ],
     ])('renders %s', (_, markup, expected) => {
       expect(toString(markup)).toBe(expected);
@@ -147,8 +189,8 @@ describe('markup', () => {
 
   describe('textarea', () => {
     it.each<Case>([
-      ['six empty rows by default', textarea('notes'), '<textarea name="notes" rows="6"></textarea>'],
-      ['an encoded value', textarea('notes', 'a<b', 3), '<textarea name="notes" rows="3">a&lt;b</textarea>'],
+      ['six empty rows by default', textarea('notes'), '<textarea name="notes" id="notes" rows="6"></textarea>'],
+      ['an encoded value', textarea('notes', 'a<b', 3), '<textarea name="notes" id="notes" rows="3">a&lt;b</textarea>'],
     ])('renders %s', (_, markup, expected) => {
       expect(toString(markup)).toBe(expected);
     });

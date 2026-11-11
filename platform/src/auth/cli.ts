@@ -151,7 +151,7 @@ function writeStdout(text: string): Promise<void> {
   });
 }
 
-// npm `.bin` shims are symlinks and Node puts the main module's real path into import.meta.url, so argv[1] is compared after realpath.
+// argv[1] may be a symlinked path (node_modules/@opt2/platform is a link) and Node puts the main module's real path into import.meta.url, so argv[1] is compared after realpath.
 const entry = process.argv[1];
 if (entry !== undefined && import.meta.url === pathToFileURL(await realpath(entry)).href) {
   // Explicit exit: an app whose plugins failed while the builder awaited it is never handed back to close, so its handles may stay open.

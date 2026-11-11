@@ -416,7 +416,7 @@ describe('CLI paths', () => {
     expect(migrateCliPath()).toBe(fileURLToPath(new URL('../../src/cli.js', import.meta.url)));
   });
 
-  it('outboxCliPath is the opt2-outbox bin beside the @opt2/platform/outbox entry', () => {
+  it('outboxCliPath is the opt2-outbox CLI module beside the @opt2/platform/outbox entry', () => {
     expect(outboxCliPath().endsWith(path.join('dist', 'outbox', 'cli.js'))).toBe(true);
   });
 });

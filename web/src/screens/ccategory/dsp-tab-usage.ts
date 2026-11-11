@@ -1,4 +1,5 @@
 // Category usage tab of `ccategory/dsp_tab_usage.cfm`; no legacy ccategory view includes it, so no screen renders it.
+import { adminUrl, type AdminParam } from '@opt2/platform/legacy-compat';
 import { formatDateField, parseLegacyDate } from '@/lib/dates';
 import { html, raw, type SafeHtml } from '@/lib/html';
 import type { RbLookup } from '@/lib/resource-bundles/rb';
@@ -52,9 +53,18 @@ function actionItems(row: CategoryUsageRow, rb: RbLookup): SafeHtml {
   if (row.verdict.toLowerCase() === 'none') {
     return html`<li class="edit disabled">${edit}</li><li class="version-history disabled">${history}</li>`;
   }
-  const query = `&contentid=${row.contentID}&type=${row.type}&parentid=${row.parentID}&topid=${row.contentID}&siteid=${row.siteID}&moduleid=${row.moduleID}`;
-  const editHref = raw(`./?muraAction=cArch.edit&contenthistid=${row.contentHistID}${query}`);
-  const historyHref = raw(`./?muraAction=cArch.hist${query}`);
+  const params: AdminParam[] = [
+    ['contentid', row.contentID, 'raw'],
+    ['type', row.type, 'raw'],
+    ['parentid', row.parentID, 'raw'],
+    ['topid', row.contentID, 'raw'],
+    ['siteid', row.siteID, 'raw'],
+    ['moduleid', row.moduleID, 'raw'],
+  ];
+  const link = (action: string, extra: AdminParam[] = []): SafeHtml =>
+    raw(adminUrl({ circuit: 'cArch', action, adminDir: '.', context: '', html: false, params: [...extra, ...params] }));
+  const editHref = link('edit', [['contenthistid', row.contentHistID, 'raw']]);
+  const historyHref = link('hist');
   return html`<li class="edit"><a title="${edit}" href="${editHref}"><i class="mi-pencil"></i></a></li><li class="version-history"><a title="${history}" href="${historyHref}"><i class="mi-history"></i></a></li>`;
 }
 
