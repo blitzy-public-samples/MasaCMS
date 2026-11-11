@@ -29,6 +29,7 @@ const LAST_DEPLOYMENT = new Date(2026, 0, 2, 3, 4, 5, 6);
 const SUBTYPE = 'S0000000-0000-0000-0000000000000001';
 const OTHER_SUBTYPE = 'S0000000-0000-0000-0000000000000002';
 const BASE_ID = 'B0000000-0000-0000-0000000000000001';
+const SIZE_ID = 'ABCDEF00-AAAA-AAAA-AAAAAAAAAAAAAAAA';
 const VALUES: ExtendDataValues = { attributevalue: '5', stringvalue: '5', datetimevalue: null, numericvalue: 5, remoteid: '' };
 
 function siteRow(siteid: string, orderno: number | null): Record<string, unknown> {
@@ -206,6 +207,34 @@ describe.skipIf(!available)('programs-sites repository against PostgreSQL', () =
     expect(await gated((tx) => repository.deleteImageSize(tx, fixedId), otherTenantId)).toBe(false);
     expect(await gated((tx) => repository.deleteImageSize(tx, fixedId))).toBe(true);
     expect(await inTenant((tx) => repository.findImageSize(tx, { sizeId: fixedId }))).toBeNull();
+  });
+
+  it.each([
+    ['a lower-cased sizeId', { sizeId: SIZE_ID.toLowerCase() }],
+    ['a differently cased name with a trailing space in a differently cased siteId', { name: 'large ', siteId: 'ALPHA' }],
+  ])('finds the stored image size by %s, as SQL Server equality does', async (_label, by) => {
+    await gated((tx) => repository.saveImageSize(tx, { sizeid: SIZE_ID, siteid: 'alpha', name: 'Large', height: '100', width: 'AUTO' }));
+    expect((await inTenant((tx) => repository.findImageSize(tx, by)))?.sizeid).toBe(SIZE_ID);
+  });
+
+  it.each([
+    ['the expansion of a stored ß', 'Straße', 'STRASSE', true],
+    ['a soft hyphen SQL Server does not ignore', 'large', 'lar\u00ADge', false],
+  ])('finds an image size by a name differing by %s only as SQL Server nvarchar equality does', async (_label, stored, name, matches) => {
+    await gated((tx) => repository.saveImageSize(tx, { sizeid: SIZE_ID, siteid: 'alpha', name: stored, height: '100', width: 'AUTO' }));
+    expect((await inTenant((tx) => repository.findImageSize(tx, { name, siteId: 'alpha' })))?.name).toBe(matches ? stored : undefined);
+  });
+
+  it('saves, lists and deletes an image size by a lower-cased sizeid and differently cased siteid, keeping the stored case', async () => {
+    await gated((tx) => repository.saveImageSize(tx, { sizeid: SIZE_ID, siteid: 'alpha', name: 'large', height: '100', width: 'AUTO' }));
+    const updated = await gated((tx) =>
+      repository.saveImageSize(tx, { sizeid: SIZE_ID.toLowerCase(), siteid: 'alpha', name: 'larger', height: '200', width: 'AUTO' }),
+    );
+
+    expect(updated).toMatchObject({ sizeid: SIZE_ID, name: 'larger', height: '200' });
+    expect((await inTenant((tx) => repository.listImageSizes(tx, 'Alpha'))).map((row) => row.sizeid)).toEqual([SIZE_ID]);
+    expect(await gated((tx) => repository.deleteImageSize(tx, SIZE_ID.toLowerCase()))).toBe(true);
+    expect(await inTenant((tx) => repository.listImageSizes(tx, 'alpha'))).toEqual([]);
   });
 
   describe('site extend definitions and data', () => {

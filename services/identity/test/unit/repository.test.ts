@@ -504,4 +504,135 @@ describe.skipIf(!available)('identity repository against PostgreSQL', () => {
     expect(await inTenant((tx) => repo.nextAggregateVersion(tx, 'membership', id(1)))).toBe(4);
     expect(await inTenant((tx) => repo.nextAggregateVersion(tx, 'membership', id(1)), otherTenantId)).toBe(1);
   });
+
+  it.each<[string, (tx: TenantTx, groupIds: string[]) => Promise<string[]>]>([
+    ['replaceMemberships', async (tx, groupIds) => (await repo.replaceMemberships(tx, { userId: id(1), groupIds })).added],
+    [
+      'addMembership',
+      async (tx, groupIds) => {
+        const added: string[] = [];
+        for (const groupId of groupIds) if (await repo.addMembership(tx, id(1), groupId)) added.push(groupId);
+        return added;
+      },
+    ],
+  ])('%s stores a group id and its lower-case variant once, keeping the stored case', async (_label, add) => {
+    const groupId = id(1, 'G');
+    expect(await gated((tx) => add(tx, [groupId, groupId.toLowerCase()]))).toEqual([groupId]);
+    expect(await inTenant((tx) => repo.membershipGroupIds(tx, id(1).toLowerCase()))).toEqual([groupId]);
+  });
+
+  it('stores a category id and its lower-case variant as one group interest, keeping the stored case', async () => {
+    const groupId = (await gated((tx) => repo.insertGroup(tx, groupInput(), null))).userid;
+    await gated((tx) => repo.replaceGroupInterests(tx, { groupId, categoryIds: [id(1, 'C'), id(1, 'C').toLowerCase()] }));
+    await gated((tx) => repo.replaceGroupInterests(tx, { groupId, categoryIds: [id(1, 'C').toLowerCase()], onlyCategoryIds: [] }));
+    const interests = await inTenant(async (tx) => (await tx.query<{ categoryid: string }>(`SELECT categoryid FROM ${handle.schema}.user_interest`)).rows);
+    expect(interests).toEqual([{ categoryid: id(1, 'C') }]);
+  });
+
+  it.each<[string, string, string, Record<string, unknown>, (tx: TenantTx, filter: string) => Promise<unknown>]>([
+    ['replaceMemberships onlyGroupIds', 'membership', 'groupid', { userid: id(1), groupid: id(1, 'G') }, (tx, filter) =>
+      repo.replaceMemberships(tx, { userId: id(1), groupIds: [], onlyGroupIds: [filter] })],
+    ['replaceGroupInterests onlyCategoryIds', 'user_interest', 'categoryid', { userid: id(1, 'G'), categoryid: id(1, 'C') }, (tx, filter) =>
+      repo.replaceGroupInterests(tx, { groupId: id(1, 'G'), categoryIds: [], onlyCategoryIds: [filter] })],
+    ['deleteTokensByUser tokens', 'oauth_token', 'token', { token: `000${'A'.repeat(32)}`, clientid: id(1, 'K'), userid: id(1), expires: NOW }, (tx, filter) =>
+      repo.deleteTokensByUser(tx, id(1), [filter])],
+  ])('%s removes the stored row of a lower-cased filter id with a trailing space', async (_label, table, column, stored, remove) => {
+    await gated(async (tx) => {
+      await repo.insertGroup(tx, groupInput({ userid: id(1, 'G') }), null);
+      await repo.insert(tx, table, stored);
+    });
+    await gated((tx) => remove(tx, `${String(stored[column]).toLowerCase()} `));
+    expect(await inTenant(async (tx) => (await tx.query(`SELECT ${column} FROM ${handle.schema}.${table}`)).rows)).toEqual([]);
+  });
+
+  it.each<[string, string, (tx: TenantTx, key: string) => Promise<{ userid: string } | null>]>([
+    ['findAccountById', id(1), (tx, key) => repo.findAccountById(tx, key)],
+    ['readCredential', id(1), (tx, key) => repo.readCredential(tx, key)],
+    ['findGroup', id(1, 'G'), (tx, key) => repo.findGroup(tx, key)],
+    ['findGroupsByIds', id(1, 'G'), async (tx, key) => (await repo.findGroupsByIds(tx, [key]))[0] ?? null],
+    ['findGroupsByIds with a trailing space', id(1, 'G'), async (tx, key) => (await repo.findGroupsByIds(tx, [`${key} `]))[0] ?? null],
+    ['readAccountRecords with a trailing space', id(1), async (tx, key) => (await repo.readAccountRecords(tx, [`${key} `]))[0] ?? null],
+  ])('%s reads the row of a lower-cased id and returns its stored case', async (_label, stored, read) => {
+    await gated(async (tx) => {
+      await repo.insertAccount(tx, account(id(1), 'user'));
+      await repo.writeCredential(tx, id(1), { password: 'hash', passwordcreated: NOW });
+      await repo.insertGroup(tx, groupInput({ userid: id(1, 'G') }), null);
+    });
+    expect((await inTenant((tx) => read(tx, stored.toLowerCase())))?.userid).toBe(stored);
+  });
+
+  it('updates and upserts by a lower-cased id on the stored row, keeping its stored case', async () => {
+    const lower = id(1).toLowerCase();
+    await gated(async (tx) => {
+      await repo.insertAccount(tx, account(id(1), 'user'));
+      await repo.writeCredential(tx, id(1), { password: 'old', passwordcreated: NOW });
+    });
+    const values = { username: 'renamed', type: 2, s2: 0, inactive: 0, ispublic: 0, siteid: 'site-a', remoteid: '', tablist: '' };
+    expect(await gated((tx) => repo.updateAccount(tx, lower, values))).toMatchObject({ userid: id(1), username: 'renamed' });
+    expect(await gated((tx) => repo.writeCredential(tx, lower, { password: 'new', passwordcreated: NOW }))).toMatchObject({ userid: id(1), password: 'new' });
+    const stored = await inTenant(async (tx) => [
+      ...(await tx.query<{ userid: string }>(`SELECT userid FROM ${handle.schema}.user_account`)).rows,
+      ...(await tx.query<{ userid: string }>(`SELECT userid FROM ${handle.schema}.credential`)).rows,
+    ]);
+    expect(stored).toEqual([{ userid: id(1) }, { userid: id(1) }]);
+  });
+
+  it.each([
+    ['user_account', { userid: id(1), type: 2 }, { userid: id(1).toLowerCase(), type: 2 }],
+    ['user_interest', { userid: id(1, 'G'), categoryid: id(1, 'C') }, { userid: id(1, 'G').toLowerCase(), categoryid: id(1, 'C').toLowerCase() }],
+    [
+      'permission',
+      { contentid: id(1, 'N'), groupid: id(1, 'G'), siteid: 'site-a', type: 'Editor' },
+      { contentid: id(1, 'N').toLowerCase(), groupid: id(1, 'G').toLowerCase(), siteid: 'SITE-A', type: 'editor' },
+    ],
+    ['user_strike', { username: 'Admin', strikes: 0 }, { username: 'ADMIN', strikes: 0 }],
+  ])('rejects a case variant of a stored %s key as SQL Server does', async (table, stored, variant) => {
+    await gated((tx) => repo.insert(tx, table, stored));
+    await expect(gated((tx) => repo.insert(tx, table, variant))).rejects.toMatchObject({ code: '23505' });
+  });
+
+  it('matches site ids without case in username and group name lookups', async () => {
+    await gated(async (tx) => {
+      await repo.insertAccount(tx, account(id(1), 'user', { siteid: 'Site-A' }));
+      await repo.insertGroup(tx, groupInput({ userid: id(1, 'G'), siteid: 'Site-A' }), null);
+    });
+    expect((await inTenant((tx) => repo.findAccountsByUsername(tx, 'user', 'site-a'))).map((row) => [row.userid, row.siteid])).toEqual([[id(1), 'Site-A']]);
+    expect((await inTenant((tx) => repo.findGroupByName(tx, 'editors', { siteId: 'SITE-A' })))?.userid).toBe(id(1, 'G'));
+  });
+
+  it('reads module grants by lower-cased group ids and a differently cased site id, returning the stored case', async () => {
+    const moduleId = '00000000000000000000000000000000008';
+    await gated((tx) => repo.replaceModulePermissions(tx, { moduleId, siteId: 'site-a', groupIds: [id(1, 'G'), id(2, 'G')] }));
+    expect(await inTenant((tx) => repo.moduleGrants(tx, [id(2, 'G').toLowerCase()], 'SITE-A'))).toEqual([{ contentId: moduleId, groupId: id(2, 'G') }]);
+  });
+
+  it.each([
+    ['an expansion of a stored ß', 'Straße', 'STRASSE', true],
+    ['a soft hyphen SQL Server does not ignore', 'admin', 'ad\u00ADmin', false],
+    ['a no-break space for a space', 'ad min', 'ad\u00A0min', false],
+  ])('matches a username differing by %s only as SQL Server nvarchar equality does', async (_label, stored, lookup, matches) => {
+    await gated((tx) => repo.insertAccount(tx, account(id(1), stored)));
+    expect((await inTenant((tx) => repo.findAccountsByUsername(tx, lookup, 'site-a'))).map((row) => row.userid)).toEqual(matches ? [id(1)] : []);
+  });
+
+  it('finds a stored group name and reserves an open operation username by their SQL Server expansion', async () => {
+    await gated((tx) => repo.insertGroup(tx, groupInput({ userid: id(1, 'G'), groupname: 'Straße' }), null));
+    expect((await inTenant((tx) => repo.findGroupByName(tx, 'STRASSE', { siteId: 'site-a' })))?.userid).toBe(id(1, 'G'));
+    const op = await inTenant((tx) => repo.insertAccountOperation(tx, { user_id: id(1), kind: 'create', state: 'prepared', username: 'Straße' }));
+    await expect(inTenant((tx) => repo.insertAccountOperation(tx, { user_id: id(2), kind: 'create', state: 'prepared', username: 'STRASSE ' }))).rejects.toMatchObject({
+      code: '23505',
+    });
+    expect((await inTenant((tx) => repo.findOpenAccountOperation(tx, { username: 'strasse' })))?.operation_id).toBe(op.operation_id);
+  });
+
+  it.each([
+    ['ß and ss', 'ß', 'ss', true],
+    ['Š and š', 'Š', 'š', true],
+    ['Ÿ and ÿ', 'Ÿ', 'ÿ', true],
+    ['É and é', 'É', 'é', false],
+  ])('keeps group ids differing by %s apart only where SQL Server char equality does', async (_label, first, second, distinct) => {
+    const [a, b] = [`G${first}${'0'.repeat(32)}`, `G${second}${'0'.repeat(32)}`];
+    expect(await gated(async (tx) => (await repo.replaceMemberships(tx, { userId: id(1), groupIds: [a, b] })).added)).toEqual(distinct ? [a, b] : [a]);
+    expect(await inTenant((tx) => repo.membershipGroupIds(tx, id(1)))).toHaveLength(distinct ? 2 : 1);
+  });
 });

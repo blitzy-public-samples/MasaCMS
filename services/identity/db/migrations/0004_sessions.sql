@@ -44,7 +44,7 @@ CREATE INDEX csrf_claim_claimed_at_idx ON identity.csrf_claim (claimed_at);
 CREATE TABLE identity.account_operation (
   tenant_id uuid NOT NULL,
   operation_id char(35) NOT NULL,
-  user_id char(35) NOT NULL,
+  user_id char(35) COLLATE identity.legacy_char_ci NOT NULL,
   kind text NOT NULL CHECK (kind IN ('create','update')),
   state text NOT NULL CHECK (state IN ('prepared','committed','aborted','reverted','finished')),
   username text,
@@ -62,13 +62,13 @@ CREATE POLICY tenant_isolation ON identity.account_operation
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 CREATE UNIQUE INDEX account_operation_open_user_idx ON identity.account_operation (tenant_id, user_id)
   WHERE state IN ('prepared','committed');
-CREATE UNIQUE INDEX account_operation_open_username_idx ON identity.account_operation (tenant_id, lower(username))
+CREATE UNIQUE INDEX account_operation_open_username_idx ON identity.account_operation (tenant_id, ((username::bpchar) COLLATE identity.legacy_ci))
   WHERE state IN ('prepared','committed') AND username IS NOT NULL;
 
 -- Projection of people.person.changed.v1 for mail and lookup by email.
 CREATE TABLE identity.person_contact (
   tenant_id uuid NOT NULL,
-  user_id char(35) NOT NULL,
+  user_id char(35) COLLATE identity.legacy_char_ci NOT NULL,
   site_id text,
   email text,
   fname text,

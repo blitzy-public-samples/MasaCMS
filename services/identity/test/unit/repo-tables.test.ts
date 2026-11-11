@@ -30,7 +30,7 @@ const MIGRATIONS = new URL('../../db/migrations/', import.meta.url);
 const OWNERSHIP = JSON.parse(readFileSync(new URL('../../../../opt2/table-ownership.json', import.meta.url), 'utf8')) as Ownership;
 const TARGET_ONLY: Readonly<Record<string, readonly string[]>> = { group_account: ['row_version'], user_account: ['opt2_state'] };
 const CREATE_TABLE = /^CREATE TABLE (\w+)\.(\w+) \(\n([\s\S]*?)\n\);/gm;
-const COLUMN = /^"?([a-z_0-9]+)"? (.+?)(?= NOT NULL| NULL| DEFAULT | PRIMARY KEY| UNIQUE| CHECK | GENERATED |$)/;
+const COLUMN = /^"?([a-z_0-9]+)"? (.+?)(?= COLLATE | NOT NULL| NULL| DEFAULT | PRIMARY KEY| UNIQUE| CHECK | GENERATED |$)/;
 const CONSTRAINT = /^(PRIMARY KEY|UNIQUE) /;
 const ADD_COLUMN = /^ALTER TABLE (\w+)\.(\w+) ADD COLUMN (.+);$/gm;
 

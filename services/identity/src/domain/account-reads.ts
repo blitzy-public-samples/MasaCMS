@@ -6,7 +6,7 @@ import { withGatedTenant } from '@opt2/platform/migration-kit';
 import { localTimestamp } from '@opt2/platform/outbox';
 import { registryEntryForTenant, type TenantDb, type TenantRegistryEntry } from '@opt2/platform/tenancy';
 import type { components } from '../generated/openapi.js';
-import type { AccountRecordRow, IdentityRepository, PoolGroupRow } from '../repo/repository.js';
+import { charKey, type AccountRecordRow, type IdentityRepository, type PoolGroupRow } from '../repo/repository.js';
 
 /** The contract's identity columns of one `Type=2` user. */
 export type AccountRecord = components['schemas']['AccountRecord'];
@@ -98,8 +98,8 @@ export function createAccountReads(deps: AccountReadsDeps): AccountReads {
       }
       const closed = rows.filter((row) => row.closed).map((row) => row.userid);
       if (closed.length === 0) {
-        const found = new Map(rows.filter((row) => row.opt2_state === 'active').map((row) => [row.userid, accountRecord(row)]));
-        return userIds.flatMap((userId) => found.get(userId) ?? []);
+        const found = new Map(rows.filter((row) => row.opt2_state === 'active').map((row) => [charKey(row.userid), accountRecord(row)]));
+        return userIds.flatMap((userId) => found.get(charKey(userId)) ?? []);
       }
       const remaining = deadline - Date.now();
       if (remaining <= 0) {

@@ -24,7 +24,7 @@ const MANAGED = new Set(KEYLESS_KEY);
 const TARGET_ONLY: Readonly<Record<string, readonly string[]>> = { site: ['row_version'] };
 const DEFINITIONS: readonly TableDefinition[] = [...OWNED_TABLES, SITE_MONITOR_STATE];
 const CREATE_TABLE = /^CREATE TABLE (\w+)\.(\w+) \(\n([\s\S]*?)\n\);/gm;
-const COLUMN = /^"?([a-z_]+)"? (.+?)(?= NOT NULL| NULL| DEFAULT | PRIMARY KEY| UNIQUE| CHECK | GENERATED |$)/;
+const COLUMN = /^"?([a-z_]+)"? (.+?)(?= COLLATE | NOT NULL| NULL| DEFAULT | PRIMARY KEY| UNIQUE| CHECK | GENERATED |$)/;
 
 /** Every `CREATE TABLE` of the `000*.sql` migrations, keyed `<schema>.<table>`, with its file, columns and primary key. */
 function migrationTables(): Map<string, DdlTable> {

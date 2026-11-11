@@ -50,7 +50,7 @@ export const SITE_UPDATE_COLUMNS: readonly string[] = Object.freeze([
 /** An image size to save; without `sizeid` it is inserted under a new CF UUID. */
 export type ImageSizeInput = Pick<ImageSizeRow, 'siteid' | 'name' | 'height' | 'width'> & { sizeid?: string };
 
-/** Lookup of `settingsImageSizeBean.getQuery`: by `sizeId`, else by `name` within `siteId`. */
+/** Lookup of `settingsImageSizeBean.getQuery`: by `sizeId`, else by `name` within `siteId`, compared with SQL Server's equality, trailing spaces of `sizeId` and `name` ignored. */
 export type ImageSizeLookup = { sizeId: string } | { name: string; siteId: string };
 
 /** The `baseTable = tsettings` extend definitions of one site, each list in legacy display order. */
@@ -84,7 +84,7 @@ export interface ProgramsSitesRepository extends Repository {
   updateDeploy(tx: TenantTx, siteId: string, deploy: number, ctx?: WriteContext): Promise<SiteRow | null>;
   /** The image sizes of `siteId`, by `sizeid`. */
   listImageSizes(tx: TenantTx, siteId: string): Promise<ImageSizeRow[]>;
-  /** The first image size matching `by`; null when none does. */
+  /** The first image size matching `by` under SQL Server equality; null when none does. */
   findImageSize(tx: TenantTx, by: ImageSizeLookup): Promise<ImageSizeRow | null>;
   /** Updates the stored size with `row.sizeid`, else inserts it, and returns the stored row. */
   saveImageSize(tx: TenantTx, row: ImageSizeInput, ctx?: WriteContext): Promise<ImageSizeRow>;
@@ -123,7 +123,10 @@ export function createProgramsSitesRepository({ clock, schema = SCHEMA }: Progra
   const listSitesSql = `SELECT * FROM ${site} WHERE tenant_id = $1 ORDER BY orderno ASC NULLS FIRST, siteid`;
   const lockSiteSql = `SELECT * FROM ${site} WHERE tenant_id = $1 AND siteid = $2 FOR UPDATE`;
   const imageSizesSql = `SELECT * FROM ${imageSize} WHERE tenant_id = $1 AND siteid = $2 ORDER BY sizeid`;
-  const imageSizeByNameSql = `SELECT * FROM ${imageSize} WHERE tenant_id = $1 AND name = $2 AND siteid = $3 ORDER BY sizeid LIMIT 1`;
+  // SQL Server's nvarchar equality, leakproof and so indexable under forced RLS: bpchar ignores trailing spaces, legacy_ci compares the rest.
+  const imageSizeByNameSql =
+    `SELECT * FROM ${imageSize} WHERE tenant_id = $1 AND (name::bpchar COLLATE ${qualified(schema, 'legacy_ci')}) = $2::bpchar` +
+    ' AND siteid = $3 ORDER BY sizeid LIMIT 1';
   // Legacy orders: subtypes by type and subtype (extendSubType.cfc:141), sets by orderno (extendSubType.cfc:882),
   // attributes by orderno and name (extendSet.cfc:272), related-content sets by orderno (extendSubType.cfc:536).
   const subtypesSql =

@@ -94,9 +94,9 @@ function cfTrim(value: string): string {
   return value.slice(start, end);
 }
 
-/** SQL Server compares `char` keys without trailing spaces, so ids are matched on that form. */
-function charKey(value: string): string {
-  return value.replace(/ +$/, '');
+/** The SQL Server `char` equality form of a key, as legacy_char_ci compares it: trailing spaces stripped, A-Z and À-Þ case folded. */
+export function charKey(value: string): string {
+  return value.replace(/ +$/, '').replace(/[A-Z\u00C0-\u00DE]/g, (c) => c.toLowerCase());
 }
 
 /** A posted id the legacy `char(35)` column can hold; legacy swallows the insert error of any other [legacy: core/mura/user/userDAO.cfc:561-581]. */
@@ -621,14 +621,16 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
   const accountOperation = name(ACCOUNT_OPERATION);
   const personContact = name(PERSON_CONTACT);
   const aggregateVersion = name(AGGREGATE_VERSION);
+  const legacyCi = qualified(schema, 'legacy_ci');
 
-  // SQL Server's default collation compares case-insensitively and ignores trailing spaces; lower(rtrim(..)) matches it.
+  // SQL Server's nvarchar equality: bpchar ignores trailing spaces and legacy_ci compares the rest. Unlike lower() and rtrim(),
+  // the comparison is leakproof, so its expression index applies under forced RLS.
   const activeAccountsSql =
     `SELECT * FROM ${userAccount} WHERE tenant_id = $1 AND type = 2 AND inactive = 0 AND opt2_state = 'active'` +
-    ' AND lower(rtrim(username)) = lower(rtrim($2)) AND ($3::text IS NULL OR siteid = $3) ORDER BY userid';
+    ` AND (username::bpchar COLLATE ${legacyCi}) = $2::bpchar AND ($3::text IS NULL OR siteid = $3) ORDER BY userid`;
   const usernameHolderSql =
     `SELECT userid FROM ${userAccount} WHERE tenant_id = $1 AND type = 2` +
-    ' AND lower(rtrim(username)) = lower(rtrim($2)) AND userid <> $3 LIMIT 1';
+    ` AND (username::bpchar COLLATE ${legacyCi}) = $2::bpchar AND userid <> $3 LIMIT 1`;
   // One statement, so the open-operation flag and the column values come from the same snapshot.
   const accountRecordsSql =
     'SELECT u.userid, u.username, u.type, u.admin, u.s2, u.perm, u.inactive, u.ispublic, u.siteid, u.remoteid, u.tablist, u.opt2_state,' +
@@ -636,10 +638,10 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     ` EXISTS (SELECT 1 FROM ${accountOperation} o WHERE o.tenant_id = u.tenant_id AND o.user_id = u.userid AND o.state = ANY($3::text[])) AS closed` +
     ` FROM ${userAccount} u LEFT JOIN ${credential} c ON c.tenant_id = u.tenant_id AND c.userid = u.userid` +
     ` LEFT JOIN ${loginState} l ON l.tenant_id = u.tenant_id AND l.userid = u.userid` +
-    ' WHERE u.tenant_id = $1 AND u.type = 2 AND u.userid = ANY($2::text[]) ORDER BY u.userid';
-  const groupsByIdsSql = `SELECT * FROM ${groupAccount} WHERE tenant_id = $1 AND userid = ANY($2::text[]) ORDER BY userid`;
+    ' WHERE u.tenant_id = $1 AND u.type = 2 AND u.userid = ANY($2::bpchar[]) ORDER BY u.userid';
+  const groupsByIdsSql = `SELECT * FROM ${groupAccount} WHERE tenant_id = $1 AND userid = ANY($2::bpchar[]) ORDER BY userid`;
   const groupByNameSql =
-    `SELECT * FROM ${groupAccount} WHERE tenant_id = $1 AND type = 1 AND lower(rtrim(groupname)) = lower(rtrim($2))` +
+    `SELECT * FROM ${groupAccount} WHERE tenant_id = $1 AND type = 1 AND (groupname::bpchar COLLATE ${legacyCi}) = $2::bpchar` +
     ' AND siteid = $3 AND ($4::integer IS NULL OR ispublic = $4) ORDER BY userid LIMIT 1';
   // A NULL groupname fails `<> 'Admin'` in SQL Server too, so it is excluded with the Admin groups.
   const listGroupsSql =
@@ -658,7 +660,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
   const lockAddressSql = `SELECT isprimary FROM ${address} WHERE tenant_id = $1 AND addressid = $2 FOR UPDATE`;
   const lockInterestsSql =
     `SELECT categoryid FROM ${interest} WHERE tenant_id = $1 AND userid = $2` +
-    ' AND ($3::text[] IS NULL OR categoryid = ANY($3::text[])) ORDER BY categoryid FOR UPDATE';
+    ' AND ($3::bpchar[] IS NULL OR categoryid = ANY($3::bpchar[])) ORDER BY categoryid FOR UPDATE';
   const interestIdsSql = `SELECT categoryid FROM ${interest} WHERE tenant_id = $1 AND userid = $2`;
   const lockTagsSql = `SELECT tagid FROM ${tag} WHERE tenant_id = $1 AND userid = $2 ORDER BY tagid FOR UPDATE`;
   const lockFavoritesSql = `SELECT favoriteid FROM ${favorite} WHERE tenant_id = $1 AND userid = $2 ORDER BY favoriteid FOR UPDATE`;
@@ -673,7 +675,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
   const membershipIdsSql = `SELECT groupid FROM ${membership} WHERE tenant_id = $1 AND userid = $2 ORDER BY groupid`;
   const lockMembershipsSql =
     `SELECT groupid FROM ${membership} WHERE tenant_id = $1 AND userid = $2` +
-    ' AND ($3::text[] IS NULL OR groupid = ANY($3::text[])) ORDER BY groupid FOR UPDATE';
+    ' AND ($3::bpchar[] IS NULL OR groupid = ANY($3::bpchar[])) ORDER BY groupid FOR UPDATE';
   const lockBadMembershipsSql =
     `SELECT m.groupid FROM ${membership} m WHERE m.tenant_id = $1 AND m.userid = $2 AND m.groupid NOT IN` +
     ` (SELECT g.userid FROM ${groupAccount} g WHERE g.tenant_id = $1 AND g.siteid = $3 AND g.type = 1 AND g.ispublic = 1)` +
@@ -696,10 +698,11 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
   const lockPermissionsSql =
     `SELECT contentid, groupid, siteid, type FROM ${permission} WHERE tenant_id = $1 AND contentid = $2 AND siteid = $3` +
     ' ORDER BY groupid, type FOR UPDATE';
+  // A bpchar[] keeps groupid uncast, so the groupid index applies.
   const moduleGrantsSql =
     `SELECT contentid, groupid FROM ${permission} WHERE tenant_id = $1 AND type = 'module' AND siteid = $2` +
-    ' AND groupid = ANY($3::text[]) ORDER BY contentid, groupid';
-  const strikeSql = `SELECT * FROM ${strike} WHERE tenant_id = $1 AND lower(rtrim(username)) = lower(rtrim($2)) ORDER BY username LIMIT 1`;
+    ' AND groupid = ANY($3::bpchar[]) ORDER BY contentid, groupid';
+  const strikeSql = `SELECT * FROM ${strike} WHERE tenant_id = $1 AND (username::bpchar COLLATE ${legacyCi}) = $2::bpchar ORDER BY username LIMIT 1`;
   const lockStrikeSql = `${strikeSql} FOR UPDATE`;
   const remoteSessionByTokenSql = `SELECT * FROM ${remoteSession} WHERE tenant_id = $1 AND authtoken = $2 ORDER BY userid LIMIT 1`;
   const deviceSql =
@@ -711,7 +714,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
   const tokenByAccessCodeSql = `SELECT * FROM ${oauthToken} WHERE tenant_id = $1 AND accesscode = $2 ORDER BY token LIMIT 1`;
   const lockUserTokensSql =
     `SELECT token FROM ${oauthToken} WHERE tenant_id = $1 AND userid = $2` +
-    ' AND ($3::text[] IS NULL OR token = ANY($3::text[])) ORDER BY token FOR UPDATE';
+    ' AND ($3::bpchar[] IS NULL OR token = ANY($3::bpchar[])) ORDER BY token FOR UPDATE';
   const reusableTokenSql =
     `SELECT * FROM ${oauthToken} WHERE tenant_id = $1 AND clientid = $2 AND granttype = $3 AND userid = $4 AND expires > $5` +
     ' ORDER BY token LIMIT 1';
@@ -728,7 +731,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     ' AND ($3::timestamp IS NULL OR coalesce(used_at, claimed_at) < $3) ORDER BY session_id, token FOR UPDATE';
   const openOperationSql =
     `SELECT * FROM ${accountOperation} WHERE tenant_id = $1 AND state = ANY($2::text[])` +
-    ' AND (($3::text IS NOT NULL AND user_id = $3) OR ($4::text IS NOT NULL AND lower(username) = lower($4)))' +
+    ` AND (($3::text IS NOT NULL AND user_id = $3) OR ($4::text IS NOT NULL AND (username::bpchar COLLATE ${legacyCi}) = $4::bpchar))` +
     ' ORDER BY created_at, operation_id LIMIT 1';
   const lockOperationSql = `SELECT state FROM ${accountOperation} WHERE tenant_id = $1 AND operation_id = $2 FOR UPDATE`;
   const contactsByEmailSql = `SELECT * FROM ${personContact} WHERE tenant_id = $1 AND lower(email) = lower($2) ORDER BY user_id`;

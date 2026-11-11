@@ -205,6 +205,13 @@ describe.skipIf(!available)('identity account reads against PostgreSQL', () => {
       expect(found[2]).toMatchObject({ SiteID: '', UserName: null, remoteID: null, tablist: null, PasswordCreated: null, LastLogin: null });
     });
 
+    it('finds users by lower-cased ids and answers their stored ids, as SQL Server char equality matches them', async () => {
+      const claims = claimsFor('tenant-a');
+
+      expect(await reads().getAccount(handle.app, claims, ACTIVE.toLowerCase())).toMatchObject({ UserID: ACTIVE });
+      expect((await reads().lookupAccounts(handle.app, claims, [PUBLIC.toLowerCase(), ACTIVE])).map((record) => record.UserID)).toEqual([PUBLIC, ACTIVE]);
+    });
+
     it('lists the private pool\'s system groups and the public pool\'s member groups', async () => {
       const groups = async (site: string, isPublic: 0 | 1): Promise<Array<string | null>> =>
         (await reads().listSiteGroups(handle.app, claimsFor(site), isPublic)).map((group) => group.GroupName);

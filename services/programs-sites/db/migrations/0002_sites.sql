@@ -1,5 +1,8 @@
 -- programs-sites owned site tables
 -- Columns follow the live legacy catalog order and nullability; one table per programs-sites unit in opt2/table-ownership.json.
+-- SQL Server SQL_Latin1_General_CP1_CI_AS equality over the CP1252 values legacy binds: legacy_ci for nvarchar, legacy_char_ci for char/varchar.
+CREATE COLLATION programs_sites.legacy_ci (provider = icu, locale = 'und', deterministic = false, rules = E'&a=A&b=B&c=C&d=D&e=E&f=F&g=G&h=H&i=I&j=J&k=K&l=L&m=M&n=N&o=O&p=P&q=Q&r=R&s=S&t=T&u=U&v=V&w=W&x=X&y=Y&z=Z&\u00E0=\u00C0&\u00E1=\u00C1&\u00E2=\u00C2&\u00E3=\u00C3&\u00E4=\u00C4&\u00E5=\u00C5&\u00E7=\u00C7&\u00E8=\u00C8&\u00E9=\u00C9&\u00EA=\u00CA&\u00EB=\u00CB&\u00EC=\u00CC&\u00ED=\u00CD&\u00EE=\u00CE&\u00EF=\u00CF&\u00F0=\u00D0&\u00F1=\u00D1&\u00F2=\u00D2&\u00F3=\u00D3&\u00F4=\u00D4&\u00F5=\u00D5&\u00F6=\u00D6&\u00F8=\u00D8&\u00F9=\u00D9&\u00FA=\u00DA&\u00FB=\u00DB&\u00FC=\u00DC&\u00FD=\u00DD&\u0161=\u0160&\u017E=\u017D&\u00FF=\u0178&1=\u00B9&2=\u00B2&3=\u00B3&ae=\u00E6=\u00C6&oe=\u0153=\u0152&ss=\u00DF&th=\u00FE=\u00DE&\'\u0009\'<\u0001<\u0002<\u0003<\u0004<\u0005<\u0006<\u0007<\u0008<\u000E<\u000F<\u0010<\u0011<\u0012<\u0013<\u0014<\u0015<\u0016<\u0017<\u0018<\u0019<\u001A<\u001B<\u001C<\u001D<\u001E<\u001F<\u007F<\u00AD');
+CREATE COLLATION programs_sites.legacy_char_ci (provider = icu, locale = 'und', deterministic = false, rules = E'&a=A&b=B&c=C&d=D&e=E&f=F&g=G&h=H&i=I&j=J&k=K&l=L&m=M&n=N&o=O&p=P&q=Q&r=R&s=S&t=T&u=U&v=V&w=W&x=X&y=Y&z=Z&\u00E0=\u00C0&\u00E1=\u00C1&\u00E2=\u00C2&\u00E3=\u00C3&\u00E4=\u00C4&\u00E5=\u00C5&\u00E6=\u00C6&\u00E7=\u00C7&\u00E8=\u00C8&\u00E9=\u00C9&\u00EA=\u00CA&\u00EB=\u00CB&\u00EC=\u00CC&\u00ED=\u00CD&\u00EE=\u00CE&\u00EF=\u00CF&\u00F0=\u00D0&\u00F1=\u00D1&\u00F2=\u00D2&\u00F3=\u00D3&\u00F4=\u00D4&\u00F5=\u00D5&\u00F6=\u00D6&\u00F8=\u00D8&\u00F9=\u00D9&\u00FA=\u00DA&\u00FB=\u00DB&\u00FC=\u00DC&\u00FD=\u00DD&\u00FE=\u00DE&\u0161<<<\u0160&\u017E<<<\u017D&\u00FF<<<\u0178&\'\u0009\'<\u0001<\u0002<\u0003<\u0004<\u0005<\u0006<\u0007<\u0008<\u000E<\u000F<\u0010<\u0011<\u0012<\u0013<\u0014<\u0015<\u0016<\u0017<\u0018<\u0019<\u001A<\u001B<\u001C<\u001D<\u001E<\u001F<\u007F<\u00AD');
 CREATE TABLE programs_sites.site (
   tenant_id uuid NOT NULL,
   siteid text NOT NULL,
@@ -115,8 +118,8 @@ CREATE POLICY tenant_isolation ON programs_sites.site
 
 CREATE TABLE programs_sites.image_size (
   tenant_id uuid NOT NULL,
-  sizeid char(35) NOT NULL,
-  siteid text,
+  sizeid char(35) COLLATE programs_sites.legacy_char_ci NOT NULL,
+  siteid text COLLATE programs_sites.legacy_ci,
   name text,
   height text,
   width text,
@@ -127,6 +130,7 @@ CREATE POLICY tenant_isolation ON programs_sites.image_size
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 CREATE INDEX image_size_tenant_siteid_idx ON programs_sites.image_size (tenant_id, siteid);
+CREATE INDEX image_size_tenant_siteid_name_idx ON programs_sites.image_size (tenant_id, siteid, ((name::bpchar) COLLATE programs_sites.legacy_ci));
 
 CREATE TABLE programs_sites.directory (
   tenant_id uuid NOT NULL,
