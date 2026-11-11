@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:opt2:identity:event:identity.permission.changed.v1",
+  "$comment": "source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "title": "identity.permission.changed.v1 payload",
+  "description": "Full set of permission rows of one group in one site.",
+  "x-opt2-kind": "state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "groupId",
+    "siteId",
+    "rows"
+  ],
+  "properties": {
+    "groupId": {
+      "description": "Group id as stored in tpermissions.GroupID.",
+      "$ref": "#/$defs/cfUuid"
+    },
+    "siteId": {
+      "description": "Legacy site whose content nodes and modules the rows grant on.",
+      "$ref": "#/$defs/siteId"
+    },
+    "rows": {
+      "description": "Every permission row of the group in siteId, in stored form; empty when none remain.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/permissionRow"
+      }
+    }
+  },
+  "$defs": {
+    "cfUuid": {
+      "description": "35-character ColdFusion UUID.",
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}$"
+    },
+    "siteId": {
+      "description": "Legacy Masa site id, for example default, umbrella or tenant-a.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 50
+    },
+    "legacyId": {
+      "description": "Legacy 35-character id; module and root-node ids are digit strings.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 35
+    },
+    "permissionRow": {
+      "description": "One tpermissions row.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contentId",
+        "siteId",
+        "type"
+      ],
+      "properties": {
+        "contentId": {
+          "description": "Content node or module id as stored in tpermissions.ContentID.",
+          "$ref": "#/$defs/legacyId"
+        },
+        "siteId": {
+          "description": "Site id of the row; equals the payload siteId.",
+          "$ref": "#/$defs/siteId"
+        },
+        "type": {
+          "description": "Grant type exactly as stored in tpermissions.Type, for example Editor, Author, Read, Deny or module.",
+          "type": "string",
+          "maxLength": 50
+        }
+      }
+    }
+  }
+}
