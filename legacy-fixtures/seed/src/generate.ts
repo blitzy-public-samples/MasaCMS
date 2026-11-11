@@ -1,0 +1,182 @@
+// SYNTHETIC: seed - no Masa equivalent; legacy oracle in legacy-fixtures/
+import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join, resolve, sep } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { parseArgs } from 'node:util';
+import { createLocalInvocationMinter, loadLocalSigningKeys } from '@opt2/platform/auth';
+import { createServiceClient, z, type ServiceClient } from '@opt2/platform/service-kit';
+import { loadConfig } from './config.js';
+import { generateCredentials, writeCredentials } from './credentials.js';
+import { buildDataset } from './dataset.js';
+import { runDirect, type DirectClient } from './direct.js';
+import { readDataset, writeDataset } from './writer.js';
+
+/** Collaborators `run` uses instead of its defaults: credential randomness, the direct-mode client and the log sink. */
+export interface GenerateDeps {
+  randomBytes?: (n: number) => Buffer;
+  client?: DirectClient;
+  log?: (line: string) => void;
+}
+
+/** Resolved locations of one run. */
+interface RunPaths {
+  config: string;
+  out: string;
+  pin: string;
+  stateDir: string;
+}
+
+// Direct mode stands in for the migration service's backfill, so it calls the owners as that workload.
+const SELF = 'migration';
+
+const pkgRoot = fileURLToPath(new URL('..', import.meta.url));
+const repoRoot = resolve(pkgRoot, '../..');
+
+const OPTIONS = {
+  direct: { type: 'boolean' },
+  config: { type: 'string' },
+  out: { type: 'string' },
+  pin: { type: 'string' },
+  help: { type: 'boolean' },
+} as const;
+
+const USAGE = `Usage: node dist/generate.js [--direct] [--config <file>] [--out <dir>] [--pin <file>]
+
+Generates the fixed-seed dataset and fresh credentials into <out>; with --direct, sends the
+dataset already in <out> to the synthetic services' migration apply endpoints instead.
+
+  --direct         apply <out>/dataset.json through OPT2_SERVICE_URLS as the migration workload
+  --config <file>  seed configuration (default <package>/seed.config.json)
+  --out <dir>      dataset directory, outside the checkout (default \${OPT2_STATE_DIR}/seed)
+  --pin <file>     source pin (default <repository>/opt2/source-pin.json)
+  --help           print this help
+`;
+
+const pinSchema = z.object({ sha: z.string().regex(/^[0-9a-f]{40}$/) });
+const serviceUrlsSchema = z.record(z.string(), z.url());
+
+/** Writes `text` and a newline to stderr. */
+function fail(text: string): void {
+  process.stderr.write(`${text}\n`);
+}
+
+/** Message of `err` on one line. */
+function oneLine(err: unknown): string {
+  return (err instanceof Error ? err.message : String(err)).replace(/\s*\n\s*/g, ' ');
+}
+
+/** Whether `dir` is `root` or lies beneath it, compared as resolved paths. */
+function isWithin(dir: string, root: string): boolean {
+  return `${resolve(dir)}${sep}`.startsWith(`${resolve(root)}${sep}`);
+}
+
+/** Pinned source SHA from the pin file at `path`. */
+async function readPinnedSha(path: string): Promise<string> {
+  const parsed = pinSchema.safeParse(JSON.parse(await readFile(path, 'utf8')));
+  if (!parsed.success) throw new Error(`${path} has no sha of 40 lower-case hex characters`);
+  return parsed.data.sha;
+}
+
+/** Callee name to base URL from `OPT2_SERVICE_URLS`, or undefined when it is unset or not a JSON object of URLs. */
+function parseServiceUrls(raw: string | undefined): Record<string, string> | undefined {
+  if (raw === undefined) return undefined;
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  const parsed = serviceUrlsSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
+
+/** Builds the dataset, writes it with its manifest, then writes fresh credentials for it. */
+async function generate(paths: RunPaths, deps: GenerateDeps, log: (line: string) => void): Promise<void> {
+  const config = await loadConfig(paths.config);
+  const sha = await readPinnedSha(paths.pin);
+  const dataset = buildDataset(config, sha);
+  const manifest = await writeDataset(paths.out, dataset, config.chunkRows);
+  const creds = generateCredentials(dataset, config, { randomBytes: deps.randomBytes });
+  await writeCredentials(paths.out, paths.stateDir, creds);
+  log(`seed digest=${manifest.digest} out=${paths.out} parts=${manifest.parts.length}`);
+  log(`seed counts ${Object.entries(manifest.counts).map(([array, count]) => `${array}=${count}`).join(' ')}`);
+}
+
+/** Sends the dataset already written to `paths.out` to its owners' migration apply endpoints. */
+async function direct(
+  paths: RunPaths,
+  serviceUrls: Record<string, string>,
+  deps: GenerateDeps,
+  log: (line: string) => void,
+): Promise<void> {
+  const config = await loadConfig(paths.config);
+  const dataset = await readDataset(paths.out);
+  let client = deps.client;
+  let owned: ServiceClient | undefined;
+  if (client === undefined) {
+    const keys = await loadLocalSigningKeys(paths.stateDir, { requirePrivate: true });
+    owned = createServiceClient({ serviceUrls, self: SELF, credentials: createLocalInvocationMinter({ keys, caller: SELF }) });
+    client = owned;
+  }
+  try {
+    const result = await runDirect(dataset, { client, config, log });
+    const byService = Object.entries(result.byService).map(([service, rows]) => `${service}=${rows}`);
+    log(`seed direct digest=${dataset.digest} batches=${result.batches} rows=${result.rows} ${byService.join(' ')}`.trimEnd());
+  } finally {
+    await owned?.close();
+  }
+}
+
+/** Runs the CLI; returns 0 on success, 1 when a run fails, 2 on a usage or environment error. */
+export async function run(argv: string[], env: NodeJS.ProcessEnv, deps: GenerateDeps = {}): Promise<number> {
+  let values: { direct?: boolean; config?: string; out?: string; pin?: string; help?: boolean };
+  try {
+    ({ values } = parseArgs({ args: argv, options: OPTIONS, strict: true, allowPositionals: false }));
+  } catch (err) {
+    fail(`seed: ${oneLine(err)}`);
+    process.stderr.write(USAGE);
+    return 2;
+  }
+  if (values.help === true) {
+    process.stdout.write(USAGE);
+    return 0;
+  }
+
+  const stateDir = resolve(env.OPT2_STATE_DIR ?? join(env.HOME ?? homedir(), '.opt2', 'state'));
+  const paths: RunPaths = {
+    config: resolve(values.config ?? join(pkgRoot, 'seed.config.json')),
+    out: resolve(values.out ?? join(stateDir, 'seed')),
+    pin: resolve(values.pin ?? join(repoRoot, 'opt2', 'source-pin.json')),
+    stateDir,
+  };
+  // Generated data and credentials stay out of the checkout, so neither can be committed by accident.
+  const written = values.direct === true ? [paths.out] : [paths.out, paths.stateDir];
+  const inside = written.find((dir) => isWithin(dir, repoRoot));
+  if (inside !== undefined) {
+    fail(`seed: ${inside} is inside the checkout ${repoRoot}; choose a location outside it`);
+    return 2;
+  }
+
+  let serviceUrls: Record<string, string> = {};
+  if (values.direct === true && deps.client === undefined) {
+    const parsed = parseServiceUrls(env.OPT2_SERVICE_URLS);
+    if (parsed === undefined) {
+      fail('seed: --direct needs OPT2_SERVICE_URLS, a JSON object of service name to URL');
+      return 2;
+    }
+    serviceUrls = parsed;
+  }
+
+  const log = deps.log ?? ((line: string) => void process.stdout.write(`${line}\n`));
+  try {
+    if (values.direct === true) await direct(paths, serviceUrls, deps, log);
+    else await generate(paths, deps, log);
+    return 0;
+  } catch (err) {
+    fail(`seed: ${oneLine(err)}`);
+    return 1;
+  }
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) void run(process.argv.slice(2), process.env).then((code) => { process.exitCode = code; });
