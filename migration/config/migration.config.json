@@ -1,0 +1,72 @@
+{
+  "sourceShaFile": "../opt2/source-pin.json",
+  "ownershipFile": "../opt2/table-ownership.json",
+  "inventoryFile": "../opt2/inventory/legacy-inventory.json",
+  "cutoverDir": "../gateway/cutover",
+  "reportsDir": "../opt2/reports",
+  "umbrellaSiteId": "umbrella",
+  "backfill": { "batchRows": 1000 },
+  "snapshot": {
+    "databaseNamePattern": "{db}_opt2_snap_{n}",
+    "backupFilePattern": "snap-{n}.bak",
+    "subdir": "snapshots"
+  },
+  "windows": { "openBudgetMs": 30000, "importRetryMs": 5000, "gatewayLeaseMs": 120000 },
+  "transition": { "freezeAckTimeoutMs": 30000, "cfthreadWaitMs": 600000, "drainTimeoutMs": 300000 },
+  "projection": { "defaultAwaitTimeoutMs": 5000, "batchRows": 1000, "idlePollMs": 250 },
+  "background": { "bridgePollMs": 60000, "tasksReconcileMs": 300000 },
+  "startupGuard": {
+    "table": "tcontent",
+    "predicateSql": "type in ('File','Link') and active=1 and body is null and filename is not null",
+    "appreloadKey": "appreload"
+  },
+  "fileStore": {
+    "expected": "fileDir",
+    "imageExtensions": ["png", "gif", "jpg", "jpeg"],
+    "flvRenditionExt": "jpg",
+    "variants": ["", "_source", "_small", "_medium"],
+    "objectKeyPattern": "{tenant}/{fileId}{variant}.{ext}",
+    "bucket": "content-files"
+  },
+  "faults": [
+    { "name": "applier-killed" },
+    { "name": "duplicate-batch" },
+    { "name": "sql-drop" },
+    { "name": "service-restart" },
+    { "name": "pubsub-redelivery" },
+    { "name": "window-import-interrupted" },
+    { "name": "projector-delay", "defaultDelayMs": 3000 },
+    { "name": "forced-reinit" }
+  ],
+  "reconciliationPoints": ["after-backfill", "after-feed-{n}", "after-fault-{fault}", "post-cutover", "rollback-before", "rollback-after"],
+  "rollbackSet": {
+    "routeKeys": [
+      "admin:cusers.update{type=2,action=add}",
+      "admin:cusers.update{type=2,action=update}",
+      "fixture:people/persons/{id}/archive@post"
+    ],
+    "units": ["people.person_archive", "timesheets.blackout"]
+  },
+  "owners": {
+    "identity": { "schema": "identity", "package": "services/identity" },
+    "people": { "schema": "people", "package": "services/people" },
+    "programs-sites": { "schema": "programs_sites", "package": "services/programs-sites" },
+    "strategies-content": { "schema": "content", "package": "services/strategies-content" },
+    "communications": { "schema": "communications", "package": "services/communications" },
+    "reporting": { "schema": "reporting", "package": "services/reporting" },
+    "surveys": { "schema": "surveys", "package": "services/surveys" },
+    "timesheets": { "schema": "timesheets", "package": "services/timesheets" },
+    "finance": { "schema": "finance", "package": "services/finance" },
+    "e-signature": { "schema": "esignature", "package": "services/e-signature" },
+    "stub": { "schema": "stub", "package": "services/stub" },
+    "gateway": { "schema": "gateway", "package": "gateway" },
+    "migration": { "schema": "migration", "package": "migration" }
+  },
+  "dataOwners": ["identity", "people", "programs-sites", "strategies-content", "communications", "reporting", "surveys", "timesheets", "finance", "e-signature"],
+  "cloud": {
+    "iamUserSuffixTrim": ".gserviceaccount.com",
+    "serviceAccountPrefix": "opt2-",
+    "bootstrapAccount": "db-bootstrap",
+    "adminUser": "postgres"
+  }
+}
