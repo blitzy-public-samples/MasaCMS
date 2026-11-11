@@ -54,6 +54,8 @@ export interface LegacySettings {
   /** Days; 0 means passwords never expire. */
   readonly expirePasswords: number;
   readonly webroot: string;
+  /** configBean `assetPath`, e.g. `/sites`; the admin session's `userFilesPath` is built from it. */
+  readonly assetPath: string;
   readonly version: string;
 }
 
@@ -117,7 +119,7 @@ interface SettingRule<T> {
   readonly apply: (value: string) => T | undefined;
 }
 
-type RuledSettings = Omit<LegacySettings, 'indexFileInAPI' | 'version'>;
+type RuledSettings = Omit<LegacySettings, 'indexFileInAPI' | 'assetPath' | 'version'>;
 
 const SETTING_RULES: { readonly [K in keyof RuledSettings]: SettingRule<RuledSettings[K]> } = {
   title: { key: 'title', template: 'Masa CMS', fallback: 'Masa CMS', apply: asIs },
@@ -190,12 +192,16 @@ function resolveLegacySettings(source: NodeJS.ProcessEnv): LegacySettings {
 
   // Start-up sets indexFileInAPI=false when only indexFileInURLS=false is configured.
   const indexFileInAPI = sourceValue(source, 'indexfileinapi');
+  // An empty assetPath falls back to configBean getSiteAssetPath(): '/<siteDir>', siteDir defaulting to 'sites'.
+  const siteDir = sourceValue(source, 'sitedir') ?? 'sites';
+  const assetPath = cleanFilePath(sourceValue(source, 'assetpath', '') ?? '');
   return {
     ...ruled,
     indexFileInAPI:
       indexFileInAPI === undefined
         ? cfBoolean(sourceValue(source, 'indexfileinurls', 'true') ?? '') !== false
         : (cfBoolean(indexFileInAPI) ?? true),
+    assetPath: assetPath !== '' ? assetPath : siteDir === '' ? '' : `/${siteDir}`,
     version: CORE_VERSION,
   };
 }
