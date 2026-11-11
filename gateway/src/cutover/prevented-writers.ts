@@ -63,8 +63,9 @@ export const PREVENTED_WRITERS: readonly PreventedWriter[] = deepFreeze<Prevente
       'The transition that moves the reporting units waits until every opt2-export-* cfthread job has left queued and running (bounded at 10 minutes) before it closes their gates.',
     // No line span: every thread-triggered record the inventory attributes to createExport belongs to these jobs.
     match: { component: 'legacy-fixtures/cfml/modules/reporting.cfc', method: 'createExport' },
-    // usp_export_job_transition runs only inside the job thread (reporting.cfc runExport -> moveJob), so its
-    // thread-triggered writes are these jobs' writes and the same wait closes them.
+    // usp_export_job_transition also runs in the POST request (createExport fails jobs without a live runner or
+    // whose thread could not start); those writes are request-triggered and go through the gateway. Its
+    // thread-triggered writes are these jobs' writes (runExport -> moveJob), so the same wait closes them.
     alsoMatch: [{ component: 'legacy-fixtures/sql/reporting/200_usp_export_job_transition.sql' }],
   },
   {

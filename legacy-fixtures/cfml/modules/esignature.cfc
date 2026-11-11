@@ -55,13 +55,14 @@ component output="false" hint="SYNTHETIC e-signature fixture: typed-name signing
 		variables.envelope.raise("notFound");
 	}
 
-	private struct function listRequests(required struct route) hint="Returns the site's requests, without document bytes, ordered by created, request_id, as an envelope.list result." {
+	private struct function listRequests(required struct route) hint="Returns one page of the site's requests, without document bytes, ordered by created, request_id, as an envelope.queryPage result." {
 		variables.auth.requireAny(["esignature.signer"]);
-		local.qry = queryExecute(
-			"SELECT #variables.requestColumns# FROM [synthetic].[signature_request] WHERE [siteID] = :siteid ORDER BY [created], [request_id]",
-			{siteid = {value = arguments.route.siteid, cfsqltype = "cf_sql_nvarchar"}}
+		return variables.envelope.queryPage(
+			"SELECT #variables.requestColumns# FROM [synthetic].[signature_request] WHERE [siteID] = :siteid ORDER BY [created], [request_id] OFFSET :offset ROWS FETCH NEXT :fetch ROWS ONLY",
+			"SELECT COUNT(*) AS [total] FROM [synthetic].[signature_request] WHERE [siteID] = :siteid",
+			{siteid = {value = arguments.route.siteid, cfsqltype = "cf_sql_nvarchar"}},
+			arguments.route.params
 		);
-		return variables.envelope.list(variables.envelope.rows(local.qry), arguments.route.params);
 	}
 
 	private struct function createRequest(required struct route) hint="Creates a PENDING request from documentName, documentBase64 and signerUserId, appends its 'created' audit entry with the document SHA-256 as detail, and returns the request row." {
@@ -140,23 +141,26 @@ component output="false" hint="SYNTHETIC e-signature fixture: typed-name signing
 		return {data = requestRows(arguments.route.siteid, local.row.request_id)[1]};
 	}
 
-	private struct function auditChain(required struct route) hint="Returns the request's audit entries ordered by seq as an envelope.list result, with at as yyyy-MM-ddTHH:mm:ss.fff text and lowercase-hex hashes, so the items POST back to verify unchanged." {
+	private struct function auditChain(required struct route) hint="Returns one page of the request's audit entries ordered by seq as an envelope.queryPage result, with at as yyyy-MM-ddTHH:mm:ss.fff text and lowercase-hex hashes, so the items POST back to verify unchanged." {
 		local.row = authorizeChainReader(arguments.route);
-		local.qry = queryExecute(
+		local.from = "FROM [synthetic].[audit_entry] AS e
+			INNER JOIN [synthetic].[signature_request] AS r ON r.[request_id] = e.[request_id] AND r.[siteID] = :siteid
+			WHERE e.[request_id] = :request_id";
+		return variables.envelope.queryPage(
 			"SELECT e.[entry_id], e.[request_id], e.[seq], e.[action], e.[actor_user_id], e.[detail],
 				FORMAT(e.[at], 'yyyy-MM-dd''T''HH:mm:ss.fff', 'en-US') AS [at],
 				LOWER(CONVERT(varchar(64), e.[prev_hash], 2)) AS [prev_hash],
 				LOWER(CONVERT(varchar(64), e.[entry_hash], 2)) AS [entry_hash]
-			FROM [synthetic].[audit_entry] AS e
-			INNER JOIN [synthetic].[signature_request] AS r ON r.[request_id] = e.[request_id] AND r.[siteID] = :siteid
-			WHERE e.[request_id] = :request_id
-			ORDER BY e.[seq]",
+			#local.from#
+			ORDER BY e.[seq]
+			OFFSET :offset ROWS FETCH NEXT :fetch ROWS ONLY",
+			"SELECT COUNT(*) AS [total] #local.from#",
 			{
 				request_id = {value = local.row.request_id, cfsqltype = "cf_sql_char"},
 				siteid = {value = arguments.route.siteid, cfsqltype = "cf_sql_nvarchar"}
-			}
+			},
+			arguments.route.params
 		);
-		return variables.envelope.list(variables.envelope.rows(local.qry), arguments.route.params);
 	}
 
 	private struct function verifyStored(required struct route) hint="Recomputes the stored chain in SQL and returns {valid, entries, brokenat}." {

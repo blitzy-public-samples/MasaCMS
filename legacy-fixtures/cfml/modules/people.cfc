@@ -23,13 +23,6 @@ component output="false" hint="Person archive records, with blackout of the pers
 	private struct function archive(required struct route) hint="Archives the person from effectiveFrom, blacks out their open timesheet days through usp_person_archived_blackout, and returns the archive record." {
 		local.user = gate(arguments.route);
 		local.effectiveFrom = effectiveFromParam(arguments.route.params);
-		local.existing = queryExecute(
-			"SELECT 1 AS found FROM synthetic.person_archive WHERE person_id = :person_id",
-			{person_id = idParam(arguments.route.id)}
-		);
-		if (local.existing.recordCount) {
-			variables.envelope.raise("badRequest");
-		}
 
 		local.now = now();
 		local.archiveId = createUUID();
@@ -45,6 +38,14 @@ component output="false" hint="Person archive records, with blackout of the pers
 		local.record.archived_by = {value = left(variables.auth.currentUser().getFullName(), 50), cfsqltype = "cf_sql_nvarchar"};
 
 		transaction {
+			// UPDLOCK, HOLDLOCK queues archives of one person here until commit; TOP (1) keeps a found row to one key lock, avoiding range-lock deadlocks.
+			local.existing = queryExecute(
+				"SELECT TOP (1) 1 AS found FROM synthetic.person_archive WITH (UPDLOCK, HOLDLOCK) WHERE person_id = :person_id",
+				{person_id = idParam(arguments.route.id)}
+			);
+			if (local.existing.recordCount) {
+				variables.envelope.raise("badRequest");
+			}
 			queryExecute(
 				"INSERT INTO synthetic.person_archive (archive_id, person_id, siteID, effective_from, archived_at, archived_by_id, archived_by) VALUES (:archive_id, :person_id, :siteID, :effective_from, :now, :archived_by_id, :archived_by)",
 				local.record

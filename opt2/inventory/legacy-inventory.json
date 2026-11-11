@@ -134477,8 +134477,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/communications.cfc",
         "lines": [
-          89,
-          92
+          91,
+          94
         ]
       },
       "owningService": "communications",
@@ -134512,8 +134512,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/communications.cfc",
         "lines": [
-          80,
-          87
+          81,
+          89
         ]
       },
       "owningService": "communications",
@@ -134547,8 +134547,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/communications.cfc",
         "lines": [
-          94,
-          139
+          96,
+          141
         ]
       },
       "owningService": "communications",
@@ -134577,8 +134577,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/communications.cfc",
             "lines": [
-              268,
-              268
+              270,
+              270
             ]
           },
           "condition": null,
@@ -134594,8 +134594,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/communications.cfc",
             "lines": [
-              102,
-              102
+              104,
+              104
             ]
           },
           "condition": null,
@@ -134611,8 +134611,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/communications.cfc",
             "lines": [
-              243,
-              243
+              245,
+              245
             ]
           },
           "condition": null,
@@ -134637,7 +134637,7 @@
         "path": "legacy-fixtures/cfml/modules/communications.cfc",
         "lines": [
           41,
-          48
+          49
         ]
       },
       "owningService": "communications",
@@ -134671,8 +134671,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/communications.cfc",
         "lines": [
-          50,
-          78
+          51,
+          79
         ]
       },
       "owningService": "communications",
@@ -134701,8 +134701,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/communications.cfc",
             "lines": [
-              65,
-              65
+              66,
+              66
             ]
           },
           "condition": null,
@@ -134726,8 +134726,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/esignature.cfc",
         "lines": [
-          143,
-          160
+          144,
+          164
         ]
       },
       "owningService": "e-signature",
@@ -134761,8 +134761,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/esignature.cfc",
         "lines": [
-          100,
-          141
+          101,
+          142
         ]
       },
       "owningService": "e-signature",
@@ -134809,8 +134809,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/esignature.cfc",
             "lines": [
-              116,
-              116
+              117,
+              117
             ]
           },
           "condition": null,
@@ -134826,8 +134826,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/esignature.cfc",
             "lines": [
-              128,
-              128
+              129,
+              129
             ]
           },
           "condition": null,
@@ -134851,8 +134851,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/esignature.cfc",
         "lines": [
-          162,
-          179
+          166,
+          183
         ]
       },
       "owningService": "e-signature",
@@ -134886,8 +134886,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/esignature.cfc",
         "lines": [
-          181,
-          214
+          185,
+          218
         ]
       },
       "owningService": "e-signature",
@@ -134922,7 +134922,7 @@
         "path": "legacy-fixtures/cfml/modules/esignature.cfc",
         "lines": [
           58,
-          65
+          66
         ]
       },
       "owningService": "e-signature",
@@ -134956,8 +134956,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/esignature.cfc",
         "lines": [
-          67,
-          98
+          68,
+          99
         ]
       },
       "owningService": "e-signature",
@@ -135004,8 +135004,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/esignature.cfc",
             "lines": [
-              82,
-              82
+              83,
+              83
             ]
           },
           "condition": null,
@@ -135029,8 +135029,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          83,
-          102
+          84,
+          103
         ]
       },
       "owningService": "finance",
@@ -135139,8 +135139,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          158,
-          168
+          161,
+          171
         ]
       },
       "owningService": "finance",
@@ -135174,8 +135174,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          113,
-          120
+          115,
+          123
         ]
       },
       "owningService": "finance",
@@ -135209,8 +135209,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          122,
-          156
+          125,
+          159
         ]
       },
       "owningService": "finance",
@@ -135239,8 +135239,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/finance.cfc",
             "lines": [
-              133,
-              133
+              136,
+              136
             ]
           },
           "condition": null,
@@ -135264,8 +135264,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          83,
-          102
+          84,
+          103
         ]
       },
       "owningService": "finance",
@@ -135374,8 +135374,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          83,
-          102
+          84,
+          103
         ]
       },
       "owningService": "finance",
@@ -135484,8 +135484,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          83,
-          102
+          84,
+          103
         ]
       },
       "owningService": "finance",
@@ -135594,8 +135594,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          83,
-          102
+          84,
+          103
         ]
       },
       "owningService": "finance",
@@ -135704,8 +135704,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          104,
-          111
+          105,
+          113
         ]
       },
       "owningService": "finance",
@@ -135739,8 +135739,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          79,
-          81
+          80,
+          82
         ]
       },
       "owningService": "finance",
@@ -135775,7 +135775,7 @@
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
           51,
-          57
+          58
         ]
       },
       "owningService": "finance",
@@ -135809,8 +135809,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          59,
-          77
+          60,
+          78
         ]
       },
       "owningService": "finance",
@@ -135919,8 +135919,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          170,
-          176
+          173,
+          181
         ]
       },
       "owningService": "finance",
@@ -135954,8 +135954,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/people.cfc",
         "lines": [
-          60,
-          67
+          61,
+          68
         ]
       },
       "owningService": "people",
@@ -135990,7 +135990,7 @@
         "path": "legacy-fixtures/cfml/modules/people.cfc",
         "lines": [
           23,
-          58
+          59
         ]
       },
       "owningService": "people",
@@ -136020,8 +136020,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/people.cfc",
             "lines": [
-              49,
-              49
+              50,
+              50
             ]
           },
           "condition": null,
@@ -136039,8 +136039,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              163,
-              163
+              178,
+              178
             ]
           },
           "condition": null,
@@ -136064,8 +136064,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/reporting.cfc",
         "lines": [
-          92,
-          105
+          118,
+          131
         ]
       },
       "owningService": "reporting",
@@ -136099,8 +136099,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/reporting.cfc",
         "lines": [
-          83,
-          90
+          109,
+          116
         ]
       },
       "owningService": "reporting",
@@ -136134,8 +136134,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/reporting.cfc",
         "lines": [
-          78,
-          81
+          99,
+          107
         ]
       },
       "owningService": "reporting",
@@ -136169,8 +136169,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/reporting.cfc",
         "lines": [
-          42,
-          76
+          44,
+          97
         ]
       },
       "owningService": "reporting",
@@ -136199,8 +136199,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/reporting.cfc",
             "lines": [
-              59,
-              59
+              66,
+              66
             ]
           },
           "condition": "runs in a cfthread after the request returns",
@@ -136242,8 +136242,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          354,
-          363
+          356,
+          365
         ]
       },
       "owningService": "surveys",
@@ -136272,8 +136272,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              358,
-              358
+              360,
+              360
             ]
           },
           "condition": null,
@@ -136297,8 +136297,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          354,
-          363
+          356,
+          365
         ]
       },
       "owningService": "surveys",
@@ -136327,8 +136327,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              358,
-              358
+              360,
+              360
             ]
           },
           "condition": null,
@@ -136352,8 +136352,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          365,
-          392
+          367,
+          394
         ]
       },
       "owningService": "surveys",
@@ -136382,8 +136382,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              384,
-              384
+              386,
+              386
             ]
           },
           "condition": null,
@@ -136407,8 +136407,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          365,
-          392
+          367,
+          394
         ]
       },
       "owningService": "surveys",
@@ -136437,8 +136437,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              384,
-              384
+              386,
+              386
             ]
           },
           "condition": null,
@@ -136462,8 +136462,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          270,
-          278
+          271,
+          280
         ]
       },
       "owningService": "surveys",
@@ -136497,8 +136497,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          280,
-          318
+          282,
+          320
         ]
       },
       "owningService": "surveys",
@@ -136527,8 +136527,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              302,
-              302
+              304,
+              304
             ]
           },
           "condition": null,
@@ -136552,8 +136552,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          111,
-          249
+          112,
+          250
         ]
       },
       "owningService": "surveys",
@@ -136582,8 +136582,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              218,
-              218
+              219,
+              219
             ]
           },
           "condition": null,
@@ -136599,8 +136599,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              221,
-              221
+              222,
+              222
             ]
           },
           "condition": null,
@@ -136616,8 +136616,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              212,
-              212
+              213,
+              213
             ]
           },
           "condition": null,
@@ -136633,8 +136633,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              203,
-              203
+              204,
+              204
             ]
           },
           "condition": null,
@@ -136650,8 +136650,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              237,
-              237
+              238,
+              238
             ]
           },
           "condition": null,
@@ -136675,8 +136675,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          251,
-          268
+          252,
+          269
         ]
       },
       "owningService": "surveys",
@@ -136731,8 +136731,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          320,
-          352
+          322,
+          354
         ]
       },
       "owningService": "surveys",
@@ -136766,8 +136766,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          81,
-          84
+          82,
+          85
         ]
       },
       "owningService": "surveys",
@@ -136802,7 +136802,7 @@
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
           51,
-          58
+          59
         ]
       },
       "owningService": "surveys",
@@ -136836,8 +136836,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          60,
-          79
+          61,
+          80
         ]
       },
       "owningService": "surveys",
@@ -136866,8 +136866,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              68,
-              68
+              69,
+              69
             ]
           },
           "condition": null,
@@ -136891,8 +136891,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/timesheets.cfc",
         "lines": [
-          62,
-          94
+          63,
+          95
         ]
       },
       "owningService": "timesheets",
@@ -136922,8 +136922,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              140,
-              140
+              144,
+              144
             ]
           },
           "condition": null,
@@ -136940,8 +136940,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              136,
-              136
+              140,
+              140
             ]
           },
           "condition": null,
@@ -136965,8 +136965,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/timesheets.cfc",
         "lines": [
-          62,
-          94
+          63,
+          95
         ]
       },
       "owningService": "timesheets",
@@ -136996,8 +136996,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              140,
-              140
+              144,
+              144
             ]
           },
           "condition": null,
@@ -137014,8 +137014,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              136,
-              136
+              140,
+              140
             ]
           },
           "condition": null,
@@ -137039,8 +137039,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/timesheets.cfc",
         "lines": [
-          62,
-          94
+          63,
+          95
         ]
       },
       "owningService": "timesheets",
@@ -137070,8 +137070,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              140,
-              140
+              144,
+              144
             ]
           },
           "condition": null,
@@ -137088,8 +137088,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              136,
-              136
+              140,
+              140
             ]
           },
           "condition": null,
@@ -137113,8 +137113,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/timesheets.cfc",
         "lines": [
-          62,
-          94
+          63,
+          95
         ]
       },
       "owningService": "timesheets",
@@ -137144,8 +137144,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              140,
-              140
+              144,
+              144
             ]
           },
           "condition": null,
@@ -137162,8 +137162,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              136,
-              136
+              140,
+              140
             ]
           },
           "condition": null,
@@ -137187,8 +137187,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/timesheets.cfc",
         "lines": [
-          62,
-          94
+          63,
+          95
         ]
       },
       "owningService": "timesheets",
@@ -137218,8 +137218,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              140,
-              140
+              144,
+              144
             ]
           },
           "condition": null,
@@ -137236,8 +137236,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              136,
-              136
+              140,
+              140
             ]
           },
           "condition": null,
@@ -137261,8 +137261,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/timesheets.cfc",
         "lines": [
-          54,
-          60
+          55,
+          61
         ]
       },
       "owningService": "timesheets",
@@ -137296,8 +137296,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/timesheets.cfc",
         "lines": [
-          44,
-          52
+          45,
+          53
         ]
       },
       "owningService": "timesheets",
@@ -137332,7 +137332,7 @@
         "path": "legacy-fixtures/cfml/modules/timesheets.cfc",
         "lines": [
           32,
-          42
+          43
         ]
       },
       "owningService": "timesheets",
@@ -177529,8 +177529,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              140,
-              140
+              144,
+              144
             ]
           },
           "op": "insert",
@@ -177612,8 +177612,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              163,
-              163
+              178,
+              178
             ]
           },
           "op": "insert",
@@ -177691,8 +177691,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/finance.cfc",
             "lines": [
-              133,
-              133
+              136,
+              136
             ]
           },
           "op": "insert",
@@ -178148,8 +178148,8 @@
           "source": {
             "path": "legacy-fixtures/sql/timesheets/200_procedures.program.sql",
             "lines": [
-              136,
-              136
+              140,
+              140
             ]
           },
           "op": "update",
@@ -178363,8 +178363,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/communications.cfc",
             "lines": [
-              268,
-              268
+              270,
+              270
             ]
           },
           "op": "insert",
@@ -178498,8 +178498,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/reporting.cfc",
             "lines": [
-              59,
-              59
+              66,
+              66
             ]
           },
           "op": "insert",
@@ -178520,8 +178520,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/reporting.cfc",
             "lines": [
-              72,
-              74
+              84,
+              90
             ]
           },
           "op": "update",
@@ -178533,7 +178533,7 @@
           ],
           "trigger": "thread",
           "sessionEffects": "none",
-          "condition": "the opt2-export-<jobId> cfthread runs runExport (reporting.cfc:107-147), which moves the job to running and then done or failed only through synthetic.usp_export_job_transition",
+          "condition": "the opt2-export-<jobId> cfthread runs runExport (reporting.cfc:133-172), which moves the job to running and then done or failed only through synthetic.usp_export_job_transition",
           "override": "harness/inventory/writer-overrides.yaml#wov:fixture-export-threads"
         },
         {
@@ -178679,8 +178679,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/communications.cfc",
             "lines": [
-              102,
-              102
+              104,
+              104
             ]
           },
           "op": "insert",
@@ -178701,8 +178701,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/communications.cfc",
             "lines": [
-              243,
-              243
+              245,
+              245
             ]
           },
           "op": "update",
@@ -178780,8 +178780,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/communications.cfc",
             "lines": [
-              65,
-              65
+              66,
+              66
             ]
           },
           "op": "insert",
@@ -178859,8 +178859,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/people.cfc",
             "lines": [
-              49,
-              49
+              50,
+              50
             ]
           },
           "op": "insert",
@@ -178994,8 +178994,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/esignature.cfc",
             "lines": [
-              128,
-              128
+              129,
+              129
             ]
           },
           "op": "insert",
@@ -179073,8 +179073,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/esignature.cfc",
             "lines": [
-              82,
-              82
+              83,
+              83
             ]
           },
           "op": "insert",
@@ -179095,8 +179095,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/esignature.cfc",
             "lines": [
-              116,
-              116
+              117,
+              117
             ]
           },
           "op": "update",
@@ -179188,7 +179188,7 @@
           ],
           "trigger": "scheduler",
           "sessionEffects": "none",
-          "condition": "the opt2-survey-<id>-launch and opt2-survey-<id>-reminder-<n> cfschedule tasks that scheduleSurvey creates (surveys.cfc:173-189) call launchCallback (354-363, survey status and launched_at) and remindCallback (365-392, reminder sent_at) with a valid opt2TaskToken",
+          "condition": "the opt2-survey-<id>-launch and opt2-survey-<id>-reminder-<n> cfschedule tasks that scheduleSurvey creates (surveys.cfc:174-190) call launchCallback (356-365, survey status and launched_at) and remindCallback (367-394, reminder sent_at) with a valid opt2TaskToken",
           "override": "harness/inventory/writer-overrides.yaml#wov:fixture-survey-tasks"
         },
         {
@@ -179197,8 +179197,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              68,
-              68
+              69,
+              69
             ]
           },
           "op": "insert",
@@ -179219,8 +179219,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              237,
-              237
+              238,
+              238
             ]
           },
           "op": "update",
@@ -179241,8 +179241,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              358,
-              358
+              360,
+              360
             ]
           },
           "op": "update",
@@ -179335,7 +179335,7 @@
           ],
           "trigger": "scheduler",
           "sessionEffects": "none",
-          "condition": "the opt2-survey-<id>-launch and opt2-survey-<id>-reminder-<n> cfschedule tasks that scheduleSurvey creates (surveys.cfc:173-189) call launchCallback (354-363, survey status and launched_at) and remindCallback (365-392, reminder sent_at) with a valid opt2TaskToken",
+          "condition": "the opt2-survey-<id>-launch and opt2-survey-<id>-reminder-<n> cfschedule tasks that scheduleSurvey creates (surveys.cfc:174-190) call launchCallback (356-365, survey status and launched_at) and remindCallback (367-394, reminder sent_at) with a valid opt2TaskToken",
           "override": "harness/inventory/writer-overrides.yaml#wov:fixture-survey-tasks"
         },
         {
@@ -179344,8 +179344,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              218,
-              218
+              219,
+              219
             ]
           },
           "op": "delete",
@@ -179366,8 +179366,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              221,
-              221
+              222,
+              222
             ]
           },
           "op": "insert",
@@ -179388,8 +179388,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              384,
-              384
+              386,
+              386
             ]
           },
           "op": "update",
@@ -179470,8 +179470,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              302,
-              302
+              304,
+              304
             ]
           },
           "op": "insert",
@@ -179549,8 +179549,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              203,
-              203
+              204,
+              204
             ]
           },
           "op": "update",
@@ -179571,8 +179571,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              212,
-              212
+              213,
+              213
             ]
           },
           "op": "insert",

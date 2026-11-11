@@ -12,6 +12,8 @@ component output="false" hint="SYNTHETIC reporting fixture: asynchronous XLSX, C
 		};
 		variables.crlf = chr(13) & chr(10);
 		variables.csvQuotePattern = '[",' & chr(13) & chr(10) & ']';
+		// A runner retries failing its job for the 10 minutes a transition waits for export jobs.
+		variables.runnerFailBudgetMs = 600000;
 		return this;
 	}
 
@@ -39,7 +41,7 @@ component output="false" hint="SYNTHETIC reporting fixture: asynchronous XLSX, C
 		variables.auth.requireAny(["reporting.exporter"]);
 	}
 
-	private struct function createExport(required struct route) hint="Queues a job for a definition of the site, starts its runner thread and returns the job as queued." {
+	private struct function createExport(required struct route) hint="Fails the site's jobs left without a runner, queues a job for a definition of the site, starts its runner thread and returns the job as queued." {
 		authorize();
 		local.definition = queryExecute(
 			"SELECT [definition_id] FROM synthetic.export_definition WHERE [definition_id] = :definitionId AND [siteID] = :siteid",
@@ -53,31 +55,55 @@ component output="false" hint="SYNTHETIC reporting fixture: asynchronous XLSX, C
 			variables.envelope.raise("invalidParameters");
 		}
 		local.asOf = asOfParam(arguments.route.params);
+		recoverJobs(arguments.route.siteid);
 
 		local.jobId = createUUID();
-		queryExecute(
-			"INSERT INTO synthetic.export_job ([job_id], [siteID], [definition_id], [format], [state], [requested_by_id], [created])
-			VALUES (:jobId, :siteid, :definitionId, :format, N'queued', :userid, :created)",
-			{
-				jobId = idParam(local.jobId),
-				siteid = siteParam(arguments.route.siteid),
-				definitionId = idParam(local.definition.definition_id[1]),
-				format = {value = local.format, cfsqltype = "cf_sql_varchar"},
-				userid = idParam(variables.auth.userId()),
-				created = {value = now(), cfsqltype = "cf_sql_timestamp"}
+		local.workers = exportWorkers();
+		// Registered before the row exists, so recovery never finds this job queued without its worker entry.
+		local.workers.put(local.jobId, arguments.route.siteid);
+		try {
+			queryExecute(
+				"INSERT INTO synthetic.export_job ([job_id], [siteID], [definition_id], [format], [state], [requested_by_id], [created])
+				VALUES (:jobId, :siteid, :definitionId, :format, N'queued', :userid, :created)",
+				{
+					jobId = idParam(local.jobId),
+					siteid = siteParam(arguments.route.siteid),
+					definitionId = idParam(local.definition.definition_id[1]),
+					format = {value = local.format, cfsqltype = "cf_sql_varchar"},
+					userid = idParam(variables.auth.userId()),
+					created = {value = now(), cfsqltype = "cf_sql_timestamp"}
+				}
+			);
+		} catch (any e) {
+			local.workers.remove(local.jobId);
+			rethrow;
+		}
+		try {
+			// Read before the thread starts, so the response always shows the job as queued.
+			local.job = jobRows(arguments.route.siteid, local.jobId)[1];
+			cfthread(name = "opt2-export-" & local.jobId, action = "run", jobId = local.jobId, siteid = arguments.route.siteid, asOf = local.asOf) {
+				try {
+					variables.runExport(attributes.jobId, attributes.siteid, attributes.asOf);
+				} finally {
+					variables.exportWorkers().remove(attributes.jobId);
+				}
 			}
-		);
-		// Read before the thread starts, so the response always shows the job as queued.
-		local.job = jobRows(arguments.route.siteid, local.jobId)[1];
-		cfthread(name = "opt2-export-" & local.jobId, action = "run", jobId = local.jobId, siteid = arguments.route.siteid, asOf = local.asOf) {
-			variables.runExport(attributes.jobId, attributes.siteid, attributes.asOf);
+		} catch (any e) {
+			local.workers.remove(local.jobId);
+			failJob(local.jobId, "export-failed");
+			rethrow;
 		}
 		return {"data" = local.job};
 	}
 
-	private struct function listExports(required struct route) hint="Lists the site's jobs, without output, ordered by created, job_id." {
+	private struct function listExports(required struct route) hint="Lists one page of the site's jobs, without output, ordered by created, job_id." {
 		authorize();
-		return variables.envelope.list(jobRows(arguments.route.siteid), arguments.route.params);
+		return variables.envelope.queryPage(
+			"SELECT #variables.jobColumns# FROM synthetic.export_job WHERE [siteID] = :siteid ORDER BY [created], [job_id] OFFSET :offset ROWS FETCH NEXT :fetch ROWS ONLY",
+			"SELECT COUNT(*) AS [total] FROM synthetic.export_job WHERE [siteID] = :siteid",
+			{siteid = siteParam(arguments.route.siteid)},
+			arguments.route.params
+		);
 	}
 
 	private struct function exportDetail(required struct route) hint="Returns one job of the site without output; raises notFound outside the site." {
@@ -105,10 +131,10 @@ component output="false" hint="SYNTHETIC reporting fixture: asynchronous XLSX, C
 	}
 
 	private void function runExport(required string jobId, required string siteid, required string asOf) hint="Thread body: moves the job to running, builds its output and records done, or failed with source-unavailable or export-failed." {
-		if (moveJob(arguments.jobId, "running") != "legal") {
-			return;
-		}
 		try {
+			if (moveJob(arguments.jobId, "running").outcome != "legal") {
+				return;
+			}
 			local.job = queryExecute(
 				"SELECT [j].[format], [d].[name], [d].[source], [d].[columns] AS [column_json]
 				FROM synthetic.export_job AS [j]
@@ -120,7 +146,7 @@ component output="false" hint="SYNTHETIC reporting fixture: asynchronous XLSX, C
 				throw(type = "opt2.reporting.definition", message = "Export job or definition not found");
 			}
 			if (compare(local.job.source[1], "broken") == 0) {
-				moveJob(arguments.jobId, "failed", {error = "source-unavailable"});
+				failJob(jobId = arguments.jobId, error = "source-unavailable", budgetMs = variables.runnerFailBudgetMs);
 				return;
 			}
 			local.format = local.job.format[1];
@@ -141,9 +167,78 @@ component output="false" hint="SYNTHETIC reporting fixture: asynchronous XLSX, C
 				sha256 = variables.envelope.sha256Hex(local.bytes)
 			});
 		} catch (any e) {
-			// A non-legal outcome here means the job already left running; the runner ends either way.
-			moveJob(arguments.jobId, "failed", {error = "export-failed"});
+			failJob(jobId = arguments.jobId, error = "export-failed", budgetMs = variables.runnerFailBudgetMs);
 		}
+	}
+
+	private boolean function failJob(required string jobId, required string error, numeric budgetMs = 3000) hint="Moves a queued or running job to failed with error through legal moves only, retrying with backoff from 500 ms doubling to 30 s until budgetMs after the first failed attempt; returns false after one log line when the budget runs out." {
+		local.delay = 500;
+		local.deadline = 0;
+		while (true) {
+			try {
+				// Each move re-reads the state under lock, so a terminal state that already committed is kept.
+				local.moved = moveJob(arguments.jobId, "failed", {error = arguments.error});
+				if (local.moved.outcome == "illegal-state" && local.moved.state == "queued") {
+					moveJob(arguments.jobId, "running");
+					moveJob(arguments.jobId, "failed", {error = arguments.error});
+				}
+				return true;
+			} catch (any e) {
+				local.failure = e;
+				if (!local.deadline) {
+					local.deadline = getTickCount() + arguments.budgetMs;
+				}
+				local.remaining = local.deadline - getTickCount();
+				if (local.remaining <= 0) {
+					break;
+				}
+				sleep(min(local.delay, local.remaining));
+				local.delay = min(local.delay * 2, 30000);
+			}
+		}
+		writeLog(type = "Error", file = "exception", text = failJobLogRecord(arguments.jobId, local.failure));
+		return false;
+	}
+
+	private string function failJobLogRecord(required string jobId, required any failure) hint="Returns a log-record.v1 JSON line for a job that could not be failed, free of request values and exception text." {
+		local.record = [:];
+		local.record["timestamp"] = dateTimeFormat(dateConvert("local2utc", now()), "yyyy-mm-dd'T'HH:nn:ss.lll'Z'");
+		local.record["severity"] = "ERROR";
+		local.record["message"] = "Export job could not be failed";
+		local.record["service"] = "legacy-fixtures";
+		local.record["version"] = "1.0.0";
+		local.record["env"] = "local";
+		local.record["requestId"] = arguments.jobId;
+		local.error = [:];
+		local.error["type"] = structKeyExists(arguments.failure, "type") && reFind("^[A-Za-z0-9_.$-]{1,128}$", arguments.failure.type) ? arguments.failure.type : "Unknown";
+		local.error["message"] = "Unhandled Exception";
+		local.record["error"] = local.error;
+		return serializeJSON(local.record);
+	}
+
+	private void function recoverJobs(required string siteid) hint="Fails with export-failed the site's queued or running jobs that have no live runner thread in this server; stops at the first job that cannot be failed." {
+		local.workers = exportWorkers();
+		local.jobs = queryExecute(
+			"SELECT [job_id] FROM synthetic.export_job WHERE [siteID] = :siteid AND [state] IN (N'queued', N'running') ORDER BY [created], [job_id]",
+			{siteid = siteParam(arguments.siteid)}
+		);
+		for (local.i = 1; local.i <= local.jobs.recordCount; local.i++) {
+			if (!local.workers.containsKey(local.jobs.job_id[local.i]) && !failJob(local.jobs.job_id[local.i], "export-failed")) {
+				return;
+			}
+		}
+	}
+
+	private any function exportWorkers() hint="Returns the server-wide map of job ids whose runner thread is live, keyed by job id with the site as value, creating it once." {
+		local.key = "opt2.reporting.exportWorkers";
+		if (!structKeyExists(server, local.key)) {
+			cflock(name = local.key, type = "exclusive", timeout = 10) {
+				if (!structKeyExists(server, local.key)) {
+					server[local.key] = createObject("java", "java.util.concurrent.ConcurrentHashMap").init();
+				}
+			}
+		}
+		return server[local.key];
 	}
 
 	private query function sourceQuery(required string source, required string siteid, required string asOf) hint="Returns the site's source rows from its program schema: timesheet statuses as of asOf, or finance records; throws for any other source." {
@@ -226,17 +321,14 @@ component output="false" hint="SYNTHETIC reporting fixture: asynchronous XLSX, C
 		return local.pdfBytes;
 	}
 
-	private array function jobRows(required string siteid, string jobId = "") hint="Returns the site's job rows without output ordered by created, job_id; only jobId's row when it is given." {
-		local.sql = "SELECT #variables.jobColumns# FROM synthetic.export_job WHERE [siteID] = :siteid";
-		local.params = {siteid = siteParam(arguments.siteid)};
-		if (len(arguments.jobId)) {
-			local.sql &= " AND [job_id] = :jobId";
-			local.params.jobId = idParam(arguments.jobId);
-		}
-		return variables.envelope.rows(queryExecute(local.sql & " ORDER BY [created], [job_id]", local.params));
+	private array function jobRows(required string siteid, required string jobId) hint="Returns jobId's row of the site without output, as an array that is empty when the site lacks the job." {
+		return variables.envelope.rows(queryExecute(
+			"SELECT #variables.jobColumns# FROM synthetic.export_job WHERE [siteID] = :siteid AND [job_id] = :jobId ORDER BY [created], [job_id]",
+			{siteid = siteParam(arguments.siteid), jobId = idParam(arguments.jobId)}
+		));
 	}
 
-	private string function moveJob(required string jobId, required string toState, struct values = {}) hint="Applies one state move through usp_export_job_transition and returns its outcome; values may carry error, fileName, contentType, output and sha256, the rest bind as NULL." {
+	private struct function moveJob(required string jobId, required string toState, struct values = {}) hint="Applies one state move through usp_export_job_transition and returns its outcome and the job's resulting state; values may carry error, fileName, contentType, output and sha256, the rest bind as NULL." {
 		local.result = queryExecute(
 			"EXEC synthetic.usp_export_job_transition @job_id = :jobId, @to_state = :toState, @now = :now, @error = :error, @file_name = :fileName, @content_type = :contentType, @output = :output, @output_sha256 = :sha256",
 			{
@@ -250,7 +342,7 @@ component output="false" hint="SYNTHETIC reporting fixture: asynchronous XLSX, C
 				sha256 = optionalParam(arguments.values, "sha256", "cf_sql_char")
 			}
 		);
-		return local.result.outcome[1];
+		return {outcome = local.result.outcome[1], state = local.result.state[1]};
 	}
 
 	private struct function optionalParam(required struct values, required string key, required string type) hint="Returns a typed param bound to values[key], or a NULL param when the key is absent." {

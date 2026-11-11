@@ -29,16 +29,17 @@ component output="false" hint="Timesheet sheets, status and day lifecycle action
 		variables.envelope.raise("notFound");
 	}
 
-	private struct function listSheets(required struct route) hint="Lists the site's sheets with status, overdue flag and day counts as of asOf." {
+	private struct function listSheets(required struct route) hint="Lists one page of the site's sheets with status, overdue flag and day counts as of asOf." {
 		gate();
 		local.schema = variables.auth.programSchema(arguments.route.siteid);
 		local.asOf = asOfParam(arguments.route.params);
 		// The procedure's own order (period_start, person_id, timesheet_id) is the contract; it returns no period_start to re-sort on.
-		local.qry = queryExecute(
-			"EXEC [#local.schema#].usp_timesheet_status_list @siteID = :siteid, @asOf = :asOf",
-			{siteid = siteParam(arguments.route.siteid), asOf = local.asOf}
+		return variables.envelope.queryPage(
+			"EXEC [#local.schema#].usp_timesheet_status_list @siteID = :siteid, @asOf = :asOf, @offset = :offset, @fetch = :fetch",
+			"SELECT COUNT(*) AS total FROM [#local.schema#].timesheet WHERE siteID = :siteid",
+			{siteid = siteParam(arguments.route.siteid), asOf = local.asOf},
+			arguments.route.params
 		);
-		return variables.envelope.list(variables.envelope.rows(local.qry), arguments.route.params);
 	}
 
 	private struct function sheetDetail(required struct route) hint="Returns one sheet with its status fields as of asOf and its days." {

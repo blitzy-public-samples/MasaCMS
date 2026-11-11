@@ -52,10 +52,12 @@ BEGIN
 END
 GO
 
--- Status rows of a site's timesheets as of @asOf, ordered by period, person and sheet.
+-- Status rows of a site's timesheets as of @asOf, ordered by period, person and sheet; skips @offset rows and returns at most @fetch (NULL: all).
 CREATE OR ALTER PROCEDURE [$(PROGRAM_SCHEMA)].[usp_timesheet_status_list]
 	@siteID nvarchar(25),
-	@asOf datetime
+	@asOf datetime,
+	@offset bigint = 0,
+	@fetch int = NULL
 AS
 BEGIN
 	SET NOCOUNT ON; SET XACT_ABORT ON;
@@ -64,7 +66,8 @@ BEGIN
 	SELECT [s].[timesheet_id], [s].[status], [s].[overdue], [s].[day_count], [s].[blackout_count], [s].[approved_count]
 	FROM [$(PROGRAM_SCHEMA)].[tvf_timesheet_status](@asOf) AS [s]
 	WHERE [s].[siteID] = @siteID
-	ORDER BY [s].[period_start], [s].[person_id] COLLATE Latin1_General_BIN2, [s].[timesheet_id] COLLATE Latin1_General_BIN2;
+	ORDER BY [s].[period_start], [s].[person_id] COLLATE Latin1_General_BIN2, [s].[timesheet_id] COLLATE Latin1_General_BIN2
+	OFFSET @offset ROWS FETCH NEXT ISNULL(@fetch, 2147483647) ROWS ONLY;
 END
 GO
 
@@ -104,7 +107,8 @@ BEGIN
 			OR NOT EXISTS (SELECT 1 FROM [synthetic].[transition_rule] WHERE [service] = N'timesheets' AND [rule_name] = N'blackout')
 			THROW 50010, N'timesheet transitions not loaded', 1;
 
-		IF EXISTS (SELECT 1 FROM [$(PROGRAM_SCHEMA)].[blackout] WHERE [day_id] = @day_id)
+		-- Day row first, then its blackout key or missing-key range, the order usp_apply_blackout locks them in.
+		IF EXISTS (SELECT 1 FROM [$(PROGRAM_SCHEMA)].[blackout] WITH (UPDLOCK, HOLDLOCK) WHERE [day_id] = @day_id)
 			SELECT @outcome = [r].[outcome], @status = [r].[status], @error = [r].[error]
 			FROM [synthetic].[transition_rule] AS [r]
 			WHERE [r].[service] = N'timesheets' AND [r].[rule_name] = N'blackout';
@@ -160,13 +164,24 @@ AS
 BEGIN
 	SET NOCOUNT ON; SET XACT_ABORT ON;
 
-	INSERT INTO [$(PROGRAM_SCHEMA)].[blackout] ([blackout_id], [day_id], [person_id], [archive_id], [created])
-	SELECT STUFF(CONVERT(char(36), NEWID()), 24, 1, ''), [d].[day_id], @person_id, @archive_id, @now
-	FROM [$(PROGRAM_SCHEMA)].[timesheet_day] AS [d]
+	DECLARE @days TABLE ([day_id] char(35) NOT NULL PRIMARY KEY);
+
+	BEGIN TRANSACTION;
+
+	-- Every candidate day row is locked before any blackout key, the order usp_timesheet_day_action takes them in.
+	INSERT INTO @days ([day_id])
+	SELECT [d].[day_id]
+	FROM [$(PROGRAM_SCHEMA)].[timesheet_day] AS [d] WITH (UPDLOCK, HOLDLOCK)
 	INNER JOIN [$(PROGRAM_SCHEMA)].[timesheet] AS [t] ON [t].[timesheet_id] = [d].[timesheet_id]
-	WHERE [t].[person_id] = @person_id AND [d].[state] <> N'APPROVED' AND [d].[work_date] >= @effective_from
-		AND NOT EXISTS (SELECT 1 FROM [$(PROGRAM_SCHEMA)].[blackout] AS [b] WHERE [b].[day_id] = [d].[day_id]);
+	WHERE [t].[person_id] = @person_id AND [d].[state] <> N'APPROVED' AND [d].[work_date] >= @effective_from;
+
+	INSERT INTO [$(PROGRAM_SCHEMA)].[blackout] ([blackout_id], [day_id], [person_id], [archive_id], [created])
+	SELECT STUFF(CONVERT(char(36), NEWID()), 24, 1, ''), [k].[day_id], @person_id, @archive_id, @now
+	FROM @days AS [k]
+	WHERE NOT EXISTS (SELECT 1 FROM [$(PROGRAM_SCHEMA)].[blackout] AS [b] WITH (UPDLOCK, HOLDLOCK) WHERE [b].[day_id] = [k].[day_id]);
 
 	SET @blackouts = @@ROWCOUNT;
+
+	COMMIT TRANSACTION;
 END
 GO

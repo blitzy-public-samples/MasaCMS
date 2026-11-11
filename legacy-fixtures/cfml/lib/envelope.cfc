@@ -85,25 +85,58 @@ component output="false" hint="Masa-shaped JSON envelope and value formats for t
 		respond(200, arguments.method, arguments.params, 'data', arguments.data);
 	}
 
-	public struct function list(required array items, struct params={}) hint="Validates pageIndex (default 1) and itemsPerPage (default 50, max 1000) and returns {list, pageIndex, itemsPerPage} for listResponse()." {
-		return {
-			'list' = arguments.items,
+	public struct function page(struct params={}) hint="Validates pageIndex (default 1) and itemsPerPage (default 50, max 1000) and returns {pageIndex, itemsPerPage, offset}, offset being the count of rows before the page." {
+		local.page = {
 			'pageIndex' = pageParam(arguments.params, 'pageIndex', 1),
 			'itemsPerPage' = pageParam(arguments.params, 'itemsPerPage', 50, 1000)
 		};
+		local.page['offset'] = (local.page.pageIndex - 1) * local.page.itemsPerPage;
+		return local.page;
 	}
 
-	public void function listResponse(required string method, struct params={}, required struct listResult) hint="Writes one page of a list() result in Masa's paged-list shape and ends the request." {
-		local.totalItems = arrayLen(arguments.listResult.list);
+	public struct function list(required array items, struct params={}) hint="Validates paging as page() does and returns {list, pageIndex, itemsPerPage} for listResponse() to slice in memory." {
+		local.page = page(arguments.params);
+		return {
+			'list' = arguments.items,
+			'pageIndex' = local.page.pageIndex,
+			'itemsPerPage' = local.page.itemsPerPage
+		};
+	}
+
+	public struct function queryPage(required string sql, required string countSql, struct sqlParams={}, struct params={}) hint="Validates paging as page() does, counts rows with countSql (column total) and, when the page starts before that total, runs sql with :offset and :fetch bound to the page; returns {list, pageIndex, itemsPerPage, totalItems} for listResponse()." {
+		local.page = page(arguments.params);
+		local.totalItems = queryExecute(arguments.countSql, arguments.sqlParams).total[1];
+		local.items = [];
+		if (local.page.offset < local.totalItems) {
+			local.pageParams = structCopy(arguments.sqlParams);
+			local.pageParams.offset = {value = local.page.offset, cfsqltype = "cf_sql_bigint"};
+			local.pageParams.fetch = {value = local.page.itemsPerPage, cfsqltype = "cf_sql_integer"};
+			local.items = rows(queryExecute(arguments.sql, local.pageParams));
+		}
+		return {
+			'list' = local.items,
+			'pageIndex' = local.page.pageIndex,
+			'itemsPerPage' = local.page.itemsPerPage,
+			'totalItems' = local.totalItems
+		};
+	}
+
+	public void function listResponse(required string method, struct params={}, required struct listResult) hint="Writes one page of a list() or queryPage() result in Masa's paged-list shape and ends the request; a result with totalItems already holds only its page." {
+		local.paged = structKeyExists(arguments.listResult, 'totalItems');
+		local.totalItems = local.paged ? arguments.listResult.totalItems : arrayLen(arguments.listResult.list);
 		local.pageIndex = arguments.listResult.pageIndex;
 		local.itemsPerPage = arguments.listResult.itemsPerPage;
 		local.startIndex = (local.pageIndex - 1) * local.itemsPerPage + 1;
 		local.endIndex = min(local.startIndex + local.itemsPerPage - 1, local.totalItems);
 
 		local.data = [:];
-		local.data['items'] = local.startIndex <= local.totalItems
-			? arraySlice(arguments.listResult.list, local.startIndex, local.endIndex - local.startIndex + 1)
-			: [];
+		if (local.startIndex > local.totalItems) {
+			local.data['items'] = [];
+		} else if (local.paged) {
+			local.data['items'] = arguments.listResult.list;
+		} else {
+			local.data['items'] = arraySlice(arguments.listResult.list, local.startIndex, local.endIndex - local.startIndex + 1);
+		}
 		local.data['startindex'] = local.startIndex;
 		local.data['endindex'] = local.endIndex;
 		local.data['itemsperpage'] = local.itemsPerPage;

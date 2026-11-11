@@ -38,13 +38,14 @@ component output="false" hint="SYNTHETIC communications fixture: template store,
 		variables.auth.requireAny(["communications.sender"]);
 	}
 
-	private struct function listTemplates(required struct route) hint="Lists the site's templates ordered by created, template_id." {
+	private struct function listTemplates(required struct route) hint="Lists one page of the site's templates ordered by created, template_id." {
 		authorize();
-		local.qry = queryExecute(
-			"SELECT " & variables.templateColumns & " FROM synthetic.message_template WHERE siteID = :siteid ORDER BY created, template_id",
-			{siteid = {value = arguments.route.siteid, cfsqltype = "cf_sql_nvarchar"}}
+		return variables.envelope.queryPage(
+			"SELECT " & variables.templateColumns & " FROM synthetic.message_template WHERE siteID = :siteid ORDER BY created, template_id OFFSET :offset ROWS FETCH NEXT :fetch ROWS ONLY",
+			"SELECT COUNT(*) AS total FROM synthetic.message_template WHERE siteID = :siteid",
+			{siteid = {value = arguments.route.siteid, cfsqltype = "cf_sql_nvarchar"}},
+			arguments.route.params
 		);
-		return variables.envelope.list(variables.envelope.rows(local.qry), arguments.route.params);
 	}
 
 	private struct function createTemplate(required struct route) hint="Stores a template with byte-exact bodies and returns the inserted row." {
@@ -77,13 +78,14 @@ component output="false" hint="SYNTHETIC communications fixture: template store,
 		return {"data" = variables.envelope.rows(findTemplate(local.templateId, arguments.route.siteid))[1]};
 	}
 
-	private struct function listMessages(required struct route) hint="Lists the site's messages ordered by created, message_id." {
+	private struct function listMessages(required struct route) hint="Lists one page of the site's messages ordered by created, message_id." {
 		authorize();
-		local.qry = queryExecute(
-			"SELECT " & variables.messageColumns & " FROM synthetic.message WHERE siteID = :siteid ORDER BY created, message_id",
-			{siteid = {value = arguments.route.siteid, cfsqltype = "cf_sql_nvarchar"}}
+		return variables.envelope.queryPage(
+			"SELECT " & variables.messageColumns & " FROM synthetic.message WHERE siteID = :siteid ORDER BY created, message_id OFFSET :offset ROWS FETCH NEXT :fetch ROWS ONLY",
+			"SELECT COUNT(*) AS total FROM synthetic.message WHERE siteID = :siteid",
+			{siteid = {value = arguments.route.siteid, cfsqltype = "cf_sql_nvarchar"}},
+			arguments.route.params
 		);
-		return variables.envelope.list(variables.envelope.rows(local.qry), arguments.route.params);
 	}
 
 	private struct function messageDetail(required struct route) hint="Returns one message of the site with its delivery-status history." {

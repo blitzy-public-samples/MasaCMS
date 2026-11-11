@@ -40,7 +40,7 @@ writers:
     keyScope: [id]
     trigger: scheduler
     sessionEffects: none
-    condition: "the opt2-survey-<id>-launch and opt2-survey-<id>-reminder-<n> cfschedule tasks that scheduleSurvey creates (surveys.cfc:173-189) call launchCallback (354-363, survey status and launched_at) and remindCallback (365-392, reminder sent_at) with a valid opt2TaskToken"
+    condition: "the opt2-survey-<id>-launch and opt2-survey-<id>-reminder-<n> cfschedule tasks that scheduleSurvey creates (surveys.cfc:174-190) call launchCallback (356-365, survey status and launched_at) and remindCallback (367-394, reminder sent_at) with a valid opt2TaskToken"
     preventedBy: fixture-survey-tasks
     reason: "ACF tasks the fixture registers at run time issue these requests, so no inventoried entry point carries their scheduler trigger."
 
@@ -49,12 +49,12 @@ writers:
     component: legacy-fixtures/cfml/modules/reporting.cfc
     method: createExport
     op: update
-    source: {path: legacy-fixtures/cfml/modules/reporting.cfc, lines: [72, 74]}
+    source: {path: legacy-fixtures/cfml/modules/reporting.cfc, lines: [84, 90]}
     routeKeys: ["fixture:reporting/exports@post"]
     keyScope: table
     trigger: thread
     sessionEffects: none
-    condition: "the opt2-export-<jobId> cfthread runs runExport (reporting.cfc:107-147), which moves the job to running and then done or failed only through synthetic.usp_export_job_transition"
+    condition: "the opt2-export-<jobId> cfthread runs runExport (reporting.cfc:133-172), which moves the job to running and then done or failed only through synthetic.usp_export_job_transition"
     preventedBy: fixture-export-threads
     reason: "The writes run in a cfthread that outlives the request that queued the job, so that request's closure cannot carry them."
 

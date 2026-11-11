@@ -48,13 +48,14 @@ component output="false" hint="SYNTHETIC surveys fixture: surveys, launch and re
 		variables.envelope.raise("notFound");
 	}
 
-	private struct function listSurveys(required struct route) hint="Lists the site's surveys." {
+	private struct function listSurveys(required struct route) hint="Lists one page of the site's surveys." {
 		variables.auth.requireAny(variables.managerRole);
-		local.qry = queryExecute(
-			"SELECT * FROM synthetic.survey WHERE siteID = :siteid ORDER BY created, survey_id",
-			{siteid = sqlParam(arguments.route.siteid)}
+		return variables.envelope.queryPage(
+			"SELECT * FROM synthetic.survey WHERE siteID = :siteid ORDER BY created, survey_id OFFSET :offset ROWS FETCH NEXT :fetch ROWS ONLY",
+			"SELECT COUNT(*) AS total FROM synthetic.survey WHERE siteID = :siteid",
+			{siteid = sqlParam(arguments.route.siteid)},
+			arguments.route.params
 		);
-		return variables.envelope.list(variables.envelope.rows(local.qry), arguments.route.params);
 	}
 
 	private struct function createSurvey(required struct route, required date now) hint="Creates a DRAFT survey in the site and returns its detail." {
@@ -267,14 +268,15 @@ component output="false" hint="SYNTHETIC surveys fixture: surveys, launch and re
 		return {"data" = variables.envelope.rows(local.qry)[1]};
 	}
 
-	private struct function listResponses(required struct route) hint="Lists the responses of a survey in the site." {
+	private struct function listResponses(required struct route) hint="Lists one page of the responses of a survey in the site." {
 		variables.auth.requireAny(variables.managerRole);
 		local.survey = findSurvey(arguments.route.id, arguments.route.siteid);
-		local.qry = queryExecute(
-			"SELECT * FROM synthetic.survey_response WHERE survey_id = :id ORDER BY created, response_id",
-			{id = sqlParam(local.survey.survey_id)}
+		return variables.envelope.queryPage(
+			"SELECT * FROM synthetic.survey_response WHERE survey_id = :id ORDER BY created, response_id OFFSET :offset ROWS FETCH NEXT :fetch ROWS ONLY",
+			"SELECT COUNT(*) AS total FROM synthetic.survey_response WHERE survey_id = :id",
+			{id = sqlParam(local.survey.survey_id)},
+			arguments.route.params
 		);
-		return variables.envelope.list(variables.envelope.rows(local.qry), arguments.route.params);
 	}
 
 	private struct function createResponse(required struct route, required date now) hint="Stores a logged-in user's answers, from the survey's own site or a targeted site, under the survey's site." {

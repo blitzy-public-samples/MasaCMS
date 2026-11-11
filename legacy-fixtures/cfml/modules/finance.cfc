@@ -48,12 +48,13 @@ component output="false" hint="Finance records, lifecycle transitions, versions,
 		variables.envelope.raise("notFound");
 	}
 
-	private struct function listRecords(required struct route, required string schema) hint="Lists the site's finance records." {
-		local.qry = queryExecute(
-			"SELECT * FROM #arguments.schema#.finance_record WHERE siteID = :siteid ORDER BY created, record_id",
-			{siteid = siteParam(arguments.route.siteid)}
+	private struct function listRecords(required struct route, required string schema) hint="Lists one page of the site's finance records." {
+		return variables.envelope.queryPage(
+			"SELECT * FROM #arguments.schema#.finance_record WHERE siteID = :siteid ORDER BY created, record_id OFFSET :offset ROWS FETCH NEXT :fetch ROWS ONLY",
+			"SELECT COUNT(*) AS total FROM #arguments.schema#.finance_record WHERE siteID = :siteid",
+			{siteid = siteParam(arguments.route.siteid)},
+			arguments.route.params
 		);
-		return variables.envelope.list(variables.envelope.rows(local.qry), arguments.route.params);
 	}
 
 	private struct function createRecord(required struct route, required string schema) hint="Creates an IN-PROGRESS record with its version-1 row and refreshes the rollup." {
@@ -101,22 +102,24 @@ component output="false" hint="Finance records, lifecycle transitions, versions,
 		return {"data" = variables.envelope.rows(findRecord(arguments.schema, arguments.route.siteid, arguments.route.id))[1]};
 	}
 
-	private struct function versions(required struct route, required string schema) hint="Lists a record's version rows in version order." {
+	private struct function versions(required struct route, required string schema) hint="Lists one page of a record's version rows in version order." {
 		requireRecord(arguments.route, arguments.schema);
-		local.qry = queryExecute(
-			"SELECT * FROM #arguments.schema#.finance_record_version WHERE record_id = :id ORDER BY version",
-			{id = idParam(arguments.route.id)}
+		return variables.envelope.queryPage(
+			"SELECT * FROM #arguments.schema#.finance_record_version WHERE record_id = :id ORDER BY version OFFSET :offset ROWS FETCH NEXT :fetch ROWS ONLY",
+			"SELECT COUNT(*) AS total FROM #arguments.schema#.finance_record_version WHERE record_id = :id",
+			{id = idParam(arguments.route.id)},
+			arguments.route.params
 		);
-		return variables.envelope.list(variables.envelope.rows(local.qry), arguments.route.params);
 	}
 
-	private struct function attachmentList(required struct route, required string schema) hint="Lists a record's attachment metadata, without content." {
+	private struct function attachmentList(required struct route, required string schema) hint="Lists one page of a record's attachment metadata, without content." {
 		requireRecord(arguments.route, arguments.schema);
-		local.qry = queryExecute(
-			"SELECT attachment_id, record_id, file_name, content_type, size_bytes, sha256, created, createdByID FROM #arguments.schema#.finance_attachment WHERE record_id = :id ORDER BY created, attachment_id",
-			{id = idParam(arguments.route.id)}
+		return variables.envelope.queryPage(
+			"SELECT attachment_id, record_id, file_name, content_type, size_bytes, sha256, created, createdByID FROM #arguments.schema#.finance_attachment WHERE record_id = :id ORDER BY created, attachment_id OFFSET :offset ROWS FETCH NEXT :fetch ROWS ONLY",
+			"SELECT COUNT(*) AS total FROM #arguments.schema#.finance_attachment WHERE record_id = :id",
+			{id = idParam(arguments.route.id)},
+			arguments.route.params
 		);
-		return variables.envelope.list(variables.envelope.rows(local.qry), arguments.route.params);
 	}
 
 	private struct function upload(required struct route, required string schema) hint="Stores the multipart field 'file' as an attachment and returns its metadata." {
@@ -167,12 +170,14 @@ component output="false" hint="Finance records, lifecycle transitions, versions,
 		return {"file" = {"bytes" = local.qry.content[1], "contentType" = local.qry.content_type[1], "fileName" = local.qry.file_name[1]}};
 	}
 
-	private struct function rollups(required struct route, required string schema) hint="Lists the program's per-period, per-state totals." {
+	private struct function rollups(required struct route, required string schema) hint="Lists one page of the program's per-period, per-state totals." {
 		// finance_rollup has no siteID: the program schema is per site. Binary collation keeps usp_finance_rollup's order.
-		local.qry = queryExecute(
-			"SELECT * FROM #arguments.schema#.finance_rollup ORDER BY period COLLATE Latin1_General_BIN2, state COLLATE Latin1_General_BIN2"
+		return variables.envelope.queryPage(
+			"SELECT * FROM #arguments.schema#.finance_rollup ORDER BY period COLLATE Latin1_General_BIN2, state COLLATE Latin1_General_BIN2 OFFSET :offset ROWS FETCH NEXT :fetch ROWS ONLY",
+			"SELECT COUNT(*) AS total FROM #arguments.schema#.finance_rollup",
+			{},
+			arguments.route.params
 		);
-		return variables.envelope.list(variables.envelope.rows(local.qry), arguments.route.params);
 	}
 
 	private string function gate(required struct route, required array roles) hint="Requires login and one of roles, then returns the site's bracket-quoted program schema." {
