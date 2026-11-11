@@ -2,14 +2,14 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { INVOCATION_HEADER, recordedRoutes } from '../../src/auth/index.js';
+import { INVOCATION_HEADER, collectRouteMatrix, recordedRoutes, transportForPath } from '../../src/auth/index.js';
 import { LegacyApiError } from '../../src/legacy-compat/index.js';
 import { createLogger } from '../../src/logging/index.js';
 import { ServiceUnavailableError, UnknownServiceError } from '../../src/service-kit/client.js';
 import { currentRequestContext } from '../../src/service-kit/context.js';
 import { createService } from '../../src/service-kit/create-service.js';
 import { loadEnv } from '../../src/service-kit/env.js';
-import type { ServiceClient, ServiceRequest, ServiceResponse } from '../../src/service-kit/index.js';
+import { z, type ServiceClient, type ServiceRequest, type ServiceResponse } from '../../src/service-kit/index.js';
 import type { TenantDb, TenantTx } from '../../src/tenancy/index.js';
 import { fixedClock } from '../../src/testing/clock.js';
 import { TENANT_A, TENANT_B } from '../../src/testing/fixtures.js';
@@ -26,9 +26,13 @@ import {
 } from '../../src/tasks/handlers.js';
 import {
   CLOUD_TASKS_HEADERS,
+  InvalidTaskNameError,
+  TASK_NAME_PATTERN,
   TaskPortConfigError,
   assertCreateInput,
+  assertTaskName,
   createTaskPort,
+  parseTaskWireBody,
   taskWireBody,
   type CreateTaskInput,
   type CreateTaskPortOptions,
@@ -41,7 +45,7 @@ import {
   type TaskPage,
   type TaskPort,
 } from '../../src/tasks/port.js';
-import { MAX_SLOT_PROBES, recurringHandler, recurringSpec } from '../../src/tasks/recurring.js';
+import { MAX_SLOT_PROBES, recurringHandler, recurringSpec, slotName } from '../../src/tasks/recurring.js';
 import {
   DEFAULT_RETRY,
   QUEUES,
@@ -173,7 +177,7 @@ describe('retry policies', () => {
 });
 
 describe('outboxSweepQueue', () => {
-  it.each(['identity', 'programs-sites', 'stub'])('names the sweep queue of %s', (service) => {
+  it.each(['identity', 'people', 'programs-sites', 'stub'])('names the sweep queue of %s', (service) => {
     expect(outboxSweepQueue(service)).toBe(`${service}-outbox-sweep`);
   });
 });
@@ -215,9 +219,9 @@ describe('QUEUES', () => {
     }
   });
 
-  it('targets only managed Cloud Tasks routes', () => {
+  it('targets only routes on the cloud-tasks transport', () => {
     for (const def of Object.values(QUEUES)) {
-      expect(def.targetPath).toMatch(/^\/internal\/v1\/(?:tasks\/|jobs\/|outbox\/sweep$)/);
+      expect(transportForPath(def.targetPath)).toBe('cloud-tasks');
     }
   });
 
@@ -412,6 +416,78 @@ describe('queueTopology', () => {
     expect(queueTopology({ target: 'cloud' })).toStrictEqual(CLOUD_TOPOLOGY);
     expect(DEFAULT_RETRY.maxAttempts).toBe(100);
     expect(RECURRING_RETRY.maxAttempts).toBe(5);
+  });
+});
+
+describe('parseTaskWireBody', () => {
+  const tenantInput: CreateTaskInput = {
+    queue: 'surveys-launch',
+    name: 'surveys-launch-A1B2',
+    scheduleTime: new Date('2026-06-30T12:00:00Z'),
+    url: `http://127.0.0.1:8117/internal/v1/tasks/surveys/${SURVEY_ID}/launch`,
+    deadlineS: 60,
+    body: { surveyId: SURVEY_ID },
+    tenantId: TENANT_A.tenantId,
+  };
+  const { tenantId: _tenantId, body: _body, ...systemInput } = tenantInput;
+
+  it.each([
+    [
+      'a tenant task',
+      tenantInput,
+      { queue: 'surveys-launch', name: 'surveys-launch-A1B2', tenantId: TENANT_A.tenantId, payload: { surveyId: SURVEY_ID } },
+    ],
+    ['a system task without a body', systemInput, { queue: 'surveys-launch', name: 'surveys-launch-A1B2', tenantId: null, payload: null }],
+  ])('reads back the wire body the adapters send for %s', (_label, input, expected) => {
+    const sent = taskWireBody(input);
+    expect(sent).toStrictEqual(expected);
+    expect(parseTaskWireBody(JSON.parse(JSON.stringify(sent)))).toStrictEqual(expected);
+  });
+
+  it.each([
+    ['null', null],
+    ['an array', [SURVEY_ID]],
+    ['a body without a queue', { name: 'surveys-launch-A1B2', tenantId: null, payload: null }],
+    ['a numeric task name', { queue: 'surveys-launch', name: 42, tenantId: null, payload: null }],
+    ['a numeric tenantId', { queue: 'surveys-launch', name: 'surveys-launch-A1B2', tenantId: 1, payload: null }],
+  ])('throws a ZodError for %s', (_label, raw) => {
+    expect(() => parseTaskWireBody(raw)).toThrow(z.ZodError);
+  });
+});
+
+describe('assertTaskName', () => {
+  it.each([
+    ['a single character', 'a'],
+    ['every allowed character class', 'Az09_-'],
+    ['500 characters', 'x'.repeat(500)],
+  ])('accepts %s', (_label, name) => {
+    expect(TASK_NAME_PATTERN.test(name)).toBe(true);
+    expect(() => assertTaskName(name)).not.toThrow();
+  });
+
+  it.each([
+    ['an empty name', ''],
+    ['501 characters', 'x'.repeat(501)],
+    ['a space', 'surveys launch'],
+    ['a slash', 'surveys-launch/A1B2'],
+    ['a dot', 'surveys.launch'],
+    ['a non-ASCII letter', 'surveys-lünch'],
+    ['a trailing newline', 'surveys-launch\n'],
+  ])('throws InvalidTaskNameError for %s', (_label, name) => {
+    expect(TASK_NAME_PATTERN.test(name)).toBe(false);
+    const error = thrownBy(() => assertTaskName(name));
+    expect(error).toBeInstanceOf(InvalidTaskNameError);
+    expect(error).toMatchObject({
+      name: 'InvalidTaskNameError',
+      taskName: name,
+      message: `Invalid task name ${JSON.stringify(name)}: expected 1-500 characters from A-Z, a-z, 0-9, _ and -`,
+    });
+  });
+
+  it('accepts the slot task name of every recurring queue', () => {
+    for (const def of recurringQueues({ includeLocalOnly: true, withSiteMonitor: true })) {
+      expect(() => assertTaskName(slotName(def.name, 1_782_820_800))).not.toThrow();
+    }
   });
 });
 
@@ -611,8 +687,9 @@ describe('registerTaskRoute', () => {
   it('declares the cloud-tasks transport and the tasks-invoker role', async () => {
     const app = await taskServiceApp('people');
     registerTaskRoute(app, SWEEP_PATH, { scope: 'system', handler: vi.fn() });
-    expect(recordedRoutes(app).filter((route) => route.url === SWEEP_PATH)).toStrictEqual([
-      { method: 'POST', url: SWEEP_PATH, config: { transport: 'cloud-tasks', requires: ['service:tasks-invoker'] } },
+    await app.ready();
+    expect(collectRouteMatrix(app).routes.filter((route) => route.url === SWEEP_PATH)).toStrictEqual([
+      { method: 'POST', url: SWEEP_PATH, transport: 'cloud-tasks', requires: ['service:tasks-invoker'], siteCheck: true },
     ]);
   });
 

@@ -1,15 +1,27 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { DestinationStream } from 'pino';
 import type { QueryConfig, QueryResult, QueryResultRow } from 'pg';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { INVOCATION_HEADER, Roles, rolesForService, verifyLocalServiceToken } from '../../src/auth/index.js';
 import type { EventPublisher } from '../../src/events/index.js';
-import { createLogger } from '../../src/logging/index.js';
+import { createLogger, setDiagnosticLogger } from '../../src/logging/index.js';
 import { UsageError, main, parseArgs, runReplay, serviceSchema } from '../../src/outbox/cli.js';
 import { localTimestamp } from '../../src/outbox/ddl.js';
 import { resetOutboxRuntimes, type OutboxRuntime } from '../../src/outbox/flush.js';
-import { baseEnvSchema, fixedClock } from '../../src/service-kit/index.js';
+import {
+  baseEnvSchema,
+  fixedClock,
+  type ServiceClientOptions,
+  type ServiceRequest,
+  type ServiceResponse,
+} from '../../src/service-kit/index.js';
+import { main as tasksMain } from '../../src/tasks/cli.js';
 import type { MetadataTx, TenantDb, TenantTx } from '../../src/tenancy/index.js';
 import { tenantIdForSite } from '../../src/tenancy/tenant-id.js';
+import { testSigningKeys, writeTestSecrets } from '../../src/testing/tokens.js';
 
 type WriteCallback = (err?: Error | null) => void;
 
@@ -32,7 +44,7 @@ interface Statement {
   values: unknown[] | undefined;
 }
 
-const state = vi.hoisted(() => ({ createPool: vi.fn(), createPublisher: vi.fn() }));
+const state = vi.hoisted(() => ({ createPool: vi.fn(), createPublisher: vi.fn(), createServiceClient: vi.fn() }));
 
 vi.mock('../../src/tenancy/index.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/tenancy/index.js')>()),
@@ -42,6 +54,11 @@ vi.mock('../../src/tenancy/index.js', async (importOriginal) => ({
 vi.mock('../../src/events/index.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/events/index.js')>()),
   createPublisher: state.createPublisher,
+}));
+
+vi.mock('../../src/service-kit/index.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/service-kit/index.js')>()),
+  createServiceClient: state.createServiceClient,
 }));
 
 const USAGE = 'usage: opt2-outbox replay --since <ISO-8601 timestamp> [--tenant <uuid>] [--schema <name>]';
@@ -743,3 +760,225 @@ describe('opt2-outbox main', () => {
     expect(stderr).toBe(`opt2-outbox: missing --since; ${USAGE}\n`);
   });
 });
+
+// opt2-auth and opt2-events are covered in auth-cli.test.ts and events-cli.test.ts, and the environment and HTTP paths of
+// opt2-tasks in tasks-cli.test.ts; this suite covers how opt2-tasks turns its flags into ensure calls.
+const TASKS_USAGE =
+  'usage: opt2-tasks reconcile [--queue <name>]... [--with-sitemonitor] [--include-local-only] [--as operator|migration]';
+const SITEMONITOR = 'programs-sites-sitemonitor';
+const SLOT = 1782820800;
+const PRODUCERS = ['identity', 'people', 'programs-sites', 'surveys', 'communications'] as const;
+const SERVICE_URLS: Record<string, string> = Object.fromEntries(
+  [...PRODUCERS, 'stub'].map((service) => [service, `http://${service}.invalid`]),
+);
+
+/** A recurring queue and the creator asked to ensure its chain. */
+type Chain = readonly [queue: string, service: string];
+
+const sweep = (service: string): Chain => [`${service}-outbox-sweep`, service];
+const DEPLOYED_SWEEPS: Chain[] = PRODUCERS.map(sweep);
+const STUB_SWEEP = sweep('stub');
+const MONITOR: Chain = [SITEMONITOR, 'programs-sites'];
+
+/** The queue-control call opt2-tasks sends to ensure `chain`. */
+function ensureRequest([queue, service]: Chain): ServiceRequest {
+  return { service, method: 'POST', path: `/internal/v1/task-queues/${queue}/ensure`, json: {}, userToken: null };
+}
+
+/** The stdout line of a chain whose creator created the current slot's task. */
+function ensuredLine([queue, service]: Chain): Record<string, unknown> {
+  return { queue, service, ok: true, created: true, name: `${queue}-${String(SLOT)}`, reason: 'created-current' };
+}
+
+/** A creator's 200 answer to an ensure call: the current slot's task, created. */
+function ensuredAnswer(req: ServiceRequest): Promise<ServiceResponse> {
+  const queue = decodeURIComponent(req.path.split('/')[4] ?? '');
+  const ensured = { queue, name: `${queue}-${String(SLOT)}`, created: true, reason: 'created-current' };
+  return Promise.resolve({ status: 200, headers: {}, body: { queue, service: req.service, ensured } });
+}
+
+/** Answers createServiceClient with a client whose calls `answer` handles with the client's options. */
+function fakeServiceClient(
+  answer: (req: ServiceRequest, options: ServiceClientOptions) => Promise<ServiceResponse> = ensuredAnswer,
+) {
+  const request = vi.fn<(req: ServiceRequest) => Promise<ServiceResponse>>();
+  const close = vi.fn(() => Promise.resolve());
+  state.createServiceClient.mockImplementation((options: ServiceClientOptions) => {
+    request.mockImplementation((req) => answer(req, options));
+    return { request, close };
+  });
+  const sent = (): ServiceRequest[] => request.mock.calls.map(([req]) => req);
+  return { request, close, sent };
+}
+
+function stdoutLines(): unknown[] {
+  return stdout
+    .split('\n')
+    .filter((line) => line !== '')
+    .map((line) => JSON.parse(line) as unknown);
+}
+
+/** The message of a usage error on stderr, between its `opt2-tasks: ` prefix and usage suffix. */
+function tasksUsageMessage(text: string): string {
+  const prefix = 'opt2-tasks: ';
+  const suffix = `; ${TASKS_USAGE}\n`;
+  expect(text.startsWith(prefix) && text.endsWith(suffix)).toBe(true);
+  return text.slice(prefix.length, -suffix.length);
+}
+
+describe('opt2-tasks reconcile', () => {
+  let stateDir: string;
+
+  beforeAll(async () => {
+    stateDir = await mkdtemp(join(tmpdir(), 'opt2-clis-tasks-'));
+    await writeTestSecrets(stateDir);
+  });
+
+  afterAll(async () => {
+    await rm(stateDir, { recursive: true, force: true });
+  });
+
+  beforeEach(() => {
+    state.createServiceClient.mockReset();
+  });
+
+  afterEach(() => {
+    setDiagnosticLogger(undefined);
+  });
+
+  /** Sets the variables opt2-tasks reads; `urls: null` leaves OPT2_SERVICE_URLS unset. */
+  function stubTasksEnv({
+    mode = 'local',
+    urls = SERVICE_URLS,
+  }: { mode?: 'local' | 'cloud'; urls?: Record<string, string> | null } = {}): void {
+    vi.stubEnv('OPT2_ENV', mode);
+    vi.stubEnv('OPT2_STATE_DIR', stateDir);
+    vi.stubEnv('OPT2_SERVICE_URLS', urls === null ? undefined : JSON.stringify(urls));
+    vi.stubEnv('GOOGLE_CLOUD_PROJECT', mode === 'cloud' ? 'opt2-unit' : undefined);
+  }
+
+  it.each([
+    { argv: [], message: /^missing subcommand$/ },
+    { argv: ['sync'], message: /^unknown subcommand "sync"$/ },
+    { argv: ['reconcile', 'all'], message: /^unknown subcommand "reconcile all"$/ },
+    { argv: ['reconcile', '--as', 'admin'], message: /^--as must be one of operator, migration, got "admin"$/ },
+    { argv: ['reconcile', '--queue'], message: /^Option '--queue <value>' argument missing/ },
+    { argv: ['reconcile', '--dry-run'], message: /^Unknown option '--dry-run'/ },
+  ])('exits 2 with the usage line for $argv before reading the environment or creating a client', async ({ argv, message }) => {
+    stubTasksEnv({ urls: null });
+
+    expect(await tasksMain(argv)).toBe(2);
+
+    expect(tasksUsageMessage(stderr)).toMatch(message);
+    expect(stdout).toBe('');
+    expect(state.createServiceClient).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { queues: ['surveys-launch'], message: 'Not a recurring task queue: surveys-launch' },
+    { queues: ['people-outbox-sweep', 'nope'], message: 'Not a recurring task queue: nope' },
+    { queues: [SITEMONITOR], message: `${SITEMONITOR} is reconciled only with withSiteMonitor` },
+  ])('exits 2 with the usage line and closes the client without a call when --queue names $queues', async ({ queues, message }) => {
+    stubTasksEnv();
+    const { request, close } = fakeServiceClient();
+
+    expect(await tasksMain(['reconcile', ...queues.flatMap((queue) => ['--queue', queue])])).toBe(2);
+
+    expect(stderr).toBe(`opt2-tasks: ${message}; ${TASKS_USAGE}\n`);
+    expect(stdout).toBe('');
+    expect(request).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it.each<{ mode: 'local' | 'cloud'; flags: string[]; chains: Chain[] }>([
+    { mode: 'local', flags: [], chains: [...DEPLOYED_SWEEPS, STUB_SWEEP] },
+    { mode: 'local', flags: ['--with-sitemonitor'], chains: [MONITOR, ...DEPLOYED_SWEEPS, STUB_SWEEP] },
+    { mode: 'cloud', flags: [], chains: DEPLOYED_SWEEPS },
+    { mode: 'cloud', flags: ['--include-local-only'], chains: [...DEPLOYED_SWEEPS, STUB_SWEEP] },
+    { mode: 'cloud', flags: ['--with-sitemonitor'], chains: [MONITOR, ...DEPLOYED_SWEEPS] },
+  ])('ensures each chain in registry order, one line each, in $mode mode with $flags', async ({ mode, flags, chains }) => {
+    stubTasksEnv({ mode });
+    const { close, sent } = fakeServiceClient();
+
+    expect(await tasksMain(['reconcile', ...flags])).toBe(0);
+
+    expect(sent()).toEqual(chains.map(ensureRequest));
+    expect(stdoutLines()).toEqual(chains.map(ensuredLine));
+    expect(stderr).toBe('');
+    expect(state.createServiceClient).toHaveBeenCalledExactlyOnceWith({
+      serviceUrls: SERVICE_URLS,
+      self: 'operator',
+      credentials: expect.objectContaining({ headersFor: expect.any(Function) }),
+    });
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it('ensures only the repeated --queue chains, once each in registry order', async () => {
+    stubTasksEnv();
+    const { sent } = fakeServiceClient();
+    const named = ['people-outbox-sweep', 'identity-outbox-sweep', SITEMONITOR, 'people-outbox-sweep'];
+
+    expect(await tasksMain(['reconcile', '--with-sitemonitor', ...named.flatMap((queue) => ['--queue', queue])])).toBe(0);
+
+    const chains = [MONITOR, sweep('identity'), sweep('people')];
+    expect(sent()).toEqual(chains.map(ensureRequest));
+    expect(stdoutLines()).toEqual(chains.map(ensuredLine));
+  });
+
+  it('exits 1 with a not-deployed line for a named queue whose creator OPT2_SERVICE_URLS lacks', async () => {
+    stubTasksEnv({ urls: Object.fromEntries(Object.entries(SERVICE_URLS).filter(([service]) => service !== 'surveys')) });
+    const { sent } = fakeServiceClient();
+
+    expect(await tasksMain(['reconcile', '--queue', 'surveys-outbox-sweep', '--queue', 'identity-outbox-sweep'])).toBe(1);
+
+    expect(sent()).toEqual([ensureRequest(sweep('identity'))]);
+    expect(stdoutLines()).toEqual([
+      ensuredLine(sweep('identity')),
+      { queue: 'surveys-outbox-sweep', service: 'surveys', ok: false, error: 'not deployed' },
+    ]);
+    expect(stderr).toBe('');
+  });
+
+  it('reports a failed ensure on its own line, still asks the later creators and exits 1', async () => {
+    stubTasksEnv();
+    const failure = 'Service people unavailable (ECONNREFUSED)';
+    const { sent } = fakeServiceClient((req) =>
+      req.service === 'people' ? Promise.reject(new Error(failure)) : ensuredAnswer(req),
+    );
+
+    expect(await tasksMain(['reconcile'])).toBe(1);
+
+    const chains = [...DEPLOYED_SWEEPS, STUB_SWEEP];
+    expect(sent()).toEqual(chains.map(ensureRequest));
+    expect(stdoutLines()).toEqual(
+      chains.map((chain) =>
+        chain[1] === 'people' ? { queue: chain[0], service: 'people', ok: false, error: failure } : ensuredLine(chain),
+      ),
+    );
+    expect(stderr).toBe('');
+  });
+
+  it.each([
+    { flags: [], caller: 'operator', role: Roles.platformOperator },
+    { flags: ['--as', 'operator'], caller: 'operator', role: Roles.platformOperator },
+    { flags: ['--as', 'migration'], caller: 'migration', role: Roles.platformMigration },
+  ])('calls as $caller with a local service token granting $role for $flags', async ({ flags, caller, role }) => {
+    stubTasksEnv();
+    const minted: Array<Record<string, string>> = [];
+    fakeServiceClient(async (req, options) => {
+      minted.push(await options.credentials.headersFor({ name: req.service }));
+      return ensuredAnswer(req);
+    });
+
+    expect(await tasksMain(['reconcile', '--queue', 'identity-outbox-sweep', ...flags])).toBe(0);
+
+    expect(state.createServiceClient).toHaveBeenCalledWith(expect.objectContaining({ self: caller }));
+    expect(minted).toHaveLength(1);
+    const token = /^Bearer (\S+)$/.exec(minted[0]?.[INVOCATION_HEADER] ?? '')?.[1] ?? '';
+    const { publicKey } = await testSigningKeys();
+    const identity = await verifyLocalServiceToken(token, { publicKey, audience: 'identity' });
+    expect(identity).toEqual({ name: caller, roles: rolesForService(caller) });
+    expect(identity.roles).toContain(role);
+  });
+});
+

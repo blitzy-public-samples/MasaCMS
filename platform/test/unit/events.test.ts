@@ -3,6 +3,15 @@ import type { PubSub } from '@google-cloud/pubsub';
 import type { Pool } from 'pg';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  DEAD_LETTER_REASONS,
+  DeadLetterError,
+  describeDeadLetter,
+  isDeadLetterReason,
+  originalAttributes,
+  publishDeadLetter,
+  type DeadLetterDescription,
+} from '../../src/events/dlq.js';
+import {
   ENVELOPE_ATTRIBUTE_KEYS,
   EnvelopeTenantError,
   buildEnvelope,
@@ -31,6 +40,7 @@ import {
   topicSchemaRelativePath,
 } from '../../src/events/naming.js';
 import { EnvelopePublishError, createPublisher, type PublisherOptions, type RawMessage } from '../../src/events/publisher.js';
+import { buildPushBody, decodePushBody, type DecodedPush, type PushBodyInput } from '../../src/events/push.js';
 import {
   ENVELOPE_SCHEMA_ID,
   TopicSchemaError,
@@ -44,6 +54,7 @@ import {
 import { newRequestContext, runWithRequestContext } from '../../src/service-kit/context.js';
 import { InvalidTenantIdError } from '../../src/tenancy/tenant-id.js';
 import { runTenantTransaction } from '../../src/tenancy/transaction.js';
+import { createCapturingPublisher, testEnvelope } from '../../src/testing/events.js';
 import { TENANT_A, TENANT_B } from '../../src/testing/fixtures.js';
 import {
   MemorySpanExporter,
@@ -1070,6 +1081,147 @@ describe('createPublisher client construction', () => {
     await publisher.close();
     expect(pubsub.topics.map(({ published }) => published.length)).toEqual([1]);
     expect(pubsub.log).toEqual([`flush ${TOPIC}`, 'close']);
+  });
+});
+
+const DELIVERY_ATTRIBUTES = envelopeAttributes(archivedEnvelope());
+
+/** Attributes Pub/Sub's dead-letter policy adds when it forwards a delivery of SUBSCRIPTION. */
+const FORWARDED_ATTRIBUTES = {
+  CloudPubSubDeadLetterSourceSubscription: `projects/opt2-test/subscriptions/${SUBSCRIPTION}`,
+  CloudPubSubDeadLetterSourceSubscriptionProject: 'opt2-test',
+  CloudPubSubDeadLetterSourceDeliveryCount: '5',
+  CloudPubSubDeadLetterSourceDeliveryErrorMessage: 'push endpoint answered 503',
+  CloudPubSubDeadLetterSourceTopicPublishTime: OCCURRED_AT,
+};
+
+describe('dead-letter reasons', () => {
+  it('lists the four reasons a consumer dead-letters instead of nacking', () => {
+    expect(DEAD_LETTER_REASONS).toEqual(['missing-tenant', 'invalid-tenant', 'schema-invalid', 'tenant-mismatch']);
+  });
+
+  it.each([...DEAD_LETTER_REASONS])('recognises %s', (reason) => {
+    expect(isDeadLetterReason(reason)).toBe(true);
+  });
+
+  it.each([undefined, null, '', 'Schema-Invalid', 'timeout', 1])('rejects %j', (value) => {
+    expect(isDeadLetterReason(value)).toBe(false);
+  });
+
+  it.each([
+    ['without a detail', undefined, 'Dead letter: tenant-mismatch'],
+    ['with a detail', 'attribute differs', 'Dead letter: tenant-mismatch: attribute differs'],
+  ])('names the reason of a DeadLetterError %s', (_label, detail, message) => {
+    const error = new DeadLetterError('tenant-mismatch', detail);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({ name: 'DeadLetterError', reason: 'tenant-mismatch', message });
+    expect(error.detail).toBe(detail);
+  });
+});
+
+describe('publishDeadLetter', () => {
+  it.each([
+    ['with its ordering key', PERSON_ID],
+    ['without an ordering key', undefined],
+  ])('publishes the delivery %s to <subscription>.dlq as a consumer letter', async (_label, orderingKey) => {
+    const publisher = createCapturingPublisher();
+    const letter = { subscription: SUBSCRIPTION, data: RAW_DATA, attributes: DELIVERY_ATTRIBUTES, orderingKey };
+    await expect(publishDeadLetter(publisher, { ...letter, reason: 'schema-invalid' })).resolves.toBe('1');
+    expect(publisher.raw).toStrictEqual([
+      {
+        topic: dlqTopicName(SUBSCRIPTION),
+        message: {
+          data: RAW_DATA,
+          attributes: { ...DELIVERY_ATTRIBUTES, reason: 'schema-invalid' },
+          ...(orderingKey === undefined ? {} : { orderingKey }),
+        },
+      },
+    ]);
+    const published = publisher.raw[0]?.message.attributes ?? {};
+    expect(describeDeadLetter(published)).toStrictEqual({ origin: 'consumer', reason: 'schema-invalid' });
+    expect(originalAttributes(published)).toStrictEqual(DELIVERY_ATTRIBUTES);
+  });
+});
+
+describe('describeDeadLetter', () => {
+  it.each<readonly [string, Record<string, string>, DeadLetterDescription]>([
+    ['a consumer letter', { ...DELIVERY_ATTRIBUTES, reason: 'missing-tenant' }, { origin: 'consumer', reason: 'missing-tenant' }],
+    ['a consumer letter with an unknown reason', { ...DELIVERY_ATTRIBUTES, reason: 'timeout' }, { origin: 'consumer' }],
+    ['attributes without any dead-letter key', {}, { origin: 'consumer' }],
+    [
+      'a forwarded letter naming its source subscription resource',
+      { ...DELIVERY_ATTRIBUTES, ...FORWARDED_ATTRIBUTES },
+      { origin: 'pubsub', sourceSubscription: SUBSCRIPTION, deliveryCount: 5 },
+    ],
+    [
+      'a forwarded letter naming its bare source subscription',
+      { CloudPubSubDeadLetterSourceSubscription: SUBSCRIPTION, CloudPubSubDeadLetterSourceDeliveryCount: '12' },
+      { origin: 'pubsub', sourceSubscription: SUBSCRIPTION, deliveryCount: 12 },
+    ],
+    [
+      'a forwarded letter whose delivery count is not a decimal integer',
+      { ...FORWARDED_ATTRIBUTES, CloudPubSubDeadLetterSourceDeliveryCount: '5.0' },
+      { origin: 'pubsub', sourceSubscription: SUBSCRIPTION },
+    ],
+    [
+      'a forwarded letter with empty source fields',
+      { CloudPubSubDeadLetterSourceSubscription: '', CloudPubSubDeadLetterSourceDeliveryCount: '' },
+      { origin: 'pubsub' },
+    ],
+    ['a letter carrying only a publish time', { CloudPubSubDeadLetterSourceTopicPublishTime: OCCURRED_AT }, { origin: 'pubsub' }],
+  ])('describes %s', (_label, attributes, description) => {
+    expect(describeDeadLetter(attributes)).toStrictEqual(description);
+  });
+});
+
+describe('originalAttributes', () => {
+  it.each([
+    ['a consumer letter', { ...DELIVERY_ATTRIBUTES, reason: 'schema-invalid' }],
+    ['a forwarded letter', { ...DELIVERY_ATTRIBUTES, ...FORWARDED_ATTRIBUTES }],
+    ['an unlisted CloudPubSubDeadLetter attribute', { ...DELIVERY_ATTRIBUTES, CloudPubSubDeadLetterFutureField: 'x' }],
+  ])('restores the delivery attributes of %s, leaving the letter unchanged', (_label, attributes) => {
+    const before = { ...attributes };
+    expect(originalAttributes(attributes)).toStrictEqual(DELIVERY_ATTRIBUTES);
+    expect(attributes).toStrictEqual(before);
+  });
+
+  it('keeps attributes that only resemble the stripped names', () => {
+    const lookalikes = { reasons: 'a', Reason: 'b', cloudPubSubDeadLetterSourceSubscription: 'c', xCloudPubSubDeadLetter: 'd' };
+    expect(originalAttributes(lookalikes)).toStrictEqual(lookalikes);
+  });
+});
+
+describe('push body round trip', () => {
+  const envelope = testEnvelope({ topic: TOPIC, tenantId: TENANT_A.tenantId, aggregateId: 'A1', aggregateVersion: 3, payload: {} });
+  const required: PushBodyInput = {
+    data: encodeEnvelope(envelope),
+    attributes: envelopeAttributes(envelope),
+    messageId: 'm1',
+    subscription: SUBSCRIPTION,
+  };
+
+  it.each<readonly [string, Partial<PushBodyInput>, Partial<DecodedPush>]>([
+    ['with only the required fields', {}, {}],
+    [
+      'with every delivery detail',
+      { orderingKey: envelope.aggregateId, publishTime: OCCURRED_AT, deliveryAttempt: 2 },
+      { orderingKey: envelope.aggregateId, publishTime: OCCURRED_AT, deliveryAttempt: 2 },
+    ],
+    [
+      'naming the subscription resource of a project',
+      { project: 'opt2-test' },
+      { subscription: `projects/opt2-test/subscriptions/${SUBSCRIPTION}` },
+    ],
+  ])('decodes what buildPushBody builds %s', (_label, extra, expected) => {
+    const decoded = decodePushBody(buildPushBody({ ...required, ...extra }));
+    expect(decoded).toStrictEqual({
+      data: encodeEnvelope(envelope),
+      attributes: envelopeAttributes(envelope),
+      messageId: 'm1',
+      subscription: SUBSCRIPTION,
+      ...expected,
+    });
+    expect(validateEnvelope(decodeEnvelopeData(decoded.data))).toEqual({ ok: true, value: envelope });
   });
 });
 

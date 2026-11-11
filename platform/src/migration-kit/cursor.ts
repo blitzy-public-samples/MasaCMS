@@ -115,12 +115,13 @@ export async function readChanges(
   return withTenant(db, tenantId, async (tx) => {
     // Taken before the row read: the row read's newer snapshot sees every transaction below this horizon as finished.
     const horizon = await scalar(tx, HORIZON_SQL);
+    // ORDER BY qualifies its columns: a bare name would sort by the text output aliases, so '10' before '9'.
     const { rows } = await tx.query<ChangelogRecord>(
-      `SELECT xid::text AS xid, seq::text AS seq, "table", op, key, before, after, columns, origin,
-              actor_user_id, actor_service, to_char(at, 'YYYY-MM-DD HH24:MI:SS.MS') AS at, request_id, operation_id
-         FROM ${qualified(tx.schema, CHANGELOG_TABLE)}
-        WHERE xid < $1::xid8 AND (xid, seq) > ($2::xid8, $3::bigint)
-        ORDER BY xid, seq
+      `SELECT c.xid::text AS xid, c.seq::text AS seq, c."table", c.op, c.key, c.before, c.after, c.columns, c.origin,
+              c.actor_user_id, c.actor_service, to_char(c.at, 'YYYY-MM-DD HH24:MI:SS.MS') AS at, c.request_id, c.operation_id
+         FROM ${qualified(tx.schema, CHANGELOG_TABLE)} AS c
+        WHERE c.xid < $1::xid8 AND (c.xid, c.seq) > ($2::xid8, $3::bigint)
+        ORDER BY c.xid, c.seq
         LIMIT $4`,
       [horizon, from.xid.toString(), from.seq.toString(), limit],
     );

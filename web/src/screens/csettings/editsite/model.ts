@@ -277,26 +277,23 @@ function numericOperand(v: unknown): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
-/** 1 or 0 for a boolean or a `true|false|yes|no` word, else undefined. */
+/** 1 or 0 for a boolean or a Java-trimmed `true|false|yes|no` word, else undefined. */
 function booleanOperand(v: unknown): number | undefined {
   if (typeof v === 'boolean') return v ? 1 : 0;
-  if (typeof v !== 'string' || !BOOLEAN_WORD.test(v)) return undefined;
-  const word = v.toLowerCase();
+  if (typeof v !== 'string') return undefined;
+  const word = javaTrim(v).toLowerCase();
+  if (!BOOLEAN_WORD.test(word)) return undefined;
   return word === 'true' || word === 'yes' ? 1 : 0;
 }
 
-/** CFML loose `eq`: numeric if both are numeric, a boolean word against a number as 1/0, else case-insensitive text. */
+/**
+ * CFML loose `eq`: when each side is numeric or a boolean word, their values as numbers with booleans as 1/0
+ * (ACF: `'yes' eq 'true'`, `' no' eq '0'`); otherwise case-insensitive text.
+ */
 export function cfEq(a: unknown, b: unknown): boolean {
-  const x = numericOperand(a);
-  const y = numericOperand(b);
+  const x = numericOperand(a) ?? booleanOperand(a);
+  const y = numericOperand(b) ?? booleanOperand(b);
   if (x !== undefined && y !== undefined) return x === y;
-  if (x !== undefined) {
-    const word = booleanOperand(b);
-    if (word !== undefined) return word === x;
-  } else if (y !== undefined) {
-    const word = booleanOperand(a);
-    if (word !== undefined) return word === y;
-  }
   return String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
 }
 

@@ -1,5 +1,6 @@
 import { createHash, createHmac } from 'node:crypto';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { Readable, Writable } from 'node:stream';
@@ -7,6 +8,7 @@ import type { Storage } from '@google-cloud/storage';
 import { fastify, type FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCloudStorageAdapter } from '../../src/storage/cloud-adapter.js';
+import * as storageBarrel from '../../src/storage/index.js';
 import { legacyFileHeaders, legacyHeaderValue, sendLegacyFile } from '../../src/storage/legacy-stream.js';
 import {
   STORAGE_DIR,
@@ -93,6 +95,19 @@ async function readAll(stream: Readable): Promise<Buffer> {
   const chunks: Buffer[] = [];
   for await (const chunk of stream) chunks.push(Buffer.from(chunk as Uint8Array));
   return Buffer.concat(chunks);
+}
+
+/** Raw response bytes of a GET over a loopback socket, headers as written on the wire. */
+async function rawHttpGet(port: number, target: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    const socket = net.connect(port, '127.0.0.1', () => {
+      socket.write(`GET ${target} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n`);
+    });
+    socket.on('data', (chunk: Buffer) => chunks.push(chunk));
+    socket.on('end', () => resolve(Buffer.concat(chunks)));
+    socket.on('error', reject);
+  });
 }
 
 describe('storage keys and constants', () => {
@@ -205,6 +220,35 @@ describe('storage keys and constants', () => {
   it('selects the Cloud Storage adapter without contacting Cloud Storage', async () => {
     const port = await createStoragePort({ OPT2_STORAGE_ADAPTER: 'cloud', GOOGLE_CLOUD_PROJECT: 'opt2-unit' });
     expect(port.kind).toBe('cloud');
+  });
+});
+
+describe('storage barrel', () => {
+  it('re-exports the port, the local adapter and the legacy stream, and leaves the Cloud Storage factory out', () => {
+    expect(storageBarrel).toMatchObject({
+      BUCKETS,
+      SIGNED_URL_TTL_S,
+      LOCAL_SIGNED_URL_PREFIX,
+      SHA256_METADATA_KEY,
+      StorageObjectNotFoundError,
+      UnknownBucketError,
+      InvalidObjectKeyError,
+      isBucketName,
+      assertBucket,
+      assertObjectKey,
+      contentFileKey,
+      objectKey,
+      createStoragePort,
+      createLocalStorageAdapter,
+      loadStorageHmacKey,
+      signLocalUrl,
+      verifySignedUrl,
+      sendLegacyFile,
+      legacyFileHeaders,
+      legacyHeaderValue,
+    });
+    expect(Object.keys(storageBarrel)).toHaveLength(20);
+    expect(storageBarrel).not.toHaveProperty('createCloudStorageAdapter');
   });
 });
 
@@ -1070,13 +1114,13 @@ describe('sendLegacyFile', () => {
     routeError = undefined;
     app = fastify();
     app.get('/_api/render/file/', async (request, reply) => {
-      const query = request.query as { key: string };
+      const query = request.query as { key: string; fileName?: string };
       return sendLegacyFile(reply, {
         storage,
         bucket: 'content-files',
         key: query.key,
         contentType: 'application/pdf',
-        fileName: 'a.pdf',
+        fileName: query.fileName ?? 'a.pdf',
         method: 'inline',
         lastModified: LAST_MODIFIED,
       });
@@ -1108,6 +1152,53 @@ describe('sendLegacyFile', () => {
       'strict-transport-security': 'max-age=1200',
       'last-modified': [LAST_MODIFIED_HTTP, LAST_MODIFIED_HTTP],
     });
+  });
+
+  // streamFile's 304 branch never runs on ACF 2023, which never exposes cgi.http_if_modified_since,
+  // so legacy answers 200 with the full body whatever the header says; a 304 here would break parity.
+  it.each<[string, string]>([
+    ['a later date', 'Mon, 02 Jun 2025 08:30:00 GMT'],
+    ['the Last-Modified date', LAST_MODIFIED_HTTP],
+    ['an earlier date', 'Sat, 31 May 2025 08:30:00 GMT'],
+  ])('answers 200 with the full body when If-Modified-Since is %s', async (_case, ifModifiedSince) => {
+    const bytes = Buffer.from('%PDF-1.7\nconditional\n');
+    await storage.put('content-files', key, bytes, { contentType: 'application/pdf' });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/_api/render/file/',
+      query: { key },
+      headers: { 'if-modified-since': ifModifiedSince },
+    });
+
+    expect(routeError).toBeUndefined();
+    expect(res.statusCode).toBe(200);
+    expect(res.rawPayload).toEqual(bytes);
+    expect(res.headers['content-length']).toBe(String(bytes.length));
+    expect(res.headers['last-modified']).toEqual([LAST_MODIFIED_HTTP, LAST_MODIFIED_HTTP]);
+  });
+
+  it('writes a non-ASCII file name to the socket as its UTF-8 bytes', async () => {
+    const bytes = Buffer.from('%PDF');
+    await storage.put('content-files', key, bytes, { contentType: 'application/pdf' });
+    const { port } = new URL(await app.listen({ host: '127.0.0.1', port: 0 }));
+
+    const raw = await rawHttpGet(
+      Number(port),
+      `/_api/render/file/?key=${encodeURIComponent(key)}&fileName=${encodeURIComponent('résumé.pdf')}`,
+    );
+
+    const headEnd = raw.indexOf('\r\n\r\n');
+    const disposition = raw
+      .subarray(0, headEnd)
+      .toString('latin1')
+      .split('\r\n')
+      .find((line) => line.toLowerCase().startsWith('content-disposition:'));
+    expect(raw.subarray(0, raw.indexOf('\r\n')).toString('latin1')).toBe('HTTP/1.1 200 OK');
+    expect(Buffer.from(disposition ?? '', 'latin1')).toEqual(
+      Buffer.from('content-disposition: inline;filename="résumé.pdf"', 'utf8'),
+    );
+    expect(raw.subarray(headEnd + 4)).toEqual(bytes);
   });
 
   it('sends the Content-Length of the version it streams when a put replaces the object right after open', async () => {

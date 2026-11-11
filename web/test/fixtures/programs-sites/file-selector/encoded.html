@@ -1,0 +1,62 @@
+
+	<div data-name="nImg" data-property="placeholderImgID" data-fileid="E966A553-A0A6-6C3D-6BD02262257365D5" data-filetype="File" data-contentid="" data-siteid="default" class="mura-file-selector x&quot;y">			
+		<div class="mura-input-set mura-file-selector-tabs" data-toggle="buttons-radio">
+			<button type="button" style="display:none">placeholder</button>
+			<button type="button" class="btn btn-default mura-file-type-selector active" value="Upload"><i class="mi-upload"></i> Via Upload</button>
+			<button type="button" class="btn btn-default mura-file-type-selector" value="URL"><i class="mi-download"></i> Via URL</button>
+			<button type="button" class="btn btn-default mura-file-type-selector" value="Existing"><i class="mi-file-picture-o"></i> Select Existing</button>
+			
+			<button type="button" class="btn btn-default mura-file-type-selector btn-razuna-icon" value="URL-Razuna"><i></i> Razuna</button>
+			
+		</div>
+
+		<div id="mura-file-upload-nImg" class="mura-file-option mura-file-upload fileTypeOptionnImg">
+
+			<div class="mura-control-group">
+					<input name="nImg" type="file" class="mura-file-selector-nImg"
+						data-label="a&lt;b&gt;&amp;amp&#x3b;&amp;quot&#x3b;c&#x27;&#x20;&eacute;&#x3a;&#x2f;&#x23;&#x9;t" data-label="r&#x27;q" data-validation="v&#x2f;w" data-regex="&#x5e;&#x5b;a-z&#x5d;&#x2b;&#x24;" data-message="m&#x3a;&eacute;">
+					<a style="display:none;" class="btn btn-default" href="" onclick="return openFileMetaData('','','default','placeholderImgID');"><i class="mi-info-circle"></i></a>
+			</div>
+
+		</div>
+		<div id="mura-file-url-nImg" class="mura-file-option mura-file-url fileTypeOptionnImg">
+
+			<div class="mura-control-group">
+					<input type="text" name="nImg" class="mura-file-selector-nImg span6" type="url" placeholder="http://www.domain.com/yourfile.p&quot;ng"	value=""
+					data-label="a&lt;b&gt;&amp;amp;&amp;quot;c' é:/#	t" data-label="r'q" data-validate="v/w" data-regex="^[a-z]+$" data-message="m:é">
+					<a style="display:none;" class="btn btn-default file-meta-open" href="" onclick="return openFileMetaData('','','default','placeholderImgID');"><i class="mi-info-circle"></i></a>
+			</div>
+
+		</div>
+
+		<div id="mura-file-existing-nImg" class="mura-file-option mura-file-existing fileTypeOptionnImg">
+
+		</div>
+		
+		<div id="mura-file-url-nImg" class="mura-file-option mura-file-url-razuna fileTypeOptionnImg">
+
+			<div class="mura-control-group">
+					<div class="input-append">
+						<input type="text" name="nImg" class="mura-file-selector-nImg span6 razuna-url" type="url" placeholder="http://dam.example.com" data-label="a&lt;b&gt;&amp;amp;&amp;quot;c' é:/#	t" data-label="r'q" data-validate="v/w" data-regex="^[a-z]+$" data-message="m:é">
+						<a style="display:none;" class="btn btn-default file-meta-open" href="" onclick="return openFileMetaData('','','default','placeholderImgID');"><i class="mi-info-circle"></i></a>
+						<button type="button" onclick="renderRazunaWindow('newfile');" class="btn btn-razuna"><i class="mi-external-link-sign"></i> Launch Razuna</button>
+					</div>
+			</div>
+
+		</div>
+		
+<div class="mura-control justify">
+
+		<a class="btn download-file" onclick="return confirmDialog('Download File?',function(){location.href='/index.cfm/_api/render/file/?fileid=E966A553-A0A6-6C3D-6BD02262257365D5&method=attachment&size=source';});"><i class="mi-download"></i></a>
+	
+	<div>
+		<label class="checkbox inline" for="deleteFileBox">
+			<input type="checkbox" name="delKey" value="1" class="deleteFileBox"/><a href="#" rel="tooltip" title="To remove the file, check the box and publish or save a version of the page">Remove Attached File <i class="mi-question-sign"></i></a>
+		</label>
+	</div>
+	
+</div>
+
+	</div>
+
+

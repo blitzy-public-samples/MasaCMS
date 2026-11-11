@@ -1,0 +1,2449 @@
+# SYNTHETIC: timesheets - no Masa equivalent; legacy oracle in legacy-fixtures/
+openapi: 3.1.0
+info:
+  title: timesheets
+  version: 1.0.0
+  description: 'SYNTHETIC: timesheets - no Masa equivalent; legacy oracle in legacy-fixtures/'
+  x-source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f
+servers:
+  - url: http://127.0.0.1:8118
+    description: Local service
+x-opt2-calls: []
+tags:
+  - name: fixture
+    description: Fixture routes, answered as `legacy-fixtures/cfml/modules/timesheets.cfc` answers them.
+  - name: v1
+    description: JSON API of the OPT-2 timesheets screens and reporting; a breaking change takes a /v2/ prefix.
+  - name: events
+    description: Pub/Sub push deliveries of the consumed topics.
+  - name: migration
+    description: Migration-kit endpoints of the owned units.
+  - name: platform
+    description: Platform health probe.
+paths:
+  /legacy-fixtures/cfml/api.cfm/timesheets/sheets:
+    parameters:
+      - $ref: '#/components/parameters/SiteId'
+      - $ref: '#/components/parameters/UseDataNamespace'
+    get:
+      operationId: fixtureListSheets
+      summary: Lists one page of the site's sheets with status, overdue flag and day counts as of `asOf`.
+      description: Rows are ordered by period start, person id and sheet id.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - timesheets.employee
+        - timesheets.primary-approver
+        - timesheets.secondary-approver
+      x-opt2-route-keys: ['fixture:timesheets/sheets@get']
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/AsOf'
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureSheetListOk'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /legacy-fixtures/cfml/api.cfm/timesheets/sheets/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+      - $ref: '#/components/parameters/SiteId'
+      - $ref: '#/components/parameters/UseDataNamespace'
+    get:
+      operationId: fixtureGetSheet
+      summary: Reads one sheet of the site with its status fields as of `asOf` and its days.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - timesheets.employee
+        - timesheets.primary-approver
+        - timesheets.secondary-approver
+      x-opt2-route-keys: ['fixture:timesheets/sheets/{id}@get']
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/AsOf'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureSheetOk'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /legacy-fixtures/cfml/api.cfm/timesheets/sheets/{id}/status:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+      - $ref: '#/components/parameters/SiteId'
+      - $ref: '#/components/parameters/UseDataNamespace'
+    get:
+      operationId: fixtureGetSheetStatus
+      summary: Reads the sheet's `usp_timesheet_status` row as of `asOf`.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - timesheets.employee
+        - timesheets.primary-approver
+        - timesheets.secondary-approver
+      x-opt2-route-keys: ['fixture:timesheets/sheets/{id}/status@get']
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/AsOf'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureSheetStatusOk'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /legacy-fixtures/cfml/api.cfm/timesheets/days/{id}/{action}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+      - $ref: '#/components/parameters/Action'
+      - $ref: '#/components/parameters/SiteId'
+      - $ref: '#/components/parameters/UseDataNamespace'
+    post:
+      operationId: fixtureDayAction
+      summary: Applies a day lifecycle action, records its approval action and returns the day.
+      description: The caller's roles decide the outcome per the transition table; a blackout day answers 409 `blackout`.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - timesheets.employee
+        - timesheets.primary-approver
+        - timesheets.secondary-approver
+      x-opt2-route-keys:
+        - 'fixture:timesheets/days/{id}/submit@post'
+        - 'fixture:timesheets/days/{id}/primary-approve@post'
+        - 'fixture:timesheets/days/{id}/secondary-approve@post'
+        - 'fixture:timesheets/days/{id}/return@post'
+        - 'fixture:timesheets/days/{id}/resubmit@post'
+      security:
+        - userToken: []
+          invocationCredential: []
+      requestBody:
+        required: false
+        description: Merged with the query string as legacy merges url, form and a JSON body; later sources win.
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/FixtureDayActionInput'
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FixtureDayActionInput'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureDayActionOk'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '409':
+          $ref: '#/components/responses/FixtureConflict'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/timesheets/sheets:
+    get:
+      operationId: listSheets
+      summary: Lists the tenant's sheets with status and overdue flag as of `asOf` for the sheet list screen.
+      description: Items are ordered by period start, person id and sheet id.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - timesheets.employee
+        - timesheets.primary-approver
+        - timesheets.secondary-approver
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/AsOf'
+      responses:
+        '200':
+          description: The tenant's sheets.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimesheetList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/timesheets/sheets/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: getSheet
+      summary: Reads one sheet with its days and the caller's allowed day actions for the sheet detail screen.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - timesheets.employee
+        - timesheets.primary-approver
+        - timesheets.secondary-approver
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/AsOf'
+      responses:
+        '200':
+          description: The sheet detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimesheetDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/timesheets/days/{id}/{action}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+      - $ref: '#/components/parameters/Action'
+    post:
+      operationId: dayAction
+      summary: Applies a day lifecycle action and records its approval action.
+      description: The caller's roles decide the outcome per the transition table; a blackout day answers 409 `blackout`.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - timesheets.employee
+        - timesheets.primary-approver
+        - timesheets.secondary-approver
+      security:
+        - userToken: []
+          invocationCredential: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DayActionInput'
+      responses:
+        '200':
+          description: The applied transition.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DayActionResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/timesheets/sheet-status:
+    get:
+      operationId: listSheetStatus
+      summary: Lists the tenant's sheet status rows as of `asOf` for reporting exports.
+      description: Rows are shaped like `tvf_timesheet_status` and ordered by period start, person id and sheet id.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - reporting.exporter
+        - timesheets.primary-approver
+        - timesheets.secondary-approver
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/AsOf'
+      responses:
+        '200':
+          description: The tenant's sheet status rows.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SheetStatusList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/events/timesheets.people.person.archived.v1:
+    post:
+      operationId: pushPersonArchived
+      summary: Receives push deliveries of `people.person.archived.v1`, blacking out the person's open days in each user-pool tenant.
+      tags:
+        - events
+      x-opt2-transport: pubsub-push
+      x-opt2-requires:
+        - service:pubsub-invoker
+      security:
+        - pubsubPushOidc: []
+        - localPushKey: []
+      parameters:
+        - $ref: '#/components/parameters/PushKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PushBody'
+      responses:
+        '204':
+          description: Acknowledged; the delivery was applied, already applied, or dead-lettered.
+        '400':
+          description: Not a push body; a nack.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/events/timesheets.programs-sites.site.changed.v1:
+    post:
+      operationId: pushSiteChanged
+      summary: Receives push deliveries of `programs-sites.site.changed.v1` into this service's tenant registry.
+      tags:
+        - events
+      x-opt2-transport: pubsub-push
+      x-opt2-requires:
+        - service:pubsub-invoker
+      security:
+        - pubsubPushOidc: []
+        - localPushKey: []
+      parameters:
+        - $ref: '#/components/parameters/PushKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PushBody'
+      responses:
+        '204':
+          description: Acknowledged; the delivery was applied, already applied, or dead-lettered.
+        '400':
+          description: Not a push body; a nack.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/apply:
+    post:
+      operationId: migrationApply
+      summary: Applies one batch of canonical legacy rows to the owned units, once per batch id.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyRequest'
+      responses:
+        '200':
+          description: The batch outcome; a repeated batch id is a no-op reported as `duplicate`.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/export:
+    get:
+      operationId: migrationExport
+      summary: Exports one page of a unit's rows in canonical legacy form.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: unit
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - $ref: '#/components/parameters/MigrationTenantId'
+        - $ref: '#/components/parameters/MigrationSiteId'
+        - name: programId
+          in: query
+          required: false
+          description: Restricts a folded unit to one `Program_<id>` schema.
+          schema:
+            $ref: '#/components/schemas/DigitString'
+        - name: after
+          in: query
+          required: false
+          description: The previous page's `next` cursor.
+          schema:
+            type: string
+            minLength: 1
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: One export page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/changes:
+    get:
+      operationId: migrationChanges
+      summary: Reads the tenant's changelog after a cursor, below the commit-safe horizon.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/MigrationTenantId'
+        - $ref: '#/components/parameters/MigrationSiteId'
+        - name: after
+          in: query
+          required: false
+          description: Cursor `<xid>:<seq>`; `0:0` when omitted.
+          schema:
+            type: string
+            pattern: '^(0|[1-9][0-9]*):(0|[1-9][0-9]*)$'
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: One page of changes with their legacy projections.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChangesResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/position:
+    get:
+      operationId: migrationPosition
+      summary: Reports the current write position and the outbox and inbox drain counts.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: eventIds
+          in: query
+          required: false
+          description: Comma-separated event ids whose inbox receipts are reported.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The owner's position.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PositionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/watermark:
+    get:
+      operationId: migrationGetWatermark
+      summary: Lists feed watermarks, optionally for one legacy table or direction.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: legacyTable
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+        - name: direction
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/WatermarkDirection'
+      responses:
+        '200':
+          description: Watermarks ordered by legacy table and direction.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WatermarkRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: migrationSetWatermark
+      summary: Records the feed watermark of one legacy table and direction.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WatermarkInput'
+      responses:
+        '200':
+          description: The stored watermark.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatermarkRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/gate:
+    post:
+      operationId: migrationGate
+      summary: Closes, re-phases, opens or reads the unit gates of this owner.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GateRequest'
+      responses:
+        '200':
+          description: The gates after the operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Another holder owns a gate, so the compare-and-set was refused.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GateConflict'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Liveness probe.
+      tags:
+        - platform
+      x-opt2-transport: service
+      x-opt2-public: true
+      security: []
+      responses:
+        '200':
+          description: The service is running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+components:
+  securitySchemes:
+    userToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Site-scoped user token in `Authorization`, minted by identity and attached by the gateway.
+    invocationCredential:
+      type: apiKey
+      in: header
+      name: X-Serverless-Authorization
+      description: Caller's invocation credential; a Google-signed ID token in the cloud, a local service token locally.
+    pubsubPushOidc:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: OIDC token of `pubsub-invoker` in `Authorization`, addressed to the push endpoint.
+    localPushKey:
+      type: apiKey
+      in: query
+      name: key
+      description: Local emulator push key, compared in constant time.
+  headers:
+    Generator:
+      description: Legacy generator header.
+      schema:
+        type: string
+        const: Masa CMS 7.6.1
+    StrictTransportSecurity:
+      description: Legacy HSTS header.
+      schema:
+        type: string
+        const: max-age=1200
+    ETag:
+      description: Uppercase hex SHA-256 of the exact body, unquoted, as ColdFusion `hash()` computes it.
+      schema:
+        type: string
+        pattern: '^[0-9A-F]{64}$'
+    WWWAuthenticate:
+      description: Challenge legacy sets before an authentication failure.
+      schema:
+        type: string
+    XOpt2WritePosition:
+      description: Committed write positions `<owner>=<xid>[,<owner>=<xid>…]`; the gateway strips it from client responses.
+      schema:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9-]*=[0-9]+(,[a-z0-9][a-z0-9-]*=[0-9]+)*$'
+  parameters:
+    SiteId:
+      name: siteid
+      in: query
+      required: false
+      description: Legacy site id, also accepted as a form or JSON body field; the session or token site when omitted, and it must equal the token's `site`.
+      schema:
+        $ref: '#/components/schemas/SiteId'
+    UseDataNamespace:
+      name: useDataNamespace
+      in: query
+      required: false
+      description: '`false` moves the keys of a struct `data` to the envelope root.'
+      schema:
+        type: string
+    PageIndex:
+      name: pageIndex
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    ItemsPerPage:
+      name: itemsPerPage
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 50
+    AsOf:
+      name: asOf
+      in: query
+      required: false
+      description: Business date for the overdue flag; today in the legacy server's zone when omitted; a non-calendar date or one before 1753 answers 400.
+      schema:
+        $ref: '#/components/schemas/LocalDate'
+    Id:
+      name: id
+      in: path
+      required: true
+      description: Sheet or day id; an unknown id, or one outside the caller's site, answers 404.
+      schema:
+        type: string
+    Action:
+      name: action
+      in: path
+      required: true
+      description: Day lifecycle action; any other value answers 404 `notFound`.
+      schema:
+        $ref: '#/components/schemas/DayAction'
+    PushKey:
+      name: key
+      in: query
+      required: false
+      description: Local emulator push key; absent in the cloud.
+      schema:
+        type: string
+    MigrationTenantId:
+      name: tenantId
+      in: query
+      required: false
+      description: Tenant UUID; exactly one of `tenantId` and `siteId` is required.
+      schema:
+        $ref: '#/components/schemas/TenantId'
+    MigrationSiteId:
+      name: siteId
+      in: query
+      required: false
+      description: Legacy site id resolved to its tenant; exactly one of `tenantId` and `siteId` is required.
+      schema:
+        type: string
+        minLength: 1
+    PageLimit:
+      name: limit
+      in: query
+      required: false
+      description: Page size, 1 to 10000; 1000 when omitted.
+      schema:
+        $ref: '#/components/schemas/DigitString'
+  responses:
+    FixtureSheetListOk:
+      description: One page of the site's sheet status rows.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureEnvelope'
+              - type: object
+                properties:
+                  method:
+                    const: timesheets.sheets
+                  data:
+                    $ref: '#/components/schemas/FixtureSheetList'
+    FixtureSheetOk:
+      description: The sheet with its status fields and days.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureEnvelope'
+              - type: object
+                properties:
+                  method:
+                    const: timesheets.sheets
+                  data:
+                    $ref: '#/components/schemas/FixtureSheet'
+    FixtureSheetStatusOk:
+      description: The sheet's status row.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureEnvelope'
+              - type: object
+                properties:
+                  method:
+                    const: timesheets.sheets.status
+                  data:
+                    $ref: '#/components/schemas/FixtureSheetStatus'
+    FixtureDayActionOk:
+      description: The day after the transition.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        X-Opt2-Write-Position:
+          $ref: '#/components/headers/XOpt2WritePosition'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureEnvelope'
+              - type: object
+                properties:
+                  method:
+                    enum:
+                      - timesheets.days.submit
+                      - timesheets.days.primary-approve
+                      - timesheets.days.secondary-approve
+                      - timesheets.days.return
+                      - timesheets.days.resubmit
+                  data:
+                    $ref: '#/components/schemas/FixtureDayActionResult'
+    FixtureBadRequest:
+      description: 'Fixture 400: `invalidParameters` for an unknown site, a site without a program, a bad `asOf`, paging or comment; or `badRequest`.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureError'
+              - type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        const: invalid_request
+                      message:
+                        enum:
+                          - Invalid parameters
+                          - Bad Request
+    FixtureUnauthorized:
+      description: 'Fixture 401 `authorization` without a logged-in session user, or the platform''s refusal of a presented credential.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        WWW-Authenticate:
+          $ref: '#/components/headers/WWWAuthenticate'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            anyOf:
+              - allOf:
+                  - $ref: '#/components/schemas/FixtureError'
+                  - type: object
+                    properties:
+                      error:
+                        type: object
+                        properties:
+                          code:
+                            const: invalid_request
+                          message:
+                            const: Insufficient Account Permissions
+              - $ref: '#/components/schemas/LegacyErrorEnvelope'
+    FixtureForbidden:
+      description: 'Fixture 403 `forbidden`: no timesheets role in the site''s private user pool, or a role that may not take the action; also the platform''s `siteid` mismatch.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            anyOf:
+              - allOf:
+                  - $ref: '#/components/schemas/FixtureError'
+                  - type: object
+                    properties:
+                      error:
+                        type: object
+                        properties:
+                          code:
+                            const: invalid_request
+                          message:
+                            const: Insufficient Account Permissions
+              - $ref: '#/components/schemas/LegacyErrorEnvelope'
+    FixtureNotFound:
+      description: Fixture 404 `notFound` for a sheet or day outside the site, or an unknown day action.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureError'
+              - type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        const: invalid_request
+                      message:
+                        const: Not Found
+    FixtureConflict:
+      description: Fixture 409 `conflict`; `error.message` names the rule, `illegalTransition` or the `blackout` guard.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureError'
+              - type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        const: invalid_request
+                      message:
+                        $ref: '#/components/schemas/TransitionRule'
+    FixtureServerError:
+      description: Fixture 500 `server_error` for an unhandled exception.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureError'
+              - type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        const: server_error
+                      message:
+                        const: Unhandled Exception
+    BadRequest:
+      description: 'Legacy 400: `invalidParameters` or `badRequest`.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyErrorEnvelope'
+    Unauthorized:
+      description: 'Legacy 401: `authorization` without a qualifying identity, or `invalidAccessToken`/`accessTokenExpired` for a bad credential.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        WWW-Authenticate:
+          $ref: '#/components/headers/WWWAuthenticate'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyErrorEnvelope'
+    Forbidden:
+      description: The identity holds none of the required roles or may not take the action, or a supplied `siteid` differs from the token's site.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyErrorEnvelope'
+    NotFound:
+      description: 404 in the legacy error envelope for a sheet or day outside the tenant.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyErrorEnvelope'
+    Conflict:
+      description: 409 in the legacy error envelope; `error.message` names the rule, `illegalTransition` or the `blackout` guard.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/LegacyErrorEnvelope'
+              - type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        const: invalid_request
+                      message:
+                        $ref: '#/components/schemas/TransitionRule'
+    ServerError:
+      description: Legacy 500 `server_error`; on a push route, a nack redelivered by Pub/Sub.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyErrorEnvelope'
+    Unavailable:
+      description: Legacy-shaped 503 after a fail-closed or wait-timeout condition, such as a closed unit gate; on a push route, a nack.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyUnavailable'
+  schemas:
+    CfUuid:
+      type: string
+      description: 35-character ColdFusion `createUUID()` id, or Masa's sentinel id.
+      minLength: 35
+      maxLength: 35
+      pattern: '^[0-9A-Fa-f-]{35}$'
+    EmptyString:
+      type: string
+      description: A NULL column as the fixture emits it.
+      maxLength: 0
+    SiteId:
+      type: string
+      description: Legacy site id.
+      minLength: 1
+      maxLength: 25
+    TenantId:
+      type: string
+      description: Tenant UUID.
+      pattern: '^([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-8][0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}|00000000-0000-0000-0000-000000000000|[Ff]{8}-[Ff]{4}-[Ff]{4}-[Ff]{4}-[Ff]{12})$'
+    LocalDate:
+      type: string
+      description: Calendar date `YYYY-MM-DD`.
+      pattern: '^\d{4}-\d{2}-\d{2}$'
+    LocalDateTime:
+      type: string
+      description: A `datetime` value in the legacy server's zone, to the second and without an offset, as the serializer writes it.
+      pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$'
+    LocalTimestamp:
+      type: string
+      description: Wall-clock time in the legacy server's zone, without an offset.
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}$'
+    WallClock:
+      type: string
+      description: Wall-clock time without a zone, `YYYY-MM-DD HH:MM[:SS[.fff]]` with a space or `T`.
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?$'
+    Hours:
+      type: string
+      description: A `numeric(19,4)` hour count as a plain decimal string with four places.
+      pattern: '^-?\d+\.\d{4}$'
+    DigitString:
+      type: string
+      description: Non-negative decimal integer without leading zeros.
+      pattern: '^(0|[1-9][0-9]{0,14})$'
+    NullableString:
+      type:
+        - string
+        - 'null'
+    DayState:
+      type: string
+      description: Timesheet day lifecycle state.
+      enum:
+        - DRAFT
+        - SUBMITTED
+        - RESUBMITTED
+        - PRIMARY_APPROVED
+        - APPROVED
+        - RETURNED
+    DayAction:
+      type: string
+      description: Timesheet day lifecycle action.
+      enum:
+        - submit
+        - primary-approve
+        - secondary-approve
+        - return
+        - resubmit
+    SheetStatus:
+      type: string
+      description: Sheet status derived from its non-blackout days.
+      enum:
+        - DRAFT
+        - SUBMITTED
+        - PARTIALLY_APPROVED
+        - APPROVED
+        - RETURNED
+    TransitionRule:
+      type: string
+      description: Rule that rejected a day action.
+      enum:
+        - illegalTransition
+        - blackout
+    FixtureEnvelope:
+      type: object
+      description: Masa JSON API envelope with lower-cased keys; `params` is absent under `suppressAPIParams`, and `useDataNamespace=false` moves the keys of a struct `data` to the root.
+      required:
+        - apiversion
+        - method
+      additionalProperties: true
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          type: string
+        params:
+          type: object
+        data: {}
+    FixtureError:
+      type: object
+      description: Fixture error envelope; `stacktrace` is present only with debugging enabled.
+      required:
+        - apiversion
+        - method
+        - error
+      additionalProperties: false
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          type: string
+          pattern: '^timesheets\.(sheets|days)(\..+)?$'
+        params:
+          type: object
+        error:
+          type: object
+          required:
+            - code
+            - message
+          additionalProperties: false
+          properties:
+            code:
+              type: string
+              enum:
+                - invalid_request
+                - server_error
+            message:
+              type: string
+            stacktrace: {}
+    LegacyErrorEnvelope:
+      type: object
+      description: 'Legacy JSON API error envelope; types map to status and code as authorization 401, invalidAccessToken and accessTokenExpired 401 invalid_token, invalidParameters and badRequest 400 invalid_request, server_error 500.'
+      required:
+        - apiversion
+        - method
+        - error
+      additionalProperties: true
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          type: string
+        params:
+          type: object
+        error:
+          type: object
+          required:
+            - message
+            - code
+          additionalProperties: true
+          properties:
+            message:
+              type: string
+            code:
+              type: string
+              enum:
+                - invalid_request
+                - invalid_token
+                - server_error
+    LegacyUnavailable:
+      type: object
+      description: Legacy JSON API `server_error` envelope sent with status 503.
+      required:
+        - apiversion
+        - method
+        - error
+      additionalProperties: false
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          type: string
+        params:
+          type: object
+        error:
+          type: object
+          required:
+            - message
+            - code
+          additionalProperties: false
+          properties:
+            message:
+              type: string
+              const: Unhandled Exception
+            code:
+              type: string
+              const: server_error
+    FixtureList:
+      type: object
+      description: One page in Masa's paged-list shape; `endindex` is below `startindex` on a page past the end.
+      required:
+        - items
+        - startindex
+        - endindex
+        - itemsperpage
+        - totalitems
+        - totalpages
+        - pageindex
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+        startindex:
+          type: integer
+          minimum: 1
+        endindex:
+          type: integer
+          minimum: 0
+        itemsperpage:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        totalitems:
+          type: integer
+          minimum: 0
+        totalpages:
+          type: integer
+          minimum: 0
+        pageindex:
+          type: integer
+          minimum: 1
+    FixtureSheetStatus:
+      type: object
+      description: A `usp_timesheet_status` row with lower-cased column names.
+      required:
+        - timesheet_id
+        - status
+        - overdue
+        - day_count
+        - blackout_count
+        - approved_count
+      additionalProperties: false
+      properties:
+        timesheet_id:
+          $ref: '#/components/schemas/CfUuid'
+        status:
+          $ref: '#/components/schemas/SheetStatus'
+        overdue:
+          type: boolean
+        day_count:
+          type: integer
+          minimum: 0
+        blackout_count:
+          type: integer
+          minimum: 0
+        approved_count:
+          type: integer
+          minimum: 0
+    FixtureSheetList:
+      description: One page of the site's sheet status rows.
+      allOf:
+        - $ref: '#/components/schemas/FixtureList'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/FixtureSheetStatus'
+    FixtureDay:
+      type: object
+      description: A `timesheet_day` row with its blackout flag, as the fixture selects it.
+      required:
+        - day_id
+        - timesheet_id
+        - work_date
+        - hours
+        - state
+        - isblackout
+      additionalProperties: false
+      properties:
+        day_id:
+          $ref: '#/components/schemas/CfUuid'
+        timesheet_id:
+          $ref: '#/components/schemas/CfUuid'
+        work_date:
+          $ref: '#/components/schemas/LocalDateTime'
+        hours:
+          $ref: '#/components/schemas/Hours'
+        state:
+          $ref: '#/components/schemas/DayState'
+        isblackout:
+          type: boolean
+    FixtureSheet:
+      type: object
+      description: A `timesheet` row with lower-cased column names, its status fields and its days in work date order; NULL columns are empty strings.
+      required:
+        - timesheet_id
+        - person_id
+        - siteid
+        - period_start
+        - period_end
+        - due_date
+        - created
+        - lastupdate
+        - lastupdatebyid
+        - status
+        - overdue
+        - day_count
+        - blackout_count
+        - approved_count
+        - days
+      additionalProperties: false
+      properties:
+        timesheet_id:
+          $ref: '#/components/schemas/CfUuid'
+        person_id:
+          $ref: '#/components/schemas/CfUuid'
+        siteid:
+          $ref: '#/components/schemas/SiteId'
+        period_start:
+          $ref: '#/components/schemas/LocalDateTime'
+        period_end:
+          $ref: '#/components/schemas/LocalDateTime'
+        due_date:
+          $ref: '#/components/schemas/LocalDateTime'
+        created:
+          $ref: '#/components/schemas/LocalDateTime'
+        lastupdate:
+          anyOf:
+            - $ref: '#/components/schemas/LocalDateTime'
+            - $ref: '#/components/schemas/EmptyString'
+        lastupdatebyid:
+          anyOf:
+            - $ref: '#/components/schemas/CfUuid'
+            - $ref: '#/components/schemas/EmptyString'
+        status:
+          $ref: '#/components/schemas/SheetStatus'
+        overdue:
+          type: boolean
+        day_count:
+          type: integer
+          minimum: 0
+        blackout_count:
+          type: integer
+          minimum: 0
+        approved_count:
+          type: integer
+          minimum: 0
+        days:
+          type: array
+          items:
+            $ref: '#/components/schemas/FixtureDay'
+    FixtureDayActionResult:
+      $ref: '#/components/schemas/FixtureDay'
+      description: The acted-on day as the fixture re-reads it after the transition.
+    FixtureDayActionInput:
+      type: object
+      description: Optional audit comment and site; a non-scalar comment answers 400.
+      properties:
+        # anyOf rather than a type array: ajv strictTypes rejects non-null union types.
+        comment:
+          anyOf:
+            - type: string
+            - type: number
+            - type: boolean
+            - type: 'null'
+        siteid:
+          $ref: '#/components/schemas/SiteId'
+    Timesheet:
+      type: object
+      description: A sheet with its status and overdue flag as of `asOf`.
+      required:
+        - timesheetId
+        - siteId
+        - personId
+        - periodStart
+        - periodEnd
+        - dueDate
+        - created
+        - lastUpdate
+        - lastUpdateById
+        - status
+        - overdue
+      additionalProperties: false
+      properties:
+        timesheetId:
+          $ref: '#/components/schemas/CfUuid'
+        siteId:
+          $ref: '#/components/schemas/SiteId'
+        personId:
+          $ref: '#/components/schemas/CfUuid'
+        periodStart:
+          $ref: '#/components/schemas/LocalDateTime'
+        periodEnd:
+          $ref: '#/components/schemas/LocalDateTime'
+        dueDate:
+          $ref: '#/components/schemas/LocalDateTime'
+        created:
+          $ref: '#/components/schemas/LocalDateTime'
+        lastUpdate:
+          oneOf:
+            - $ref: '#/components/schemas/LocalDateTime'
+            - type: 'null'
+        lastUpdateById:
+          oneOf:
+            - $ref: '#/components/schemas/CfUuid'
+            - type: 'null'
+        status:
+          $ref: '#/components/schemas/SheetStatus'
+        overdue:
+          type: boolean
+    TimesheetDay:
+      type: object
+      description: A sheet day with its blackout flag and the actions the caller may take on it.
+      required:
+        - dayId
+        - timesheetId
+        - workDate
+        - hours
+        - state
+        - blackout
+        - lastUpdate
+        - lastUpdateById
+        - allowedActions
+      additionalProperties: false
+      properties:
+        dayId:
+          $ref: '#/components/schemas/CfUuid'
+        timesheetId:
+          $ref: '#/components/schemas/CfUuid'
+        workDate:
+          $ref: '#/components/schemas/LocalDateTime'
+        hours:
+          $ref: '#/components/schemas/Hours'
+        state:
+          $ref: '#/components/schemas/DayState'
+        blackout:
+          type: boolean
+        lastUpdate:
+          oneOf:
+            - $ref: '#/components/schemas/LocalDateTime'
+            - type: 'null'
+        lastUpdateById:
+          oneOf:
+            - $ref: '#/components/schemas/CfUuid'
+            - type: 'null'
+        allowedActions:
+          type: array
+          description: Legal actions for the caller's roles; empty on a blackout or terminal day.
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/DayAction'
+    TimesheetDetail:
+      type: object
+      description: A sheet with its status, overdue flag and days in work date order.
+      required:
+        - timesheetId
+        - siteId
+        - personId
+        - periodStart
+        - periodEnd
+        - dueDate
+        - created
+        - lastUpdate
+        - lastUpdateById
+        - status
+        - overdue
+        - days
+      additionalProperties: false
+      properties:
+        timesheetId:
+          $ref: '#/components/schemas/CfUuid'
+        siteId:
+          $ref: '#/components/schemas/SiteId'
+        personId:
+          $ref: '#/components/schemas/CfUuid'
+        periodStart:
+          $ref: '#/components/schemas/LocalDateTime'
+        periodEnd:
+          $ref: '#/components/schemas/LocalDateTime'
+        dueDate:
+          $ref: '#/components/schemas/LocalDateTime'
+        created:
+          $ref: '#/components/schemas/LocalDateTime'
+        lastUpdate:
+          oneOf:
+            - $ref: '#/components/schemas/LocalDateTime'
+            - type: 'null'
+        lastUpdateById:
+          oneOf:
+            - $ref: '#/components/schemas/CfUuid'
+            - type: 'null'
+        status:
+          $ref: '#/components/schemas/SheetStatus'
+        overdue:
+          type: boolean
+        days:
+          type: array
+          items:
+            $ref: '#/components/schemas/TimesheetDay'
+    TimesheetList:
+      type: object
+      required:
+        - items
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Timesheet'
+    SheetStatusRow:
+      type: object
+      description: A `tvf_timesheet_status` row.
+      required:
+        - timesheetId
+        - siteId
+        - personId
+        - periodStart
+        - status
+        - overdue
+        - dayCount
+        - blackoutCount
+        - approvedCount
+      additionalProperties: false
+      properties:
+        timesheetId:
+          $ref: '#/components/schemas/CfUuid'
+        siteId:
+          $ref: '#/components/schemas/SiteId'
+        personId:
+          $ref: '#/components/schemas/CfUuid'
+        periodStart:
+          $ref: '#/components/schemas/LocalDateTime'
+        status:
+          $ref: '#/components/schemas/SheetStatus'
+        overdue:
+          type: boolean
+        dayCount:
+          type: integer
+          minimum: 0
+        blackoutCount:
+          type: integer
+          minimum: 0
+        approvedCount:
+          type: integer
+          minimum: 0
+    SheetStatusList:
+      type: object
+      required:
+        - items
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SheetStatusRow'
+    DayActionInput:
+      type: object
+      description: Optional audit comment stored on the approval action.
+      additionalProperties: false
+      properties:
+        comment:
+          type: string
+    DayActionResult:
+      type: object
+      description: The applied transition and the day it changed.
+      required:
+        - dayId
+        - timesheetId
+        - action
+        - fromState
+        - toState
+        - actionId
+        - workDate
+        - hours
+        - blackout
+      additionalProperties: false
+      properties:
+        dayId:
+          $ref: '#/components/schemas/CfUuid'
+        timesheetId:
+          $ref: '#/components/schemas/CfUuid'
+        action:
+          $ref: '#/components/schemas/DayAction'
+        fromState:
+          $ref: '#/components/schemas/DayState'
+        toState:
+          $ref: '#/components/schemas/DayState'
+        actionId:
+          $ref: '#/components/schemas/CfUuid'
+        workDate:
+          $ref: '#/components/schemas/LocalDateTime'
+        hours:
+          $ref: '#/components/schemas/Hours'
+        blackout:
+          type: boolean
+          description: False after any applied action, since a blackout day takes none.
+    PushBody:
+      type: object
+      description: Pub/Sub push wrapper; `data` is the base64 event envelope.
+      required:
+        - message
+        - subscription
+      additionalProperties: true
+      properties:
+        message:
+          type: object
+          additionalProperties: true
+          properties:
+            data:
+              type: string
+              contentEncoding: base64
+            attributes:
+              type: object
+              additionalProperties:
+                type: string
+            messageId:
+              type: string
+            message_id:
+              type: string
+            publishTime:
+              type: string
+            publish_time:
+              type: string
+            orderingKey:
+              type: string
+          allOf:
+            - anyOf:
+                - required:
+                    - messageId
+                  properties:
+                    messageId:
+                      type: string
+                      minLength: 1
+                - required:
+                    - message_id
+                  properties:
+                    message_id:
+                      type: string
+                      minLength: 1
+        subscription:
+          type: string
+          minLength: 1
+          description: Usually `projects/<project>/subscriptions/<subscription>`.
+        deliveryAttempt:
+          type: integer
+    CanonicalType:
+      type: string
+      description: Canonical encoding tag.
+      enum:
+        - s
+        - i
+        - f
+        - d
+        - t
+        - b
+    CanonicalColumn:
+      type: object
+      required:
+        - name
+        - type
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+        type:
+          $ref: '#/components/schemas/CanonicalType'
+        scale:
+          type: integer
+          minimum: 0
+    WatermarkDirection:
+      type: string
+      enum:
+        - forward
+        - reverse
+    WatermarkFields:
+      type: object
+      required:
+        - direction
+        - finishedAt
+      properties:
+        direction:
+          $ref: '#/components/schemas/WatermarkDirection'
+        snapshotSeq:
+          type: integer
+          minimum: 0
+        backupLsn:
+          type: string
+          pattern: '^[0-9]{1,25}$'
+        finishedAt:
+          $ref: '#/components/schemas/WallClock'
+    ApplyRequest:
+      type: object
+      description: One batch of canonical legacy rows for one legacy table and tenant; exactly one of `tenantId` and `siteId` is required.
+      required:
+        - batchId
+        - origin
+        - legacyTable
+        - columns
+        - rows
+      # Each branch declares its property so the schema compiles under ajv strictRequired.
+      oneOf:
+        - required:
+            - tenantId
+          properties:
+            tenantId: true
+        - required:
+            - siteId
+          properties:
+            siteId: true
+      additionalProperties: false
+      properties:
+        batchId:
+          type: string
+          minLength: 1
+        origin:
+          type: string
+          enum:
+            - backfill
+            - migration-feed
+            - legacy-window
+        legacyTable:
+          type: string
+          minLength: 1
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        siteId:
+          type: string
+          minLength: 1
+        legacyProgramId:
+          type: integer
+          minimum: 0
+        columns:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/CanonicalColumn'
+        units:
+          type: array
+          items:
+            type: string
+            minLength: 1
+        holderId:
+          type: string
+          minLength: 1
+        rows:
+          type: array
+          items:
+            type: object
+            required:
+              - op
+              - row
+            additionalProperties: false
+            properties:
+              op:
+                type: string
+                enum:
+                  - upsert
+                  - delete
+                  - insert
+              row:
+                type: string
+              discriminator:
+                anyOf:
+                  - type: string
+                  - type: number
+        watermark:
+          type: object
+          allOf:
+            - $ref: '#/components/schemas/WatermarkFields'
+          unevaluatedProperties: false
+    ApplyResponse:
+      type: object
+      required:
+        - batchId
+        - duplicate
+        - applied
+        - skipped
+      additionalProperties: false
+      properties:
+        batchId:
+          type: string
+        duplicate:
+          type: boolean
+        applied:
+          type: integer
+          minimum: 0
+        skipped:
+          type: integer
+          minimum: 0
+    ObjectManifestEntry:
+      type: object
+      required:
+        - key
+        - size
+        - sha256
+      additionalProperties: false
+      properties:
+        key:
+          type: string
+        size:
+          type: integer
+          minimum: 0
+        sha256:
+          type: string
+        contentType:
+          type: string
+        legacyPath:
+          type: string
+    ExportRow:
+      type: object
+      description: One row in legacy form; `key` is the whole-row encoding for keyless tables.
+      required:
+        - key
+        - row
+        - hash
+      additionalProperties: false
+      properties:
+        key:
+          type: string
+        row:
+          type: string
+        hash:
+          type: string
+        legacyProgramId:
+          type: integer
+    ExportTable:
+      type: object
+      required:
+        - unit
+        - legacyTable
+        - targetTable
+        - keyless
+        - columns
+        - rows
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        legacyTable:
+          type: string
+        targetTable:
+          type: string
+        keyless:
+          type: boolean
+        columns:
+          type: array
+          items:
+            $ref: '#/components/schemas/CanonicalColumn'
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExportRow'
+    ExportResponse:
+      type: object
+      description: One export page; `next` is null after the last page, and `objects` comes with the first page only.
+      required:
+        - unit
+        - tenantId
+        - tables
+        - next
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        tables:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExportTable'
+        next:
+          type:
+            - string
+            - 'null'
+        objects:
+          type: array
+          items:
+            $ref: '#/components/schemas/ObjectManifestEntry'
+    ChangeOp:
+      type: string
+      enum:
+        - insert
+        - update
+        - delete
+    ChangeOrigin:
+      type: string
+      enum:
+        - target
+        - legacy-window
+        - migration-feed
+        - backfill
+    LegacyChange:
+      type: object
+      description: A changelog row in the legacy form of one mapping; `columns` are legacy names.
+      required:
+        - unit
+        - legacyTable
+        - key
+        - before
+        - after
+        - columns
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        legacyTable:
+          type: string
+        key:
+          type: string
+        before:
+          $ref: '#/components/schemas/NullableString'
+        after:
+          $ref: '#/components/schemas/NullableString'
+        columns:
+          type: array
+          items:
+            type: string
+        legacyProgramId:
+          type: integer
+    ChangeRow:
+      type: object
+      description: One changelog row; `xid` and `seq` are decimal strings, `at` is `YYYY-MM-DD HH:MM:SS.mmm`.
+      required:
+        - xid
+        - seq
+        - table
+        - op
+        - key
+        - before
+        - after
+        - columns
+        - origin
+        - actorUserId
+        - actorService
+        - at
+        - requestId
+        - operationId
+      properties:
+        xid:
+          type: string
+          pattern: '^[0-9]+$'
+        seq:
+          type: string
+          pattern: '^[0-9]+$'
+        table:
+          type: string
+        op:
+          $ref: '#/components/schemas/ChangeOp'
+        key:
+          type: string
+        before:
+          $ref: '#/components/schemas/NullableString'
+        after:
+          $ref: '#/components/schemas/NullableString'
+        columns:
+          type: array
+          items:
+            type: string
+        origin:
+          $ref: '#/components/schemas/ChangeOrigin'
+        actorUserId:
+          $ref: '#/components/schemas/NullableString'
+        actorService:
+          $ref: '#/components/schemas/NullableString'
+        at:
+          type: string
+        requestId:
+          $ref: '#/components/schemas/NullableString'
+        operationId:
+          $ref: '#/components/schemas/NullableString'
+    ProjectedChangeRow:
+      type: object
+      description: A changelog row with one legacy projection per mapping of its table.
+      allOf:
+        - $ref: '#/components/schemas/ChangeRow'
+        - type: object
+          required:
+            - legacy
+          properties:
+            legacy:
+              type: array
+              items:
+                $ref: '#/components/schemas/LegacyChange'
+      unevaluatedProperties: false
+    OperationStatus:
+      type: string
+      enum:
+        - open
+        - done
+        - rolled-back
+    ChangesResponse:
+      type: object
+      description: Rows below `horizon` in `(xid, seq)` order; `horizon` counts as applied only when `complete`.
+      required:
+        - rows
+        - cursor
+        - horizon
+        - complete
+        - operations
+      additionalProperties: false
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectedChangeRow'
+        cursor:
+          type: string
+          pattern: '^[0-9]+:[0-9]+$'
+        horizon:
+          type: string
+          pattern: '^[0-9]+$'
+        complete:
+          type: boolean
+        operations:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/OperationStatus'
+    TenantDrainCount:
+      type: object
+      required:
+        - tenantId
+        - unpublished
+        - held
+      additionalProperties: false
+      properties:
+        tenantId:
+          type: string
+        unpublished:
+          type: integer
+          minimum: 0
+        held:
+          type: integer
+          minimum: 0
+    OutboxDrainCounts:
+      type: object
+      required:
+        - tenants
+        - unpublished
+        - held
+      additionalProperties: false
+      properties:
+        tenants:
+          type: array
+          items:
+            $ref: '#/components/schemas/TenantDrainCount'
+        unpublished:
+          type: integer
+          minimum: 0
+        held:
+          type: integer
+          minimum: 0
+    InboxCounts:
+      type: object
+      description: Inbox receipts over every registered tenant; `receipts` maps each asked event id to the tenants that applied it.
+      required:
+        - total
+        - bySubscription
+      additionalProperties: false
+      properties:
+        total:
+          type: integer
+          minimum: 0
+        bySubscription:
+          type: object
+          additionalProperties:
+            type: integer
+        receipts:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+    PositionResponse:
+      type: object
+      description: The latest assigned xid and the drain counts; `outbox` or `inbox` is null where the service has no such table.
+      required:
+        - owner
+        - position
+        - outbox
+        - inbox
+      additionalProperties: false
+      properties:
+        owner:
+          type: string
+          const: timesheets
+        position:
+          type: string
+          pattern: '^[0-9]+$'
+        outbox:
+          oneOf:
+            - $ref: '#/components/schemas/OutboxDrainCounts'
+            - type: 'null'
+        inbox:
+          oneOf:
+            - $ref: '#/components/schemas/InboxCounts'
+            - type: 'null'
+    WatermarkRecord:
+      type: object
+      required:
+        - legacyTable
+        - direction
+        - snapshotSeq
+        - backupLsn
+        - finishedAt
+      additionalProperties: false
+      properties:
+        legacyTable:
+          type: string
+        direction:
+          $ref: '#/components/schemas/WatermarkDirection'
+        snapshotSeq:
+          type:
+            - integer
+            - 'null'
+        backupLsn:
+          $ref: '#/components/schemas/NullableString'
+        finishedAt:
+          $ref: '#/components/schemas/LocalTimestamp'
+    WatermarkInput:
+      type: object
+      description: A watermark to record for one legacy table.
+      allOf:
+        - $ref: '#/components/schemas/WatermarkFields'
+        - type: object
+          required:
+            - legacyTable
+          properties:
+            legacyTable:
+              type: string
+              minLength: 1
+      unevaluatedProperties: false
+    GateState:
+      type: string
+      enum:
+        - legacy
+        - open
+        - closed
+    GatePhase:
+      type: string
+      enum:
+        - quiet
+        - executing
+        - importing
+        - import-pending
+    UnitList:
+      type: array
+      minItems: 1
+      items:
+        type: string
+        minLength: 1
+    GateRequest:
+      description: One gate operation, selected by `op`.
+      oneOf:
+        - $ref: '#/components/schemas/GateClose'
+        - $ref: '#/components/schemas/GatePhaseChange'
+        - $ref: '#/components/schemas/GateOpen'
+        - $ref: '#/components/schemas/GateStatus'
+    GateClose:
+      type: object
+      description: Closes the units' gates for a holder; `allowLegacy` lets a transition close units still `legacy`.
+      required:
+        - op
+        - units
+        - holderId
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: close
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+        phase:
+          $ref: '#/components/schemas/GatePhase'
+        allowLegacy:
+          type: boolean
+        timeoutMs:
+          type: integer
+          minimum: 1
+          maximum: 30000
+    GatePhaseChange:
+      type: object
+      description: Sets the phase of gates the holder closed.
+      required:
+        - op
+        - units
+        - holderId
+        - phase
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: phase
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+        phase:
+          $ref: '#/components/schemas/GatePhase'
+    GateOpen:
+      type: object
+      description: Reopens the holder's gates as `open`, or sets them to `legacy`.
+      required:
+        - op
+        - units
+        - holderId
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: open
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+        state:
+          type: string
+          enum:
+            - open
+            - legacy
+    GateStatus:
+      type: object
+      description: Reads the gates; every unit of this owner when `units` is omitted.
+      required:
+        - op
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: status
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+    UnitGate:
+      type: object
+      required:
+        - unit
+        - state
+        - holderId
+        - phase
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        state:
+          $ref: '#/components/schemas/GateState'
+        holderId:
+          $ref: '#/components/schemas/NullableString'
+        phase:
+          $ref: '#/components/schemas/GatePhase'
+    GateResponse:
+      type: object
+      required:
+        - units
+      additionalProperties: false
+      properties:
+        units:
+          type: array
+          items:
+            $ref: '#/components/schemas/UnitGate'
+    GateConflict:
+      type: object
+      description: The units whose gate another holder owns.
+      required:
+        - error
+        - units
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          const: gate-conflict
+        units:
+          type: array
+          items:
+            type: string
+    Health:
+      type: object
+      required:
+        - status
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          const: ok

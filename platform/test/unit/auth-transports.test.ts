@@ -10,7 +10,6 @@ import {
   createLocalJWKSet,
   errors,
   exportJWK,
-  exportPKCS8,
   exportSPKI,
   generateKeyPair,
   jwtVerify,
@@ -19,61 +18,75 @@ import {
   type JWTVerifyGetKey,
 } from 'jose';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest';
-import { AuthDenial, TRANSPORTS, type AuthDenialReason, type AuthDenialType } from '../../src/auth/claims.js';
-import { GOOGLE_AUTH_TIMEOUT_MS } from '../../src/auth/deadline.js';
 import {
+  AuthDenial,
+  GOOGLE_SECURETOKEN_JWKS_URL,
   INVOCATION_HEADER,
   LOCAL_SECRET_FILES,
   LOCAL_SERVICE_ISSUER,
   LOCAL_SERVICE_TOKEN_TTL_SECONDS,
+  LOCAL_USER_TOKEN,
   MANAGED_INVOKER_NAMES,
   SIGNATURE_REMOVED_MARKER,
+  TRANSPORTS,
+  assertSiteMatches,
+  cloudUserTokenSettings,
+  createAuthFromEnv,
+  createCloudCloudTasksTransport,
   createCloudInvocationMinter,
   createCloudInvocationVerifier,
+  createCloudPubSubPushTransport,
   createCloudRunInvocationReader,
+  createLocalCloudTasksTransport,
   createLocalInvocationMinter,
   createLocalInvocationVerifier,
+  createLocalPubSubPushTransport,
+  createServiceTransport,
+  createUserTokenVerifier,
   invocationAudience,
   loadLocalSigningKeys,
   localSecretPath,
+  managedAudience,
+  rolesForService,
   serviceAccountEmail,
   serviceIdentityFromEmail,
   signLocalServiceToken,
-  verifyLocalServiceToken,
-  type LocalSigningKeys,
-} from '../../src/auth/invocation.js';
-import { rolesForService } from '../../src/auth/roles.js';
-import {
-  createAuthFromEnv,
-  createCloudCloudTasksTransport,
-  createCloudPubSubPushTransport,
-  createLocalCloudTasksTransport,
-  createLocalPubSubPushTransport,
-  createServiceTransport,
-  managedAudience,
   transportForPath,
+  verifyLocalServiceToken,
+  type AuthDenialReason,
+  type AuthDenialType,
   type AuthEnv,
   type AuthRequest,
   type AuthResult,
+  type AuthSetup,
+  type LocalSigningKeys,
+  type Transport,
   type TransportAuthenticator,
   type TransportSet,
-} from '../../src/auth/transports.js';
-import {
-  GOOGLE_SECURETOKEN_JWKS_URL,
-  LOCAL_USER_TOKEN,
-  assertSiteMatches,
-  cloudUserTokenSettings,
-  createUserTokenVerifier,
+  type UserClaims,
   type UserTokenVerifier,
-} from '../../src/auth/user-token.js';
+} from '../../src/auth/index.js';
+// The Google-auth bound and the legacy error base are not re-exported by the auth surface.
+import { GOOGLE_AUTH_TIMEOUT_MS } from '../../src/auth/deadline.js';
 import { LegacyApiError } from '../../src/legacy-compat/index.js';
+import {
+  TENANT_A,
+  TEST_PUSH_KEY,
+  mintServiceToken,
+  mintTasksInvokerToken,
+  mintUserToken,
+  pushKeyQuery,
+  testJwks,
+  testSigningKeys,
+  testVerifier,
+  writeTestSecrets,
+} from '../../src/testing/index.js';
 
 const NOW = Math.floor(Date.now() / 1000);
 const PROJECT = 'proj';
-const TENANT_ID = '3d5c8a1e-7f2b-5c4d-9e6a-0b1c2d3e4f5a';
 const PEOPLE_URL = 'https://opt2-people-abc123-uc.a.run.app';
 const FINANCE_URL = 'https://opt2-finance-abc123-uc.a.run.app';
-const PUSH_ENDPOINT = `${PEOPLE_URL}/internal/v1/events/timesheets-people-archived`;
+const PUSH_ENDPOINT = `${PEOPLE_URL}/internal/v1/events/timesheets.people.person.archived.v1`;
 const GOOGLE_ISSUER = 'https://accounts.google.com';
 const GATEWAY_EMAIL = 'opt2-gateway@proj.iam.gserviceaccount.com';
 const PUBSUB_INVOKER_EMAIL = 'opt2-pubsub-invoker@proj.iam.gserviceaccount.com';
@@ -125,22 +138,29 @@ function signToken(payload: JWTPayload, key: SigningKey, kid = key.kid): Promise
   return new SignJWT(payload).setProtectedHeader({ alg: 'RS256', kid, typ: 'JWT' }).sign(key.privateKey);
 }
 
-/** Site-scoped user token claims as identity's local signer mints them; an `undefined` override drops the claim. */
+/** Claims of the site-scoped user token the tests present, as identity's local signer mints them. */
+const USER: UserClaims = {
+  iss: LOCAL_USER_TOKEN.issuer,
+  aud: LOCAL_USER_TOKEN.audience,
+  sub: 'A1B2C3D4-E5F6-7A8B-9C0D1E2F3A4B5C6D',
+  sid: 'b7e6d5c4-session',
+  tid: TENANT_A.tenantId,
+  site: TENANT_A.siteId,
+  roles: ['site-admin', 'm:008'],
+  s2: false,
+  epoch: 3,
+  iat: NOW,
+  exp: NOW + LOCAL_USER_TOKEN.lifetimeSeconds,
+};
+
+/** User claims for crafted payloads; an `undefined` override drops the claim and other values may break its shape. */
 function userClaims(overrides: Record<string, unknown> = {}): JWTPayload {
-  return {
-    iss: LOCAL_USER_TOKEN.issuer,
-    aud: LOCAL_USER_TOKEN.audience,
-    sub: 'A1B2C3D4-E5F6-7A8B-9C0D1E2F3A4B5C6D',
-    sid: 'b7e6d5c4-session',
-    tid: TENANT_ID,
-    site: 'tenant-a',
-    roles: ['site-admin', 'm:008'],
-    s2: false,
-    epoch: 3,
-    iat: NOW,
-    exp: NOW + LOCAL_USER_TOKEN.lifetimeSeconds,
-    ...overrides,
-  };
+  return { ...USER, ...overrides };
+}
+
+/** User token minted by the test kit from the default claims with `overrides` applied. */
+function userToken(overrides: Partial<UserClaims> = {}): Promise<string> {
+  return mintUserToken({ ...USER, ...overrides });
 }
 
 /** Google-signed OIDC ID token claims of the gateway's service account, addressed to the people service. */
@@ -261,15 +281,21 @@ let foreignKey: SigningKey;
 let keySet: JWTVerifyGetKey;
 let localKeys: LocalSigningKeys;
 let googleClient: InMemoryCertsClient;
+let stateDir: string;
 
 beforeAll(async () => {
-  issuerKey = await newSigningKey();
+  issuerKey = await testSigningKeys();
   foreignKey = await newSigningKey();
-  keySet = createLocalJWKSet({
-    keys: [{ ...(await exportJWK(issuerKey.publicKey)), kid: issuerKey.kid, alg: 'RS256', use: 'sig' }],
-  });
-  localKeys = { privateKey: issuerKey.privateKey, publicKey: issuerKey.publicKey, kid: issuerKey.kid };
+  keySet = createLocalJWKSet(await testJwks());
+  localKeys = issuerKey;
+  // Google's certificates are the test key too, so a cross-scheme token is refused by its claims, not its signature.
   googleClient = new InMemoryCertsClient({ [issuerKey.kid]: await exportSPKI(issuerKey.publicKey) });
+  stateDir = await mkdtemp(path.join(os.tmpdir(), 'opt2-unit-'));
+  await writeTestSecrets(stateDir);
+});
+
+afterAll(async () => {
+  await rm(stateDir, { recursive: true, force: true });
 });
 
 describe('AuthDenial', () => {
@@ -352,8 +378,8 @@ describe('createUserTokenVerifier', () => {
   });
 
   it('accepts an audience list that contains the expected audience', async () => {
-    const claims = userClaims({ aud: [LOCAL_USER_TOKEN.audience, 'opt2-local-admin'] });
-    await expect(localVerifier().verify(await signToken(claims, issuerKey))).resolves.toEqual(claims);
+    const aud = [LOCAL_USER_TOKEN.audience, 'opt2-local-admin'];
+    await expect(localVerifier().verify(await userToken({ aud }))).resolves.toEqual(userClaims({ aud }));
   });
 
   it('maps an Identity Platform ID token to its declared claims', async () => {
@@ -407,20 +433,23 @@ describe('createUserTokenVerifier', () => {
   });
 
   it('answers an expired token as accessTokenExpired', async () => {
-    const token = await signToken(userClaims({ iat: NOW - 600, exp: NOW - 300 }), issuerKey);
+    const token = await userToken({ iat: NOW - 600, exp: NOW - 300 });
     expect(await denialOf(() => localVerifier().verify(token))).toEqual(ACCESS_TOKEN_EXPIRED);
   });
 
   it.each([
-    { kind: 'a Pub/Sub push OIDC token', claims: googleOidcClaims({ aud: PUSH_ENDPOINT, email: PUBSUB_INVOKER_EMAIL }) },
-    { kind: 'a Cloud Tasks OIDC token', claims: googleOidcClaims({ email: TASKS_INVOKER_EMAIL }) },
     {
-      kind: 'a local tasks-invoker service token',
-      claims: serviceClaims({ sub: 'service:tasks-invoker', roles: ['service:tasks-invoker'] }),
+      kind: 'a Pub/Sub push OIDC token',
+      token: () => signToken(googleOidcClaims({ aud: PUSH_ENDPOINT, email: PUBSUB_INVOKER_EMAIL }), issuerKey),
     },
-  ])('answers $kind presented as a user token with invalidAccessToken', async ({ claims }) => {
-    const token = await signToken(claims, issuerKey);
-    expect(await denialOf(() => localVerifier().verify(token))).toEqual(INVALID_ACCESS_TOKEN);
+    {
+      kind: 'a Cloud Tasks OIDC token',
+      token: () => signToken(googleOidcClaims({ email: TASKS_INVOKER_EMAIL }), issuerKey),
+    },
+    { kind: 'a local tasks-invoker service token', token: () => mintTasksInvokerToken({ audience: 'people' }) },
+  ])('answers $kind presented as a user token with invalidAccessToken', async ({ token }) => {
+    const presented = await token();
+    expect(await denialOf(() => localVerifier().verify(presented))).toEqual(INVALID_ACCESS_TOKEN);
   });
 
   it.each([
@@ -434,8 +463,7 @@ describe('createUserTokenVerifier', () => {
       audience: LOCAL_USER_TOKEN.audience,
       keySet: () => Promise.reject(error),
     });
-    const token = await signToken(userClaims(), issuerKey);
-    await expect(verifier.verify(token)).rejects.toBe(error);
+    await expect(verifier.verify(await userToken())).rejects.toBe(error);
   });
 
   it('rejects a malformed token without fetching the remote key set', async () => {
@@ -476,32 +504,20 @@ describe('assertSiteMatches', () => {
   });
 });
 
-let stateRoot: string;
-
-/** Creates `<stateRoot>/<name>/secrets` holding the public PEM and, per `privateKey`, the private PEM or a directory. */
+/** `<stateDir>/variants/<name>` with the test key files but no push key; the private key is `pem`, `absent` or a directory. */
 async function stateDirWith(name: string, privateKey: 'pem' | 'absent' | 'directory'): Promise<string> {
-  const stateDir = path.join(stateRoot, name);
-  await mkdir(path.join(stateDir, 'secrets'), { recursive: true });
-  await writeFile(
-    localSecretPath(stateDir, LOCAL_SECRET_FILES.tokenSigningPublicKey),
-    await exportSPKI(issuerKey.publicKey),
-  );
-  const privatePath = localSecretPath(stateDir, LOCAL_SECRET_FILES.tokenSigningPrivateKey);
-  if (privateKey === 'pem') {
-    await writeFile(privatePath, await exportPKCS8(issuerKey.privateKey));
-  } else if (privateKey === 'directory') {
-    await mkdir(privatePath);
+  const variant = path.join(stateDir, 'variants', name);
+  await writeTestSecrets(variant);
+  await rm(localSecretPath(variant, LOCAL_SECRET_FILES.pubsubPushKey));
+  if (privateKey !== 'pem') {
+    const privatePath = localSecretPath(variant, LOCAL_SECRET_FILES.tokenSigningPrivateKey);
+    await rm(privatePath);
+    if (privateKey === 'directory') {
+      await mkdir(privatePath);
+    }
   }
-  return stateDir;
+  return variant;
 }
-
-beforeAll(async () => {
-  stateRoot = await mkdtemp(path.join(os.tmpdir(), 'opt2-auth-transports-'));
-});
-
-afterAll(async () => {
-  await rm(stateRoot, { recursive: true, force: true });
-});
 
 describe('local signing keys', () => {
   it('places the secret files under <stateDir>/secrets with the up.sh file names', () => {
@@ -540,8 +556,8 @@ describe('local signing keys', () => {
     requirePrivate,
     code,
   }) => {
-    const stateDir = await stateDirWith(`private-${setup}`, setup);
-    await expect(loadLocalSigningKeys(stateDir, { requirePrivate })).rejects.toMatchObject({ code });
+    const variant = await stateDirWith(`private-${setup}`, setup);
+    await expect(loadLocalSigningKeys(variant, { requirePrivate })).rejects.toMatchObject({ code });
   });
 });
 
@@ -575,7 +591,7 @@ describe('local service tokens', () => {
   });
 
   it('verifies a service token to the calling workload and its roles', async () => {
-    const token = await signLocalServiceToken({ keys: localKeys, caller: 'gateway', audience: 'people' });
+    const token = await mintServiceToken({ caller: 'gateway', audience: 'people' });
     await expect(
       verifyLocalServiceToken(token, { publicKey: issuerKey.publicKey, audience: 'people' }),
     ).resolves.toEqual({ name: 'gateway', roles: ['service:gateway'] });
@@ -584,7 +600,7 @@ describe('local service tokens', () => {
   it.each([
     {
       problem: 'is addressed to another service',
-      token: () => signLocalServiceToken({ keys: localKeys, caller: 'gateway', audience: 'finance' }),
+      token: () => mintServiceToken({ caller: 'gateway', audience: 'finance' }),
     },
     {
       problem: 'has the user-token issuer',
@@ -616,7 +632,7 @@ describe('local service tokens', () => {
   });
 
   it('propagates a key failure that is not a token fault', async () => {
-    const token = await signLocalServiceToken({ keys: localKeys, caller: 'gateway', audience: 'people' });
+    const token = await mintServiceToken({ caller: 'gateway', audience: 'people' });
     await expect(
       verifyLocalServiceToken(token, { publicKey: createSecretKey(randomBytes(32)), audience: 'people' }),
     ).rejects.toBeInstanceOf(TypeError);
@@ -691,9 +707,9 @@ describe('local invocation credentials', () => {
   });
 
   it('refuses a user token presented as the invocation credential as invalid-credential', async () => {
-    const userToken = await signToken(userClaims({ aud: 'people' }), issuerKey);
+    const token = await userToken({ aud: 'people' });
     const verifier = createLocalInvocationVerifier({ publicKey: issuerKey.publicKey, callee: 'people' });
-    expect(await denialOf(() => verifier.verify(`Bearer ${userToken}`))).toEqual(INVALID_CREDENTIAL);
+    expect(await denialOf(() => verifier.verify(`Bearer ${token}`))).toEqual(INVALID_CREDENTIAL);
   });
 
   it.each([
@@ -707,7 +723,7 @@ describe('local invocation credentials', () => {
   });
 
   it('accepts a lower-case bearer scheme surrounded by whitespace', async () => {
-    const token = await signLocalServiceToken({ keys: localKeys, caller: 'gateway', audience: 'people' });
+    const token = await mintServiceToken({ caller: 'gateway', audience: 'people' });
     const verifier = createLocalInvocationVerifier({ publicKey: issuerKey.publicKey, callee: 'people' });
     await expect(verifier.verify(`  bearer ${token}  `)).resolves.toEqual({ name: 'gateway', roles: ['service:gateway'] });
   });
@@ -807,7 +823,7 @@ describe('createCloudInvocationVerifier', () => {
       problem: 'carries a known kid over a foreign signature',
       token: () => signToken(googleOidcClaims(), foreignKey, issuerKey.kid),
     },
-    { problem: 'is a local user token', token: () => signToken(userClaims({ aud: PEOPLE_URL }), issuerKey) },
+    { problem: 'is a local user token', token: () => userToken({ aud: PEOPLE_URL }) },
   ])('refuses a credential that $problem as invalid-credential', async ({ token }) => {
     const header = `Bearer ${await token()}`;
     expect(await denialOf(() => peopleVerifier().verify(header))).toEqual(INVALID_CREDENTIAL);
@@ -968,11 +984,12 @@ describe('createCloudInvocationMinter', () => {
   });
 });
 
-const PUSH_PATH = '/internal/v1/events/timesheets-people-archived';
+const PUSH_PATH = new URL(PUSH_ENDPOINT).pathname;
 const TASK_PATH = '/internal/v1/tasks/site-monitor';
 const PEOPLE_PATH = '/internal/v1/people';
 const LOCAL_JWKS_URL = 'http://127.0.0.1:8111/.well-known/jwks.json';
-const PUSH_KEY = randomBytes(24).toString('base64url');
+/** The emulator push endpoint's query, as `app.inject` receives it. */
+const PUSH_QUERY: Record<string, string> = Object.fromEntries(new URLSearchParams(pushKeyQuery()));
 const MISSING_CREDENTIAL: DenialShape = { ...INVALID_CREDENTIAL, reason: 'missing-credential' };
 const PUBSUB_INVOKER_IDENTITY = { service: { name: 'pubsub-invoker', roles: ['service:pubsub-invoker'] } };
 const TASKS_INVOKER_IDENTITY = { service: { name: 'tasks-invoker', roles: ['service:tasks-invoker'] } };
@@ -987,22 +1004,24 @@ function authenticate(
   return authenticator.authenticate({ path: route, headers, query }, { optional: false });
 }
 
-/** Bearer header of a local service token from `caller` addressed to `audience`. */
+/** Bearer header of a test-kit service token from `caller` addressed to `audience`. */
 async function localServiceBearer(caller: string, audience = 'people'): Promise<string> {
-  return `Bearer ${await signLocalServiceToken({ keys: localKeys, caller, audience })}`;
+  return `Bearer ${await mintServiceToken({ caller, audience })}`;
 }
 
 describe('transportForPath', () => {
   it.each([
-    { path: '/internal/v1/events/sub-a', transport: 'pubsub-push' },
-    { path: '/internal/v1/events/sub-a?key=abc', transport: 'pubsub-push' },
+    { path: '/internal/v1/events/timesheets.people.person.archived.v1', transport: 'pubsub-push' },
+    { path: `${PUSH_PATH}?${pushKeyQuery()}`, transport: 'pubsub-push' },
     { path: '/internal/v1/events/', transport: 'service' },
     { path: '/internal/v1/events/a/b', transport: 'service' },
     { path: TASK_PATH, transport: 'cloud-tasks' },
+    { path: '/internal/v1/tasks/surveys/X/launch', transport: 'cloud-tasks' },
     { path: '/internal/v1/tasks', transport: 'service' },
     { path: '/internal/v1/outbox/sweep', transport: 'cloud-tasks' },
     { path: '/internal/v1/outbox/sweep/now', transport: 'service' },
-    { path: '/internal/v1/jobs/exports/run', transport: 'cloud-tasks' },
+    { path: '/internal/v1/jobs/sitemonitor', transport: 'cloud-tasks' },
+    { path: '/internal/v1/migration/apply', transport: 'service' },
     { path: '/internal/v1/tokens', transport: 'service' },
     { path: '/people?next=/internal/v1/tasks/x', transport: 'service' },
     { path: '/_api/json/v1/default/content', transport: 'service' },
@@ -1026,6 +1045,12 @@ describe('managedAudience', () => {
       route: '/internal/v1/outbox/sweep',
       audience: `${PEOPLE_URL}/internal/v1/outbox/sweep`,
     },
+    {
+      given: 'the sweep route of a run.app URL',
+      selfUrl: 'https://people-abc.a.run.app',
+      route: '/internal/v1/outbox/sweep',
+      audience: 'https://people-abc.a.run.app/internal/v1/outbox/sweep',
+    },
   ])('keeps the service origin and the route path given $given', ({ selfUrl, route, audience }) => {
     expect(managedAudience(selfUrl, route)).toBe(audience);
   });
@@ -1041,15 +1066,19 @@ describe('createServiceTransport', () => {
   }
 
   it('accepts a user token with the caller invocation credential and returns the user, the raw token and the caller', async () => {
-    const userToken = await signToken(userClaims(), issuerKey);
+    const token = await userToken();
     const transport = peopleService();
     expect(transport.transport).toBe('service');
     await expect(
       authenticate(transport, PEOPLE_PATH, {
-        authorization: `Bearer ${userToken}`,
+        authorization: `Bearer ${token}`,
         [INVOCATION_HEADER]: await localServiceBearer('gateway'),
       }),
-    ).resolves.toEqual({ user: userClaims(), userToken, service: { name: 'gateway', roles: ['service:gateway'] } });
+    ).resolves.toEqual({
+      user: userClaims(),
+      userToken: token,
+      service: { name: 'gateway', roles: ['service:gateway'] },
+    });
   });
 
   it('accepts an invocation credential without a user token as a call for no user', async () => {
@@ -1062,9 +1091,9 @@ describe('createServiceTransport', () => {
   });
 
   it('refuses a request without an invocation credential as missing-credential when the route requires one', async () => {
-    const userToken = await signToken(userClaims(), issuerKey);
+    const token = await userToken();
     expect(
-      await denialOf(() => authenticate(peopleService(), PEOPLE_PATH, { authorization: `Bearer ${userToken}` })),
+      await denialOf(() => authenticate(peopleService(), PEOPLE_PATH, { authorization: `Bearer ${token}` })),
     ).toEqual(MISSING_CREDENTIAL);
   });
 
@@ -1075,13 +1104,13 @@ describe('createServiceTransport', () => {
   });
 
   it('verifies a user token without an invocation credential on a route where the credential is optional', async () => {
-    const userToken = await signToken(userClaims(), issuerKey);
+    const token = await userToken();
     await expect(
       peopleService().authenticate(
-        { path: PEOPLE_PATH, headers: { authorization: `Bearer ${userToken}` } },
+        { path: PEOPLE_PATH, headers: { authorization: `Bearer ${token}` } },
         { optional: true },
       ),
-    ).resolves.toEqual({ user: userClaims(), userToken });
+    ).resolves.toEqual({ user: userClaims(), userToken: token });
   });
 
   it('refuses a non-bearer Authorization as the wrong scheme', async () => {
@@ -1090,7 +1119,7 @@ describe('createServiceTransport', () => {
   });
 
   it.each(['authorization', INVOCATION_HEADER])('refuses a repeated %s header as invalid-credential', async (name) => {
-    const authorization = `Bearer ${await signToken(userClaims(), issuerKey)}`;
+    const authorization = `Bearer ${await userToken()}`;
     const invocation = await localServiceBearer('gateway');
     const repeated = name === 'authorization' ? authorization : invocation;
     const headers = { authorization, [INVOCATION_HEADER]: invocation, [name]: [repeated, repeated] };
@@ -1098,18 +1127,18 @@ describe('createServiceTransport', () => {
   });
 
   it.each([
-    {
-      kind: 'a local tasks-invoker service token',
-      claims: serviceClaims({ sub: 'service:tasks-invoker', roles: ['service:tasks-invoker'] }),
-    },
+    { kind: 'a local tasks-invoker service token', token: () => mintTasksInvokerToken({ audience: 'people' }) },
     {
       kind: 'a Pub/Sub push OIDC token',
-      claims: googleOidcClaims({ aud: PUSH_ENDPOINT, email: PUBSUB_INVOKER_EMAIL }),
+      token: () => signToken(googleOidcClaims({ aud: PUSH_ENDPOINT, email: PUBSUB_INVOKER_EMAIL }), issuerKey),
     },
-    { kind: 'a Cloud Tasks OIDC token', claims: googleOidcClaims({ email: TASKS_INVOKER_EMAIL }) },
-  ])('answers $kind presented as the user token with invalidAccessToken', async ({ claims }) => {
+    {
+      kind: 'a Cloud Tasks OIDC token',
+      token: () => signToken(googleOidcClaims({ email: TASKS_INVOKER_EMAIL }), issuerKey),
+    },
+  ])('answers $kind presented as the user token with invalidAccessToken', async ({ token }) => {
     const headers = {
-      authorization: `Bearer ${await signToken(claims, issuerKey)}`,
+      authorization: `Bearer ${await token()}`,
       [INVOCATION_HEADER]: await localServiceBearer('gateway'),
     };
     expect(await denialOf(() => authenticate(peopleService(), PEOPLE_PATH, headers))).toEqual(INVALID_ACCESS_TOKEN);
@@ -1139,7 +1168,7 @@ describe('createServiceTransport', () => {
     {
       problem: 'a user token for another audience',
       headers: async () => ({
-        authorization: `Bearer ${await signToken(userClaims({ aud: 'people' }), issuerKey)}`,
+        authorization: `Bearer ${await userToken({ aud: 'people' })}`,
         [INVOCATION_HEADER]: await localServiceBearer('gateway'),
       }),
       expected: INVALID_ACCESS_TOKEN,
@@ -1147,10 +1176,18 @@ describe('createServiceTransport', () => {
     {
       problem: 'a user token from another issuer',
       headers: async () => ({
-        authorization: `Bearer ${await signToken(userClaims({ iss: GOOGLE_ISSUER }), issuerKey)}`,
+        authorization: `Bearer ${await userToken({ iss: 'other' })}`,
         [INVOCATION_HEADER]: await localServiceBearer('gateway'),
       }),
       expected: INVALID_ACCESS_TOKEN,
+    },
+    {
+      problem: 'an expired user token',
+      headers: async () => ({
+        authorization: `Bearer ${await userToken({ iat: NOW - 600, exp: NOW - 300 })}`,
+        [INVOCATION_HEADER]: await localServiceBearer('gateway'),
+      }),
+      expected: ACCESS_TOKEN_EXPIRED,
     },
   ])('refuses $problem with the $expected.type error', async ({ headers, expected }) => {
     const presented = await headers();
@@ -1161,7 +1198,7 @@ describe('createServiceTransport', () => {
 describe('createLocalPubSubPushTransport', () => {
   /** Local push scheme holding the test push key. */
   function push(): TransportAuthenticator {
-    return createLocalPubSubPushTransport({ pushKey: PUSH_KEY });
+    return createLocalPubSubPushTransport({ pushKey: TEST_PUSH_KEY });
   }
 
   it('refuses to build on an empty push key', () => {
@@ -1172,17 +1209,17 @@ describe('createLocalPubSubPushTransport', () => {
 
   it('accepts the push key in the key query parameter as the pubsub-invoker', async () => {
     expect(push().transport).toBe('pubsub-push');
-    await expect(authenticate(push(), PUSH_PATH, {}, { key: PUSH_KEY })).resolves.toEqual(PUBSUB_INVOKER_IDENTITY);
+    await expect(authenticate(push(), PUSH_PATH, {}, PUSH_QUERY)).resolves.toEqual(PUBSUB_INVOKER_IDENTITY);
   });
 
   it.each([
-    { presented: 'another key of the same length', key: `${PUSH_KEY.startsWith('A') ? 'B' : 'A'}${PUSH_KEY.slice(1)}` },
-    { presented: 'a prefix of the key', key: PUSH_KEY.slice(0, -1) },
-    { presented: 'the key with a suffix', key: `${PUSH_KEY}x` },
+    { presented: 'another key of the same length', key: `x${TEST_PUSH_KEY.slice(1)}` },
+    { presented: 'a prefix of the key', key: TEST_PUSH_KEY.slice(0, -1) },
+    { presented: 'the key with a suffix', key: `${TEST_PUSH_KEY}x` },
     { presented: 'an empty key', key: '' },
     { presented: 'a numeric key', key: 42 },
-    { presented: 'a repeated key parameter', key: [PUSH_KEY, PUSH_KEY] },
-  ])('refuses $presented as invalid-credential', async ({ key }) => {
+    { presented: 'a repeated key parameter', key: [TEST_PUSH_KEY, TEST_PUSH_KEY] },
+  ])('refuses $presented as invalid-credential without throwing', async ({ key }) => {
     expect(await denialOf(() => authenticate(push(), PUSH_PATH, {}, { key }))).toEqual(INVALID_CREDENTIAL);
   });
 
@@ -1194,7 +1231,7 @@ describe('createLocalPubSubPushTransport', () => {
   });
 
   it.each([
-    { kind: 'a bearer user token', authorization: async () => `Bearer ${await signToken(userClaims(), issuerKey)}` },
+    { kind: 'a bearer user token', authorization: async () => `Bearer ${await userToken()}` },
     {
       kind: 'the pubsub-invoker OIDC token',
       authorization: async () =>
@@ -1203,7 +1240,7 @@ describe('createLocalPubSubPushTransport', () => {
     { kind: 'Basic credentials', authorization: () => Promise.resolve(BASIC_HEADER) },
   ])('refuses $kind in Authorization as the wrong scheme even with the right key', async ({ authorization }) => {
     const headers = { authorization: await authorization() };
-    expect(await denialOf(() => authenticate(push(), PUSH_PATH, headers, { key: PUSH_KEY }))).toEqual(WRONG_SCHEME);
+    expect(await denialOf(() => authenticate(push(), PUSH_PATH, headers, PUSH_QUERY))).toEqual(WRONG_SCHEME);
   });
 });
 
@@ -1270,7 +1307,7 @@ describe.each([
 
   it.each([
     { problem: 'is signed by an unknown Google key', token: () => invokerBearer({}, foreignKey) },
-    { problem: 'is a local user token', token: async () => `Bearer ${await signToken(userClaims(), issuerKey)}` },
+    { problem: 'is a local user token', token: async () => `Bearer ${await userToken()}` },
     { problem: `is a local ${invoker} service token`, token: () => localServiceBearer(invoker, audience) },
   ])('refuses a credential that $problem as invalid-credential', async ({ token }) => {
     const headers = { authorization: await token() };
@@ -1314,14 +1351,14 @@ describe('createLocalCloudTasksTransport', () => {
 
   it('accepts a local tasks-invoker service token addressed to the service', async () => {
     expect(tasks().transport).toBe('cloud-tasks');
-    await expect(
-      authenticate(tasks(), TASK_PATH, { authorization: await localServiceBearer('tasks-invoker') }),
-    ).resolves.toEqual(TASKS_INVOKER_IDENTITY);
+    const token = await mintTasksInvokerToken({ audience: 'people' });
+    await expect(authenticate(tasks(), TASK_PATH, { authorization: `Bearer ${token}` })).resolves.toEqual(
+      TASKS_INVOKER_IDENTITY,
+    );
   });
 
   it('grants only the tasks-invoker role whatever roles the token carries', async () => {
-    const token = await signLocalServiceToken({
-      keys: localKeys,
+    const token = await mintServiceToken({
       caller: 'tasks-invoker',
       audience: 'people',
       roles: ['service:tasks-invoker', 'platform.operator'],
@@ -1337,7 +1374,10 @@ describe('createLocalCloudTasksTransport', () => {
   });
 
   it.each([
-    { problem: 'is addressed to another service', token: () => localServiceBearer('tasks-invoker', 'finance') },
+    {
+      problem: 'is addressed to another service',
+      token: async () => `Bearer ${await mintTasksInvokerToken({ audience: 'finance' })}`,
+    },
     {
       problem: 'has the user-token issuer',
       token: async () =>
@@ -1347,7 +1387,7 @@ describe('createLocalCloudTasksTransport', () => {
       problem: 'is signed by another key',
       token: async () => `Bearer ${await signToken(serviceClaims(TASKS_INVOKER_SUBJECT), foreignKey)}`,
     },
-    { problem: 'is a local user token', token: async () => `Bearer ${await signToken(userClaims(), issuerKey)}` },
+    { problem: 'is a local user token', token: async () => `Bearer ${await userToken()}` },
     {
       problem: 'is a Cloud Tasks OIDC token',
       token: async () =>
@@ -1374,8 +1414,7 @@ describe('createAuthFromEnv', () => {
 
   /** Answers every fetch with the issuer key set, so remote JWKS verifiers run offline; returns the spy. */
   async function serveIssuerJwks(): Promise<MockInstance<typeof fetch>> {
-    const jwk = { ...(await exportJWK(issuerKey.publicKey)), kid: issuerKey.kid, alg: 'RS256', use: 'sig' };
-    const jwks = { keys: [jwk] };
+    const jwks = await testJwks();
     return vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.resolve(Response.json(jwks)));
   }
 
@@ -1388,10 +1427,10 @@ describe('createAuthFromEnv', () => {
     });
   }
 
-  /** Writes `contents` as the push key file of `stateDir` and returns `stateDir`. */
-  async function withPushKey(stateDir: string, contents = `${PUSH_KEY}\n`): Promise<string> {
-    await writeFile(localSecretPath(stateDir, LOCAL_SECRET_FILES.pubsubPushKey), contents);
-    return stateDir;
+  /** Writes `contents` as the push key file of `dir` and returns `dir`. */
+  async function withPushKey(dir: string, contents = `${TEST_PUSH_KEY}\n`): Promise<string> {
+    await writeFile(localSecretPath(dir, LOCAL_SECRET_FILES.pubsubPushKey), contents);
+    return dir;
   }
 
   /** Verifiers, minter and managed schemes of the people service built from the in-memory keys. */
@@ -1401,19 +1440,19 @@ describe('createAuthFromEnv', () => {
       invocationVerifier: createLocalInvocationVerifier({ publicKey: issuerKey.publicKey, callee: 'people' }),
       invocationMinter: createLocalInvocationMinter({ keys: localKeys, caller: 'people' }),
       transports: {
-        'pubsub-push': createLocalPubSubPushTransport({ pushKey: PUSH_KEY }),
+        'pubsub-push': createLocalPubSubPushTransport({ pushKey: TEST_PUSH_KEY }),
         'cloud-tasks': createLocalCloudTasksTransport({ publicKey: issuerKey.publicKey, callee: 'people' }),
       },
     };
   }
 
   describe('in local mode', () => {
-    /** Local environment of the people service over `stateDir`; an `undefined` override drops the setting. */
-    function localEnv(stateDir: string, overrides: Partial<AuthEnv> = {}): AuthEnv {
+    /** Local environment of the people service over `dir`; an `undefined` override drops the setting. */
+    function localEnv(dir: string, overrides: Partial<AuthEnv> = {}): AuthEnv {
       return {
         OPT2_ENV: 'local',
         OPT2_SERVICE_NAME: 'people',
-        OPT2_STATE_DIR: stateDir,
+        OPT2_STATE_DIR: dir,
         OPT2_JWKS_URL: LOCAL_JWKS_URL,
         ...overrides,
       };
@@ -1449,21 +1488,21 @@ describe('createAuthFromEnv', () => {
       refusedIss,
     }) => {
       const fetchSpy = await serveIssuerJwks();
-      const stateDir = await withPushKey(await stateDirWith(`env-user-${settings}`, 'pem'));
-      const auth = await createAuthFromEnv(localEnv(stateDir, env));
-      const userToken = await signToken(userClaims({ iss, aud }), issuerKey);
+      const variant = await withPushKey(await stateDirWith(`env-user-${settings}`, 'pem'));
+      const auth = await createAuthFromEnv(localEnv(variant, env));
+      const token = await userToken({ iss, aud });
       await expect(
         authenticate(auth.transports.service, PEOPLE_PATH, {
-          authorization: `Bearer ${userToken}`,
+          authorization: `Bearer ${token}`,
           [INVOCATION_HEADER]: await localServiceBearer('gateway'),
         }),
       ).resolves.toEqual({
         user: userClaims({ iss, aud }),
-        userToken,
+        userToken: token,
         service: { name: 'gateway', roles: ['service:gateway'] },
       });
       expect(fetchSpy).toHaveBeenCalledWith(LOCAL_JWKS_URL, expect.anything());
-      const refused = await signToken(userClaims({ iss: refusedIss, aud }), issuerKey);
+      const refused = await userToken({ iss: refusedIss, aud });
       expect(await denialOf(() => auth.userVerifier.verify(refused))).toEqual(INVALID_ACCESS_TOKEN);
     });
 
@@ -1472,13 +1511,13 @@ describe('createAuthFromEnv', () => {
       expect(Object.isFrozen(auth.transports)).toBe(true);
       expect(auth.transports.service.transport).toBe('service');
       const push = auth.transports['pubsub-push'];
-      await expect(authenticate(push, PUSH_PATH, {}, { key: PUSH_KEY })).resolves.toEqual(PUBSUB_INVOKER_IDENTITY);
-      expect(await denialOf(() => authenticate(push, PUSH_PATH, {}, { key: `${PUSH_KEY}\n` }))).toEqual(
+      await expect(authenticate(push, PUSH_PATH, {}, PUSH_QUERY)).resolves.toEqual(PUBSUB_INVOKER_IDENTITY);
+      expect(await denialOf(() => authenticate(push, PUSH_PATH, {}, { key: `${TEST_PUSH_KEY}\n` }))).toEqual(
         INVALID_CREDENTIAL,
       );
       await expect(
         authenticate(auth.transports['cloud-tasks'], TASK_PATH, {
-          authorization: await localServiceBearer('tasks-invoker'),
+          authorization: `Bearer ${await mintTasksInvokerToken({ audience: 'people' })}`,
         }),
       ).resolves.toEqual(TASKS_INVOKER_IDENTITY);
     });
@@ -1491,16 +1530,16 @@ describe('createAuthFromEnv', () => {
         roles: ['service:people', 'platform.operator'],
       },
     ])('mints invocation credentials for the service carrying $carrying', async ({ minterRoles, roles }) => {
-      const stateDir = await withPushKey(await stateDirWith(`env-minter-${String(roles.length)}`, 'pem'));
-      const auth = await createAuthFromEnv(localEnv(stateDir), { minterRoles });
+      const variant = await withPushKey(await stateDirWith(`env-minter-${String(roles.length)}`, 'pem'));
+      const auth = await createAuthFromEnv(localEnv(variant), { minterRoles });
       const headers = await auth.invocationMinter.headersFor({ name: 'finance' });
       const finance = createLocalInvocationVerifier({ publicKey: issuerKey.publicKey, callee: 'finance' });
       await expect(finance.verify(headers[INVOCATION_HEADER] ?? '')).resolves.toEqual({ name: 'people', roles });
     });
 
     it('starts without the private key file and fails only when minting', async () => {
-      const stateDir = await withPushKey(await stateDirWith('env-verify-only', 'absent'));
-      const auth = await createAuthFromEnv(localEnv(stateDir));
+      const variant = await withPushKey(await stateDirWith('env-verify-only', 'absent'));
+      const auth = await createAuthFromEnv(localEnv(variant));
       await expect(auth.invocationMinter.headersFor({ name: 'finance' })).rejects.toThrow(
         'Local service token for people needs token-signing-private.pem',
       );
@@ -1514,13 +1553,17 @@ describe('createAuthFromEnv', () => {
       expect(auth.invocationMinter).toBe(pieces.invocationMinter);
       expect(auth.transports['pubsub-push']).toBe(pieces.transports['pubsub-push']);
       expect(auth.transports['cloud-tasks']).toBe(pieces.transports['cloud-tasks']);
-      const userToken = await signToken(userClaims(), issuerKey);
+      const token = await userToken();
       await expect(
         authenticate(auth.transports.service, PEOPLE_PATH, {
-          authorization: `Bearer ${userToken}`,
+          authorization: `Bearer ${token}`,
           [INVOCATION_HEADER]: await localServiceBearer('gateway'),
         }),
-      ).resolves.toEqual({ user: userClaims(), userToken, service: { name: 'gateway', roles: ['service:gateway'] } });
+      ).resolves.toEqual({
+        user: userClaims(),
+        userToken: token,
+        service: { name: 'gateway', roles: ['service:gateway'] },
+      });
     });
 
     it.each([
@@ -1531,22 +1574,114 @@ describe('createAuthFromEnv', () => {
       { setting: 'OPT2_JWKS_URL', value: 'unset', env: { OPT2_JWKS_URL: undefined } },
       { setting: 'OPT2_JWKS_URL', value: 'empty', env: { OPT2_JWKS_URL: '' } },
     ])('fails when $setting is $value', async ({ setting, env }) => {
-      const stateDir = await withPushKey(await stateDirWith('env-required', 'pem'));
-      await expect(createAuthFromEnv(localEnv(stateDir, env))).rejects.toThrow(
+      const variant = await withPushKey(await stateDirWith('env-required', 'pem'));
+      await expect(createAuthFromEnv(localEnv(variant, env))).rejects.toThrow(
         `${setting} is required for OPT2_ENV=local authentication`,
       );
     });
 
     it('fails when the push key file is missing', async () => {
-      const stateDir = await stateDirWith('env-no-push-key', 'pem');
-      await expect(createAuthFromEnv(localEnv(stateDir))).rejects.toMatchObject({ code: 'ENOENT' });
+      const variant = await stateDirWith('env-no-push-key', 'pem');
+      await expect(createAuthFromEnv(localEnv(variant))).rejects.toMatchObject({ code: 'ENOENT' });
     });
 
     it('refuses a push key file holding only whitespace', async () => {
-      const stateDir = await withPushKey(await stateDirWith('env-blank-push-key', 'pem'), ' \n');
-      await expect(createAuthFromEnv(localEnv(stateDir))).rejects.toThrow(
+      const variant = await withPushKey(await stateDirWith('env-blank-push-key', 'pem'), ' \n');
+      await expect(createAuthFromEnv(localEnv(variant))).rejects.toThrow(
         new TypeError('Local Pub/Sub push key is empty'),
       );
+    });
+
+    describe("over writeTestSecrets' files with testVerifier() overrides", () => {
+      let auth: AuthSetup;
+
+      beforeAll(async () => {
+        auth = await createAuthFromEnv(
+          localEnv(stateDir, {
+            OPT2_JWKS_URL: undefined,
+            OPT2_TOKEN_ISSUER: LOCAL_USER_TOKEN.issuer,
+            OPT2_TOKEN_AUDIENCE: LOCAL_USER_TOKEN.audience,
+          }),
+          testVerifier(),
+        );
+      });
+
+      interface SchemeCredential {
+        scheme: Transport;
+        route: string;
+        request: () => Promise<Omit<AuthRequest, 'path'>>;
+      }
+
+      /** One credential per scheme, as each arrives at the people service. */
+      const CREDENTIALS: readonly SchemeCredential[] = [
+        {
+          scheme: 'service',
+          route: PEOPLE_PATH,
+          request: async () => ({
+            headers: {
+              authorization: `Bearer ${await userToken()}`,
+              [INVOCATION_HEADER]: await localServiceBearer('gateway'),
+            },
+          }),
+        },
+        { scheme: 'pubsub-push', route: PUSH_PATH, request: () => Promise.resolve({ headers: {}, query: PUSH_QUERY }) },
+        {
+          scheme: 'cloud-tasks',
+          route: TASK_PATH,
+          request: async () => ({
+            headers: { authorization: `Bearer ${await mintTasksInvokerToken({ audience: 'people' })}` },
+          }),
+        },
+      ];
+
+      /** Reason each scheme gives a credential of another scheme, keyed by credential then scheme. */
+      const REFUSALS: Readonly<Record<Transport, Partial<Record<Transport, DenialShape>>>> = {
+        service: { 'pubsub-push': WRONG_SCHEME, 'cloud-tasks': INVALID_CREDENTIAL },
+        'pubsub-push': { service: MISSING_CREDENTIAL, 'cloud-tasks': MISSING_CREDENTIAL },
+        'cloud-tasks': { service: MISSING_CREDENTIAL, 'pubsub-push': WRONG_SCHEME },
+      };
+
+      it('assembles both verifiers, the minter and one scheme per transport', () => {
+        expect(Object.keys(auth).sort()).toEqual([
+          'invocationMinter',
+          'invocationVerifier',
+          'transports',
+          'userVerifier',
+        ]);
+        expect(Object.keys(auth.transports)).toEqual([...TRANSPORTS]);
+        expect(TRANSPORTS.map((transport) => auth.transports[transport].transport)).toEqual([...TRANSPORTS]);
+      });
+
+      it('accepts every scheme credential on its own transport', async () => {
+        const identities = await Promise.all(
+          CREDENTIALS.map(async ({ scheme, route, request }) =>
+            auth.transports[scheme].authenticate({ path: route, ...(await request()) }, { optional: false }),
+          ),
+        );
+        expect(identities).toEqual([
+          {
+            user: userClaims(),
+            userToken: expect.any(String),
+            service: { name: 'gateway', roles: ['service:gateway'] },
+          },
+          PUBSUB_INVOKER_IDENTITY,
+          TASKS_INVOKER_IDENTITY,
+        ]);
+      });
+
+      it.each(
+        CREDENTIALS.flatMap((credential) =>
+          TRANSPORTS.filter((transport) => transport !== credential.scheme).map((transport) => ({
+            ...credential,
+            transport,
+          })),
+        ),
+      )('refuses the $scheme credential on the $transport transport', async ({ scheme, route, request, transport }) => {
+        const presented = { path: route, ...(await request()) };
+        expect(await denialOf(() => auth.transports[transport].authenticate(presented, { optional: false }))).toEqual(
+          REFUSALS[scheme][transport],
+        );
+      });
     });
   });
 
@@ -1648,10 +1783,10 @@ describe('createAuthFromEnv', () => {
     }) => {
       const fetchSpy = await serveIssuerJwks();
       const auth = await createAuthFromEnv(cloudEnv(env));
-      const claims = userClaims({ iss, aud, exp: NOW + 3600 });
-      await expect(auth.userVerifier.verify(await signToken(claims, issuerKey))).resolves.toEqual(claims);
+      const overrides = { iss, aud, exp: NOW + 3600 };
+      await expect(auth.userVerifier.verify(await userToken(overrides))).resolves.toEqual(userClaims(overrides));
       expect(fetchSpy).toHaveBeenCalledWith(jwksUrl, expect.anything());
-      const refused = await signToken(userClaims({ iss: refusedIss, aud }), issuerKey);
+      const refused = await userToken({ iss: refusedIss, aud });
       expect(await denialOf(() => auth.userVerifier.verify(refused))).toEqual(INVALID_ACCESS_TOKEN);
     });
 

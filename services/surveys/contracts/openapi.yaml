@@ -1,0 +1,3446 @@
+openapi: 3.1.0
+info:
+  title: surveys
+  version: 1.0.0
+  description: 'SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/'
+  x-source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f
+servers:
+  - url: http://127.0.0.1:8117
+    description: local
+x-opt2-calls:
+  - communications
+security:
+  - userToken: []
+    invocationCredential: []
+tags:
+  - name: fixture
+    description: Fixture routes, answered byte-shaped like `legacy-fixtures/cfml/modules/surveys.cfc`.
+  - name: v1
+    description: JSON API of the OPT-2 surveys screens; a breaking change takes a /v2/ prefix.
+  - name: internal
+    description: Task, push-delivery, migration, queue-control and service-to-service routes.
+  - name: health
+    description: Liveness probe.
+paths:
+  /legacy-fixtures/cfml/api.cfm/surveys/surveys:
+    parameters:
+      - $ref: '#/components/parameters/FixtureSiteId'
+      - $ref: '#/components/parameters/UseDataNamespace'
+      - $ref: '#/components/parameters/MethodOverride'
+    get:
+      operationId: fixtureListSurveys
+      summary: Lists one page of the site's surveys, ordered by creation time and id.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - surveys.manager
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+      responses:
+        '200':
+          description: One page of surveys.
+          headers:
+            Generator:
+              $ref: '#/components/headers/Generator'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FixtureEnvelope'
+                  - type: object
+                    properties:
+                      method:
+                        type: string
+                        const: surveys.surveys
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/FixtureList'
+                          - type: object
+                            properties:
+                              items:
+                                type: array
+                                items:
+                                  $ref: '#/components/schemas/FixtureSurvey'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: fixtureCreateSurvey
+      summary: Creates a DRAFT survey in the site and returns its detail.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - surveys.manager
+      security:
+        - userToken: []
+          invocationCredential: []
+      requestBody:
+        $ref: '#/components/requestBodies/FixtureCreateSurveyCall'
+      responses:
+        '200':
+          description: The created survey.
+          headers:
+            Generator:
+              $ref: '#/components/headers/Generator'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FixtureEnvelope'
+                  - type: object
+                    properties:
+                      method:
+                        type: string
+                        const: surveys.surveys
+                      data:
+                        $ref: '#/components/schemas/FixtureSurveyDetail'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /legacy-fixtures/cfml/api.cfm/surveys/surveys/{id}:
+    parameters:
+      - $ref: '#/components/parameters/FixtureSurveyId'
+      - $ref: '#/components/parameters/FixtureSiteId'
+      - $ref: '#/components/parameters/UseDataNamespace'
+      - $ref: '#/components/parameters/MethodOverride'
+    get:
+      operationId: fixtureGetSurvey
+      summary: Reads one survey of the site with its schedule, reminders and targets.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - surveys.manager
+      security:
+        - userToken: []
+          invocationCredential: []
+      responses:
+        '200':
+          description: The survey detail.
+          headers:
+            Generator:
+              $ref: '#/components/headers/Generator'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FixtureEnvelope'
+                  - type: object
+                    properties:
+                      method:
+                        type: string
+                        const: surveys.surveys
+                      data:
+                        $ref: '#/components/schemas/FixtureSurveyDetail'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /legacy-fixtures/cfml/api.cfm/surveys/surveys/{id}/schedule:
+    parameters:
+      - $ref: '#/components/parameters/FixtureSurveyId'
+      - $ref: '#/components/parameters/FixtureSiteId'
+      - $ref: '#/components/parameters/UseDataNamespace'
+      - $ref: '#/components/parameters/MethodOverride'
+    post:
+      operationId: fixtureScheduleSurvey
+      summary: Replaces the survey's launch schedule and reminders, marks it SCHEDULED and returns its detail.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - surveys.manager
+      security:
+        - userToken: []
+          invocationCredential: []
+      requestBody:
+        $ref: '#/components/requestBodies/FixtureScheduleCall'
+      responses:
+        '200':
+          description: The survey detail with its new schedule version and reminders.
+          headers:
+            Generator:
+              $ref: '#/components/headers/Generator'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FixtureEnvelope'
+                  - type: object
+                    properties:
+                      method:
+                        type: string
+                        const: surveys.surveys.schedule
+                      data:
+                        $ref: '#/components/schemas/FixtureSurveyDetail'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '409':
+          $ref: '#/components/responses/FixtureConflict'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /legacy-fixtures/cfml/api.cfm/surveys/surveys/{id}/targets/bulk:
+    parameters:
+      - $ref: '#/components/parameters/FixtureSurveyId'
+      - $ref: '#/components/parameters/FixtureSiteId'
+      - $ref: '#/components/parameters/UseDataNamespace'
+      - $ref: '#/components/parameters/MethodOverride'
+    post:
+      operationId: fixtureBulkTargetSurvey
+      summary: Adds the distinct site and group targets the survey lacks and returns the inserted and total counts.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - surveys.manager
+      security:
+        - userToken: []
+          invocationCredential: []
+      requestBody:
+        $ref: '#/components/requestBodies/FixtureBulkTargetCall'
+      responses:
+        '200':
+          description: The counts `usp_survey_bulk_target` returns.
+          headers:
+            Generator:
+              $ref: '#/components/headers/Generator'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FixtureEnvelope'
+                  - type: object
+                    properties:
+                      method:
+                        type: string
+                        const: surveys.surveys.targets.bulk
+                      data:
+                        $ref: '#/components/schemas/FixtureBulkTargetResult'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /legacy-fixtures/cfml/api.cfm/surveys/surveys/{id}/responses:
+    parameters:
+      - $ref: '#/components/parameters/FixtureSurveyId'
+      - $ref: '#/components/parameters/FixtureSiteId'
+      - $ref: '#/components/parameters/UseDataNamespace'
+      - $ref: '#/components/parameters/MethodOverride'
+    get:
+      operationId: fixtureListSurveyResponses
+      summary: Lists one page of the survey's responses, ordered by creation time and id.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - surveys.manager
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+      responses:
+        '200':
+          description: One page of responses.
+          headers:
+            Generator:
+              $ref: '#/components/headers/Generator'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FixtureEnvelope'
+                  - type: object
+                    properties:
+                      method:
+                        type: string
+                        const: surveys.surveys.responses
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/FixtureList'
+                          - type: object
+                            properties:
+                              items:
+                                type: array
+                                items:
+                                  $ref: '#/components/schemas/FixtureSurveyResponse'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: fixtureSubmitSurveyResponse
+      summary: Stores a logged-in user's answers from the survey's site or a targeted site under the survey's site.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - member
+        - system-user
+      security:
+        - userToken: []
+          invocationCredential: []
+      requestBody:
+        $ref: '#/components/requestBodies/FixtureResponseCall'
+      responses:
+        '200':
+          description: The stored response.
+          headers:
+            Generator:
+              $ref: '#/components/headers/Generator'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FixtureEnvelope'
+                  - type: object
+                    properties:
+                      method:
+                        type: string
+                        const: surveys.surveys.responses
+                      data:
+                        $ref: '#/components/schemas/FixtureSurveyResponse'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+          description: The request site is neither the survey's site nor a targeted site, or a platform refusal.
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /legacy-fixtures/cfml/api.cfm/surveys/surveys/{id}/tasks:
+    parameters:
+      - $ref: '#/components/parameters/FixtureSurveyId'
+      - $ref: '#/components/parameters/FixtureSiteId'
+      - $ref: '#/components/parameters/UseDataNamespace'
+      - $ref: '#/components/parameters/MethodOverride'
+    get:
+      operationId: fixtureListSurveyTasks
+      summary: Lists one page of the survey's launch and reminder tasks, ordered by offset and task name.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - surveys.manager
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+      responses:
+        '200':
+          description: One page of the current schedule's tasks.
+          headers:
+            Generator:
+              $ref: '#/components/headers/Generator'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FixtureEnvelope'
+                  - type: object
+                    properties:
+                      method:
+                        type: string
+                        const: surveys.surveys.tasks
+                      data:
+                        allOf:
+                          - $ref: '#/components/schemas/FixtureList'
+                          - type: object
+                            properties:
+                              items:
+                                type: array
+                                items:
+                                  $ref: '#/components/schemas/FixtureTask'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/surveys:
+    get:
+      operationId: listSurveys
+      summary: Lists the site's surveys with their schedules for the Surveys screen, ordered by creation time and id.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - surveys.manager
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+      responses:
+        '200':
+          description: The site's surveys.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                additionalProperties: false
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Survey'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/surveys/{surveyId}:
+    parameters:
+      - $ref: '#/components/parameters/SurveyId'
+    get:
+      operationId: getSurvey
+      summary: Reads one survey of the site with its schedule.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - surveys.manager
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+      responses:
+        '200':
+          description: The survey.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                additionalProperties: false
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Survey'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/surveys/{surveyId}/schedule:
+    parameters:
+      - $ref: '#/components/parameters/SurveyId'
+    post:
+      operationId: scheduleSurvey
+      summary: Replaces the survey's launch time and reminders, marks it SCHEDULED and announces the new schedule version.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - surveys.manager
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleRequest'
+      responses:
+        '200':
+          description: The stored schedule.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                additionalProperties: false
+                properties:
+                  data:
+                    $ref: '#/components/schemas/SurveySchedule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+          description: The survey is LAUNCHED or CLOSED, so it keeps its schedule.
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/surveys/{surveyId}/targets:
+    parameters:
+      - $ref: '#/components/parameters/SurveyId'
+    get:
+      operationId: listSurveyTargets
+      summary: Lists the survey's site and group targets, ordered by site, group and id.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - surveys.manager
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+      responses:
+        '200':
+          description: The survey's targets.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                additionalProperties: false
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SurveyTarget'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/surveys/{surveyId}/targets/bulk:
+    parameters:
+      - $ref: '#/components/parameters/SurveyId'
+    post:
+      operationId: bulkTargetSurvey
+      summary: Adds the distinct site and group targets the survey lacks and grants each targeted site its responses.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - surveys.manager
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkTargetRequest'
+      responses:
+        '200':
+          description: The inserted and total target counts.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                additionalProperties: false
+                properties:
+                  data:
+                    $ref: '#/components/schemas/BulkTargetResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/surveys/{surveyId}/responses:
+    parameters:
+      - $ref: '#/components/parameters/SurveyId'
+    get:
+      operationId: listSurveyResponses
+      summary: Lists the survey's responses from every responding site, ordered by creation time and id.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - surveys.manager
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+      responses:
+        '200':
+          description: The survey's responses.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                additionalProperties: false
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SurveyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/surveys/{surveyId}/tasks:
+    parameters:
+      - $ref: '#/components/parameters/SurveyId'
+    get:
+      operationId: listSurveyTasks
+      summary: Lists the launch and reminder tasks of the survey's current schedule version, as communications holds them.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - surveys.manager
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+      responses:
+        '200':
+          description: The tasks ordered by schedule time, then launch before reminders, then ordinal.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                additionalProperties: false
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ScheduledTaskView'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: Communications or a unit gate is unavailable.
+  /internal/v1/tasks/surveys/{surveyId}/launch:
+    parameters:
+      - $ref: '#/components/parameters/SurveyId'
+    post:
+      operationId: launchSurveyTask
+      summary: Runs a `surveys-launch` task, marking the survey LAUNCHED once when its schedule version is current.
+      tags:
+        - internal
+      x-opt2-transport: cloud-tasks
+      x-opt2-requires:
+        - service:tasks-invoker
+      security:
+        - tasksInvokerOidc: []
+      parameters:
+        - $ref: '#/components/parameters/CloudTasksTaskName'
+        - $ref: '#/components/parameters/CloudTasksQueueName'
+        - $ref: '#/components/parameters/CloudTasksRetryCount'
+        - $ref: '#/components/parameters/CloudTasksExecutionCount'
+        - $ref: '#/components/parameters/CloudTasksEta'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LaunchTaskWireBody'
+      responses:
+        '200':
+          description: The launch outcome; a stale schedule version or an earlier launch answers `applied` false.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LaunchResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: A malformed task body, or a tenant under which the survey is not visible.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: The launch failed, so Cloud Tasks retries the task.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: A unit gate is closed, so Cloud Tasks retries the task.
+  /internal/v1/surveys/{surveyId}/reminders/{n}/sent:
+    parameters:
+      - $ref: '#/components/parameters/SurveyId'
+      - $ref: '#/components/parameters/ReminderOrdinal'
+    post:
+      operationId: markReminderSent
+      summary: Stamps the n-th reminder's sent time once, after communications has run its reminder task.
+      tags:
+        - internal
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:communications
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReminderSentRequest'
+      responses:
+        '200':
+          description: The outcome; an already-sent reminder or an older schedule version answers `applied` false.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReminderSentResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+          description: No reminder of that task name is visible under the body's tenant and site.
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/apply:
+    post:
+      operationId: migrationApply
+      summary: Applies one batch of canonical legacy rows to the owned units, once per batch id.
+      tags:
+        - internal
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyRequest'
+      responses:
+        '200':
+          description: The batch outcome; a repeated batch id is a no-op reported as `duplicate`.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/export:
+    get:
+      operationId: migrationExport
+      summary: Exports one page of a unit's rows in canonical legacy form.
+      tags:
+        - internal
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: unit
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - $ref: '#/components/parameters/MigrationTenantId'
+        - $ref: '#/components/parameters/MigrationSiteId'
+        - name: programId
+          in: query
+          required: false
+          description: Restricts a folded unit to one `Program_<id>` schema.
+          schema:
+            $ref: '#/components/schemas/DigitString'
+        - name: after
+          in: query
+          required: false
+          description: The previous page's `next` cursor.
+          schema:
+            type: string
+            minLength: 1
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: One export page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/changes:
+    get:
+      operationId: migrationChanges
+      summary: Reads the tenant's changelog after a cursor, below the commit-safe horizon.
+      tags:
+        - internal
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/MigrationTenantId'
+        - $ref: '#/components/parameters/MigrationSiteId'
+        - name: after
+          in: query
+          required: false
+          description: Cursor `<xid>:<seq>`; `0:0` when omitted.
+          schema:
+            type: string
+            pattern: '^(0|[1-9][0-9]*):(0|[1-9][0-9]*)$'
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: One page of changes with their legacy projections.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChangesResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/position:
+    get:
+      operationId: migrationPosition
+      summary: Reports the current write position and the outbox and inbox drain counts.
+      tags:
+        - internal
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: eventIds
+          in: query
+          required: false
+          description: Comma-separated event ids whose inbox receipts are reported.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The owner's position.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PositionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/watermark:
+    get:
+      operationId: migrationGetWatermark
+      summary: Lists feed watermarks, optionally for one legacy table or direction.
+      tags:
+        - internal
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: legacyTable
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+        - name: direction
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/WatermarkDirection'
+      responses:
+        '200':
+          description: Watermarks ordered by legacy table and direction.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WatermarkRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: migrationPutWatermark
+      summary: Records the feed watermark of one legacy table and direction.
+      tags:
+        - internal
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WatermarkInput'
+      responses:
+        '200':
+          description: The stored watermark.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatermarkRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/gate:
+    post:
+      operationId: migrationGate
+      summary: Closes, re-phases, opens or reads the unit gates of this owner.
+      tags:
+        - internal
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GateRequest'
+      responses:
+        '200':
+          description: The gates after the operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Another holder owns a gate, so the compare-and-set was refused.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GateConflict'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: The gates could not close within the wait budget.
+  /internal/v1/outbox/sweep:
+    post:
+      operationId: outboxSweep
+      summary: Creates the next sweep task, then publishes every unpublished outbox row per registry tenant.
+      tags:
+        - internal
+      x-opt2-transport: cloud-tasks
+      x-opt2-requires:
+        - service:tasks-invoker
+      security:
+        - tasksInvokerOidc: []
+      parameters:
+        - $ref: '#/components/parameters/CloudTasksTaskName'
+        - $ref: '#/components/parameters/CloudTasksQueueName'
+        - $ref: '#/components/parameters/CloudTasksRetryCount'
+        - $ref: '#/components/parameters/CloudTasksExecutionCount'
+        - $ref: '#/components/parameters/CloudTasksEta'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SweepTaskWireBody'
+      responses:
+        '200':
+          description: The sweep totals.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SweepResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: A malformed task body, or one carrying a tenant.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: The sweep failed, so Cloud Tasks retries this task.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: The successor task could not be created, so Cloud Tasks retries this one.
+  /internal/v1/events/surveys.programs-sites.site.changed.v1:
+    post:
+      operationId: consumeSiteChanged
+      summary: Receives push deliveries of `programs-sites.site.changed.v1` into this service's tenant registry.
+      description: The payload schema is `services/programs-sites/contracts/events/programs-sites.site.changed.v1.json`.
+      tags:
+        - internal
+      x-opt2-transport: pubsub-push
+      x-opt2-requires:
+        - service:pubsub-invoker
+      security:
+        - pubsubPushOidc: []
+        - localPushKey: []
+      parameters:
+        - $ref: '#/components/parameters/PushKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PushBody'
+      responses:
+        '204':
+          description: Acknowledged; the delivery was applied, already applied, or dead-lettered.
+        '400':
+          description: Not a push body; a nack.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: Processing failed; a nack, redelivered by Pub/Sub.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: A unit gate or the database is unavailable; a nack, redelivered by Pub/Sub.
+  /internal/v1/task-queues/{queue}/pause:
+    parameters:
+      - $ref: '#/components/parameters/Queue'
+    post:
+      operationId: pauseTaskQueue
+      summary: Pauses dispatch from a queue this service creates tasks on.
+      tags:
+        - internal
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+        - platform.operator
+      security:
+        - invocationCredential: []
+      responses:
+        '200':
+          $ref: '#/components/responses/QueueControlled'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: The queue is not one this service creates tasks on.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/task-queues/{queue}/resume:
+    parameters:
+      - $ref: '#/components/parameters/Queue'
+    post:
+      operationId: resumeTaskQueue
+      summary: Resumes dispatch from a queue this service creates tasks on.
+      tags:
+        - internal
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+        - platform.operator
+      security:
+        - invocationCredential: []
+      responses:
+        '200':
+          $ref: '#/components/responses/QueueControlled'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: The queue is not one this service creates tasks on.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/task-queues/{queue}/ensure:
+    parameters:
+      - $ref: '#/components/parameters/Queue'
+    post:
+      operationId: ensureTaskQueue
+      summary: Ensures the recurring chain of a queue this service creates has a live task.
+      tags:
+        - internal
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+        - platform.operator
+      security:
+        - invocationCredential: []
+      responses:
+        '200':
+          $ref: '#/components/responses/QueueControlled'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: The queue is not a recurring chain this service creates.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Liveness probe.
+      tags:
+        - health
+      x-opt2-transport: service
+      x-opt2-public: true
+      security: []
+      responses:
+        '200':
+          description: The service is running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+          description: A presented credential is invalid.
+
+components:
+  securitySchemes:
+    userToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Site-scoped user token in `Authorization`, minted by identity and attached by the gateway.
+    invocationCredential:
+      type: apiKey
+      in: header
+      name: X-Serverless-Authorization
+      description: Caller's invocation credential; a Google-signed ID token in the cloud, a local service token locally.
+    pubsubPushOidc:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: OIDC token of `pubsub-invoker` in `Authorization`, addressed to the push endpoint.
+    localPushKey:
+      type: apiKey
+      in: query
+      name: key
+      description: Local emulator push key, compared in constant time.
+    tasksInvokerOidc:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: OIDC token of `tasks-invoker` in `Authorization` in the cloud; a local `tasks-invoker` service token locally.
+  headers:
+    Generator:
+      description: Legacy generator header.
+      schema:
+        type: string
+        const: Masa CMS 7.6.1
+    StrictTransportSecurity:
+      description: Legacy HSTS header.
+      schema:
+        type: string
+        const: max-age=1200
+    ETag:
+      description: Uppercase hex SHA-256 of the exact body, unquoted, as ColdFusion `hash()` computes it.
+      schema:
+        type: string
+        pattern: '^[0-9A-F]{64}$'
+    WWWAuthenticate:
+      description: Challenge set before an authentication failure.
+      schema:
+        type: string
+    XOpt2WritePosition:
+      description: Committed write positions `<owner>=<xid>[,<owner>=<xid>…]`; the gateway strips it from client responses.
+      schema:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9-]*=[0-9]+(,[a-z0-9][a-z0-9-]*=[0-9]+)*$'
+  parameters:
+    FixtureSiteId:
+      name: siteid
+      in: query
+      required: false
+      description: Legacy site id, also read from the body, equal to the token's `site`; empty means the session site, unknown answers `invalidParameters`.
+      schema:
+        $ref: '#/components/schemas/SiteId'
+    SiteIdQuery:
+      name: siteid
+      in: query
+      required: true
+      description: Legacy site id, equal to the token's `site` (403 otherwise).
+      schema:
+        $ref: '#/components/schemas/SiteId'
+    PageIndex:
+      name: pageIndex
+      in: query
+      required: false
+      description: Page number; an empty value means 1 and any other non-integer or value below 1 answers `invalidParameters`.
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    ItemsPerPage:
+      name: itemsPerPage
+      in: query
+      required: false
+      description: Page size up to 1000; an empty value means 50 and any value outside 1 to 1000 answers `invalidParameters`.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 50
+    UseDataNamespace:
+      name: useDataNamespace
+      in: query
+      required: false
+      description: A CFML boolean; false moves the `data` keys to the envelope's top level.
+      schema:
+        type: string
+        examples:
+          - 'false'
+    MethodOverride:
+      name: X-HTTP-Method-Override
+      in: header
+      required: false
+      description: HTTP method the fixture dispatches on instead of the request method.
+      schema:
+        type: string
+    FixtureSurveyId:
+      name: id
+      in: path
+      required: true
+      description: Survey id; an id outside the request site answers `notFound`.
+      schema:
+        $ref: '#/components/schemas/CfUuid'
+    SurveyId:
+      name: surveyId
+      in: path
+      required: true
+      description: Survey id; an id outside the token's site answers 404.
+      schema:
+        $ref: '#/components/schemas/CfUuid'
+    ReminderOrdinal:
+      name: n
+      in: path
+      required: true
+      description: Reminder ordinal, the suffix of its task name.
+      schema:
+        type: integer
+        minimum: 1
+    MigrationTenantId:
+      name: tenantId
+      in: query
+      required: false
+      description: Tenant UUID; exactly one of `tenantId` and `siteId` is required.
+      schema:
+        $ref: '#/components/schemas/TenantId'
+    MigrationSiteId:
+      name: siteId
+      in: query
+      required: false
+      description: Legacy site id resolved to its tenant; exactly one of `tenantId` and `siteId` is required.
+      schema:
+        type: string
+        minLength: 1
+    PageLimit:
+      name: limit
+      in: query
+      required: false
+      description: Page size, 1 to 10000; 1000 when omitted.
+      schema:
+        $ref: '#/components/schemas/DigitString'
+    PushKey:
+      name: key
+      in: query
+      required: false
+      description: Local emulator push key; absent in the cloud.
+      schema:
+        type: string
+    CloudTasksTaskName:
+      name: X-CloudTasks-TaskName
+      in: header
+      required: false
+      description: Task id; the body's `name` when absent.
+      schema:
+        type: string
+    CloudTasksQueueName:
+      name: X-CloudTasks-QueueName
+      in: header
+      required: false
+      description: Queue name; the body's `queue` when absent.
+      schema:
+        type: string
+    CloudTasksRetryCount:
+      name: X-CloudTasks-TaskRetryCount
+      in: header
+      required: false
+      schema:
+        type: string
+        pattern: '^[0-9]+$'
+    CloudTasksExecutionCount:
+      name: X-CloudTasks-TaskExecutionCount
+      in: header
+      required: false
+      schema:
+        type: string
+        pattern: '^[0-9]+$'
+    CloudTasksEta:
+      name: X-CloudTasks-TaskETA
+      in: header
+      required: false
+      description: Scheduled time in epoch seconds.
+      schema:
+        type: string
+    Queue:
+      name: queue
+      in: path
+      required: true
+      description: A queue this service creates tasks on.
+      schema:
+        type: string
+        enum:
+          - surveys-outbox-sweep
+  requestBodies:
+    FixtureCreateSurveyCall:
+      required: false
+      description: Merged with the query string as the fixture merges url, form and a JSON body; later sources win.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/FixtureCreateSurveyRequest'
+        application/x-www-form-urlencoded:
+          schema:
+            $ref: '#/components/schemas/FixtureCreateSurveyRequest'
+    FixtureScheduleCall:
+      required: false
+      description: Merged with the query string as the fixture merges url, form and a JSON body; later sources win.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/FixtureScheduleRequest'
+        application/x-www-form-urlencoded:
+          schema:
+            $ref: '#/components/schemas/FixtureScheduleRequest'
+    FixtureBulkTargetCall:
+      required: false
+      description: Merged with the query string as the fixture merges url, form and a JSON body; later sources win.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/FixtureBulkTargetRequest'
+        application/x-www-form-urlencoded:
+          schema:
+            $ref: '#/components/schemas/FixtureBulkTargetRequest'
+    FixtureResponseCall:
+      required: false
+      description: Merged with the query string as the fixture merges url, form and a JSON body; later sources win.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/FixtureSubmitResponseRequest'
+        application/x-www-form-urlencoded:
+          schema:
+            $ref: '#/components/schemas/FixtureSubmitResponseRequest'
+  responses:
+    FixtureBadRequest:
+      description: 'Fixture 400 `invalidParameters` (message `Invalid parameters`) for an unknown site or an invalid parameter.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureErrorEnvelope'
+              - type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        const: invalid_request
+    FixtureUnauthorized:
+      description: 'Fixture 401 `authorization` without a logged-in user, or the platform''s refusal of a missing or invalid credential.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        WWW-Authenticate:
+          $ref: '#/components/headers/WWWAuthenticate'
+      content:
+        application/json:
+          schema:
+            anyOf:
+              - $ref: '#/components/schemas/FixtureErrorEnvelope'
+              - $ref: '#/components/schemas/LegacyErrorEnvelope'
+    FixtureForbidden:
+      description: 'Fixture 403 `forbidden` (message `Insufficient Account Permissions`); the user lacks a required role or the site check failed.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureErrorEnvelope'
+              - type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        const: invalid_request
+    FixtureNotFound:
+      description: 'Fixture 404 `notFound` (message `Not Found`) for a survey outside the request site.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureErrorEnvelope'
+              - type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        const: invalid_request
+    FixtureConflict:
+      description: 'Fixture 409 `conflict` (message `Conflict`); a LAUNCHED or CLOSED survey keeps its schedule.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureErrorEnvelope'
+              - type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        const: invalid_request
+    FixtureServerError:
+      description: 'Fixture 500 `server_error`, message `Unhandled Exception` unless the fixture names the failure.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureErrorEnvelope'
+              - type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        const: server_error
+    BadRequest:
+      description: 'Legacy 400: `invalidParameters` or `badRequest`.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LegacyErrorEnvelope'
+    Unauthorized:
+      description: 'Legacy 401: `authorization` without a qualifying identity, or `invalidAccessToken`/`accessTokenExpired` for a bad credential.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        WWW-Authenticate:
+          $ref: '#/components/headers/WWWAuthenticate'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LegacyErrorEnvelope'
+    Forbidden:
+      description: The identity holds none of the required roles, or a supplied `siteid` differs from the token's site.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LegacyErrorEnvelope'
+    NotFound:
+      description: 404 in the legacy error envelope for a survey outside the token's site.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LegacyErrorEnvelope'
+    Conflict:
+      description: 409 in the legacy error envelope for a request the stored state refuses.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LegacyErrorEnvelope'
+    ServerError:
+      description: Legacy 500 `server_error`.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LegacyErrorEnvelope'
+    Unavailable:
+      description: Legacy-shaped 503 after a fail-closed or wait-timeout condition.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LegacyUnavailable'
+    QueueControlled:
+      description: The queue's state after the operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/QueueControlResult'
+  schemas:
+    CfUuid:
+      type: string
+      description: ColdFusion `createUUID()` id, 35 uppercase hex characters grouped 8-4-4-16.
+      minLength: 35
+      maxLength: 35
+      pattern: '^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$'
+    TenantId:
+      type: string
+      description: Tenant UUID.
+      format: uuid
+      pattern: '^([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-8][0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}|00000000-0000-0000-0000-000000000000|[Ff]{8}-[Ff]{4}-[Ff]{4}-[Ff]{4}-[Ff]{12})$'
+    SiteId:
+      type: string
+      description: Legacy site id, as `tsettings.SiteID`.
+      minLength: 1
+      maxLength: 25
+      examples:
+        - tenant-a
+    DigitString:
+      type: string
+      description: Non-negative decimal integer without leading zeros.
+      pattern: '^(0|[1-9][0-9]{0,14})$'
+    LocalTimestamp:
+      type: string
+      description: Wall-clock time in the legacy server's zone with milliseconds, without an offset.
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}$'
+      examples:
+        - '2026-06-30T09:15:00.000'
+    LocalSecondTimestamp:
+      type: string
+      description: Wall-clock time in the legacy server's zone to the second, without an offset, as the fixture writes it.
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}$'
+      examples:
+        - '2026-06-30T09:15:00'
+    WallClock:
+      type: string
+      description: Wall-clock time without a zone, `YYYY-MM-DD HH:MM[:SS[.fff]]` with a space or `T`.
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?$'
+    NullableString:
+      type:
+        - string
+        - 'null'
+    FixtureNull:
+      type: string
+      description: A NULL column as the fixture serialises it.
+      const: ''
+    SurveyStatus:
+      type: string
+      description: Survey lifecycle state.
+      enum:
+        - DRAFT
+        - SCHEDULED
+        - LAUNCHED
+        - CLOSED
+    LaunchTaskName:
+      type: string
+      description: Launch task name of a survey.
+      maxLength: 100
+      pattern: '^opt2-survey-[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}-launch$'
+    ReminderTaskName:
+      type: string
+      description: Task name of the n-th reminder of a survey.
+      maxLength: 100
+      pattern: '^opt2-survey-[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}-reminder-[1-9][0-9]*$'
+    SurveyTaskName:
+      description: Launch or reminder task name of a survey.
+      anyOf:
+        - $ref: '#/components/schemas/LaunchTaskName'
+        - $ref: '#/components/schemas/ReminderTaskName'
+    FixtureEnvelope:
+      type: object
+      description: Fixture success envelope; `params` is absent under `suppressAPIParams`, and `data` keys move to the top level when `useDataNamespace` is false.
+      required:
+        - apiversion
+        - method
+      additionalProperties: true
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          type: string
+        params:
+          type: object
+          description: The merged request parameters without `method` and path-like values.
+          additionalProperties: true
+        data: {}
+    FixtureError:
+      type: object
+      description: Error member of the fixture envelope; `stacktrace` is present only with debugging enabled.
+      required:
+        - code
+        - message
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          enum:
+            - invalid_request
+            - server_error
+        message:
+          type: string
+        stacktrace: {}
+    FixtureErrorEnvelope:
+      type: object
+      description: Fixture error envelope.
+      required:
+        - apiversion
+        - method
+        - error
+      additionalProperties: false
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          type: string
+        params:
+          type: object
+          additionalProperties: true
+        error:
+          $ref: '#/components/schemas/FixtureError'
+    FixtureList:
+      type: object
+      description: One page of a fixture list; an empty list reports `startindex` 1, `endindex` 0 and `totalpages` 0.
+      required:
+        - items
+        - startindex
+        - endindex
+        - itemsperpage
+        - totalitems
+        - totalpages
+        - pageindex
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+        startindex:
+          type: integer
+          minimum: 1
+        endindex:
+          type: integer
+          minimum: 0
+        itemsperpage:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        totalitems:
+          type: integer
+          minimum: 0
+        totalpages:
+          type: integer
+          minimum: 0
+        pageindex:
+          type: integer
+          minimum: 1
+    LegacyErrorEnvelope:
+      type: object
+      description: 'Legacy JSON API error envelope; codes are invalid_request, invalid_token (bad bearer credential) and server_error.'
+      required:
+        - apiversion
+        - method
+        - error
+      additionalProperties: true
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          type: string
+        params:
+          type: object
+        error:
+          type: object
+          required:
+            - message
+            - code
+          additionalProperties: true
+          properties:
+            message:
+              type: string
+            code:
+              type: string
+              enum:
+                - invalid_request
+                - invalid_token
+                - server_error
+    LegacyUnavailable:
+      type: object
+      description: Legacy JSON API `server_error` envelope sent with status 503.
+      required:
+        - apiversion
+        - method
+        - error
+      additionalProperties: false
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          type: string
+        params:
+          type: object
+        error:
+          type: object
+          required:
+            - message
+            - code
+          additionalProperties: false
+          properties:
+            message:
+              type: string
+              const: Unhandled Exception
+            code:
+              type: string
+              const: server_error
+    FixtureSurvey:
+      type: object
+      description: A `synthetic.survey` row in fixture form.
+      required:
+        - survey_id
+        - siteid
+        - title
+        - status
+        - created
+        - createdbyid
+        - lastupdate
+        - lastupdatebyid
+        - launched_at
+      additionalProperties: false
+      properties:
+        survey_id:
+          $ref: '#/components/schemas/CfUuid'
+        siteid:
+          $ref: '#/components/schemas/SiteId'
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        status:
+          $ref: '#/components/schemas/SurveyStatus'
+        created:
+          $ref: '#/components/schemas/LocalSecondTimestamp'
+        createdbyid:
+          $ref: '#/components/schemas/CfUuid'
+        lastupdate:
+          oneOf:
+            - $ref: '#/components/schemas/LocalSecondTimestamp'
+            - $ref: '#/components/schemas/FixtureNull'
+        lastupdatebyid:
+          oneOf:
+            - $ref: '#/components/schemas/CfUuid'
+            - $ref: '#/components/schemas/FixtureNull'
+        launched_at:
+          oneOf:
+            - $ref: '#/components/schemas/LocalSecondTimestamp'
+            - $ref: '#/components/schemas/FixtureNull'
+    FixtureSurveyDetail:
+      type: object
+      description: A survey row with its schedule (`{}` when never scheduled), reminders and targets in fixture form.
+      required:
+        - survey_id
+        - siteid
+        - title
+        - status
+        - created
+        - createdbyid
+        - lastupdate
+        - lastupdatebyid
+        - launched_at
+        - schedule
+        - reminders
+        - targets
+      additionalProperties: false
+      properties:
+        survey_id:
+          $ref: '#/components/schemas/CfUuid'
+        siteid:
+          $ref: '#/components/schemas/SiteId'
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        status:
+          $ref: '#/components/schemas/SurveyStatus'
+        created:
+          $ref: '#/components/schemas/LocalSecondTimestamp'
+        createdbyid:
+          $ref: '#/components/schemas/CfUuid'
+        lastupdate:
+          oneOf:
+            - $ref: '#/components/schemas/LocalSecondTimestamp'
+            - $ref: '#/components/schemas/FixtureNull'
+        lastupdatebyid:
+          oneOf:
+            - $ref: '#/components/schemas/CfUuid'
+            - $ref: '#/components/schemas/FixtureNull'
+        launched_at:
+          oneOf:
+            - $ref: '#/components/schemas/LocalSecondTimestamp'
+            - $ref: '#/components/schemas/FixtureNull'
+        schedule:
+          oneOf:
+            - $ref: '#/components/schemas/FixtureSurveySchedule'
+            - type: object
+              maxProperties: 0
+        reminders:
+          type: array
+          description: Reminders in ordinal order.
+          items:
+            $ref: '#/components/schemas/FixtureSurveyReminder'
+        targets:
+          type: array
+          description: Targets ordered by site, group and id.
+          items:
+            $ref: '#/components/schemas/FixtureSurveyTarget'
+    FixtureSurveySchedule:
+      type: object
+      description: The `synthetic.survey_schedule` row of a survey in fixture form.
+      required:
+        - schedule_id
+        - survey_id
+        - launch_at
+        - schedule_version
+        - task_name
+        - created
+      additionalProperties: false
+      properties:
+        schedule_id:
+          $ref: '#/components/schemas/CfUuid'
+        survey_id:
+          $ref: '#/components/schemas/CfUuid'
+        launch_at:
+          $ref: '#/components/schemas/LocalSecondTimestamp'
+        schedule_version:
+          type: integer
+          minimum: 1
+        task_name:
+          $ref: '#/components/schemas/LaunchTaskName'
+        created:
+          $ref: '#/components/schemas/LocalSecondTimestamp'
+    FixtureSurveyReminder:
+      type: object
+      description: A `synthetic.survey_reminder` row in fixture form.
+      required:
+        - reminder_id
+        - survey_id
+        - offset_minutes
+        - remind_at
+        - task_name
+        - sent_at
+      additionalProperties: false
+      properties:
+        reminder_id:
+          $ref: '#/components/schemas/CfUuid'
+        survey_id:
+          $ref: '#/components/schemas/CfUuid'
+        offset_minutes:
+          type: integer
+          minimum: 0
+        remind_at:
+          $ref: '#/components/schemas/LocalSecondTimestamp'
+        task_name:
+          $ref: '#/components/schemas/ReminderTaskName'
+        sent_at:
+          oneOf:
+            - $ref: '#/components/schemas/LocalSecondTimestamp'
+            - $ref: '#/components/schemas/FixtureNull'
+    FixtureSurveyTarget:
+      type: object
+      description: A `synthetic.survey_target` row in fixture form; an empty `group_name` targets every user of the site.
+      required:
+        - target_id
+        - survey_id
+        - siteid
+        - group_name
+        - created
+      additionalProperties: false
+      properties:
+        target_id:
+          $ref: '#/components/schemas/CfUuid'
+        survey_id:
+          $ref: '#/components/schemas/CfUuid'
+        siteid:
+          $ref: '#/components/schemas/SiteId'
+        group_name:
+          type: string
+          maxLength: 255
+        created:
+          $ref: '#/components/schemas/LocalSecondTimestamp'
+    FixtureSurveyResponse:
+      type: object
+      description: A `synthetic.survey_response` row in fixture form; `siteid` is the survey's site.
+      required:
+        - response_id
+        - survey_id
+        - siteid
+        - respondentsiteid
+        - respondent_user_id
+        - answers
+        - created
+      additionalProperties: false
+      properties:
+        response_id:
+          $ref: '#/components/schemas/CfUuid'
+        survey_id:
+          $ref: '#/components/schemas/CfUuid'
+        siteid:
+          $ref: '#/components/schemas/SiteId'
+        respondentsiteid:
+          $ref: '#/components/schemas/SiteId'
+        respondent_user_id:
+          $ref: '#/components/schemas/CfUuid'
+        answers:
+          type: string
+          description: The stored answers text.
+        created:
+          $ref: '#/components/schemas/LocalSecondTimestamp'
+    FixtureTask:
+      type: object
+      description: One task of the survey's current schedule, with its callback route and offset from the launch time.
+      required:
+        - taskname
+        - kind
+        - route
+        - offsetminutes
+      additionalProperties: false
+      properties:
+        taskname:
+          $ref: '#/components/schemas/SurveyTaskName'
+        kind:
+          type: string
+          enum:
+            - launch
+            - reminder
+        route:
+          type: string
+          description: Path the task calls, without origin and query.
+          pattern: '^/'
+        offsetminutes:
+          type: integer
+          minimum: 0
+    FixtureBulkTargetResult:
+      type: object
+      description: Targets inserted by the request and the survey's target total.
+      required:
+        - inserted
+        - total
+      additionalProperties: false
+      properties:
+        inserted:
+          type: integer
+          minimum: 0
+        total:
+          type: integer
+          minimum: 0
+    FixtureCreateSurveyRequest:
+      type: object
+      description: Fields of a new survey; other parameters are ignored.
+      required:
+        - title
+      additionalProperties: true
+      properties:
+        siteid:
+          $ref: '#/components/schemas/SiteId'
+        title:
+          type: string
+          description: Survey title; blank answers `invalidParameters`.
+          minLength: 1
+          maxLength: 255
+    FixtureScheduleRequest:
+      type: object
+      description: Launch time and reminder offsets; other parameters are ignored.
+      required:
+        - launchAt
+      additionalProperties: true
+      properties:
+        siteid:
+          $ref: '#/components/schemas/SiteId'
+        launchAt:
+          $ref: '#/components/schemas/LocalSecondTimestamp'
+        reminders:
+          description: Reminders in ordinal order, as an array or its JSON text; empty or absent schedules none.
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+                required:
+                  - offsetMinutes
+                additionalProperties: true
+                properties:
+                  offsetMinutes:
+                    description: Minutes after `launchAt`; negative values answer `invalidParameters`.
+                    type:
+                      - integer
+                      - string
+    FixtureBulkTargetRequest:
+      type: object
+      description: Targets passed to `usp_survey_bulk_target`; other parameters are ignored.
+      required:
+        - targets
+      additionalProperties: true
+      properties:
+        siteid:
+          $ref: '#/components/schemas/SiteId'
+        targets:
+          description: Targets as an array or its JSON text; each needs a non-empty `siteID`.
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+                required:
+                  - siteID
+                additionalProperties: true
+                properties:
+                  siteID:
+                    type: string
+                    minLength: 1
+                    maxLength: 25
+                  groupName:
+                    type:
+                      - string
+                      - 'null'
+                    maxLength: 255
+    FixtureSubmitResponseRequest:
+      type: object
+      description: A respondent's answers; other parameters are ignored.
+      required:
+        - answers
+      additionalProperties: true
+      properties:
+        siteid:
+          $ref: '#/components/schemas/SiteId'
+        answers:
+          type: string
+          description: Answers text, stored as given.
+          minLength: 1
+    Survey:
+      type: object
+      description: A survey of the site with its current schedule.
+      required:
+        - surveyId
+        - siteId
+        - title
+        - status
+        - created
+        - createdById
+        - lastUpdate
+        - lastUpdateById
+        - launchedAt
+        - schedule
+      additionalProperties: false
+      properties:
+        surveyId:
+          $ref: '#/components/schemas/CfUuid'
+        siteId:
+          $ref: '#/components/schemas/SiteId'
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        status:
+          $ref: '#/components/schemas/SurveyStatus'
+        created:
+          $ref: '#/components/schemas/LocalTimestamp'
+        createdById:
+          $ref: '#/components/schemas/CfUuid'
+        lastUpdate:
+          oneOf:
+            - $ref: '#/components/schemas/LocalTimestamp'
+            - type: 'null'
+        lastUpdateById:
+          oneOf:
+            - $ref: '#/components/schemas/CfUuid'
+            - type: 'null'
+        launchedAt:
+          oneOf:
+            - $ref: '#/components/schemas/LocalTimestamp'
+            - type: 'null'
+        schedule:
+          description: The current schedule; null when never scheduled.
+          oneOf:
+            - $ref: '#/components/schemas/SurveySchedule'
+            - type: 'null'
+    SurveySchedule:
+      type: object
+      description: The launch schedule of a survey with its reminders in ordinal order.
+      required:
+        - surveyId
+        - launchAt
+        - scheduleVersion
+        - launchTaskName
+        - reminders
+      additionalProperties: false
+      properties:
+        surveyId:
+          $ref: '#/components/schemas/CfUuid'
+        launchAt:
+          $ref: '#/components/schemas/LocalTimestamp'
+        scheduleVersion:
+          type: integer
+          description: 1 when first scheduled, incremented on each reschedule.
+          minimum: 1
+        launchTaskName:
+          $ref: '#/components/schemas/LaunchTaskName'
+        reminders:
+          type: array
+          items:
+            $ref: '#/components/schemas/SurveyReminder'
+    SurveyReminder:
+      type: object
+      description: One reminder of a survey schedule.
+      required:
+        - reminderId
+        - n
+        - offsetMinutes
+        - remindAt
+        - taskName
+        - sentAt
+      additionalProperties: false
+      properties:
+        reminderId:
+          $ref: '#/components/schemas/CfUuid'
+        n:
+          type: integer
+          description: Reminder ordinal, 1-based in request order; the task name suffix.
+          minimum: 1
+        offsetMinutes:
+          type: integer
+          description: Minutes after the launch time.
+          minimum: 0
+        remindAt:
+          $ref: '#/components/schemas/LocalTimestamp'
+        taskName:
+          $ref: '#/components/schemas/ReminderTaskName'
+        sentAt:
+          description: When communications reported the reminder sent; null until then.
+          oneOf:
+            - $ref: '#/components/schemas/LocalTimestamp'
+            - type: 'null'
+    SurveyTarget:
+      type: object
+      description: A site, optionally narrowed to one group, that a survey targets.
+      required:
+        - targetId
+        - surveyId
+        - siteId
+        - groupName
+        - created
+      additionalProperties: false
+      properties:
+        targetId:
+          $ref: '#/components/schemas/CfUuid'
+        surveyId:
+          $ref: '#/components/schemas/CfUuid'
+        siteId:
+          $ref: '#/components/schemas/SiteId'
+        groupName:
+          description: Group name within the site; null targets every user of the site.
+          type:
+            - string
+            - 'null'
+          maxLength: 255
+        created:
+          $ref: '#/components/schemas/LocalTimestamp'
+    SurveyResponse:
+      type: object
+      description: One response, stored under the survey's site with the respondent's site alongside.
+      required:
+        - responseId
+        - surveyId
+        - siteId
+        - respondentSiteId
+        - respondentUserId
+        - answers
+        - created
+      additionalProperties: false
+      properties:
+        responseId:
+          $ref: '#/components/schemas/CfUuid'
+        surveyId:
+          $ref: '#/components/schemas/CfUuid'
+        siteId:
+          $ref: '#/components/schemas/SiteId'
+        respondentSiteId:
+          $ref: '#/components/schemas/SiteId'
+        respondentUserId:
+          $ref: '#/components/schemas/CfUuid'
+        answers:
+          type: string
+          description: Answers text exactly as stored.
+        created:
+          $ref: '#/components/schemas/LocalTimestamp'
+    ScheduledTaskView:
+      type: object
+      description: One launch or reminder task of the current schedule version, from communications' scheduled-task list.
+      required:
+        - taskName
+        - kind
+        - scheduleTime
+        - status
+      additionalProperties: false
+      properties:
+        taskName:
+          $ref: '#/components/schemas/SurveyTaskName'
+        kind:
+          type: string
+          description: '`launch` for `survey-launch`, `reminder` for `survey-reminder`.'
+          enum:
+            - launch
+            - reminder
+        scheduleTime:
+          $ref: '#/components/schemas/LocalTimestamp'
+        status:
+          type: string
+          enum:
+            - scheduled
+            - done
+            - failed
+            - cancelled
+            - superseded
+    ScheduleRequest:
+      type: object
+      description: New launch time and reminder offsets of a survey; reminder ordinals follow array order.
+      required:
+        - launchAt
+      additionalProperties: false
+      properties:
+        launchAt:
+          $ref: '#/components/schemas/LocalSecondTimestamp'
+        reminders:
+          type: array
+          description: Reminders in ordinal order; empty or absent schedules none.
+          items:
+            type: object
+            required:
+              - offsetMinutes
+            additionalProperties: false
+            properties:
+              offsetMinutes:
+                type: integer
+                description: Minutes after `launchAt`; the reminder time must not pass 9999-12-31T23:59:59.
+                minimum: 0
+    BulkTargetRequest:
+      type: object
+      description: Sites and groups to add as targets; ones the survey already has are skipped.
+      required:
+        - targets
+      additionalProperties: false
+      properties:
+        targets:
+          type: array
+          items:
+            type: object
+            required:
+              - siteId
+            additionalProperties: false
+            properties:
+              siteId:
+                $ref: '#/components/schemas/SiteId'
+              groupName:
+                description: Group name within the site; null or absent targets every user of the site.
+                type:
+                  - string
+                  - 'null'
+                maxLength: 255
+    BulkTargetResult:
+      type: object
+      description: Targets inserted by the request and the survey's target total.
+      required:
+        - inserted
+        - total
+      additionalProperties: false
+      properties:
+        inserted:
+          type: integer
+          minimum: 0
+        total:
+          type: integer
+          minimum: 0
+    TaskWireBody:
+      type: object
+      description: JSON body both task adapters post; `tenantId` is null on system tasks.
+      required:
+        - queue
+        - name
+        - tenantId
+      additionalProperties: true
+      properties:
+        queue:
+          type: string
+          minLength: 1
+        name:
+          type: string
+          minLength: 1
+        tenantId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        payload: {}
+    LaunchTaskWireBody:
+      description: Task wire body of a launch task, which names the tenant of its survey.
+      allOf:
+        - $ref: '#/components/schemas/TaskWireBody'
+        - type: object
+          required:
+            - queue
+            - tenantId
+            - payload
+          properties:
+            queue:
+              type: string
+              const: surveys-launch
+            tenantId:
+              $ref: '#/components/schemas/TenantId'
+            payload:
+              $ref: '#/components/schemas/LaunchPayload'
+    LaunchPayload:
+      type: object
+      description: The survey and schedule version a launch task was created for.
+      required:
+        - surveyId
+        - siteId
+        - scheduleVersion
+      additionalProperties: false
+      properties:
+        surveyId:
+          $ref: '#/components/schemas/CfUuid'
+        siteId:
+          $ref: '#/components/schemas/SiteId'
+        scheduleVersion:
+          type: integer
+          minimum: 1
+    LaunchResult:
+      type: object
+      description: Whether the task launched the survey, and the survey's status after it.
+      required:
+        - applied
+        - status
+      additionalProperties: false
+      properties:
+        applied:
+          type: boolean
+        status:
+          $ref: '#/components/schemas/SurveyStatus'
+    SweepTaskWireBody:
+      description: Task wire body of the `surveys-outbox-sweep` chain, which names no tenant.
+      allOf:
+        - $ref: '#/components/schemas/TaskWireBody'
+        - type: object
+          required:
+            - queue
+            - tenantId
+          properties:
+            queue:
+              type: string
+              const: surveys-outbox-sweep
+            tenantId:
+              type: 'null'
+    ReminderSentRequest:
+      type: object
+      description: A reminder communications sent; tenant and site are re-checked against the stored reminder.
+      required:
+        - tenantId
+        - siteId
+        - taskName
+        - scheduleVersion
+        - sentAt
+      additionalProperties: false
+      properties:
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        siteId:
+          $ref: '#/components/schemas/SiteId'
+        taskName:
+          $ref: '#/components/schemas/ReminderTaskName'
+        scheduleVersion:
+          type: integer
+          description: Schedule version the reminder task belongs to.
+          minimum: 1
+        sentAt:
+          $ref: '#/components/schemas/LocalTimestamp'
+    ReminderSentResult:
+      type: object
+      description: Whether the reminder's sent time was stamped.
+      required:
+        - applied
+      additionalProperties: false
+      properties:
+        applied:
+          type: boolean
+    PushBody:
+      type: object
+      description: Pub/Sub push wrapper; `data` is the base64 event envelope.
+      required:
+        - message
+        - subscription
+      additionalProperties: true
+      properties:
+        message:
+          type: object
+          additionalProperties: true
+          properties:
+            data:
+              type: string
+              contentEncoding: base64
+            attributes:
+              type: object
+              additionalProperties:
+                type: string
+            messageId:
+              type: string
+            message_id:
+              type: string
+            publishTime:
+              type: string
+            publish_time:
+              type: string
+            orderingKey:
+              type: string
+          allOf:
+            - anyOf:
+                - required:
+                    - messageId
+                  properties:
+                    messageId:
+                      minLength: 1
+                - required:
+                    - message_id
+                  properties:
+                    message_id:
+                      minLength: 1
+        subscription:
+          type: string
+          minLength: 1
+          description: Usually `projects/<project>/subscriptions/surveys.programs-sites.site.changed.v1`.
+        deliveryAttempt:
+          type: integer
+    SweepResult:
+      type: object
+      description: Totals of one sweep and each recovery hook's outcome in run order.
+      required:
+        - published
+        - failed
+        - skipped
+        - tenants
+        - hooks
+      additionalProperties: false
+      properties:
+        published:
+          type: integer
+          minimum: 0
+        failed:
+          type: integer
+          minimum: 0
+        skipped:
+          type: integer
+          minimum: 0
+        tenants:
+          type: integer
+          minimum: 0
+        hooks:
+          type: array
+          items:
+            type: object
+            required:
+              - name
+              - ok
+            additionalProperties: false
+            properties:
+              name:
+                type: string
+              ok:
+                type: boolean
+    EnsureRecurringResult:
+      type: object
+      description: The chain task `ensure` found live or created.
+      required:
+        - queue
+        - name
+        - created
+        - reason
+      additionalProperties: false
+      properties:
+        queue:
+          type: string
+        name:
+          type: string
+        created:
+          type: boolean
+        reason:
+          type: string
+          enum:
+            - live
+            - created-current
+            - created-next
+    QueueControlResult:
+      type: object
+      description: The queue's paused state after pause or resume, or the chain task `ensure` found or created.
+      required:
+        - queue
+        - service
+      additionalProperties: false
+      properties:
+        queue:
+          type: string
+        service:
+          type: string
+          const: surveys
+        paused:
+          type: boolean
+        ensured:
+          $ref: '#/components/schemas/EnsureRecurringResult'
+    CanonicalType:
+      type: string
+      description: Canonical encoding tag.
+      enum:
+        - s
+        - i
+        - f
+        - d
+        - t
+        - b
+    CanonicalColumn:
+      type: object
+      required:
+        - name
+        - type
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+        type:
+          $ref: '#/components/schemas/CanonicalType'
+        scale:
+          type: integer
+          minimum: 0
+    WatermarkDirection:
+      type: string
+      enum:
+        - forward
+        - reverse
+    WatermarkFields:
+      type: object
+      required:
+        - direction
+        - finishedAt
+      properties:
+        direction:
+          $ref: '#/components/schemas/WatermarkDirection'
+        snapshotSeq:
+          type: integer
+          minimum: 0
+        backupLsn:
+          type: string
+          pattern: '^[0-9]{1,25}$'
+        finishedAt:
+          $ref: '#/components/schemas/WallClock'
+    ApplyRequest:
+      type: object
+      description: One batch of canonical legacy rows for one legacy table and tenant; exactly one of `tenantId` and `siteId` is required.
+      required:
+        - batchId
+        - origin
+        - legacyTable
+        - columns
+        - rows
+      oneOf:
+        - required:
+            - tenantId
+        - required:
+            - siteId
+      additionalProperties: false
+      properties:
+        batchId:
+          type: string
+          minLength: 1
+        origin:
+          type: string
+          enum:
+            - backfill
+            - migration-feed
+            - legacy-window
+        legacyTable:
+          type: string
+          minLength: 1
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        siteId:
+          type: string
+          minLength: 1
+        legacyProgramId:
+          type: integer
+          minimum: 0
+        columns:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/CanonicalColumn'
+        units:
+          type: array
+          items:
+            type: string
+            minLength: 1
+        holderId:
+          type: string
+          minLength: 1
+        rows:
+          type: array
+          items:
+            type: object
+            required:
+              - op
+              - row
+            additionalProperties: false
+            properties:
+              op:
+                type: string
+                enum:
+                  - upsert
+                  - delete
+                  - insert
+              row:
+                type: string
+              discriminator:
+                type:
+                  - string
+                  - number
+        watermark:
+          allOf:
+            - $ref: '#/components/schemas/WatermarkFields'
+          unevaluatedProperties: false
+    ApplyResponse:
+      type: object
+      required:
+        - batchId
+        - duplicate
+        - applied
+        - skipped
+      additionalProperties: false
+      properties:
+        batchId:
+          type: string
+        duplicate:
+          type: boolean
+        applied:
+          type: integer
+          minimum: 0
+        skipped:
+          type: integer
+          minimum: 0
+    ObjectManifestEntry:
+      type: object
+      required:
+        - key
+        - size
+        - sha256
+      additionalProperties: false
+      properties:
+        key:
+          type: string
+        size:
+          type: integer
+          minimum: 0
+        sha256:
+          type: string
+        contentType:
+          type: string
+        legacyPath:
+          type: string
+    ExportRow:
+      type: object
+      description: One row in legacy form; `key` is the whole-row encoding for keyless tables.
+      required:
+        - key
+        - row
+        - hash
+      additionalProperties: false
+      properties:
+        key:
+          type: string
+        row:
+          type: string
+        hash:
+          type: string
+        legacyProgramId:
+          type: integer
+    ExportTable:
+      type: object
+      required:
+        - unit
+        - legacyTable
+        - targetTable
+        - keyless
+        - columns
+        - rows
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        legacyTable:
+          type: string
+        targetTable:
+          type: string
+        keyless:
+          type: boolean
+        columns:
+          type: array
+          items:
+            $ref: '#/components/schemas/CanonicalColumn'
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExportRow'
+    ExportResponse:
+      type: object
+      description: One export page; `next` is null after the last page, and `objects` comes with the first page only.
+      required:
+        - unit
+        - tenantId
+        - tables
+        - next
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        tables:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExportTable'
+        next:
+          type:
+            - string
+            - 'null'
+        objects:
+          type: array
+          items:
+            $ref: '#/components/schemas/ObjectManifestEntry'
+    ChangeOp:
+      type: string
+      enum:
+        - insert
+        - update
+        - delete
+    ChangeOrigin:
+      type: string
+      enum:
+        - target
+        - legacy-window
+        - migration-feed
+        - backfill
+    LegacyChange:
+      type: object
+      description: A changelog row in the legacy form of one mapping; `columns` are legacy names.
+      required:
+        - unit
+        - legacyTable
+        - key
+        - before
+        - after
+        - columns
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        legacyTable:
+          type: string
+        key:
+          type: string
+        before:
+          $ref: '#/components/schemas/NullableString'
+        after:
+          $ref: '#/components/schemas/NullableString'
+        columns:
+          type: array
+          items:
+            type: string
+        legacyProgramId:
+          type: integer
+    ChangeRow:
+      type: object
+      description: One changelog row; `xid` and `seq` are decimal strings, `at` is `YYYY-MM-DD HH:MM:SS.mmm`.
+      required:
+        - xid
+        - seq
+        - table
+        - op
+        - key
+        - before
+        - after
+        - columns
+        - origin
+        - actorUserId
+        - actorService
+        - at
+        - requestId
+        - operationId
+      properties:
+        xid:
+          type: string
+          pattern: '^[0-9]+$'
+        seq:
+          type: string
+          pattern: '^[0-9]+$'
+        table:
+          type: string
+        op:
+          $ref: '#/components/schemas/ChangeOp'
+        key:
+          type: string
+        before:
+          $ref: '#/components/schemas/NullableString'
+        after:
+          $ref: '#/components/schemas/NullableString'
+        columns:
+          type: array
+          items:
+            type: string
+        origin:
+          $ref: '#/components/schemas/ChangeOrigin'
+        actorUserId:
+          $ref: '#/components/schemas/NullableString'
+        actorService:
+          $ref: '#/components/schemas/NullableString'
+        at:
+          type: string
+        requestId:
+          $ref: '#/components/schemas/NullableString'
+        operationId:
+          $ref: '#/components/schemas/NullableString'
+    ProjectedChangeRow:
+      description: A changelog row with one legacy projection per mapping of its table; none for unmapped tables.
+      allOf:
+        - $ref: '#/components/schemas/ChangeRow'
+        - type: object
+          required:
+            - legacy
+          properties:
+            legacy:
+              type: array
+              items:
+                $ref: '#/components/schemas/LegacyChange'
+      unevaluatedProperties: false
+    OperationStatus:
+      type: string
+      enum:
+        - open
+        - done
+        - rolled-back
+    ChangesResponse:
+      type: object
+      description: Rows below `horizon` in `(xid, seq)` order; `horizon` counts as applied only when `complete`.
+      required:
+        - rows
+        - cursor
+        - horizon
+        - complete
+        - operations
+      additionalProperties: false
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectedChangeRow'
+        cursor:
+          type: string
+          pattern: '^[0-9]+:[0-9]+$'
+        horizon:
+          type: string
+          pattern: '^[0-9]+$'
+        complete:
+          type: boolean
+        operations:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/OperationStatus'
+    TenantDrainCount:
+      type: object
+      required:
+        - tenantId
+        - unpublished
+        - held
+      additionalProperties: false
+      properties:
+        tenantId:
+          type: string
+        unpublished:
+          type: integer
+          minimum: 0
+        held:
+          type: integer
+          minimum: 0
+    OutboxDrainCounts:
+      type: object
+      required:
+        - tenants
+        - unpublished
+        - held
+      additionalProperties: false
+      properties:
+        tenants:
+          type: array
+          items:
+            $ref: '#/components/schemas/TenantDrainCount'
+        unpublished:
+          type: integer
+          minimum: 0
+        held:
+          type: integer
+          minimum: 0
+    InboxCounts:
+      type: object
+      description: Inbox receipts over every registered tenant; `receipts` maps each asked event id to the tenants that applied it.
+      required:
+        - total
+        - bySubscription
+      additionalProperties: false
+      properties:
+        total:
+          type: integer
+          minimum: 0
+        bySubscription:
+          type: object
+          additionalProperties:
+            type: integer
+        receipts:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+    PositionResponse:
+      type: object
+      description: The latest assigned xid and the drain counts; `outbox` or `inbox` is null where the service has no such table.
+      required:
+        - owner
+        - position
+        - outbox
+        - inbox
+      additionalProperties: false
+      properties:
+        owner:
+          type: string
+          const: surveys
+        position:
+          type: string
+          pattern: '^[0-9]+$'
+        outbox:
+          oneOf:
+            - $ref: '#/components/schemas/OutboxDrainCounts'
+            - type: 'null'
+        inbox:
+          oneOf:
+            - $ref: '#/components/schemas/InboxCounts'
+            - type: 'null'
+    WatermarkRecord:
+      type: object
+      required:
+        - legacyTable
+        - direction
+        - snapshotSeq
+        - backupLsn
+        - finishedAt
+      additionalProperties: false
+      properties:
+        legacyTable:
+          type: string
+        direction:
+          $ref: '#/components/schemas/WatermarkDirection'
+        snapshotSeq:
+          type:
+            - integer
+            - 'null'
+        backupLsn:
+          $ref: '#/components/schemas/NullableString'
+        finishedAt:
+          $ref: '#/components/schemas/LocalTimestamp'
+    WatermarkInput:
+      description: A watermark to record for one legacy table.
+      allOf:
+        - $ref: '#/components/schemas/WatermarkFields'
+        - type: object
+          required:
+            - legacyTable
+          properties:
+            legacyTable:
+              type: string
+              minLength: 1
+      unevaluatedProperties: false
+    GateState:
+      type: string
+      enum:
+        - legacy
+        - open
+        - closed
+    GatePhase:
+      type: string
+      enum:
+        - quiet
+        - executing
+        - importing
+        - import-pending
+    UnitList:
+      type: array
+      minItems: 1
+      items:
+        type: string
+        minLength: 1
+    GateRequest:
+      description: One gate operation, selected by `op`.
+      oneOf:
+        - $ref: '#/components/schemas/GateClose'
+        - $ref: '#/components/schemas/GatePhaseChange'
+        - $ref: '#/components/schemas/GateOpen'
+        - $ref: '#/components/schemas/GateStatus'
+      discriminator:
+        propertyName: op
+        mapping:
+          close: '#/components/schemas/GateClose'
+          phase: '#/components/schemas/GatePhaseChange'
+          open: '#/components/schemas/GateOpen'
+          status: '#/components/schemas/GateStatus'
+    GateClose:
+      type: object
+      description: Closes the units' gates for a holder; `allowLegacy` lets a transition close units still `legacy`.
+      required:
+        - op
+        - units
+        - holderId
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: close
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+        phase:
+          $ref: '#/components/schemas/GatePhase'
+        allowLegacy:
+          type: boolean
+        timeoutMs:
+          type: integer
+          minimum: 1
+          maximum: 30000
+    GatePhaseChange:
+      type: object
+      description: Sets the phase of gates the holder closed.
+      required:
+        - op
+        - units
+        - holderId
+        - phase
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: phase
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+        phase:
+          $ref: '#/components/schemas/GatePhase'
+    GateOpen:
+      type: object
+      description: Reopens the holder's gates as `open`, or sets them to `legacy`.
+      required:
+        - op
+        - units
+        - holderId
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: open
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+        state:
+          type: string
+          enum:
+            - open
+            - legacy
+    GateStatus:
+      type: object
+      description: Reads the gates; every unit of this owner when `units` is omitted.
+      required:
+        - op
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: status
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+    UnitGate:
+      type: object
+      required:
+        - unit
+        - state
+        - holderId
+        - phase
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        state:
+          $ref: '#/components/schemas/GateState'
+        holderId:
+          $ref: '#/components/schemas/NullableString'
+        phase:
+          $ref: '#/components/schemas/GatePhase'
+    GateResponse:
+      type: object
+      required:
+        - units
+      additionalProperties: false
+      properties:
+        units:
+          type: array
+          items:
+            $ref: '#/components/schemas/UnitGate'
+    GateConflict:
+      type: object
+      description: The units whose gate another holder owns.
+      required:
+        - error
+        - units
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          const: gate-conflict
+        units:
+          type: array
+          items:
+            type: string
+    Health:
+      type: object
+      required:
+        - status
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          const: ok
