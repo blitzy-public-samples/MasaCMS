@@ -23,7 +23,7 @@ import {
   SchedulerStateConflictError,
   defaultSiteMonitorRecord,
   type NativeTask,
-  type NativeTasksRecord,
+  type SchedulerRecordMap,
   type SiteMonitorRecord,
 } from '../../src/scheduler/state.js';
 
@@ -94,8 +94,8 @@ class SchedulerTable {
     this.rows.set(key, structuredClone(value));
   }
 
-  stored<T>(key: string): T {
-    return this.rows.get(key) as T;
+  stored<K extends keyof SchedulerRecordMap>(key: K): SchedulerRecordMap[K] {
+    return this.rows.get(key) as SchedulerRecordMap[K];
   }
 
   db(): TenantDb {
@@ -221,8 +221,7 @@ describe('normaliseNativeTasksFile', () => {
     expect(normalised.capturedAt).toBeNull();
     expect(normalised.tasks).toEqual([MONITOR, SURVEY]);
     expect(normaliseNativeTasksFile(normalised)).toEqual(normalised);
-    const fileDigest = nativeTasksDigest(normaliseNativeTasksFile({ ...CAPTURE, siteMonitorTask: null }));
-    expect(nativeTasksDigest(normalised)).toBe(fileDigest);
+    expect(nativeTasksDigest(normalised)).toBe(nativeTasksDigest(normaliseNativeTasksFile(CAPTURE)));
   });
 
   it.each([
@@ -262,7 +261,7 @@ describe('importNativeTasks', () => {
     const outcome = await importNativeTasks(deps(table, T2), CAPTURE);
     const sourceSha256 = nativeTasksDigest(normaliseNativeTasksFile(CAPTURE));
     expect(outcome).toEqual({ imported: true, reason: 'imported', nativeExisted: true, siteMonitorTask: MONITOR_NAME, taskCount: 2, sourceSha256 });
-    expect(table.stored<NativeTasksRecord>('nativeTasks')).toEqual({
+    expect(table.stored('nativeTasks')).toEqual({
       capturedAt: CAPTURED_AT,
       originalPing: true,
       siteMonitorTask: MONITOR_NAME,
@@ -270,7 +269,7 @@ describe('importNativeTasks', () => {
       sourceSha256,
       importedAt: T2.toISOString(),
     });
-    expect(table.stored<SiteMonitorRecord>('sitemonitor')).toEqual({
+    expect(table.stored('sitemonitor')).toEqual({
       ...current,
       nativeExisted: true,
       originalPing: true,
@@ -285,7 +284,7 @@ describe('importNativeTasks', () => {
     const table = new SchedulerTable();
     const outcome = await importNativeTasks(deps(table), { capturedAt: CAPTURED_AT, originalPing: false, tasks: [SURVEY] });
     expect(outcome).toMatchObject({ imported: true, reason: 'imported', nativeExisted: false, siteMonitorTask: null, taskCount: 1 });
-    expect(table.stored<SiteMonitorRecord>('sitemonitor')).toMatchObject({
+    expect(table.stored('sitemonitor')).toMatchObject({
       nativeExisted: false,
       originalPing: false,
       definition: null,
@@ -298,13 +297,13 @@ describe('importNativeTasks', () => {
     const custom = { ...MONITOR, task: 'Masa monitor', url: 'http://localhost:8080/monitor.cfm' };
     const outcome = await importNativeTasks(deps(table), { ...CAPTURE, siteMonitorTask: 'Masa monitor', tasks: [custom] });
     expect(outcome).toMatchObject({ nativeExisted: true, siteMonitorTask: 'Masa monitor' });
-    expect(table.stored<SiteMonitorRecord>('sitemonitor').definition).toEqual(custom);
+    expect(table.stored('sitemonitor').definition).toEqual(custom);
   });
 
   it('stores the import time as the capture time of a request body', async () => {
     const table = new SchedulerTable();
     await importNativeTasks(deps(table, T2), { nativeTasks: [cfconfigTask(MONITOR)], ping: null });
-    expect(table.stored<NativeTasksRecord>('nativeTasks')).toMatchObject({ capturedAt: T2.toISOString(), originalPing: null });
+    expect(table.stored('nativeTasks')).toMatchObject({ capturedAt: T2.toISOString(), originalPing: null });
   });
 
   it('replaces a different capture before the hand-off', async () => {
@@ -312,16 +311,16 @@ describe('importNativeTasks', () => {
     await importNativeTasks(deps(table), CAPTURE);
     const outcome = await importNativeTasks(deps(table, T2), { ...CAPTURE, originalPing: false, tasks: [SURVEY] });
     expect(outcome).toMatchObject({ imported: true, reason: 'replaced', nativeExisted: false, taskCount: 1 });
-    expect(table.stored<NativeTasksRecord>('nativeTasks').importedAt).toBe(T2.toISOString());
-    expect(table.stored<SiteMonitorRecord>('sitemonitor')).toMatchObject({ nativeExisted: false, definition: null });
+    expect(table.stored('nativeTasks').importedAt).toBe(T2.toISOString());
+    expect(table.stored('sitemonitor')).toMatchObject({ nativeExisted: false, definition: null });
   });
 
   it('refuses a different capture after the monitor was handed off, writing nothing', async () => {
     const table = new SchedulerTable();
     await importNativeTasks(deps(table), CAPTURE);
-    const handedOff = { ...table.stored<SiteMonitorRecord>('sitemonitor'), state: 'target', handedOffAt: T1.toISOString() };
+    const handedOff = { ...table.stored('sitemonitor'), state: 'target', handedOffAt: T1.toISOString() };
     table.seed('sitemonitor', handedOff);
-    const capture = structuredClone(table.stored<NativeTasksRecord>('nativeTasks'));
+    const capture = structuredClone(table.stored('nativeTasks'));
     const inserts = table.inserts;
 
     await expect(importNativeTasks(deps(table, T2), { ...CAPTURE, tasks: [MONITOR] })).rejects.toThrow(SchedulerStateConflictError);
@@ -329,6 +328,22 @@ describe('importNativeTasks', () => {
     expect(table.stored('sitemonitor')).toEqual(handedOff);
     expect(table.inserts).toBe(inserts);
     await expect(importNativeTasks(deps(table, T2), CFCONFIG_CAPTURE)).resolves.toMatchObject({ reason: 'unchanged' });
+  });
+
+  it.each([
+    ['before', {}],
+    ['after', { state: 'target', handedOffAt: T1.toISOString() }],
+  ] as const)('reports the request body of a capture whose file names its monitor unchanged %s the hand-off', async (_when, handOff) => {
+    const table = new SchedulerTable();
+    const imported = await importNativeTasks(deps(table), CAPTURE);
+    const monitor = { ...table.stored('sitemonitor'), ...handOff };
+    table.seed('sitemonitor', monitor);
+    const inserts = table.inserts;
+
+    const body = { nativeTasks: Object.values(CFCONFIG_CAPTURE.scheduledTasks), ping: true };
+    await expect(importNativeTasks(deps(table, T2), body)).resolves.toEqual({ ...imported, imported: false, reason: 'unchanged' });
+    expect(table.inserts).toBe(inserts);
+    expect(table.stored('sitemonitor')).toEqual(monitor);
   });
 });
 
@@ -354,7 +369,7 @@ describe('importSchedulerState', () => {
     const unchanged = await importSchedulerState(second.ctx, file);
     expect(unchanged).toEqual({ ...imported, imported: false, reason: 'unchanged' });
     expect(table.inserts).toBe(2);
-    expect(table.stored<NativeTasksRecord>('nativeTasks').importedAt).toBe(T1.toISOString());
+    expect(table.stored('nativeTasks').importedAt).toBe(T1.toISOString());
     expect(second.info.mock.calls[0]?.[0]).toContain('unchanged');
   });
 
@@ -370,6 +385,46 @@ describe('importSchedulerState', () => {
     const { ctx } = context(new SchedulerTable());
     await expect(importSchedulerState(ctx, file)).rejects.toThrow(SchedulerImportError);
     await expect(importSchedulerState(ctx, file)).rejects.toThrow(`${file} is not valid JSON`);
+  });
+
+  // Fixed and ten characters, so the whole value fits the excerpt V8 quotes around an unexpected token.
+  const canary = ['canary', '7c1'].join('-');
+
+  it.each([
+    [
+      'an unquoted task password',
+      `{\n  "capturedAt": "${CAPTURED_AT}",\n  "scheduledTasks": {"siteMonitor": {"username": "scheduler", "password": ${canary}}}\n}`,
+      '',
+    ],
+    [
+      'a task URL with credentials followed by a trailing comma',
+      [
+        '{',
+        `  "capturedAt": "${CAPTURED_AT}",`,
+        '  "tasks": [{',
+        '    "task": "siteMonitor",',
+        `    "url": "http://scheduler:${canary}@localhost:8080/",`,
+        '  }]',
+        '}',
+      ].join('\n'),
+      ' at line 6 column 3',
+    ],
+    [
+      'a capture truncated after a task password',
+      `{"capturedAt": "${CAPTURED_AT}", "scheduledTasks": {"siteMonitor": {"username": "scheduler", "password": "${canary}", "URL":`,
+      '',
+    ],
+  ])('raises SchedulerImportError for %s without quoting the capture', async (_case, content, location) => {
+    const file = await writeCapture('credential-capture.json', content);
+    const { ctx, info } = context(new SchedulerTable());
+
+    const error = await importSchedulerState(ctx, file).catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(SchedulerImportError);
+    const { message, stack, cause } = error as SchedulerImportError;
+    expect(message).toBe(`${file} is not valid JSON${location}`);
+    expect(cause).toBeUndefined();
+    for (const text of [message, stack, String(error)]) expect(text).not.toContain(canary);
+    expect(info).not.toHaveBeenCalled();
   });
 
   it('propagates the error of a missing file unchanged', async () => {

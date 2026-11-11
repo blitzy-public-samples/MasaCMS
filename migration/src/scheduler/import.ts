@@ -161,12 +161,19 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/** Masa's monitor task in `doc`, and its effective name: the found task's, else the name the capture reports. */
+function resolveSiteMonitor(doc: NativeTasksFile): { siteMonitor: NativeTask | null; siteMonitorTask: string | null } {
+  const siteMonitor = doc.tasks.find((task) => isSiteMonitorTask(task, doc.siteMonitorTask)) ?? null;
+  return { siteMonitor, siteMonitorTask: siteMonitor?.task ?? doc.siteMonitorTask ?? null };
+}
+
 /**
  * Lowercase hex SHA-256 of a normalised capture's canonical JSON.
  * `capturedAt` is left out, because an HTTP body cannot carry it and the same tasks and `ping` are the same capture.
+ * The effective monitor name is hashed, because an HTTP body names no monitor where a file names it explicitly.
  */
 export function nativeTasksDigest(doc: NativeTasksFile): string {
-  const content = { originalPing: doc.originalPing, siteMonitorTask: doc.siteMonitorTask ?? null, tasks: doc.tasks };
+  const content = { originalPing: doc.originalPing, siteMonitorTask: resolveSiteMonitor(doc).siteMonitorTask, tasks: doc.tasks };
   return createHash('sha256').update(canonicalJson(content)).digest('hex');
 }
 
@@ -182,8 +189,7 @@ export async function importNativeTasks(
 ): Promise<SchedulerImportResult> {
   const doc = normaliseNativeTasksFile(raw);
   const sourceSha256 = nativeTasksDigest(doc);
-  const siteMonitor = doc.tasks.find((task) => isSiteMonitorTask(task, doc.siteMonitorTask)) ?? null;
-  const siteMonitorTask = siteMonitor?.task ?? doc.siteMonitorTask ?? null;
+  const { siteMonitor, siteMonitorTask } = resolveSiteMonitor(doc);
   const now = deps.clock.now();
   const importedAt = now.toISOString();
   const nativeExisted = siteMonitor !== null;
@@ -241,7 +247,7 @@ export async function importNativeTasks(
 
 /**
  * Reads `file` (`opt2-migrate scheduler import --file`) and imports it with `importNativeTasks`; a missing file's error propagates.
- * @throws SchedulerImportError when `file` is not valid JSON, naming the path.
+ * @throws SchedulerImportError when `file` is not valid JSON, naming the path and the parser's location, never its excerpt.
  */
 export async function importSchedulerState(
   ctx: Pick<MigrationContext, 'db' | 'clock' | 'logger'>,
@@ -252,9 +258,16 @@ export async function importSchedulerState(
   try {
     raw = JSON.parse(text);
   } catch (error) {
-    throw new SchedulerImportError(`${file} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`, {
-      cause: error,
-    });
+    // V8 parser messages can quote the capture, task credentials included, so only their location digits are kept.
+    const [, position, line, column] =
+      /at position (\d+)(?: \(line (\d+) column (\d+)\))?/.exec(error instanceof Error ? error.message : '') ?? [];
+    const location =
+      line !== undefined && column !== undefined
+        ? ` at line ${line} column ${column}`
+        : position !== undefined
+          ? ` at position ${position}`
+          : '';
+    throw new SchedulerImportError(`${file} is not valid JSON${location}`);
   }
   const result = await importNativeTasks(ctx, raw);
   ctx.logger.info(
