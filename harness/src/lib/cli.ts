@@ -4,6 +4,7 @@ import { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { inspect, parseArgs, type ParseArgsConfig } from 'node:util';
 
+import { safeDiagnostic, safeSummary } from './diagnostics.js';
 import { REPO_ROOT } from './paths.js';
 
 /** Invalid command-line usage, carrying the command's optional usage text. */
@@ -57,6 +58,7 @@ export type ParsedFlags<T extends OptionsConfig, P extends boolean = false> = Re
 /**
  * Runs `main`, writes exactly one JSON summary line to stdout (commands write progress to stderr only), calls `exit` and returns the code.
  * Exit code: `main`'s `code` (default 0); 2 for a `UsageError`; 1 for any other throw or a code outside 0–255.
+ * Error text passes through `safeDiagnostic`, and the summary through `safeSummary`.
  */
 export async function runCli(main: CliMain, io: CliIo = {}): Promise<number> {
   const argv = io.argv ?? process.argv.slice(2);
@@ -75,7 +77,7 @@ export async function runCli(main: CliMain, io: CliIo = {}): Promise<number> {
     }
     const head = { command, ok: code === 0, code };
     // Re-applied after the summary so a summary field can never contradict the exit status.
-    line = JSON.stringify(Object.assign({ ...head }, outcome.summary, head));
+    line = JSON.stringify(Object.assign({ ...head }, safeSummary(outcome.summary), head));
   } catch (err) {
     ({ code, line } = failureLine(command, err));
   }
@@ -123,14 +125,14 @@ function defaultCommand(argv1: string | undefined): string {
 
 function failureLine(command: string, err: unknown): { code: number; line: string } {
   if (err instanceof UsageError) {
-    const error = { type: 'UsageError', message: err.message };
+    const error = { type: 'UsageError', message: safeDiagnostic(err.message) };
     return { code: 2, line: JSON.stringify({ command, ok: false, code: 2, error, usage: err.usage }) };
   }
   const error =
     err instanceof Error
-      ? { type: err.name, message: err.message }
-      : { type: typeof err, message: typeof err === 'string' ? err : inspect(err) };
-  process.stderr.write(`${err instanceof Error ? (err.stack ?? err.message) : error.message}\n`);
+      ? { type: err.name, message: safeDiagnostic(err.message) }
+      : { type: typeof err, message: safeDiagnostic(typeof err === 'string' ? err : inspect(err)) };
+  process.stderr.write(`${err instanceof Error ? safeDiagnostic(err.stack ?? err.message) : error.message}\n`);
   return { code: 1, line: JSON.stringify({ command, ok: false, code: 1, error }) };
 }
 

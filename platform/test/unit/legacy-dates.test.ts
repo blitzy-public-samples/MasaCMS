@@ -4,6 +4,7 @@ import {
   cfDateFormat,
   cfDateTimeFormat,
   cfLsDateFormat,
+  cfLsTimeFormat,
   cfTimeFormat,
   formatCookieExpires,
   formatCsrfExpires,
@@ -210,6 +211,76 @@ describe('cfTimeFormat', () => {
       expect(() => cfTimeFormat(TUE, mask)).toThrow(RangeError);
     },
   );
+});
+
+describe('cfLsTimeFormat', () => {
+  const PM = new Date(2026, 9, 29, 15, 45, 7);
+  const AM = new Date(2026, 9, 29, 0, 5);
+
+  it.each([
+    { locale: 'en_US', mask: 'short', date: PM, expected: '3:45 PM' },
+    { locale: 'en_US', mask: 'short', date: AM, expected: '12:05 AM' },
+    { locale: 'en_US', mask: 'medium', date: PM, expected: '3:45:07 PM' },
+    { locale: 'fil_PH', mask: 'short', date: PM, expected: '3:45 PM' },
+    { locale: 'fil_PH', mask: 'short', date: AM, expected: '12:05 AM' },
+    { locale: 'de_DE', mask: 'short', date: PM, expected: '15:45' },
+    { locale: 'de_DE', mask: 'short', date: AM, expected: '00:05' },
+    { locale: 'de_DE', mask: 'medium', date: PM, expected: '15:45:07' },
+    { locale: 'fr_FR', mask: 'short', date: PM, expected: '15:45' },
+    { locale: 'es_ES', mask: 'short', date: AM, expected: '0:05' },
+    { locale: 'hu_HU', mask: 'short', date: AM, expected: '0:05' },
+    { locale: 'da_DK', mask: 'short', date: PM, expected: '15.45' },
+    { locale: 'id_ID', mask: 'medium', date: PM, expected: '15.45.07' },
+    { locale: 'zh_CN', mask: 'short', date: PM, expected: '下午3:45' },
+    { locale: 'zh_CN', mask: 'short', date: AM, expected: '上午12:05' },
+    { locale: 'zh_CN', mask: 'medium', date: PM, expected: '下午3:45:07' },
+    { locale: 'zh_TW', mask: 'short', date: PM, expected: '下午3:45' },
+    { locale: 'zh_TW', mask: 'short', date: AM, expected: '上午12:05' },
+    { locale: 'zh_HK', mask: 'short', date: PM, expected: '下午3:45' },
+    { locale: 'zh_HK', mask: 'short', date: AM, expected: '上午12:05' },
+    { locale: 'DE_de', mask: 'short', date: PM, expected: '15:45' },
+    { locale: 'zh_tw', mask: 'short', date: PM, expected: '下午3:45' },
+    { locale: 'en_us', mask: 'short', date: AM, expected: '12:05 AM' },
+    { locale: 'de_DE', mask: 'SHORT', date: PM, expected: '15:45' },
+    { locale: 'zh_TW', mask: 'Medium', date: PM, expected: '下午3:45:07' },
+    { locale: 'en_AU', mask: 'short', date: PM, expected: '3:45 pm' },
+    { locale: 'en_AU', mask: 'short', date: AM, expected: '12:05 am' },
+    { locale: 'en_AU', mask: 'medium', date: PM, expected: '3:45:07 pm' },
+    { locale: 'ja_JP', mask: 'short', date: PM, expected: '15:45' },
+    { locale: 'ja_JP', mask: 'short', date: AM, expected: '0:05' },
+    { locale: 'th_TH', mask: 'short', date: PM, expected: '15:45' },
+    { locale: 'th_TH', mask: 'short', date: AM, expected: '00:05' },
+    { locale: 'es_MX', mask: 'short', date: PM, expected: '15:45' },
+    { locale: 'es_MX', mask: 'short', date: AM, expected: '00:05' },
+    { locale: 'es_US', mask: 'short', date: PM, expected: '3:45 p.\u00a0m.' },
+    { locale: 'es_CO', mask: 'short', date: PM, expected: '3:45 p.\u00a0m.' },
+    { locale: 'ar_EG', mask: 'short', date: PM, expected: '\u0663:\u0664\u0665 \u0645' },
+    { locale: 'ar_EG', mask: 'short', date: AM, expected: '\u0661\u0662:\u0660\u0665 \u0635' },
+    { locale: 'fr_CA', mask: 'short', date: PM, expected: '15 h 45' },
+    { locale: 'fr_CA', mask: 'medium', date: PM, expected: '15 h 45 min 07 s' },
+    { locale: 'ko_KR', mask: 'short', date: PM, expected: '오후 3:45' },
+    { locale: 'zh_SG_#Hans', mask: 'short', date: AM, expected: '上午 12:05' },
+    { locale: 'Spanish (Mexican)', mask: 'short', date: PM, expected: '15:45' },
+    { locale: 'German (Standard)', mask: 'short', date: PM, expected: '15:45' },
+    { locale: 'agq_CM_#Latn', mask: 'short', date: AM, expected: '12:05 AM' },
+  ])('renders $mask in $locale as $expected', ({ locale, mask, date, expected }) => {
+    expect(cfLsTimeFormat(date, mask, locale)).toBe(expected);
+  });
+
+  it.each(['xx_YY', 'iw_IL'])('rejects %s as setLocale does', (locale) => {
+    expect(() => cfLsTimeFormat(PM, 'short', locale)).toThrow(
+      new RangeError(`${locale} must be one of the ColdFusion supported locales.`),
+    );
+  });
+
+  it.each([
+    { locale: 'de_DE', mask: 'HH:mm', date: PM },
+    { locale: 'en_US', mask: 'long', date: PM },
+    { locale: 'en_AU', mask: 'long', date: PM },
+    { locale: 'de_DE', mask: 'short', date: new Date(Number.NaN) },
+  ])('rejects $mask in $locale for $date', ({ locale, mask, date }) => {
+    expect(() => cfLsTimeFormat(date, mask, locale)).toThrow(RangeError);
+  });
 });
 
 describe('cfDateTimeFormat', () => {

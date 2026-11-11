@@ -1,5 +1,5 @@
 import type { ClientConfig, QueryConfig } from 'pg';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { EnvLike } from '../../src/lib/paths.js';
 import {
   createCatalogClient,
@@ -11,14 +11,34 @@ import {
 /** Stand-in for `pg.Client` that opens no socket; records each instance's config and calls. */
 const pgDouble = vi.hoisted(() => {
   const clients: { config: unknown; log: unknown[] }[] = [];
+  // When set, end() settles only once the socket is destroyed, like pg facing a peer that never closes.
+  const behaviour = { endHangs: false };
   class Client {
     private readonly entry: { config: unknown; log: unknown[] };
+    private readonly closed: Promise<void>;
+    readonly connection: { stream: { destroy(): void } };
     constructor(config: unknown) {
       this.entry = { config, log: [] };
       clients.push(this.entry);
+      let markClosed: () => void = () => undefined;
+      this.closed = new Promise((resolve) => {
+        markClosed = resolve;
+      });
+      this.connection = {
+        stream: {
+          destroy: () => {
+            this.entry.log.push('destroy');
+            markClosed();
+          },
+        },
+      };
     }
     async connect(): Promise<void> {
       this.entry.log.push('connect');
+    }
+    on(event: string): this {
+      this.entry.log.push(`on ${event}`);
+      return this;
     }
     async query(config: unknown): Promise<{ rows: unknown[] }> {
       this.entry.log.push(config);
@@ -26,9 +46,10 @@ const pgDouble = vi.hoisted(() => {
     }
     async end(): Promise<void> {
       this.entry.log.push('end');
+      if (behaviour.endHangs) await this.closed;
     }
   }
-  return { clients, Client };
+  return { clients, behaviour, Client };
 });
 
 vi.mock('pg', () => ({ default: { Client: pgDouble.Client } }));
@@ -45,6 +66,8 @@ const ENV: EnvLike = {
 const SETTINGS_ERROR = 'PostgreSQL catalog client settings missing or invalid: ';
 const BEGIN: QueryConfig = { text: 'BEGIN TRANSACTION READ ONLY' };
 const ROLLBACK: QueryConfig = { text: 'ROLLBACK' };
+const STEP_DEADLINE_MS = 35_000;
+const END_DEADLINE_MS = 5_000;
 
 type Answer = (config: QueryConfig) => Promise<{ rows: unknown[] }>;
 
@@ -62,14 +85,16 @@ function statement(text: string, values: unknown[] = []): QueryConfig & { queryM
   return { text, values, queryMode: 'extended' };
 }
 
-/** Fake connection answering every query with `answer`; logs each query config and `end` in call order. */
+/** Fake connection answering every query with `answer`; logs each query config and `end` in call order; `emitError` raises a connection error event. */
 function fakeConnection(answer: Answer = async () => ({ rows: [] })): {
   connect: CatalogConnect;
   configs: ClientConfig[];
   log: (QueryConfig | 'end')[];
+  emitError: (error: Error) => void;
 } {
   const configs: ClientConfig[] = [];
   const log: (QueryConfig | 'end')[] = [];
+  const errorListeners: ((error: Error) => void)[] = [];
   const client: QueryableClient = {
     async query(config) {
       log.push(config);
@@ -78,12 +103,39 @@ function fakeConnection(answer: Answer = async () => ({ rows: [] })): {
     async end() {
       log.push('end');
     },
+    on(_event, listener) {
+      errorListeners.push(listener);
+    },
   };
   const connect: CatalogConnect = async (config) => {
     configs.push(config);
     return client;
   };
-  return { connect, configs, log };
+  const emitError = (error: Error): void => {
+    for (const listener of errorListeners) listener(error);
+  };
+  return { connect, configs, log, emitError };
+}
+
+/** Answer that never settles for `pendingText` and gives no rows otherwise. */
+function neverAnswering(pendingText: string): Answer {
+  return (config) => (config.text === pendingText ? new Promise(() => undefined) : Promise.resolve({ rows: [] }));
+}
+
+/** Rejection refusing a query on a session that failed with `cause`. */
+function refusal(cause: unknown): Error {
+  return new Error('PostgreSQL catalog session is closed after an earlier failure', { cause });
+}
+
+/** Rejection of a query whose ROLLBACK failed with `rollbackError`, after the statement failed with `statementError` if given. */
+function rollbackFailure(rollbackError: Error, statementError?: Error): Error {
+  if (statementError) {
+    return new AggregateError(
+      [statementError, rollbackError],
+      'PostgreSQL catalog query and its ROLLBACK failed; the catalog session is closed',
+    );
+  }
+  return new Error('PostgreSQL catalog ROLLBACK failed; the catalog session is closed', { cause: rollbackError });
 }
 
 /** Answer giving `rows` for the caller's statement and none for BEGIN or ROLLBACK. */
@@ -106,7 +158,7 @@ function settled(): Promise<void> {
 }
 
 describe('pgCatalogConfigFromEnv', () => {
-  it('maps the PG_* variables to a read-only connection config for PG_USER', () => {
+  it('maps the PG_* variables to a read-only connection config for PG_USER with bounded connect, lock and statement waits', () => {
     expect(pgCatalogConfigFromEnv(ENV)).toEqual({
       host: 'catalog.invalid',
       port: 6543,
@@ -115,6 +167,9 @@ describe('pgCatalogConfigFromEnv', () => {
       database: 'fixture_db',
       application_name: 'opt2-harness-catalog',
       options: '-c default_transaction_read_only=on',
+      connectionTimeoutMillis: 10_000,
+      lock_timeout: 10_000,
+      statement_timeout: 30_000,
     });
   });
 
@@ -145,6 +200,11 @@ describe('pgCatalogConfigFromEnv', () => {
 });
 
 describe('createCatalogClient', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    pgDouble.behaviour.endHangs = false;
+  });
+
   it('connects once, before any query, with the config derived from env', async () => {
     const fake = fakeConnection();
     await createCatalogClient(ENV, { connect: fake.connect });
@@ -152,12 +212,29 @@ describe('createCatalogClient', () => {
     expect(fake.log).toEqual([]);
   });
 
-  it('without an injected connect, connects a pg.Client built from the env config and queries through it', async () => {
+  it('without an injected connect, connects a pg.Client built from the env config, watches its errors and queries through it', async () => {
     const catalog = await createCatalogClient(ENV);
-    expect(pgDouble.clients).toEqual([{ config: pgCatalogConfigFromEnv(ENV), log: ['connect'] }]);
+    expect(pgDouble.clients).toEqual([{ config: pgCatalogConfigFromEnv(ENV), log: ['connect', 'on error'] }]);
     await catalog.query('SELECT 1');
     await catalog.close();
-    expect(pgDouble.clients[0]?.log).toEqual(['connect', BEGIN, statement('SELECT 1'), ROLLBACK, 'end']);
+    expect(pgDouble.clients[0]?.log).toEqual(['connect', 'on error', BEGIN, statement('SELECT 1'), ROLLBACK, 'end']);
+  });
+
+  it('without an injected connect, close() destroys the socket when pg has not finished ending within 5 s', async () => {
+    vi.useFakeTimers();
+    pgDouble.behaviour.endHangs = true;
+    const catalog = await createCatalogClient(ENV);
+    const entry = pgDouble.clients.at(-1);
+    let closed = false;
+    const closing = catalog.close().then(() => {
+      closed = true;
+    });
+    await vi.advanceTimersByTimeAsync(END_DEADLINE_MS - 1);
+    expect(closed).toBe(false);
+    expect(entry?.log).toEqual(['connect', 'on error', 'end']);
+    await vi.advanceTimersByTimeAsync(1);
+    await closing;
+    expect(entry?.log).toEqual(['connect', 'on error', 'end', 'destroy']);
   });
 
   it('rejects with the settings error without connecting', async () => {
@@ -191,7 +268,6 @@ describe('createCatalogClient', () => {
   it.each<[string, string, QueryConfig[]]>([
     ['BEGIN', BEGIN.text, [BEGIN]],
     ['statement', 'SELECT 1', [BEGIN, statement('SELECT 1'), ROLLBACK]],
-    ['ROLLBACK', ROLLBACK.text, [BEGIN, statement('SELECT 1'), ROLLBACK]],
   ])('rejects only the query whose %s fails; the query queued behind it still runs', async (_step, failingText, failedLog) => {
     const failure = new Error(`${failingText} failed`);
     let failed = false;
@@ -208,6 +284,91 @@ describe('createCatalogClient', () => {
     await expect(first).rejects.toBe(failure);
     await expect(second).resolves.toEqual([{ n: 2 }]);
     expect(fake.log).toEqual([...failedLog, BEGIN, statement('SELECT 2'), ROLLBACK]);
+  });
+
+  it.each<[string, string]>([
+    ['57014', 'statement timeout'],
+    ['55P03', 'lock timeout'],
+  ])('when the server cancels the statement with SQLSTATE %s (%s), rejects with that error, ends the connection once without ROLLBACK and refuses later queries unsent', async (code, reason) => {
+    const cancelled = Object.assign(new Error(`canceling statement due to ${reason}`), { code });
+    const fake = fakeConnection(async (config) => {
+      if (config.text === 'SELECT 1') throw cancelled;
+      return { rows: [] };
+    });
+    const catalog = await createCatalogClient(ENV, { connect: fake.connect });
+    const first = catalog.query('SELECT 1');
+    const queued = catalog.query('SELECT 2');
+    await expect(first).rejects.toBe(cancelled);
+    await expect(queued).rejects.toEqual(refusal(cancelled));
+    await expect(catalog.query('SELECT 3')).rejects.toEqual(refusal(cancelled));
+    await expect(catalog.close()).resolves.toBeUndefined();
+    expect(fake.log).toEqual([BEGIN, statement('SELECT 1'), 'end']);
+  });
+
+  it.each<[string, boolean]>([
+    ['succeeded', false],
+    ['failed', true],
+  ])('when ROLLBACK fails after the statement %s, rejects with each failure, ends the connection and refuses later queries unsent', async (_label, statementFails) => {
+    const statementError = new Error('SELECT 1 failed');
+    const rollbackError = new Error('ROLLBACK failed');
+    const fake = fakeConnection(async (config) => {
+      if (config.text === ROLLBACK.text) throw rollbackError;
+      if (statementFails && config.text === 'SELECT 1') throw statementError;
+      return { rows: [] };
+    });
+    const catalog = await createCatalogClient(ENV, { connect: fake.connect });
+    const first = catalog.query('SELECT 1');
+    const queued = catalog.query('SELECT 2');
+    await expect(first).rejects.toEqual(rollbackFailure(rollbackError, statementFails ? statementError : undefined));
+    await expect(queued).rejects.toEqual(refusal(rollbackError));
+    await expect(catalog.query('SELECT 3')).rejects.toEqual(refusal(rollbackError));
+    await expect(catalog.close()).resolves.toBeUndefined();
+    expect(fake.log).toEqual([BEGIN, statement('SELECT 1'), ROLLBACK, 'end']);
+  });
+
+  it.each<[string, string, QueryConfig[]]>([
+    ['BEGIN', BEGIN.text, [BEGIN]],
+    ['statement', 'SELECT 1', [BEGIN, statement('SELECT 1')]],
+    ['ROLLBACK', ROLLBACK.text, [BEGIN, statement('SELECT 1'), ROLLBACK]],
+  ])('when %s does not finish within 35 s, rejects naming it, ends the connection once, sends no ROLLBACK after it and refuses later queries', async (step, pendingText, sentLog) => {
+    vi.useFakeTimers();
+    const fake = fakeConnection(neverAnswering(pendingText));
+    const catalog = await createCatalogClient(ENV, { connect: fake.connect });
+    const first = catalog.query('SELECT 1');
+    const queued = catalog.query('SELECT 2');
+    let firstSettled = false;
+    first.catch(() => undefined).finally(() => {
+      firstSettled = true;
+    });
+    await vi.advanceTimersByTimeAsync(STEP_DEADLINE_MS - 1);
+    expect(firstSettled).toBe(false);
+    expect(fake.log).toEqual(sentLog);
+    await vi.advanceTimersByTimeAsync(1);
+    const expired = new Error(
+      `PostgreSQL catalog ${step} did not finish within ${STEP_DEADLINE_MS} ms; the catalog session is closed`,
+    );
+    await expect(first).rejects.toEqual(step === 'ROLLBACK' ? rollbackFailure(expired) : expired);
+    await expect(queued).rejects.toEqual(refusal(expired));
+    await expect(catalog.query('SELECT 3')).rejects.toEqual(refusal(expired));
+    await expect(catalog.close()).resolves.toBeUndefined();
+    expect(fake.log).toEqual([...sentLog, 'end']);
+  });
+
+  it('a connection error event fails the session: the query in flight rejects with it, unrolled back, and later queries are refused unsent', async () => {
+    const lost = new Error('Connection terminated unexpectedly');
+    const fake = fakeConnection(async (config) => {
+      if (config.text !== 'SELECT 1') return { rows: [] };
+      fake.emitError(lost);
+      throw lost;
+    });
+    const catalog = await createCatalogClient(ENV, { connect: fake.connect });
+    const first = catalog.query('SELECT 1');
+    const queued = catalog.query('SELECT 2');
+    await expect(first).rejects.toBe(lost);
+    await expect(queued).rejects.toEqual(refusal(lost));
+    await expect(catalog.query('SELECT 3')).rejects.toEqual(refusal(lost));
+    await expect(catalog.close()).resolves.toBeUndefined();
+    expect(fake.log).toEqual([BEGIN, statement('SELECT 1'), 'end']);
   });
 
   it('runs queries one at a time in call order, each caller receiving its own rows', async () => {

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { NextConfig } from 'next';
-import { legacyHeaders } from '@opt2/platform/legacy-compat';
+import { IDENTITY_ACCEPT_ENCODING } from './src/lib/accept-encoding';
 
 // Next always runs from web/; the repository root also covers the ../platform symlink target.
 const repoRoot = path.resolve(process.cwd(), '..');
@@ -10,12 +10,6 @@ const platformManifest = JSON.parse(readFileSync(path.join(repoRoot, 'platform',
   dependencies: Record<string, string>;
 };
 
-// Legacy order: request-start Strict-Transport-Security and Generator, then the admin layout's Expires.
-const legacyPageHeaders = [
-  ...Object.entries(legacyHeaders()).map(([key, value]) => ({ key, value })),
-  { key: 'Expires', value: '06 Nov 1994 08:37:34 GMT' },
-];
-
 const nextConfig: NextConfig = {
   turbopack: { root: repoRoot },
   outputFileTracingRoot: repoRoot,
@@ -23,10 +17,15 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ['@opt2/platform', ...Object.keys(platformManifest.dependencies)],
   poweredByHeader: false,
   generateEtags: false,
+  // Legacy never compresses dynamic output, so Content-Encoding stays what the container negotiated.
+  compress: false,
+  // Page headers come from proxy.ts; the gateway drops Next's own Cache-Control left on compact pages.
+  // Next drops the Content-Encoding a proxy sets, so the proxied pages get the negotiated one here.
   async headers() {
     return ['/admin/:circuit/:action', '/opt2/admin/:module/:screen'].map((source) => ({
       source,
-      headers: legacyPageHeaders,
+      has: [{ type: 'header', key: 'accept-encoding', value: IDENTITY_ACCEPT_ENCODING }],
+      headers: [{ key: 'Content-Encoding', value: 'identity' }],
     }));
   },
 };

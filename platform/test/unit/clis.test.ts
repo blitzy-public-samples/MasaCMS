@@ -21,6 +21,9 @@ interface StoredRow {
   tenantId: string;
   orderingKey: string;
   publishedAt?: string;
+  held?: boolean;
+  /** Defaults to CREATED_AT, after SINCE. */
+  createdAt?: string;
 }
 
 interface Statement {
@@ -47,6 +50,7 @@ const TENANT_B = tenantIdForSite('tenant-b');
 const SINCE_ISO = '2026-06-01T09:30:00.000Z';
 const SINCE = new Date(SINCE_ISO);
 const NOW = new Date(2026, 5, 30, 14, 5, 9, 123);
+const CREATED_AT = '2026-06-15 10:00:00.000';
 const TOPIC = 'people.person.archived.v1';
 
 const ENV: Record<string, string> = {
@@ -69,11 +73,25 @@ const ENV: Record<string, string> = {
 let stdout: string;
 let stderr: string;
 
-/** The replay SELECT against `schema`. */
+/** The replay SELECT of a tenant's last seq created since `$1` against `schema`. */
+function boundSql(schema: string): string {
+  return `SELECT max(seq)::text AS bound FROM "${schema}".outbox WHERE created_at >= $1`;
+}
+
+/** The replay page SELECT against `schema`. */
 function selectSql(schema: string): string {
   return (
-    `SELECT * FROM "${schema}".outbox WHERE NOT held AND created_at >= $1 AND seq > $2` +
-    ' ORDER BY seq LIMIT $3 FOR UPDATE SKIP LOCKED'
+    `SELECT * FROM "${schema}".outbox WHERE NOT held AND created_at >= $1 AND seq > $2::bigint AND seq <= $3::bigint` +
+    ' ORDER BY seq LIMIT $4 FOR UPDATE'
+  );
+}
+
+/** The SELECT of each ordering key's first unlocked unpublished or held row against `schema`. */
+function blockerSql(schema: string): string {
+  return (
+    `SELECT ordering_key, min(seq)::text AS seq FROM "${schema}".outbox` +
+    ' WHERE ((published_at IS NULL AND NOT held) OR held) AND ordering_key = ANY($1::text[])' +
+    ' AND seq < $2::bigint AND seq <> ALL($3::bigint[]) GROUP BY ordering_key'
   );
 }
 
@@ -103,8 +121,8 @@ function dbRow(row: StoredRow): QueryResultRow {
     ordering_key: row.orderingKey,
     envelope: envelope(row),
     operation_id: null,
-    held: false,
-    created_at: '2026-06-15 10:00:00.000',
+    held: row.held ?? false,
+    created_at: row.createdAt ?? CREATED_AT,
     published_at: row.publishedAt ?? null,
   };
 }
@@ -117,11 +135,28 @@ function result<R extends QueryResultRow>(command: string, found: QueryResultRow
   return { command, rowCount: found.length, oid: 0, fields: [], rows: found as R[] };
 }
 
+/** The first unpublished or held row of each of `keys` before seq `last` and outside `seqs`, as the blocker SELECT answers. */
+function blockers(tenantRows: readonly StoredRow[], [keys, last, seqs]: [string[], string, string[]]): QueryResultRow[] {
+  const first = new Map<string, number>();
+  for (const row of tenantRows) {
+    const open = row.publishedAt === undefined || row.held === true;
+    if (open && keys.includes(row.orderingKey) && row.seq < Number(last) && !seqs.includes(String(row.seq))) {
+      first.set(row.orderingKey, Math.min(first.get(row.orderingKey) ?? Number.POSITIVE_INFINITY, row.seq));
+    }
+  }
+  return [...first].map(([key, seq]) => ({ ordering_key: key, seq: String(seq) }));
+}
+
 /**
- * A TenantDb over `stored` that answers the replay SELECT with the tenant's rows after `$2`, at most `$3`, in seq order,
- * and the registry SELECT with `registry`; records every statement and every tenant transaction.
+ * A TenantDb over `stored`, answering as PostgreSQL would: the bound SELECT with the tenant's last seq since `$1`, the page
+ * SELECT with its unheld rows since `$1` after `$2` up to `$3`, at most `$4`, in seq order, the blocker SELECT from the
+ * stored rows and the registry SELECT with `registry`; the stamp UPDATE marks rows published. `beforePage` runs ahead of
+ * each page with its `after`. Records every statement and every tenant transaction.
  */
-function fakeDb(stored: readonly StoredRow[], opts: { schema?: string; registry?: readonly string[] } = {}) {
+function fakeDb(
+  stored: readonly StoredRow[],
+  opts: { schema?: string; registry?: readonly string[]; beforePage?: (after: string) => void } = {},
+) {
   const schema = opts.schema ?? 'people';
   const statements: Statement[] = [];
   const tenants: string[] = [];
@@ -138,12 +173,29 @@ function fakeDb(stored: readonly StoredRow[], opts: { schema?: string; registry?
       if (tenantId === null) {
         return Promise.resolve(result<R>('SELECT', registry));
       }
-      if (!sql.startsWith('SELECT')) {
+      if (sql === selectSql(schema)) {
+        opts.beforePage?.((values as [string, string])[1]);
+      }
+      const tenantRows = stored.filter((row) => row.tenantId === tenantId);
+      if (sql.startsWith('UPDATE')) {
+        const [stamp, ids] = values as [string, string[]];
+        for (const row of tenantRows) {
+          if (row.publishedAt === undefined && ids.includes(eventId(row.seq))) row.publishedAt = stamp;
+        }
         return Promise.resolve(result<R>('UPDATE', []));
       }
-      const [, after, limit] = values as [string, string, number];
-      const page = stored
-        .filter((row) => row.tenantId === tenantId && row.seq > Number(after))
+      if (sql === blockerSql(schema)) {
+        return Promise.resolve(result<R>('SELECT', blockers(tenantRows, values as [string[], string, string[]])));
+      }
+      const since = (values as [string])[0];
+      const inRange = tenantRows.filter((row) => (row.createdAt ?? CREATED_AT) >= since);
+      if (sql === boundSql(schema)) {
+        const bound = inRange.length === 0 ? null : String(Math.max(...inRange.map((row) => row.seq)));
+        return Promise.resolve(result<R>('SELECT', [{ bound }]));
+      }
+      const [, after, bound, limit] = values as [string, string, string, number];
+      const page = inRange
+        .filter((row) => row.held !== true && row.seq > Number(after) && row.seq <= Number(bound))
         .sort((a, b) => a.seq - b.seq)
         .slice(0, limit)
         .map(dbRow);
@@ -162,9 +214,10 @@ function fakeDb(stored: readonly StoredRow[], opts: { schema?: string; registry?
     withMetadata: withMetadata as TenantDb['withMetadata'],
     end,
   };
-  const selects = () => statements.filter((s) => s.tenantId !== null && s.sql.startsWith('SELECT'));
+  const bounds = () => statements.filter((s) => s.sql === boundSql(schema));
+  const pages = () => statements.filter((s) => s.sql === selectSql(schema));
   const updates = () => statements.filter((s) => s.sql.startsWith('UPDATE'));
-  return { db, statements, tenants, end, withMetadata, selects, updates };
+  return { db, statements, tenants, end, withMetadata, bounds, pages, updates };
 }
 
 /** A publisher whose publish rejects for the listed event ids; `order` records close calls. */
@@ -296,37 +349,76 @@ describe('opt2-outbox runReplay', () => {
   it('republishes each stored envelope since the cut-off with its original eventId, stamping only unpublished rows', async () => {
     const stored = rows(TENANT_A, [1, 2, 3, 4, 5]);
     (stored[1] as StoredRow).publishedAt = '2026-06-20 08:00:00.000';
-    const { db, selects, updates, tenants } = fakeDb(stored);
+    const { db, bounds, pages, updates, tenants } = fakeDb(stored);
     const { runtime, publish } = runtimeWith(db);
 
     const summary = await runReplay({ runtime, since: SINCE, tenantsOf: () => Promise.resolve([TENANT_A]), batchSize: 2 });
 
     expect(summary).toEqual({ replayed: 5, failed: 0, skipped: 0, tenants: 1 });
     expect(publish.mock.calls).toEqual(stored.map((row) => [TOPIC, envelope(row)]));
-    expect(selects().map((s) => s.sql)).toEqual([selectSql('people'), selectSql('people'), selectSql('people')]);
-    expect(selects().every((s) => s.values?.[0] === localTimestamp(SINCE))).toBe(true);
+    expect(bounds()).toEqual([{ tenantId: TENANT_A, sql: boundSql('people'), values: [localTimestamp(SINCE)] }]);
+    expect(pages().map((s) => s.sql)).toEqual([selectSql('people'), selectSql('people'), selectSql('people')]);
+    expect(pages().every((s) => s.values?.[0] === localTimestamp(SINCE))).toBe(true);
     expect(updates()).toEqual([
       { tenantId: TENANT_A, sql: stampSql('people'), values: [localTimestamp(NOW), [eventId(1), eventId(2)]] },
       { tenantId: TENANT_A, sql: stampSql('people'), values: [localTimestamp(NOW), [eventId(3), eventId(4)]] },
       { tenantId: TENANT_A, sql: stampSql('people'), values: [localTimestamp(NOW), [eventId(5)]] },
     ]);
-    expect(tenants).toEqual([TENANT_A, TENANT_A, TENANT_A]);
+    expect(tenants).toEqual([TENANT_A, TENANT_A, TENANT_A, TENANT_A]);
   });
 
   it.each([
-    { count: 5, batchSize: 2, batch: '2', pages: [['0', 2], ['2', 2], ['4', 2]] },
-    { count: 4, batchSize: 2, batch: '2', pages: [['0', 2], ['2', 2], ['4', 2]] },
-    { count: 3, batchSize: undefined, batch: 'the default 500', pages: [['0', 500]] },
-    { count: 0, batchSize: 1, batch: '1', pages: [['0', 1]] },
-  ])('pages $count rows by seq in batches of $batch until a page is short', async ({ count, batchSize, pages }) => {
-    const { db, selects } = fakeDb(rows(TENANT_A, Array.from({ length: count }, (_, n) => n + 1)));
+    { count: 5, batchSize: 2, batch: '2', pages: [['0', '5', 2], ['2', '5', 2], ['4', '5', 2]] },
+    { count: 4, batchSize: 2, batch: '2', pages: [['0', '4', 2], ['2', '4', 2]] },
+    { count: 3, batchSize: undefined, batch: 'the default 500', pages: [['0', '3', 500]] },
+    { count: 0, batchSize: 1, batch: '1', pages: [] },
+  ])('pages $count rows by seq in batches of $batch up to the bound read first', async ({ count, batchSize, pages: expected }) => {
+    const { db, pages } = fakeDb(rows(TENANT_A, Array.from({ length: count }, (_, n) => n + 1)));
     const { runtime, publish } = runtimeWith(db);
 
     const summary = await runReplay({ runtime, since: SINCE, tenant: TENANT_A, batchSize });
 
     expect(summary).toEqual({ replayed: count, failed: 0, skipped: 0, tenants: 1 });
-    expect(selects().map((s) => s.values?.slice(1))).toEqual(pages);
+    expect(pages().map((s) => s.values?.slice(1))).toEqual(expected);
     expect(publish).toHaveBeenCalledTimes(count);
+  });
+
+  it('never pages past the bound read first while rows keep arriving', async () => {
+    const stored = rows(TENANT_A, [1, 2]);
+    const { db, pages } = fakeDb(stored, { beforePage: () => stored.push(...rows(TENANT_A, [stored.length + 1])) });
+    const { runtime, publish } = runtimeWith(db);
+
+    const summary = await runReplay({ runtime, since: SINCE, tenant: TENANT_A, batchSize: 1 });
+
+    expect(summary).toEqual({ replayed: 2, failed: 0, skipped: 0, tenants: 1 });
+    expect(publishedIds(publish)).toEqual([eventId(1), eventId(2)]);
+    expect(pages().map((s) => s.values?.slice(1))).toEqual([['0', '2', 1], ['1', '2', 1]]);
+  });
+
+  it('skips rows behind an earlier unpublished or held row of their key, and the key on later pages', async () => {
+    const stored: StoredRow[] = [
+      { seq: 1, tenantId: TENANT_A, orderingKey: 'key-a', createdAt: '2026-05-01 00:00:00.000' },
+      { seq: 2, tenantId: TENANT_A, orderingKey: 'key-a', publishedAt: CREATED_AT },
+      { seq: 3, tenantId: TENANT_A, orderingKey: 'key-b' },
+      { seq: 4, tenantId: TENANT_A, orderingKey: 'key-c', held: true },
+      { seq: 5, tenantId: TENANT_A, orderingKey: 'key-c' },
+      { seq: 6, tenantId: TENANT_A, orderingKey: 'key-a', publishedAt: CREATED_AT },
+    ];
+    // A concurrent publisher sends row 1 before the second page, so only the stopped key keeps row 6 back.
+    const beforePage = (after: string) => {
+      if (after !== '0') (stored[0] as StoredRow).publishedAt = CREATED_AT;
+    };
+    const { db, statements } = fakeDb(stored, { beforePage });
+    const { runtime, publish } = runtimeWith(db);
+
+    const summary = await runReplay({ runtime, since: SINCE, tenant: TENANT_A, batchSize: 3 });
+
+    expect(summary).toEqual({ replayed: 1, failed: 0, skipped: 3, tenants: 1 });
+    expect(publishedIds(publish)).toEqual([eventId(3)]);
+    expect(statements.filter((s) => s.sql === blockerSql('people')).map((s) => s.values)).toEqual([
+      [['key-a', 'key-b', 'key-c'], '5', ['2', '3', '5']],
+      [['key-a'], '6', ['6']],
+    ]);
   });
 
   it('counts a failed row and skips later rows with its ordering key on the same and on later pages', async () => {
@@ -344,6 +436,39 @@ describe('opt2-outbox runReplay', () => {
     ]);
   });
 
+  it.each([
+    {
+      stopped: 'failed',
+      stored: [
+        { seq: 1, tenantId: TENANT_A, orderingKey: 'key-k', publishedAt: CREATED_AT },
+        { seq: 2, tenantId: TENANT_B, orderingKey: 'key-k', publishedAt: CREATED_AT },
+        { seq: 3, tenantId: TENANT_A, orderingKey: 'key-k', publishedAt: CREATED_AT },
+      ],
+      failing: [eventId(1)],
+      summary: { replayed: 1, failed: 1, skipped: 1, tenants: 2 },
+      sent: [eventId(1), eventId(2)],
+    },
+    {
+      stopped: 'blocked',
+      stored: [
+        { seq: 1, tenantId: TENANT_A, orderingKey: 'key-k', held: true },
+        { seq: 2, tenantId: TENANT_B, orderingKey: 'key-k', publishedAt: CREATED_AT },
+        { seq: 3, tenantId: TENANT_A, orderingKey: 'key-k' },
+      ],
+      failing: [],
+      summary: { replayed: 1, failed: 0, skipped: 1, tenants: 2 },
+      sent: [eventId(2)],
+    },
+  ])('stops a $stopped key in its own tenant only, still replaying that key in the next tenant', async ({ stored, failing, summary, sent }) => {
+    const { db } = fakeDb(stored);
+    const { runtime, publish } = runtimeWith(db, failing);
+
+    const result = await runReplay({ runtime, since: SINCE, tenantsOf: () => Promise.resolve([TENANT_A, TENANT_B]), batchSize: 1 });
+
+    expect(result).toEqual(summary);
+    expect(publishedIds(publish)).toEqual(sent);
+  });
+
   it('replays each listed tenant once when ids differ only in case', async () => {
     const { db, tenants } = fakeDb([...rows(TENANT_A, [1, 3]), ...rows(TENANT_B, [2])]);
     const { runtime, publish } = runtimeWith(db);
@@ -352,7 +477,8 @@ describe('opt2-outbox runReplay', () => {
     const summary = await runReplay({ runtime, since: SINCE, tenantsOf });
 
     expect(summary).toEqual({ replayed: 3, failed: 0, skipped: 0, tenants: 2 });
-    expect(tenants).toEqual([TENANT_A, TENANT_B]);
+    // Each tenant's bound read, then its one page.
+    expect(tenants).toEqual([TENANT_A, TENANT_A, TENANT_B, TENANT_B]);
     expect(publishedIds(publish)).toEqual([eventId(1), eventId(3), eventId(2)]);
   });
 
@@ -370,7 +496,7 @@ describe('opt2-outbox runReplay', () => {
       sql: 'SELECT tenant_id, site_id FROM people.tenant_registry ORDER BY site_id',
       values: undefined,
     });
-    expect(tenants).toEqual([TENANT_B, TENANT_A]);
+    expect(tenants).toEqual([TENANT_B, TENANT_B, TENANT_A, TENANT_A]);
   });
 
   it('replays only the given --tenant, case-folded, without listing tenants', async () => {
@@ -383,7 +509,7 @@ describe('opt2-outbox runReplay', () => {
     const summary = await runReplay({ runtime, since: SINCE, tenant: TENANT_A.toUpperCase(), tenantsOf });
 
     expect(summary).toEqual({ replayed: 1, failed: 0, skipped: 0, tenants: 1 });
-    expect(tenants).toEqual([TENANT_A]);
+    expect(tenants).toEqual([TENANT_A, TENANT_A]);
     expect(publishedIds(publish)).toEqual([eventId(1)]);
     expect(tenantsOf).not.toHaveBeenCalled();
     expect(withMetadata).not.toHaveBeenCalled();
@@ -451,7 +577,27 @@ describe('opt2-outbox main', () => {
     );
     expect(state.createPool).toHaveBeenCalledWith(expect.objectContaining({ schema: 'stub' }));
     expect(db.withMetadata).not.toHaveBeenCalled();
-    expect(db.tenants).toEqual([TENANT_B]);
+    expect(db.tenants).toEqual([TENANT_B, TENANT_B]);
+  });
+
+  it('exits 1 when a row is skipped behind a held row of its key, though none failed', async () => {
+    stubEnv();
+    const order: string[] = [];
+    const db = fakeDb(
+      [
+        { seq: 1, tenantId: TENANT_A, orderingKey: 'key-a', held: true },
+        { seq: 2, tenantId: TENANT_A, orderingKey: 'key-a' },
+      ],
+      { registry: [TENANT_A] },
+    );
+    const publisher = fakePublisher([], order);
+    serve(db, publisher, order);
+
+    expect(await main(['replay', '--since', SINCE_ISO])).toBe(1);
+
+    expect(JSON.parse(stdout)).toEqual({ schema: 'people', since: SINCE_ISO, replayed: 0, failed: 0, skipped: 1, tenants: 1 });
+    expect(publisher.publish).not.toHaveBeenCalled();
+    expect(order).toEqual(['publisher.close', 'db.end']);
   });
 
   it('exits 1 and logs the failure on stderr when a row fails to republish', async () => {

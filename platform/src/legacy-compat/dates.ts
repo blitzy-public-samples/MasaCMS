@@ -1,4 +1,5 @@
-// ColdFusion date arithmetic and masks as ACF 2023 renders them (en_US, process TZ = legacy server zone).
+// ColdFusion date arithmetic and masks as ACF 2023 renders them (en_US unless a locale is passed, process TZ = legacy server zone).
+import { ACF_TIME_STYLES } from './acf-time-styles.js';
 
 type Flavor = 'datetime' | 'date' | 'time';
 
@@ -48,6 +49,10 @@ const TIME_STYLES = new Map([
   ['short', 'h:mm a'],
   ['medium', 'h:mm:ss a'],
 ]);
+
+type Markers = readonly [am: string, pm: string];
+const AM_PM: Markers = ['AM', 'PM'];
+const ZERO = 0x30;
 
 const pad = (n: number, width: number): string => String(n).padStart(width, '0');
 
@@ -113,7 +118,7 @@ function toJavaPattern(mask: string, flavor: Flavor): string {
 }
 
 /** Formats one run of a Java pattern letter. */
-function javaField(letter: string, count: number, f: Fields, fullMarker: boolean): string {
+function javaField(letter: string, count: number, f: Fields, fullMarker: boolean, markers: Markers): string {
   switch (letter) {
     case 'G':
       return 'AD';
@@ -147,7 +152,7 @@ function javaField(letter: string, count: number, f: Fields, fullMarker: boolean
     case 'S':
       return pad(f.ms, count);
     case 'a': {
-      const marker = f.hour < 12 ? 'AM' : 'PM';
+      const marker = f.hour < 12 ? markers[0] : markers[1];
       return fullMarker ? marker : marker.charAt(0);
     }
     default:
@@ -156,8 +161,8 @@ function javaField(letter: string, count: number, f: Fields, fullMarker: boolean
   }
 }
 
-/** Renders a Java SimpleDateFormat pattern: quoted text, '' as a quote, runs of one letter as a field. */
-function renderJava(f: Fields, pattern: string, fullMarker: boolean): string {
+/** Renders a Java SimpleDateFormat pattern: quoted text, '' as a quote, runs of one letter as a field, digits from zeroDigit (a code point). */
+function renderJava(f: Fields, pattern: string, fullMarker: boolean, markers: Markers = AM_PM, zeroDigit = ZERO): string {
   let out = '';
   let i = 0;
   while (i < pattern.length) {
@@ -183,7 +188,11 @@ function renderJava(f: Fields, pattern: string, fullMarker: boolean): string {
     }
     let count = 1;
     while (pattern.charAt(i + count) === ch) count++;
-    out += javaField(ch, count, f, fullMarker);
+    const field = javaField(ch, count, f, fullMarker, markers);
+    out +=
+      zeroDigit === ZERO || ch === 'a'
+        ? field
+        : field.replace(/[0-9]/g, (digit) => String.fromCodePoint(zeroDigit + digit.charCodeAt(0) - ZERO));
     i += count;
   }
   return out;
@@ -293,6 +302,16 @@ export const cfLsDateFormat: (d: Date, mask: string) => string = cfDateFormat;
 /** CFML TimeFormat: h/H hours, m/M/n minutes, s/S seconds, l/L ms, t A/P, tt AM/PM; named short/medium. */
 export function cfTimeFormat(d: Date, mask: string): string {
   return format(fieldsOf(d, false), mask, 'time');
+}
+
+/** CFML LSTimeFormat under setLocale(javaLocale), named short/medium only; javaLocale is any ACF supported locale name, in any case. */
+export function cfLsTimeFormat(d: Date, mask: string, javaLocale: string): string {
+  const known = ACF_TIME_STYLES.get(javaLocale.toLowerCase());
+  if (!known) throw new RangeError(`${javaLocale} must be one of the ColdFusion supported locales.`);
+  const style = mask.toLowerCase();
+  if (style !== 'short' && style !== 'medium') throw new RangeError(`Unsupported LSTimeFormat mask '${mask}'`);
+  const [short, medium, am, pm, zeroDigit] = known;
+  return renderJava(fieldsOf(d, false), style === 'short' ? short : medium, true, [am, pm], zeroDigit);
 }
 
 /** CSRF token expiry string, 15 digits (sessionUserFacade.cfc:228,246). */

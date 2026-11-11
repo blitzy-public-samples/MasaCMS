@@ -553,4 +553,3 @@ describe('default instance over the generated legacy bundles', () => {
     expect(siteRbFor('en_US').rbKey('global.mycustomkey')).toBe(expected);
   });
 });
-

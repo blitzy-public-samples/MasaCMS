@@ -12,8 +12,8 @@ const TENANT_C = tenantIdForSite('tenant-c');
 const EVENT_ID = '0f7c6a52-0c8e-4d8e-9a43-6a3c1d2b5e70';
 const REGISTRY_SQL = 'SELECT tenant_id, site_id FROM stub.tenant_registry ORDER BY site_id';
 const COUNT_SQL =
-  'SELECT count(*) FILTER (WHERE published_at IS NULL AND NOT held) AS unpublished,' +
-  ' count(*) FILTER (WHERE held) AS held FROM "stub".outbox';
+  'SELECT (SELECT count(*) FROM "stub".outbox WHERE published_at IS NULL AND NOT held) AS unpublished,' +
+  ' (SELECT count(*) FROM "stub".outbox WHERE held) AS held';
 
 const INVALID_SCHEMAS: readonly (readonly [string, string])[] = [
   ['upper-case letters', 'Stub'],

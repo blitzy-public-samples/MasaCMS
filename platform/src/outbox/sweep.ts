@@ -10,7 +10,7 @@ import {
   type QueueName,
   type TaskPort,
 } from '../tasks/index.js';
-import { outboxRuntimeFor, publishLockedRows, selectPublishable, type OutboxRuntime } from './flush.js';
+import { dropBlockedRows, outboxRuntimeFor, publishLockedRows, selectPublishable, type OutboxRuntime } from './flush.js';
 import { registryTenants, type TenantsOf } from './stats.js';
 
 const DEFAULT_BATCH_SIZE = 500;
@@ -66,17 +66,21 @@ export interface SweepOutboxOptions {
   recoveryHooks?: readonly RecoveryHook[];
 }
 
-// A short batch, or one that published nothing, ends the tenant, so a key whose publishes keep failing cannot spin the sweep.
+// Pages by seq, so a blocked or failed row is not re-selected within one sweep; a short batch ends the tenant.
 async function sweepTenant(runtime: OutboxRuntime, tenantId: string, batchSize: number, totals: SweepResult): Promise<void> {
+  const { schema } = runtime.db;
+  let after: string | undefined;
   for (;;) {
-    const { locked, summary } = await runtime.db.withTenant(tenantId, async (tx) => {
-      const rows = await selectPublishable(tx, runtime.db.schema, { limit: batchSize });
-      return { locked: rows.length, summary: await publishLockedRows(tx, runtime, rows) };
+    const page = await runtime.db.withTenant(tenantId, async (tx) => {
+      const locked = await selectPublishable(tx, schema, after === undefined ? { limit: batchSize } : { limit: batchSize, after });
+      const { rows, blocked } = await dropBlockedRows(tx, schema, locked);
+      return { size: locked.length, last: locked.at(-1)?.seq, blocked, summary: await publishLockedRows(tx, runtime, rows) };
     });
-    totals.published += summary.published;
-    totals.failed += summary.failed;
-    totals.skipped += summary.skipped;
-    if (locked < batchSize || summary.published === 0) return;
+    totals.published += page.summary.published;
+    totals.failed += page.summary.failed;
+    totals.skipped += page.summary.skipped + page.blocked;
+    if (page.size < batchSize || page.last === undefined) return;
+    after = page.last;
   }
 }
 

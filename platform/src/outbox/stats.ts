@@ -26,9 +26,11 @@ export interface OutboxDrainCounts {
 
 /** Counts unpublished and held outbox rows of every listed tenant, each in its own tenant transaction under RLS. */
 export async function outboxDrainCounts(db: TenantDb, opts?: { tenantsOf?: TenantsOf }): Promise<OutboxDrainCounts> {
+  const table = outboxTable(db.schema);
+  // Each WHERE repeats its partial index predicate, so the counts read only pending and held rows.
   const sql =
-    'SELECT count(*) FILTER (WHERE published_at IS NULL AND NOT held) AS unpublished,' +
-    ` count(*) FILTER (WHERE held) AS held FROM ${outboxTable(db.schema)}`;
+    `SELECT (SELECT count(*) FROM ${table} WHERE published_at IS NULL AND NOT held) AS unpublished,` +
+    ` (SELECT count(*) FROM ${table} WHERE held) AS held`;
   // Case-folded as withTenant folds them, so one tenant is never counted twice.
   const tenantIds = new Set((await (opts?.tenantsOf ?? registryTenants)(db)).map((id) => id.toLowerCase()));
   const tenants: TenantDrainCount[] = [];

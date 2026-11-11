@@ -16,6 +16,7 @@ import {
   upStatePath,
   upStateSchema,
   writeUpState,
+  type PublicUpState,
   type UpProcessEntry,
   type UpState,
   type UpStatePatch,
@@ -30,6 +31,14 @@ vi.mock('node:fs', async (importOriginal) => {
 const COMMAND = 'repro:up-state';
 const USAGE_HEAD = 'usage: tsx src/repro/up-state.ts write';
 const WIN32 = process.platform === 'win32';
+// Synthetic value, assembled at run time so no credential-shaped literal sits in the source.
+const SECRET = ['Qz', 'r7', 'Wv', 'k3', 'Jx', 'p9'].join('');
+const SECRET_JSON = `{"processes":{"people":{"env":{"PG_PASSWORD": ${SECRET}}}}}`;
+
+/** 4-code-unit slices of SECRET that occur in `text`. */
+function leaked(text: string): string[] {
+  return Array.from({ length: SECRET.length - 3 }, (_, i) => SECRET.slice(i, i + 4)).filter((slice) => text.includes(slice));
+}
 
 let stateDir: string;
 let env: EnvLike;
@@ -161,6 +170,7 @@ describe('readUpState', () => {
 
   it.each<[string, string, RegExp]>([
     ['text that is not JSON', '{', /up\.json: is not valid JSON: /],
+    ['text that quotes a password and is not JSON', SECRET_JSON, /up\.json: is not valid JSON: Unexpected token in JSON$/],
     ['JSON without processes', '{}', /up\.json: does not match the up\.json schema:\n/],
     [
       'a process entry with pid 0',
@@ -173,6 +183,7 @@ describe('readUpState', () => {
     expect(err).not.toBeInstanceOf(UpStateMissingError);
     expect(err.message).toMatch(message);
     expect(err.message.startsWith(file)).toBe(true);
+    expect(leaked(err.message)).toEqual([]);
   });
 
   it('rethrows read errors other than a missing file', async () => {
@@ -413,30 +424,110 @@ describe('schemas shared with the fault process control', () => {
   });
 });
 
-describe('redactUpState', () => {
-  it('masks env values whose names contain PASSWORD, SECRET, KEY or TOKEN, without changing its input', () => {
-    const state = deepFreeze<UpState>({
-      ...sampleState(),
-      processes: {
-        gateway: structuredClone(GATEWAY),
-        people: { ...PEOPLE, env: { PORT: '8112', PG_PASSWORD: 'x', CLIENT_SECRET: 'x', OPT2_PUSH_KEY: 'x', sessionToken: 'x' } },
-        timesheets: { pid: 4118, cwd: '/x/services/timesheets', command: 'node dist/main.js' },
+/** Synthetic secrets `secretState` carries; no public projection may contain one. */
+const SECRETS = [
+  'synthetic-argv-password',
+  'synthetic-cfid-value',
+  'synthetic-cftoken-value',
+  'synthetic-jsessionid-value',
+  'synthetic-inline-password',
+  'synthetic-pg-password',
+  'synthetic.person@example.test',
+  'synthetic-entry-token',
+  'synthetic-snapshot-key',
+  'synthetic.ops@example.test',
+  'synthetic-fixture-password',
+  'synthetic-fixture-detail',
+  'synthetic-legacy-password',
+  'synthetic-harness-note',
+];
+
+/** An up.json whose env, commands, unknown keys and fixture reason carry the synthetic secrets. */
+function secretState(): UpState {
+  return {
+    processes: {
+      gateway: {
+        ...structuredClone(GATEWAY),
+        command: ['node', 'dist/main.js', '--password', 'synthetic-argv-password'],
+        env: {
+          PORT: '8100',
+          CFID: 'synthetic-cfid-value',
+          CFTOKEN: 'synthetic-cftoken-value',
+          JSESSIONID: 'synthetic-jsessionid-value',
+        },
       },
-    });
+      people: {
+        pid: 4112,
+        cwd: '/x/services/people',
+        command: 'PGPASSWORD=synthetic-inline-password psql -h 127.0.0.1 -f seed.sql',
+        env: { PG_PASSWORD: 'synthetic-pg-password', ADMIN_EMAIL: 'synthetic.person@example.test' },
+        token: 'synthetic-entry-token',
+      },
+    },
+    ports: { gateway: 8100, people: 8112 },
+    snapshot: { seq: 3, kind: 'checkpoint', name: 'C3', key: 'synthetic-snapshot-key' },
+    fixtures: {
+      available: false,
+      reason: 'mail to synthetic.ops@example.test refused; password=synthetic-fixture-password',
+      checkedAt: '2026-06-30T08:00:00.000Z',
+      detail: 'synthetic-fixture-detail',
+    },
+    startedAt: '2026-06-30T08:00:00.000Z',
+    legacy: { adminPassword: 'synthetic-legacy-password' },
+    nativeTaskExisted: true,
+    harnessNote: 'synthetic-harness-note',
+  };
+}
 
-    const redacted = redactUpState(state);
+const SECRET_PROJECTION: PublicUpState = {
+  processes: {
+    gateway: { pid: 4101, port: 8100, cwd: '/x/gateway', log: '/x/gateway.out' },
+    people: { pid: 4112, cwd: '/x/services/people' },
+  },
+  ports: { gateway: 8100, people: 8112 },
+  snapshot: { seq: 3, kind: 'checkpoint', name: 'C3' },
+  fixtures: { available: false, reason: 'mail to [REDACTED] refused; password=[REDACTED]', checkedAt: '2026-06-30T08:00:00.000Z' },
+  startedAt: '2026-06-30T08:00:00.000Z',
+};
 
-    expect(redacted.processes.people?.env).toEqual({
-      PORT: '8112',
-      PG_PASSWORD: '<redacted>',
-      CLIENT_SECRET: '<redacted>',
-      OPT2_PUSH_KEY: '<redacted>',
-      sessionToken: '<redacted>',
-    });
-    expect(redacted.processes.gateway).toEqual(GATEWAY);
-    expect(redacted.processes.timesheets).toEqual(state.processes.timesheets);
-    expect(redacted.harnessNote).toBe('kept as written');
-    expect(state.processes.people?.env?.PG_PASSWORD).toBe('x');
+describe('redactUpState', () => {
+  it.each<[string, UpState, PublicUpState]>([
+    ['a state carrying secrets in env, commands, unknown keys and the fixture reason', secretState(), SECRET_PROJECTION],
+    [
+      'the sample state, whose snapshot is a string',
+      sampleState(),
+      {
+        processes: {
+          gateway: { pid: 4101, port: 8100, cwd: '/x/gateway', log: '/x/gateway.out' },
+          people: { pid: 4112, port: 8112, cwd: '/x/services/people' },
+        },
+        ports: { gateway: 8100, people: 8112 },
+        fixtures: { available: true },
+        startedAt: '2026-06-30T08:00:00.000Z',
+      },
+    ],
+    ['processes alone', { processes: { people: structuredClone(PEOPLE) } }, { processes: { people: { pid: 4112, port: 8112, cwd: '/x/services/people' } } }],
+    ['null fixtures and a null snapshot', { processes: {}, fixtures: null, snapshot: null }, { processes: {}, fixtures: null }],
+    [
+      'a null fixture reason and an array snapshot',
+      { processes: {}, fixtures: { available: true, reason: null }, snapshot: [{ seq: 0 }] },
+      { processes: {}, fixtures: { available: true, reason: null } },
+    ],
+    [
+      'a snapshot object without scalar seq, kind or name',
+      { processes: {}, snapshot: { seq: null, kind: ['S'], name: { label: 'S0' }, key: 'synthetic-snapshot-key' } },
+      { processes: {}, snapshot: {} },
+    ],
+  ])('projects %s onto its allowlisted fields without changing it', (_label, input, expected) => {
+    const state = deepFreeze(input);
+    const before = structuredClone(state);
+
+    const projection = redactUpState(state);
+
+    expect(projection).toStrictEqual(expected);
+    expect(state).toStrictEqual(before);
+    const text = JSON.stringify(projection);
+    for (const secret of SECRETS) expect(text).not.toContain(secret);
   });
 });
 
@@ -463,7 +554,7 @@ async function cli(argv: string[]): Promise<CliRun> {
 }
 
 describe('repro:up-state CLI', () => {
-  it('write records a process from flags, and read prints the stored state on one JSON line', async () => {
+  it('write records a process from flags, and read prints its public projection on one JSON line', async () => {
     const wrote = await cli([
       'write',
       '--process', 'gateway',
@@ -485,7 +576,13 @@ describe('repro:up-state CLI', () => {
     expect(read).toEqual({
       code: 0,
       exits: [0],
-      line: { command: COMMAND, ok: true, code: 0, path: file, value: readUpState({ env }) },
+      line: {
+        command: COMMAND,
+        ok: true,
+        code: 0,
+        path: file,
+        value: { processes: { gateway: { pid: 4101, port: 8100, cwd: '/x/gateway', log: '/x/gateway.out' } } },
+      },
     });
   });
 
@@ -531,22 +628,46 @@ describe('repro:up-state CLI', () => {
     expect(readUpState({ env })).toEqual(sampleState());
   });
 
-  it('read --field prints one nested value', async () => {
+  it('read --field prints one nested value of the projection', async () => {
     writeUpState(sampleState(), { env });
-    const result = await cli(['read', '--field', 'processes.gateway.command']);
+    const result = await cli(['read', '--field', 'processes.gateway.pid']);
     expect(result.code).toBe(0);
-    expect(result.line.value).toEqual(['node', 'dist/main.js']);
+    expect(result.line.value).toBe(4101);
   });
 
-  it('read redacts secret-looking env values in its output and leaves the file as written', async () => {
-    writeUpState({ processes: { people: { ...PEOPLE, env: { PORT: '8112', PG_PASSWORD: 'x' } } } }, { env });
-    const result = await cli(['read', '--field', 'processes.people.env']);
-    expect(result.line.value).toEqual({ PORT: '8112', PG_PASSWORD: '<redacted>' });
-    expect(readUpState({ env }).processes.people?.env?.PG_PASSWORD).toBe('x');
+  it('read prints no secret of up.json and leaves the file as written', async () => {
+    writeUpState(secretState(), { env });
+    const before = await fs.readFile(file, 'utf8');
+
+    const result = await cli(['read']);
+
+    expect(result.code).toBe(0);
+    expect(result.line.value).toEqual(SECRET_PROJECTION);
+    const text = JSON.stringify(result.line);
+    for (const secret of SECRETS) expect(text).not.toContain(secret);
+    expect(await fs.readFile(file, 'utf8')).toBe(before);
+    expect(readUpState({ env })).toEqual(secretState());
   });
 
-  it.each<[string, boolean, (dir: string) => string[], string, RegExp]>([
+  it.each(['processes.people.env', 'processes.people.command', 'processes.people.token', 'legacy'])(
+    'read --field %s exits 1 as not present while up.json keeps it',
+    async (field) => {
+      writeUpState(secretState(), { env });
+      vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+      const result = await cli(['read', '--field', field]);
+
+      expect(result.code).toBe(1);
+      expect(result.exits).toEqual([1]);
+      expect(result.line).toMatchObject({ command: COMMAND, ok: false, code: 1, error: { type: 'Error' } });
+      expect((result.line.error as { message: string }).message).toContain(`field '${field}' is not present in `);
+      expect(readUpState({ env })).toEqual(secretState());
+    },
+  );
+
+  it.each<[string, boolean | string, (dir: string) => string[], string, RegExp]>([
     ['read without up.json', false, () => ['read'], 'UpStateMissingError', /does not exist; run harness\/repro\/up\.sh first$/],
+    ['read of an up.json that quotes a password and is not JSON', SECRET_JSON, () => ['read'], 'Error', /up\.json: is not valid JSON: Unexpected token in JSON$/],
     ['read of an absent field', true, () => ['read', '--field', 'processes.web'], 'Error', /^field 'processes\.web' is not present in /],
     [
       'write with an unreadable --patch-file',
@@ -556,13 +677,15 @@ describe('repro:up-state CLI', () => {
       /^--patch-file .*absent\.json cannot be read: /,
     ],
   ])('exits 1 on %s', async (_label, seed, argv, type, message) => {
-    if (seed) writeUpState(sampleState(), { env });
-    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    if (seed === true) writeUpState(sampleState(), { env });
+    if (typeof seed === 'string') await fs.writeFile(file, seed);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const result = await cli(argv(stateDir));
     expect(result.code).toBe(1);
     expect(result.exits).toEqual([1]);
     expect(result.line).toMatchObject({ command: COMMAND, ok: false, code: 1, error: { type } });
     expect((result.line.error as { message: string }).message).toMatch(message);
+    expect(leaked(JSON.stringify(result.line) + stderr.mock.calls.map((call) => String(call[0])).join(''))).toEqual([]);
   });
 
   it.each<[string, string[], RegExp]>([
@@ -572,6 +695,12 @@ describe('repro:up-state CLI', () => {
     ['an unknown flag', ['write', '--bogus', 'x'], /--bogus/],
     ['a positional argument to read', ['read', 'extra'], /extra/],
     ['a --patch that is not JSON', ['write', '--patch', '{'], /^--patch is not valid JSON: /],
+    ['a --patch cut off inside a password', ['write', '--patch', `{"token":"${SECRET}`], /^--patch is not valid JSON: Unterminated string in JSON at line 1 column 23$/],
+    [
+      'an --env-json that quotes a password and is not JSON',
+      ['write', '--process', 'gateway', '--pid', '1', '--cwd', '/x', '--command', 'node', '--env-json', `{"PG_PASSWORD": ${SECRET}}`],
+      /^--env-json is not valid JSON: Unexpected token in JSON$/,
+    ],
     ['a --patch that fails the schema', ['write', '--patch', '{"processes":{"gateway":{"pid":-1}}}'], /^--patch is invalid:/],
     ['--patch with process flags', ['write', '--patch', '{}', '--process', 'gateway'], /are mutually exclusive$/],
     ['a top-level flag the patch also sets', ['write', '--patch', '{"snapshot":"S0"}', '--snapshot-json', '"S1"'], /--snapshot-json conflicts with the patch's snapshot$/],
@@ -601,6 +730,7 @@ describe('repro:up-state CLI', () => {
     expect(result.line).toMatchObject({ command: COMMAND, ok: false, code: 2, error: { type: 'UsageError' } });
     expect((result.line.error as { message: string }).message).toMatch(message);
     expect(String(result.line.usage).startsWith(USAGE_HEAD)).toBe(true);
+    expect(leaked(JSON.stringify(result.line))).toEqual([]);
     expect(await fs.readFile(file, 'utf8')).toBe(before);
     expect(await fs.readdir(stateDir)).toEqual(['up.json']);
   });

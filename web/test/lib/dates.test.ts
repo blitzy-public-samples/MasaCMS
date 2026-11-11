@@ -49,6 +49,10 @@ describe('dateKeyFor', () => {
     ['ru', '.', '1,0,2', 'dd.mm.yyyy', '10.11.2024', 'ru'],
     ['tr', '.', '1,0,2', 'dd.mm.yyyy', '10.11.2024', 'tr'],
     ['uk', '/', '1,0,2', 'dd/mm/yyyy', '10/11/2024', 'uk'],
+    ['zh_tw', '/', '2,0,1', 'yyyy/mm/dd', '2024/11/10', 'zh-tw'],
+    ['Zh_Tw', '/', '2,0,1', 'yyyy/mm/dd', '2024/11/10', 'Zh-Tw'],
+    ['ZH_HK', '-', '1,0,2', 'dd-mm-yyyy', '10-11-2024', 'ZH-HK'],
+    ['RU', '.', '1,0,2', 'dd.mm.yyyy', '10.11.2024', 'RU'],
   ])('takes %s from localeLookup', (javaLocale, dtCh, dtFormat, dateKeyFormat, dtExample, locale) => {
     expect(fieldsOf(dateKeyFor(javaLocale))).toEqual(expectedKey(locale, dtCh, dtFormat, dateKeyFormat, dtExample));
   });
@@ -58,7 +62,10 @@ describe('dateKeyFor', () => {
     ['nl_NL', '-', '1,0,2', 'DD-MM-YYYY', '315-11-2024', 'nl-NL'],
     ['ru_RU', '.', '1,0,2', 'DD.MM.YYYY', '315.11.2024', 'ru-RU'],
     ['ja_JP', '/', '1,2,0', 'YYYY/MM/DD', '2024/11/315', 'ja-JP'],
-    ['th_TH', '/', '1,0', 'DD/MM/DD', '315/11/315', 'th-TH'],
+    ['th_TH', '/', '1,0,2', 'DD/MM/YYYY', '315/11/2024', 'th-TH'],
+    ['de_de', '.', '1,0,2', 'DD.MM.YYYY', '315.11.2024', 'de-de'],
+    ['hu_hu', '.', '-1,-1,0', 'YYYY.MM.DD', '2024.11.315', 'hu-hu'],
+    ['zh_cn', '/', '1,2,0', 'YYYY/MM/DD', '2024/11/315', 'zh-cn'],
   ])('derives %s from its short date', (javaLocale, dtCh, dtFormat, dateKeyFormat, dtExample, locale) => {
     expect(fieldsOf(dateKeyFor(javaLocale))).toEqual(expectedKey(locale, dtCh, dtFormat, dateKeyFormat, dtExample));
   });
@@ -75,6 +82,8 @@ describe('shortDatePattern', () => {
     ['en_US', '11/10/24'],
     ['de_DE', '10.11.24'],
     ['ja_JP', '2024/11/10'],
+    ['hu_hu', '2024. 11. 10.'],
+    ['th_TH', '10/11/24'],
   ])('%s -> %s', (javaLocale, expected) => {
     expect(shortDatePattern(javaLocale)).toBe(expected);
   });
@@ -86,6 +95,7 @@ describe('localeHasDayParts', () => {
     ['de_DE', false],
     ['en_AU', true],
     ['ja_JP', false],
+    ['en_us', true],
   ])('%s -> %s', (javaLocale, expected) => {
     expect(localeHasDayParts(javaLocale)).toBe(expected);
   });
@@ -160,19 +170,24 @@ describe('formatDateField', () => {
 });
 
 describe('formatDateTimeShort', () => {
-  it.each<[Date | string, string]>([
-    [new Date(2026, 9, 29, 15, 45), '10/302/2026 3:45 PM'],
-    [new Date(2026, 9, 29, 0, 5), '10/302/2026 12:05 AM'],
-    ["{ts '2026-10-29 15:45:00'}", '10/302/2026 3:45 PM'],
-  ])('formats %j', (value, expected) => {
-    expect(formatDateTimeShort(value, 'MM/DD/YYYY')).toBe(expected);
+  it.each<[Date | string, string, string, string]>([
+    [new Date(2026, 9, 29, 15, 45), 'MM/DD/YYYY', 'en_US', '10/302/2026 3:45 PM'],
+    [new Date(2026, 9, 29, 0, 5), 'MM/DD/YYYY', 'en_US', '10/302/2026 12:05 AM'],
+    ["{ts '2026-10-29 15:45:00'}", 'MM/DD/YYYY', 'en_US', '10/302/2026 3:45 PM'],
+    [new Date(2026, 9, 29, 15, 45, 7), 'DD.MM.YYYY', 'de_DE', '302.10.2026 15:45'],
+    [new Date(2026, 9, 29, 15, 45, 7), 'DD/MM/YYYY', 'fr_FR', '302/10/2026 15:45'],
+    [new Date(2026, 9, 29, 15, 45, 7), 'YYYY/MM/DD', 'zh_CN', '2026/10/302 下午3:45'],
+    [new Date(2026, 9, 29, 15, 45, 7), 'DD/MM/YYYY', 'en_AU', '302/10/2026 3:45 pm'],
+    [new Date(2026, 9, 29, 15, 45, 7), 'DD/MM/YYYY', 'es_MX', '302/10/2026 15:45'],
+  ])('formats %j with %s in %s', (value, dateKeyFormat, javaLocale, expected) => {
+    expect(formatDateTimeShort(value, dateKeyFormat, javaLocale)).toBe(expected);
   });
 
   it.each(['', null, undefined])('renders %j as a space', (value) => {
-    expect(formatDateTimeShort(value, 'MM/DD/YYYY')).toBe(' ');
+    expect(formatDateTimeShort(value, 'MM/DD/YYYY', 'en_US')).toBe(' ');
   });
 
   it('throws for an unparsable value', () => {
-    expect(() => formatDateTimeShort('garbage', 'MM/DD/YYYY')).toThrow(RangeError);
+    expect(() => formatDateTimeShort('garbage', 'MM/DD/YYYY', 'en_US')).toThrow(RangeError);
   });
 });

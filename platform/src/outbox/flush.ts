@@ -26,7 +26,7 @@ export interface CreateOutboxOptions {
   payloadValidators?: Record<string, TopicValidator> | Map<string, TopicValidator>;
 }
 
-/** Counts of one publishing pass; `skipped` rows follow a failed row with the same ordering key and stay unpublished. */
+/** Counts of one publishing pass; `skipped` rows stay unpublished behind a failed, held or unpublished earlier row of their ordering key. */
 export interface PublishSummary {
   published: number;
   failed: number;
@@ -78,20 +78,56 @@ export function resetOutboxRuntimes(): void {
   runtimes.clear();
 }
 
-/** Locks up to `limit` unpublished, unheld rows of the transaction tenant in `seq` order, skipping rows another transaction holds. */
-export async function selectPublishable(
+/** Rows {@link selectPublishable} locks: the ordering keys of `eventIds` up to their latest named row, or a `limit` page after seq `after`. */
+export type SelectPublishableOptions = { eventIds: readonly string[] } | { limit: number; after?: string };
+
+/** Locks the tenant's unpublished, unheld rows in `seq` order: waiting for other lockers with `eventIds`, otherwise skipping locked rows. */
+export async function selectPublishable(tx: TenantTx, schema: string, opts: SelectPublishableOptions): Promise<OutboxRow[]> {
+  const table = outboxTable(schema);
+  if ('eventIds' in opts) {
+    const { rows } = await tx.query(
+      `SELECT o.* FROM ${table} o JOIN (SELECT ordering_key, max(seq) AS upto FROM ${table}` +
+        ' WHERE event_id = ANY($1::uuid[]) AND published_at IS NULL AND NOT held GROUP BY ordering_key) named' +
+        ' ON o.ordering_key = named.ordering_key AND o.seq <= named.upto' +
+        ' WHERE o.published_at IS NULL AND NOT o.held ORDER BY o.seq FOR UPDATE OF o',
+      [opts.eventIds],
+    );
+    return rows.map(rowFromDb);
+  }
+  const { limit, after } = opts;
+  const paged = after !== undefined;
+  const sql =
+    `SELECT * FROM ${table} WHERE published_at IS NULL AND NOT held` +
+    (paged ? ' AND seq > $1::bigint' : '') +
+    ` ORDER BY seq LIMIT $${paged ? 2 : 1} FOR UPDATE SKIP LOCKED`;
+  const { rows } = await tx.query(sql, paged ? [after, limit] : [limit]);
+  return rows.map(rowFromDb);
+}
+
+/** Splits locked `rows` into those publishable now and the count behind an earlier unpublished or held row of their key that `rows` lacks. */
+export async function dropBlockedRows(
   tx: TenantTx,
   schema: string,
-  opts: { eventIds?: readonly string[]; limit: number },
-): Promise<OutboxRow[]> {
-  const { eventIds, limit } = opts;
-  const byId = eventIds !== undefined;
-  const sql =
-    `SELECT * FROM ${outboxTable(schema)} WHERE published_at IS NULL AND NOT held` +
-    (byId ? ' AND event_id = ANY($1::uuid[])' : '') +
-    ` ORDER BY seq LIMIT $${byId ? 2 : 1} FOR UPDATE SKIP LOCKED`;
-  const { rows } = await tx.query(sql, byId ? [eventIds, limit] : [limit]);
-  return rows.map(rowFromDb);
+  rows: readonly OutboxRow[],
+): Promise<{ rows: OutboxRow[]; blocked: number }> {
+  if (rows.length === 0) {
+    return { rows: [], blocked: 0 };
+  }
+  const seqs = rows.map((row) => row.seq);
+  const last = seqs.reduce((max, seq) => (BigInt(seq) > BigInt(max) ? seq : max));
+  // `published_at IS NULL` spelled so the unpublished and held partial indexes serve it; held rows are never published.
+  const { rows: found } = await tx.query<{ ordering_key: string; seq: string }>(
+    `SELECT ordering_key, min(seq)::text AS seq FROM ${outboxTable(schema)}` +
+      ' WHERE ((published_at IS NULL AND NOT held) OR held) AND ordering_key = ANY($1::text[])' +
+      ' AND seq < $2::bigint AND seq <> ALL($3::bigint[]) GROUP BY ordering_key',
+    [[...new Set(rows.map((row) => row.orderingKey))], last, seqs],
+  );
+  const firstBlocker = new Map(found.map((r) => [r.ordering_key, BigInt(r.seq)]));
+  const open = rows.filter((row) => {
+    const blocker = firstBlocker.get(row.orderingKey);
+    return blocker === undefined || BigInt(row.seq) < blocker;
+  });
+  return { rows: open, blocked: rows.length - open.length };
 }
 
 function bySeq(a: OutboxRow, b: OutboxRow): number {
@@ -142,9 +178,8 @@ export async function publishLockedRows(
 }
 
 /**
- * Publishes and stamps the rows `eventIds` names in a fresh tenant transaction; registered as a commit callback, so the
- * committing request answers only after it. Never throws: on error nothing is stamped, every id counts as failed and
- * the rows are left to the sweep, as are rows a concurrent sweep has locked.
+ * Commit callback publishing and stamping the rows `eventIds` names after their keys' earlier unpublished rows, in a fresh tenant transaction.
+ * Never throws: on error nothing is stamped, every id counts as failed and the rows are left to the sweep, as are rows behind a held row.
  */
 export async function flushAfterCommit(
   runtime: OutboxRuntime,
@@ -154,10 +189,12 @@ export async function flushAfterCommit(
   if (eventIds.length === 0) {
     return { published: 0, failed: 0, skipped: 0 };
   }
+  const { schema } = runtime.db;
   try {
     return await runtime.db.withTenant(tenantId, async (tx) => {
-      const rows = await selectPublishable(tx, runtime.db.schema, { eventIds, limit: eventIds.length });
-      return publishLockedRows(tx, runtime, rows);
+      const { rows, blocked } = await dropBlockedRows(tx, schema, await selectPublishable(tx, schema, { eventIds }));
+      const summary = await publishLockedRows(tx, runtime, rows);
+      return { ...summary, skipped: summary.skipped + blocked };
     });
   } catch (err) {
     runtime.logger.error(

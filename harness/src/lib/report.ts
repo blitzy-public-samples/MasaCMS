@@ -1,6 +1,8 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from '@opt2/platform/service-kit';
+import { jsonSyntaxDetail } from './diagnostics.js';
 import { REPO_ROOT, repoPath } from './paths.js';
 import { readPin, type Pin } from './pin.js';
 
@@ -54,9 +56,22 @@ function defaultGeneratedBy(): string {
   return path.relative(REPO_ROOT, path.resolve(script)).split(path.sep).join('/') || 'harness';
 }
 
+/** Replaces `file` with `text` through a sibling temp file and a rename, so no reader sees a partial file. */
 async function writeText(file: string, text: string): Promise<void> {
-  await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(file, text, 'utf8');
+  const dir = path.dirname(file);
+  await mkdir(dir, { recursive: true });
+  const tmp = path.join(dir, `.${path.basename(file)}.${process.pid}.${randomUUID()}.tmp`);
+  try {
+    await writeFile(tmp, text, { encoding: 'utf8', flag: 'wx' });
+    await rename(tmp, file);
+  } catch (err) {
+    try {
+      await rm(tmp, { force: true });
+    } catch (cleanupErr) {
+      throw new AggregateError([err, cleanupErr], `${file}: write failed and ${tmp} could not be removed`);
+    }
+    throw err;
+  }
 }
 
 /**
@@ -109,7 +124,7 @@ export async function readJson<T>(filePath: string, schema?: z.ZodType<T>): Prom
   try {
     json = JSON.parse(raw);
   } catch (err) {
-    throw new Error(`${file}: is not valid JSON: ${(err as Error).message}`, { cause: err });
+    throw new Error(`${file}: is not valid JSON: ${jsonSyntaxDetail(err)}`, { cause: err });
   }
   if (schema === undefined) return json as T;
   const parsed = schema.safeParse(json);

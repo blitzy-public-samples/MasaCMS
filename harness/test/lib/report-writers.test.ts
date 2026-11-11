@@ -1,10 +1,10 @@
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from '@opt2/platform/service-kit';
 import fc from 'fast-check';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { REPO_ROOT } from '../../src/lib/paths.js';
 import { pinSchema, readPin, type Pin } from '../../src/lib/pin.js';
 import {
@@ -16,10 +16,23 @@ import {
   type ReportOptions,
 } from '../../src/lib/report.js';
 
+// The writers go through `node:fs/promises`; wrapping writeFile, rename and rm lets a test fail one step of the swap.
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, writeFile: vi.fn(actual.writeFile), rename: vi.fn(actual.rename), rm: vi.fn(actual.rm) };
+});
+
 const SHA = '696383140578f8dea3ece26f80cd7bfb370ddf0f';
 const OTHER_SHA = `${SHA.slice(0, -1)}e`;
 const FIXED_AT = '2026-01-02T03:04:05.000Z';
 const FIXED: ReportOptions = { generatedBy: 'harness/test', clock: () => new Date(FIXED_AT) };
+// Synthetic value, assembled at run time so no credential-shaped literal sits in the source.
+const SECRET = ['Qz', 'r7', 'Wv', 'k3', 'Jx', 'p9'].join('');
+
+/** 4-code-unit slices of SECRET that occur in `text`. */
+function leaked(text: string): string[] {
+  return Array.from({ length: SECRET.length - 3 }, (_, i) => SECRET.slice(i, i + 4)).filter((slice) => text.includes(slice));
+}
 
 let root: string;
 let serial = 0;
@@ -36,6 +49,12 @@ async function fixture(name: string, text: string): Promise<string> {
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, text, 'utf8');
   return file;
+}
+
+/** Matches the temp path a writer stages `file` in: hidden, in the same directory, tagged with the pid and a UUID. */
+function tempPathOf(file: string): RegExp {
+  const prefix = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.`);
+  return new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}\\.tmp$`);
 }
 
 /** Pin source returning the committed pin with `sha` as both `sha` and `sourceSha`. */
@@ -355,6 +374,83 @@ describe('writeMarkdown', () => {
   });
 });
 
+describe.each<[string, string, (file: string) => Promise<unknown>, string]>([
+  [
+    'writeJsonReport',
+    'atomic.json',
+    (file) => writeJsonReport(file, { n: 1 }, FIXED),
+    stableStringify({ n: 1, sourceSha: SHA, generatedBy: 'harness/test', generatedAt: FIXED_AT }),
+  ],
+  ['writeMarkdown', 'atomic.md', (file) => writeMarkdown(file, 'T', ['a']), `# T\nSource SHA: ${SHA}\n\na\n`],
+])('%s replaces its destination through a sibling temp file', (_writer, name, write, bytes) => {
+  const failure = new Error('injected failure');
+
+  /** Clears recorded calls and any one-off failure a test left unconsumed; the pass-throughs stay. */
+  function resetFs(): void {
+    vi.mocked(writeFile).mockReset();
+    vi.mocked(rename).mockReset();
+    vi.mocked(rm).mockReset();
+  }
+
+  beforeEach(resetFs);
+  afterEach(resetFs);
+
+  it('leaves only the destination, holding the exact bytes, after a write', async () => {
+    const file = target(name);
+    await write(file);
+    expect(await readdir(path.dirname(file))).toEqual([name]);
+    expect(await readFile(file, 'utf8')).toBe(bytes);
+  });
+
+  it('writes a new exclusive temp file beside an existing destination and renames it over that file', async () => {
+    const file = await fixture(name, 'prior');
+    const before = await stat(file);
+    await write(file);
+    expect(vi.mocked(rename).mock.calls).toEqual([[expect.stringMatching(tempPathOf(file)), file]]);
+    const tmp = vi.mocked(rename).mock.calls[0]?.[0];
+    expect(vi.mocked(writeFile).mock.calls.at(-1)).toEqual([tmp, bytes, { encoding: 'utf8', flag: 'wx' }]);
+    expect((await stat(file)).ino).not.toBe(before.ino);
+    expect(await readFile(file, 'utf8')).toBe(bytes);
+    expect(await readdir(path.dirname(file))).toEqual([name]);
+  });
+
+  it.each<[string, () => void]>([
+    ['the rename', () => vi.mocked(rename).mockRejectedValueOnce(failure)],
+    [
+      'writing the temp file',
+      () =>
+        vi.mocked(writeFile).mockImplementationOnce(async (tmp, _text, options) => {
+          const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+          await actual.writeFile(tmp, 'part', options);
+          throw failure;
+        }),
+    ],
+  ])('keeps the prior destination, removes the temp file and rethrows when %s fails', async (_step, inject) => {
+    const file = await fixture(name, 'prior');
+    inject();
+    await expect(write(file)).rejects.toBe(failure);
+    expect(await readFile(file, 'utf8')).toBe('prior');
+    expect(await readdir(path.dirname(file))).toEqual([name]);
+  });
+
+  it('rejects with the original and the cleanup failure when the temp file cannot be removed', async () => {
+    const file = await fixture(name, 'prior');
+    const cleanup = new Error('injected cleanup failure');
+    vi.mocked(rename).mockRejectedValueOnce(failure);
+    vi.mocked(rm).mockRejectedValueOnce(cleanup);
+    const err: unknown = await write(file).then(
+      () => undefined,
+      (rejection: unknown) => rejection,
+    );
+    const tmp = String(vi.mocked(rename).mock.calls[0]?.[0]);
+    expect(err).toBeInstanceOf(AggregateError);
+    expect((err as AggregateError).errors).toEqual([failure, cleanup]);
+    expect((err as AggregateError).errors[0]).toBe(failure);
+    expect((err as AggregateError).message).toBe(`${file}: write failed and ${tmp} could not be removed`);
+    expect(await readFile(file, 'utf8')).toBe('prior');
+  });
+});
+
 describe('readJson', () => {
   const schema = z.object({ name: z.string(), count: z.number().int() });
 
@@ -379,9 +475,13 @@ describe('readJson', () => {
   it.each<[string, string | undefined, string]>([
     ['is missing', undefined, 'cannot be read'],
     ['holds malformed JSON', '{"name":', 'is not valid JSON'],
+    ['holds malformed JSON quoting a token', `{"token": ${SECRET}}`, 'is not valid JSON: Unexpected token in JSON'],
   ])('throws an Error naming the file when it %s', async (_label, text, reason) => {
     const file = text === undefined ? target('absent.json') : await fixture('malformed.json', text);
-    await expect(readJson(file)).rejects.toThrow(`${file}: ${reason}`);
+    const error: unknown = await readJson(file).catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain(`${file}: ${reason}`);
+    expect(leaked((error as Error).message)).toEqual([]);
   });
 
   it('resolves a relative path against the repository root', async () => {

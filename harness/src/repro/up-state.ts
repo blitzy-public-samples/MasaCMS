@@ -1,9 +1,11 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { redactText } from '@opt2/platform/logging';
 import { z } from '@opt2/platform/service-kit';
 
 import { isMainModule, parseFlags, runCli, UsageError, type CliOutcome } from '../lib/cli.js';
+import { jsonSyntaxDetail } from '../lib/diagnostics.js';
 import { stateDir, type EnvLike } from '../lib/paths.js';
 import { stableStringify } from '../lib/report.js';
 
@@ -88,7 +90,7 @@ export function readUpState(opts: UpStateOptions = {}): UpState {
   try {
     json = JSON.parse(raw);
   } catch (err) {
-    throw new Error(`${file}: is not valid JSON: ${(err as Error).message}`, { cause: err });
+    throw new Error(`${file}: is not valid JSON: ${jsonSyntaxDetail(err)}`, { cause: err });
   }
   const parsed = upStateSchema.safeParse(json);
   if (!parsed.success) {
@@ -135,21 +137,55 @@ export function writeUpState(patch: UpStatePatch, opts: UpStateOptions = {}): { 
   return { path: file, state };
 }
 
-const SECRET_NAME = /PASSWORD|SECRET|KEY|TOKEN/i;
-const REDACTED = '<redacted>';
+const SNAPSHOT_FIELDS = ['seq', 'kind', 'name'] as const;
 
-/** Copy of `state` whose process `env` values with secret-looking names read `<redacted>`. */
-export function redactUpState(state: UpState): UpState {
-  const processes = Object.fromEntries(
-    Object.entries(state.processes).map(([name, entry]) => {
-      if (entry.env === undefined) return [name, entry];
-      const env = Object.fromEntries(
-        Object.entries(entry.env).map(([key, value]) => [key, SECRET_NAME.test(key) ? REDACTED : value]),
-      );
-      return [name, { ...entry, env }];
-    }),
+/** The part of `up.json` that `read` prints; a process's env and command, and every unlisted key, stay private. */
+export interface PublicUpState {
+  processes: Record<string, Pick<UpProcessEntry, 'pid' | 'port' | 'cwd' | 'log'>>;
+  ports?: Record<string, number>;
+  startedAt?: string;
+  fixtures?: { available: boolean; reason?: string | null; checkedAt?: string } | null;
+  snapshot?: Partial<Record<(typeof SNAPSHOT_FIELDS)[number], number | string>>;
+}
+
+/** `value` without its undefined properties, so `read --field` reports an absent one as not present. */
+function definedFields<T extends object>(value: T): T {
+  return Object.fromEntries(Object.entries(value).filter(([, field]) => field !== undefined)) as T;
+}
+
+/** The scalar `seq`, `kind` and `name` of a plain-object snapshot; undefined for any other snapshot. */
+function publicSnapshot(snapshot: unknown): PublicUpState['snapshot'] {
+  if (snapshot === null || typeof snapshot !== 'object' || Array.isArray(snapshot)) return undefined;
+  const fields = snapshot as Record<string, unknown>;
+  return Object.fromEntries(
+    SNAPSHOT_FIELDS.map((key): [string, unknown] => [key, fields[key]]).filter(
+      ([, value]) => typeof value === 'number' || typeof value === 'string',
+    ),
   );
-  return { ...state, processes };
+}
+
+/** Public projection of `state`, built from allowlisted fields; the fixture reason is passed through `redactText`. */
+export function redactUpState(state: UpState): PublicUpState {
+  const { fixtures } = state;
+  return definedFields<PublicUpState>({
+    processes: Object.fromEntries(
+      Object.entries(state.processes).map(([name, entry]) => [
+        name,
+        definedFields({ pid: entry.pid, port: entry.port, cwd: entry.cwd, log: entry.log }),
+      ]),
+    ),
+    ports: state.ports === undefined ? undefined : Object.fromEntries(Object.entries(state.ports)),
+    startedAt: state.startedAt,
+    fixtures:
+      fixtures === undefined || fixtures === null
+        ? fixtures
+        : definedFields({
+            available: fixtures.available,
+            reason: typeof fixtures.reason === 'string' ? redactText(fixtures.reason) : fixtures.reason,
+            checkedAt: fixtures.checkedAt,
+          }),
+    snapshot: publicSnapshot(state.snapshot),
+  });
 }
 
 const USAGE = [
@@ -165,7 +201,7 @@ function parseJson(label: string, text: string): unknown {
   try {
     return JSON.parse(text);
   } catch (err) {
-    throw new UsageError(`${label} is not valid JSON: ${(err as Error).message}`, USAGE);
+    throw new UsageError(`${label} is not valid JSON: ${jsonSyntaxDetail(err)}`, USAGE);
   }
 }
 
@@ -289,7 +325,7 @@ function readCommand(argv: string[], env: EnvLike): CliOutcome {
   return { summary: { path: file, value: values.field === undefined ? state : fieldValue(state, values.field, file) } };
 }
 
-/** CLI entry: `write` merges a patch into up.json, `read` prints it (or one field) with secret env values redacted. */
+/** CLI entry: `write` merges a patch into up.json, `read` prints its public projection (or one field of it). */
 export function main(argv: string[], env: EnvLike = process.env): CliOutcome {
   const [subcommand, ...rest] = argv;
   if (subcommand === 'write') return writeCommand(rest, env);

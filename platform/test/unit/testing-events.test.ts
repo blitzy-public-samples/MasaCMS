@@ -584,7 +584,7 @@ describe('capturing publisher behind the outbox flush', () => {
     };
   }
 
-  /** A tenant A TenantDb whose SELECTs answer `selected`, recording every statement. */
+  /** A tenant A TenantDb whose locking SELECTs answer `selected` and whose blocker SELECT finds none, recording every statement. */
   function outboxDb(selected: readonly QueryResultRow[] = []): { db: TenantDb; tx: TenantTx; statements: Statement[] } {
     const statements: Statement[] = [];
     const tx: TenantTx = {
@@ -595,7 +595,7 @@ describe('capturing publisher behind the outbox flush', () => {
       query: ((text: string | QueryConfig, values?: unknown[]) => {
         const sql = typeof text === 'string' ? text : text.text;
         statements.push({ sql, values });
-        const rows = sql.startsWith('SELECT') ? [...selected] : [];
+        const rows = sql.startsWith('SELECT') && !sql.startsWith('SELECT ordering_key') ? [...selected] : [];
         return Promise.resolve({ command: 'SELECT', rowCount: rows.length, oid: 0, fields: [], rows });
       }) as TenantTx['query'],
     };
@@ -669,11 +669,15 @@ describe('capturing publisher behind the outbox flush', () => {
 
     await expect(flushAfterCommit(runtime, TENANT_A.tenantId, [envelope.eventId])).resolves.toStrictEqual({ published: 0, failed: 1, skipped: 0 });
     expect(publisher.published).toEqual([]);
-    expect(statements.map((statement) => statement.sql.split(' ', 1)[0])).toEqual(['SELECT']);
+    expect(statements.map((statement) => statement.sql.split(' ', 1)[0])).toEqual(['SELECT', 'SELECT']);
 
     await expect(flushAfterCommit(runtime, TENANT_A.tenantId, [envelope.eventId])).resolves.toStrictEqual({ published: 1, failed: 0, skipped: 0 });
     expect(publisher.published).toStrictEqual([{ topic: TOPIC, envelope }]);
-    expect(statements.slice(1)).toEqual([{ sql: expect.stringMatching(/^SELECT /), values: [[envelope.eventId], 1] }, stamped([envelope.eventId])]);
+    expect(statements.slice(2)).toEqual([
+      { sql: expect.stringMatching(/^SELECT o\.\* /), values: [[envelope.eventId]] },
+      { sql: expect.stringMatching(/^SELECT ordering_key, /), values: [[envelope.aggregateId], '1', ['1']] },
+      stamped([envelope.eventId]),
+    ]);
   });
 });
 

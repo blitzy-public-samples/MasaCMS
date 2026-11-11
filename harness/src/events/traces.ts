@@ -1,7 +1,8 @@
 // Finds the people-archive seam trace in the collector's OTLP-JSON export and validates captured log lines.
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { closeSync, openSync, readSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 
 import { subscriptionName } from '@opt2/platform/events';
 import { validateLogRecord } from '@opt2/platform/logging';
@@ -23,23 +24,81 @@ export function tracesPath(env?: EnvLike): string {
   return path.join(stateDir(env), 'otel', 'traces.jsonl');
 }
 
-function nonBlankLines(text: string): string[] {
-  return text.split(/\r?\n/).filter((line) => line.trim() !== '');
+const CHUNK_BYTES = 64 * 1024;
+const NEWLINE_BYTE = 0x0a;
+
+function stripCarriageReturn(line: string): string {
+  return line.endsWith('\r') ? line.slice(0, -1) : line;
 }
 
-/** Non-blank lines of the trace export; throws an error naming the path when the file does not exist. */
-export function readTraceLines(env?: EnvLike): string[] {
-  const file = tracesPath(env);
-  let text: string;
+/** Non-blank lines of `file` from byte `start`, read in fixed chunks; a line `start` cuts is skipped. */
+function* fileLines(file: string, start = 0): Generator<string> {
+  const fd = openSync(file, 'r');
   try {
-    text = readFileSync(file, 'utf8');
+    const buffer = Buffer.alloc(CHUNK_BYTES);
+    const decoder = new StringDecoder('utf8');
+    let skipHead = start > 0 && readSync(fd, buffer, 0, 1, start - 1) === 1 && buffer[0] !== NEWLINE_BYTE;
+    let position = start;
+    let pending = '';
+    for (;;) {
+      const read = readSync(fd, buffer, 0, CHUNK_BYTES, position);
+      if (read === 0) {
+        break;
+      }
+      position += read;
+      const chunk = decoder.write(buffer.subarray(0, read));
+      let from = 0;
+      for (let newline = chunk.indexOf('\n'); newline >= 0; newline = chunk.indexOf('\n', from)) {
+        const line = stripCarriageReturn(pending + chunk.slice(from, newline));
+        pending = '';
+        from = newline + 1;
+        if (skipHead) {
+          skipHead = false;
+        } else if (line.trim() !== '') {
+          yield line;
+        }
+      }
+      pending += chunk.slice(from);
+    }
+    const last = pending + decoder.end();
+    if (!skipHead && last.trim() !== '') {
+      yield last;
+    }
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Current byte size of the trace export, 0 when absent; record it before a run and pass it as `fromOffset`. */
+export function traceExportOffset(env?: EnvLike): number {
+  try {
+    return statSync(tracesPath(env)).size;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return 0;
+    }
+    throw err;
+  }
+}
+
+/** Where reading of the trace export starts. */
+export interface ReadTraceLinesOptions {
+  /** Byte offset from {@link traceExportOffset}; a line it cuts is skipped. */
+  fromOffset?: number;
+}
+
+/** Non-blank lines of the trace export, streamed afresh on each iteration; throws naming the path when it does not exist. */
+export function readTraceLines(env?: EnvLike, opts: ReadTraceLinesOptions = {}): Iterable<string> {
+  const file = tracesPath(env);
+  try {
+    statSync(file);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       throw new Error(`${file} does not exist; the OpenTelemetry Collector has exported no traces`, { cause: err });
     }
     throw err;
   }
-  return nonBlankLines(text);
+  return { [Symbol.iterator]: () => fileLines(file, opts.fromOffset ?? 0) };
 }
 
 /** A W3C `traceparent` header value and the trace id it starts. */
@@ -169,7 +228,9 @@ function spanKey(traceId: string, spanId: string): string {
   return `${traceId}/${spanId}`;
 }
 
-function recordDetails(request: OtlpRequest | null, details: Map<string, SpanDetail>): void {
+/** Start time and path attributes of each span in one export line, keyed by trace and span id. */
+function lineDetails(request: OtlpRequest | null): Map<string, SpanDetail> {
+  const details = new Map<string, SpanDetail>();
   for (const resourceSpans of request?.resourceSpans ?? []) {
     for (const scope of resourceSpans.scopeSpans ?? resourceSpans.instrumentationLibrarySpans ?? []) {
       for (const span of scope.spans ?? []) {
@@ -187,11 +248,33 @@ function recordDetails(request: OtlpRequest | null, details: Map<string, SpanDet
       }
     }
   }
+  return details;
 }
 
 function failureDetail(err: unknown): string {
   const cause = err instanceof Error && err.cause instanceof Error ? err.cause : err;
   return cause instanceof Error ? cause.message : String(cause);
+}
+
+type ParsedLine = { spans: ContinuitySpan[]; details: Map<string, SpanDetail> } | { failure: unknown };
+
+/** Spans of one export line with their details, none for a blank line, or the failure that made the line unreadable. */
+function parseLine(line: string): ParsedLine {
+  if (line.trim() === '') {
+    return { spans: [], details: new Map() };
+  }
+  let spans: ContinuitySpan[];
+  try {
+    spans = spansFromOtlpJsonLines(line);
+  } catch (err) {
+    return { failure: err };
+  }
+  return { spans, details: lineDetails(JSON.parse(line) as OtlpRequest | null) };
+}
+
+function servesArchive(span: ContinuitySpan, details: ReadonlyMap<string, SpanDetail>, archivePath: RegExp): boolean {
+  const paths = details.get(spanKey(span.traceId, span.spanId))?.paths ?? [];
+  return paths.some((p) => p.search(archivePath) >= 0) && firstMatch([span], GATEWAY_SERVER) !== undefined;
 }
 
 /** First span matching `selector`, by the platform's selector rules. */
@@ -208,7 +291,7 @@ interface Evaluation {
   gatewayStart: bigint;
 }
 
-function evaluate(traceId: string, spans: readonly ContinuitySpan[], details: ReadonlyMap<string, SpanDetail>): Evaluation {
+function evaluate(traceId: string, spans: readonly ContinuitySpan[], starts: ReadonlyMap<string, bigint>): Evaluation {
   const continuity = checkTraceContinuity(spans, { expectedSpanNames: SELECTORS });
   const found = continuity.ok ? continuity.matched : SELECTORS.map((selector) => firstMatch(spans, selector));
   const gateway = found[0];
@@ -216,7 +299,7 @@ function evaluate(traceId: string, spans: readonly ContinuitySpan[], details: Re
     traceId,
     found,
     continuity,
-    gatewayStart: gateway === undefined ? NO_START : (details.get(spanKey(traceId, gateway.spanId))?.start ?? NO_START),
+    gatewayStart: gateway === undefined ? NO_START : (starts.get(spanKey(traceId, gateway.spanId)) ?? NO_START),
   };
 }
 
@@ -246,44 +329,132 @@ function reportSpans(found: readonly (ContinuitySpan | undefined)[]): SeamTraceS
   });
 }
 
-/** Picks the seam trace from OTLP-JSON export lines; unparseable lines are reported in `problems` by 1-based number. */
-export function findSeamTrace(lines: string[], opts: FindSeamTraceOptions = {}): SeamTraceResult {
-  const problems: string[] = [];
-  const details = new Map<string, SpanDetail>();
-  const byTrace = new Map<string, ContinuitySpan[]>();
-  lines.forEach((line, index) => {
-    if (line.trim() === '') {
-      return;
+/** Most problems of one kind listed one by one; any further ones are summarised in a single problem. */
+const MAX_PROBLEM_SAMPLES = 20;
+
+/** First-seen ids of traces holding a span that matches `selector`, at most one more than the sample limit. */
+interface TraceSample {
+  selector: SpanSelector;
+  ids: Set<string>;
+  overflow: boolean;
+}
+
+function noteTrace(sample: TraceSample, span: ContinuitySpan): void {
+  if (sample.overflow || sample.ids.has(span.traceId) || firstMatch([span], sample.selector) === undefined) {
+    return;
+  }
+  if (sample.ids.size > MAX_PROBLEM_SAMPLES) {
+    sample.overflow = true;
+  } else {
+    sample.ids.add(span.traceId);
+  }
+}
+
+/** Archive candidates mapped to the line number of their last span, and the number of lines read. */
+interface ArchiveScan {
+  lastLines: Map<string, number>;
+  lineCount: number;
+}
+
+function scanArchiveCandidates(lines: Iterable<string>, archivePath: RegExp): ArchiveScan {
+  const lastLines = new Map<string, number>();
+  let lineCount = 0;
+  for (const line of lines) {
+    lineCount += 1;
+    const parsed = parseLine(line);
+    if ('failure' in parsed) {
+      continue;
     }
-    let spans: ContinuitySpan[];
-    try {
-      spans = spansFromOtlpJsonLines(line);
-    } catch (err) {
-      problems.push(`malformed OTLP JSON on line ${index + 1}: ${failureDetail(err)}`);
-      return;
-    }
-    recordDetails(JSON.parse(line) as OtlpRequest | null, details);
-    for (const span of spans) {
-      const traceSpans = byTrace.get(span.traceId);
-      if (traceSpans === undefined) {
-        byTrace.set(span.traceId, [span]);
-      } else {
-        traceSpans.push(span);
+    for (const span of parsed.spans) {
+      if (lastLines.has(span.traceId) || servesArchive(span, parsed.details, archivePath)) {
+        lastLines.set(span.traceId, lineCount);
       }
     }
-  });
+  }
+  return { lastLines, lineCount };
+}
 
-  const archivePath = opts.archivePath ?? DEFAULT_ARCHIVE_PATH;
-  const servesArchive = (spans: readonly ContinuitySpan[]): boolean =>
-    firstMatch(
-      spans.filter((span) => details.get(spanKey(span.traceId, span.spanId))?.paths.some((p) => p.search(archivePath) >= 0)),
-      GATEWAY_SERVER,
-    ) !== undefined;
-  const evaluations = [...byTrace]
-    .filter(([traceId, spans]) => (opts.traceId === undefined ? servesArchive(spans) : traceId === opts.traceId))
-    .map(([traceId, spans]) => evaluate(traceId, spans, details));
+/** Spans collected so far for a trace not yet evaluated, and the start time of each of its gateway server spans. */
+interface OpenTrace {
+  spans: ContinuitySpan[];
+  starts: Map<string, bigint>;
+}
 
-  if (evaluations.length === 0) {
+const ONE_SHOT_INPUT =
+  'findSeamTrace without opts.traceId reads its lines twice: pass an array or the result of readTraceLines, or set opts.traceId';
+
+/** With `opts.traceId`, one pass keeping that trace; otherwise two passes over a re-iterable input keeping only open archive candidates. */
+export function findSeamTrace(lines: Iterable<string>, opts: FindSeamTraceOptions = {}): SeamTraceResult {
+  if (opts.traceId === undefined && (lines[Symbol.iterator]() as unknown) === lines) {
+    throw new TypeError(ONE_SHOT_INPUT);
+  }
+  const scan = opts.traceId === undefined ? scanArchiveCandidates(lines, opts.archivePath ?? DEFAULT_ARCHIVE_PATH) : undefined;
+  const lineLimit = scan?.lineCount ?? Number.POSITIVE_INFINITY;
+  const keeps = (id: string): boolean => (scan === undefined ? id === opts.traceId : scan.lastLines.has(id));
+  const open = new Map<string, OpenTrace>();
+  const tally: { best?: Evaluation; evaluated: number } = { evaluated: 0 };
+  const settle = (id: string, trace: OpenTrace): void => {
+    scan?.lastLines.delete(id);
+    open.delete(id);
+    const evaluation = evaluate(id, trace.spans, trace.starts);
+    tally.evaluated += 1;
+    if (tally.best === undefined || outranks(evaluation, tally.best)) {
+      tally.best = evaluation;
+    }
+  };
+
+  const problems: string[] = [];
+  const samples: TraceSample[] = SELECTORS.map((selector) => ({ selector, ids: new Set<string>(), overflow: false }));
+  let lineNumber = 0;
+  let unlistedMalformed = 0;
+  for (const line of lines) {
+    if (lineNumber === lineLimit) {
+      break;
+    }
+    lineNumber += 1;
+    const parsed = parseLine(line);
+    if ('failure' in parsed) {
+      if (problems.length < MAX_PROBLEM_SAMPLES) {
+        problems.push(`malformed OTLP JSON on line ${lineNumber}: ${failureDetail(parsed.failure)}`);
+      } else {
+        unlistedMalformed += 1;
+      }
+    } else {
+      for (const span of parsed.spans) {
+        for (const sample of samples) {
+          noteTrace(sample, span);
+        }
+        if (!keeps(span.traceId)) {
+          continue;
+        }
+        let trace = open.get(span.traceId);
+        if (trace === undefined) {
+          trace = { spans: [], starts: new Map() };
+          open.set(span.traceId, trace);
+        }
+        trace.spans.push(span);
+        if (firstMatch([span], GATEWAY_SERVER) !== undefined) {
+          const key = spanKey(span.traceId, span.spanId);
+          trace.starts.set(key, parsed.details.get(key)?.start ?? NO_START);
+        }
+      }
+      for (const span of parsed.spans) {
+        const trace = open.get(span.traceId);
+        if (trace !== undefined && scan?.lastLines.get(span.traceId) === lineNumber) {
+          settle(span.traceId, trace);
+        }
+      }
+    }
+  }
+  for (const [id, trace] of [...open]) {
+    settle(id, trace);
+  }
+  if (unlistedMalformed > 0) {
+    problems.push(`${unlistedMalformed} further malformed OTLP JSON lines not listed`);
+  }
+
+  const { best } = tally;
+  if (best === undefined) {
     return {
       trace: { traceId: null, requiredSpans: reportSpans([]), singleTrace: false },
       candidates: 0,
@@ -291,28 +462,32 @@ export function findSeamTrace(lines: string[], opts: FindSeamTraceOptions = {}):
     };
   }
 
-  const best = evaluations.reduce((chosen, next) => (outranks(next, chosen) ? next : chosen));
   if (!best.continuity.ok) {
     problems.push(...best.continuity.problems);
     const elsewhere = new Set<string>();
-    SELECTORS.forEach((selector, index) => {
+    let unlistedSplit = false;
+    samples.forEach((sample, index) => {
       if (best.found[index] !== undefined) {
         return;
       }
-      for (const [traceId, spans] of byTrace) {
-        if (traceId !== best.traceId && firstMatch(spans, selector) !== undefined) {
+      unlistedSplit ||= sample.overflow;
+      for (const traceId of sample.ids) {
+        if (traceId !== best.traceId) {
           elsewhere.add(traceId);
         }
       }
     });
-    for (const traceId of elsewhere) {
+    for (const traceId of [...elsewhere].slice(0, MAX_PROBLEM_SAMPLES)) {
       problems.push(`split across traces: ${traceId}`);
+    }
+    if (unlistedSplit || elsewhere.size > MAX_PROBLEM_SAMPLES) {
+      problems.push(`split across further traces not listed (more than ${MAX_PROBLEM_SAMPLES})`);
     }
   }
 
   return {
     trace: { traceId: best.traceId, requiredSpans: reportSpans(best.found), singleTrace: best.continuity.ok },
-    candidates: evaluations.length,
+    candidates: tally.evaluated,
     problems,
   };
 }
@@ -354,7 +529,7 @@ function logLineErrors(line: string): string[] | null {
 }
 
 /** Validates each non-blank line against log-record.v1, keeping at most 20 invalid samples. */
-export function validateLogLines(lines: ReadonlyArray<string | CapturedLogLine>): LogValidationSummary {
+export function validateLogLines(lines: Iterable<string | CapturedLogLine>): LogValidationSummary {
   const summary: LogValidationSummary = { schema: LOG_RECORD_SCHEMA, linesChecked: 0, invalid: 0, invalidSamples: [] };
   for (const entry of lines) {
     const { source, line } = typeof entry === 'string' ? { source: null, line: entry } : entry;
@@ -380,14 +555,23 @@ export interface ReadCapturedLogLinesOptions {
   packages?: readonly string[];
 }
 
-/** Non-blank lines of each listed package's process log in up.json; throws naming a package with no log path. */
-export function readCapturedLogLines(opts: ReadCapturedLogLinesOptions = {}): CapturedLogLine[] {
+/** Non-blank lines of each listed package's up.json log, streamed per iteration; throws naming a package with no log path. */
+export function readCapturedLogLines(opts: ReadCapturedLogLinesOptions = {}): Iterable<CapturedLogLine> {
   const { processes } = readUpState({ env: opts.env });
-  return (opts.packages ?? PACKAGE_NAMES).flatMap((name) => {
+  const logs = (opts.packages ?? PACKAGE_NAMES).map((name) => {
     const entry = processes[name];
     if (entry?.log === undefined) {
       throw new Error(`${upStatePath(opts.env)} records no log file for package ${name}`);
     }
-    return nonBlankLines(readFileSync(path.resolve(entry.cwd, entry.log), 'utf8')).map((line) => ({ source: name, line }));
+    return { source: name, file: path.resolve(entry.cwd, entry.log) };
   });
+  return {
+    *[Symbol.iterator]() {
+      for (const { source, file } of logs) {
+        for (const line of fileLines(file)) {
+          yield { source, line };
+        }
+      }
+    },
+  };
 }

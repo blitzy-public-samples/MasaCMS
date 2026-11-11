@@ -1,5 +1,5 @@
 // The admin session date key (session.dateKey, session.dateKeyFormat) and legacy date field values (server-only).
-import { cfDateAdd, cfEq, cfListToArray, cfLsDateFormat, cfTimeFormat } from '@opt2/platform/legacy-compat';
+import { cfDateAdd, cfEq, cfListToArray, cfLsDateFormat, cfLsTimeFormat } from '@opt2/platform/legacy-compat';
 import { raw, type SafeHtml } from './html';
 
 /** Date validation key of a session locale, as resourceBundle utils.setJSDateKeys builds it. */
@@ -26,8 +26,13 @@ interface LocaleKey {
   readonly dateKeyFormat: string;
 }
 
+/** Map keyed by lower-cased name, read case-insensitively as CFML struct keys and ACF locale names are. */
+function byLowerCaseName<V>(entries: ReadonlyArray<readonly [string, V]>): ReadonlyMap<string, V> {
+  return new Map(entries.map(([name, value]) => [name.toLowerCase(), value]));
+}
+
 /** Fixed keys for locales whose short date format uses non-ASCII text. */
-const LOCALE_LOOKUP: ReadonlyMap<string, LocaleKey> = new Map([
+const LOCALE_LOOKUP = byLowerCaseName<LocaleKey>([
   ['zh-HK', { dtCh: '-', dtFormat: '1,0,2', dateKeyFormat: 'dd-mm-yyyy' }],
   ['zh-TW', { dtCh: '/', dtFormat: '2,0,1', dateKeyFormat: 'yyyy/mm/dd' }],
   ['ru', { dtCh: '.', dtFormat: '1,0,2', dateKeyFormat: 'dd.mm.yyyy' }],
@@ -36,10 +41,7 @@ const LOCALE_LOOKUP: ReadonlyMap<string, LocaleKey> = new Map([
 ]);
 
 /** Java 17 DateFormat SHORT of 2024-11-10 and MEDIUM of 00:00:00 for the locales Masa ships bundles for. */
-const JAVA_FORMATS: ReadonlyMap<string, readonly [shortDate: string, mediumMidnight: string]> = new Map<
-  string,
-  readonly [string, string]
->([
+const JAVA_FORMATS = byLowerCaseName<readonly [shortDate: string, mediumMidnight: string]>([
   ['en_US', ['11/10/24', '12:00:00 AM']],
   ['en_GB', ['10/11/2024', '00:00:00']],
   ['de_DE', ['10.11.24', '00:00:00']],
@@ -66,15 +68,15 @@ const languageTag = (javaLocale: string): string => javaLocale.replaceAll('_', '
 
 /** The locale's Java SHORT date of 2024-11-10, as LSDateFormat(createDate(2024,11,10),'short') prints it. */
 export function shortDatePattern(javaLocale: string): string {
-  const known = JAVA_FORMATS.get(javaLocale);
+  const known = JAVA_FORMATS.get(javaLocale.toLowerCase());
   if (known) return known[0];
-  return new Intl.DateTimeFormat(languageTag(javaLocale), { dateStyle: 'short' }).format(KEY_DATE);
+  return new Intl.DateTimeFormat(languageTag(javaLocale), { dateStyle: 'short', calendar: 'gregory' }).format(KEY_DATE);
 }
 
 /** Whether the locale's medium time of 00:00:00 contains AM (session.localeHasDayParts). */
 export function localeHasDayParts(javaLocale: string): boolean {
   const medium =
-    JAVA_FORMATS.get(javaLocale)?.[1] ??
+    JAVA_FORMATS.get(javaLocale.toLowerCase())?.[1] ??
     new Intl.DateTimeFormat(languageTag(javaLocale), { timeStyle: 'medium' }).format(KEY_DATE);
   return /am/i.test(medium);
 }
@@ -92,7 +94,8 @@ function keyFromShortDate(formatTest: string): LocaleKey {
 
 function buildDateKey(javaLocale: string): DateKey {
   const locale = javaLocale.replace('_', '-');
-  const { dtCh, dtFormat, dateKeyFormat } = LOCALE_LOOKUP.get(locale) ?? keyFromShortDate(shortDatePattern(javaLocale));
+  const { dtCh, dtFormat, dateKeyFormat } =
+    LOCALE_LOOKUP.get(locale.toLowerCase()) ?? keyFromShortDate(shortDatePattern(javaLocale));
   const dtExample = cfLsDateFormat(KEY_DATE, dateKeyFormat);
   return Object.freeze({
     locale,
@@ -157,10 +160,14 @@ export function formatDateField(
   return cfLsDateFormat(date, dateKeyFormat);
 }
 
-/** `LSDateFormat(value, dateKeyFormat) LSTimeFormat(value, 'short')`; ' ' when empty, RangeError when unparsable. */
-export function formatDateTimeShort(value: Date | string | null | undefined, dateKeyFormat: string): string {
+/** `LSDateFormat(value, dateKeyFormat) LSTimeFormat(value, 'short')` under the session locale; ' ' when empty, RangeError when unparsable. */
+export function formatDateTimeShort(
+  value: Date | string | null | undefined,
+  dateKeyFormat: string,
+  javaLocale: string,
+): string {
   if (value === null || value === undefined || value === '') return ' ';
   const date = parseLegacyDate(value);
   if (!date) throw new RangeError(`The value ${String(value)} cannot be converted to a date.`);
-  return `${cfLsDateFormat(date, dateKeyFormat)} ${cfTimeFormat(date, 'short')}`;
+  return `${cfLsDateFormat(date, dateKeyFormat)} ${cfLsTimeFormat(date, 'short', javaLocale)}`;
 }

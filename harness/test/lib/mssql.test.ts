@@ -32,6 +32,10 @@ const CONFIG: MssqlConfig = {
 const START = 'read-only query must start with SELECT or WITH … SELECT';
 const SINGLE = 'read-only query must be a single statement';
 const uses = (keyword: string): string => `read-only query must not use ${keyword}`;
+const UNTERMINATED = 'read-only query has an unterminated comment, literal or quoted identifier';
+/** Batch `readOnlyQuery` sends for `sql`. */
+const inRollback = (sql: string): string =>
+  `SET XACT_ABORT ON;\nBEGIN TRANSACTION;\n${sql}\nIF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;`;
 
 const WRITE_KEYWORDS = [
   'INSERT', 'UPDATE', 'DELETE', 'MERGE', 'INTO', 'TRUNCATE', 'BULK',
@@ -113,6 +117,11 @@ describe('assertReadOnlySql', () => {
     ['keywords inside variable, temp-table, pseudo-column and $ names', 'SELECT @delete, $exec, a$exec, t1delete FROM #into'],
     ['identifiers that contain the newer keywords', 'SELECT settings, BeginDate, isOpen, DateAdded, SavedAt FROM tusers'],
     ['columns named next and value, and OFFSET … FETCH NEXT', 'SELECT next, value FROM t ORDER BY next OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY'],
+    ['a nested block comment', 'SELECT 1 /* a /* b */ c */ AS n'],
+    ['a quote inside a block comment', "SELECT 1 /* it's */ AS n"],
+    ['a line-comment marker inside a block comment', 'SELECT 1 /* -- */ AS n'],
+    ['an empty block comment', 'SELECT 1 /**/ AS n'],
+    ['a trailing line comment', 'SELECT 1 AS n -- note'],
   ])('accepts %s', (_label, sql) => {
     expect(() => assertReadOnlySql(sql)).not.toThrow();
   });
@@ -135,12 +144,12 @@ describe('assertReadOnlySql', () => {
     ['a write after a semicolon', 'SELECT 1; DROP TABLE tusers', SINGLE],
     ['a doubled terminator', 'SELECT 1;;', SINGLE],
     ['a semicolon after a literal that looks like a comment', "SELECT '--'; DROP TABLE tusers", SINGLE],
-    ['a semicolon in an unterminated literal', "SELECT 'x; DROP TABLE tusers", SINGLE],
+    ['a semicolon in an unterminated literal', "SELECT 'x; DROP TABLE tusers", UNTERMINATED],
     ['a write after WITH … SELECT', 'WITH c AS (SELECT 1 AS n) DELETE FROM tusers', uses('DELETE')],
     ['SELECT … INTO', 'SELECT * INTO tusers_copy FROM tusers', uses('INTO')],
     ['SELECT … INTO a temp table', 'SELECT * INTO #t FROM tusers', uses('INTO')],
     ['a second statement without a terminator', 'SELECT 1\nDELETE FROM tusers', uses('DELETE')],
-    ['a write after an unterminated block comment', 'SELECT 1 /* DROP TABLE tusers', uses('DROP')],
+    ['a write after an unterminated block comment', 'SELECT 1 /* DROP TABLE tusers', UNTERMINATED],
     ['a lower-case keyword', "select 1 from tusers waitfor delay '0:0:5'", uses('WAITFOR')],
     ['a sequence advance', 'SELECT NEXT VALUE FOR dbo.seq_order AS n', uses('NEXT VALUE FOR')],
     ['a mixed-case sequence advance split by whitespace and a comment', 'SELECT next\n\tValue /* gap */ FOR dbo.seq_order', uses('NEXT VALUE FOR')],
@@ -150,6 +159,16 @@ describe('assertReadOnlySql', () => {
     ['UPDATE glued to a binary literal', 'SELECT 0xUPDATE tusers SET Fname = NULL', uses('UPDATE')],
     ['INSERT glued to a float exponent', 'SELECT 1EINSERT tusers VALUES (1)', uses('INSERT')],
     ['DELETE glued to a money literal', 'SELECT $1DELETE FROM tusers', uses('DELETE')],
+    ['a write after a nested comment hiding a quote', "SELECT 1 /* outer /* inner */ ' */ DELETE FROM dbo.some_table -- '", uses('DELETE')],
+    ['a write after a 3-deep nested comment hiding a quote', "SELECT 1 /* a /* b /* c */ ' */ d */ DELETE FROM t -- '", uses('DELETE')],
+    ['a write after a comment opened by /*/', 'SELECT 1 AS n /*/ x */ DELETE FROM t', uses('DELETE')],
+    ['a write after a line comment ended by a lone CR', 'SELECT 1 AS n -- x\r DELETE FROM t', uses('DELETE')],
+    ['an unterminated literal', "SELECT 'abc", UNTERMINATED],
+    ['a literal ending in an escaped quote', "SELECT 'abc''", UNTERMINATED],
+    ['an unterminated bracketed identifier', 'SELECT [abc', UNTERMINATED],
+    ['an unterminated quoted identifier', 'SELECT "abc', UNTERMINATED],
+    ['a write in an unterminated nested comment', 'SELECT 1 /* a /* b */ DELETE FROM t', UNTERMINATED],
+    ['an unterminated block comment', 'SELECT 1 /* x', UNTERMINATED],
   ])('refuses %s', (_label, sql, message) => {
     expect(() => assertReadOnlySql(sql)).toThrow(ReadOnlyViolation);
     expect(() => assertReadOnlySql(sql)).toThrow(message);
@@ -259,7 +278,24 @@ describe('createReadOnlyMssql', () => {
     const client = await createReadOnlyMssql(ENV, { driver: fake.driver });
     const sql = 'SELECT UserID, SiteID FROM tusers WHERE SiteID = @siteID AND Type = @_type2';
     await expect(client.readOnlyQuery(sql, { siteID: 'default', _type2: 2 })).resolves.toEqual(rows);
-    expect(fake.log).toEqual(['connect', 'request', 'input siteID="default"', 'input _type2=2', `query ${sql}`]);
+    expect(fake.log).toEqual([
+      'connect',
+      'request',
+      'input siteID="default"',
+      'input _type2=2',
+      `query ${inRollback(sql)}`,
+    ]);
+  });
+
+  it('sends the statement between XACT_ABORT, BEGIN TRANSACTION and an unconditional ROLLBACK', async () => {
+    const fake = fakeDriver([{ n: 1 }]);
+    const client = await createReadOnlyMssql(ENV, { driver: fake.driver });
+    await client.readOnlyQuery('SELECT COUNT(*) AS n FROM tusers WHERE SiteID = @siteID;', { siteID: 'default' });
+    expect(fake.log.at(-1)).toBe(
+      'query SET XACT_ABORT ON;\nBEGIN TRANSACTION;\n' +
+        'SELECT COUNT(*) AS n FROM tusers WHERE SiteID = @siteID;\n' +
+        'IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;',
+    );
   });
 
   it('runs a statement without parameters and reuses the one connected pool', async () => {
@@ -271,9 +307,9 @@ describe('createReadOnlyMssql', () => {
     expect(fake.log).toEqual([
       'connect',
       'request',
-      'query SELECT COUNT(*) AS n FROM sys.procedures',
+      `query ${inRollback('SELECT COUNT(*) AS n FROM sys.procedures')}`,
       'request',
-      'query SELECT COUNT(*) AS n FROM sys.triggers',
+      `query ${inRollback('SELECT COUNT(*) AS n FROM sys.triggers')}`,
     ]);
   });
 
@@ -282,7 +318,11 @@ describe('createReadOnlyMssql', () => {
     const fake = fakeDriver([], undefined, failure);
     const client = await createReadOnlyMssql(ENV, { driver: fake.driver });
     await expect(client.readOnlyQuery('SELECT program_id FROM synthetic.program_site')).rejects.toBe(failure);
-    expect(fake.log).toEqual(['connect', 'request', 'query SELECT program_id FROM synthetic.program_site']);
+    expect(fake.log).toEqual([
+      'connect',
+      'request',
+      `query ${inRollback('SELECT program_id FROM synthetic.program_site')}`,
+    ]);
   });
 
   it('refuses a write before creating a request', async () => {

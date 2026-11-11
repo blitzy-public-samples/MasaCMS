@@ -1,34 +1,156 @@
-// The builders read no environment variable, so these suites install no test environment.
-import { describe, expect, it } from 'vitest';
+// The default Content-Language comes from the MURA_LOCALE setting, so every suite pins it.
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LEGACY_ERROR_PAGE_HTML } from '@opt2/platform/legacy-compat';
+import { resetLegacySettingsForTests } from '@/lib/env';
 import { html, raw } from '@/lib/html';
 import {
   HTML_CONTENT_TYPE,
   JSON_CONTENT_TYPE,
   NO_CACHE_HEADERS,
+  contentLanguage,
   downloadResponse,
   fw1Redirect,
   htmlResponse,
+  isCompactDisplay,
   jsonResponse,
+  legacyPageHeaders,
   legacyUnavailable,
+  negotiatesIdentityEncoding,
   notFound,
   withSetCookies,
+  type LegacyResponseContext,
 } from '@/lib/responses';
 
 const bytes = [0, 255, 1];
 
+const builders: Array<[string, (context?: LegacyResponseContext) => Response]> = [
+  ['htmlResponse', (context) => htmlResponse('<p>x</p>', { context })],
+  ['jsonResponse', (context) => jsonResponse('{}', { context })],
+  ['downloadResponse', (context) => downloadResponse({ status: 200, headers: {}, body: 'a' }, context)],
+  ['fw1Redirect', (context) => fw1Redirect('./', { context })],
+  ['legacyUnavailable', (context) => legacyUnavailable(context)],
+  ['notFound', (context) => notFound(context)],
+];
+
+const pinLocale = (locale: string): void => {
+  vi.stubEnv('MURA_LOCALE', locale);
+  resetLegacySettingsForTests();
+};
+
+beforeEach(() => pinLocale('Server'));
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  resetLegacySettingsForTests();
+});
+
 describe('responses', () => {
-  it.each<[string, () => Response]>([
-    ['htmlResponse', () => htmlResponse('<p>x</p>')],
-    ['jsonResponse', () => jsonResponse('{}')],
-    ['downloadResponse', () => downloadResponse({ status: 200, headers: {}, body: 'a' })],
-    ['fw1Redirect', () => fw1Redirect('./')],
-    ['legacyUnavailable', () => legacyUnavailable()],
-    ['notFound', () => notFound()],
-  ])('%s carries the onRequestStart headers', (_name, build) => {
+  it.each(builders)('%s carries the onRequestStart headers', (_name, build) => {
     const res = build();
     expect(res.headers.get('generator')).toBe('Masa CMS 7.6.1');
     expect(res.headers.get('strict-transport-security')).toBe('max-age=1200');
+  });
+
+  describe.each(builders)('%s container headers', (_name, build) => {
+    it('sends the configured locale as Content-Language and no Content-Encoding by default', () => {
+      const res = build();
+      expect(res.headers.get('content-language')).toBe('en-US');
+      expect(res.headers.get('content-encoding')).toBeNull();
+    });
+
+    it.each<[LegacyResponseContext, string]>([
+      [{ locale: 'de_DE' }, 'de-DE'],
+      [{ locale: '' }, 'en-US'],
+    ])('sends Content-Language for %o', (context, expected) => {
+      expect(build(context).headers.get('content-language')).toBe(expected);
+    });
+
+    it('follows a configured locale setting', () => {
+      pinLocale('German (Standard)');
+      expect(build().headers.get('content-language')).toBe('de-DE');
+    });
+
+    it.each<[string | null, string | null]>([
+      ['identity', 'identity'],
+      ['gzip, deflate', null],
+      [null, null],
+    ])('answers Accept-Encoding %j with Content-Encoding %j', (acceptEncoding, expected) => {
+      expect(build({ acceptEncoding }).headers.get('content-encoding')).toBe(expected);
+    });
+  });
+
+  describe('isCompactDisplay', () => {
+    it.each([
+      'true', 'TRUE', 'TrUe', 'yes', 'Yes', ' yes', 'yes ', '1', '1.0', '01', '1e0', '1E0', '+1', '.1e1', '1e-0',
+      '100e-2', ' 1', '1 ', '\t1', '1\0',
+    ])('selects the compact layout for %j', (value) => {
+      expect(isCompactDisplay(value)).toBe(true);
+    });
+
+    it.each([
+      null, undefined, '', ' ', 'false', 'no', 'on', 't', 'y', '2', '-1', '0', '0.5', '1.', '1d', '1f', '0x1', ' true',
+      'true ', '\ttrue', 'true,false', 'yes,no',
+    ])('keeps the full layout for %j', (value) => {
+      expect(isCompactDisplay(value)).toBe(false);
+    });
+  });
+
+  describe('negotiatesIdentityEncoding', () => {
+    it.each([
+      'identity', 'identity, gzip', 'gzip, identity', '*', 'identity;q=0.001', 'identity ;q=1',
+      'gzip;q=0.5, identity;q=0.1', 'br, identity;q=0.5', '*, gzip;q=0', 'identity, *;q=0',
+    ])('negotiates identity for %j', (value) => {
+      expect(negotiatesIdentityEncoding(value)).toBe(true);
+    });
+
+    it.each([
+      'IDENTITY', 'gzip', 'deflate', 'gzip, deflate', 'br', '', null, undefined, 'identity;q=0', 'identity;q=0.000',
+      'identity;q=0.0000', 'identity;q=', 'gzip;q=0, identity;q=0',
+    ])('negotiates nothing for %j', (value) => {
+      expect(negotiatesIdentityEncoding(value)).toBe(false);
+    });
+  });
+
+  it.each([
+    ['en_US', 'en-US'],
+    ['de_DE', 'de-DE'],
+    ['zh_TW', 'zh-TW'],
+    ['ja_JP_JP', 'ja-JP'],
+    ['iw_IL', 'he-IL'],
+    ['ji_US', 'yi-US'],
+    ['in_ID', 'id-ID'],
+    ['EN_us', 'en-US'],
+    ['de', 'de-'],
+  ])('contentLanguage(%j) is %j', (javaLocale, expected) => {
+    expect(contentLanguage(javaLocale)).toBe(expected);
+  });
+
+  describe('legacyPageHeaders', () => {
+    it.each<[string, boolean]>([
+      ['', true],
+      ['compactDisplay=false', true],
+      ['compactDisplay=true', false],
+      ['compactDisplay=Yes', false],
+      ['COMPACTDISPLAY=1', false],
+      ['compactdisplay=true&muraAction=carch.list', false],
+      ['compactDisplay=true&compactDisplay=false', true],
+      ['compactDisplay=true&COMPACTDISPLAY=true', true],
+    ])('answers ?%s with the full layout cache headers: %s', (query, full) => {
+      const headers = legacyPageHeaders(new URLSearchParams(query), new Headers());
+      expect(headers.get('expires')).toBe(full ? '06 Nov 1994 08:37:34 GMT' : null);
+      expect(headers.get('cache-control')).toBe(full ? 'no-cache, no-store, must-revalidate' : null);
+      expect(headers.get('generator')).toBe('Masa CMS 7.6.1');
+      expect(headers.get('strict-transport-security')).toBe('max-age=1200');
+      expect(headers.get('content-language')).toBe('en-US');
+    });
+
+    it.each<[string, string | null]>([
+      ['identity', 'identity'],
+      ['gzip, deflate', null],
+    ])('answers Accept-Encoding %j with Content-Encoding %j', (acceptEncoding, expected) => {
+      const headers = legacyPageHeaders(new URLSearchParams(), new Headers({ 'accept-encoding': acceptEncoding }));
+      expect(headers.get('content-encoding')).toBe(expected);
+    });
   });
 
   describe('htmlResponse', () => {
@@ -116,6 +238,15 @@ describe('responses', () => {
       expect(await res.text()).toBe('a,b\n');
     });
 
+    it('keeps the service Content-Encoding and Content-Language over the container ones', () => {
+      const res = downloadResponse(
+        { status: 200, headers: { 'Content-Encoding': 'gzip', 'content-language': 'fr-FR' }, body: '' },
+        { acceptEncoding: 'identity' },
+      );
+      expect(res.headers.get('content-encoding')).toBe('gzip');
+      expect(res.headers.get('content-language')).toBe('fr-FR');
+    });
+
     it.each(['connection', 'Keep-Alive', 'transfer-encoding', 'upgrade', 'X-Opt2-Write-Position', 'x-opt2-request-id'])(
       'drops %s',
       (name) => {
@@ -124,6 +255,24 @@ describe('responses', () => {
         expect(res.headers.get('content-type')).toBe('text/csv');
       },
     );
+
+    it.each<[string, Record<string, string | string[]>]>([
+      ['a string value', { connection: 'x-private-hop', 'X-Private-Hop': 'v' }],
+      ['an array value', { Connection: ['keep-alive', 'X-Private-Hop'], 'x-private-hop': 'v' }],
+      ['a list with spaces, tabs and empty tokens', { connection: ' ,\tX-Private-HOP\t, ,', 'x-PRIVATE-hop': 'v' }],
+      ['an upper-case CONNECTION key', { CONNECTION: 'close, x-private-hop', 'X-Private-Hop': 'v' }],
+      ['two Connection keys', { connection: 'close', Connection: 'X-Private-Hop', 'X-Private-Hop': 'v' }],
+    ])('drops the fields Connection nominates with %s', (_name, nominated) => {
+      const res = downloadResponse({
+        status: 200,
+        headers: { ...nominated, 'content-type': 'text/csv', 'x-public': 'kept' },
+        body: '',
+      });
+      expect(res.headers.get('x-private-hop')).toBeNull();
+      expect(res.headers.get('connection')).toBeNull();
+      expect(res.headers.get('content-type')).toBe('text/csv');
+      expect(res.headers.get('x-public')).toBe('kept');
+    });
 
     it.each([
       ['Uint8Array', () => new Uint8Array(bytes)],

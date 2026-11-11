@@ -7,6 +7,7 @@ import { rowFromDb } from '../../src/outbox/ddl.js';
 import {
   OutboxNotConfiguredError,
   createOutbox,
+  dropBlockedRows,
   flushAfterCommit,
   outboxRuntimeFor,
   publishLockedRows,
@@ -22,9 +23,17 @@ const NOW = new Date(2026, 5, 30, 14, 5, 9, 123);
 const STAMP = '2026-06-30 14:05:09.123';
 const TOPIC = 'stub.note.created.v1';
 const SELECT_ALL = 'SELECT * FROM "stub".outbox WHERE published_at IS NULL AND NOT held ORDER BY seq LIMIT $1 FOR UPDATE SKIP LOCKED';
+const SELECT_AFTER =
+  'SELECT * FROM "stub".outbox WHERE published_at IS NULL AND NOT held AND seq > $1::bigint ORDER BY seq LIMIT $2 FOR UPDATE SKIP LOCKED';
 const SELECT_IDS =
-  'SELECT * FROM "stub".outbox WHERE published_at IS NULL AND NOT held AND event_id = ANY($1::uuid[])' +
-  ' ORDER BY seq LIMIT $2 FOR UPDATE SKIP LOCKED';
+  'SELECT o.* FROM "stub".outbox o JOIN (SELECT ordering_key, max(seq) AS upto FROM "stub".outbox' +
+  ' WHERE event_id = ANY($1::uuid[]) AND published_at IS NULL AND NOT held GROUP BY ordering_key) named' +
+  ' ON o.ordering_key = named.ordering_key AND o.seq <= named.upto' +
+  ' WHERE o.published_at IS NULL AND NOT o.held ORDER BY o.seq FOR UPDATE OF o';
+const BLOCKERS_SQL =
+  'SELECT ordering_key, min(seq)::text AS seq FROM "stub".outbox' +
+  ' WHERE ((published_at IS NULL AND NOT held) OR held) AND ordering_key = ANY($1::text[])' +
+  ' AND seq < $2::bigint AND seq <> ALL($3::bigint[]) GROUP BY ordering_key';
 const STAMP_SQL = 'UPDATE "stub".outbox SET published_at = $1 WHERE event_id = ANY($2::uuid[]) AND published_at IS NULL';
 
 type LogLine = Record<string, unknown>;
@@ -58,8 +67,15 @@ function dbRow(seq: string, orderingKey: string): QueryResultRow {
   };
 }
 
-/** A TenantDb whose SELECTs answer `rows`, recording every statement; `fail` rejects at connect, SELECT or UPDATE. */
-function fakeDb(rows: readonly QueryResultRow[] = [], fail: { connect?: Error; select?: Error; update?: Error } = {}) {
+/**
+ * A TenantDb whose locking SELECTs answer `rows` and whose blocker SELECT answers `blockers`, recording every statement;
+ * `fail` rejects at connect, SELECT or UPDATE.
+ */
+function fakeDb(
+  rows: readonly QueryResultRow[] = [],
+  fail: { connect?: Error; select?: Error; update?: Error } = {},
+  blockers: readonly QueryResultRow[] = [],
+) {
   const statements: Statement[] = [];
   const tenants: string[] = [];
   const tx = (tenantId: string): TenantTx => ({
@@ -72,7 +88,7 @@ function fakeDb(rows: readonly QueryResultRow[] = [], fail: { connect?: Error; s
       statements.push({ tenantId, sql, values });
       const failure = sql.startsWith('SELECT') ? fail.select : fail.update;
       if (failure !== undefined) return Promise.reject(failure);
-      const result = sql.startsWith('SELECT') ? [...rows] : [];
+      const result = sql === BLOCKERS_SQL ? [...blockers] : sql.startsWith('SELECT') ? [...rows] : [];
       return Promise.resolve({ command: 'SELECT', rowCount: result.length, oid: 0, fields: [], rows: result as R[] });
     },
   });
@@ -165,14 +181,20 @@ describe('selectPublishable', () => {
   const rows = [dbRow('1', 'note:a'), dbRow('2', 'note:b')];
 
   it.each([
-    { case: 'every unpublished row', opts: { limit: 500 }, sql: SELECT_ALL, values: [500] },
+    { case: 'a page of unpublished rows, skipping locked ones', opts: { limit: 500 }, sql: SELECT_ALL, values: [500] },
     {
-      case: 'the named rows',
-      opts: { eventIds: [eventId(1), eventId(2)], limit: 2 },
-      sql: SELECT_IDS,
-      values: [[eventId(1), eventId(2)], 2],
+      case: 'a page after a seq beyond 2^53, skipping locked ones',
+      opts: { limit: 2, after: '9007199254740993' },
+      sql: SELECT_AFTER,
+      values: ['9007199254740993', 2],
     },
-  ])('locks $case in seq order, skipping locked rows, and maps them', async ({ opts, sql, values }) => {
+    {
+      case: "the named rows' ordering keys up to each key's latest named row, waiting for locked ones",
+      opts: { eventIds: [eventId(1), eventId(2)] },
+      sql: SELECT_IDS,
+      values: [[eventId(1), eventId(2)]],
+    },
+  ])('locks $case in seq order and maps them', async ({ opts, sql, values }) => {
     const { tx, statements } = fakeDb(rows);
     await expect(selectPublishable(tx, 'stub', opts)).resolves.toStrictEqual(rows.map(rowFromDb));
     expect(statements).toEqual([{ tenantId: TENANT_A, sql, values }]);
@@ -181,6 +203,35 @@ describe('selectPublishable', () => {
   it('rejects an invalid schema before querying', async () => {
     const { tx, statements } = fakeDb(rows);
     await expect(selectPublishable(tx, 'Stub', { limit: 1 })).rejects.toThrow(new TypeError('Invalid schema identifier: "Stub"'));
+    expect(statements).toEqual([]);
+  });
+});
+
+describe('dropBlockedRows', () => {
+  it("drops the rows after their key's first unlocked unpublished or held row, comparing seqs beyond 2^53 exactly", async () => {
+    const locked = [dbRow('3', 'L'), dbRow('9007199254740992', 'K'), dbRow('9007199254740994', 'K')].map(rowFromDb);
+    const { tx, statements } = fakeDb([], {}, [{ ordering_key: 'K', seq: '9007199254740993' }]);
+
+    await expect(dropBlockedRows(tx, 'stub', locked)).resolves.toStrictEqual({ rows: locked.slice(0, 2), blocked: 1 });
+
+    expect(statements).toEqual([
+      {
+        tenantId: TENANT_A,
+        sql: BLOCKERS_SQL,
+        values: [['L', 'K'], '9007199254740994', ['3', '9007199254740992', '9007199254740994']],
+      },
+    ]);
+  });
+
+  it('keeps every row when no key has an earlier unlocked unpublished or held row', async () => {
+    const locked = [dbRow('1', 'K'), dbRow('2', 'K')].map(rowFromDb);
+    const { tx } = fakeDb();
+    await expect(dropBlockedRows(tx, 'stub', locked)).resolves.toStrictEqual({ rows: locked, blocked: 0 });
+  });
+
+  it('issues no query for no rows', async () => {
+    const { tx, statements } = fakeDb();
+    await expect(dropBlockedRows(tx, 'stub', [])).resolves.toStrictEqual({ rows: [], blocked: 0 });
     expect(statements).toEqual([]);
   });
 });
@@ -242,7 +293,7 @@ describe('publishLockedRows', () => {
 describe('flushAfterCommit', () => {
   const ids = [eventId(1), eventId(2)];
 
-  it('selects, publishes and stamps the named rows in one tenant transaction', async () => {
+  it('locks, checks for blockers, publishes and stamps the named rows in one tenant transaction', async () => {
     const { db, statements, tenants } = fakeDb([dbRow('1', 'K'), dbRow('2', 'L')]);
     const { runtime, publish, lines } = runtimeWith(db);
 
@@ -251,17 +302,28 @@ describe('flushAfterCommit', () => {
     expect(tenants).toEqual([TENANT_A]);
     expect(publish).toHaveBeenCalledTimes(2);
     expect(statements).toEqual([
-      { tenantId: TENANT_A, sql: SELECT_IDS, values: [ids, 2] },
+      { tenantId: TENANT_A, sql: SELECT_IDS, values: [ids] },
+      { tenantId: TENANT_A, sql: BLOCKERS_SQL, values: [['K', 'L'], '2', ['1', '2']] },
       { tenantId: TENANT_A, sql: STAMP_SQL, values: [STAMP, ids] },
     ]);
     expect(lines).toEqual([]);
+  });
+
+  it('leaves a row behind an earlier held or unpublished row of its key unpublished and counts it as skipped', async () => {
+    const { db, statements } = fakeDb([dbRow('1', 'K'), dbRow('2', 'L')], {}, [{ ordering_key: 'K', seq: '0' }]);
+    const { runtime, publish } = runtimeWith(db);
+
+    await expect(flushAfterCommit(runtime, TENANT_A, ids)).resolves.toStrictEqual({ published: 1, failed: 0, skipped: 1 });
+
+    expect(publish.mock.calls.map(([, envelope]) => envelope)).toEqual([rowFromDb(dbRow('2', 'L')).envelope]);
+    expect(statements.at(-1)).toEqual({ tenantId: TENANT_A, sql: STAMP_SQL, values: [STAMP, [eventId(2)]] });
   });
 
   it('resolves with the failures counted when the publisher rejects', async () => {
     const { db, statements } = fakeDb([dbRow('1', 'K'), dbRow('2', 'K')]);
     const { runtime } = runtimeWith(db, [eventId(1)]);
     await expect(flushAfterCommit(runtime, TENANT_A, ids)).resolves.toStrictEqual({ published: 0, failed: 1, skipped: 1 });
-    expect(statements.map((s) => s.sql)).toEqual([SELECT_IDS]);
+    expect(statements.map((s) => s.sql)).toEqual([SELECT_IDS, BLOCKERS_SQL]);
   });
 
   it('opens no transaction for an empty id list', async () => {

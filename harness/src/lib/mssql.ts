@@ -41,20 +41,61 @@ export class ReadOnlyViolation extends Error {
   override name = 'ReadOnlyViolation';
 }
 
-// Comments, string literals, [bracketed] and "quoted" identifiers, each with its doubled-delimiter escape.
-const SCRUBBED = /--[^\r\n]*|\/\*[\s\S]*?\*\/|'(?:[^']|'')*'|\[(?:[^\]]|\]\])*\]|"(?:[^"]|"")*"/g;
+// Openers of string literals and [bracketed] or "quoted" identifiers, mapped to their closers; a doubled closer is escaped.
+const CLOSERS: Readonly<Record<string, string>> = { "'": "'", '[': ']', '"': '"' };
+const UNTERMINATED = 'read-only query has an unterminated comment, literal or quoted identifier';
 // Skips keywords inside names (letter, _, @, # or non-money $ first); T-SQL ends a number before one (1DELETE, 0xUPDATE).
 const WRITE_KEYWORD =
   /(?<!(?<![\w@#$])(?:[A-Za-z_@#]|\$(?!\d))[\w@#$]*)(INSERT|UPDATE|DELETE|MERGE|EXEC|EXECUTE|CREATE|ALTER|DROP|TRUNCATE|BACKUP|RESTORE|INTO|GRANT|REVOKE|DENY|DBCC|OPENROWSET|OPENQUERY|OPENDATASOURCE|BULK|WAITFOR|SHUTDOWN|KILL|USE|WRITETEXT|UPDATETEXT|SET|DECLARE|BEGIN|COMMIT|ROLLBACK|SAVE|CHECKPOINT|RECONFIGURE|RAISERROR|SETUSER|REVERT|OPEN|ADD|NEXT\s+VALUE\s+FOR|END\s+CONVERSATION)\b/i;
 const PARAM_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
- * Throws `ReadOnlyViolation` unless `sql` is one `SELECT` (or `WITH … SELECT`) statement, at most one
- * trailing `;`, and free of write, DDL, execution, transaction, external-data, session and sequence keywords
+ * Returns `sql` with comments, string literals and quoted identifiers replaced by spaces, lexed as SQL Server does:
+ * block comments nest and `--` ends at CR or LF. Throws `ReadOnlyViolation` for an unterminated one.
+ */
+function blankNonCode(sql: string): string {
+  let code = '';
+  let i = 0;
+  while (i < sql.length) {
+    const start = i;
+    const closer = CLOSERS[sql.charAt(i)];
+    if (sql.startsWith('--', i)) {
+      while (i < sql.length && sql[i] !== '\r' && sql[i] !== '\n') i += 1;
+    } else if (sql.startsWith('/*', i)) {
+      let depth = 0;
+      do {
+        if (i >= sql.length) throw new ReadOnlyViolation(UNTERMINATED);
+        const pair = sql.slice(i, i + 2);
+        if (pair === '/*' || pair === '*/') {
+          depth += pair === '/*' ? 1 : -1;
+          i += 2;
+        } else {
+          i += 1;
+        }
+      } while (depth > 0);
+    } else if (closer !== undefined) {
+      do {
+        const end = sql.indexOf(closer, i + 1);
+        if (end < 0) throw new ReadOnlyViolation(UNTERMINATED);
+        i = end + 1;
+      } while (sql[i] === closer);
+    } else {
+      code += sql.charAt(i);
+      i += 1;
+      continue;
+    }
+    code += ' '.repeat(i - start);
+  }
+  return code;
+}
+
+/**
+ * Throws `ReadOnlyViolation` unless `sql` lexes completely and is one `SELECT` (or `WITH … SELECT`) statement, at
+ * most one trailing `;`, and free of write, DDL, execution, transaction, external-data, session and sequence keywords
  * outside comments, literals and quoted identifiers.
  */
 export function assertReadOnlySql(sql: string): void {
-  const code = sql.replace(SCRUBBED, (match) => ' '.repeat(match.length));
+  const code = blankNonCode(sql);
   const first = /^\s*([A-Za-z]+)\b/.exec(code)?.[1]?.toUpperCase();
   if (first !== 'SELECT' && !(first === 'WITH' && /\bSELECT\b/i.test(code))) {
     throw new ReadOnlyViolation('read-only query must start with SELECT or WITH … SELECT');
@@ -92,7 +133,10 @@ export function mssqlConfigFromEnv(env: EnvLike = process.env, opts: { database?
   return { server, port, database, user, password, options: { encrypt: true, trustServerCertificate: true } };
 }
 
-/** Connects to the legacy database and returns a client that only runs statements passing `assertReadOnlySql`. */
+/**
+ * Connects to the legacy database and returns a client that only runs statements passing `assertReadOnlySql`, each
+ * inside a transaction it always rolls back.
+ */
 export async function createReadOnlyMssql(
   env: EnvLike = process.env,
   deps: { driver?: MssqlDriver; database?: string } = {},
@@ -113,7 +157,9 @@ export async function createReadOnlyMssql(
       for (const [name, value] of entries) {
         request.input(name, value);
       }
-      return (await request.query<T>(sql)).recordset;
+      // XACT_ABORT and the closing rollback undo any write the lexical guard misses; the recordset stays the SELECT's.
+      const batch = `SET XACT_ABORT ON;\nBEGIN TRANSACTION;\n${sql}\nIF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;`;
+      return (await request.query<T>(batch)).recordset;
     },
     close: () => pool.close(),
   };
