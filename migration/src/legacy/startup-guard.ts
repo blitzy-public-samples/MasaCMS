@@ -22,18 +22,55 @@ export interface StartupGuardSteps<C = void, W = void> {
   commit(): Promise<C>;
   /** Runs a `?appreload` request inside a write window on the content units, including its import. */
   runReloadWindow(): Promise<W>;
+  /** Counts predicate rows on the live database after the reload window's import. */
+  remainingStartupRows(): Promise<number>;
   /** Unfreezes the entries `freezeLegacyBound` froze. */
   unfreeze(): Promise<void>;
 }
 
-/** Freezes, commits, runs the reload window and always unfreezes; a failed unfreeze never hides the step's error. */
+/** The batch committed and the freeze stays in place; run `recoverStartupGuard` before legacy traffic resumes. */
+export class StartupGuardFrozenError extends Error {
+  override readonly name = 'StartupGuardFrozenError';
+  /** Matching rows left after the import; undefined when the reload window or the count failed. */
+  readonly remaining: number | undefined;
+
+  constructor(remaining: number | undefined, options?: ErrorOptions) {
+    super(
+      remaining === undefined
+        ? 'Start-up guard reload window or row count failed after commit; legacy-bound entries stay frozen'
+        : `${String(remaining)} rows still match the start-up predicate; legacy-bound entries stay frozen`,
+      options,
+    );
+    this.remaining = remaining;
+  }
+}
+
+/** Runs the reload window, then unfreezes only if no matching row remains; else throws `StartupGuardFrozenError`. */
+export async function recoverStartupGuard<W>(
+  steps: Pick<StartupGuardSteps<unknown, W>, 'runReloadWindow' | 'remainingStartupRows' | 'unfreeze'>,
+): Promise<W> {
+  let reload: W;
+  let remaining: number;
+  try {
+    reload = await steps.runReloadWindow();
+    remaining = await steps.remainingStartupRows();
+  } catch (error) {
+    throw new StartupGuardFrozenError(undefined, { cause: error });
+  }
+  if (remaining !== 0) throw new StartupGuardFrozenError(remaining);
+  await steps.unfreeze();
+  return reload;
+}
+
+/**
+ * Freezes, commits and converts; unfreezes on a pre-commit failure or once no matching row remains.
+ * After a post-commit failure the freeze stays and `StartupGuardFrozenError` is thrown.
+ */
 export async function runStartupGuardSequence<C, W>(steps: StartupGuardSteps<C, W>): Promise<{ commit: C; reload: W }> {
-  let outcome: { commit: C; reload: W };
+  let commit: C;
   try {
     await steps.freezeLegacyBound();
-    const commit = await steps.commit();
-    const reload = await steps.runReloadWindow();
-    outcome = { commit, reload };
+    commit = await steps.commit();
   } catch (error) {
     try {
       await steps.unfreeze();
@@ -45,8 +82,8 @@ export async function runStartupGuardSequence<C, W>(steps: StartupGuardSteps<C, 
     }
     throw error;
   }
-  await steps.unfreeze();
-  return outcome;
+  const reload = await recoverStartupGuard(steps);
+  return { commit, reload };
 }
 
 /** Whether the guard sequence ran, and the matching row count that decided it. */

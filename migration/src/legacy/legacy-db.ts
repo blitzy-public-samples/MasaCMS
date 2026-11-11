@@ -15,7 +15,10 @@ export interface LegacyDb {
   live(): Promise<ConnectionPool>;
   /** Pool on database `name` of the same server, such as a read-only snapshot or `master`; one shared pool per name. */
   database(name: string): Promise<ConnectionPool>;
-  /** Runs `fn` in one READ COMMITTED transaction on the live database or `options.database`; commits, or rolls back and rethrows. */
+  /**
+   * Runs `fn` in one READ COMMITTED transaction on the live database or `options.database`; commits, or rolls back and rethrows.
+   * A rollback failure other than an already-ended transaction is thrown with the original in an AggregateError.
+   */
   transaction<T>(fn: (tx: Transaction) => Promise<T>, options?: { database?: string }): Promise<T>;
   /** Closes every pool opened so far. */
   close(): Promise<void>;
@@ -23,6 +26,11 @@ export interface LegacyDb {
 
 /** The server's `master` database, used for backup and restore statements. */
 export const MASTER_DATABASE = 'master';
+
+/** Whether a rollback failed only because the transaction had already ended, by a server abort or a commit attempt. */
+function isAlreadyEnded(error: unknown): boolean {
+  return error instanceof sql.TransactionError && (error.code === 'EABORT' || error.code === 'ENOTBEGUN');
+}
 
 /** Creates the legacy database port; `options.createPool` replaces the driver's pool constructor, for example in tests. */
 export function createLegacyDb(
@@ -68,8 +76,10 @@ export function createLegacyDb(
       } catch (error) {
         try {
           await tx.rollback();
-        } catch {
-          // The transaction already ended (server abort or failed commit); the original error is the one to report.
+        } catch (rollbackError) {
+          if (!isAlreadyEnded(rollbackError)) {
+            throw new AggregateError([error, rollbackError], 'Transaction failed and its rollback failed');
+          }
         }
         throw error;
       }

@@ -13,6 +13,7 @@ export type MoneyRejectReason = 'format' | 'range';
 export type MoneyParseResult = { ok: true; value: Money } | { ok: false; reason: MoneyRejectReason };
 
 const MAX_INTEGER_DIGITS = 15;
+// Without the m flag `$` matches only at end of input, so a trailing line terminator is rejected, as in finance.cfc's reFind.
 const AMOUNT_TEXT = /^(-?)([0-9]+)(?:\.([0-9]{1,4}))?$/;
 const NUMERIC_TEXT = /^(-?)([0-9]+)(?:\.([0-9]+))?$/;
 // ACF prints a non-integral double with 12 significant digits, in E notation outside these decimal exponents.

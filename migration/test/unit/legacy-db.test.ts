@@ -1,7 +1,8 @@
 // Unit tests for the SQL Server connection port, using fake pools in place of a server.
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 
-import type { ConnectionPool, config as MssqlConfig } from 'mssql';
+import sql from 'mssql';
+import type { ConnectionPool, Transaction, config as MssqlConfig } from 'mssql';
 import { describe, expect, it } from 'vitest';
 
 import { createLegacyDb, MASTER_DATABASE, quoteIdent, type LegacyDbEnv } from '../../src/legacy/legacy-db.js';
@@ -21,6 +22,7 @@ const env: LegacyDbEnv = {
 class FakeConnection extends EventEmitter {
   readonly calls: string[] = [];
   commitError: Error | undefined;
+  rollbackError: Error | undefined;
 
   beginTransaction(callback: (err?: Error) => void): void {
     this.calls.push('begin');
@@ -34,7 +36,13 @@ class FakeConnection extends EventEmitter {
 
   rollbackTransaction(callback: (err?: Error) => void): void {
     this.calls.push('rollback');
-    setImmediate(callback);
+    setImmediate(callback, this.rollbackError);
+  }
+
+  /** Accepts a request and never completes it, so the transaction keeps a request in progress. */
+  execSql(): void {
+    this.calls.push('execSql');
+    this.emit('execSql');
   }
 }
 
@@ -201,6 +209,49 @@ describe('createLegacyDb transaction', () => {
 
     await expect(db.transaction(async () => 1)).rejects.toMatchObject({ originalError: commitFailure });
     expect(fake.pool(0).connection.calls).toEqual(['begin', 'commit']);
+  });
+
+  const rollbackFailure = new Error('connection reset during rollback');
+
+  it.each([
+    {
+      cause: 'the server rejects the rollback',
+      during: async (_tx: Transaction, connection: FakeConnection) => {
+        connection.rollbackError = rollbackFailure;
+      },
+      rollbackError: { originalError: rollbackFailure },
+      calls: ['begin', 'rollback'],
+    },
+    {
+      cause: 'a request is still in progress',
+      during: async (tx: Transaction, connection: FakeConnection) => {
+        const sent = once(connection, 'execSql');
+        void tx.request().query('SELECT 1');
+        await sent;
+      },
+      rollbackError: { code: 'EREQINPROG' },
+      calls: ['begin', 'execSql'],
+    },
+  ])('reports the original error with the rollback failure when $cause', async ({ during, rollbackError, calls }) => {
+    const fake = fakePools();
+    const db = createLegacyDb(env, { createPool: fake.createPool });
+    const failure = new Error('apply failed');
+
+    const error: unknown = await db
+      .transaction(async (tx) => {
+        await during(tx, fake.pool(0).connection);
+        throw failure;
+      })
+      .catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).message).toBe('Transaction failed and its rollback failed');
+    const [original, rollback, ...rest] = (error as AggregateError).errors;
+    expect(original).toBe(failure);
+    expect(rollback).toBeInstanceOf(sql.TransactionError);
+    expect(rollback).toMatchObject(rollbackError);
+    expect(rest).toEqual([]);
+    expect(fake.pool(0).connection.calls).toEqual(calls);
   });
 });
 

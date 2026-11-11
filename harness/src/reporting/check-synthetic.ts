@@ -31,6 +31,9 @@ export const LABEL_PREFIXES: Record<string, string[]> = {
   '.sh': ['# SYNTHETIC: '],
 };
 
+/** Text every header carries after `<module> - `. */
+export const LABEL_TEXT = 'no Masa equivalent; legacy oracle in legacy-fixtures/';
+
 /** Opening of the first non-blank line of every synthetic README. */
 export const README_LABEL = '**SYNTHETIC MODULE**';
 
@@ -38,9 +41,9 @@ export const README_LABEL = '**SYNTHETIC MODULE**';
 export type FileClass = 'labelled' | 'readme' | 'exempt';
 
 /** Why a file fails the check. */
-export type SyntheticFindingKind = 'missing-label' | 'wrong-syntax' | 'missing-readme-label';
+export type SyntheticFindingKind = 'missing-label' | 'wrong-syntax' | 'malformed-label' | 'missing-readme-label';
 
-/** One unlabelled file; `expected` lists the openings its type accepts. */
+/** One unlabelled file; `expected` lists the openings its type accepts, or the full header lines for a `malformed-label`. */
 export interface SyntheticFinding {
   path: string;
   kind: SyntheticFindingKind;
@@ -60,6 +63,24 @@ const USAGE = 'check-synthetic [--root <dir>]';
 // A SYNTHETIC: header behind another comment marker, or behind none.
 const MISPLACED_LABEL = /^\W*SYNTHETIC:/;
 
+// Closing marker a header needs after LABEL_TEXT, by prefix; prefixes not listed need none.
+const LABEL_CLOSERS: Record<string, string> = { '<!--- SYNTHETIC: ': ' --->' };
+
+// A service file's module is its folder name; any other root accepts a lower-case kebab slug.
+const SERVICE_PATH = /^services\/([^/]+)\//;
+const MODULE_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+function headerLine(prefix: string, module: string): string {
+  return `${prefix}${module} - ${LABEL_TEXT}${LABEL_CLOSERS[prefix] ?? ''}`;
+}
+
+// Whether `header`, which starts with `prefix`, is its full header line naming `service`, or any slug when there is none.
+function isFullHeader(header: string, prefix: string, service: string | undefined): boolean {
+  if (service !== undefined) return header === headerLine(prefix, service);
+  const suffix = headerLine(prefix, '').slice(prefix.length);
+  return header.endsWith(suffix) && MODULE_SLUG.test(header.slice(prefix.length, header.length - suffix.length));
+}
+
 function extensionOf(relPath: string): string {
   return path.posix.extname(relPath).toLowerCase();
 }
@@ -72,7 +93,7 @@ export function classifyFile(relPath: string): FileClass {
 
 /**
  * Finding for file `relPath` holding `content`, or `null` when it is labelled or exempt.
- * The header is line 1, or line 2 when line 1 is a `#!` shebang (never required); it needs text after its prefix.
+ * The header (line 1, or line 2 after a `#!`) is `<prefix><module> - LABEL_TEXT`, plus ` --->` for a CFML tag; a service's module is its folder.
  */
 export function checkLabel(relPath: string, content: string): SyntheticFinding | null {
   const fileClass = classifyFile(relPath);
@@ -88,7 +109,12 @@ export function checkLabel(relPath: string, content: string): SyntheticFinding |
   const prefixes = LABEL_PREFIXES[extensionOf(relPath)] ?? [];
   const header = (lines[0]?.startsWith('#!') ? lines[1] : lines[0]) ?? '';
   const prefix = prefixes.find((candidate) => header.startsWith(candidate));
-  if (prefix !== undefined && header.slice(prefix.length).trim() !== '') return null;
+  const service = SERVICE_PATH.exec(relPath)?.[1];
+  if (prefix !== undefined && isFullHeader(header.trimEnd(), prefix, service)) return null;
+  if (prefix !== undefined && header.slice(prefix.length).trim() !== '') {
+    const expected = prefixes.map((candidate) => headerLine(candidate, service ?? '<module>'));
+    return { path: relPath, kind: 'malformed-label', expected };
+  }
   const kind = prefix === undefined && MISPLACED_LABEL.test(header) ? 'wrong-syntax' : 'missing-label';
   return { path: relPath, kind, expected: [...prefixes] };
 }
@@ -121,9 +147,15 @@ async function collectFiles(base: string, relDir: string, files: string[]): Prom
   }
 }
 
-/** Checks every file under each of {@link SYNTHETIC_ROOTS} in `opts.root` (default the checkout); absent roots are listed, not failed. */
+/**
+ * Checks every file under each of {@link SYNTHETIC_ROOTS} in `opts.root` (default the checkout); absent roots are listed, not failed.
+ * Rejects with `ENOENT` or `ENOTDIR` when `opts.root` is not a directory.
+ */
 export async function checkSynthetic(opts: { root?: string } = {}): Promise<SyntheticCheckResult> {
   const base = opts.root ?? REPO_ROOT;
+  if (!(await fs.stat(base)).isDirectory()) {
+    throw Object.assign(new Error(`ENOTDIR: not a directory, '${base}'`), { code: 'ENOTDIR', path: base });
+  }
   const checked: Record<FileClass, number> = { labelled: 0, readme: 0, exempt: 0 };
   const rootsMissing: string[] = [];
   const findings: SyntheticFinding[] = [];
@@ -148,7 +180,7 @@ export async function checkSynthetic(opts: { root?: string } = {}): Promise<Synt
   return { ok: findings.length === 0, checked, rootsMissing, findings };
 }
 
-/** CLI entry; `--root <dir>` checks another tree. Exit 1 when any file lacks its label. */
+/** CLI entry; `--root <dir>` checks another tree. Exit 1 when any file lacks its label or the root is not a directory. */
 export async function main(argv: string[]): Promise<CliOutcome> {
   const { values } = parseFlags(argv, { options: { root: { type: 'string' } }, usage: USAGE });
   if (values.root === '') throw new UsageError('--root needs a directory', USAGE);

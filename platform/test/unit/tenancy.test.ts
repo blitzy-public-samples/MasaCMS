@@ -3,16 +3,21 @@ import * as tenancy from '../../src/tenancy/index.js';
 import {
   InvalidTenantIdError,
   NON_TENANT_TABLES,
+  OutsideTenantTransactionError,
   createPool,
+  currentTenantTx,
+  currentTransaction,
   hasGrant,
   iamDbUser,
   isNonTenantTable,
+  requireTenantTx,
   tenantDbFromPool,
   tenantIdForSite,
   withMetadata,
   withTenant,
   writeGrant,
   type DbEnv,
+  type MetadataTx,
   type Pool,
   type QueryConfig,
   type TenantDb,
@@ -50,6 +55,8 @@ const doubles = vi.hoisted(() => {
     static readonly created: FakePool[] = [];
     readonly options: Record<string, unknown> | undefined;
     readonly client = new FakeClient();
+    /** Clients in connect order: `client`, then a new one per later connect, as pg gives open transactions distinct connections. */
+    readonly clients: FakeClient[] = [];
     readonly listeners = new Map<string, unknown>();
     readonly events: string[] = [];
     connects = 0;
@@ -62,7 +69,9 @@ const doubles = vi.hoisted(() => {
 
     connect(): Promise<FakeClient> {
       this.connects += 1;
-      return Promise.resolve(this.client);
+      const client = this.clients.length === 0 ? this.client : new FakeClient();
+      this.clients.push(client);
+      return Promise.resolve(client);
     }
 
     on(event: string, listener: unknown): this {
@@ -153,6 +162,22 @@ function lastPool(): FakePoolInstance {
 }
 
 const statements = (pool: FakePoolInstance): string[] => pool.client.calls.map(([text]) => text);
+
+/** Each connection's latest statement and its releases, in connect order. */
+const progress = (pool: FakePoolInstance): [string | undefined, unknown[]][] =>
+  pool.clients.map(({ calls, releases }) => [calls.at(-1)?.[0], releases]);
+
+/** Asserts the context helpers report `tx` as the open transaction, and as the tenant transaction only when it is one. */
+function expectContext(tx: TenantTx | MetadataTx | undefined): void {
+  expect(currentTransaction()).toBe(tx);
+  if (tx?.kind === 'tenant') {
+    expect(currentTenantTx()).toBe(tx);
+    expect(requireTenantTx()).toBe(tx);
+  } else {
+    expect(currentTenantTx()).toBeUndefined();
+    expect(() => requireTenantTx()).toThrow(OutsideTenantTransactionError);
+  }
+}
 
 beforeEach(() => {
   FakePool.created.length = 0;
@@ -293,6 +318,116 @@ describe('tenantDbFromPool', () => {
 
     await (endError === undefined ? expect(ending).resolves.toBeUndefined() : expect(ending).rejects.toBe(endError));
     expect(pool.events).toEqual(['pool.end', 'onEnd']);
+  });
+});
+
+describe('nested transactions', () => {
+  const INNER: readonly (readonly [
+    string,
+    (db: TenantDb, fn: (tx: TenantTx | MetadataTx) => Promise<void>) => Promise<void>,
+    string,
+    Record<string, unknown>,
+  ])[] = [
+    ['withTenant(B)', (db, fn) => withTenant(db, TENANT_B, fn), TENANT_B, { kind: 'tenant', tenantId: TENANT_B }],
+    ['withMetadata', (db, fn) => withMetadata(db, fn), '', { kind: 'metadata' }],
+  ];
+  const failure = new Error('inner failed');
+  const SETTLED: readonly (readonly [string, Error | undefined, string])[] = [
+    ['commits', undefined, 'COMMIT'],
+    ['rolls back a caught rejection', failure, 'ROLLBACK'],
+  ];
+
+  describe.each(INNER)('%s inside withTenant(A)', (_name, open, setting, handle) => {
+    it.each(SETTLED)('%s on its own connection, then the outer transaction is current again and commits', async (_label, error, end) => {
+      const { pool, db } = fakeDb();
+      expectContext(undefined);
+
+      await withTenant(db, TENANT_A, async (outer) => {
+        await outer.query('SELECT 1');
+        const settled = await open(db, async (tx) => {
+          await tx.query('SELECT 2');
+          expect(tx).toMatchObject({ ...handle, schema: 'people' });
+          expectContext(tx);
+          if (error !== undefined) {
+            throw error;
+          }
+        }).then(
+          () => undefined,
+          (err: unknown) => err,
+        );
+        expect(settled).toBe(error);
+        expect(progress(pool)).toEqual([
+          ['SELECT 1', []],
+          [end, [undefined]],
+        ]);
+        expectContext(outer);
+        expect(requireTenantTx().tenantId).toBe(TENANT_A);
+        await outer.query('SELECT 3');
+      });
+
+      expectContext(undefined);
+      expect(pool.connects).toBe(2);
+      expect(pool.clients.map(({ calls }) => calls)).toEqual([
+        [
+          ['BEGIN', undefined],
+          [SET_TENANT, [TENANT_A]],
+          ['SELECT 1', undefined],
+          ['SELECT 3', undefined],
+          ['COMMIT', undefined],
+        ],
+        [
+          ['BEGIN', undefined],
+          [SET_TENANT, [setting]],
+          ['SELECT 2', undefined],
+          [end, undefined],
+        ],
+      ]);
+      expect(pool.clients.map(({ releases }) => releases)).toEqual([[undefined], [undefined]]);
+    });
+
+    it('rolls back an uncaught rejection on its own connection, then the outer rolls back and withTenant rejects with it', async () => {
+      const { pool, db } = fakeDb();
+      expectContext(undefined);
+
+      await expect(
+        withTenant(db, TENANT_A, async (outer) => {
+          await outer.query('SELECT 1');
+          try {
+            await open(db, async (tx) => {
+              await tx.query('SELECT 2');
+              expect(tx).toMatchObject({ ...handle, schema: 'people' });
+              expectContext(tx);
+              throw failure;
+            });
+          } finally {
+            expect(progress(pool)).toEqual([
+              ['SELECT 1', []],
+              ['ROLLBACK', [undefined]],
+            ]);
+            expectContext(outer);
+            expect(requireTenantTx().tenantId).toBe(TENANT_A);
+          }
+        }),
+      ).rejects.toBe(failure);
+
+      expectContext(undefined);
+      expect(pool.connects).toBe(2);
+      expect(pool.clients.map(({ calls }) => calls)).toEqual([
+        [
+          ['BEGIN', undefined],
+          [SET_TENANT, [TENANT_A]],
+          ['SELECT 1', undefined],
+          ['ROLLBACK', undefined],
+        ],
+        [
+          ['BEGIN', undefined],
+          [SET_TENANT, [setting]],
+          ['SELECT 2', undefined],
+          ['ROLLBACK', undefined],
+        ],
+      ]);
+      expect(pool.clients.map(({ releases }) => releases)).toEqual([[undefined], [undefined]]);
+    });
   });
 });
 
@@ -488,4 +623,3 @@ describe('hasGrant', () => {
     expect(pool.connects).toBe(0);
   });
 });
-

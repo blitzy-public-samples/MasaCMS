@@ -24,7 +24,7 @@ import { createLogger } from '../../src/logging/index.js';
 import { createService } from '../../src/service-kit/create-service.js';
 import { loadEnv, type BaseEnv } from '../../src/service-kit/env.js';
 import { tenantIdForSite } from '../../src/tenancy/index.js';
-import { TENANT_A, TENANT_B } from '../../src/testing/fixtures.js';
+import { TENANT_A, TENANT_B, TENANT_UMBRELLA, type TenantFixture } from '../../src/testing/fixtures.js';
 import {
   ROLE_SET,
   SERVICE_CALLERS,
@@ -35,6 +35,7 @@ import {
   mintUserToken,
   pushKeyQuery,
   subjectQueryFor,
+  subjectSiteFor,
   testInvocationMinter,
   testJwks,
   testSigningKeys,
@@ -234,7 +235,8 @@ describe('ROLE_SET', () => {
   it('builds user and service roles from the auth role constants', () => {
     const byName = new Map(ROLE_SET.map((subject) => [subject.name, subject]));
     expect(byName.get('s2')).toMatchObject({ kind: 'user', roles: [Roles.systemUser, Roles.s2], s2: true });
-    expect(byName.get('other-tenant')).toMatchObject({ siteOverride: TENANT_B.siteId });
+    expect(byName.get('other-tenant')).toMatchObject({ crossTenant: true });
+    expect(byName.get('other-tenant')).not.toHaveProperty('siteOverride');
     expect(byName.get(Roles.financeApprover)?.roles).toEqual([Roles.systemUser, Roles.financeApprover]);
     expect(byName.get('service:migration')).toMatchObject({
       kind: 'service',
@@ -246,17 +248,47 @@ describe('ROLE_SET', () => {
   });
 });
 
-const SITE_ROUTE = `/v1/sites/${TENANT_A.siteId}/admin`;
+describe('subjectSiteFor', () => {
+  const otherTenant = ROLE_SET.find((subject) => subject.name === 'other-tenant') as RoleSubject;
+  const siteAdmin = ROLE_SET.find((subject) => subject.name === Roles.siteAdmin) as RoleSubject;
+
+  it.each<[string, RoleSubject, string | undefined, string]>([
+    ['a cross-tenant subject relative to the site', otherTenant, TENANT_B.siteId, TENANT_A.siteId],
+    [
+      'a cross-tenant subject ahead of its override',
+      { ...otherTenant, siteOverride: TENANT_B.siteId },
+      TENANT_A.siteId,
+      TENANT_B.siteId,
+    ],
+    [
+      'the override of a subject',
+      { ...siteAdmin, siteOverride: TENANT_UMBRELLA.siteId },
+      TENANT_B.siteId,
+      TENANT_UMBRELLA.siteId,
+    ],
+    ['the site for a plain subject', siteAdmin, TENANT_B.siteId, TENANT_B.siteId],
+    ['tenant-a for a plain subject by default', siteAdmin, undefined, TENANT_A.siteId],
+  ])('returns %s', (_label, subject, site, expected) => {
+    expect(subjectSiteFor(subject, site)).toBe(expected);
+  });
+});
+
 const MIGRATION_ROUTE = '/internal/v1/migration/apply';
 const EVENT_ROUTE = '/internal/v1/events/people.stub.note.created.v1';
 
-/** The one route each subject may reach in the app below. */
-const ALLOWED: Readonly<Record<string, string>> = {
-  [Roles.siteAdmin]: SITE_ROUTE,
-  'service:migration': MIGRATION_ROUTE,
-  'service:tasks-invoker': TASK_PATH,
-  'service:pubsub-invoker': EVENT_ROUTE,
-};
+function siteRoute(site: string): string {
+  return `/v1/sites/${site}/admin`;
+}
+
+/** The one route each subject may reach in the app below when `site` is under test. */
+function allowedRoutes(site: string): Readonly<Record<string, string>> {
+  return {
+    [Roles.siteAdmin]: siteRoute(site),
+    'service:migration': MIGRATION_ROUTE,
+    'service:tasks-invoker': TASK_PATH,
+    'service:pubsub-invoker': EVENT_ROUTE,
+  };
+}
 
 function envFor(stateDir: string): BaseEnv {
   return loadEnv(undefined, {
@@ -279,7 +311,7 @@ async function matrixApp(stateDir: string, bindCallee: boolean): Promise<Fastify
     verifierOverride: bindCallee ? testVerifier(CALLEE) : testVerifier(),
     logger: createLogger({ service: CALLEE, version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
   });
-  const ok = async (): Promise<{ ok: true }> => ({ ok: true });
+  const ok = (): Promise<{ ok: true }> => Promise.resolve({ ok: true });
   app.get('/v1/sites/:siteid/admin', { config: { opt2: { requires: [Roles.siteAdmin] } } }, ok);
   app.post(MIGRATION_ROUTE, { config: { opt2: { requires: [Roles.platformMigration] } } }, ok);
   app.post(TASK_PATH, { config: { opt2: { requires: [TASKS_INVOKER_ROLE], transport: 'cloud-tasks' } } }, ok);
@@ -308,30 +340,39 @@ describe.each([
     await rm(stateDir, { recursive: true, force: true });
   });
 
-  it.each(ROLE_SET.map((subject): [string, RoleSubject] => [subject.name, subject]))(
-    '%s reaches only its own route',
-    async (name, subject) => {
-      const headers = await authHeadersFor(subject, { audience: CALLEE });
-      for (const url of [SITE_ROUTE, MIGRATION_ROUTE, TASK_PATH, EVENT_ROUTE]) {
-        const method = url === SITE_ROUTE ? 'GET' : 'POST';
-        const res = await app.inject({ method, url, headers, query: subjectQueryFor(subject) });
-        expect(ALLOWED[name] === url ? [200] : [401, 403], url).toContain(res.statusCode);
-      }
-    },
-  );
+  describe.each([TENANT_A.siteId, TENANT_B.siteId])('on site %s', (site) => {
+    const route = siteRoute(site);
+    const allowed = allowedRoutes(site);
+
+    it.each(ROLE_SET.map((subject): [string, RoleSubject] => [subject.name, subject]))(
+      '%s reaches only its own route',
+      async (name, subject) => {
+        const headers = await authHeadersFor(subject, { audience: CALLEE, site });
+        for (const url of [route, MIGRATION_ROUTE, TASK_PATH, EVENT_ROUTE]) {
+          const method = url === route ? 'GET' : 'POST';
+          const res = await app.inject({ method, url, headers, query: subjectQueryFor(subject) });
+          expect(allowed[name] === url ? [200] : [401, 403], url).toContain(res.statusCode);
+        }
+      },
+    );
+  });
 });
 
 describe('authHeadersFor header shapes', () => {
-  it('sends user tokens with the gateway invocation credential and the subject site', async () => {
+  it.each<[string | undefined, TenantFixture]>([
+    [TENANT_A.siteId, TENANT_B],
+    [TENANT_B.siteId, TENANT_A],
+    [undefined, TENANT_B],
+    ['TENANT-B', TENANT_A],
+    [TENANT_UMBRELLA.siteId, TENANT_B],
+  ])('sends other-tenant tokens for site %s with the gateway invocation credential', async (site, expected) => {
     const otherTenant = ROLE_SET.find((subject) => subject.name === 'other-tenant');
     expect(otherTenant).toBeDefined();
-    const headers = await authHeadersFor(otherTenant as RoleSubject, { audience: CALLEE, sub: 'U8' });
+    const headers = await authHeadersFor(otherTenant as RoleSubject, { audience: CALLEE, sub: 'U8', site });
     expect(Object.keys(headers).sort()).toEqual(['authorization', INVOCATION_HEADER]);
-    expect(decodeJwt((headers.authorization ?? '').replace(/^Bearer /, ''))).toMatchObject({
-      sub: 'U8',
-      site: TENANT_B.siteId,
-      tid: TENANT_B.tenantId,
-    });
+    const claims = decodeJwt((headers.authorization ?? '').replace(/^Bearer /, ''));
+    expect(claims).toMatchObject({ sub: 'U8', site: expected.siteId, tid: expected.tenantId });
+    expect(claims.tid).not.toBe(tenantIdForSite(site ?? TENANT_A.siteId));
     expect(decodeJwt((headers[INVOCATION_HEADER] ?? '').replace(/^Bearer /, ''))).toMatchObject({
       sub: 'service:gateway',
       aud: CALLEE,

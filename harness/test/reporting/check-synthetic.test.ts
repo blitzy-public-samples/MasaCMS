@@ -6,6 +6,7 @@ import { UsageError, runCli } from '../../src/lib/cli.js';
 import { REPO_ROOT, isInsideRepo } from '../../src/lib/paths.js';
 import {
   LABEL_PREFIXES,
+  LABEL_TEXT,
   README_LABEL,
   SKIPPED_DIRS,
   SYNTHETIC_ROOTS,
@@ -43,6 +44,12 @@ const SQL_EXPECTED = ['-- SYNTHETIC: '];
 const CFML_EXPECTED = ['<!--- SYNTHETIC: ', '// SYNTHETIC: '];
 const SH_EXPECTED = ['# SYNTHETIC: '];
 const README_EXPECTED = ['**SYNTHETIC MODULE**'];
+const TS_FINANCE_EXPECTED = [`// SYNTHETIC: ${MODULE_TEXT}`];
+const TS_ANY_EXPECTED = [`// SYNTHETIC: <module> - ${LABEL_TEXT}`];
+const SQL_ANY_EXPECTED = [`-- SYNTHETIC: <module> - ${LABEL_TEXT}`];
+const CFML_ANY_EXPECTED = [`<!--- SYNTHETIC: <module> - ${LABEL_TEXT} --->`, `// SYNTHETIC: <module> - ${LABEL_TEXT}`];
+const SH_FINANCE_EXPECTED = [SH_HEADER];
+const ESIGN_EXPECTED = [`// SYNTHETIC: e-signature - ${LABEL_TEXT}`];
 
 const ALL_ROOTS = [
   'services/communications',
@@ -153,6 +160,10 @@ describe('constants', () => {
   it('README_LABEL is the bold SYNTHETIC MODULE marker', () => {
     expect(README_LABEL).toBe('**SYNTHETIC MODULE**');
   });
+
+  it('LABEL_TEXT is the no-Masa, legacy-oracle wording every header carries after its module', () => {
+    expect(LABEL_TEXT).toBe('no Masa equivalent; legacy oracle in legacy-fixtures/');
+  });
 });
 
 describe('classifyFile', () => {
@@ -195,6 +206,13 @@ describe('checkLabel', () => {
     ['a README whose first non-blank line holds the label', 'services/finance/README.md', '\n  \n**SYNTHETIC MODULE** finance\n'],
     ['a README label behind a byte-order mark', 'services/finance/README.md', `\uFEFF${README_TEXT}`],
     ['an exempt file with no label', 'services/finance/package.json', '{}\n'],
+    ['a header naming a hyphenated service', 'services/e-signature/src/a.ts', `// SYNTHETIC: e-signature - ${LABEL_TEXT}\n`],
+    ['an opt2 screen header naming its module', 'web/src/screens/opt2/admin/A.tsx', `// SYNTHETIC: opt2-admin - ${LABEL_TEXT}\n`],
+    ['an opt2 app header naming its module', 'web/app/opt2/modules/page.tsx', `// SYNTHETIC: opt2-modules - ${LABEL_TEXT}\n`],
+    ['a legacy-fixtures header naming a sub-module', 'legacy-fixtures/seed/src/a.ts', `// SYNTHETIC: seed - ${LABEL_TEXT}\n`],
+    ['a header with trailing whitespace', 'services/finance/src/a.ts', `${TS_HEADER} \t\nexport {};\n`],
+    ['a CFML tag header with trailing whitespace', 'legacy-fixtures/cfml/a.cfm', `${CFML_TAG_HEADER}  \r\n`],
+    ['a closed CFML tag header', 'legacy-fixtures/cfml/a.cfc', `<!--- SYNTHETIC: legacy-fixtures - ${LABEL_TEXT} --->\n`],
   ])('accepts %s', (_label, relPath, content) => {
     expect(checkLabel(relPath, content)).toBeNull();
   });
@@ -219,6 +237,23 @@ describe('checkLabel', () => {
     ['an empty README', 'missing-readme-label', 'services/finance/README.md', '', README_EXPECTED],
     ['a README with the label mid-line', 'missing-readme-label', 'services/finance/README.md', 'Finance **SYNTHETIC MODULE**\n', README_EXPECTED],
     ['a README with a lower-case label', 'missing-readme-label', 'services/finance/README.md', '**synthetic module**\n', README_EXPECTED],
+    ['a header with arbitrary text', 'malformed-label', 'services/finance/src/a.ts', '// SYNTHETIC: anything\n', TS_FINANCE_EXPECTED],
+    ['an unterminated CFML tag header', 'malformed-label', 'legacy-fixtures/cfml/a.cfm', `<!--- SYNTHETIC: ${MODULE_TEXT}\n`, CFML_ANY_EXPECTED],
+    ['a CFML tag header with arbitrary text', 'malformed-label', 'legacy-fixtures/cfml/a.cfm', '<!--- SYNTHETIC: x\n', CFML_ANY_EXPECTED],
+    ['a CFML closer with no space', 'malformed-label', 'legacy-fixtures/cfml/a.cfc', `<!--- SYNTHETIC: ${MODULE_TEXT}--->\n`, CFML_ANY_EXPECTED],
+    ['a CFML script header with a bare module', 'malformed-label', 'legacy-fixtures/a.cfc', '// SYNTHETIC: finance\n', CFML_ANY_EXPECTED],
+    ['a CFML script header with a closer', 'malformed-label', 'legacy-fixtures/a.cfm', `// SYNTHETIC: ${MODULE_TEXT} --->\n`, CFML_ANY_EXPECTED],
+    ['truncated wording', 'malformed-label', 'services/finance/src/a.ts', '// SYNTHETIC: finance - no Masa equivalent\n', TS_FINANCE_EXPECTED],
+    ['other wording', 'malformed-label', 'legacy-fixtures/a.sql', '-- SYNTHETIC: finance - mirrors Masa; legacy oracle\n', SQL_ANY_EXPECTED],
+    ['another service as module', 'malformed-label', 'services/finance/src/a.ts', `// SYNTHETIC: surveys - ${LABEL_TEXT}\n`, TS_FINANCE_EXPECTED],
+    ['a script with a sub-module', 'malformed-label', 'services/finance/a.sh', `#!/bin/sh\n# SYNTHETIC: seed - ${LABEL_TEXT}\n`, SH_FINANCE_EXPECTED],
+    ['a service name with no hyphen', 'malformed-label', 'services/e-signature/a.ts', `// SYNTHETIC: esignature - ${LABEL_TEXT}`, ESIGN_EXPECTED],
+    ['text after the wording', 'malformed-label', 'services/finance/src/a.ts', `${TS_HEADER} (draft)\n`, TS_FINANCE_EXPECTED],
+    ['text after the CFML closer', 'malformed-label', 'legacy-fixtures/cfml/a.cfc', `${CFML_TAG_HEADER} <cfcomponent>\n`, CFML_ANY_EXPECTED],
+    ['an upper-case module', 'malformed-label', 'legacy-fixtures/seed/src/a.ts', `// SYNTHETIC: Seed - ${LABEL_TEXT}\n`, TS_ANY_EXPECTED],
+    ['a module with a space', 'malformed-label', 'web/app/opt2/admin/page.tsx', `// SYNTHETIC: opt2 admin - ${LABEL_TEXT}\n`, TS_ANY_EXPECTED],
+    ['a module behind extra spaces', 'malformed-label', 'legacy-fixtures/seed/src/a.ts', `// SYNTHETIC:  seed - ${LABEL_TEXT}\n`, TS_ANY_EXPECTED],
+    ['a header with no module', 'malformed-label', 'legacy-fixtures/seed/src/a.ts', `// SYNTHETIC:  - ${LABEL_TEXT}\n`, TS_ANY_EXPECTED],
   ])('reports %s as %s', (_label, kind, relPath, content, expected) => {
     expect(checkLabel(relPath, content)).toEqual({ path: relPath, kind, expected });
   });
@@ -256,6 +291,8 @@ describe('checkSynthetic', () => {
       'legacy-fixtures/load-surveys.sh': `set -euo pipefail\n${SH_HEADER}\n`,
       'services/e-signature/README.md': '# E-signature\n',
       'web/app/opt2/finance/page.tsx': 'export default function Page() {\n  return null;\n}\n',
+      'services/finance/src/forged.ts': '// SYNTHETIC: anything\n',
+      'legacy-fixtures/cfml/open.cfm': '<!--- SYNTHETIC: x\n',
     });
     await write('services/finance/README.md', '# Finance\n');
 
@@ -263,17 +300,19 @@ describe('checkSynthetic', () => {
 
     expect(result.ok).toBe(false);
     expect(result.findings).toEqual([
+      { path: 'legacy-fixtures/cfml/open.cfm', kind: 'malformed-label', expected: CFML_ANY_EXPECTED },
       { path: 'legacy-fixtures/load-surveys.sh', kind: 'missing-label', expected: SH_EXPECTED },
       { path: 'legacy-fixtures/sql/surveys/010_surveys.sql', kind: 'wrong-syntax', expected: SQL_EXPECTED },
       { path: 'services/communications/src/send.ts', kind: 'missing-label', expected: TS_EXPECTED },
       { path: 'services/e-signature/README.md', kind: 'missing-readme-label', expected: README_EXPECTED },
       { path: 'services/finance/README.md', kind: 'missing-readme-label', expected: README_EXPECTED },
+      { path: 'services/finance/src/forged.ts', kind: 'malformed-label', expected: TS_FINANCE_EXPECTED },
       { path: 'services/reporting/src/export.ts', kind: 'missing-label', expected: TS_EXPECTED },
       { path: 'services/surveys/src/schedule.ts', kind: 'missing-label', expected: TS_EXPECTED },
       { path: 'services/timesheets/src/approval.ts', kind: 'wrong-syntax', expected: TS_EXPECTED },
       { path: 'web/app/opt2/finance/page.tsx', kind: 'missing-label', expected: TS_EXPECTED },
     ]);
-    expect(result.checked).toEqual({ labelled: 14, readme: 2, exempt: 1 });
+    expect(result.checked).toEqual({ labelled: 16, readme: 2, exempt: 1 });
     expect(result.rootsMissing).toEqual([]);
   });
 
@@ -348,6 +387,15 @@ describe('checkSynthetic', () => {
   it('rejects when the root is a file rather than a directory', async () => {
     const file = await write('not-a-directory', 'x\n');
     await expect(checkSynthetic({ root: file })).rejects.toMatchObject({ code: 'ENOTDIR' });
+  });
+
+  it.each<[string, string, (dir: string) => string]>([
+    ['ENOENT', 'does not exist', (dir) => path.join(dir, 'typo')],
+    ['ENOENT', 'sits below a missing directory', (dir) => path.join(dir, 'missing', 'typo')],
+    ['ENOTDIR', 'sits below a file', (dir) => path.join(dir, 'not-a-directory', 'typo')],
+  ])('rejects with %s when the root %s', async (code, _label, rootOf) => {
+    await write('not-a-directory', 'x\n');
+    await expect(checkSynthetic({ root: rootOf(root) })).rejects.toMatchObject({ code });
   });
 
   it('checks the checkout root when no root is given, as main does without --root', async () => {
@@ -433,6 +481,20 @@ describe('main through runCli', () => {
     expect(run.exits).toEqual([1]);
     expect(run.line).toMatchObject({ command: COMMAND, ok: false, code: 1, error: { type: 'Error' } });
     expect(String((run.line['error'] as { message: unknown }).message)).toContain('ENOTDIR');
+    expect(stderr).toHaveBeenCalled();
+  });
+
+  it.each<[string, (dir: string) => string[]]>([
+    ['--root <missing>', (dir) => ['--root', path.join(dir, 'typo')]],
+    ['--root=<missing>', (dir) => [`--root=${path.join(dir, 'typo')}`]],
+  ])('exits 1 with an ENOENT error in the summary line, not a pass, for %s', async (_form, argv) => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const run = await runCheck(argv(root));
+    expect(run.code).toBe(1);
+    expect(run.exits).toEqual([1]);
+    expect(run.output.split('\n')).toHaveLength(2);
+    expect(run.line).toEqual({ command: COMMAND, ok: false, code: 1, error: { type: 'Error', message: expect.stringContaining('ENOENT') } });
+    expect(String((run.line['error'] as { message: unknown }).message)).toContain(path.join(root, 'typo'));
     expect(stderr).toHaveBeenCalled();
   });
 });

@@ -38,6 +38,8 @@ export {
   STARTUP_COUNT_SQL,
   countStartupRows,
   runStartupGuardSequence,
+  recoverStartupGuard,
+  StartupGuardFrozenError,
   commitWithStartupGuard,
 } from './startup-guard.js';
 export type { StartupGuardSteps, StartupGuardOutcome } from './startup-guard.js';

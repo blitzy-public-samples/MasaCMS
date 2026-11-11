@@ -246,6 +246,8 @@ export interface RoleSubject {
   s2?: boolean;
   /** Site the subject's token is minted for, instead of the one under test. */
   siteOverride?: string;
+  /** Mints the token for a fixture site of another tenant than the one under test; takes precedence over siteOverride. */
+  crossTenant?: boolean;
   /** Service name of a `service` subject. */
   caller?: string;
 }
@@ -292,10 +294,20 @@ export const ROLE_SET: readonly RoleSubject[] = Object.freeze([
   userSubject('editor', [Roles.systemUser]),
   userSubject(Roles.siteAdmin, [Roles.systemUser, Roles.siteAdmin]),
   userSubject(Roles.s2, [Roles.systemUser, Roles.s2], { s2: true }),
-  userSubject('other-tenant', [Roles.systemUser, Roles.siteAdmin], { siteOverride: TENANT_B.siteId }),
+  userSubject('other-tenant', [Roles.systemUser, Roles.siteAdmin], { crossTenant: true }),
   ...SYNTHETIC_ROLES.map((role) => userSubject(role, [Roles.systemUser, role])),
   ...SERVICE_CALLERS.map(serviceSubject),
 ] satisfies RoleSubject[]);
+
+/** Fixture site of a tenant unrelated to `site`: tenant-a for tenant-b, otherwise tenant-b, which shares no pool. */
+export function otherTenantSite(site: string): string {
+  return tenantIdForSite(site) === TENANT_B.tenantId ? TENANT_A.siteId : TENANT_B.siteId;
+}
+
+/** Site authHeadersFor mints a user subject's token for, so authz suites can derive the expected site-check outcome. */
+export function subjectSiteFor(subject: RoleSubject, site: string = TENANT_A.siteId): string {
+  return subject.crossTenant ? otherTenantSite(site) : (subject.siteOverride ?? site);
+}
 
 /** Options of authHeadersFor. */
 export interface AuthHeadersOptions {
@@ -317,7 +329,7 @@ export async function authHeadersFor(subject: RoleSubject, opts: AuthHeadersOpti
     const [userToken, gatewayToken] = await Promise.all([
       mintUserToken({
         sub: opts.sub ?? `test-${subject.name}`,
-        site: subject.siteOverride ?? opts.site ?? TENANT_A.siteId,
+        site: subjectSiteFor(subject, opts.site),
         roles: subject.roles,
         s2: subject.s2,
       }),

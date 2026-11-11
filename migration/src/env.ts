@@ -3,9 +3,11 @@ import { baseEnvSchema, envPort, envUrl, loadEnv, optionalEnvString, requiredEnv
 
 const SQL_SERVER_TYPES = new Set(['mssql', 'sqlserver', 'microsoft sql server']);
 
+const LOCAL_PUBSUB_KEYS = ['GOOGLE_CLOUD_PROJECT', 'PUBSUB_EMULATOR_HOST'] as const;
+
 const absolutePath = () => z.string().refine((value) => path.isAbsolute(value), 'must be an absolute path');
 
-/** Environment of the migration service and the `opt2-migrate` and `opt2-ops` CLIs. */
+/** Environment of the migration service and the `opt2-migrate` and `opt2-ops` CLIs; local mode requires the Pub/Sub project and emulator host. */
 export const migrationEnvSchema = baseEnvSchema.extend({
   MURA_DBTYPE: optionalEnvString(),
   MURA_DBHOST: requiredEnvString(),
@@ -24,6 +26,11 @@ export const migrationEnvSchema = baseEnvSchema.extend({
   OPT2_LEGACY_RESTART_CMD: optionalEnvString(),
   OPT2_REPORTS_DIR: optionalEnvString(absolutePath()),
   OPT2_PRISTINE_DIR: optionalEnvString(absolutePath()),
+}).superRefine((env, ctx) => {
+  if (env.OPT2_ENV !== 'local') return;
+  for (const key of LOCAL_PUBSUB_KEYS) {
+    if (env[key] === undefined) ctx.addIssue({ code: 'custom', path: [key], message: 'is required when OPT2_ENV=local' });
+  }
 });
 
 /** Parsed migration environment. */

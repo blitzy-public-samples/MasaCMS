@@ -70,6 +70,8 @@ const ENV: NodeJS.ProcessEnv = {
   PORT: '8102',
   OPT2_SERVICE_NAME: 'migration',
   OPT2_ENV: 'local',
+  GOOGLE_CLOUD_PROJECT: 'opt2-unit',
+  PUBSUB_EMULATOR_HOST: '127.0.0.1:8085',
   OPT2_JWKS_URL: 'http://127.0.0.1:8111/.well-known/jwks.json',
   OPT2_TOKEN_ISSUER: 'http://127.0.0.1:8111',
   OPT2_TOKEN_AUDIENCE: 'opt2',
@@ -437,6 +439,29 @@ describe('migration environment', () => {
     expect(error).toBeInstanceOf(EnvValidationError);
     expect((error as EnvValidationError).issues).toEqual([`${key}: is required`]);
     expect((error as EnvValidationError).message).not.toContain('not-a-secret');
+  });
+
+  it.each<[string, 'unset' | 'blank']>([
+    ['GOOGLE_CLOUD_PROJECT', 'unset'],
+    ['GOOGLE_CLOUD_PROJECT', 'blank'],
+    ['PUBSUB_EMULATOR_HOST', 'unset'],
+    ['PUBSUB_EMULATOR_HOST', 'blank'],
+  ])('rejects a local environment with %s %s', (key, state) => {
+    const source = without(key, state);
+    const error = thrownBy(() => loadMigrationEnv(source));
+
+    expect(migrationEnvSchema.safeParse(source).success).toBe(false);
+    expect(error).toBeInstanceOf(EnvValidationError);
+    expect((error as EnvValidationError).issues).toEqual([`${key}: is required when OPT2_ENV=local`]);
+  });
+
+  it('parses a cloud environment without PUBSUB_EMULATOR_HOST and rejects one with it', () => {
+    const withoutEmulator = { ...without('PUBSUB_EMULATOR_HOST', 'unset'), OPT2_ENV: 'cloud' };
+    const error = thrownBy(() => loadMigrationEnv({ ...ENV, OPT2_ENV: 'cloud' }));
+
+    expect(loadMigrationEnv(withoutEmulator)).toMatchObject({ OPT2_ENV: 'cloud', GOOGLE_CLOUD_PROJECT: 'opt2-unit' });
+    expect(error).toBeInstanceOf(EnvValidationError);
+    expect((error as EnvValidationError).issues).toEqual(['PUBSUB_EMULATOR_HOST: must be unset when OPT2_ENV=cloud']);
   });
 
   it('accepts an absolute OPT2_REPORTS_DIR and rejects a relative one', () => {

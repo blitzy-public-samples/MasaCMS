@@ -7,14 +7,16 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   commitWithStartupGuard,
   countStartupRows,
+  recoverStartupGuard,
   runStartupGuardSequence,
   STARTUP_COUNT_SQL,
   STARTUP_PREDICATE_WHERE,
+  StartupGuardFrozenError,
   type StartupGuardSteps,
 } from '../../src/legacy/startup-guard.js';
 
 const MASA_APP_START = new URL('../../../core/appcfc/onApplicationStart_include.cfm', import.meta.url);
-const FULL_SEQUENCE = ['freezeLegacyBound', 'commit', 'runReloadWindow', 'unfreeze'];
+const FULL_SEQUENCE = ['freezeLegacyBound', 'commit', 'runReloadWindow', 'remainingStartupRows', 'unfreeze'];
 
 const normalise = (text: string): string => text.replace(/\s+/g, ' ').trim();
 
@@ -28,8 +30,8 @@ function fakeScope(recordset: unknown[], error?: Error) {
   return { scope: { request }, query, request };
 }
 
-/** Steps that record their call order; a step named in `failures` rejects with that error. */
-function recordedSteps(failures: Partial<Record<keyof StartupGuardSteps, Error>> = {}) {
+/** Steps that record their call order; a step named in `failures` rejects with that error; `remaining` is the count. */
+function recordedSteps(failures: Partial<Record<keyof StartupGuardSteps, Error>> = {}, remaining = 0) {
   const calls: string[] = [];
   const step =
     <T>(name: keyof StartupGuardSteps, value: T) =>
@@ -43,6 +45,7 @@ function recordedSteps(failures: Partial<Record<keyof StartupGuardSteps, Error>>
     freezeLegacyBound: step('freezeLegacyBound', undefined),
     commit: step('commit', 'committed'),
     runReloadWindow: step('runReloadWindow', 7),
+    remainingStartupRows: step('remainingStartupRows', remaining),
     unfreeze: step('unfreeze', undefined),
   };
   return { calls, steps };
@@ -90,7 +93,7 @@ describe('countStartupRows', () => {
 });
 
 describe('runStartupGuardSequence', () => {
-  it('freezes, commits, runs the reload window and unfreezes, in that order', async () => {
+  it('freezes, commits, runs the reload window, counts remaining rows and unfreezes, in that order', async () => {
     const { calls, steps } = recordedSteps();
 
     await expect(runStartupGuardSequence(steps)).resolves.toEqual({ commit: 'committed', reload: 7 });
@@ -100,7 +103,6 @@ describe('runStartupGuardSequence', () => {
   it.each([
     ['freezeLegacyBound', ['freezeLegacyBound', 'unfreeze']],
     ['commit', ['freezeLegacyBound', 'commit', 'unfreeze']],
-    ['runReloadWindow', FULL_SEQUENCE],
   ] as const)('unfreezes and rethrows the original error when %s fails', async (failing, expectedCalls) => {
     const failure = new Error(`${failing} failed`);
     const { calls, steps } = recordedSteps({ [failing]: failure });
@@ -126,6 +128,43 @@ describe('runStartupGuardSequence', () => {
 
     await expect(runStartupGuardSequence(steps)).rejects.toBe(unfreezeFailure);
     expect(calls).toEqual(FULL_SEQUENCE);
+  });
+});
+
+describe('recoverStartupGuard', () => {
+  it('returns the reload result and unfreezes after a zero count', async () => {
+    const { calls, steps } = recordedSteps();
+
+    await expect(recoverStartupGuard(steps)).resolves.toBe(7);
+    expect(calls).toEqual(['runReloadWindow', 'remainingStartupRows', 'unfreeze']);
+  });
+});
+
+describe.each<[string, (steps: StartupGuardSteps<string, number>) => Promise<unknown>, string[]]>([
+  ['runStartupGuardSequence', runStartupGuardSequence, ['freezeLegacyBound', 'commit']],
+  ['recoverStartupGuard', recoverStartupGuard, []],
+])('%s after the batch committed', (_entry, run, committedCalls) => {
+  const reloadFailure = new Error('reload window failed');
+  const countFailure = new Error('count failed');
+  const counted = ['runReloadWindow', 'remainingStartupRows'];
+
+  it.each<
+    [string, Partial<Record<keyof StartupGuardSteps, Error>>, number, string[], Error | undefined, number | undefined]
+  >([
+    ['the reload window fails', { runReloadWindow: reloadFailure }, 0, ['runReloadWindow'], reloadFailure, undefined],
+    ['the remaining-row count fails', { remainingStartupRows: countFailure }, 0, counted, countFailure, undefined],
+    ['2 matching rows remain', {}, 2, counted, undefined, 2],
+  ])('stays frozen and throws StartupGuardFrozenError when %s', async (_case, failures, count, after, cause, left) => {
+    const { calls, steps } = recordedSteps(failures, count);
+
+    const error = await run(steps).catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(StartupGuardFrozenError);
+    expect((error as StartupGuardFrozenError).name).toBe('StartupGuardFrozenError');
+    expect((error as StartupGuardFrozenError).cause).toBe(cause);
+    expect((error as StartupGuardFrozenError).remaining).toBe(left);
+    expect(calls).toEqual([...committedCalls, ...after]);
+    expect(calls).not.toContain('unfreeze');
   });
 });
 

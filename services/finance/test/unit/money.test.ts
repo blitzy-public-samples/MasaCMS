@@ -121,6 +121,12 @@ describe('parseMoney rejections the fixture amount pattern makes', () => {
     ['leading whitespace', ' 12'],
     ['trailing whitespace', '12 '],
     ['a trailing newline', '12\n'],
+    ['a trailing carriage return', '12\r'],
+    ['a trailing CRLF', '12\r\n'],
+    ['a trailing line separator', '12\u2028'],
+    ['a trailing paragraph separator', '12\u2029'],
+    ['a trailing next-line character', '12\u0085'],
+    ['a trailing newline after a fraction', '12.5\n'],
     ['a doubled minus sign', '--1'],
     ['a bare minus sign', '-'],
     ['hex notation', '0x10'],
@@ -191,10 +197,13 @@ describe('moneyFromNumeric', () => {
     expect(moneyFromNumeric(text)).toBe(value);
   });
 
-  it.each(['abc', '', '12.3.4', ' 1', '1e3', 'NaN'])('throws RangeError for malformed text %j', (text) => {
-    expect(() => moneyFromNumeric(text)).toThrow(RangeError);
-    expect(() => moneyFromNumeric(text)).toThrow(`not numeric text: ${JSON.stringify(text)}`);
-  });
+  it.each(['abc', '', '12.3.4', ' 1', '1e3', 'NaN', '12\n', '12\r', '12\r\n', '12\u2028', '12\u2029', '12.3400\n'])(
+    'throws RangeError for malformed text %j',
+    (text) => {
+      expect(() => moneyFromNumeric(text)).toThrow(RangeError);
+      expect(() => moneyFromNumeric(text)).toThrow(`not numeric text: ${JSON.stringify(text)}`);
+    },
+  );
 
   it('throws RangeError for text with nonzero digits beyond scale 4', () => {
     expect(() => moneyFromNumeric('12.34001')).toThrow(RangeError);
