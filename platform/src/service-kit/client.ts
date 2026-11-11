@@ -30,6 +30,8 @@ export interface ServiceRequest {
   userToken?: string | null;
   /** Returns the body as the received bytes (a Buffer) whatever its media type, for byte-exact passthrough. */
   rawBody?: boolean;
+  /** Bounds this call instead of the client's timeout, for a callee whose own budget exceeds it (write-window open). */
+  timeoutMs?: number;
 }
 
 /** A callee's answer; every status is returned as data, 4xx and 5xx included. */
@@ -170,8 +172,9 @@ export function createServiceClient(options: ServiceClientOptions): ServiceClien
     // Only this workload's own credential for this callee is ever sent, never one a caller passed along.
     delete headers[INVOCATION_HEADER];
 
+    const callTimeoutMs = req.timeoutMs ?? timeoutMs;
     // undici's parser timers fire up to ~500 ms late and a MockAgent ignores them, so the signal bounds the whole call.
-    const deadline = AbortSignal.timeout(timeoutMs);
+    const deadline = AbortSignal.timeout(callTimeoutMs);
     let credential: Record<string, string>;
     try {
       // Bounded here too, since a minter may ignore the signal.
@@ -194,8 +197,8 @@ export function createServiceClient(options: ServiceClientOptions): ServiceClien
         headers,
         body,
         dispatcher,
-        headersTimeout: timeoutMs,
-        bodyTimeout: timeoutMs,
+        headersTimeout: callTimeoutMs,
+        bodyTimeout: callTimeoutMs,
         signal: deadline,
       });
       raw = Buffer.from(await response.body.arrayBuffer());

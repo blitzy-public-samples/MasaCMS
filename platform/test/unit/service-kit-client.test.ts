@@ -263,6 +263,23 @@ describe('createServiceClient with a MockAgent', () => {
     expect(callCount()).toBe(1);
   });
 
+  it.each<[string, number, number, 'ok' | 'timeout']>([
+    ['shortens', 5_000, 50, 'timeout'],
+    ['extends', 50, 5_000, 'ok'],
+  ])('a per-call timeoutMs %s the client timeout for that call only', async (_label, clientMs, callMs, outcome) => {
+    client = makeClient({ timeoutMs: clientMs });
+    agent.get(IDENTITY).intercept({ path: '/x' }).reply(200, 'late').delay(300).persist();
+    const outcomeOf = (req: ServiceRequest): Promise<unknown> =>
+      client.request(req).then(
+        () => 'ok',
+        (e: unknown) => (e instanceof ServiceUnavailableError ? 'timeout' : e),
+      );
+    await expect(outcomeOf({ service: 'identity', method: 'GET', path: '/x', timeoutMs: callMs })).resolves.toBe(outcome);
+    await expect(outcomeOf({ service: 'identity', method: 'GET', path: '/x' })).resolves.toBe(
+      outcome === 'ok' ? 'timeout' : 'ok',
+    );
+  });
+
   it.each<[string, Error, string]>([
     ['ECONNREFUSED', Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }), 'ECONNREFUSED'],
     ['ECONNRESET', Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }), 'ECONNRESET'],
