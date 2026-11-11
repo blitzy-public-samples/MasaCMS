@@ -1,0 +1,2561 @@
+# SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
+openapi: 3.1.0
+info:
+  title: finance
+  version: 1.0.0
+  description: 'SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/'
+  x-source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f
+servers:
+  - url: http://127.0.0.1:8119
+    description: local
+tags:
+  - name: fixture
+    description: Fixture routes, answered byte-shaped like `legacy-fixtures/cfml/modules/finance.cfc`.
+  - name: v1
+    description: JSON API of the OPT-2 finance screens; a breaking change takes a /v2/ prefix.
+  - name: internal
+    description: Local file, push-delivery, migration and health routes.
+security:
+  - userToken: []
+    invocationCredential: []
+paths:
+  /legacy-fixtures/cfml/api.cfm/finance/records:
+    parameters:
+      - $ref: '#/components/parameters/SiteId'
+      - $ref: '#/components/parameters/UseDataNamespace'
+    get:
+      operationId: fixtureListRecords
+      summary: Lists the site's finance records in creation order.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - finance.preparer
+        - finance.approver
+      parameters:
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureRecordList'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    post:
+      operationId: fixtureCreateRecord
+      summary: Creates an IN-PROGRESS record at version 1 and rebuilds the program rollup.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - finance.preparer
+      requestBody:
+        $ref: '#/components/requestBodies/FinanceRecordForm'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureRecordCreated'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /legacy-fixtures/cfml/api.cfm/finance/records/{id}:
+    parameters:
+      - $ref: '#/components/parameters/RecordId'
+      - $ref: '#/components/parameters/SiteId'
+      - $ref: '#/components/parameters/UseDataNamespace'
+    get:
+      operationId: fixtureGetRecord
+      summary: Reads one record of the site.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - finance.preparer
+        - finance.approver
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureRecord'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /legacy-fixtures/cfml/api.cfm/finance/records/{id}/{action}:
+    parameters:
+      - $ref: '#/components/parameters/RecordId'
+      - $ref: '#/components/parameters/Action'
+      - $ref: '#/components/parameters/SiteId'
+      - $ref: '#/components/parameters/UseDataNamespace'
+    post:
+      operationId: fixtureTransitionRecord
+      summary: Applies a lifecycle action, writing a new version, and rebuilds the program rollup.
+      description: The caller's roles decide the outcome per the transition table; a role that may not take the action answers 403.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - finance.preparer
+        - finance.approver
+      requestBody:
+        required: false
+        description: Read only by `edit`, which requires all three fields.
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/FinanceRecordInput'
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FinanceRecordInput'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureRecordTransitioned'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '409':
+          $ref: '#/components/responses/FixtureConflict'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /legacy-fixtures/cfml/api.cfm/finance/records/{id}/versions:
+    parameters:
+      - $ref: '#/components/parameters/RecordId'
+      - $ref: '#/components/parameters/SiteId'
+      - $ref: '#/components/parameters/UseDataNamespace'
+    get:
+      operationId: fixtureListVersions
+      summary: Lists a record's version rows in version order.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - finance.preparer
+        - finance.approver
+      parameters:
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureVersionList'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /legacy-fixtures/cfml/api.cfm/finance/records/{id}/attachments:
+    parameters:
+      - $ref: '#/components/parameters/RecordId'
+      - $ref: '#/components/parameters/SiteId'
+      - $ref: '#/components/parameters/UseDataNamespace'
+    get:
+      operationId: fixtureListAttachments
+      summary: Lists a record's attachment metadata, without content.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - finance.preparer
+        - finance.approver
+      parameters:
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureAttachmentList'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    post:
+      operationId: fixtureUploadAttachment
+      summary: Stores the uploaded file as an attachment of the record and returns its metadata.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - finance.preparer
+      requestBody:
+        $ref: '#/components/requestBodies/AttachmentUpload'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureAttachmentCreated'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /legacy-fixtures/cfml/api.cfm/finance/records/{id}/attachments/{aid}:
+    parameters:
+      - $ref: '#/components/parameters/RecordId'
+      - $ref: '#/components/parameters/AttachmentId'
+      - $ref: '#/components/parameters/SiteId'
+    get:
+      operationId: fixtureDownloadAttachment
+      summary: Downloads an attachment of the record.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - finance.preparer
+        - finance.approver
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureAttachmentFile'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /legacy-fixtures/cfml/api.cfm/finance/rollups:
+    parameters:
+      - $ref: '#/components/parameters/SiteId'
+      - $ref: '#/components/parameters/UseDataNamespace'
+    get:
+      operationId: fixtureListRollups
+      summary: Lists the program's record count and total amount per period and state.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - finance.preparer
+        - finance.approver
+      parameters:
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureRollupList'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /v1/finance/records:
+    get:
+      operationId: listRecords
+      summary: Lists the tenant's finance records for the record list screen.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - finance.preparer
+        - finance.approver
+      parameters:
+        - name: state
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/FinanceState'
+        - name: period
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Period'
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: One page of matching records and the count of every matching record.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - total
+                additionalProperties: false
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FinanceRecord'
+                  total:
+                    type: integer
+                    minimum: 0
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /v1/finance/records/{id}:
+    parameters:
+      - $ref: '#/components/parameters/RecordId'
+    get:
+      operationId: getRecord
+      summary: Reads one record with its version history and attachment metadata.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - finance.preparer
+        - finance.approver
+      responses:
+        '200':
+          description: The record detail.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                additionalProperties: false
+                properties:
+                  data:
+                    $ref: '#/components/schemas/FinanceRecordDetail'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /v1/finance/records/{id}/versions:
+    parameters:
+      - $ref: '#/components/parameters/RecordId'
+    get:
+      operationId: listRecordVersions
+      summary: Lists a record's version rows in version order.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - finance.preparer
+        - finance.approver
+      responses:
+        '200':
+          description: The record's versions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                additionalProperties: false
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FinanceRecordVersion'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /v1/finance/records/{id}/transitions/{action}:
+    parameters:
+      - $ref: '#/components/parameters/RecordId'
+      - $ref: '#/components/parameters/Action'
+    post:
+      operationId: transitionRecord
+      summary: Applies a lifecycle action to a record, writing a new version.
+      description: The caller's roles decide the outcome per the transition table; a role that may not take the action answers 403.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - finance.preparer
+        - finance.approver
+      requestBody:
+        required: false
+        description: Read only by `edit`, which requires all three fields.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FinanceRecordInput'
+      responses:
+        '200':
+          description: The record after the transition.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                additionalProperties: false
+                properties:
+                  data:
+                    $ref: '#/components/schemas/FinanceRecord'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '409':
+          $ref: '#/components/responses/FixtureConflict'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /v1/finance/records/{id}/attachments:
+    parameters:
+      - $ref: '#/components/parameters/RecordId'
+    get:
+      operationId: listRecordAttachments
+      summary: Lists a record's attachment metadata, without content.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - finance.preparer
+        - finance.approver
+      responses:
+        '200':
+          description: The record's attachments.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                additionalProperties: false
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FinanceAttachment'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    post:
+      operationId: uploadRecordAttachment
+      summary: Stores the uploaded file as an attachment of the record and returns its metadata.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - finance.preparer
+      requestBody:
+        $ref: '#/components/requestBodies/AttachmentUpload'
+      responses:
+        '200':
+          description: The stored attachment's metadata.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                additionalProperties: false
+                properties:
+                  data:
+                    $ref: '#/components/schemas/FinanceAttachment'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /v1/finance/records/{id}/attachments/{aid}/download-url:
+    parameters:
+      - $ref: '#/components/parameters/RecordId'
+      - $ref: '#/components/parameters/AttachmentId'
+    get:
+      operationId: getAttachmentDownloadUrl
+      summary: Issues a time-limited download URL for an attachment of the record.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - finance.preparer
+        - finance.approver
+      responses:
+        '200':
+          description: The signed download URL.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                additionalProperties: false
+                properties:
+                  data:
+                    $ref: '#/components/schemas/SignedUrl'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /v1/finance/rollups:
+    get:
+      operationId: listRollups
+      summary: Lists the tenant's record count and total amount per period and state.
+      tags:
+        - v1
+      x-opt2-transport: service
+      x-opt2-requires:
+        - finance.preparer
+        - finance.approver
+      parameters:
+        - name: asOf
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+            examples:
+              - '2026-06-30'
+      responses:
+        '200':
+          description: The rollup rows ordered by period, then state.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                additionalProperties: false
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FinanceRollup'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+
+  /opt2/files/finance-attachments/{tenantId}/{objectName}:
+    parameters:
+      - name: tenantId
+        in: path
+        required: true
+        description: First segment of the object key `<tenantId>/<id>.<ext>`.
+        schema:
+          type: string
+          format: uuid
+      - name: objectName
+        in: path
+        required: true
+        description: Second segment of the object key, the attachment's CF id and extension.
+        schema:
+          type: string
+          pattern: '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}\.[^/]+$'
+    get:
+      operationId: getLocalAttachmentObject
+      summary: Serves an attachment object of the local storage adapter through its signed URL.
+      description: The signature is the credential, checked with `verifySignedUrl` of `@opt2/platform/storage`; only the local adapter issues these URLs.
+      tags:
+        - internal
+      x-opt2-transport: service
+      x-opt2-public: true
+      security: []
+      parameters:
+        - name: expires
+          in: query
+          required: true
+          description: Expiry in epoch seconds.
+          schema:
+            type: integer
+            minimum: 0
+        - name: sig
+          in: query
+          required: true
+          description: Lowercase hex HMAC-SHA256 over the bucket, key, expiry and any disposition.
+          schema:
+            type: string
+            pattern: '^[0-9a-f]{64}$'
+        - name: disposition
+          in: query
+          required: false
+          description: Signed Content-Disposition of the download.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The object bytes under their stored content type.
+          headers:
+            Content-Disposition:
+              description: The signed `disposition`, when the URL carries one.
+              schema:
+                type: string
+          content:
+            '*/*':
+              schema:
+                type: string
+                format: binary
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+          description: The signature is malformed, wrong or expired.
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+          description: No object is stored under the key.
+  /internal/v1/events/finance.programs-sites.site.changed.v1:
+    post:
+      operationId: pushProgramsSitesSiteChanged
+      summary: Receives push deliveries of `programs-sites.site.changed.v1` into this service's tenant registry.
+      tags:
+        - internal
+      x-opt2-transport: pubsub-push
+      x-opt2-requires:
+        - service:pubsub-invoker
+      security:
+        - pubsubPushOidc: []
+        - localPushKey: []
+      parameters:
+        - $ref: '#/components/parameters/PushKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PushBody'
+      responses:
+        '204':
+          description: Acknowledged; the delivery was applied, already applied, or dead-lettered.
+        '400':
+          description: Not a push body; a nack.
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+          description: Processing failed; a nack, redelivered by Pub/Sub.
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+          description: A unit gate or the database is unavailable; a nack, redelivered by Pub/Sub.
+  /internal/v1/migration/apply:
+    post:
+      operationId: migrationApply
+      summary: Applies one batch of canonical legacy rows to the owned units, once per batch id.
+      tags:
+        - internal
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyRequest'
+      responses:
+        '200':
+          description: The batch outcome; a repeated batch id is a no-op reported as `duplicate`.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplyResponse'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /internal/v1/migration/export:
+    get:
+      operationId: migrationExport
+      summary: Exports one page of a unit's rows in canonical legacy form.
+      tags:
+        - internal
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: unit
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - $ref: '#/components/parameters/MigrationTenantId'
+        - $ref: '#/components/parameters/MigrationSiteId'
+        - name: programId
+          in: query
+          required: false
+          description: Restricts a folded unit to one `Program_<id>` schema.
+          schema:
+            $ref: '#/components/schemas/DigitString'
+        - name: after
+          in: query
+          required: false
+          description: The previous page's `next` cursor.
+          schema:
+            type: string
+            minLength: 1
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: One export page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportResponse'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /internal/v1/migration/changes:
+    get:
+      operationId: migrationChanges
+      summary: Reads the tenant's changelog after a cursor, below the commit-safe horizon.
+      tags:
+        - internal
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/MigrationTenantId'
+        - $ref: '#/components/parameters/MigrationSiteId'
+        - name: after
+          in: query
+          required: false
+          description: Cursor `<xid>:<seq>`; `0:0` when omitted.
+          schema:
+            type: string
+            pattern: '^(0|[1-9][0-9]*):(0|[1-9][0-9]*)$'
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: One page of changes with their legacy projections.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChangesResponse'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /internal/v1/migration/position:
+    get:
+      operationId: migrationPosition
+      summary: Reports the current write position and the outbox and inbox drain counts.
+      tags:
+        - internal
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: eventIds
+          in: query
+          required: false
+          description: Comma-separated event ids whose inbox receipts are reported.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The owner's position.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PositionResponse'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /internal/v1/migration/watermark:
+    get:
+      operationId: migrationWatermarkGet
+      summary: Lists feed watermarks, optionally for one legacy table or direction.
+      tags:
+        - internal
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: legacyTable
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+        - name: direction
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/WatermarkDirection'
+      responses:
+        '200':
+          description: Watermarks ordered by legacy table and direction.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WatermarkRecord'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+    post:
+      operationId: migrationWatermarkPost
+      summary: Records the feed watermark of one legacy table and direction.
+      tags:
+        - internal
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WatermarkInput'
+      responses:
+        '200':
+          description: The stored watermark.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatermarkRecord'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /internal/v1/migration/gate:
+    post:
+      operationId: migrationGate
+      summary: Closes, re-phases, opens or reads the unit gates of this owner.
+      tags:
+        - internal
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GateRequest'
+      responses:
+        '200':
+          description: The gates after the operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GateResponse'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '409':
+          description: Another holder owns a gate, so the compare-and-set was refused.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GateConflict'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+          description: The gates could not close within the wait budget.
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Liveness probe.
+      tags:
+        - internal
+      x-opt2-transport: service
+      x-opt2-public: true
+      security: []
+      responses:
+        '200':
+          description: The service is running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+          description: A presented credential is invalid.
+
+components:
+  securitySchemes:
+    userToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Site-scoped user token in `Authorization`, minted by identity and attached by the gateway.
+    invocationCredential:
+      type: apiKey
+      in: header
+      name: X-Serverless-Authorization
+      description: Caller's invocation credential; a Google-signed ID token in the cloud, a local service token locally.
+    pubsubPushOidc:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: OIDC token of `pubsub-invoker` in `Authorization`, addressed to the push endpoint.
+    localPushKey:
+      type: apiKey
+      in: query
+      name: key
+      description: Local emulator push key, compared in constant time.
+  headers:
+    Generator:
+      description: Legacy generator header.
+      schema:
+        type: string
+        const: Masa CMS 7.6.1
+    StrictTransportSecurity:
+      description: Legacy HSTS header.
+      schema:
+        type: string
+        const: max-age=1200
+    ETag:
+      description: Uppercase hex SHA-256 of the exact body, unquoted, as ColdFusion `hash()` computes it.
+      schema:
+        type: string
+        pattern: '^[0-9A-F]{64}$'
+    XOpt2WritePosition:
+      description: Committed write positions `<owner>=<xid>[,<owner>=<xid>…]`; the gateway strips it from client responses.
+      schema:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9-]*=[0-9]+(,[a-z0-9][a-z0-9-]*=[0-9]+)*$'
+    ContentDisposition:
+      description: '`attachment; filename="<name>"`, with backslashes and double quotes in the name escaped by a backslash.'
+      schema:
+        type: string
+        pattern: '^attachment; filename=".*"$'
+  parameters:
+    SiteId:
+      name: siteid
+      in: query
+      required: false
+      description: Legacy site id, also accepted as a form or JSON body field; the session or token site when omitted, and it must equal the token's `site`.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 25
+        examples:
+          - tenant-a
+    UseDataNamespace:
+      name: useDataNamespace
+      in: query
+      required: false
+      description: '`false` moves the keys of a struct `data` to the envelope root.'
+      schema:
+        type: string
+        examples:
+          - 'false'
+    PageIndex:
+      name: pageIndex
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    ItemsPerPage:
+      name: itemsPerPage
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 50
+    RecordId:
+      name: id
+      in: path
+      required: true
+      description: Finance record id; a record outside the caller's site answers 404.
+      schema:
+        $ref: '#/components/schemas/CfId'
+    AttachmentId:
+      name: aid
+      in: path
+      required: true
+      description: Attachment id; an attachment of another record answers 404.
+      schema:
+        $ref: '#/components/schemas/CfId'
+    Action:
+      name: action
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/TransitionAction'
+    PushKey:
+      name: key
+      in: query
+      required: false
+      description: Local emulator push key; absent in the cloud.
+      schema:
+        type: string
+    MigrationTenantId:
+      name: tenantId
+      in: query
+      required: false
+      description: Tenant UUID; exactly one of `tenantId` and `siteId` is required.
+      schema:
+        type: string
+        format: uuid
+    MigrationSiteId:
+      name: siteId
+      in: query
+      required: false
+      description: Legacy site id resolved to its tenant; exactly one of `tenantId` and `siteId` is required.
+      schema:
+        type: string
+        minLength: 1
+    PageLimit:
+      name: limit
+      in: query
+      required: false
+      description: Page size, 1 to 10000; 1000 when omitted.
+      schema:
+        $ref: '#/components/schemas/DigitString'
+  requestBodies:
+    FinanceRecordForm:
+      required: true
+      description: Merged with the query string as legacy merges url, form and a JSON body; later sources win.
+      content:
+        application/x-www-form-urlencoded:
+          schema:
+            $ref: '#/components/schemas/FinanceRecordInput'
+        application/json:
+          schema:
+            $ref: '#/components/schemas/FinanceRecordInput'
+    AttachmentUpload:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            $ref: '#/components/schemas/AttachmentUploadForm'
+  responses:
+    FixtureRecordList:
+      description: One page of the site's records.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureEnvelope'
+              - properties:
+                  method:
+                    const: finance.records
+                  data:
+                    $ref: '#/components/schemas/FinanceRecordPage'
+    FixtureRecord:
+      description: The record.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureEnvelope'
+              - properties:
+                  method:
+                    const: finance.records
+                  data:
+                    $ref: '#/components/schemas/FinanceRecord'
+    FixtureRecordCreated:
+      description: The created record, IN-PROGRESS at version 1.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        X-Opt2-Write-Position:
+          $ref: '#/components/headers/XOpt2WritePosition'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureEnvelope'
+              - properties:
+                  method:
+                    const: finance.records
+                  data:
+                    $ref: '#/components/schemas/FinanceRecord'
+    FixtureRecordTransitioned:
+      description: The record after the transition.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        X-Opt2-Write-Position:
+          $ref: '#/components/headers/XOpt2WritePosition'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureEnvelope'
+              - properties:
+                  method:
+                    enum:
+                      - finance.records.submit
+                      - finance.records.approve
+                      - finance.records.reject
+                      - finance.records.resubmit
+                      - finance.records.edit
+                  data:
+                    $ref: '#/components/schemas/FinanceRecord'
+    FixtureVersionList:
+      description: One page of the record's versions.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureEnvelope'
+              - properties:
+                  method:
+                    const: finance.records.versions
+                  data:
+                    $ref: '#/components/schemas/FinanceRecordVersionPage'
+    FixtureAttachmentList:
+      description: One page of the record's attachments.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureEnvelope'
+              - properties:
+                  method:
+                    const: finance.records.attachments
+                  data:
+                    $ref: '#/components/schemas/FinanceAttachmentPage'
+    FixtureAttachmentCreated:
+      description: The stored attachment's metadata.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        X-Opt2-Write-Position:
+          $ref: '#/components/headers/XOpt2WritePosition'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureEnvelope'
+              - properties:
+                  method:
+                    const: finance.records.attachments
+                  data:
+                    $ref: '#/components/schemas/FinanceAttachment'
+    FixtureAttachmentFile:
+      description: The attachment bytes under their stored content type, without an ETag.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        Content-Disposition:
+          $ref: '#/components/headers/ContentDisposition'
+      content:
+        '*/*':
+          schema:
+            type: string
+            format: binary
+    FixtureRollupList:
+      description: One page of the program's rollup rows, ordered by period, then state.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureEnvelope'
+              - properties:
+                  method:
+                    const: finance.rollups
+                  data:
+                    $ref: '#/components/schemas/FinanceRollupPage'
+    FixtureBadRequest:
+      description: '`invalidParameters`: an unknown site, a site without a program, invalid record fields, paging or a missing file; or `badRequest`.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/FixtureErrorEnvelope'
+    FixtureUnauthorized:
+      description: '`authorization`: no logged-in user or user token; `invalid_token` codes come from a rejected token.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/FixtureErrorEnvelope'
+    FixtureForbidden:
+      description: '`forbidden`: the user holds none of the required roles, may not take the lifecycle action, or supplied another site.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/FixtureErrorEnvelope'
+    FixtureNotFound:
+      description: '`notFound`: no such record in the caller''s site, or no such attachment of the record.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/FixtureErrorEnvelope'
+    FixtureConflict:
+      description: '`conflict`: the action is illegal in the record''s state; `error.message` is the transition table''s error value.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/FixtureErrorEnvelope'
+          example:
+            apiversion: v1
+            method: finance.records.approve
+            error:
+              code: invalid_request
+              message: illegalTransition
+    FixtureServerError:
+      description: '`server_error`: an unhandled exception.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/FixtureErrorEnvelope'
+    LegacyUnavailable503:
+      description: Legacy-shaped 503 after a fail-closed or wait-timeout condition.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyUnavailable'
+
+
+  schemas:
+    CfId:
+      type: string
+      description: ColdFusion `createUUID()` id.
+      minLength: 35
+      maxLength: 35
+      pattern: '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}$'
+    OptionalCfId:
+      type: string
+      description: A ColdFusion `createUUID()` id, or the empty string for NULL.
+      pattern: '^([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16})?$'
+    FixtureTimestamp:
+      type: string
+      description: Wall-clock time in the legacy server's zone, without an offset, as the fixture serializes dates.
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}$'
+      examples:
+        - '2026-06-30T09:15:00'
+    OptionalFixtureTimestamp:
+      type: string
+      description: A fixture timestamp, or the empty string for NULL.
+      pattern: '^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})?$'
+    Money:
+      type: string
+      description: A `numeric(19,4)` amount as a plain decimal string with four places.
+      pattern: '^-?[0-9]+\.[0-9]{4}$'
+      examples:
+        - '1250.5000'
+    MoneyInput:
+      type:
+        - string
+        - number
+      description: An amount of at most 15 integer digits and 4 decimals.
+      pattern: '^-?[0-9]{1,15}(\.[0-9]{1,4})?$'
+    Period:
+      type: string
+      description: Accounting month `YYYY-MM`.
+      pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$'
+      examples:
+        - '2026-06'
+    Sha256Hex:
+      type: string
+      description: Lowercase hex SHA-256.
+      pattern: '^[0-9a-f]{64}$'
+    DigitString:
+      type: string
+      description: Non-negative decimal integer without leading zeros.
+      pattern: '^(0|[1-9][0-9]{0,14})$'
+    LocalTimestamp:
+      type: string
+      description: Wall-clock time in the legacy server's zone, without an offset.
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}$'
+      examples:
+        - '2026-06-30T09:15:00.000'
+    WallClock:
+      type: string
+      description: Wall-clock time without a zone, `YYYY-MM-DD HH:MM[:SS[.fff]]` with a space or `T`.
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?$'
+    FixtureEnvelope:
+      type: object
+      description: Masa JSON API envelope with lower-cased keys; `params` is absent under `suppressAPIParams`, and `useDataNamespace=false` moves the keys of a struct `data` to the root.
+      required:
+        - apiversion
+        - method
+      additionalProperties: true
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          type: string
+        params:
+          type: object
+        data: {}
+    FixtureError:
+      type: object
+      required:
+        - code
+        - message
+      additionalProperties: true
+      properties:
+        code:
+          type: string
+          examples:
+            - invalid_request
+            - invalid_token
+            - server_error
+        message:
+          type: string
+          examples:
+            - Invalid parameters
+            - Bad Request
+            - Insufficient Account Permissions
+            - Not Found
+            - illegalTransition
+            - Unhandled Exception
+    FixtureErrorEnvelope:
+      description: Masa JSON API error envelope.
+      allOf:
+        - $ref: '#/components/schemas/FixtureEnvelope'
+        - type: object
+          required:
+            - error
+          properties:
+            error:
+              $ref: '#/components/schemas/FixtureError'
+    LegacyUnavailable:
+      type: object
+      description: Legacy JSON API `server_error` envelope sent with status 503.
+      required:
+        - apiversion
+        - method
+        - error
+      additionalProperties: false
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          type: string
+        params:
+          type: object
+        error:
+          type: object
+          required:
+            - message
+            - code
+          additionalProperties: false
+          properties:
+            message:
+              type: string
+              const: Unhandled Exception
+            code:
+              type: string
+              const: server_error
+    FixtureList:
+      type: object
+      description: One page in Masa's paged-list shape; `endindex` is below `startindex` on a page past the end.
+      required:
+        - items
+        - startindex
+        - endindex
+        - itemsperpage
+        - totalitems
+        - totalpages
+        - pageindex
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+        startindex:
+          type: integer
+          minimum: 1
+        endindex:
+          type: integer
+          minimum: 0
+        itemsperpage:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        totalitems:
+          type: integer
+          minimum: 0
+        totalpages:
+          type: integer
+          minimum: 0
+        pageindex:
+          type: integer
+          minimum: 1
+    FinanceRecordPage:
+      allOf:
+        - $ref: '#/components/schemas/FixtureList'
+        - properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/FinanceRecord'
+    FinanceRecordVersionPage:
+      allOf:
+        - $ref: '#/components/schemas/FixtureList'
+        - properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/FinanceRecordVersion'
+    FinanceAttachmentPage:
+      allOf:
+        - $ref: '#/components/schemas/FixtureList'
+        - properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/FinanceAttachment'
+    FinanceRollupPage:
+      allOf:
+        - $ref: '#/components/schemas/FixtureList'
+        - properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/FinanceRollup'
+    FinanceState:
+      type: string
+      enum:
+        - IN-PROGRESS
+        - SUBMITTED
+        - RE-SUBMITTED
+        - APPROVED
+        - REJECTED
+    TransitionAction:
+      type: string
+      enum:
+        - submit
+        - approve
+        - reject
+        - resubmit
+        - edit
+    FinanceRecordFields:
+      type: object
+      description: A `finance_record` row with lower-cased column names in catalog order; NULL columns are empty strings.
+      required:
+        - record_id
+        - siteid
+        - title
+        - amount
+        - period
+        - state
+        - version
+        - created
+        - createdbyid
+        - lastupdate
+        - lastupdatebyid
+      properties:
+        record_id:
+          $ref: '#/components/schemas/CfId'
+        siteid:
+          type: string
+          minLength: 1
+          maxLength: 25
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        amount:
+          $ref: '#/components/schemas/Money'
+        period:
+          $ref: '#/components/schemas/Period'
+        state:
+          $ref: '#/components/schemas/FinanceState'
+        version:
+          type: integer
+          minimum: 1
+        created:
+          $ref: '#/components/schemas/FixtureTimestamp'
+        createdbyid:
+          $ref: '#/components/schemas/CfId'
+        lastupdate:
+          $ref: '#/components/schemas/OptionalFixtureTimestamp'
+        lastupdatebyid:
+          $ref: '#/components/schemas/OptionalCfId'
+    FinanceRecord:
+      allOf:
+        - $ref: '#/components/schemas/FinanceRecordFields'
+      unevaluatedProperties: false
+    FinanceRecordDetail:
+      description: A record with its versions and attachment metadata.
+      allOf:
+        - $ref: '#/components/schemas/FinanceRecordFields'
+        - type: object
+          required:
+            - versions
+            - attachments
+          properties:
+            versions:
+              type: array
+              items:
+                $ref: '#/components/schemas/FinanceRecordVersion'
+            attachments:
+              type: array
+              items:
+                $ref: '#/components/schemas/FinanceAttachment'
+      unevaluatedProperties: false
+    FinanceRecordVersion:
+      type: object
+      description: A `finance_record_version` row with lower-cased column names in catalog order.
+      required:
+        - version_id
+        - record_id
+        - version
+        - state
+        - title
+        - amount
+        - period
+        - action
+        - actor_user_id
+        - created
+      additionalProperties: false
+      properties:
+        version_id:
+          $ref: '#/components/schemas/CfId'
+        record_id:
+          $ref: '#/components/schemas/CfId'
+        version:
+          type: integer
+          minimum: 1
+        state:
+          $ref: '#/components/schemas/FinanceState'
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        amount:
+          $ref: '#/components/schemas/Money'
+        period:
+          $ref: '#/components/schemas/Period'
+        action:
+          type: string
+          enum:
+            - create
+            - submit
+            - approve
+            - reject
+            - resubmit
+            - edit
+        actor_user_id:
+          $ref: '#/components/schemas/CfId'
+        created:
+          $ref: '#/components/schemas/FixtureTimestamp'
+    FinanceAttachment:
+      type: object
+      description: A `finance_attachment` row without its content, with lower-cased column names in catalog order.
+      required:
+        - attachment_id
+        - record_id
+        - file_name
+        - content_type
+        - size_bytes
+        - sha256
+        - created
+        - createdbyid
+      additionalProperties: false
+      properties:
+        attachment_id:
+          $ref: '#/components/schemas/CfId'
+        record_id:
+          $ref: '#/components/schemas/CfId'
+        file_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        content_type:
+          type: string
+          minLength: 1
+          maxLength: 100
+        size_bytes:
+          type: integer
+          minimum: 0
+        sha256:
+          $ref: '#/components/schemas/Sha256Hex'
+        created:
+          $ref: '#/components/schemas/FixtureTimestamp'
+        createdbyid:
+          $ref: '#/components/schemas/CfId'
+    FinanceRollup:
+      type: object
+      description: A `finance_rollup` row with its column names in catalog order.
+      required:
+        - period
+        - state
+        - record_count
+        - total_amount
+        - computed_at
+      additionalProperties: false
+      properties:
+        period:
+          $ref: '#/components/schemas/Period'
+        state:
+          $ref: '#/components/schemas/FinanceState'
+        record_count:
+          type: integer
+          minimum: 1
+        total_amount:
+          $ref: '#/components/schemas/Money'
+        computed_at:
+          $ref: '#/components/schemas/FixtureTimestamp'
+    FinanceRecordInput:
+      type: object
+      required:
+        - title
+        - amount
+        - period
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '\S'
+        amount:
+          $ref: '#/components/schemas/MoneyInput'
+        period:
+          $ref: '#/components/schemas/Period'
+        siteid:
+          type: string
+          minLength: 1
+          maxLength: 25
+    AttachmentUploadForm:
+      type: object
+      required:
+        - file
+      properties:
+        file:
+          type: string
+          format: binary
+          description: The file part; it must carry a file name.
+        siteid:
+          type: string
+          minLength: 1
+          maxLength: 25
+    SignedUrl:
+      type: object
+      description: A download URL valid for 900 s; a v4 signed Cloud Storage URL in the cloud, a path-only HMAC URL under `/opt2/files/finance-attachments/` locally.
+      required:
+        - url
+        - expiresAt
+      additionalProperties: false
+      properties:
+        url:
+          type: string
+          minLength: 1
+        expiresAt:
+          type: string
+          format: date-time
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,3})?Z$'
+
+    PushBody:
+      type: object
+      description: Pub/Sub push wrapper; `data` is the base64 event envelope.
+      required:
+        - message
+        - subscription
+      additionalProperties: true
+      properties:
+        message:
+          type: object
+          additionalProperties: true
+          properties:
+            data:
+              type: string
+              contentEncoding: base64
+            attributes:
+              type: object
+              additionalProperties:
+                type: string
+            messageId:
+              type: string
+            message_id:
+              type: string
+            publishTime:
+              type: string
+            publish_time:
+              type: string
+            orderingKey:
+              type: string
+        subscription:
+          type: string
+          description: Usually `projects/<project>/subscriptions/finance.programs-sites.site.changed.v1`.
+        deliveryAttempt:
+          type: integer
+    CanonicalType:
+      type: string
+      description: Canonical encoding tag.
+      enum:
+        - s
+        - i
+        - f
+        - d
+        - t
+        - b
+    CanonicalColumn:
+      type: object
+      required:
+        - name
+        - type
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+        type:
+          $ref: '#/components/schemas/CanonicalType'
+        scale:
+          type: integer
+          minimum: 0
+    WatermarkDirection:
+      type: string
+      enum:
+        - forward
+        - reverse
+    WatermarkFields:
+      type: object
+      required:
+        - direction
+        - finishedAt
+      properties:
+        direction:
+          $ref: '#/components/schemas/WatermarkDirection'
+        snapshotSeq:
+          type: integer
+          minimum: 0
+        backupLsn:
+          type: string
+          pattern: '^[0-9]{1,25}$'
+        finishedAt:
+          $ref: '#/components/schemas/WallClock'
+    ApplyRequest:
+      type: object
+      description: One batch of canonical legacy rows for one legacy table and tenant; exactly one of `tenantId` and `siteId` is required.
+      required:
+        - batchId
+        - origin
+        - legacyTable
+        - columns
+        - rows
+      additionalProperties: false
+      properties:
+        batchId:
+          type: string
+          minLength: 1
+        origin:
+          type: string
+          enum:
+            - backfill
+            - migration-feed
+            - legacy-window
+        legacyTable:
+          type: string
+          minLength: 1
+        tenantId:
+          type: string
+          minLength: 1
+        siteId:
+          type: string
+          minLength: 1
+        legacyProgramId:
+          type: integer
+          minimum: 0
+        columns:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/CanonicalColumn'
+        units:
+          type: array
+          items:
+            type: string
+            minLength: 1
+        holderId:
+          type: string
+          minLength: 1
+        rows:
+          type: array
+          items:
+            type: object
+            required:
+              - op
+              - row
+            additionalProperties: false
+            properties:
+              op:
+                type: string
+                enum:
+                  - upsert
+                  - delete
+                  - insert
+              row:
+                type: string
+              discriminator:
+                type:
+                  - string
+                  - number
+        watermark:
+          allOf:
+            - $ref: '#/components/schemas/WatermarkFields'
+          unevaluatedProperties: false
+    ApplyResponse:
+      type: object
+      required:
+        - batchId
+        - duplicate
+        - applied
+        - skipped
+      additionalProperties: false
+      properties:
+        batchId:
+          type: string
+        duplicate:
+          type: boolean
+        applied:
+          type: integer
+          minimum: 0
+        skipped:
+          type: integer
+          minimum: 0
+    ObjectManifestEntry:
+      type: object
+      required:
+        - key
+        - size
+        - sha256
+      additionalProperties: false
+      properties:
+        key:
+          type: string
+        size:
+          type: integer
+          minimum: 0
+        sha256:
+          type: string
+        contentType:
+          type: string
+        legacyPath:
+          type: string
+    ExportRow:
+      type: object
+      description: One row in legacy form; `key` is the whole-row encoding for keyless tables.
+      required:
+        - key
+        - row
+        - hash
+      additionalProperties: false
+      properties:
+        key:
+          type: string
+        row:
+          type: string
+        hash:
+          type: string
+        legacyProgramId:
+          type: integer
+    ExportTable:
+      type: object
+      required:
+        - unit
+        - legacyTable
+        - targetTable
+        - keyless
+        - columns
+        - rows
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        legacyTable:
+          type: string
+        targetTable:
+          type: string
+        keyless:
+          type: boolean
+        columns:
+          type: array
+          items:
+            $ref: '#/components/schemas/CanonicalColumn'
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExportRow'
+    ExportResponse:
+      type: object
+      description: One export page; `next` is null after the last page, and `objects` comes with the first page only.
+      required:
+        - unit
+        - tenantId
+        - tables
+        - next
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        tenantId:
+          type: string
+          format: uuid
+        tables:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExportTable'
+        next:
+          type:
+            - string
+            - 'null'
+        objects:
+          type: array
+          items:
+            $ref: '#/components/schemas/ObjectManifestEntry'
+    ChangeOp:
+      type: string
+      enum:
+        - insert
+        - update
+        - delete
+    ChangeOrigin:
+      type: string
+      enum:
+        - target
+        - legacy-window
+        - migration-feed
+        - backfill
+    NullableString:
+      type:
+        - string
+        - 'null'
+    LegacyChange:
+      type: object
+      description: A changelog row in the legacy form of one mapping; `columns` are legacy names.
+      required:
+        - unit
+        - legacyTable
+        - key
+        - before
+        - after
+        - columns
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        legacyTable:
+          type: string
+        key:
+          type: string
+        before:
+          $ref: '#/components/schemas/NullableString'
+        after:
+          $ref: '#/components/schemas/NullableString'
+        columns:
+          type: array
+          items:
+            type: string
+        legacyProgramId:
+          type: integer
+    ProjectedChangeRow:
+      type: object
+      description: One changelog row; `xid` and `seq` are decimal strings, `at` is `YYYY-MM-DD HH:MM:SS.mmm`.
+      required:
+        - xid
+        - seq
+        - table
+        - op
+        - key
+        - before
+        - after
+        - columns
+        - origin
+        - actorUserId
+        - actorService
+        - at
+        - requestId
+        - operationId
+        - legacy
+      additionalProperties: false
+      properties:
+        xid:
+          type: string
+          pattern: '^[0-9]+$'
+        seq:
+          type: string
+          pattern: '^[0-9]+$'
+        table:
+          type: string
+        op:
+          $ref: '#/components/schemas/ChangeOp'
+        key:
+          type: string
+        before:
+          $ref: '#/components/schemas/NullableString'
+        after:
+          $ref: '#/components/schemas/NullableString'
+        columns:
+          type: array
+          items:
+            type: string
+        origin:
+          $ref: '#/components/schemas/ChangeOrigin'
+        actorUserId:
+          $ref: '#/components/schemas/NullableString'
+        actorService:
+          $ref: '#/components/schemas/NullableString'
+        at:
+          type: string
+        requestId:
+          $ref: '#/components/schemas/NullableString'
+        operationId:
+          $ref: '#/components/schemas/NullableString'
+        legacy:
+          type: array
+          items:
+            $ref: '#/components/schemas/LegacyChange'
+    OperationStatus:
+      type: string
+      enum:
+        - open
+        - done
+        - rolled-back
+    ChangesResponse:
+      type: object
+      description: Rows below `horizon` in `(xid, seq)` order; `horizon` counts as applied only when `complete`.
+      required:
+        - rows
+        - cursor
+        - horizon
+        - complete
+        - operations
+      additionalProperties: false
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectedChangeRow'
+        cursor:
+          type: string
+          pattern: '^[0-9]+:[0-9]+$'
+        horizon:
+          type: string
+          pattern: '^[0-9]+$'
+        complete:
+          type: boolean
+        operations:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/OperationStatus'
+    TenantDrainCount:
+      type: object
+      required:
+        - tenantId
+        - unpublished
+        - held
+      additionalProperties: false
+      properties:
+        tenantId:
+          type: string
+        unpublished:
+          type: integer
+          minimum: 0
+        held:
+          type: integer
+          minimum: 0
+    OutboxDrainCounts:
+      type: object
+      required:
+        - tenants
+        - unpublished
+        - held
+      additionalProperties: false
+      properties:
+        tenants:
+          type: array
+          items:
+            $ref: '#/components/schemas/TenantDrainCount'
+        unpublished:
+          type: integer
+          minimum: 0
+        held:
+          type: integer
+          minimum: 0
+    InboxCounts:
+      type: object
+      description: Inbox receipts over every registered tenant; `receipts` maps each asked event id to the tenants that applied it.
+      required:
+        - total
+        - bySubscription
+      additionalProperties: false
+      properties:
+        total:
+          type: integer
+          minimum: 0
+        bySubscription:
+          type: object
+          additionalProperties:
+            type: integer
+        receipts:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+    PositionResponse:
+      type: object
+      description: The latest assigned xid and the drain counts; `outbox` or `inbox` is null where the service has no such table.
+      required:
+        - owner
+        - position
+        - outbox
+        - inbox
+      additionalProperties: false
+      properties:
+        owner:
+          type: string
+          const: finance
+        position:
+          type: string
+          pattern: '^[0-9]+$'
+        outbox:
+          oneOf:
+            - $ref: '#/components/schemas/OutboxDrainCounts'
+            - type: 'null'
+        inbox:
+          oneOf:
+            - $ref: '#/components/schemas/InboxCounts'
+            - type: 'null'
+    WatermarkRecord:
+      type: object
+      required:
+        - legacyTable
+        - direction
+        - snapshotSeq
+        - backupLsn
+        - finishedAt
+      additionalProperties: false
+      properties:
+        legacyTable:
+          type: string
+        direction:
+          $ref: '#/components/schemas/WatermarkDirection'
+        snapshotSeq:
+          type:
+            - integer
+            - 'null'
+        backupLsn:
+          $ref: '#/components/schemas/NullableString'
+        finishedAt:
+          $ref: '#/components/schemas/LocalTimestamp'
+    WatermarkInput:
+      description: A watermark to record for one legacy table.
+      allOf:
+        - $ref: '#/components/schemas/WatermarkFields'
+        - type: object
+          required:
+            - legacyTable
+          properties:
+            legacyTable:
+              type: string
+              minLength: 1
+      unevaluatedProperties: false
+    GateState:
+      type: string
+      enum:
+        - legacy
+        - open
+        - closed
+    GatePhase:
+      type: string
+      enum:
+        - quiet
+        - executing
+        - importing
+        - import-pending
+    UnitList:
+      type: array
+      minItems: 1
+      items:
+        type: string
+        minLength: 1
+    GateRequest:
+      description: One gate operation, selected by `op`.
+      oneOf:
+        - $ref: '#/components/schemas/GateClose'
+        - $ref: '#/components/schemas/GatePhaseChange'
+        - $ref: '#/components/schemas/GateOpen'
+        - $ref: '#/components/schemas/GateStatus'
+      discriminator:
+        propertyName: op
+        mapping:
+          close: '#/components/schemas/GateClose'
+          phase: '#/components/schemas/GatePhaseChange'
+          open: '#/components/schemas/GateOpen'
+          status: '#/components/schemas/GateStatus'
+    GateClose:
+      type: object
+      description: Closes the units' gates for a holder; `allowLegacy` lets a transition close units still `legacy`.
+      required:
+        - op
+        - units
+        - holderId
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: close
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+        phase:
+          $ref: '#/components/schemas/GatePhase'
+        allowLegacy:
+          type: boolean
+        timeoutMs:
+          type: integer
+          minimum: 1
+          maximum: 30000
+    GatePhaseChange:
+      type: object
+      description: Sets the phase of gates the holder closed.
+      required:
+        - op
+        - units
+        - holderId
+        - phase
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: phase
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+        phase:
+          $ref: '#/components/schemas/GatePhase'
+    GateOpen:
+      type: object
+      description: Reopens the holder's gates as `open`, or sets them to `legacy`.
+      required:
+        - op
+        - units
+        - holderId
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: open
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+        state:
+          type: string
+          enum:
+            - open
+            - legacy
+    GateStatus:
+      type: object
+      description: Reads the gates; every unit of this owner when `units` is omitted.
+      required:
+        - op
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: status
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+    UnitGate:
+      type: object
+      required:
+        - unit
+        - state
+        - holderId
+        - phase
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        state:
+          $ref: '#/components/schemas/GateState'
+        holderId:
+          $ref: '#/components/schemas/NullableString'
+        phase:
+          $ref: '#/components/schemas/GatePhase'
+    GateResponse:
+      type: object
+      required:
+        - units
+      additionalProperties: false
+      properties:
+        units:
+          type: array
+          items:
+            $ref: '#/components/schemas/UnitGate'
+    GateConflict:
+      type: object
+      description: The units whose gate another holder owns.
+      required:
+        - error
+        - units
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          const: gate-conflict
+        units:
+          type: array
+          items:
+            type: string
+    Health:
+      type: object
+      required:
+        - status
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          const: ok

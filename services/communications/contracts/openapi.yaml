@@ -1,0 +1,2883 @@
+openapi: 3.1.0
+info:
+  title: communications
+  version: 1.0.0
+  description: 'SYNTHETIC communications service API: template store, send, delivery status and survey task scheduling; a breaking change takes a /v2/ prefix.'
+  x-source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f
+servers:
+  - url: http://127.0.0.1:8115
+    description: local
+x-opt2-calls:
+  - surveys
+security:
+  - userToken: []
+    invocationCredential: []
+paths:
+  /legacy-fixtures/cfml/api.cfm/communications/templates:
+    get:
+      operationId: fixtureListTemplates
+      summary: Lists the site's message templates in the fixture envelope, ordered by creation time and id.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/FixtureSiteId'
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+        - $ref: '#/components/parameters/UseDataNamespace'
+        - $ref: '#/components/parameters/MethodOverride'
+      responses:
+        '200':
+          description: One page of templates.
+          headers:
+            Generator:
+              $ref: '#/components/headers/Generator'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json;charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/FixtureTemplateListEnvelope'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: fixtureCreateTemplate
+      summary: Stores a message template with byte-exact bodies and returns the stored row in the fixture envelope.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/FixtureSiteId'
+        - $ref: '#/components/parameters/UseDataNamespace'
+        - $ref: '#/components/parameters/MethodOverride'
+      requestBody:
+        $ref: '#/components/requestBodies/FixtureTemplateCall'
+      responses:
+        '200':
+          description: The stored template.
+          headers:
+            Generator:
+              $ref: '#/components/headers/Generator'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json;charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/FixtureTemplateEnvelope'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /legacy-fixtures/cfml/api.cfm/communications/messages:
+    get:
+      operationId: fixtureListMessages
+      summary: Lists the site's messages in the fixture envelope, ordered by creation time and id.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/FixtureSiteId'
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+        - $ref: '#/components/parameters/UseDataNamespace'
+        - $ref: '#/components/parameters/MethodOverride'
+      responses:
+        '200':
+          description: One page of messages.
+          headers:
+            Generator:
+              $ref: '#/components/headers/Generator'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json;charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/FixtureMessageListEnvelope'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: fixtureSendMessage
+      summary: Queues, sends over SMTP and confirms one message through Mailpit, then returns its detail in the fixture envelope.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/FixtureSiteId'
+        - $ref: '#/components/parameters/UseDataNamespace'
+        - $ref: '#/components/parameters/MethodOverride'
+      requestBody:
+        $ref: '#/components/requestBodies/FixtureMessageCall'
+      responses:
+        '200':
+          description: The message with its delivery history; a failed send still answers 200 with state `failed`.
+          headers:
+            Generator:
+              $ref: '#/components/headers/Generator'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+            ETag:
+              $ref: '#/components/headers/ETag'
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json;charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/FixtureMessageDetailEnvelope'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /legacy-fixtures/cfml/api.cfm/communications/messages/{id}:
+    parameters:
+      - $ref: '#/components/parameters/FixtureMessageId'
+    get:
+      operationId: fixtureGetMessage
+      summary: Reads one message of the site with its delivery-status history in the fixture envelope.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-site-check: false
+      security:
+        - {}
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/FixtureSiteId'
+        - $ref: '#/components/parameters/UseDataNamespace'
+        - $ref: '#/components/parameters/MethodOverride'
+      responses:
+        '200':
+          description: The message with its delivery history.
+          headers:
+            Generator:
+              $ref: '#/components/headers/Generator'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json;charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/FixtureMessageDetailEnvelope'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/templates:
+    get:
+      operationId: listTemplates
+      summary: Lists the site's message templates for the Templates screen.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - communications.sender
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+      responses:
+        '200':
+          description: One page of templates.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TemplateListBody'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: createTemplate
+      summary: Stores a message template for the site.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - communications.sender
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TemplateInput'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TemplateInput'
+      responses:
+        '200':
+          description: The stored template.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TemplateBody'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/messages:
+    get:
+      operationId: listMessages
+      summary: Lists the site's sent messages for the Sends screen.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - communications.sender
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+      responses:
+        '200':
+          description: One page of messages.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageListBody'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: sendMessage
+      summary: Creates one message from a template or literal content, sends it and records its delivery status.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - communications.sender
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MessageInput'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/MessageInput'
+      responses:
+        '200':
+          description: The message with its delivery history; a failed send still answers 200 with state `failed`.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageDetailBody'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+          description: The `templateId` names no template of the site.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/messages/{messageId}:
+    parameters:
+      - $ref: '#/components/parameters/MessageId'
+    get:
+      operationId: getMessage
+      summary: Reads one message of the site with its delivery-status history for the Delivery status screen.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - communications.sender
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+      responses:
+        '200':
+          description: The message with its delivery history.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageDetailBody'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/scheduled-tasks:
+    get:
+      operationId: listScheduledTasks
+      summary: Lists the scheduled tasks of one source in the forwarded user token's tenant.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:surveys
+      security:
+        - invocationCredential: []
+          userToken: []
+      parameters:
+        - name: sourceType
+          in: query
+          required: true
+          schema:
+            type: string
+            enum:
+              - survey
+        - name: sourceId
+          in: query
+          required: true
+          description: Id of the source, such as the survey id.
+          schema:
+            $ref: '#/components/schemas/CfUuid'
+      responses:
+        '200':
+          description: The source's tasks of its current schedule version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduledTaskList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/tasks/reminders/{scheduledTaskId}:
+    parameters:
+      - $ref: '#/components/parameters/ScheduledTaskId'
+    post:
+      operationId: runSurveyReminderTask
+      summary: Runs one survey reminder task, then reports the reminder sent to surveys; a superseded or already-sent task changes nothing.
+      x-opt2-transport: cloud-tasks
+      x-opt2-requires:
+        - service:tasks-invoker
+      security:
+        - tasksInvokerOidc: []
+      parameters:
+        - $ref: '#/components/parameters/CloudTasksTaskName'
+        - $ref: '#/components/parameters/CloudTasksQueueName'
+        - $ref: '#/components/parameters/CloudTasksRetryCount'
+        - $ref: '#/components/parameters/CloudTasksExecutionCount'
+        - $ref: '#/components/parameters/CloudTasksEta'
+      requestBody:
+        required: true
+        description: Task wire body of a tenant-scoped reminder task.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReminderTaskWireBody'
+      responses:
+        '200':
+          description: The task's outcome.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReminderTaskResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: A malformed task body, or a tenant under which the scheduled task is not visible.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: The task failed, so Cloud Tasks retries it.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: A unit gate is closed or a dependency is unavailable, so Cloud Tasks retries the task.
+  /internal/v1/migration/apply:
+    post:
+      operationId: migrationApply
+      summary: Applies one batch of canonical legacy rows to the owned units, once per batch id.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyRequest'
+      responses:
+        '200':
+          description: The batch outcome; a repeated batch id is a no-op reported as `duplicate`.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/export:
+    get:
+      operationId: migrationExport
+      summary: Exports one page of a unit's rows in canonical legacy form.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: unit
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - $ref: '#/components/parameters/MigrationTenantId'
+        - $ref: '#/components/parameters/MigrationSiteId'
+        - name: programId
+          in: query
+          required: false
+          description: Restricts a folded unit to one `Program_<id>` schema.
+          schema:
+            $ref: '#/components/schemas/DigitString'
+        - name: after
+          in: query
+          required: false
+          description: The previous page's `next` cursor.
+          schema:
+            type: string
+            minLength: 1
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: One export page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/changes:
+    get:
+      operationId: migrationChanges
+      summary: Reads the tenant's changelog after a cursor, below the commit-safe horizon.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/MigrationTenantId'
+        - $ref: '#/components/parameters/MigrationSiteId'
+        - name: after
+          in: query
+          required: false
+          description: Cursor `<xid>:<seq>`; `0:0` when omitted.
+          schema:
+            type: string
+            pattern: '^(0|[1-9][0-9]*):(0|[1-9][0-9]*)$'
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: One page of changes with their legacy projections.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChangesResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/position:
+    get:
+      operationId: migrationPosition
+      summary: Reports the current write position and the outbox and inbox drain counts.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: eventIds
+          in: query
+          required: false
+          description: Comma-separated event ids whose inbox receipts are reported.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The owner's position.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PositionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/watermark:
+    get:
+      operationId: migrationWatermarkGet
+      summary: Lists feed watermarks, optionally for one legacy table or direction.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: legacyTable
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+        - name: direction
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/WatermarkDirection'
+      responses:
+        '200':
+          description: Watermarks ordered by legacy table and direction.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WatermarkRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: migrationWatermarkPost
+      summary: Records the feed watermark of one legacy table and direction.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WatermarkInput'
+      responses:
+        '200':
+          description: The stored watermark.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatermarkRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/gate:
+    post:
+      operationId: migrationGate
+      summary: Closes, re-phases, opens or reads the unit gates of this owner.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GateRequest'
+      responses:
+        '200':
+          description: The gates after the operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Another holder owns a gate, so the compare-and-set was refused.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GateConflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: The gates could not close within the wait budget.
+  /internal/v1/migration/adopt-scheduled-tasks:
+    post:
+      operationId: adoptScheduledTasks
+      summary: Adopts fixture survey ACF tasks as Cloud Tasks and scheduled-task rows, idempotent by name; past times are scheduled immediately.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdoptScheduledTasksRequest'
+      responses:
+        '200':
+          description: The adoption counts.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdoptScheduledTasksResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/cancel-adopted-scheduled-tasks:
+    post:
+      operationId: cancelAdoptedScheduledTasks
+      summary: Cancels adopted scheduled tasks and their Cloud Tasks when their units return to legacy.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelAdoptedTasksRequest'
+      responses:
+        '200':
+          description: The number of tasks cancelled.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancelAdoptedTasksResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/events/communications.programs-sites.site.changed.v1:
+    post:
+      operationId: pushSiteChanged
+      summary: Receives push deliveries of `programs-sites.site.changed.v1` into this service's tenant registry.
+      x-opt2-transport: pubsub-push
+      x-opt2-requires:
+        - service:pubsub-invoker
+      security:
+        - pubsubPushOidc: []
+        - localPushKey: []
+      parameters:
+        - $ref: '#/components/parameters/PushKey'
+      requestBody:
+        $ref: '#/components/requestBodies/Push'
+      responses:
+        '204':
+          description: Acknowledged; the delivery was applied, already applied, or dead-lettered.
+        '400':
+          description: Not a push body; a nack.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: Processing failed; a nack, redelivered by Pub/Sub.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: A unit gate or the database is unavailable; a nack, redelivered by Pub/Sub.
+  /internal/v1/events/communications.identity.login-mail.requested.v1:
+    post:
+      operationId: pushLoginMailRequested
+      summary: Receives push deliveries of `identity.login-mail.requested.v1` and sends each login-information mail once.
+      x-opt2-transport: pubsub-push
+      x-opt2-requires:
+        - service:pubsub-invoker
+      security:
+        - pubsubPushOidc: []
+        - localPushKey: []
+      parameters:
+        - $ref: '#/components/parameters/PushKey'
+      requestBody:
+        $ref: '#/components/requestBodies/Push'
+      responses:
+        '204':
+          description: Acknowledged; the delivery was applied, already applied, or dead-lettered.
+        '400':
+          description: Not a push body; a nack.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: Processing failed; a nack, redelivered by Pub/Sub.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: A unit gate or the database is unavailable; a nack, redelivered by Pub/Sub.
+  /internal/v1/events/communications.surveys.survey.scheduled.v1:
+    post:
+      operationId: pushSurveyScheduled
+      summary: Receives push deliveries of `surveys.survey.scheduled.v1` and creates the launch and reminder tasks of the schedule version.
+      x-opt2-transport: pubsub-push
+      x-opt2-requires:
+        - service:pubsub-invoker
+      security:
+        - pubsubPushOidc: []
+        - localPushKey: []
+      parameters:
+        - $ref: '#/components/parameters/PushKey'
+      requestBody:
+        $ref: '#/components/requestBodies/Push'
+      responses:
+        '204':
+          description: Acknowledged; the delivery was applied, already applied, superseded, or dead-lettered.
+        '400':
+          description: Not a push body; a nack.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: Processing failed; a nack, redelivered by Pub/Sub.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: A unit gate, the database or the task queue is unavailable; a nack, redelivered by Pub/Sub.
+  /internal/v1/outbox/sweep:
+    post:
+      operationId: sweepOutbox
+      summary: Creates the next sweep task, then publishes every unpublished outbox row per registry tenant.
+      x-opt2-transport: cloud-tasks
+      x-opt2-requires:
+        - service:tasks-invoker
+      security:
+        - tasksInvokerOidc: []
+      parameters:
+        - $ref: '#/components/parameters/CloudTasksTaskName'
+        - $ref: '#/components/parameters/CloudTasksQueueName'
+        - $ref: '#/components/parameters/CloudTasksRetryCount'
+        - $ref: '#/components/parameters/CloudTasksExecutionCount'
+        - $ref: '#/components/parameters/CloudTasksEta'
+      requestBody:
+        $ref: '#/components/requestBodies/SystemTask'
+      responses:
+        '200':
+          description: The sweep totals.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SweepResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: A malformed task body, or one carrying a tenant.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: The sweep failed, so Cloud Tasks retries this task.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: The successor task could not be created, so Cloud Tasks retries this one.
+  /internal/v1/task-queues/{queue}/pause:
+    parameters:
+      - $ref: '#/components/parameters/Queue'
+    post:
+      operationId: pauseTaskQueue
+      summary: Pauses dispatch from a queue this service creates tasks on.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+        - platform.operator
+      security:
+        - invocationCredential: []
+      responses:
+        '200':
+          $ref: '#/components/responses/QueueControlled'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: The queue is not one this service creates tasks on.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/task-queues/{queue}/resume:
+    parameters:
+      - $ref: '#/components/parameters/Queue'
+    post:
+      operationId: resumeTaskQueue
+      summary: Resumes dispatch from a queue this service creates tasks on.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+        - platform.operator
+      security:
+        - invocationCredential: []
+      responses:
+        '200':
+          $ref: '#/components/responses/QueueControlled'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: The queue is not one this service creates tasks on.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/task-queues/{queue}/ensure:
+    parameters:
+      - $ref: '#/components/parameters/Queue'
+    post:
+      operationId: ensureTaskQueue
+      summary: Ensures a recurring chain this service creates has a live task.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+        - platform.operator
+      security:
+        - invocationCredential: []
+      responses:
+        '200':
+          $ref: '#/components/responses/QueueControlled'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: The queue is not a recurring chain this service creates.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Liveness probe.
+      x-opt2-transport: service
+      x-opt2-public: true
+      security: []
+      responses:
+        '200':
+          description: The service is running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+          description: A presented credential is invalid.
+
+
+components:
+  securitySchemes:
+    userToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Site-scoped user token in `Authorization`, minted by identity and attached by the gateway.
+    invocationCredential:
+      type: apiKey
+      in: header
+      name: X-Serverless-Authorization
+      description: Caller's invocation credential; a Google-signed ID token in the cloud, a local service token locally.
+    pubsubPushOidc:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: OIDC token of `pubsub-invoker` in `Authorization`, addressed to the push endpoint.
+    localPushKey:
+      type: apiKey
+      in: query
+      name: key
+      description: Local emulator push key, compared in constant time.
+    tasksInvokerOidc:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: OIDC token of `tasks-invoker` in `Authorization` in the cloud; a local `tasks-invoker` service token locally.
+  headers:
+    Generator:
+      description: Legacy generator header.
+      schema:
+        type: string
+        const: Masa CMS 7.6.1
+    StrictTransportSecurity:
+      description: Legacy HSTS header.
+      schema:
+        type: string
+        const: max-age=1200
+    ETag:
+      description: Uppercase hex SHA-256 of the exact body, unquoted, as ColdFusion `hash()` computes it.
+      schema:
+        type: string
+        pattern: '^[0-9A-F]{64}$'
+    WWWAuthenticate:
+      description: Challenge legacy sets before an authentication failure.
+      schema:
+        type: string
+    XOpt2WritePosition:
+      description: Committed write positions `<owner>=<xid>[,<owner>=<xid>…]`; the gateway strips it from client responses.
+      schema:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9-]*=[0-9]+(,[a-z0-9][a-z0-9-]*=[0-9]+)*$'
+  parameters:
+    FixtureSiteId:
+      name: siteid
+      in: query
+      required: false
+      description: Legacy site id, also read from the body; the session user's site when empty, and an unknown site answers `invalidParameters`.
+      schema:
+        $ref: '#/components/schemas/SiteId'
+    SiteIdQuery:
+      name: siteid
+      in: query
+      required: false
+      description: Legacy site id, equal to the token's `site` (403 otherwise); the token's site when absent.
+      schema:
+        $ref: '#/components/schemas/SiteId'
+    PageIndex:
+      name: pageIndex
+      in: query
+      required: false
+      description: Page number; an empty value means 1 and any other non-integer or value below 1 answers `invalidParameters`.
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    ItemsPerPage:
+      name: itemsPerPage
+      in: query
+      required: false
+      description: Page size up to 1000; an empty value means 50 and any value outside 1 to 1000 answers `invalidParameters`.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 50
+    UseDataNamespace:
+      name: useDataNamespace
+      in: query
+      required: false
+      description: A CFML boolean; false moves the `data` keys to the envelope's top level.
+      schema:
+        type: string
+        examples:
+          - 'false'
+    MethodOverride:
+      name: X-HTTP-Method-Override
+      in: header
+      required: false
+      description: HTTP method the fixture dispatches on instead of the request method.
+      schema:
+        type: string
+    FixtureMessageId:
+      name: id
+      in: path
+      required: true
+      description: Message id; an id outside the site answers `notFound`.
+      schema:
+        type: string
+        minLength: 1
+    MessageId:
+      name: messageId
+      in: path
+      required: true
+      description: Message id; an id outside the site answers 404.
+      schema:
+        type: string
+        minLength: 1
+    ScheduledTaskId:
+      name: scheduledTaskId
+      in: path
+      required: true
+      description: Id of the scheduled-task row the reminder task runs.
+      schema:
+        $ref: '#/components/schemas/CfUuid'
+    MigrationTenantId:
+      name: tenantId
+      in: query
+      required: false
+      description: Tenant UUID; exactly one of `tenantId` and `siteId` is required.
+      schema:
+        type: string
+        format: uuid
+    MigrationSiteId:
+      name: siteId
+      in: query
+      required: false
+      description: Legacy site id resolved to its tenant; exactly one of `tenantId` and `siteId` is required.
+      schema:
+        type: string
+        minLength: 1
+    PageLimit:
+      name: limit
+      in: query
+      required: false
+      description: Page size, 1 to 10000; 1000 when omitted.
+      schema:
+        $ref: '#/components/schemas/DigitString'
+    PushKey:
+      name: key
+      in: query
+      required: false
+      description: Local emulator push key; absent in the cloud.
+      schema:
+        type: string
+    CloudTasksTaskName:
+      name: X-CloudTasks-TaskName
+      in: header
+      required: false
+      description: Task id; the body's `name` when absent.
+      schema:
+        type: string
+    CloudTasksQueueName:
+      name: X-CloudTasks-QueueName
+      in: header
+      required: false
+      description: Queue name; the body's `queue` when absent.
+      schema:
+        type: string
+    CloudTasksRetryCount:
+      name: X-CloudTasks-TaskRetryCount
+      in: header
+      required: false
+      schema:
+        type: string
+        pattern: '^[0-9]+$'
+    CloudTasksExecutionCount:
+      name: X-CloudTasks-TaskExecutionCount
+      in: header
+      required: false
+      schema:
+        type: string
+        pattern: '^[0-9]+$'
+    CloudTasksEta:
+      name: X-CloudTasks-TaskETA
+      in: header
+      required: false
+      description: Scheduled time in epoch seconds.
+      schema:
+        type: string
+    Queue:
+      name: queue
+      in: path
+      required: true
+      description: A queue this service creates tasks on; `ensure` accepts only the recurring `communications-outbox-sweep`.
+      schema:
+        type: string
+        enum:
+          - surveys-launch
+          - communications-reminders
+          - communications-outbox-sweep
+  requestBodies:
+    FixtureTemplateCall:
+      required: false
+      description: Merged with the query string as the fixture merges url, form and a JSON body; later sources win.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/TemplateInput'
+        application/x-www-form-urlencoded:
+          schema:
+            $ref: '#/components/schemas/TemplateInput'
+    FixtureMessageCall:
+      required: false
+      description: Merged with the query string as the fixture merges url, form and a JSON body; later sources win.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MessageInput'
+        application/x-www-form-urlencoded:
+          schema:
+            $ref: '#/components/schemas/MessageInput'
+    Push:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PushBody'
+    SystemTask:
+      required: true
+      description: Task wire body of a tenant-less system task.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SystemTaskWireBody'
+  responses:
+    FixtureBadRequest:
+      description: 'Fixture 400: `invalidParameters` for an unknown site or an invalid parameter, or `badRequest`.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureError'
+              - type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        const: invalid_request
+                      message:
+                        enum:
+                          - Invalid parameters
+                          - Bad Request
+    FixtureUnauthorized:
+      description: 'Fixture 401 `authorization` without a logged-in session user, or the platform''s refusal of a presented credential.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        WWW-Authenticate:
+          $ref: '#/components/headers/WWWAuthenticate'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            anyOf:
+              - allOf:
+                  - $ref: '#/components/schemas/FixtureError'
+                  - type: object
+                    properties:
+                      error:
+                        type: object
+                        properties:
+                          code:
+                            const: invalid_request
+                          message:
+                            const: Insufficient Account Permissions
+              - $ref: '#/components/schemas/LegacyErrorEnvelope'
+    FixtureForbidden:
+      description: Fixture 403 `forbidden`; the session user holds no `communications.sender` group in the site's private user pool.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureError'
+              - type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        const: invalid_request
+                      message:
+                        const: Insufficient Account Permissions
+    FixtureNotFound:
+      description: Fixture 404 `notFound` for a message or template outside the site.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureError'
+              - type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        const: invalid_request
+                      message:
+                        const: Not Found
+    FixtureServerError:
+      description: Fixture 500 `server_error` for an unhandled exception.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureError'
+              - type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        const: server_error
+                      message:
+                        const: Unhandled Exception
+    QueueControlled:
+      description: The queue's state after the operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/QueueControlResult'
+    BadRequest:
+      description: 'Legacy 400: `invalidParameters` or `badRequest`.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyErrorEnvelope'
+    Unauthorized:
+      description: 'Legacy 401: `authorization` without a qualifying identity, or `invalidAccessToken`/`accessTokenExpired` for a bad credential.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        WWW-Authenticate:
+          $ref: '#/components/headers/WWWAuthenticate'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyErrorEnvelope'
+    Forbidden:
+      description: The identity holds none of the required roles, or a supplied `siteid` differs from the token's site.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyErrorEnvelope'
+    NotFound:
+      description: 404 in the legacy error envelope.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyErrorEnvelope'
+    ServerError:
+      description: Legacy 500 `server_error`.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyErrorEnvelope'
+    Unavailable:
+      description: Legacy-shaped 503 after a fail-closed or wait-timeout condition.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyUnavailable'
+
+  schemas:
+    CfUuid:
+      type: string
+      description: ColdFusion `createUUID()` id.
+      minLength: 35
+      maxLength: 35
+      pattern: '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}$'
+    SiteId:
+      type: string
+      description: Legacy site id, as `tsettings.SiteID`.
+      maxLength: 25
+      examples:
+        - tenant-a
+    DigitString:
+      type: string
+      description: Non-negative decimal integer without leading zeros.
+      pattern: '^(0|[1-9][0-9]{0,14})$'
+    LocalTimestamp:
+      type: string
+      description: Wall-clock time in the legacy server's zone, without an offset.
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}$'
+      examples:
+        - '2026-06-30T09:15:00.000'
+    FixtureTimestamp:
+      type: string
+      description: A `datetime` column as the fixture emits it, in the legacy server's zone, to the second and without an offset.
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}$'
+      examples:
+        - '2026-06-30T09:15:00'
+    EmptyString:
+      type: string
+      description: A NULL column as the fixture emits it.
+      maxLength: 0
+    WallClock:
+      type: string
+      description: Wall-clock time without a zone, `YYYY-MM-DD HH:MM[:SS[.fff]]` with a space or `T`.
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?$'
+    FormValue:
+      description: One form field as a CFML scope holds it; JSON callers may send numbers and booleans.
+      type:
+        - string
+        - number
+        - boolean
+    LegacyErrorEnvelope:
+      type: object
+      description: 'Legacy JSON API error envelope; types map to status and code as authorization 401, invalidAccessToken and accessTokenExpired 401 invalid_token, disabled, invalidParameters, invalidEntityCall, invalidMethodCall, badRequest and invalidTokens 400 invalid_request, server_error 500.'
+      required:
+        - apiversion
+        - method
+        - error
+      additionalProperties: true
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          type: string
+        params:
+          type: object
+        error:
+          type: object
+          required:
+            - message
+            - code
+          additionalProperties: true
+          properties:
+            message:
+              type: string
+            code:
+              type: string
+              enum:
+                - invalid_request
+                - invalid_token
+                - server_error
+    LegacyUnavailable:
+      type: object
+      description: Legacy JSON API `server_error` envelope sent with status 503.
+      required:
+        - apiversion
+        - method
+        - error
+      additionalProperties: false
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          type: string
+        params:
+          type: object
+        error:
+          type: object
+          required:
+            - message
+            - code
+          additionalProperties: false
+          properties:
+            message:
+              type: string
+              const: Unhandled Exception
+            code:
+              type: string
+              const: server_error
+    FixtureMethod:
+      type: string
+      description: Envelope method, `<module>.<resource>` of the fixture path.
+      enum:
+        - communications.templates
+        - communications.messages
+    FixtureEnvelope:
+      type: object
+      description: Fixture success envelope as Masa serializes it; `params` is absent under `suppressAPIParams`, and `data` keys move to the top level when `useDataNamespace` is false.
+      required:
+        - apiversion
+        - method
+      additionalProperties: true
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          $ref: '#/components/schemas/FixtureMethod'
+        params:
+          type: object
+        data: {}
+    FixtureError:
+      type: object
+      description: Fixture error envelope; `stacktrace` is present only with debugging enabled.
+      required:
+        - apiversion
+        - method
+        - error
+      additionalProperties: false
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          $ref: '#/components/schemas/FixtureMethod'
+        params:
+          type: object
+        error:
+          type: object
+          required:
+            - code
+            - message
+          additionalProperties: false
+          properties:
+            code:
+              type: string
+              enum:
+                - invalid_request
+                - server_error
+            message:
+              type: string
+            stacktrace: {}
+    FixtureList:
+      type: object
+      description: One page of a fixture list; an empty list reports `startindex` 1, `endindex` 0 and `totalpages` 0.
+      required:
+        - items
+        - startindex
+        - endindex
+        - itemsperpage
+        - totalitems
+        - totalpages
+        - pageindex
+      properties:
+        items:
+          type: array
+        startindex:
+          type: integer
+          minimum: 1
+        endindex:
+          type: integer
+          minimum: 0
+        itemsperpage:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        totalitems:
+          type: integer
+          minimum: 0
+        totalpages:
+          type: integer
+          minimum: 0
+        pageindex:
+          type: integer
+          minimum: 1
+    TemplateList:
+      description: One page of templates.
+      allOf:
+        - $ref: '#/components/schemas/FixtureList'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/MessageTemplate'
+      unevaluatedProperties: false
+    MessageList:
+      description: One page of messages.
+      allOf:
+        - $ref: '#/components/schemas/FixtureList'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Message'
+      unevaluatedProperties: false
+    FixtureTemplateListEnvelope:
+      description: Fixture envelope of one page of templates.
+      allOf:
+        - $ref: '#/components/schemas/FixtureEnvelope'
+        - type: object
+          properties:
+            method:
+              const: communications.templates
+            data:
+              $ref: '#/components/schemas/TemplateList'
+    FixtureTemplateEnvelope:
+      description: Fixture envelope of one template.
+      allOf:
+        - $ref: '#/components/schemas/FixtureEnvelope'
+        - type: object
+          properties:
+            method:
+              const: communications.templates
+            data:
+              $ref: '#/components/schemas/MessageTemplate'
+    FixtureMessageListEnvelope:
+      description: Fixture envelope of one page of messages.
+      allOf:
+        - $ref: '#/components/schemas/FixtureEnvelope'
+        - type: object
+          properties:
+            method:
+              const: communications.messages
+            data:
+              $ref: '#/components/schemas/MessageList'
+    FixtureMessageDetailEnvelope:
+      description: Fixture envelope of one message with its delivery history.
+      allOf:
+        - $ref: '#/components/schemas/FixtureEnvelope'
+        - type: object
+          properties:
+            method:
+              const: communications.messages
+            data:
+              $ref: '#/components/schemas/MessageDetail'
+    MessageTemplate:
+      type: object
+      description: A `synthetic.message_template` row as the fixture emits it.
+      required:
+        - template_id
+        - siteid
+        - name
+        - subject
+        - body_text
+        - body_html
+        - created
+        - lastupdate
+      additionalProperties: false
+      properties:
+        template_id:
+          $ref: '#/components/schemas/CfUuid'
+        siteid:
+          $ref: '#/components/schemas/SiteId'
+        name:
+          type: string
+          maxLength: 100
+        subject:
+          type: string
+          maxLength: 255
+          description: Subject with `{{key}}` placeholders.
+        body_text:
+          type: string
+          description: Plain-text body with `{{key}}` placeholders; empty when the template has an HTML body only.
+        body_html:
+          type: string
+          description: HTML body with `{{key}}` placeholders; empty when the template has a text body only.
+        created:
+          $ref: '#/components/schemas/FixtureTimestamp'
+        lastupdate:
+          anyOf:
+            - $ref: '#/components/schemas/FixtureTimestamp'
+            - $ref: '#/components/schemas/EmptyString'
+    MessageState:
+      type: string
+      description: Delivery state; a message starts `queued`.
+      enum:
+        - queued
+        - sent
+        - delivered
+        - failed
+    MessageFields:
+      type: object
+      description: The columns of a `synthetic.message` row as the fixture emits them.
+      required:
+        - message_id
+        - siteid
+        - template_id
+        - to_address
+        - from_address
+        - subject
+        - body_text
+        - body_html
+        - state
+        - created
+        - sent_at
+      properties:
+        message_id:
+          $ref: '#/components/schemas/CfUuid'
+        siteid:
+          $ref: '#/components/schemas/SiteId'
+        template_id:
+          description: Template the message was composed from; empty for literal content.
+          anyOf:
+            - $ref: '#/components/schemas/CfUuid'
+            - $ref: '#/components/schemas/EmptyString'
+        to_address:
+          type: string
+          maxLength: 255
+        from_address:
+          type: string
+          maxLength: 255
+        subject:
+          type: string
+          maxLength: 255
+          description: Subject after `{{key}}` substitution.
+        body_text:
+          type: string
+        body_html:
+          type: string
+        state:
+          $ref: '#/components/schemas/MessageState'
+        created:
+          $ref: '#/components/schemas/FixtureTimestamp'
+        sent_at:
+          description: Time the SMTP send succeeded; empty before then or when it failed.
+          anyOf:
+            - $ref: '#/components/schemas/FixtureTimestamp'
+            - $ref: '#/components/schemas/EmptyString'
+    Message:
+      description: A `synthetic.message` row as the fixture emits it.
+      allOf:
+        - $ref: '#/components/schemas/MessageFields'
+      unevaluatedProperties: false
+    DeliveryStatusEntry:
+      type: object
+      description: A `synthetic.delivery_status` row as the fixture emits it.
+      required:
+        - status_id
+        - message_id
+        - status
+        - detail
+        - mailpit_id
+        - recorded_at
+      additionalProperties: false
+      properties:
+        status_id:
+          $ref: '#/components/schemas/CfUuid'
+        message_id:
+          $ref: '#/components/schemas/CfUuid'
+        status:
+          $ref: '#/components/schemas/MessageState'
+        detail:
+          type: string
+          description: Failure reason `smtp-error` or `mailpit-not-found` on a failed row; empty otherwise.
+        mailpit_id:
+          type: string
+          maxLength: 100
+          description: Mailpit message `ID` on the delivered row; empty otherwise.
+        recorded_at:
+          $ref: '#/components/schemas/FixtureTimestamp'
+    MessageDetail:
+      description: A message with its delivery-status history ordered by `recorded_at`, then `status_id`.
+      allOf:
+        - $ref: '#/components/schemas/MessageFields'
+        - type: object
+          required:
+            - history
+          properties:
+            history:
+              type: array
+              items:
+                $ref: '#/components/schemas/DeliveryStatusEntry'
+      unevaluatedProperties: false
+    TemplateInput:
+      type: object
+      description: Template fields; a blank `name` or `subject`, or no non-empty body, answers `invalidParameters`.
+      additionalProperties: true
+      properties:
+        siteid:
+          $ref: '#/components/schemas/SiteId'
+        name:
+          type: string
+          maxLength: 100
+        subject:
+          type: string
+          maxLength: 255
+        bodyText:
+          type: string
+        bodyHtml:
+          type: string
+    MessageInput:
+      type: object
+      description: A message from `templateId` with `variables`, or from literal `subject` and bodies; invalid input answers `invalidParameters`.
+      additionalProperties: true
+      properties:
+        siteid:
+          $ref: '#/components/schemas/SiteId'
+        templateId:
+          type: string
+          description: Template of the site whose subject and bodies are used; a template outside the site answers `notFound`.
+        variables:
+          description: Values for `{{key}}` placeholders, matched case-sensitively; a JSON object string in form posts.
+          anyOf:
+            - type: object
+              additionalProperties:
+                $ref: '#/components/schemas/FormValue'
+            - type: string
+        to:
+          type: string
+          format: email
+          maxLength: 255
+        from:
+          type: string
+          maxLength: 255
+          description: Sender address; `noreply@opt2.local` when absent or empty.
+        subject:
+          type: string
+          maxLength: 255
+          description: Literal subject, required without `templateId`.
+        bodyText:
+          type: string
+          description: Literal text body; without `templateId` at least one body is required.
+        bodyHtml:
+          type: string
+          description: Literal HTML body; without `templateId` at least one body is required.
+    TemplateListBody:
+      type: object
+      required:
+        - data
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/TemplateList'
+    TemplateBody:
+      type: object
+      required:
+        - data
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/MessageTemplate'
+    MessageListBody:
+      type: object
+      required:
+        - data
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/MessageList'
+    MessageDetailBody:
+      type: object
+      required:
+        - data
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/MessageDetail'
+    ScheduledTaskName:
+      type: string
+      description: Task name, equal to the ACF task name the surveys fixture gives the launch or the n-th reminder of a survey.
+      maxLength: 100
+      pattern: '^opt2-survey-[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}-(launch|reminder-[1-9][0-9]*)$'
+    ScheduledTask:
+      type: object
+      description: One scheduled task of a source.
+      required:
+        - taskName
+        - kind
+        - n
+        - targetRoute
+        - scheduleTime
+        - status
+        - scheduleVersion
+        - queue
+      additionalProperties: false
+      properties:
+        taskName:
+          $ref: '#/components/schemas/ScheduledTaskName'
+        kind:
+          type: string
+          enum:
+            - survey-launch
+            - survey-reminder
+        n:
+          type:
+            - integer
+            - 'null'
+          minimum: 1
+          description: Reminder ordinal; null for the launch task.
+        targetRoute:
+          type: string
+          description: Route the task calls, with its parameters filled.
+          pattern: '^/internal/v1/tasks/(surveys/[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}/launch|reminders/[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16})$'
+        scheduleTime:
+          $ref: '#/components/schemas/LocalTimestamp'
+        status:
+          type: string
+          enum:
+            - scheduled
+            - done
+            - failed
+            - cancelled
+            - superseded
+        scheduleVersion:
+          type: integer
+          minimum: 1
+        queue:
+          type: string
+          enum:
+            - surveys-launch
+            - communications-reminders
+    ScheduledTaskList:
+      type: object
+      description: The tasks of a source's current schedule version, ordered by `scheduleTime`, then `kind`, then `n`.
+      required:
+        - sourceType
+        - sourceId
+        - scheduleVersion
+        - items
+      additionalProperties: false
+      properties:
+        sourceType:
+          type: string
+          enum:
+            - survey
+        sourceId:
+          $ref: '#/components/schemas/CfUuid'
+        scheduleVersion:
+          type:
+            - integer
+            - 'null'
+          minimum: 1
+          description: Current schedule version; null when the source was never scheduled.
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScheduledTask'
+    TaskWireBody:
+      type: object
+      description: JSON body both task adapters post; `tenantId` is null on system tasks.
+      required:
+        - queue
+        - name
+        - tenantId
+      additionalProperties: true
+      properties:
+        queue:
+          type: string
+          minLength: 1
+        name:
+          type: string
+          minLength: 1
+        tenantId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        payload: {}
+    SystemTaskWireBody:
+      description: Task wire body of a recurring system task, which names no tenant.
+      allOf:
+        - $ref: '#/components/schemas/TaskWireBody'
+        - type: object
+          required:
+            - tenantId
+          properties:
+            tenantId:
+              type: 'null'
+    ReminderTaskPayload:
+      type: object
+      description: The scheduled reminder a `communications-reminders` task runs.
+      required:
+        - scheduledTaskId
+        - surveyId
+        - n
+        - scheduleVersion
+      additionalProperties: false
+      properties:
+        scheduledTaskId:
+          $ref: '#/components/schemas/CfUuid'
+        surveyId:
+          $ref: '#/components/schemas/CfUuid'
+        n:
+          type: integer
+          minimum: 1
+        scheduleVersion:
+          type: integer
+          minimum: 1
+    ReminderTaskWireBody:
+      description: Task wire body of a reminder task, which names the tenant of its scheduled-task row.
+      allOf:
+        - $ref: '#/components/schemas/TaskWireBody'
+        - type: object
+          required:
+            - tenantId
+            - payload
+          properties:
+            queue:
+              const: communications-reminders
+            tenantId:
+              type: string
+              format: uuid
+            payload:
+              $ref: '#/components/schemas/ReminderTaskPayload'
+    ReminderTaskResult:
+      type: object
+      description: '`sent` after a run, `already-sent` for a repeated run, `superseded` for a task of an older schedule version.'
+      required:
+        - status
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum:
+            - sent
+            - already-sent
+            - superseded
+    AdoptScheduledTasksRequest:
+      type: object
+      description: Fixture survey ACF tasks to adopt, as captured before their deletion.
+      required:
+        - tasks
+      additionalProperties: false
+      properties:
+        tasks:
+          type: array
+          items:
+            type: object
+            required:
+              - name
+              - siteId
+              - scheduleTime
+              - scheduleVersion
+            additionalProperties: false
+            properties:
+              name:
+                $ref: '#/components/schemas/ScheduledTaskName'
+              siteId:
+                $ref: '#/components/schemas/SiteId'
+              scheduleTime:
+                $ref: '#/components/schemas/LocalTimestamp'
+              scheduleVersion:
+                type: integer
+                minimum: 1
+    AdoptScheduledTasksResult:
+      type: object
+      description: Tasks newly adopted, already present by name, and adopted with a past time and so scheduled immediately.
+      required:
+        - adopted
+        - existing
+        - scheduledImmediately
+      additionalProperties: false
+      properties:
+        adopted:
+          type: integer
+          minimum: 0
+        existing:
+          type: integer
+          minimum: 0
+        scheduledImmediately:
+          type: integer
+          minimum: 0
+    CancelAdoptedTasksRequest:
+      type: object
+      description: Adopted tasks to cancel; every adopted task when `names` is absent.
+      additionalProperties: false
+      properties:
+        names:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScheduledTaskName'
+    CancelAdoptedTasksResult:
+      type: object
+      required:
+        - cancelled
+      additionalProperties: false
+      properties:
+        cancelled:
+          type: integer
+          minimum: 0
+    PushBody:
+      type: object
+      description: Pub/Sub push wrapper; `data` is the base64 event envelope.
+      required:
+        - message
+        - subscription
+      additionalProperties: true
+      properties:
+        message:
+          type: object
+          additionalProperties: true
+          properties:
+            data:
+              type: string
+              contentEncoding: base64
+            attributes:
+              type: object
+              additionalProperties:
+                type: string
+            messageId:
+              type: string
+            message_id:
+              type: string
+            publishTime:
+              type: string
+            publish_time:
+              type: string
+            orderingKey:
+              type: string
+        subscription:
+          type: string
+          description: Usually `projects/<project>/subscriptions/<subscription>`, where the subscription is `communications.<topic>`.
+        deliveryAttempt:
+          type: integer
+    SweepResult:
+      type: object
+      description: Totals of one sweep and each recovery hook's outcome in run order.
+      required:
+        - published
+        - failed
+        - skipped
+        - tenants
+        - hooks
+      additionalProperties: false
+      properties:
+        published:
+          type: integer
+          minimum: 0
+        failed:
+          type: integer
+          minimum: 0
+        skipped:
+          type: integer
+          minimum: 0
+        tenants:
+          type: integer
+          minimum: 0
+        hooks:
+          type: array
+          items:
+            type: object
+            required:
+              - name
+              - ok
+            additionalProperties: false
+            properties:
+              name:
+                type: string
+              ok:
+                type: boolean
+    EnsureRecurringResult:
+      type: object
+      required:
+        - queue
+        - name
+        - created
+        - reason
+      additionalProperties: false
+      properties:
+        queue:
+          type: string
+        name:
+          type: string
+        created:
+          type: boolean
+        reason:
+          type: string
+          enum:
+            - live
+            - created-current
+            - created-next
+    QueueControlResult:
+      type: object
+      description: The queue's paused state after pause or resume, or the chain task `ensure` found or created.
+      required:
+        - queue
+        - service
+      additionalProperties: false
+      properties:
+        queue:
+          type: string
+        service:
+          type: string
+          const: communications
+        paused:
+          type: boolean
+        ensured:
+          $ref: '#/components/schemas/EnsureRecurringResult'
+    CanonicalType:
+      type: string
+      description: Canonical encoding tag.
+      enum:
+        - s
+        - i
+        - f
+        - d
+        - t
+        - b
+    CanonicalColumn:
+      type: object
+      required:
+        - name
+        - type
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+        type:
+          $ref: '#/components/schemas/CanonicalType'
+        scale:
+          type: integer
+          minimum: 0
+    WatermarkDirection:
+      type: string
+      enum:
+        - forward
+        - reverse
+    WatermarkFields:
+      type: object
+      required:
+        - direction
+        - finishedAt
+      properties:
+        direction:
+          $ref: '#/components/schemas/WatermarkDirection'
+        snapshotSeq:
+          type: integer
+          minimum: 0
+        backupLsn:
+          type: string
+          pattern: '^[0-9]{1,25}$'
+        finishedAt:
+          $ref: '#/components/schemas/WallClock'
+    ApplyRequest:
+      type: object
+      description: One batch of canonical legacy rows for one legacy table and tenant; exactly one of `tenantId` and `siteId` is required.
+      required:
+        - batchId
+        - origin
+        - legacyTable
+        - columns
+        - rows
+      additionalProperties: false
+      properties:
+        batchId:
+          type: string
+          minLength: 1
+        origin:
+          type: string
+          enum:
+            - backfill
+            - migration-feed
+            - legacy-window
+        legacyTable:
+          type: string
+          minLength: 1
+        tenantId:
+          type: string
+          minLength: 1
+        siteId:
+          type: string
+          minLength: 1
+        legacyProgramId:
+          type: integer
+          minimum: 0
+        columns:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/CanonicalColumn'
+        units:
+          type: array
+          items:
+            type: string
+            minLength: 1
+        holderId:
+          type: string
+          minLength: 1
+        rows:
+          type: array
+          items:
+            type: object
+            required:
+              - op
+              - row
+            additionalProperties: false
+            properties:
+              op:
+                type: string
+                enum:
+                  - upsert
+                  - delete
+                  - insert
+              row:
+                type: string
+              discriminator:
+                type:
+                  - string
+                  - number
+        watermark:
+          allOf:
+            - $ref: '#/components/schemas/WatermarkFields'
+          unevaluatedProperties: false
+    ApplyResponse:
+      type: object
+      required:
+        - batchId
+        - duplicate
+        - applied
+        - skipped
+      additionalProperties: false
+      properties:
+        batchId:
+          type: string
+        duplicate:
+          type: boolean
+        applied:
+          type: integer
+          minimum: 0
+        skipped:
+          type: integer
+          minimum: 0
+    ObjectManifestEntry:
+      type: object
+      required:
+        - key
+        - size
+        - sha256
+      additionalProperties: false
+      properties:
+        key:
+          type: string
+        size:
+          type: integer
+          minimum: 0
+        sha256:
+          type: string
+        contentType:
+          type: string
+        legacyPath:
+          type: string
+    ExportRow:
+      type: object
+      description: One row in legacy form; `key` is the whole-row encoding for keyless tables.
+      required:
+        - key
+        - row
+        - hash
+      additionalProperties: false
+      properties:
+        key:
+          type: string
+        row:
+          type: string
+        hash:
+          type: string
+        legacyProgramId:
+          type: integer
+    ExportTable:
+      type: object
+      required:
+        - unit
+        - legacyTable
+        - targetTable
+        - keyless
+        - columns
+        - rows
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        legacyTable:
+          type: string
+        targetTable:
+          type: string
+        keyless:
+          type: boolean
+        columns:
+          type: array
+          items:
+            $ref: '#/components/schemas/CanonicalColumn'
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExportRow'
+    ExportResponse:
+      type: object
+      description: One export page; `next` is null after the last page, and `objects` comes with the first page only.
+      required:
+        - unit
+        - tenantId
+        - tables
+        - next
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        tenantId:
+          type: string
+          format: uuid
+        tables:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExportTable'
+        next:
+          type:
+            - string
+            - 'null'
+        objects:
+          type: array
+          items:
+            $ref: '#/components/schemas/ObjectManifestEntry'
+    ChangeOp:
+      type: string
+      enum:
+        - insert
+        - update
+        - delete
+    ChangeOrigin:
+      type: string
+      enum:
+        - target
+        - legacy-window
+        - migration-feed
+        - backfill
+    NullableString:
+      type:
+        - string
+        - 'null'
+    LegacyChange:
+      type: object
+      description: A changelog row in the legacy form of one mapping; `columns` are legacy names.
+      required:
+        - unit
+        - legacyTable
+        - key
+        - before
+        - after
+        - columns
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        legacyTable:
+          type: string
+        key:
+          type: string
+        before:
+          $ref: '#/components/schemas/NullableString'
+        after:
+          $ref: '#/components/schemas/NullableString'
+        columns:
+          type: array
+          items:
+            type: string
+        legacyProgramId:
+          type: integer
+    ProjectedChangeRow:
+      type: object
+      description: One changelog row; `xid` and `seq` are decimal strings, `at` is `YYYY-MM-DD HH:MM:SS.mmm`.
+      required:
+        - xid
+        - seq
+        - table
+        - op
+        - key
+        - before
+        - after
+        - columns
+        - origin
+        - actorUserId
+        - actorService
+        - at
+        - requestId
+        - operationId
+        - legacy
+      additionalProperties: false
+      properties:
+        xid:
+          type: string
+          pattern: '^[0-9]+$'
+        seq:
+          type: string
+          pattern: '^[0-9]+$'
+        table:
+          type: string
+        op:
+          $ref: '#/components/schemas/ChangeOp'
+        key:
+          type: string
+        before:
+          $ref: '#/components/schemas/NullableString'
+        after:
+          $ref: '#/components/schemas/NullableString'
+        columns:
+          type: array
+          items:
+            type: string
+        origin:
+          $ref: '#/components/schemas/ChangeOrigin'
+        actorUserId:
+          $ref: '#/components/schemas/NullableString'
+        actorService:
+          $ref: '#/components/schemas/NullableString'
+        at:
+          type: string
+        requestId:
+          $ref: '#/components/schemas/NullableString'
+        operationId:
+          $ref: '#/components/schemas/NullableString'
+        legacy:
+          type: array
+          items:
+            $ref: '#/components/schemas/LegacyChange'
+    OperationStatus:
+      type: string
+      enum:
+        - open
+        - done
+        - rolled-back
+    ChangesResponse:
+      type: object
+      description: Rows below `horizon` in `(xid, seq)` order; `horizon` counts as applied only when `complete`.
+      required:
+        - rows
+        - cursor
+        - horizon
+        - complete
+        - operations
+      additionalProperties: false
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectedChangeRow'
+        cursor:
+          type: string
+          pattern: '^[0-9]+:[0-9]+$'
+        horizon:
+          type: string
+          pattern: '^[0-9]+$'
+        complete:
+          type: boolean
+        operations:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/OperationStatus'
+    TenantDrainCount:
+      type: object
+      required:
+        - tenantId
+        - unpublished
+        - held
+      additionalProperties: false
+      properties:
+        tenantId:
+          type: string
+        unpublished:
+          type: integer
+          minimum: 0
+        held:
+          type: integer
+          minimum: 0
+    OutboxDrainCounts:
+      type: object
+      required:
+        - tenants
+        - unpublished
+        - held
+      additionalProperties: false
+      properties:
+        tenants:
+          type: array
+          items:
+            $ref: '#/components/schemas/TenantDrainCount'
+        unpublished:
+          type: integer
+          minimum: 0
+        held:
+          type: integer
+          minimum: 0
+    InboxCounts:
+      type: object
+      description: Inbox receipts over every registered tenant; `receipts` maps each asked event id to the tenants that applied it.
+      required:
+        - total
+        - bySubscription
+      additionalProperties: false
+      properties:
+        total:
+          type: integer
+          minimum: 0
+        bySubscription:
+          type: object
+          additionalProperties:
+            type: integer
+        receipts:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+    PositionResponse:
+      type: object
+      description: The latest assigned xid and the drain counts; `outbox` or `inbox` is null where the service has no such table.
+      required:
+        - owner
+        - position
+        - outbox
+        - inbox
+      additionalProperties: false
+      properties:
+        owner:
+          type: string
+          const: communications
+        position:
+          type: string
+          pattern: '^[0-9]+$'
+        outbox:
+          oneOf:
+            - $ref: '#/components/schemas/OutboxDrainCounts'
+            - type: 'null'
+        inbox:
+          oneOf:
+            - $ref: '#/components/schemas/InboxCounts'
+            - type: 'null'
+    WatermarkRecord:
+      type: object
+      required:
+        - legacyTable
+        - direction
+        - snapshotSeq
+        - backupLsn
+        - finishedAt
+      additionalProperties: false
+      properties:
+        legacyTable:
+          type: string
+        direction:
+          $ref: '#/components/schemas/WatermarkDirection'
+        snapshotSeq:
+          type:
+            - integer
+            - 'null'
+        backupLsn:
+          $ref: '#/components/schemas/NullableString'
+        finishedAt:
+          $ref: '#/components/schemas/LocalTimestamp'
+    WatermarkInput:
+      description: A watermark to record for one legacy table.
+      allOf:
+        - $ref: '#/components/schemas/WatermarkFields'
+        - type: object
+          required:
+            - legacyTable
+          properties:
+            legacyTable:
+              type: string
+              minLength: 1
+      unevaluatedProperties: false
+    GateState:
+      type: string
+      enum:
+        - legacy
+        - open
+        - closed
+    GatePhase:
+      type: string
+      enum:
+        - quiet
+        - executing
+        - importing
+        - import-pending
+    UnitList:
+      type: array
+      minItems: 1
+      items:
+        type: string
+        minLength: 1
+    GateRequest:
+      description: One gate operation, selected by `op`.
+      oneOf:
+        - $ref: '#/components/schemas/GateClose'
+        - $ref: '#/components/schemas/GatePhaseChange'
+        - $ref: '#/components/schemas/GateOpen'
+        - $ref: '#/components/schemas/GateStatus'
+      discriminator:
+        propertyName: op
+        mapping:
+          close: '#/components/schemas/GateClose'
+          phase: '#/components/schemas/GatePhaseChange'
+          open: '#/components/schemas/GateOpen'
+          status: '#/components/schemas/GateStatus'
+    GateClose:
+      type: object
+      description: Closes the units' gates for a holder; `allowLegacy` lets a transition close units still `legacy`.
+      required:
+        - op
+        - units
+        - holderId
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: close
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+        phase:
+          $ref: '#/components/schemas/GatePhase'
+        allowLegacy:
+          type: boolean
+        timeoutMs:
+          type: integer
+          minimum: 1
+          maximum: 30000
+    GatePhaseChange:
+      type: object
+      description: Sets the phase of gates the holder closed.
+      required:
+        - op
+        - units
+        - holderId
+        - phase
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: phase
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+        phase:
+          $ref: '#/components/schemas/GatePhase'
+    GateOpen:
+      type: object
+      description: Reopens the holder's gates as `open`, or sets them to `legacy`.
+      required:
+        - op
+        - units
+        - holderId
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: open
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+        state:
+          type: string
+          enum:
+            - open
+            - legacy
+    GateStatus:
+      type: object
+      description: Reads the gates; every unit of this owner when `units` is omitted.
+      required:
+        - op
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: status
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+    UnitGate:
+      type: object
+      required:
+        - unit
+        - state
+        - holderId
+        - phase
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        state:
+          $ref: '#/components/schemas/GateState'
+        holderId:
+          $ref: '#/components/schemas/NullableString'
+        phase:
+          $ref: '#/components/schemas/GatePhase'
+    GateResponse:
+      type: object
+      required:
+        - units
+      additionalProperties: false
+      properties:
+        units:
+          type: array
+          items:
+            $ref: '#/components/schemas/UnitGate'
+    GateConflict:
+      type: object
+      description: The units whose gate another holder owns.
+      required:
+        - error
+        - units
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          const: gate-conflict
+        units:
+          type: array
+          items:
+            type: string
+    Health:
+      type: object
+      required:
+        - status
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          const: ok
