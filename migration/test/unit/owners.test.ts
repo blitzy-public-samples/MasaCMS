@@ -38,6 +38,7 @@ const TENANT = '0b0c4f7e-3f7a-4c1e-9a55-1d2b3c4d5e6f';
 const UNIT = 'people.person';
 const FILE_ID = '6A1B2C3D-4E5F-4061-7283940516273849';
 const EVENT_IDS = ['a0000000-0000-4000-8000-00000000000a', 'b0000000-0000-4000-8000-00000000000b'];
+const TOPICS = ['people.person.archived.v1', 'people.person.changed.v1'];
 
 // The client needs no catalog fact, so reading any member fails the test.
 const UNUSED_CATALOG = new Proxy({} as UnitCatalog, {
@@ -146,7 +147,7 @@ describe('createOwnersClient', () => {
     },
     {
       name: 'position joins event ids with commas',
-      call: (owners) => owners.position('people', EVENT_IDS),
+      call: (owners) => owners.position('people', { eventIds: EVENT_IDS }),
       request: {
         service: 'people',
         method: 'GET',
@@ -157,16 +158,34 @@ describe('createOwnersClient', () => {
       answer: POSITION_ANSWER,
     },
     {
-      name: 'position without event ids sends none',
-      call: (owners) => owners.position('people'),
-      request: { service: 'people', method: 'GET', path: '/internal/v1/migration/position', query: {}, userToken: null },
+      name: 'position joins published topics with commas',
+      call: (owners) => owners.position('people', { publishedTopics: TOPICS }),
+      request: {
+        service: 'people',
+        method: 'GET',
+        path: '/internal/v1/migration/position',
+        query: { publishedTopics: TOPICS.join(',') },
+        userToken: null,
+      },
       answer: POSITION_ANSWER,
     },
     {
-      name: 'gate posts the request to its owner',
-      call: (owners) => owners.gate('people', GATE_REQUEST),
-      request: { service: 'people', method: 'POST', path: '/internal/v1/migration/gate', json: GATE_REQUEST, userToken: null },
-      answer: GATE_ANSWER,
+      name: 'position sends event ids and published topics together',
+      call: (owners) => owners.position('people', { eventIds: EVENT_IDS, publishedTopics: TOPICS }),
+      request: {
+        service: 'people',
+        method: 'GET',
+        path: '/internal/v1/migration/position',
+        query: { eventIds: EVENT_IDS.join(','), publishedTopics: TOPICS.join(',') },
+        userToken: null,
+      },
+      answer: POSITION_ANSWER,
+    },
+    {
+      name: 'position without event ids or topics sends none',
+      call: (owners) => owners.position('people'),
+      request: { service: 'people', method: 'GET', path: '/internal/v1/migration/position', query: {}, userToken: null },
+      answer: POSITION_ANSWER,
     },
     {
       name: 'siteMonitorState reads programs-sites',
@@ -215,6 +234,21 @@ describe('createOwnersClient', () => {
 
     await expect(call(owners)).resolves.toEqual(answer);
     expect(calls).toEqual([request]);
+    expect(calls[0]?.timeoutMs).toBeUndefined();
+  });
+
+  it.each<[string, number | undefined, GateRequest]>([
+    ['close', 40_000, GATE_REQUEST],
+    ['close with its own wait', 15_000, { ...GATE_REQUEST, timeoutMs: 5_000 }],
+    ['phase', 40_000, { op: 'phase', units: [UNIT], holderId: 'window-1', phase: 'executing' }],
+    ['open', undefined, { op: 'open', units: [UNIT], holderId: 'window-1' }],
+    ['status', undefined, { op: 'status', units: [UNIT] }],
+  ])('gate posts a %s request to its owner with timeoutMs %s', async (_label, timeoutMs, req) => {
+    const { owners, calls } = routedClient({ 'people POST /internal/v1/migration/gate': [{ body: GATE_ANSWER }] });
+
+    await expect(owners.gate('people', req)).resolves.toEqual(GATE_ANSWER);
+    expect(calls).toEqual([{ service: 'people', method: 'POST', path: '/internal/v1/migration/gate', json: req, userToken: null, timeoutMs }]);
+    expect(calls[0]?.timeoutMs).toBe(timeoutMs);
   });
 
   it.each<[string, ServiceResponse['headers'], Record<string, string>]>([

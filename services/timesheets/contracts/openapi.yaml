@@ -548,6 +548,12 @@ paths:
           description: Comma-separated event ids whose inbox receipts are reported.
           schema:
             type: string
+        - name: publishedTopics
+          in: query
+          required: false
+          description: Comma-separated topics whose published outbox events are listed in `published`.
+          schema:
+            type: string
       responses:
         '200':
           description: The owner's position.
@@ -2263,6 +2269,28 @@ components:
           oneOf:
             - $ref: '#/components/schemas/InboxCounts'
             - type: 'null'
+        published:
+          type: array
+          description: Published outbox events of the asked `publishedTopics`; present only when asked, empty without an outbox.
+          items:
+            $ref: '#/components/schemas/PublishedEvent'
+    PublishedEvent:
+      type: object
+      description: A published outbox event and the tenant of its envelope.
+      required:
+        - eventId
+        - topic
+        - tenantId
+      additionalProperties: false
+      properties:
+        eventId:
+          type: string
+          format: uuid
+        topic:
+          type: string
+        tenantId:
+          type: string
+          format: uuid
     WatermarkRecord:
       type: object
       required:

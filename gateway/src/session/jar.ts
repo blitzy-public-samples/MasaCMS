@@ -5,7 +5,7 @@ import {
   parseSetCookie,
   setCookieLegacy,
 } from '@opt2/platform/legacy-compat';
-import { withMetadata, type TenantDb } from '@opt2/platform/tenancy';
+import { withMetadata, type MetadataTx, type TenantDb } from '@opt2/platform/tenancy';
 import type { SessionMode } from './mode.js';
 
 /** Upper-case legacy session cookie name: `CFID`, `CFTOKEN` or `JSESSIONID`. */
@@ -43,8 +43,8 @@ export interface JarUpsert {
   hydratedEpoch: number | null;
 }
 
-/** Store of `gateway.legacy_jar`. */
-export interface LegacyJar {
+/** Reads and writes of `gateway.legacy_jar`; each write first takes the advisory locks {@link LegacyJar} describes. */
+export interface JarStatements {
   /** The jar of an identity session, or undefined when it has none. */
   get(sessionId: string): Promise<JarRow | undefined>;
   /** The jar holding a ColdFusion session, or undefined when none does. */
@@ -55,6 +55,32 @@ export interface LegacyJar {
   setHydratedEpoch(sessionId: string, epoch: number): Promise<boolean>;
   /** Removes a jar; false when it did not exist. */
   drop(sessionId: string): Promise<boolean>;
+  /**
+   * Maps `input.legacySessionId` to `input.sessionId` alone: the jar of `previousSessionId` and any other holder of
+   * that legacy session are removed, their barrier positions move to `input.sessionId`, then `input` is upserted.
+   */
+  rebind(input: JarUpsert, previousSessionId?: string): Promise<JarRow>;
+}
+
+/** Jar statements of a session's locked section, which may also take one ColdFusion session's lock. */
+export interface LockedJar extends JarStatements {
+  /** Takes the ColdFusion session's lock until the section ends. */
+  lockNative(legacySessionId: string): Promise<void>;
+}
+
+/**
+ * Store of `gateway.legacy_jar`. A row's own state is written under its session's lock; every `op=hydrate` or `op=end`
+ * of a ColdFusion session, and every rebind to it, holds that ColdFusion session's lock. A transaction takes at most
+ * one session lock and one ColdFusion session lock, the session's first; any other order throws.
+ */
+export interface LegacyJar extends JarStatements {
+  /**
+   * Runs `fn` in one transaction holding the session's advisory lock; commits when `fn` resolves, rolls back when it
+   * throws. Inside `fn` only `locked` may be used: a top-level write for the same session would wait on this lock.
+   */
+  withSessionLock<T>(sessionId: string, fn: (locked: LockedJar) => Promise<T>): Promise<T>;
+  /** As {@link withSessionLock}, holding only the ColdFusion session's lock; `locked.rebind` takes no previous. */
+  withNativeLock<T>(legacySessionId: string, fn: (locked: JarStatements) => Promise<T>): Promise<T>;
 }
 
 /** Raw `Set-Cookie` values of a legacy response split into jar cookies and the rest. */
@@ -65,7 +91,9 @@ export interface AbsorbedSetCookies {
 }
 
 const TABLE = 'legacy_jar';
+const BARRIER_TABLE = 'session_barrier';
 const COLUMNS = 'session_id, legacy_session_id, cookies, mode, hydrated_epoch, updated_at';
+const LOCK_SQL = 'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))';
 
 interface JarRecord {
   session_id: string;
@@ -178,6 +206,13 @@ export function requestSessionCookies(
   return out;
 }
 
+/** True when describing kept the session `sent` names: ColdFusion set no session cookie to another value. */
+export function keptSession(sent: JarCookies, observed: JarCookies): boolean {
+  return (
+    Object.keys(sent).length > 0 && Object.entries(observed).every(([key, cookie]) => sent[key]?.value === cookie.value)
+  );
+}
+
 function toRow(record: JarRecord): JarRow {
   return {
     sessionId: record.session_id,
@@ -189,49 +224,148 @@ function toRow(record: JarRecord): JarRow {
   };
 }
 
-/** Creates the jar store over the gateway's database handle; SQL is qualified by the handle's schema (`gateway`). */
-export function createLegacyJar(db: TenantDb): LegacyJar {
+/** Jar statements of one transaction, plus the session lock they take. */
+interface TxStatements extends LockedJar {
+  /** Takes the transaction-scoped advisory lock of an identity session. */
+  lockSession: (sessionId: string) => Promise<void>;
+}
+
+/** The jar statements on one metadata transaction. */
+function statementsOn(tx: MetadataTx): TxStatements {
   // Qualified by the handle's schema, as platform grants are, rather than a literal `gateway.`, so a throwaway schema is read.
-  /** Runs one statement against `<schema>.legacy_jar`; `sql` receives the qualified table name. */
-  function run(sql: (table: string) => string, values: unknown[]) {
-    return withMetadata(db, (tx) => tx.query<JarRecord>(sql(`${tx.schema}.${TABLE}`), values));
+  const table = `${tx.schema}.${TABLE}`;
+  const barrier = `${tx.schema}.${BARRIER_TABLE}`;
+  // One of each kind, session first, so no transaction waits for a lock while holding one another waits behind.
+  const held: { session?: string; native?: string } = {};
+
+  async function lockSession(sessionId: string): Promise<void> {
+    if (held.session === sessionId) return;
+    if (held.session !== undefined) {
+      throw new Error(`jar lock order: session ${sessionId} requested while holding session ${held.session}`);
+    }
+    if (held.native !== undefined) {
+      throw new Error(`jar lock order: session ${sessionId} requested after native session ${held.native}`);
+    }
+    await tx.query(LOCK_SQL, [`${table}:${sessionId}`]);
+    held.session = sessionId;
   }
 
-  async function first(sql: (table: string) => string, values: unknown[]): Promise<JarRow | undefined> {
-    const record = (await run(sql, values)).rows[0];
+  async function lockNative(legacySessionId: string): Promise<void> {
+    if (held.native === legacySessionId) return;
+    if (held.native !== undefined) {
+      throw new Error(
+        `jar lock order: native session ${legacySessionId} requested while holding native session ${held.native}`,
+      );
+    }
+    await tx.query(LOCK_SQL, [`${table}.native:${legacySessionId}`]);
+    held.native = legacySessionId;
+  }
+
+  async function first(sql: string, values: unknown[]): Promise<JarRow | undefined> {
+    const record = (await tx.query<JarRecord>(sql, values)).rows[0];
     return record === undefined ? undefined : toRow(record);
   }
 
-  async function changed(sql: (table: string) => string, values: unknown[]): Promise<boolean> {
-    return ((await run(sql, values)).rowCount ?? 0) > 0;
+  async function changed(sql: string, values: unknown[]): Promise<boolean> {
+    return ((await tx.query(sql, values)).rowCount ?? 0) > 0;
+  }
+
+  async function write(input: JarUpsert): Promise<JarRow> {
+    const row = await first(
+      `INSERT INTO ${table} AS jar (${COLUMNS}) VALUES ($1, $2, $3::jsonb, $4, $5, now())
+       ON CONFLICT (session_id) DO UPDATE SET
+         legacy_session_id = EXCLUDED.legacy_session_id,
+         cookies = jar.cookies || EXCLUDED.cookies,
+         mode = EXCLUDED.mode,
+         hydrated_epoch = EXCLUDED.hydrated_epoch,
+         updated_at = EXCLUDED.updated_at
+       RETURNING ${COLUMNS}`,
+      [input.sessionId, input.legacySessionId, JSON.stringify(input.cookies), input.mode, input.hydratedEpoch],
+    );
+    // INSERT … ON CONFLICT DO UPDATE … RETURNING always returns the written row.
+    return row as JarRow;
   }
 
   return {
-    get: (sessionId) => first((t) => `SELECT ${COLUMNS} FROM ${t} WHERE session_id = $1`, [sessionId]),
+    lockSession,
+    lockNative,
+
+    get: (sessionId) => first(`SELECT ${COLUMNS} FROM ${table} WHERE session_id = $1`, [sessionId]),
 
     findByLegacySessionId: (legacySessionId) =>
-      first((t) => `SELECT ${COLUMNS} FROM ${t} WHERE legacy_session_id = $1`, [legacySessionId]),
+      first(`SELECT ${COLUMNS} FROM ${table} WHERE legacy_session_id = $1`, [legacySessionId]),
 
     async upsert(input) {
-      const row = await first(
-        (t) =>
-          `INSERT INTO ${t} AS jar (${COLUMNS}) VALUES ($1, $2, $3::jsonb, $4, $5, now())
-           ON CONFLICT (session_id) DO UPDATE SET
-             legacy_session_id = EXCLUDED.legacy_session_id,
-             cookies = jar.cookies || EXCLUDED.cookies,
-             mode = EXCLUDED.mode,
-             hydrated_epoch = EXCLUDED.hydrated_epoch,
-             updated_at = EXCLUDED.updated_at
-           RETURNING ${COLUMNS}`,
-        [input.sessionId, input.legacySessionId, JSON.stringify(input.cookies), input.mode, input.hydratedEpoch],
-      );
-      // INSERT … ON CONFLICT DO UPDATE … RETURNING always returns the written row.
-      return row as JarRow;
+      await lockSession(input.sessionId);
+      return write(input);
     },
 
-    setHydratedEpoch: (sessionId, epoch) =>
-      changed((t) => `UPDATE ${t} SET hydrated_epoch = $2, updated_at = now() WHERE session_id = $1`, [sessionId, epoch]),
+    async setHydratedEpoch(sessionId, epoch) {
+      await lockSession(sessionId);
+      return changed(`UPDATE ${table} SET hydrated_epoch = $2, updated_at = now() WHERE session_id = $1`, [
+        sessionId,
+        epoch,
+      ]);
+    },
 
-    drop: (sessionId) => changed((t) => `DELETE FROM ${t} WHERE session_id = $1`, [sessionId]),
+    async drop(sessionId) {
+      await lockSession(sessionId);
+      return changed(`DELETE FROM ${table} WHERE session_id = $1`, [sessionId]);
+    },
+
+    async rebind(input, previousSessionId) {
+      // The holders of the legacy session are guarded by its lock, which their hydrations and logouts hold too.
+      if (previousSessionId !== undefined) await lockSession(previousSessionId);
+      if (input.legacySessionId !== null) await lockNative(input.legacySessionId);
+      const { rows } = await tx.query<{ session_id: string }>(
+        `DELETE FROM ${table} WHERE session_id <> $1 AND (session_id = $2 OR legacy_session_id = $3)
+         RETURNING session_id`,
+        [input.sessionId, previousSessionId ?? null, input.legacySessionId],
+      );
+      const replaced = rows.map((row) => row.session_id);
+      if (replaced.length > 0) {
+        // The replaced sessions' unapplied write positions still bind the legacy session's next requests; one
+        // statement moves exactly the positions it deletes.
+        await tx.query(
+          `WITH moved AS (DELETE FROM ${barrier} WHERE session_id = ANY($2::text[]) RETURNING owner, xid, recorded_at)
+           INSERT INTO ${barrier} AS b (session_id, owner, xid, recorded_at)
+           SELECT $1, owner, max(xid), max(recorded_at) FROM moved GROUP BY owner
+           ON CONFLICT (session_id, owner) DO UPDATE SET
+             xid = GREATEST(b.xid, EXCLUDED.xid),
+             recorded_at = GREATEST(b.recorded_at, EXCLUDED.recorded_at)`,
+          [input.sessionId, replaced],
+        );
+      }
+      return write(input);
+    },
+  };
+}
+
+/** Creates the jar store over the gateway's database handle; SQL is qualified by the handle's schema (`gateway`). */
+export function createLegacyJar(db: TenantDb): LegacyJar {
+  /** Runs `fn` on the jar statements of one metadata transaction. */
+  function inTransaction<T>(fn: (statements: TxStatements) => Promise<T>): Promise<T> {
+    return withMetadata(db, (tx) => fn(statementsOn(tx)));
+  }
+
+  return {
+    get: (sessionId) => inTransaction((s) => s.get(sessionId)),
+    findByLegacySessionId: (legacySessionId) => inTransaction((s) => s.findByLegacySessionId(legacySessionId)),
+    upsert: (input) => inTransaction((s) => s.upsert(input)),
+    setHydratedEpoch: (sessionId, epoch) => inTransaction((s) => s.setHydratedEpoch(sessionId, epoch)),
+    drop: (sessionId) => inTransaction((s) => s.drop(sessionId)),
+    rebind: (input, previousSessionId) => inTransaction((s) => s.rebind(input, previousSessionId)),
+
+    withSessionLock: (sessionId, fn) =>
+      inTransaction(async ({ lockSession, ...locked }) => {
+        await lockSession(sessionId);
+        return fn(locked);
+      }),
+
+    withNativeLock: (legacySessionId, fn) =>
+      inTransaction(async (statements) => {
+        await statements.lockNative(legacySessionId);
+        return fn(statements);
+      }),
   };
 }

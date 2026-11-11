@@ -1,6 +1,7 @@
 /** Client of the owners' internal migration, object, site-monitor and scheduled-task endpoints: the package's only route to target data. */
 import { Buffer } from 'node:buffer';
 import {
+  GATE_WAIT_MS,
   MIGRATION_PATH_PREFIX,
   WRITE_POSITION_HEADER_LC,
   parseWritePosition,
@@ -16,7 +17,7 @@ import {
   type WatermarkRecord,
   type WritePositions,
 } from '@opt2/platform/migration-kit';
-import type { ServiceClient, ServiceRequest, ServiceResponse } from '@opt2/platform/service-kit';
+import { SERVICE_CALL_TIMEOUT_MS, type ServiceClient, type ServiceRequest, type ServiceResponse } from '@opt2/platform/service-kit';
 import { callQueueControl, type QueueControlOp, type QueueControlResult } from '@opt2/platform/tasks';
 import type { components, paths } from '../generated/clients/strategies-content.js';
 import type { DataOwner, UnitCatalog } from './units.js';
@@ -67,6 +68,12 @@ export interface ChangesParams {
   tenantId: string;
   after: string;
   limit?: number;
+}
+
+/** Query of a position read: which tenants' inboxes hold `eventIds`, and the published events of `publishedTopics`. */
+export interface PositionParams {
+  eventIds?: readonly string[];
+  publishedTopics?: readonly string[];
 }
 
 /** A watermark to store: a `POST /watermark` body, or a stored record whose null sequence or LSN is sent as absent. */
@@ -123,8 +130,8 @@ export interface OwnersClient {
   exportPages(owner: DataOwner, params: ExportParams): AsyncIterable<ExportResponse>;
   /** One commit-safe change-feed page: the `ChangesPage` fields with legacy projections and operation statuses. */
   changes(owner: DataOwner, params: ChangesParams): Promise<ChangesResponse>;
-  /** Current write position and drain counts; `eventIds` also asks which tenants' inboxes hold those events. */
-  position(owner: DataOwner, eventIds?: readonly string[]): Promise<PositionResponse>;
+  /** Current write position and drain counts, with the receipts and published events `params` asks for. */
+  position(owner: DataOwner, params?: PositionParams): Promise<PositionResponse>;
   /** @returns the watermark of `legacyTable` and `direction`, or null when the owner has none. */
   watermark(owner: DataOwner, legacyTable: string, direction: WatermarkDirection): Promise<WatermarkRecord | null>;
   /** Stores a watermark and returns it as stored. */
@@ -195,6 +202,13 @@ interface CallOptions {
   json?: unknown;
   body?: Buffer;
   headers?: Record<string, string>;
+  timeoutMs?: ServiceRequest['timeoutMs'];
+}
+
+/** Bound of a gate call: the owner's gate wait plus the call bound when closing or re-phasing, else the client's default. */
+function gateCallTimeoutMs(req: GateRequest): number | undefined {
+  if (req.op === 'close') return (req.timeoutMs ?? GATE_WAIT_MS) + SERVICE_CALL_TIMEOUT_MS;
+  return req.op === 'phase' ? GATE_WAIT_MS + SERVICE_CALL_TIMEOUT_MS : undefined;
 }
 
 function isGateConflictBody(body: unknown): body is { error: string; units: string[] } {
@@ -264,8 +278,8 @@ export function createOwnersClient(options: CreateOwnersClientOptions): OwnersCl
       return (await call<ChangesResponse>(owner, 'GET', CHANGES_PATH, { query })).body;
     },
 
-    async position(owner, eventIds) {
-      const query = { eventIds: eventIds?.join(',') };
+    async position(owner, params = {}) {
+      const query = { eventIds: params.eventIds?.join(','), publishedTopics: params.publishedTopics?.join(',') };
       return (await call<PositionResponse>(owner, 'GET', POSITION_PATH, { query })).body;
     },
 
@@ -282,7 +296,7 @@ export function createOwnersClient(options: CreateOwnersClientOptions): OwnersCl
     },
 
     async gate(owner, req) {
-      return (await call<GateResponse>(owner, 'POST', GATE_PATH, { json: req })).body;
+      return (await call<GateResponse>(owner, 'POST', GATE_PATH, { json: req, timeoutMs: gateCallTimeoutMs(req) })).body;
     },
 
     async putObject(params, bytes) {

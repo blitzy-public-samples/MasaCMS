@@ -25,6 +25,7 @@ import {
   type ObjectManifestPage,
   type OperationStatus,
   type PositionResponse,
+  type PublishedEvent,
   type WatermarkRecord,
 } from '../../src/migration-kit/handlers.js';
 import { defineMapping, type MappingColumn } from '../../src/migration-kit/mapping.js';
@@ -974,6 +975,40 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
     expectRejected(await get('/position', { eventIds: 'not-a-uuid' }));
   });
 
+  it('lists the published events of the asked topics in every registered tenant by tenant, topic and id', async () => {
+    await seedRegistry(handle.app);
+    const [created, changed, unasked] = ['mk.listed.created.v1', 'mk.listed.changed.v1', 'mk.listed.unasked.v1'];
+    const outbox = `INSERT INTO ${handle.schema}.outbox (tenant_id, event_id, topic, kind, ordering_key, envelope, held, created_at, published_at)
+      VALUES ($1, $2, $3, 'state', 'k', '{}'::jsonb, $4, localtimestamp(3), $5)`;
+    const published = '2026-06-30 12:00:00';
+    const expected: PublishedEvent[] = [];
+    for (const fixture of [TENANT_UMBRELLA, TENANT_B, TENANT_A]) {
+      await handle.app.withTenant(fixture.tenantId, async (tx) => {
+        for (const [topic, held, publishedAt] of [
+          [changed, false, published],
+          [created, false, published],
+          [created, false, published],
+          [created, false, null],
+          [created, true, null],
+          [unasked, false, published],
+        ] as const) {
+          const eventId = randomUUID();
+          await tx.query(outbox, [tx.tenantId, eventId, topic, held, publishedAt]);
+          if (topic !== unasked && publishedAt !== null) expected.push({ eventId, topic, tenantId: tx.tenantId });
+        }
+      });
+    }
+    const order = (e: PublishedEvent): string => `${e.tenantId} ${e.topic} ${e.eventId}`;
+    expected.sort((a, b) => (order(a) < order(b) ? -1 : 1));
+
+    const res = await get('/position', { publishedTopics: ` ${created},${changed}, ` });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json<PositionResponse>().published).toEqual(expected);
+    expect((await get('/position', { publishedTopics: '' })).json<PositionResponse>().published).toEqual([]);
+    expect((await get('/position')).json<PositionResponse>()).not.toHaveProperty('published');
+    expectRejected(await get('/position', { publishedTopics: `${created},mk.listed.created` }));
+  });
+
   it('stores watermarks under normalised Program_<id> names and lists them by table and direction', async () => {
     const mark = { direction: 'forward', snapshotSeq: 42, backupLsn: '1234567890123456789012345', finishedAt: '2026-06-30 12:00:00.5' };
     const stored1 = await post('/watermark', { legacyTable: '[Program_2].[Scores]', ...mark });
@@ -1192,6 +1227,8 @@ describe.skipIf(!available)('migration endpoints of a service without outbox, in
     const position = await app.inject({ method: 'GET', url: `${MIGRATION_PATH_PREFIX}/position`, headers });
     expect(position.statusCode, position.body).toBe(200);
     expect(position.json()).toEqual({ owner: OWNER, position: expect.stringMatching(/^\d+$/), outbox: null, inbox: null });
+    const listing = await app.inject({ method: 'GET', url: `${MIGRATION_PATH_PREFIX}/position`, headers, query: { publishedTopics: 'mk.item.changed.v1' } });
+    expect(listing.json<PositionResponse>().published).toEqual([]);
 
     const exportRes = await app.inject({ method: 'GET', url: `${MIGRATION_PATH_PREFIX}/export`, headers, query: { unit: 'mk.item', siteId: 'tenant-a' } });
     expect(exportRes.json()).toEqual({

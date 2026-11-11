@@ -3,7 +3,15 @@ import { cfDateTimeFormat } from '@opt2/platform/legacy-compat';
 import { systemClock, type Clock } from '@opt2/platform/service-kit';
 import type { BridgeCallOptions, BridgeClient, HydrateBody } from './bridge-client.js';
 import type { IdentityClient, SessionSnapshot } from './identity-client.js';
-import { absorbLegacySetCookies, isDeletedJarCookie, type JarCookies, type JarRow, type LegacyJar } from './jar.js';
+import {
+  absorbLegacySetCookies,
+  isDeletedJarCookie,
+  keptSession,
+  legacyCookieHeader,
+  type JarCookies,
+  type JarRow,
+  type LegacyJar,
+} from './jar.js';
 
 /** Waits until legacy holds the owners' current writes; rejects (legacy-shaped 503) when the wait times out. */
 export interface HydrationBarrier {
@@ -18,24 +26,43 @@ export type HydrationCall = Pick<BridgeCallOptions, 'userAgent'>;
 
 /** Keeps a session's legacy ColdFusion session at identity's login snapshot. */
 export interface Hydrator {
-  /** The jar row, hydrated at `epoch` or later; undefined when identity reports the session missing or ended. */
+  /**
+   * The jar row, hydrated at `epoch` or later into a ColdFusion session that still holds it; undefined when identity
+   * reports the session missing or ended.
+   */
   ensureHydrated(sessionId: string, epoch: number, call?: HydrationCall): Promise<JarRow | undefined>;
 }
 
 /** Dependencies of {@link createHydrator}. */
 export interface HydratorOptions {
   identity: Pick<IdentityClient, 'snapshot'>;
-  bridge: Pick<BridgeClient, 'hydrate'>;
-  jar: Pick<LegacyJar, 'get' | 'upsert'>;
+  bridge: Pick<BridgeClient, 'describe' | 'hydrate'>;
+  jar: Pick<LegacyJar, 'get' | 'withSessionLock'>;
   barrier: HydrationBarrier;
-  /** Stamps the used-token entries; defaults to the system clock. */
+  /** Stamps the used-token entries and judges cookie expiry; defaults to the system clock. */
   clock?: Clock;
+}
+
+/** What `op=describe` finds behind a jar row's live cookies. */
+interface Attachment {
+  /** The row probed; undefined when the session has no jar. */
+  row: JarRow | undefined;
+  /** ColdFusion still holds the row's own legacy session. */
+  attached: boolean;
+  /** That session is also still logged in, so a hydration in it stands. */
+  live: boolean;
+  /** Cookies of the legacy session to hydrate into; none lets ColdFusion start one. */
+  cookies: JarCookies;
+  /** That session's id, signed as the bridge's `sid`. */
+  legacySessionId?: string;
+  /** Session cookies ColdFusion set while describing. */
+  observed: JarCookies;
 }
 
 /** Bridge wire time in the legacy server's zone, the space-separated form the bridge parses. */
 const WIRE_TIME_MASK = 'yyyy-MM-dd HH:nn:ss.lll';
 
-/** True when the row's legacy session already holds identity's snapshot at `epoch` or later; epochs only grow. */
+/** True when the row records a target-primary hydration at `epoch` or later; epochs only grow. */
 function isCurrent(row: JarRow | undefined, epoch: number): row is JarRow {
   return row?.mode === 'target-primary' && row.hydratedEpoch !== null && row.hydratedEpoch >= epoch;
 }
@@ -84,57 +111,110 @@ function hydrateBody(snapshot: SessionSnapshot, usedAt: string): HydrateBody {
   };
 }
 
-/** The jar's live session cookies and the legacy session id the bridge checks them against. */
-function attachedSession(row: JarRow | undefined, now: Date): { cookies: JarCookies; legacySessionId?: string } {
-  // Cookies of an unknown session id would fail the bridge's sid check, so ColdFusion starts a new session instead.
-  if (row === undefined || row.legacySessionId === null) return { cookies: {} };
+/** The jar cookies a browser would still send at `now`. */
+function liveCookies(row: JarRow | undefined, now: Date): JarCookies {
   const cookies: JarCookies = {};
-  for (const [key, cookie] of Object.entries(row.cookies)) if (!isDeletedJarCookie(cookie, now)) cookies[key] = cookie;
-  return Object.keys(cookies).length > 0 ? { cookies, legacySessionId: row.legacySessionId } : { cookies };
+  for (const [key, cookie] of Object.entries(row?.cookies ?? {})) {
+    if (!isDeletedJarCookie(cookie, now)) cookies[key] = cookie;
+  }
+  return cookies;
 }
 
-/** Creates a hydrator; concurrent calls for one session share a single hydration. */
+/** True when `row` is the same jar version, legacy session and live cookie values that `probed` described. */
+function unchangedSince(probed: Attachment, row: JarRow | undefined, now: Date): boolean {
+  const before = probed.row;
+  return (
+    before?.updatedAt.getTime() === row?.updatedAt.getTime() &&
+    before?.legacySessionId === row?.legacySessionId &&
+    legacyCookieHeader(before?.cookies ?? {}, now) === legacyCookieHeader(row?.cookies ?? {}, now)
+  );
+}
+
+/** Creates a hydrator; concurrent calls for one session share one hydration, across instances through the jar lock. */
 export function createHydrator(opts: HydratorOptions): Hydrator {
   const { identity, bridge, jar, barrier } = opts;
   const clock = opts.clock ?? systemClock;
   const running = new Map<string, Promise<JarRow | undefined>>();
 
-  /** Installs identity's current snapshot in the session's legacy session and records it in the jar. */
-  async function hydrate(sessionId: string, call: HydrationCall): Promise<JarRow | undefined> {
-    // The user's rows must reach legacy before op=hydrate installs them.
+  /** Describes the row's legacy session: whether ColdFusion still holds it logged in, and where to hydrate if not. */
+  async function probe(row: JarRow | undefined, call: HydrationCall): Promise<Attachment> {
+    const cookies = liveCookies(row, clock.now());
+    if (row === undefined || Object.keys(cookies).length === 0) {
+      return { row, attached: false, live: false, cookies: {}, observed: {} };
+    }
+    const described = await bridge.describe(cookies, call);
+    const observed = absorbLegacySetCookies(described.setCookies).sessionCookies;
+    const { sessionId, isLoggedIn } = described.body;
+    const attached = keptSession(cookies, observed) && sessionId === row.legacySessionId;
+    // Hydration goes into the session describe found or started, so the bridge's sid matches and none is orphaned.
+    const target = { cookies: { ...cookies, ...observed }, legacySessionId: sessionId, observed };
+    return { row, attached, live: attached && isLoggedIn, ...target };
+  }
+
+  /** Installs identity's current snapshot in the session's legacy session and records it, under its jar lock. */
+  async function hydrate(
+    sessionId: string,
+    epoch: number,
+    call: HydrationCall,
+    probed: Attachment | undefined,
+  ): Promise<JarRow | undefined> {
+    // The user's rows must reach legacy before op=hydrate installs them; awaited before the lock holds a connection.
     await barrier.awaitOwners([...HYDRATION_OWNERS]);
-    const snapshot = await identity.snapshot(sessionId);
-    if (snapshot === undefined) return undefined;
-    // Read after the waits, so the cookies sent are the jar's current ones.
-    const row = await jar.get(sessionId);
-    const now = clock.now();
-    const attached = attachedSession(row, now);
-    const result = await bridge.hydrate(attached.cookies, hydrateBody(snapshot, cfDateTimeFormat(now, WIRE_TIME_MASK)), {
-      ...call,
-      legacySessionId: attached.legacySessionId,
-    });
-    // The upsert merges cookies in SQL, so only those ColdFusion set are written and the rest keep their stored values.
-    const { sessionCookies } = absorbLegacySetCookies(result.setCookies);
-    return jar.upsert({
-      sessionId,
-      legacySessionId: result.body.sessionId || (row?.legacySessionId ?? null),
-      cookies: sessionCookies,
-      mode: 'target-primary',
-      // The epoch actually installed, which may differ from the caller's when a login raced the state check.
-      hydratedEpoch: snapshot.epoch,
+    return jar.withSessionLock(sessionId, async (locked) => {
+      // Read under the lock, so a hydration, rebind or logout that finished meanwhile is seen.
+      let row = await locked.get(sessionId);
+      if (row?.legacySessionId) {
+        await locked.lockNative(row.legacySessionId);
+        // A rebind holding that lock may have moved the legacy session to another jar and removed this one.
+        row = await locked.get(sessionId);
+      }
+      const now = clock.now();
+      const attachment = probed !== undefined && unchangedSince(probed, row, now) ? probed : await probe(row, call);
+      if (isCurrent(row, epoch) && attachment.live) return row;
+      // Read under the lock, so a logout that ended the session first leaves nothing to recreate.
+      const snapshot = await identity.snapshot(sessionId);
+      if (snapshot === undefined) return undefined;
+      const body = hydrateBody(snapshot, cfDateTimeFormat(now, WIRE_TIME_MASK));
+      if (body.snapshot.user.userID === '') {
+        // An anonymous session has no login to install (the bridge refuses an empty userID); its attachment stands.
+        if (attachment.attached && isCurrent(row, snapshot.epoch)) return row;
+        return locked.upsert({
+          sessionId,
+          legacySessionId: attachment.legacySessionId ?? null,
+          cookies: attachment.observed,
+          mode: 'target-primary',
+          hydratedEpoch: snapshot.epoch,
+        });
+      }
+      const result = await bridge.hydrate(attachment.cookies, body, {
+        ...call,
+        legacySessionId: attachment.legacySessionId,
+      });
+      // The upsert merges cookies in SQL, so only those ColdFusion set are written; the rest keep their stored values.
+      const { sessionCookies } = absorbLegacySetCookies(result.setCookies);
+      return locked.upsert({
+        sessionId,
+        legacySessionId: result.body.sessionId || attachment.legacySessionId || null,
+        cookies: { ...attachment.observed, ...sessionCookies },
+        mode: 'target-primary',
+        // The epoch actually installed, which may differ from the caller's when a login raced the state check.
+        hydratedEpoch: snapshot.epoch,
+      });
     });
   }
 
   async function ensureHydrated(sessionId: string, epoch: number, call: HydrationCall = {}): Promise<JarRow | undefined> {
     const row = await jar.get(sessionId);
-    if (isCurrent(row, epoch)) return row;
+    // The epoch alone does not prove ColdFusion still holds the session: a timeout or restart drops it unannounced.
+    const probed = isCurrent(row, epoch) ? await probe(row, call) : undefined;
+    if (probed?.live === true) return row;
     const pending = running.get(sessionId);
     if (pending !== undefined) {
       const joined = await pending;
       // A hydration that began before a newer login may have installed the older snapshot.
       return joined === undefined || isCurrent(joined, epoch) ? joined : ensureHydrated(sessionId, epoch, call);
     }
-    const started: Promise<JarRow | undefined> = hydrate(sessionId, call).finally(() => {
+    const started: Promise<JarRow | undefined> = hydrate(sessionId, epoch, call, probed).finally(() => {
       if (running.get(sessionId) === started) running.delete(sessionId);
     });
     running.set(sessionId, started);

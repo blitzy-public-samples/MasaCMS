@@ -54,7 +54,7 @@ export interface ConsumeOptions {
 /** What one destination tenant did with the event. */
 export type DestinationResult = 'applied' | 'duplicate' | 'stale' | 'superseded';
 
-/** Per-destination results of one consume call, in destination order. */
+/** Per-destination results of one consume call, in apply order: fan-out tenants, then the envelope tenant. */
 export interface ConsumeOutcome {
   eventId: string;
   destinations: Array<{ tenantId: string; result: DestinationResult }>;
@@ -95,7 +95,9 @@ export function consumeEnvelope<P>(
       async (): Promise<ConsumeOutcome> => {
         const origin = envelope.tenantId.toLowerCase();
         const destinations: ConsumeOutcome['destinations'] = [];
-        for (const tenantId of await destinationTenants(db, def, envelope)) {
+        const tenants = await destinationTenants(db, def, envelope);
+        // Fan-out tenants first and the envelope tenant last, so its receipt shows the delivery reached every destination.
+        for (const tenantId of [...tenants.filter((tenant) => tenant !== origin), origin]) {
           const result = await runWithConsumedEnvelope(envelope, () =>
             consumeIn(db, def, envelope, options, { tenantId, isFanout: tenantId !== origin }),
           );

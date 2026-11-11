@@ -9,11 +9,12 @@ import {
 } from '@opt2/platform/service-kit';
 import { describe, expect, it } from 'vitest';
 
+import { loadConfig } from '../../src/config.js';
 import { openWindowViaService } from '../../src/windows/via-service.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-function recordingContext(): { ctx: { clientAs: () => ServiceClient }; sent: ServiceRequest[] } {
+function recordingContext(): { ctx: { clientAs: () => ServiceClient; config: ReturnType<typeof loadConfig> }; sent: ServiceRequest[] } {
   const sent: ServiceRequest[] = [];
   const client: ServiceClient = {
     request<T>(req: ServiceRequest): Promise<ServiceResponse<T>> {
@@ -22,7 +23,7 @@ function recordingContext(): { ctx: { clientAs: () => ServiceClient }; sent: Ser
     },
     close: () => Promise.resolve(),
   };
-  return { ctx: { clientAs: () => client }, sent };
+  return { ctx: { clientAs: () => client, config: loadConfig() }, sent };
 }
 
 describe('openWindowViaService', () => {

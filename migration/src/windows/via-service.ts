@@ -1,7 +1,7 @@
 // `opt2-migrate` client of the running migration service's write-window operations, called as `platform.operator`.
 import { randomUUID } from 'node:crypto';
 
-import { currentRequestContext, REQUEST_ID_HEADER, ServiceUnavailableError } from '@opt2/platform/service-kit';
+import { currentRequestContext, REQUEST_ID_HEADER, SERVICE_CALL_TIMEOUT_MS, ServiceUnavailableError } from '@opt2/platform/service-kit';
 
 import type { MigrationContext } from '../context.js';
 import type { components, operations, paths } from '../generated/openapi.js';
@@ -48,8 +48,8 @@ export interface CompleteWindowInput {
   forwarded: boolean;
 }
 
-/** The context part these calls need: the per-caller service client. */
-type WindowCallContext = Pick<MigrationContext, 'clientAs'>;
+/** The context part these calls need: the per-caller service client and the window budgets. */
+type WindowCallContext = Pick<MigrationContext, 'clientAs' | 'config'>;
 
 interface WindowOperation {
   readonly operationId: keyof operations;
@@ -86,17 +86,18 @@ function windowPath(operation: WindowOperation, windowId: string): string {
   return operation.path.replace('{windowId}', encodeURIComponent(windowId));
 }
 
-/** Sends one POST as `operator` without a user token; a 503 throws the legacy 503 error, any other non-2xx {@link WindowCallError}. */
+/** Sends one POST as `operator` without a user token, with `options.headers` and bounded by `options.timeoutMs` when given; a 503 throws the legacy 503 error, any other non-2xx {@link WindowCallError}. */
 async function post<T>(
   ctx: WindowCallContext,
   operation: WindowOperation,
   path: string,
   json?: unknown,
-  headers?: Record<string, string>,
+  options: { headers?: Record<string, string>; timeoutMs?: number } = {},
 ): Promise<T> {
+  const { headers, timeoutMs } = options;
   const response = await ctx
     .clientAs('operator')
-    .request<T>({ service: MIGRATION_SERVICE, method: 'POST', path, json, headers, userToken: null });
+    .request<T>({ service: MIGRATION_SERVICE, method: 'POST', path, json, headers, userToken: null, timeoutMs });
   if (response.status === HTTP_UNAVAILABLE) {
     const cause = Object.assign(new Error(`${MIGRATION_SERVICE} answered HTTP ${String(HTTP_UNAVAILABLE)}`), {
       code: `HTTP_${String(HTTP_UNAVAILABLE)}`,
@@ -110,7 +111,7 @@ async function post<T>(
 }
 
 /**
- * Opens a write window in the running migration service; legacy may execute once this resolves.
+ * Opens a write window in the running migration service, waiting its open budget plus the call bound; legacy may execute once this resolves.
  * @throws ServiceUnavailableError when the service refuses the window (503) or cannot be reached.
  */
 export async function openWindowViaService(ctx: WindowCallContext, input: OpenWindowInput): Promise<WindowOpenResponse> {
@@ -122,7 +123,10 @@ export async function openWindowViaService(ctx: WindowCallContext, input: OpenWi
     scope: input.scope ?? { table: true },
     requestId,
   } satisfies WindowOpenRequest;
-  return post<WindowOpenResponse>(ctx, OPERATIONS.open, OPERATIONS.open.path, body, { [REQUEST_ID_HEADER]: requestId });
+  return post<WindowOpenResponse>(ctx, OPERATIONS.open, OPERATIONS.open.path, body, {
+    headers: { [REQUEST_ID_HEADER]: requestId },
+    timeoutMs: ctx.config.windows.openBudgetMs + SERVICE_CALL_TIMEOUT_MS,
+  });
 }
 
 /** Reports the legacy outcome of an open window; the service imports legacy changes and closes it, or leaves it import-pending. */

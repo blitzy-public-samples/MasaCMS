@@ -160,6 +160,7 @@ export type {
   ProjectedChangeRow,
   ChangesResponse,
   InboxCounts,
+  PublishedEvent,
   PositionResponse,
   WatermarkRecord,
   GateResponse,

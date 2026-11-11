@@ -43,7 +43,7 @@ export interface Invalidation {
 export interface InvalidationOptions {
   identity: Pick<IdentityClient, 'adopt' | 'end'>;
   bridge: Pick<BridgeClient, 'describe' | 'end'>;
-  jar: Pick<LegacyJar, 'get' | 'upsert' | 'setHydratedEpoch' | 'drop'>;
+  jar: Pick<LegacyJar, 'withSessionLock' | 'drop'>;
   tokenCache: Pick<TokenCache, 'drop'>;
   state: Pick<SessionStateChecker, 'forget'>;
 }
@@ -134,16 +134,26 @@ export function createInvalidation(opts: InvalidationOptions): Invalidation {
   return {
     async afterTargetLogout(sessionId, browser = {}) {
       forget(sessionId);
-      const row = await jar.get(sessionId);
-      if (row === undefined) return;
-      const cookies = liveCookies(row.cookies);
-      if (Object.keys(cookies).length > 0) {
-        const call = { userAgent: browser.userAgent };
-        // `end` must name the attached session; a jar that never recorded its id learns it from `describe`.
-        const legacySessionId = row.legacySessionId ?? (await bridge.describe(cookies, call)).body.sessionId;
-        await bridge.end(cookies, { ...call, legacySessionId });
-      }
-      await jar.drop(sessionId);
+      // Under the jar lock: a running hydration finishes first, and one starting later finds the session ended.
+      await jar.withSessionLock(sessionId, async (locked) => {
+        let row = await locked.get(sessionId);
+        if (row?.legacySessionId) {
+          await locked.lockNative(row.legacySessionId);
+          // A rebind holding that lock may have moved the legacy session to another jar and removed this one.
+          row = await locked.get(sessionId);
+        }
+        if (row === undefined) return;
+        const cookies = liveCookies(row.cookies);
+        if (Object.keys(cookies).length > 0) {
+          const call = { userAgent: browser.userAgent };
+          // `end` must name the attached session; a jar that never recorded its id learns it from `describe`.
+          const legacySessionId = row.legacySessionId ?? (await bridge.describe(cookies, call)).body.sessionId;
+          // A recorded id's lock is already held, and re-requesting it is a no-op.
+          await locked.lockNative(legacySessionId);
+          await bridge.end(cookies, { ...call, legacySessionId });
+        }
+        await locked.drop(sessionId);
+      });
     },
 
     async afterLegacyLogout(sessionId) {
@@ -154,28 +164,44 @@ export function createInvalidation(opts: InvalidationOptions): Invalidation {
     },
 
     async afterLegacyLogin(sessionId, mode, legacy = {}) {
-      const row = await jar.get(sessionId);
-      // In target-primary mode the browser's CFID/CFTOKEN/JSESSIONID carry identity's values; the jar holds legacy's.
-      const source = mode === 'target-primary' ? row?.cookies : (legacy.cookies ?? row?.cookies);
-      const cookies = liveCookies(source ?? {});
-      if (Object.keys(cookies).length === 0) return undefined;
+      // Under the jar lock, so no hydration installs an older snapshot over the login or rebinds around it.
+      const adopted = await jar.withSessionLock(sessionId, async (locked) => {
+        const row = await locked.get(sessionId);
+        // In target-primary mode the browser's CFID/CFTOKEN/JSESSIONID carry identity's values; the jar holds legacy's.
+        const source = mode === 'target-primary' ? row?.cookies : (legacy.cookies ?? row?.cookies);
+        const cookies = liveCookies(source ?? {});
+        if (Object.keys(cookies).length === 0) return undefined;
 
-      const { body: describe } = await bridge.describe(cookies, { userAgent: legacy.userAgent });
-      const adopted = await identity.adopt({ describe, siteId: legacy.siteId || describe.siteId || DEFAULT_SITE_ID });
-      if (adopted.sessionId === sessionId && describe.sessionId === row?.legacySessionId) {
-        // Legacy already holds the adopted state, so it is recorded as hydrated rather than hydrated over.
-        if (mode === 'target-primary') await jar.setHydratedEpoch(sessionId, adopted.epoch);
-      } else {
-        // The old mapping goes first: legacy_session_id is unique in the jar.
-        if (adopted.sessionId !== sessionId) await jar.drop(sessionId);
-        await jar.upsert({
-          sessionId: adopted.sessionId,
-          legacySessionId: describe.sessionId,
-          cookies,
-          mode,
-          hydratedEpoch: mode === 'target-primary' ? adopted.epoch : null,
-        });
-      }
+        const call = { userAgent: legacy.userAgent };
+        let { body: describe } = await bridge.describe(cookies, call);
+        await locked.lockNative(describe.sessionId);
+        const holder = await locked.findByLegacySessionId(describe.sessionId);
+        if (holder !== undefined && holder.sessionId !== sessionId && holder.mode === 'target-primary') {
+          // That holder may have hydrated or ended the legacy session since it was described.
+          const fresh = (await bridge.describe(cookies, call)).body;
+          if (fresh.sessionId !== describe.sessionId) return undefined;
+          describe = fresh;
+        }
+        const session = await identity.adopt({ describe, siteId: legacy.siteId || describe.siteId || DEFAULT_SITE_ID });
+        if (session.sessionId === sessionId && holder?.sessionId === sessionId) {
+          // Legacy already holds the adopted state, so it is recorded as hydrated rather than hydrated over.
+          if (mode === 'target-primary') await locked.setHydratedEpoch(sessionId, session.epoch);
+        } else {
+          // One write replaces the old mapping and any other holder of the legacy session: legacy_session_id is unique.
+          await locked.rebind(
+            {
+              sessionId: session.sessionId,
+              legacySessionId: describe.sessionId,
+              cookies,
+              mode,
+              hydratedEpoch: mode === 'target-primary' ? session.epoch : null,
+            },
+            sessionId,
+          );
+        }
+        return session;
+      });
+      if (adopted === undefined) return undefined;
       for (const id of new Set([sessionId, adopted.sessionId])) forget(id);
       return adopted;
     },

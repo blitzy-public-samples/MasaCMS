@@ -83,6 +83,9 @@ async function markUsedApp(
     upsert: unexpected('jar.upsert'),
     setHydratedEpoch: unexpected('jar.setHydratedEpoch'),
     drop: unexpected('jar.drop'),
+    rebind: unexpected('jar.rebind'),
+    withSessionLock: unexpected('jar.withSessionLock'),
+    withNativeLock: unexpected('jar.withNativeLock'),
   };
   const bridge: BridgeClient = {
     describe: unexpected('bridge.describe'),

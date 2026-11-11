@@ -1,6 +1,12 @@
-/** Pub/Sub adapter for quiescence: OPT-2 subscription discovery, push-config save and restore, and a non-acking backlog peek. */
-import { PubSub, v1 } from '@google-cloud/pubsub';
-import { consumerOfSubscription, InvalidEventNameError, topicOfSubscription } from '@opt2/platform/events';
+/** Pub/Sub adapter for quiescence: OPT-2 subscription discovery, push-config save and restore, and non-acking backlog and DLQ peeks. */
+import { PubSub, v1, type protos } from '@google-cloud/pubsub';
+import {
+  consumerOfSubscription,
+  decodeEnvelopeData,
+  dlqReplaySubscriptionName,
+  InvalidEventNameError,
+  topicOfSubscription,
+} from '@opt2/platform/events';
 import type { MigrationEnv } from '../env.js';
 
 /** JSON-safe copy of a subscription's push config; `{}` means pull delivery. */
@@ -14,7 +20,7 @@ export interface SubscriptionLike {
   seek(snapshotOrTime: Date): Promise<unknown>;
 }
 
-/** The subset of a `PubSub` client used by quiescence; {@link createPubSub} adds `pullOnce`. */
+/** The subset of a `PubSub` client used by quiescence; {@link createPubSub} adds `pullOnce` and `peekEventIds`. */
 export interface PubSubLike {
   projectId?: string;
   getSubscriptions(): Promise<[SubscriptionLike[], ...unknown[]]>;
@@ -22,6 +28,8 @@ export interface PubSubLike {
   close(): Promise<void>;
   /** Pulls at most one message from a fully qualified subscription, releases it unacked, and resolves to the number received. */
   pullOnce?(fullName: string): Promise<number>;
+  /** Event ids of every message a fully qualified subscription holds, all released unacked, sorted; [] when it does not exist. */
+  peekEventIds?(fullName: string): Promise<string[]>;
 }
 
 /** An OPT-2 consumer subscription `<consumer>.<topic>`; `name` is the short id. */
@@ -34,9 +42,26 @@ export interface Opt2Subscription {
 }
 
 const FULL_NAME_PREFIX = /^projects\/[^/]+\/subscriptions\//;
+const GRPC_NOT_FOUND = 5;
+/** Largest pull of a dead-letter peek; Pub/Sub returns at most 1000 messages per pull. */
+const PEEK_PULL_MAX = 1000;
 
 // `ClientConfig` lacks the index signature of gax `ClientOptions`; the library hands the same object to its own GAPIC clients.
 type SubscriberClientOptions = NonNullable<ConstructorParameters<typeof v1.SubscriberClient>[0]>;
+
+/** The message's `eventId` attribute, else its JSON envelope's `eventId`; undefined when neither holds one. */
+function eventIdOf(message: protos.google.pubsub.v1.IPubsubMessage | null | undefined): string | undefined {
+  const attribute = message?.attributes?.eventId;
+  if (attribute) return attribute;
+  if (message?.data == null) return undefined;
+  try {
+    const envelope = decodeEnvelopeData(message.data) as { eventId?: unknown } | null;
+    return typeof envelope?.eventId === 'string' ? envelope.eventId : undefined;
+  } catch (error) {
+    if (error instanceof SyntaxError) return undefined;
+    throw error;
+  }
+}
 
 /** Creates a Pub/Sub client for `GOOGLE_CLOUD_PROJECT`, on the emulator when `PUBSUB_EMULATOR_HOST` is set. */
 export function createPubSub(env: Pick<MigrationEnv, 'GOOGLE_CLOUD_PROJECT' | 'PUBSUB_EMULATOR_HOST'>): PubSubLike {
@@ -60,7 +85,44 @@ export function createPubSub(env: Pick<MigrationEnv, 'GOOGLE_CLOUD_PROJECT' | 'P
     }
   }
 
-  return Object.assign(pubsub, { pullOnce });
+  async function peekEventIds(fullName: string): Promise<string[]> {
+    const client = new v1.SubscriberClient((await pubsub.getClientConfig()) as SubscriberClientOptions);
+    const leases: string[][] = [];
+    const seen = new Set<string>();
+    const eventIds = new Set<string>();
+    try {
+      // Every lease is held until the end, so a pull that brings no unseen message has read the whole backlog.
+      for (;;) {
+        const [response] = await client.pull({ subscription: fullName, maxMessages: PEEK_PULL_MAX, returnImmediately: true });
+        const received = response.receivedMessages ?? [];
+        leases.push(received.flatMap((message) => (message.ackId ? [message.ackId] : [])));
+        const unseen = received.filter((message) => {
+          const key = message.message?.messageId ?? message.ackId ?? '';
+          const isNew = !seen.has(key);
+          seen.add(key);
+          return isNew;
+        });
+        if (unseen.length === 0) break;
+        for (const message of unseen) {
+          const eventId = eventIdOf(message.message);
+          if (eventId !== undefined) eventIds.add(eventId);
+        }
+      }
+    } catch (error) {
+      if ((error as { code?: unknown } | null)?.code !== GRPC_NOT_FOUND) throw error;
+    } finally {
+      try {
+        for (const ackIds of leases.filter((batch) => batch.length > 0)) {
+          await client.modifyAckDeadline({ subscription: fullName, ackIds, ackDeadlineSeconds: 0 });
+        }
+      } finally {
+        await client.close();
+      }
+    }
+    return [...eventIds].sort();
+  }
+
+  return Object.assign(pubsub, { pullOnce, peekEventIds });
 }
 
 /** Short subscription id: `fullName` without its `projects/<project>/subscriptions/` prefix. */
@@ -120,6 +182,14 @@ export async function peekBacklog(pubsub: PubSubLike, name: string): Promise<num
     throw new TypeError('peekBacklog needs a Pub/Sub client with pullOnce, as created by createPubSub');
   }
   return pubsub.pullOnce(pubsub.subscription(name).name);
+}
+
+/** Event ids of the dead letters on the DLQ replay subscription of `subscription`, read without acking; [] when it does not exist. */
+export async function peekDeadLetterEventIds(pubsub: PubSubLike, subscription: string): Promise<string[]> {
+  if (pubsub.peekEventIds === undefined) {
+    throw new TypeError('peekDeadLetterEventIds needs a Pub/Sub client with peekEventIds, as created by createPubSub');
+  }
+  return pubsub.peekEventIds(pubsub.subscription(dlqReplaySubscriptionName(subscription)).name);
 }
 
 /** `url` without its query string, which may carry the local push key. */

@@ -60,8 +60,8 @@ import {
   type TenantDb,
   type TenantTx,
 } from '../tenancy/index.js';
-import { OUTBOX_TABLE, outboxDrainCounts, type OutboxDrainCounts } from '../outbox/index.js';
-import { INBOX_TABLE } from '../events/index.js';
+import { OUTBOX_TABLE, outboxDrainCounts, registryTenants, type OutboxDrainCounts } from '../outbox/index.js';
+import { INBOX_TABLE, isTopicName } from '../events/index.js';
 import { Roles, type Opt2RouteConfig } from '../auth/index.js';
 import { z, type FastifyInstance, type FastifyRequest } from '../service-kit/index.js';
 import { LegacyApiError } from '../legacy-compat/index.js';
@@ -200,12 +200,21 @@ export interface InboxCounts {
   receipts?: Record<string, string[]>;
 }
 
+/** A published outbox event: its id, topic and envelope tenant. */
+export interface PublishedEvent {
+  eventId: string;
+  topic: string;
+  tenantId: string;
+}
+
 /** Answer of `GET /position`; `outbox` and `inbox` are null when the service has no such table. */
 export interface PositionResponse {
   owner: string;
   position: string;
   outbox: OutboxDrainCounts | null;
   inbox: InboxCounts | null;
+  /** Published events of the asked `publishedTopics` in every registered tenant, by tenant, topic and id; empty without an outbox. */
+  published?: PublishedEvent[];
 }
 
 /** One `migration_watermark` row; `finishedAt` is `YYYY-MM-DDTHH:MM:SS.mmm` wall-clock time. */
@@ -282,6 +291,11 @@ const positionQuerySchema = z.strictObject({
     .string()
     .transform((ids) => ids.split(',').map((id) => id.trim()).filter((id) => id !== ''))
     .pipe(z.array(z.uuid()))
+    .optional(),
+  publishedTopics: z
+    .string()
+    .transform((topics) => topics.split(',').map((topic) => topic.trim()).filter((topic) => topic !== ''))
+    .pipe(z.array(z.string().refine(isTopicName, 'expected a <service>.<entity>.<event>.v<major> topic')))
     .optional(),
 });
 
@@ -826,7 +840,26 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
     return counts;
   }
 
-  async function position(eventIds: readonly string[] | undefined): Promise<PositionResponse> {
+  /** Published outbox events of `topics` in every registered tenant, each tenant read in its own transaction. */
+  async function publishedEvents(topics: readonly string[]): Promise<PublishedEvent[]> {
+    const table = qualified(db.schema, OUTBOX_TABLE);
+    const tenantIds = [...new Set((await registryTenants(db)).map((id) => id.toLowerCase()))].sort();
+    const published: PublishedEvent[] = [];
+    // Sequential, so the listing holds at most one pooled connection at a time.
+    for (const tenantId of tenantIds) {
+      await withTenant(db, tenantId, async (tx) => {
+        const { rows } = await tx.query<{ event_id: string; topic: string }>(
+          `SELECT event_id::text AS event_id, topic FROM ${table}` +
+            ' WHERE published_at IS NOT NULL AND topic = ANY($1::text[]) ORDER BY topic, event_id',
+          [topics],
+        );
+        for (const row of rows) published.push({ eventId: row.event_id, topic: row.topic, tenantId: tx.tenantId });
+      });
+    }
+    return published;
+  }
+
+  async function position(query: z.output<typeof positionQuerySchema>): Promise<PositionResponse> {
     const present = await withMetadata(db, async (tx) => {
       const { rows } = await tx.query<{ outbox: boolean; inbox: boolean }>(
         'SELECT to_regclass($1) IS NOT NULL AS outbox, to_regclass($2) IS NOT NULL AS inbox',
@@ -834,13 +867,17 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
       );
       return rows[0] as { outbox: boolean; inbox: boolean };
     });
-    return {
+    const answer: PositionResponse = {
       owner,
       position: await currentPosition(db),
       // A service that publishes no events has no outbox: null tells a drain there is nothing to wait for.
       outbox: present.outbox ? await outboxDrainCounts(db) : null,
-      inbox: present.inbox ? await inboxCounts(eventIds) : null,
+      inbox: present.inbox ? await inboxCounts(query.eventIds) : null,
     };
+    if (query.publishedTopics !== undefined) {
+      answer.published = present.outbox ? await publishedEvents(query.publishedTopics) : [];
+    }
+    return answer;
   }
 
   function runGate(body: GateBody): Promise<UnitGate[]> {
@@ -886,8 +923,7 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
   });
 
   app.get(`${MIGRATION_PATH_PREFIX}/position`, { config: ROUTE }, async (request) => {
-    const { eventIds } = await handle(request, () => positionQuerySchema.parse(request.query));
-    return position(eventIds);
+    return position(await handle(request, () => positionQuerySchema.parse(request.query)));
   });
 
   app.get(`${MIGRATION_PATH_PREFIX}/watermark`, { config: ROUTE }, async (request): Promise<WatermarkRecord[]> => {

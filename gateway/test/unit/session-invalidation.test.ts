@@ -14,7 +14,7 @@ import {
   type InvalidationOptions,
   type LegacyLoginFacts,
 } from '../../src/session/invalidation.js';
-import type { JarCookie, JarCookies, JarRow } from '../../src/session/jar.js';
+import type { JarCookie, JarCookies, JarRow, JarUpsert, LockedJar } from '../../src/session/jar.js';
 import type { SessionMode } from '../../src/session/mode.js';
 
 const NOW = new Date(Date.UTC(2026, 5, 30, 12));
@@ -78,8 +78,13 @@ type Call = [op: string, ...args: unknown[]];
 interface Harness {
   calls: Call[];
   rows: Map<string, JarRow>;
+  /** Answer of every `op=describe` once `describes` is empty. */
   describe: LegacyDescribe;
+  /** Answers of the next `op=describe` calls, in order. */
+  describes: LegacyDescribe[];
   adopted: AdoptedSession;
+  /** Runs when a locked section has taken a legacy session's lock. */
+  onNative?: () => void;
   options: InvalidationOptions;
 }
 
@@ -88,11 +93,55 @@ function harness(row?: JarRow): Harness {
     calls: [],
     rows: new Map(row === undefined ? [] : [[row.sessionId, row]]),
     describe: described(),
+    describes: [],
     adopted: { sessionId: SESSION_ID, epoch: 6, setCookie: [] },
     options: undefined as unknown as InvalidationOptions,
   };
   const record = (op: string, ...args: unknown[]): void => {
     h.calls.push([op, ...args]);
+  };
+  const store = (input: JarUpsert): JarRow => {
+    const next: JarRow = { ...input, updatedAt: NOW };
+    h.rows.set(input.sessionId, next);
+    return next;
+  };
+  /** The jar statements a locked section runs, logged as `locked.*`. */
+  const locked: LockedJar = {
+    lockNative(legacySessionId) {
+      record('locked.lockNative', legacySessionId);
+      h.onNative?.();
+      return Promise.resolve();
+    },
+    get(sessionId) {
+      record('locked.get', sessionId);
+      return Promise.resolve(h.rows.get(sessionId));
+    },
+    findByLegacySessionId(legacySessionId) {
+      record('locked.findByLegacySessionId', legacySessionId);
+      return Promise.resolve([...h.rows.values()].find((row) => row.legacySessionId === legacySessionId));
+    },
+    upsert(input) {
+      record('locked.upsert', input);
+      return Promise.resolve(store(input));
+    },
+    setHydratedEpoch(sessionId, epoch) {
+      record('locked.setHydratedEpoch', sessionId, epoch);
+      return Promise.resolve(h.rows.has(sessionId));
+    },
+    drop(sessionId) {
+      record('locked.drop', sessionId);
+      return Promise.resolve(h.rows.delete(sessionId));
+    },
+    rebind(input, previousSessionId) {
+      record('locked.rebind', input, previousSessionId);
+      for (const row of [...h.rows.values()]) {
+        const replaced =
+          row.sessionId === previousSessionId ||
+          (input.legacySessionId !== null && row.legacySessionId === input.legacySessionId);
+        if (row.sessionId !== input.sessionId && replaced) h.rows.delete(row.sessionId);
+      }
+      return Promise.resolve(store(input));
+    },
   };
   h.options = {
     identity: {
@@ -108,7 +157,7 @@ function harness(row?: JarRow): Harness {
     bridge: {
       describe(cookies, call) {
         record('bridge.describe', cookies, call);
-        return Promise.resolve({ body: h.describe, setCookies: [] });
+        return Promise.resolve({ body: h.describes.shift() ?? h.describe, setCookies: [] });
       },
       end(cookies, call) {
         record('bridge.end', cookies, call);
@@ -116,19 +165,16 @@ function harness(row?: JarRow): Harness {
       },
     },
     jar: {
-      get(sessionId) {
-        record('jar.get', sessionId);
-        return Promise.resolve(h.rows.get(sessionId));
-      },
-      upsert(input) {
-        record('jar.upsert', input);
-        const next: JarRow = { ...input, updatedAt: NOW };
-        h.rows.set(input.sessionId, next);
-        return Promise.resolve(next);
-      },
-      setHydratedEpoch(sessionId, epoch) {
-        record('jar.setHydratedEpoch', sessionId, epoch);
-        return Promise.resolve(h.rows.has(sessionId));
+      async withSessionLock<T>(sessionId: string, fn: (locked: LockedJar) => Promise<T>): Promise<T> {
+        record('jar.lock', sessionId);
+        try {
+          const result = await fn(locked);
+          record('jar.commit', sessionId);
+          return result;
+        } catch (err) {
+          record('jar.rollback', sessionId);
+          throw err;
+        }
       },
       drop(sessionId) {
         record('jar.drop', sessionId);
@@ -242,14 +288,26 @@ describe('legacySessionEffect', () => {
 });
 
 describe('afterTargetLogout', () => {
-  it('drops tokens and state, ends the attached legacy session with its live cookies and drops the jar', async () => {
+  const LOCK: Call = ['jar.lock', SESSION_ID];
+  const COMMIT: Call = ['jar.commit', SESSION_ID];
+  /** The jar read, its recorded legacy session's lock, and the jar read again under both locks. */
+  const LOCKED_READ: Call[] = [
+    ['locked.get', SESSION_ID],
+    ['locked.lockNative', LEGACY_SESSION_ID],
+    ['locked.get', SESSION_ID],
+  ];
+
+  it('drops tokens and state, then ends the attached legacy session and drops the jar under its lock', async () => {
     const h = harness(jarRow());
     await createInvalidation(h.options).afterTargetLogout(SESSION_ID, { userAgent: USER_AGENT });
     expect(h.calls).toEqual([
       ...FORGET_SESSION,
-      ['jar.get', SESSION_ID],
+      LOCK,
+      ...LOCKED_READ,
+      ['locked.lockNative', LEGACY_SESSION_ID],
       ['bridge.end', JAR_LIVE, { userAgent: USER_AGENT, legacySessionId: LEGACY_SESSION_ID }],
-      ['jar.drop', SESSION_ID],
+      ['locked.drop', SESSION_ID],
+      COMMIT,
     ]);
     expect(h.rows.size).toBe(0);
   });
@@ -260,23 +318,47 @@ describe('afterTargetLogout', () => {
     await createInvalidation(h.options).afterTargetLogout(SESSION_ID);
     expect(h.calls).toEqual([
       ...FORGET_SESSION,
-      ['jar.get', SESSION_ID],
+      LOCK,
+      ['locked.get', SESSION_ID],
       ['bridge.describe', JAR_LIVE, { userAgent: undefined }],
+      ['locked.lockNative', NEW_LEGACY_SESSION_ID],
       ['bridge.end', JAR_LIVE, { userAgent: undefined, legacySessionId: NEW_LEGACY_SESSION_ID }],
-      ['jar.drop', SESSION_ID],
+      ['locked.drop', SESSION_ID],
+      COMMIT,
     ]);
   });
 
   it('drops a jar holding only deleted cookies without calling the bridge', async () => {
     const h = harness(jarRow({ cookies: DELETED }));
     await createInvalidation(h.options).afterTargetLogout(SESSION_ID);
-    expect(h.calls).toEqual([...FORGET_SESSION, ['jar.get', SESSION_ID], ['jar.drop', SESSION_ID]]);
+    expect(h.calls).toEqual([...FORGET_SESSION, LOCK, ...LOCKED_READ, ['locked.drop', SESSION_ID], COMMIT]);
+  });
+
+  it('leaves the legacy session to the jar a rebind moved it to while the logout waited for its lock', async () => {
+    const h = harness(jarRow());
+    const moved = jarRow({ sessionId: NEW_SESSION_ID, mode: 'legacy-primary' });
+    h.onNative = () => {
+      h.rows.delete(SESSION_ID);
+      h.rows.set(NEW_SESSION_ID, moved);
+    };
+    await createInvalidation(h.options).afterTargetLogout(SESSION_ID);
+    expect(h.calls).toEqual([...FORGET_SESSION, LOCK, ...LOCKED_READ, COMMIT]);
+    expect([...h.rows.values()]).toEqual([moved]);
   });
 
   it('only forgets tokens and state when the session has no jar', async () => {
     const h = harness();
     await createInvalidation(h.options).afterTargetLogout(SESSION_ID);
-    expect(h.calls).toEqual([...FORGET_SESSION, ['jar.get', SESSION_ID]]);
+    expect(h.calls).toEqual([...FORGET_SESSION, LOCK, ['locked.get', SESSION_ID], COMMIT]);
+  });
+
+  it('propagates a failed legacy end out of the locked section without dropping the jar', async () => {
+    const h = harness(jarRow());
+    const refusal = new Error('legacy-bridge unavailable');
+    h.options.bridge.end = () => Promise.reject(refusal);
+    await expect(createInvalidation(h.options).afterTargetLogout(SESSION_ID)).rejects.toBe(refusal);
+    expect(h.calls.slice(-1)).toEqual([['jar.rollback', SESSION_ID]]);
+    expect(h.calls.map(([op]) => op)).not.toContain('locked.drop');
   });
 });
 
@@ -306,12 +388,14 @@ describe('afterLegacyLogin', () => {
       h.adopted,
     );
     expect(h.calls).toEqual([
-      ['jar.get', SESSION_ID],
+      ['jar.lock', SESSION_ID],
+      ['locked.get', SESSION_ID],
       ['bridge.describe', BROWSER_LIVE, { userAgent: USER_AGENT }],
+      ['locked.lockNative', LEGACY_SESSION_ID],
+      ['locked.findByLegacySessionId', LEGACY_SESSION_ID],
       ['identity.adopt', { describe: h.describe, siteId: 'tenant-b' }],
-      ['jar.drop', SESSION_ID],
       [
-        'jar.upsert',
+        'locked.rebind',
         {
           sessionId: NEW_SESSION_ID,
           legacySessionId: LEGACY_SESSION_ID,
@@ -319,7 +403,9 @@ describe('afterLegacyLogin', () => {
           mode: 'legacy-primary',
           hydratedEpoch: null,
         },
+        SESSION_ID,
       ],
+      ['jar.commit', SESSION_ID],
       ...FORGET_SESSION,
       ['tokenCache.drop', NEW_SESSION_ID],
       ['state.forget', NEW_SESSION_ID],
@@ -330,10 +416,14 @@ describe('afterLegacyLogin', () => {
     const h = harness(jarRow());
     await createInvalidation(h.options).afterLegacyLogin(SESSION_ID, 'target-primary', { cookies: BROWSER_LIVE });
     expect(h.calls).toEqual([
-      ['jar.get', SESSION_ID],
+      ['jar.lock', SESSION_ID],
+      ['locked.get', SESSION_ID],
       ['bridge.describe', JAR_LIVE, { userAgent: undefined }],
+      ['locked.lockNative', LEGACY_SESSION_ID],
+      ['locked.findByLegacySessionId', LEGACY_SESSION_ID],
       ['identity.adopt', { describe: h.describe, siteId: 'tenant-a' }],
-      ['jar.setHydratedEpoch', SESSION_ID, 6],
+      ['locked.setHydratedEpoch', SESSION_ID, 6],
+      ['jar.commit', SESSION_ID],
       ...FORGET_SESSION,
     ]);
   });
@@ -342,37 +432,126 @@ describe('afterLegacyLogin', () => {
     const h = harness(jarRow({ mode: 'legacy-primary', hydratedEpoch: null }));
     await createInvalidation(h.options).afterLegacyLogin(SESSION_ID, 'legacy-primary', { cookies: JAR_LIVE });
     expect(h.calls.map(([op]) => op)).toEqual([
-      'jar.get',
+      'jar.lock',
+      'locked.get',
       'bridge.describe',
+      'locked.lockNative',
+      'locked.findByLegacySessionId',
       'identity.adopt',
+      'jar.commit',
       'tokenCache.drop',
       'state.forget',
     ]);
   });
 
-  it.each<[string, SessionMode, string, string, Call[], number | null]>([
-    ['a new legacy session id in target-primary mode', 'target-primary', SESSION_ID, NEW_LEGACY_SESSION_ID, [], 6],
-    ['a new identity session in target-primary mode', 'target-primary', NEW_SESSION_ID, LEGACY_SESSION_ID, [['jar.drop', SESSION_ID]], 6],
-    ['a new legacy session id in legacy-primary mode', 'legacy-primary', SESSION_ID, NEW_LEGACY_SESSION_ID, [], null],
-    ['a new identity session in legacy-primary mode', 'legacy-primary', NEW_SESSION_ID, LEGACY_SESSION_ID, [['jar.drop', SESSION_ID]], null],
-  ])('rebinds the jar for %s', async (_label, mode, adoptedId, legacyId, drops, hydratedEpoch) => {
+  it.each<[string, SessionMode, string, string, number | null]>([
+    ['a new legacy session id in target-primary mode', 'target-primary', SESSION_ID, NEW_LEGACY_SESSION_ID, 6],
+    ['a new identity session in target-primary mode', 'target-primary', NEW_SESSION_ID, LEGACY_SESSION_ID, 6],
+    ['a new legacy session id in legacy-primary mode', 'legacy-primary', SESSION_ID, NEW_LEGACY_SESSION_ID, null],
+    ['a new identity session in legacy-primary mode', 'legacy-primary', NEW_SESSION_ID, LEGACY_SESSION_ID, null],
+  ])('rebinds the jar in one locked write for %s', async (_label, mode, adoptedId, legacyId, hydratedEpoch) => {
     const h = harness(jarRow({ mode }));
+    h.rows.set('stale-holder', jarRow({ sessionId: 'stale-holder', legacySessionId: legacyId }));
     h.adopted = { sessionId: adoptedId, epoch: 6, setCookie: [] };
     h.describe = described({ sessionId: legacyId });
 
     await createInvalidation(h.options).afterLegacyLogin(SESSION_ID, mode);
-    const writes = h.calls.filter(([op]) => op.startsWith('jar.') && op !== 'jar.get');
+    const reads = ['locked.get', 'locked.findByLegacySessionId', 'locked.lockNative'];
+    const writes = h.calls.filter(([op]) => op.startsWith('jar.') || (op.startsWith('locked.') && !reads.includes(op)));
     expect(writes).toEqual([
-      ...drops,
-      ['jar.upsert', { sessionId: adoptedId, legacySessionId: legacyId, cookies: JAR_LIVE, mode, hydratedEpoch }],
+      ['jar.lock', SESSION_ID],
+      [
+        'locked.rebind',
+        { sessionId: adoptedId, legacySessionId: legacyId, cookies: JAR_LIVE, mode, hydratedEpoch },
+        SESSION_ID,
+      ],
+      ['jar.commit', SESSION_ID],
     ]);
+    expect([...h.rows.keys()]).toEqual([adoptedId]);
     expect(h.rows.get(adoptedId)).toMatchObject({ legacySessionId: legacyId, mode });
+  });
+
+  it('describes again under the lock of a legacy session another target-primary jar holds', async () => {
+    const h = harness();
+    h.rows.set('holder', jarRow({ sessionId: 'holder' }));
+    h.adopted = { sessionId: NEW_SESSION_ID, epoch: 1, setCookie: [] };
+    const fresh = described({ memberships: 'Admin;default;0,S2' });
+    h.describes = [described(), fresh];
+
+    await expect(
+      createInvalidation(h.options).afterLegacyLogin(SESSION_ID, 'legacy-primary', { cookies: BROWSER_LIVE }),
+    ).resolves.toBe(h.adopted);
+    expect(h.calls.slice(0, 8)).toEqual([
+      ['jar.lock', SESSION_ID],
+      ['locked.get', SESSION_ID],
+      ['bridge.describe', BROWSER_LIVE, { userAgent: undefined }],
+      ['locked.lockNative', LEGACY_SESSION_ID],
+      ['locked.findByLegacySessionId', LEGACY_SESSION_ID],
+      ['bridge.describe', BROWSER_LIVE, { userAgent: undefined }],
+      ['identity.adopt', { describe: fresh, siteId: 'tenant-a' }],
+      [
+        'locked.rebind',
+        {
+          sessionId: NEW_SESSION_ID,
+          legacySessionId: LEGACY_SESSION_ID,
+          cookies: BROWSER_LIVE,
+          mode: 'legacy-primary',
+          hydratedEpoch: null,
+        },
+        SESSION_ID,
+      ],
+    ]);
+    expect([...h.rows.keys()]).toEqual([NEW_SESSION_ID]);
+  });
+
+  it('adopts nothing when that second describe names another legacy session', async () => {
+    const h = harness();
+    const holder = jarRow({ sessionId: 'holder' });
+    h.rows.set('holder', holder);
+    h.describes = [described(), described({ sessionId: NEW_LEGACY_SESSION_ID })];
+
+    await expect(
+      createInvalidation(h.options).afterLegacyLogin(SESSION_ID, 'legacy-primary', { cookies: BROWSER_LIVE }),
+    ).resolves.toBeUndefined();
+    expect(h.calls.map(([op]) => op)).toEqual([
+      'jar.lock',
+      'locked.get',
+      'bridge.describe',
+      'locked.lockNative',
+      'locked.findByLegacySessionId',
+      'bridge.describe',
+      'jar.commit',
+    ]);
+    expect([...h.rows.values()]).toEqual([holder]);
+  });
+
+  it('rebinds rather than records a re-login whose legacy session a rebind moved away while it waited', async () => {
+    const h = harness(jarRow());
+    h.onNative = () => {
+      h.rows.delete(SESSION_ID);
+      h.rows.set('moved', jarRow({ sessionId: 'moved', mode: 'legacy-primary' }));
+    };
+    await createInvalidation(h.options).afterLegacyLogin(SESSION_ID, 'target-primary');
+    expect(h.calls.filter(([op]) => op === 'bridge.describe')).toHaveLength(1);
+    expect(h.calls.find(([op]) => op === 'locked.rebind')).toEqual([
+      'locked.rebind',
+      {
+        sessionId: SESSION_ID,
+        legacySessionId: LEGACY_SESSION_ID,
+        cookies: JAR_LIVE,
+        mode: 'target-primary',
+        hydratedEpoch: 6,
+      },
+      SESSION_ID,
+    ]);
+    expect(h.calls.map(([op]) => op)).not.toContain('locked.setHydratedEpoch');
+    expect([...h.rows.keys()]).toEqual([SESSION_ID]);
   });
 
   it('describes the jar cookies in legacy-primary mode when the request carries none', async () => {
     const h = harness(jarRow({ mode: 'legacy-primary' }));
     await createInvalidation(h.options).afterLegacyLogin(SESSION_ID, 'legacy-primary', { userAgent: USER_AGENT });
-    expect(h.calls[1]).toEqual(['bridge.describe', JAR_LIVE, { userAgent: USER_AGENT }]);
+    expect(h.calls[2]).toEqual(['bridge.describe', JAR_LIVE, { userAgent: USER_AGENT }]);
   });
 
   it.each<[string, SessionMode, JarRow | undefined, LegacyLoginFacts | undefined]>([
@@ -383,7 +562,11 @@ describe('afterLegacyLogin', () => {
   ])('adopts nothing and answers undefined in %s', async (_label, mode, row, legacy) => {
     const h = harness(row);
     await expect(createInvalidation(h.options).afterLegacyLogin(SESSION_ID, mode, legacy)).resolves.toBeUndefined();
-    expect(h.calls).toEqual([['jar.get', SESSION_ID]]);
+    expect(h.calls).toEqual([
+      ['jar.lock', SESSION_ID],
+      ['locked.get', SESSION_ID],
+      ['jar.commit', SESSION_ID],
+    ]);
   });
 
   it.each<[string, string | undefined, string, string]>([

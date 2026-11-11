@@ -20,6 +20,7 @@ export type {
   FileObject,
   ExportParams,
   ChangesParams,
+  PositionParams,
   WatermarkWrite,
   SiteMonitorState,
   SiteMonitorStateInput,

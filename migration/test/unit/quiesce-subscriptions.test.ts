@@ -1,4 +1,6 @@
 // Unit tests for the quiescence Pub/Sub adapter, using in-memory subscriptions and a stand-in GAPIC subscriber.
+import { Buffer } from 'node:buffer';
+
 import { PubSub } from '@google-cloud/pubsub';
 import { consumerOfSubscription, dlqReplaySubscriptionName, pushPath, subscriptionName } from '@opt2/platform/events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -8,6 +10,7 @@ import {
   isPushConfig,
   listOpt2Subscriptions,
   peekBacklog,
+  peekDeadLetterEventIds,
   readPushConfig,
   redactEndpoint,
   setPushConfig,
@@ -16,7 +19,14 @@ import {
 import type { PubSubLike, SavedPushConfig, SubscriptionLike } from '../../src/quiesce/subscriptions.js';
 
 type PullRequest = { subscription: string; maxMessages: number; returnImmediately: boolean };
-type PullResponse = { receivedMessages?: { ackId?: string | null }[] | null };
+interface PulledMessage {
+  messageId?: string;
+  attributes?: Record<string, string>;
+  data?: Buffer;
+}
+interface PullResponse {
+  receivedMessages?: { ackId?: string | null; message?: PulledMessage }[] | null;
+}
 type ModifyAckDeadlineRequest = { subscription: string; ackIds: string[]; ackDeadlineSeconds: number };
 type SubscriptionMetadata = Awaited<ReturnType<SubscriptionLike['getMetadata']>>[0];
 
@@ -69,7 +79,17 @@ const SAVED_LOCAL_PUSH: SavedPushConfig = {
   wrapper: 'noWrapper',
 };
 
+const DLQ_REPLAY = dlqReplaySubscriptionName(TIMESHEETS_ARCHIVED);
+const EVENT_A = 'a0000000-0000-4000-8000-00000000000a';
+const EVENT_B = 'b0000000-0000-4000-8000-00000000000b';
+
 const fullName = (id: string): string => `projects/${PROJECT}/subscriptions/${id}`;
+
+/** A pulled dead letter whose event id travels in its `eventId` attribute or only in its envelope data. */
+function pulled(ackId: string, messageId: string, eventId: { attribute?: string; data?: string } = {}): { ackId: string; message: PulledMessage } {
+  const attributes: Record<string, string> = eventId.attribute === undefined ? {} : { eventId: eventId.attribute, reason: 'invalid-tenant' };
+  return { ackId, message: { messageId, attributes, ...(eventId.data === undefined ? {} : { data: Buffer.from(eventId.data, 'utf8') }) } };
+}
 
 /** In-memory subscription that serves `metadata` and records push-config changes and seeks. */
 function fakeSubscription(name: string, metadata: SubscriptionMetadata = {}) {
@@ -81,14 +101,19 @@ function fakeSubscription(name: string, metadata: SubscriptionMetadata = {}) {
   } satisfies SubscriptionLike;
 }
 
-/** In-memory client listing `subscriptions`; `pullOnce` is present only when given. */
-function fakePubSub(subscriptions: SubscriptionLike[], pullOnce?: (fullName: string) => Promise<number>): PubSubLike {
+/** In-memory client listing `subscriptions`; `pullOnce` and `peekEventIds` are present only when given. */
+function fakePubSub(
+  subscriptions: SubscriptionLike[],
+  pullOnce?: (fullName: string) => Promise<number>,
+  peekEventIds?: (fullName: string) => Promise<string[]>,
+): PubSubLike {
   return {
     projectId: PROJECT,
     getSubscriptions: () => Promise.resolve<[SubscriptionLike[]]>([subscriptions]),
     subscription: (name) => fakeSubscription(fullName(name)),
     close: () => Promise.resolve(),
     ...(pullOnce === undefined ? {} : { pullOnce }),
+    ...(peekEventIds === undefined ? {} : { peekEventIds }),
   };
 }
 
@@ -234,6 +259,19 @@ describe('peekBacklog with an injected client', () => {
   });
 });
 
+describe('peekDeadLetterEventIds with an injected client', () => {
+  it('resolves to the event ids peekEventIds reads from the fully qualified DLQ replay subscription', async () => {
+    const peekEventIds = vi.fn<(fullName: string) => Promise<string[]>>(() => Promise.resolve([EVENT_A]));
+
+    expect(await peekDeadLetterEventIds(fakePubSub([], undefined, peekEventIds), TIMESHEETS_ARCHIVED)).toStrictEqual([EVENT_A]);
+    expect(peekEventIds).toHaveBeenCalledExactlyOnceWith(fullName(DLQ_REPLAY));
+  });
+
+  it('rejects with a TypeError when the client has no peekEventIds', async () => {
+    await expect(peekDeadLetterEventIds(fakePubSub([]), TIMESHEETS_ARCHIVED)).rejects.toThrow(TypeError);
+  });
+});
+
 describe('createPubSub', () => {
   const clients: PubSubLike[] = [];
 
@@ -252,13 +290,14 @@ describe('createPubSub', () => {
     subscriber.close.mockClear();
   });
 
-  it('returns a client for GOOGLE_CLOUD_PROJECT exposing getSubscriptions, subscription, close and pullOnce', () => {
+  it('returns a client for GOOGLE_CLOUD_PROJECT exposing getSubscriptions, subscription, close, pullOnce and peekEventIds', () => {
     const client: PubSubLike = create({ GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: EMULATOR });
 
     expect(client.projectId).toBe(PROJECT);
     expect(typeof client.getSubscriptions).toBe('function');
     expect(typeof client.close).toBe('function');
     expect(typeof client.pullOnce).toBe('function');
+    expect(typeof client.peekEventIds).toBe('function');
     expect(client.subscription(TIMESHEETS_ARCHIVED).name).toBe(fullName(TIMESHEETS_ARCHIVED));
   });
 
@@ -315,6 +354,61 @@ describe('createPubSub', () => {
 
     await expect(peekBacklog(client, TIMESHEETS_ARCHIVED)).rejects.toBe(failure);
     expect(subscriber.modifyAckDeadline).not.toHaveBeenCalled();
+    expect(subscriber.close).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['an empty pull', { receivedMessages: [] }, [['ack-1', 'ack-2', 'ack-3'], ['ack-4', 'ack-5']]],
+    ['a pull of seen messages only', { receivedMessages: [pulled('ack-1b', 'm-1')] }, [['ack-1', 'ack-2', 'ack-3'], ['ack-4', 'ack-5'], ['ack-1b']]],
+  ])(
+    'peekEventIds pulls until %s, reads attribute or envelope event ids, and releases every lease unacked',
+    async (_label, last: PullResponse, released: string[][]) => {
+      const client = create({ GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: EMULATOR });
+      subscriber.pull
+        .mockResolvedValueOnce([
+          {
+            receivedMessages: [
+              pulled('ack-1', 'm-1', { attribute: EVENT_B }),
+              pulled('ack-2', 'm-2', { data: JSON.stringify({ eventId: EVENT_A }) }),
+              pulled('ack-3', 'm-3', { data: 'not json' }),
+            ],
+          },
+        ])
+        .mockResolvedValueOnce([{ receivedMessages: [pulled('ack-4', 'm-4', { attribute: EVENT_A }), pulled('ack-5', 'm-5', { data: '{}' })] }])
+        .mockResolvedValueOnce([last]);
+
+      expect(await peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED)).toStrictEqual([EVENT_A, EVENT_B]);
+
+      expect(subscriber.pull.mock.calls).toStrictEqual(
+        Array.from({ length: 3 }, () => [{ subscription: fullName(DLQ_REPLAY), maxMessages: 1000, returnImmediately: true }]),
+      );
+      expect(subscriber.modifyAckDeadline.mock.calls).toStrictEqual(
+        released.map((ackIds) => [{ subscription: fullName(DLQ_REPLAY), ackIds, ackDeadlineSeconds: 0 }]),
+      );
+      expect(subscriber.close).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('peekEventIds resolves to no event ids when the DLQ replay subscription does not exist', async () => {
+    const client = create({ GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: EMULATOR });
+    subscriber.pull.mockRejectedValueOnce(Object.assign(new Error('5 NOT_FOUND: Subscription does not exist'), { code: 5 }));
+
+    expect(await peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED)).toStrictEqual([]);
+    expect(subscriber.modifyAckDeadline).not.toHaveBeenCalled();
+    expect(subscriber.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('peekEventIds propagates another pull failure after releasing the leases it holds and closing the client', async () => {
+    const failure = Object.assign(new Error('14 UNAVAILABLE: No connection established'), { code: 14 });
+    const client = create({ GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: EMULATOR });
+    subscriber.pull.mockResolvedValueOnce([{ receivedMessages: [pulled('ack-1', 'm-1', { attribute: EVENT_A })] }]).mockRejectedValueOnce(failure);
+
+    await expect(peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED)).rejects.toBe(failure);
+    expect(subscriber.modifyAckDeadline).toHaveBeenCalledExactlyOnceWith({
+      subscription: fullName(DLQ_REPLAY),
+      ackIds: ['ack-1'],
+      ackDeadlineSeconds: 0,
+    });
     expect(subscriber.close).toHaveBeenCalledTimes(1);
   });
 });

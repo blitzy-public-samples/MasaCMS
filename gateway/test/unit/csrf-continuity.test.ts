@@ -4,7 +4,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { loadInventoryFacts, loadVariants } from '../../src/cutover/loader.js';
 import { resolveGatewayPaths } from '../../src/cutover/paths.js';
 import type { CsrfValidation, RouteFacts } from '../../src/cutover/types.js';
-import type { LegacyUsedToken } from '../../src/session/bridge-client.js';
+import type { BridgeClient, LegacyCookies, LegacyDescribe, LegacyUsedToken } from '../../src/session/bridge-client.js';
 import {
   createCsrfContinuity,
   csrfTokenFromRequest,
@@ -12,10 +12,14 @@ import {
   type CsrfContinuityOptions,
   type CsrfHandle,
 } from '../../src/session/csrf.js';
-import type { ClaimResult } from '../../src/session/identity-client.js';
-import type { JarCookie, JarCookies, JarRow } from '../../src/session/jar.js';
+import type { ClaimResult, IdentityClient } from '../../src/session/identity-client.js';
+import type { JarCookie, JarCookies, JarRow, JarUpsert, LegacyJar } from '../../src/session/jar.js';
 import type { SessionMode } from '../../src/session/mode.js';
-import type { SessionRequestInput, SessionResolution } from '../../src/session/resolve.js';
+import {
+  createSessionResolver,
+  type SessionRequestInput,
+  type SessionResolution,
+} from '../../src/session/resolve.js';
 
 const NOW = new Date(2026, 5, 30, 12, 34, 56, 789);
 const WIRE_NOW = '2026-06-30 12:34:56.789';
@@ -116,7 +120,7 @@ interface Harness {
   ops(): string[];
 }
 
-function harness(withClock = true): Harness {
+function harness(withClock = true, overrides: Partial<CsrfContinuityOptions> = {}): Harness {
   const h: Harness = {
     calls: [],
     now: NOW,
@@ -170,7 +174,7 @@ function harness(withClock = true): Harness {
     },
   };
   if (withClock) options.clock = { now: () => h.now };
-  h.continuity = createCsrfContinuity(options);
+  h.continuity = createCsrfContinuity({ ...options, ...overrides });
   return h;
 }
 
@@ -529,6 +533,96 @@ describe('createCsrfContinuity beforeLegacy', () => {
       { sessionId: SESSION_ID, token: HEADER_VALUE, expires: '', context: CONTEXT },
     ]);
     expect(handle?.claimedTokens).toEqual([HEADER_VALUE]);
+  });
+
+  it('claims in the session a switch back restored when the dispatcher already resolved the same request', async () => {
+    const rows = new Map<string, JarRow>([['T1', jarRow({ sessionId: 'T1', legacySessionId: LEGACY_SESSION_ID })]]);
+    const restoredOps: string[] = [];
+    const statements = {
+      get: (sessionId: string) => Promise.resolve(rows.get(sessionId)),
+      findByLegacySessionId: (id: string) => Promise.resolve([...rows.values()].find((r) => r.legacySessionId === id)),
+      lockNative(legacySessionId: string) {
+        restoredOps.push(`jar.lockNative:${legacySessionId}`);
+        return Promise.resolve();
+      },
+      rebind(input: JarUpsert, previousSessionId?: string) {
+        restoredOps.push('jar.rebind');
+        if (previousSessionId !== undefined && previousSessionId !== input.sessionId) rows.delete(previousSessionId);
+        const row: JarRow = { ...input, updatedAt: NOW };
+        rows.set(input.sessionId, row);
+        return Promise.resolve(row);
+      },
+    };
+    const jar = {
+      ...statements,
+      withSessionLock<T>(sessionId: string, fn: (locked: typeof statements) => Promise<T>): Promise<T> {
+        restoredOps.push(`jar.withSessionLock:${sessionId}`);
+        return fn(statements);
+      },
+    } as unknown as LegacyJar;
+    const sessions = createSessionResolver({
+      identity: {
+        adopt() {
+          restoredOps.push('identity.adopt');
+          return Promise.resolve({ sessionId: SESSION_ID, epoch: 4, setCookie: [] });
+        },
+      } as unknown as IdentityClient,
+      bridge: {
+        describe(cookies: LegacyCookies) {
+          restoredOps.push(`bridge.describe:${Object.values(cookies).map((c) => (c as JarCookie).value).join(',')}`);
+          const body: LegacyDescribe = {
+            sessionId: LEGACY_SESSION_ID,
+            isLoggedIn: true,
+            user: {
+              userID: 'USER-0001',
+              username: 'admin',
+              siteID: 'default',
+              subtype: 'Default',
+              password: '',
+              fname: '',
+              lname: '',
+              email: '',
+              remoteID: '',
+              company: '',
+              lastlogin: '',
+              passwordCreated: '',
+            },
+            memberships: '',
+            membershipIds: '',
+            csrfSecretKey: 'SECRET',
+            usedTokens: [],
+            siteId: 'default',
+            serverTime: WIRE_NOW,
+          };
+          return Promise.resolve({ body, setCookies: [] });
+        },
+      } as unknown as BridgeClient,
+      jar,
+      state: {
+        check: () => Promise.resolve({ state: 'ended', epoch: 0, userId: '', siteId: '', epochChanged: false }),
+        forget() {},
+      },
+    });
+    const h = harness(true, { sessions, jar });
+    const cookie = 'JSESSIONID=T1; CFID=T-CFID; CFTOKEN=T-CFTOKEN';
+    const req = request({ headers: { 'user-agent': USER_AGENT, cookie } });
+
+    const dispatched = await sessions.resolveLegacyBound(req, { mode: 'legacy-primary', adopt: false });
+    const handle = await h.continuity.beforeLegacy(req, ROUTE, 'legacy-primary');
+
+    expect(dispatched).toMatchObject({ kind: 'session', sessionId: SESSION_ID, legacyCookies: LIVE });
+    expect(restoredOps).toEqual([
+      'jar.withSessionLock:T1',
+      'bridge.describe:1001,12345678',
+      `jar.lockNative:${LEGACY_SESSION_ID}`,
+      'identity.adopt',
+      'jar.rebind',
+    ]);
+    expect(onlyCall(h, 'identity.claim')).toStrictEqual([
+      { sessionId: SESSION_ID, token: TOKEN, expires: EXPIRES, context: CONTEXT },
+    ]);
+    expect(handle).toMatchObject({ sessionId: SESSION_ID, legacySessionId: LEGACY_SESSION_ID, legacyCookies: LIVE });
+    expect(rows.has('T1')).toBe(false);
   });
 
   it('stamps since with the system clock when no clock is given', async () => {

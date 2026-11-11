@@ -247,8 +247,8 @@ describe('userPool fan-out against PostgreSQL and the Pub/Sub emulator', () => {
     expect(await effectTenants(envelope.eventId)).toEqual(UMBRELLA_AND_A);
     expect(await receiptTenants(envelope.eventId)).toEqual(UMBRELLA_AND_A);
     expect(appliedFor(envelope.eventId)).toEqual([
-      { tenantId: TENANT_UMBRELLA.tenantId, isFanout: false },
       { tenantId: TENANT_A.tenantId, isFanout: true },
+      { tenantId: TENANT_UMBRELLA.tenantId, isFanout: false },
     ]);
   });
 
@@ -262,27 +262,31 @@ describe('userPool fan-out against PostgreSQL and the Pub/Sub emulator', () => {
     expect(await receiptTenants(envelope.eventId)).toEqual(UMBRELLA_AND_A);
   });
 
-  it('applies an interrupted fan-out only where no receipt exists', async () => {
+  it.each([
+    { failIn: 'the envelope tenant', envelopeFails: true },
+    { failIn: 'the fan-out tenant', envelopeFails: false },
+  ])('applies a fan-out interrupted in $failIn only where no receipt exists, the envelope tenant last', async ({ envelopeFails }) => {
     const envelope = archived(TENANT_UMBRELLA.tenantId);
     const destinations = await destinationTenants(handle.app, fanoutConsumer, envelope);
     expect(destinations).toHaveLength(2);
-    const [first, second] = destinations as [string, string];
+    const [origin, member] = destinations as [string, string];
+    const committed = envelopeFails ? [member] : [];
 
-    failFor = second;
+    failFor = envelopeFails ? origin : member;
     try {
       expect(isAck(await pushTo(app, subscription.name, envelope))).toBe(false);
     } finally {
       failFor = undefined;
     }
-    expect(await effectTenants(envelope.eventId)).toEqual([first]);
-    expect(await receiptTenants(envelope.eventId)).toEqual([first]);
+    expect(await effectTenants(envelope.eventId)).toEqual(committed);
+    expect(await receiptTenants(envelope.eventId)).toEqual(committed);
 
     const redelivered = await pushTo(app, subscription.name, envelope);
 
     expect(redelivered.statusCode).toBe(204);
-    expect(appliedFor(envelope.eventId).map((effect) => effect.tenantId)).toEqual([first, second]);
-    expect(await effectTenants(envelope.eventId)).toEqual([first, second].sort());
-    expect(await receiptTenants(envelope.eventId)).toEqual([first, second].sort());
+    expect(appliedFor(envelope.eventId).map((effect) => effect.tenantId)).toEqual([member, origin]);
+    expect(await effectTenants(envelope.eventId)).toEqual([origin, member].sort());
+    expect(await receiptTenants(envelope.eventId)).toEqual([origin, member].sort());
   });
 
   it('does not fan out without the declaration', async () => {

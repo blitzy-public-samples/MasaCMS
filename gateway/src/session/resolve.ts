@@ -2,10 +2,11 @@
 import { parseCookieHeader, type RouteFamily } from '@opt2/platform/legacy-compat';
 import { IDENTITY_SERVICE, ServiceUnavailableError } from '@opt2/platform/service-kit';
 import type { BridgeClient } from './bridge-client.js';
-import type { IdentityClient, LegacyDescribe, RestAuthOutcome } from './identity-client.js';
+import type { AdoptedSession, IdentityClient, LegacyDescribe, RestAuthOutcome } from './identity-client.js';
 import {
   absorbLegacySetCookies,
   isDeletedJarCookie,
+  keptSession,
   legacySetCookiesFrom,
   requestSessionCookies,
   targetSetCookiesFrom,
@@ -13,6 +14,7 @@ import {
   type JarCookie,
   type JarCookies,
   type JarRow,
+  type JarUpsert,
   type LegacyJar,
 } from './jar.js';
 import type { SessionMode } from './mode.js';
@@ -41,7 +43,10 @@ export type SessionResolution =
       sessionId: string;
       epoch: number;
       mode: SessionMode;
-      /** The jar's legacy session cookies, sent only to legacy. */
+      /**
+       * Session cookies legacy receives in place of the request's own: the jar's in target-primary, the restored jar's
+       * right after a switch back, else none (the browser's own pass unchanged).
+       */
       legacyCookies: Record<string, JarCookie>;
       setCookies: string[];
     }
@@ -74,7 +79,7 @@ export interface AfterLegacyOptions {
   siteId?: string | undefined;
 }
 
-/** Maps browser requests to identity sessions and keeps `gateway.legacy_jar` in step. */
+/** Maps browser requests to identity sessions and keeps `gateway.legacy_jar` in step; a request switches back once. */
 export interface SessionResolver {
   /** The session of a target-bound request; REST is sessionless and answered by identity's credential rules. */
   resolveSession(request: SessionRequestInput, options: ResolveSessionOptions): Promise<SessionResolution>;
@@ -104,6 +109,28 @@ interface AttachedSession {
   describe: LegacyDescribe;
   /** Session cookies ColdFusion set while describing, with legacy's attributes. */
   observed: JarCookies;
+}
+
+/** An identity session adopted from a legacy session, with the jar mapping it. */
+interface Adoption {
+  adopted: AdoptedSession;
+  row: JarRow;
+}
+
+/** The jar of an adopted legacy session; legacy holds the adopted state, so target-primary owes it no hydration. */
+function adoptedJar(
+  adopted: AdoptedSession,
+  legacySessionId: string,
+  cookies: JarCookies,
+  mode: SessionMode,
+): JarUpsert {
+  return {
+    sessionId: adopted.sessionId,
+    legacySessionId,
+    cookies,
+    mode,
+    hydratedEpoch: mode === 'target-primary' ? adopted.epoch : null,
+  };
 }
 
 /** The identity session id in identity-issued cookies, or undefined when they carry none. */
@@ -144,15 +171,11 @@ function isEmpty(cookies: JarCookies): boolean {
   return Object.keys(cookies).length === 0;
 }
 
-/** True when describing kept the session `sent` names: ColdFusion set no session cookie to another value. */
-function keptSession(sent: JarCookies, observed: JarCookies): boolean {
-  return !isEmpty(sent) && Object.entries(observed).every(([key, cookie]) => sent[key]?.value === cookie.value);
-}
-
 function none(setCookies: string[] = []): SessionResolution {
   return { kind: 'none', setCookies };
 }
 
+/** A session resolution; only target-primary swaps the jar's cookies in for the request's own. */
 function session(
   sessionId: string,
   epoch: number,
@@ -160,7 +183,8 @@ function session(
   row: JarRow | undefined,
   setCookies: string[],
 ): SessionResolution {
-  return { kind: 'session', sessionId, epoch, mode, legacyCookies: row?.cookies ?? {}, setCookies };
+  const legacyCookies = mode === 'target-primary' ? (row?.cookies ?? {}) : {};
+  return { kind: 'session', sessionId, epoch, mode, legacyCookies, setCookies };
 }
 
 /** Identity's legacy answer for a `denied` or `answered` outcome; without one, identity counts as unavailable. */
@@ -215,26 +239,46 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
     return keptSession(sent, observed) ? { describe: described.body, observed } : undefined;
   }
 
-  /** Adopts a described legacy session into identity and records its jar. */
-  async function adopt(described: LegacyDescribe, cookies: JarCookies, mode: SessionMode, siteId: string | undefined) {
-    const adopted = await identity.adopt({ describe: described, siteId: siteId || DEFAULT_SITE_ID });
-    const row = await jar.upsert({
-      sessionId: adopted.sessionId,
-      legacySessionId: described.sessionId,
-      cookies,
-      mode,
-      // Legacy already holds the adopted state, so target-primary owes it no hydration at this epoch.
-      hydratedEpoch: mode === 'target-primary' ? adopted.epoch : null,
+  /** Identity's adoption of a described legacy session, at the requested site or legacy's default. */
+  function adoptInIdentity(describe: LegacyDescribe, siteId: string | undefined) {
+    return identity.adopt({ describe, siteId: siteId || DEFAULT_SITE_ID });
+  }
+
+  /**
+   * Adopts the legacy session `sent` was described as into identity and maps its jar to the adopted session alone;
+   * undefined when, described again under its lock, `sent` names another legacy session.
+   */
+  async function adopt(
+    request: SessionRequestInput,
+    sent: JarCookies,
+    described: LegacyDescribe,
+    cookies: JarCookies,
+    mode: SessionMode,
+    siteId: string | undefined,
+  ): Promise<Adoption | undefined> {
+    const holder = await jar.findByLegacySessionId(described.sessionId);
+    if (holder?.mode !== 'target-primary') {
+      const adopted = await adoptInIdentity(described, siteId);
+      return { adopted, row: await jar.rebind(adoptedJar(adopted, described.sessionId, cookies, mode)) };
+    }
+    // A target-primary holder may be hydrating or ending that legacy session, so it is described again under its lock.
+    return jar.withNativeLock(described.sessionId, async (locked) => {
+      const fresh = (await describeSession(request, sent)).body;
+      if (fresh.sessionId !== described.sessionId) return undefined;
+      const adopted = await adoptInIdentity(fresh, siteId);
+      return { adopted, row: await locked.rebind(adoptedJar(adopted, fresh.sessionId, cookies, mode)) };
     });
-    return { adopted, row };
   }
 
   /** Target-primary adoption of the live legacy session the request's cookies attach. */
   async function adoptIntoTarget(request: SessionRequestInput, siteId: string | undefined): Promise<SessionResolution> {
-    const attached = await describeAttached(request, requestCookies(request));
+    const sent = requestCookies(request);
+    const attached = await describeAttached(request, sent);
     if (attached === undefined) return none();
     const cookies = requestCookies(request, attached.observed);
-    const { adopted, row } = await adopt(attached.describe, cookies, 'target-primary', siteId);
+    const adoption = await adopt(request, sent, attached.describe, cookies, 'target-primary', siteId);
+    if (adoption === undefined) return none();
+    const { adopted, row } = adoption;
     return session(adopted.sessionId, adopted.epoch, 'target-primary', row, reissue(cookies, adopted.setCookie));
   }
 
@@ -266,48 +310,116 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
     return adoptIntoTarget(request, siteId);
   }
 
-  /** Back in legacy-primary: the jar's legacy session is re-adopted and its cookies are handed back to the browser. */
-  async function switchBack(request: SessionRequestInput, row: JarRow, siteId: string | undefined) {
-    const described = await describeSession(request, liveCookies(row.cookies));
-    const absorbed = absorbLegacySetCookies(described.setCookies);
-    const cookies = { ...row.cookies, ...absorbed.sessionCookies };
-    const { adopted, row: stored } = await adopt(described.body, cookies, 'legacy-primary', siteId);
-    // Identity keys legacy-primary sessions by the legacy session id, so a superseded mapping must not stay findable.
-    if (stored.sessionId !== row.sessionId) await jar.drop(row.sessionId);
-    const setCookies = [...legacySetCookiesFrom(stored.cookies), ...absorbed.otherSetCookies];
-    return session(adopted.sessionId, adopted.epoch, 'legacy-primary', stored, setCookies);
+  /**
+   * Back in legacy-primary: the jar's legacy session is re-adopted and its cookies are handed back to the browser;
+   * undefined when another target-primary jar's session changed it to one its cookies no longer name.
+   */
+  function switchBack(
+    request: SessionRequestInput,
+    targetRow: JarRow,
+    siteId: string | undefined,
+  ): Promise<SessionResolution | undefined> {
+    return jar.withSessionLock(targetRow.sessionId, async (locked) => {
+      // A concurrent switch back may have rebound it already; its cookies then restore the same session.
+      const current = (await locked.get(targetRow.sessionId)) ?? targetRow;
+      const sent = liveCookies(current.cookies);
+      let described = await describeSession(request, sent);
+      await locked.lockNative(described.body.sessionId);
+      const holder = await locked.findByLegacySessionId(described.body.sessionId);
+      if (holder !== undefined && holder.sessionId !== targetRow.sessionId && holder.mode === 'target-primary') {
+        // That holder may have hydrated or ended the legacy session since it was described.
+        const fresh = await describeSession(request, sent);
+        if (fresh.body.sessionId !== described.body.sessionId) return undefined;
+        described = fresh;
+      }
+      const absorbed = absorbLegacySetCookies(described.setCookies);
+      const cookies = { ...current.cookies, ...absorbed.sessionCookies };
+      const adopted = await adoptInIdentity(described.body, siteId);
+      // Identity keys legacy-primary sessions by the legacy session id, so a superseded mapping must not stay findable.
+      const stored = await locked.rebind(
+        adoptedJar(adopted, described.body.sessionId, cookies, 'legacy-primary'),
+        targetRow.sessionId,
+      );
+      const setCookies = [...legacySetCookiesFrom(stored.cookies), ...absorbed.otherSetCookies];
+      // The browser still sends the target values on this request, so legacy receives the restored jar's.
+      return {
+        kind: 'session',
+        sessionId: adopted.sessionId,
+        epoch: adopted.epoch,
+        mode: 'legacy-primary',
+        legacyCookies: stored.cookies,
+        setCookies,
+      };
+    });
+  }
+
+  /** The switch back of the target-primary jar the request's target cookie names; undefined when it names none. */
+  async function restoreTargetJar(request: SessionRequestInput, siteId: string | undefined) {
+    const candidate = sessionIdFromTargetCookies(parseCookieHeader(headerValue(request.headers, 'cookie')));
+    const targetRow = candidate === undefined ? undefined : await jar.get(candidate);
+    return targetRow?.mode === 'target-primary' ? switchBack(request, targetRow, siteId) : undefined;
+  }
+
+  /** Switch backs by request object, so each legacy-primary resolution of one request acts in the restored session. */
+  const restorations = new WeakMap<SessionRequestInput, Promise<SessionResolution | undefined>>();
+
+  /** The restored session of a legacy-primary request, shared by its every resolution; a failed one is not kept. */
+  function restoredSession(request: SessionRequestInput, siteId: string | undefined) {
+    const known = restorations.get(request);
+    if (known !== undefined) return known;
+    const pending = restoreTargetJar(request, siteId);
+    restorations.set(request, pending);
+    pending.catch(() => {
+      if (restorations.get(request) === pending) restorations.delete(request);
+    });
+    return pending;
   }
 
   /** Legacy-primary: the browser's legacy cookies pass unchanged, and identity mirrors the session they attach. */
   async function legacyPrimarySession(request: SessionRequestInput, siteId: string | undefined) {
-    const candidate = sessionIdFromTargetCookies(parseCookieHeader(headerValue(request.headers, 'cookie')));
-    const targetRow = candidate === undefined ? undefined : await jar.get(candidate);
-    if (targetRow?.mode === 'target-primary') return switchBack(request, targetRow, siteId);
-    const described = await describeSession(request, requestCookies(request));
+    const restored = await restoredSession(request, siteId);
+    if (restored !== undefined) return restored;
+    const sent = requestCookies(request);
+    const described = await describeSession(request, sent);
     const absorbed = absorbLegacySetCookies(described.setCookies);
     const cookies = { ...requestCookies(request, absorbed.sessionCookies), ...absorbed.sessionCookies };
-    const { adopted, row } = await adopt(described.body, cookies, 'legacy-primary', siteId);
+    const adoption = await adopt(request, sent, described.body, cookies, 'legacy-primary', siteId);
+    if (adoption === undefined) return none();
+    const { adopted, row } = adoption;
     // ColdFusion's own Set-Cookie values reach the browser as legacy would have set them.
     return session(adopted.sessionId, adopted.epoch, 'legacy-primary', row, [...described.setCookies]);
   }
 
-  /** Target-primary: legacy cookies set on an existing session go to its jar; the browser keeps the target values. */
+  /**
+   * Target-primary: legacy cookies set on an existing session go to its jar, unless that jar was dropped or rebound
+   * away since it was read; the browser keeps the target values.
+   */
   async function absorbIntoSession(
     request: SessionRequestInput,
     found: TargetSession,
     absorbed: AbsorbedSetCookies,
   ): Promise<SessionResolution> {
-    const previous = found.row?.cookies ?? {};
-    const replaced = Object.entries(absorbed.sessionCookies).some(
-      ([key, cookie]) => Object.hasOwn(previous, key) && previous[key]?.value !== cookie.value,
-    );
-    const stored = await jar.upsert({
-      sessionId: found.sessionId,
-      // A replaced cookie means a new legacy session, which is neither known by id nor hydrated yet.
-      legacySessionId: replaced ? null : (found.row?.legacySessionId ?? null),
-      cookies: absorbed.sessionCookies,
-      mode: 'target-primary',
-      hydratedEpoch: replaced ? null : (found.row?.hydratedEpoch ?? null),
+    const stored = await jar.withSessionLock(found.sessionId, async (locked) => {
+      let row = await locked.get(found.sessionId);
+      if (row?.legacySessionId) {
+        await locked.lockNative(row.legacySessionId);
+        // A rebind holding that lock may have moved the legacy session to another jar and removed this one.
+        row = await locked.get(found.sessionId);
+      }
+      // Writing now would recreate a jar a logout or rebind removed.
+      if (found.row !== undefined && row === undefined) return undefined;
+      const previous = row?.cookies ?? {};
+      const replaced = Object.entries(absorbed.sessionCookies).some(
+        ([key, cookie]) => Object.hasOwn(previous, key) && previous[key]?.value !== cookie.value,
+      );
+      return locked.upsert({
+        sessionId: found.sessionId,
+        // A replaced cookie means a new legacy session, which is neither known by id nor hydrated yet.
+        legacySessionId: replaced ? null : (row?.legacySessionId ?? null),
+        cookies: absorbed.sessionCookies,
+        mode: 'target-primary',
+        hydratedEpoch: replaced ? null : (row?.hydratedEpoch ?? null),
+      });
     });
     const setCookies = [
       ...targetSetCookiesFrom(absorbed.sessionCookies, requestCookieValues(request)),
@@ -323,12 +435,17 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
     siteId: string | undefined,
   ): Promise<SessionResolution> {
     const cookies = { ...requestCookies(request, absorbed.sessionCookies), ...absorbed.sessionCookies };
-    const attached = await describeAttached(request, liveCookies(cookies));
+    const sent = liveCookies(cookies);
+    const attached = await describeAttached(request, sent);
+    const adoption =
+      attached === undefined
+        ? undefined
+        : await adopt(request, sent, attached.describe, cookies, 'target-primary', siteId);
     // Without a live legacy session only legacy's deletions are passed on; legacy values never reach the browser.
-    if (attached === undefined) {
+    if (adoption === undefined) {
       return none([...targetSetCookiesFrom(absorbed.sessionCookies, {}), ...absorbed.otherSetCookies]);
     }
-    const { adopted, row } = await adopt(attached.describe, cookies, 'target-primary', siteId);
+    const { adopted, row } = adoption;
     return session(adopted.sessionId, adopted.epoch, 'target-primary', row, [
       ...reissue(cookies, adopted.setCookie),
       ...absorbed.otherSetCookies,
@@ -348,6 +465,9 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
         if (found !== undefined) return session(found.sessionId, found.epoch, 'target-primary', found.row, []);
         return adoptUnmapped ? adoptIntoTarget(request, siteId) : none();
       }
+      // Restoring a mapped session is not adopting an unmapped one, so `adopt` does not gate it.
+      const restored = await restoredSession(request, siteId);
+      if (restored !== undefined) return restored;
       const sent = requestCookies(request);
       if (isEmpty(sent)) return none();
       const described = await describeSession(request, sent);
@@ -359,8 +479,10 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
       if (!adoptUnmapped) return none();
       const observed = absorbLegacySetCookies(described.setCookies).sessionCookies;
       if (!keptSession(sent, observed)) return none();
-      const { adopted, row } = await adopt(described.body, requestCookies(request, observed), 'legacy-primary', siteId);
-      return session(adopted.sessionId, adopted.epoch, 'legacy-primary', row, []);
+      const cookies = requestCookies(request, observed);
+      const adoption = await adopt(request, sent, described.body, cookies, 'legacy-primary', siteId);
+      if (adoption === undefined) return none();
+      return session(adoption.adopted.sessionId, adoption.adopted.epoch, 'legacy-primary', adoption.row, []);
     },
 
     async adoptAfterLegacy(request, { mode, setCookies, siteId }) {
