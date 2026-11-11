@@ -65,6 +65,6 @@ Expected from the golden catalogue before any run; not results.
 | GS-PUB-03 | `withheld` | `page:createprofile`, `page:updateprofile` | [decision-list.md](../decision-list.md): `opt2/decision-list.json#actionVariants/page:createprofile`, `opt2/decision-list.json#actionVariants/page:updateprofile` |
 | GS-PUB-05 | `withheld` | `api:processasyncobject{saveform}`, `page:saveform` | [decision-list.md](../decision-list.md): `opt2/decision-list.json#actionVariants/api:processasyncobject{saveform}`, `opt2/decision-list.json#actionVariants/page:saveform` |
 | GS-BR-01 | `withheld` | `page:render` | [decision-list.md](../decision-list.md): `opt2/decision-list.json#actionVariants/page:render` |
-| GS-CO-07 | `halted` | `admin:carch.update{upload=image}`, `admin:carch.multifileupload{upload=image}`, `api:file.save{upload=image}` | [exceptions-list.md](../exceptions-list.md): `EX-FILE-RENDITION` |
+| GS-CO-07 | `halted` | `admin:carch.update{upload=image}`, `admin:carch.multifileupload{upload=image}`, `api:file.save{upload=image}`, `rest:file.save{upload=image}` | [exceptions-list.md](../exceptions-list.md): `EX-FILE-RENDITION` |
 
 With fixtures unavailable (`fixtures.available` false), parity covers four of ten services and "all ten services pass parity" is unmet (AAP 0.7.6).

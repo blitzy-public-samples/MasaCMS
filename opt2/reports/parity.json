@@ -196,7 +196,8 @@
         "routeKeys": [
           "admin:carch.update{upload=image}",
           "admin:carch.multifileupload{upload=image}",
-          "api:file.save{upload=image}"
+          "api:file.save{upload=image}",
+          "rest:file.save{upload=image}"
         ]
       }
     ]
