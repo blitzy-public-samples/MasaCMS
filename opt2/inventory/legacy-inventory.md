@@ -66,7 +66,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:carch.assocfiles` | `admin:carch.assocfiles` | strategies-content | carry (5) | none | fragment (text/html) |
 | `ctl:carch.audit` | `admin:carch.audit` | strategies-content | carry (5) | none | page (text/html) |
 | `ctl:carch.availablechangesets` | `admin:carch.availablechangesets` | strategies-content | carry (5) | none | fragment (text/html) |
-| `ctl:carch.copy` | `admin:carch.copy` | spans identity, strategies-content | decision (3) (corrected; expected carry) (decision-list gap) | none | json (application/json) |
+| `ctl:carch.copy` | `admin:carch.copy` | spans identity, strategies-content | decision (3) (corrected; expected carry) | none | json (application/json) |
 | `ctl:carch.cropimage` | `admin:carch.cropimage` | strategies-content | carry (5) | validates `rc.fileid` | page (text/html) |
 | `ctl:carch.datamanager` | `admin:carch.datamanager` | strategies-content | carry (5) | validates `rc.responseid` | page (text/html) |
 | `ctl:carch.displayobjectmodal` | `admin:carch.displayobjectmodal` | strategies-content | carry (5) | none | page (text/html) |
@@ -131,7 +131,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:carch.update` | `admin:carch.update` | strategies-content | carry (5) | validates `rc.contentid & "deleteall" \| rc.contentid & "deletehistall" \| rc.contenthistid & "delete" \| rc.contentBean.getContentHistID() & "add" \| rc.parentid & "multifileupload"` | fragment (text/html) |
 | `ctl:carch.updateobjectparams{approved=1}` | `admin:carch.updateobjectparams{approved=1}` | spans identity, strategies-content | decision (2) (corrected; expected carry) | none | page (text/html) |
 | `ctl:carch.updateobjectparams` | `admin:carch.updateobjectparams` | strategies-content | carry (5) | none | page (text/html) |
-| `ctl:carch.variationtargeting{notify}` | `admin:carch.variationtargeting{notify}` | spans identity, strategies-content | decision (3) (corrected; expected carry) (decision-list gap) | none | page (text/html) |
+| `ctl:carch.variationtargeting{notify}` | `admin:carch.variationtargeting{notify}` | spans identity, strategies-content | decision (3) (corrected; expected carry) | none | page (text/html) |
 | `ctl:carch.variationtargeting` | `admin:carch.variationtargeting` | strategies-content | carry (5) | none | page (text/html) |
 | `ctl:ccategory.edit` | `admin:ccategory.edit` | strategies-content | carry (5) | none | page (text/html) |
 | `ctl:ccategory.list` | `admin:ccategory.list` | strategies-content | carry (5) | none | page (text/html) |
@@ -178,7 +178,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:cdashboard.viewsession` | `admin:cdashboard.viewsession` | reporting | legacy-served (4) | none | page (text/html) |
 | `ctl:ceditprofile.edit` | `admin:ceditprofile.edit` | identity | carry (5) (corrected; expected carry) | none | page (text/html) |
 | `ctl:ceditprofile.update{photo}` | `admin:ceditprofile.update{photo}` | people | decision (3) | validates | page (text/html) |
-| `ctl:ceditprofile.update{extdata}` | `admin:ceditprofile.update{extdata}` | spans identity, people, strategies-content | decision (3) (corrected; expected carry) (decision-list gap) | validates | page (text/html) |
+| `ctl:ceditprofile.update{extdata}` | `admin:ceditprofile.update{extdata}` | spans identity, people, strategies-content | decision (3) (corrected; expected carry) | validates | page (text/html) |
 | `ctl:ceditprofile.update` | `admin:ceditprofile.update` | people | carry (5) | validates | page (text/html) |
 | `ctl:cemail.deletebounces` | `admin:cemail.deletebounces` | communications | legacy-served (4) | none | redirect |
 | `ctl:cemail.download` | `admin:cemail.download` | communications | legacy-served (4) | none | download (application/msexcel) |
@@ -235,7 +235,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:cnav.searchsitedata` | `admin:cnav.searchsitedata` | strategies-content | carry (5) | none | json (application/json) |
 | `ctl:cperm.main` | `admin:cperm.main` | identity | carry (5) | none | page (text/html) |
 | `ctl:cperm.module` | `admin:cperm.module` | identity | carry (5) | none | page (text/html) |
-| `ctl:cperm.update` | `admin:cperm.update` | spans identity, strategies-content | decision (3) (corrected; expected carry) (decision-list gap) | validates `rc.contentid` | redirect |
+| `ctl:cperm.update` | `admin:cperm.update` | spans identity, strategies-content | decision (3) (corrected; expected carry) | validates `rc.contentid` | redirect |
 | `ctl:cperm.updatemodule` | `admin:cperm.updatemodule` | identity | carry (5) | validates `rc.moduleid` | redirect |
 | `ctl:cplugins.list` | `admin:cplugins.list` | — | legacy-served (4) (corrected; expected decision) | none | page (text/html) |
 | `ctl:csettings.createbundle` | `admin:csettings.createbundle` | strategies-content | legacy-served (4) | validates `csrfContext` | page (text/html) |
@@ -280,17 +280,17 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:cusers.route` | `admin:cusers.route` | people | carry (5) | none | redirect |
 | `ctl:cusers.search` | `admin:cusers.search` | people | carry (5) | none | page (text/html) |
 | `ctl:cusers.update{photo}` | `admin:cusers.update{photo}` | people | decision (3) | validates `rc.userid` | redirect |
-| `ctl:cusers.update{type=2,action=add,extdata}` | `admin:cusers.update{type=2,action=add,extdata}` | spans identity, people, strategies-content | decision (3) (corrected; expected carry) (decision-list gap) | validates `rc.userid` | redirect |
-| `ctl:cusers.update{type=2,action=update,extdata}` | `admin:cusers.update{type=2,action=update,extdata}` | spans identity, people, strategies-content | decision (3) (corrected; expected carry) (decision-list gap) | validates `rc.userid` | redirect |
-| `ctl:cusers.update{type=1,action=delete}` | `admin:cusers.update{type=1,action=delete}` | spans identity, strategies-content | decision (3) (corrected; expected carry) (decision-list gap) | validates `rc.userid` | redirect |
-| `ctl:cusers.update{type=1,extdata}` | `admin:cusers.update{type=1,extdata}` | spans identity, strategies-content | decision (3) (corrected; expected carry) (decision-list gap) | validates `rc.userid` | redirect |
+| `ctl:cusers.update{type=2,action=add,extdata}` | `admin:cusers.update{type=2,action=add,extdata}` | spans identity, people, strategies-content | decision (3) (corrected; expected carry) | validates `rc.userid` | redirect |
+| `ctl:cusers.update{type=2,action=update,extdata}` | `admin:cusers.update{type=2,action=update,extdata}` | spans identity, people, strategies-content | decision (3) (corrected; expected carry) | validates `rc.userid` | redirect |
+| `ctl:cusers.update{type=1,action=delete}` | `admin:cusers.update{type=1,action=delete}` | spans identity, strategies-content | decision (3) (corrected; expected carry) | validates `rc.userid` | redirect |
+| `ctl:cusers.update{type=1,extdata}` | `admin:cusers.update{type=1,extdata}` | spans identity, strategies-content | decision (3) (corrected; expected carry) | validates `rc.userid` | redirect |
 | `ctl:cusers.update{type=2,action=add}` | `admin:cusers.update{type=2,action=add}` | people | carry (5) | validates `rc.userid` | redirect |
 | `ctl:cusers.update{type=2,action=delete}` | `admin:cusers.update{type=2,action=delete}` | people | decision (3) | validates `rc.userid` | redirect |
 | `ctl:cusers.update{type=2,action=update}` | `admin:cusers.update{type=2,action=update}` | people | carry (5) | validates `rc.userid` | redirect |
 | `ctl:cusers.update{type=1}` | `admin:cusers.update{type=1}` | identity | carry (5) | validates `rc.userid` | redirect |
-| `ctl:cusers.update` | `admin:cusers.update` | spans identity, people, strategies-content | decision (3) (decision-list gap) | validates `rc.userid` | redirect |
-| `ctl:cusers.updateaddress{action=delete}` | `admin:cusers.updateaddress{action=delete}` | spans people, strategies-content | decision (3) (corrected; expected carry) (decision-list gap) | validates `'updateaddress' & rc.userid` | redirect |
-| `ctl:cusers.updateaddress{extdata}` | `admin:cusers.updateaddress{extdata}` | spans people, strategies-content | decision (3) (corrected; expected carry) (decision-list gap) | validates `'updateaddress' & rc.userid` | redirect |
+| `ctl:cusers.update` | `admin:cusers.update` | spans identity, people, strategies-content | decision (3) | validates `rc.userid` | redirect |
+| `ctl:cusers.updateaddress{action=delete}` | `admin:cusers.updateaddress{action=delete}` | spans people, strategies-content | decision (3) (corrected; expected carry) | validates `'updateaddress' & rc.userid` | redirect |
+| `ctl:cusers.updateaddress{extdata}` | `admin:cusers.updateaddress{extdata}` | spans people, strategies-content | decision (3) (corrected; expected carry) | validates `'updateaddress' & rc.userid` | redirect |
 | `ctl:cusers.updateaddress` | `admin:cusers.updateaddress` | people | carry (5) | validates `'updateaddress' & rc.userid` | redirect |
 | `ctl:cwebservice.delete` | `admin:cwebservice.delete` | identity | carry (5) | validates `rc.clientid` | redirect |
 | `ctl:cwebservice.list` | `admin:cwebservice.list` | identity | carry (5) | none | page (text/html) |
@@ -327,7 +327,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 
 | Id | Route key | Owner | Disposition (step) | Notes |
 | --- | --- | --- | --- | --- |
-| `api:address.delete` | `api:address.delete` | spans people, strategies-content | decision (3) (corrected; expected carry) (decision-list gap) | — |
+| `api:address.delete` | `api:address.delete` | spans people, strategies-content | decision (3) (corrected; expected carry) | `opt2/decision-list.json#api:address.delete` |
 | `api:address.findall` | `api:address.findall` | people | carry (5) | — |
 | `api:address.findmany` | `api:address.findmany` | people | carry (5) | — |
 | `api:address.findnew` | `api:address.findnew` | people | carry (5) | — |
@@ -336,7 +336,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `api:address.findproperties` | `api:address.findproperties` | people | carry (5) | — |
 | `api:address.findquery` | `api:address.findquery` | people | carry (5) | — |
 | `api:address.save` | `api:address.save` | people | carry (5) | — |
-| `api:address.save{extdata}` | `api:address.save{extdata}` | spans people, strategies-content | decision (3) (corrected; expected carry) (decision-list gap) | — |
+| `api:address.save{extdata}` | `api:address.save{extdata}` | spans people, strategies-content | decision (3) (corrected; expected carry) | `opt2/decision-list.json#api:address.save{extdata}` |
 | `api:address.validate` | `api:address.validate` | people | carry (5) | — |
 | `api:category.delete` | `api:category.delete` | strategies-content | carry (5) | — |
 | `api:category.findall` | `api:category.findall` | strategies-content | carry (5) | — |
@@ -471,7 +471,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `api:findversionhistory` | `api:findversionhistory` | strategies-content | carry (5) | — |
 | `api:generatecsrftokens` | `api:generatecsrftokens` | identity | carry (5) | — |
 | `api:geturlforimage` | `api:geturlforimage` | strategies-content | carry (5) | — |
-| `api:group.delete` | `api:group.delete` | spans identity, strategies-content | decision (3) (corrected; expected carry) (decision-list gap) | — |
+| `api:group.delete` | `api:group.delete` | spans identity, strategies-content | decision (3) (corrected; expected carry) | `opt2/decision-list.json#api:group.delete` |
 | `api:group.findall` | `api:group.findall` | identity | carry (5) | — |
 | `api:group.findmany` | `api:group.findmany` | identity | carry (5) | — |
 | `api:group.findnew` | `api:group.findnew` | identity | carry (5) | — |
@@ -480,13 +480,13 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `api:group.findproperties` | `api:group.findproperties` | identity | carry (5) | — |
 | `api:group.findquery` | `api:group.findquery` | identity | carry (5) | — |
 | `api:group.save` | `api:group.save` | identity | carry (5) | — |
-| `api:group.save{extdata}` | `api:group.save{extdata}` | spans identity, strategies-content | decision (3) (corrected; expected carry) (decision-list gap) | — |
+| `api:group.save{extdata}` | `api:group.save{extdata}` | spans identity, strategies-content | decision (3) (corrected; expected carry) | `opt2/decision-list.json#api:group.save{extdata}` |
 | `api:group.save{photo}` | `api:group.save{photo}` | identity | decision (3) | `opt2/decision-list.json#api:group.save{photo}` |
 | `api:group.validate` | `api:group.validate` | identity | carry (5) | — |
 | `api:login` | `api:login` | identity | carry (5) | — |
 | `api:logout` | `api:logout` | identity | carry (5) | — |
-| `api:processasyncobject` | `api:processasyncobject` | spans communications, identity, people, programs-sites, strategies-content | decision (3) (corrected; expected legacy-served) (decision-list gap) | — |
-| `api:processasyncobject{saveform}` | `api:processasyncobject{saveform}` | spans identity, strategies-content | decision (3) (corrected; expected legacy-served) (decision-list gap) | — |
+| `api:processasyncobject` | `api:processasyncobject` | spans communications, identity, people, programs-sites, strategies-content | decision (3) (corrected; expected legacy-served) | `opt2/decision-list.json#api:processasyncobject` |
+| `api:processasyncobject{saveform}` | `api:processasyncobject{saveform}` | spans identity, strategies-content | decision (3) (corrected; expected legacy-served) | `opt2/decision-list.json#api:processasyncobject{saveform}` |
 | `api:site.delete` | `api:site.delete` | programs-sites | carry (5) | — |
 | `api:site.findall` | `api:site.findall` | programs-sites | carry (5) | — |
 | `api:site.findmany` | `api:site.findmany` | programs-sites | carry (5) | — |
@@ -520,7 +520,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `api:user.findproperties` | `api:user.findproperties` | people | carry (5) | — |
 | `api:user.findquery` | `api:user.findquery` | people | carry (5) | — |
 | `api:user.save` | `api:user.save` | people | carry (5) | — |
-| `api:user.save{extdata}` | `api:user.save{extdata}` | spans identity, people, strategies-content | decision (3) (corrected; expected carry) (decision-list gap) | — |
+| `api:user.save{extdata}` | `api:user.save{extdata}` | spans identity, people, strategies-content | decision (3) (corrected; expected carry) | `opt2/decision-list.json#api:user.save{extdata}` |
 | `api:user.save{photo}` | `api:user.save{photo}` | people | decision (3) | `opt2/decision-list.json#api:user.save{photo}` |
 | `api:user.validate` | `api:user.validate` | people | carry (5) | — |
 | `api:user.~pollstate` | `api:user.~pollstate` | people | carry (5) | — |
@@ -535,7 +535,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `api:variationtargeting.findquery` | `api:variationtargeting.findquery` | strategies-content | carry (5) | — |
 | `api:variationtargeting.save` | `api:variationtargeting.save` | strategies-content | carry (5) | — |
 | `api:variationtargeting.validate` | `api:variationtargeting.validate` | strategies-content | carry (5) | — |
-| `rest:address.delete` | `rest:address.delete` | spans people, strategies-content | decision (3) (corrected; expected carry) (decision-list gap) | — |
+| `rest:address.delete` | `rest:address.delete` | spans people, strategies-content | decision (3) (corrected; expected carry) | `opt2/decision-list.json#api:address.delete` |
 | `rest:address.findall` | `rest:address.findall` | people | carry (5) | — |
 | `rest:address.findmany` | `rest:address.findmany` | people | carry (5) | — |
 | `rest:address.findnew` | `rest:address.findnew` | people | carry (5) | — |
@@ -544,7 +544,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `rest:address.findproperties` | `rest:address.findproperties` | people | carry (5) | — |
 | `rest:address.findquery` | `rest:address.findquery` | people | carry (5) | — |
 | `rest:address.save` | `rest:address.save` | people | carry (5) | — |
-| `rest:address.save{extdata}` | `rest:address.save{extdata}` | spans people, strategies-content | decision (3) (corrected; expected carry) (decision-list gap) | — |
+| `rest:address.save{extdata}` | `rest:address.save{extdata}` | spans people, strategies-content | decision (3) (corrected; expected carry) | `opt2/decision-list.json#api:address.save{extdata}` |
 | `rest:address.validate` | `rest:address.validate` | people | carry (5) | — |
 | `rest:category.delete` | `rest:category.delete` | strategies-content | carry (5) | — |
 | `rest:category.findall` | `rest:category.findall` | strategies-content | carry (5) | — |
@@ -679,7 +679,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `rest:findversionhistory` | `rest:findversionhistory` | strategies-content | carry (5) | — |
 | `rest:generatecsrftokens` | `rest:generatecsrftokens` | identity | carry (5) | — |
 | `rest:geturlforimage` | `rest:geturlforimage` | strategies-content | carry (5) | — |
-| `rest:group.delete` | `rest:group.delete` | spans identity, strategies-content | decision (3) (corrected; expected carry) (decision-list gap) | — |
+| `rest:group.delete` | `rest:group.delete` | spans identity, strategies-content | decision (3) (corrected; expected carry) | `opt2/decision-list.json#api:group.delete` |
 | `rest:group.findall` | `rest:group.findall` | identity | carry (5) | — |
 | `rest:group.findmany` | `rest:group.findmany` | identity | carry (5) | — |
 | `rest:group.findnew` | `rest:group.findnew` | identity | carry (5) | — |
@@ -688,13 +688,13 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `rest:group.findproperties` | `rest:group.findproperties` | identity | carry (5) | — |
 | `rest:group.findquery` | `rest:group.findquery` | identity | carry (5) | — |
 | `rest:group.save` | `rest:group.save` | identity | carry (5) | — |
-| `rest:group.save{extdata}` | `rest:group.save{extdata}` | spans identity, strategies-content | decision (3) (corrected; expected carry) (decision-list gap) | — |
+| `rest:group.save{extdata}` | `rest:group.save{extdata}` | spans identity, strategies-content | decision (3) (corrected; expected carry) | `opt2/decision-list.json#api:group.save{extdata}` |
 | `rest:group.save{photo}` | `rest:group.save{photo}` | identity | decision (3) | `opt2/decision-list.json#api:group.save{photo}` |
 | `rest:group.validate` | `rest:group.validate` | identity | carry (5) | — |
 | `rest:login` | `rest:login` | identity | carry (5) | — |
 | `rest:logout` | `rest:logout` | identity | carry (5) | — |
-| `rest:processasyncobject` | `rest:processasyncobject` | spans identity, people, strategies-content | decision (3) (corrected; expected legacy-served) (decision-list gap) | — |
-| `rest:processasyncobject{saveform}` | `rest:processasyncobject{saveform}` | spans identity, strategies-content | decision (3) (corrected; expected legacy-served) (decision-list gap) | — |
+| `rest:processasyncobject` | `rest:processasyncobject` | spans identity, people, strategies-content | decision (3) (corrected; expected legacy-served) | `opt2/decision-list.json#api:processasyncobject` |
+| `rest:processasyncobject{saveform}` | `rest:processasyncobject{saveform}` | spans identity, strategies-content | decision (3) (corrected; expected legacy-served) | `opt2/decision-list.json#api:processasyncobject{saveform}` |
 | `rest:site.delete` | `rest:site.delete` | programs-sites | carry (5) | — |
 | `rest:site.findall` | `rest:site.findall` | programs-sites | carry (5) | — |
 | `rest:site.findmany` | `rest:site.findmany` | programs-sites | carry (5) | — |
@@ -728,7 +728,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `rest:user.findproperties` | `rest:user.findproperties` | people | carry (5) | — |
 | `rest:user.findquery` | `rest:user.findquery` | people | carry (5) | — |
 | `rest:user.save` | `rest:user.save` | people | carry (5) | — |
-| `rest:user.save{extdata}` | `rest:user.save{extdata}` | spans identity, people, strategies-content | decision (3) (corrected; expected carry) (decision-list gap) | — |
+| `rest:user.save{extdata}` | `rest:user.save{extdata}` | spans identity, people, strategies-content | decision (3) (corrected; expected carry) | `opt2/decision-list.json#api:user.save{extdata}` |
 | `rest:user.save{photo}` | `rest:user.save{photo}` | people | decision (3) | `opt2/decision-list.json#api:user.save{photo}` |
 | `rest:user.validate` | `rest:user.validate` | people | carry (5) | — |
 | `rest:user.~pollstate` | `rest:user.~pollstate` | people | carry (5) | — |
@@ -823,7 +823,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `fe:commentsproxy.getContentStats` | commentsProxy.getContentStats remote method | strategies-content | carry (5) | no | none |
 | `fe:commentsproxy.renderCommentsPage` | commentsProxy.renderCommentsPage remote method | strategies-content | legacy-served (4) | no | none |
 | `fe:doaction=contactsend` | doaction=contactsend: case commented out at the pin, so the value only renders the page | — | retired (1) (corrected; expected legacy-served) | no | none |
-| `fe:doaction=createprofile` | doaction=createprofile: public registration through userBean.save, then login mail or loginByUserID | spans identity, people, strategies-content | decision (3) (corrected; expected legacy-served) (decision-list gap) | yes | relogin |
+| `fe:doaction=createprofile` | doaction=createprofile: public registration through userBean.save, then login mail or loginByUserID | spans identity, people, strategies-content | decision (3) (corrected; expected legacy-served) | yes | relogin |
 | `fe:doaction=forward` | doaction=forward: email forward link; no handler acts on it, so the page renders | communications | legacy-served (4) | no | none |
 | `fe:doaction=forwardEmail` | doaction=forwardEmail: forward an email to up to five addresses | communications | legacy-served (4) | no | none |
 | `fe:doaction=login` | doaction=login: challenge attempt or username and password login | identity | legacy-served (4) | yes | relogin |
@@ -835,11 +835,11 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `fe:doaction=setReminder` | doaction=setReminder: event reminder create | communications | decision (2) (corrected; expected legacy-served) | no | none |
 | `fe:doaction=subscribe` | doaction=subscribe: mailing list member create after the human check | communications | legacy-served (4) | no | none |
 | `fe:doaction=unsubscribe` | doaction=unsubscribe: mailing list member delete | communications | legacy-served (4) | no | none |
-| `fe:doaction=updateprofile` | doaction=updateprofile: address create, update or delete, or userManager.update then loginByUserID | spans identity, people, strategies-content | decision (3) (corrected; expected legacy-served) (decision-list gap) | yes | relogin |
+| `fe:doaction=updateprofile` | doaction=updateprofile: address create, update or delete, or userManager.update then loginByUserID | spans identity, people, strategies-content | decision (3) (corrected; expected legacy-served) | yes | relogin |
 | `fe:doaction=validateMember` | doaction=validateMember: master mailing list display object validates a member | communications | legacy-served (4) | no | none |
-| `fe:processasyncobject{saveform}` | processAsyncObject rendering the form display object with saveform | spans identity, strategies-content | decision (3) (corrected; expected legacy-served) (decision-list gap) | yes | none |
-| `fe:render` | page render through handleRootRequest; session tracking writes tsessiontracking | spans communications, identity, people, programs-sites, reporting, strategies-content | decision (3) (corrected; expected legacy-served) (decision-list gap) | yes | relogin |
-| `fe:saveform` | form display object submits through dataCollectionBean.submit while rendering | spans identity, strategies-content | decision (3) (corrected; expected legacy-served) (decision-list gap) | yes | none |
+| `fe:processasyncobject{saveform}` | processAsyncObject rendering the form display object with saveform | spans identity, strategies-content | decision (3) (corrected; expected legacy-served) | yes | none |
+| `fe:render` | page render through handleRootRequest; session tracking writes tsessiontracking | spans communications, identity, people, programs-sites, reporting, strategies-content | decision (3) (corrected; expected legacy-served) | yes | relogin |
+| `fe:saveform` | form display object submits through dataCollectionBean.submit while rendering | spans identity, strategies-content | decision (3) (corrected; expected legacy-served) | yes | none |
 
 ## Site monitor
 

@@ -1,0 +1,842 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "approvalNote": "Approval is the user's decision; this run withholds every entry.",
+  "tables": [
+    {
+      "table": "tplugins",
+      "proposedOwner": "retire",
+      "readingServices": [],
+      "accessMode": null,
+      "reason": "Retires with the CFML plugin runtime, which runs only on legacy.",
+      "buildWithheld": true,
+      "withheld": "all",
+      "approval": "pending",
+      "source": {"path": "core/mura/dbUpdates/5.0.594.cfm", "lines": [8, 18]},
+      "withheldEntryPoints": [
+        {"id": "api:site.save{bundle}", "routeKey": "api:site.save{bundle}"},
+        {"id": "ctl:carch.importcontent", "routeKey": "admin:carch.importcontent"},
+        {"id": "ctl:cextend.importsubtypes", "routeKey": "admin:cextend.importsubtypes"},
+        {"id": "ctl:csettings.deleteplugin", "routeKey": "admin:csettings.deleteplugin"},
+        {"id": "ctl:csettings.deployplugin", "routeKey": "admin:csettings.deployplugin"},
+        {"id": "ctl:csettings.sitecopy", "routeKey": "admin:csettings.sitecopy"},
+        {"id": "ctl:csettings.updateplugin", "routeKey": "admin:csettings.updateplugin"},
+        {"id": "ctl:csettings.updatesite{bundle}", "routeKey": "admin:csettings.updatesite{bundle}"},
+        {"id": "rest:site.save{bundle}", "routeKey": "rest:site.save{bundle}"}
+      ],
+      "affectedScenarios": ["GS-PS-03", "GS-PS-05"]
+    },
+    {
+      "table": "tpluginsettings",
+      "proposedOwner": "retire",
+      "readingServices": [],
+      "accessMode": null,
+      "reason": "Retires with the CFML plugin runtime, which runs only on legacy.",
+      "buildWithheld": true,
+      "withheld": "all",
+      "approval": "pending",
+      "source": {"path": "core/mura/dbUpdates/5.0.594.cfm", "lines": [83, 87]},
+      "withheldEntryPoints": [
+        {"id": "api:site.save{bundle}", "routeKey": "api:site.save{bundle}"},
+        {"id": "ctl:carch.importcontent", "routeKey": "admin:carch.importcontent"},
+        {"id": "ctl:cextend.importsubtypes", "routeKey": "admin:cextend.importsubtypes"},
+        {"id": "ctl:csettings.deleteplugin", "routeKey": "admin:csettings.deleteplugin"},
+        {"id": "ctl:csettings.deployplugin", "routeKey": "admin:csettings.deployplugin"},
+        {"id": "ctl:csettings.sitecopy", "routeKey": "admin:csettings.sitecopy"},
+        {"id": "ctl:csettings.updateplugin", "routeKey": "admin:csettings.updateplugin"},
+        {"id": "ctl:csettings.updatesite{bundle}", "routeKey": "admin:csettings.updatesite{bundle}"},
+        {"id": "rest:site.save{bundle}", "routeKey": "rest:site.save{bundle}"}
+      ],
+      "affectedScenarios": ["GS-PS-03", "GS-PS-05"]
+    },
+    {
+      "table": "tpluginscripts",
+      "proposedOwner": "retire",
+      "readingServices": [],
+      "accessMode": null,
+      "reason": "Retires with the CFML plugin runtime, which runs only on legacy.",
+      "buildWithheld": true,
+      "withheld": "all",
+      "approval": "pending",
+      "source": {"path": "core/mura/dbUpdates/5.0.594.cfm", "lines": [60, 65]},
+      "withheldEntryPoints": [
+        {"id": "api:site.save{bundle}", "routeKey": "api:site.save{bundle}"},
+        {"id": "ctl:carch.importcontent", "routeKey": "admin:carch.importcontent"},
+        {"id": "ctl:cextend.importsubtypes", "routeKey": "admin:cextend.importsubtypes"},
+        {"id": "ctl:csettings.deleteplugin", "routeKey": "admin:csettings.deleteplugin"},
+        {"id": "ctl:csettings.deployplugin", "routeKey": "admin:csettings.deployplugin"},
+        {"id": "ctl:csettings.sitecopy", "routeKey": "admin:csettings.sitecopy"},
+        {"id": "ctl:csettings.updateplugin", "routeKey": "admin:csettings.updateplugin"},
+        {"id": "ctl:csettings.updatesite{bundle}", "routeKey": "admin:csettings.updatesite{bundle}"},
+        {"id": "rest:site.save{bundle}", "routeKey": "rest:site.save{bundle}"}
+      ],
+      "affectedScenarios": ["GS-PS-03", "GS-PS-05"]
+    },
+    {
+      "table": "tplugindisplayobjects",
+      "proposedOwner": "retire",
+      "readingServices": [],
+      "accessMode": null,
+      "reason": "Retires with the CFML plugin runtime, which runs only on legacy.",
+      "buildWithheld": true,
+      "withheld": "all",
+      "approval": "pending",
+      "source": {"path": "core/mura/dbUpdates/5.0.594.cfm", "lines": [36, 42]},
+      "withheldEntryPoints": [
+        {"id": "api:site.save{bundle}", "routeKey": "api:site.save{bundle}"},
+        {"id": "ctl:carch.importcontent", "routeKey": "admin:carch.importcontent"},
+        {"id": "ctl:cextend.importsubtypes", "routeKey": "admin:cextend.importsubtypes"},
+        {"id": "ctl:csettings.deleteplugin", "routeKey": "admin:csettings.deleteplugin"},
+        {"id": "ctl:csettings.deployplugin", "routeKey": "admin:csettings.deployplugin"},
+        {"id": "ctl:csettings.sitecopy", "routeKey": "admin:csettings.sitecopy"},
+        {"id": "ctl:csettings.updateplugin", "routeKey": "admin:csettings.updateplugin"},
+        {"id": "ctl:csettings.updatesite{bundle}", "routeKey": "admin:csettings.updatesite{bundle}"},
+        {"id": "rest:site.save{bundle}", "routeKey": "rest:site.save{bundle}"}
+      ],
+      "affectedScenarios": ["GS-PS-03", "GS-PS-05"]
+    },
+    {
+      "table": "tclusterpeers",
+      "proposedOwner": "retire",
+      "readingServices": [],
+      "accessMode": null,
+      "reason": "Retires because Pub/Sub replaces the cluster command broadcast this peer registry serves.",
+      "buildWithheld": true,
+      "withheld": "all",
+      "approval": "pending",
+      "source": {"path": "core/mura/dbUpdates/5.7.cfm", "lines": [124, 126]},
+      "withheldEntryPoints": [
+        {"id": "job:sitemonitor.cluster-cleanup", "routeKey": null}
+      ],
+      "affectedScenarios": []
+    },
+    {
+      "table": "tclustercommands",
+      "proposedOwner": "retire",
+      "readingServices": [],
+      "accessMode": null,
+      "reason": "Retires because Pub/Sub replaces cluster commands.",
+      "buildWithheld": true,
+      "withheld": "all",
+      "approval": "pending",
+      "source": {"path": "core/mura/dbUpdates/5.7.cfm", "lines": [128, 134]},
+      "withheldEntryPoints": [
+        {"id": "job:sitemonitor.cluster-cleanup", "routeKey": null}
+      ],
+      "affectedScenarios": []
+    },
+    {
+      "table": "tentity",
+      "proposedOwner": "programs-sites",
+      "readingServices": ["strategies-content"],
+      "accessMode": "api",
+      "reason": "Runtime entity declaration (`declareEntity`, `beanEntity.cfc`) has no single static owner, so programs-sites is proposed as the schema registry.",
+      "buildWithheld": true,
+      "withheld": "all",
+      "approval": "pending",
+      "source": {"path": "core/mura/bean/beanEntity.cfc", "lines": [1, 1]},
+      "withheldEntryPoints": [
+        {"id": "api:declareentity", "routeKey": "api:declareentity"},
+        {"id": "api:undeclareentity", "routeKey": "api:undeclareentity"},
+        {"id": "rest:declareentity", "routeKey": "rest:declareentity"},
+        {"id": "rest:undeclareentity", "routeKey": "rest:undeclareentity"}
+      ],
+      "affectedScenarios": []
+    },
+    {
+      "table": "tentity-declared:*",
+      "proposedOwner": "programs-sites",
+      "readingServices": ["strategies-content"],
+      "accessMode": "api",
+      "reason": "Tables of entities declared at runtime through `tentity` or by plugins have no single static owner.",
+      "buildWithheld": true,
+      "withheld": "all",
+      "approval": "pending",
+      "source": {"path": "core/mura/bean/beanEntity.cfc", "lines": [1, 12]},
+      "withheldEntryPoints": [
+        {"id": "api:checkschema", "routeKey": "api:checkschema"},
+        {"id": "rest:checkschema", "routeKey": "rest:checkschema"}
+      ],
+      "affectedScenarios": []
+    },
+    {
+      "table": "tremotepointer",
+      "proposedOwner": "strategies-content",
+      "readingServices": [],
+      "accessMode": null,
+      "reason": "No carried entry point writes it, so nothing on the target needs it.",
+      "buildWithheld": true,
+      "withheld": "all",
+      "approval": "pending",
+      "source": {"path": "core/mura/bean/beanRemotePointer.cfc", "lines": [1, 1]},
+      "withheldEntryPoints": [],
+      "affectedScenarios": []
+    },
+    {
+      "table": "trazunasettings",
+      "proposedOwner": "strategies-content",
+      "readingServices": [],
+      "accessMode": null,
+      "reason": "Razuna integration settings serve the legacy-served `razuna` circuit, yet every site create, update and delete also writes them (`core/mura/settings/settingsManager.cfc` 271, 316, 379).",
+      "buildWithheld": true,
+      "withheld": "all; `razuna` stays legacy-served",
+      "approval": "pending",
+      "source": {"path": "core/mura/content/file/razuna/razunaSettingsBean.cfc", "lines": [2, 2]},
+      "withheldEntryPoints": [
+        {"id": "api:site.save", "routeKey": "api:site.save"},
+        {"id": "api:site.save{bundle}", "routeKey": "api:site.save{bundle}"},
+        {"id": "ctl:carch.importcontent", "routeKey": "admin:carch.importcontent"},
+        {"id": "ctl:cextend.importsubtypes", "routeKey": "admin:cextend.importsubtypes"},
+        {"id": "ctl:csettings.deployplugin", "routeKey": "admin:csettings.deployplugin"},
+        {"id": "ctl:csettings.sitecopy", "routeKey": "admin:csettings.sitecopy"},
+        {"id": "ctl:csettings.updateplugin", "routeKey": "admin:csettings.updateplugin"},
+        {"id": "ctl:csettings.updatesite{action=add}", "routeKey": "admin:csettings.updatesite{action=add}"},
+        {"id": "ctl:csettings.updatesite{action=delete}", "routeKey": "admin:csettings.updatesite{action=delete}"},
+        {"id": "ctl:csettings.updatesite{action=update}", "routeKey": "admin:csettings.updatesite{action=update}"},
+        {"id": "ctl:csettings.updatesite{bundle}", "routeKey": "admin:csettings.updatesite{bundle}"},
+        {"id": "rest:site.save", "routeKey": "rest:site.save"},
+        {"id": "rest:site.save{bundle}", "routeKey": "rest:site.save{bundle}"}
+      ],
+      "affectedScenarios": ["GS-PS-01", "GS-PS-02", "GS-PS-03", "GS-PS-05"]
+    },
+    {
+      "table": "tcontenteventreminders",
+      "proposedOwner": "communications",
+      "readingServices": ["strategies-content"],
+      "accessMode": "event-projection",
+      "reason": "Event reminders are written by `doaction=setReminder` and sent by `contentManager.sendReminders`, so communications is proposed as owner with a content-side projection.",
+      "buildWithheld": true,
+      "withheld": "all; reminders stay on legacy (site-monitor step through `gateway/legacy-bridge/cfml/jobs.cfm`)",
+      "approval": "pending",
+      "source": {"path": "core/setup/db/mssql.sql", "lines": [133, 142]},
+      "withheldEntryPoints": [
+        {"id": "api:content.save{approved=1}", "routeKey": "api:content.save{approved=1}"},
+        {"id": "api:content.save{notify}", "routeKey": "api:content.save{notify}"},
+        {"id": "api:contentnav.save{approved=1}", "routeKey": "api:contentnav.save{approved=1}"},
+        {"id": "api:contentnav.save{notify}", "routeKey": "api:contentnav.save{notify}"},
+        {"id": "ctl:carch.importcomponent", "routeKey": "admin:carch.importcomponent"},
+        {"id": "ctl:carch.importcontent", "routeKey": "admin:carch.importcontent"},
+        {"id": "ctl:carch.updateobjectparams{approved=1}", "routeKey": "admin:carch.updateobjectparams{approved=1}"},
+        {"id": "ctl:carch.update{approved=1}", "routeKey": "admin:carch.update{approved=1}"},
+        {"id": "ctl:carch.update{notify}", "routeKey": "admin:carch.update{notify}"},
+        {"id": "ctl:carch.update{upload=image}", "routeKey": "admin:carch.update{upload=image}"},
+        {"id": "ctl:cchangesets.publish", "routeKey": "admin:cchangesets.publish"},
+        {"id": "ctl:cfeed.import2", "routeKey": "admin:cfeed.import2"},
+        {"id": "ctl:csettings.updatesite{action=delete}", "routeKey": "admin:csettings.updatesite{action=delete}"},
+        {"id": "ctl:csettings.updatesite{bundle}", "routeKey": "admin:csettings.updatesite{bundle}"},
+        {"id": "ctl:ctrash.empty", "routeKey": "admin:ctrash.empty"},
+        {"id": "fe:doaction=setReminder", "routeKey": "page:setreminder"},
+        {"id": "job:sitemonitor.changeset-publish", "routeKey": null},
+        {"id": "job:sitemonitor.feed-import", "routeKey": null},
+        {"id": "job:sitemonitor.reminders", "routeKey": null},
+        {"id": "rest:content.save{approved=1}", "routeKey": "rest:content.save{approved=1}"},
+        {"id": "rest:content.save{notify}", "routeKey": "rest:content.save{notify}"},
+        {"id": "rest:contentnav.save{approved=1}", "routeKey": "rest:contentnav.save{approved=1}"},
+        {"id": "rest:contentnav.save{notify}", "routeKey": "rest:contentnav.save{notify}"}
+      ],
+      "affectedScenarios": ["GS-CO-03", "GS-CO-07", "GS-CO-10", "GS-CO-13", "GS-PS-06"]
+    },
+    {
+      "table": "fb_*",
+      "proposedOwner": "strategies-content",
+      "readingServices": ["reporting"],
+      "accessMode": "api",
+      "reason": "Form-builder entity tables are generated at runtime from `formBuilderManager.cfc` component strings, so only the live catalog names them.",
+      "buildWithheld": true,
+      "withheld": "all",
+      "approval": "pending",
+      "source": {"path": "core/mura/formBuilder/formBuilderManager.cfc", "lines": [443, 773]},
+      "withheldEntryPoints": [],
+      "affectedScenarios": []
+    }
+  ],
+  "actionVariants": [
+    {
+      "routeKey": "admin:cusers.update{type=2,action=delete}",
+      "entryPoints": [
+        {"id": "ctl:cusers.update{type=2,action=delete}", "routeKey": "admin:cusers.update{type=2,action=delete}"}
+      ],
+      "writeSet": ["tclassextenddatauseractivity", "tfiles", "toauthtokens", "ttrash", "tusers", "tuserstags"],
+      "owners": ["identity", "people", "strategies-content"],
+      "proposal": "People owns the delete and asks identity to delete the account, credential and OAuth-token rows, and strategies-content to retire a stored photo, under the roster write protocol.",
+      "affectedScenarios": ["GS-ID-05"],
+      "approval": "pending",
+      "source": [
+        {"path": "admin/core/controllers/cusers.cfc", "lines": [290, 353]},
+        {"path": "core/mura/user/userManager.cfc", "lines": [705, 744]},
+        {"path": "core/mura/user/userDAO.cfc", "lines": [357, 378]}
+      ]
+    },
+    {
+      "routeKey": "api:user.delete",
+      "entryPoints": [
+        {"id": "api:user.delete", "routeKey": "api:user.delete"},
+        {"id": "rest:user.delete", "routeKey": "rest:user.delete"}
+      ],
+      "writeSet": ["tclassextenddatauseractivity", "tfiles", "toauthtokens", "ttrash", "tusers", "tuserstags"],
+      "owners": ["identity", "people", "strategies-content"],
+      "proposal": "People owns the JSON API user delete, which reaches the same `userManager.delete` closure, and asks identity and strategies-content for their parts under the roster write protocol.",
+      "affectedScenarios": [],
+      "approval": "pending",
+      "source": [
+        {"path": "core/mura/client/api/json/v1/jsonApiUtility.cfc", "lines": [3259, 3335]},
+        {"path": "core/mura/user/userManager.cfc", "lines": [705, 744]},
+        {"path": "core/mura/user/userDAO.cfc", "lines": [357, 378]}
+      ]
+    },
+    {
+      "routeKey": "admin:cusers.update{photo}",
+      "entryPoints": [
+        {"id": "ctl:cusers.update{photo}", "routeKey": "admin:cusers.update{photo}"}
+      ],
+      "writeSet": ["tclassextenddatauseractivity", "tfiles", "toauthtokens", "tredirects", "ttrash", "tuseraddresses", "tusers", "tusersinterests", "tusersmemb", "tuserstags", "file-store"],
+      "owners": ["identity", "people", "strategies-content"],
+      "proposal": "People (users) or identity (groups) owns the save and asks strategies-content to store or delete the photo under the roster write protocol, extended to a third participant.",
+      "affectedScenarios": ["GS-ID-05"],
+      "approval": "pending",
+      "source": [
+        {"path": "admin/core/controllers/cusers.cfc", "lines": [290, 353]},
+        {"path": "core/mura/user/userManager.cfc", "lines": [495, 502]},
+        {"path": "core/mura/user/userManager.cfc", "lines": [650, 652]}
+      ]
+    },
+    {
+      "routeKey": "admin:ceditprofile.update{photo}",
+      "entryPoints": [
+        {"id": "ctl:ceditprofile.update{photo}", "routeKey": "admin:ceditprofile.update{photo}"}
+      ],
+      "writeSet": ["tclassextenddatauseractivity", "tfiles", "toauthtokens", "tredirects", "tuseraddresses", "tusers", "tusersinterests", "tusersmemb", "tuserstags", "file-store"],
+      "owners": ["identity", "people", "strategies-content"],
+      "proposal": "People owns the profile save and asks identity for the account part and strategies-content to store or delete the photo under the roster write protocol, extended to a third participant.",
+      "affectedScenarios": ["GS-PE-04"],
+      "approval": "pending",
+      "source": [
+        {"path": "admin/core/controllers/ceditprofile.cfc", "lines": [124, 141]},
+        {"path": "core/mura/user/userManager.cfc", "lines": [495, 502]}
+      ]
+    },
+    {
+      "routeKey": "api:user.save{photo}",
+      "entryPoints": [
+        {"id": "api:user.save{photo}", "routeKey": "api:user.save{photo}"},
+        {"id": "rest:user.save{photo}", "routeKey": "rest:user.save{photo}"}
+      ],
+      "writeSet": ["tclassextenddatauseractivity", "tfiles", "toauthtokens", "tredirects", "tuseraddresses", "tusers", "tusersinterests", "tusersmemb", "tuserstags", "file-store"],
+      "owners": ["identity", "people", "strategies-content"],
+      "proposal": "People owns the JSON API user save and asks identity for the account part and strategies-content to store or delete the photo under the roster write protocol, extended to a third participant.",
+      "affectedScenarios": [],
+      "approval": "pending",
+      "source": [
+        {"path": "core/mura/client/api/json/v1/jsonApiUtility.cfc", "lines": [1903, 2074]},
+        {"path": "core/mura/user/userManager.cfc", "lines": [495, 502]},
+        {"path": "core/mura/user/userManager.cfc", "lines": [650, 652]}
+      ]
+    },
+    {
+      "routeKey": "api:group.save{photo}",
+      "entryPoints": [
+        {"id": "api:group.save{photo}", "routeKey": "api:group.save{photo}"},
+        {"id": "rest:group.save{photo}", "routeKey": "rest:group.save{photo}"}
+      ],
+      "writeSet": ["tclassextenddatauseractivity", "tfiles", "toauthtokens", "tredirects", "tuseraddresses", "tusers", "tusersinterests", "tusersmemb", "tuserstags", "file-store"],
+      "owners": ["identity", "strategies-content"],
+      "proposal": "Identity owns the JSON API group save and asks strategies-content to store or delete the photo under the roster write protocol, with identity coordinating.",
+      "affectedScenarios": [],
+      "approval": "pending",
+      "source": [
+        {"path": "core/mura/client/api/json/v1/jsonApiUtility.cfc", "lines": [1903, 2074]},
+        {"path": "core/mura/user/userManager.cfc", "lines": [495, 502]},
+        {"path": "core/mura/user/userManager.cfc", "lines": [650, 652]}
+      ]
+    },
+    {
+      "routeKey": "admin:csettings.updatesite{action=add}",
+      "entryPoints": [
+        {"id": "ctl:csettings.updatesite{action=add}", "routeKey": "admin:csettings.updatesite{action=add}"}
+      ],
+      "writeSet": ["tclassextenddata", "tclassextendrcsets", "tclassextendsets", "tcontent", "tfiles", "timagesizes", "tmailinglist", "trazunasettings", "tsettings", "tsystemobjects", "tusers", "file-store"],
+      "owners": ["communications", "identity", "people", "programs-sites", "strategies-content"],
+      "proposal": "Programs-sites orchestrates the site-create closure across identity, people, strategies-content and communications under the roster write protocol, extended to every participant, once `trazunasettings` is decided.",
+      "affectedScenarios": ["GS-PS-01"],
+      "approval": "pending",
+      "source": [
+        {"path": "admin/core/controllers/csettings.cfc", "lines": [170, 225]},
+        {"path": "admin/core/controllers/csettings.cfc", "lines": [190, 206]},
+        {"path": "core/mura/settings/settingsManager.cfc", "lines": [339, 411]}
+      ]
+    },
+    {
+      "routeKey": "admin:csettings.updatesite{action=delete}",
+      "entryPoints": [
+        {"id": "ctl:csettings.updatesite{action=delete}", "routeKey": "admin:csettings.updatesite{action=delete}"}
+      ],
+      "writeSet": ["tapprovalactions", "tapprovalassignments", "tapprovalchains", "tapprovalmemberships", "tapprovalrequests", "tchangesets", "tclassextend", "tclassextendattributes", "tclassextenddata", "tclassextendrcsets", "tclassextendsets", "tcontent", "tcontentassignments", "tcontentcategories", "tcontentcategoryassign", "tcontentcomments", "tcontenteventreminders", "tcontentfeedadvancedparams", "tcontentfeeditems", "tcontentfeeds", "tcontentobjects", "tcontentratings", "tcontentrelated", "tcontenttags", "temailreturnstats", "temails", "temailstats", "tfiles", "tformresponsepackets", "tformresponsequestions", "timagesizes", "tmailinglist", "tmailinglistmembers", "tpermissions", "trazunasettings", "tsessiontracking", "tsettings", "tsystemobjects", "ttrash", "tuseraddresses", "tusers", "tusersfavorites", "tusersinterests", "tusersmemb", "file-store"],
+      "owners": ["communications", "identity", "people", "programs-sites", "reporting", "strategies-content"],
+      "proposal": "Programs-sites orchestrates the site-delete closure across identity, people, strategies-content, communications and reporting, including the decision-list `tcontenteventreminders` and `trazunasettings` rows and the bundleable entity tables, under the roster write protocol extended to every participant.",
+      "affectedScenarios": [],
+      "approval": "pending",
+      "source": [
+        {"path": "admin/core/controllers/csettings.cfc", "lines": [170, 225]},
+        {"path": "admin/core/controllers/csettings.cfc", "lines": [207, 212]},
+        {"path": "core/mura/settings/settingsManager.cfc", "lines": [306, 337]},
+        {"path": "core/mura/settings/settingsDAO.cfc", "lines": [120, 316]},
+        {"path": "core/mura/settings/settingsDAO.cfc", "lines": [224, 224]},
+        {"path": "core/mura/settings/settingsDAO.cfc", "lines": [303, 310]}
+      ]
+    },
+    {
+      "routeKey": "admin:csettings.sitecopyselect",
+      "entryPoints": [
+        {"id": "ctl:csettings.sitecopyselect", "routeKey": "admin:csettings.sitecopyselect"}
+      ],
+      "writeSet": [],
+      "owners": ["programs-sites"],
+      "proposal": "Programs-sites hosts the site-copy selection screen once the `csettings.sitecopy` proposal is approved, because the screen serves only that branch.",
+      "affectedScenarios": ["GS-PS-03"],
+      "approval": "pending",
+      "source": [
+        {"path": "admin/core/controllers/csettings.cfc", "lines": [227, 229]}
+      ]
+    },
+    {
+      "routeKey": "admin:csettings.sitecopy",
+      "entryPoints": [
+        {"id": "ctl:csettings.sitecopy", "routeKey": "admin:csettings.sitecopy"}
+      ],
+      "writeSet": ["tchangesets", "tclassextend", "tclassextendattributes", "tclassextenddata", "tclassextenddatauseractivity", "tclassextendrcsets", "tclassextendsets", "tcontent", "tcontentcategories", "tcontentcategoryassign", "tcontentcomments", "tcontentfeedadvancedparams", "tcontentfeeditems", "tcontentfeeds", "tcontentobjects", "tcontentratings", "tcontentrelated", "tcontentstats", "tcontenttags", "tfiles", "tformresponsepackets", "tformresponsequestions", "timagesizes", "tmailinglist", "tmailinglistmembers", "tpermissions", "tplugindisplayobjects", "tplugins", "tpluginscripts", "tpluginsettings", "trazunasettings", "tsettings", "tsystemobjects", "ttrash", "tuseraddresses", "tusers", "tusersfavorites", "tusersinterests", "tusersmemb", "tuserstags", "file-store"],
+      "owners": ["communications", "identity", "people", "programs-sites", "strategies-content"],
+      "proposal": "Programs-sites orchestrates the `publisher.copy` closure across every owner under the roster write protocol, extended to every participant, once the plugin tables and `trazunasettings` are decided.",
+      "affectedScenarios": ["GS-PS-03"],
+      "approval": "pending",
+      "source": [
+        {"path": "admin/core/controllers/csettings.cfc", "lines": [235, 240]},
+        {"path": "core/mura/publisher.cfc", "lines": [3500, 3590]}
+      ]
+    },
+    {
+      "routeKey": "admin:cextend.*",
+      "entryPoints": [
+        {"id": "ctl:cextend.download", "routeKey": "admin:cextend.download"},
+        {"id": "ctl:cextend.editattributes", "routeKey": "admin:cextend.editattributes"},
+        {"id": "ctl:cextend.editrelatedcontentset", "routeKey": "admin:cextend.editrelatedcontentset"},
+        {"id": "ctl:cextend.editset", "routeKey": "admin:cextend.editset"},
+        {"id": "ctl:cextend.editsubtype", "routeKey": "admin:cextend.editsubtype"},
+        {"id": "ctl:cextend.export", "routeKey": "admin:cextend.export"},
+        {"id": "ctl:cextend.exportsubtype", "routeKey": "admin:cextend.exportsubtype"},
+        {"id": "ctl:cextend.importsubtypes", "routeKey": "admin:cextend.importsubtypes"},
+        {"id": "ctl:cextend.listsets", "routeKey": "admin:cextend.listsets"},
+        {"id": "ctl:cextend.listsubtypes", "routeKey": "admin:cextend.listsubtypes"},
+        {"id": "ctl:cextend.saveattributesort", "routeKey": "admin:cextend.saveattributesort"},
+        {"id": "ctl:cextend.saveextendsetsort", "routeKey": "admin:cextend.saveextendsetsort"},
+        {"id": "ctl:cextend.saverelatedsetsort", "routeKey": "admin:cextend.saverelatedsetsort"},
+        {"id": "ctl:cextend.updateattribute", "routeKey": "admin:cextend.updateattribute"},
+        {"id": "ctl:cextend.updaterelatedcontentset", "routeKey": "admin:cextend.updaterelatedcontentset"},
+        {"id": "ctl:cextend.updateset", "routeKey": "admin:cextend.updateset"},
+        {"id": "ctl:cextend.updatesubtype", "routeKey": "admin:cextend.updatesubtype"}
+      ],
+      "writeSet": ["tchangesets", "tclassextend", "tclassextendattributes", "tclassextenddata", "tclassextenddatauseractivity", "tclassextendrcsets", "tclassextendsets", "tcontent", "tcontentcategories", "tcontentcategoryassign", "tcontentcomments", "tcontentfeedadvancedparams", "tcontentfeeditems", "tcontentfeeds", "tcontentobjects", "tcontentratings", "tcontentrelated", "tcontentstats", "tcontenttags", "tfiles", "tformresponsepackets", "tformresponsequestions", "timagesizes", "tmailinglist", "tmailinglistmembers", "tpermissions", "tplugindisplayobjects", "tplugins", "tpluginscripts", "tpluginsettings", "trazunasettings", "tsettings", "tsystemobjects", "ttrash", "tuseraddresses", "tusers", "tusersfavorites", "tusersinterests", "tusersmemb", "tuserstags", "file-store"],
+      "owners": ["communications", "identity", "people", "programs-sites", "strategies-content"],
+      "proposal": "Programs-sites hosts the class-extension screens, and writes are delegated to the owner of each stored subtype's `baseTable`.",
+      "affectedScenarios": ["GS-PS-05"],
+      "approval": "pending",
+      "source": [
+        {"path": "admin/core/controllers/cextend.cfc", "lines": [126, 134]},
+        {"path": "admin/core/views/cextend/editattributes.cfm", "lines": [1, 147]},
+        {"path": "admin/core/views/cextend/editrelatedcontentset.cfm", "lines": [1, 188]},
+        {"path": "admin/core/views/cextend/editset.cfm", "lines": [1, 172]},
+        {"path": "admin/core/views/cextend/editsubtype.cfm", "lines": [1, 262]},
+        {"path": "admin/core/controllers/cextend.cfc", "lines": [116, 124]},
+        {"path": "admin/core/controllers/cextend.cfc", "lines": [93, 99]},
+        {"path": "admin/core/controllers/cextend.cfc", "lines": [101, 114]},
+        {"path": "admin/core/views/cextend/listsets.cfm", "lines": [1, 215]},
+        {"path": "admin/core/views/cextend/listsubtypes.cfm", "lines": [1, 187]},
+        {"path": "admin/core/controllers/cextend.cfc", "lines": [216, 219]},
+        {"path": "admin/core/controllers/cextend.cfc", "lines": [221, 224]},
+        {"path": "admin/core/controllers/cextend.cfc", "lines": [226, 229]},
+        {"path": "admin/core/controllers/cextend.cfc", "lines": [199, 214]},
+        {"path": "admin/core/controllers/cextend.cfc", "lines": [182, 197]},
+        {"path": "admin/core/controllers/cextend.cfc", "lines": [161, 180]},
+        {"path": "admin/core/controllers/cextend.cfc", "lines": [136, 159]}
+      ]
+    },
+    {
+      "routeKey": "admin:ctrash.*",
+      "entryPoints": [
+        {"id": "ctl:ctrash.detail", "routeKey": "admin:ctrash.detail"},
+        {"id": "ctl:ctrash.empty", "routeKey": "admin:ctrash.empty"},
+        {"id": "ctl:ctrash.list", "routeKey": "admin:ctrash.list"},
+        {"id": "ctl:ctrash.restore", "routeKey": "admin:ctrash.restore"}
+      ],
+      "writeSet": ["tcontentassignments", "tcontentcategoryassign", "tcontentcomments", "tcontenteventreminders", "tcontentfeedadvancedparams", "tcontentfeeditems", "tcontentratings", "tcontentremotepointer", "tcontentvariationtargeting", "tfiles", "tformresponsepackets", "tformresponsequestions", "tmailinglistmembers", "tpermissions", "ttrash", "tuseraddresses", "tusersfavorites", "tusersinterests", "tusersmemb", "file-store"],
+      "owners": ["communications", "identity", "people", "programs-sites", "strategies-content"],
+      "proposal": "Programs-sites hosts the trash screens, and writes are delegated to the owner of each stored `objectClass`.",
+      "affectedScenarios": ["GS-PS-06"],
+      "approval": "pending",
+      "source": [
+        {"path": "admin/core/controllers/ctrash.cfc", "lines": [108, 110]},
+        {"path": "admin/core/controllers/ctrash.cfc", "lines": [100, 106]},
+        {"path": "admin/core/controllers/ctrash.cfc", "lines": [93, 98]},
+        {"path": "admin/core/controllers/ctrash.cfc", "lines": [112, 145]}
+      ]
+    },
+    {
+      "routeKey": "admin:cusers.update",
+      "entryPoints": [
+        {"id": "ctl:cusers.update", "routeKey": "admin:cusers.update"}
+      ],
+      "writeSet": ["tclassextenddatauseractivity", "tfiles", "toauthtokens", "tredirects", "ttrash", "tuseraddresses", "tusers", "tusersinterests", "tusersmemb", "tuserstags", "file-store"],
+      "owners": ["identity", "people", "strategies-content"],
+      "proposal": "Resolve the owner from the stored `Type` of the addressed row, or the bean default for a create, and apply that typed branch's resolution.",
+      "affectedScenarios": [],
+      "approval": "pending",
+      "source": [
+        {"path": "admin/core/controllers/cusers.cfc", "lines": [290, 353]},
+        {"path": "core/mura/user/userManager.cfc", "lines": [404, 561]},
+        {"path": "core/mura/user/userManager.cfc", "lines": [563, 703]}
+      ]
+    },
+    {
+      "routeKey": "admin:cusers.update{type=1,action=delete}",
+      "entryPoints": [
+        {"id": "ctl:cusers.update{type=1,action=delete}", "routeKey": "admin:cusers.update{type=1,action=delete}"}
+      ],
+      "writeSet": ["tclassextenddatauseractivity", "tfiles", "toauthtokens", "ttrash", "tusers", "tuserstags"],
+      "owners": ["identity", "strategies-content"],
+      "proposal": "Identity owns the group delete and asks strategies-content to retire the group's stored photo under the roster write protocol, with identity coordinating.",
+      "affectedScenarios": ["GS-ID-06"],
+      "approval": "pending",
+      "source": [
+        {"path": "admin/core/controllers/cusers.cfc", "lines": [290, 353]},
+        {"path": "core/mura/user/userManager.cfc", "lines": [705, 744]},
+        {"path": "core/mura/user/userDAO.cfc", "lines": [357, 378]}
+      ]
+    },
+    {
+      "routeKey": "admin:cusers.update{type=1,extdata}",
+      "entryPoints": [
+        {"id": "ctl:cusers.update{type=1,extdata}", "routeKey": "admin:cusers.update{type=1,extdata}"}
+      ],
+      "writeSet": ["tclassextenddatauseractivity", "tfiles", "toauthtokens", "tredirects", "tuseraddresses", "tusers", "tusersinterests", "tusersmemb", "tuserstags", "file-store"],
+      "owners": ["identity", "strategies-content"],
+      "proposal": "Identity owns the group save and asks strategies-content to store or delete File-type extended-attribute files under the roster write protocol, with identity coordinating.",
+      "affectedScenarios": ["GS-ID-06"],
+      "approval": "pending",
+      "source": [
+        {"path": "admin/core/controllers/cusers.cfc", "lines": [290, 353]},
+        {"path": "core/mura/user/userManager.cfc", "lines": [491, 493]},
+        {"path": "core/mura/user/userManager.cfc", "lines": [646, 648]}
+      ]
+    },
+    {
+      "routeKey": "admin:cusers.update{type=2,action=add,extdata}",
+      "entryPoints": [
+        {"id": "ctl:cusers.update{type=2,action=add,extdata}", "routeKey": "admin:cusers.update{type=2,action=add,extdata}"}
+      ],
+      "writeSet": ["tclassextenddatauseractivity", "tfiles", "tuseraddresses", "tusers", "tusersinterests", "tusersmemb", "tuserstags", "file-store"],
+      "owners": ["identity", "people", "strategies-content"],
+      "proposal": "People owns the roster create and asks identity for the account part and strategies-content for File-type extended-attribute files under the roster write protocol, extended to a third participant.",
+      "affectedScenarios": ["GS-ID-05"],
+      "approval": "pending",
+      "source": [
+        {"path": "admin/core/controllers/cusers.cfc", "lines": [290, 353]},
+        {"path": "core/mura/user/userManager.cfc", "lines": [646, 648]}
+      ]
+    },
+    {
+      "routeKey": "admin:cusers.update{type=2,action=update,extdata}",
+      "entryPoints": [
+        {"id": "ctl:cusers.update{type=2,action=update,extdata}", "routeKey": "admin:cusers.update{type=2,action=update,extdata}"}
+      ],
+      "writeSet": ["tclassextenddatauseractivity", "tfiles", "toauthtokens", "tredirects", "tuseraddresses", "tusers", "tusersinterests", "tusersmemb", "tuserstags", "file-store"],
+      "owners": ["identity", "people", "strategies-content"],
+      "proposal": "People owns the roster edit and asks identity for the account part and strategies-content for File-type extended-attribute files under the roster write protocol, extended to a third participant.",
+      "affectedScenarios": ["GS-ID-05"],
+      "approval": "pending",
+      "source": [
+        {"path": "admin/core/controllers/cusers.cfc", "lines": [290, 353]},
+        {"path": "core/mura/user/userManager.cfc", "lines": [491, 493]}
+      ]
+    },
+    {
+      "routeKey": "admin:cusers.updateaddress{action=delete}",
+      "entryPoints": [
+        {"id": "ctl:cusers.updateaddress{action=delete}", "routeKey": "admin:cusers.updateaddress{action=delete}"}
+      ],
+      "writeSet": ["tclassextenddatauseractivity", "tcontentratings", "tfiles", "ttrash", "tuseraddresses"],
+      "owners": ["people", "strategies-content"],
+      "proposal": "People owns the address delete and asks strategies-content to delete the address's `tcontentratings` rows and stored extended-attribute files under the roster write protocol, with people coordinating.",
+      "affectedScenarios": [],
+      "approval": "pending",
+      "source": [
+        {"path": "admin/core/controllers/cusers.cfc", "lines": [355, 375]},
+        {"path": "core/mura/user/userManager.cfc", "lines": [941, 949]},
+        {"path": "core/mura/user/userDAO.cfc", "lines": [810, 824]}
+      ]
+    },
+    {
+      "routeKey": "admin:cusers.updateaddress{extdata}",
+      "entryPoints": [
+        {"id": "ctl:cusers.updateaddress{extdata}", "routeKey": "admin:cusers.updateaddress{extdata}"}
+      ],
+      "writeSet": ["tclassextenddatauseractivity", "tfiles", "tuseraddresses", "file-store"],
+      "owners": ["people", "strategies-content"],
+      "proposal": "People owns the address save and asks strategies-content to store or delete File-type extended-attribute files under the roster write protocol, with people coordinating.",
+      "affectedScenarios": [],
+      "approval": "pending",
+      "source": [
+        {"path": "admin/core/controllers/cusers.cfc", "lines": [355, 375]}
+      ]
+    },
+    {
+      "routeKey": "admin:ceditprofile.update{extdata}",
+      "entryPoints": [
+        {"id": "ctl:ceditprofile.update{extdata}", "routeKey": "admin:ceditprofile.update{extdata}"}
+      ],
+      "writeSet": ["tclassextenddatauseractivity", "tfiles", "toauthtokens", "tredirects", "tuseraddresses", "tusers", "tusersinterests", "tusersmemb", "tuserstags", "file-store"],
+      "owners": ["identity", "people", "strategies-content"],
+      "proposal": "People owns the profile save and asks identity for the account part and strategies-content for File-type extended-attribute files under the roster write protocol, extended to a third participant.",
+      "affectedScenarios": ["GS-PE-04"],
+      "approval": "pending",
+      "source": [
+        {"path": "admin/core/controllers/ceditprofile.cfc", "lines": [124, 141]},
+        {"path": "core/mura/user/userManager.cfc", "lines": [491, 493]}
+      ]
+    },
+    {
+      "routeKey": "admin:cperm.update",
+      "entryPoints": [
+        {"id": "ctl:cperm.update", "routeKey": "admin:cperm.update"}
+      ],
+      "writeSet": ["tapprovalassignments", "tpermissions"],
+      "owners": ["identity", "strategies-content"],
+      "proposal": "Identity owns the permission save and asks strategies-content to save the node's approval-chain assignment (`tapprovalassignments`) under the roster write protocol, with identity coordinating.",
+      "affectedScenarios": ["GS-ID-07"],
+      "approval": "pending",
+      "source": [
+        {"path": "admin/core/controllers/cperm.cfc", "lines": [98, 108]},
+        {"path": "core/mura/permission.cfc", "lines": [518, 552]}
+      ]
+    },
+    {
+      "routeKey": "admin:carch.copy",
+      "entryPoints": [
+        {"id": "ctl:carch.copy", "routeKey": "admin:carch.copy"}
+      ],
+      "writeSet": ["tapprovalactions", "tapprovalrequests", "tchangesetcategoryassign", "tchangesets", "tchangesettagassign", "tclassextenddata", "tcontent", "tcontentassignments", "tcontentcategoryassign", "tcontentfilenamearchive", "tcontentobjects", "tcontentpublicsubmissionapprovals", "tcontentrelated", "tcontentsourcemaps", "tcontentstats", "tcontenttags", "tfiles", "tpermissions", "file-store"],
+      "owners": ["identity", "strategies-content"],
+      "proposal": "Strategies-content owns the copy and asks identity to copy the source nodes' `tpermissions` rows under the roster write protocol, with strategies-content coordinating.",
+      "affectedScenarios": [],
+      "approval": "pending",
+      "source": [
+        {"path": "admin/core/controllers/carch.cfc", "lines": [508, 511]},
+        {"path": "core/mura/content/contentUtility.cfc", "lines": [957, 1096]}
+      ]
+    },
+    {
+      "routeKey": "admin:carch.variationtargeting{notify}",
+      "entryPoints": [
+        {"id": "ctl:carch.variationtargeting{notify}", "routeKey": "admin:carch.variationtargeting{notify}"}
+      ],
+      "writeSet": ["tapprovalactions", "tapprovalrequests", "tchangesetcategoryassign", "tchangesets", "tchangesettagassign", "tclassextenddata", "tcontent", "tcontentassignments", "tcontentcategoryassign", "tcontentfilenamearchive", "tcontentobjects", "tcontentpublicsubmissionapprovals", "tcontentrelated", "tcontentsourcemaps", "tcontentstats", "tcontenttags", "tfiles", "tredirects", "file-store"],
+      "owners": ["identity", "strategies-content"],
+      "proposal": "Strategies-content owns the save and asks identity to create the notification's `tredirects` links under the roster write protocol, with strategies-content coordinating.",
+      "affectedScenarios": [],
+      "approval": "pending",
+      "source": [
+        {"path": "admin/core/views/carch/variationtargeting.cfm", "lines": [1, 71]},
+        {"path": "core/mura/content/contentUtility.cfc", "lines": [547, 693]}
+      ]
+    },
+    {
+      "routeKey": "api:address.delete",
+      "entryPoints": [
+        {"id": "api:address.delete", "routeKey": "api:address.delete"},
+        {"id": "rest:address.delete", "routeKey": "rest:address.delete"}
+      ],
+      "writeSet": ["tclassextenddatauseractivity", "tcontentratings", "tfiles", "ttrash", "tuseraddresses"],
+      "owners": ["people", "strategies-content"],
+      "proposal": "People owns the JSON API address delete and asks strategies-content to delete the address's `tcontentratings` rows and stored extended-attribute files under the roster write protocol, with people coordinating.",
+      "affectedScenarios": [],
+      "approval": "pending",
+      "source": [
+        {"path": "core/mura/client/api/json/v1/jsonApiUtility.cfc", "lines": [3259, 3335]},
+        {"path": "core/mura/user/userManager.cfc", "lines": [941, 949]},
+        {"path": "core/mura/user/userDAO.cfc", "lines": [810, 824]}
+      ]
+    },
+    {
+      "routeKey": "api:address.save{extdata}",
+      "entryPoints": [
+        {"id": "api:address.save{extdata}", "routeKey": "api:address.save{extdata}"},
+        {"id": "rest:address.save{extdata}", "routeKey": "rest:address.save{extdata}"}
+      ],
+      "writeSet": ["tclassextenddatauseractivity", "tfiles", "tuseraddresses", "file-store"],
+      "owners": ["people", "strategies-content"],
+      "proposal": "People owns the JSON API address save and asks strategies-content to store or delete File-type extended-attribute files under the roster write protocol, with people coordinating.",
+      "affectedScenarios": [],
+      "approval": "pending",
+      "source": [
+        {"path": "core/mura/client/api/json/v1/jsonApiUtility.cfc", "lines": [1903, 2074]}
+      ]
+    },
+    {
+      "routeKey": "api:group.delete",
+      "entryPoints": [
+        {"id": "api:group.delete", "routeKey": "api:group.delete"},
+        {"id": "rest:group.delete", "routeKey": "rest:group.delete"}
+      ],
+      "writeSet": ["tclassextenddatauseractivity", "tfiles", "toauthtokens", "ttrash", "tusers", "tuserstags"],
+      "owners": ["identity", "strategies-content"],
+      "proposal": "Identity owns the JSON API group delete and asks strategies-content to retire the group's stored photo under the roster write protocol, with identity coordinating.",
+      "affectedScenarios": [],
+      "approval": "pending",
+      "source": [
+        {"path": "core/mura/client/api/json/v1/jsonApiUtility.cfc", "lines": [3259, 3335]},
+        {"path": "core/mura/user/userManager.cfc", "lines": [705, 744]},
+        {"path": "core/mura/user/userDAO.cfc", "lines": [357, 378]}
+      ]
+    },
+    {
+      "routeKey": "api:group.save{extdata}",
+      "entryPoints": [
+        {"id": "api:group.save{extdata}", "routeKey": "api:group.save{extdata}"},
+        {"id": "rest:group.save{extdata}", "routeKey": "rest:group.save{extdata}"}
+      ],
+      "writeSet": ["tclassextenddatauseractivity", "tfiles", "toauthtokens", "tredirects", "tuseraddresses", "tusers", "tusersinterests", "tusersmemb", "tuserstags", "file-store"],
+      "owners": ["identity", "strategies-content"],
+      "proposal": "Identity owns the JSON API group save and asks strategies-content to store or delete File-type extended-attribute files under the roster write protocol, with identity coordinating.",
+      "affectedScenarios": [],
+      "approval": "pending",
+      "source": [
+        {"path": "core/mura/client/api/json/v1/jsonApiUtility.cfc", "lines": [1903, 2074]},
+        {"path": "core/mura/user/userManager.cfc", "lines": [491, 493]},
+        {"path": "core/mura/user/userManager.cfc", "lines": [646, 648]}
+      ]
+    },
+    {
+      "routeKey": "api:user.save{extdata}",
+      "entryPoints": [
+        {"id": "api:user.save{extdata}", "routeKey": "api:user.save{extdata}"},
+        {"id": "rest:user.save{extdata}", "routeKey": "rest:user.save{extdata}"}
+      ],
+      "writeSet": ["tclassextenddatauseractivity", "tfiles", "toauthtokens", "tredirects", "tuseraddresses", "tusers", "tusersinterests", "tusersmemb", "tuserstags", "file-store"],
+      "owners": ["identity", "people", "strategies-content"],
+      "proposal": "People owns the JSON API user save and asks identity for the account part and strategies-content for File-type extended-attribute files under the roster write protocol, extended to a third participant.",
+      "affectedScenarios": [],
+      "approval": "pending",
+      "source": [
+        {"path": "core/mura/client/api/json/v1/jsonApiUtility.cfc", "lines": [1903, 2074]},
+        {"path": "core/mura/user/userManager.cfc", "lines": [491, 493]},
+        {"path": "core/mura/user/userManager.cfc", "lines": [646, 648]}
+      ]
+    },
+    {
+      "routeKey": "api:processasyncobject",
+      "entryPoints": [
+        {"id": "api:processasyncobject", "routeKey": "api:processasyncobject"},
+        {"id": "rest:processasyncobject", "routeKey": "rest:processasyncobject"}
+      ],
+      "writeSet": ["tclassextenddatauseractivity", "tcontentcommentcommenters", "tcontentcomments", "tcontentratings", "tcontentstats", "tfiles", "toauthtokens", "tredirects", "ttrash", "tuseraddresses", "tuserdevice", "tusers", "tusersinterests", "tusersmemb", "tuserstags", "tuserstrikes", "file-store"],
+      "owners": ["communications", "identity", "people", "programs-sites", "strategies-content"],
+      "proposal": "Display objects stay legacy-rendered by the CFML runtime, and their writes into target-authoritative units are imported through write windows.",
+      "affectedScenarios": [],
+      "approval": "pending",
+      "source": [
+        {"path": "core/mura/client/api/json/v1/jsonApiUtility.cfc", "lines": [3823, 4102]}
+      ]
+    },
+    {
+      "routeKey": "api:processasyncobject{saveform}",
+      "entryPoints": [
+        {"id": "api:processasyncobject{saveform}", "routeKey": "api:processasyncobject{saveform}"},
+        {"id": "rest:processasyncobject{saveform}", "routeKey": "rest:processasyncobject{saveform}"},
+        {"id": "fe:processasyncobject{saveform}", "routeKey": "api:processasyncobject{saveform}"}
+      ],
+      "writeSet": ["tfiles", "tformresponsepackets", "tformresponsequestions", "tredirects", "file-store"],
+      "owners": ["identity", "strategies-content"],
+      "proposal": "Strategies-content owns the form submission and asks identity to create the notification mail's `tredirects` links under the roster write protocol, while the form itself stays legacy-rendered.",
+      "affectedScenarios": ["GS-PUB-05"],
+      "approval": "pending",
+      "source": [
+        {"path": "core/mura/client/api/json/v1/jsonApiUtility.cfc", "lines": [3823, 4102]},
+        {"path": "core/modules/v1/form/index.cfm", "lines": [114, 119]}
+      ]
+    },
+    {
+      "routeKey": "page:render",
+      "entryPoints": [
+        {"id": "fe:render", "routeKey": "page:render"}
+      ],
+      "writeSet": ["tclassextenddatauseractivity", "tcontentcommentcommenters", "tcontentcomments", "tcontentstats", "toauthtokens", "tredirects", "tsessiontracking", "ttrash", "tuseraddresses", "tusers", "tusersinterests", "tusersmemb", "tuserstags", "tuserstrikes"],
+      "owners": ["communications", "identity", "people", "programs-sites", "reporting", "strategies-content"],
+      "proposal": "The page stays legacy-rendered by the CFML theme runtime, and its session-tracking, comment, login and account writes are imported into each owner through write windows.",
+      "affectedScenarios": ["GS-BR-01"],
+      "approval": "pending",
+      "source": [
+        {"path": "core/mura/content/contentServer.cfc", "lines": [779, 799]}
+      ]
+    },
+    {
+      "routeKey": "page:saveform",
+      "entryPoints": [
+        {"id": "fe:saveform", "routeKey": "page:saveform"}
+      ],
+      "writeSet": ["tfiles", "tformresponsepackets", "tformresponsequestions", "tredirects", "file-store"],
+      "owners": ["identity", "strategies-content"],
+      "proposal": "Strategies-content owns the form submission and asks identity to create the notification mail's `tredirects` links under the roster write protocol, while the page itself stays legacy-rendered.",
+      "affectedScenarios": ["GS-PUB-05"],
+      "approval": "pending",
+      "source": [
+        {"path": "core/modules/v1/form/index.cfm", "lines": [114, 119]}
+      ]
+    },
+    {
+      "routeKey": "page:createprofile",
+      "entryPoints": [
+        {"id": "fe:doaction=createprofile", "routeKey": "page:createprofile"}
+      ],
+      "writeSet": ["tclassextenddatauseractivity", "tfiles", "toauthtokens", "tredirects", "tuseraddresses", "tusers", "tusersinterests", "tusersmemb", "tuserstags", "file-store"],
+      "owners": ["identity", "people", "strategies-content"],
+      "proposal": "People owns the profile create and asks identity for the account part and strategies-content for files under the roster write protocol, while the page itself stays legacy-rendered.",
+      "affectedScenarios": ["GS-PUB-03"],
+      "approval": "pending",
+      "source": [
+        {"path": "core/mura/Handler/standardEventsHandler.cfc", "lines": [604, 629]}
+      ]
+    },
+    {
+      "routeKey": "page:updateprofile",
+      "entryPoints": [
+        {"id": "fe:doaction=updateprofile", "routeKey": "page:updateprofile"}
+      ],
+      "writeSet": ["tclassextenddatauseractivity", "tcontentratings", "tfiles", "toauthtokens", "tredirects", "ttrash", "tuseraddresses", "tusers", "tusersinterests", "tusersmemb", "tuserstags", "file-store"],
+      "owners": ["identity", "people", "strategies-content"],
+      "proposal": "People owns the profile update and asks identity for the account part and strategies-content for files under the roster write protocol, while the page itself stays legacy-rendered.",
+      "affectedScenarios": ["GS-PUB-03"],
+      "approval": "pending",
+      "source": [
+        {"path": "core/mura/Handler/standardEventsHandler.cfc", "lines": [565, 602]}
+      ]
+    }
+  ],
+  "spanningControllers": [
+    {
+      "controller": "cusers",
+      "source": {"path": "admin/core/controllers/cusers.cfc", "lines": [290, 375]},
+      "branches": [
+        {"routeKey": "admin:cusers.update{photo}", "closureOwners": ["identity", "people", "strategies-content"], "resolution": "withheld", "settledBy": "no input names the owner"},
+        {"routeKey": "admin:cusers.update{type=2,action=add,extdata}", "closureOwners": ["identity", "people", "strategies-content"], "resolution": "withheld", "settledBy": "no input names the owner"},
+        {"routeKey": "admin:cusers.update{type=2,action=update,extdata}", "closureOwners": ["identity", "people", "strategies-content"], "resolution": "withheld", "settledBy": "no input names the owner"},
+        {"routeKey": "admin:cusers.update{type=1,action=delete}", "closureOwners": ["identity", "strategies-content"], "resolution": "withheld", "settledBy": "no input names the owner"},
+        {"routeKey": "admin:cusers.update{type=1,extdata}", "closureOwners": ["identity", "strategies-content"], "resolution": "withheld", "settledBy": "no input names the owner"},
+        {"routeKey": "admin:cusers.update{type=2,action=add}", "closureOwners": ["identity", "people"], "resolution": "carry", "settledBy": "the request names the people roster routes; the roster write protocol applies"},
+        {"routeKey": "admin:cusers.update{type=2,action=delete}", "closureOwners": ["identity", "people", "strategies-content"], "resolution": "withheld", "settledBy": "no input names the owner"},
+        {"routeKey": "admin:cusers.update{type=2,action=update}", "closureOwners": ["identity", "people"], "resolution": "carry", "settledBy": "the request names the people roster routes; the roster write protocol applies"},
+        {"routeKey": "admin:cusers.update{type=1}", "closureOwners": ["identity"], "resolution": "carry", "settledBy": "single owner"},
+        {"routeKey": "admin:cusers.update", "closureOwners": ["identity", "people", "strategies-content"], "resolution": "withheld", "settledBy": "no input names the owner"},
+        {"routeKey": "admin:cusers.updateaddress{action=delete}", "closureOwners": ["people", "strategies-content"], "resolution": "withheld", "settledBy": "no input names the owner"},
+        {"routeKey": "admin:cusers.updateaddress{extdata}", "closureOwners": ["people", "strategies-content"], "resolution": "withheld", "settledBy": "no input names the owner"},
+        {"routeKey": "admin:cusers.updateaddress", "closureOwners": ["people"], "resolution": "carry", "settledBy": "single owner"}
+      ]
+    }
+  ]
+}
