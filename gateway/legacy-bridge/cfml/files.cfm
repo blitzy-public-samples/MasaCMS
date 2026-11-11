@@ -37,14 +37,15 @@ try {
 	if (!structKeyExists(url, "siteid") || !isSimpleValue(url.siteid) || !len(url.siteid)) {
 		app.raise(400, "badRequest", "missing siteid");
 	}
-	if (!application.settingsManager.siteExists(url.siteid)) {
+	sites = application.settingsManager.getSites();
+	if (!structKeyExists(sites, url.siteid)) {
 		app.raise(404, "notFound", "unknown site");
 	}
 	store = application.configBean.getFileStore();
 	if (store != "fileDir" && op != "list") {
 		app.raise(409, "unsupportedFileStore", store);
 	}
-	dir = application.configBean.getFileDir() & "/" & url.siteid & "/cache/file/";
+	dir = application.configBean.getFileDir() & "/" & sites[url.siteid].getSiteID() & "/cache/file/";
 
 	switch (op) {
 		// Every file whose name starts with a fileID and meets the name rule, so variants are found rather than assumed.

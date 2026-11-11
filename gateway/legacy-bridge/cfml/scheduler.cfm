@@ -25,12 +25,12 @@ function bodyText(required struct source, required string key) {
 	return toString(arguments.source[arguments.key]);
 }
 
-// Body flag, false when absent; raises 400 badRequest when it is not a boolean.
+// Body flag, false when absent; raises 400 badRequest when it is not a JSON boolean.
 function bodyFlag(required struct source, required string key) {
 	if (!structKeyExists(arguments.source, arguments.key) || isNull(arguments.source[arguments.key])) {
 		return false;
 	}
-	if (!isSimpleValue(arguments.source[arguments.key]) || !isBoolean(arguments.source[arguments.key])) {
+	if (!isInstanceOf(arguments.source[arguments.key], "java.lang.Boolean")) {
 		app.raise(400, "badRequest", arguments.key & " must be a boolean");
 	}
 	return arguments.source[arguments.key] ? true : false;
@@ -76,7 +76,11 @@ function gatewayOrigin() {
 	if (isNull(origin) || !len(origin)) {
 		app.raise(500, "serverError", "OPT2_GATEWAY_ORIGIN unset");
 	}
-	var uri = createObject("java", "java.net.URI").init(origin);
+	try {
+		var uri = createObject("java", "java.net.URI").init(origin);
+	} catch (any parseError) {
+		app.raise(500, "serverError", "OPT2_GATEWAY_ORIGIN invalid");
+	}
 	if (isNull(uri.getScheme()) || isNull(uri.getHost())) {
 		app.raise(500, "serverError", "OPT2_GATEWAY_ORIGIN invalid");
 	}
