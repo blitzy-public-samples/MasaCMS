@@ -29,10 +29,10 @@
     "bucket": "content-files"
   },
   "faults": [
-    { "name": "applier-killed" },
+    { "name": "applier-killed-mid-batch" },
     { "name": "duplicate-batch" },
-    { "name": "sql-drop" },
-    { "name": "service-restart" },
+    { "name": "mssql-dropped-mid-extract" },
+    { "name": "service-restarted-mid-apply" },
     { "name": "pubsub-redelivery" },
     { "name": "window-import-interrupted" },
     { "name": "projector-delay", "defaultDelayMs": 3000 },
