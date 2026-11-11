@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:opt2:programs-sites:event:programs-sites.site.changed.v1",
+  "$comment": "source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "title": "programs-sites.site.changed.v1 payload",
+  "description": "Full registry state of one Masa site and its pool assignments.",
+  "x-opt2-kind": "state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "siteId",
+    "publicUserPoolId",
+    "privateUserPoolId",
+    "categoryPoolId",
+    "filePoolId",
+    "displayPoolId",
+    "contentPoolIds",
+    "domains"
+  ],
+  "properties": {
+    "siteId": {
+      "description": "Legacy site id as stored in tsettings.SiteID, for example default, umbrella or tenant-a.",
+      "type": "string",
+      "minLength": 1
+    },
+    "publicUserPoolId": {
+      "description": "Legacy site id of the public user pool; the site's own id when unset.",
+      "type": "string",
+      "minLength": 1
+    },
+    "privateUserPoolId": {
+      "description": "Legacy site id of the private (system) user pool; the site's own id when unset.",
+      "type": "string",
+      "minLength": 1
+    },
+    "categoryPoolId": {
+      "description": "Legacy site id of the category pool; the site's own id when unset.",
+      "type": "string",
+      "minLength": 1
+    },
+    "filePoolId": {
+      "description": "Legacy site id of the file pool; the site's own id when unset.",
+      "type": "string",
+      "minLength": 1
+    },
+    "displayPoolId": {
+      "description": "Legacy site id of the display (theme) pool; the site's own id when unset.",
+      "type": "string",
+      "minLength": 1
+    },
+    "contentPoolIds": {
+      "description": "Legacy site ids of the contentPoolID list in stored order; [siteId] when unset.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "domains": {
+      "description": "Site Domain followed by its CRLF-separated domainAlias entries; empty when neither is set.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
