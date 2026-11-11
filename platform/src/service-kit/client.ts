@@ -28,6 +28,8 @@ export interface ServiceRequest {
   headers?: Record<string, string>;
   /** User token for `Authorization`: undefined forwards the request context's token, null sends none. */
   userToken?: string | null;
+  /** Returns the body as the received bytes (a Buffer) whatever its media type, for byte-exact passthrough. */
+  rawBody?: boolean;
 }
 
 /** A callee's answer; every status is returned as data, 4xx and 5xx included. */
@@ -207,7 +209,7 @@ export function createServiceClient(options: ServiceClientOptions): ServiceClien
       if (value !== undefined) responseHeaders[name.toLowerCase()] = value;
     }
     const callee = `Service ${req.service} (called by ${options.self})`;
-    const decoded = decodeBody(raw, responseHeaders['content-type'], callee);
+    const decoded = req.rawBody === true ? raw : decodeBody(raw, responseHeaders['content-type'], callee);
     return { status: response.statusCode, headers: responseHeaders, body: decoded as T };
   }
 

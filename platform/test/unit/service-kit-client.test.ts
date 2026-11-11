@@ -206,6 +206,17 @@ describe('createServiceClient with a MockAgent', () => {
     expect(res.body).toEqual(expected);
   });
 
+  it.each<[string, string, string]>([
+    ['JSON', 'application/json;charset=utf-8', '{"html":"<a href=\\"\\/x\\">\\u00e9<\\/a>"}'],
+    ['invalid JSON', 'application/json', '{bad'],
+    ['text', 'text/csv', 'a,b\r\n1,2\r\n'],
+  ])('returns %s bytes untouched with rawBody', async (_label, contentType, data) => {
+    agent.get(IDENTITY).intercept({ path: '/x' }).reply(200, data, { headers: { 'Content-Type': contentType } });
+    const res = await client.request<Buffer>({ service: 'identity', method: 'GET', path: '/x', rawBody: true });
+    expect(Buffer.isBuffer(res.body)).toBe(true);
+    expect(res.body.toString('utf8')).toBe(data);
+  });
+
   it('throws an Error naming the callee for invalid JSON', async () => {
     agent.get(IDENTITY).intercept({ path: '/x' }).reply(200, '{bad', { headers: { 'content-type': 'application/json' } });
     const err = await client.request({ service: 'identity', method: 'GET', path: '/x' }).catch((e: unknown) => e);
