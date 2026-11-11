@@ -1,0 +1,72 @@
+# Role-override sample with one malformed override id.
+sourceSha: "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+
+extractorPatterns:
+  - id: P0
+    shape: "before() calls no secure()"
+    requiredRole: public
+  - id: P1
+    shape: "!(Admin;<privateUserPoolID>;0 membership OR S2 membership), or the equivalent !Admin AND !S2, then secure()"
+    requiredRole: {anyOf: [s2, site-admin]}
+  - id: P2
+    shape: "(not Admin AND not S2) AND !(getModulePerm(X) [AND getModulePerm(000)]), or the shortcut-free !(getModulePerm(000) AND getModulePerm(X)), then secure(); a single getModulePerm(X) gives m:X alone"
+    requiredRole: {anyOf: [s2, site-admin, {allOf: ["m:X", "m:000"]}]}
+  - id: P3
+    shape: "!S2 membership, then secure()"
+    requiredRole: s2
+  - id: P4
+    shape: "!getModulePerm(X), then secure()"
+    requiredRole: {anyOf: [s2, site-admin, "m:X"]}
+  - id: P5
+    shape: "!session.mura.isLoggedIn, then secure()"
+    requiredRole: {anyOf: [system-user, member]}
+
+applicationGate:
+  source: {path: admin/Application.cfc, lines: [444, 451]}
+  siteFrom:
+    order: [rc.siteid, session.siteid, default]
+    except: {action: csettings.editsite, order: [rc.siteid, default]}
+    unknownSite: default
+    source: {path: admin/Application.cfc, lines: [342, 412]}
+  siteArray:
+    requiredRole: {anyOf: [s2, site-admin, "m:000"]}
+    built: "once per session, on the first logged-in admin request without session.siteArray, from every site where getModulePerm('00000000000000000000000000000000000', site) is true"
+    cleared: "at login [core/mura/user/userUtility.cfc:339]"
+    source: {path: admin/Application.cfc, lines: [433, 441]}
+  anonymous: "not affected: a logged-out session skips the gate and gets session.siteArray = [] [admin/Application.cfc:455-457]"
+  rules:
+    - id: no-site-not-private
+      on: session
+      predicate: "logged in, session.siteArray empty, memberships lack S2IsPrivate, and the circuit of rc.muraAction is not clogin"
+      redirect: clogin.logout
+      source: {path: admin/Application.cfc, lines: [444, 445]}
+    - id: no-site
+      on: session
+      predicate: "logged in, session.siteArray empty, the previous rule not matched, and rc.muraAction is empty or its circuit is not clogin, cMessage or cEditprofile (case-insensitive)"
+      redirect: cMessage.noaccess
+      source: {path: admin/Application.cfc, lines: [446, 451]}
+
+denialDefault:
+  source: {path: admin/core/controllers/controller.cfc, lines: [83, 92]}
+  anonymous: "redirect cLogin.main with returnURL,compactDisplay"
+  authenticated: "utility.backUp(): cflocation to cgi.HTTP_REFERER, else ./ [core/mura/utility.cfc:302-310]"
+
+overrides:
+  - id: "role:cfixture.special"
+    circuit: cfixture
+    action: special
+    requiredRole: {anyOf: [site-admin, s2]}
+    gate: {path: admin/core/controllers/cfixture.cfc, lines: [11, 13]}
+    reason: "For cFixture.special the before() gate skips the module test and calls secure() unless getBean('fixtureGate').allows(arguments.rc) is true, an opaque bean check that no extractor pattern classifies."
+  - id: "role:cmessage.*"
+    circuit: cmessage
+    action: "*"
+    requiredRole: system-user
+    gate: {path: admin/core/controllers/cmessage.cfc, lines: [78, 82]}
+    reason: "The gate requires a login and the S2IsPrivate membership and redirects every other caller to the site root instead of calling secure()."
+  - id: "cusers-update"
+    circuit: cusers
+    action: "*"
+    requiredRole: "m:008"
+    gate: {path: admin/core/controllers/cusers.cfc, lines: [90, 124]}
+    reason: "The module test for m:008 runs through rc.isAdmin, which before() builds from the private-pool Admin and S2 memberships, a form the extractor patterns do not read."

@@ -1,0 +1,27 @@
+# Writer-override sample carrying a non-pinned sourceSha.
+sourceSha: "0000000000000000000000000000000000000000"
+
+writers:
+  - id: wov:fixture-relogin
+    tables: [tusers]
+    component: core/mura/fixture/fixtureManager.cfc
+    method: refreshLogin
+    op: update
+    source: {path: core/mura/fixture/fixtureManager.cfc, lines: [18, 20]}
+    routeKeys: ["api:user.save"]
+    keyScope: [userid, siteid]
+    trigger: request
+    sessionEffects: relogin
+    reason: "refreshLogin calls login() on a user bean passed in as an argument, so the extractor cannot resolve the userBean.login() chain that rewrites the user's tusers row and logs the session user in again."
+
+  - id: wov:fixture-thread
+    tables: [tfixturestats]
+    component: core/mura/fixture/fixtureManager.cfc
+    method: trackStats
+    op: insert
+    source: {path: core/mura/fixture/fixtureManager.cfc, lines: [12, 16]}
+    routeKeys: []
+    keyScope: [siteid]
+    trigger: thread
+    sessionEffects: none
+    reason: "The tfixturestats insert runs in a cfthread that outlives the request that started it, so that request's closure cannot carry it."

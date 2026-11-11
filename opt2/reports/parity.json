@@ -1,0 +1,204 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "generatedBy": "harness/src/golden/compare.ts",
+  "generatedAt": null,
+  "status": "pending-run",
+  "replayedBy": "harness/src/golden/replay.ts",
+  "tableVersion": "v0002",
+  "fixtures": {
+    "available": null,
+    "reason": null,
+    "source": "${OPT2_STATE_DIR}/fixtures.json"
+  },
+  "summary": {
+    "total": null,
+    "pass": null,
+    "fail": null,
+    "excepted": null,
+    "halted": null,
+    "knownIssue": null,
+    "withheld": null,
+    "skipped": null
+  },
+  "scenarios": [],
+  "unmetWithheld": [],
+  "planned": {
+    "provenance": "planning",
+    "withheld": [
+      {
+        "scenario": "GS-ID-05",
+        "routeKeys": [
+          "admin:cusers.update{type=2,action=delete}",
+          "admin:cusers.update{photo}",
+          "admin:cusers.update{type=2,action=add,extdata}",
+          "admin:cusers.update{type=2,action=update,extdata}"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=delete}",
+          "opt2/decision-list.json#actionVariants/admin:cusers.update{photo}",
+          "opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=add,extdata}",
+          "opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=update,extdata}"
+        ]
+      },
+      {
+        "scenario": "GS-ID-06",
+        "routeKeys": [
+          "admin:cusers.update{type=1,action=delete}",
+          "admin:cusers.update{type=1,extdata}"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#actionVariants/admin:cusers.update{type=1,action=delete}",
+          "opt2/decision-list.json#actionVariants/admin:cusers.update{type=1,extdata}"
+        ]
+      },
+      {
+        "scenario": "GS-ID-07",
+        "routeKeys": [
+          "admin:cperm.update"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#actionVariants/admin:cperm.update"
+        ]
+      },
+      {
+        "scenario": "GS-PE-04",
+        "routeKeys": [
+          "admin:ceditprofile.update{photo}",
+          "admin:ceditprofile.update{extdata}"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#actionVariants/admin:ceditprofile.update{photo}",
+          "opt2/decision-list.json#actionVariants/admin:ceditprofile.update{extdata}"
+        ]
+      },
+      {
+        "scenario": "GS-PS-01",
+        "routeKeys": [
+          "admin:csettings.updatesite{action=add}"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#actionVariants/admin:csettings.updatesite{action=add}",
+          "opt2/decision-list.json#tables/trazunasettings"
+        ]
+      },
+      {
+        "scenario": "GS-PS-02",
+        "routeKeys": [
+          "admin:csettings.updatesite{action=update}"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#tables/trazunasettings"
+        ]
+      },
+      {
+        "scenario": "GS-PS-03",
+        "routeKeys": [
+          "admin:csettings.sitecopyselect",
+          "admin:csettings.sitecopy"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#actionVariants/admin:csettings.sitecopyselect",
+          "opt2/decision-list.json#actionVariants/admin:csettings.sitecopy",
+          "opt2/decision-list.json#tables/tplugins",
+          "opt2/decision-list.json#tables/tpluginsettings",
+          "opt2/decision-list.json#tables/tpluginscripts",
+          "opt2/decision-list.json#tables/tplugindisplayobjects",
+          "opt2/decision-list.json#tables/trazunasettings"
+        ]
+      },
+      {
+        "scenario": "GS-PS-05",
+        "routeKeys": [
+          "admin:cextend.*"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#actionVariants/admin:cextend.*",
+          "opt2/decision-list.json#tables/tplugins",
+          "opt2/decision-list.json#tables/tpluginsettings",
+          "opt2/decision-list.json#tables/tpluginscripts",
+          "opt2/decision-list.json#tables/tplugindisplayobjects",
+          "opt2/decision-list.json#tables/trazunasettings"
+        ]
+      },
+      {
+        "scenario": "GS-PS-06",
+        "routeKeys": [
+          "admin:ctrash.*"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#actionVariants/admin:ctrash.*",
+          "opt2/decision-list.json#tables/tcontenteventreminders"
+        ]
+      },
+      {
+        "scenario": "GS-CO-03",
+        "routeKeys": [
+          "admin:carch.update{approved=1}"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#tables/tcontenteventreminders"
+        ]
+      },
+      {
+        "scenario": "GS-CO-10",
+        "routeKeys": [
+          "admin:cchangesets.publish"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#tables/tcontenteventreminders"
+        ]
+      },
+      {
+        "scenario": "GS-CO-13",
+        "routeKeys": [
+          "admin:cfeed.import2"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#tables/tcontenteventreminders"
+        ]
+      },
+      {
+        "scenario": "GS-PUB-03",
+        "routeKeys": [
+          "page:createprofile",
+          "page:updateprofile"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#actionVariants/page:createprofile",
+          "opt2/decision-list.json#actionVariants/page:updateprofile"
+        ]
+      },
+      {
+        "scenario": "GS-PUB-05",
+        "routeKeys": [
+          "api:processasyncobject{saveform}",
+          "page:saveform"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#actionVariants/api:processasyncobject{saveform}",
+          "opt2/decision-list.json#actionVariants/page:saveform"
+        ]
+      },
+      {
+        "scenario": "GS-BR-01",
+        "routeKeys": [
+          "page:render"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#actionVariants/page:render"
+        ]
+      }
+    ],
+    "halted": [
+      {
+        "scenario": "GS-CO-07",
+        "exceptionId": "EX-FILE-RENDITION",
+        "routeKeys": [
+          "admin:carch.update{upload=image}",
+          "admin:carch.multifileupload{upload=image}",
+          "api:file.save{upload=image}"
+        ]
+      }
+    ]
+  }
+}
