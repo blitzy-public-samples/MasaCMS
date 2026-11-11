@@ -1,0 +1,1985 @@
+openapi: 3.1.0
+info:
+  title: stub
+  version: 1.0.0
+  description: 'API of the OPT-2 platform-proof stub: one tenant-owned note entity, its self-consumed event, the migration owner endpoints and the outbox sweep; local only, never deployed.'
+  x-source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f
+servers:
+  - url: http://127.0.0.1:8199
+    description: local
+x-opt2-calls: []
+security:
+  - userToken: []
+    invocationCredential: []
+tags:
+  - name: notes
+    description: Tenant-owned notes and their event-fed projection.
+  - name: health
+    description: Liveness probe.
+  - name: migration
+    description: Owner side of backfill, change feed, reconciliation exports and unit gates.
+  - name: events
+    description: Pub/Sub push deliveries.
+  - name: tasks
+    description: Cloud Tasks deliveries and queue control.
+paths:
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Liveness probe.
+      tags:
+        - health
+      x-opt2-transport: service
+      x-opt2-public: true
+      security: []
+      responses:
+        '200':
+          description: The service is running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+          description: A presented credential is invalid.
+  /opt2/stub/notes:
+    post:
+      operationId: createNote
+      summary: Creates a note in the token's tenant and writes its `stub.note.created.v1` outbox row in the same transaction.
+      tags:
+        - notes
+      x-opt2-transport: service
+      x-opt2-requires:
+        - system-user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NoteCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/NoteCreate'
+      responses:
+        '200':
+          $ref: '#/components/responses/NoteSaved'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: 'Legacy 400 `invalidParameters`: a missing or oversized title, or an oversized body.'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    get:
+      operationId: listNotes
+      summary: Lists the notes of the token's tenant ordered by creation time, then note id.
+      tags:
+        - notes
+      x-opt2-transport: service
+      x-opt2-requires:
+        - member
+        - system-user
+        - site-admin
+        - s2
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+      responses:
+        '200':
+          $ref: '#/components/responses/NoteListRead'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /opt2/stub/notes/{noteId}:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    get:
+      operationId: getNote
+      summary: Reads one note of the token's tenant.
+      tags:
+        - notes
+      x-opt2-transport: service
+      x-opt2-requires:
+        - member
+        - system-user
+        - site-admin
+        - s2
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+      responses:
+        '200':
+          $ref: '#/components/responses/NoteRead'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: deleteNote
+      summary: Deletes one note of the token's tenant; only S2 may.
+      tags:
+        - notes
+      x-opt2-transport: service
+      x-opt2-requires:
+        - s2
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+      responses:
+        '200':
+          $ref: '#/components/responses/NoteDeletedRead'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /opt2/stub/notes/{noteId}/projection:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    get:
+      operationId: getNoteProjection
+      summary: Reads the `stub.note_projection` row the self-consumed event wrote for a note.
+      tags:
+        - notes
+      x-opt2-transport: service
+      x-opt2-requires:
+        - member
+        - system-user
+        - site-admin
+        - s2
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+      responses:
+        '200':
+          $ref: '#/components/responses/NoteProjectionRead'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+          description: No such note in the token's tenant, or its event is not consumed yet.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/apply:
+    post:
+      operationId: migrationApply
+      summary: Applies one batch of canonical legacy rows to the owned units, once per batch id.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyRequest'
+      responses:
+        '200':
+          description: The batch outcome; a repeated batch id is a no-op reported as `duplicate`.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/export:
+    get:
+      operationId: migrationExport
+      summary: Exports one page of a unit's rows in canonical legacy form.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: unit
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - $ref: '#/components/parameters/MigrationTenantId'
+        - $ref: '#/components/parameters/MigrationSiteId'
+        - name: programId
+          in: query
+          required: false
+          description: Restricts a folded unit to one `Program_<id>` schema.
+          schema:
+            $ref: '#/components/schemas/DigitString'
+        - name: after
+          in: query
+          required: false
+          description: The previous page's `next` cursor.
+          schema:
+            type: string
+            minLength: 1
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: One export page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/changes:
+    get:
+      operationId: migrationChanges
+      summary: Reads the tenant's changelog after a cursor, below the commit-safe horizon.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/MigrationTenantId'
+        - $ref: '#/components/parameters/MigrationSiteId'
+        - name: after
+          in: query
+          required: false
+          description: Cursor `<xid>:<seq>`; `0:0` when omitted.
+          schema:
+            type: string
+            pattern: '^(0|[1-9][0-9]*):(0|[1-9][0-9]*)$'
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: One page of changes with their legacy projections.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChangesResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/position:
+    get:
+      operationId: migrationPosition
+      summary: Reports the current write position and the outbox and inbox drain counts.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: eventIds
+          in: query
+          required: false
+          description: Comma-separated event ids whose inbox receipts are reported.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The owner's position.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PositionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/watermark:
+    get:
+      operationId: migrationWatermarkGet
+      summary: Lists feed watermarks, optionally for one legacy table or direction.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: legacyTable
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+        - name: direction
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/WatermarkDirection'
+      responses:
+        '200':
+          description: Watermarks ordered by legacy table and direction.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WatermarkRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: migrationWatermarkPost
+      summary: Records the feed watermark of one legacy table and direction.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WatermarkInput'
+      responses:
+        '200':
+          description: The stored watermark.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatermarkRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/gate:
+    post:
+      operationId: migrationGate
+      summary: Closes, re-phases, opens or reads the unit gates of this owner.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GateRequest'
+      responses:
+        '200':
+          description: The gates after the operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Another holder owns a gate, so the compare-and-set was refused.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GateConflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: The gates could not close within the wait budget.
+
+  /internal/v1/events/stub.stub.note.created.v1:
+    post:
+      operationId: pushNoteCreated
+      summary: Receives push deliveries of `stub.note.created.v1` into `stub.note_projection`.
+      tags:
+        - events
+      x-opt2-transport: pubsub-push
+      x-opt2-requires:
+        - service:pubsub-invoker
+      security:
+        - pubsubPushOidc: []
+        - localPushKey: []
+      parameters:
+        - $ref: '#/components/parameters/PushKey'
+      requestBody:
+        $ref: '#/components/requestBodies/PushDelivery'
+      responses:
+        '204':
+          description: Acknowledged; the delivery was applied, already applied, or dead-lettered.
+        '400':
+          description: Not a push body; a nack.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: Processing failed; a nack, redelivered by Pub/Sub.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: A unit gate or the database is unavailable; a nack, redelivered by Pub/Sub.
+  /internal/v1/events/stub.programs-sites.site.changed.v1:
+    post:
+      operationId: pushSiteChanged
+      summary: Receives push deliveries of `programs-sites.site.changed.v1` into `stub.tenant_registry`.
+      tags:
+        - events
+      x-opt2-transport: pubsub-push
+      x-opt2-requires:
+        - service:pubsub-invoker
+      security:
+        - pubsubPushOidc: []
+        - localPushKey: []
+      parameters:
+        - $ref: '#/components/parameters/PushKey'
+      requestBody:
+        $ref: '#/components/requestBodies/PushDelivery'
+      responses:
+        '204':
+          description: Acknowledged; the delivery was applied, already applied, or dead-lettered.
+        '400':
+          description: Not a push body; a nack.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: Processing failed; a nack, redelivered by Pub/Sub.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: The database is unavailable; a nack, redelivered by Pub/Sub.
+  /internal/v1/outbox/sweep:
+    post:
+      operationId: outboxSweep
+      summary: Creates the next sweep task on `stub-outbox-sweep`, then publishes every unpublished outbox row per registry tenant.
+      tags:
+        - tasks
+      x-opt2-transport: cloud-tasks
+      x-opt2-requires:
+        - service:tasks-invoker
+      security:
+        - tasksInvokerOidc: []
+      parameters:
+        - $ref: '#/components/parameters/CloudTasksTaskName'
+        - $ref: '#/components/parameters/CloudTasksQueueName'
+        - $ref: '#/components/parameters/CloudTasksRetryCount'
+        - $ref: '#/components/parameters/CloudTasksExecutionCount'
+        - $ref: '#/components/parameters/CloudTasksEta'
+      requestBody:
+        $ref: '#/components/requestBodies/SystemTask'
+      responses:
+        '200':
+          description: The sweep totals.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SweepResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: A malformed task body, or one carrying a tenant.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: The sweep failed, so Cloud Tasks retries this task.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: The successor task could not be created, so Cloud Tasks retries this one.
+  /internal/v1/task-queues/{queue}/pause:
+    parameters:
+      - $ref: '#/components/parameters/Queue'
+    post:
+      operationId: queuePause
+      summary: Pauses dispatch from a queue this service creates tasks on.
+      tags:
+        - tasks
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+        - platform.operator
+      security:
+        - invocationCredential: []
+      responses:
+        '200':
+          $ref: '#/components/responses/QueueControlled'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: The queue is not one this service creates tasks on.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/task-queues/{queue}/resume:
+    parameters:
+      - $ref: '#/components/parameters/Queue'
+    post:
+      operationId: queueResume
+      summary: Resumes dispatch from a queue this service creates tasks on.
+      tags:
+        - tasks
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+        - platform.operator
+      security:
+        - invocationCredential: []
+      responses:
+        '200':
+          $ref: '#/components/responses/QueueControlled'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: The queue is not one this service creates tasks on.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/task-queues/{queue}/ensure:
+    parameters:
+      - $ref: '#/components/parameters/Queue'
+    post:
+      operationId: queueEnsure
+      summary: Ensures the recurring chain of a queue this service creates has a live task.
+      tags:
+        - tasks
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+        - platform.operator
+      security:
+        - invocationCredential: []
+      responses:
+        '200':
+          $ref: '#/components/responses/QueueControlled'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: The queue is not a recurring chain this service creates.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+components:
+  securitySchemes:
+    userToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Site-scoped user token in `Authorization`, minted by identity and attached by the gateway.
+    invocationCredential:
+      type: apiKey
+      in: header
+      name: X-Serverless-Authorization
+      description: Caller's invocation credential; a Google-signed ID token in the cloud, a local service token locally.
+    pubsubPushOidc:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: OIDC token of `pubsub-invoker` in `Authorization`, addressed to the push endpoint.
+    localPushKey:
+      type: apiKey
+      in: query
+      name: key
+      description: Local emulator push key, compared in constant time.
+    tasksInvokerOidc:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: OIDC token of `tasks-invoker` in `Authorization` in the cloud; a local `tasks-invoker` service token locally.
+  headers:
+    Generator:
+      description: Legacy generator header.
+      schema:
+        type: string
+        const: Masa CMS 7.6.1
+    StrictTransportSecurity:
+      description: Legacy HSTS header.
+      schema:
+        type: string
+        const: max-age=1200
+    ETag:
+      description: Uppercase hex SHA-256 of the exact body, unquoted, as ColdFusion `hash()` computes it.
+      schema:
+        type: string
+        pattern: '^[0-9A-F]{64}$'
+    WWWAuthenticate:
+      description: Challenge legacy sets before an authentication failure.
+      schema:
+        type: string
+    XOpt2WritePosition:
+      description: Committed write positions `<owner>=<xid>[,<owner>=<xid>…]`, here `stub=<xid>`; the gateway strips it from client responses.
+      schema:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9-]*=[0-9]+(,[a-z0-9][a-z0-9-]*=[0-9]+)*$'
+  parameters:
+    NoteId:
+      name: noteId
+      in: path
+      required: true
+      description: Note id; an unknown id, or one of another tenant, answers 404.
+      schema:
+        type: string
+        minLength: 1
+    SiteIdQuery:
+      name: siteid
+      in: query
+      required: false
+      description: Legacy site id, equal to the token's `site` (403 otherwise).
+      schema:
+        type: string
+        minLength: 1
+    MigrationTenantId:
+      name: tenantId
+      in: query
+      required: false
+      description: Tenant UUID; exactly one of `tenantId` and `siteId` is required.
+      schema:
+        type: string
+        format: uuid
+    MigrationSiteId:
+      name: siteId
+      in: query
+      required: false
+      description: Legacy site id resolved to its tenant; exactly one of `tenantId` and `siteId` is required.
+      schema:
+        type: string
+        minLength: 1
+    PageLimit:
+      name: limit
+      in: query
+      required: false
+      description: Page size, 1 to 10000; 1000 when omitted.
+      schema:
+        $ref: '#/components/schemas/DigitString'
+    PushKey:
+      name: key
+      in: query
+      required: false
+      description: Local emulator push key; absent in the cloud.
+      schema:
+        type: string
+    CloudTasksTaskName:
+      name: X-CloudTasks-TaskName
+      in: header
+      required: false
+      description: Task id; the body's `name` when absent.
+      schema:
+        type: string
+    CloudTasksQueueName:
+      name: X-CloudTasks-QueueName
+      in: header
+      required: false
+      description: Queue name; the body's `queue` when absent.
+      schema:
+        type: string
+    CloudTasksRetryCount:
+      name: X-CloudTasks-TaskRetryCount
+      in: header
+      required: false
+      schema:
+        type: string
+        pattern: '^[0-9]+$'
+    CloudTasksExecutionCount:
+      name: X-CloudTasks-TaskExecutionCount
+      in: header
+      required: false
+      schema:
+        type: string
+        pattern: '^[0-9]+$'
+    CloudTasksEta:
+      name: X-CloudTasks-TaskETA
+      in: header
+      required: false
+      description: Scheduled time in epoch seconds.
+      schema:
+        type: string
+    Queue:
+      name: queue
+      in: path
+      required: true
+      description: A queue this service creates tasks on; the stub creates only the local-only recurring `stub-outbox-sweep`.
+      schema:
+        type: string
+        enum:
+          - stub-outbox-sweep
+  requestBodies:
+    PushDelivery:
+      required: true
+      description: Pub/Sub push wrapper of one delivery.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PushBody'
+    SystemTask:
+      required: true
+      description: Task wire body of a tenant-less system task.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SystemTaskWireBody'
+  responses:
+    NoteSaved:
+      description: The created note in the legacy envelope.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        X-Opt2-Write-Position:
+          $ref: '#/components/headers/XOpt2WritePosition'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/NoteSaveEnvelope'
+    NoteListRead:
+      description: The tenant's notes in the legacy envelope.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/NoteListEnvelope'
+    NoteRead:
+      description: One note in the legacy envelope.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/NoteEnvelope'
+    NoteProjectionRead:
+      description: One projected note in the legacy envelope.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/NoteProjectionEnvelope'
+    NoteDeletedRead:
+      description: The delete outcome in the legacy envelope.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        X-Opt2-Write-Position:
+          $ref: '#/components/headers/XOpt2WritePosition'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/NoteDeletedEnvelope'
+    QueueControlled:
+      description: The queue's state after the operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/QueueControlResult'
+    BadRequest:
+      description: 'Legacy 400: `invalidParameters` or `badRequest`.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyError'
+    Unauthorized:
+      description: 'Legacy 401: `authorization` without a qualifying identity, or `invalidAccessToken`/`accessTokenExpired` for a bad credential.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        WWW-Authenticate:
+          $ref: '#/components/headers/WWWAuthenticate'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyError'
+    Forbidden:
+      description: The identity holds none of the required roles, or a supplied `siteid` differs from the token's site.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyError'
+    LegacyNotFound:
+      description: Legacy 404 in the error envelope.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyError'
+    ServerError:
+      description: Legacy 500 `server_error`.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyError'
+    Unavailable:
+      description: Legacy-shaped 503 after a fail-closed or wait-timeout condition.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyUnavailable'
+
+  schemas:
+    DigitString:
+      type: string
+      description: Non-negative decimal integer without leading zeros.
+      pattern: '^(0|[1-9][0-9]{0,14})$'
+    PositiveDigits:
+      type: string
+      description: Positive decimal integer as the legacy serializer quotes numbers under the default hint.
+      pattern: '^[1-9][0-9]*$'
+    CfUuid:
+      type: string
+      description: ColdFusion `createUUID()` id as the platform generates it.
+      minLength: 35
+      maxLength: 35
+      pattern: '^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$'
+    NoteTimestamp:
+      type: string
+      description: Local `timestamp(3)` text without an offset, as the outbox writes it.
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{3})?$'
+      examples:
+        - '2026-06-30 09:15:00.000'
+    LocalTimestamp:
+      type: string
+      description: Wall-clock time in the legacy server's zone, without an offset.
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}$'
+      examples:
+        - '2026-06-30T09:15:00.000'
+    WallClock:
+      type: string
+      description: Wall-clock time without a zone, `YYYY-MM-DD HH:MM[:SS[.fff]]` with a space or `T`.
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?$'
+    NullableString:
+      type:
+        - string
+        - 'null'
+    LegacyEnvelope:
+      type: object
+      description: Legacy JSON API success envelope; `params` is absent under `suppressAPIParams`, and `data` keys move to the top level when `useDataNamespace` is false.
+      required:
+        - apiversion
+        - method
+      additionalProperties: true
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          type: string
+        params:
+          type: object
+        data: {}
+    LegacyError:
+      type: object
+      description: 'Legacy JSON API error envelope; types map to status and code as authorization 401, invalidAccessToken and accessTokenExpired 401 invalid_token, disabled, invalidParameters, invalidEntityCall, invalidMethodCall, badRequest and invalidTokens 400 invalid_request, server_error 500.'
+      required:
+        - apiversion
+        - method
+        - error
+      additionalProperties: true
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          type: string
+        params:
+          type: object
+        error:
+          type: object
+          required:
+            - message
+            - code
+          additionalProperties: true
+          properties:
+            message:
+              type: string
+            code:
+              type: string
+              enum:
+                - invalid_request
+                - invalid_token
+                - server_error
+    LegacyUnavailable:
+      type: object
+      description: Legacy JSON API `server_error` envelope sent with status 503.
+      required:
+        - apiversion
+        - method
+        - error
+      additionalProperties: false
+      properties:
+        apiversion:
+          type: string
+          const: v1
+        method:
+          type: string
+        params:
+          type: object
+        error:
+          type: object
+          required:
+            - message
+            - code
+          additionalProperties: false
+          properties:
+            message:
+              type: string
+              const: Unhandled Exception
+            code:
+              type: string
+              const: server_error
+    NoteSaveEnvelope:
+      description: Legacy envelope of a created note.
+      allOf:
+        - $ref: '#/components/schemas/LegacyEnvelope'
+        - type: object
+          required:
+            - method
+            - data
+          properties:
+            method:
+              type: string
+              const: save
+            data:
+              $ref: '#/components/schemas/Note'
+    NoteEnvelope:
+      description: Legacy envelope of one note.
+      allOf:
+        - $ref: '#/components/schemas/LegacyEnvelope'
+        - type: object
+          required:
+            - method
+            - data
+          properties:
+            method:
+              type: string
+              const: findOne
+            data:
+              $ref: '#/components/schemas/Note'
+    NoteListEnvelope:
+      description: Legacy envelope of the tenant's notes.
+      allOf:
+        - $ref: '#/components/schemas/LegacyEnvelope'
+        - type: object
+          required:
+            - method
+            - data
+          properties:
+            method:
+              type: string
+              const: findMany
+            data:
+              $ref: '#/components/schemas/NoteList'
+    NoteProjectionEnvelope:
+      description: Legacy envelope of one projected note.
+      allOf:
+        - $ref: '#/components/schemas/LegacyEnvelope'
+        - type: object
+          required:
+            - method
+            - data
+          properties:
+            method:
+              type: string
+              const: findProjection
+            data:
+              $ref: '#/components/schemas/NoteProjection'
+    NoteDeletedEnvelope:
+      description: Legacy envelope of a delete.
+      allOf:
+        - $ref: '#/components/schemas/LegacyEnvelope'
+        - type: object
+          required:
+            - method
+            - data
+          properties:
+            method:
+              type: string
+              const: delete
+            data:
+              $ref: '#/components/schemas/NoteDeleted'
+    Note:
+      type: object
+      description: A `stub.note` row as the legacy serializer emits it, keys lower-cased.
+      required:
+        - noteid
+        - title
+        - body
+        - created
+        - rowversion
+      additionalProperties: false
+      properties:
+        noteid:
+          $ref: '#/components/schemas/CfUuid'
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        body:
+          type: string
+          maxLength: 10000
+        created:
+          $ref: '#/components/schemas/NoteTimestamp'
+        rowversion:
+          $ref: '#/components/schemas/PositiveDigits'
+    NoteList:
+      type: object
+      description: The tenant's notes ordered by `created`, then `noteid`.
+      required:
+        - items
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Note'
+    NoteProjection:
+      type: object
+      description: A `stub.note_projection` row as the legacy serializer emits it, keys lower-cased.
+      required:
+        - noteid
+        - title
+        - body
+        - created
+        - aggregateversion
+        - applycount
+        - lasteventid
+        - projectedat
+      additionalProperties: false
+      properties:
+        noteid:
+          $ref: '#/components/schemas/CfUuid'
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        body:
+          type: string
+          maxLength: 10000
+        created:
+          $ref: '#/components/schemas/NoteTimestamp'
+        aggregateversion:
+          $ref: '#/components/schemas/PositiveDigits'
+        applycount:
+          $ref: '#/components/schemas/PositiveDigits'
+        lasteventid:
+          type: string
+          description: Event id of the last applied delivery.
+          pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        projectedat:
+          $ref: '#/components/schemas/NoteTimestamp'
+    NoteDeleted:
+      type: object
+      required:
+        - deleted
+      additionalProperties: false
+      properties:
+        deleted:
+          type: boolean
+          const: true
+    NoteCreate:
+      type: object
+      description: A note to create; field names match ignoring case, and other fields are ignored.
+      required:
+        - title
+      additionalProperties: true
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        body:
+          type: string
+          description: Note body; empty when omitted.
+          maxLength: 10000
+        siteid:
+          type: string
+          minLength: 1
+          description: Legacy site id, equal to the token's `site` (403 otherwise).
+    TaskWireBody:
+      type: object
+      description: JSON body both task adapters post; `tenantId` is null on system tasks.
+      required:
+        - queue
+        - name
+        - tenantId
+      additionalProperties: true
+      properties:
+        queue:
+          type: string
+          minLength: 1
+        name:
+          type: string
+          minLength: 1
+        tenantId:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        payload: {}
+    SystemTaskWireBody:
+      description: Task wire body of a recurring system task, which names no tenant.
+      allOf:
+        - $ref: '#/components/schemas/TaskWireBody'
+        - type: object
+          required:
+            - tenantId
+          properties:
+            tenantId:
+              type: 'null'
+    PushBody:
+      type: object
+      description: Pub/Sub push wrapper; `data` is the base64 event envelope.
+      required:
+        - message
+        - subscription
+      additionalProperties: true
+      properties:
+        message:
+          type: object
+          additionalProperties: true
+          properties:
+            data:
+              type: string
+              contentEncoding: base64
+            attributes:
+              type: object
+              additionalProperties:
+                type: string
+            messageId:
+              type: string
+            message_id:
+              type: string
+            publishTime:
+              type: string
+            publish_time:
+              type: string
+            orderingKey:
+              type: string
+        subscription:
+          type: string
+          description: Usually `projects/<project>/subscriptions/<subscription>`, the subscription the path names.
+        deliveryAttempt:
+          type: integer
+    SweepResult:
+      type: object
+      description: Totals of one sweep and each recovery hook's outcome in run order.
+      required:
+        - published
+        - failed
+        - skipped
+        - tenants
+        - hooks
+      additionalProperties: false
+      properties:
+        published:
+          type: integer
+          minimum: 0
+        failed:
+          type: integer
+          minimum: 0
+        skipped:
+          type: integer
+          minimum: 0
+        tenants:
+          type: integer
+          minimum: 0
+        hooks:
+          type: array
+          items:
+            type: object
+            required:
+              - name
+              - ok
+            additionalProperties: false
+            properties:
+              name:
+                type: string
+              ok:
+                type: boolean
+    EnsureRecurringResult:
+      type: object
+      required:
+        - queue
+        - name
+        - created
+        - reason
+      additionalProperties: false
+      properties:
+        queue:
+          type: string
+        name:
+          type: string
+        created:
+          type: boolean
+        reason:
+          type: string
+          enum:
+            - live
+            - created-current
+            - created-next
+    QueueControlResult:
+      type: object
+      description: The queue's paused state after pause or resume, or the chain task `ensure` found or created.
+      required:
+        - queue
+        - service
+      additionalProperties: false
+      properties:
+        queue:
+          type: string
+        service:
+          type: string
+          const: stub
+        paused:
+          type: boolean
+        ensured:
+          $ref: '#/components/schemas/EnsureRecurringResult'
+    CanonicalType:
+      type: string
+      description: Canonical encoding tag.
+      enum:
+        - s
+        - i
+        - f
+        - d
+        - t
+        - b
+    CanonicalColumn:
+      type: object
+      required:
+        - name
+        - type
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+        type:
+          $ref: '#/components/schemas/CanonicalType'
+        scale:
+          type: integer
+          minimum: 0
+    WatermarkDirection:
+      type: string
+      enum:
+        - forward
+        - reverse
+    WatermarkFields:
+      type: object
+      required:
+        - direction
+        - finishedAt
+      properties:
+        direction:
+          $ref: '#/components/schemas/WatermarkDirection'
+        snapshotSeq:
+          type: integer
+          minimum: 0
+        backupLsn:
+          type: string
+          pattern: '^[0-9]{1,25}$'
+        finishedAt:
+          $ref: '#/components/schemas/WallClock'
+    ApplyRequest:
+      type: object
+      description: One batch of canonical legacy rows for one legacy table and tenant; exactly one of `tenantId` and `siteId` is required.
+      required:
+        - batchId
+        - origin
+        - legacyTable
+        - columns
+        - rows
+      additionalProperties: false
+      properties:
+        batchId:
+          type: string
+          minLength: 1
+        origin:
+          type: string
+          enum:
+            - backfill
+            - migration-feed
+            - legacy-window
+        legacyTable:
+          type: string
+          minLength: 1
+        tenantId:
+          type: string
+          minLength: 1
+        siteId:
+          type: string
+          minLength: 1
+        legacyProgramId:
+          type: integer
+          minimum: 0
+        columns:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/CanonicalColumn'
+        units:
+          type: array
+          items:
+            type: string
+            minLength: 1
+        holderId:
+          type: string
+          minLength: 1
+        rows:
+          type: array
+          items:
+            type: object
+            required:
+              - op
+              - row
+            additionalProperties: false
+            properties:
+              op:
+                type: string
+                enum:
+                  - upsert
+                  - delete
+                  - insert
+              row:
+                type: string
+              discriminator:
+                type:
+                  - string
+                  - number
+        watermark:
+          allOf:
+            - $ref: '#/components/schemas/WatermarkFields'
+          unevaluatedProperties: false
+    ApplyResponse:
+      type: object
+      required:
+        - batchId
+        - duplicate
+        - applied
+        - skipped
+      additionalProperties: false
+      properties:
+        batchId:
+          type: string
+        duplicate:
+          type: boolean
+        applied:
+          type: integer
+          minimum: 0
+        skipped:
+          type: integer
+          minimum: 0
+    ObjectManifestEntry:
+      type: object
+      required:
+        - key
+        - size
+        - sha256
+      additionalProperties: false
+      properties:
+        key:
+          type: string
+        size:
+          type: integer
+          minimum: 0
+        sha256:
+          type: string
+        contentType:
+          type: string
+        legacyPath:
+          type: string
+    ExportRow:
+      type: object
+      description: One row in legacy form; `key` is the whole-row encoding for keyless tables.
+      required:
+        - key
+        - row
+        - hash
+      additionalProperties: false
+      properties:
+        key:
+          type: string
+        row:
+          type: string
+        hash:
+          type: string
+        legacyProgramId:
+          type: integer
+    ExportTable:
+      type: object
+      required:
+        - unit
+        - legacyTable
+        - targetTable
+        - keyless
+        - columns
+        - rows
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        legacyTable:
+          type: string
+        targetTable:
+          type: string
+        keyless:
+          type: boolean
+        columns:
+          type: array
+          items:
+            $ref: '#/components/schemas/CanonicalColumn'
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExportRow'
+    ExportResponse:
+      type: object
+      description: One export page; `next` is null after the last page, and `objects` comes with the first page only.
+      required:
+        - unit
+        - tenantId
+        - tables
+        - next
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        tenantId:
+          type: string
+          format: uuid
+        tables:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExportTable'
+        next:
+          type:
+            - string
+            - 'null'
+        objects:
+          type: array
+          items:
+            $ref: '#/components/schemas/ObjectManifestEntry'
+    ChangeOp:
+      type: string
+      enum:
+        - insert
+        - update
+        - delete
+    ChangeOrigin:
+      type: string
+      enum:
+        - target
+        - legacy-window
+        - migration-feed
+        - backfill
+    LegacyChange:
+      type: object
+      description: A changelog row in the legacy form of one mapping; `columns` are legacy names.
+      required:
+        - unit
+        - legacyTable
+        - key
+        - before
+        - after
+        - columns
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        legacyTable:
+          type: string
+        key:
+          type: string
+        before:
+          $ref: '#/components/schemas/NullableString'
+        after:
+          $ref: '#/components/schemas/NullableString'
+        columns:
+          type: array
+          items:
+            type: string
+        legacyProgramId:
+          type: integer
+    ProjectedChangeRow:
+      type: object
+      description: One changelog row; `xid` and `seq` are decimal strings, `at` is `YYYY-MM-DD HH:MM:SS.mmm`.
+      required:
+        - xid
+        - seq
+        - table
+        - op
+        - key
+        - before
+        - after
+        - columns
+        - origin
+        - actorUserId
+        - actorService
+        - at
+        - requestId
+        - operationId
+        - legacy
+      additionalProperties: false
+      properties:
+        xid:
+          type: string
+          pattern: '^[0-9]+$'
+        seq:
+          type: string
+          pattern: '^[0-9]+$'
+        table:
+          type: string
+        op:
+          $ref: '#/components/schemas/ChangeOp'
+        key:
+          type: string
+        before:
+          $ref: '#/components/schemas/NullableString'
+        after:
+          $ref: '#/components/schemas/NullableString'
+        columns:
+          type: array
+          items:
+            type: string
+        origin:
+          $ref: '#/components/schemas/ChangeOrigin'
+        actorUserId:
+          $ref: '#/components/schemas/NullableString'
+        actorService:
+          $ref: '#/components/schemas/NullableString'
+        at:
+          type: string
+        requestId:
+          $ref: '#/components/schemas/NullableString'
+        operationId:
+          $ref: '#/components/schemas/NullableString'
+        legacy:
+          type: array
+          items:
+            $ref: '#/components/schemas/LegacyChange'
+    OperationStatus:
+      type: string
+      enum:
+        - open
+        - done
+        - rolled-back
+    ChangesResponse:
+      type: object
+      description: Rows below `horizon` in `(xid, seq)` order; `horizon` counts as applied only when `complete`.
+      required:
+        - rows
+        - cursor
+        - horizon
+        - complete
+        - operations
+      additionalProperties: false
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectedChangeRow'
+        cursor:
+          type: string
+          pattern: '^[0-9]+:[0-9]+$'
+        horizon:
+          type: string
+          pattern: '^[0-9]+$'
+        complete:
+          type: boolean
+        operations:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/OperationStatus'
+    TenantDrainCount:
+      type: object
+      required:
+        - tenantId
+        - unpublished
+        - held
+      additionalProperties: false
+      properties:
+        tenantId:
+          type: string
+        unpublished:
+          type: integer
+          minimum: 0
+        held:
+          type: integer
+          minimum: 0
+    OutboxDrainCounts:
+      type: object
+      required:
+        - tenants
+        - unpublished
+        - held
+      additionalProperties: false
+      properties:
+        tenants:
+          type: array
+          items:
+            $ref: '#/components/schemas/TenantDrainCount'
+        unpublished:
+          type: integer
+          minimum: 0
+        held:
+          type: integer
+          minimum: 0
+    InboxCounts:
+      type: object
+      description: Inbox receipts over every registered tenant; `receipts` maps each asked event id to the tenants that applied it.
+      required:
+        - total
+        - bySubscription
+      additionalProperties: false
+      properties:
+        total:
+          type: integer
+          minimum: 0
+        bySubscription:
+          type: object
+          additionalProperties:
+            type: integer
+        receipts:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+    PositionResponse:
+      type: object
+      description: The latest assigned xid and the drain counts; `outbox` or `inbox` is null where the service has no such table.
+      required:
+        - owner
+        - position
+        - outbox
+        - inbox
+      additionalProperties: false
+      properties:
+        owner:
+          type: string
+          const: stub
+        position:
+          type: string
+          pattern: '^[0-9]+$'
+        outbox:
+          oneOf:
+            - $ref: '#/components/schemas/OutboxDrainCounts'
+            - type: 'null'
+        inbox:
+          oneOf:
+            - $ref: '#/components/schemas/InboxCounts'
+            - type: 'null'
+    WatermarkRecord:
+      type: object
+      required:
+        - legacyTable
+        - direction
+        - snapshotSeq
+        - backupLsn
+        - finishedAt
+      additionalProperties: false
+      properties:
+        legacyTable:
+          type: string
+        direction:
+          $ref: '#/components/schemas/WatermarkDirection'
+        snapshotSeq:
+          type:
+            - integer
+            - 'null'
+        backupLsn:
+          $ref: '#/components/schemas/NullableString'
+        finishedAt:
+          $ref: '#/components/schemas/LocalTimestamp'
+    WatermarkInput:
+      description: A watermark to record for one legacy table.
+      allOf:
+        - $ref: '#/components/schemas/WatermarkFields'
+        - type: object
+          required:
+            - legacyTable
+          properties:
+            legacyTable:
+              type: string
+              minLength: 1
+      unevaluatedProperties: false
+    GateState:
+      type: string
+      enum:
+        - legacy
+        - open
+        - closed
+    GatePhase:
+      type: string
+      enum:
+        - quiet
+        - executing
+        - importing
+        - import-pending
+    UnitList:
+      type: array
+      minItems: 1
+      items:
+        type: string
+        minLength: 1
+    GateRequest:
+      description: One gate operation, selected by `op`.
+      oneOf:
+        - $ref: '#/components/schemas/GateClose'
+        - $ref: '#/components/schemas/GatePhaseChange'
+        - $ref: '#/components/schemas/GateOpen'
+        - $ref: '#/components/schemas/GateStatus'
+      discriminator:
+        propertyName: op
+        mapping:
+          close: '#/components/schemas/GateClose'
+          phase: '#/components/schemas/GatePhaseChange'
+          open: '#/components/schemas/GateOpen'
+          status: '#/components/schemas/GateStatus'
+    GateClose:
+      type: object
+      description: Closes the units' gates for a holder; `allowLegacy` lets a transition close units still `legacy`.
+      required:
+        - op
+        - units
+        - holderId
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: close
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+        phase:
+          $ref: '#/components/schemas/GatePhase'
+        allowLegacy:
+          type: boolean
+        timeoutMs:
+          type: integer
+          minimum: 1
+          maximum: 30000
+    GatePhaseChange:
+      type: object
+      description: Sets the phase of gates the holder closed.
+      required:
+        - op
+        - units
+        - holderId
+        - phase
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: phase
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+        phase:
+          $ref: '#/components/schemas/GatePhase'
+    GateOpen:
+      type: object
+      description: Reopens the holder's gates as `open`, or sets them to `legacy`.
+      required:
+        - op
+        - units
+        - holderId
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: open
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+        state:
+          type: string
+          enum:
+            - open
+            - legacy
+    GateStatus:
+      type: object
+      description: Reads the gates; every unit of this owner when `units` is omitted.
+      required:
+        - op
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          const: status
+        units:
+          $ref: '#/components/schemas/UnitList'
+        holderId:
+          type: string
+          minLength: 1
+    UnitGate:
+      type: object
+      required:
+        - unit
+        - state
+        - holderId
+        - phase
+      additionalProperties: false
+      properties:
+        unit:
+          type: string
+        state:
+          $ref: '#/components/schemas/GateState'
+        holderId:
+          $ref: '#/components/schemas/NullableString'
+        phase:
+          $ref: '#/components/schemas/GatePhase'
+    GateResponse:
+      type: object
+      required:
+        - units
+      additionalProperties: false
+      properties:
+        units:
+          type: array
+          items:
+            $ref: '#/components/schemas/UnitGate'
+    GateConflict:
+      type: object
+      description: The units whose gate another holder owns.
+      required:
+        - error
+        - units
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          const: gate-conflict
+        units:
+          type: array
+          items:
+            type: string
+    Health:
+      type: object
+      required:
+        - status
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          const: ok
