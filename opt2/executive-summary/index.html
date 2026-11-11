@@ -129,14 +129,14 @@
     .mermaid-container {
       display: flex; justify-content: center; align-items: center; box-sizing: border-box;
       background: var(--blitzy-surface-0); border: 1px solid var(--blitzy-border-soft);
-      border-radius: 20px; padding: 28px 36px; max-height: 760px; overflow: hidden;
+      border-radius: 20px; padding: 28px 36px; max-height: 890px; overflow: hidden;
     }
     .reveal pre.mermaid {
       width: 100%; margin: 0; padding: 0; background: transparent; border: 0; box-shadow: none;
       font-family: var(--ff-body); font-size: 16px; text-align: center; white-space: pre;
     }
     .reveal pre.mermaid:not([data-processed]) { color: transparent; }
-    .mermaid-container svg { width: 100%; max-width: 100% !important; height: auto; max-height: 700px; }
+    .mermaid-container svg { width: 100%; max-width: 100% !important; height: auto; max-height: 820px; }
     .mermaid-container.compact svg { max-height: 300px; }
     .mermaid-container.timeline svg { max-height: 560px; }
 
@@ -208,7 +208,7 @@
           <div class="kpi-card" data-source="opt2/table-ownership.json#counts.liveStatic">
             <i data-lucide="database" class="kpi-icon"></i>
             <div class="kpi-value">73</div>
-            <div class="kpi-label">Legacy tables, every one assigned an owner</div>
+            <div class="kpi-label">Legacy tables inventoried: <span class="nowrap">51 one owner,</span> 12 split, 10 withheld</div>
             <div class="kpi-note">108 target units, one writer each</div>
           </div>
           <div class="kpi-card" data-source="opt2/reports/baseline.json#expected.totals.specs">
@@ -243,16 +243,24 @@ flowchart LR
     B1["Browser"] --> B2["Masa CMS on Adobe ColdFusion 2023"]
     B2 --> B3[("SQL Server 2022")]
   end
-  subgraph AFTER["After: OPT-2 on Google Cloud"]
-    direction LR
+  subgraph AFTER["After: OPT-2 beside legacy"]
+    direction TB
     A1["Browser"] --> A2["Gateway and cut-over table"]
-    A2 --> A3["Next.js admin"]
-    A2 --> A4["Ten domain services"]
-    A2 -->|unmoved routes| A5["Legacy Masa"]
+    A2 -->|"moved screens"| A3["Next.js admin"]
+    A3 -->|"service calls"| A2
+    A2 -->|"moved routes"| A4["Ten domain services"]
     A4 --> A6[("PostgreSQL schema per service")]
-    A4 --> A7["Pub/Sub events"]
     A4 --> A8["Cloud Tasks"]
     A4 --> A9["Cloud Storage"]
+    A4 --> A12["Transactional outbox"]
+    A12 --> A7["Pub/Sub events"]
+    A7 --> A13["Consuming services"]
+    A2 -->|"shared session, jobs"| A10["Legacy bridge"]
+    A2 -->|"unmoved routes"| A5["Legacy Masa"]
+    A10 --> A5
+    A5 --> A11[("Legacy SQL Server")]
+    A14["Migration orchestrator"] -->|"snapshots, reverse projection"| A11
+    A14 -->|"backfill, change feed"| A4
   end
   BEFORE ~~~ AFTER
           </pre>
@@ -270,14 +278,14 @@ flowchart LR
         <h2>What moved where</h2>
         <table class="deck-table">
           <thead>
-            <tr><th>Domain</th><th>Service</th><th>Origin</th><th>Disposition</th></tr>
+            <tr><th>Domain</th><th>Service</th><th>Origin</th><th>Disposition</th><th>Withheld, stays on legacy</th></tr>
           </thead>
           <tbody>
-            <tr><td>Identity: login, groups, permissions, OAuth</td><td><code>identity</code></td><td>Migrated from Masa</td><td><span class="pill pill-carry">Carry</span></td></tr>
-            <tr><td>People: user roster, profiles, archive</td><td><code>people</code></td><td>Migrated from Masa</td><td><span class="pill pill-carry">Carry</span></td></tr>
-            <tr><td>Programs and sites: site settings, site monitor</td><td><code>programs-sites</code></td><td>Migrated from Masa</td><td><span class="pill pill-carry">Carry</span></td></tr>
-            <tr><td>Strategies and content: content, approvals, files, feeds</td><td><code>strategies-content</code></td><td>Migrated from Masa</td><td><span class="pill pill-carry">Carry</span></td></tr>
-            <tr><td>Communications, reporting, surveys, timesheets, finance, <span class="nowrap">e-signature</span></td><td>Six services</td><td>Synthetic, legacy fixture oracle</td><td><span class="pill pill-new">New module</span></td></tr>
+            <tr><td>Identity: login, groups, permissions, OAuth</td><td><code>identity</code></td><td>Migrated from Masa</td><td><span class="pill pill-carry">Carry</span> <span class="pill pill-pending">Part withheld</span></td><td>Permission saves; group deletes, photo and file-attribute saves</td></tr>
+            <tr><td>People: user roster, profiles, archive</td><td><code>people</code></td><td>Migrated from Masa</td><td><span class="pill pill-carry">Carry</span> <span class="pill pill-pending">Part withheld</span></td><td>User and address deletes; photo and file-attribute saves; public profile saves</td></tr>
+            <tr><td>Programs and sites: site settings, site monitor</td><td><code>programs-sites</code></td><td>Migrated from Masa</td><td><span class="pill pill-carry">Carry</span> <span class="pill pill-pending">Part withheld</span></td><td>Every site save: add, edit, delete, copy; class extensions; trash</td></tr>
+            <tr><td>Strategies and content: content, approvals, files, feeds</td><td><code>strategies-content</code></td><td>Migrated from Masa</td><td><span class="pill pill-carry">Carry</span> <span class="pill pill-pending">Part withheld</span></td><td>Publishing and change sets, notifications, feed import, image uploads, copies, forms</td></tr>
+            <tr><td>Communications, reporting, surveys, timesheets, finance, <span class="nowrap">e-signature</span></td><td>Six services</td><td>Synthetic, legacy fixture oracle</td><td><span class="pill pill-new">New module</span></td><td>Content event reminders, proposed for communications</td></tr>
           </tbody>
         </table>
         <div class="chip-row" data-source="opt2/inventory/legacy-inventory.json#counts.dispositions">
@@ -287,7 +295,7 @@ flowchart LR
           <span class="chip"><i data-lucide="clipboard-list"></i>Withheld <b>136</b></span>
           <span class="chip"><i data-lucide="archive"></i>Retired <b>21</b></span>
         </div>
-        <p class="caption">Why: each domain deploys, scales to zero and fails independently; users keep the same screens and data.</p>
+        <p class="caption">Why: each domain deploys, scales to zero and fails independently; users keep the same screens and data. Withheld parts keep running on legacy until you decide.</p>
       </section>
 
       <section class="slide-divider" data-background-color="#2D1C77">
@@ -358,7 +366,7 @@ flowchart LR
             <tr><th>Risk</th><th>Mitigation</th></tr>
           </thead>
           <tbody>
-            <tr><td>Cloud paths are untested without cloud credentials</td><td>Adapters tested on recorded exchanges; Terraform plan proves wiring; gap reported</td></tr>
+            <tr><td>Cloud paths are untested without cloud credentials</td><td>Planned recorded-exchange adapter tests and Terraform plan, both Pending run; live cloud paths stay untested</td></tr>
             <tr><td>An unknown legacy writer changes moved data outside a window</td><td>Known writers prevented; overrides reviewed; every reconciliation detects divergence</td></tr>
             <tr><td>Long legacy writes, such as bundle deploys, hold windows open</td><td>Target waits or fails closed; windows over 5 s are flagged</td></tr>
             <tr><td>Withheld variants and halted cases leave scenarios unmet</td><td>Reported per scenario; the decision list awaits your approval</td></tr>
@@ -374,27 +382,28 @@ flowchart LR
       </section>
 
       <section>
+        <p class="eyebrow">Planned for later milestones; not yet usable</p>
         <h2>How the team continues</h2>
         <div class="icon-row">
           <div>
             <i data-lucide="terminal"></i>
             <h3>Start and prove</h3>
-            <p><code>harness/repro/up.sh</code>, then <code>harness/repro/test-all.sh</code></p>
+            <p><span class="pill pill-pending">Planned</span> <code>harness/repro/up.sh</code>, then <code>harness/repro/test-all.sh</code></p>
           </div>
           <div>
             <i data-lucide="book-open"></i>
             <h3>Read per service</h3>
-            <p><code>README.md</code> and <code>TRACEABILITY.md</code></p>
+            <p><span class="pill pill-pending">Planned</span> <code>README.md</code> and <code>TRACEABILITY.md</code></p>
           </div>
           <div>
             <i data-lucide="file-code"></i>
             <h3>Build to contracts</h3>
-            <p><code>contracts/openapi.yaml</code> and event schemas</p>
+            <p><span class="pill pill-pending">Partial</span> <code>contracts/openapi.yaml</code> and event schemas</p>
           </div>
           <div>
             <i data-lucide="workflow"></i>
             <h3>Trust CI</h3>
-            <p><code>contracts</code>, <code>services</code>, <code>terraform</code> and <code>security</code> workflows</p>
+            <p><span class="pill pill-pending">Planned</span> <code>contracts</code>, <code>services</code>, <code>terraform</code> and <code>security</code> workflows</p>
           </div>
         </div>
         <ul>
@@ -425,7 +434,7 @@ flowchart TB
   PROVE -->|stage 4 to stage 5| MOVE
           </pre>
         </div>
-        <p class="caption">Each stage must pass before the next starts; no calendar dates are set.</p>
+        <p class="caption">A failing stage stops all later stages, except two documented cases that continue and are reported unmet: a persistent legacy timing-test difference and unavailable test fixtures. No calendar dates are set.</p>
       </section>
 
       <section>
@@ -475,8 +484,8 @@ flowchart TB
           <h2>Behaviour kept, platform modernised</h2>
           <ul>
             <li>Approve or reject the decision list</li>
-            <li>Run <code>harness/repro/test-all.sh</code> for final evidence</li>
-            <li>Review the Terraform plan; never apply</li>
+            <li>Once delivered, run <code>harness/repro/test-all.sh</code> for final evidence</li>
+            <li>Review the Terraform plan once it runs; never apply</li>
           </ul>
           <div class="brand-lockup">
             <i data-lucide="sparkles" class="brand-mark"></i>
@@ -509,9 +518,9 @@ flowchart TB
       flowchart: { htmlLabels: false }
     });
 
-    /** Renders the Mermaid diagrams and Lucide icons of the visible slide; diagrams render only when visible to get real sizes. */
+    /** Renders the visible slide's Mermaid diagrams and Lucide icons, then re-centres it; diagrams render only when visible to get real sizes. */
     function renderVisuals(slide) {
-      const rendered = mermaid.run({ nodes: slide.querySelectorAll('pre.mermaid:not([data-processed])') });
+      const rendered = mermaid.run({ nodes: slide.querySelectorAll('pre.mermaid:not([data-processed])') }).then(() => Reveal.layout());
       lucide.createIcons();
       return rendered;
     }

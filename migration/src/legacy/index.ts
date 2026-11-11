@@ -47,5 +47,11 @@ export type { StartupGuardSteps, StartupGuardOutcome } from './startup-guard.js'
 export { initLegacy, opt2SyncReady, Opt2SyncUnavailableError } from './init-legacy.js';
 export type { InitLegacyLogger, InitLegacyResult } from './init-legacy.js';
 
-export { restartLegacy, RestartUnavailableError, LegacyRestartError } from './restart.js';
-export type { RestartOptions, LegacyRestartResult } from './restart.js';
+export { restartLegacy, superviseChild, RestartUnavailableError, LegacyRestartError } from './restart.js';
+export type {
+  RestartOptions,
+  LegacyRestartResult,
+  SuperviseOptions,
+  SupervisedEnd,
+  SignalFunction,
+} from './restart.js';

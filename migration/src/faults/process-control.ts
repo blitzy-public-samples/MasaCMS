@@ -1,7 +1,8 @@
-import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions, type StdioOptions } from 'node:child_process';
+import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { closeSync, openSync, readFileSync } from 'node:fs';
-import { rename, rm, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { open, readFile, realpath, rename, rm, type FileHandle } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -9,7 +10,10 @@ import { fileURLToPath } from 'node:url';
 
 import { z } from '@opt2/platform/service-kit';
 
+import { superviseChild, type SuperviseOptions } from '../legacy/restart.js';
 import { upJsonPath } from '../paths.js';
+import { LOG_SANITIZER_SECRETS_ENV, logSanitizerPath, secretValues } from './log-sanitizer.js';
+import { listeningOwner, processStartTime } from './proc-identity.js';
 
 const OUTPUT_TAIL_BYTES = 8 * 1024;
 const STOP_POLL_MS = 100;
@@ -95,13 +99,14 @@ export interface ChildOutcome {
 /** Signals `pid`; signal 0 only probes that it exists. */
 export type KillFunction = (pid: number, signal: NodeJS.Signals | 0) => unknown;
 
-/** Options of {@link createProcessControl}; the functions replace their Node defaults. */
+/** Options of {@link createProcessControl}; the functions replace their Node defaults and `procRoot` `/proc`. */
 export interface ProcessControlOptions {
   stateDir: string;
   spawn?: typeof nodeSpawn;
   kill?: KillFunction;
   fetch?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
+  procRoot?: string;
 }
 
 /** Budgets of one restart; `healthTimeoutMs` defaults to `timeoutMs`. */
@@ -131,10 +136,69 @@ export interface ProcessControl {
   entry(name: string): UpProcessEntry;
   /** `process.env` with the entry's recorded `env` merged over it. */
   envOf(name: string): NodeJS.ProcessEnv;
-  /** Stops the process with SIGTERM, starts its command again and waits for `/healthz`. */
+  /** SIGTERMs the process once verified to own its port, starts its command again and waits for `/healthz`. */
   restart(name: string, options: ProcessRestartOptions): Promise<ProcessRestartResult>;
   /** Milliseconds until `http://127.0.0.1:<port>/healthz` answered 200. */
   waitHealthy(name: string, options: WaitHealthyOptions): Promise<number>;
+}
+
+/** An up.json document with the entry one call reads. */
+interface LocatedEntry {
+  file: string;
+  doc: UpJson;
+  entry: ParsedEntry;
+}
+
+/** A process as verified before it is signalled; the same pid with another start time is a different process. */
+interface VerifiedProcess {
+  pid: number;
+  startTime: string;
+}
+
+/** Pending up.json rewrites by canonical file path, shared by every control so that rewrites never interleave. */
+const upJsonWrites = new Map<string, Promise<void>>();
+
+/** Runs `task` after every task queued earlier under `key`; the key is dropped once its queue drains. */
+async function serialized<T>(key: string, task: () => Promise<T>): Promise<T> {
+  const run = (upJsonWrites.get(key) ?? Promise.resolve()).then(task);
+  const settled = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  upJsonWrites.set(key, settled);
+  try {
+    return await run;
+  } finally {
+    if (upJsonWrites.get(key) === settled) upJsonWrites.delete(key);
+  }
+}
+
+/** The `name` entry of the up.json `text` read from `file`, validated against {@link upJsonSchema}. */
+function locate(file: string, text: string, name: string): LocatedEntry {
+  const parsed = upJsonSchema.safeParse(JSON.parse(text));
+  if (!parsed.success) throw new Error(`Invalid ${file}: ${z.prettifyError(parsed.error)}`);
+  const doc = parsed.data;
+  const entry = Object.hasOwn(doc.processes, name) ? doc.processes[name] : undefined;
+  if (entry === undefined) throw new ProcessEntryError(name, file);
+  return { file, doc, entry };
+}
+
+/** Replaces `file` with `text` through a sibling created exclusively with mode 0600 and renamed over it. */
+async function replaceFile(file: string, text: string): Promise<void> {
+  const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    // A fresh file takes `mode`, and up.json must stay private: recorded env values may hold role passwords.
+    const handle = await open(tmp, 'wx', 0o600);
+    try {
+      await handle.writeFile(text, 'utf8');
+    } finally {
+      await handle.close();
+    }
+    await rename(tmp, file);
+  } catch (error) {
+    await rm(tmp, { force: true });
+    throw error;
+  }
 }
 
 /** Process control over `${stateDir}/up.json`, which is re-read on every call. */
@@ -143,19 +207,17 @@ export function createProcessControl(options: ProcessControlOptions): ProcessCon
   const kill: KillFunction = options.kill ?? ((pid, signal) => process.kill(pid, signal));
   const fetchFn = options.fetch ?? fetch;
   const sleep = options.sleep ?? ((ms: number) => delay(ms));
+  const procRoot = options.procRoot ?? '/proc';
 
-  function load(): { file: string; doc: UpJson } {
+  /** Synchronous read, for the accessors that return values. */
+  function find(name: string): LocatedEntry {
     const file = upJsonPath(options.stateDir);
-    const parsed = upJsonSchema.safeParse(JSON.parse(readFileSync(file, 'utf8')));
-    if (!parsed.success) throw new Error(`Invalid ${file}: ${z.prettifyError(parsed.error)}`);
-    return { file, doc: parsed.data };
+    return locate(file, readFileSync(file, 'utf8'), name);
   }
 
-  function find(name: string): { file: string; doc: UpJson; entry: ParsedEntry } {
-    const { file, doc } = load();
-    const entry = Object.hasOwn(doc.processes, name) ? doc.processes[name] : undefined;
-    if (entry === undefined) throw new ProcessEntryError(name, file);
-    return { file, doc, entry };
+  async function findAsync(name: string): Promise<LocatedEntry> {
+    const file = upJsonPath(options.stateDir);
+    return locate(file, await readFile(file, 'utf8'), name);
   }
 
   /** Sends `signal` to `pid`; false when the process no longer exists. */
@@ -169,43 +231,135 @@ export function createProcessControl(options: ProcessControlOptions): ProcessCon
     }
   }
 
-  async function stop(name: string, pid: number, timeoutMs: number): Promise<number> {
+  async function startTimeOf(name: string, pid: number): Promise<string | undefined> {
+    try {
+      return await processStartTime(procRoot, pid);
+    } catch (error) {
+      throw new ProcessControlError(name, 'stop', `cannot read the identity of pid ${pid} under ${procRoot}`, error);
+    }
+  }
+
+  /** The recorded process and, when another member of its tree holds the port, that holder; empty once it is gone. */
+  async function verifiedTargets(name: string, pid: number, port: number): Promise<VerifiedProcess[]> {
+    const startTime = await startTimeOf(name, pid);
+    if (startTime === undefined) {
+      // A pid that answers while procRoot has no entry for it cannot be identified, so it is never signalled.
+      if (signalPid(name, pid, 0)) {
+        throw new ProcessControlError(name, 'stop', `pid ${pid} is not listed under ${procRoot}; cannot verify it`);
+      }
+      return [];
+    }
+    let holder: number | undefined;
+    try {
+      holder = await listeningOwner(procRoot, pid, port);
+    } catch (error) {
+      const message = `cannot verify under ${procRoot} that pid ${pid} owns port ${port}`;
+      throw new ProcessControlError(name, 'stop', message, error);
+    }
+    if (holder === undefined) {
+      throw new ProcessControlError(name, 'stop', `pid ${pid} does not own port ${port}; the up.json record is stale`);
+    }
+    const root = { pid, startTime };
+    const holderStart = holder === pid ? undefined : await startTimeOf(name, holder);
+    return holderStart === undefined ? [root] : [root, { pid: holder, startTime: holderStart }];
+  }
+
+  /** First target still running as the process that was verified; a reused pid has another start time. */
+  async function firstRunning(name: string, targets: VerifiedProcess[]): Promise<VerifiedProcess | undefined> {
+    for (const target of targets) {
+      if (signalPid(name, target.pid, 0) && (await startTimeOf(name, target.pid)) === target.startTime) return target;
+    }
+    return undefined;
+  }
+
+  async function stop(name: string, pid: number, port: number, timeoutMs: number): Promise<number> {
     const startedAt = performance.now();
-    signalPid(name, pid, 'SIGTERM');
-    while (signalPid(name, pid, 0)) {
+    const targets = await verifiedTargets(name, pid, port);
+    // Re-checked right before each signal, so SIGTERM reaches only a process whose identity was verified.
+    for (const target of targets) {
+      if ((await firstRunning(name, [target])) !== undefined) signalPid(name, target.pid, 'SIGTERM');
+    }
+    for (;;) {
+      const running = await firstRunning(name, targets);
+      if (running === undefined) return Math.round(performance.now() - startedAt);
       const remaining = timeoutMs - (performance.now() - startedAt);
       if (remaining <= 0) {
-        throw new ProcessControlError(name, 'stop', `pid ${pid} still running ${timeoutMs} ms after SIGTERM`);
+        throw new ProcessControlError(name, 'stop', `pid ${running.pid} still running ${timeoutMs} ms after SIGTERM`);
       }
       await sleep(Math.min(STOP_POLL_MS, remaining));
     }
-    return Math.round(performance.now() - startedAt);
   }
 
-  async function start(name: string, entry: ParsedEntry): Promise<number> {
-    let logFd: number | undefined;
+  /** Runs `run`, mapping a throw or an asynchronous spawn error to ProcessControlError(start). */
+  async function spawned(
+    name: string,
+    what: string,
+    run: () => ChildProcess,
+  ): Promise<{ child: ChildProcess; pid: number }> {
     let child: ChildProcess;
     try {
-      logFd = entry.log === undefined ? undefined : openSync(path.resolve(entry.cwd, entry.log), 'a');
-      const stdio: StdioOptions = logFd === undefined ? 'ignore' : ['ignore', logFd, logFd];
-      const spawnOptions: SpawnOptions = { cwd: entry.cwd, env: { ...process.env, ...entry.env }, detached: true, stdio };
-      child =
-        typeof entry.command === 'string'
-          ? spawn(entry.command, { ...spawnOptions, shell: true })
-          : spawn(entry.command[0], entry.command.slice(1), spawnOptions);
+      child = run();
     } catch (error) {
-      throw new ProcessControlError(name, 'start', 'cannot run the start command', error);
-    } finally {
-      // The child holds its own copy of the descriptor.
-      if (logFd !== undefined) closeSync(logFd);
+      throw new ProcessControlError(name, 'start', `cannot run ${what}`, error);
     }
     const pid = child.pid;
     if (pid === undefined) {
       const [error] = (await once(child, 'error')) as [unknown];
-      throw new ProcessControlError(name, 'start', 'the start command could not be spawned', error);
+      throw new ProcessControlError(name, 'start', `${what} could not be spawned`, error);
     }
+    return { child, pid };
+  }
+
+  async function launch(name: string, entry: ParsedEntry, options: SpawnOptions): Promise<number> {
+    const { child, pid } = await spawned(name, 'the start command', () =>
+      typeof entry.command === 'string'
+        ? spawn(entry.command, { ...options, shell: true })
+        : spawn(entry.command[0], entry.command.slice(1), options),
+    );
     child.unref();
     return pid;
+  }
+
+  /** Starts the command writing into a pipe that a detached log sanitizer masks into the log descriptor `logFd`. */
+  async function launchLogged(name: string, entry: ParsedEntry, options: SpawnOptions, logFd: number): Promise<number> {
+    const { child: sanitizer } = await spawned(name, 'the log sanitizer', () =>
+      spawn(process.execPath, [logSanitizerPath()], {
+        detached: true,
+        stdio: ['pipe', logFd, logFd],
+        // In the environment, which only the same user can read, and not in argv.
+        env: { [LOG_SANITIZER_SECRETS_ENV]: JSON.stringify(secretValues(process.env, entry.env)) },
+      }),
+    );
+    const input = sanitizer.stdin;
+    try {
+      if (input === null) throw new ProcessControlError(name, 'start', 'the log sanitizer has no input pipe');
+      return await launch(name, entry, { ...options, stdio: ['ignore', input, input] });
+    } catch (error) {
+      sanitizer.kill('SIGTERM');
+      throw error;
+    } finally {
+      // The command holds its own end of the pipe, so the sanitizer reads until the command exits.
+      input?.destroy();
+      sanitizer.unref();
+    }
+  }
+
+  async function start(name: string, entry: ParsedEntry): Promise<number> {
+    const env = { ...process.env, ...entry.env };
+    const options: SpawnOptions = { cwd: entry.cwd, env, detached: true, stdio: 'ignore' };
+    if (entry.log === undefined) return launch(name, entry, options);
+    let log: FileHandle;
+    try {
+      log = await open(path.resolve(entry.cwd, entry.log), 'a', 0o600);
+    } catch (error) {
+      throw new ProcessControlError(name, 'start', 'cannot run the start command', error);
+    }
+    try {
+      return await launchLogged(name, entry, options, log.fd);
+    } finally {
+      // Each child holds its own copy of the descriptor.
+      await log.close();
+    }
   }
 
   async function pollHealth(name: string, port: number, timeoutMs: number, intervalMs: number): Promise<number> {
@@ -230,18 +384,15 @@ export function createProcessControl(options: ProcessControlOptions): ProcessCon
     }
   }
 
-  /** Replaces the entry's pid by writing a temporary file and renaming it over up.json. */
+  /** Replaces the entry's pid, re-read in up.json's write queue so that concurrent restarts keep each other's pids. */
   async function recordPid(name: string, pid: number): Promise<void> {
-    const { file, doc, entry } = find(name);
-    const next: UpJson = { ...doc, processes: { ...doc.processes, [name]: { ...entry, pid } } };
-    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-    try {
-      await writeFile(tmp, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
-      await rename(tmp, file);
-    } catch (error) {
-      await rm(tmp, { force: true });
-      throw error;
-    }
+    const file = upJsonPath(options.stateDir);
+    const key = path.join(await realpath(path.dirname(file)), path.basename(file));
+    await serialized(key, async () => {
+      const { doc, entry } = await findAsync(name);
+      const next: UpJson = { ...doc, processes: { ...doc.processes, [name]: { ...entry, pid } } };
+      await replaceFile(file, `${JSON.stringify(next, null, 2)}\n`);
+    });
   }
 
   return {
@@ -254,10 +405,10 @@ export function createProcessControl(options: ProcessControlOptions): ProcessCon
     },
 
     async restart(name, { timeoutMs, healthTimeoutMs = timeoutMs }) {
-      const { file, entry } = find(name);
+      const { file, entry } = await findAsync(name);
       // Checked before SIGTERM, so a process whose health cannot be checked is never stopped.
       if (entry.port === undefined) throw new ProcessEntryError(name, file, 'port');
-      const stoppedMs = await stop(name, entry.pid, timeoutMs);
+      const stoppedMs = await stop(name, entry.pid, entry.port, timeoutMs);
       const newPid = await start(name, entry);
       // Recorded before the health wait, so up.json names the running process even when it never turns healthy.
       await recordPid(name, newPid);
@@ -266,7 +417,7 @@ export function createProcessControl(options: ProcessControlOptions): ProcessCon
     },
 
     async waitHealthy(name, { timeoutMs, intervalMs = HEALTH_POLL_MS }) {
-      const { file, entry } = find(name);
+      const { file, entry } = await findAsync(name);
       if (entry.port === undefined) throw new ProcessEntryError(name, file, 'port');
       return pollHealth(name, entry.port, timeoutMs, intervalMs);
     },
@@ -274,45 +425,32 @@ export function createProcessControl(options: ProcessControlOptions): ProcessCon
 }
 
 /** Options of {@link spawnChild}; `env` is passed to the child exactly as given. */
-export interface SpawnChildOptions {
+export interface SpawnChildOptions extends SuperviseOptions {
   env: NodeJS.ProcessEnv;
   cwd?: string;
-  timeoutMs: number;
   spawn?: typeof nodeSpawn;
 }
 
-/** Runs `command` without a shell and resolves with its outcome, whatever the exit code; SIGTERM on timeout. */
-export function spawnChild(command: string, args: readonly string[], options: SpawnChildOptions): Promise<ChildOutcome> {
+/** Runs `command` without a shell in its own process group and resolves with its outcome, whatever the exit code. */
+export async function spawnChild(
+  command: string,
+  args: readonly string[],
+  options: SpawnChildOptions,
+): Promise<ChildOutcome> {
   const spawn = options.spawn ?? nodeSpawn;
-  return new Promise<ChildOutcome>((resolve, reject) => {
-    const stdout = outputTail();
-    const stderr = outputTail();
-    let timedOut = false;
-    let settled = false;
-
-    const child = spawn(command, args, { env: options.env, cwd: options.cwd, stdio: ['ignore', 'pipe', 'pipe'] });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGTERM');
-    }, options.timeoutMs);
-
-    child.stdout.on('data', stdout.push);
-    child.stderr.on('data', stderr.push);
-    // `on`, not `once`: a later 'error' (a failed kill) without a listener would crash this process.
-    child.on('error', (error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(error);
-    });
-    // 'close', not 'exit', so the tails hold the last output.
-    child.on('close', (exitCode: number | null, signal: NodeJS.Signals | null) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({ exitCode, signal, timedOut, stdoutTail: stdout.text(), stderrTail: stderr.text() });
-    });
+  const stdout = outputTail();
+  const stderr = outputTail();
+  // Detached, so a timeout terminates the child's whole process group.
+  const child = spawn(command, args, {
+    env: options.env,
+    cwd: options.cwd,
+    detached: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
+  child.stdout.on('data', stdout.push);
+  child.stderr.on('data', stderr.push);
+  const { exitCode, signal, timedOut } = await superviseChild(child, options);
+  return { exitCode, signal, timedOut, stdoutTail: stdout.text(), stderrTail: stderr.text() };
 }
 
 /** Path of the `opt2-migrate` CLI beside this package's `src`/`dist` root. */

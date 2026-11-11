@@ -107,8 +107,14 @@ interface Case {
   expected: DeckFinding[];
 }
 
-const CUTOVER_CAPTION = '        <p class="caption">Each stage must pass';
+const CUTOVER_CAPTION = '        <p class="caption">A failing stage stops';
 const CUTOVER_LINE = lineOf(CUTOVER_CAPTION);
+const CUTOVER_END = 'No calendar dates are set.';
+/** Words of the cut-over caption, slide 14's only body text. */
+const CUTOVER_WORDS = between(DECK, CUTOVER_CAPTION, '</p>')
+  .replace(/<[^>]*>/g, ' ')
+  .split(/\s+/)
+  .filter((token) => /[\p{L}\p{N}]/u.test(token)).length;
 const REVEAL_BLOCK = between(DECK, 'Reveal.initialize({', '});');
 const MERMAID_BLOCK = between(DECK, 'mermaid.initialize({', '});');
 const STYLE_BLOCK = between(DECK, '  <style>\n', '  </style>\n');
@@ -252,12 +258,12 @@ const SLIDE_CASES: Case[] = [
   },
   {
     name: 'accepts 40 words of body text on a content slide',
-    html: editSlide(DECK, 14, ['no calendar dates are set.', `no calendar dates are set. ${words(27)}`]),
+    html: editSlide(DECK, 14, [CUTOVER_END, `${CUTOVER_END} ${words(40 - CUTOVER_WORDS)}`]),
     expected: [],
   },
   {
     name: 'reports 41 words of body text on a content slide as one content-words finding',
-    html: editSlide(DECK, 14, ['no calendar dates are set.', `no calendar dates are set. ${words(28)}`]),
+    html: editSlide(DECK, 14, [CUTOVER_END, `${CUTOVER_END} ${words(41 - CUTOVER_WORDS)}`]),
     expected: [{ check: 'content-words', slide: 14, detail: '41 words of body text; content slides allow at most 40' }],
   },
   {
@@ -382,7 +388,7 @@ const MARKUP_CASES: Case[] = [
   },
   {
     name: 'reports triple backticks in a slide as one fenced-code finding',
-    html: editSlide(DECK, 14, ['no calendar dates are set.', 'no calendar dates are set. ```npm test```']),
+    html: editSlide(DECK, 14, [CUTOVER_END, CUTOVER_END + ' ```npm test```']),
     expected: [
       {
         check: 'fenced-code',
