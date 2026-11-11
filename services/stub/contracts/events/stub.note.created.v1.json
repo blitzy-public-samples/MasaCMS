@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:opt2:stub:event:stub.note.created.v1",
+  "$comment": "source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "title": "stub.note.created.v1 payload",
+  "description": "Full state of a stub note after creation.",
+  "x-opt2-kind": "state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "noteId",
+    "title",
+    "body",
+    "created",
+    "rowVersion"
+  ],
+  "properties": {
+    "noteId": {
+      "description": "Note primary key as a CF UUID; equals the envelope aggregateId.",
+      "type": "string",
+      "pattern": "^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$"
+    },
+    "title": {
+      "description": "Note title.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    },
+    "body": {
+      "description": "Note body; may be empty.",
+      "type": "string",
+      "maxLength": 10000
+    },
+    "created": {
+      "description": "Creation time as local timestamp(3) text, yyyy-MM-dd HH:mm:ss.SSS.",
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}$"
+    },
+    "rowVersion": {
+      "description": "Producer row_version; equals the envelope aggregateVersion.",
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}

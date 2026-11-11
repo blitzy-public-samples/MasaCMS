@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:opt2:identity:event:identity.group.changed.v1",
+  "$comment": "source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "title": "identity.group.changed.v1",
+  "description": "Full state of one Masa group account.",
+  "x-opt2-kind": "state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "groupId",
+    "siteId",
+    "groupName",
+    "type",
+    "isPublic",
+    "poolTenantId",
+    "deleted"
+  ],
+  "properties": {
+    "groupId": {
+      "$ref": "#/$defs/cfUuid",
+      "description": "Group id (tusers.UserID)."
+    },
+    "siteId": {
+      "$ref": "#/$defs/siteId",
+      "description": "Legacy site id of the group row, which is its user-pool site."
+    },
+    "groupName": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 255
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Group name (tusers.GroupName)."
+    },
+    "type": {
+      "const": 1,
+      "description": "Legacy row type; 1 for groups."
+    },
+    "isPublic": {
+      "enum": [
+        0,
+        1,
+        null
+      ],
+      "description": "1 for a public-pool group, 0 for a private-pool group (tusers.isPublic)."
+    },
+    "poolTenantId": {
+      "$ref": "urn:opt2:platform:event-envelope:v1#/$defs/rfc4122Uuid",
+      "description": "Tenant id of siteId."
+    },
+    "deleted": {
+      "type": "boolean",
+      "description": "True when the group row has been deleted."
+    }
+  },
+  "$defs": {
+    "cfUuid": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}$",
+      "description": "35-character ColdFusion UUID."
+    },
+    "siteId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 50,
+      "description": "Legacy Masa site id."
+    }
+  }
+}
