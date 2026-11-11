@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   GENERATED_BY,
@@ -482,6 +482,23 @@ describe('main', () => {
     expect(code).toBe(2);
     expect(stderr[0]).toMatch(/^build-groups: unknown argument/);
   });
+
+  it.each(['inventoryFile', 'tableOwnershipFile', 'exceptionsListFile'] as const)(
+    'reports a %s of another commit and exits 1',
+    async (key) => {
+      const file = join(dir, `other-commit-${basename(committed[key])}`);
+      const doc = JSON.parse(await readFile(committed[key], 'utf8')) as { sourceSha: string };
+      await writeFile(file, JSON.stringify({ ...doc, sourceSha: '0'.repeat(40) }));
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      const code = await main([], { paths: { ...paths, [key]: file }, stdout: (text) => stdout.push(text), stderr: (text) => stderr.push(text) });
+      expect({ code, stdout, stderr }).toEqual({
+        code: 1,
+        stdout: [],
+        stderr: [`build-groups: ${file} does not match its cut-over schema: /sourceSha must equal the pinned sha ${SHA}`],
+      });
+    },
+  );
 
   it('propagates read errors other than a missing file', async () => {
     await expect(main([], { paths: { ...paths, groupsFile: dir }, stdout: () => undefined, stderr: () => undefined })).rejects.toThrow(/EISDIR/);

@@ -336,6 +336,17 @@ export interface DecisionListDoc {
   readonly actionVariants: readonly DecisionActionVariant[];
 }
 
+/** A decision-list reference to a withheld entry point; null where no single key applies. */
+export interface DecisionEntryPointRef {
+  readonly routeKey: string | null;
+}
+
+/** `opt2/decision-list.json` with the withheld entry points its tables and action variants list. */
+export interface DecisionListInput extends DecisionListDoc {
+  readonly tables: readonly (DecisionTable & { readonly withheldEntryPoints?: readonly DecisionEntryPointRef[] })[];
+  readonly actionVariants: readonly (DecisionActionVariant & { readonly entryPoints?: readonly DecisionEntryPointRef[] })[];
+}
+
 /** An exceptions-list entry and the route keys it applies to. */
 export interface ExceptionEntry {
   readonly id: string;
@@ -354,7 +365,10 @@ export interface ExceptionsDoc {
 /** `opt2/source-pin.json`, the pinned commit. */
 export interface SourcePin {
   readonly sha: string;
-  readonly sourceSha: string;
+  readonly subject: string;
+  readonly repository: string;
+  readonly confirmedAt: string;
+  readonly confirmCommand: string;
 }
 
 /** `${OPT2_STATE_DIR}/fixtures.json`, written by `legacy-fixtures/load-fixtures.sh`. */

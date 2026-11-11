@@ -19,6 +19,7 @@ import {
   type DeleteTaskResult,
   type QueueState,
   type TaskInfo,
+  type TaskPage,
   type TaskPort,
 } from '@opt2/platform/tasks';
 import type { TenantDb } from '@opt2/platform/tenancy';
@@ -47,10 +48,16 @@ class MemoryTaskPort implements TaskPort {
   async delete(_queue: string, name: string): Promise<DeleteTaskResult> {
     return { name, deleted: this.tasks.delete(name) };
   }
-  async list(queue: string): Promise<TaskInfo[]> {
-    return [...this.tasks.values()]
-      .filter((task) => task.queue === queue)
-      .map((task) => ({ queue, name: task.name, scheduleTime: task.scheduleTime, status: 'pending', attempts: 0 }));
+  async list(queue: string): Promise<TaskPage> {
+    return {
+      tasks: [...this.tasks.values()]
+        .filter((task) => task.queue === queue)
+        .map((task) => ({ queue, name: task.name, scheduleTime: task.scheduleTime, status: 'pending', attempts: 0 })),
+    };
+  }
+  async get(queue: string, name: string): Promise<TaskInfo | undefined> {
+    const task = this.tasks.get(name);
+    return task?.queue === queue ? { queue, name, scheduleTime: task.scheduleTime, status: 'pending', attempts: 0 } : undefined;
   }
   async pauseQueue(): Promise<void> {}
   async resumeQueue(): Promise<void> {}
@@ -155,7 +162,7 @@ describe('ensureStartupChains', () => {
     expect([...port.tasks.values()].map((task) => [task.queue, task.url])).toStrictEqual([
       [SWEEP_QUEUE, 'http://127.0.0.1:8113/internal/v1/outbox/sweep'],
     ]);
-    expect(await port.list(SITEMONITOR_QUEUE)).toStrictEqual([]);
+    expect((await port.list(SITEMONITOR_QUEUE)).tasks).toStrictEqual([]);
   });
 
   it('finds a live sweep chain instead of creating another', async () => {

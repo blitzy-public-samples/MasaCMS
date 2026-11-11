@@ -1,5 +1,7 @@
+import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 
 const SERVICE_NAME = /^[a-z][a-z0-9-]*$/;
@@ -8,6 +10,8 @@ const PORT_NUMBER = z.coerce.number<string>().int().min(1).max(65535);
 const CLOUD_SQL_INSTANCE = /^[^:]+:[^:]+:[^:]+$/;
 const MODES = ['local', 'cloud'] as const;
 const ADAPTER_KEYS = ['OPT2_TASKS_ADAPTER', 'OPT2_STORAGE_ADAPTER'] as const;
+// Repository checkout root: the same depth above src/service-kit/env.ts and dist/service-kit/env.js.
+const REPO_ROOT = realpathSync(fileURLToPath(new URL('../../../', import.meta.url)));
 
 type Mode = (typeof MODES)[number];
 type AdapterKey = (typeof ADAPTER_KEYS)[number];
@@ -87,6 +91,34 @@ const serviceUrlMap = z
   })
   .pipe(z.record(z.string().regex(SERVICE_NAME), httpUrl()));
 
+/** `dir` with its deepest existing ancestor resolved through symlinks. */
+function canonicalPath(dir: string): string {
+  const missing: string[] = [];
+  for (let current = dir; ; current = path.dirname(current)) {
+    try {
+      return path.join(realpathSync(current), ...missing);
+    } catch {
+      if (path.dirname(current) === current) return dir;
+      missing.unshift(path.basename(current));
+    }
+  }
+}
+
+/** Absolute runtime state directory outside the checkout, returned normalised. */
+const stateDirPath = z.string().transform((dir, ctx) => {
+  if (!path.isAbsolute(dir)) {
+    ctx.addIssue({ code: 'custom', message: 'must be an absolute path' });
+    return z.NEVER;
+  }
+  const resolved = path.resolve(dir);
+  const canonical = canonicalPath(resolved);
+  if (canonical === REPO_ROOT || canonical.startsWith(REPO_ROOT + path.sep)) {
+    ctx.addIssue({ code: 'custom', message: 'must be outside the repository checkout' });
+    return z.NEVER;
+  }
+  return resolved;
+});
+
 /** Variables every OPT-2 process reads; gateway, migration and communications `.extend()` it with the builders above. */
 export const baseEnvSchema = z.object({
   PORT: envPort(),
@@ -113,9 +145,10 @@ export const baseEnvSchema = z.object({
   OPT2_GATEWAY_URL: optionalEnvString(envUrl()),
   OPT2_MIGRATION_URL: optionalEnvString(envUrl()),
   OPT2_SERVICE_URLS: z.preprocess(blankToUndefined, serviceUrlMap),
+  // `.prefault` checks the home-directory default too; `.default` would return it unchecked.
   OPT2_STATE_DIR: z.preprocess(
     blankToUndefined,
-    z.string().default(() => path.join(homedir(), '.opt2', 'state')),
+    stateDirPath.prefault(() => path.join(homedir(), '.opt2', 'state')),
   ),
   OPT2_TASKS_ADAPTER: optionalEnvString(z.enum(MODES)),
   OPT2_STORAGE_ADAPTER: optionalEnvString(z.enum(MODES)),

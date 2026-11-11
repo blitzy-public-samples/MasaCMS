@@ -1,6 +1,7 @@
 // Appends and upserts entries in the migration service's run logs, `windows.json` and `transitions.json`.
 import path from 'node:path';
 
+import { projectReportValue } from './redact.js';
 import { readJsonReport, writeJsonReport, type ReportClock, type ReportTarget } from './write-report.js';
 
 /** Phase a write window is in, recorded with the time it was entered. */
@@ -178,7 +179,7 @@ export function appendLogEntry<E extends object>(
   );
 }
 
-/** Replaces, in place, the first entry of `file` whose `idKey` equals `entry[idKey]`, or appends `entry`. */
+/** Replaces, in place, the first entry of `file` whose `idKey` equals `entry[idKey]` as written, or appends `entry`. */
 export function upsertLogEntry<E extends object>(
   target: ReportTarget,
   file: RunLogFile | string,
@@ -186,7 +187,6 @@ export function upsertLogEntry<E extends object>(
   entry: E,
   opts?: { clock?: ReportClock },
 ): Promise<void> {
-  const id: unknown = entry[idKey];
   const idOf = (value: unknown): unknown =>
     typeof value === 'object' && value !== null ? (value as Record<string, unknown>)[idKey] : undefined;
   return serialise(logKey(target, file), () =>
@@ -194,6 +194,8 @@ export function upsertLogEntry<E extends object>(
       target,
       file,
       (entries) => {
+        // Stored entries hold their projected ids, so the new id is compared in the same form; a throw rejects the call.
+        const id = projectReportValue(entry[idKey], idKey);
         const index = entries.findIndex((existing) => idOf(existing) === id);
         if (index === -1) entries.push(entry);
         else entries[index] = entry;

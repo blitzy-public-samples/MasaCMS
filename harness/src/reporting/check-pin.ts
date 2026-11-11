@@ -44,6 +44,8 @@ export type PinFinding =
   | { kind: 'subject-mismatch'; expected: string; found: string }
   | { kind: 'tracked-file-changed'; path: string }
   | { kind: 'forbidden-tracked'; path: string }
+  | { kind: 'file-missing'; path: string; form: ShaForm }
+  | { kind: 'unreadable'; path: string; form: ShaForm; error: string }
   | { kind: 'missing'; path: string; form: ShaForm }
   | { kind: 'mismatch'; path: string; form: ShaForm; found: string[] }
   | { kind: 'unparseable'; path: string; form: ShaForm; error: string }
@@ -58,7 +60,10 @@ export interface ConfirmResult {
   findings: PinFinding[];
 }
 
-/** Outcome of {@link checkDeliverables}; `checked` counts the deliverables read, and findings are sorted by path. */
+/**
+ * Outcome of {@link checkDeliverables}; `checked` counts the deliverables read, a deliverable absent from disk or
+ * unreadable is a finding, and findings are sorted by path.
+ */
 export interface DeliverablesResult {
   mode: 'deliverables';
   sha: string;
@@ -139,7 +144,7 @@ function structuredShas(form: ShaForm, doc: unknown): string[] {
     case 'yaml':
       return hexValues(top.sourceSha ?? top['x-source-sha']);
     case 'pin-json':
-      return hexValues(top.sha, top.sourceSha);
+      return hexValues(top.sha);
     case 'contract-json':
       return typeof top.$comment === 'string' ? captures(COMMENT_SHA, top.$comment) : [];
     default:
@@ -203,12 +208,14 @@ function resolveDeps(deps: PinDeps): { root: string; git: GitDeps; pin: Pin } {
   };
 }
 
-async function readIfPresent(absPath: string): Promise<string | undefined> {
+/** Content of the deliverable at `relPath` under `root`, or the finding that it is absent or cannot be read. */
+async function readDeliverable(root: string, relPath: string): Promise<{ content: string } | { finding: PinFinding }> {
   try {
-    return await fs.readFile(absPath, 'utf8');
+    return { content: await fs.readFile(path.join(root, relPath), 'utf8') };
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-    throw err;
+    const at = { path: relPath, form: shaFormFor(relPath) };
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { finding: { kind: 'file-missing', ...at } };
+    return { finding: { kind: 'unreadable', ...at, error: err instanceof Error ? err.message : String(err) } };
   }
 }
 
@@ -251,11 +258,13 @@ export async function checkDeliverables(deps: PinDeps = {}): Promise<Deliverable
 
   let checked = 0;
   for (const relPath of deliverables) {
-    // A cached path deleted from disk is a --confirm concern, not a deliverable.
-    const content = await readIfPresent(path.join(root, relPath));
-    if (content === undefined) continue;
+    const read = await readDeliverable(root, relPath);
+    if ('finding' in read) {
+      findings.push(read.finding);
+      continue;
+    }
     checked += 1;
-    const finding = verdict(relPath, extractSha(relPath, content, pin.sha), pin.sha);
+    const finding = verdict(relPath, extractSha(relPath, read.content, pin.sha), pin.sha);
     if (finding !== null) findings.push(finding);
   }
 

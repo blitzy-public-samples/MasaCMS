@@ -1,28 +1,38 @@
 // Validates cut-over versions against the inventory, groups, decision list and exceptions; CLI `cutover:validate`.
 import { readFileSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ROUTE_FAMILIES, normaliseRouteKey } from '@opt2/platform/legacy-compat';
-import { CutoverSchemaError, listVersions, loadGroups, loadVariants, loadVersion } from './loader.js';
+import { carryWriteEntries, createWriteClosure, type WriteClosure } from './build-groups.js';
+import {
+  CutoverSchemaError,
+  listVersions,
+  loadDecisionList,
+  loadExceptionsList,
+  loadGroups,
+  loadInventory,
+  loadSourcePin,
+  loadTableOwnership,
+  loadVariants,
+  loadVersion,
+} from './loader.js';
 import { resolveGatewayPaths, type GatewayPaths } from './paths.js';
 import { isPreventedWriter } from './prevented-writers.js';
 import type {
   Authority,
   CutoverEntry,
   CutoverTable,
-  DecisionActionVariant,
-  DecisionListDoc,
-  DecisionTable,
+  DecisionListInput,
   Disposition,
+  EntryKind,
   ExceptionsDoc,
   Finding,
+  FindingRule,
   GroupsFile,
   InventoryDoc,
   InventoryWrite,
   InventoryWriter,
   OwnershipDoc,
-  SourcePin,
   VariantsFile,
 } from './types.js';
 
@@ -40,16 +50,7 @@ export interface InventoryKeyFacts {
   kindHint?: 'job' | 'static';
 }
 
-/** A decision-list reference to a withheld entry point; null where no single key applies. */
-export interface DecisionEntryPointRef {
-  readonly routeKey: string | null;
-}
-
-/** `opt2/decision-list.json` with the withheld entry points its tables and action variants list. */
-export interface DecisionListInput extends DecisionListDoc {
-  readonly tables: readonly (DecisionTable & { readonly withheldEntryPoints?: readonly DecisionEntryPointRef[] })[];
-  readonly actionVariants: readonly (DecisionActionVariant & { readonly entryPoints?: readonly DecisionEntryPointRef[] })[];
-}
+export type { DecisionEntryPointRef, DecisionListInput } from './types.js';
 
 /** Everything `validateVersion` checks a version against. */
 export interface ValidationContext {
@@ -90,11 +91,20 @@ const SYNTHETIC_SERVICES: ReadonlySet<string> = new Set([
 ]);
 const UNROUTED_OWNERS: ReadonlySet<string> = new Set(['gateway', 'web']);
 const SYNTHETIC_PATH_PREFIX = '/v1/';
+const FIXTURE_SCHEMA_TABLE = /^(?:synthetic|program_\w+)\./i;
 // A key ends in `{<variant>}` only when a declared variant matched (route-key.ts); fixture `{id}` segments end in `@<method>`.
 const VARIANT_SUFFIX = /\{[^{}]*\}$/;
 const ZERO_DIFFERENCE = 'zero-difference';
 
 const DISPOSITION_RANK: Readonly<Record<Disposition, number>> = { carry: 0, retired: 1, 'legacy-served': 2, decision: 3 };
+// Rule an entry's units fall under, by the entry's kind.
+const UNITS_RULE: Readonly<Record<EntryKind, FindingRule>> = {
+  read: 'read-follows-units',
+  static: 'read-follows-units',
+  write: 'write-follows-group',
+  'legacy-write': 'legacy-write-always-legacy',
+  job: 'job-state',
+};
 
 interface KeyedItem {
   readonly routeKey: string | null;
@@ -143,11 +153,7 @@ export function inventoryKeyFacts(inventory: InventoryDoc): Map<string, Inventor
   );
 }
 
-async function readJson<T>(file: string): Promise<T> {
-  return JSON.parse(await readFile(file, 'utf8')) as T;
-}
-
-/** Loads every input once: variants and groups schema-validated through the loader, the opt2 documents as committed. */
+/** Loads every input through the loader, each schema-validated and bound to the source pin. */
 export async function loadValidationContext(
   paths: ValidationPaths,
   mode: ValidationMode,
@@ -156,11 +162,11 @@ export async function loadValidationContext(
   const [variants, groups, inventory, ownership, decisionList, exceptions, pin] = await Promise.all([
     loadVariants(paths),
     loadGroups(paths),
-    readJson<InventoryDoc>(paths.inventoryFile),
-    readJson<OwnershipDoc>(paths.tableOwnershipFile),
-    readJson<DecisionListInput>(paths.decisionListFile),
-    readJson<ExceptionsDoc>(paths.exceptionsListFile),
-    readJson<SourcePin>(paths.sourcePinFile),
+    loadInventory(paths),
+    loadTableOwnership(paths),
+    loadDecisionList(paths),
+    loadExceptionsList(paths),
+    loadSourcePin(paths),
   ]);
   const ctx: ValidationContext = {
     mode,
@@ -171,7 +177,7 @@ export async function loadValidationContext(
     decisionList,
     exceptions,
     ownership,
-    sourceSha: pin.sourceSha,
+    sourceSha: pin.sha,
     reconciliationDir: paths.reconciliationDir,
   };
   if (opts.prior !== undefined) ctx.prior = opts.prior;
@@ -245,6 +251,39 @@ function heldBackKeys(exceptions: ExceptionsDoc): Set<string> {
   return keys;
 }
 
+/** Sorted write-closure units of each normalised inventoried key that writes a target unit; a job key routes per step. */
+function writeClosures(inventory: InventoryDoc, closure: WriteClosure): Map<string, readonly string[]> {
+  const jobKeys = new Set(inventory.scheduledJobs.map((job) => normaliseRouteKey(job.routeKey)));
+  const items = [
+    ...inventory.controllers.flatMap((controller) => controller.actions.flatMap((action) => action.variants)),
+    ...inventory.routes,
+    ...inventory.frontEnd,
+  ];
+  const byKey = new Map<string, Set<string>>();
+  for (const item of items) {
+    if (item.routeKey === null) continue;
+    const key = normaliseRouteKey(item.routeKey);
+    const units = jobKeys.has(key) ? [] : closure(item);
+    if (units.length === 0) continue;
+    const keyUnits = byKey.get(key) ?? new Set<string>();
+    for (const unit of units) keyUnits.add(unit);
+    byKey.set(key, keyUnits);
+  }
+  return new Map([...byKey].map(([key, units]) => [key, [...units].sort()]));
+}
+
+/** Ids of the generated groups whose writeEntries list each normalised key. */
+function writeEntryGroups(groups: GroupsFile): Map<string, string[]> {
+  const byKey = new Map<string, string[]>();
+  for (const group of groups.groups) {
+    for (const key of group.writeEntries) {
+      const normalised = normaliseRouteKey(key);
+      byKey.set(normalised, [...(byKey.get(normalised) ?? []), group.id]);
+    }
+  }
+  return byKey;
+}
+
 type ReportVerdict = { ok: true } | { ok: false; reason: string };
 
 /** Reads a reconciliation report named by a rollback reference from the reconciliation directory. */
@@ -270,6 +309,9 @@ interface VersionView {
   readonly heldBack: Set<string>;
   readonly declaredVariants: Set<string>;
   readonly decisionTables: readonly string[];
+  readonly writeClosures: Map<string, readonly string[]>;
+  readonly carriedWrites: ReadonlySet<string>;
+  readonly writeGroups: Map<string, readonly string[]>;
   authority(groupId: string): Authority;
   unitAuthority(unit: string): Authority;
 }
@@ -285,6 +327,7 @@ function viewOf(table: CutoverTable, ctx: ValidationContext): VersionView {
   const authorities = new Map<string, Authority>(Object.entries(table.groupAuthority));
   const authority = (groupId: string): Authority => authorities.get(groupId) ?? 'legacy';
   const unitGroup = new Map(ctx.groups.groups.flatMap((group) => group.units.map((unit): [string, string] => [unit, group.id])));
+  const closure = createWriteClosure(ctx.inventory, ctx.ownership);
   return {
     table,
     ctx,
@@ -297,6 +340,9 @@ function viewOf(table: CutoverTable, ctx: ValidationContext): VersionView {
       ctx.variants.variants.map((v) => `${normaliseRouteKey(v.route)}{${normaliseRouteKey(v.variant)}}`),
     ),
     decisionTables: ctx.decisionList.tables.map((table) => table.table),
+    writeClosures: writeClosures(ctx.inventory, closure),
+    carriedWrites: new Set(carryWriteEntries(ctx, closure).keys()),
+    writeGroups: writeEntryGroups(ctx.groups),
     authority,
     unitAuthority: (unit) => {
       const group = unitGroup.get(unit);
@@ -305,17 +351,20 @@ function viewOf(table: CutoverTable, ctx: ValidationContext): VersionView {
   };
 }
 
-/** Whether an entry without an inventoried key may stand in a version. */
-function mayBeUninventoried(route: string, entry: CutoverEntry): boolean {
+/** Whether an entry is a synthetic service's own `/v1/` route. */
+function isSyntheticRoute(route: string, entry: CutoverEntry): boolean {
   const family = familyOf(route);
-  if (family === 'opt2' || UNROUTED_OWNERS.has(entry.owningService)) return true;
-  if (
+  return (
     SYNTHETIC_SERVICES.has(entry.owningService) &&
     family !== undefined &&
     route.slice(family.length + 1).startsWith(SYNTHETIC_PATH_PREFIX)
-  ) {
-    return true;
-  }
+  );
+}
+
+/** Whether an entry without an inventoried key may stand in a version. */
+function mayBeUninventoried(route: string, entry: CutoverEntry): boolean {
+  if (familyOf(route) === 'opt2' || UNROUTED_OWNERS.has(entry.owningService)) return true;
+  if (isSyntheticRoute(route, entry)) return true;
   // Legacy static assets (/admin/assets/**, /core/vendor/**, /core/modules/**) are listed as legacy `static`
   // entries; such an entry routes exactly as an unlisted key does, so it is allowed beside the three listed cases.
   return entry.kind === 'static' && entry.state === 'legacy';
@@ -349,19 +398,46 @@ function entryFindings(view: VersionView, entry: CutoverEntry): Finding[] {
   const group = entry.group ?? null;
   const knownGroup = group === null || view.groupUnits.has(group);
   if (group !== null && !knownGroup) add('group-unknown', `group ${group} is not in groups.json`, group);
-  // A write entry with no units writes no unit of authority, so the schema gives it no group (stub, admin-actions).
-  if (entry.kind === 'write' && entry.units.length > 0) {
-    if (group === null) {
-      add('write-follows-group', 'write entry has no group');
-    } else if (knownGroup) {
-      const authority = view.authority(group);
-      if (entry.state !== authority) add('write-follows-group', `state ${entry.state} differs from group authority ${authority}`, group);
-      const outside = entry.units.filter((unit) => !view.groupUnits.get(group)?.has(unit));
-      if (outside.length > 0) add('write-follows-group', `units ${outside.join(', ')} are not in the group`, group);
+  const unknownUnits = entry.units.filter((unit) => !view.unitTables.has(unit));
+  if (unknownUnits.length > 0) add(UNITS_RULE[entry.kind], `units ${unknownUnits.join(', ')} are not in opt2/table-ownership.json`);
+  const units = entry.units.filter((unit) => view.unitTables.has(unit));
+
+  // An inventoried writer is held to its write closure and generated group, whatever kind, group and units it declares.
+  const closure = view.writeClosures.get(route);
+  const missing = closure?.filter((unit) => !entry.units.includes(unit)) ?? [];
+  const carried = view.carriedWrites.has(route);
+  const generated = carried ? (view.writeGroups.get(route) ?? []) : [];
+  const generatedGroup = generated.length === 1 ? generated[0] : undefined;
+  const writeGroup = generatedGroup ?? (knownGroup ? group : null);
+  if (carried) {
+    if (entry.kind !== 'write') add('write-follows-group', `carry write has kind ${entry.kind}`);
+    if (generatedGroup === undefined) {
+      const listed = generated.length === 0 ? 'no generated group' : `groups ${generated.join(', ')}`;
+      add('write-follows-group', `carry write is in ${listed}`);
+    } else if (group !== null && knownGroup && group !== generatedGroup) {
+      add('write-follows-group', `group ${group} is not its generated group ${generatedGroup}`, group);
+    }
+    if (missing.length > 0) add('write-follows-group', `units lack ${missing.join(', ')} of its write closure`, writeGroup ?? undefined);
+  } else if (closure !== undefined) {
+    const heldBack = view.heldBack.has(route);
+    if (!heldBack && entry.kind !== 'legacy-write') add('legacy-write-always-legacy', `${disposition} write has kind ${entry.kind}`);
+    if (missing.length > 0) {
+      add(heldBack ? 'halted-is-legacy-write' : 'legacy-write-always-legacy', `units lack ${missing.join(', ')} of its write closure`);
+    }
+  }
+  // Any other write entry with no units writes no unit of authority, so the schema gives it no group (stub, admin-actions).
+  if (carried || (closure === undefined && entry.kind === 'write' && entry.units.length > 0)) {
+    if (group === null) add('write-follows-group', 'write entry has no group');
+    if (writeGroup !== null) {
+      const authority = view.authority(writeGroup);
+      if (entry.state !== authority) add('write-follows-group', `state ${entry.state} differs from group authority ${authority}`, writeGroup);
+      const groupUnits = view.groupUnits.get(writeGroup);
+      const outside = units.filter((unit) => !groupUnits?.has(unit));
+      if (outside.length > 0) add('write-follows-group', `units ${outside.join(', ')} are not in the group`, writeGroup);
     }
   }
   if (entry.kind === 'read' && entry.state === 'target') {
-    const legacyUnits = entry.units.filter((unit) => view.unitAuthority(unit) !== 'target');
+    const legacyUnits = units.filter((unit) => view.unitAuthority(unit) !== 'target');
     if (legacyUnits.length > 0) add('read-follows-units', `target read of legacy-authoritative ${legacyUnits.join(', ')}`);
   }
   if (entry.kind === 'legacy-write' && entry.state !== 'legacy') add('legacy-write-always-legacy', 'legacy-write entry is target');
@@ -480,6 +556,29 @@ function chainFindings(view: VersionView): Finding[] {
   return findings;
 }
 
+/** Groups a synthetic service's own non-inventoried `/v1/` target carry writes name after the first version. */
+function syntheticWriteGroups(view: VersionView): Set<string> {
+  const groups = new Set<string>();
+  if (view.table.previous === null) return groups;
+  const owners = new Map(view.ctx.ownership.units.map((unit) => [unit.unit, unit.owner]));
+  // Only a synthetic module's fixture-backed units lack a legacy oracle once the fixtures are unavailable.
+  const fixtureBacked = (unit: string, service: string): boolean => {
+    const tables = view.unitTables.get(unit) ?? [];
+    return owners.get(unit) === service && tables.length > 0 && tables.every((table) => FIXTURE_SCHEMA_TABLE.test(table));
+  };
+  for (const [route, entries] of view.entriesByKey) {
+    if (view.ctx.inventoryKeys.has(route)) continue;
+    for (const entry of entries) {
+      const group = entry.group;
+      if (entry.kind !== 'write' || entry.disposition !== 'carry' || entry.state !== 'target' || !group) continue;
+      const units = view.groupUnits.get(group);
+      if (units === undefined || entry.units.length === 0 || !isSyntheticRoute(route, entry)) continue;
+      if ([...units].every((unit) => fixtureBacked(unit, entry.owningService))) groups.add(group);
+    }
+  }
+  return groups;
+}
+
 function groupAuthorityFindings(view: VersionView): Finding[] {
   const ids = new Set(view.ctx.groups.groups.map((group) => group.id));
   const listed = new Set(Object.keys(view.table.groupAuthority));
@@ -489,6 +588,11 @@ function groupAuthorityFindings(view: VersionView): Finding[] {
   }
   for (const group of listed) {
     if (!ids.has(group)) findings.push({ rule: 'group-authority', group, message: 'authority names a group not in groups.json' });
+  }
+  const synthetic = syntheticWriteGroups(view);
+  for (const group of view.ctx.groups.groups) {
+    if (group.writeEntries.length > 0 || synthetic.has(group.id) || view.authority(group.id) !== 'target') continue;
+    findings.push({ rule: 'group-authority', group: group.id, message: 'group without a carry write entry is target' });
   }
   return findings;
 }

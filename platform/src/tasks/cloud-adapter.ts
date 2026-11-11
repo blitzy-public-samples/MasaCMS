@@ -5,6 +5,7 @@ import {
   TaskPortConfigError,
   assertCreateInput,
   assertTaskName,
+  resolvePageSize,
   taskWireBody,
   type CreateTaskInput,
   type CreateTaskResult,
@@ -12,6 +13,8 @@ import {
   type QueueState,
   type TaskInfo,
   type TaskLogger,
+  type TaskPage,
+  type TaskPageRequest,
   type TaskPort,
 } from './port.js';
 import { queueDefinition } from './queues.js';
@@ -22,11 +25,14 @@ export const TASKS_INVOKER_NAME = 'tasks-invoker';
 /** gRPC status of a create whose task name exists or was used recently. */
 export const GRPC_ALREADY_EXISTS = 6;
 
-/** gRPC status of a delete whose task does not exist. */
+/** gRPC status of a get or delete whose task does not exist, a tombstone included. */
 export const GRPC_NOT_FOUND = 5;
 
 /** Metadata-server path that answers `projects/<number>/regions/<region>` on Cloud Run. */
 export const METADATA_REGION_URL = 'http://metadata.google.internal/computeMetadata/v1/instance/region';
+
+/** Deadline of the metadata region lookup, covering the request and its body. */
+export const METADATA_TIMEOUT_MS = 5000;
 
 /** Protobuf timestamp as the client returns it; int64 `seconds` arrives as a string, number or Long. */
 export interface CloudTimestampLike {
@@ -34,7 +40,7 @@ export interface CloudTimestampLike {
   nanos?: number | null;
 }
 
-/** Fields `list` reads from a BASIC-view task. */
+/** Fields `list` and `get` read from a BASIC-view task. */
 export interface CloudTaskSummary {
   name?: string | null;
   scheduleTime?: CloudTimestampLike | null;
@@ -65,8 +71,12 @@ export interface CloudTasksClientLike {
   taskPath(project: string, location: string, queue: string, task: string): string;
   createTask(req: { parent: string; task: CloudTaskRequest }): Promise<unknown>;
   deleteTask(req: { name: string }): Promise<unknown>;
-  /** Auto-paginates, so the first element holds every task. */
-  listTasks(req: { parent: string; responseView: 'BASIC' }): Promise<[CloudTaskSummary[], ...unknown[]]>;
+  /** With `autoPaginate: false` it answers one page; the third element is the raw response carrying `nextPageToken`. */
+  listTasks(
+    req: { parent: string; responseView: 'BASIC'; pageSize: number; pageToken?: string },
+    options: { autoPaginate: false },
+  ): Promise<[CloudTaskSummary[], unknown, { nextPageToken?: string | null } | null | undefined, ...unknown[]]>;
+  getTask(req: { name: string; responseView: 'BASIC' }): Promise<[CloudTaskSummary, ...unknown[]]>;
   getQueue(req: { name: string }): Promise<[{ state?: string | number | null }, ...unknown[]]>;
   pauseQueue(req: { name: string }): Promise<unknown>;
   resumeQueue(req: { name: string }): Promise<unknown>;
@@ -119,18 +129,30 @@ export function buildCloudTask(input: CreateTaskInput, ctx: CloudTaskBuildContex
   };
 }
 
-/** Region of the running Cloud Run instance; throws `TaskPortConfigError` when the metadata server is unreachable or answers non-200. */
-export async function resolveCloudTasksLocation(fetchImpl: typeof fetch = fetch): Promise<string> {
-  let response: Response;
+/** Region of the running Cloud Run instance; throws `TaskPortConfigError` when the metadata server is unreachable, answers non-200 or misses `timeoutMs`. */
+export async function resolveCloudTasksLocation(
+  fetchImpl: typeof fetch = fetch,
+  timeoutMs = METADATA_TIMEOUT_MS,
+): Promise<string> {
+  const deadline = AbortSignal.timeout(timeoutMs);
+  let status: number;
+  let body = '';
   try {
-    response = await fetchImpl(METADATA_REGION_URL, { headers: { 'Metadata-Flavor': 'Google' } });
+    const response = await fetchImpl(METADATA_REGION_URL, { headers: { 'Metadata-Flavor': 'Google' }, signal: deadline });
+    status = response.status;
+    if (status === 200) body = await response.text();
   } catch (err) {
-    throw new TaskPortConfigError('Cloud Tasks location unavailable: the metadata server is unreachable', { cause: err });
+    throw new TaskPortConfigError(
+      deadline.aborted
+        ? `Cloud Tasks location unavailable: the metadata server did not answer within ${timeoutMs} ms`
+        : 'Cloud Tasks location unavailable: the metadata server is unreachable',
+      { cause: err },
+    );
   }
-  if (response.status !== 200) {
-    throw new TaskPortConfigError(`Cloud Tasks location unavailable: the metadata server answered ${response.status}`);
+  if (status !== 200) {
+    throw new TaskPortConfigError(`Cloud Tasks location unavailable: the metadata server answered ${status}`);
   }
-  const region = (await response.text()).trim().split('/').pop();
+  const region = body.trim().split('/').pop();
   if (!region) throw new TaskPortConfigError('Cloud Tasks location unavailable: the metadata server returned no region');
   return region;
 }
@@ -160,7 +182,7 @@ function toTaskInfo(queue: string, task: CloudTaskSummary): TaskInfo {
   };
 }
 
-/** Creates the Cloud Tasks `TaskPort`, loading `@google-cloud/tasks` only without an injected `client`; ALREADY_EXISTS and NOT_FOUND resolve as `created: false` and `deleted: false`. */
+/** Creates the Cloud Tasks `TaskPort`, loading `@google-cloud/tasks` only without an injected `client`; ALREADY_EXISTS resolves as `created: false`, NOT_FOUND as `deleted: false` or an undefined `get`. */
 export async function createCloudTaskAdapter(opts: CloudTaskAdapterOptions): Promise<TaskPort & { kind: 'cloud' }> {
   const { project, logger } = opts;
   // Resolved before the client is built, so a failed lookup leaves no client to close.
@@ -202,9 +224,28 @@ export async function createCloudTaskAdapter(opts: CloudTaskAdapterOptions): Pro
       return { name, deleted: true };
     },
 
-    async list(queue: string): Promise<TaskInfo[]> {
-      const [tasks] = await client.listTasks({ parent: queuePath(queue), responseView: 'BASIC' });
-      return tasks.map((task) => toTaskInfo(queue, task));
+    async list(queue: string, page: TaskPageRequest = {}): Promise<TaskPage> {
+      const parent = queuePath(queue);
+      const pageSize = resolvePageSize(page.pageSize);
+      const [tasks, , response] = await client.listTasks(
+        { parent, responseView: 'BASIC', pageSize, ...(page.pageToken === undefined ? {} : { pageToken: page.pageToken }) },
+        { autoPaginate: false },
+      );
+      const nextPageToken = response?.nextPageToken;
+      return { tasks: tasks.map((task) => toTaskInfo(queue, task)), ...(nextPageToken ? { nextPageToken } : {}) };
+    },
+
+    async get(queue: string, name: string): Promise<TaskInfo | undefined> {
+      queueDefinition(queue);
+      assertTaskName(name);
+      let task: CloudTaskSummary;
+      try {
+        [task] = await client.getTask({ name: taskPath(queue, name), responseView: 'BASIC' });
+      } catch (err) {
+        if (grpcCode(err) !== GRPC_NOT_FOUND) throw err;
+        return undefined;
+      }
+      return toTaskInfo(queue, task);
     },
 
     async pauseQueue(queue: string): Promise<void> {

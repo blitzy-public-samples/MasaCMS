@@ -546,7 +546,7 @@ const DELIVERY_CASES: Case[] = [
     expected: [{ check: 'theme-class', detail: 'no inline CSS rule selects the Mermaid container (.mermaid…)' }],
   },
   {
-    name: 'reports a deck without an inline theme once, then each slide style the theme no longer sets',
+    name: 'reports a deck without an inline theme once, then each slide style and table style the theme no longer sets',
     html: edit(DECK, STYLE_BLOCK, ''),
     expected: [
       { check: 'theme-property', detail: 'deck has no inline <style> theme' },
@@ -554,6 +554,7 @@ const DELIVERY_CASES: Case[] = [
       { check: 'slide-style', slide: 1, detail: 'no CSS rule sets the eyebrow in Fira Code (--ff-mono)' },
       { check: 'slide-style', slide: 1, detail: 'no CSS rule colours the title eyebrow teal (--blitzy-accent-teal)' },
       { check: 'slide-style', slide: 4, detail: 'no CSS rule centres the section divider heading (text-align: center)' },
+      ...[9, 11, 15].map((n): DeckFinding => ({ check: 'non-text-visual', slide: n, detail: `slide ${NO_VISUAL}` })),
     ],
   },
   ...Object.entries(REVEAL_CONFIG).map(
@@ -888,7 +889,8 @@ describe('check-deck: Executive Presentation rule', () => {
   });
 
   describe('main through runCli', () => {
-    const playwright = { imports: 0, launches: [] as unknown[] };
+    const WS_ENDPOINT = 'ws://127.0.0.1:9/check-deck-gate';
+    const playwright = { imports: 0, launches: [] as unknown[], connects: [] as string[], server: [] as string[] };
     let browser = fakeChromium();
 
     afterEach(() => {
@@ -896,6 +898,8 @@ describe('check-deck: Executive Presentation rule', () => {
       vi.resetModules();
       playwright.imports = 0;
       playwright.launches = [];
+      playwright.connects = [];
+      playwright.server = [];
     });
 
     /** Runs a freshly imported `main` with `@playwright/test` mocked, capturing the summary line and exit code. */
@@ -905,8 +909,20 @@ describe('check-deck: Executive Presentation rule', () => {
         playwright.imports += 1;
         return {
           chromium: {
-            launch: async (options: unknown): Promise<Browser> => {
+            launchServer: async (options: unknown) => {
               playwright.launches.push(options);
+              return {
+                wsEndpoint: () => WS_ENDPOINT,
+                close: async (): Promise<void> => {
+                  playwright.server.push('close');
+                },
+                kill: async (): Promise<void> => {
+                  playwright.server.push('kill');
+                },
+              };
+            },
+            connect: async (endpoint: string): Promise<Browser> => {
+              playwright.connects.push(endpoint);
               return browser.launch();
             },
           },
@@ -949,11 +965,13 @@ describe('check-deck: Executive Presentation rule', () => {
       expect(outcome.line).toMatchObject({ ok: true, file: 'opt2/executive-summary/index.html', sections: 16, findings: [] });
       expect(playwright.imports).toBe(1);
       expect(playwright.launches).toEqual([{ headless: true }]);
+      expect(playwright.connects).toEqual([WS_ENDPOINT]);
       expect(browser.calls.find((call) => call.method === 'goto')?.args).toEqual([
         pathToFileURL(DECK_PATH).href,
         { waitUntil: 'load', timeout: 30_000 },
       ]);
       expect(methods(browser.calls)).toEqual(DRIVEN);
+      expect(playwright.server).toEqual(['close']);
     });
 
     it('--file checks a failing deck copy outside the checkout and exits 1 with its findings', async () => {

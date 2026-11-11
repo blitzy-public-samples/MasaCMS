@@ -4,6 +4,7 @@ import { request as undiciRequest } from 'undici';
 import {
   CLOUD_TASKS_HEADERS,
   assertCreateInput,
+  resolvePageSize,
   taskWireBody,
   type CreateTaskInput,
   type CreateTaskResult,
@@ -11,13 +12,16 @@ import {
   type QueueState,
   type TaskInfo,
   type TaskLogger,
+  type TaskPage,
+  type TaskPageRequest,
   type TaskPort,
 } from './port.js';
 import { UnknownTaskTargetError, queueDefinition, retryDelayS, type RetryPolicy } from './queues.js';
 import { SYSTEM_TENANT_ID, registeredTenants, rlsSql, withTenant, type TenantDb, type TenantTx } from '../tenancy/index.js';
 import { loadLocalSigningKeys, signLocalServiceToken, type MANAGED_INVOKER_NAMES } from '../auth/index.js';
 import { taskHeaders, withExtractedContext, type TraceCarrier } from '../tracing/index.js';
-import { systemClock, type Clock } from '../service-kit/index.js';
+import { systemClock, z, type Clock } from '../service-kit/index.js';
+import { serializeError } from '../logging/index.js';
 
 /** Table holding the local adapter's tasks in each creating service's schema. */
 export const SCHEDULED_TASK_QUEUE_TABLE = 'scheduled_task_queue';
@@ -30,6 +34,9 @@ export const LOCAL_TOMBSTONE_RETENTION_S = 3600;
 
 /** Seconds past a task's dispatch deadline after which its `running` lease may be reclaimed. */
 export const LEASE_MARGIN_S = 30;
+
+/** Default adapter-wide cap on in-flight dispatches. */
+export const DEFAULT_MAX_CONCURRENT_DISPATCHES = 100;
 
 const SCHEMA_NAME = /^[a-z_][a-z0-9_]*$/;
 const LOCAL_TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/;
@@ -65,7 +72,10 @@ export function scheduledTaskQueueSql(schema: string): string {
     '  updated_at timestamp(3) without time zone NOT NULL,',
     '  PRIMARY KEY (tenant_id, queue, name)',
     ');',
-    `CREATE INDEX scheduled_task_queue_due ON ${queue} (status, schedule_time);`,
+    `CREATE INDEX scheduled_task_queue_pending_due ON ${queue} (tenant_id, schedule_time) WHERE status = 'pending';`,
+    `CREATE INDEX scheduled_task_queue_lease_expiry ON ${queue} (tenant_id, lease_until) WHERE status = 'running';`,
+    `CREATE INDEX scheduled_task_queue_live ON ${queue} (tenant_id, queue, schedule_time, name) WHERE status IN ('pending','running');`,
+    `CREATE INDEX scheduled_task_queue_tombstone_expiry ON ${queue} (tenant_id, updated_at) WHERE status IN ('done','failed','deleted');`,
     rlsSql(schema, SCHEDULED_TASK_QUEUE_TABLE),
     `CREATE TABLE ${state} (`,
     '  tenant_id uuid NOT NULL,',
@@ -86,11 +96,13 @@ export interface LocalTaskAdapterOptions {
   /** Base URL per service; a task URL's origin must match one of them. */
   serviceUrls: Record<string, string>;
   clock?: Clock;
-  logger?: TaskLogger;
+  logger: TaskLogger;
   /** Default 1000. */
   pollIntervalMs?: number;
-  /** Rows claimed per tenant per scan; default 20. */
+  /** Most rows claimed per tenant per scan, within free dispatch capacity; default 20. */
   batchSize?: number;
+  /** Adapter-wide cap on in-flight dispatches, a positive integer; default `DEFAULT_MAX_CONCURRENT_DISPATCHES`. */
+  maxConcurrentDispatches?: number;
   /** Default true. */
   autoStart?: boolean;
   request?: typeof import('undici').request;
@@ -104,7 +116,7 @@ export interface LocalTaskPort extends TaskPort {
   start(): void;
   /** Stops polling and waits for in-flight dispatches. */
   stop(): Promise<void>;
-  /** Runs one scan, awaits its dispatches and returns how many were dispatched. */
+  /** Runs one scan within free dispatch capacity, awaits its dispatches and returns how many it started. */
   dispatchDue(): Promise<number>;
 }
 
@@ -126,6 +138,20 @@ interface ListRow {
   status: 'pending' | 'running';
   attempts: number;
 }
+
+interface PageRow extends ListRow {
+  /** `schedule_time` as stored, the keyset position a page token carries. */
+  schedule_key: string;
+}
+
+/** Keyset position of a local `list` page token: the tenant and the last row returned. */
+interface ListCursor {
+  tenant: string;
+  scheduleTime: string;
+  name: string;
+}
+
+const listCursorSchema = z.object({ tenant: z.string(), scheduleTime: z.string().regex(LOCAL_TIMESTAMP), name: z.string() });
 
 function pad(value: number, width = 2): string {
   return String(value).padStart(width, '0');
@@ -184,31 +210,59 @@ function isExhausted(policy: RetryPolicy, attempts: number): boolean {
   return policy.maxAttempts !== -1 && attempts >= policy.maxAttempts;
 }
 
-function byScheduleThenName(a: TaskInfo, b: TaskInfo): number {
-  const diff = a.scheduleTime.getTime() - b.scheduleTime.getTime();
-  if (diff !== 0) return diff;
-  return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+function toTaskInfo(queue: string, tenant: string, row: ListRow): TaskInfo {
+  return {
+    queue,
+    name: row.name,
+    scheduleTime: fromLocalTimestamp(row.schedule_time),
+    ...(tenant === SYSTEM_TENANT_ID ? {} : { tenantId: tenant }),
+    status: row.status,
+    attempts: row.attempts,
+  };
+}
+
+function encodeListCursor(cursor: ListCursor): string {
+  return Buffer.from(JSON.stringify(cursor)).toString('base64url');
+}
+
+/** Cursor of a page token this adapter issued; throws `TypeError` for a malformed token or a tenant outside `tenants`. */
+function decodeListCursor(token: string, tenants: readonly string[]): ListCursor {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(Buffer.from(token, 'base64url').toString('utf8'));
+  } catch {
+    raw = undefined;
+  }
+  const parsed = listCursorSchema.safeParse(raw);
+  if (!parsed.success || !tenants.includes(parsed.data.tenant)) throw new TypeError('Invalid task list page token');
+  return parsed.data;
 }
 
 /** Creates the local task adapter over the service's own schema; it starts dispatching unless `autoStart` is false. */
 export async function createLocalTaskAdapter(opts: LocalTaskAdapterOptions): Promise<LocalTaskPort> {
-  const { db } = opts;
+  const { db, logger } = opts;
   const clock = opts.clock ?? systemClock;
-  const logger: TaskLogger = opts.logger ?? console;
   const pollIntervalMs = opts.pollIntervalMs ?? 1000;
   const batchSize = opts.batchSize ?? 20;
+  const maxConcurrentDispatches = opts.maxConcurrentDispatches ?? DEFAULT_MAX_CONCURRENT_DISPATCHES;
+  if (!Number.isInteger(maxConcurrentDispatches) || maxConcurrentDispatches < 1) {
+    throw new RangeError(`maxConcurrentDispatches must be a positive integer, got ${String(maxConcurrentDispatches)}`);
+  }
   const send = opts.request ?? undiciRequest;
   const signer = opts.signer ?? (await localTasksInvokerSigner(opts.stateDir));
   const resolveTarget = targetResolver(opts.serviceUrls);
   const table = `${db.schema}.${SCHEDULED_TASK_QUEUE_TABLE}`;
   const stateTable = `${db.schema}.${SCHEDULED_TASK_QUEUE_STATE_TABLE}`;
-  const claimSql = `UPDATE ${table} t SET status = 'running', attempts = t.attempts + 1,
-  lease_until = $1::timestamp(3) + make_interval(secs => t.deadline_s + $2), updated_at = $1::timestamp(3)
-WHERE (t.tenant_id, t.queue, t.name) IN (
+  // MATERIALIZED runs the locking subquery once; as an IN semi-join the planner may rescan it and claim past LIMIT.
+  const claimSql = `WITH due AS MATERIALIZED (
   SELECT tenant_id, queue, name FROM ${table}
   WHERE NOT (queue = ANY($3::text[]))
     AND ((status = 'pending' AND schedule_time <= $1::timestamp(3)) OR (status = 'running' AND lease_until < $1::timestamp(3)))
   ORDER BY schedule_time LIMIT $4 FOR UPDATE SKIP LOCKED)
+UPDATE ${table} t SET status = 'running', attempts = t.attempts + 1,
+  lease_until = $1::timestamp(3) + make_interval(secs => t.deadline_s + $2), updated_at = $1::timestamp(3)
+FROM due
+WHERE (t.tenant_id, t.queue, t.name) = (due.tenant_id, due.queue, due.name)
 RETURNING t.*`;
 
   const inTenant = <T>(tenantId: string, fn: (tx: TenantTx) => Promise<T>): Promise<T> => withTenant(db, tenantId, fn);
@@ -249,28 +303,47 @@ WHERE tenant_id = $1 AND queue = $2 AND name = $3 AND status IN ('pending', 'run
     return { name, deleted: false };
   }
 
-  async function list(queue: string): Promise<TaskInfo[]> {
+  /** One page of live tasks, the system tenant's first and then each registered tenant's, each by schedule time and name. */
+  async function list(queue: string, page: TaskPageRequest = {}): Promise<TaskPage> {
+    queueDefinition(queue);
+    const pageSize = resolvePageSize(page.pageSize);
+    const tenants = await scanTenants();
+    const cursor = page.pageToken === undefined ? undefined : decodeListCursor(page.pageToken, tenants);
     const tasks: TaskInfo[] = [];
-    for (const tenant of await scanTenants()) {
+    for (const tenant of tenants.slice(cursor === undefined ? 0 : tenants.indexOf(cursor.tenant))) {
+      const after = cursor?.tenant === tenant ? [cursor.scheduleTime, cursor.name] : [];
+      const keyset = after.length === 0 ? '' : ' AND (schedule_time, name) > ($3::timestamp(3), $4)';
+      const limit = pageSize - tasks.length;
+      // One row past the page tells whether this tenant holds more.
       const { rows } = await inTenant(tenant, (tx) =>
-        tx.query<ListRow>(
-          `SELECT name, schedule_time, status, attempts FROM ${table}
-WHERE tenant_id = $1 AND queue = $2 AND status IN ('pending', 'running') ORDER BY schedule_time, name`,
-          [tx.tenantId, queue],
+        tx.query<PageRow>(
+          `SELECT name, schedule_time, to_char(schedule_time, 'YYYY-MM-DD HH24:MI:SS.MS') AS schedule_key, status, attempts FROM ${table}
+WHERE tenant_id = $1 AND queue = $2 AND status IN ('pending', 'running')${keyset} ORDER BY schedule_time, name LIMIT $${String(after.length + 3)}`,
+          [tx.tenantId, queue, ...after, limit + 1],
         ),
       );
-      for (const row of rows) {
-        tasks.push({
-          queue,
-          name: row.name,
-          scheduleTime: fromLocalTimestamp(row.schedule_time),
-          ...(tenant === SYSTEM_TENANT_ID ? {} : { tenantId: tenant }),
-          status: row.status,
-          attempts: row.attempts,
-        });
+      const kept = rows.slice(0, limit);
+      for (const row of kept) tasks.push(toTaskInfo(queue, tenant, row));
+      const last = kept.at(-1);
+      if (tasks.length === pageSize && last !== undefined) {
+        if (rows.length <= limit && tenant === tenants.at(-1)) return { tasks };
+        return { tasks, nextPageToken: encodeListCursor({ tenant, scheduleTime: last.schedule_key, name: last.name }) };
       }
     }
-    return tasks.sort(byScheduleThenName);
+    return { tasks };
+  }
+
+  async function get(queue: string, name: string, getOpts?: { tenantId?: string }): Promise<TaskInfo | undefined> {
+    queueDefinition(queue);
+    return inTenant(getOpts?.tenantId ?? SYSTEM_TENANT_ID, async (tx) => {
+      const { rows } = await tx.query<ListRow>(
+        `SELECT name, schedule_time, status, attempts FROM ${table}
+WHERE tenant_id = $1 AND queue = $2 AND name = $3 AND status IN ('pending', 'running')`,
+        [tx.tenantId, queue, name],
+      );
+      const row = rows[0];
+      return row === undefined ? undefined : toTaskInfo(queue, tx.tenantId, row);
+    });
   }
 
   async function setPaused(queue: string, paused: boolean): Promise<void> {
@@ -326,7 +399,7 @@ ON CONFLICT (tenant_id, queue) DO UPDATE SET paused = EXCLUDED.paused, updated_a
         attempts: row.attempts,
         status,
         ...(statusCode === null ? {} : { statusCode }),
-        ...(failure === undefined ? {} : { error: failure }),
+        ...(failure === undefined ? {} : { error: serializeError(failure) }),
       },
       `Local task ${row.queue}/${row.name} attempt ${String(row.attempts)} ${outcome}; ${next}`,
     );
@@ -375,7 +448,7 @@ ON CONFLICT (tenant_id, queue) DO UPDATE SET paused = EXCLUDED.paused, updated_a
   function track(work: Promise<void>): Promise<void> {
     const tracked = work
       .catch((err: unknown) => {
-        logger.error({ error: err }, 'Local task dispatch could not record its outcome');
+        logger.error({ error: serializeError(err) }, 'Local task dispatch could not record its outcome');
       })
       .finally(() => inflight.delete(tracked));
     inflight.add(tracked);
@@ -398,7 +471,12 @@ ON CONFLICT (tenant_id, queue) DO UPDATE SET paused = EXCLUDED.paused, updated_a
     }
   }
 
-  /** Claims due rows tenant by tenant and starts their dispatches; resolves after the claims, not the dispatches. */
+  // Slots reserved by claims still awaiting their rows, so overlapping scans stay within the cap together.
+  let claiming = 0;
+  // Tenant index the next scan starts at: the first tenant a saturated scan could not reach.
+  let nextTenant = 0;
+
+  /** Claims due rows into free dispatch slots, tenant by tenant from a rotating start, and starts their dispatches; resolves after the claims. */
   async function scan(): Promise<Promise<void>[]> {
     const now = clock.now();
     const nowTs = toLocalTimestamp(now);
@@ -410,8 +488,20 @@ ON CONFLICT (tenant_id, queue) DO UPDATE SET paused = EXCLUDED.paused, updated_a
     });
     const tenants = await scanTenants();
     const dispatches: Promise<void>[] = [];
-    for (const tenant of tenants) {
-      const { rows } = await inTenant(tenant, (tx) => tx.query<QueueRow>(claimSql, [nowTs, LEASE_MARGIN_S, paused, batchSize]));
+    const first = nextTenant % tenants.length;
+    for (const [offset, tenant] of [...tenants.slice(first), ...tenants.slice(0, first)].entries()) {
+      const limit = Math.min(batchSize, maxConcurrentDispatches - inflight.size - claiming);
+      if (limit <= 0) {
+        nextTenant = (first + offset) % tenants.length;
+        break;
+      }
+      claiming += limit;
+      let rows: QueueRow[];
+      try {
+        ({ rows } = await inTenant(tenant, (tx) => tx.query<QueueRow>(claimSql, [nowTs, LEASE_MARGIN_S, paused, limit])));
+      } finally {
+        claiming -= limit;
+      }
       for (const row of rows) dispatches.push(track(dispatch(row)));
     }
     await purgeTombstones(tenants, now);
@@ -429,7 +519,7 @@ ON CONFLICT (tenant_id, queue) DO UPDATE SET paused = EXCLUDED.paused, updated_a
         .then(
           () => undefined,
           (err: unknown) => {
-            logger.error({ error: err }, 'Local tasks scan failed');
+            logger.error({ error: serializeError(err) }, 'Local tasks scan failed');
           },
         )
         .finally(() => {
@@ -461,6 +551,7 @@ ON CONFLICT (tenant_id, queue) DO UPDATE SET paused = EXCLUDED.paused, updated_a
     create,
     delete: deleteTask,
     list,
+    get,
     pauseQueue: (queue) => setPaused(queue, true),
     resumeQueue: (queue) => setPaused(queue, false),
     queueState,

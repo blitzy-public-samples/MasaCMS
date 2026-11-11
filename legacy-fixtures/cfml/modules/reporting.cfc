@@ -258,12 +258,12 @@ component output="false" hint="SYNTHETIC reporting fixture: asynchronous XLSX, C
 		return {value = local.present ? arguments.values[arguments.key] : "", cfsqltype = arguments.type, null = !local.present};
 	}
 
-	private string function asOfParam(required struct params) hint="Returns params.asOf, or today as yyyy-mm-dd when it is absent or null; raises invalidParameters unless it is a real yyyy-mm-dd date." {
+	private string function asOfParam(required struct params) hint="Returns params.asOf, or today as yyyy-mm-dd when it is absent or null; raises invalidParameters unless it is a real yyyy-mm-dd date from 1753 on, SQL Server datetime's floor." {
 		if (!structKeyExists(arguments.params, "asOf") || isNull(arguments.params.asOf)) {
 			return dateFormat(now(), "yyyy-mm-dd");
 		}
 		local.text = isSimpleValue(arguments.params.asOf) ? toString(arguments.params.asOf) : "";
-		if (!reFind("^\d{4}-\d{2}-\d{2}$", local.text)
+		if (!reFind("^\d{4}-\d{2}-\d{2}$", local.text) || val(left(local.text, 4)) < 1753
 			|| val(mid(local.text, 6, 2)) < 1 || val(mid(local.text, 6, 2)) > 12 || val(right(local.text, 2)) < 1
 			|| val(right(local.text, 2)) > daysInMonth(createDate(val(left(local.text, 4)), val(mid(local.text, 6, 2)), 1))) {
 			variables.envelope.raise("invalidParameters");

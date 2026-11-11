@@ -16,13 +16,15 @@ SMTP_PORT="${SMTP_PORT:-1025}"
 OPT2_LEGACY_SERVER_NAME="${OPT2_LEGACY_SERVER_NAME:-opt2-legacy}"
 
 REQUIRED_CFPM_PACKAGES=(spreadsheet document mail scheduler)
-STATUS_FILE="$OPT2_STATE_DIR/fixtures.json"
-WORK_DIR="$OPT2_STATE_DIR/fixtures"
-SQLCMD_OUT="$WORK_DIR/sqlcmd.out"
+# sqlcmd limits in seconds: login, then the whole run of one capability query or of one loading call.
+SQLCMD_LOGIN_TIMEOUT=15
+CHECK_DEADLINE=60
+LOAD_DEADLINE=300
 
 STEP="setup"
 SQLCMD_BIN=""
 SQLCMD_ARGS=()
+SQL_DEADLINE="$CHECK_DEADLINE"
 SQL_ERROR=""
 SCALAR=""
 JOINED=""
@@ -30,6 +32,22 @@ REASONS=()
 PROGRAMS=()
 PROGRAMS_READ=0
 CFPM_INSTALLED=()
+
+# Prints the usage text.
+usage() {
+  cat <<'EOF'
+Usage: legacy-fixtures/load-fixtures.sh [-h|--help]
+
+Checks what the legacy fixtures need, loads legacy-fixtures/sql into the legacy database when it is all present
+and writes ${OPT2_STATE_DIR}/fixtures.json. Takes no other arguments; it is configured through the environment.
+
+Required: MURA_DATABASE, MURA_DBUSERNAME, MURA_DBPASSWORD
+Optional: MURA_DBHOST, MURA_DBPORT, OPT2_STATE_DIR (absolute, outside the checkout; default $HOME/.opt2/state),
+          MAILPIT_API_URL, SMTP_HOST, SMTP_PORT, OPT2_LEGACY_SERVER_NAME, SQLCMD, CFPM_CMD
+
+Exit status: 0 once fixtures.json is written, 1 on an unexpected error, 2 on a usage or OPT2_STATE_DIR error.
+EOF
+}
 
 # Writes fixtures.json atomically: write_status <true|false> <reason>.
 write_status() {
@@ -74,21 +92,24 @@ resolve_sqlcmd() {
     fi
   done
   [[ -n "$SQLCMD_BIN" ]] || return 1
-  SQLCMD_ARGS=(-S "$MURA_DBHOST,$MURA_DBPORT" -U "$MURA_DBUSERNAME" -d "$MURA_DATABASE" -b -I)
+  SQLCMD_ARGS=(-S "$MURA_DBHOST,$MURA_DBPORT" -U "$MURA_DBUSERNAME" -d "$MURA_DATABASE" -b -I -l "$SQLCMD_LOGIN_TIMEOUT")
   # The tools18 build encrypts by default, so it must trust the local server's self-signed certificate.
   if [[ "$(readlink -f "$SQLCMD_BIN" || true)" == */mssql-tools18/* ]]; then
     SQLCMD_ARGS+=(-C)
   else
-    help="$("$SQLCMD_BIN" '-?' 2>&1)" || true
+    help="$(timeout --kill-after=5 10 "$SQLCMD_BIN" '-?' 2>&1)" || true
     if [[ "$help" =~ -C,?[[:space:]]+(Trust|--trust) ]]; then SQLCMD_ARGS+=(-C); fi
   fi
 }
 
-# Runs sqlcmd against the legacy database, the password passed only through SQLCMDPASSWORD; sets SQL_ERROR on failure.
+# Runs sqlcmd against the legacy database within SQL_DEADLINE seconds, the password passed only through SQLCMDPASSWORD; sets SQL_ERROR on failure.
+# No -t: sqlcmd 18 reports a query timeout with exit 0 and runs the remaining batches, so the deadline is enforced outside it.
 sql() {
   local rc=0
-  SQLCMDPASSWORD="$MURA_DBPASSWORD" "$SQLCMD_BIN" "${SQLCMD_ARGS[@]}" "$@" >"$SQLCMD_OUT" 2>&1 || rc=$?
-  if (( rc != 0 )); then
+  SQLCMDPASSWORD="$MURA_DBPASSWORD" timeout --kill-after=10 "$SQL_DEADLINE" "$SQLCMD_BIN" "${SQLCMD_ARGS[@]}" "$@" >"$SQLCMD_OUT" 2>&1 || rc=$?
+  if (( rc == 124 || rc == 137 )); then
+    SQL_ERROR="sqlcmd timed out after $SQL_DEADLINE s"
+  elif (( rc != 0 )); then
     SQL_ERROR="$(sed -e '/^[[:space:]]*$/d' "$SQLCMD_OUT" | tail -n 1)"
     SQL_ERROR="sqlcmd exited $rc: ${SQL_ERROR:0:300}"
   fi
@@ -232,10 +253,31 @@ load_transitions() {
   printf 'loaded opt2/reports/state-machines/%s.json into synthetic.%s (%s rows)\n' "$service" "$table" "$expected" >&2
 }
 
-trap 'fail "exit $? at line $LINENO"' ERR
+if (( $# > 0 )); then
+  if [[ $# -eq 1 && ( "$1" == -h || "$1" == --help ) ]]; then
+    usage
+    exit 0
+  fi
+  printf 'load-fixtures: unexpected arguments: %s\n' "$*" >&2
+  usage >&2
+  exit 2
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+# Rejects a relative state directory or one that resolves, through symlinks too, into the checkout.
+STATE_DIR="$(realpath -m -- "$OPT2_STATE_DIR")"
+if [[ "$OPT2_STATE_DIR" != /* || "$STATE_DIR/" == "$REPO_ROOT/"* ]]; then
+  printf 'load-fixtures: OPT2_STATE_DIR must be an absolute path outside the repository checkout %s, got %s\n' "$REPO_ROOT" "$OPT2_STATE_DIR" >&2
+  exit 2
+fi
+OPT2_STATE_DIR="$STATE_DIR"
+STATUS_FILE="$OPT2_STATE_DIR/fixtures.json"
+WORK_DIR="$OPT2_STATE_DIR/fixtures"
+SQLCMD_OUT="$WORK_DIR/sqlcmd.out"
+
+trap 'fail "exit $? at line $LINENO"' ERR
+
 mkdir -p "$WORK_DIR"
 for name in MURA_DATABASE MURA_DBUSERNAME MURA_DBPASSWORD; do
   [[ -n "${!name}" ]] || fail "$name is not set"
@@ -258,6 +300,7 @@ if (( ${#REASONS[@]} > 0 )); then
   exit 0
 fi
 
+SQL_DEADLINE="$LOAD_DEADLINE"
 load_sql_files
 load_transitions finance finance_transition
 load_transitions timesheets timesheet_transition

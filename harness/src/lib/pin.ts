@@ -7,17 +7,14 @@ export const PIN_PATH: string = opt2Path('source-pin.json');
 
 const hex40 = z.string().regex(/^[0-9a-f]{40}$/, 'must be a 40-character lowercase hex commit id');
 
-/** Shape of the source-pin record; unknown keys are tolerated and `sha` must equal `sourceSha`. */
-export const pinSchema = z
-  .object({
-    sha: hex40,
-    subject: z.string().min(1),
-    repository: z.string().min(1),
-    confirmedAt: z.string().min(1),
-    confirmCommand: z.string().min(1),
-    sourceSha: hex40,
-  })
-  .refine((p) => p.sha === p.sourceSha, { message: 'sha and sourceSha differ', path: ['sourceSha'] });
+/** Shape of the five-field source-pin record; unknown keys are tolerated. */
+export const pinSchema = z.object({
+  sha: hex40,
+  subject: z.string().min(1),
+  repository: z.string().min(1),
+  confirmedAt: z.string().min(1),
+  confirmCommand: z.string().min(1),
+});
 
 /** A validated source-pin record. */
 export type Pin = z.infer<typeof pinSchema>;

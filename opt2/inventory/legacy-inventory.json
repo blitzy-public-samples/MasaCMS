@@ -134477,8 +134477,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/communications.cfc",
         "lines": [
-          86,
-          89
+          89,
+          92
         ]
       },
       "owningService": "communications",
@@ -134512,8 +134512,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/communications.cfc",
         "lines": [
-          77,
-          84
+          80,
+          87
         ]
       },
       "owningService": "communications",
@@ -134547,8 +134547,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/communications.cfc",
         "lines": [
-          91,
-          135
+          94,
+          139
         ]
       },
       "owningService": "communications",
@@ -134577,8 +134577,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/communications.cfc",
             "lines": [
-              240,
-              240
+              268,
+              268
             ]
           },
           "condition": null,
@@ -134594,8 +134594,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/communications.cfc",
             "lines": [
-              98,
-              98
+              102,
+              102
             ]
           },
           "condition": null,
@@ -134611,8 +134611,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/communications.cfc",
             "lines": [
-              215,
-              215
+              243,
+              243
             ]
           },
           "condition": null,
@@ -134636,8 +134636,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/communications.cfc",
         "lines": [
-          38,
-          45
+          41,
+          48
         ]
       },
       "owningService": "communications",
@@ -134671,8 +134671,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/communications.cfc",
         "lines": [
-          47,
-          75
+          50,
+          78
         ]
       },
       "owningService": "communications",
@@ -134701,8 +134701,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/communications.cfc",
             "lines": [
-              62,
-              62
+              65,
+              65
             ]
           },
           "condition": null,
@@ -136242,8 +136242,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          334,
-          341
+          354,
+          363
         ]
       },
       "owningService": "surveys",
@@ -136272,8 +136272,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              337,
-              337
+              358,
+              358
             ]
           },
           "condition": null,
@@ -136297,8 +136297,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          334,
-          341
+          354,
+          363
         ]
       },
       "owningService": "surveys",
@@ -136327,8 +136327,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              337,
-              337
+              358,
+              358
             ]
           },
           "condition": null,
@@ -136352,8 +136352,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          343,
-          368
+          365,
+          392
         ]
       },
       "owningService": "surveys",
@@ -136382,8 +136382,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              361,
-              361
+              384,
+              384
             ]
           },
           "condition": null,
@@ -136407,8 +136407,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          343,
-          368
+          365,
+          392
         ]
       },
       "owningService": "surveys",
@@ -136437,8 +136437,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              361,
-              361
+              384,
+              384
             ]
           },
           "condition": null,
@@ -136462,8 +136462,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          250,
-          258
+          270,
+          278
         ]
       },
       "owningService": "surveys",
@@ -136497,8 +136497,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          260,
-          298
+          280,
+          318
         ]
       },
       "owningService": "surveys",
@@ -136527,8 +136527,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              282,
-              282
+              302,
+              302
             ]
           },
           "condition": null,
@@ -136553,7 +136553,7 @@
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
           111,
-          229
+          249
         ]
       },
       "owningService": "surveys",
@@ -136582,8 +136582,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              180,
-              180
+              218,
+              218
             ]
           },
           "condition": null,
@@ -136599,8 +136599,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              191,
-              191
+              221,
+              221
             ]
           },
           "condition": null,
@@ -136616,8 +136616,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              174,
-              174
+              212,
+              212
             ]
           },
           "condition": null,
@@ -136633,8 +136633,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              165,
-              165
+              203,
+              203
             ]
           },
           "condition": null,
@@ -136650,8 +136650,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              204,
-              204
+              237,
+              237
             ]
           },
           "condition": null,
@@ -136675,8 +136675,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          231,
-          248
+          251,
+          268
         ]
       },
       "owningService": "surveys",
@@ -136731,8 +136731,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          300,
-          332
+          320,
+          352
         ]
       },
       "owningService": "surveys",
@@ -178363,8 +178363,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/communications.cfc",
             "lines": [
-              240,
-              240
+              268,
+              268
             ]
           },
           "op": "insert",
@@ -178679,8 +178679,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/communications.cfc",
             "lines": [
-              98,
-              98
+              102,
+              102
             ]
           },
           "op": "insert",
@@ -178701,8 +178701,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/communications.cfc",
             "lines": [
-              215,
-              215
+              243,
+              243
             ]
           },
           "op": "update",
@@ -178780,8 +178780,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/communications.cfc",
             "lines": [
-              62,
-              62
+              65,
+              65
             ]
           },
           "op": "insert",
@@ -179188,7 +179188,7 @@
           ],
           "trigger": "scheduler",
           "sessionEffects": "none",
-          "condition": "the opt2-survey-<id>-launch and opt2-survey-<id>-reminder-<n> cfschedule tasks that scheduleSurvey creates (surveys.cfc:207-225) call launchCallback (334-341, survey status and launched_at) and remindCallback (343-368, reminder sent_at) with a valid opt2TaskToken",
+          "condition": "the opt2-survey-<id>-launch and opt2-survey-<id>-reminder-<n> cfschedule tasks that scheduleSurvey creates (surveys.cfc:173-189) call launchCallback (354-363, survey status and launched_at) and remindCallback (365-392, reminder sent_at) with a valid opt2TaskToken",
           "override": "harness/inventory/writer-overrides.yaml#wov:fixture-survey-tasks"
         },
         {
@@ -179219,8 +179219,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              204,
-              204
+              237,
+              237
             ]
           },
           "op": "update",
@@ -179241,8 +179241,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              337,
-              337
+              358,
+              358
             ]
           },
           "op": "update",
@@ -179335,7 +179335,7 @@
           ],
           "trigger": "scheduler",
           "sessionEffects": "none",
-          "condition": "the opt2-survey-<id>-launch and opt2-survey-<id>-reminder-<n> cfschedule tasks that scheduleSurvey creates (surveys.cfc:207-225) call launchCallback (334-341, survey status and launched_at) and remindCallback (343-368, reminder sent_at) with a valid opt2TaskToken",
+          "condition": "the opt2-survey-<id>-launch and opt2-survey-<id>-reminder-<n> cfschedule tasks that scheduleSurvey creates (surveys.cfc:173-189) call launchCallback (354-363, survey status and launched_at) and remindCallback (365-392, reminder sent_at) with a valid opt2TaskToken",
           "override": "harness/inventory/writer-overrides.yaml#wov:fixture-survey-tasks"
         },
         {
@@ -179344,8 +179344,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              180,
-              180
+              218,
+              218
             ]
           },
           "op": "delete",
@@ -179366,8 +179366,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              191,
-              191
+              221,
+              221
             ]
           },
           "op": "insert",
@@ -179388,8 +179388,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              361,
-              361
+              384,
+              384
             ]
           },
           "op": "update",
@@ -179470,8 +179470,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              282,
-              282
+              302,
+              302
             ]
           },
           "op": "insert",
@@ -179549,8 +179549,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              165,
-              165
+              203,
+              203
             ]
           },
           "op": "update",
@@ -179571,8 +179571,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              174,
-              174
+              212,
+              212
             ]
           },
           "op": "insert",

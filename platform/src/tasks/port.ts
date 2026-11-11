@@ -49,6 +49,33 @@ export interface QueueState {
   paused: boolean;
 }
 
+/** Tasks per `list` page when the request names no size. */
+export const DEFAULT_TASK_PAGE_SIZE = 100;
+
+/** Largest `list` page, the Cloud Tasks maximum. */
+export const MAX_TASK_PAGE_SIZE = 1000;
+
+/** Paging of a `list` call; `pageToken` is the previous page's `nextPageToken`. */
+export interface TaskPageRequest {
+  pageSize?: number;
+  pageToken?: string;
+}
+
+/** One page of live tasks; `nextPageToken` is present only when more tasks may follow. */
+export interface TaskPage {
+  tasks: TaskInfo[];
+  nextPageToken?: string;
+}
+
+/** Page size of a `list` request, `DEFAULT_TASK_PAGE_SIZE` when omitted; throws `RangeError` outside 1–`MAX_TASK_PAGE_SIZE`. */
+export function resolvePageSize(pageSize: number | undefined): number {
+  const size = pageSize ?? DEFAULT_TASK_PAGE_SIZE;
+  if (!Number.isInteger(size) || size < 1 || size > MAX_TASK_PAGE_SIZE) {
+    throw new RangeError(`pageSize must be an integer from 1 to ${String(MAX_TASK_PAGE_SIZE)}, got ${String(pageSize)}`);
+  }
+  return size;
+}
+
 /** Task scheduling port implemented by the local and Cloud Tasks adapters. */
 export interface TaskPort {
   /** Adapter backing this port. */
@@ -57,8 +84,10 @@ export interface TaskPort {
   create(input: CreateTaskInput): Promise<CreateTaskResult>;
   /** Deletes a live task; `tenantId` narrows the local adapter's search, and the cloud adapter ignores it. */
   delete(queue: string, name: string, opts?: { tenantId?: string }): Promise<DeleteTaskResult>;
-  /** Live tasks of the queue. */
-  list(queue: string): Promise<TaskInfo[]>;
+  /** One page of the queue's live tasks; follow `nextPageToken` for the rest. */
+  list(queue: string, page?: TaskPageRequest): Promise<TaskPage>;
+  /** The live task `name`, or undefined when absent or a tombstone; `tenantId` is its creating tenant, and the cloud adapter ignores it. */
+  get(queue: string, name: string, opts?: { tenantId?: string }): Promise<TaskInfo | undefined>;
   /** Stops dispatch from the queue; creation still succeeds. */
   pauseQueue(queue: string): Promise<void>;
   /** Restarts dispatch from the queue. */
@@ -69,7 +98,7 @@ export interface TaskPort {
   close(): Promise<void>;
 }
 
-/** Logger subset the adapters use; pino and Fastify loggers satisfy it. */
+/** Logger subset the adapters use; pino and Fastify loggers satisfy it, and every logged `error` arrives already serialized. */
 export interface TaskLogger {
   info(obj: object, msg?: string): void;
   warn(obj: object, msg?: string): void;
@@ -170,13 +199,13 @@ export interface TaskEnv {
   GOOGLE_CLOUD_PROJECT?: string;
 }
 
-/** `db` is required by the local adapter; `cloud.client` replaces the Cloud Tasks client and `cloud.location` the metadata lookup. */
+/** `db` and `logger` are required by the local adapter; `cloud.client` replaces the Cloud Tasks client and `cloud.location` the metadata lookup. */
 export interface CreateTaskPortOptions {
   db?: TenantDb;
   clock?: Clock;
   logger?: TaskLogger;
   cloud?: { client?: unknown; location?: string };
-  local?: { pollIntervalMs?: number; batchSize?: number; autoStart?: boolean };
+  local?: { pollIntervalMs?: number; batchSize?: number; maxConcurrentDispatches?: number; autoStart?: boolean };
 }
 
 // Non-literal specifiers keep the port free of a compile-time dependency on its adapters, which import it;
@@ -186,7 +215,7 @@ const CLOUD_ADAPTER_MODULE = './cloud-adapter.js';
 
 interface LocalAdapterModule {
   createLocalTaskAdapter: (
-    opts: { db: TenantDb; stateDir: string; serviceUrls: Record<string, string>; clock?: Clock; logger?: TaskLogger } & NonNullable<
+    opts: { db: TenantDb; stateDir: string; serviceUrls: Record<string, string>; clock?: Clock; logger: TaskLogger } & NonNullable<
       CreateTaskPortOptions['local']
     >,
   ) => Promise<TaskPort>;
@@ -201,7 +230,9 @@ export async function createTaskPort(env: TaskEnv, opts: CreateTaskPortOptions =
   const { db, clock, logger } = opts;
   switch (env.OPT2_TASKS_ADAPTER) {
     case 'local': {
-      if (!db || !env.OPT2_STATE_DIR) throw new TaskPortConfigError('The local tasks adapter requires a TenantDb and OPT2_STATE_DIR');
+      if (!db || !logger || !env.OPT2_STATE_DIR) {
+        throw new TaskPortConfigError('The local tasks adapter requires a TenantDb, a logger and OPT2_STATE_DIR');
+      }
       const { createLocalTaskAdapter } = (await import(LOCAL_ADAPTER_MODULE)) as LocalAdapterModule;
       // An absent map matches the env loader's '{}' default.
       const serviceUrls = env.OPT2_SERVICE_URLS ?? {};

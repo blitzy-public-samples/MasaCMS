@@ -66,11 +66,11 @@ export const CDN_PINS = { reveal: '5.1.0', mermaid: '11.4.0', lucide: '0.460.0' 
 /** A library pinned in {@link CDN_PINS}. */
 export type CdnLibrary = keyof typeof CDN_PINS;
 
-/** URL matchers capturing each library's version from a CDN URL. */
+/** Whole-pathname-segment matchers per library: `<package>@<version>` captures the version; a bare `<package>` takes it from the next segment. */
 export const CDN_MATCHERS: Readonly<Record<CdnLibrary, RegExp>> = {
-  reveal: /reveal\.js[@/]([\d.]+)/,
-  mermaid: /mermaid[@/]([\d.]+)/,
-  lucide: /lucide[@/]([\d.]+)/,
+  reveal: /^reveal\.js(?:@(.+))?$/,
+  mermaid: /^mermaid(?:@(.+))?$/,
+  lucide: /^lucide(?:@(.+))?$/,
 };
 
 /** Mermaid `themeVariables` values `mermaid.initialize` must set. */
@@ -136,7 +136,11 @@ export interface DeckFinding {
 /** Options of {@link renderDeck}; `launch` replaces the headless Chromium launch. */
 export interface RenderOptions {
   timeoutMs?: number;
+  /** Total ms from launch through close; by default every step's own wait plus launch and close slack. */
+  budgetMs?: number;
   launch?: () => Promise<Browser>;
+  /** With `launch`, terminates the browser it started once that browser outlasts the budget or fails to close. */
+  kill?: () => Promise<void>;
 }
 
 const USAGE = 'check-deck [--file <path>] [--render]';
@@ -149,15 +153,23 @@ const CLOSING_HEADING_WORDS = { min: 3, max: 6 } as const;
 const RENDER_TIMEOUT_MS = 30_000;
 // Lets each slide's `slidechanged` handler start its Mermaid and Lucide work before the next slide is shown.
 const SLIDE_SETTLE_MS = 200;
+// Budget beyond the per-step waits for launch, page creation, probe overhead and the close reserve.
+const RENDER_SLACK_MS = 30_000;
+// The end of the budget kept for close: this, or a third of a smaller budget.
+const CLOSE_RESERVE_MS = 5_000;
+// How long a kill may wait, past the budget, for the killed browser to exit.
+const KILL_WAIT_MS = 1_000;
 const RENDER_VIEWPORT = { width: 1920, height: 1080 } as const;
 
 const CDN_LABELS: Readonly<Record<CdnLibrary, string>> = { reveal: 'reveal.js', mermaid: 'Mermaid', lucide: 'Lucide' };
-// A URL naming a library without a version the matcher can read is unpinned.
+// A URL whose pathname names a library without a version the matcher can read is unpinned.
 const CDN_NAMES: Readonly<Record<CdnLibrary, RegExp>> = {
   reveal: /\breveal\b/i,
   mermaid: /\bmermaid\b/i,
   lucide: /\blucide\b/i,
 };
+// Resolves relative and protocol-relative CDN URLs so their pathname can be read.
+const CDN_URL_BASE = 'https://deck.invalid/';
 
 const SLIDE_TYPE_CLASSES = [
   ['slide-title', 'title'],
@@ -173,7 +185,10 @@ const INLINE_TAGS = new Set([
   'a', 'abbr', 'b', 'bdi', 'bdo', 'cite', 'code', 'data', 'dfn', 'em', 'i', 'kbd', 'mark',
   'q', 's', 'samp', 'small', 'span', 'strong', 'sub', 'sup', 'time', 'u', 'var', 'wbr',
 ]);
-const EMOJI = /[\p{Extended_Pictographic}\u{FE0F}]/gu;
+// A keycap or a flag (regional-indicator pair) is one emoji; so is each other pictograph, emoji-presentation character or FE0F.
+const EMOJI = /[0-9#*]\u{FE0F}?\u{20E3}|\p{Regional_Indicator}{2}|[\p{Extended_Pictographic}\p{Emoji_Presentation}\u{FE0F}]/gu;
+// A character reference, or a bare `&`, taken whole so it decodes alone as the parser decodes it in text.
+const REFERENCE = /&[#\w]*;?/g;
 const FENCE = /`{3,}/g;
 const GOOGLE_FONTS_CSS2 = 'https://fonts.googleapis.com/css2?';
 const INVERT_COLOURS = ['var(--blitzy-text-invert)', '#fff', '#ffffff', 'white', 'rgb(255, 255, 255)'];
@@ -197,6 +212,8 @@ interface Slide {
 interface CssRule {
   selectors: string[];
   declarations: Map<string, string>;
+  /** Rule body with comments masked. */
+  body: string;
 }
 
 interface InlineScript {
@@ -247,20 +264,27 @@ function maskCssComments(css: string): string {
   return css.replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, ' '));
 }
 
+/** Declarations of a rule body; property names lower-cased except custom properties. */
+function cssDeclarations(body: string): Map<string, string> {
+  const declarations = new Map<string, string>();
+  for (const declaration of splitTopLevel(body, ';')) {
+    const colon = declaration.indexOf(':');
+    if (colon <= 0) continue;
+    const name = declaration.slice(0, colon).trim();
+    declarations.set(name.startsWith('--') ? name : name.toLowerCase(), declaration.slice(colon + 1).trim());
+  }
+  return declarations;
+}
+
 /** Innermost style rules of `css` with their selector lists and declarations. */
 function cssRules(css: string): CssRule[] {
   const rules: CssRule[] = [];
   for (const match of maskCssComments(css).matchAll(/([^{}]*)\{([^{}]*)\}/g)) {
     const prelude = (match[1] ?? '').slice((match[1] ?? '').lastIndexOf(';') + 1).trim();
     if (prelude === '' || prelude.startsWith('@')) continue;
-    const declarations = new Map<string, string>();
-    for (const declaration of splitTopLevel(match[2] ?? '', ';')) {
-      const colon = declaration.indexOf(':');
-      if (colon <= 0) continue;
-      const name = declaration.slice(0, colon).trim();
-      declarations.set(name.startsWith('--') ? name : name.toLowerCase(), declaration.slice(colon + 1).trim());
-    }
-    rules.push({ selectors: splitTopLevel(prelude, ',').map((s) => s.trim()).filter((s) => s !== ''), declarations });
+    const body = match[2] ?? '';
+    const declarations = cssDeclarations(body);
+    rules.push({ selectors: splitTopLevel(prelude, ',').map((s) => s.trim()).filter((s) => s !== ''), declarations, body });
   }
   return rules;
 }
@@ -498,14 +522,57 @@ function checkSectionCount(deck: Deck, out: FindingList): void {
   }
 }
 
+const TABLE_PARTS = 'table, caption, thead, tbody, tfoot, tr, th, td';
+// Pseudo-elements and state pseudo-classes, dropped so a rule styling an element's part or state counts for it; a bare one becomes `*`.
+const UNEVALUATED_PSEUDOS =
+  /::[\w-]+(?:\([^)]*\))?|:(?:before|after|first-line|first-letter|hover|active|focus(?:-visible|-within)?|visited|target)(?![\w-])/gi;
+
+// A custom property (`--x`) or an identifier such as `border` or `-webkit-x`.
+const CSS_PROPERTY = /^(?:--(?=.)|-?(?:[a-z_]|[\u0080-\uffff]|\\.))(?:[\w-]|[\u0080-\uffff]|\\.)*$/i;
+const IMPORTANT = /!\s*important\s*$/i;
+
+/** Whether a rule body or `style` attribute, comments ignored, has a declaration with a valid name and a value besides `!important`. */
+function hasDeclaration(body: string): boolean {
+  // An unclosed comment runs to the end of the CSS.
+  return splitTopLevel(maskCssComments(body).replace(/\/\*[\s\S]*/, ''), ';').some((declaration) => {
+    const colon = declaration.indexOf(':');
+    return (
+      colon !== -1 &&
+      CSS_PROPERTY.test(declaration.slice(0, colon).trim()) &&
+      declaration.slice(colon + 1).replace(IMPORTANT, '').trim() !== ''
+    );
+  });
+}
+
+/** Whether a table or its own parts carry an inline style or match an inline-CSS rule passing {@link hasDeclaration}. */
+function styledTableTest(deck: Deck): (table: DeckElement) => boolean {
+  const { $ } = deck;
+  const parts = $(TABLE_PARTS);
+  const matching = (selector: string): DeckElement[] => {
+    const evaluable = selector.replace(UNEVALUATED_PSEUDOS, (_: string, at: number, all: string) =>
+      /(^|[\s>+~(,])$/.test(all.slice(0, at)) ? '*' : '',
+    );
+    try {
+      return parts.filter(evaluable).toArray();
+    } catch {
+      return [];
+    }
+  };
+  const reached = parts.filter((_, el) => hasDeclaration($(el).attr('style') ?? '')).toArray();
+  for (const rule of deck.rules) if (hasDeclaration(rule.body)) reached.push(...rule.selectors.flatMap(matching));
+  const owners = new Set(reached.flatMap((el) => $(el).closest('table').toArray()));
+  return (table) => owners.has(table);
+}
+
+/** Flags each `<section>` without a Mermaid diagram, KPI card, Lucide icon or table passing {@link styledTableTest}. */
 function checkVisuals(deck: Deck, out: FindingList): void {
   const { $ } = deck;
-  const tableTypeStyled = deck.rules.some((rule) => rule.selectors.some((s) => /(^|[\s>+~(])table(?![\w-])/.test(s)));
+  const isStyled = styledTableTest(deck);
   for (const section of $('section').toArray()) {
     const styledTable = $(section)
       .find('table')
       .toArray()
-      .some((t) => tableTypeStyled || ($(t).attr('class') ?? '').trim() !== '' || ($(t).attr('style') ?? '').trim() !== '');
+      .some((t) => isStyled(t));
     if ($(section).find('pre.mermaid, .kpi-card').length > 0 || styledTable || hasIcon($, section, 'i[data-lucide]')) continue;
     const nested = $(section).parent().is('section') ? 'nested <section>' : 'slide';
     out.add('non-text-visual', startOf(section), `${nested} has no Mermaid diagram, KPI card, styled table or Lucide icon`);
@@ -655,15 +722,94 @@ function checkSlideStyle(deck: Deck, out: FindingList): void {
   }
 }
 
-function codePoint(char: string): string {
-  return `U+${(char.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}`;
+/** `U+XXXX` label of each code point of `text`, space-separated. */
+function codePoints(text: string): string {
+  return [...text].map((char) => `U+${(char.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}`).join(' ');
+}
+
+// parse5 records each attribute's source span, which domhandler's location type omits.
+type AttributeSpans = NonNullable<DeckElement['sourceCodeLocation']> & {
+  attrs?: Record<string, { startOffset: number; endOffset: number }>;
+};
+
+/** Emoji in `value`, the parser's decoding of `html` from `start` to `end`, that a character reference produced. */
+function referencedEmoji(
+  html: string,
+  value: string,
+  start: number,
+  end: number,
+  decode: (reference: string) => string,
+): { at: number; label: string }[] {
+  const found = [...value.matchAll(EMOJI)];
+  if (found.length === 0) return [];
+  const raw = html.slice(start, end);
+  const referenceAt = new Map<number, number>();
+  let text = '';
+  let last = 0;
+  for (const m of raw.matchAll(REFERENCE)) {
+    text += raw.slice(last, m.index).replace(/\r\n?/g, '\n');
+    const decoded = decode(m[0]);
+    for (let i = 0; i < decoded.length; i++) referenceAt.set(text.length + i, start + m.index);
+    text += decoded;
+    last = m.index + m[0].length;
+  }
+  text += raw.slice(last).replace(/\r\n?/g, '\n');
+  // The parser drops the newline opening a <pre>, <textarea> or <listing> but keeps it in the span.
+  const skip = text.length - value.length;
+  if (text.endsWith(value)) {
+    return found.flatMap((m) => {
+      const units = Array.from({ length: m[0].length }, (_, i) => referenceAt.get(skip + m.index + i));
+      const at = units.find((offset) => offset !== undefined);
+      return at === undefined ? [] : [{ at, label: codePoints(m[0]) }];
+    });
+  }
+  // The decoding does not map onto the span: each hit its literal characters do not account for is placed at its start.
+  const literal = [...raw.matchAll(EMOJI)].map((m) => m[0]);
+  return found.flatMap((m) => {
+    const i = literal.indexOf(m[0]);
+    if (i === -1) return [{ at: start, label: codePoints(m[0]) }];
+    literal.splice(i, 1);
+    return [];
+  });
+}
+
+/** Emoji that character references put into text nodes and attribute values, each at its reference's offset. */
+function encodedEmoji(deck: Deck): { at: number; label: string }[] {
+  const { $, html } = deck;
+  const cache = new Map<string, string>();
+  const decode = (reference: string): string => {
+    const decoded = cache.get(reference) ?? load(reference, null, false).text();
+    cache.set(reference, decoded);
+    return decoded;
+  };
+  const elements = $.root().find('*').toArray();
+  const texts = $(elements)
+    .contents()
+    .toArray()
+    .flatMap((node) => {
+      if (node.nodeType !== 3) return [];
+      const start = node.startIndex ?? 0;
+      return referencedEmoji(html, node.data, start, node.endIndex ?? start, decode);
+    });
+  const attributes = elements.flatMap((el) => {
+    const spans = (el.sourceCodeLocation as AttributeSpans | null | undefined)?.attrs;
+    return Object.entries(el.attribs).flatMap(([name, value]) => {
+      // SVG attribute names are case-adjusted after their spans are recorded; attributes merged into <html> or <body> have none.
+      const span = spans?.[name] ?? spans?.[name.toLowerCase()];
+      if (span === undefined) return referencedEmoji(html, value, startOf(el), startOf(el), decode);
+      const open = /^[^=]*=\s*["']?/.exec(html.slice(span.startOffset, span.endOffset))?.[0] ?? '';
+      const end = span.endOffset - (/["']$/.test(open) ? 1 : 0);
+      return referencedEmoji(html, value, span.startOffset + open.length, end, decode);
+    });
+  });
+  return [...texts, ...attributes];
 }
 
 function checkCharacters(deck: Deck, out: FindingList): void {
   const { $, html } = deck;
   out.addGrouped(
     'emoji',
-    [...html.matchAll(EMOJI)].map((m) => ({ at: m.index, label: codePoint(m[0]) })),
+    [...[...html.matchAll(EMOJI)].map((m) => ({ at: m.index, label: codePoints(m[0]) })), ...encodedEmoji(deck)],
     'emoji are not allowed; use Lucide icons',
   );
   out.addGrouped(
@@ -684,6 +830,34 @@ function checkCharacters(deck: Deck, out: FindingList): void {
   }
 }
 
+/** Decoded pathname segments of `url`, without its query or fragment; none when `url` does not parse. */
+function pathSegments(url: string): string[] {
+  let pathname: string;
+  try {
+    pathname = new URL(url, CDN_URL_BASE).pathname;
+  } catch {
+    return [];
+  }
+  return pathname.split('/').map((segment) => {
+    try {
+      return decodeURIComponent(segment);
+    } catch {
+      return segment;
+    }
+  });
+}
+
+/** Versions of `library` in `segments`: the rest of a `<package>@…` segment, or the digit-led segment after a bare `<package>`. */
+function cdnVersions(library: CdnLibrary, segments: readonly string[]): string[] {
+  return segments.flatMap((segment, i) => {
+    const match = CDN_MATCHERS[library].exec(segment);
+    if (match === null) return [];
+    if (match[1] !== undefined) return [match[1]];
+    const next = segments[i + 1];
+    return next !== undefined && /^\d/.test(next) ? [next] : [];
+  });
+}
+
 function checkCdns(deck: Deck, out: FindingList): void {
   const { $ } = deck;
   const urls = $('script[src], link[href]')
@@ -692,12 +866,12 @@ function checkCdns(deck: Deck, out: FindingList): void {
   for (const library of Object.keys(CDN_PINS) as CdnLibrary[]) {
     const pin = CDN_PINS[library];
     const label = CDN_LABELS[library];
-    const matcher = new RegExp(CDN_MATCHERS[library].source, 'g');
     let scripted = false;
     for (const { tag, url, at } of urls) {
-      const versions = [...url.matchAll(matcher)].map((m) => m[1] ?? '');
+      const segments = pathSegments(url);
+      const versions = cdnVersions(library, segments);
       if (versions.length === 0) {
-        if (CDN_NAMES[library].test(url)) out.add('cdn', at, `${label} URL ${url} carries no version; pin ${pin}`);
+        if (CDN_NAMES[library].test(segments.join('/'))) out.add('cdn', at, `${label} URL ${url} carries no version; pin ${pin}`);
         continue;
       }
       if (tag === 'script') scripted = true;
@@ -992,16 +1166,129 @@ function renderFindings(state: RenderState, declaredIcons: number): DeckFinding[
   return findings;
 }
 
-async function launchChromium(): Promise<Browser> {
+/** The render budget ran out while `step` was pending. */
+class RenderExpired extends Error {
+  override name = 'RenderExpired';
+  readonly step: string;
+
+  constructor(step: string) {
+    super(`render budget expired during ${step}`);
+    this.step = step;
+  }
+}
+
+/** Settles as `work` does, or rejects with {@link RenderExpired} once `deadline` (a `performance.now()` time) passes. */
+function beforeDeadline<T>(work: Promise<T>, step: string, deadline: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const expiry = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new RenderExpired(step)), Math.max(0, deadline - performance.now()));
+  });
+  // race() keeps a handler on `work`, so a rejection it raises after expiry stays handled.
+  return Promise.race([work, expiry]).finally(() => clearTimeout(timer));
+}
+
+function stalledFinding(err: RenderExpired, budgetMs: number): DeckFinding {
+  return { check: 'render-unavailable', detail: `render did not finish within the ${budgetMs} ms budget: stalled in ${err.step}` };
+}
+
+/** A launched browser; `close` ends what started it after the browser closes, `kill` terminates it. */
+interface Launched {
+  browser: Browser;
+  close?: () => Promise<void>;
+  kill?: () => Promise<void>;
+}
+
+/** Kills through `kill`, waiting at most {@link KILL_WAIT_MS}; why the kill did not finish, when it did not. */
+async function killBrowser(kill: () => Promise<void>): Promise<string | undefined> {
+  try {
+    await beforeDeadline(kill(), 'kill', performance.now() + KILL_WAIT_MS);
+    return undefined;
+  } catch (err) {
+    return err instanceof RenderExpired ? `no exit within ${KILL_WAIT_MS} ms` : errorMessage(err);
+  }
+}
+
+/** Starts a headless Chromium server and connects to it by `deadline`; a server that arrives later or fails to connect is killed. */
+async function launchChromium(deadline: number): Promise<Launched> {
   const { chromium } = await import('@playwright/test');
-  return chromium.launch({ headless: true });
+  const server = await chromium.launchServer({ headless: true });
+  const kill = (): Promise<void> => server.kill();
+  try {
+    if (performance.now() >= deadline) throw new RenderExpired('launch');
+    const browser = await beforeDeadline(chromium.connect(server.wsEndpoint()), 'launch', deadline);
+    return { browser, close: () => server.close(), kill };
+  } catch (err) {
+    await killBrowser(kill);
+    throw err;
+  }
+}
+
+/** Closes the browser, then what launched it, by `deadline`; kills it when that fails or is late, with a finding when late. */
+async function closeBrowser({ browser, close, kill }: Launched, budgetMs: number, deadline: number): Promise<DeckFinding | undefined> {
+  try {
+    await beforeDeadline(browser.close().then(() => close?.()), 'close', deadline);
+    return undefined;
+  } catch (err) {
+    const unkilled = kill === undefined ? undefined : await killBrowser(kill);
+    if (!(err instanceof RenderExpired)) throw err;
+    const detail = `browser did not close within the ${budgetMs} ms render budget`;
+    if (kill === undefined) return { check: 'render-unavailable', detail };
+    const outcome = unkilled === undefined ? 'was killed' : `could not be killed: ${unkilled}`;
+    return { check: 'render-unavailable', detail: `${detail} and ${outcome}` };
+  }
+}
+
+/** Drives a new page of `browser` over the deck at `absolute`; rejects with {@link RenderExpired} past `deadline`. */
+async function renderPage(
+  browser: Browser,
+  absolute: string,
+  { timeoutMs, declaredIcons, deadline }: { timeoutMs: number; declaredIcons: number; deadline: number },
+): Promise<DeckFinding[]> {
+  const step = <T>(name: string, work: Promise<T>): Promise<T> => beforeDeadline(work, name, deadline);
+  const page = await step('newPage', browser.newPage({ viewport: RENDER_VIEWPORT }));
+  const pageErrors: string[] = [];
+  const failedRequests: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  page.on('requestfailed', (request) => failedRequests.push(`${request.url()} (${request.failure()?.errorText ?? 'failed'})`));
+  const findings: DeckFinding[] = [];
+  try {
+    await step('goto', page.goto(pathToFileURL(absolute).href, { waitUntil: 'load', timeout: timeoutMs }));
+  } catch (err) {
+    if (err instanceof RenderExpired) throw err;
+    return [{ check: 'render-unavailable', detail: `deck did not load: ${errorMessage(err)}` }];
+  }
+  const ready = await step(
+    'reveal.js ready wait',
+    page.waitForFunction(revealReady, undefined, { timeout: timeoutMs }).then(
+      () => true,
+      () => false,
+    ),
+  );
+  if (ready) {
+    await step('slide visits', page.evaluate(visitSlides, { selector: SLIDE_SELECTOR, settleMs: SLIDE_SETTLE_MS }));
+    // A timeout here is reported through the collected state, which names each unrendered visual.
+    await step('visuals wait', page.waitForFunction(visualsRendered, undefined, { timeout: timeoutMs }).catch(() => undefined));
+    findings.push(...renderFindings(await step('state collection', page.evaluate(collectState, SLIDE_SELECTOR)), declaredIcons));
+  } else {
+    findings.push({ check: 'render-ready', detail: `reveal.js was not ready within ${timeoutMs} ms` });
+  }
+  const errorCounts = new Map<string, number>();
+  for (const message of pageErrors) errorCounts.set(message, (errorCounts.get(message) ?? 0) + 1);
+  return [
+    ...failedRequests.map((request): DeckFinding => ({ check: 'render-unavailable', detail: `request failed: ${request}` })),
+    ...findings,
+    ...[...errorCounts].map(
+      ([message, count]): DeckFinding => ({ check: 'render-error', detail: `page error${count > 1 ? ` (×${count})` : ''}: ${message}` }),
+    ),
+  ];
 }
 
 /**
  * Renders the deck at `file` in headless Chromium and reports what failed to render.
  * Page calls, in order: `on('pageerror')`, `on('requestfailed')`, `goto`, `waitForFunction` (reveal.js ready),
  * `evaluate` (visit every slide; `{ selector, settleMs }` argument), `waitForFunction` (all visuals rendered; a timeout is
- * tolerated), `evaluate` (collect a {@link RenderState}; selector argument). The browser is always closed.
+ * tolerated), `evaluate` (collect a {@link RenderState}; selector argument). The browser is always closed, or else killed.
+ * Launch through close finish within one budget whose end is reserved for close; the step it runs out in is reported.
  */
 export async function renderDeck(file: string, opts: RenderOptions = {}): Promise<DeckFinding[]> {
   const timeoutMs = opts.timeoutMs ?? RENDER_TIMEOUT_MS;
@@ -1010,48 +1297,34 @@ export async function renderDeck(file: string, opts: RenderOptions = {}): Promis
   const declaredIcons = $('i[data-lucide]')
     .toArray()
     .filter((el) => ($(el).attr('data-lucide') ?? '').trim() !== '').length;
-  let browser: Browser;
+  const budgetMs = opts.budgetMs ?? 3 * timeoutMs + slideElements($).length * SLIDE_SETTLE_MS + RENDER_SLACK_MS;
+  const deadline = performance.now() + budgetMs;
+  const workDeadline = deadline - Math.min(CLOSE_RESERVE_MS, budgetMs / 3);
+  const launching: Promise<Launched> =
+    opts.launch === undefined ? launchChromium(workDeadline) : opts.launch().then((browser) => ({ browser, kill: opts.kill }));
+  let launched: Launched;
   try {
-    browser = await (opts.launch ?? launchChromium)();
+    launched = await beforeDeadline(launching, 'launch', workDeadline);
   } catch (err) {
-    return [{ check: 'render-unavailable', detail: `Chromium did not launch (npx playwright install chromium): ${errorMessage(err)}` }];
+    if (!(err instanceof RenderExpired)) {
+      return [{ check: 'render-unavailable', detail: `Chromium did not launch (npx playwright install chromium): ${errorMessage(err)}` }];
+    }
+    // A browser that launches too late to render is killed on arrival, or closed when nothing can kill it.
+    void launching.then(({ browser, kill }) => (kill === undefined ? browser.close() : kill())).catch(() => undefined);
+    return [stalledFinding(err, budgetMs)];
   }
+  let findings: DeckFinding[];
   try {
-    const page = await browser.newPage({ viewport: RENDER_VIEWPORT });
-    const pageErrors: string[] = [];
-    const failedRequests: string[] = [];
-    page.on('pageerror', (error) => pageErrors.push(error.message));
-    page.on('requestfailed', (request) => failedRequests.push(`${request.url()} (${request.failure()?.errorText ?? 'failed'})`));
-    const findings: DeckFinding[] = [];
-    try {
-      await page.goto(pathToFileURL(absolute).href, { waitUntil: 'load', timeout: timeoutMs });
-    } catch (err) {
-      return [{ check: 'render-unavailable', detail: `deck did not load: ${errorMessage(err)}` }];
+    findings = await renderPage(launched.browser, absolute, { timeoutMs, declaredIcons, deadline: workDeadline });
+  } catch (err) {
+    if (!(err instanceof RenderExpired)) {
+      await closeBrowser(launched, budgetMs, deadline);
+      throw err;
     }
-    const ready = await page.waitForFunction(revealReady, undefined, { timeout: timeoutMs }).then(
-      () => true,
-      () => false,
-    );
-    if (ready) {
-      await page.evaluate(visitSlides, { selector: SLIDE_SELECTOR, settleMs: SLIDE_SETTLE_MS });
-      // A timeout here is reported through the collected state, which names each unrendered visual.
-      await page.waitForFunction(visualsRendered, undefined, { timeout: timeoutMs }).catch(() => undefined);
-      findings.push(...renderFindings(await page.evaluate(collectState, SLIDE_SELECTOR), declaredIcons));
-    } else {
-      findings.push({ check: 'render-ready', detail: `reveal.js was not ready within ${timeoutMs} ms` });
-    }
-    const errorCounts = new Map<string, number>();
-    for (const message of pageErrors) errorCounts.set(message, (errorCounts.get(message) ?? 0) + 1);
-    return [
-      ...failedRequests.map((request): DeckFinding => ({ check: 'render-unavailable', detail: `request failed: ${request}` })),
-      ...findings,
-      ...[...errorCounts].map(
-        ([message, count]): DeckFinding => ({ check: 'render-error', detail: `page error${count > 1 ? ` (×${count})` : ''}: ${message}` }),
-      ),
-    ];
-  } finally {
-    await browser.close();
+    findings = [stalledFinding(err, budgetMs)];
   }
+  const unclosed = await closeBrowser(launched, budgetMs, deadline);
+  return unclosed === undefined ? findings : [...findings, unclosed];
 }
 
 /** Number of top-level slides in `html`. */

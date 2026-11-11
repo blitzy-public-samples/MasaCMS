@@ -1,3 +1,5 @@
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { managedAudience, serviceAccountEmail } from '../../src/auth/index.js';
 import {
@@ -12,7 +14,9 @@ import {
   type CloudTasksClientLike,
 } from '../../src/tasks/cloud-adapter.js';
 import {
+  DEFAULT_TASK_PAGE_SIZE,
   InvalidTaskNameError,
+  MAX_TASK_PAGE_SIZE,
   TaskPortConfigError,
   createTaskPort,
   type CreateTaskInput,
@@ -48,7 +52,12 @@ function fakeClient() {
     ),
     createTask: vi.fn(async (_req: Parameters<CloudTasksClientLike['createTask']>[0]): Promise<unknown> => [{}]),
     deleteTask: vi.fn(async (_req: { name: string }): Promise<unknown> => [{}]),
-    listTasks: vi.fn(async (_req: { parent: string; responseView: 'BASIC' }): Promise<[CloudTaskSummary[], ...unknown[]]> => [[]]),
+    listTasks: vi.fn(
+      async (
+        ..._args: Parameters<CloudTasksClientLike['listTasks']>
+      ): ReturnType<CloudTasksClientLike['listTasks']> => [[], null, { nextPageToken: '' }],
+    ),
+    getTask: vi.fn(async (_req: { name: string; responseView: 'BASIC' }): Promise<[CloudTaskSummary, ...unknown[]]> => [{}]),
     getQueue: vi.fn(async (_req: { name: string }): Promise<[{ state?: string | number | null }, ...unknown[]]> => [{ state: 'RUNNING' }]),
     pauseQueue: vi.fn(async (_req: { name: string }): Promise<unknown> => [{}]),
     resumeQueue: vi.fn(async (_req: { name: string }): Promise<unknown> => [{}]),
@@ -140,22 +149,64 @@ describe('resolveCloudTasksLocation', () => {
   it('returns the region segment of the metadata answer', async () => {
     const fetchImpl = vi.fn(async () => new Response('projects/123456789/regions/europe-west1\n'));
     await expect(resolveCloudTasksLocation(fetchImpl as unknown as typeof fetch)).resolves.toBe('europe-west1');
-    expect(fetchImpl).toHaveBeenCalledWith(METADATA_REGION_URL, { headers: { 'Metadata-Flavor': 'Google' } });
+    expect(fetchImpl).toHaveBeenCalledWith(METADATA_REGION_URL, {
+      headers: { 'Metadata-Flavor': 'Google' },
+      signal: expect.any(AbortSignal),
+    });
   });
 
   it.each([
-    ['a non-200 answer', async () => new Response('not found', { status: 404 })],
-    ['an empty answer', async () => new Response('')],
+    ['a non-200 answer', async () => new Response('not found', { status: 404 }), 'the metadata server answered 404'],
+    ['an empty answer', async () => new Response(''), 'the metadata server returned no region'],
     [
       'an unreachable server',
       async () => {
         throw new TypeError('fetch failed');
       },
+      'the metadata server is unreachable',
     ],
-  ])('throws TaskPortConfigError on %s', async (_case, impl) => {
-    await expect(resolveCloudTasksLocation(vi.fn(impl) as unknown as typeof fetch)).rejects.toBeInstanceOf(
-      TaskPortConfigError,
-    );
+  ])('throws TaskPortConfigError on %s', async (_case, impl, reason) => {
+    const failure = resolveCloudTasksLocation(vi.fn(impl) as unknown as typeof fetch);
+    await expect(failure).rejects.toBeInstanceOf(TaskPortConfigError);
+    await expect(failure).rejects.toThrow(`Cloud Tasks location unavailable: ${reason}`);
+  });
+
+  describe('against a stalled metadata server', () => {
+    let server: Server;
+    let base: string;
+
+    beforeAll(async () => {
+      server = createServer((req, res) => {
+        req.resume();
+        // `/body` sends 200 headers and part of the region, then stalls; any other path never answers.
+        if (req.url === '/body') {
+          res.writeHead(200, { 'Content-Type': 'text/plain' });
+          res.write('projects/1/regions/');
+        }
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
+    });
+
+    afterAll(async () => {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    });
+
+    it.each([
+      ['the server never sends headers', '/headers'],
+      ['the body stalls after 200 headers', '/body'],
+    ])('throws TaskPortConfigError naming the deadline when %s', async (_case, path) => {
+      const fetchImpl: typeof fetch = (_url, init) => fetch(`${base}${path}`, init);
+      const started = performance.now();
+      const err = await resolveCloudTasksLocation(fetchImpl, 200).catch((e: unknown) => e);
+      expect(performance.now() - started).toBeLessThan(2000);
+      expect(err).toBeInstanceOf(TaskPortConfigError);
+      expect((err as Error).message).toBe(
+        'Cloud Tasks location unavailable: the metadata server did not answer within 200 ms',
+      );
+      expect((err as Error).cause).toMatchObject({ name: 'TimeoutError' });
+    });
   });
 });
 
@@ -230,12 +281,75 @@ describe('createCloudTaskAdapter', () => {
       {},
     ]);
     const port = await createCloudTaskAdapter({ project: PROJECT, location: LOCATION, client });
-    await expect(port.list('content-feed-import')).resolves.toStrictEqual([
-      { queue: 'content-feed-import', name: 'running', scheduleTime: new Date(1_782_820_800_500), status: 'running', attempts: 2 },
-      { queue: 'content-feed-import', name: 'retrying', scheduleTime: new Date(1_782_820_801_000), status: 'pending', attempts: 3 },
-      { queue: 'content-feed-import', name: 'new', scheduleTime: new Date(10_000), status: 'pending', attempts: 0 },
+    await expect(port.list('content-feed-import')).resolves.toStrictEqual({
+      tasks: [
+        { queue: 'content-feed-import', name: 'running', scheduleTime: new Date(1_782_820_800_500), status: 'running', attempts: 2 },
+        { queue: 'content-feed-import', name: 'retrying', scheduleTime: new Date(1_782_820_801_000), status: 'pending', attempts: 3 },
+        { queue: 'content-feed-import', name: 'new', scheduleTime: new Date(10_000), status: 'pending', attempts: 0 },
+      ],
+    });
+    expect(client.listTasks).toHaveBeenCalledWith(
+      { parent: queuePathOf('content-feed-import'), responseView: 'BASIC', pageSize: DEFAULT_TASK_PAGE_SIZE },
+      { autoPaginate: false },
+    );
+  });
+
+  it.each([
+    {
+      label: 'sends the size and token and returns the next token',
+      page: { pageSize: 2, pageToken: 'token-1' },
+      response: { nextPageToken: 'token-2' },
+      request: { pageSize: 2, pageToken: 'token-1' },
+      next: { nextPageToken: 'token-2' },
+    },
+    { label: 'omits an empty next token', page: { pageSize: MAX_TASK_PAGE_SIZE }, response: { nextPageToken: '' }, request: { pageSize: 1000 }, next: {} },
+    { label: 'omits a null next token', page: {}, response: { nextPageToken: null }, request: { pageSize: DEFAULT_TASK_PAGE_SIZE }, next: {} },
+    { label: 'omits the token of a missing response', page: {}, response: undefined, request: { pageSize: DEFAULT_TASK_PAGE_SIZE }, next: {} },
+  ])('lists one page without auto-pagination and $label', async ({ page, response, request, next }) => {
+    const client = fakeClient();
+    const task = { name: `${queuePathOf('surveys-launch')}/tasks/t-1`, scheduleTime: { seconds: 60 } };
+    client.listTasks.mockResolvedValueOnce([[task], null, response]);
+    const port = await createCloudTaskAdapter({ project: PROJECT, location: LOCATION, client });
+    await expect(port.list('surveys-launch', page)).resolves.toStrictEqual({
+      tasks: [{ queue: 'surveys-launch', name: 't-1', scheduleTime: new Date(60_000), status: 'pending', attempts: 0 }],
+      ...next,
+    });
+    expect(client.listTasks).toHaveBeenCalledExactlyOnceWith(
+      { parent: queuePathOf('surveys-launch'), responseView: 'BASIC', ...request },
+      { autoPaginate: false },
+    );
+  });
+
+  it.each([0, -1, 2.5, MAX_TASK_PAGE_SIZE + 1])('rejects pageSize %s before calling the client', async (pageSize) => {
+    const client = fakeClient();
+    const port = await createCloudTaskAdapter({ project: PROJECT, location: LOCATION, client });
+    await expect(port.list('surveys-launch', { pageSize })).rejects.toBeInstanceOf(RangeError);
+    expect(client.listTasks).not.toHaveBeenCalled();
+  });
+
+  it('gets the BASIC view of a live task by task path, ignoring tenantId', async () => {
+    const client = fakeClient();
+    client.getTask.mockResolvedValueOnce([
+      { name: `${queuePathOf('surveys-launch')}/tasks/task-1`, scheduleTime: { seconds: '1782820800', nanos: 0 }, dispatchCount: 1, responseCount: 0 },
     ]);
-    expect(client.listTasks).toHaveBeenCalledWith({ parent: queuePathOf('content-feed-import'), responseView: 'BASIC' });
+    const port = await createCloudTaskAdapter({ project: PROJECT, location: LOCATION, client });
+    await expect(port.get('surveys-launch', 'task-1', { tenantId: TENANT })).resolves.toStrictEqual({
+      queue: 'surveys-launch',
+      name: 'task-1',
+      scheduleTime: new Date(1_782_820_800_000),
+      status: 'running',
+      attempts: 1,
+    });
+    expect(client.getTask).toHaveBeenCalledExactlyOnceWith({ name: `${queuePathOf('surveys-launch')}/tasks/task-1`, responseView: 'BASIC' });
+  });
+
+  it('answers get of a missing or tombstoned task (NOT_FOUND) with undefined and rethrows other errors', async () => {
+    const client = fakeClient();
+    const port = await createCloudTaskAdapter({ project: PROJECT, location: LOCATION, client });
+    client.getTask.mockRejectedValueOnce(grpcError(GRPC_NOT_FOUND));
+    await expect(port.get('surveys-launch', 'task-1')).resolves.toBeUndefined();
+    client.getTask.mockRejectedValueOnce(grpcError(14));
+    await expect(port.get('surveys-launch', 'task-1')).rejects.toThrow('grpc 14');
   });
 
   it.each([
@@ -256,6 +370,7 @@ describe('createCloudTaskAdapter', () => {
   it.each([
     ['delete', (port: Awaited<ReturnType<typeof createCloudTaskAdapter>>) => port.delete('no-such-queue', 'task-1')],
     ['list', (port: Awaited<ReturnType<typeof createCloudTaskAdapter>>) => port.list('no-such-queue')],
+    ['get', (port: Awaited<ReturnType<typeof createCloudTaskAdapter>>) => port.get('no-such-queue', 'task-1')],
     ['pauseQueue', (port: Awaited<ReturnType<typeof createCloudTaskAdapter>>) => port.pauseQueue('no-such-queue')],
     ['resumeQueue', (port: Awaited<ReturnType<typeof createCloudTaskAdapter>>) => port.resumeQueue('no-such-queue')],
     ['queueState', (port: Awaited<ReturnType<typeof createCloudTaskAdapter>>) => port.queueState('no-such-queue')],
@@ -265,16 +380,21 @@ describe('createCloudTaskAdapter', () => {
     await expect(call(port)).rejects.toBeInstanceOf(UnknownQueueError);
     expect(client.deleteTask).not.toHaveBeenCalled();
     expect(client.listTasks).not.toHaveBeenCalled();
+    expect(client.getTask).not.toHaveBeenCalled();
     expect(client.pauseQueue).not.toHaveBeenCalled();
     expect(client.resumeQueue).not.toHaveBeenCalled();
     expect(client.getQueue).not.toHaveBeenCalled();
   });
 
-  it('rejects an invalid task name on delete', async () => {
+  it.each([
+    ['delete', (port: Awaited<ReturnType<typeof createCloudTaskAdapter>>) => port.delete('surveys-launch', 'bad/name')],
+    ['get', (port: Awaited<ReturnType<typeof createCloudTaskAdapter>>) => port.get('surveys-launch', 'bad/name')],
+  ])('rejects an invalid task name on %s', async (_method, call) => {
     const client = fakeClient();
     const port = await createCloudTaskAdapter({ project: PROJECT, location: LOCATION, client });
-    await expect(port.delete('surveys-launch', 'bad/name')).rejects.toBeInstanceOf(InvalidTaskNameError);
+    await expect(call(port)).rejects.toBeInstanceOf(InvalidTaskNameError);
     expect(client.deleteTask).not.toHaveBeenCalled();
+    expect(client.getTask).not.toHaveBeenCalled();
   });
 
   it('resolves the location from the metadata server and closes the client', async () => {

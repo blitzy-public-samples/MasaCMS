@@ -38,9 +38,10 @@ import {
   type TaskContext,
   type TaskEnv,
   type TaskInfo,
+  type TaskPage,
   type TaskPort,
 } from '../../src/tasks/port.js';
-import { recurringHandler, recurringSpec } from '../../src/tasks/recurring.js';
+import { MAX_SLOT_PROBES, recurringHandler, recurringSpec } from '../../src/tasks/recurring.js';
 import {
   DEFAULT_RETRY,
   QUEUES,
@@ -447,10 +448,11 @@ function launchBody(tenantId: string | null): unknown {
   return { queue: 'surveys-launch', name: 'surveys-launch-A1B2', tenantId, payload: { surveyId: SURVEY_ID } };
 }
 
-/** In-memory task port with Cloud Tasks name semantics: an existing name answers `created: false`. */
+/** In-memory task port with Cloud Tasks name semantics: a live or tombstoned name answers `created: false`. */
 class MemoryTaskPort implements TaskPort {
   readonly kind = 'local';
   readonly live = new Map<string, CreateTaskInput>();
+  readonly tombstones = new Set<string>();
   readonly paused = new Set<string>();
   createFailure: Error | undefined;
   listFailure: Error | undefined;
@@ -459,7 +461,7 @@ class MemoryTaskPort implements TaskPort {
     if (this.createFailure) throw this.createFailure;
     assertCreateInput(input);
     const key = `${input.queue}/${input.name}`;
-    const created = !this.live.has(key);
+    const created = !this.live.has(key) && !this.tombstones.has(key);
     if (created) this.live.set(key, input);
     return { name: input.name, created };
   }
@@ -468,11 +470,19 @@ class MemoryTaskPort implements TaskPort {
     return { name, deleted: this.live.delete(`${queue}/${name}`) };
   }
 
-  async list(queue: string): Promise<TaskInfo[]> {
+  /** The whole queue as one page. */
+  async list(queue: string): Promise<TaskPage> {
     if (this.listFailure) throw this.listFailure;
-    return [...this.live.values()]
-      .filter((task) => task.queue === queue)
-      .map((task) => ({ queue, name: task.name, scheduleTime: task.scheduleTime, status: 'pending' as const, attempts: 0 }));
+    return {
+      tasks: [...this.live.values()]
+        .filter((task) => task.queue === queue)
+        .map((task) => ({ queue, name: task.name, scheduleTime: task.scheduleTime, status: 'pending' as const, attempts: 0 })),
+    };
+  }
+
+  async get(queue: string, name: string): Promise<TaskInfo | undefined> {
+    const task = this.live.get(`${queue}/${name}`);
+    return task && { queue, name, scheduleTime: task.scheduleTime, status: 'pending', attempts: 0 };
   }
 
   async pauseQueue(queue: string): Promise<void> {
@@ -979,6 +989,17 @@ describe('registerQueueControl', () => {
     });
     expect(port.live.size).toBe(1);
   });
+
+  it('answers 503 to ensure when every probed slot name of the chain is a tombstone', async () => {
+    const { app, port } = await controlApp('communications');
+    for (let probe = 0; probe < MAX_SLOT_PROBES; probe += 1) {
+      port.tombstones.add(`communications-outbox-sweep/communications-outbox-sweep-${String(SWEEP_SLOT_S + probe * 60)}`);
+    }
+    const response = await postControl(app, 'communications-outbox-sweep', 'ensure');
+    expect(response.statusCode).toBe(503);
+    expect(errorOf(response)).toMatchObject({ code: 'server_error' });
+    expect(port.live.size).toBe(0);
+  });
 });
 
 /** Client answering every call with `status` and `body`. */
@@ -1188,21 +1209,15 @@ describe('reconcileRecurringQueues', () => {
 });
 
 describe('createTaskPort', () => {
+  const logger = createLogger({ service: 'stub', version: '1.0.0', env: 'local', destination: { write: () => undefined } });
+  const stateDir = path.join(tmpdir(), 'opt2-tasks-unit-unused');
+  const localMessage = 'The local tasks adapter requires a TenantDb, a logger and OPT2_STATE_DIR';
   it.each([
     ['no adapter is selected', {}, {}, 'OPT2_TASKS_ADAPTER must be local or cloud, got undefined'],
     ['an unknown adapter is selected', { OPT2_TASKS_ADAPTER: 'memory' }, {}, 'OPT2_TASKS_ADAPTER must be local or cloud, got memory'],
-    [
-      'the local adapter has no TenantDb',
-      { OPT2_TASKS_ADAPTER: 'local', OPT2_STATE_DIR: path.join(tmpdir(), 'opt2-tasks-unit-unused') },
-      {},
-      'The local tasks adapter requires a TenantDb and OPT2_STATE_DIR',
-    ],
-    [
-      'the local adapter has no OPT2_STATE_DIR',
-      { OPT2_TASKS_ADAPTER: 'local' },
-      { db: memoryTenantDb() },
-      'The local tasks adapter requires a TenantDb and OPT2_STATE_DIR',
-    ],
+    ['the local adapter has no TenantDb', { OPT2_TASKS_ADAPTER: 'local', OPT2_STATE_DIR: stateDir }, { logger }, localMessage],
+    ['the local adapter has no logger', { OPT2_TASKS_ADAPTER: 'local', OPT2_STATE_DIR: stateDir }, { db: memoryTenantDb() }, localMessage],
+    ['the local adapter has no OPT2_STATE_DIR', { OPT2_TASKS_ADAPTER: 'local' }, { db: memoryTenantDb(), logger }, localMessage],
     ['the cloud adapter has no project', { OPT2_TASKS_ADAPTER: 'cloud' }, {}, 'GOOGLE_CLOUD_PROJECT is required for the cloud tasks adapter'],
   ] satisfies Array<[string, Record<string, unknown>, CreateTaskPortOptions, string]>)(
     'throws TaskPortConfigError when %s',

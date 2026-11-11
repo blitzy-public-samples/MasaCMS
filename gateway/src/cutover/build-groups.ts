@@ -5,6 +5,16 @@ import { basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { diff } from 'node:util';
 import { normaliseRouteKey } from '@opt2/platform/legacy-compat';
+import {
+  CutoverSchemaError,
+  DECISION_TABLE_PREFIX,
+  FILE_STORE,
+  FILE_STORE_TABLE,
+  loadExceptionsList,
+  loadSourcePin,
+  parseInventory,
+  parseTableOwnership,
+} from './loader.js';
 import { resolveGatewayPaths, type GatewayPaths } from './paths.js';
 import type {
   CutoverGroup,
@@ -16,16 +26,10 @@ import type {
   InventoryWriter,
   OwnershipDoc,
   OwnershipTarget,
-  SourcePin,
 } from './types.js';
 
 /** `generatedBy` of groups.json. */
 export const GENERATED_BY = 'gateway/src/cutover/build-groups.ts';
-
-const FILE_STORE = 'file-store';
-// Masa's file store holds the bytes of tfiles rows (fileDAO.cfc:153-209), so its writes are writes of the tfiles units.
-const FILE_STORE_TABLE = 'tfiles';
-const DECISION_TABLE_PREFIX = 'legacy:';
 
 // Identity's legacy-hash upgrade at login (userUtility.cfc:168-173, the savePassword call at 172) never joins
 // identity.credential to a group: identity performs the upgrade only while that unit is target-authoritative.
@@ -276,22 +280,23 @@ function sha256(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-/** Reads the opt2 inputs of `buildGroups` and hashes the committed inventory and ownership bytes. */
+/** Reads and validates the opt2 inputs of `buildGroups`, hashing the inventory and ownership bytes it validated. */
 export async function loadBuildGroupsInput(
   paths: Pick<GatewayPaths, 'inventoryFile' | 'tableOwnershipFile' | 'exceptionsListFile' | 'sourcePinFile'>,
 ): Promise<BuildGroupsInput> {
-  const [inventory, ownership, exceptions, pin] = await Promise.all([
+  const [inventoryBytes, ownershipBytes, exceptions, pin] = await Promise.all([
     readFile(paths.inventoryFile),
     readFile(paths.tableOwnershipFile),
-    readFile(paths.exceptionsListFile, 'utf8'),
-    readFile(paths.sourcePinFile, 'utf8'),
+    loadExceptionsList(paths),
+    loadSourcePin(paths),
   ]);
+  const ownership = parseTableOwnership(paths.tableOwnershipFile, ownershipBytes.toString('utf8'), pin);
   return {
-    sourceSha: (JSON.parse(pin) as SourcePin).sourceSha,
-    inventory: JSON.parse(inventory.toString('utf8')) as InventoryDoc,
-    ownership: JSON.parse(ownership.toString('utf8')) as OwnershipDoc,
-    exceptions: JSON.parse(exceptions) as ExceptionsDoc,
-    inputs: { inventorySha256: sha256(inventory), tableOwnershipSha256: sha256(ownership) },
+    sourceSha: pin.sha,
+    inventory: parseInventory(paths.inventoryFile, inventoryBytes.toString('utf8'), pin, ownership),
+    ownership,
+    exceptions,
+    inputs: { inventorySha256: sha256(inventoryBytes), tableOwnershipSha256: sha256(ownershipBytes) },
   };
 }
 
@@ -345,7 +350,7 @@ export interface BuildGroupsIo {
 
 const USAGE = 'usage: build-groups.ts [--write]';
 
-/** CLI: diffs the build against groups.json (exit 0 equal, 1 differ), or writes it with `--write`; exit 2 on usage error. */
+/** CLI: diffs the build against groups.json (exit 0 equal, 1 differ or invalid input), or writes it with `--write`; 2 on usage error. */
 export async function main(argv: readonly string[], io: BuildGroupsIo = {}): Promise<number> {
   const stdout = io.stdout ?? ((text: string) => process.stdout.write(`${text}\n`));
   const stderr = io.stderr ?? ((text: string) => process.stderr.write(`${text}\n`));
@@ -355,7 +360,15 @@ export async function main(argv: readonly string[], io: BuildGroupsIo = {}): Pro
     return 2;
   }
   const paths = io.paths ?? resolveGatewayPaths();
-  const generated = serialiseGroups(buildGroups(await loadBuildGroupsInput(paths)));
+  let input: BuildGroupsInput;
+  try {
+    input = await loadBuildGroupsInput(paths);
+  } catch (error) {
+    if (!(error instanceof CutoverSchemaError)) throw error;
+    stderr(`build-groups: ${error.message}`);
+    return 1;
+  }
+  const generated = serialiseGroups(buildGroups(input));
   if (argv.includes('--write')) {
     await writeFile(paths.groupsFile, generated);
     stdout(`build-groups: wrote ${paths.groupsFile}`);

@@ -9,6 +9,7 @@ import type {
   CutoverTable,
   Disposition,
   ExceptionsDoc,
+  Finding,
   GroupsFile,
   InventoryActionVariant,
   InventoryDoc,
@@ -171,7 +172,7 @@ function inventory(extraContentWriters: InventoryWriter[] = []): InventoryDoc {
               variant(SITECOPY, 'decision', 'programs-sites'),
               variant(CEMAIL, 'legacy-served', 'communications'),
               variant(IMAGE, 'carry', 'strategies-content', [write('content.content', 'tcontent')]),
-              variant(CARCH, 'carry', 'strategies-content', [write('content.content', 'tcontent')]),
+              variant(CARCH, 'carry', 'strategies-content', [write('content.content', 'tcontent'), write('file-store', null)]),
             ],
           },
         ],
@@ -230,6 +231,7 @@ const ownership: OwnershipDoc = {
     { unit: 'people.person', owner: 'people', legacyTables: ['tusers'] },
     { unit: 'identity.group_account', owner: 'identity', legacyTables: ['tusers'] },
     { unit: 'content.content', owner: 'strategies-content', legacyTables: ['tcontent'] },
+    { unit: 'content.file', owner: 'strategies-content', legacyTables: ['tfiles'] },
     { unit: 'reporting.export_job', owner: 'reporting', legacyTables: ['synthetic.export_job'] },
   ],
   tables: [
@@ -242,6 +244,7 @@ const ownership: OwnershipDoc = {
       ],
     },
     { table: 'tcontent', owner: 'strategies-content', targets: [{ unit: 'content.content', rowPredicate: null, ownedColumns: [] }] },
+    { table: 'tfiles', owner: 'strategies-content', targets: [{ unit: 'content.file', rowPredicate: null, ownedColumns: [] }] },
     {
       table: 'synthetic.export_job',
       owner: 'reporting',
@@ -255,7 +258,7 @@ const groups: GroupsFile = {
   generatedBy: 'gateway/src/cutover/build-groups.ts',
   inputs: { inventorySha256: 'a'.repeat(64), tableOwnershipSha256: 'b'.repeat(64) },
   groups: [
-    { id: G_CONTENT, units: ['content.content'], writeEntries: [CARCH], hasCarryWrite: true },
+    { id: G_CONTENT, units: ['content.content', 'content.file'], writeEntries: [CARCH], hasCarryWrite: true },
     { id: G_GROUP, units: ['identity.group_account'], writeEntries: [], hasCarryWrite: false },
     { id: G_PERSON, units: ['people.person'], writeEntries: [V_ADD], hasCarryWrite: true },
     { id: G_EXPORT, units: ['reporting.export_job'], writeEntries: [FIXTURE], hasCarryWrite: true },
@@ -327,7 +330,7 @@ const BASE: BaseEntry[] = [
   entry(SITECOPY, 'programs-sites', 'read', [], 'decision'),
   entry(CEMAIL, 'communications', 'read', [], 'legacy-served'),
   entry(IMAGE, 'strategies-content', 'legacy-write', ['content.content'], 'carry'),
-  entry(CARCH, 'strategies-content', 'write', ['content.content'], 'carry', G_CONTENT),
+  entry(CARCH, 'strategies-content', 'write', ['content.content', 'content.file'], 'carry', G_CONTENT),
   entry(REMINDER, 'communications', 'legacy-write', [], 'decision'),
   entry(CONTACT, 'none', 'read', [], 'retired'),
   entry(JOB, 'programs-sites', 'job', [], 'carry'),
@@ -419,6 +422,8 @@ describe('validateVersion', () => {
     ['an opt2 entry of a service', extra('opt2:/opt2/files/reporting-exports/**', 'reporting')],
     ['a synthetic /v1/ entry', extra('static:/v1/timesheets/**', 'timesheets')],
     ['a legacy static entry', extra('static:/core/vendor/**', 'none', { kind: 'static', state: 'legacy', disposition: 'legacy-served' })],
+    ['a unitless stub write', extra('opt2:/opt2/stub/other/**', 'stub', { kind: 'write' })],
+    ['a unitless admin-actions write', extra('opt2:/opt2/admin-actions/reporting/**', 'web', { kind: 'write' })],
   ])('allows %s without an inventoried key', (_name, added) => {
     expect(rulesOf(adding(V1, added))).toEqual([]);
   });
@@ -432,12 +437,16 @@ describe('validateVersion', () => {
     ['a non-/v1/ synthetic entry', adding(V1, extra('static:/x/timesheets/**', 'timesheets')), ['route-not-inventoried']],
     ['a retired entry made target', patch(V1, CONTACT, { state: 'target' }), ['target-only-carry']],
     ['a withheld entry point made target', patch(V1, SITECOPY, { state: 'target' }), ['withheld-never-target']],
-    ['a withheld action variant made target', patch(V1, V_DELETE, { state: 'target', kind: 'read', units: [] }), ['withheld-never-target']],
+    ['a withheld action variant made target', patch(V1, V_DELETE, { state: 'target' }), ['withheld-never-target', 'legacy-write-always-legacy']],
     ['a decision-table writer made target', patch(V1, REMINDER, { state: 'target', kind: 'read' }), ['withheld-never-target']],
     ['a legacy-served entry made target', patch(V1, CEMAIL, { state: 'target' }), ['legacy-served-never-target']],
     ['a target write under a legacy group', { ...V2, groupAuthority: { ...V2.groupAuthority, [G_CONTENT]: 'legacy' } }, ['write-follows-group']],
     ['a write entry without a group', patch(V1, CARCH, { group: null }), ['write-follows-group']],
-    ['a write entry with units outside its group', patch(V1, CARCH, { units: ['content.content', 'people.person'] }), ['write-follows-group']],
+    [
+      'a write entry with units outside its group',
+      patch(V1, CARCH, { units: ['content.content', 'content.file', 'people.person'] }),
+      ['write-follows-group'],
+    ],
     ['a target read of a legacy unit', patch(V1, LIST, { state: 'target' }), ['read-follows-units']],
     ['a target legacy-write', patch(V1, IMAGE, { state: 'target' }), ['legacy-write-always-legacy']],
     ['a target job in the first version', patch(V1, JOB, { state: 'target' }), ['job-state']],
@@ -469,6 +478,199 @@ describe('validateVersion', () => {
     ],
   ])('reports %s', (_name, t, expected, ctx) => {
     expect(rulesOf(t, ctx)).toEqual(expected);
+  });
+
+  const FORM = 'page:saveform';
+  const formCtx = (() => {
+    const inv = inventory();
+    const formItem = entryPoint(FORM, 'legacy-served', 'strategies-content', [write('content.content', 'tcontent')]);
+    return context({ inventory: { ...inv, frontEnd: [...inv.frontEnd, formItem] } });
+  })();
+  const form = (fields: Partial<CutoverEntry>): CutoverEntry =>
+    extra(FORM, 'strategies-content', { state: 'legacy', kind: 'legacy-write', units: ['content.content'], disposition: 'legacy-served', ...fields });
+  const withWriteEntries = (byGroup: Record<string, string[]>): ValidationContext =>
+    context({ groups: { ...groups, groups: groups.groups.map((g) => ({ ...g, writeEntries: byGroup[g.id] ?? g.writeEntries })) } });
+  const lacks = (route: string, units: string, rule: Finding['rule'], group?: string): Finding => ({
+    rule,
+    route,
+    ...(group === undefined ? {} : { group }),
+    message: `units lack ${units} of its write closure`,
+  });
+
+  it.each<[string, CutoverTable, Finding[], ValidationContext?]>([
+    [
+      'a carry write declared a unitless target read',
+      patch(V1, V_ADD, { kind: 'read', units: [], group: null, state: 'target' }),
+      [
+        { rule: 'write-follows-group', route: V_ADD, message: 'carry write has kind read' },
+        lacks(V_ADD, 'people.person', 'write-follows-group', G_PERSON),
+        { rule: 'write-follows-group', route: V_ADD, message: 'write entry has no group' },
+        { rule: 'write-follows-group', route: V_ADD, group: G_PERSON, message: 'state target differs from group authority legacy' },
+      ],
+    ],
+    [
+      'a carry write without units',
+      patch(V1, CARCH, { units: [] }),
+      [lacks(CARCH, 'content.content, content.file', 'write-follows-group', G_CONTENT)],
+    ],
+    [
+      'a carry write missing a closure unit',
+      patch(V1, CARCH, { units: ['content.content'] }),
+      [lacks(CARCH, 'content.file', 'write-follows-group', G_CONTENT)],
+    ],
+    [
+      'a carry write in another group',
+      patch(V1, CARCH, { group: G_PERSON }),
+      [{ rule: 'write-follows-group', route: CARCH, group: G_PERSON, message: `group ${G_PERSON} is not its generated group ${G_CONTENT}` }],
+    ],
+    [
+      'a carry write in no generated group',
+      V1,
+      [{ rule: 'write-follows-group', route: CARCH, message: 'carry write is in no generated group' }],
+      withWriteEntries({ [G_CONTENT]: [] }),
+    ],
+    [
+      'a carry write in two generated groups',
+      V1,
+      [{ rule: 'write-follows-group', route: CARCH, message: `carry write is in groups ${G_CONTENT}, ${G_PERSON}` }],
+      withWriteEntries({ [G_PERSON]: [V_ADD, CARCH] }),
+    ],
+    [
+      'a withheld write declared a read',
+      patch(V1, V_DELETE, { kind: 'read' }),
+      [{ rule: 'legacy-write-always-legacy', route: V_DELETE, message: 'decision write has kind read' }],
+    ],
+    [
+      'a legacy-served write declared a read',
+      adding(V1, form({ kind: 'read' })),
+      [{ rule: 'legacy-write-always-legacy', route: FORM, message: 'legacy-served write has kind read' }],
+      formCtx,
+    ],
+    ['a legacy-served write without units', adding(V1, form({ units: [] })), [lacks(FORM, 'content.content', 'legacy-write-always-legacy')], formCtx],
+    ['a halted write without units', patch(V1, IMAGE, { units: [] }), [lacks(IMAGE, 'content.content', 'halted-is-legacy-write')]],
+    [
+      'a target read of an unknown unit',
+      patch(V2, LIST, { units: ['people.person', 'people.nope'] }),
+      [{ rule: 'read-follows-units', route: LIST, message: 'units people.nope are not in opt2/table-ownership.json' }],
+      context({ prior: V1 }),
+    ],
+    [
+      'a write of an unknown unit',
+      patch(V1, CARCH, { units: ['content.content', 'content.file', 'content.nope'] }),
+      [{ rule: 'write-follows-group', route: CARCH, message: 'units content.nope are not in opt2/table-ownership.json' }],
+    ],
+    [
+      'a legacy-write of an unknown unit',
+      patch(V1, V_DELETE, { units: ['people.person', 'people.nope'] }),
+      [{ rule: 'legacy-write-always-legacy', route: V_DELETE, message: 'units people.nope are not in opt2/table-ownership.json' }],
+    ],
+  ])('holds %s to its inventoried write closure', (_name, t, expected, ctx = context()) => {
+    expect(validateVersion(t, ctx)).toEqual(expected);
+  });
+
+  // Without fixtures the inventory has no fixture route, so the reporting group has no carry write entry.
+  const noFixtures = (() => {
+    const inv = inventory();
+    return context({
+      inventory: { ...inv, routes: inv.routes.filter((r) => r.routeKey !== FIXTURE) },
+      groups: { ...groups, groups: groups.groups.map((g) => (g.id === G_EXPORT ? { ...g, writeEntries: [], hasCarryWrite: false } : g)) },
+      prior: V1,
+    });
+  })();
+  const V2_NO_FIXTURES: CutoverTable = { ...V2, entries: V2.entries.filter((e) => e.route !== FIXTURE) };
+  const v1Write = (route: string, owningService: CutoverEntry['owningService'], fields: Partial<CutoverEntry> = {}): CutoverEntry =>
+    extra(route, owningService, { tableVersion: 'v0002', kind: 'write', group: G_EXPORT, units: ['reporting.export_job'], ...fields });
+  const ownExportWrite = v1Write('static:/v1/reporting/**', 'reporting');
+  const V1_NO_FIXTURES: CutoverTable = {
+    ...V1,
+    groupAuthority: { ...V1.groupAuthority, [G_EXPORT]: 'target' },
+    entries: V1.entries.filter((e) => e.route !== FIXTURE),
+  };
+  // Further groups without carry write entries: Program_N-backed timesheets and Masa-backed email.
+  const G_SHEET = 'grp:timesheets.timesheet';
+  const G_EMAIL = 'grp:communications.email';
+  const withSyntheticGroups = (exportUnits: string[]): ValidationContext => ({
+    ...noFixtures,
+    ownership: {
+      ...ownership,
+      units: [
+        ...ownership.units,
+        { unit: 'timesheets.timesheet', owner: 'timesheets', legacyTables: ['Program_N.timesheet'] },
+        { unit: 'communications.email', owner: 'communications', legacyTables: ['temails'] },
+        { unit: 'reporting.session_tracking', owner: 'reporting', legacyTables: ['tsessiontracking'] },
+      ],
+    },
+    groups: {
+      ...noFixtures.groups,
+      groups: [
+        ...noFixtures.groups.groups.map((g) => (g.id === G_EXPORT ? { ...g, units: exportUnits } : g)),
+        { id: G_SHEET, units: ['timesheets.timesheet'], writeEntries: [], hasCarryWrite: false },
+        { id: G_EMAIL, units: ['communications.email'], writeEntries: [], hasCarryWrite: false },
+      ],
+    },
+  });
+  const syntheticGroups = withSyntheticGroups(['reporting.export_job']);
+  const withSyntheticAuthority = (authority: CutoverTable['groupAuthority'], ...entries: CutoverEntry[]): CutoverTable =>
+    adding(
+      { ...V2_NO_FIXTURES, groupAuthority: { ...V2_NO_FIXTURES.groupAuthority, [G_SHEET]: 'legacy', [G_EMAIL]: 'legacy', ...authority } },
+      ownExportWrite,
+      ...entries,
+    );
+
+  it.each<[string, CutoverTable, string[], ValidationContext]>([
+    ['kept legacy', V2, [], context({ prior: V1 })],
+    [
+      'made target',
+      { ...V2, groupAuthority: { ...V2.groupAuthority, [G_GROUP]: 'target' } },
+      ['unprevented-writer', 'group-authority'],
+      context({ prior: V1 }),
+    ],
+    ['made target without fixtures', V2_NO_FIXTURES, ['group-authority'], noFixtures],
+    ['made target by its own service /v1/ write', adding(V2_NO_FIXTURES, v1Write('static:/v1/reporting/**', 'reporting')), [], noFixtures],
+    [
+      'made target by another service /v1/ write',
+      adding(V2_NO_FIXTURES, v1Write('static:/v1/timesheets/**', 'timesheets')),
+      ['group-authority'],
+      noFixtures,
+    ],
+    [
+      'made target by its own service /v1/ write of Program_N-backed units',
+      withSyntheticAuthority(
+        { [G_SHEET]: 'target' },
+        v1Write('static:/v1/timesheets/**', 'timesheets', { group: G_SHEET, units: ['timesheets.timesheet'] }),
+      ),
+      [],
+      syntheticGroups,
+    ],
+    [
+      'made target by its own service /v1/ write of a Masa-backed unit',
+      withSyntheticAuthority(
+        { [G_EMAIL]: 'target' },
+        v1Write('static:/v1/communications/email/**', 'communications', { group: G_EMAIL, units: ['communications.email'] }),
+      ),
+      ['group-authority'],
+      syntheticGroups,
+    ],
+    [
+      'made target by its own service /v1/ write of fixture-backed and Masa-backed units',
+      withSyntheticAuthority({}),
+      ['group-authority'],
+      withSyntheticGroups(['reporting.export_job', 'reporting.session_tracking']),
+    ],
+    [
+      'made target by its own service /v1/ write in the first version',
+      adding(V1_NO_FIXTURES, v1Write('static:/v1/reporting/**', 'reporting', { tableVersion: 'v0001' })),
+      ['group-authority'],
+      { ...noFixtures, prior: undefined },
+    ],
+  ])('checks a group without carry write entries %s', (_name, t, expected, ctx) => {
+    expect(rulesOf(t, ctx)).toEqual(expected);
+  });
+
+  it('names the group without carry write entries that is target', () => {
+    expect(validateVersion(V2_NO_FIXTURES, noFixtures)).toEqual([
+      { rule: 'group-authority', group: G_EXPORT, message: 'group without a carry write entry is target' },
+    ]);
   });
 
   it('names the route, unit and group a finding concerns', () => {
@@ -623,7 +825,13 @@ async function fixturePaths(versions: CutoverTable[] = [V1, V2, V3]): Promise<Ga
     json(paths.tableOwnershipFile, ownership),
     json(paths.decisionListFile, decisionList),
     json(paths.exceptionsListFile, exceptions),
-    json(paths.sourcePinFile, { sha: SHA, sourceSha: SHA }),
+    json(paths.sourcePinFile, {
+      sha: SHA,
+      subject: 'Increase version to 7.6.1 in package files and configuration',
+      repository: 'fixture',
+      confirmedAt: '2026-06-01T00:00:00Z',
+      confirmCommand: 'cd harness && npx tsx src/reporting/check-pin.ts --confirm',
+    }),
     json(join(reconciliationDir, 'rollback-before.json'), { result: 'pending-run' }),
     ...versions.map((t) => json(join(paths.versionsDir, `${t.tableVersion}.json`), t)),
   ]);
@@ -699,6 +907,20 @@ describe('main', () => {
     expect(result.code).toBe(1);
     expect(result.out).toEqual([]);
     expect(result.err[0]).toMatch(/^validate: .*groups\.json does not match its cut-over schema/);
+  });
+
+  it.each([
+    ['a table ownership of another commit', 'tableOwnershipFile', { ...ownership, sourceSha: '0'.repeat(40) }, `/sourceSha must equal the pinned sha ${SHA}`],
+    [
+      'an inventory write to an unknown unit',
+      'inventoryFile',
+      { ...inventory(), frontEnd: [entryPoint('page:ghost', 'carry', 'people', [write('people.ghost', 'tusers')])] },
+      '/frontEnd/0/writeSet/0/unit people.ghost maps to no unit of opt2/table-ownership.json',
+    ],
+  ] as const)('fails on %s before validating any version', async (_label, key, doc, expected) => {
+    const paths = await fixturePaths();
+    await writeFile(paths[key], JSON.stringify(doc));
+    expect(await run([], paths)).toEqual({ code: 1, out: [], err: [`validate: ${paths[key]} does not match its cut-over schema: ${expected}`] });
   });
 
   it('fails without version files', async () => {

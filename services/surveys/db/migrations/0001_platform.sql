@@ -159,7 +159,10 @@ CREATE TABLE surveys.scheduled_task_queue (
   updated_at timestamp(3) without time zone NOT NULL,
   PRIMARY KEY (tenant_id, queue, name)
 );
-CREATE INDEX scheduled_task_queue_due ON surveys.scheduled_task_queue (status, schedule_time);
+CREATE INDEX scheduled_task_queue_pending_due ON surveys.scheduled_task_queue (tenant_id, schedule_time) WHERE status = 'pending';
+CREATE INDEX scheduled_task_queue_lease_expiry ON surveys.scheduled_task_queue (tenant_id, lease_until) WHERE status = 'running';
+CREATE INDEX scheduled_task_queue_live ON surveys.scheduled_task_queue (tenant_id, queue, schedule_time, name) WHERE status IN ('pending','running');
+CREATE INDEX scheduled_task_queue_tombstone_expiry ON surveys.scheduled_task_queue (tenant_id, updated_at) WHERE status IN ('done','failed','deleted');
 ALTER TABLE surveys.scheduled_task_queue ENABLE ROW LEVEL SECURITY; ALTER TABLE surveys.scheduled_task_queue FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON surveys.scheduled_task_queue
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)

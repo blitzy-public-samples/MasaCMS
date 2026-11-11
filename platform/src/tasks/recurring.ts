@@ -68,30 +68,72 @@ function slotTask(spec: RecurringSpec, slotS: number): CreateTaskInput {
   };
 }
 
-/** Creates the current slot's chain task unless a chain task of any slot is live. */
+/** Most consecutive slots a chain walk tries before giving up on tombstoned names. */
+export const MAX_SLOT_PROBES = 5;
+
+/** Every probed slot name of a chain is a tombstone; renders as the legacy 503 so the caller retries. */
+export class RecurringSlotsTombstonedError extends LegacyServiceUnavailableError {
+  override readonly name: string = 'RecurringSlotsTombstonedError';
+
+  constructor(
+    readonly queue: string,
+    readonly probed: readonly string[],
+  ) {
+    super(`No live chain task on queue ${queue}: tombstoned slots ${probed.join(', ')}`, 'auto', 'recurring-slots-tombstoned');
+  }
+}
+
+/** Live chain task a slot walk secured: its slot, and whether the walk created it. */
+interface DurableSlot {
+  name: string;
+  slotS: number;
+  created: boolean;
+}
+
+/** Secures a live chain task at `fromS` or the first later slot whose name is not a tombstone; throws `RecurringSlotsTombstonedError` after `MAX_SLOT_PROBES` tombstones. */
+async function durableSlot(port: TaskPort, spec: RecurringSpec, fromS: number): Promise<DurableSlot> {
+  const probed: string[] = [];
+  for (let probe = 0; probe < MAX_SLOT_PROBES; probe += 1) {
+    const slotS = fromS + probe * spec.intervalS;
+    const task = slotTask(spec, slotS);
+    if ((await port.create(task)).created) return { name: task.name, slotS, created: true };
+    if ((await port.get(spec.queue, task.name)) !== undefined) return { name: task.name, slotS, created: false };
+    // ALREADY_EXISTS with no live task is a tombstone, whose name stays reserved.
+    probed.push(task.name);
+  }
+  throw new RecurringSlotsTombstonedError(spec.queue, probed);
+}
+
+/** Earliest chain task in the first page of the queue that holds one, or undefined when no page does. */
+async function liveChainTask(port: TaskPort, queue: string): Promise<string | undefined> {
+  let pageToken: string | undefined;
+  do {
+    const page = await port.list(queue, pageToken === undefined ? {} : { pageToken });
+    let earliest: { name: string; slotS: number } | undefined;
+    for (const task of page.tasks) {
+      const slotS = parseSlotName(queue, task.name);
+      if (slotS !== undefined && (earliest === undefined || slotS < earliest.slotS)) earliest = { name: task.name, slotS };
+    }
+    if (earliest) return earliest.name;
+    pageToken = page.nextPageToken;
+  } while (pageToken !== undefined);
+  return undefined;
+}
+
+/** Creates the current slot's chain task, or a later one past tombstones, unless a chain task is live. */
 export async function ensureRecurring(port: TaskPort, opts: RecurringSpec & { clock: Clock }): Promise<EnsureRecurringResult> {
   const { queue, intervalS } = opts;
   const current = slotStartS(epochSeconds(opts.clock), intervalS);
 
-  let earliest: { name: string; slotS: number } | undefined;
-  for (const task of await port.list(queue)) {
-    const slotS = parseSlotName(queue, task.name);
-    if (slotS !== undefined && (earliest === undefined || slotS < earliest.slotS)) earliest = { name: task.name, slotS };
-  }
-  if (earliest) return { queue, name: earliest.name, created: false, reason: 'live' };
+  const live = await liveChainTask(port, queue);
+  if (live !== undefined) return { queue, name: live, created: false, reason: 'live' };
 
-  const currentTask = slotTask(opts, current);
-  if ((await port.create(currentTask)).created) {
-    return { queue, name: currentTask.name, created: true, reason: 'created-current' };
-  }
-
-  // Not live yet not creatable: the current name is the tombstone of a lost chain, so restart at the next slot.
-  const nextTask = slotTask(opts, current + intervalS);
-  const next = await port.create(nextTask);
-  return { queue, name: nextTask.name, created: next.created, reason: 'created-next' };
+  const slot = await durableSlot(port, opts, current);
+  if (!slot.created) return { queue, name: slot.name, created: false, reason: 'live' };
+  return { queue, name: slot.name, created: true, reason: slot.slotS === current ? 'created-current' : 'created-next' };
 }
 
-/** The successor chain task could not be created; renders as the legacy 503 so the queue retries the current task. */
+/** No live successor chain task could be secured; renders as the legacy 503 so the queue retries the current task. */
 export class SuccessorCreationError extends LegacyServiceUnavailableError {
   override readonly name: string = 'SuccessorCreationError';
 
@@ -104,7 +146,7 @@ export class SuccessorCreationError extends LegacyServiceUnavailableError {
   }
 }
 
-/** Task context of a chain task: its slot and the successor created before the work ran. */
+/** Task context of a chain task: its slot and the live successor secured before the work ran. */
 export interface RecurringTaskContext extends TaskContext {
   slotStartS: number;
   successor: { name: string; created: boolean };
@@ -112,7 +154,7 @@ export interface RecurringTaskContext extends TaskContext {
 
 const CLOUD_TASK_PATH_PREFIX = /^projects\/.*\/tasks\//;
 
-/** Task handler that creates the chain's successor, then runs `fn`; returns `fn`'s result or `{ ok: true, successor }`. */
+/** Task handler that secures a live successor chain task, then runs `fn`; returns `fn`'s result or `{ ok: true, successor }`. */
 export function recurringHandler(
   opts: RecurringSpec & { port: TaskPort; clock: Clock },
   fn: (ctx: RecurringTaskContext) => Promise<unknown>,
@@ -122,17 +164,17 @@ export function recurringHandler(
     const nowS = epochSeconds(clock);
     const taskId = ctx.taskName.replace(CLOUD_TASK_PATH_PREFIX, '');
     const current = parseSlotName(queue, taskId) ?? slotStartS(nowS, intervalS);
-    const successorTask = slotTask(opts, successorSlotS(current, nowS, intervalS));
+    const successorS = successorSlotS(current, nowS, intervalS);
 
-    let created: boolean;
+    let successor: DurableSlot;
     try {
-      created = (await port.create(successorTask)).created;
+      successor = await durableSlot(port, opts, successorS);
     } catch (err) {
-      throw new SuccessorCreationError(queue, successorTask.name, err);
+      throw new SuccessorCreationError(queue, slotName(queue, successorS), err);
     }
 
-    const result = await fn({ ...ctx, slotStartS: current, successor: { name: successorTask.name, created } });
-    return result === undefined ? { ok: true, successor: successorTask.name } : result;
+    const result = await fn({ ...ctx, slotStartS: current, successor: { name: successor.name, created: successor.created } });
+    return result === undefined ? { ok: true, successor: successor.name } : result;
   };
 }
 

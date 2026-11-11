@@ -401,16 +401,22 @@ describe('extractSha', () => {
       expected: { form: 'yaml', found: [], problem: NOT_PARSED },
     },
     {
-      label: 'both the sha and sourceSha of the pin record',
+      label: 'the sha of the pin record',
       relPath: PIN_REL,
       content: JSON.stringify(PIN),
-      expected: { form: 'pin-json', found: [SHA, SHA] },
+      expected: { form: 'pin-json', found: [SHA] },
     },
     {
       label: 'a differing sha of the pin record',
       relPath: PIN_REL,
-      content: JSON.stringify({ sha: OTHER_SHA, sourceSha: SHA }),
-      expected: { form: 'pin-json', found: [OTHER_SHA, SHA] },
+      content: JSON.stringify({ sha: OTHER_SHA }),
+      expected: { form: 'pin-json', found: [OTHER_SHA] },
+    },
+    {
+      label: 'no SHA from a pin record carrying only sourceSha',
+      relPath: PIN_REL,
+      content: JSON.stringify({ sourceSha: SHA }),
+      expected: { form: 'pin-json', found: [] },
     },
     {
       label: 'no SHA from a pin record without one',
@@ -614,22 +620,63 @@ describe('checkDeliverables', () => {
     expect(reads()).toEqual(['themes/other/README.md']);
   });
 
-  it('skips, without counting, a listed deliverable that is no longer on disk', async () => {
-    const deleted = ['opt2/reports/deleted.json'];
-    const { run } = fakeRunner(listingReplies({ listed: deleted, tracked: deleted }));
+  it.each<{ state: string; directory: boolean; relPath: string; finding: PinFinding }>([
+    {
+      state: 'no longer on disk',
+      directory: false,
+      relPath: 'opt2/reports/deleted.json',
+      finding: { kind: 'file-missing', path: 'opt2/reports/deleted.json', form: 'json' },
+    },
+    {
+      state: 'a directory',
+      directory: true,
+      relPath: 'services/people/contracts/vendored',
+      finding: {
+        kind: 'unreadable',
+        path: 'services/people/contracts/vendored',
+        form: 'text',
+        error: expect.stringContaining('EISDIR'),
+      },
+    },
+  ])('reports, without counting, a tracked deliverable that is $state', async ({ directory, relPath, finding }) => {
+    if (directory) await fs.mkdir(path.join(root, relPath), { recursive: true });
+    const { run } = fakeRunner(listingReplies({ listed: [relPath], tracked: [relPath] }));
     await expect(checkDeliverables({ root, git: { run } })).resolves.toEqual({
       mode: 'deliverables',
       sha: SHA,
       checked: 0,
-      ok: true,
-      findings: [],
+      ok: false,
+      findings: [finding],
     });
   });
 
-  it('rejects when a listed deliverable is a directory', async () => {
-    await fs.mkdir(path.join(root, 'services/people/contracts/vendored'), { recursive: true });
-    const { run } = fakeRunner(listingReplies({ listed: ['services/people/contracts/vendored'] }));
-    await expect(checkDeliverables({ root, git: { run } })).rejects.toMatchObject({ code: 'EISDIR' });
+  it('still checks and reports the deliverables after one that is absent or unreadable', async () => {
+    await fs.mkdir(path.join(root, 'opt2/reports/a-directory.json'), { recursive: true });
+    await writeTree({
+      'opt2/reports/speed.json': JSON.stringify({ sourceSha: SHA }),
+      'opt2/reports/windows.json': JSON.stringify({ sourceSha: OTHER_SHA }),
+    });
+    const listed = [
+      'opt2/reports/a-directory.json',
+      'opt2/reports/deleted.md',
+      'opt2/reports/speed.json',
+      'opt2/reports/windows.json',
+    ];
+    const { run } = fakeRunner(listingReplies({ listed, tracked: listed }));
+    const reads = spyReads();
+    const result = await checkDeliverables({ root, git: { run } });
+    expect(result).toMatchObject({ checked: 2, ok: false });
+    expect(result.findings).toEqual<PinFinding[]>([
+      {
+        kind: 'unreadable',
+        path: 'opt2/reports/a-directory.json',
+        form: 'json',
+        error: expect.stringContaining('EISDIR'),
+      },
+      { kind: 'file-missing', path: 'opt2/reports/deleted.md', form: 'markdown' },
+      { kind: 'mismatch', path: 'opt2/reports/windows.json', form: 'json', found: [OTHER_SHA] },
+    ]);
+    expect(reads()).toEqual(listed);
   });
 });
 
@@ -685,9 +732,13 @@ describe('main through runCli', () => {
     });
   });
 
-  it('checks deliverables without --confirm and exits 1 on a finding', async () => {
-    await write('services/people/README.md', '# People\n');
-    const { run } = fakeRunner(listingReplies({ listed: ['services/people/README.md'] }));
+  it.each<{ label: string; content?: string; checked: number; kind: 'missing' | 'file-missing' }>([
+    { label: 'a deliverable without the SHA', content: '# People\n', checked: 1, kind: 'missing' },
+    { label: 'a tracked deliverable deleted from disk', checked: 0, kind: 'file-missing' },
+  ])('checks deliverables without --confirm and exits 1 on $label', async ({ content, checked, kind }) => {
+    const readme = 'services/people/README.md';
+    if (content !== undefined) await write(readme, content);
+    const { run } = fakeRunner(listingReplies({ listed: [readme], tracked: [readme] }));
     const outcome = await runCheck([], { root, git: { run } });
     expect(outcome.code).toBe(1);
     expect(outcome.exits).toEqual([1]);
@@ -699,8 +750,8 @@ describe('main through runCli', () => {
       root,
       mode: 'deliverables',
       sha: SHA,
-      checked: 1,
-      findings: [{ kind: 'missing', path: 'services/people/README.md', form: 'markdown' }],
+      checked,
+      findings: [{ kind, path: readme, form: 'markdown' }],
     });
   });
 

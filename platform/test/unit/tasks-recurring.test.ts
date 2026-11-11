@@ -11,10 +11,14 @@ import {
   type QueueState,
   type TaskContext,
   type TaskInfo,
+  type TaskPage,
+  type TaskPageRequest,
   type TaskPort,
 } from '../../src/tasks/port.js';
 import { UnknownQueueError, UnknownTaskTargetError } from '../../src/tasks/queues.js';
 import {
+  MAX_SLOT_PROBES,
+  RecurringSlotsTombstonedError,
   SuccessorCreationError,
   ensureOwnRecurring,
   ensureRecurring,
@@ -47,14 +51,29 @@ const SERVICE_URLS: Readonly<Record<string, string>> = {
 
 const key = (queue: string, name: string): string => `${queue}/${name}`;
 
-/** In-memory task port with Cloud Tasks name semantics: a live or tombstoned name answers ALREADY_EXISTS. */
+function taskInfo(task: CreateTaskInput): TaskInfo {
+  return {
+    queue: task.queue,
+    name: task.name,
+    scheduleTime: task.scheduleTime,
+    ...(task.tenantId === undefined ? {} : { tenantId: task.tenantId }),
+    status: 'pending',
+    attempts: 0,
+  };
+}
+
+/** In-memory task port with Cloud Tasks name semantics: a live or tombstoned name answers ALREADY_EXISTS, and only a live one is found. */
 class MemoryTaskPort implements TaskPort {
   readonly kind = 'local';
   readonly live = new Map<string, CreateTaskInput>();
   readonly tombstones = new Set<string>();
+  /** Live tasks `list` leaves out, as if created after its snapshot. */
+  readonly unlisted = new Set<string>();
   readonly paused = new Set<string>();
   readonly calls: string[] = [];
+  pageSize = 100;
   createFailure: Error | undefined;
+  getFailure: Error | undefined;
 
   create(input: CreateTaskInput): Promise<CreateTaskResult> {
     this.calls.push(`create ${key(input.queue, input.name)}`);
@@ -76,20 +95,23 @@ class MemoryTaskPort implements TaskPort {
     return Promise.resolve({ name, deleted });
   }
 
-  list(queue: string): Promise<TaskInfo[]> {
-    this.calls.push(`list ${queue}`);
-    return Promise.resolve(
-      [...this.live.values()]
-        .filter((task) => task.queue === queue)
-        .map((task): TaskInfo => ({
-          queue: task.queue,
-          name: task.name,
-          scheduleTime: task.scheduleTime,
-          ...(task.tenantId === undefined ? {} : { tenantId: task.tenantId }),
-          status: 'pending',
-          attempts: 0,
-        })),
-    );
+  /** Pages of `pageSize` in creation order; the token is the offset of the next page. */
+  list(queue: string, page: TaskPageRequest = {}): Promise<TaskPage> {
+    this.calls.push(page.pageToken === undefined ? `list ${queue}` : `list ${queue} ${page.pageToken}`);
+    const all = [...this.live.entries()]
+      .filter(([id, task]) => task.queue === queue && !this.unlisted.has(id))
+      .map(([, task]) => taskInfo(task));
+    const start = page.pageToken === undefined ? 0 : Number(page.pageToken);
+    const end = start + (page.pageSize ?? this.pageSize);
+    const tasks = all.slice(start, end);
+    return Promise.resolve(end < all.length ? { tasks, nextPageToken: String(end) } : { tasks });
+  }
+
+  get(queue: string, name: string): Promise<TaskInfo | undefined> {
+    this.calls.push(`get ${key(queue, name)}`);
+    if (this.getFailure) return Promise.reject(this.getFailure);
+    const task = this.live.get(key(queue, name));
+    return Promise.resolve(task === undefined ? undefined : taskInfo(task));
   }
 
   pauseQueue(queue: string): Promise<void> {
@@ -119,6 +141,17 @@ class MemoryTaskPort implements TaskPort {
 /** Creates a live task named `name` on the spec's queue. */
 async function seed(port: MemoryTaskPort, spec: RecurringSpec, name: string): Promise<void> {
   await port.create({ queue: spec.queue, name, scheduleTime: new Date(NOW), url: spec.url, deadlineS: spec.deadlineS });
+}
+
+/** Leaves the chain names of `count` consecutive slots from `fromS` as tombstones; returns those names. */
+async function tombstone(port: MemoryTaskPort, spec: RecurringSpec, fromS: number, count: number): Promise<string[]> {
+  const names = Array.from({ length: count }, (_, i) => slotName(spec.queue, fromS + i * spec.intervalS));
+  for (const name of names) {
+    await seed(port, spec, name);
+    await port.delete(spec.queue, name);
+  }
+  port.calls.length = 0;
+  return names;
 }
 
 function taskContext(queue: string, taskName: string): TaskContext {
@@ -346,12 +379,12 @@ describe('ensureRecurring', () => {
     expect(port.liveNames(SWEEP)).toStrictEqual([first.name]);
   });
 
-  it('restarts the chain at the next slot when the current slot name is a tombstone', async () => {
+  it.each([1, 2, MAX_SLOT_PROBES - 1])('restarts the chain past %i tombstoned slot names from the current one', async (count) => {
     const port = new MemoryTaskPort();
     const spec = sweepSpec();
-    await seed(port, spec, slotName(SWEEP, SWEEP_SLOT_S));
-    await port.delete(SWEEP, slotName(SWEEP, SWEEP_SLOT_S));
-    const next = slotName(SWEEP, SWEEP_SLOT_S + 60);
+    await tombstone(port, spec, SWEEP_SLOT_S, count);
+    const nextS = SWEEP_SLOT_S + count * 60;
+    const next = slotName(SWEEP, nextS);
 
     await expect(ensureRecurring(port, { ...spec, clock })).resolves.toStrictEqual({
       queue: SWEEP,
@@ -360,24 +393,81 @@ describe('ensureRecurring', () => {
       reason: 'created-next',
     });
     expect(port.liveNames(SWEEP)).toStrictEqual([next]);
-    expect(port.live.get(key(SWEEP, next))?.scheduleTime).toStrictEqual(new Date((SWEEP_SLOT_S + 60) * 1000));
+    expect(port.live.get(key(SWEEP, next))?.scheduleTime).toStrictEqual(new Date(nextS * 1000));
   });
 
-  it('reports the next slot as not created when it is a tombstone too', async () => {
+  it('fails with a 503 RecurringSlotsTombstonedError and creates nothing when every probed slot is a tombstone', async () => {
     const port = new MemoryTaskPort();
     const spec = sweepSpec();
-    for (const slotS of [SWEEP_SLOT_S, SWEEP_SLOT_S + 60]) {
-      await seed(port, spec, slotName(SWEEP, slotS));
-      await port.delete(SWEEP, slotName(SWEEP, slotS));
-    }
+    const probed = await tombstone(port, spec, SWEEP_SLOT_S, MAX_SLOT_PROBES);
+
+    const error = (await ensureRecurring(port, { ...spec, clock }).catch((err: unknown) => err)) as RecurringSlotsTombstonedError;
+
+    expect(error).toBeInstanceOf(RecurringSlotsTombstonedError);
+    expect(error).toBeInstanceOf(LegacyServiceUnavailableError);
+    expect(error).toMatchObject({ name: 'RecurringSlotsTombstonedError', queue: SWEEP, probed, reason: 'recurring-slots-tombstoned' });
+    expect(renderUnavailable(error, 'opt2').status).toBe(503);
+    expect(port.liveNames(SWEEP)).toStrictEqual([]);
+    expect(port.calls).toStrictEqual([`list ${SWEEP}`, ...probed.flatMap((name) => [`create ${key(SWEEP, name)}`, `get ${key(SWEEP, name)}`])]);
+  });
+
+  it('reports a chain task that create finds live although list did not show it', async () => {
+    const port = new MemoryTaskPort();
+    const spec = sweepSpec();
+    const current = slotName(SWEEP, SWEEP_SLOT_S);
+    await seed(port, spec, current);
+    port.unlisted.add(key(SWEEP, current));
+    port.calls.length = 0;
 
     await expect(ensureRecurring(port, { ...spec, clock })).resolves.toStrictEqual({
       queue: SWEEP,
-      name: slotName(SWEEP, SWEEP_SLOT_S + 60),
+      name: current,
       created: false,
-      reason: 'created-next',
+      reason: 'live',
     });
-    expect(port.liveNames(SWEEP)).toStrictEqual([]);
+    expect(port.calls).toStrictEqual([`list ${SWEEP}`, `create ${key(SWEEP, current)}`, `get ${key(SWEEP, current)}`]);
+  });
+
+  it('stops at the first page holding a chain task and reports its earliest one', async () => {
+    const port = new MemoryTaskPort();
+    const spec = sweepSpec();
+    port.pageSize = 3;
+    for (const name of [`${SWEEP}-manual`, slotName(SWEEP, SWEEP_SLOT_S + 180), slotName(SWEEP, SWEEP_SLOT_S + 120), slotName(SWEEP, SWEEP_SLOT_S + 60)]) {
+      await seed(port, spec, name);
+    }
+    port.calls.length = 0;
+
+    await expect(ensureRecurring(port, { ...spec, clock })).resolves.toStrictEqual({
+      queue: SWEEP,
+      name: slotName(SWEEP, SWEEP_SLOT_S + 120),
+      created: false,
+      reason: 'live',
+    });
+    expect(port.calls).toStrictEqual([`list ${SWEEP}`]);
+  });
+
+  it.each([
+    {
+      label: 'reports the chain task of the second page',
+      seeds: [`${SWEEP}-manual`, `${SWEEP}-manual-2`, slotName(SWEEP, SWEEP_SLOT_S + 60)],
+      expected: { name: slotName(SWEEP, SWEEP_SLOT_S + 60), created: false, reason: 'live' },
+      after: [],
+    },
+    {
+      label: 'creates the current slot task after the last page',
+      seeds: [`${SWEEP}-manual`, `${SWEEP}-manual-2`, `${SWEEP}-manual-3`],
+      expected: { name: slotName(SWEEP, SWEEP_SLOT_S), created: true, reason: 'created-current' },
+      after: [`create ${key(SWEEP, slotName(SWEEP, SWEEP_SLOT_S))}`],
+    },
+  ])('follows the page token past a page with no chain task and $label', async ({ seeds, expected, after }) => {
+    const port = new MemoryTaskPort();
+    const spec = sweepSpec();
+    port.pageSize = 2;
+    for (const name of seeds) await seed(port, spec, name);
+    port.calls.length = 0;
+
+    await expect(ensureRecurring(port, { ...spec, clock })).resolves.toStrictEqual({ queue: SWEEP, ...expected });
+    expect(port.calls).toStrictEqual([`list ${SWEEP}`, `list ${SWEEP} 2`, ...after]);
   });
 });
 
@@ -468,6 +558,75 @@ describe('recurringHandler', () => {
     });
     expect(renderUnavailable(error, 'opt2').status).toBe(503);
     expect(port.calls).toStrictEqual([`create ${key(SWEEP, successor)}`]);
+  });
+
+  it.each([
+    { label: 'a live successor it did not create', tombstoned: 0, live: true, successorS: SWEEP_SLOT_S + 60, created: false },
+    { label: 'the slot after a tombstoned successor', tombstoned: 1, live: false, successorS: SWEEP_SLOT_S + 120, created: true },
+    {
+      label: 'the first slot past tombstoned successors',
+      tombstoned: MAX_SLOT_PROBES - 1,
+      live: false,
+      successorS: SWEEP_SLOT_S + MAX_SLOT_PROBES * 60,
+      created: true,
+    },
+  ])('runs the work and answers ok with $label', async ({ tombstoned, live, successorS, created }) => {
+    const port = new MemoryTaskPort();
+    const spec = sweepSpec();
+    const dead = await tombstone(port, spec, SWEEP_SLOT_S + 60, tombstoned);
+    const successor = slotName(SWEEP, successorS);
+    if (live) await seed(port, spec, successor);
+    port.calls.length = 0;
+    const seen: RecurringTaskContext['successor'][] = [];
+    const handler = recurringHandler({ ...spec, port, clock }, (ctx) => {
+      seen.push(ctx.successor);
+      return Promise.resolve();
+    });
+
+    await expect(handler(taskContext(SWEEP, slotName(SWEEP, SWEEP_SLOT_S)))).resolves.toStrictEqual({ ok: true, successor });
+    expect(seen).toStrictEqual([{ name: successor, created }]);
+    expect(port.liveNames(SWEEP)).toStrictEqual([successor]);
+    expect(port.calls).toStrictEqual([
+      ...dead.flatMap((name) => [`create ${key(SWEEP, name)}`, `get ${key(SWEEP, name)}`]),
+      `create ${key(SWEEP, successor)}`,
+      ...(created ? [] : [`get ${key(SWEEP, successor)}`]),
+    ]);
+  });
+
+  it.each([
+    {
+      label: 'every probed successor slot is a tombstone',
+      /** Arranges the port and returns the cause the error must carry. */
+      arrange: async (port: MemoryTaskPort): Promise<unknown> => {
+        return new RecurringSlotsTombstonedError(SWEEP, await tombstone(port, sweepSpec(), SWEEP_SLOT_S + 60, MAX_SLOT_PROBES));
+      },
+    },
+    {
+      label: 'the liveness check of an existing successor fails',
+      arrange: async (port: MemoryTaskPort): Promise<unknown> => {
+        await tombstone(port, sweepSpec(), SWEEP_SLOT_S + 60, 1);
+        port.getFailure = new Error('14 UNAVAILABLE: connection reset');
+        return port.getFailure;
+      },
+    },
+  ])('fails with a 503 SuccessorCreationError and never runs the work when $label', async ({ arrange }) => {
+    const port = new MemoryTaskPort();
+    const cause = await arrange(port);
+    const work = (): Promise<void> => {
+      port.calls.push('work');
+      return Promise.resolve();
+    };
+    const handler = recurringHandler({ ...sweepSpec(), port, clock }, work);
+    const successor = slotName(SWEEP, SWEEP_SLOT_S + 60);
+
+    const error = (await handler(taskContext(SWEEP, slotName(SWEEP, SWEEP_SLOT_S))).catch((err: unknown) => err)) as SuccessorCreationError;
+
+    expect(error).toBeInstanceOf(SuccessorCreationError);
+    expect(error).toMatchObject({ queue: SWEEP, successor, reason: 'successor-creation-failed' });
+    expect(error.cause).toStrictEqual(cause);
+    expect(renderUnavailable(error, 'opt2').status).toBe(503);
+    expect(port.calls).not.toContain('work');
+    expect(port.liveNames(SWEEP)).toStrictEqual([]);
   });
 
   it('keeps the successor when the work fails, and a retry runs the work against that same successor', async () => {

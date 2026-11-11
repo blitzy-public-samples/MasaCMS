@@ -57,9 +57,9 @@ function tempPathOf(file: string): RegExp {
   return new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}\\.tmp$`);
 }
 
-/** Pin source returning the committed pin with `sha` as both `sha` and `sourceSha`. */
+/** Pin source returning the committed pin with `sha` replaced. */
 function pinWith(sha: string): () => Pin {
-  return () => ({ ...readPin(), sha, sourceSha: sha });
+  return () => ({ ...readPin(), sha });
 }
 
 /** Whether `key` is a canonical array index, which JavaScript enumerates ahead of every other key. */

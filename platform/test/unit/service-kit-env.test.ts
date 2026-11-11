@@ -1,6 +1,8 @@
-import { homedir } from 'node:os';
+import { mkdirSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { fileURLToPath } from 'node:url';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   EnvValidationError,
   baseEnvSchema,
@@ -13,6 +15,10 @@ import {
 } from '../../src/service-kit/env.js';
 
 const PG_SECRET = 'pg-s3cr3t-do-not-echo';
+const REPO_ROOT = realpathSync(fileURLToPath(new URL('../../../', import.meta.url)));
+const SCRATCH = path.join(tmpdir(), `opt2-service-kit-env-${process.pid}`);
+const LINK_TO_CHECKOUT = path.join(SCRATCH, 'checkout-link');
+const LINK_OUTSIDE = path.join(SCRATCH, 'outside-link');
 
 const localEnv: Record<string, string> = {
   PORT: '8112',
@@ -154,6 +160,42 @@ describe('loadEnv', () => {
     ['TZ', 'US/Eastern'],
   ])('accepts %s %s and returns it unchanged', (key, value) => {
     expect(loadEnv(baseEnvSchema, { ...localEnv, [key]: value })).toMatchObject({ [key]: value });
+  });
+
+  describe('OPT2_STATE_DIR', () => {
+    beforeAll(() => {
+      mkdirSync(path.join(SCRATCH, 'outside'), { recursive: true });
+      symlinkSync(REPO_ROOT, LINK_TO_CHECKOUT);
+      symlinkSync(path.join(SCRATCH, 'outside'), LINK_OUTSIDE);
+    });
+
+    afterAll(() => {
+      rmSync(SCRATCH, { recursive: true, force: true });
+    });
+
+    it.each([
+      ['a relative "."', '.', 'must be an absolute path'],
+      ['a relative "state"', 'state', 'must be an absolute path'],
+      ['the checkout root', `${REPO_ROOT}/`, 'must be outside the repository checkout'],
+      ['a path inside the checkout', path.join(REPO_ROOT, 'opt2-state'), 'must be outside the repository checkout'],
+      ['a ".." path that resolves into the checkout', `${REPO_ROOT}/platform/../state`, 'must be outside the repository checkout'],
+      ['a path through a symlink into the checkout', path.join(LINK_TO_CHECKOUT, 'state'), 'must be outside the repository checkout'],
+    ])('rejects %s', (_case, value, message) => {
+      expect(issuesOf({ ...localEnv, OPT2_STATE_DIR: value })).toEqual([`OPT2_STATE_DIR: ${message}`]);
+    });
+
+    it.each([
+      ['a trailing "/" and ".." segment', `${SCRATCH}/x/../state/`, path.join(SCRATCH, 'state')],
+      ['a symlink to a directory outside the checkout', `${LINK_OUTSIDE}/state`, path.join(LINK_OUTSIDE, 'state')],
+    ])('accepts a path outside the checkout with %s, normalised', (_case, value, expected) => {
+      expect(loadEnv(baseEnvSchema, { ...localEnv, OPT2_STATE_DIR: value }).OPT2_STATE_DIR).toBe(expected);
+    });
+
+    it('checks the home-directory default as well', () => {
+      vi.stubEnv('HOME', REPO_ROOT);
+
+      expect(issuesOf(localEnv)).toEqual(['OPT2_STATE_DIR: must be outside the repository checkout']);
+    });
   });
 
   it('lists every issue under the service name and never echoes the database password', () => {

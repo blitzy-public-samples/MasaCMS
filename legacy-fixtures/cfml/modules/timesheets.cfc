@@ -125,7 +125,7 @@ component output="false" hint="Timesheet sheets, status and day lifecycle action
 		);
 	}
 
-	private struct function asOfParam(required struct params) hint="Returns asOf as a cf_sql_date param, today when absent, or raises invalidParameters unless it is a real yyyy-mm-dd date." {
+	private struct function asOfParam(required struct params) hint="Returns asOf as a cf_sql_date param, today when absent, or raises invalidParameters unless it is a real yyyy-mm-dd date from 1753 on, SQL Server datetime's floor." {
 		if (!structKeyExists(arguments.params, "asOf") || isNull(arguments.params.asOf)) {
 			local.today = now();
 			return {value = createDate(year(local.today), month(local.today), day(local.today)), cfsqltype = "cf_sql_date"};
@@ -138,7 +138,7 @@ component output="false" hint="Timesheet sheets, status and day lifecycle action
 		local.month = int(mid(local.text, 6, 2));
 		local.day = int(right(local.text, 2));
 		// createDate maps years below 100 into another century, so the round trip rejects them; compare() because != compares date-like strings as dates.
-		if (local.month < 1 || local.month > 12 || local.day < 1 || local.day > daysInMonth(createDate(local.year, local.month, 1))
+		if (local.year < 1753 || local.month < 1 || local.month > 12 || local.day < 1 || local.day > daysInMonth(createDate(local.year, local.month, 1))
 			|| compare(dateFormat(createDate(local.year, local.month, local.day), "yyyy-mm-dd"), local.text) != 0) {
 			variables.envelope.raise("invalidParameters");
 		}

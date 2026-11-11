@@ -1,9 +1,12 @@
-// Unit tests for the source-pin reader, the JSON and Markdown report writers and the run logs.
+// Unit tests for the source-pin reader, the JSON and Markdown report writers, report redaction and the run logs.
+import { createHash } from 'node:crypto';
+import { readdirSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { REDACTED } from '@opt2/platform/logging';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -15,8 +18,10 @@ import {
   summariseWindows,
   upsertLogEntry,
   type RunLogFile,
+  type TransitionLogEntry,
   type WindowLogEntry,
 } from '../../src/reports/append-log.js';
+import { projectReportValue, redactReportMarkdown, redactReportText } from '../../src/reports/redact.js';
 import { SourcePinError, readSourcePin, readSourceSha, resetSourcePinCache } from '../../src/reports/source-pin.js';
 import {
   ReportPathError,
@@ -42,7 +47,41 @@ const PIN_SUBJECT = 'Increase version to 7.6.1 in package files and configuratio
 const OTHER_SHA = '0123456789abcdef0123456789abcdef01234567';
 const REPO_PIN_FILE = fileURLToPath(new URL('../../../opt2/source-pin.json', import.meta.url));
 const REPO_REPORTS_DIR = fileURLToPath(new URL('../../../opt2/reports/', import.meta.url));
+const REPO_GROUPS_FILE = fileURLToPath(new URL('../../../gateway/cutover/groups.json', import.meta.url));
+const PLACEHOLDER_JSON = [
+  'migration-order.json',
+  'transitions.json',
+  'windows.json',
+  ...readdirSync(path.join(REPO_REPORTS_DIR, 'reconciliation'))
+    .filter((name) => name.endsWith('.json'))
+    .map((name) => `reconciliation/${name}`),
+];
 const FIXED_AT = '2026-01-02T03:04:05.678Z';
+
+// Synthetic credential-shaped values, assembled at run time so secret scanners do not match the source.
+const EMAIL = ['qa.reviewer', 'example.com'].join('@');
+const TOKEN = ['oat', '7f3c', '91ab', 'e2d4'].join('-');
+const JWT_LIKE = [`eyJ${'hbGciOiJub25lIn0'}`, `eyJ${'zdWIiOiJxYSJ9'}`, 'c2ln'].join('.');
+const PASSWORD = ['Synthetic', 'Pass', '42'].join('-');
+const PASSWORD_HASH = createHash('md5').update(PASSWORD).digest('hex').toUpperCase();
+const RAW_SECRETS = [EMAIL, TOKEN, JWT_LIKE, PASSWORD, PASSWORD_HASH, PASSWORD_HASH.toLowerCase()];
+const TABLE_SHA = createHash('sha256').update('tusers').digest('hex');
+const FLAG_ROUTE = 'cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=flag';
+const ABORT_REASON = `reconcile failed for ${EMAIL}: Bearer ${TOKEN} rejected, jwt ${JWT_LIKE}, password=${PASSWORD}`;
+const MASKED_ABORT_REASON = `reconcile failed for ${REDACTED}: Bearer ${REDACTED} rejected, jwt ${REDACTED}, password=${REDACTED}`;
+const DIFFERENCE = {
+  kind: 'changed',
+  key: `s${TOKEN.length}:${TOKEN}`,
+  column: 'Password',
+  legacy: PASSWORD_HASH,
+  target: PASSWORD_HASH.toLowerCase(),
+  occurrences: 1,
+};
+
+/** The digest the projection writes in place of a raw string. */
+function digestOf(text: string): string {
+  return `sha256:${createHash('sha256').update(text).digest('hex')} (${[...text].length} chars)`;
+}
 
 const tempDirs: string[] = [];
 
@@ -71,7 +110,6 @@ function pinRecord(overrides: Record<string, unknown> = {}): Record<string, unkn
     repository: 'https://example.invalid/masa.git',
     confirmedAt: '2026-01-01T00:00:00Z',
     confirmCommand: 'check-pin --confirm',
-    sourceSha: PIN_SHA,
     ...overrides,
   };
 }
@@ -109,11 +147,18 @@ afterEach(async () => {
 describe('readSourcePin', () => {
   it('reads the repository pin file', () => {
     const pin = readSourcePin(REPO_PIN_FILE);
-    expect(pin).toMatchObject({ sha: PIN_SHA, subject: PIN_SUBJECT, sourceSha: PIN_SHA });
+    expect(pin).toMatchObject({ sha: PIN_SHA, subject: PIN_SUBJECT });
     for (const key of ['repository', 'confirmedAt', 'confirmCommand'] as const) {
       expect(typeof pin[key]).toBe('string');
     }
     expect(readSourceSha(REPO_PIN_FILE)).toBe(PIN_SHA);
+  });
+
+  it('reads sha from a five-field record and ignores an extra sourceSha key', async () => {
+    const dir = await makeTempDir();
+    expect(readSourceSha(await writePinFile(dir, JSON.stringify(pinRecord())))).toBe(PIN_SHA);
+    resetSourcePinCache();
+    expect(readSourceSha(await writePinFile(dir, JSON.stringify(pinRecord({ sourceSha: OTHER_SHA }))))).toBe(PIN_SHA);
   });
 
   it('returns a frozen record', async () => {
@@ -128,7 +173,7 @@ describe('readSourcePin', () => {
   it('memoises by resolved path until the cache is reset', async () => {
     const file = await writePinFile(await makeTempDir(), JSON.stringify(pinRecord()));
     const first = readSourcePin(file);
-    await writePinFile(path.dirname(file), JSON.stringify(pinRecord({ sha: OTHER_SHA, sourceSha: OTHER_SHA })));
+    await writePinFile(path.dirname(file), JSON.stringify(pinRecord({ sha: OTHER_SHA })));
 
     expect(readSourcePin(path.relative(process.cwd(), file))).toBe(first);
     expect(readSourceSha(file)).toBe(PIN_SHA);
@@ -185,14 +230,9 @@ describe('readSourcePin', () => {
       reason: malformed(JSON.stringify(` ${PIN_SHA}`)),
     },
     {
-      label: 'a missing sourceSha',
-      text: JSON.stringify(pinRecord({ sourceSha: undefined })),
-      reason: `sha ${PIN_SHA} does not match sourceSha undefined`,
-    },
-    {
-      label: 'a different sourceSha',
-      text: JSON.stringify(pinRecord({ sourceSha: OTHER_SHA })),
-      reason: `sha ${PIN_SHA} does not match sourceSha "${OTHER_SHA}"`,
+      label: 'a sha with a trailing LF',
+      text: JSON.stringify(pinRecord({ sha: `${PIN_SHA}\n` })),
+      reason: malformed(JSON.stringify(`${PIN_SHA}\n`)),
     },
   ])('rejects $label', async ({ text, reason }) => {
     const file = await writePinFile(await makeTempDir(), text);
@@ -292,6 +332,13 @@ describe('writeJsonReport', () => {
       generatedBy: 'option-run',
       status: 'fail',
     },
+    {
+      label: 'the selected values carry an email and a password, which are digested',
+      body: { status: `fail password=${PASSWORD}`, generatedBy: 'body-run' },
+      opts: { generatedBy: `opt2-migrate run by ${EMAIL}` },
+      generatedBy: digestOf(`opt2-migrate run by ${EMAIL}`),
+      status: digestOf(`fail password=${PASSWORD}`),
+    },
   ])('takes generatedBy and status from the options, then the body, when $label', async ({ body, opts, generatedBy, status }) => {
     const { report } = await writeJsonReport(await makeTarget(), 'r.json', { ...body, rows: 1 }, { ...opts, clock: fixedClock(FIXED_AT) });
     const head = generatedBy === undefined ? ['sourceSha', 'generatedAt', 'status'] : ['sourceSha', 'generatedBy', 'generatedAt', 'status'];
@@ -356,6 +403,30 @@ describe('writeJsonReport', () => {
     const { base, target } = await makeNestedTarget();
     await expect(writeJsonReport(target, relPath, {})).rejects.toThrow(ReportPathError);
     expect(await readdir(base)).toEqual([]);
+  });
+
+  it('writes and returns the redacted body, leaving the caller object unchanged', async () => {
+    const target = await makeTarget();
+    const body = {
+      reconciliation: { differences: [DIFFERENCE] },
+      abortReason: ABORT_REASON,
+      units: [{ unit: 'identity.credential', legacy: { rowCount: 3, sha256: TABLE_SHA } }],
+    };
+    const before = structuredClone(body);
+    const { path: file, report } = await writeJsonReport(target, 'reconciliation/after-fault-x.json', body, {
+      clock: fixedClock(FIXED_AT),
+    });
+
+    const text = await readFile(file, 'utf8');
+    expect(body).toEqual(before);
+    expect(text).toBe(`${JSON.stringify(report, null, 2)}\n`);
+    expect(Object.keys(report)).toEqual(['sourceSha', 'generatedAt', 'status', 'reconciliation', 'abortReason', 'units']);
+    expect(report).toMatchObject({
+      sourceSha: PIN_SHA,
+      abortReason: MASKED_ABORT_REASON,
+      units: [{ unit: 'identity.credential', legacy: { rowCount: 3, sha256: TABLE_SHA } }],
+    });
+    for (const secret of RAW_SECRETS) expect(text).not.toContain(secret);
   });
 });
 
@@ -423,6 +494,43 @@ describe('writeMarkdownReport', () => {
     const expected = `# Summary\n\nSource SHA: ${PIN_SHA}\n\nAll zero.\n`;
     expect(result).toEqual({ path: path.join(target.reportsDir, 'reconciliation', 'summary.md'), text: expected });
     expect(await readFile(result.path, 'utf8')).toBe(expected);
+  });
+
+  it('redacts the markdown and keeps its Source SHA line', async () => {
+    const target = await makeTarget();
+    const markdown = `# Rehearsal\n\nSource SHA: stale\n\nOperator ${EMAIL} used Bearer ${TOKEN} today.\nThe duplicate key value is (${TOKEN}).\n`;
+    const expected = `# Rehearsal\n\nSource SHA: ${PIN_SHA}\n\nOperator ${REDACTED} used Bearer ${REDACTED} today.\nThe duplicate key value is (${REDACTED}).\n`;
+    const result = await writeMarkdownReport(target, 'rollback-rehearsal.md', markdown);
+    expect(result.text).toBe(expected);
+    expect(await readFile(result.path, 'utf8')).toBe(expected);
+  });
+
+  it.each([
+    [
+      'values beside credential- and personal-named key cells',
+      `| Field | Before |\n| --- | --- |\n| Password | ${PASSWORD} |\n| FirstName | Avery |\n| Rows | 2 |`,
+      `| Field | Before |\n| --- | --- |\n| Password | ${REDACTED} |\n| FirstName | ${REDACTED} |\n| Rows | 2 |`,
+    ],
+    [
+      'every body cell under a personal-named header, keeping the other columns',
+      '| Id | Email | Rows |\n|---|:-:|--:|\n| 1 | avery.quinn | 3 |\n| 2 |  | 4 |',
+      `| Id | Email | Rows |\n|---|:-:|--:|\n| 1 | ${REDACTED} | 3 |\n| 2 |  | 4 |`,
+    ],
+    [
+      'headers written with emphasis, backticks or spaces, and rows without outer pipes',
+      '**Phone number** | `Display name` | _note_\n--- | --- | ---\n202-555-0148 | Avery Quinn | kept',
+      `**Phone number** | \`Display name\` | _note_\n--- | --- | ---\n${REDACTED} | ${REDACTED} | kept`,
+    ],
+    [
+      'an escaped pipe as part of its cell, up to the blank line ending the table',
+      `| Note | Password |\n|---|---|\n| a \\| b | ${PASSWORD} |\n\n| c | kept |`,
+      `| Note | Password |\n|---|---|\n| a \\| b | ${REDACTED} |\n\n| c | kept |`,
+    ],
+  ])('masks pipe-table %s, idempotently', async (_label, table, masked) => {
+    expect(redactReportMarkdown(table)).toBe(masked);
+    expect(redactReportMarkdown(masked)).toBe(masked);
+    const { text } = await writeMarkdownReport(await makeTarget(), 'r.md', `# Report\n\n${table}\n`);
+    expect(text).toBe(`# Report\n\nSource SHA: ${PIN_SHA}\n\n${masked}\n`);
   });
 
   it.each(['/abs/summary.md', '../summary.md'])('rejects the report path %j without writing', async (relPath) => {
@@ -589,6 +697,57 @@ describe('run logs', () => {
   });
 
   it.each([
+    { file: 'windows.json', idKey: 'windowId', id: `W:${EMAIL}`, written: digestOf(`W:${EMAIL}`) },
+    { file: 'other.json', idKey: 'key', id: 's2:k1', written: digestOf('s2:k1') },
+  ])('upserts $file in place by a $idKey the projection alters', async ({ file, idKey, id, written }) => {
+    const target = await makeTarget();
+    await appendLogEntry(target, file, { [idKey]: 'first', revision: 0 });
+    await upsertLogEntry(target, file, idKey, { [idKey]: id, revision: 1 });
+    await appendLogEntry(target, file, { [idKey]: 'last', revision: 2 });
+    await upsertLogEntry(target, file, idKey, { [idKey]: id, revision: 3 });
+
+    const entries = await readLogEntries<Record<string, unknown>>(target.reportsDir, file);
+    expect(entries.map((entry) => entry.revision)).toEqual([0, 3, 2]);
+    expect(entries[1]?.[idKey]).toBe(written);
+  });
+
+  it.each([
+    {
+      file: 'windows.json',
+      idKey: 'windowId',
+      entry: (id: string, durationMs: number): Record<string, unknown> => ({ ...windowEntry(id), durationMs }),
+    },
+    {
+      file: 'transitions.json',
+      idKey: 'transitionId',
+      entry: (id: string, durationMs: number): Record<string, unknown> => ({
+        transitionId: id,
+        from: 'v0001',
+        to: 'v0002',
+        startedAt: FIXED_AT,
+        setT: ['identity.credential'],
+        entriesChanged: [],
+        legacyWriteEntries: [],
+        steps: [],
+        durationMs,
+      }),
+    },
+  ] as const)('keeps two $idKey values differing only in an email apart, each upserted in place', async ({ file, idKey, entry }) => {
+    const target = await makeTarget();
+    const [one = '', two = ''] = ['user-one', 'user-two'].map((user) => `X:${[user, 'example.test'].join('@')}`);
+    await upsertLogEntry(target, file, idKey, entry(one, 1));
+    await upsertLogEntry(target, file, idKey, entry(two, 1));
+    await upsertLogEntry(target, file, idKey, entry(one, 2));
+
+    const entries = await readLogEntries<Record<string, unknown>>(target.reportsDir, file);
+    expect(entries.map((stored) => [stored[idKey], stored.durationMs])).toEqual([
+      [digestOf(one), 2],
+      [digestOf(two), 1],
+    ]);
+    expect(await readFile(path.join(target.reportsDir, file), 'utf8')).not.toContain('example.test');
+  });
+
+  it.each([
     [4000, 0],
     [5000, 0],
     [5001, 1],
@@ -665,5 +824,564 @@ describe('run logs', () => {
     await second;
     expect(await windowIds(target.reportsDir)).toEqual(['second']);
     expect(await tempFiles(target.reportsDir)).toEqual([]);
+  });
+
+  it('records a transition redacted and leaves it unchanged by later appends', async () => {
+    const target = await makeTarget();
+    await copyFile(path.join(REPO_REPORTS_DIR, 'transitions.json'), path.join(target.reportsDir, 'transitions.json'));
+    const placeholder = await readDoc(target.reportsDir, 'transitions.json');
+    const transition = (transitionId: string, overrides: Partial<TransitionLogEntry> = {}): TransitionLogEntry => ({
+      transitionId,
+      from: 'v0001',
+      to: 'v0002',
+      startedAt: FIXED_AT,
+      setT: ['identity.credential'],
+      entriesChanged: [FLAG_ROUTE],
+      legacyWriteEntries: [FLAG_ROUTE],
+      steps: [{ step: 6, name: 'final-state-and-reconcile', startedAt: FIXED_AT, result: ABORT_REASON }],
+      ...overrides,
+    });
+    const reconciliation = { differences: [DIFFERENCE], rowsImported: { 'identity.credential': 3 } };
+
+    await appendLogEntry(target, 'transitions.json', transition('T1', { outcome: 'aborted', abortReason: ABORT_REASON, reconciliation }));
+    const [recorded] = (await readDoc(target.reportsDir, 'transitions.json')).transitions as unknown[];
+    await appendLogEntry(target, 'transitions.json', transition('T2'));
+
+    const doc = await readDoc(target.reportsDir, 'transitions.json');
+    expect(doc.transitions).toEqual([recorded, expect.objectContaining({ transitionId: 'T2' })]);
+    expect(doc.planned).toEqual(placeholder.planned);
+    expect(recorded).toMatchObject({
+      abortReason: MASKED_ABORT_REASON,
+      entriesChanged: [FLAG_ROUTE],
+      legacyWriteEntries: [FLAG_ROUTE],
+      steps: [{ result: MASKED_ABORT_REASON }],
+      reconciliation: {
+        differences: [{ kind: 'changed', key: digestOf(DIFFERENCE.key), column: 'Password', occurrences: 1 }],
+        rowsImported: { 'identity.credential': 3 },
+      },
+    });
+    const text = await readFile(path.join(target.reportsDir, 'transitions.json'), 'utf8');
+    for (const secret of RAW_SECRETS) expect(text).not.toContain(secret);
+  });
+});
+
+describe('projectReportValue', () => {
+  const projectionCases = [
+    {
+      label: 'masks every non-null value of a credential-named field, whatever its type',
+      input: {
+        PasswordHash: PASSWORD_HASH,
+        passwordCreated: FIXED_AT,
+        accessTokenHash: TABLE_SHA,
+        tokenCount: 4,
+        newPassword: PASSWORD,
+        apiKey: 7,
+        'x-auth-token': TOKEN,
+        session_id: 's-1',
+        passwordSalt: 'salt',
+        cookies: ['a=1'],
+        credentials: { user: 'u' },
+        secretKey: TOKEN,
+        signingKey: TOKEN,
+        hmacKey: TOKEN,
+        bridgeHmacKey: TOKEN,
+        OPT2_BRIDGE_HMAC_KEY: TOKEN,
+        encryptionKey: TOKEN,
+        sharedKey: TOKEN,
+        pushKey: TOKEN,
+        masterKey: TOKEN,
+        clientKey: TOKEN,
+        privateKeys: [TOKEN],
+        password: null,
+        hasPasswordSet: true,
+      },
+      expected: {
+        PasswordHash: REDACTED,
+        passwordCreated: REDACTED,
+        accessTokenHash: REDACTED,
+        tokenCount: REDACTED,
+        newPassword: REDACTED,
+        apiKey: REDACTED,
+        'x-auth-token': REDACTED,
+        session_id: REDACTED,
+        passwordSalt: REDACTED,
+        cookies: REDACTED,
+        credentials: REDACTED,
+        secretKey: REDACTED,
+        signingKey: REDACTED,
+        hmacKey: REDACTED,
+        bridgeHmacKey: REDACTED,
+        OPT2_BRIDGE_HMAC_KEY: REDACTED,
+        encryptionKey: REDACTED,
+        sharedKey: REDACTED,
+        pushKey: REDACTED,
+        masterKey: REDACTED,
+        clientKey: REDACTED,
+        privateKeys: REDACTED,
+        password: null,
+        hasPasswordSet: REDACTED,
+      },
+    },
+    {
+      label: 'masks no key name that names no credential: a route key is kept, other unknown strings digested',
+      input: { key: 'W1', idKey: 'windowId', routeKey: FLAG_ROUTE, primaryKey: ['UserID'], sortKey: 'lastUpdate', orderingKey: 'tenant-a' },
+      expected: {
+        key: digestOf('W1'),
+        idKey: digestOf('windowId'),
+        routeKey: FLAG_ROUTE,
+        primaryKey: [digestOf('UserID')],
+        sortKey: digestOf('lastUpdate'),
+        orderingKey: digestOf('tenant-a'),
+      },
+    },
+    {
+      label: 'keeps counts under dotted unit ids and unknown names',
+      input: {
+        rowsImported: { 'identity.credential': 3, 'identity.user_address': 1, 'people.person': 2 },
+        byOutcome: { 'aborted-503': 1 },
+        durationMs: 12,
+        ok: false,
+      },
+      expected: {
+        rowsImported: { 'identity.credential': 3, 'identity.user_address': 1, 'people.person': 2 },
+        byOutcome: { 'aborted-503': 1 },
+        durationMs: 12,
+        ok: false,
+      },
+    },
+    {
+      label: 'digests the key and values of a difference, keeping its kind, column and count',
+      input: DIFFERENCE,
+      expected: {
+        kind: 'changed',
+        key: digestOf(DIFFERENCE.key),
+        column: 'Password',
+        legacy: digestOf(DIFFERENCE.legacy),
+        target: digestOf(DIFFERENCE.target),
+        occurrences: 1,
+      },
+    },
+    {
+      label: 'keeps the row counts and hashes of a unit report',
+      input: {
+        unit: 'identity.credential',
+        legacySha256: TABLE_SHA,
+        legacy: { rowCount: 3, sha256: TABLE_SHA },
+        target: { rowCount: 3, manifestSha256: TABLE_SHA },
+      },
+      expected: {
+        unit: 'identity.credential',
+        legacySha256: TABLE_SHA,
+        legacy: { rowCount: 3, sha256: TABLE_SHA },
+        target: { rowCount: 3, manifestSha256: TABLE_SHA },
+      },
+    },
+    {
+      label: 'digests strings, dates and bytes anywhere under a raw-value field',
+      input: {
+        before: { UserName: 'qa_member', tags: ['x'], Password: PASSWORD, LastLogin: new Date(FIXED_AT), size: 3 },
+        row: Buffer.from('abc'),
+      },
+      expected: {
+        before: { UserName: digestOf('qa_member'), tags: [digestOf('x')], Password: REDACTED, LastLogin: digestOf(FIXED_AT), size: 3 },
+        row: `sha256:${createHash('sha256').update('abc').digest('hex')} (3 bytes)`,
+      },
+    },
+    {
+      label: 'keeps only hash-shaped hash-named strings, digests and the placeholder under a raw-value field',
+      input: {
+        row: { rowHash: TABLE_SHA, sourceSha: PIN_SHA, checksum: 'c1', manifestHash: TABLE_SHA, note: digestOf('x'), masked: REDACTED },
+      },
+      expected: {
+        row: {
+          rowHash: TABLE_SHA,
+          sourceSha: PIN_SHA,
+          checksum: digestOf('c1'),
+          manifestHash: digestOf(TABLE_SHA),
+          note: digestOf('x'),
+          masked: REDACTED,
+        },
+      },
+    },
+    {
+      label: 'redacts email, bearer, JWT and password text in free-text fields',
+      input: { abortReason: ABORT_REASON, steps: [{ step: 6, result: ABORT_REASON }] },
+      expected: { abortReason: MASKED_ABORT_REASON, steps: [{ step: 6, result: MASKED_ABORT_REASON }] },
+    },
+    {
+      label: 'masks database value echoes in free-text fields',
+      input: { error: `Cannot insert duplicate key in object 'dbo.toauthtokens'. The duplicate key value is (${TOKEN}).` },
+      expected: { error: `Cannot insert duplicate key in object 'dbo.toauthtokens'. The duplicate key value is (${REDACTED}).` },
+    },
+    {
+      label: 'keeps route keys under route fields and redacts their query values elsewhere',
+      input: {
+        routeKey: FLAG_ROUTE,
+        entriesChanged: [FLAG_ROUTE, 'admin:cusers.update{type=2,action=add}'],
+        legacyWriteEntries: [FLAG_ROUTE],
+        route: 'not a route key?token=abc',
+        note: `moved ${FLAG_ROUTE}`,
+      },
+      expected: {
+        routeKey: FLAG_ROUTE,
+        entriesChanged: [FLAG_ROUTE, 'admin:cusers.update{type=2,action=add}'],
+        legacyWriteEntries: [FLAG_ROUTE],
+        route: digestOf('not a route key?token=abc'),
+        note: `moved ${FLAG_ROUTE.replace('=flag', `=${REDACTED}`)}`,
+      },
+    },
+    {
+      label: 'masks a credential hash held under a raw-value field',
+      input: {
+        differences: [{ column: 'PasswordHash', before: { PasswordHash: PASSWORD_HASH, rowCount: 1 }, after: { PasswordHash: 'changed' } }],
+      },
+      expected: {
+        differences: [{ column: 'PasswordHash', before: { PasswordHash: REDACTED, rowCount: 1 }, after: { PasswordHash: REDACTED } }],
+      },
+    },
+    {
+      label: 'digests personal values, numbers and flags included, and treats an object beneath one as raw data',
+      input: {
+        orphanDetails: [
+          {
+            firstName: 'Avery',
+            lastName: 'Quinn',
+            phone: '202-555-0148',
+            email: EMAIL,
+            zip: 12345,
+            isEmailVerified: true,
+            address: { street: 'Main', houseNumber: 5 },
+          },
+        ],
+      },
+      expected: {
+        orphanDetails: [
+          {
+            firstName: digestOf('Avery'),
+            lastName: digestOf('Quinn'),
+            phone: digestOf('202-555-0148'),
+            email: digestOf(EMAIL),
+            zip: digestOf('12345'),
+            isEmailVerified: digestOf('true'),
+            address: { street: digestOf('Main'), houseNumber: 5 },
+          },
+        ],
+      },
+    },
+    {
+      label: 'digests unknown strings at any depth and keeps their numbers, flags and nulls',
+      input: { extra: { label: 'Avery', nested: [{ caption: 'Quinn', count: 2, ok: true, none: null }] } },
+      expected: { extra: { label: digestOf('Avery'), nested: [{ caption: digestOf('Quinn'), count: 2, ok: true, none: null }] } },
+    },
+    {
+      label: 'digests a URL or a token-bearing key under a route field and keeps a cut-over route key',
+      input: {
+        route: `https://localhost/reset?token=${TOKEN}`,
+        routeKey: 'admin:cusers.update{type=2,action=update}',
+        entryPoints: [`api:/reset?token=${TOKEN}`, FLAG_ROUTE],
+        appliesTo: ['cusers.update{type=2,action=Delete}', `cusers.update?email=${EMAIL}`],
+      },
+      expected: {
+        route: digestOf(`https://localhost/reset?token=${TOKEN}`),
+        routeKey: 'admin:cusers.update{type=2,action=update}',
+        entryPoints: [digestOf(`api:/reset?token=${TOKEN}`), FLAG_ROUTE],
+        appliesTo: ['cusers.update{type=2,action=Delete}', digestOf(`cusers.update?email=${EMAIL}`)],
+      },
+    },
+    {
+      label: 'keeps identifiers redaction leaves unchanged and digests the others',
+      input: {
+        windowId: `W:${EMAIL}`,
+        holderId: 'transition:T1',
+        tenantId: 'tenant-a',
+        scope: { siteid: 'default', userid: EMAIL, contentid: '00000000000000000000000000000001' },
+        column: 'Password',
+        units: ['identity.credential', `Bearer ${TOKEN}`],
+      },
+      expected: {
+        windowId: digestOf(`W:${EMAIL}`),
+        holderId: 'transition:T1',
+        tenantId: 'tenant-a',
+        scope: { siteid: 'default', userid: digestOf(EMAIL), contentid: '00000000000000000000000000000001' },
+        column: 'Password',
+        units: ['identity.credential', digestOf(`Bearer ${TOKEN}`)],
+      },
+    },
+    {
+      label: 'keeps kebab-case step and fault names and digests every other name',
+      input: {
+        steps: [{ step: 6, name: 'final-state-and-reconcile' }],
+        faults: [{ name: 'applier-killed-mid-batch' }],
+        owner: { name: 'Avery Quinn' },
+      },
+      expected: {
+        steps: [{ step: 6, name: 'final-state-and-reconcile' }],
+        faults: [{ name: 'applier-killed-mid-batch' }],
+        owner: { name: digestOf('Avery Quinn') },
+      },
+    },
+    {
+      label: 'keeps hash-shaped hash-named values outside raw data and digests the rest',
+      input: { sourceSha: PIN_SHA, targetSha256: digestOf('x'), legacyRowHash: TABLE_SHA, manifestHash: TABLE_SHA, sha256: 'pending' },
+      expected: {
+        sourceSha: PIN_SHA,
+        targetSha256: digestOf('x'),
+        legacyRowHash: TABLE_SHA,
+        manifestHash: digestOf(TABLE_SHA),
+        sha256: digestOf('pending'),
+      },
+    },
+  ];
+
+  it.each(projectionCases)('$label', ({ input, expected }) => {
+    expect(projectReportValue(input)).toEqual(expected);
+  });
+
+  it('masks a top-level value by the property name it is held under', () => {
+    expect(projectReportValue(PASSWORD, 'password')).toBe(REDACTED);
+    expect(projectReportValue(TOKEN, 'key')).toBe(digestOf(TOKEN));
+    expect(projectReportValue('a\u{1F600}', 'value')).toMatch(/^sha256:[0-9a-f]{64} \(2 chars\)$/);
+    expect(projectReportValue(ABORT_REASON, 'abortReason')).toBe(MASKED_ABORT_REASON);
+    expect(projectReportValue(ABORT_REASON)).toBe(digestOf(ABORT_REASON));
+  });
+
+  it('is idempotent and leaves no raw secret', () => {
+    const document = Object.fromEntries(projectionCases.map(({ input }, index) => [`case${index}`, input]));
+    const once = projectReportValue(document);
+    expect(projectReportValue(once)).toEqual(once);
+    const text = JSON.stringify(once);
+    for (const secret of RAW_SECRETS) expect(text).not.toContain(secret);
+  });
+
+  it('serialises non-sensitive values as JSON.stringify does', () => {
+    const input = {
+      at: new Date(FIXED_AT),
+      skipped: undefined,
+      fn: () => 1,
+      list: [undefined, () => 1, Symbol('s'), 1, true],
+      nonFinite: [Number.NaN, Number.POSITIVE_INFINITY],
+      boxed: [new Number(2), new Boolean(false)],
+      status: new String('s'),
+      custom: { toJSON: (key: string) => ({ kind: key }) },
+      map: new Map([['a', 1]]),
+    };
+    const projected = projectReportValue(input);
+    expect(projected).toEqual(JSON.parse(JSON.stringify(input)));
+    expect(Object.keys(projected as object)).toEqual(Object.keys(JSON.parse(JSON.stringify(input)) as object));
+    expect(projectReportValue(undefined)).toBeUndefined();
+    const shared = { n: 1 };
+    expect(projectReportValue({ a: shared, b: [shared] })).toEqual({ a: { n: 1 }, b: [{ n: 1 }] });
+  });
+
+  const selfList: unknown[] = [];
+  selfList.push(selfList);
+  const selfRow: Record<string, unknown> = {};
+  selfRow.row = selfRow;
+  it.each([
+    ['a nested BigInt', { a: [{ b: 1n }] }],
+    ['a BigInt under a credential field', { password: 1n }],
+    ['a circular array', { list: selfList }],
+    ['a circular object under a raw-value field', { row: selfRow }],
+    ['a circular object under a credential field', { secret: selfRow }],
+  ])('throws a TypeError on %s', (_label, value) => {
+    expect(() => projectReportValue(value)).toThrow(TypeError);
+  });
+
+  const unitReport = {
+    unit: 'identity.credential',
+    owner: 'identity',
+    legacyTable: 'tusers',
+    tenantId: 'tenant-a',
+    status: 'difference',
+    legacy: { rowCount: 3, sha256: TABLE_SHA },
+    target: { rowCount: 3, sha256: TABLE_SHA },
+    legacyCount: 3,
+    targetCount: 3,
+    legacySha256: TABLE_SHA,
+    targetSha256: TABLE_SHA,
+    differenceCount: 1,
+    differences: [DIFFERENCE],
+    excludedColumns: ['PasswordCreated'],
+    files: { legacyObjects: 0, targetObjects: 0, differences: 0, differenceCount: 0 },
+    orphans: ['tusersmemb'],
+    orphanCount: 1,
+  };
+  const reconcileReport = {
+    point: 'after-fault-duplicate-batch',
+    expectedTableVersion: 'v0001',
+    tableVersion: 'v0001',
+    tableVersionMatches: true,
+    snapshotSeq: 4,
+    legacySource: 'snapshot',
+    legacyDatabase: 'muradb',
+    tolerance: 0,
+    measures: ['rowCount', 'sha256', 'differences', 'fileManifest'],
+    units: [unitReport],
+    summary: { units: 1, tenants: 2, unitsWithDifferences: 1, differences: 1, orphans: 1, haltedUnits: 0 },
+    fileStore: { store: 'filesystem', status: 'zero-difference', reason: 'no file units', haltedUnits: [] },
+    result: 'zero-difference',
+  };
+  const migrationOrder = {
+    basis: { relations: 'legacy-inventory.json relations[]', kinds: ['DAO join'], foreignKeysDeclared: 0, cyclePolicy: 'second pass' },
+    expectedHead: { provenance: 'planning', tables: ['tsettings', 'people children'] },
+    order: [{ position: 1, table: 'tusers', schema: 'identity', owner: 'identity', parents: ['tsettings'], tenantFrom: 'SiteID' }],
+    brokenCycles: [{ tables: ['tcontent'], backReferenceColumn: 'ParentID', patchedInSecondPass: true }],
+  };
+  const projectedDifference = projectReportValue(DIFFERENCE);
+  it.each([
+    {
+      label: 'a reconcile report',
+      input: reconcileReport,
+      expected: { ...reconcileReport, units: [{ ...unitReport, differences: [projectedDifference] }] },
+    },
+    { label: 'a migration order', input: migrationOrder, expected: migrationOrder },
+  ])('keeps the identifiers, counts and hashes of $label', ({ input, expected }) => {
+    expect(projectReportValue(input)).toEqual(expected);
+  });
+});
+
+describe('committed report placeholders', () => {
+  it.each(PLACEHOLDER_JSON)('project %s unchanged', async (file) => {
+    const doc: unknown = JSON.parse(await readFile(path.join(REPO_REPORTS_DIR, file), 'utf8'));
+    expect(projectReportValue(doc)).toEqual(doc);
+  });
+
+  it.each(['reconciliation/summary.md', 'rollback-rehearsal.md'])('redact the Markdown %s unchanged', async (file) => {
+    const markdown = await readFile(path.join(REPO_REPORTS_DIR, file), 'utf8');
+    expect(redactReportMarkdown(markdown)).toBe(markdown);
+  });
+
+  it('keep every cut-over write entry of groups.json under routeKey', async () => {
+    const { groups } = JSON.parse(await readFile(REPO_GROUPS_FILE, 'utf8')) as { groups: { writeEntries: string[] }[] };
+    const routes = groups.flatMap((group) => group.writeEntries);
+    expect(routes.length).toBeGreaterThan(0);
+    expect(routes.map((routeKey) => projectReportValue(routeKey, 'routeKey'))).toEqual(routes);
+  });
+});
+
+describe('redactReportText', () => {
+  it.each([
+    [
+      'a SQL Server duplicate key value',
+      `Violation of PRIMARY KEY constraint 'PK_toauthtokens'. The duplicate key value is (${TOKEN}). The statement has been terminated.`,
+      `Violation of PRIMARY KEY constraint 'PK_toauthtokens'. The duplicate key value is (${REDACTED}). The statement has been terminated.`,
+    ],
+    [
+      'a SQL Server truncated value',
+      "String or binary data would be truncated in table 'muradb.dbo.tusers', column 'UserName'. Truncated value: 'qa_member'.",
+      `String or binary data would be truncated in table 'muradb.dbo.tusers', column 'UserName'. Truncated value: '${REDACTED}'.`,
+    ],
+    [
+      'a SQL Server conversion value',
+      "Conversion failed when converting the nvarchar value 'qa_member' to data type int.",
+      `Conversion failed when converting the nvarchar value '${REDACTED}' to data type int.`,
+    ],
+    [
+      'a PostgreSQL key value',
+      'duplicate key value violates unique constraint "user_account_site_username" Key (site_id, username)=(tenant-a, qa_member) already exists.',
+      `duplicate key value violates unique constraint "user_account_site_username" Key (site_id, username)=(${REDACTED}) already exists.`,
+    ],
+    [
+      'a PostgreSQL expression key value',
+      `Key (lower(email::text))=(${EMAIL}) already exists.`,
+      `Key (lower(email::text))=(${REDACTED}) already exists.`,
+    ],
+    [
+      'a PostgreSQL failing row',
+      `new row for relation "credential" violates check constraint "c" Failing row contains (u-1, ${PASSWORD}, null).`,
+      `new row for relation "credential" violates check constraint "c" Failing row contains (${REDACTED}).`,
+    ],
+    [
+      'an unterminated value only to the end of its line',
+      'The duplicate key value is (qa_member\nnext (line) kept',
+      `The duplicate key value is (${REDACTED}\nnext (line) kept`,
+    ],
+    [
+      'credentials, tokens and email addresses',
+      ABORT_REASON,
+      MASKED_ABORT_REASON,
+    ],
+    [
+      'a PostgreSQL invalid input value',
+      'insert failed: invalid input syntax for type integer: "202-555-0148" in column phone',
+      `insert failed: invalid input syntax for type integer: "${REDACTED}" in column phone`,
+    ],
+    [
+      'a PostgreSQL invalid input value of a multi-word type',
+      `invalid input syntax for type timestamp with time zone: "${TOKEN}"`,
+      `invalid input syntax for type timestamp with time zone: "${REDACTED}"`,
+    ],
+    [
+      'a PostgreSQL invalid enum value',
+      'invalid input value for enum people.person_status: "Avery"',
+      `invalid input value for enum people.person_status: "${REDACTED}"`,
+    ],
+    [
+      'a PostgreSQL out-of-range field value',
+      'date/time field value out of range: "1990-13-45"',
+      `date/time field value out of range: "${REDACTED}"`,
+    ],
+    [
+      'a PostgreSQL malformed literal',
+      `malformed array literal: "{${TOKEN}"`,
+      `malformed array literal: "${REDACTED}"`,
+    ],
+    [
+      'a PostgreSQL out-of-range value',
+      'value "2026055501480" is out of range for type integer',
+      `value "${REDACTED}" is out of range for type integer`,
+    ],
+    [
+      'a PostgreSQL invalid formatting value',
+      'invalid value "Avery" for "YYYY" in to_date',
+      `invalid value "${REDACTED}" for "YYYY" in to_date`,
+    ],
+    [
+      'a PostgreSQL syntax error token',
+      `syntax error at or near "${TOKEN}" at character 15`,
+      `syntax error at or near "${REDACTED}" at character 15`,
+    ],
+    [
+      'a SQL Server syntax error token',
+      `Incorrect syntax near '${TOKEN}'.`,
+      `Incorrect syntax near '${REDACTED}'.`,
+    ],
+    [
+      'a SQL Server unclosed string',
+      `Unclosed quotation mark after the character string '${PASSWORD}'.`,
+      `Unclosed quotation mark after the character string '${REDACTED}'.`,
+    ],
+  ])('masks %s, idempotently', (_label, text, expected) => {
+    expect(redactReportText(text)).toBe(expected);
+    expect(redactReportText(expected)).toBe(expected);
+  });
+
+  const repeated = (echo: string): string => echo.repeat(Math.ceil(1_000_000 / echo.length));
+  it.each([
+    ['duplicate key value is (', `duplicate key value is (${REDACTED}`],
+    ["Truncated value: '", `Truncated value: '${REDACTED}'`],
+    ['Failing row contains (', `Failing row contains (${REDACTED}`],
+    ['Key (', repeated('Key (')],
+    ['invalid input syntax for type integer: "', `invalid input syntax for type integer: "${REDACTED}"`],
+    ['value "', repeated('value "')],
+    ['invalid value "', `invalid value "${REDACTED}`],
+    ['at or near "', `at or near "${REDACTED}"`],
+    ["near '", `near '${REDACTED}'`],
+  ])('scans a 1 MB line of repeated %j echoes in linear time', (echo, expected) => {
+    const started = performance.now();
+    expect(redactReportText(repeated(echo))).toBe(expected);
+    expect(performance.now() - started).toBeLessThan(5000);
+  });
+});
+
+describe('redactReportMarkdown', () => {
+  it.each([
+    ['a 1 MB table', `| Email | n |\n|---|---|\n${'| avery | 1 |\n'.repeat(80_000)}`, 80_000],
+    ['a 1 MB row of pipes', `| Email |\n|---|\n${'|'.repeat(1_000_000)}\n`, 0],
+  ])('masks %s in linear time', (_label, markdown, masked) => {
+    const started = performance.now();
+    const text = redactReportMarkdown(markdown);
+    expect(performance.now() - started).toBeLessThan(5000);
+    expect(text.split(REDACTED).length - 1).toBe(masked);
   });
 });

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // `opt2-tasks` CLI of @opt2/platform/tasks: `reconcile` asks each creating service to ensure its recurring task chains.
-import { realpath } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { reconcileRecurringQueues, type ReconcileResult } from './handlers.js';
@@ -11,6 +11,8 @@ import {
   loadLocalSigningKeys,
   type InvocationMinter,
 } from '../auth/index.js';
+import { createLogger, emitDiagnostic, serializeError, setDiagnosticLogger } from '../logging/index.js';
+import { safeErrorMessage } from '../logging/safe-error.js';
 
 const USAGE =
   'usage: opt2-tasks reconcile [--queue <name>]... [--with-sitemonitor] [--include-local-only] [--as operator|migration]';
@@ -33,12 +35,20 @@ interface ReconcileArgs {
 
 // loadEnv requires every base variable and the service mode rules (PORT, TZ, token issuer and audience, JWKS URL),
 // so the CLI parses only the variables it reads, with loadEnv's messages and error type.
-const cliEnvSchema = baseEnvSchema.pick({
-  OPT2_ENV: true,
-  OPT2_SERVICE_URLS: true,
-  OPT2_STATE_DIR: true,
-  GOOGLE_CLOUD_PROJECT: true,
-});
+const cliEnvSchema = baseEnvSchema
+  .pick({
+    OPT2_ENV: true,
+    OPT2_SERVICE_URLS: true,
+    OPT2_STATE_DIR: true,
+    GOOGLE_CLOUD_PROJECT: true,
+  })
+  .extend({
+    // Without a service URL no creator is reachable, so the base default `{}` is refused here.
+    OPT2_SERVICE_URLS: baseEnvSchema.shape.OPT2_SERVICE_URLS.refine(
+      (urls) => Object.keys(urls).length > 0,
+      'must name at least one service',
+    ),
+  });
 
 type CliEnv = ReturnType<typeof cliEnvSchema.parse>;
 
@@ -60,6 +70,25 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     throw err;
   }
 
+  // stderr, so stdout carries only the result lines.
+  const logger = createLogger({
+    service: 'opt2-tasks',
+    version: await platformVersion(),
+    env: env.OPT2_ENV,
+    googleCloudProject: env.GOOGLE_CLOUD_PROJECT,
+    destination: process.stderr,
+  });
+  setDiagnosticLogger(logger);
+  try {
+    return await reconcile(args, env);
+  } catch (err) {
+    logger.fatal({ error: serializeError(err) }, 'opt2-tasks failed');
+    return 1;
+  }
+}
+
+/** Reconciles the selected queues and writes one result line each; returns the exit code `main` describes. */
+async function reconcile(args: ReconcileArgs, env: CliEnv): Promise<number> {
   const credentials = invocationMinter(env, args.as);
   const client = createServiceClient({ serviceUrls: env.OPT2_SERVICE_URLS, self: args.as, credentials });
   let results: ReconcileResult[];
@@ -81,6 +110,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 
   await writeStdout(results.map(resultLine).join(''));
+  if (results.every((result) => result.skipped !== undefined)) {
+    process.stderr.write('opt2-tasks: OPT2_SERVICE_URLS names no creator of the selected queues\n');
+    return 2;
+  }
   return results.every((result) => result.skipped !== undefined || result.ok) ? 0 : 1;
 }
 
@@ -125,7 +158,7 @@ function isCaller(value: string): value is Caller {
   return (CALLERS as readonly string[]).includes(value);
 }
 
-/** Parses the CLI's variables; throws `EnvValidationError` listing every invalid or missing one. */
+/** Parses the CLI's variables, then the cloud mode's project rule; throws `EnvValidationError` listing every invalid or missing one. */
 function loadCliEnv(source: NodeJS.ProcessEnv): CliEnv {
   const result = cliEnvSchema.safeParse(source, {
     error: (issue) => (issue.input === undefined ? 'is required' : undefined),
@@ -134,7 +167,17 @@ function loadCliEnv(source: NodeJS.ProcessEnv): CliEnv {
     const issues = result.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`);
     throw new EnvValidationError(issues, 'opt2-tasks');
   }
+  // The platform mode rule; the cloud logger's trace key needs the project.
+  if (result.data.OPT2_ENV === 'cloud' && result.data.GOOGLE_CLOUD_PROJECT === undefined) {
+    throw new EnvValidationError(['GOOGLE_CLOUD_PROJECT: is required when OPT2_ENV=cloud'], 'opt2-tasks');
+  }
   return result.data;
+}
+
+/** Version of @opt2/platform, read from its package.json beside `src` and `dist`. */
+async function platformVersion(): Promise<string> {
+  const manifest = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string };
+  return manifest.version;
 }
 
 /** Google-signed ID tokens in the cloud; locally, service tokens for `caller` signed with the state directory's key pair. */
@@ -170,13 +213,17 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Writes to stdout and resolves once the chunk is flushed. */
+/** Writes to stdout and resolves once the chunk is flushed; a failed write rejects instead of raising an uncaught `error` event. */
 function writeStdout(text: string): Promise<void> {
   return new Promise((done, fail) => {
+    // The stream emits a failed write's error after its callback, so the listener stays until then.
+    const onError = (err: Error): void => fail(err);
+    process.stdout.once('error', onError);
     process.stdout.write(text, (err) => {
       if (err) {
         fail(err);
       } else {
+        process.stdout.off('error', onError);
         done();
       }
     });
@@ -189,8 +236,10 @@ if (entry !== undefined && import.meta.url === pathToFileURL(await realpath(entr
   main().then(
     (code) => process.exit(code),
     (err: unknown) => {
-      console.error(err);
-      process.exit(1);
+      // Only failures before main's logger exists reach here.
+      emitDiagnostic('OPT2_TASKS', `opt2-tasks failed: ${safeErrorMessage(err)}`, err);
+      // A native warning prints on the next tick, so exiting now would drop it.
+      setImmediate(() => process.exit(1));
     },
   );
 }

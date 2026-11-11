@@ -108,11 +108,13 @@ component output="false" hint="SYNTHETIC surveys fixture: surveys, launch and re
 		return local.survey;
 	}
 
-	private struct function scheduleSurvey(required struct route, required date now) hint="Replaces the survey's schedule and reminders, marks it SCHEDULED and recreates its ACF launch and reminder tasks." {
+	private struct function scheduleSurvey(required struct route, required date now) hint="Replaces the survey's schedule and reminders, marks it SCHEDULED and recreates its ACF launch and reminder tasks; on failure the rows roll back and the previous tasks are restored." {
 		variables.auth.requireAny(variables.managerRole);
 		local.survey = findSurvey(arguments.route.id, arguments.route.siteid);
 		local.launchText = paramValue(arguments.route.params, "launchAt");
-		if (!isSimpleValue(local.launchText) || !reFind("^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$", local.launchText)) {
+		// SQL Server datetime starts at 1753-01-01.
+		if (!isSimpleValue(local.launchText) || !reFind("^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$", local.launchText)
+			|| val(left(local.launchText, 4)) < 1753) {
 			variables.envelope.raise("invalidParameters");
 		}
 		// ACF masks use mm for months and nn for minutes; the round trip rejects values the lenient parser rolls over.
@@ -122,106 +124,124 @@ component output="false" hint="SYNTHETIC surveys fixture: surveys, launch and re
 			|| !allHaveValue(local.reminders, "offsetMinutes")) {
 			variables.envelope.raise("invalidParameters");
 		}
-		for (local.reminder in local.reminders) {
-			if (!isValid("integer", local.reminder.offsetMinutes) || local.reminder.offsetMinutes < 0) {
-				variables.envelope.raise("invalidParameters");
-			}
-		}
-		// A launched or closed survey keeps its state: rescheduling it would never launch again.
-		if (!listFind(variables.scheduleStates, local.survey.status)) {
-			variables.envelope.raise("conflict");
-		}
-
-		local.origin = structKeyExists(server.system.environment, "OPT2_GATEWAY_ORIGIN")
-			? reReplace(server.system.environment.OPT2_GATEWAY_ORIGIN, "/+$", "")
-			: "";
-		if (!len(local.origin)) {
-			variables.envelope.raise("server_error");
-		}
-		local.originUri = createObject("java", "java.net.URI").init(local.origin);
-		local.port = local.originUri.getPort() > 0 ? local.originUri.getPort() : (local.originUri.getScheme() == "https" ? 443 : 80);
-
 		local.surveyId = local.survey.survey_id;
-		local.token = lCase(binaryEncode(binaryDecode(generateSecretKey("AES", 256), "base64"), "hex"));
-		local.tokenHash = sqlParam(variables.envelope.sha256Hex(local.token), "cf_sql_char");
 		local.taskBase = variables.taskPrefix & local.surveyId & "-";
 		local.tasks = [{"name" = local.taskBase & "launch", "action" = "launch", "runAt" = local.launchAt, "reminder" = 0}];
+		local.reminderRows = [];
+		// SQL Server datetime ends at 9999-12-31 23:59:59.997.
+		local.latest = createDateTime(9999, 12, 31, 23, 59, 59);
+		for (local.n = 1; local.n <= arrayLen(local.reminders); local.n++) {
+			local.offset = local.reminders[local.n].offsetMinutes;
+			if (!isValid("integer", local.offset) || local.offset < 0) {
+				variables.envelope.raise("invalidParameters");
+			}
+			local.task = {"name" = local.taskBase & "reminder-" & local.n, "action" = "remind", "runAt" = dateAdd("n", int(local.offset), local.launchAt), "reminder" = local.n};
+			if (dateCompare(local.task.runAt, local.latest) > 0) {
+				variables.envelope.raise("invalidParameters");
+			}
+			arrayAppend(local.tasks, local.task);
+			arrayAppend(local.reminderRows, {
+				"reminder_id" = createUUID(),
+				"offset_minutes" = int(local.offset),
+				"remind_at" = dateTimeFormat(local.task.runAt, "yyyy-mm-dd'T'HH:nn:ss"),
+				"task_name" = local.task.name
+			});
+		}
+
+		local.gateway = gatewayOrigin(structKeyExists(server.system.environment, "OPT2_GATEWAY_ORIGIN") ? server.system.environment.OPT2_GATEWAY_ORIGIN : "");
+
+		local.token = lCase(binaryEncode(binaryDecode(generateSecretKey("AES", 256), "base64"), "hex"));
+		local.tokenHash = sqlParam(variables.envelope.sha256Hex(local.token), "cf_sql_char");
 
 		// Serialises reschedules of one survey so its ACF tasks always carry the token whose hash committed last.
 		lock name="#local.taskBase#" type="exclusive" timeout="30" {
-			transaction {
-				local.existing = queryExecute(
-					"SELECT schedule_version FROM synthetic.survey_schedule WHERE survey_id = :id",
-					{id = sqlParam(local.surveyId)}
-				);
-				local.scheduleParams = {
-					id = sqlParam(local.surveyId),
-					launchAt = sqlParam(local.launchAt, "cf_sql_timestamp"),
-					taskName = sqlParam(local.tasks[1].name, "cf_sql_nvarchar"),
-					tokenHash = local.tokenHash
-				};
-				if (local.existing.recordCount) {
-					queryExecute(
-						"UPDATE synthetic.survey_schedule
-						SET launch_at = :launchAt, schedule_version = schedule_version + 1, task_name = :taskName, task_token_hash = :tokenHash
-						WHERE survey_id = :id",
-						local.scheduleParams
+			local.previous = scheduledTasks(local.taskBase);
+			local.tasksChanged = false;
+			try {
+				transaction {
+					// The survey row lock comes first here and in the task callbacks, so they serialise with this reschedule.
+					local.state = queryExecute(
+						"SELECT status FROM synthetic.survey WITH (UPDLOCK, HOLDLOCK) WHERE survey_id = :id",
+						{id = sqlParam(local.surveyId)}
 					);
-				} else {
-					local.scheduleParams.scheduleId = sqlParam(createUUID());
-					local.scheduleParams.now = sqlParam(arguments.now, "cf_sql_timestamp");
-					queryExecute(
-						"INSERT INTO synthetic.survey_schedule (schedule_id, survey_id, launch_at, schedule_version, task_name, task_token_hash, created)
-						VALUES (:scheduleId, :id, :launchAt, 1, :taskName, :tokenHash, :now)",
-						local.scheduleParams
-					);
-				}
+					// A launched or closed survey keeps its state: rescheduling it would never launch again.
+					if (!local.state.recordCount || !listFind(variables.scheduleStates, local.state.status[1])) {
+						variables.envelope.raise("conflict");
+					}
 
-				queryExecute("DELETE FROM synthetic.survey_reminder WHERE survey_id = :id", {id = sqlParam(local.surveyId)});
-				for (local.n = 1; local.n <= arrayLen(local.reminders); local.n++) {
-					local.offset = int(local.reminders[local.n].offsetMinutes);
-					local.task = {
-						"name" = local.taskBase & "reminder-" & local.n,
-						"action" = "remind",
-						"runAt" = dateAdd("n", local.offset, local.launchAt),
-						"reminder" = local.n
+					local.tasksChanged = true;
+					for (local.stale in local.previous) {
+						cfschedule(action = "delete", task = local.stale.name);
+					}
+					for (local.task in local.tasks) {
+						saveTask({
+							"name" = local.task.name,
+							"url" = local.gateway.origin & variables.callbackPath & encodeForURL(local.surveyId) & "/" & local.task.action
+								& "?siteid=" & encodeForURL(arguments.route.siteid)
+								& (local.task.reminder ? "&reminder=" & local.task.reminder : "")
+								& "&opt2TaskToken=" & local.token,
+							"port" = local.gateway.port,
+							"startDate" = dateFormat(local.task.runAt, "mm/dd/yyyy"),
+							"startTime" = timeFormat(local.task.runAt, "HH:mm:ss"),
+							"interval" = "once",
+							"requestTimeOut" = "600"
+						});
+					}
+
+					local.existing = queryExecute(
+						"SELECT schedule_version FROM synthetic.survey_schedule WHERE survey_id = :id",
+						{id = sqlParam(local.surveyId)}
+					);
+					local.scheduleParams = {
+						id = sqlParam(local.surveyId),
+						launchAt = sqlParam(local.launchAt, "cf_sql_timestamp"),
+						taskName = sqlParam(local.tasks[1].name, "cf_sql_nvarchar"),
+						tokenHash = local.tokenHash
 					};
-					arrayAppend(local.tasks, local.task);
-					queryExecute(
-						"INSERT INTO synthetic.survey_reminder (reminder_id, survey_id, offset_minutes, remind_at, task_name, task_token_hash, sent_at)
-						VALUES (:reminderId, :id, :offset, :remindAt, :taskName, :tokenHash, NULL)",
-						{
-							reminderId = sqlParam(createUUID()),
-							id = sqlParam(local.surveyId),
-							offset = sqlParam(local.offset, "cf_sql_integer"),
-							remindAt = sqlParam(local.task.runAt, "cf_sql_timestamp"),
-							taskName = sqlParam(local.task.name, "cf_sql_nvarchar"),
-							tokenHash = local.tokenHash
-						}
-					);
+					if (local.existing.recordCount) {
+						queryExecute(
+							"UPDATE synthetic.survey_schedule
+							SET launch_at = :launchAt, schedule_version = schedule_version + 1, task_name = :taskName, task_token_hash = :tokenHash
+							WHERE survey_id = :id",
+							local.scheduleParams
+						);
+					} else {
+						local.scheduleParams.scheduleId = sqlParam(createUUID());
+						local.scheduleParams.now = sqlParam(arguments.now, "cf_sql_timestamp");
+						queryExecute(
+							"INSERT INTO synthetic.survey_schedule (schedule_id, survey_id, launch_at, schedule_version, task_name, task_token_hash, created)
+							VALUES (:scheduleId, :id, :launchAt, 1, :taskName, :tokenHash, :now)",
+							local.scheduleParams
+						);
+					}
+
+					queryExecute("DELETE FROM synthetic.survey_reminder WHERE survey_id = :id", {id = sqlParam(local.surveyId)});
+					if (arrayLen(local.reminderRows)) {
+						queryExecute(
+							"INSERT INTO synthetic.survey_reminder (reminder_id, survey_id, offset_minutes, remind_at, task_name, task_token_hash, sent_at)
+							SELECT j.reminder_id, :id, j.offset_minutes, CONVERT(datetime, j.remind_at, 126), j.task_name, :tokenHash, NULL
+							FROM OPENJSON(:rows) WITH (
+								reminder_id char(35) '$.reminder_id',
+								offset_minutes int '$.offset_minutes',
+								remind_at nvarchar(19) '$.remind_at',
+								task_name nvarchar(100) '$.task_name'
+							) AS j",
+							{
+								id = sqlParam(local.surveyId),
+								tokenHash = local.tokenHash,
+								rows = sqlParam(serializeJSON(local.reminderRows), "cf_sql_longnvarchar")
+							}
+						);
+					}
+
+					queryExecute("UPDATE synthetic.survey SET status = 'SCHEDULED' WHERE survey_id = :id", {id = sqlParam(local.surveyId)});
 				}
-
-				queryExecute("UPDATE synthetic.survey SET status = 'SCHEDULED' WHERE survey_id = :id", {id = sqlParam(local.surveyId)});
-			}
-
-			for (local.stale in scheduledTasks(local.taskBase)) {
-				cfschedule(action = "delete", task = local.stale.name);
-			}
-			for (local.task in local.tasks) {
-				cfschedule(
-					action = "update",
-					task = local.task.name,
-					operation = "HTTPRequest",
-					url = local.origin & variables.callbackPath & encodeForURL(local.surveyId) & "/" & local.task.action
-						& "?siteid=" & encodeForURL(arguments.route.siteid)
-						& (local.task.reminder ? "&reminder=" & local.task.reminder : "")
-						& "&opt2TaskToken=" & local.token,
-					port = local.port,
-					startDate = dateFormat(local.task.runAt, "mm/dd/yyyy"),
-					startTime = timeFormat(local.task.runAt, "HH:mm:ss"),
-					interval = "once",
-					requestTimeOut = "600"
-				);
+			} catch (any e) {
+				// The rollback kept the previous token hash, which the previous task URLs carry.
+				if (local.tasksChanged) {
+					restoreTasks(local.taskBase, local.previous);
+				}
+				rethrow;
 			}
 		}
 
@@ -332,52 +352,63 @@ component output="false" hint="SYNTHETIC surveys fixture: surveys, launch and re
 	}
 
 	private struct function launchCallback(required struct route, required date now) hint="Task callback: marks the survey LAUNCHED the first time and returns its row." {
-		local.surveyId = verifiedTaskSurvey(arguments.route);
-		queryExecute(
-			"UPDATE synthetic.survey SET status = 'LAUNCHED', launched_at = :now WHERE survey_id = :id AND launched_at IS NULL",
-			{id = sqlParam(local.surveyId), now = sqlParam(arguments.now, "cf_sql_timestamp")}
-		);
+		transaction {
+			local.surveyId = verifiedTaskSurvey(arguments.route);
+			queryExecute(
+				"UPDATE synthetic.survey SET status = 'LAUNCHED', launched_at = :now WHERE survey_id = :id AND launched_at IS NULL",
+				{id = sqlParam(local.surveyId), now = sqlParam(arguments.now, "cf_sql_timestamp")}
+			);
+		}
 		return {"data" = findSurvey(local.surveyId, arguments.route.siteid)};
 	}
 
 	private struct function remindCallback(required struct route, required date now) hint="Task callback: stamps the reminder's sent_at the first time and returns its row." {
-		local.surveyId = verifiedTaskSurvey(arguments.route);
-		local.n = paramValue(arguments.route.params, "reminder");
-		if (!isSimpleValue(local.n) || !isValid("integer", local.n) || local.n < 1) {
-			variables.envelope.raise("invalidParameters");
-		}
-		local.found = queryExecute(
-			"SELECT reminder_id FROM synthetic.survey_reminder WHERE survey_id = :id AND task_name = :taskName",
-			{
-				id = sqlParam(local.surveyId),
-				taskName = sqlParam(variables.taskPrefix & local.surveyId & "-reminder-" & int(local.n), "cf_sql_nvarchar")
+		transaction {
+			local.surveyId = verifiedTaskSurvey(arguments.route);
+			local.n = paramValue(arguments.route.params, "reminder");
+			if (!isSimpleValue(local.n) || !isValid("integer", local.n) || local.n < 1) {
+				variables.envelope.raise("invalidParameters");
 			}
-		);
-		if (!local.found.recordCount) {
-			variables.envelope.raise("notFound");
+			local.found = queryExecute(
+				"SELECT reminder_id FROM synthetic.survey_reminder WHERE survey_id = :id AND task_name = :taskName",
+				{
+					id = sqlParam(local.surveyId),
+					taskName = sqlParam(variables.taskPrefix & local.surveyId & "-reminder-" & int(local.n), "cf_sql_nvarchar")
+				}
+			);
+			if (!local.found.recordCount) {
+				variables.envelope.raise("notFound");
+			}
+			local.reminderParams = {id = sqlParam(local.found.reminder_id[1]), now = sqlParam(arguments.now, "cf_sql_timestamp")};
+			queryExecute(
+				"UPDATE synthetic.survey_reminder SET sent_at = :now WHERE reminder_id = :id AND sent_at IS NULL",
+				local.reminderParams
+			);
 		}
-		local.reminderParams = {id = sqlParam(local.found.reminder_id[1]), now = sqlParam(arguments.now, "cf_sql_timestamp")};
-		queryExecute(
-			"UPDATE synthetic.survey_reminder SET sent_at = :now WHERE reminder_id = :id AND sent_at IS NULL",
-			local.reminderParams
-		);
 		return {"data" = variables.envelope.rows(queryExecute(
 			"SELECT reminder_id, survey_id, offset_minutes, remind_at, task_name, sent_at FROM synthetic.survey_reminder WHERE reminder_id = :id",
 			{id = local.reminderParams.id}
 		))[1]};
 	}
 
-	private string function verifiedTaskSurvey(required struct route) hint="Returns the scheduled survey's id when url.opt2TaskToken matches its stored task token hash in the request site; raises forbidden otherwise, a missing survey included." {
-		local.qry = queryExecute(
-			"SELECT s.survey_id, s.task_token_hash
-			FROM synthetic.survey_schedule s INNER JOIN synthetic.survey v ON v.survey_id = s.survey_id
-			WHERE s.survey_id = :id AND v.siteID = :siteid",
+	private string function verifiedTaskSurvey(required struct route) hint="Inside the caller's transaction, locks the survey row and returns its id when url.opt2TaskToken matches its stored task token hash in the request site; raises forbidden otherwise, a missing survey included." {
+		// Survey row before schedule, the order scheduleSurvey locks them, so the hash read is the last committed one.
+		local.survey = queryExecute(
+			"SELECT survey_id FROM synthetic.survey WITH (UPDLOCK, HOLDLOCK) WHERE survey_id = :id AND siteID = :siteid",
 			{id = sqlParam(arguments.route.id), siteid = sqlParam(arguments.route.siteid)}
 		);
-		if (!variables.auth.checkTaskToken(url.opt2TaskToken ?: "", local.qry.recordCount ? local.qry.task_token_hash[1] : "")) {
+		local.storedHash = "";
+		if (local.survey.recordCount) {
+			local.schedule = queryExecute(
+				"SELECT task_token_hash FROM synthetic.survey_schedule WHERE survey_id = :id",
+				{id = sqlParam(local.survey.survey_id[1])}
+			);
+			local.storedHash = local.schedule.recordCount ? local.schedule.task_token_hash[1] : "";
+		}
+		if (!variables.auth.checkTaskToken(url.opt2TaskToken ?: "", local.storedHash)) {
 			variables.envelope.raise("forbidden");
 		}
-		return local.qry.survey_id[1];
+		return local.survey.survey_id[1];
 	}
 
 	private struct function findSurvey(required string surveyId, required string siteid) hint="Returns the survey row in the site, or raises notFound." {
@@ -391,7 +422,30 @@ component output="false" hint="SYNTHETIC surveys fixture: surveys, launch and re
 		return local.rows[1];
 	}
 
-	private array function scheduledTasks(required string prefix) hint="Returns {name, url} of every ACF task whose name starts with prefix (case-sensitive), from a query or array-of-structs listing." {
+	private struct function gatewayOrigin(required string value) hint="Returns {origin, port} of an OPT2_GATEWAY_ORIGIN value without trailing slashes, the port defaulting by scheme; raises server_error unless it is an absolute http(s) origin with a host." {
+		local.origin = reReplace(arguments.value, "/+$", "");
+		if (!len(local.origin)) {
+			variables.envelope.raise("server_error", "OPT2_GATEWAY_ORIGIN is not set");
+		}
+		try {
+			local.uri = createObject("java", "java.net.URI").init(local.origin);
+			local.scheme = lCase(local.uri.getScheme() ?: "");
+			local.port = local.uri.getPort();
+			// An authority of exactly host[:port] excludes userinfo and an empty or non-canonical port.
+			local.valid = listFind("http,https", local.scheme) && len(local.uri.getHost() ?: "")
+				&& (local.port == -1 || (local.port >= 1 && local.port <= 65535))
+				&& !compare(local.uri.getRawAuthority(), local.uri.getHost() & (local.port == -1 ? "" : ":" & local.port))
+				&& !len(local.uri.getRawPath() ?: "") && isNull(local.uri.getRawQuery()) && isNull(local.uri.getRawFragment());
+		} catch (any e) {
+			local.valid = false;
+		}
+		if (!local.valid) {
+			variables.envelope.raise("server_error", "OPT2_GATEWAY_ORIGIN is not an absolute http or https origin");
+		}
+		return {"origin" = local.origin, "port" = local.port == -1 ? (local.scheme == "https" ? 443 : 80) : local.port};
+	}
+
+	private array function scheduledTasks(required string prefix) hint="Returns {name, url, port, startDate, startTime, interval, requestTimeOut, paused} of every ACF task whose name starts with prefix (case-sensitive), from a query or array-of-structs listing, dates in the forms cfschedule accepts." {
 		cfschedule(action = "list", result = "local.listing");
 		local.result = [];
 		for (local.entry in local.listing) {
@@ -400,10 +454,57 @@ component output="false" hint="SYNTHETIC surveys fixture: surveys, launch and re
 				local.name = entryValue(local.entry, "taskname");
 			}
 			if (len(local.name) > len(arguments.prefix) && !compare(left(local.name, len(arguments.prefix)), arguments.prefix)) {
-				arrayAppend(local.result, {"name" = local.name, "url" = entryValue(local.entry, "url")});
+				local.startDate = entryValue(local.entry, "startDate");
+				local.startTime = entryValue(local.entry, "startTime");
+				arrayAppend(local.result, {
+					"name" = local.name,
+					"url" = entryValue(local.entry, "url"),
+					"port" = entryValue(local.entry, "port"),
+					"startDate" = isDate(local.startDate) ? dateFormat(local.startDate, "mm/dd/yyyy") : local.startDate,
+					"startTime" = isDate(local.startTime) ? timeFormat(local.startTime, "HH:mm:ss") : local.startTime,
+					"interval" = entryValue(local.entry, "interval"),
+					"requestTimeOut" = entryValue(local.entry, "requestTimeOut"),
+					"paused" = !compareNoCase(entryValue(local.entry, "status"), "Paused")
+				});
 			}
 		}
 		return local.result;
+	}
+
+	private void function saveTask(required struct task) hint="Creates or updates an HTTP task in ACF's default group from {name, url, port, startDate, startTime, interval, requestTimeOut}." {
+		cfschedule(
+			action = "update",
+			task = arguments.task.name,
+			operation = "HTTPRequest",
+			url = arguments.task.url,
+			port = arguments.task.port,
+			startDate = arguments.task.startDate,
+			startTime = arguments.task.startTime,
+			interval = arguments.task.interval,
+			requestTimeOut = arguments.task.requestTimeOut
+		);
+	}
+
+	private void function restoreTasks(required string prefix, required array previous) hint="Deletes the tasks under prefix that previous does not name, then recreates every previous task and re-pauses the paused ones; throws opt2.surveys.taskRestore when that fails." {
+		try {
+			local.kept = {};
+			for (local.task in arguments.previous) {
+				local.kept[local.task.name] = true;
+			}
+			for (local.task in scheduledTasks(arguments.prefix)) {
+				if (!structKeyExists(local.kept, local.task.name)) {
+					cfschedule(action = "delete", task = local.task.name);
+				}
+			}
+			for (local.task in arguments.previous) {
+				saveTask(local.task);
+				if (local.task.paused) {
+					cfschedule(action = "pause", task = local.task.name);
+				}
+			}
+		} catch (any e) {
+			throw(type = "opt2.surveys.taskRestore", message = "The survey's previous ACF tasks could not be restored", detail = e.type);
+		}
 	}
 
 	private string function entryValue(required struct entry, required string key) hint="Returns a task-listing field read case-insensitively, or an empty string when absent or null." {
@@ -447,4 +548,3 @@ component output="false" hint="SYNTHETIC surveys fixture: surveys, launch and re
 	}
 
 }
-

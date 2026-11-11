@@ -154,6 +154,67 @@ const SECTION_CASES: Case[] = [
 ];
 
 const ICON_ROW = '<div class="icon-row"><i data-lucide="server"></i><i data-lucide="cpu"></i><i data-lucide="cloud"></i></div>';
+const FIXTURE_TABLE = '<table class="fixture-table"><tr><th>Fixture</th><td>One</td></tr></table>';
+
+/** The valid fixture with slide 7's only visual replaced by `table` and `css` appended to the inline theme. */
+function tableSlide(table: string, css: string): string {
+  const html = editSlide(7, ICON_ROW, table);
+  return css === '' ? html : edit(html, '  </style>\n', `    ${css}\n  </style>\n`);
+}
+
+/** Slide 7 holding only a table, and whether that table must count as its styled-table visual. */
+const TABLE_VISUALS: { name: string; table?: string; css?: string; styled: boolean }[] = [
+  { name: 'a class no rule selects', styled: false },
+  { name: 'a class no rule selects and an unrelated table rule', css: '.appendix table { border: 1px solid #D9D9D9; }', styled: false },
+  { name: 'an empty style attribute', table: '<table style=""><tr><td>One</td></tr></table>', styled: false },
+  { name: 'a style attribute without a value', table: '<table style="border: ;"><tr><td>One</td></tr></table>', styled: false },
+  {
+    name: 'a comment-only style attribute',
+    table: '<table style="/* border: 1px solid #D9D9D9 */"><tr><td>One</td></tr></table>',
+    styled: false,
+  },
+  {
+    name: 'a style value that is only a comment',
+    table: '<table style="border: /* no value */"><tr><td>One</td></tr></table>',
+    styled: false,
+  },
+  {
+    name: 'a style value cut off by an unclosed comment',
+    table: '<table style="border: /* 1px solid #D9D9D9"><tr><td>One</td></tr></table>',
+    styled: false,
+  },
+  {
+    name: 'a style value that is only !important',
+    table: '<table style="border: !important"><tr><td>One</td></tr></table>',
+    styled: false,
+  },
+  { name: 'a style value without a property', table: '<table style="1px solid"><tr><td>One</td></tr></table>', styled: false },
+  { name: 'a style declaration without a property name', table: '<table style=": #D9D9D9"><tr><td>One</td></tr></table>', styled: false },
+  {
+    name: 'a style property that is not an identifier',
+    table: '<table style="1px solid: #D9D9D9"><tr><td>One</td></tr></table>',
+    styled: false,
+  },
+  { name: 'a matching rule without declarations', css: '.fixture-table { }', styled: false },
+  { name: 'a matching rule holding only a comment', css: '.fixture-table { /* border: 0 */ }', styled: false },
+  { name: 'a matching rule css-select cannot evaluate', css: '.fixture-table td:placeholder-shown { color: #333333; }', styled: false },
+  { name: 'the deck-table class', table: '<table class="deck-table"><tr><td>One</td></tr></table>', styled: true },
+  { name: 'an inline style declaration', table: '<table style="border-collapse: collapse"><tr><td>One</td></tr></table>', styled: true },
+  {
+    name: 'a commented inline style declaration',
+    table: '<table style="/* frame */ border: 1px solid #D9D9D9"><tr><td>One</td></tr></table>',
+    styled: true,
+  },
+  {
+    name: 'an important style declaration before an ineffective repeat',
+    table: '<table style="border: 1px solid #D9D9D9 !important; border: !important"><tr><td>One</td></tr></table>',
+    styled: true,
+  },
+  { name: 'an inline style declaration on a cell', table: '<table><tr><td style="color: #5B39F3">One</td></tr></table>', styled: true },
+  { name: 'a rule selecting its cells', css: '.fixture-table td { border: 1px solid #D9D9D9; }', styled: true },
+  { name: 'a rule selecting a pseudo-element of its cells', css: ".fixture-table td::before { content: '-'; }", styled: true },
+  { name: 'a rule selecting its parts by state alone', css: '.fixture-table :focus-within { outline: 1px solid #5B39F3; }', styled: true },
+];
 
 const STRUCTURE_CASES: Case[] = [
   {
@@ -161,6 +222,13 @@ const STRUCTURE_CASES: Case[] = [
     html: editSlide(7, ICON_ROW, '<p>Fixture paragraph</p>'),
     expected: [{ check: 'non-text-visual', slide: 7, detail: NO_VISUAL }],
   },
+  ...TABLE_VISUALS.map(
+    ({ name, table, css, styled }): Case => ({
+      name: styled ? `counts a table with ${name} as a styled-table visual` : `flags a slide whose only table has ${name}`,
+      html: tableSlide(table ?? FIXTURE_TABLE, css ?? ''),
+      expected: styled ? [] : [{ check: 'non-text-visual', slide: 7, detail: NO_VISUAL }],
+    }),
+  ),
   {
     name: 'flags a first slide without slide-title',
     html: editSlide(1, '<section class="slide-title">', '<section>'),
@@ -242,6 +310,21 @@ const FENCED = editSlide(5, '<table class="deck-table">', '<p>```\nfixture code\
 const FENCE_LINE = lineOf(FENCED, '```');
 const CODE_BLOCK = editSlide(5, '<table class="deck-table">', '<pre><code>fixture = 1</code></pre>\n        <table class="deck-table">');
 const CODE_LINE = lineOf(CODE_BLOCK, '<pre><code>');
+const US_FLAG = String.fromCodePoint(0x1f1fa, 0x1f1f8);
+const LONE_INDICATOR = String.fromCodePoint(0x1f1fa);
+const SKIN_TONE = String.fromCodePoint(0x1f3fd);
+
+/** The valid fixture with `markup` ahead of slide 7's icon row. */
+function withMarkup(markup: string): string {
+  return editSlide(7, '<div class="icon-row">', `${markup}\n        <div class="icon-row">`);
+}
+
+/** A case whose `html` yields one emoji finding, on `slide` when given, listing each label at the line of its needle. */
+function emojiCase(name: string, html: string, hits: [label: string, needle: string][], slide?: number): Case {
+  const labels = hits.map(([label, needle]) => `${label} (line ${lineOf(html, needle)})`).join(', ');
+  const detail = `emoji are not allowed; use Lucide icons: ${labels}`;
+  return { name, html, expected: [slide === undefined ? { check: 'emoji', detail } : { check: 'emoji', slide, detail }] };
+}
 
 const CHARACTER_CASES: Case[] = [
   {
@@ -249,6 +332,73 @@ const CHARACTER_CASES: Case[] = [
     html: EMOJI,
     expected: [{ check: 'emoji', slide: 5, detail: `emoji are not allowed; use Lucide icons: U+1F680 (line ${lineOf(EMOJI, ROCKET)})` }],
   },
+  emojiCase('flags a literal flag as one regional-indicator pair', withMarkup(`<p>Fixture ${US_FLAG} region</p>`), [['U+1F1FA U+1F1F8', US_FLAG]], 7),
+  emojiCase(
+    'flags literal keycaps with and without FE0F as one sequence each',
+    withMarkup('<p>Fixture 1\u20E3 and\n          #\uFE0F\u20E3 steps</p>'),
+    [
+      ['U+0031 U+20E3', '1\u20E3'],
+      ['U+0023 U+FE0F U+20E3', '#\uFE0F\u20E3'],
+    ],
+    7,
+  ),
+  emojiCase(
+    'flags a lone regional indicator and a skin-tone modifier',
+    withMarkup(`<p>Fixture ${LONE_INDICATOR} and ${SKIN_TONE} marks</p>`),
+    [
+      ['U+1F1FA', LONE_INDICATOR],
+      ['U+1F3FD', SKIN_TONE],
+    ],
+    7,
+  ),
+  {
+    name: 'accepts digits, # and * outside keycaps, references to non-emoji characters and references in raw text',
+    html: withMarkup('<style>/* &#x1F680; */</style><p title="1 &amp; 2">Fixture 1, 2 and 3; #4 *5 &amp; &lt;b&gt; &nbsp; &rarr; done</p>'),
+    expected: [],
+  },
+  emojiCase('flags a hexadecimal reference to an emoji at its line', withMarkup('<p>Fixture\n          &#x1F680; launch</p>'), [['U+1F680', '&#x1F680;']], 7),
+  emojiCase('flags a decimal reference to an emoji', withMarkup('<p>Fixture &#128640; launch</p>'), [['U+1F680', '&#128640;']], 7),
+  emojiCase(
+    'flags named references to pictographs',
+    withMarkup('<p>Fixture &copy; &reg; &trade; notice</p>'),
+    [
+      ['U+00A9', '&copy;'],
+      ['U+00AE', '&reg;'],
+      ['U+2122', '&trade;'],
+    ],
+    7,
+  ),
+  emojiCase('flags a reference to an emoji in an attribute at its line', withMarkup('<p\n          title="Fixture &#x2B50;">Fixture star</p>'), [['U+2B50', '&#x2B50;']], 7),
+  emojiCase('flags an encoded flag as one regional-indicator pair', withMarkup('<p>Fixture &#x1F1FA;&#x1F1F8; region</p>'), [['U+1F1FA U+1F1F8', '&#x1F1FA;']], 7),
+  emojiCase('flags a keycap completed by a reference', withMarkup('<p>Fixture #&#x20E3; step</p>'), [['U+0023 U+20E3', '&#x20E3;']], 7),
+  emojiCase('locates a reference in a case-adjusted SVG attribute at its line', withMarkup('<svg\n          viewBox="&#x1F680;"></svg>'), [['U+1F680', '&#x1F680;']], 7),
+  emojiCase(
+    'reports a literal and an encoded emoji of one text node once each',
+    withMarkup(`<p>Fixture ${ROCKET} and &#x1F680; launch</p>`),
+    [
+      ['U+1F680', ROCKET],
+      ['U+1F680', '&#x1F680;'],
+    ],
+    7,
+  ),
+  emojiCase('locates a reference after a CRLF line break', withMarkup('<p>Fixture\r\n          &#x1F680; launch</p>'), [['U+1F680', '&#x1F680;']], 7),
+  emojiCase(
+    'locates a reference in a Mermaid diagram at its line',
+    editSlide(3, 'A[Fixture client]', 'A[Fixture &#x1F680; client]'),
+    [['U+1F680', '&#x1F680;']],
+    3,
+  ),
+  emojiCase(
+    'places an emoji at its attribute value when the decoding does not map onto the source',
+    withMarkup(`<p title="&copy2024 &#x1F680; ${ROCKET}">Fixture mark</p>`),
+    [
+      ['U+1F680', '&copy2024'],
+      ['U+1F680', ROCKET],
+    ],
+    7,
+  ),
+  emojiCase('flags a reference in the <title> without a slide', edit(VALID, '<title>', '<title>&#x1F680; '), [['U+1F680', '<title>']]),
+  emojiCase('places a reference in an attribute merged into <body> at the <body> tag', withMarkup('<body title="&#x1F680;">'), [['U+1F680', '<body>']]),
   {
     name: 'flags a fenced code block inside a slide',
     html: FENCED,
@@ -308,6 +458,10 @@ function cdnCase(library: CdnLibrary, version: string): Case {
 const MERMAID_UNPINNED = cdnCase('mermaid', '11.3.0');
 const MERMAID_SCRIPT = '  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.min.js"></script>\n';
 const UNVERSIONED_LUCIDE = 'https://unpkg.com/lucide/dist/umd/lucide.min.js';
+const REVEAL_SCRIPT_URL = 'https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js';
+const LUCIDE_SCRIPT_URL = 'https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js';
+const MALFORMED_LUCIDE = 'https://unpkg.com/lucide@0.460.0%zz/dist/umd/lucide.min.js';
+const UNPARSEABLE_LUCIDE = 'https://unpkg.com:bad/lucide@0.460.0/dist/umd/lucide.min.js';
 
 const CDN_CASES: Case[] = [
   cdnCase('reveal', '5.0.0'),
@@ -325,6 +479,43 @@ const CDN_CASES: Case[] = [
       { check: 'cdn', detail: `Lucide URL ${UNVERSIONED_LUCIDE} carries no version; pin 0.460.0` },
       { check: 'cdn', detail: 'no <script src> loads Lucide 0.460.0' },
     ],
+  },
+  cdnCase('reveal', '5.1.0-beta'),
+  cdnCase('mermaid', '11.4.0-rc.1'),
+  cdnCase('lucide', '0.460.0-beta'),
+  cdnCase('reveal', '^5.1.0'),
+  ...(
+    [
+      ['lucide', LUCIDE_SCRIPT_URL, `${UNVERSIONED_LUCIDE}?expected=lucide@0.460.0`],
+      ['lucide', LUCIDE_SCRIPT_URL, `${UNVERSIONED_LUCIDE}#lucide@0.460.0`],
+      ['lucide', LUCIDE_SCRIPT_URL, 'https://unpkg.com/lucide-static@0.460.0/dist/umd/lucide.min.js'],
+      ['reveal', REVEAL_SCRIPT_URL, 'https://cdn.example/x/reveal.min.js?expected=reveal.js@5.1.0'],
+    ] as const
+  ).map(([library, from, url]): Case => ({
+    name: `reads no ${CDN_LABELS[library]} version from the pathname of ${url}`,
+    html: edit(VALID, from, url),
+    expected: [
+      { check: 'cdn', detail: `${CDN_LABELS[library]} URL ${url} carries no version; pin ${CDN_PINS[library]}` },
+      { check: 'cdn', detail: `no <script src> loads ${CDN_LABELS[library]} ${CDN_PINS[library]}` },
+    ],
+  })),
+  ...['5.1.0', '5.1.0-beta'].map((version): Case => {
+    const url = `https://cdnjs.cloudflare.com/ajax/libs/reveal.js/${version}/reveal.min.js`;
+    return {
+      name: `reads reveal.js ${version} from the segment after reveal.js in ${url}`,
+      html: edit(VALID, REVEAL_SCRIPT_URL, url),
+      expected: version === CDN_PINS.reveal ? [] : [{ check: 'cdn', detail: `reveal.js ${version} in ${url}; the pinned version is 5.1.0` }],
+    };
+  }),
+  {
+    name: 'reads a Lucide version with malformed percent-encoding as written',
+    html: edit(VALID, LUCIDE_SCRIPT_URL, MALFORMED_LUCIDE),
+    expected: [{ check: 'cdn', detail: `Lucide 0.460.0%zz in ${MALFORMED_LUCIDE}; the pinned version is 0.460.0` }],
+  },
+  {
+    name: 'does not count an unparseable Lucide script URL as loading Lucide',
+    html: edit(VALID, LUCIDE_SCRIPT_URL, UNPARSEABLE_LUCIDE),
+    expected: [{ check: 'cdn', detail: 'no <script src> loads Lucide 0.460.0' }],
   },
 ];
 
@@ -483,10 +674,28 @@ interface PageScript {
   gotoError?: Error;
   revealReady?: boolean;
   collectError?: Error;
+  /** Calls that never settle: `newPage`, `goto`, the slide-visit and state-collection `evaluate`s, `close` or `kill`. */
+  stalls?: readonly Stall[];
+  /** Milliseconds before launch() settles. */
+  launchDelayMs?: number;
+  /** Rejects launch() with this error once `launchDelayMs` has passed. */
+  launchError?: Error;
+  /** Milliseconds before close() settles. */
+  closeDelayMs?: number;
+  /** Rejects close() with this error. */
+  closeError?: Error;
+  /** Rejects kill() with this error. */
+  killError?: Error;
 }
+
+type Stall = 'newPage' | 'goto' | 'visit' | 'collect' | 'close' | 'kill';
+
+const never = (): Promise<never> => new Promise<never>(() => undefined);
 
 interface FakeChromium {
   launch: () => Promise<Browser>;
+  /** Terminates the fake browser, recorded as a `kill` call. */
+  kill: () => Promise<void>;
   calls: string[];
   gotos: string[];
 }
@@ -501,6 +710,7 @@ function fakeChromium(script: PageScript = {}): FakeChromium {
   };
   const state = script.state ?? RENDERED;
   const settled = state.diagrams.every((diagram) => diagram.svg) && state.placeholders.length === 0;
+  const stalls = new Set(script.stalls);
   let waits = 0;
   const page = {
     on(event: 'pageerror' | 'requestfailed', listener: (payload: never) => void): void {
@@ -510,6 +720,7 @@ function fakeChromium(script: PageScript = {}): FakeChromium {
     async goto(url: string): Promise<null> {
       calls.push('goto');
       gotos.push(url);
+      if (stalls.has('goto')) return never();
       for (const message of script.pageErrors ?? []) emit('pageerror', new Error(message));
       for (const { url: failed, errorText } of script.failedRequests ?? []) {
         emit('requestfailed', { url: () => failed, failure: () => ({ errorText }) });
@@ -526,6 +737,7 @@ function fakeChromium(script: PageScript = {}): FakeChromium {
     },
     async evaluate(_probe: unknown, arg: unknown): Promise<unknown> {
       calls.push('evaluate');
+      if (stalls.has(typeof arg === 'string' ? 'collect' : 'visit')) return never();
       if (typeof arg !== 'string') return state.slides;
       if (script.collectError !== undefined) throw script.collectError;
       return state;
@@ -534,18 +746,38 @@ function fakeChromium(script: PageScript = {}): FakeChromium {
   const browser = {
     async newPage(): Promise<typeof page> {
       calls.push('newPage');
+      if (stalls.has('newPage')) return never();
       return page;
     },
     async close(): Promise<void> {
       calls.push('close');
+      if (stalls.has('close')) await never();
+      if (script.closeError !== undefined) throw script.closeError;
+      const delayMs = script.closeDelayMs;
+      if (delayMs !== undefined) await new Promise((resolve) => setTimeout(resolve, delayMs));
     },
   };
-  // renderDeck touches only these members, so the fake stands in for the whole Playwright Browser.
-  return { launch: async () => browser as unknown as Browser, calls, gotos };
+  const launch = async (): Promise<Browser> => {
+    const delayMs = script.launchDelayMs;
+    if (delayMs !== undefined) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    if (script.launchError !== undefined) throw script.launchError;
+    // renderDeck touches only these members, so the fake stands in for the whole Playwright Browser.
+    return browser as unknown as Browser;
+  };
+  const kill = async (): Promise<void> => {
+    calls.push('kill');
+    if (stalls.has('kill')) await never();
+    if (script.killError !== undefined) throw script.killError;
+  };
+  return { launch, kill, calls, gotos };
 }
 
 function closes(chromium: FakeChromium): number {
   return chromium.calls.filter((call) => call === 'close').length;
+}
+
+function kills(chromium: FakeChromium): number {
+  return chromium.calls.filter((call) => call === 'kill').length;
 }
 
 describe('check-deck: Executive Presentation rule', () => {
@@ -612,9 +844,9 @@ describe('check-deck: Executive Presentation rule', () => {
   });
 
   describe('renderDeck', () => {
-    it('reports nothing when every diagram and icon renders, and closes the browser', async () => {
+    it('reports nothing when every diagram and icon renders, and closes the browser without killing it', async () => {
       const chromium = fakeChromium();
-      await expect(renderDeck(VALID_PATH, { launch: chromium.launch, timeoutMs: 50 })).resolves.toEqual([]);
+      await expect(renderDeck(VALID_PATH, { launch: chromium.launch, kill: chromium.kill, timeoutMs: 50 })).resolves.toEqual([]);
       expect(chromium.gotos).toEqual([pathToFileURL(VALID_PATH).href]);
       expect(chromium.calls).toEqual([
         'newPage',
@@ -683,12 +915,24 @@ describe('check-deck: Executive Presentation rule', () => {
       expect(closes(chromium)).toBe(1);
     });
 
-    it('closes the browser when an in-page probe throws', async () => {
-      const chromium = fakeChromium({ collectError: new Error('Execution context was destroyed') });
-      await expect(renderDeck(VALID_PATH, { launch: chromium.launch, timeoutMs: 50 })).rejects.toThrow(
-        'Execution context was destroyed',
-      );
+    it.each<{ name: string; script: PageScript; message: string; killed: boolean }>([
+      {
+        name: 'an in-page probe throws, closing the browser',
+        script: { collectError: new Error('Execution context was destroyed') },
+        message: 'Execution context was destroyed',
+        killed: false,
+      },
+      {
+        name: 'closing the browser fails, killing it',
+        script: { closeError: new Error('Target page, context or browser has been closed') },
+        message: 'Target page, context or browser has been closed',
+        killed: true,
+      },
+    ])('rejects when $name', async ({ script, message, killed }) => {
+      const chromium = fakeChromium(script);
+      await expect(renderDeck(VALID_PATH, { launch: chromium.launch, kill: chromium.kill, timeoutMs: 50 })).rejects.toThrow(message);
       expect(closes(chromium)).toBe(1);
+      expect(kills(chromium)).toBe(killed ? 1 : 0);
     });
 
     it('reports a browser that does not launch', async () => {
@@ -699,35 +943,177 @@ describe('check-deck: Executive Presentation rule', () => {
         { check: 'render-unavailable', detail: 'Chromium did not launch (npx playwright install chromium): Executable does not exist' },
       ]);
     });
+
+    describe('render budget', () => {
+      const BUDGET_MS = 150;
+      // The budget covers launch through close; the margin absorbs deck parsing and timer latency.
+      const BOUND_MS = BUDGET_MS + 100;
+      const stalledIn = (step: string): DeckFinding => ({
+        check: 'render-unavailable',
+        detail: `render did not finish within the ${BUDGET_MS} ms budget: stalled in ${step}`,
+      });
+      const NOT_CLOSED = `browser did not close within the ${BUDGET_MS} ms render budget`;
+      const KILLED: DeckFinding = { check: 'render-unavailable', detail: `${NOT_CLOSED} and was killed` };
+
+      afterEach(() => {
+        vi.restoreAllMocks();
+      });
+
+      it.each<{ name: string; stalls: Stall[]; expected: DeckFinding[]; killed: boolean }>([
+        { name: 'newPage', stalls: ['newPage'], expected: [stalledIn('newPage')], killed: false },
+        { name: 'goto', stalls: ['goto'], expected: [stalledIn('goto')], killed: false },
+        { name: 'the slide-visit probe', stalls: ['visit'], expected: [stalledIn('slide visits')], killed: false },
+        { name: 'the state-collection probe', stalls: ['collect'], expected: [stalledIn('state collection')], killed: false },
+        { name: 'close after a full render', stalls: ['close'], expected: [KILLED], killed: true },
+        { name: 'close after a stalled probe', stalls: ['visit', 'close'], expected: [stalledIn('slide visits'), KILLED], killed: true },
+      ])('reports $name outlasting the budget, closes the browser once, kills it only when close is late and leaves no timer', async ({
+        stalls,
+        expected,
+        killed,
+      }) => {
+        const chromium = fakeChromium({ stalls });
+        const setTimer = vi.spyOn(globalThis, 'setTimeout');
+        const clearTimer = vi.spyOn(globalThis, 'clearTimeout');
+        const started = performance.now();
+        await expect(
+          renderDeck(VALID_PATH, { launch: chromium.launch, kill: chromium.kill, timeoutMs: 50, budgetMs: BUDGET_MS }),
+        ).resolves.toEqual(expected);
+        expect(performance.now() - started).toBeLessThan(BOUND_MS);
+        expect(closes(chromium)).toBe(1);
+        expect(kills(chromium)).toBe(killed ? 1 : 0);
+        const timers = setTimer.mock.results.map((result) => result.value as unknown);
+        expect(timers.length).toBeGreaterThan(0);
+        expect(clearTimer.mock.calls.map(([timer]) => timer)).toEqual(expect.arrayContaining(timers));
+      });
+
+      it.each<{ name: string; script: PageScript; killable: boolean; detail: string; boundMs: number }>([
+        { name: 'with nothing to kill it', script: { stalls: ['close'] }, killable: false, detail: NOT_CLOSED, boundMs: BOUND_MS },
+        {
+          name: 'whose kill fails',
+          script: { stalls: ['close'], killError: new Error('kill EPERM') },
+          killable: true,
+          detail: `${NOT_CLOSED} and could not be killed: kill EPERM`,
+          boundMs: BOUND_MS,
+        },
+        {
+          name: 'whose kill never finishes',
+          script: { stalls: ['close', 'kill'] },
+          killable: true,
+          detail: `${NOT_CLOSED} and could not be killed: no exit within 1000 ms`,
+          // A kill may wait 1000 ms past the budget for the browser to exit.
+          boundMs: BOUND_MS + 1_000,
+        },
+      ])('reports an unclosed browser $name, and resolves', async ({ script, killable, detail, boundMs }) => {
+        const chromium = fakeChromium(script);
+        const started = performance.now();
+        const kill = killable ? chromium.kill : undefined;
+        await expect(renderDeck(VALID_PATH, { launch: chromium.launch, kill, timeoutMs: 50, budgetMs: BUDGET_MS })).resolves.toEqual([
+          { check: 'render-unavailable', detail },
+        ]);
+        expect(performance.now() - started).toBeLessThan(boundMs);
+        expect(closes(chromium)).toBe(1);
+        expect(kills(chromium)).toBe(killable ? 1 : 0);
+      });
+
+      it('gives close the budget a quick render leaves, beyond its reserve', async () => {
+        const closeDelayMs = (2 * BUDGET_MS) / 3;
+        const chromium = fakeChromium({ closeDelayMs });
+        const started = performance.now();
+        await expect(
+          renderDeck(VALID_PATH, { launch: chromium.launch, kill: chromium.kill, timeoutMs: 50, budgetMs: BUDGET_MS }),
+        ).resolves.toEqual([]);
+        const elapsed = performance.now() - started;
+        expect(elapsed).toBeGreaterThanOrEqual(closeDelayMs - 5);
+        expect(elapsed).toBeLessThan(BOUND_MS);
+        expect(closes(chromium)).toBe(1);
+        expect(kills(chromium)).toBe(0);
+      });
+
+      it.each<{ name: string; killable: boolean; launchError?: Error; calls: string[] }>([
+        { name: 'kills its browser when it arrives', killable: true, calls: ['kill'] },
+        { name: 'closes its browser on arrival when nothing can kill it', killable: false, calls: ['close'] },
+        { name: 'absorbs its later failure', killable: true, launchError: new Error('Executable does not exist'), calls: [] },
+      ])('reports a launch outlasting the budget and $name', async ({ killable, launchError, calls }) => {
+        const unhandled: unknown[] = [];
+        const onUnhandled = (reason: unknown): void => {
+          unhandled.push(reason);
+        };
+        process.on('unhandledRejection', onUnhandled);
+        try {
+          const chromium = fakeChromium({ launchDelayMs: 2 * BUDGET_MS, launchError });
+          const kill = killable ? chromium.kill : undefined;
+          const started = performance.now();
+          await expect(renderDeck(VALID_PATH, { launch: chromium.launch, kill, budgetMs: BUDGET_MS })).resolves.toEqual([stalledIn('launch')]);
+          expect(performance.now() - started).toBeLessThan(BOUND_MS);
+          expect(chromium.calls).toEqual([]);
+          await new Promise((resolve) => setTimeout(resolve, 3 * BUDGET_MS));
+          expect(chromium.calls).toEqual(calls);
+          expect(unhandled).toEqual([]);
+        } finally {
+          process.off('unhandledRejection', onUnhandled);
+        }
+      });
+    });
   });
 
   describe('main', () => {
-    const playwright = { imported: 0, launches: [] as unknown[] };
+    const WS_ENDPOINT = 'ws://127.0.0.1:9/check-deck-test';
+    const playwright = { imported: 0, launches: [] as unknown[], connects: [] as string[], server: [] as string[] };
+
+    /** How the mocked Chromium server behaves; it starts, connects and closes at once unless set. */
+    interface ServerScript {
+      launchDelayMs?: number;
+      connectError?: Error;
+      connectStalls?: boolean;
+    }
 
     afterEach(() => {
       vi.doUnmock('@playwright/test');
       vi.resetModules();
       playwright.imported = 0;
       playwright.launches = [];
+      playwright.connects = [];
+      playwright.server = [];
     });
+
+    /** Mocks `@playwright/test` with a Chromium server, recording its `close` and `kill`, whose connect yields `chromium`'s browser. */
+    function mockPlaywright(chromium: FakeChromium, server: ServerScript = {}): void {
+      vi.resetModules();
+      vi.doMock('@playwright/test', () => {
+        playwright.imported += 1;
+        return {
+          chromium: {
+            launchServer: async (options: unknown) => {
+              playwright.launches.push(options);
+              const delayMs = server.launchDelayMs;
+              if (delayMs !== undefined) await new Promise((resolve) => setTimeout(resolve, delayMs));
+              return {
+                wsEndpoint: () => WS_ENDPOINT,
+                close: async (): Promise<void> => {
+                  playwright.server.push('close');
+                },
+                kill: async (): Promise<void> => {
+                  playwright.server.push('kill');
+                },
+              };
+            },
+            connect: async (endpoint: string): Promise<Browser> => {
+              playwright.connects.push(endpoint);
+              if (server.connectStalls === true) return never();
+              if (server.connectError !== undefined) throw server.connectError;
+              return chromium.launch();
+            },
+          },
+        };
+      });
+    }
 
     /** Runs a freshly imported main through runCli with `@playwright/test` mocked by `chromium`. */
     async function runCheck(
       argv: string[],
       chromium: FakeChromium = fakeChromium(),
     ): Promise<{ code: number; exits: number[]; summary: Record<string, unknown> }> {
-      vi.resetModules();
-      vi.doMock('@playwright/test', () => {
-        playwright.imported += 1;
-        return {
-          chromium: {
-            launch: async (options: unknown): Promise<Browser> => {
-              playwright.launches.push(options);
-              return chromium.launch();
-            },
-          },
-        };
-      });
+      mockPlaywright(chromium);
       const { main } = await import('../../src/reporting/check-deck.js');
       // runCli comes from the same fresh module graph as main, so it recognises that graph's UsageError.
       const { runCli } = await import('../../src/lib/cli.js');
@@ -766,8 +1152,54 @@ describe('check-deck: Executive Presentation rule', () => {
       expect(outcome.summary).toMatchObject({ ok: true, sections: 16, findings: [] });
       expect(playwright.imported).toBe(1);
       expect(playwright.launches).toEqual([{ headless: true }]);
+      expect(playwright.connects).toEqual([WS_ENDPOINT]);
       expect(chromium.gotos).toEqual([pathToFileURL(VALID_PATH).href]);
       expect(closes(chromium)).toBe(1);
+      expect(playwright.server).toEqual(['close']);
+    });
+
+    describe('default launcher', () => {
+      const BUDGET_MS = 150;
+      const STALLED: DeckFinding = {
+        check: 'render-unavailable',
+        detail: `render did not finish within the ${BUDGET_MS} ms budget: stalled in launch`,
+      };
+
+      it.each<{ name: string; server: ServerScript; expected: DeckFinding[]; connects: string[] }>([
+        {
+          name: 'whose connect fails',
+          server: { connectError: new Error('WebSocket error: connect ECONNREFUSED') },
+          expected: [
+            {
+              check: 'render-unavailable',
+              detail: 'Chromium did not launch (npx playwright install chromium): WebSocket error: connect ECONNREFUSED',
+            },
+          ],
+          connects: [WS_ENDPOINT],
+        },
+        { name: 'whose connect outlasts the budget', server: { connectStalls: true }, expected: [STALLED], connects: [WS_ENDPOINT] },
+        { name: 'that starts after the budget, without connecting', server: { launchDelayMs: 2 * BUDGET_MS }, expected: [STALLED], connects: [] },
+      ])('kills a Chromium server $name', async ({ server, expected, connects }) => {
+        const unhandled: unknown[] = [];
+        const onUnhandled = (reason: unknown): void => {
+          unhandled.push(reason);
+        };
+        process.on('unhandledRejection', onUnhandled);
+        try {
+          mockPlaywright(fakeChromium(), server);
+          const fresh = await import('../../src/reporting/check-deck.js');
+          const started = performance.now();
+          await expect(fresh.renderDeck(VALID_PATH, { budgetMs: BUDGET_MS })).resolves.toEqual(expected);
+          expect(performance.now() - started).toBeLessThan(BUDGET_MS + 100);
+          await new Promise((resolve) => setTimeout(resolve, 3 * BUDGET_MS));
+          expect(playwright.launches).toEqual([{ headless: true }]);
+          expect(playwright.connects).toEqual(connects);
+          expect(playwright.server).toEqual(['kill']);
+          expect(unhandled).toEqual([]);
+        } finally {
+          process.off('unhandledRejection', onUnhandled);
+        }
+      });
     });
 
     it('exits 1 with the findings of a failing deck copy outside the checkout', async () => {

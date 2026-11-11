@@ -9,7 +9,6 @@ export interface SourcePin {
   repository: string;
   confirmedAt: string;
   confirmCommand: string;
-  sourceSha: string;
 }
 
 /** Raised when a pin file cannot be read, parsed or trusted. */
@@ -26,7 +25,7 @@ const pinCache = new Map<string, SourcePin>();
 
 /**
  * Returns the frozen pin record at `sourcePinPath`, memoised by resolved path.
- * @throws SourcePinError on a missing or unreadable file, invalid JSON, a malformed sha, or sha !== sourceSha.
+ * @throws SourcePinError on a missing or unreadable file, invalid JSON, or a malformed sha.
  */
 export function readSourcePin(sourcePinPath: string): SourcePin {
   const pinPath = path.resolve(sourcePinPath);
@@ -49,9 +48,6 @@ export function readSourcePin(sourcePinPath: string): SourcePin {
   const sha = parsed?.sha;
   if (typeof sha !== 'string' || !SHA_PATTERN.test(sha)) {
     throw new SourcePinError(pinPath, `malformed sha ${JSON.stringify(sha)}, expected 40 lowercase hex digits`);
-  }
-  if (sha !== parsed?.sourceSha) {
-    throw new SourcePinError(pinPath, `sha ${sha} does not match sourceSha ${JSON.stringify(parsed?.sourceSha)}`);
   }
 
   const pin = Object.freeze(parsed as SourcePin);

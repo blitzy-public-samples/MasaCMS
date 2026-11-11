@@ -13,14 +13,15 @@ import {
   scheduledTaskQueueSql,
   type LocalTaskPort,
 } from '../../src/tasks/local-adapter.js';
-import { createTaskPort, type CreateTaskInput, type TaskLogger } from '../../src/tasks/port.js';
-import { RECURRING_RETRY, UnknownTaskTargetError, retryDelayS } from '../../src/tasks/queues.js';
+import { MAX_TASK_PAGE_SIZE, createTaskPort, type CreateTaskInput, type TaskLogger } from '../../src/tasks/port.js';
+import { RECURRING_RETRY, UnknownQueueError, UnknownTaskTargetError, retryDelayS } from '../../src/tasks/queues.js';
 import { SYSTEM_TENANT_ID, rlsSql, tenantRegistrySql, type TenantDb } from '../../src/tenancy/index.js';
 import { createLocalCloudTasksTransport } from '../../src/auth/index.js';
 import { MemorySpanExporter, SpanKind, shutdownTracing, startSpan, startTracing } from '../../src/tracing/index.js';
 import { createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '../../src/testing/schema.js';
 import { TENANT_A, TENANT_B, seedRegistry } from '../../src/testing/fixtures.js';
 import { testSigningKeys, writeTestSecrets } from '../../src/testing/tokens.js';
+import { REDACTED } from '../../src/logging/index.js';
 
 const SERVICE_URLS: Readonly<Record<string, string>> = {
   surveys: 'http://127.0.0.1:8117',
@@ -29,7 +30,7 @@ const SERVICE_URLS: Readonly<Record<string, string>> = {
 };
 
 describe('scheduledTaskQueueSql', () => {
-  it('returns both tables, the due index and each table RLS block, newline-terminated', () => {
+  it('returns both tables, the tenant-leading queue indexes and each table RLS block, newline-terminated', () => {
     expect(scheduledTaskQueueSql('stub')).toBe(
       [
         'CREATE TABLE stub.scheduled_task_queue (',
@@ -49,7 +50,10 @@ describe('scheduledTaskQueueSql', () => {
         '  updated_at timestamp(3) without time zone NOT NULL,',
         '  PRIMARY KEY (tenant_id, queue, name)',
         ');',
-        'CREATE INDEX scheduled_task_queue_due ON stub.scheduled_task_queue (status, schedule_time);',
+        "CREATE INDEX scheduled_task_queue_pending_due ON stub.scheduled_task_queue (tenant_id, schedule_time) WHERE status = 'pending';",
+        "CREATE INDEX scheduled_task_queue_lease_expiry ON stub.scheduled_task_queue (tenant_id, lease_until) WHERE status = 'running';",
+        "CREATE INDEX scheduled_task_queue_live ON stub.scheduled_task_queue (tenant_id, queue, schedule_time, name) WHERE status IN ('pending','running');",
+        "CREATE INDEX scheduled_task_queue_tombstone_expiry ON stub.scheduled_task_queue (tenant_id, updated_at) WHERE status IN ('done','failed','deleted');",
         rlsSql('stub', 'scheduled_task_queue'),
         'CREATE TABLE stub.scheduled_task_queue_state (',
         '  tenant_id uuid NOT NULL,',
@@ -179,11 +183,11 @@ describe.skipIf(!available)('local task adapter', () => {
     expect([await visible(TENANT_A.tenantId, 'iso-a'), await visible(TENANT_B.tenantId, 'iso-a')]).toEqual([1, 0]);
     expect([await visible(TENANT_B.tenantId, 'iso-b'), await visible(TENANT_A.tenantId, 'iso-b')]).toEqual([1, 0]);
     expect(await visible(SYSTEM_TENANT_ID, 'iso-a')).toBe(0);
-    expect((await port.list('surveys-launch')).map((task) => [task.name, task.tenantId])).toEqual([
+    expect((await port.list('surveys-launch')).tasks.map((task) => [task.name, task.tenantId])).toEqual([
       ['iso-a', TENANT_A.tenantId],
       ['iso-b', TENANT_B.tenantId],
     ]);
-    const [sweep] = await port.list('stub-outbox-sweep');
+    const [sweep] = (await port.list('stub-outbox-sweep')).tasks;
     expect(sweep).toMatchObject({ queue: 'stub-outbox-sweep', name: 'stub-outbox-sweep-1', status: 'pending', attempts: 0 });
     expect(sweep).not.toHaveProperty('tenantId');
 
@@ -196,7 +200,7 @@ describe.skipIf(!available)('local task adapter', () => {
       ]),
     );
     expect(await rowOf(TENANT_A.tenantId, 'iso-a')).toMatchObject({ status: 'done', attempts: 1, last_status: 200, lease_until: null });
-    expect(await port.list('surveys-launch')).toEqual([]);
+    expect(await port.list('surveys-launch')).toEqual({ tasks: [] });
   });
 
   it('leaves no rows visible to a pooled connection reused after a tenant scan', async () => {
@@ -286,13 +290,32 @@ describe.skipIf(!available)('local task adapter', () => {
     expect(JSON.stringify(warnings)).not.toMatch(/Bearer|payload/);
   });
 
+  it('logs a failed dispatch with its error serialized, never its raw message', async () => {
+    respond = async () => {
+      throw new Error('connect failed https://user:pw@h/?X-Goog-Signature=abc');
+    };
+    await port.create({
+      queue: 'stub-outbox-sweep',
+      name: 'raw-error-sys',
+      scheduleTime: new Date(nowMs),
+      url: `${SERVICE_URLS.stub}/internal/v1/outbox/sweep`,
+      deadlineS: 60,
+    });
+    expect(await port.dispatchDue()).toBe(1);
+    const logged = warnings.at(-1)?.obj as { error?: Record<string, unknown> } | undefined;
+    expect(logged).toMatchObject({ name: 'raw-error-sys', status: 'pending', error: { type: 'Error', message: REDACTED } });
+    expect(logged?.error).not.toBeInstanceOf(Error);
+    expect(Object.keys(logged?.error ?? {}).every((key) => ['type', 'message', 'stack'].includes(key))).toBe(true);
+    expect(JSON.stringify(warnings)).not.toMatch(/connect failed|user:pw|X-Goog-Signature/);
+  });
+
   it('answers created:false for a duplicate name and for a deleted name until its tombstone expires', async () => {
     const input = launch('dup-a', TENANT_A.tenantId, { scheduleTime: new Date(nowMs + 600_000) });
     expect(await port.create(input)).toEqual({ name: 'dup-a', created: true });
     expect(await port.create(input)).toEqual({ name: 'dup-a', created: false });
     expect(await port.delete('surveys-launch', 'dup-a')).toEqual({ name: 'dup-a', deleted: true });
     expect(await port.delete('surveys-launch', 'dup-a')).toEqual({ name: 'dup-a', deleted: false });
-    expect(await port.list('surveys-launch')).toEqual([]);
+    expect(await port.list('surveys-launch')).toEqual({ tasks: [] });
     expect(await port.create(input)).toEqual({ name: 'dup-a', created: false });
     nowMs += (LOCAL_TOMBSTONE_RETENTION_S - 10) * 1000;
     await port.dispatchDue();
@@ -304,6 +327,113 @@ describe.skipIf(!available)('local task adapter', () => {
     expect(await port.delete('surveys-launch', 'dup-a', { tenantId: TENANT_B.tenantId })).toEqual({ name: 'dup-a', deleted: false });
     expect(await port.delete('surveys-launch', 'dup-a', { tenantId: TENANT_A.tenantId })).toEqual({ name: 'dup-a', deleted: true });
   });
+
+  describe('paged list and get', () => {
+    const queue = 'content-scheduled-publish';
+    const url = `${SERVICE_URLS.stub}/internal/v1/tasks/content/publish`;
+    let seeded = 0;
+
+    /** Creates a task due an hour from now plus `offsetMs`, under `tenantId` or as a system task. */
+    async function createAt(name: string, tenantId: string | undefined, offsetMs: number, onQueue = queue): Promise<void> {
+      const scheduleTime = new Date(nowMs + 3_600_000 + offsetMs);
+      await port.create({ queue: onQueue, name, scheduleTime, url, deadlineS: 60, ...(tenantId === undefined ? {} : { tenantId }) });
+    }
+
+    /** Seeds live tasks of the system tenant, tenant A and tenant B, a tombstone and another queue's task; returns the live ones in list order. */
+    async function seedPages(): Promise<Array<[string, string | undefined]>> {
+      seeded += 1;
+      const at = (suffix: string): string => `page${String(seeded)}-${suffix}`;
+      for (const [suffix, tenantId, offsetMs] of [
+        ['sys-2', undefined, 1_567],
+        ['sys-1', undefined, 1_234],
+        ['a-3', TENANT_A.tenantId, 3_001],
+        ['a-2', TENANT_A.tenantId, 1_234],
+        ['a-1', TENANT_A.tenantId, 1_234],
+        ['b-1', TENANT_B.tenantId, 5],
+      ] as const) {
+        await createAt(at(suffix), tenantId, offsetMs);
+      }
+      await createAt(at('a-dead'), TENANT_A.tenantId, 0);
+      await port.delete(queue, at('a-dead'), { tenantId: TENANT_A.tenantId });
+      await createAt(at('other'), undefined, 0, 'content-feed-import');
+      return [
+        [at('sys-1'), undefined],
+        [at('sys-2'), undefined],
+        [at('a-1'), TENANT_A.tenantId],
+        [at('a-2'), TENANT_A.tenantId],
+        [at('a-3'), TENANT_A.tenantId],
+        [at('b-1'), TENANT_B.tenantId],
+      ];
+    }
+
+    it.each([1, 2, 4, 5, 6, MAX_TASK_PAGE_SIZE])('pages every live task once, in order, without tombstones, at pageSize %i', async (pageSize) => {
+      const expected = await seedPages();
+      const seen: Array<[string, string | undefined]> = [];
+      const sizes: number[] = [];
+      let pageToken: string | undefined;
+      do {
+        const page = await port.list(queue, { pageSize, ...(pageToken === undefined ? {} : { pageToken }) });
+        sizes.push(page.tasks.length);
+        seen.push(...page.tasks.map((task): [string, string | undefined] => [task.name, task.tenantId]));
+        pageToken = page.nextPageToken;
+      } while (pageToken !== undefined && sizes.length <= expected.length + 1);
+      expect(seen).toEqual(expected);
+      const fullPages = Math.floor(expected.length / pageSize);
+      expect(sizes.every((size) => size <= pageSize)).toBe(true);
+      expect(sizes.slice(0, fullPages)).toEqual(Array.from({ length: fullPages }, () => pageSize));
+      expect(sizes.length).toBeLessThanOrEqual(Math.ceil(expected.length / pageSize) + 1);
+    });
+
+    let getCase = 0;
+    it.each([
+      { label: 'a system task looked up without a tenant', creator: undefined, lookup: undefined, remove: false, found: true },
+      { label: 'a tenant task looked up under its tenant', creator: TENANT_A.tenantId, lookup: TENANT_A.tenantId, remove: false, found: true },
+      { label: 'a tenant task looked up as a system task', creator: TENANT_A.tenantId, lookup: undefined, remove: false, found: false },
+      { label: 'a tenant task looked up under another tenant', creator: TENANT_A.tenantId, lookup: TENANT_B.tenantId, remove: false, found: false },
+      { label: 'a system task looked up under a tenant', creator: undefined, lookup: TENANT_B.tenantId, remove: false, found: false },
+      { label: 'a deleted task, whose name is a tombstone', creator: TENANT_B.tenantId, lookup: TENANT_B.tenantId, remove: true, found: false },
+      { label: 'a name never created', creator: null, lookup: undefined, remove: false, found: false },
+    ])('get answers $label', async ({ creator, lookup, remove, found }) => {
+      getCase += 1;
+      const name = `get-${String(getCase)}`;
+      const tenantId = creator ?? undefined;
+      if (creator !== null) await createAt(name, tenantId, 7);
+      if (remove) await port.delete(queue, name, { tenantId });
+      const expected = {
+        queue,
+        name,
+        scheduleTime: new Date(nowMs + 3_600_000 + 7),
+        ...(tenantId === undefined ? {} : { tenantId }),
+        status: 'pending',
+        attempts: 0,
+      };
+      expect(await port.get(queue, name, lookup === undefined ? undefined : { tenantId: lookup })).toStrictEqual(found ? expected : undefined);
+      expect(await port.get('content-feed-import', name, lookup === undefined ? undefined : { tenantId: lookup })).toBeUndefined();
+    });
+
+    const token = (cursor: unknown): string => Buffer.from(JSON.stringify(cursor)).toString('base64url');
+    it.each([
+      { label: 'list of an unknown queue', call: () => port.list('no-such-queue'), error: UnknownQueueError },
+      { label: 'get of an unknown queue', call: () => port.get('no-such-queue', 'x'), error: UnknownQueueError },
+      ...[0, -1, 1.5, MAX_TASK_PAGE_SIZE + 1, Number.NaN].map((pageSize) => ({
+        label: `pageSize ${String(pageSize)}`,
+        call: () => port.list(queue, { pageSize }),
+        error: RangeError,
+      })),
+      ...[
+        ['a token that is not base64url JSON', 'not-a-token'],
+        ['a token of the wrong shape', token({ tenant: SYSTEM_TENANT_ID })],
+        ['a token with a malformed schedule time', token({ tenant: SYSTEM_TENANT_ID, scheduleTime: 'yesterday', name: 'x' })],
+        [
+          'a token of an unregistered tenant',
+          token({ tenant: '0b8f6c1e-5b7d-5e8a-9c3f-0d1e2f3a4b5c', scheduleTime: '2026-06-30 12:00:00.000', name: 'x' }),
+        ],
+      ].map(([label, pageToken]) => ({ label: String(label), call: () => port.list(queue, { pageToken: String(pageToken) }), error: TypeError })),
+    ])('rejects $label', async ({ call, error }) => {
+      await expect(call()).rejects.toBeInstanceOf(error);
+    });
+  });
+
 
   it('rejects a task URL outside the configured service origins before storing it', async () => {
     await expect(port.create(launch('unknown-a', TENANT_A.tenantId, { url: 'http://127.0.0.1:1/internal/v1/tasks/x' }))).rejects.toBeInstanceOf(
@@ -363,7 +493,74 @@ describe.skipIf(!available)('local task adapter', () => {
     await polling.stop();
     expect(calls.map((call) => call.headers['x-cloudtasks-taskname'])).toEqual(['poll-a']);
     expect(errors[0]?.msg).toBe('Local tasks scan failed');
+    expect(errors[0]?.obj).toEqual({ error: expect.objectContaining({ type: 'Error', message: REDACTED }) });
+    expect(JSON.stringify(errors)).not.toContain('database unavailable');
     expect(await rowOf(TENANT_A.tenantId, 'poll-a')).toMatchObject({ status: 'done' });
+  });
+
+  describe('maxConcurrentDispatches', () => {
+    /** Adapter over the shared schema with the stub request and the given dispatch cap. */
+    const cappedAdapter = (maxConcurrentDispatches: number): Promise<LocalTaskPort> =>
+      createLocalTaskAdapter({ db, stateDir, serviceUrls: SERVICE_URLS, clock, logger, autoStart: false, request: stubRequest, maxConcurrentDispatches });
+
+    it('claims only free slots, leaves the rest pending while saturated and drains them as slots free', async () => {
+      let open: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+      let active = 0;
+      let peak = 0;
+      respond = async () => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await gate;
+        active -= 1;
+        return 200;
+      };
+      const capped = await cappedAdapter(3);
+      const names = Array.from({ length: 7 }, (_, i) => `cap-a-${String(i)}`);
+      for (const name of names) await capped.create(launch(name, TENANT_A.tenantId));
+      const first = capped.dispatchDue();
+      for (let i = 0; i < 50 && calls.length < 3; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(await capped.dispatchDue()).toBe(0);
+      expect(calls).toHaveLength(3);
+      const statuses = await Promise.all(names.map(async (name) => (await rowOf(TENANT_A.tenantId, name))?.status));
+      expect(statuses.filter((status) => status === 'running')).toHaveLength(3);
+      expect(statuses.filter((status) => status === 'pending')).toHaveLength(4);
+      open();
+      expect(await first).toBe(3);
+      expect([await capped.dispatchDue(), await capped.dispatchDue(), await capped.dispatchDue()]).toEqual([3, 1, 0]);
+      expect(peak).toBe(3);
+      expect(new Set(calls.map((call) => call.headers['x-cloudtasks-taskname']))).toEqual(new Set(names));
+      await capped.close();
+    });
+
+    it('rotates the starting tenant so a busy tenant cannot hold every slot', async () => {
+      const capped = await cappedAdapter(1);
+      for (const tenant of [TENANT_A, TENANT_B]) {
+        for (const n of [1, 2]) await capped.create(launch(`fair-${tenant.siteId}-${String(n)}`, tenant.tenantId));
+      }
+      const counts: number[] = [];
+      for (let scan = 0; scan < 5; scan += 1) counts.push(await capped.dispatchDue());
+      expect(counts).toEqual([1, 1, 1, 1, 0]);
+      expect(calls.map((call) => (call.body as { tenantId: string }).tenantId)).toEqual([
+        TENANT_A.tenantId,
+        TENANT_B.tenantId,
+        TENANT_A.tenantId,
+        TENANT_B.tenantId,
+      ]);
+      await capped.close();
+    });
+
+    it.each([0, -1, 1.5])('rejects %s with RangeError, directly and through createTaskPort', async (value) => {
+      await expect(cappedAdapter(value)).rejects.toBeInstanceOf(RangeError);
+      await expect(
+        createTaskPort(
+          { OPT2_TASKS_ADAPTER: 'local', OPT2_STATE_DIR: stateDir, OPT2_SERVICE_URLS: { ...SERVICE_URLS } },
+          { db, clock, logger, local: { autoStart: false, maxConcurrentDispatches: value } },
+        ),
+      ).rejects.toBeInstanceOf(RangeError);
+    });
   });
 
   it('is built by createTaskPort and refuses a state directory without signing keys', async () => {
@@ -374,7 +571,7 @@ describe.skipIf(!available)('local task adapter', () => {
     expect(viaFactory.kind).toBe('local');
     await viaFactory.close();
     await expect(
-      createLocalTaskAdapter({ db, stateDir: join(stateDir, 'missing'), serviceUrls: SERVICE_URLS, autoStart: false }),
+      createLocalTaskAdapter({ db, stateDir: join(stateDir, 'missing'), serviceUrls: SERVICE_URLS, logger, autoStart: false }),
     ).rejects.toThrow();
   });
 

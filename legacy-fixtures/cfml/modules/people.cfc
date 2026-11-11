@@ -86,9 +86,9 @@ component output="false" hint="Person archive records, with blackout of the pers
 		return local.user;
 	}
 
-	private date function effectiveFromParam(required struct params) hint="Returns effectiveFrom as a date at midnight, or raises invalidParameters unless it is a real yyyy-mm-dd calendar date." {
+	private date function effectiveFromParam(required struct params) hint="Returns effectiveFrom as a date at midnight, or raises invalidParameters unless it is a real yyyy-mm-dd calendar date from 1753 on, SQL Server datetime's floor." {
 		local.text = structKeyExists(arguments.params, "effectiveFrom") && !isNull(arguments.params.effectiveFrom) ? arguments.params.effectiveFrom : "";
-		if (!isSimpleValue(local.text) || !reFind("^\d{4}-\d{2}-\d{2}$", local.text)) {
+		if (!isSimpleValue(local.text) || !reFind("^\d{4}-\d{2}-\d{2}$", local.text) || val(left(local.text, 4)) < 1753) {
 			variables.envelope.raise("invalidParameters");
 		}
 		try {

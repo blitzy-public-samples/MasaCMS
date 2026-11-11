@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { projectReportValue, redactReportMarkdown } from './redact.js';
 import { readSourceSha } from './source-pin.js';
 
 /** Where reports are written and the SHA every report carries. */
@@ -85,6 +86,7 @@ export async function writeFileAtomic(filePath: string, text: string): Promise<v
 
 /**
  * Writes `body` as `relPath` under the reports directory and returns its absolute path and the written object.
+ * `generatedBy`, `status` and body values are written as {@link projectReportValue} redacts them; the caller's `body` is not changed.
  * Head keys come first, in order: `sourceSha` (always `target.sourceSha`), `generatedBy` (omitted when unset),
  * `generatedAt`, `status` (default `generated`); the remaining `body` keys follow in their original order.
  * @throws ReportPathError as {@link reportFilePath}; serialisation errors are thrown before any file is touched.
@@ -97,12 +99,16 @@ export async function writeJsonReport(
 ): Promise<{ path: string; report: Record<string, unknown> }> {
   const filePath = reportFilePath(target.reportsDir, relPath);
   const head: [string, unknown][] = [['sourceSha', target.sourceSha]];
-  const generatedBy = opts.generatedBy ?? body.generatedBy;
+  const generatedBy = projectReportValue(opts.generatedBy ?? body.generatedBy, 'generatedBy');
   if (generatedBy !== undefined) head.push(['generatedBy', generatedBy]);
   head.push(['generatedAt', (opts.clock ?? systemClock).now().toISOString()]);
-  head.push(['status', opts.status ?? body.status ?? 'generated']);
+  head.push(['status', projectReportValue(opts.status ?? body.status ?? 'generated', 'status')]);
+  const fields = Object.entries(body)
+    .filter(([key]) => !HEAD_KEYS.has(key))
+    .map(([key, value]): [string, unknown] => [key, projectReportValue(value, key)])
+    .filter(([, value]) => value !== undefined);
   // fromEntries defines own properties, so a `__proto__` data key in `body` stays data.
-  const report = Object.fromEntries([...head, ...Object.entries(body).filter(([key]) => !HEAD_KEYS.has(key))]);
+  const report = Object.fromEntries([...head, ...fields]);
   const text = `${JSON.stringify(report, null, 2)}\n`;
   await writeFileAtomic(filePath, text);
   return { path: filePath, report };
@@ -150,14 +156,14 @@ export function ensureSourceShaLine(markdown: string, sha: string): string {
   return result.replace(/\n*$/, '\n');
 }
 
-/** Writes `markdown` as `relPath` under the reports directory with its `Source SHA:` line ensured. */
+/** Writes `markdown`, redacted by {@link redactReportMarkdown}, as `relPath` under the reports directory with its `Source SHA:` line ensured. */
 export async function writeMarkdownReport(
   target: ReportTarget,
   relPath: string,
   markdown: string,
 ): Promise<{ path: string; text: string }> {
   const filePath = reportFilePath(target.reportsDir, relPath);
-  const text = ensureSourceShaLine(markdown, target.sourceSha);
+  const text = ensureSourceShaLine(redactReportMarkdown(markdown), target.sourceSha);
   await writeFileAtomic(filePath, text);
   return { path: filePath, text };
 }

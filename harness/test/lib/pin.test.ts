@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -11,7 +11,6 @@ const OTHER_SHA = `${SHA.slice(0, -1)}e`;
 
 const BASE: Pin = {
   sha: SHA,
-  sourceSha: SHA,
   subject: SUBJECT,
   repository: 'fixture',
   confirmedAt: '2026-06-01T00:00:00.000Z',
@@ -48,29 +47,42 @@ describe('PIN_PATH', () => {
     expect(PIN_PATH.endsWith(path.join('opt2', 'source-pin.json'))).toBe(true);
     expect((await stat(PIN_PATH)).isFile()).toBe(true);
   });
+
+  it('holds exactly the five pin fields', async () => {
+    const record = JSON.parse(await readFile(PIN_PATH, 'utf8')) as Record<string, unknown>;
+    expect(Object.keys(record)).toEqual(['sha', 'subject', 'repository', 'confirmedAt', 'confirmCommand']);
+  });
 });
 
 describe('readPin', () => {
   it('reads the committed pin', () => {
     const pin = readPin();
     expect(pin.sha).toBe(SHA);
-    expect(pin.sourceSha).toBe(SHA);
     expect(pin.subject).toBe(SUBJECT);
     expect(pin.repository).not.toBe('');
     expect(pin.confirmCommand).not.toBe('');
     expect(Number.isNaN(Date.parse(pin.confirmedAt))).toBe(false);
   });
 
-  it('reads a valid pin from another path field for field', async () => {
+  it('reads a valid five-field pin from another path field for field', async () => {
     expect(readPin({ path: await writePin(root, {}) })).toEqual(BASE);
   });
 
+  it('tolerates an unknown key and returns the five pin fields', async () => {
+    const file = path.join(root, 'extra-key.json');
+    await writeFile(file, JSON.stringify({ ...BASE, sourceSha: OTHER_SHA }), 'utf8');
+    expect(readPin({ path: file })).toEqual(BASE);
+  });
+
   it.each<[string, Overrides]>([
-    ['sourceSha differs from sha', { sourceSha: OTHER_SHA }],
-    ['the SHA is uppercase', { sha: SHA.toUpperCase(), sourceSha: SHA.toUpperCase() }],
-    ['the SHA has 39 characters', { sha: SHA.slice(0, 39), sourceSha: SHA.slice(0, 39) }],
+    ['the SHA is uppercase', { sha: SHA.toUpperCase() }],
+    ['the SHA has 39 characters', { sha: SHA.slice(0, 39) }],
+    ['the SHA ends with LF', { sha: `${SHA}\n` }],
+    ['the SHA ends with CR', { sha: `${SHA}\r` }],
+    ['the SHA ends with CRLF', { sha: `${SHA}\r\n` }],
+    ['the SHA ends with U+2028', { sha: `${SHA}\u2028` }],
+    ['the SHA ends with U+2029', { sha: `${SHA}\u2029` }],
     ['subject is missing', { subject: undefined }],
-    ['sourceSha is missing', { sourceSha: undefined }],
   ])('throws PinError when %s', async (_label, overrides) => {
     const file = await writePin(root, overrides);
     expect(() => readPin({ path: file })).toThrow(PinError);
@@ -97,7 +109,7 @@ describe('pinnedSha', () => {
   });
 
   it('honours the path option', async () => {
-    const file = await writePin(root, { sha: OTHER_SHA, sourceSha: OTHER_SHA });
+    const file = await writePin(root, { sha: OTHER_SHA });
     expect(pinnedSha({ path: file })).toBe(OTHER_SHA);
   });
 });
@@ -105,6 +117,6 @@ describe('pinnedSha', () => {
 describe('pinSchema', () => {
   it('accepts a valid record and rejects uppercase hex', () => {
     expect(pinSchema.safeParse(BASE).success).toBe(true);
-    expect(pinSchema.safeParse({ ...BASE, sha: SHA.toUpperCase(), sourceSha: SHA.toUpperCase() }).success).toBe(false);
+    expect(pinSchema.safeParse({ ...BASE, sha: SHA.toUpperCase() }).success).toBe(false);
   });
 });

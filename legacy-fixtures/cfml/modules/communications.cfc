@@ -5,6 +5,9 @@ component output="false" hint="SYNTHETIC communications fixture: template store,
 		variables.envelope = arguments.envelope;
 		variables.auth = arguments.auth;
 		variables.defaultFrom = "noreply@opt2.local";
+		variables.smtpTimeoutSeconds = 10;
+		variables.lookupBudgetMs = 10000;
+		variables.lookupCallTimeoutSeconds = 2;
 		variables.templateColumns = "template_id, siteID, name, subject, body_text, body_html, created, lastUpdate";
 		variables.messageColumns = "message_id, siteID, template_id, to_address, from_address, subject, body_text, body_html, state, created, sent_at";
 		return this;
@@ -91,6 +94,7 @@ component output="false" hint="SYNTHETIC communications fixture: template store,
 	private struct function sendMessage(required struct route) hint="Queues, sends and confirms one message, recording each state change; returns the message detail." {
 		authorize();
 		local.mail = composeMessage(arguments.route.params, arguments.route.siteid);
+		local.settings = mailSettings();
 		local.messageId = createUUID();
 		local.at = now();
 		transaction {
@@ -114,7 +118,7 @@ component output="false" hint="SYNTHETIC communications fixture: template store,
 		}
 
 		try {
-			deliver(local.messageId, local.mail);
+			deliver(local.messageId, local.mail, local.settings);
 		} catch (any e) {
 			// Masa's mailer logs the same line when cfmail fails [core/mura/mailer.cfc:220-222].
 			writeLog(type = "Error", file = "exception", text = "The current mail server settings for the site '" & arguments.route.siteid & "' are not valid.");
@@ -124,7 +128,7 @@ component output="false" hint="SYNTHETIC communications fixture: template store,
 		}
 
 		local.at = recordState(local.messageId, "sent", local.at);
-		local.mailpitId = confirm(local.messageId);
+		local.mailpitId = confirm(local.messageId, local.settings.apiBase);
 		if (len(local.mailpitId)) {
 			// synthetic.message has no mailpit_id column; the id is kept on the delivered status row.
 			recordState(local.messageId, "delivered", local.at, "", local.mailpitId);
@@ -167,8 +171,31 @@ component output="false" hint="SYNTHETIC communications fixture: template store,
 		return local.mail;
 	}
 
-	private void function deliver(required string messageId, required struct mail) hint="Sends the message synchronously to Mailpit SMTP under a fixed Message-ID; throws when the send fails." {
-		cfmail(to = arguments.mail.to, from = arguments.mail.from, subject = arguments.mail.subject, server = "127.0.0.1", port = "1025", spoolEnable = "false", charset = "utf-8") {
+	private struct function mailSettings() hint="Resolves SMTP_HOST, SMTP_PORT and MAILPIT_API_URL, unset or blank meaning 127.0.0.1, 1025 and http://127.0.0.1:8025; returns {smtpHost, smtpPort, apiBase}, throwing Opt2.Configuration that names an invalid variable." {
+		local.values = {"SMTP_HOST" = "127.0.0.1", "SMTP_PORT" = "1025", "MAILPIT_API_URL" = "http://127.0.0.1:8025"};
+		for (local.name in structKeyArray(local.values)) {
+			if (structKeyExists(server.system.environment, local.name) && len(trim(server.system.environment[local.name]))) {
+				local.values[local.name] = trim(server.system.environment[local.name]);
+			}
+		}
+		if (!reFind("^[A-Za-z0-9._:\[\]-]+$", local.values.SMTP_HOST)) {
+			throw(type = "Opt2.Configuration", message = "SMTP_HOST is not a host name or address.");
+		}
+		if (!reFind("^[0-9]{1,5}$", local.values.SMTP_PORT) || val(local.values.SMTP_PORT) < 1 || val(local.values.SMTP_PORT) > 65535) {
+			throw(type = "Opt2.Configuration", message = "SMTP_PORT is not an integer from 1 to 65535.");
+		}
+		if (!reFindNoCase("^https?://[A-Za-z0-9._:\[\]-]+(/[A-Za-z0-9._~/-]*)?$", local.values.MAILPIT_API_URL)) {
+			throw(type = "Opt2.Configuration", message = "MAILPIT_API_URL is not an http(s) origin with an optional path.");
+		}
+		return {
+			"smtpHost" = local.values.SMTP_HOST,
+			"smtpPort" = int(local.values.SMTP_PORT),
+			"apiBase" = reReplace(local.values.MAILPIT_API_URL, "/+$", "")
+		};
+	}
+
+	private void function deliver(required string messageId, required struct mail, required struct settings) hint="Sends the message synchronously to the resolved SMTP host and port under a fixed Message-ID, waiting at most smtpTimeoutSeconds (10 s) for the server; throws when the send fails or times out." {
+		cfmail(to = arguments.mail.to, from = arguments.mail.from, subject = arguments.mail.subject, server = arguments.settings.smtpHost, port = arguments.settings.smtpPort, timeout = variables.smtpTimeoutSeconds, spoolEnable = "false", charset = "utf-8") {
 			cfmailparam(name = "Message-ID", value = "<" & arguments.messageId & "@opt2.local>");
 			if (len(arguments.mail.bodyText)) {
 				cfmailpart(type = "text/plain", charset = "utf-8") {
@@ -183,17 +210,18 @@ component output="false" hint="SYNTHETIC communications fixture: template store,
 		}
 	}
 
-	private string function confirm(required string messageId) hint="Looks the message up in the Mailpit API by Message-ID, up to 10 attempts 500 ms apart; returns the Mailpit ID, or an empty string when never found." {
-		local.base = "http://127.0.0.1:8025";
-		if (structKeyExists(server.system.environment, "MAILPIT_API_URL") && len(server.system.environment.MAILPIT_API_URL)) {
-			local.base = reReplace(server.system.environment.MAILPIT_API_URL, "/+$", "");
-		}
-		local.searchUrl = local.base & "/api/v1/search?query=" & encodeForURL("message-id:" & arguments.messageId & "@opt2.local");
+	private string function confirm(required string messageId, required string apiBase) hint="Looks the message up in the Mailpit API at apiBase by Message-ID, up to 10 attempts 500 ms apart within lookupBudgetMs (10 s), each call capped at lookupCallTimeoutSeconds (2 s); returns the Mailpit ID, or an empty string when not found in time." {
+		local.searchUrl = arguments.apiBase & "/api/v1/search?query=" & encodeForURL("message-id:" & arguments.messageId & "@opt2.local");
+		local.deadline = getTickCount() + variables.lookupBudgetMs;
 		for (local.attempt = 1; local.attempt <= 10; local.attempt++) {
 			if (local.attempt > 1) {
 				sleep(500);
 			}
-			cfhttp(method = "GET", url = local.searchUrl, result = "local.res");
+			local.remainingSeconds = int((local.deadline - getTickCount()) / 1000);
+			if (local.remainingSeconds < 1) {
+				break;
+			}
+			cfhttp(method = "GET", url = local.searchUrl, result = "local.res", timeout = min(variables.lookupCallTimeoutSeconds, local.remainingSeconds));
 			if (val(local.res.statusCode) == 200 && isJSON(local.res.fileContent)) {
 				local.found = deserializeJSON(local.res.fileContent);
 				if (isStruct(local.found) && structKeyExists(local.found, "messages") && isArray(local.found.messages) && arrayLen(local.found.messages)) {
