@@ -7,7 +7,8 @@
       "routeKey": "admin:carch.update{upload=image}",
       "appliesTo": [
         "admin:carch.multifileupload{upload=image}",
-        "api:file.save{upload=image}"
+        "api:file.save{upload=image}",
+        "rest:file.save{upload=image}"
       ],
       "difference": "Legacy re-encodes png, gif, jpg and jpeg uploads with ColdFusion's image engine into `_source`, `_small` and `_medium` renditions, and may replace the stored original with a resized copy (core/mura/content/file/processImgCfimage.cfc:266-320,371-417; core/mura/content/file/fileDAO.cfc:159-179, which also stores `_small` and `_medium` JPEGs for flv). Another encoder cannot reproduce those bytes.",
       "decision": "preserve",

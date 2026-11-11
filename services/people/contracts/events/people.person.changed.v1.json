@@ -1,0 +1,324 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:opt2:people:event:people.person.changed.v1",
+  "$comment": "source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "title": "Person changed payload",
+  "description": "Full state of one Masa person (tusers Type=2 person columns); aggregate person, aggregateId = userId, aggregateVersion = people.person.row_version.",
+  "x-opt2-kind": "state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "userId",
+    "siteId",
+    "deleted",
+    "groupName",
+    "fname",
+    "lname",
+    "email",
+    "company",
+    "jobTitle",
+    "mobilePhone",
+    "website",
+    "subType",
+    "ext",
+    "contactForm",
+    "subscribe",
+    "notes",
+    "description",
+    "interests",
+    "keepPrivate",
+    "photoFileId",
+    "imName",
+    "imService",
+    "tags",
+    "created",
+    "lastUpdate",
+    "lastUpdateBy",
+    "lastUpdateById"
+  ],
+  "properties": {
+    "userId": {
+      "$ref": "#/$defs/cfUuid"
+    },
+    "siteId": {
+      "$ref": "#/$defs/siteId"
+    },
+    "deleted": {
+      "type": "boolean"
+    },
+    "groupName": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 255
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "fname": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 50
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "lname": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 50
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "email": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 255
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "company": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 50
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "jobTitle": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 50
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "mobilePhone": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 50
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "website": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 255
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "subType": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 50
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ext": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "contactForm": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "subscribe": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "notes": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "interests": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "keepPrivate": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "photoFileId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 35
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "imName": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 100
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "imService": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 50
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tags": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/localTimestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "lastUpdate": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/localTimestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "lastUpdateBy": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 50
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "lastUpdateById": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 35
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "cfUuid": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}$",
+      "description": "35-character ColdFusion UUID."
+    },
+    "siteId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 50,
+      "description": "Legacy Masa site id."
+    },
+    "localTimestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}$",
+      "description": "Local timestamp(3) text without zone, yyyy-MM-dd HH:mm:ss.SSS."
+    }
+  }
+}

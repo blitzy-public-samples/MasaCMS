@@ -1,0 +1,668 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "generatedBy": "gateway/src/cutover/build-groups.ts",
+  "inputs": {
+    "inventorySha256": "77bffada3117230f016e4682c6b3f20a6cb17df0a99e6ffeea6fcda440d3ea0b",
+    "tableOwnershipSha256": "e2961c444acc1641d6c81f58a255ecdcf5d200ea9c184020e2c6bdc53313a4df"
+  },
+  "groups": [
+    {
+      "id": "grp:communications.delivery_status",
+      "units": [
+        "communications.delivery_status",
+        "communications.message"
+      ],
+      "writeEntries": [
+        "fixture:communications/messages@post"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:communications.email",
+      "units": [
+        "communications.email"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:communications.email_return_stat",
+      "units": [
+        "communications.email_return_stat"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:communications.email_stat",
+      "units": [
+        "communications.email_stat"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:communications.mailing_list",
+      "units": [
+        "communications.mailing_list"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:communications.mailing_list_member",
+      "units": [
+        "communications.mailing_list_member"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:communications.message_template",
+      "units": [
+        "communications.message_template"
+      ],
+      "writeEntries": [
+        "fixture:communications/templates@post"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:communications.trash",
+      "units": [
+        "communications.trash"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:content.approval_action",
+      "units": [
+        "content.approval_action",
+        "content.approval_chain",
+        "content.approval_membership",
+        "content.approval_request",
+        "content.category",
+        "content.changeset",
+        "content.changeset_category_assign",
+        "content.changeset_tag_assign",
+        "content.comment",
+        "content.content",
+        "content.content_assignment",
+        "content.content_category_assign",
+        "content.content_object",
+        "content.content_rating",
+        "content.content_related",
+        "content.content_remote_pointer",
+        "content.content_stats",
+        "content.content_tag",
+        "content.extend_data",
+        "content.feed",
+        "content.feed_advanced_param",
+        "content.feed_item",
+        "content.file",
+        "content.file_metadata",
+        "content.filename_archive",
+        "content.form_response_packet",
+        "content.form_response_question",
+        "content.public_submission_approval",
+        "content.source_map",
+        "content.trash"
+      ],
+      "writeEntries": [
+        "admin:carch.approvalaction",
+        "admin:carch.approvalaction{action=approve}",
+        "admin:carch.cropimage",
+        "admin:carch.datamanager",
+        "admin:carch.edit",
+        "admin:carch.list",
+        "admin:carch.loadfilemetadata",
+        "admin:carch.lockfile",
+        "admin:carch.unlockfile",
+        "admin:carch.unlocknode",
+        "admin:carch.update",
+        "admin:carch.updateobjectparams",
+        "admin:carch.variationtargeting",
+        "admin:ccategory.update",
+        "admin:cchain.delete",
+        "admin:cchain.save",
+        "admin:cchangesets.delete",
+        "admin:cchangesets.removeitem",
+        "admin:cchangesets.rollback",
+        "admin:cchangesets.save",
+        "admin:ccomments.approve",
+        "admin:ccomments.bulkedit",
+        "admin:ccomments.delete",
+        "admin:ccomments.markasspam",
+        "admin:ccomments.purgedeletedcomments",
+        "admin:ccomments.singleedit",
+        "admin:ccomments.unapprove",
+        "admin:cfeed.update",
+        "admin:cform.importform",
+        "api:category.delete",
+        "api:category.save",
+        "api:changeset.delete",
+        "api:changeset.save",
+        "api:changesetcategoryassignment.delete",
+        "api:changesetcategoryassignment.save",
+        "api:comment.delete",
+        "api:comment.save",
+        "api:comment.~delete",
+        "api:comment.~flag",
+        "api:comment.~markasspam",
+        "api:comment.~undelete",
+        "api:comment.~unmarkasspam",
+        "api:content.delete",
+        "api:content.save",
+        "api:contentcategoryassign.delete",
+        "api:contentcategoryassign.save",
+        "api:contentnav.delete",
+        "api:contentnav.save",
+        "api:feed.delete",
+        "api:feed.save",
+        "api:file.delete",
+        "api:file.save",
+        "api:filemetadata.delete",
+        "api:filemetadata.save",
+        "api:stats.delete",
+        "api:stats.save",
+        "cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=flag",
+        "cfm:/core/modules/v1/rater/ajax/saverate.cfm",
+        "render:file",
+        "rest:category.delete",
+        "rest:category.save",
+        "rest:changeset.delete",
+        "rest:changeset.save",
+        "rest:changesetcategoryassignment.delete",
+        "rest:changesetcategoryassignment.save",
+        "rest:comment.delete",
+        "rest:comment.save",
+        "rest:comment.~delete",
+        "rest:comment.~flag",
+        "rest:comment.~markasspam",
+        "rest:comment.~undelete",
+        "rest:comment.~unmarkasspam",
+        "rest:content.delete",
+        "rest:content.save",
+        "rest:contentcategoryassign.delete",
+        "rest:contentcategoryassign.save",
+        "rest:contentnav.delete",
+        "rest:contentnav.save",
+        "rest:feed.delete",
+        "rest:feed.save",
+        "rest:file.delete",
+        "rest:file.save",
+        "rest:filemetadata.delete",
+        "rest:filemetadata.save",
+        "rest:stats.delete",
+        "rest:stats.save"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:content.approval_assignment",
+      "units": [
+        "content.approval_assignment"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:content.changeset_rollback",
+      "units": [
+        "content.changeset_rollback"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:content.commenter",
+      "units": [
+        "content.commenter"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:content.display_title_approval",
+      "units": [
+        "content.display_title_approval"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:content.extend_attribute",
+      "units": [
+        "content.extend_attribute"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:content.extend_rc_set",
+      "units": [
+        "content.extend_rc_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:content.extend_set",
+      "units": [
+        "content.extend_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:content.extend_subtype",
+      "units": [
+        "content.extend_subtype"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:content.variation_targeting",
+      "units": [
+        "content.variation_targeting"
+      ],
+      "writeEntries": [
+        "api:variationtargeting.delete",
+        "api:variationtargeting.save",
+        "rest:variationtargeting.delete",
+        "rest:variationtargeting.save"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:esignature.audit_entry",
+      "units": [
+        "esignature.audit_entry",
+        "esignature.signature",
+        "esignature.signature_request"
+      ],
+      "writeEntries": [
+        "fixture:esignature/requests/{id}/sign@post",
+        "fixture:esignature/requests@post"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:finance.attachment",
+      "units": [
+        "finance.attachment"
+      ],
+      "writeEntries": [
+        "fixture:finance/records/{id}/attachments@post"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:finance.record",
+      "units": [
+        "finance.record",
+        "finance.record_version",
+        "finance.rollup"
+      ],
+      "writeEntries": [
+        "fixture:finance/records/{id}/approve@post",
+        "fixture:finance/records/{id}/edit@post",
+        "fixture:finance/records/{id}/reject@post",
+        "fixture:finance/records/{id}/resubmit@post",
+        "fixture:finance/records/{id}/submit@post",
+        "fixture:finance/records@post"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:identity.credential",
+      "units": [
+        "identity.credential",
+        "identity.group_account",
+        "identity.login_state",
+        "identity.membership",
+        "identity.oauth_token",
+        "identity.redirect",
+        "identity.user_account",
+        "identity.user_address",
+        "identity.user_device",
+        "identity.user_interest",
+        "identity.user_strike",
+        "identity.user_tag",
+        "people.person",
+        "people.user_address",
+        "people.user_interest",
+        "people.user_tag"
+      ],
+      "writeEntries": [
+        "admin:ceditprofile.edit",
+        "admin:ceditprofile.update",
+        "admin:clogin.login",
+        "admin:clogin.main",
+        "admin:cusers.addtogroup",
+        "admin:cusers.edituser",
+        "admin:cusers.removefromgroup",
+        "admin:cusers.updateaddress",
+        "admin:cusers.update{type=1}",
+        "admin:cusers.update{type=2,action=add}",
+        "admin:cusers.update{type=2,action=update}",
+        "api:address.save",
+        "api:group.save",
+        "api:login",
+        "api:user.save",
+        "rest:address.save",
+        "rest:group.save",
+        "rest:login",
+        "rest:oauth",
+        "rest:oauth2",
+        "rest:tokeninfo",
+        "rest:user.save"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:identity.extend_data_user_activity",
+      "units": [
+        "identity.extend_data_user_activity"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:identity.oauth_client",
+      "units": [
+        "identity.oauth_client"
+      ],
+      "writeEntries": [
+        "admin:cwebservice.delete",
+        "admin:cwebservice.save"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:identity.permission",
+      "units": [
+        "identity.permission"
+      ],
+      "writeEntries": [
+        "admin:cperm.updatemodule"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:identity.remote_session",
+      "units": [
+        "identity.remote_session"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:identity.trash",
+      "units": [
+        "identity.trash"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:identity.user_favorite",
+      "units": [
+        "identity.user_favorite"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:people.extend_attribute",
+      "units": [
+        "people.extend_attribute"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:people.extend_data",
+      "units": [
+        "people.extend_data"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:people.extend_data_user_activity",
+      "units": [
+        "people.extend_data_user_activity"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:people.extend_rc_set",
+      "units": [
+        "people.extend_rc_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:people.extend_set",
+      "units": [
+        "people.extend_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:people.extend_subtype",
+      "units": [
+        "people.extend_subtype"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:people.person_archive",
+      "units": [
+        "people.person_archive",
+        "timesheets.blackout"
+      ],
+      "writeEntries": [
+        "fixture:people/persons/{id}/archive@post"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:people.trash",
+      "units": [
+        "people.trash"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:people.user_favorite",
+      "units": [
+        "people.user_favorite"
+      ],
+      "writeEntries": [
+        "cfm:/core/modules/v1/favorites/ajax/deletefavorite.cfm",
+        "cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm",
+        "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:programs_sites.directory",
+      "units": [
+        "programs_sites.directory"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:programs_sites.extend_attribute",
+      "units": [
+        "programs_sites.extend_attribute"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:programs_sites.extend_data",
+      "units": [
+        "programs_sites.extend_data"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:programs_sites.extend_rc_set",
+      "units": [
+        "programs_sites.extend_rc_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:programs_sites.extend_set",
+      "units": [
+        "programs_sites.extend_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:programs_sites.extend_subtype",
+      "units": [
+        "programs_sites.extend_subtype"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:programs_sites.image_size",
+      "units": [
+        "programs_sites.image_size"
+      ],
+      "writeEntries": [
+        "admin:csettings.loadcustomimages"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:programs_sites.site",
+      "units": [
+        "programs_sites.site"
+      ],
+      "writeEntries": [
+        "admin:csettings.list"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:programs_sites.system_object",
+      "units": [
+        "programs_sites.system_object"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:programs_sites.trash",
+      "units": [
+        "programs_sites.trash"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:reporting.export_definition",
+      "units": [
+        "reporting.export_definition"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:reporting.export_job",
+      "units": [
+        "reporting.export_job"
+      ],
+      "writeEntries": [
+        "fixture:reporting/exports@post"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:reporting.session_tracking",
+      "units": [
+        "reporting.session_tracking"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:surveys.survey",
+      "units": [
+        "surveys.survey",
+        "surveys.survey_reminder",
+        "surveys.survey_schedule"
+      ],
+      "writeEntries": [
+        "fixture:surveys/surveys/{id}/launch@get",
+        "fixture:surveys/surveys/{id}/launch@post",
+        "fixture:surveys/surveys/{id}/remind@get",
+        "fixture:surveys/surveys/{id}/remind@post",
+        "fixture:surveys/surveys/{id}/schedule@post",
+        "fixture:surveys/surveys@post"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:surveys.survey_response",
+      "units": [
+        "surveys.survey_response"
+      ],
+      "writeEntries": [
+        "fixture:surveys/surveys/{id}/responses@post"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:surveys.survey_target",
+      "units": [
+        "surveys.survey_target"
+      ],
+      "writeEntries": [
+        "fixture:surveys/surveys/{id}/targets/bulk@post"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:timesheets.approval_action",
+      "units": [
+        "timesheets.approval_action",
+        "timesheets.timesheet_day"
+      ],
+      "writeEntries": [
+        "fixture:timesheets/days/{id}/primary-approve@post",
+        "fixture:timesheets/days/{id}/resubmit@post",
+        "fixture:timesheets/days/{id}/return@post",
+        "fixture:timesheets/days/{id}/secondary-approve@post",
+        "fixture:timesheets/days/{id}/submit@post"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:timesheets.timesheet",
+      "units": [
+        "timesheets.timesheet"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    }
+  ]
+}
