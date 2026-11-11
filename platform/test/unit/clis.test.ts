@@ -1,0 +1,599 @@
+import { fileURLToPath } from 'node:url';
+import type { DestinationStream } from 'pino';
+import type { QueryConfig, QueryResult, QueryResultRow } from 'pg';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { EventPublisher } from '../../src/events/index.js';
+import { createLogger } from '../../src/logging/index.js';
+import { UsageError, main, parseArgs, runReplay, serviceSchema } from '../../src/outbox/cli.js';
+import { localTimestamp } from '../../src/outbox/ddl.js';
+import { resetOutboxRuntimes, type OutboxRuntime } from '../../src/outbox/flush.js';
+import { baseEnvSchema, fixedClock } from '../../src/service-kit/index.js';
+import type { MetadataTx, TenantDb, TenantTx } from '../../src/tenancy/index.js';
+import { tenantIdForSite } from '../../src/tenancy/tenant-id.js';
+
+type WriteCallback = (err?: Error | null) => void;
+
+type LogLine = Record<string, unknown>;
+
+/** One outbox row as the fake table stores it; `seq` is unique across tenants, as the identity column is. */
+interface StoredRow {
+  seq: number;
+  tenantId: string;
+  orderingKey: string;
+  publishedAt?: string;
+}
+
+interface Statement {
+  tenantId: string | null;
+  sql: string;
+  values: unknown[] | undefined;
+}
+
+const state = vi.hoisted(() => ({ createPool: vi.fn(), createPublisher: vi.fn() }));
+
+vi.mock('../../src/tenancy/index.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/tenancy/index.js')>()),
+  createPool: state.createPool,
+}));
+
+vi.mock('../../src/events/index.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/events/index.js')>()),
+  createPublisher: state.createPublisher,
+}));
+
+const USAGE = 'usage: opt2-outbox replay --since <ISO-8601 timestamp> [--tenant <uuid>] [--schema <name>]';
+const TENANT_A = tenantIdForSite('tenant-a');
+const TENANT_B = tenantIdForSite('tenant-b');
+const SINCE_ISO = '2026-06-01T09:30:00.000Z';
+const SINCE = new Date(SINCE_ISO);
+const NOW = new Date(2026, 5, 30, 14, 5, 9, 123);
+const TOPIC = 'people.person.archived.v1';
+
+const ENV: Record<string, string> = {
+  PORT: '8112',
+  OPT2_SERVICE_NAME: 'people',
+  OPT2_ENV: 'local',
+  OPT2_DB_AUTH: 'password',
+  PG_HOST: '127.0.0.1',
+  PG_PORT: '5432',
+  PG_DATABASE: 'masa_services_unit',
+  PG_USER: 'people_app',
+  PG_PASSWORD: 'unused',
+  PUBSUB_EMULATOR_HOST: 'localhost:8085',
+  GOOGLE_CLOUD_PROJECT: 'opt2-unit',
+  OPT2_JWKS_URL: 'http://127.0.0.1:8111/internal/v1/jwks',
+  OPT2_TOKEN_ISSUER: 'opt2-local-identity',
+  OPT2_TOKEN_AUDIENCE: 'opt2-local',
+};
+
+let stdout: string;
+let stderr: string;
+
+/** The replay SELECT against `schema`. */
+function selectSql(schema: string): string {
+  return (
+    `SELECT * FROM "${schema}".outbox WHERE NOT held AND created_at >= $1 AND seq > $2` +
+    ' ORDER BY seq LIMIT $3 FOR UPDATE SKIP LOCKED'
+  );
+}
+
+/** The stamp UPDATE against `schema`. */
+function stampSql(schema: string): string {
+  return `UPDATE "${schema}".outbox SET published_at = $1 WHERE event_id = ANY($2::uuid[]) AND published_at IS NULL`;
+}
+
+/** A 36-character RFC 4122 event id ending in `seq`. */
+function eventId(seq: number): string {
+  return `0f7c6a52-0c8e-4d8e-9a43-${seq.toString(16).padStart(12, '0')}`;
+}
+
+/** The envelope stored with `row`. */
+function envelope(row: StoredRow): Record<string, unknown> {
+  return { eventId: eventId(row.seq), tenantId: row.tenantId, aggregateId: row.orderingKey, payload: { seq: row.seq } };
+}
+
+/** A snake_case outbox row as pg returns it, `seq` as text. */
+function dbRow(row: StoredRow): QueryResultRow {
+  return {
+    seq: String(row.seq),
+    tenant_id: row.tenantId,
+    event_id: eventId(row.seq),
+    topic: TOPIC,
+    kind: 'state',
+    ordering_key: row.orderingKey,
+    envelope: envelope(row),
+    operation_id: null,
+    held: false,
+    created_at: '2026-06-15 10:00:00.000',
+    published_at: row.publishedAt ?? null,
+  };
+}
+
+function rows(tenantId: string, seqs: readonly number[], key = (seq: number) => `key-${String(seq)}`): StoredRow[] {
+  return seqs.map((seq) => ({ seq, tenantId, orderingKey: key(seq) }));
+}
+
+function result<R extends QueryResultRow>(command: string, found: QueryResultRow[]): QueryResult<R> {
+  return { command, rowCount: found.length, oid: 0, fields: [], rows: found as R[] };
+}
+
+/**
+ * A TenantDb over `stored` that answers the replay SELECT with the tenant's rows after `$2`, at most `$3`, in seq order,
+ * and the registry SELECT with `registry`; records every statement and every tenant transaction.
+ */
+function fakeDb(stored: readonly StoredRow[], opts: { schema?: string; registry?: readonly string[] } = {}) {
+  const schema = opts.schema ?? 'people';
+  const statements: Statement[] = [];
+  const tenants: string[] = [];
+  const end = vi.fn(() => Promise.resolve());
+  const withMetadata = vi.fn();
+  const registry = (opts.registry ?? []).map((id, n) => ({ tenant_id: id, site_id: `site-${String(n)}` }));
+  const query = (tenantId: string | null) =>
+    function <R extends QueryResultRow = QueryResultRow>(
+      text: string | QueryConfig,
+      values?: unknown[],
+    ): Promise<QueryResult<R>> {
+      const sql = typeof text === 'string' ? text : text.text;
+      statements.push({ tenantId, sql, values });
+      if (tenantId === null) {
+        return Promise.resolve(result<R>('SELECT', registry));
+      }
+      if (!sql.startsWith('SELECT')) {
+        return Promise.resolve(result<R>('UPDATE', []));
+      }
+      const [, after, limit] = values as [string, string, number];
+      const page = stored
+        .filter((row) => row.tenantId === tenantId && row.seq > Number(after))
+        .sort((a, b) => a.seq - b.seq)
+        .slice(0, limit)
+        .map(dbRow);
+      return Promise.resolve(result<R>('SELECT', page));
+    };
+  withMetadata.mockImplementation((fn: (tx: MetadataTx) => Promise<unknown>) =>
+    fn({ schema, kind: 'metadata', onCommit: vi.fn(), query: query(null) }),
+  );
+  const db: TenantDb = {
+    schema,
+    withTenant: (tenantId, fn) => {
+      tenants.push(tenantId);
+      const tx: TenantTx = { schema, kind: 'tenant', tenantId, onCommit: vi.fn(), query: query(tenantId) };
+      return fn(tx);
+    },
+    withMetadata: withMetadata as TenantDb['withMetadata'],
+    end,
+  };
+  const selects = () => statements.filter((s) => s.tenantId !== null && s.sql.startsWith('SELECT'));
+  const updates = () => statements.filter((s) => s.sql.startsWith('UPDATE'));
+  return { db, statements, tenants, end, withMetadata, selects, updates };
+}
+
+/** A publisher whose publish rejects for the listed event ids; `order` records close calls. */
+function fakePublisher(failing: readonly string[] = [], order: string[] = []) {
+  const publish = vi.fn((_topic: string, sent: { eventId: string }) =>
+    failing.includes(sent.eventId)
+      ? Promise.reject(new Error(`publish rejected ${sent.eventId}`))
+      : Promise.resolve(`msg-${sent.eventId}`),
+  );
+  const close = vi.fn(() => {
+    order.push('publisher.close');
+    return Promise.resolve();
+  });
+  const publisher = { publish, publishRaw: vi.fn(), close } as unknown as EventPublisher;
+  return { publisher, publish, close };
+}
+
+function runtimeWith(db: TenantDb, failing: readonly string[] = []) {
+  const lines: LogLine[] = [];
+  const destination: DestinationStream = { write: (chunk: string) => void lines.push(JSON.parse(chunk) as LogLine) };
+  const logger = createLogger({ service: 'people', version: '1.0.0', env: 'local', destination });
+  const { publisher, publish } = fakePublisher(failing);
+  const runtime: OutboxRuntime = { service: 'people', db, publisher, logger, clock: fixedClock(NOW) };
+  return { runtime, publish, lines };
+}
+
+function publishedIds(publish: ReturnType<typeof fakePublisher>['publish']): string[] {
+  return publish.mock.calls.map(([, sent]) => sent.eventId);
+}
+
+/** A `write` replacement that appends each chunk to `sink` and answers the callback with `error`. */
+function capture(sink: (chunk: string) => void, error: Error | null = null) {
+  return (chunk: string | Uint8Array, encodingOrCallback?: BufferEncoding | WriteCallback, callback?: WriteCallback): boolean => {
+    sink(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+    (typeof encodingOrCallback === 'function' ? encodingOrCallback : callback)?.(error);
+    return error === null;
+  };
+}
+
+/** Sets every base variable from ENV and `overrides`, with TZ as the zone this process already applies. */
+function stubEnv(overrides: Record<string, string | undefined> = {}): void {
+  const env: Record<string, string | undefined> = { ...ENV, TZ: Intl.DateTimeFormat().resolvedOptions().timeZone, ...overrides };
+  for (const key of Object.keys(baseEnvSchema.shape)) vi.stubEnv(key, env[key]);
+}
+
+function usageErrorOf(argv: string[]): UsageError {
+  try {
+    parseArgs(argv);
+  } catch (err) {
+    expect(err).toBeInstanceOf(UsageError);
+    return err as UsageError;
+  }
+  throw new Error(`expected parseArgs to reject ${JSON.stringify(argv)}`);
+}
+
+function stderrLines(): LogLine[] {
+  return stderr
+    .split('\n')
+    .filter((line) => line.startsWith('{'))
+    .map((line) => JSON.parse(line) as LogLine);
+}
+
+beforeEach(() => {
+  stdout = '';
+  stderr = '';
+  state.createPool.mockReset();
+  state.createPublisher.mockReset();
+  vi.spyOn(process.stdout, 'write').mockImplementation(capture((chunk) => (stdout += chunk)));
+  vi.spyOn(process.stderr, 'write').mockImplementation(capture((chunk) => (stderr += chunk)));
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  resetOutboxRuntimes();
+});
+
+describe('opt2-outbox parseArgs', () => {
+  it.each([
+    { argv: ['replay', '--since', SINCE_ISO], expected: { since: SINCE } },
+    {
+      argv: ['replay', '--since', SINCE_ISO, '--tenant', TENANT_A, '--schema', 'programs_sites'],
+      expected: { since: SINCE, tenant: TENANT_A, schema: 'programs_sites' },
+    },
+    {
+      argv: ['--since=2026-06-01', 'replay', '--tenant', TENANT_B.toUpperCase()],
+      expected: { since: new Date('2026-06-01'), tenant: TENANT_B.toUpperCase() },
+    },
+  ])('parses $argv', ({ argv, expected }) => {
+    expect(parseArgs(argv)).toStrictEqual(expected);
+  });
+
+  it.each([
+    { argv: [], message: /^missing subcommand$/ },
+    { argv: ['--since', SINCE_ISO], message: /^missing subcommand$/ },
+    { argv: ['sweep', '--since', SINCE_ISO], message: /^unknown subcommand "sweep"$/ },
+    { argv: ['replay', 'extra', '--since', SINCE_ISO], message: /^unknown subcommand "replay extra"$/ },
+    { argv: ['replay', '--since', SINCE_ISO, '--verbose'], message: /^Unknown option '--verbose'/ },
+    { argv: ['replay', '--since'], message: /^Option '--since <value>' argument missing/ },
+    { argv: ['replay'], message: /^missing --since$/ },
+    { argv: ['replay', '--since', 'yesterday'], message: /^--since must be an ISO-8601 timestamp, got "yesterday"$/ },
+    {
+      argv: ['replay', '--since', SINCE_ISO, '--tenant', 'tenant-a'],
+      message: /^--tenant must be a tenant UUID, got "tenant-a"$/,
+    },
+    {
+      argv: ['replay', '--since', SINCE_ISO, '--schema', 'Programs-Sites'],
+      message: /^--schema: Invalid schema identifier: "Programs-Sites"$/,
+    },
+    { argv: ['replay', '--since', SINCE_ISO, '--schema', 'x".outbox'], message: /^--schema: Invalid schema identifier: / },
+  ])('rejects $argv with a UsageError', ({ argv, message }) => {
+    expect(usageErrorOf(argv).message).toMatch(message);
+  });
+});
+
+describe('opt2-outbox serviceSchema', () => {
+  it.each([
+    ['programs-sites', 'programs_sites'],
+    ['strategies-content', 'content'],
+    ['e-signature', 'esignature'],
+    ['people', 'people'],
+    ['surveys', 'surveys'],
+  ])('maps service %s to schema %s', (service, schema) => {
+    expect(serviceSchema(service)).toBe(schema);
+  });
+});
+
+describe('opt2-outbox runReplay', () => {
+  it('republishes each stored envelope since the cut-off with its original eventId, stamping only unpublished rows', async () => {
+    const stored = rows(TENANT_A, [1, 2, 3, 4, 5]);
+    (stored[1] as StoredRow).publishedAt = '2026-06-20 08:00:00.000';
+    const { db, selects, updates, tenants } = fakeDb(stored);
+    const { runtime, publish } = runtimeWith(db);
+
+    const summary = await runReplay({ runtime, since: SINCE, tenantsOf: () => Promise.resolve([TENANT_A]), batchSize: 2 });
+
+    expect(summary).toEqual({ replayed: 5, failed: 0, skipped: 0, tenants: 1 });
+    expect(publish.mock.calls).toEqual(stored.map((row) => [TOPIC, envelope(row)]));
+    expect(selects().map((s) => s.sql)).toEqual([selectSql('people'), selectSql('people'), selectSql('people')]);
+    expect(selects().every((s) => s.values?.[0] === localTimestamp(SINCE))).toBe(true);
+    expect(updates()).toEqual([
+      { tenantId: TENANT_A, sql: stampSql('people'), values: [localTimestamp(NOW), [eventId(1), eventId(2)]] },
+      { tenantId: TENANT_A, sql: stampSql('people'), values: [localTimestamp(NOW), [eventId(3), eventId(4)]] },
+      { tenantId: TENANT_A, sql: stampSql('people'), values: [localTimestamp(NOW), [eventId(5)]] },
+    ]);
+    expect(tenants).toEqual([TENANT_A, TENANT_A, TENANT_A]);
+  });
+
+  it.each([
+    { count: 5, batchSize: 2, batch: '2', pages: [['0', 2], ['2', 2], ['4', 2]] },
+    { count: 4, batchSize: 2, batch: '2', pages: [['0', 2], ['2', 2], ['4', 2]] },
+    { count: 3, batchSize: undefined, batch: 'the default 500', pages: [['0', 500]] },
+    { count: 0, batchSize: 1, batch: '1', pages: [['0', 1]] },
+  ])('pages $count rows by seq in batches of $batch until a page is short', async ({ count, batchSize, pages }) => {
+    const { db, selects } = fakeDb(rows(TENANT_A, Array.from({ length: count }, (_, n) => n + 1)));
+    const { runtime, publish } = runtimeWith(db);
+
+    const summary = await runReplay({ runtime, since: SINCE, tenant: TENANT_A, batchSize });
+
+    expect(summary).toEqual({ replayed: count, failed: 0, skipped: 0, tenants: 1 });
+    expect(selects().map((s) => s.values?.slice(1))).toEqual(pages);
+    expect(publish).toHaveBeenCalledTimes(count);
+  });
+
+  it('counts a failed row and skips later rows with its ordering key on the same and on later pages', async () => {
+    const keys: Record<number, string> = { 1: 'key-a', 2: 'key-a', 3: 'key-b', 4: 'key-a', 5: 'key-b' };
+    const { db, updates } = fakeDb(rows(TENANT_A, [1, 2, 3, 4, 5], (seq) => keys[seq] as string));
+    const { runtime, publish, lines } = runtimeWith(db, [eventId(1)]);
+
+    const summary = await runReplay({ runtime, since: SINCE, tenant: TENANT_A, batchSize: 3 });
+
+    expect(summary).toEqual({ replayed: 2, failed: 1, skipped: 2, tenants: 1 });
+    expect(publishedIds(publish)).toEqual([eventId(1), eventId(3), eventId(5)]);
+    expect(updates().map((s) => s.values?.[1])).toEqual([[eventId(3)], [eventId(5)]]);
+    expect(lines).toEqual([
+      expect.objectContaining({ severity: 'ERROR', message: 'outbox publish failed', eventId: eventId(1) }),
+    ]);
+  });
+
+  it('replays each listed tenant once when ids differ only in case', async () => {
+    const { db, tenants } = fakeDb([...rows(TENANT_A, [1, 3]), ...rows(TENANT_B, [2])]);
+    const { runtime, publish } = runtimeWith(db);
+    const tenantsOf = () => Promise.resolve([TENANT_A.toUpperCase(), TENANT_A, TENANT_B]);
+
+    const summary = await runReplay({ runtime, since: SINCE, tenantsOf });
+
+    expect(summary).toEqual({ replayed: 3, failed: 0, skipped: 0, tenants: 2 });
+    expect(tenants).toEqual([TENANT_A, TENANT_B]);
+    expect(publishedIds(publish)).toEqual([eventId(1), eventId(3), eventId(2)]);
+  });
+
+  it('lists the tenants of the service tenant_registry when neither --tenant nor tenantsOf is given', async () => {
+    const { db, tenants, statements } = fakeDb([...rows(TENANT_A, [1]), ...rows(TENANT_B, [2])], {
+      registry: [TENANT_B, TENANT_A, TENANT_B],
+    });
+    const { runtime } = runtimeWith(db);
+
+    const summary = await runReplay({ runtime, since: SINCE });
+
+    expect(summary).toEqual({ replayed: 2, failed: 0, skipped: 0, tenants: 2 });
+    expect(statements[0]).toEqual({
+      tenantId: null,
+      sql: 'SELECT tenant_id, site_id FROM people.tenant_registry ORDER BY site_id',
+      values: undefined,
+    });
+    expect(tenants).toEqual([TENANT_B, TENANT_A]);
+  });
+
+  it('replays only the given --tenant, case-folded, without listing tenants', async () => {
+    const { db, tenants, withMetadata } = fakeDb([...rows(TENANT_A, [1]), ...rows(TENANT_B, [2])], {
+      registry: [TENANT_A, TENANT_B],
+    });
+    const { runtime, publish } = runtimeWith(db);
+    const tenantsOf = vi.fn(() => Promise.resolve([TENANT_B]));
+
+    const summary = await runReplay({ runtime, since: SINCE, tenant: TENANT_A.toUpperCase(), tenantsOf });
+
+    expect(summary).toEqual({ replayed: 1, failed: 0, skipped: 0, tenants: 1 });
+    expect(tenants).toEqual([TENANT_A]);
+    expect(publishedIds(publish)).toEqual([eventId(1)]);
+    expect(tenantsOf).not.toHaveBeenCalled();
+    expect(withMetadata).not.toHaveBeenCalled();
+  });
+
+  it.each([0, -1, 2.5, Number.NaN])('rejects batchSize %s before listing tenants or opening a transaction', async (batchSize) => {
+    const { db, tenants } = fakeDb(rows(TENANT_A, [1]));
+    const { runtime } = runtimeWith(db);
+    const tenantsOf = vi.fn(() => Promise.resolve([TENANT_A]));
+
+    await expect(runReplay({ runtime, since: SINCE, tenantsOf, batchSize })).rejects.toThrow(
+      new RangeError(`batchSize must be a positive integer, got ${String(batchSize)}`),
+    );
+    expect(tenantsOf).not.toHaveBeenCalled();
+    expect(tenants).toEqual([]);
+  });
+});
+
+describe('opt2-outbox main', () => {
+  /** Answers createPool with `db` and createPublisher with `publisher`, recording pool end after publisher close. */
+  function serve(db: ReturnType<typeof fakeDb>, publisher: ReturnType<typeof fakePublisher>, order: string[]): void {
+    db.end.mockImplementation(() => {
+      order.push('db.end');
+      return Promise.resolve();
+    });
+    state.createPool.mockResolvedValue(db.db);
+    state.createPublisher.mockReturnValue(publisher.publisher);
+  }
+
+  it('replays each registry tenant of the service schema, prints the summary, then closes publisher and pool', async () => {
+    stubEnv({ OPT2_SERVICE_NAME: 'programs-sites' });
+    const order: string[] = [];
+    const db = fakeDb([...rows(TENANT_A, [1]), ...rows(TENANT_B, [2])], {
+      schema: 'programs_sites',
+      registry: [TENANT_A, TENANT_B],
+    });
+    const publisher = fakePublisher([], order);
+    serve(db, publisher, order);
+
+    expect(await main(['replay', '--since', SINCE_ISO])).toBe(0);
+
+    expect(stdout).toBe(`{"schema":"programs_sites","since":"${SINCE_ISO}","replayed":2,"failed":0,"skipped":0,"tenants":2}\n`);
+    expect(stderr).toBe('');
+    expect(state.createPool).toHaveBeenCalledTimes(1);
+    const [options] = state.createPool.mock.calls[0] as [{ env: object; schema: string; onError: unknown }];
+    expect(options.env).toMatchObject({ OPT2_DB_AUTH: 'password', PG_DATABASE: 'masa_services_unit', PG_USER: 'people_app' });
+    expect(options.schema).toBe('programs_sites');
+    expect(options.onError).toBeTypeOf('function');
+    expect(state.createPublisher).toHaveBeenCalledWith({ projectId: 'opt2-unit', emulatorHost: 'localhost:8085' });
+    expect(publishedIds(publisher.publish)).toEqual([eventId(1), eventId(2)]);
+    expect(order).toEqual(['publisher.close', 'db.end']);
+  });
+
+  it('replays only --tenant in --schema and echoes the tenant in the summary line', async () => {
+    stubEnv();
+    const order: string[] = [];
+    const db = fakeDb([...rows(TENANT_A, [1]), ...rows(TENANT_B, [2])], { schema: 'stub' });
+    const publisher = fakePublisher([], order);
+    serve(db, publisher, order);
+
+    expect(await main(['replay', '--since', SINCE_ISO, '--tenant', TENANT_B, '--schema', 'stub'])).toBe(0);
+
+    expect(stdout).toBe(
+      `{"schema":"stub","since":"${SINCE_ISO}","tenant":"${TENANT_B}","replayed":1,"failed":0,"skipped":0,"tenants":1}\n`,
+    );
+    expect(state.createPool).toHaveBeenCalledWith(expect.objectContaining({ schema: 'stub' }));
+    expect(db.withMetadata).not.toHaveBeenCalled();
+    expect(db.tenants).toEqual([TENANT_B]);
+  });
+
+  it('exits 1 and logs the failure on stderr when a row fails to republish', async () => {
+    stubEnv();
+    const order: string[] = [];
+    const db = fakeDb(rows(TENANT_A, [1, 2]), { registry: [TENANT_A] });
+    const publisher = fakePublisher([eventId(1)], order);
+    serve(db, publisher, order);
+
+    expect(await main(['replay', '--since', SINCE_ISO])).toBe(1);
+
+    expect(JSON.parse(stdout)).toEqual({ schema: 'people', since: SINCE_ISO, replayed: 1, failed: 1, skipped: 0, tenants: 1 });
+    expect(stderrLines()).toEqual([
+      expect.objectContaining({ severity: 'ERROR', service: 'people', message: 'outbox publish failed', eventId: eventId(1) }),
+    ]);
+    expect(order).toEqual(['publisher.close', 'db.end']);
+  });
+
+  it('logs pool errors on stderr, never on stdout', async () => {
+    stubEnv();
+    const order: string[] = [];
+    serve(fakeDb([], { registry: [] }), fakePublisher([], order), order);
+
+    expect(await main(['replay', '--since', SINCE_ISO])).toBe(0);
+    const [{ onError }] = state.createPool.mock.calls[0] as [{ onError: (err: unknown) => void }];
+    onError(new Error('idle client terminated'));
+
+    expect(stdout).toBe(`{"schema":"people","since":"${SINCE_ISO}","replayed":0,"failed":0,"skipped":0,"tenants":0}\n`);
+    expect(stderrLines()).toMatchObject([{ severity: 'ERROR', message: 'database pool error', error: { type: 'Error' } }]);
+  });
+
+  it('exits 1 without a publisher when the pool cannot open', async () => {
+    stubEnv();
+    state.createPool.mockRejectedValue(new Error('connect ECONNREFUSED 127.0.0.1:5432'));
+
+    expect(await main(['replay', '--since', SINCE_ISO])).toBe(1);
+
+    expect(stderr).toBe('opt2-outbox: connect ECONNREFUSED 127.0.0.1:5432\n');
+    expect(stdout).toBe('');
+    expect(state.createPublisher).not.toHaveBeenCalled();
+  });
+
+  it('ends the pool and exits 1 when the publisher cannot be created', async () => {
+    stubEnv();
+    const order: string[] = [];
+    const db = fakeDb([], { registry: [TENANT_A] });
+    serve(db, fakePublisher([], order), order);
+    state.createPublisher.mockImplementation(() => {
+      throw new Error('invalid project');
+    });
+
+    expect(await main(['replay', '--since', SINCE_ISO])).toBe(1);
+
+    expect(stderr).toBe('opt2-outbox: invalid project\n');
+    expect(order).toEqual(['db.end']);
+    expect(db.tenants).toEqual([]);
+  });
+
+  it('still ends the pool and exits 1 when closing the publisher fails', async () => {
+    stubEnv();
+    const order: string[] = [];
+    const db = fakeDb(rows(TENANT_A, [1]), { registry: [TENANT_A] });
+    const publisher = fakePublisher([], order);
+    publisher.close.mockImplementation(() => {
+      order.push('publisher.close');
+      return Promise.reject(new Error('close timed out'));
+    });
+    serve(db, publisher, order);
+
+    expect(await main(['replay', '--since', SINCE_ISO])).toBe(1);
+
+    expect(stderr).toBe('opt2-outbox: close timed out\n');
+    expect(stdout).toBe('');
+    expect(order).toEqual(['publisher.close', 'db.end']);
+  });
+
+  it('exits 1 when stdout cannot take the summary line', async () => {
+    stubEnv();
+    const order: string[] = [];
+    serve(fakeDb([], { registry: [] }), fakePublisher([], order), order);
+    vi.spyOn(process.stdout, 'write').mockImplementation(capture((chunk) => (stdout += chunk), new Error('write EPIPE')));
+
+    expect(await main(['replay', '--since', SINCE_ISO])).toBe(1);
+
+    expect(stderr).toBe('opt2-outbox: write EPIPE\n');
+  });
+
+  it.each([
+    { argv: [], message: 'missing subcommand' },
+    { argv: ['replay'], message: 'missing --since' },
+    { argv: ['replay', '--since', 'soon'], message: '--since must be an ISO-8601 timestamp, got "soon"' },
+    { argv: ['replay', '--since', SINCE_ISO, '--tenant', 'default'], message: '--tenant must be a tenant UUID, got "default"' },
+  ])('exits 2 with the usage line on stderr for $argv before reading the environment', async ({ argv, message }) => {
+    stubEnv({ OPT2_SERVICE_NAME: undefined });
+
+    expect(await main(argv)).toBe(2);
+
+    expect(stderr).toBe(`opt2-outbox: ${message}; ${USAGE}\n`);
+    expect(stdout).toBe('');
+    expect(state.createPool).not.toHaveBeenCalled();
+  });
+
+  it('exits 2 listing each missing base variable', async () => {
+    stubEnv(Object.fromEntries(Object.keys(baseEnvSchema.shape).map((key) => [key, undefined])));
+
+    expect(await main(['replay', '--since', SINCE_ISO])).toBe(2);
+
+    expect(stderr).toMatch(/^invalid environment\n/);
+    for (const key of ['PORT', 'OPT2_SERVICE_NAME', 'OPT2_ENV', 'OPT2_TOKEN_ISSUER', 'OPT2_TOKEN_AUDIENCE', 'TZ']) {
+      expect(stderr).toContain(`\n  ${key}: is required`);
+    }
+    expect(state.createPool).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { unset: ['OPT2_DB_AUTH'], issues: ['OPT2_DB_AUTH'] },
+    { unset: ['GOOGLE_CLOUD_PROJECT'], issues: ['GOOGLE_CLOUD_PROJECT'] },
+    {
+      unset: ['OPT2_DB_AUTH', 'PG_DATABASE', 'GOOGLE_CLOUD_PROJECT'],
+      issues: ['OPT2_DB_AUTH', 'PG_DATABASE', 'GOOGLE_CLOUD_PROJECT'],
+    },
+  ])('exits 2 naming $issues when a replay setting is unset', async ({ unset, issues }) => {
+    stubEnv(Object.fromEntries(unset.map((key) => [key, undefined])));
+
+    expect(await main(['replay', '--since', SINCE_ISO])).toBe(2);
+
+    expect(stderr).toBe(`people: invalid environment\n${issues.map((key) => `  ${key}: is required\n`).join('')}`);
+    expect(state.createPool).not.toHaveBeenCalled();
+  });
+
+  it('exits with the code of main when loaded as the opt2-outbox bin', async () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+    const argv = process.argv;
+    process.argv = [argv[0] as string, fileURLToPath(new URL('../../src/outbox/cli.ts', import.meta.url)), 'replay'];
+    try {
+      vi.resetModules();
+      await import('../../src/outbox/cli.js');
+    } finally {
+      process.argv = argv;
+    }
+
+    expect(exit).toHaveBeenCalledWith(2);
+    expect(stderr).toBe(`opt2-outbox: missing --since; ${USAGE}\n`);
+  });
+});
