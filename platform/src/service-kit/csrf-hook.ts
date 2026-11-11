@@ -36,7 +36,10 @@ export interface CsrfConsumeResponse {
 export interface CsrfPreHandlerOptions {
   /** The route's legacy `validateCSRFTokens(context=…)` value. */
   contextOf: (request: FastifyRequest) => string;
-  /** Answers a rejected request, such as an admin form re-render; without it the JSON API `invalidTokens` 400 is thrown. */
+  /**
+   * Answers a rejected request, such as an admin form re-render, or leaves the reply unsent so the handler runs, as for
+   * actions that only skip their writes; without it the JSON API `invalidTokens` 400 is thrown.
+   */
   onReject?: (request: FastifyRequest, reply: FastifyReply) => Promise<unknown> | unknown;
 }
 
@@ -91,6 +94,7 @@ export function csrfPreHandler(opts: CsrfPreHandlerOptions): preHandlerAsyncHook
     }
     if (opts.onReject === undefined) throw new LegacyApiError('invalidTokens');
     await opts.onReject(request, reply);
-    return reply;
+    // The reply is thenable: returned unsent it would await a response that never comes, so the handler runs instead.
+    return reply.sent ? reply : undefined;
   };
 }

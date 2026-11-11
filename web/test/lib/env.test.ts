@@ -180,6 +180,8 @@ describe('legacySettings', () => {
         ['mode', 'mode', 'production', 'production'],
         ['dbType', 'dbtype', '', ''],
         ['indexFileInAPI', 'indexfileinurls', 'true', true],
+        ['siteIDInURLS', 'siteidinurls', 'false', false],
+        ['indexFileInURLS', 'indexfileinurls', 'true', true],
         ['serverPort', 'port', '${cgi.SERVER_PORT}', ''],
       ] as const
     ).map(([field, key, raw, expected]) => ({
@@ -263,6 +265,10 @@ describe('legacySettings', () => {
     [{ MURA_INDEXFILEINURLS: 'true' }, 'indexFileInAPI', true],
     [{ MURA_INDEXFILEINAPI: 'false' }, 'indexFileInAPI', false],
     [{ MURA_INDEXFILEINAPI: 'true', MURA_INDEXFILEINURLS: 'false' }, 'indexFileInAPI', true],
+    [{ MURA_SITEIDINURLS: 'true' }, 'siteIDInURLS', true],
+    [{ MURA_SITEIDINURLS: 'maybe' }, 'siteIDInURLS', true],
+    [{ MURA_INDEXFILEINURLS: 'false' }, 'indexFileInURLS', false],
+    [{ MURA_INDEXFILEINURLS: 'no' }, 'indexFileInURLS', false],
     [{ MURA_ASSETPATH: '/assets/' }, 'assetPath', '/assets'],
     [{ MURA_SITEDIR: 'tenants' }, 'assetPath', '/tenants'],
     [{ MURA_SITEDIR: '' }, 'assetPath', ''],

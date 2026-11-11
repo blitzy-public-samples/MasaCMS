@@ -50,12 +50,18 @@ export interface LegacySettings {
   readonly serverPort: string;
   readonly htmlEditorType: string;
   readonly fileDelim: string;
+  /** configBean `siteIDInURLS`: site URL stems carry `/<siteid>`. */
+  readonly siteIDInURLS: boolean;
+  /** configBean `indexFileInURLS`: site URL stems carry `/index.cfm`. */
+  readonly indexFileInURLS: boolean;
   readonly indexFileInAPI: boolean;
   /** Days; 0 means passwords never expire. */
   readonly expirePasswords: number;
   readonly webroot: string;
   /** configBean `assetPath`, e.g. `/sites`; the admin session's `userFilesPath` is built from it. */
   readonly assetPath: string;
+  /** configBean `getSiteAssetPath()`: `/<siteDir>`, or `''` with no site directory; site asset URLs are built from it. */
+  readonly siteAssetPath: string;
   readonly version: string;
 }
 
@@ -119,7 +125,7 @@ interface SettingRule<T> {
   readonly apply: (value: string) => T | undefined;
 }
 
-type RuledSettings = Omit<LegacySettings, 'indexFileInAPI' | 'assetPath' | 'version'>;
+type RuledSettings = Omit<LegacySettings, 'indexFileInAPI' | 'assetPath' | 'siteAssetPath' | 'version'>;
 
 const SETTING_RULES: { readonly [K in keyof RuledSettings]: SettingRule<RuledSettings[K]> } = {
   title: { key: 'title', template: 'Masa CMS', fallback: 'Masa CMS', apply: asIs },
@@ -169,6 +175,8 @@ const SETTING_RULES: { readonly [K in keyof RuledSettings]: SettingRule<RuledSet
     fallback: process.platform === 'win32' ? '\\' : '/',
     apply: (delim) => delim || undefined,
   },
+  siteIDInURLS: { key: 'siteidinurls', template: 'false', fallback: true, apply: cfBoolean },
+  indexFileInURLS: { key: 'indexfileinurls', template: 'true', fallback: true, apply: cfBoolean },
   expirePasswords: { key: 'expirepasswords', fallback: 0, apply: cfVal },
   // Masa sets it to expandPath('/muraWRM'), which only the legacy host knows.
   webroot: { key: 'webroot', fallback: '', apply: cleanFilePath },
@@ -194,6 +202,7 @@ function resolveLegacySettings(source: NodeJS.ProcessEnv): LegacySettings {
   const indexFileInAPI = sourceValue(source, 'indexfileinapi');
   // An empty assetPath falls back to configBean getSiteAssetPath(): '/<siteDir>', siteDir defaulting to 'sites'.
   const siteDir = sourceValue(source, 'sitedir') ?? 'sites';
+  const siteAssetPath = siteDir === '' ? '' : `/${siteDir}`;
   const assetPath = cleanFilePath(sourceValue(source, 'assetpath', '') ?? '');
   return {
     ...ruled,
@@ -201,7 +210,8 @@ function resolveLegacySettings(source: NodeJS.ProcessEnv): LegacySettings {
       indexFileInAPI === undefined
         ? cfBoolean(sourceValue(source, 'indexfileinurls', 'true') ?? '') !== false
         : (cfBoolean(indexFileInAPI) ?? true),
-    assetPath: assetPath !== '' ? assetPath : siteDir === '' ? '' : `/${siteDir}`,
+    assetPath: assetPath !== '' ? assetPath : siteAssetPath,
+    siteAssetPath,
     version: CORE_VERSION,
   };
 }

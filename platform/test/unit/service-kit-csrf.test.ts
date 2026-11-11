@@ -125,6 +125,7 @@ function envFor(identityOrigin: string): BaseEnv {
 }
 
 const handler = vi.fn(async () => 'saved');
+const rejected = new WeakSet<FastifyRequest>();
 
 /** An app with `/hooked` (CSRF hook, context from `?ctx`), `/rerender` (hook with onReject), `/plain` and `/tokens`. */
 async function build(identityOrigin = identity.origin): Promise<FastifyInstance> {
@@ -155,6 +156,14 @@ async function build(identityOrigin = identity.origin): Promise<FastifyInstance>
       }),
     },
     handler,
+  );
+  app.post(
+    '/skip-writes',
+    {
+      config: { opt2: { requires: ['s2'] } },
+      preHandler: csrfPreHandler({ contextOf, onReject: (request) => void rejected.add(request) }),
+    },
+    async (request) => (rejected.has(request) ? 'skipped' : handler()),
   );
   app.post('/plain', { config: { opt2: { requires: ['s2'] } } }, handler);
   app.post('/tokens', { config: { opt2: { public: true } } }, async (request) => csrfTokenFrom(request));
@@ -297,6 +306,21 @@ describe('csrfPreHandler', () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.body).toBe('<form>re-rendered</form>');
+    expect(handler).not.toHaveBeenCalled();
+    expect(identity.calls).toHaveLength(1);
+  });
+
+  it('runs the route handler when onReject leaves the reply unsent', async () => {
+    identity.answer = { status: 200, body: { valid: false } };
+    const app = await build();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/skip-writes',
+      headers: { ...AUTHENTICATED, ...FORM },
+      payload: `csrf_token=USED&csrf_token_expires=${EXPIRES}`,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toBe('skipped');
     expect(handler).not.toHaveBeenCalled();
     expect(identity.calls).toHaveLength(1);
   });

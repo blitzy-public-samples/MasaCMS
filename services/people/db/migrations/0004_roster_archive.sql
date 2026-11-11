@@ -22,8 +22,9 @@ CREATE TABLE people.roster_operation (
   operation_id char(35) NOT NULL,
   kind text NOT NULL,
   user_id char(35) NOT NULL,
-  payload jsonb NOT NULL,
-  before_image jsonb NULL,
+  -- JSON text, not jsonb: changelog images encode every column canonically as text, and pg returns jsonb as parsed objects.
+  payload text NOT NULL,
+  before_image text NULL,
   identity_xid text NULL,
   state text NOT NULL CHECK (state IN ('started','people-committed','done','rolled-back','halted')),
   error text NULL,

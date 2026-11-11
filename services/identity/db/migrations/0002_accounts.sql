@@ -160,7 +160,7 @@ CREATE POLICY tenant_isolation ON identity.user_interest
 
 CREATE TABLE identity.user_tag (
   tenant_id uuid NOT NULL,
-  -- Legacy IDENTITY value, copied as is; no sequence.
+  -- Legacy IDENTITY value, copied as is; target-created ids come from the sequence in 0005_child_id_sequences.sql.
   tagid integer NOT NULL,
   userid char(35),
   siteid text,
@@ -193,7 +193,7 @@ CREATE POLICY tenant_isolation ON identity.user_favorite
 
 CREATE TABLE identity.extend_data_user_activity (
   tenant_id uuid NOT NULL,
-  -- Legacy IDENTITY value, copied as is; no sequence.
+  -- Legacy IDENTITY value, copied as is; target-created ids come from the sequence in 0005_child_id_sequences.sql.
   dataid integer NOT NULL,
   baseid char(35) NOT NULL,
   attributeid integer NOT NULL,
