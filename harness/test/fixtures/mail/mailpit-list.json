@@ -1,0 +1,45 @@
+{
+  "total": 2,
+  "unread": 2,
+  "count": 2,
+  "messages_count": 2,
+  "messages_unread": 2,
+  "start": 0,
+  "tags": [],
+  "messages": [
+    {
+      "ID": "mpForgotMail0000000001",
+      "MessageID": "1000001.1.1782813900000.JavaMail.cfusion@localhost",
+      "Read": false,
+      "From": { "Name": "Masa CMS", "Address": "no-reply@example.test" },
+      "To": [ { "Name": "", "Address": "avery.member@example.test" } ],
+      "Cc": null,
+      "Bcc": null,
+      "ReplyTo": [],
+      "Subject": "Masa CMS Account Information",
+      "Created": "2026-06-30T10:05:00.120Z",
+      "Username": "",
+      "Tags": [],
+      "Size": 2417,
+      "Attachments": 0,
+      "Snippet": "Dear Avery, We received a request to reset the password associated with this email address. If you made this request, please follow the instructions below. (If you did not request to have your password reset you can safely ignore this email.) Please ..."
+    },
+    {
+      "ID": "mpTemplateSend00000002",
+      "MessageID": "44444444-4444-4444-4444444444444444@opt2.local",
+      "Read": false,
+      "From": { "Name": "Tenant A Communications", "Address": "communications@example.test" },
+      "To": [ { "Name": "Blake Recipient", "Address": "blake.recipient@example.test" } ],
+      "Cc": null,
+      "Bcc": null,
+      "ReplyTo": [],
+      "Subject": "June programme update",
+      "Created": "2026-06-30T10:00:00.450Z",
+      "Username": "",
+      "Tags": [],
+      "Size": 1186,
+      "Attachments": 0,
+      "Snippet": "Hello Blake, The June programme update for Tenant A is now available in the member area. Regards, Tenant A Communications"
+    }
+  ]
+}

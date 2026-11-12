@@ -282,11 +282,11 @@ describe('normaliseSetCookies', () => {
     expect(normaliseSetCookies(['CFID=1002;path=/;HttpOnly;'], options, rules)[0]?.rotation).toBe('changed');
     expect(normaliseSetCookies(['cfid=1002;path=/;HttpOnly;'], options, rules)[0]?.rotation).toBe('same');
 
-    const fresh = normaliseSetCookies(login, { ...options, tracker: createSessionCookieTracker() }, rules);
-    expect(fresh.flatMap(({ rotation }) => (rotation === undefined ? [] : [rotation]))).toStrictEqual([
-      'first',
-      'first',
-      'first',
+    const fresh = normaliseSetCookies(relogin, { ...options, tracker: createSessionCookieTracker() }, rules);
+    expect(fresh.map(({ name, rotation }) => [name, rotation])).toStrictEqual([
+      ['CFID', 'first'],
+      ['CFTOKEN', 'first'],
+      ['JSESSIONID', 'first'],
     ]);
   });
 
@@ -310,8 +310,9 @@ describe('normaliseAuth', () => {
 
   beforeAll(() => {
     [legacy, gateway] = [LEGACY_ORIGIN, GATEWAY_ORIGIN].map((origin, side): Flow => {
-      const query = `muraAction=cArch.list&siteid=default&contentid=${cfUuid()}&csrf_token=side${side}`;
-      const location = `${origin}/admin/?${query}`;
+      const requested = `${origin}/admin/?muraAction=cArch.list&siteid=default`;
+      const returnURL = encodeURIComponent(requested);
+      const location = `${origin}/admin/?muraAction=cLogin.main&returnURL=${returnURL}&userid=${cfUuid()}`;
       const setCookie = login.map((line) => {
         const { name } = parseSetCookie(line);
         return side === 0 ? line : line.replace(`${name}=`, `${name}=replay-`);
@@ -319,19 +320,20 @@ describe('normaliseAuth', () => {
       const finalHeaders = {
         date: REFERENCE_DATE_HEADER,
         'content-type': HTML,
+        'set-cookie': setCookie,
         'www-authenticate': WWW_AUTHENTICATE.bearerInvalidAccessToken,
       };
       const hops: HttpHop[] = [
         {
-          method: 'POST',
-          url: `${origin}/admin/index.cfm`,
+          method: 'GET',
+          url: requested,
           status: 302,
           location,
-          setCookie,
-          requestHeaders: { 'content-type': 'application/x-www-form-urlencoded' },
-          responseHeaders: { date: REFERENCE_DATE_HEADER, location, 'set-cookie': setCookie },
+          setCookie: [],
+          requestHeaders: {},
+          responseHeaders: { date: REFERENCE_DATE_HEADER, location },
         },
-        { method: 'GET', url: location, status: 200, setCookie: [], requestHeaders: {}, responseHeaders: finalHeaders },
+        { method: 'GET', url: location, status: 200, setCookie, requestHeaders: {}, responseHeaders: finalHeaders },
       ];
       const response: RecordedResponse = {
         status: 200,
@@ -347,22 +349,22 @@ describe('normaliseAuth', () => {
   });
 
   it('returns the final WWW-Authenticate value verbatim and the normalised Location of each redirect hop', () => {
-    for (const [origin, flow] of [
-      [LEGACY_ORIGIN, legacy],
-      [GATEWAY_ORIGIN, gateway],
-    ] as const) {
+    for (const flow of [legacy, gateway]) {
       expect(flow.auth.wwwAuthenticate).toStrictEqual([WWW_AUTHENTICATE.bearerInvalidAccessToken]);
       expect(flow.auth.redirectTargets).toStrictEqual([
         { status: 302, location: normaliseUrl(flow.location, createIdOrdinals(), rules) },
       ]);
-      expect(flow.auth.redirectTargets[0]?.location).not.toContain(origin);
+      expect(flow.auth.redirectTargets[0]?.location).toBe(
+        '<origin>/admin/?muraAction=clogin.main' +
+          '&returnURL=http%3A%2F%2F<origin>%2Fadmin%2F%3FmuraAction%3DcArch.list%26siteid%3Ddefault&userid=<id:1>',
+      );
     }
   });
 
   it('reads each hop cookie against the hop Date header and updates the side tracker', () => {
     const tracker = createSessionCookieTracker();
     expect(legacy.auth.cookies).toStrictEqual(
-      normaliseSetCookies(login, { hop: 0, referenceDate: REFERENCE_DATE, tracker }, rules),
+      normaliseSetCookies(login, { hop: 1, referenceDate: REFERENCE_DATE, tracker }, rules),
     );
     expect([...legacy.state.sessionCookies.keys()]).toStrictEqual(['cfid', 'cftoken', 'jsessionid']);
   });
