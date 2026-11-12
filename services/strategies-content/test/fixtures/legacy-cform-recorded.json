@@ -1,0 +1,489 @@
+{
+ "_note": "Bodies recorded from Masa 7.6.1 on ACF 2023.0.26 (admin cform actions as admin, session locale en; oracle on :8080). field-nested was POSTed with formid as the form builder does; site default has no other form.",
+ "contentTypes": {
+  "json": "application/json;charset=utf-8",
+  "html": "text/html;charset=UTF-8"
+ },
+ "templates": {
+  "dataset-create": "<span>\n\t\t<div id=\"dataset-create\" class=\"mura-template-form\">\n\t\t\t<h2>Form: <span id=\"mura-template-form-label\"></span></h2>\n\t\t\t\t\t<ul class=\"template-form\">\n\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t<label for=\"dataset\">Data Set</label>\n\t\t\t\t\t\t\t<select class=\"select\" name=\"datasetid\">\n\t\t\t\t\t\t\t\t<option value=\"\">Choose One</option>\n\t\t\t\t\t\t\t\t<option value=\"4FA62B2D-3A29-44B1-8603FB892C60014B\">Big Long Honking Name Shirt Sizes</option>\n\t\t\t\t\t\t\t\t<option value=\"77917A42-28F4-4BA4-B88732109F9A05C5\">Colors</option>\n\t\t\t\t\t\t\t</select>\n\t\t\t\t\t\t\t<input type=\"button\" class=\"button ui-icon ui-icon-check\" name=\"set-dataset\" value=\"Set\" />\n\t\t\t\t\t\t</li>\n\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t<label for=\"filter\">Filter</label>\n\t\t\t\t\t\t\t<input class=\"text medium\" type=\"text\" name=\"filter\" id=\"dataset-filter\" value=\"\" maxlength=\"50\" />\n\t\t\t\t\t\t\t<input type=\"button\" class=\"button ui-icon ui-icon-check\" name=\"set-filter\" value=\"\" />\n\t\t\t\t\t\t</li>\n\t\t\t\t\t</ul>\n\t\t\t\t\t<div class=\"btn-wrap\">\n\t\t\t\t\t<input type=\"button\" class=\"btn\" name=\"new-datasource\" value=\"Create New\" />\n\t\t\t\t\t</div>\n\t\t</div>\n\t</span>",
+  "dataset-form": "<div class=\"ui-tabs\">\r\n\t\t<ul class=\"ui-tabs-nav\">\r\n\t\t\t<li title=\"Edit\" class=\"ui-state-active ui-corner-top ui-tabs-selected\"><a href=\"javascript:void(null);\"><span>Source</span></a></li>\r\n\t\t\t<li id=\"button-grid-grid\" class=\"ui-state-default ui-corner-top\"><a href=\"javascript:void(null);\"><span>List</span></a></li>\r\n\t\t</ul>\r\n\t\t\t<div class=\"ui-tabs-panel\" id=\"mura-tb-form-tab-source\">\r\n\t\t\t<div id=\"mura-tb-dataset\" class=\"mura-tb-form\">\r\n\r\n\t\t\t\t\t<ul class=\"template-form\">\r\n\t\t\t\t\t\t<li class=\"mura-tb-grp-sourcetype\">\r\n\t\t\t\t\t\t\t<label for=\"dataset\">Source</label>\r\n\t\t\t\t\t\t\t<select class=\"select\" name=\"sourcetype\" id=\"mura-tb-dataset-sourcetype\">\r\n\t\t\t\t\t\t\t\t<option value=\"entered\">Create New</option>\r\n\t\t\t\t\t\t\t\t<option value=\"dsp\">Custom Display Object</option>\r\n\t\t\t\t\t\t\t\t<option value=\"object\">Custom Object</option>\r\n\t\t\t\t\t\t\t\t\r\n\t\t\t\t\t\t\t\t<option value=\"remote\">Remote Source</option>\r\n\t\t\t\t\t\t\t</select>\r\n\t\t\t\t\t\t</li>\r\n\r\n\t\t\t\t\t\t<li class=\"mura-tb-dsi mura-tb-grp-entered\" style=\"display: none\">\r\n\t\t\t\t\t\t\t<label for=\"dataset\">Sort Type</label>\r\n\t\t\t\t\t\t\t<select class=\"select\" name=\"issorted\" id=\"mura-tb-dataset-issorted\">\r\n\t\t\t\t\t\t\t\t<option value=\"0\">Manual</option>\r\n\t\t\t\t\t\t\t\t<option value=\"1\">Sorted</option>\r\n\t\t\t\t\t\t\t</select>\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li class=\"mura-tb-dsi mura-tb-grp-sorted\" style=\"display: none\">\r\n\t\t\t\t\t\t\t<label for=\"dataset\">Sorted By</label>\r\n\t\t\t\t\t\t\t<select class=\"select\" name=\"sorttype\" id=\"mura-tb-dataset-sorttype\">\r\n\t\t\t\t\t\t\t\t<option value=\"string\">Alphabetical</option>\r\n\t\t\t\t\t\t\t\t<option value=\"numeric\">Numeric</option>\r\n\t\t\t\t\t\t\t\t<option value=\"date\">Date</option>\r\n\t\t\t\t\t\t\t</select>\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li class=\"mura-tb-dsi mura-tb-grp-sorted\" style=\"display: none\">\r\n\t\t\t\t\t\t\t<label for=\"dataset\">Sort Column</label>\r\n\t\t\t\t\t\t\t<select class=\"select\" name=\"sortcolumn\" id=\"mura-tb-dataset-sortcolumn\">\r\n\t\t\t\t\t\t\t\t<option value=\"label\">Label</option>\r\n\t\t\t\t\t\t\t\t<option value=\"value\">Value</option>\r\n\t\t\t\t\t\t\t</select>\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li class=\"mura-tb-dsi mura-tb-grp-sorted\" style=\"display: none\">\r\n\t\t\t\t\t\t\t<label for=\"dataset\">Sort Direction</label>\r\n\t\t\t\t\t\t\t<select class=\"select\" name=\"sortdirection\" id=\"mura-tb-dataset-sortdirection\">\r\n\t\t\t\t\t\t\t\t<option value=\"asc\">Ascending</option>\r\n\t\t\t\t\t\t\t\t<option value=\"desc\">Descending</option>\r\n\t\t\t\t\t\t\t</select>\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li class=\"mura-tb-dsi mura-tb-grp-source\" style=\"display: none\">\r\n\t\t\t\t\t\t\t<label for=\"dataset\">Source</label>\r\n\t\t\t\t\t\t\t<input class=\"text tb-source\" id=\"mura-tb-dataset-source\" type=\"text\" name=\"source\" value=\"\" maxlength=\"250\" />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t</ul>\r\n\t\t\t\t\t<div class=\"btn-wrap\">\r\n\t\t\t\t\t\t<input type=\"button\" class=\"btn\" name=\"save-dataset\" id=\"mura-tb-save-dataset\" value=\"Update\" />\r\n\t\t\t\t\t</div>\r\n\t\t\t\t</div>\r\n\t\t\t</div>\r\n\r\n\t\t</div>",
+  "dataset-grid": "<span>\n<div class=\"ui-tabs\">\n\t\t\t<ul class=\"ui-tabs-nav\">\n\t\t\t\t<li id=\"button-grid-edit\" title=\"Edit\" class=\"ui-state-default ui-corner-top\"><a href=\"javascript:void(null);\"><span>Source</span></a></li>\n\t\t\t\t<li class=\"ui-state-default ui-state-active ui-corner-top ui-tabs-selected\"><a href=\"javascript:void(null);\"><span>List</span></a></li>\n\t\t\t</ul>\n\t\t\t\n\t\t\t<div class=\"ui-tabs-panel\" id=\"mura-tb-form-tab-list\">\n\t\t\t\t<div id=\"dataset-grid\" class=\"mura-tb-form template-form\">\n\t\t\t\t<div id=\"mura-tb-grid-message\" style=\"display: none\">formbuilder.dataset.mastermode_missing</div>\n\t\t\t\t<div id=\"mura-tb-grid\">\n\t\t\t\t\t<ul id=\"mura-tb-grid-table-header\">\n\t\t\t\t\t</ul>\n\t\t\t\t\t<ul id=\"mura-tb-grid-table\">\n\t\t\t\t\t</ul>\n\t\t\t\t</div>\n\t\t\t<div class=\"ui-button\" id=\"button-grid-add\" title=\"Add Option\">Add Option</div>\n\t\t</div>\n\t\t</div>\n\t</div>\n</span>",
+  "dataset-nested": "<div id=\"dataset-row\">\r\n\t<div id=\"element-row\">\r\n\t\t<li></li>\r\n\t</div>\r\n\t<div id=\"element-button-delete\">\r\n\t\t<div class=\"button-grid-row-delete\" title=\"Delete\"></div>\r\n\t</div>\r\n\t<div id=\"element-labels\">\r\n\t\t<label id=\"label\">Label</label>\r\n\t\t<label id=\"value\">Value</label>\r\n\t</div>\r\n\t<div id=\"element-cell\">\r\n\t\t<span class='mura-tb-cell'></span>\r\n\t</div>\r\n\t<div id=\"element-display\">\r\n\t\t<div class=\"mura-tb-grid-display\"></div>\r\n\t</div>\r\n\t<div id=\"element-input\">\r\n\t\t<input type=\"text\" class=\"mura-tb-grid-input\" />\r\n\t</div>\r\n\t<div id=\"element-checkbox\">\r\n\t\t<input type=\"checkbox\" title=\"formbuilder.isselected_missing\" class=\"checkbox mura-tb-grid-checkbox\" data-id=\"\" value=\"1\" />\r\n\t</div>\r\n\t<div id=\"element-radio\">\r\n\t\t<input type=\"radio\" name=\"isdefault\" title=\"Default\" class=\"radio mura-tb-grid-radio\" data-id=\"\" />\r\n\t</div>\r\n\t<div id=\"element-handle\">\r\n\t\t<span class=\"mura-tb-grid-handle\"></span>\r\n\t</div>\r\n</div>",
+  "dataset-row": "<div id=\"dataset-row\">\r\n\t<div id=\"element-row\">\r\n\t\t<li></li>\r\n\t</div>\r\n\t<div id=\"element-button-delete\">\r\n\t\t<div class=\"button-grid-row-delete\" title=\"Delete\"></div>\r\n\t</div>\r\n\t<div id=\"element-labels\">\r\n\t\t<label id=\"label\">Label</label>\r\n\t\t<label id=\"value\">Value</label>\r\n\t</div>\r\n\t<div id=\"element-cell\">\r\n\t\t<span class='mura-tb-cell'></span>\r\n\t</div>\r\n\t<div id=\"element-display\">\r\n\t\t<div class=\"mura-tb-grid-display\"></div>\r\n\t</div>\r\n\t<div id=\"element-input\">\r\n\t\t<input type=\"text\" class=\"mura-tb-grid-input\" />\r\n\t</div>\r\n\t<div id=\"element-checkbox\">\r\n\t\t<input type=\"checkbox\" title=\"formbuilder.isselected_missing\" class=\"checkbox mura-tb-grid-checkbox\" data-id=\"\" value=\"1\" />\r\n\t</div>\r\n\t<div id=\"element-radio\">\r\n\t\t<input type=\"radio\" name=\"isdefault\" title=\"Default\" class=\"radio mura-tb-grid-radio\" data-id=\"\" />\r\n\t</div>\r\n\t<div id=\"element-handle\">\r\n\t\t<span class=\"mura-tb-grid-handle\"></span>\r\n\t</div>\r\n</div>",
+  "dataset-sourced": "<div id=\"mura-tb-grid\" class=\"mura-tb-form\">\r\n\t\t<div id=\"dataset-sourced\" class=\"mura-tb-header\">\r\n\t\t\t<h2>Source</h2>\r\n\t\t\t<ul class=\"right\">\r\n\t\t\t\t<li><div class=\"ui-button\" id=\"button-grid-edit\" title=\"Edit\"><span class=\"ui-icon ui-icon-pencil\"></span></div></li>\r\n\t\t\t</ul>\r\n\t\t</div>\r\n\t\t<div class=\"columns\">\r\n\t\t\t<div class=\"col2\">\r\n\t\t\t\t<ul class=\"template-form\">\r\n\t\t\t\t\t<li>\r\n\t\t\t\t\t\t<label for=\"dataset\">Source</label>\r\n\t\t\t\t\t\t<input id=\"tb-source\" class=\"text medium disabled\" name=\"source\" type=\"text\" value=\"\" maxlength=\"150\" disabled=\"true\" />\r\n\t\t\t\t\t</li>\r\n\t\t\t\t</ul>\r\n\t\t\t</div>\r\n\t\t</div>\r\n\t</div>",
+  "field-block": "<li>\r\n\t\t\t<ul class=\"mura-tb-nav-utility\">\r\n\t\t\t\t<li><div id=\"button-trash\" title=\"Delete\"></div></li>\r\n\t\t\t</ul>\r\n\t\t\t<div class=\"mura-tb-block\">\r\n\t\t\t\t<span></span>\r\n\t\t\t</div>\r\n\t\t</li>",
+  "field-checkbox": "<span>\n\t\t<div class=\"mura-tb-form\" id=\"formblock-${fieldid}\">\n\t\t\t<div class=\"mura-tb-header checkbox\">\n\t\t\t\t<h2> <span id=\"mura-tb-form-label\"></span></h2>\n\t\t\t\t<ul class=\"mura-tb-nav-utility\">\n\t\t\t\t\t<li><div id=\"button-trash\" title=\"Delete\"></div></li>\n\t\t\t\t</ul>\n\t\t\t</div>\n\n\t\t\t<div class=\"ui-tabs\" id=\"ui-tabs\">\n\n\t\t\t\t<ul class=\"ui-tabs-nav\">\n\t\t\t\t\t<li class=\"ui-state-default ui-corner-top\"><a href=\"#mura-tb-form-tab-basic\"><span>Basic</span></a></li>\n\t\t\t\t\t<li class=\"ui-state-default ui-corner-top\"><a href=\"#mura-tb-form-tab-advanced\"><span>Advanced</span></a></li>\n\t\t\t\t\t<li class=\"ui-state-default ui-corner-top\"><a href=\"#mura-tb-form-tab-validation\"><span>Validation</span></a></li>\n\t\t\t\t</ul>\n\n\t\t\t\t<div class=\"ui-tabs-panel\" id=\"mura-tb-form-tab-basic\">\n\t\t\t\t\t<ul class=\"template-form\">\n\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t<label for=\"label\">Label</label>\n\t\t\t\t\t\t\t<input class=\"text tb-label\" type=\"text\" name=\"label\" value=\"\" maxlength=\"250\" data-required='true' data-label=\"true\" />\n\t\t\t\t\t\t</li>\n\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t<label for=\"name\">Name</label>\n\t\t\t\t\t\t\t<input id=\"tb-name\" class=\"text disabled\" name=\"name\" type=\"text\" value=\"\" maxlength=\"250\" disabled=\"true\" />\n\t\t\t\t\t\t</li>\n\t\t\t\t\t\t\n\t\t\t\t\t</ul>\n\t\t\t\t</div>\n\t\t\t\t<div class=\"ui-tabs-panel\" id=\"mura-tb-form-tab-advanced\">\n\t\t\t\t\t<ul class=\"template-form\">\n\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t<label for=\"size\">Size</label>\n\t\t\t\t\t\t\t<input class=\"text \" type=\"text\" name=\"size\" value=\"\" maxlength=\"250\" data-required='false' />\n\t\t\t\t\t\t</li>\n\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t<label for=\"cssid\">CSS ID</label>\n\t\t\t\t\t\t\t<input class=\"text \" type=\"text\" name=\"cssid\" value=\"\" maxlength=\"250\" data-required='false' />\n\t\t\t\t\t\t</li>\n\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t<label for=\"cssclass\">CSS Class</label>\n\t\t\t\t\t\t\t<input class=\"text \" type=\"text\" name=\"cssclass\" value=\"\" maxlength=\"250\" data-required='false' />\n\t\t\t\t\t\t</li>\n\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t<label for=\"wrappercssclass\">Wrapper Class</label>\n\t\t\t\t\t\t\t<input class=\"text \" type=\"text\" name=\"wrappercssclass\" value=\"\" maxlength=\"50\" data-required='false' />\n\t\t\t\t\t\t</li>\n\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t<label for=\"tooltip\">Tool Tip</label>\n\t\t\t\t\t\t\t<input class=\"text long\" type=\"text\" name=\"tooltip\" value=\"\" maxlength=\"250\" />\n\t\t\t\t\t\t</li>\n\t\t\t\t\t</ul>\n\t\t\t\t</div>\n\t\t\t\t<div class=\"ui-tabs-panel\" id=\"mura-tb-form-tab-validation\">\n\t\t\t\t<ul class=\"template-form\">\n\t\t\t\t\t<li>\n\t\t\t\t\t\t<label for=\"validatemessage\">Validate Message</label>\n\t\t\t\t\t\t<input class=\"text long\" type=\"text\" name=\"validatemessage\" value=\"\" maxlength=\"250\" />\n\t\t\t\t\t</li>\n\t\t\t\t\t<li class=\"checkbox\">\n\t\t\t\t\t\t<label for=\"isrequired\">\n\t\t\t\t\t\tRequired?</label>\n\t\t\t\t\t\t<input type=\"checkbox\" type=\"text\" name=\"isrequired\" value=\"1\">\n\t\t\t\t\t</li>\n\t\t\t\t</ul>\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\t</span>",
+  "field-dropdown": "<span>\r\n\t\t<div class=\"mura-tb-form\" id=\"formblock-${fieldid}\">\r\n\t\t\t<div class=\"mura-tb-header dropdown\">\r\n\t\t\t\t<h2> <span id=\"mura-tb-form-label\"></span></h2>\r\n\t\t\t\t<ul class=\"mura-tb-nav-utility\">\r\n\t\t\t\t\t<li><div id=\"button-trash\" title=\"Delete\"></div></li>\r\n\t\t\t\t</ul>\r\n\t\t\t</div>\r\n\t\t\t\r\n\t\t\t<div class=\"ui-tabs\" id=\"ui-tabs\">\r\n\t\t\t\r\n\t\t\t<ul class=\"ui-tabs-nav\">\r\n\t\t\t\t<li class=\"ui-state-default ui-corner-top\"><a href=\"#mura-tb-form-tab-basic\"><span>Basic</span></a></li>\r\n\t\t\t\t<li class=\"ui-state-default ui-corner-top\"><a href=\"#mura-tb-form-tab-advanced\"><span>Advanced</span></a></li>\r\n\t\t\t\t<li class=\"ui-state-default ui-corner-top\"><a href=\"#mura-tb-form-tab-validation\"><span>Validation</span></a></li>\r\n\t\t\t</ul>\r\n\t\t\t\r\n\t\t\t<div class=\"ui-tabs-panel\" id=\"mura-tb-form-tab-basic\">\r\n\t\t\t\r\n\t\t\t\t\t<ul class=\"template-form\">\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"label\">Label</label>\r\n\t\t\t\t\t\t\t<input class=\"text  tb-label\" type=\"text\" name=\"label\" value=\"\" maxlength=\"50\" data-required='true' data-label=\"true\" />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"name\">Name</label>\r\n\t\t\t\t\t\t\t<input id=\"tb-name\" class=\"text  disabled\" name=\"name\" type=\"text\" value=\"\" maxlength=\"50\" disabled=\"true\" />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t\r\n\t\t\t\t\t</ul>\r\n\t\t\t\t</div>\r\n\t\t\t\t<div class=\"ui-tabs-panel\" id=\"mura-tb-form-tab-advanced\">\r\n\t\t\t\t\t<ul class=\"template-form\">\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"size\">Size</label>\r\n\t\t\t\t\t\t\t<input class=\"text \" type=\"text\" name=\"size\" value=\"\" maxlength=\"50\" data-required='false' />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"cssid\">CSS ID</label>\r\n\t\t\t\t\t\t\t<input class=\"text \" type=\"text\" name=\"cssid\" value=\"\" maxlength=\"50\" data-required='false' />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"cssclass\">CSS Class</label>\r\n\t\t\t\t\t\t\t<input class=\"text \" type=\"text\" name=\"cssclass\" value=\"\" maxlength=\"50\" data-required='false' />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"wrappercssclass\">Wrapper Class</label>\r\n\t\t\t\t\t\t\t<input class=\"text \" type=\"text\" name=\"wrappercssclass\" value=\"\" maxlength=\"50\" data-required='false' />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"tooltip\">Tool Tip</label>\r\n\t\t\t\t\t\t\t<textarea name=\"tooltip\" value=\"\" maxlength=\"250\" ></textarea>\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t</ul>\r\n\t\t\t\t\t</div>\r\n\t\t\t\t\t<div class=\"ui-tabs-panel\" id=\"mura-tb-form-tab-validation\">\r\n\t\t\t\t\t\r\n\t\t\t\t\t<ul class=\"template-form\">\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"validatemessage\">Validate Message</label>\r\n\t\t\t\t\t\t\t<input class=\"text long\" type=\"text\" name=\"validatemessage\" value=\"\" maxlength=\"250\" />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li class=\"checkbox\">\r\n\t\t\t\t\t\t\t<label for=\"isrequired\">\r\n\t\t\t\t\t\t\tRequired?</label>\r\n\t\t\t\t\t\t\t<input type=\"checkbox\" type=\"text\" name=\"isrequired\" value=\"1\">\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t</ul>\r\n\t\t\t\t\t</div>\r\n\t\t\t\t</div>\r\n\t\t\t</div>\r\n\t\t</div>\r\n\t</span>",
+  "field-file": "<span>\r\n\t\t<div class=\"mura-tb-form\">\r\n\t\t\t<div class=\"mura-tb-header fileuploadfield\">\r\n\t\t\t\t<h2><span id=\"mura-tb-form-label\"></span></h2>\r\n\t\t\t\t<ul class=\"mura-tb-nav-utility\">\r\n\t\t\t\t\t<li><div id=\"button-trash\" title=\"Delete\"></div></li>\r\n\t\t\t\t</ul>\r\n\t\t\t</div>\r\n\r\n\t\t\t<div class=\"ui-tabs\" id=\"ui-tabs\">\r\n\r\n\t\t\t<ul class=\"ui-tabs-nav\">\r\n\t\t\t\t<li class=\"ui-state-default ui-corner-top\"><a href=\"#mura-tb-form-tab-basic\"><span>Basic</span></a></li>\r\n\t\t\t\t<li class=\"ui-state-default ui-corner-top\"><a href=\"#mura-tb-form-tab-validation\"><span>Validation</span></a></li>\r\n\t\t\t</ul>\r\n\r\n\t\t\t<div class=\"ui-tabs-panel\" id=\"mura-tb-form-tab-basic\">\r\n\r\n\t\t\t\t\t<ul class=\"template-form\">\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"label\">Label</label>\r\n\t\t\t\t\t\t\t<input class=\"text tb-label\" type=\"text\" name=\"label\" value=\"\" maxlength=\"250\" data-required='true' />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"name\">Name</label>\r\n\t\t\t\t\t\t\t<input id=\"tb-name\" class=\"text disabled\" name=\"name\" type=\"text\" value=\"\" maxlength=\"250\" disabled=\"true\" />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"placeholder\">Placeholder</label>\r\n\t\t\t\t\t\t\t<input class=\"text \" type=\"text\" name=\"placeholder\" value=\"\" maxlength=\"255\" data-required='false' />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t</ul>\r\n\t\t\t</div>\r\n\t\t\t<div class=\"ui-tabs-panel\" id=\"mura-tb-form-tab-validation\">\r\n\t\t\t\t\t<ul class=\"template-form\">\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"validatetype\">Validation Type</label>\r\n\t\t\t\t\t\t\t<select class=\"select\" name=\"validatetype\">\r\n\t\t\t\t\t\t\t\t<option value=\"\">None</option>\r\n\t\t\t\t\t\t\t\t<option value=\"regex\">Regex</option>\r\n\t\t\t\t\t\t\t</select>\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"validateregex\">Validate Regex</label>\r\n\t\t\t\t\t\t\t<input class=\"text long\" type=\"text\" name=\"validateregex\" value=\"\" maxlength=\"350\" />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"validatemessage\">Validate Message</label>\r\n\t\t\t\t\t\t\t<input class=\"text long\" type=\"text\" name=\"validatemessage\" value=\"\" maxlength=\"250\" />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li class=\"checkbox\">\r\n\t\t\t\t\t\t\t<label for=\"isrequired\">\r\n\t\t\t\t\t\t\tRequired?</label>\r\n\t\t\t\t\t\t\t<input type=\"checkbox\" name=\"isrequired\" value=\"1\">\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t</ul>\r\n\t\t\t</div>\r\n\t\t</div>\r\n\t</span>",
+  "field-hidden": "<span>\r\n\t\t<div class=\"mura-tb-form\">\r\n\t\t\t<div class=\"mura-tb-header hiddenfield\">\r\n\t\t\t\t<h2><span id=\"mura-tb-form-label\"></span></h2>\r\n\t\t\t\t<ul class=\"mura-tb-nav-utility\">\r\n\t\t\t\t\t<li><div id=\"button-trash\" title=\"Delete\"></div></li>\r\n\t\t\t\t</ul>\r\n\t\t\t</div>\r\n\t\t\t\r\n\t\t\t<div class=\"ui-tabs\" id=\"ui-tabs\">\r\n\t\t\t\r\n\t\t\t<ul class=\"ui-tabs-nav\">\r\n\t\t\t\t<li class=\"ui-state-default ui-corner-top\"><a href=\"#mura-tb-form-tab-basic\"><span>Basic</span></a></li>\r\n\t\t\t</ul>\r\n\t\t\t\r\n\t\t\t<div class=\"ui-tabs-panel\" id=\"mura-tb-form-tab-basic\">\r\n\t\t\t\r\n\t\t\t\t\t<ul class=\"template-form\">\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"label\">Label</label>\r\n\t\t\t\t\t\t\t<input class=\"text tb-label\" type=\"text\" name=\"label\" value=\"\" maxlength=\"250\" data-required='true' />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"name\">Name</label>\r\n\t\t\t\t\t\t\t<input id=\"tb-name\" class=\"text disabled\" name=\"name\" type=\"text\" value=\"\" maxlength=\"250\" disabled=\"true\" />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"value\">Value</label>\r\n\t\t\t\t\t\t\t<input class=\"text long\" type=\"text\" name=\"value\" value=\"\" maxlength=\"250\" />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t\r\n\t\t\t\t\t</ul>\r\n\t\t\t</div>\t\t\r\n\t\t</div>\r\n\t\t</div>\r\n\t</span>",
+  "field-nested": "<span>\r\n\t\t<div class=\"mura-tb-form\">\r\n\t\t\t<div class=\"mura-tb-header nestedform\">\r\n\t\t\t\t<h2><span id=\"mura-tb-form-label\"></span></h2>\r\n\t\t\t\t<ul class=\"mura-tb-nav-utility\">\r\n\t\t\t\t\t<li><div id=\"button-trash\" title=\"Delete\"></div></li>\r\n\t\t\t\t</ul>\r\n\t\t\t</div>\r\n\t\t\t\r\n\t\t\t<div class=\"ui-tabs\" id=\"ui-tabs\">\r\n\t\t\t\r\n\t\t\t<ul class=\"ui-tabs-nav\">\r\n\t\t\t\t<li class=\"ui-state-default ui-corner-top\"><a href=\"#mura-tb-form-tab-basic\"><span>Basic</span></a></li>\r\n\t\t\t</ul>\r\n\t\t\t\t\t\t\r\n\t\t\t<div class=\"ui-tabs-panel\" id=\"mura-tb-form-tab-basic\">\r\n\t\t\t\r\n\t\t\t\t\t<ul class=\"template-form\">\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"label\">Label</label>\r\n\t\t\t\t\t\t\t<input class=\"text tb-label\" type=\"text\" name=\"label\" value=\"\" maxlength=\"250\" data-required='true' />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"prefix\">Field Prefix</label>\r\n\t\t\t\t\t\t\t<input id=\"tb-name\" class=\"text disabled\" name=\"name\" type=\"text\" value=\"\" maxlength=\"250\" disabled=\"true\" />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"value\">Form</label>\r\n\t\t\t\t\t\t\t<select name=\"formid\" id=\"tb-formid\">\r\n\t\t\t\t\t\t\t\t\r\n\t\t\t\t\t\t\t</select>\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t\r\n\t\t\t\t\t</ul>\r\n\t\t\t</div>\t\t\r\n\t\t</div>\r\n\t\t</div>\r\n\t</span>",
+  "field-radio": "<span>\n\t\t<div class=\"mura-tb-form\" id=\"formblock-${fieldid}\">\n\t\t\t<div class=\"mura-tb-header radio\">\n\t\t\t\t<h2> <span id=\"mura-tb-form-label\"></span></h2>\n\t\t\t\t<ul class=\"mura-tb-nav-utility\">\n\t\t\t\t\t<li><div id=\"button-trash\" title=\"Delete\"></div></li>\n\t\t\t\t</ul>\n\t\t\t</div>\n\t\t\t\n\t\t<div class=\"ui-tabs\" id=\"ui-tabs\">\n\t\t\n\t\t\t<ul class=\"ui-tabs-nav\">\n\t\t\t\t<li class=\"ui-state-default ui-corner-top\"><a href=\"#mura-tb-form-tab-basic\"><span>Basic</span></a></li>\n\t\t\t\t<li class=\"ui-state-default ui-corner-top\"><a href=\"#mura-tb-form-tab-advanced\"><span>Advanced</span></a></li>\n\t\t\t\t<li class=\"ui-state-default ui-corner-top\"><a href=\"#mura-tb-form-tab-validation\"><span>Validation</span></a></li>\n\t\t\t</ul>\n\t\t\t\n\t\t\t<div class=\"ui-tabs-panel\" id=\"mura-tb-form-tab-basic\">\n\t\t\t\t\t<ul class=\"template-form\">\n\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t<label for=\"label\">Label</label>\n\t\t\t\t\t\t\t<input class=\"text long tb-label\" type=\"text\" name=\"label\" value=\"\" maxlength=\"50\" data-required='true' data-label=\"true\" />\n\t\t\t\t\t\t</li>\n\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t<label for=\"name\">Name</label>\n\t\t\t\t\t\t\t<input id=\"tb-name\" class=\"text long disabled\" name=\"name\" type=\"text\" value=\"\" maxlength=\"50\" disabled=\"true\" />\n\t\t\t\t\t\t</li>\n\t\t\t\t\t\t\n\t\t\t\t\t</ul>\n\t\t\t\t</div>\n\t\t\t\t\n\t\t\t\t<div class=\"ui-tabs-panel\" id=\"mura-tb-form-tab-advanced\">\n\t\t\t\t\t<ul class=\"template-form\">\n\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t<label for=\"size\">Size</label>\n\t\t\t\t\t\t\t<input class=\"text short\" type=\"text\" name=\"size\" value=\"\" maxlength=\"50\" data-required='false' />\n\t\t\t\t\t\t</li>\n\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t<label for=\"cssid\">CSS ID</label>\n\t\t\t\t\t\t\t<input class=\"text long\" type=\"text\" name=\"cssid\" value=\"\" maxlength=\"50\" data-required='false' />\n\t\t\t\t\t\t</li>\n\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t<label for=\"cssclass\">CSS Class</label>\n\t\t\t\t\t\t\t<input class=\"text long\" type=\"text\" name=\"cssclass\" value=\"\" maxlength=\"50\" data-required='false' />\n\t\t\t\t\t\t</li>\n\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t<label for=\"wrappercssclass\">Wrapper Class</label>\n\t\t\t\t\t\t\t<input class=\"text \" type=\"text\" name=\"wrappercssclass\" value=\"\" maxlength=\"50\" data-required='false' />\n\t\t\t\t\t\t</li>\n\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t<label for=\"tooltip\">Tool Tip</label>\n\t\t\t\t\t\t\t<textarea name=\"tooltip\" value=\"\" maxlength=\"250\" ></textarea>\n\t\t\t\t\t\t</li>\n\t\t\t\t\t</ul>\n\t\t\t\t</div> \n\t\t\t\t<div class=\"ui-tabs-panel\" id=\"mura-tb-form-tab-validation\">\n\t\t\t\t<ul class=\"template-form\">\n\t\t\t\t\t<li>\n\t\t\t\t\t\t<label for=\"validatemessage\">Validate Message</label>\n\t\t\t\t\t\t<input class=\"text long\" type=\"text\" name=\"validatemessage\" value=\"\" maxlength=\"250\" />\n\t\t\t\t\t</li>\n\t\t\t\t\t<li class=\"checkbox\">\n\t\t\t\t\t\t<label for=\"isrequired\">\n\t\t\t\t\t\tRequired?</label>\n\t\t\t\t\t\t<input type=\"checkbox\" type=\"text\" name=\"isrequired\" value=\"1\">\n\t\t\t\t\t</li>\n\t\t\t\t</ul>\n\t\t\t\t</div>\n\t\t\t\t\n\t\t\t\t\n\t\t\t</div> \n\t\t</div> \n\t</span>",
+  "field-section": "<span>\r\n\t\t<div class=\"mura-tb-form\" id=\"formblock-${fieldid}\">\r\n\t\t\t<div class=\"mura-tb-header\">\r\n\t\t\t\t<h2> <span id=\"mura-tb-form-label\"></span></h2>\r\n\t\t\t\t<ul class=\"mura-tb-nav-utility\">\r\n\t\t\t\t\t<li><div id=\"button-trash\" title=\"Delete\"></div></li>\r\n\t\t\t\t</ul>\r\n\t\t\t</div>\r\n\r\n\t\t\t<div class=\"ui-tabs\" id=\"ui-tabs\">\r\n\t\t\t\r\n\t\t\t\t<ul class=\"template-form\">\r\n\t\t\t\t\t<li>\r\n\t\t\t\t\t\t<label for=\"label\">Label</label>\r\n\t\t\t\t\t\t<input class=\"text  tb-label\" type=\"text\" name=\"label\" value=\"\" data-label=\"true\">\r\n\t\t\t\t\t</li>\r\n\t\t\t\t\t<li>\r\n\t\t\t\t\t\t<label for=\"name\">Name</label>\r\n\t\t\t\t\t\t<input id=\"tb-name\" class=\"text\" name=\"name\" type=\"text\" value=\"\" maxlength=\"50\" disabled=\"true\" />\r\n\t\t\t\t\t</li>\r\n\t\t\t\t\t<li>\r\n\t\t\t\t\t\t<label for=\"fieldsetopen\">As Fieldset?\r\n\t\t\t\t\t\t</label>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;\r\n\t\t\t\t\t\t\t<select class=\"select\" name=\"fieldsetopen\">\r\n\t\t\t\t\t\t\t\t<option value=\"0\">No</option>\r\n\t\t\t\t\t\t\t\t<option value=\"1\">Yes</option>\r\n\t\t\t\t\t\t\t</select>\r\n\t\t\t\t\t\t\t(label will not appear)\r\n\t\t\t\t\t</li>\r\n\t\t\t\t\t<li>\r\n\t\t\t\t\t<label for=\"fieldsetid\">Fieldset ID</label>\r\n\t\t\t\t\t\t<input class=\"text\" type=\"text\" name=\"fieldsetid\" value=\"\" data-label=\"true\">\r\n\t\t\t\t\t</li>\r\n\t\t\t\t</ul>\r\n\t\t\t</div>\r\n\t\t</div>\r\n\r\n\t</span>",
+  "field-textarea": "<span>\r\n\t\t<div class=\"mura-tb-form\">\r\n\t\t\t<div class=\"mura-tb-header textarea\">\r\n\t\t\t\t<h2> <span id=\"mura-tb-form-label\"></span></h2>\r\n\t\t\t\t<ul class=\"mura-tb-nav-utility\">\r\n\t\t\t\t\t<li><div id=\"button-trash\" title=\"Delete\"></div></li>\r\n\t\t\t\t</ul>\r\n\t\t\t</div>\r\n\t\t\t\r\n\t\t\t<div class=\"ui-tabs\" id=\"ui-tabs\">\r\n\t\t\t\r\n\t\t\t<ul class=\"ui-tabs-nav\">\r\n\t\t\t\t<li class=\"ui-state-default ui-corner-top\"><a href=\"#mura-tb-form-tab-basic\"><span>Basic</span></a></li>\r\n\t\t\t\t<li class=\"ui-state-default ui-corner-top\"><a href=\"#mura-tb-form-tab-advanced\"><span>Advanced</span></a></li>\r\n\t\t\t\t<li class=\"ui-state-default ui-corner-top\"><a href=\"#mura-tb-form-tab-validation\"><span>Validation</span></a></li>\r\n\t\t\t</ul>\r\n\t\t\t\r\n\t\t\t<div class=\"ui-tabs-panel\" id=\"mura-tb-form-tab-basic\">\r\n\t\t\t\r\n\t\t\t\t\t<ul class=\"template-form\">\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"label\">Label</label>\r\n\t\t\t\t\t\t\t<input class=\"text  tb-label\" type=\"text\" name=\"label\" value=\"\" maxlength=\"50\" data-required='true' />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"name\">Name</label>\r\n\t\t\t\t\t\t\t<input id=\"tb-name\" class=\"text  disabled\" name=\"name\" type=\"text\" value=\"\" maxlength=\"50\" disabled=\"true\" />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"value\">Value</label>\r\n\t\t\t\t\t\t\t<textarea class=\"textarea\" name=\"value\"></textarea>\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t\r\n\t\t\t\t\t</ul>\r\n\t\t\t</div>\r\n\t\t\t<div class=\"ui-tabs-panel\" id=\"mura-tb-form-tab-advanced\">\r\n\t\t\t\t\t<ul class=\"template-form\">\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"size\">Size</label>\r\n\t\t\t\t\t\t\t<input class=\"text \" type=\"text\" name=\"size\" value=\"\" maxlength=\"50\" data-required='false' />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"cssid\">CSS ID</label>\r\n\t\t\t\t\t\t\t<input class=\"text \" type=\"text\" name=\"cssid\" value=\"\" maxlength=\"50\" data-required='false' />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"cssclass\">CSS Class</label>\r\n\t\t\t\t\t\t\t<input class=\"text \" type=\"text\" name=\"cssclass\" value=\"\" maxlength=\"50\" data-required='false' />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"wrappercssclass\">Wrapper Class</label>\r\n\t\t\t\t\t\t\t<input class=\"text \" type=\"text\" name=\"wrappercssclass\" value=\"\" maxlength=\"50\" data-required='false' />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"placeholder\">Placeholder</label>\r\n\t\t\t\t\t\t\t<input class=\"text \" type=\"text\" name=\"placeholder\" value=\"\" maxlength=\"255\" data-required='false' />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"tooltip\">Tool Tip</label>\r\n\t\t\t\t\t\t\t<textarea name=\"tooltip\" value=\"\" maxlength=\"250\" ></textarea>\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t</ul>\r\n\t\t\t\t</div>\r\n\t\t\t\t<div class=\"ui-tabs-panel\" id=\"mura-tb-form-tab-validation\">\r\n\t\t\t\t\t<ul class=\"template-form\">\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"validatemessage\">Validate Message</label>\r\n\t\t\t\t\t\t\t<input class=\"text long\" type=\"text\" name=\"validatemessage\" value=\"\" maxlength=\"250\" />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li class=\"checkbox\">\r\n\t\t\t\t\t\t\t<label for=\"isrequired\">\r\n\t\t\t\t\t\t\tRequired?</label>\r\n\t\t\t\t\t\t\t<input type=\"checkbox\" type=\"text\" name=\"isrequired\" value=\"1\">\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t</ul>\r\n\t\t\t\t</div>\r\n\t\t\t</div>\r\n\t\t</div>\r\n\t</span>",
+  "field-textblock": "<span>\n\t\t<div class=\"mura-tb-form\">\n\t\t\t<div class=\"mura-tb-header textblock\">\n\t\t\t\t<h2> <span id=\"mura-tb-form-label\"></span></h2>\n\t\t\t\t<ul class=\"mura-tb-nav-utility\">\n\t\t\t\t\t<li><div id=\"button-trash\" title=\"Delete\"></div></li>\n\t\t\t\t</ul>\n\t\t\t</div>\n\t\t\t\n\t\t\t<div class=\"ui-tabs\" id=\"ui-tabs\">\n\t\t\t\n\t\t\t<ul class=\"ui-tabs-nav\">\n\t\t\t\t<li class=\"ui-state-default ui-corner-top\"><a href=\"#mura-tb-form-tab-basic\"><span>Basic</span></a></li>\n\t\t\t</ul>\n\t\t\t\n\t\t\t<div class=\"ui-tabs-panel\" id=\"mura-tb-form-tab-basic\" style=\"position: relative\">\t\t\n\t\t\t\t\t<ul class=\"template-form\">\n\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t<label for=\"label\">Label</label>\n\t\t\t\t\t\t\t<input class=\"text  tb-label\" type=\"text\" name=\"label\" value=\"\" maxlength=\"50\" data-required='true' />\n\t\t\t\t\t\t\t<textarea id='field_textblock' class=\"textarea\" name=\"value\"></textarea>\n\t\t\t\t\t\t</li>\n\t\t\t\t\t</ul>\n\t\t\t</div>\n\t\t</div>\n\t</span>",
+  "field-textfield": "<span>\r\n\t\t<div class=\"mura-tb-form\">\r\n\t\t\t<div class=\"mura-tb-header textfield\">\r\n\t\t\t\t<h2><span id=\"mura-tb-form-label\"></span></h2>\r\n\t\t\t\t<ul class=\"mura-tb-nav-utility\">\r\n\t\t\t\t\t<li><div id=\"button-trash\" title=\"Delete\"></div></li>\r\n\t\t\t\t</ul>\r\n\t\t\t</div>\r\n\t\t\t\r\n\t\t\t<div class=\"ui-tabs\" id=\"ui-tabs\">\r\n\t\t\t\r\n\t\t\t<ul class=\"ui-tabs-nav\">\r\n\t\t\t\t<li class=\"ui-state-default ui-corner-top\"><a href=\"#mura-tb-form-tab-basic\"><span>Basic</span></a></li>\r\n\t\t\t\t<li class=\"ui-state-default ui-corner-top\"><a href=\"#mura-tb-form-tab-advanced\"><span>Advanced</span></a></li>\r\n\t\t\t\t<li class=\"ui-state-default ui-corner-top\"><a href=\"#mura-tb-form-tab-validation\"><span>Validation</span></a></li>\r\n\t\t\t</ul>\r\n\t\t\t\r\n\t\t\t<div class=\"ui-tabs-panel\" id=\"mura-tb-form-tab-basic\">\r\n\t\t\t\r\n\t\t\t\t\t<ul class=\"template-form\">\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"label\">Label</label>\r\n\t\t\t\t\t\t\t<input class=\"text tb-label\" type=\"text\" name=\"label\" value=\"\" maxlength=\"250\" data-required='true' />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"name\">Name</label>\r\n\t\t\t\t\t\t\t<input id=\"tb-name\" class=\"text disabled\" name=\"name\" type=\"text\" value=\"\" maxlength=\"250\" disabled=\"true\" />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"value\">Value</label>\r\n\t\t\t\t\t\t\t<input class=\"text long\" type=\"text\" name=\"value\" value=\"\" maxlength=\"250\" />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t\r\n\t\t\t\t\t</ul>\r\n\t\t\t</div>\r\n\t\t\t\r\n\t\t\t<div class=\"ui-tabs-panel\" id=\"mura-tb-form-tab-advanced\">\t\r\n\t\t\t\t\t<ul class=\"template-form\">\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"size\">Size</label>\r\n\t\t\t\t\t\t\t<input class=\"text \" type=\"text\" name=\"size\" value=\"\" maxlength=\"50\" data-required='false' />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"cssid\">CSS ID</label>\r\n\t\t\t\t\t\t\t<input class=\"text \" type=\"text\" name=\"cssid\" value=\"\" maxlength=\"50\" data-required='false' />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"cssclass\">CSS Class</label>\r\n\t\t\t\t\t\t\t<input class=\"text \" type=\"text\" name=\"cssclass\" value=\"\" maxlength=\"50\" data-required='false' />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"wrappercssclass\">Wrapper Class</label>\r\n\t\t\t\t\t\t\t<input class=\"text \" type=\"text\" name=\"wrappercssclass\" value=\"\" maxlength=\"50\" data-required='false' />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"placeholder\">Placeholder</label>\r\n\t\t\t\t\t\t\t<input class=\"text \" type=\"text\" name=\"placeholder\" value=\"\" maxlength=\"255\" data-required='false' />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"tooltip\">Tool Tip</label>\r\n\t\t\t\t\t\t\t<textarea name=\"tooltip\" value=\"\" maxlength=\"250\" ></textarea>\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t</ul>\r\n\t\t\t</div>\r\n\t\t\t\r\n\t\t\t<div class=\"ui-tabs-panel\" id=\"mura-tb-form-tab-validation\">\r\n\t\t\t\t\t<ul class=\"template-form\">\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"validatetype\">Validation Type</label>\r\n\t\t\t\t\t\t\t<select class=\"select\" name=\"validatetype\">\r\n\t\t\t\t\t\t\t\t<option value=\"\">None</option>\r\n\t\t\t\t\t\t\t\t<option value=\"numeric\">Numeric</option>\r\n\t\t\t\t\t\t\t\t<option value=\"date\">Date</option>\r\n\t\t\t\t\t\t\t\t<option value=\"email\">Email</option>\r\n\t\t\t\t\t\t\t\t<option value=\"regex\">Regex</option>\r\n\t\t\t\t\t\t\t</select>\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"validateregex\">Validate Regex</label>\r\n\t\t\t\t\t\t\t<input class=\"text long\" type=\"text\" name=\"validateregex\" value=\"\" maxlength=\"350\" />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li>\r\n\t\t\t\t\t\t\t<label for=\"validatemessage\">Validate Message</label>\r\n\t\t\t\t\t\t\t<input class=\"text long\" type=\"text\" name=\"validatemessage\" value=\"\" maxlength=\"250\" />\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t\t<li class=\"checkbox\">\r\n\t\t\t\t\t\t\t<label for=\"isrequired\">\r\n\t\t\t\t\t\t\tRequired?</label>\r\n\t\t\t\t\t\t\t<input type=\"checkbox\" name=\"isrequired\" value=\"1\">\r\n\t\t\t\t\t\t</li>\r\n\t\t\t\t\t</ul>\r\n\t\t\t\t</div>\r\n\t\t\t</div>\r\n\t\t</div>\r\n\t</span>",
+  "form-form": "<span>\r\n\t\t<div class=\"mura-tb-form\" id=\"formblock-${fieldid}\">\r\n\t\t\t<div class=\"mura-tb-header\">\r\n\t\t\t\t<h2><span id=\"mura-tb-form-label\">Form</span></h2>\r\n\t\t\t</div>\r\n\t\t\t<ul class=\"template-form\">\r\n\t\t\t\t<li>\r\n\t\t\t\t\t<label for=\"label\">Email Subject</label>\r\n\t\t\t\t\t<input class=\"text tb-emailsubject\" type=\"text\" name=\"emailsubject\" value=\"\" data-label=\"true\">\r\n\t\t\t\t</li>\r\n\t\t\t\t<li>\r\n\t\t\t\t\t<label for=\"name\">Reply To</label>\r\n\t\t\t\t\t<input class=\"text tb-replyto\" type=\"text\" name=\"replyto\" value=\"\" data-label=\"true\">\r\n\t\t\t\t</li>\r\n\t\t\t\t<li>\r\n\t\t\t\t\t<label for=\"name\">Submit Label</label>\r\n\t\t\t\t\t<input class=\"text tb-submitlabel\" type=\"text\" name=\"submitlabel\" value=\"\" data-label=\"true\">\r\n\t\t\t\t</li>\r\n\t\t\t\t<li>\r\n\t\t\t\t\t<label for=\"name\">CSS Class</label>\r\n\t\t\t\t\t<input class=\"text tb-class\" type=\"text\" name=\"class\" value=\"\" data-label=\"true\">\r\n\t\t\t\t</li>\r\n\t\t\t\t<li>\r\n\t\t\t\t\t<label for=\"name-restricted\">Field Naming</label>\r\n\t\t\t\t\t<input id=\"tb-name-restricted\" class=\"text tb-class\" type=\"checkbox\" name=\"name-unrestricted\" value=\"1\" data-label=\"true\"> *\r\n\t\t\t\t</li>\r\n\t\t\t\t\r\n\t\t\t\t<input id=\"tb-muraormentities\" class=\"text tb-class\" type=\"hidden\" name=\"muraormentities\" value=\"0\" data-label=\"true\">\r\n\r\n\t\t\t\t<li>\r\n\t\t\t\t\t<div>\r\n\t\t\t\t\t*Form field names must begin with a letter. Letters, numbers and underscore \"_\" only.\r\n\t\t\t\t\t</div>\r\n\t\t\t\t\t\r\n\t\t\t\t</li>\r\n\r\n\r\n\r\n\t\t\t</ul>\r\n\t\t</div>\r\n\t</span>",
+  "message-dataset-sourcerequired": "<span>You must specify a source</span>",
+  "message-delete-row": "<span>Delete Row?</span>"
+ },
+ "missing": {
+  "Foo.Bar!": "formbuilder.missingfieldtemplatefile_missing: foobar.cfm",
+  "nope": "formbuilder.missingfieldtemplatefile_missing: nope.cfm",
+  "éfield": "formbuilder.missingfieldtemplatefile_missing: field.cfm",
+  "a|b": "formbuilder.missingfieldtemplatefile_missing: a|b.cfm"
+ },
+ "beans": [
+  {
+   "action": "getForm",
+   "input": {},
+   "body": "{\"datecreate\":\"\",\"fields\":{},\"pages\":[],\"statuscode\":0,\"datelastupdate\":\"\",\"formattributes\":{},\"siteid\":\"\",\"formid\":\"20FC3157-95EC-EB56-B4F74707A2B6320C\",\"isactive\":0,\"name\":\"\",\"config\":{},\"notes\":\"\",\"remoteid\":\"\",\"iscurrent\":0,\"package\":\"\",\"deletedfields\":{},\"fieldorder\":[]}"
+  },
+  {
+   "action": "getForm",
+   "input": {
+    "formId": "11111111-2222-3333-4444555566667777"
+   },
+   "body": "{\"datecreate\":\"\",\"fields\":{},\"pages\":[],\"statuscode\":0,\"datelastupdate\":\"\",\"formattributes\":{},\"siteid\":\"\",\"formid\":\"11111111-2222-3333-4444555566667777\",\"isactive\":0,\"name\":\"\",\"config\":{},\"notes\":\"\",\"remoteid\":\"\",\"iscurrent\":0,\"package\":\"\",\"deletedfields\":{},\"fieldorder\":[]}"
+  },
+  {
+   "action": "getForm",
+   "input": {
+    "formId": "abcdefab-2222-3333-4444555566667777"
+   },
+   "body": "{\"datecreate\":\"\",\"fields\":{},\"pages\":[],\"statuscode\":0,\"datelastupdate\":\"\",\"formattributes\":{},\"siteid\":\"\",\"formid\":\"abcdefab-2222-3333-4444555566667777\",\"isactive\":0,\"name\":\"\",\"config\":{},\"notes\":\"\",\"remoteid\":\"\",\"iscurrent\":0,\"package\":\"\",\"deletedfields\":{},\"fieldorder\":[]}"
+  },
+  {
+   "action": "getField",
+   "input": {
+    "formId": "11111111-2222-3333-4444555566667777"
+   },
+   "body": "{\"fieldid\":\"20FC33C4-0D72-E23C-B8AC4CA7EA7F7A60\",\"sectionid\":\"00000000-0000-0000-0000000000000000\",\"validatemessage\":\"\",\"fieldtype\":{\"fieldtypeid\":\"20FC33D3-CA8E-FD2F-4176EF4A29E5C101\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":\"textfield\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"},\"relatedid\":\"\",\"rblabel\":\"\",\"value\":\"\",\"config\":{},\"isrequired\":0,\"label\":\"New Text Field\",\"type\":\"COMMON\",\"fieldtypeid\":\"\",\"datecreate\":\"\",\"cssstyle\":\"\",\"datelastupdate\":\"\",\"validateregex\":\"\",\"isactive\":1,\"formid\":\"11111111-2222-3333-4444555566667777\",\"name\":\"\",\"placeholder\":\"\",\"islocked\":0,\"validatetype\":\"\",\"datasetid\":\"\",\"remoteid\":\"\",\"tooltip\":\"\",\"isdeleted\":0,\"orderno\":0,\"isentrytype\":\"SINGLE\",\"params\":\"\"}"
+  },
+  {
+   "action": "getField",
+   "input": {
+    "formId": "11111111-2222-3333-4444555566667777",
+    "fieldId": "AAAAAAAA-2222-3333-4444555566667777",
+    "fieldType": "field-dropdown"
+   },
+   "body": "{\"fieldid\":\"AAAAAAAA-2222-3333-4444555566667777\",\"sectionid\":\"00000000-0000-0000-0000000000000000\",\"validatemessage\":\"\",\"fieldtype\":{\"fieldtypeid\":\"20FC352F-D3F6-BC10-9557289585AC3A50\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":\"dropdown\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":1,\"label\":\"\"},\"relatedid\":\"\",\"rblabel\":\"\",\"value\":\"\",\"config\":{},\"isrequired\":0,\"label\":\"New Dropdown Menu\",\"type\":\"COMMON\",\"fieldtypeid\":\"\",\"datecreate\":\"\",\"cssstyle\":\"\",\"datelastupdate\":\"\",\"validateregex\":\"\",\"isactive\":1,\"formid\":\"11111111-2222-3333-4444555566667777\",\"name\":\"\",\"placeholder\":\"\",\"islocked\":0,\"validatetype\":\"\",\"datasetid\":\"\",\"remoteid\":\"\",\"tooltip\":\"\",\"isdeleted\":0,\"orderno\":0,\"isentrytype\":\"SINGLE\",\"params\":\"\"}"
+  },
+  {
+   "action": "getField",
+   "input": {
+    "formId": "11111111-2222-3333-4444555566667777",
+    "fieldType": "field-textarea"
+   },
+   "body": "{\"fieldid\":\"20FC3649-C515-737D-54F17AEDD93144A7\",\"sectionid\":\"00000000-0000-0000-0000000000000000\",\"validatemessage\":\"\",\"fieldtype\":{\"fieldtypeid\":\"20FC364D-9C21-C573-281019741656872A\",\"islong\":1,\"datecreate\":\"\",\"fieldtype\":\"textarea\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"},\"relatedid\":\"\",\"rblabel\":\"\",\"value\":\"\",\"config\":{},\"isrequired\":0,\"label\":\"New Text Area\",\"type\":\"COMMON\",\"fieldtypeid\":\"\",\"datecreate\":\"\",\"cssstyle\":\"\",\"datelastupdate\":\"\",\"validateregex\":\"\",\"isactive\":1,\"formid\":\"11111111-2222-3333-4444555566667777\",\"name\":\"\",\"placeholder\":\"\",\"islocked\":0,\"validatetype\":\"\",\"datasetid\":\"\",\"remoteid\":\"\",\"tooltip\":\"\",\"isdeleted\":0,\"orderno\":0,\"isentrytype\":\"SINGLE\",\"params\":\"\"}"
+  },
+  {
+   "action": "getField",
+   "input": {
+    "formId": "11111111-2222-3333-4444555566667777",
+    "fieldType": "field-checkbox"
+   },
+   "body": "{\"fieldid\":\"212CC9E0-DA4F-9661-8111EA55C8233376\",\"sectionid\":\"00000000-0000-0000-0000000000000000\",\"validatemessage\":\"\",\"fieldtype\":{\"fieldtypeid\":\"212CC9E4-0A14-5F8A-3A810F85D6D35F3D\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":\"checkbox\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":1,\"label\":\"\"},\"relatedid\":\"\",\"rblabel\":\"\",\"value\":\"\",\"config\":{},\"isrequired\":0,\"label\":\"New Checkboxes\",\"type\":\"COMMON\",\"fieldtypeid\":\"\",\"datecreate\":\"\",\"cssstyle\":\"\",\"datelastupdate\":\"\",\"validateregex\":\"\",\"isactive\":1,\"formid\":\"11111111-2222-3333-4444555566667777\",\"name\":\"\",\"placeholder\":\"\",\"islocked\":0,\"validatetype\":\"\",\"datasetid\":\"\",\"remoteid\":\"\",\"tooltip\":\"\",\"isdeleted\":0,\"orderno\":0,\"isentrytype\":\"SINGLE\",\"params\":\"\"}"
+  },
+  {
+   "action": "getField",
+   "input": {
+    "formId": "11111111-2222-3333-4444555566667777",
+    "fieldId": "aaaaaaaa-2222-3333-4444555566667777"
+   },
+   "body": "{\"fieldid\":\"aaaaaaaa-2222-3333-4444555566667777\",\"sectionid\":\"00000000-0000-0000-0000000000000000\",\"validatemessage\":\"\",\"fieldtype\":{\"fieldtypeid\":\"2111AD3F-EA9A-B255-A05D26B8DCB29DEC\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":\"textfield\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"},\"relatedid\":\"\",\"rblabel\":\"\",\"value\":\"\",\"config\":{},\"isrequired\":0,\"label\":\"New Text Field\",\"type\":\"COMMON\",\"fieldtypeid\":\"\",\"datecreate\":\"\",\"cssstyle\":\"\",\"datelastupdate\":\"\",\"validateregex\":\"\",\"isactive\":1,\"formid\":\"11111111-2222-3333-4444555566667777\",\"name\":\"\",\"placeholder\":\"\",\"islocked\":0,\"validatetype\":\"\",\"datasetid\":\"\",\"remoteid\":\"\",\"tooltip\":\"\",\"isdeleted\":0,\"orderno\":0,\"isentrytype\":\"SINGLE\",\"params\":\"\"}"
+  },
+  {
+   "action": "getField",
+   "input": {
+    "formId": "11111111-2222-3333-4444555566667777",
+    "fieldType": "field-text-x"
+   },
+   "body": "{\"fieldid\":\"2111A60D-0B4D-0075-250895098BC9DE0A\",\"sectionid\":\"00000000-0000-0000-0000000000000000\",\"validatemessage\":\"\",\"fieldtype\":{\"fieldtypeid\":\"2111A612-9ED1-FA52-96979D08CADDB5BF\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":\"text\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"},\"relatedid\":\"\",\"rblabel\":\"\",\"value\":\"\",\"config\":{},\"isrequired\":0,\"label\":\"New formbuilder.field.text-x_missing\",\"type\":\"COMMON\",\"fieldtypeid\":\"\",\"datecreate\":\"\",\"cssstyle\":\"\",\"datelastupdate\":\"\",\"validateregex\":\"\",\"isactive\":1,\"formid\":\"11111111-2222-3333-4444555566667777\",\"name\":\"\",\"placeholder\":\"\",\"islocked\":0,\"validatetype\":\"\",\"datasetid\":\"\",\"remoteid\":\"\",\"tooltip\":\"\",\"isdeleted\":0,\"orderno\":0,\"isentrytype\":\"SINGLE\",\"params\":\"\"}"
+  },
+  {
+   "action": "getField",
+   "input": {
+    "formId": "11111111-2222-3333-4444555566667777",
+    "fieldType": "Field-TextField"
+   },
+   "body": "{\"fieldid\":\"2111A721-FC06-4771-6AFA07616B2949F9\",\"sectionid\":\"00000000-0000-0000-0000000000000000\",\"validatemessage\":\"\",\"fieldtype\":{\"fieldtypeid\":\"2111A725-90E0-E9ED-03A5A04E54CD4F42\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":\"textfield\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"},\"relatedid\":\"\",\"rblabel\":\"\",\"value\":\"\",\"config\":{},\"isrequired\":0,\"label\":\"New Text Field\",\"type\":\"COMMON\",\"fieldtypeid\":\"\",\"datecreate\":\"\",\"cssstyle\":\"\",\"datelastupdate\":\"\",\"validateregex\":\"\",\"isactive\":1,\"formid\":\"11111111-2222-3333-4444555566667777\",\"name\":\"\",\"placeholder\":\"\",\"islocked\":0,\"validatetype\":\"\",\"datasetid\":\"\",\"remoteid\":\"\",\"tooltip\":\"\",\"isdeleted\":0,\"orderno\":0,\"isentrytype\":\"SINGLE\",\"params\":\"\"}"
+  },
+  {
+   "action": "getField",
+   "input": {
+    "formId": "11111111-2222-3333-4444555566667777",
+    "fieldType": "field--textfield"
+   },
+   "body": "{\"fieldid\":\"2111A87A-9E69-68B0-29FDCDC5F6FCAE05\",\"sectionid\":\"00000000-0000-0000-0000000000000000\",\"validatemessage\":\"\",\"fieldtype\":{\"fieldtypeid\":\"2111A87E-0F83-67B1-CF85D86956F0A612\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":\"textfield\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"},\"relatedid\":\"\",\"rblabel\":\"\",\"value\":\"\",\"config\":{},\"isrequired\":0,\"label\":\"New formbuilder.field.-textfield_missing\",\"type\":\"COMMON\",\"fieldtypeid\":\"\",\"datecreate\":\"\",\"cssstyle\":\"\",\"datelastupdate\":\"\",\"validateregex\":\"\",\"isactive\":1,\"formid\":\"11111111-2222-3333-4444555566667777\",\"name\":\"\",\"placeholder\":\"\",\"islocked\":0,\"validatetype\":\"\",\"datasetid\":\"\",\"remoteid\":\"\",\"tooltip\":\"\",\"isdeleted\":0,\"orderno\":0,\"isentrytype\":\"SINGLE\",\"params\":\"\"}"
+  },
+  {
+   "action": "getField",
+   "input": {
+    "formId": "11111111-2222-3333-4444555566667777",
+    "fieldType": "x-y"
+   },
+   "body": "{\"fieldid\":\"2111A98F-C069-A24F-57483E87744972EE\",\"sectionid\":\"00000000-0000-0000-0000000000000000\",\"validatemessage\":\"\",\"fieldtype\":{\"fieldtypeid\":\"2111A993-A862-0DC7-D19DDDDBB5A2D7CF\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":\"y\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"x\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"},\"relatedid\":\"\",\"rblabel\":\"\",\"value\":\"\",\"config\":{},\"isrequired\":0,\"label\":\"New formbuilder.field.y_missing\",\"type\":\"COMMON\",\"fieldtypeid\":\"\",\"datecreate\":\"\",\"cssstyle\":\"\",\"datelastupdate\":\"\",\"validateregex\":\"\",\"isactive\":1,\"formid\":\"11111111-2222-3333-4444555566667777\",\"name\":\"\",\"placeholder\":\"\",\"islocked\":0,\"validatetype\":\"\",\"datasetid\":\"\",\"remoteid\":\"\",\"tooltip\":\"\",\"isdeleted\":0,\"orderno\":0,\"isentrytype\":\"SINGLE\",\"params\":\"\"}"
+  },
+  {
+   "action": "getField",
+   "input": {
+    "formId": "11111111-2222-3333-4444555566667777",
+    "fieldType": "field-123"
+   },
+   "body": "{\"fieldid\":\"2111AA83-902F-33D9-13C8CA5967DA0CDF\",\"sectionid\":\"00000000-0000-0000-0000000000000000\",\"validatemessage\":\"\",\"fieldtype\":{\"fieldtypeid\":\"2111AA87-BFA5-3AD4-F30BA1D879B7519C\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":123,\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"},\"relatedid\":\"\",\"rblabel\":\"\",\"value\":\"\",\"config\":{},\"isrequired\":0,\"label\":\"New formbuilder.field.123_missing\",\"type\":\"COMMON\",\"fieldtypeid\":\"\",\"datecreate\":\"\",\"cssstyle\":\"\",\"datelastupdate\":\"\",\"validateregex\":\"\",\"isactive\":1,\"formid\":\"11111111-2222-3333-4444555566667777\",\"name\":\"\",\"placeholder\":\"\",\"islocked\":0,\"validatetype\":\"\",\"datasetid\":\"\",\"remoteid\":\"\",\"tooltip\":\"\",\"isdeleted\":0,\"orderno\":0,\"isentrytype\":\"SINGLE\",\"params\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {},
+   "body": "{\"fieldtypeid\":\"20FC3AD7-A494-12DB-6997C4E58F01B8AA\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":\"textfield\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldTypeId": "BBBBBBBB-2222-3333-4444555566667777",
+    "fieldType": "field-radio"
+   },
+   "body": "{\"fieldtypeid\":\"BBBBBBBB-2222-3333-4444555566667777\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":\"radio\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":1,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-htmleditor"
+   },
+   "body": "{\"fieldtypeid\":\"20FC3CAB-FB2C-79F7-BE8EEBA9F33A4F3F\",\"islong\":1,\"datecreate\":\"\",\"fieldtype\":\"htmleditor\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "dataset-multientity-x"
+   },
+   "body": "{\"fieldtypeid\":\"20FC3D85-08F0-E4E0-3F01FD54E0449892\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":\"multientity\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"dataset\",\"bean\":\"\",\"isdata\":1,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-123"
+   },
+   "body": "{\"fieldtypeid\":\"21116FAA-E73E-FC30-E86EE4CEDF456481\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":123,\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-007"
+   },
+   "body": "{\"fieldtypeid\":\"211170B6-F03C-169F-8C942410DDF13760\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":7,\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-0"
+   },
+   "body": "{\"fieldtypeid\":\"21119BA8-FCC6-316F-E228F99607EE5AC4\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":0,\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-true"
+   },
+   "body": "{\"fieldtypeid\":\"21119C8C-A1B1-1A9D-FE8F173A237A05DA\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":true,\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-false"
+   },
+   "body": "{\"fieldtypeid\":\"21119D6B-F0A9-F99C-D6A701414D88041A\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":false,\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-null"
+   },
+   "body": "{\"fieldtypeid\":\"21119E3C-CA52-040E-66F61BCC6C740466\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":null,\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "123-abc"
+   },
+   "body": "{\"fieldtypeid\":\"2111A00D-B61B-6AA9-383674B66D6E9F75\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":\"abc\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":123,\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field--textfield"
+   },
+   "body": "{\"fieldtypeid\":\"2111A1BD-CCEA-3A0F-5BF8BB7361DEDF64\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":\"textfield\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-text-x"
+   },
+   "body": "{\"fieldtypeid\":\"2111A28B-C7E6-C7A0-B0653ADD9EA60DF7\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":\"text\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-1.5"
+   },
+   "body": "{\"fieldtypeid\":\"2111A445-AF06-3E5C-21A4925A7ABA2705\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":15,\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "Field-TextField"
+   },
+   "body": "{\"fieldtypeid\":\"2111A522-BBCD-62C0-857C050869EBBA25\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":\"textfield\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-12345678901"
+   },
+   "body": "{\"fieldtypeid\":\"2118CA10-B0C2-19DD-074456EE3FB7191F\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":12345678901,\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-99999999999999999999"
+   },
+   "body": "{\"fieldtypeid\":\"2118CAF8-FAE9-0A75-3D88E1004E5BB81F\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":1.0E20,\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-1|2"
+   },
+   "body": "{\"fieldtypeid\":\"2118E53E-97CD-F897-A6C2CF1AA672BE94\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":\"1|2\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-|"
+   },
+   "body": "{\"fieldtypeid\":\"2118EAA5-F5EB-B66B-5D01010199AA7757\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":\"|\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-tru"
+   },
+   "body": "{\"fieldtypeid\":\"2118EB7A-9FED-FFC0-BEEFEC757F4E8E54\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":\"tru\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-0x1f"
+   },
+   "body": "{\"fieldtypeid\":\"2118EC61-CF59-B510-E745CE34B3C00BB2\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":\"0x1f\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-1e"
+   },
+   "body": "{\"fieldtypeid\":\"2118ED3B-AF70-BEAC-5B26E5AF6A4FED46\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":\"1e\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-e1"
+   },
+   "body": "{\"fieldtypeid\":\"2118EE0D-FB03-151A-38800F86A018CA13\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":\"e1\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-infinity"
+   },
+   "body": "{\"fieldtypeid\":\"2118F7DD-BDFC-7D96-1AD91A8DD47BED74\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":\"infinity\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-nan"
+   },
+   "body": "{\"fieldtypeid\":\"2118F948-C0AA-262A-8AAF643641241FC3\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":\"nan\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-1e22"
+   },
+   "body": "{\"fieldtypeid\":\"2118FE5F-A2EC-DCE0-ADBE2CB8595753D1\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":1.0E22,\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-00"
+   },
+   "body": "{\"fieldtypeid\":\"2118FF2B-A68F-9D1A-FECC6F4E207684FF\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":0,\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-2147483648"
+   },
+   "body": "{\"fieldtypeid\":\"2118FBCA-B501-529A-F9263C81A3AC5C9F\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":2147483648,\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-9223372036854775808"
+   },
+   "body": "{\"fieldtypeid\":\"2118FD94-DD18-F0AF-B5EB6D043157B86F\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":9.223372036854776E18,\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-truex"
+   },
+   "body": "{\"fieldtypeid\":\"211900BE-FEF1-6925-BB2167A80B305C8B\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":\"truex\",\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-NULL"
+   },
+   "body": "{\"fieldtypeid\":\"2119018C-E159-C05B-2A79E74C462A1B15\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":null,\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field-TRUE"
+   },
+   "body": "{\"fieldtypeid\":\"21192A8A-BB80-1A73-F967774F36B7C871\",\"islong\":0,\"datecreate\":\"\",\"fieldtype\":true,\"IsMultiSelect\":0,\"moduleid\":\"\",\"datelastupdate\":\"\",\"rblabel\":\"\",\"displaytype\":\"field\",\"bean\":\"\",\"isdata\":0,\"label\":\"\"}"
+  },
+  {
+   "action": "getDataset",
+   "input": {
+    "fieldId": "AAAAAAAA-2222-3333-4444555566667777"
+   },
+   "body": "{\"datarecords\":{},\"deletedrecords\":{},\"datecreate\":\"\",\"issortchanged\":0,\"datelastupdate\":\"\",\"model\":{\"datasetid\":\"20FC3E5F-0313-51EC-6F4B0BE2D8D204E2\",\"datecreate\":\"\",\"remoteid\":\"\",\"orderno\":0,\"datelastupdate\":\"\",\"isselected\":0,\"label\":\"\",\"datarecordid\":\"20FC3E70-FB43-3E53-E98EF177991FC531\",\"value\":\"\"},\"sourcetype\":\"\",\"siteid\":\"\",\"isactive\":1,\"name\":\"\",\"islocked\":0,\"datasetid\":\"20FC3E5F-0313-51EC-6F4B0BE2D8D204E2\",\"remoteid\":\"\",\"parentid\":\"\",\"source\":\"\",\"sorttype\":\"\",\"issorted\":0,\"isglobal\":0,\"sortdirection\":\"asc\",\"sortcolumn\":\"orderby\",\"datarecordorder\":[]}"
+  },
+  {
+   "action": "getDataset",
+   "input": {
+    "datasetId": "",
+    "fieldId": "AAAAAAAA-2222-3333-4444555566667777"
+   },
+   "body": "{\"datarecords\":{},\"deletedrecords\":{},\"datecreate\":\"\",\"issortchanged\":0,\"datelastupdate\":\"\",\"model\":{\"datasetid\":\"20FC4B94-D341-E426-F5F2D951C3404BEF\",\"datecreate\":\"\",\"remoteid\":\"\",\"orderno\":0,\"datelastupdate\":\"\",\"isselected\":0,\"label\":\"\",\"datarecordid\":\"20FC4B98-A056-D370-11FB3FE8D1871907\",\"value\":\"\"},\"sourcetype\":\"\",\"siteid\":\"\",\"isactive\":1,\"name\":\"\",\"islocked\":0,\"datasetid\":\"20FC4B94-D341-E426-F5F2D951C3404BEF\",\"remoteid\":\"\",\"parentid\":\"\",\"source\":\"\",\"sorttype\":\"\",\"issorted\":0,\"isglobal\":0,\"sortdirection\":\"asc\",\"sortcolumn\":\"orderby\",\"datarecordorder\":[]}"
+  },
+  {
+   "action": "getDataset",
+   "input": {
+    "datasetId": "CCCCCCCC-2222-3333-4444555566667777",
+    "fieldId": "AAAAAAAA-2222-3333-4444555566667777"
+   },
+   "body": "{\"datarecords\":{},\"deletedrecords\":{},\"datecreate\":\"\",\"issortchanged\":0,\"datelastupdate\":\"\",\"model\":{\"datasetid\":\"CCCCCCCC-2222-3333-4444555566667777\",\"datecreate\":\"\",\"remoteid\":\"\",\"orderno\":0,\"datelastupdate\":\"\",\"isselected\":0,\"label\":\"\",\"datarecordid\":\"20FC4C75-BB60-427E-E16AEB805C046F86\",\"value\":\"\"},\"sourcetype\":\"\",\"siteid\":\"\",\"isactive\":1,\"name\":\"\",\"islocked\":0,\"datasetid\":\"CCCCCCCC-2222-3333-4444555566667777\",\"remoteid\":\"\",\"parentid\":\"\",\"source\":\"\",\"sorttype\":\"\",\"issorted\":0,\"isglobal\":0,\"sortdirection\":\"asc\",\"sortcolumn\":\"orderby\",\"datarecordorder\":[]}"
+  }
+ ],
+ "errors": [
+  {
+   "action": "getForm",
+   "input": {
+    "formId": ""
+   },
+   "message": "The FORMID argument passed to the getFormBean function is not of type uuid."
+  },
+  {
+   "action": "getForm",
+   "input": {
+    "formId": "nope"
+   },
+   "message": "The FORMID argument passed to the getFormBean function is not of type uuid."
+  },
+  {
+   "action": "getField",
+   "input": {},
+   "message": "Element RC.formID is undefined in ARGUMENTS."
+  },
+  {
+   "action": "getField",
+   "input": {
+    "formId": "11111111-2222-3333-4444555566667777",
+    "fieldId": ""
+   },
+   "message": "The FIELDID argument passed to the getFieldBean function is not of type uuid."
+  },
+  {
+   "action": "getField",
+   "input": {
+    "formId": "nope",
+    "fieldId": "nope"
+   },
+   "message": "The FORMID argument passed to the getFieldBean function is not of type uuid."
+  },
+  {
+   "action": "getField",
+   "input": {
+    "formId": "11111111-2222-3333-4444555566667777",
+    "fieldType": "---"
+   },
+   "message": "The element at position 1 of dimension 1,                  of array variable \"AFIELDTEMPLATE,\" cannot be found."
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldTypeId": ""
+   },
+   "message": "The FIELDTYPEID argument passed to the getFieldTypeBean function is not of type uuid."
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "field"
+   },
+   "message": "The element at position 2 of dimension 1,                  of array variable \"AFIELDTEMPLATE,\" cannot be found."
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "-abc"
+   },
+   "message": "The element at position 2 of dimension 1,                  of array variable \"AFIELDTEMPLATE,\" cannot be found."
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": "---"
+   },
+   "message": "The element at position 1 of dimension 1,                  of array variable \"AFIELDTEMPLATE,\" cannot be found."
+  },
+  {
+   "action": "getFieldType",
+   "input": {
+    "fieldType": ""
+   },
+   "message": "The element at position 1 of dimension 1,                  of array variable \"AFIELDTEMPLATE,\" cannot be found."
+  },
+  {
+   "action": "getDataset",
+   "input": {},
+   "message": "Element RC.fieldID is undefined in ARGUMENTS."
+  },
+  {
+   "action": "getDataset",
+   "input": {
+    "datasetId": "nope",
+    "fieldId": "nope"
+   },
+   "message": "The DATASETID argument passed to the getDatasetBean function is not of type uuid."
+  },
+  {
+   "action": "getDataset",
+   "input": {
+    "fieldId": "nope"
+   },
+   "message": "The FIELDID argument passed to the getDatasetBean function is not of type uuid."
+  },
+  {
+   "action": "getFieldTemplate",
+   "input": {
+    "fieldType": "field-nested"
+   },
+   "message": "Element FORMID is undefined in FORM."
+  }
+ ]
+}
