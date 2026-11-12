@@ -1,0 +1,12 @@
+-- Target values of the IDENTITY columns legacy also numbers: negative, so they never meet the positive values backfill copies or
+-- legacy-served writers keep issuing, nor move SQL Server's seed when projected back; ascending by 1 like IDENTITY(1,1).
+ALTER TABLE content.content ALTER COLUMN tcontent_id
+  SET MINVALUE -2147483648 SET MAXVALUE -1 SET START WITH -2147483648 RESTART WITH -2147483648;
+ALTER TABLE content.content_related ALTER COLUMN relatedcontentid
+  SET MINVALUE -2147483648 SET MAXVALUE -1 SET START WITH -2147483648 RESTART WITH -2147483648;
+ALTER TABLE content.content_tag ALTER COLUMN tagid
+  SET MINVALUE -2147483648 SET MAXVALUE -1 SET START WITH -2147483648 RESTART WITH -2147483648;
+ALTER TABLE content.extend_attribute ALTER COLUMN attributeid
+  SET MINVALUE -2147483648 SET MAXVALUE -1 SET START WITH -2147483648 RESTART WITH -2147483648;
+ALTER TABLE content.extend_data ALTER COLUMN dataid
+  SET MINVALUE -2147483648 SET MAXVALUE -1 SET START WITH -2147483648 RESTART WITH -2147483648;
