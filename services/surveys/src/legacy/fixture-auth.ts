@@ -1,7 +1,9 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Port of legacy-fixtures/cfml/lib/auth.cfc over the verified user token: site resolution, login, role-group and CSRF checks. */
+/** Port of legacy-fixtures/cfml/lib/auth.cfc over the verified user token: site resolution, login, role-group, CSRF and task-token checks. */
+import { timingSafeEqual } from 'node:crypto';
 import { hasAnyRole, Roles, SYNTHETIC_ROLES, type UserClaims } from '@opt2/platform/auth';
 import { javaTrim, LegacyApiError } from '@opt2/platform/legacy-compat';
+import { sha256Hex } from '@opt2/platform/migration-kit';
 import { csrfPreHandler, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
 import { FixtureApiError, type FixtureParams } from './fixture-envelope.js';
 
@@ -98,7 +100,7 @@ export function requireAny(request: FastifyRequest, roles: readonly string[]): U
 const csrfValidated = new WeakSet<FastifyRequest>();
 
 /** The method api.cfm dispatches on: a non-empty X-HTTP-Method-Override, else the request method, upper-cased. */
-function fixtureHttpMethod(request: FastifyRequest): string {
+export function fixtureHttpMethod(request: FastifyRequest): string {
   const override = request.headers['x-http-method-override'];
   const value = Array.isArray(override) ? override[0] : override;
   return (value === undefined || value === '' ? request.method : value).toUpperCase();
@@ -121,6 +123,30 @@ export async function requireCsrf(request: FastifyRequest, reply: FastifyReply, 
 export function isSiteAdmin(request: FastifyRequest): boolean {
   const user = verifiedUser(request);
   return user !== undefined && (user.s2 || hasAnyRole(user.roles, [Roles.s2, Roles.siteAdmin]));
+}
+
+/** Whether the verified user is S2, a private-pool user (`system-user`) or a public-pool account (`member`) of the token's site. */
+export function isSiteMember(request: FastifyRequest): boolean {
+  const user = verifiedUser(request);
+  return user !== undefined && (user.s2 || hasAnyRole(user.roles, [Roles.s2, Roles.systemUser, Roles.member]));
+}
+
+/** `url.opt2TaskToken` as ACF's url scope holds it: the query only, any case, the last spelling winning, repeats comma-joined; '' when absent. */
+export function taskTokenOf(request: FastifyRequest): string {
+  const query = (request.query ?? {}) as Record<string, unknown>;
+  const key = Object.keys(query).findLast((name) => name.toLowerCase() === 'opt2tasktoken');
+  const value = key === undefined ? undefined : query[key];
+  if (Array.isArray(value)) {
+    return value.map(String).join(',');
+  }
+  return typeof value === 'string' ? value : '';
+}
+
+/** auth.cfc checkTaskToken: the lowercase hex SHA-256 of `token`'s UTF-8 bytes equals `storedHash`, compared in constant time. */
+export function checkTaskToken(token: string, storedHash: string): boolean {
+  const computed = Buffer.from(sha256Hex(token), 'utf8');
+  const stored = Buffer.from(storedHash, 'utf8');
+  return computed.length === stored.length && timingSafeEqual(computed, stored);
 }
 
 /** The verified user's Masa UserID; an empty string when anonymous, as auth.cfc returns for a guest session. */

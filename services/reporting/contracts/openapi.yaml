@@ -1853,6 +1853,10 @@ components:
           type: string
           format: date
           pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+        userToken:
+          type: string
+          minLength: 1
+          description: Site-scoped user token of the requester, sent as `Authorization` on the finance and timesheets source reads, whose routes act only for a verified user; the task route itself never accepts it as a credential.
     ExportTaskWireBody:
       description: Task wire body of an export task, which names the tenant of its job.
       allOf:

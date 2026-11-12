@@ -46,6 +46,9 @@ export type FileObject = components['schemas']['FileObject'];
 /** Query of strategies-content's object upload: tenant, legacy `fileID`, variant suffix, extension, content type and body SHA-256. */
 export type PutObjectParams = paths[typeof OBJECTS_PATH]['post']['parameters']['query'];
 
+/** Query of strategies-content's object read: the `content-files` key `<tenantId>/<fileId><variant>.<ext>`. */
+type GetObjectParams = paths[typeof OBJECTS_PATH]['get']['parameters']['query'];
+
 /** An apply answer with the write positions its response header reported. */
 export type ApplyResult = ApplyResponse & { writePositions: WritePositions };
 
@@ -140,6 +143,8 @@ export interface OwnersClient {
   gate(owner: DataOwner, req: GateRequest): Promise<GateResponse>;
   /** Stores one legacy file-store object in strategies-content's `content-files`. */
   putObject(params: PutObjectParams, bytes: Uint8Array): Promise<PutObjectResult>;
+  /** Reads the bytes of one stored `content-files` object by its key. */
+  getObject(key: string): Promise<Buffer>;
   /** Reads programs-sites' site-monitor cursor. */
   siteMonitorState(): Promise<SiteMonitorState>;
   /** Seeds programs-sites' site-monitor cursor. */
@@ -203,6 +208,7 @@ interface CallOptions {
   body?: Buffer;
   headers?: Record<string, string>;
   timeoutMs?: ServiceRequest['timeoutMs'];
+  rawBody?: ServiceRequest['rawBody'];
 }
 
 /** Bound of a gate call: the owner's gate wait plus the call bound when closing or re-phasing, else the client's default. */
@@ -306,6 +312,12 @@ export function createOwnersClient(options: CreateOwnersClientOptions): OwnersCl
         headers: { 'content-type': 'application/octet-stream' },
       });
       return { ...response.body, writePositions: writePositionsOf(response.headers) };
+    },
+
+    async getObject(key) {
+      const query: GetObjectParams = { key };
+      // Raw, so an object stored as JSON or text keeps its exact bytes.
+      return (await call<Buffer>(CONTENT, 'GET', OBJECTS_PATH, { query, rawBody: true })).body;
     },
 
     async siteMonitorState() {

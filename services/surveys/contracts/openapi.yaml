@@ -30,11 +30,12 @@ paths:
     get:
       operationId: fixtureListSurveys
       summary: Lists one page of the site's surveys, ordered by creation time and id.
+      description: 'Public on the platform; the handler checks the site, then login and the `surveys.manager` role group, as the fixture does.'
       tags:
         - fixture
       x-opt2-transport: service
-      x-opt2-requires:
-        - surveys.manager
+      x-opt2-public: true
+      x-opt2-site-check: false
       security:
         - userToken: []
           invocationCredential: []
@@ -76,6 +77,9 @@ paths:
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
           $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+          description: The effective method, after X-HTTP-Method-Override, is not one this path dispatches on.
         '500':
           $ref: '#/components/responses/FixtureServerError'
         '503':
@@ -83,11 +87,12 @@ paths:
     post:
       operationId: fixtureCreateSurvey
       summary: Creates a DRAFT survey in the site and returns its detail.
+      description: 'Public on the platform; the handler checks the site, then login and the `surveys.manager` role group, as the fixture does.'
       tags:
         - fixture
       x-opt2-transport: service
-      x-opt2-requires:
-        - surveys.manager
+      x-opt2-public: true
+      x-opt2-site-check: false
       security:
         - userToken: []
           invocationCredential: []
@@ -127,6 +132,9 @@ paths:
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
           $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+          description: The effective method, after X-HTTP-Method-Override, is not one this path dispatches on.
         '500':
           $ref: '#/components/responses/FixtureServerError'
         '503':
@@ -140,11 +148,12 @@ paths:
     get:
       operationId: fixtureGetSurvey
       summary: Reads one survey of the site with its schedule, reminders and targets.
+      description: 'Public on the platform; the handler checks the site, then login and the `surveys.manager` role group, as the fixture does.'
       tags:
         - fixture
       x-opt2-transport: service
-      x-opt2-requires:
-        - surveys.manager
+      x-opt2-public: true
+      x-opt2-site-check: false
       security:
         - userToken: []
           invocationCredential: []
@@ -191,11 +200,12 @@ paths:
     post:
       operationId: fixtureScheduleSurvey
       summary: Replaces the survey's launch schedule and reminders, marks it SCHEDULED and returns its detail.
+      description: 'Public on the platform; the handler checks the site, then login and the `surveys.manager` role group, as the fixture does.'
       tags:
         - fixture
       x-opt2-transport: service
-      x-opt2-requires:
-        - surveys.manager
+      x-opt2-public: true
+      x-opt2-site-check: false
       security:
         - userToken: []
           invocationCredential: []
@@ -253,11 +263,12 @@ paths:
     post:
       operationId: fixtureBulkTargetSurvey
       summary: Adds the distinct site and group targets the survey lacks and returns the inserted and total counts.
+      description: 'Public on the platform; the handler checks the site, then login and the `surveys.manager` role group, as the fixture does.'
       tags:
         - fixture
       x-opt2-transport: service
-      x-opt2-requires:
-        - surveys.manager
+      x-opt2-public: true
+      x-opt2-site-check: false
       security:
         - userToken: []
           invocationCredential: []
@@ -312,11 +323,12 @@ paths:
     get:
       operationId: fixtureListSurveyResponses
       summary: Lists one page of the survey's responses, ordered by creation time and id.
+      description: 'Public on the platform; the handler checks the site, then login and the `surveys.manager` role group, as the fixture does.'
       tags:
         - fixture
       x-opt2-transport: service
-      x-opt2-requires:
-        - surveys.manager
+      x-opt2-public: true
+      x-opt2-site-check: false
       security:
         - userToken: []
           invocationCredential: []
@@ -367,12 +379,12 @@ paths:
     post:
       operationId: fixtureSubmitSurveyResponse
       summary: Stores the answers of a member of the request site, the survey's site or a targeted site, under the survey's site.
+      description: 'Public on the platform; the handler checks the site, then login and site membership (S2, `system-user` or `member`), as the fixture does.'
       tags:
         - fixture
       x-opt2-transport: service
-      x-opt2-requires:
-        - member
-        - system-user
+      x-opt2-public: true
+      x-opt2-site-check: false
       security:
         - userToken: []
           invocationCredential: []
@@ -428,11 +440,12 @@ paths:
     get:
       operationId: fixtureListSurveyTasks
       summary: Lists one page of the survey's launch and reminder tasks, ordered by offset and task name.
+      description: 'Public on the platform; the handler checks the site, then login and the `surveys.manager` role group, as the fixture does.'
       tags:
         - fixture
       x-opt2-transport: service
-      x-opt2-requires:
-        - surveys.manager
+      x-opt2-public: true
+      x-opt2-site-check: false
       security:
         - userToken: []
           invocationCredential: []
@@ -529,6 +542,9 @@ paths:
         '403':
           $ref: '#/components/responses/FixtureForbidden'
           description: The task token is absent or does not match, or the survey is not scheduled in the site.
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+          description: The effective method, after X-HTTP-Method-Override, is not one this path dispatches on.
         '500':
           $ref: '#/components/responses/FixtureServerError'
         '503':
@@ -576,6 +592,9 @@ paths:
         '403':
           $ref: '#/components/responses/FixtureForbidden'
           description: The task token is absent or does not match, or the survey is not scheduled in the site.
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+          description: The effective method, after X-HTTP-Method-Override, is not one this path dispatches on.
         '500':
           $ref: '#/components/responses/FixtureServerError'
         '503':
@@ -1927,7 +1946,7 @@ components:
                       code:
                         const: invalid_request
     FixtureUnauthorized:
-      description: 'Fixture 401 `authorization` without a logged-in user, or the platform''s refusal of a missing or invalid credential.'
+      description: 'Fixture 401 `authorization` without a logged-in user, or the platform''s refusal of a presented invalid credential.'
       headers:
         Generator:
           $ref: '#/components/headers/Generator'

@@ -346,6 +346,17 @@ describe('createOwnersClient', () => {
     ]);
   });
 
+  it('getObject reads one object of strategies-content by key as raw bytes', async () => {
+    const key = `${TENANT}/${FILE_ID}.json`;
+    const bytes = Buffer.from('{"stored":"as json"}');
+    const { owners, calls } = routedClient({ 'strategies-content GET /internal/v1/migration/objects': [{ body: bytes }] });
+
+    await expect(owners.getObject(key)).resolves.toBe(bytes);
+    expect(calls).toEqual([
+      { service: 'strategies-content', method: 'GET', path: '/internal/v1/migration/objects', query: { key }, rawBody: true, userToken: null },
+    ]);
+  });
+
   it.each<QueueControlOp>(['pause', 'resume', 'ensure'])('queueControl posts %s to the queue on the given service', async (op) => {
     const answer: QueueControlResult = { queue: SITEMONITOR_QUEUE, service: 'programs-sites' };
     const path = `/internal/v1/task-queues/${SITEMONITOR_QUEUE}/${op}`;
@@ -402,6 +413,15 @@ describe('createOwnersClient', () => {
       body: undefined,
       call: (owners) =>
         owners.putObject({ tenantId: TENANT, fileId: FILE_ID, variant: '', ext: 'pdf', contentType: 'application/pdf', sha256: 'unchecked' }, new Uint8Array()),
+    },
+    {
+      name: 'getObject answering 404',
+      owner: 'strategies-content',
+      method: 'GET',
+      path: '/internal/v1/migration/objects',
+      status: 404,
+      body: { error: 'notFound' },
+      call: (owners) => owners.getObject(`${TENANT}/${FILE_ID}.pdf`),
     },
     {
       name: 'gate answering 409 without a gate conflict',

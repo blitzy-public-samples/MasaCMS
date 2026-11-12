@@ -1,14 +1,13 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Reminder-sent routes: communications' `markReminderSent` callback and the fixture `surveys/surveys/{id}/remind` task callback. */
-import { timingSafeEqual } from 'node:crypto';
 import { serviceRole, type Opt2RouteConfig } from '@opt2/platform/auth';
 import { LegacyApiError, cfDateTimeFormat } from '@opt2/platform/legacy-compat';
-import { sha256Hex, withGatedTenant } from '@opt2/platform/migration-kit';
-import { z, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
+import { withGatedTenant } from '@opt2/platform/migration-kit';
+import { z, type FastifyInstance } from '@opt2/platform/service-kit';
 import { tenantForRegisteredSite, type TenantDb } from '@opt2/platform/tenancy';
 import { recordReminderSent, type ReminderOutcome, type ReminderResult } from '../domain/reminders.js';
 import type { components } from '../generated/openapi.js';
-import { resolveSite, type FixtureSiteLookup } from '../legacy/fixture-auth.js';
+import { checkTaskToken, fixtureHttpMethod, resolveSite, taskTokenOf, type FixtureSiteLookup } from '../legacy/fixture-auth.js';
 import {
   FixtureApiError,
   fixtureHandler,
@@ -116,32 +115,10 @@ async function recordSent(
   }
 }
 
-/** The method api.cfm dispatches on: a non-empty X-HTTP-Method-Override, else the request method, upper-cased. */
-function effectiveMethod(request: FastifyRequest): string {
-  const override = request.headers['x-http-method-override'];
-  return (typeof override === 'string' && override !== '' ? override : request.method).toUpperCase();
-}
-
 /** The value under `name` ignoring case, the last spelling winning; undefined when absent. */
 function valueNoCase(values: Record<string, unknown>, name: string): unknown {
   const key = Object.keys(values).findLast((candidate) => candidate.toLowerCase() === name.toLowerCase());
   return key === undefined ? undefined : values[key];
-}
-
-/** `url.opt2TaskToken` as ACF's url scope holds it: repeated values comma-joined; '' when absent. The body is never read. */
-function urlTaskToken(request: FastifyRequest): string {
-  const value = valueNoCase((request.query ?? {}) as Record<string, unknown>, 'opt2TaskToken');
-  if (Array.isArray(value)) {
-    return value.map(String).join(',');
-  }
-  return typeof value === 'string' ? value : '';
-}
-
-/** auth.cfc checkTaskToken: the lowercase hex SHA-256 of the token's UTF-8 bytes equals the stored hash, compared in constant time. */
-function taskTokenMatches(token: string, storedHash: string): boolean {
-  const computed = Buffer.from(sha256Hex(token), 'utf8');
-  const stored = Buffer.from(storedHash, 'utf8');
-  return computed.length === stored.length && timingSafeEqual(computed, stored);
 }
 
 /** The fixture's `reminder` param: a simple value ACF's isValid('integer') accepts, at least 1; else invalidParameters. */
@@ -205,7 +182,7 @@ export async function registerRemindRoutes(app: FastifyInstance, deps: RemindRou
     handler: fixtureHandler(REMIND_METHOD, async (request, reply, ctx) => {
       const site = await resolveSite(request, ctx.params, deps.siteLookup);
       // api.cfm answers GET and POST alike and any other overriding method with notFound, after the site check.
-      if (!REMIND_HTTP_METHODS.has(effectiveMethod(request))) {
+      if (!REMIND_HTTP_METHODS.has(fixtureHttpMethod(request))) {
         throw new FixtureApiError('notFound');
       }
       // An ACF task run carries no user token; its credential is the task token, checked in the tenant the registry
@@ -214,7 +191,7 @@ export async function registerRemindRoutes(app: FastifyInstance, deps: RemindRou
       if (tenantId === null) {
         throw new LegacyApiError('invalidParameters');
       }
-      const token = urlTaskToken(request);
+      const token = taskTokenOf(request);
       // Stored ids are upper-case CF UUIDs, so upper-casing reproduces SQL Server's case-insensitive id match.
       const surveyId = request.params.id.toUpperCase();
       const result = await withGatedTenant(deps.db, tenantId, async (tx) => {
@@ -222,7 +199,7 @@ export async function registerRemindRoutes(app: FastifyInstance, deps: RemindRou
         const survey = await deps.repository.lockSurvey(tx, surveyId);
         const schedule =
           survey !== null && collated(survey.siteid) === collated(site) ? await queries.getSchedule(tx, survey.survey_id) : null;
-        if (survey === null || !taskTokenMatches(token, schedule?.task_token_hash ?? '')) {
+        if (survey === null || !checkTaskToken(token, schedule?.task_token_hash ?? '')) {
           throw new FixtureApiError('forbidden');
         }
         const n = reminderOrdinal(ctx.params);

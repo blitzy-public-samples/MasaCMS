@@ -12,17 +12,21 @@ import {
   type FastifyReply,
   type FastifyRequest,
 } from '@opt2/platform/service-kit';
+import { sha256Hex } from '@opt2/platform/migration-kit';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { mintUserToken, testVerifier } from '@opt2/platform/testing';
 import { fixtureHandler, fixtureMethod, fixtureSuccess } from '../../src/legacy/fixture-envelope.js';
 import {
   FIXTURE_ROLES,
+  checkTaskToken,
   isSiteAdmin,
+  isSiteMember,
   requireAny,
   requireCsrf,
   requireLogin,
   resolveSite,
   rolesHeld,
+  taskTokenOf,
   userId,
   type FixtureSiteLookup,
 } from '../../src/legacy/fixture-auth.js';
@@ -374,5 +378,39 @@ describe('fixture check order through app.inject', () => {
       path: CSRF_CONSUME_PATH,
       json: { token: HEADER_TOKENS['x-csrf_token'], context: SURVEY_ID },
     });
+  });
+});
+
+describe('site membership and task tokens', () => {
+  it.each<[string, string[], boolean, boolean]>([
+    ['the s2 claim', [], true, true],
+    ['a private-pool system user', [Roles.systemUser], false, true],
+    ['a public-pool member', [Roles.member], false, true],
+    ['only a fixture role group', [Roles.surveysManager], false, false],
+    ['only site-admin', [Roles.siteAdmin], false, false],
+  ])('isSiteMember with %s', (_case, roles, s2, expected) => {
+    expect(isSiteMember(requestWith(claims(roles, s2)))).toBe(expected);
+  });
+
+  it('isSiteMember is false when anonymous', () => {
+    expect(isSiteMember(requestWith())).toBe(false);
+  });
+
+  it.each<[string, Record<string, unknown> | undefined, string]>([
+    ['absent', {}, ''],
+    ['without a query', undefined, ''],
+    ['read ignoring case, the last spelling winning', { opt2TaskToken: 'first', OPT2TASKTOKEN: 'last' }, 'last'],
+    ['repeated, comma-joined as the url scope joins it', { opt2TaskToken: ['a', 'b'] }, 'a,b'],
+  ])('taskTokenOf a query %s', (_case, query, expected) => {
+    expect(taskTokenOf({ query } as unknown as FastifyRequest)).toBe(expected);
+  });
+
+  it.each<[string, string, string, boolean]>([
+    ['the token whose hash is stored', 'secret', sha256Hex('secret'), true],
+    ['another token', 'other', sha256Hex('secret'), false],
+    ['the upper-case hash', 'secret', sha256Hex('secret').toUpperCase(), false],
+    ['no stored hash', '', '', false],
+  ])('checkTaskToken accepts only %s', (_case, token, stored, expected) => {
+    expect(checkTaskToken(token, stored)).toBe(expected);
   });
 });
