@@ -72,7 +72,7 @@ export interface GatewayInflightRow {
   startedAt: number;
   /** Marks the row's instance dead, which makes all its rows orphans. */
   orphan?: boolean;
-  /** Units of a target-side row's route; `gates-closed` evidence clears the row only when it names all of them. */
+  /** Units of a target-side row's route; `gates-closed` evidence clears the row only when they are known, non-empty and all named. */
   units?: string[];
 }
 
@@ -195,6 +195,11 @@ function clearRefusal({ side, evidence }: InflightClearRequest): string | undefi
   if (EVIDENCE_SIDE[evidence.kind] !== side) return `${evidence.kind} evidence clears only ${EVIDENCE_SIDE[evidence.kind]}-side in-flight writes`;
   if (evidence.kind === 'gates-closed' && (evidence.units ?? []).length === 0) return 'gates-closed evidence must name the units whose gates closed';
   return Number.isNaN(Date.parse(evidence.at)) ? `evidence.at ${evidence.at} is not a timestamp` : undefined;
+}
+
+/** True when a target row's units are known, non-empty and all among the closed gates. */
+function coveredByGates(units: readonly string[] | undefined, closed: ReadonlySet<string>): boolean {
+  return units !== undefined && units.length > 0 && units.every((unit) => closed.has(unit));
 }
 
 function groupInflight(rows: readonly GatewayInflightRow[]): InflightRow[] {
@@ -439,7 +444,7 @@ export function createGatewayDouble(opts: GatewayDoubleOptions = {}): GatewayDou
         row.side === request.side &&
         row.startedAt < before &&
         (limit === null || limit.has(row.instance)) &&
-        (row.side === 'legacy' || (row.units ?? []).every((unit) => covered.has(unit)));
+        (row.side === 'legacy' || coveredByGates(row.units, covered));
       const kept = rows.filter((row) => !cleared(row));
       const count = rows.length - kept.length;
       rows = kept;
