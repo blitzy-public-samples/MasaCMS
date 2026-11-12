@@ -16,6 +16,7 @@ import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA } from '@opt2/platform/testing';
 import { addressMapping } from '../../src/migration/mappings/address.js';
 import { extendAttributeMapping } from '../../src/migration/mappings/extend-attribute.js';
+import { extendDataMapping } from '../../src/migration/mappings/extend-data.js';
 import { EXTEND_RCSET_MAPPINGS, extendRcsetMapping } from '../../src/migration/mappings/extend-rcset.js';
 import { extendSetMapping } from '../../src/migration/mappings/extend-set.js';
 import { extendSubtypeMapping } from '../../src/migration/mappings/extend-subtype.js';
@@ -61,6 +62,7 @@ const MAPPINGS: readonly Mapping[] = [
   extendSetMapping,
   extendAttributeMapping,
   extendRcsetMapping,
+  extendDataMapping,
   personArchiveMapping,
 ];
 
@@ -136,6 +138,7 @@ describe('people mappings against table ownership', () => {
       'tclassextendsets{baseTable=tusers,tusersaddresses}',
       'tclassextendattributes{baseTable=tusers,tusersaddresses}',
       'tclassextendrcsets{baseTable=tusers,tusersaddresses}',
+      'tclassextenddatauseractivity{Type=2}',
       'synthetic.person_archive',
     ]);
     expect(EXTEND_RCSET_MAPPINGS).toStrictEqual([extendRcsetMapping]);
@@ -180,6 +183,10 @@ describe('split discriminators', () => {
     ['a set of a user subtype', extendSetMapping, { subTypeID: 'S1' }, 'tusers', true],
     ['an attribute of a site subtype', extendAttributeMapping, { extendSetID: 'SET1' }, 'tsettings', false],
     ['a related-content set of an address subtype', extendRcsetMapping, { subTypeID: 'S2' }, 'tusersaddresses', true],
+    ['an extended value of a Type=2 user', extendDataMapping, { baseID: 'U-A' }, 2, true],
+    ['an extended value of a group', extendDataMapping, { baseID: 'G-A' }, 1, false],
+    ['an extended value of a Type=2 user\'s address, by its owner\'s Type as text', extendDataMapping, { baseID: 'ADDR-A' }, '2 ', true],
+    ['an extended value whose owner does not resolve', extendDataMapping, { baseID: 'X' }, null, false],
     ['an archive row, which has no split', personArchiveMapping, {}, undefined, true],
   ])('answers %s', (_label, mapping, row, discriminator, accepted) => {
     expect(mapping.acceptsRow(row, discriminator)).toBe(accepted);
@@ -267,7 +274,7 @@ describe('mapping construction against a drifted table definition', () => {
     vi.resetModules();
   });
 
-  type Definition = 'PERSON' | 'ADDRESS' | 'INTEREST' | 'TAG' | 'FAVORITE' | 'EXTEND_SET' | 'EXTEND_ATTRIBUTE' | 'EXTEND_RCSET';
+  type Definition = 'PERSON' | 'ADDRESS' | 'INTEREST' | 'TAG' | 'FAVORITE' | 'EXTEND_SET' | 'EXTEND_ATTRIBUTE' | 'EXTEND_RCSET' | 'EXTEND_DATA';
 
   it.each<{ legacyTable: string; definition: Definition; dropped: string; message: string; load: () => Promise<unknown> }>([
     { legacyTable: 'tusers', definition: 'PERSON', dropped: 'IMService', message: 'people.person has no column imservice', load: () => import('../../src/migration/mappings/person.js') },
@@ -278,6 +285,7 @@ describe('mapping construction against a drifted table definition', () => {
     { legacyTable: 'tclassextendsets', definition: 'EXTEND_SET', dropped: 'isActive', message: 'people.extend_set declares no column for isActive', load: () => import('../../src/migration/mappings/extend-set.js') },
     { legacyTable: 'tclassextendattributes', definition: 'EXTEND_ATTRIBUTE', dropped: 'defaultValue', message: 'people.extend_attribute declares no column for defaultValue', load: () => import('../../src/migration/mappings/extend-attribute.js') },
     { legacyTable: 'tclassextendrcsets', definition: 'EXTEND_RCSET', dropped: 'orderNo', message: 'people.extend_rc_set declares no column for orderNo', load: () => import('../../src/migration/mappings/extend-rcset.js') },
+    { legacyTable: 'tclassextenddatauseractivity', definition: 'EXTEND_DATA', dropped: 'numericvalue', message: 'people.extend_data_user_activity declares no column for numericvalue', load: () => import('../../src/migration/mappings/extend-data.js') },
   ])('refuses to build $legacyTable when its target lacks the column for $dropped', async ({ legacyTable, definition, dropped, message, load }) => {
     vi.resetModules();
     vi.doMock('../../src/repo/tables.js', async (importOriginal) => {
