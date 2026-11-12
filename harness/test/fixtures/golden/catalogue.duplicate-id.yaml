@@ -1,0 +1,95 @@
+# Golden catalogue sample: duplicate scenario id.
+sourceSha: "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+scenarios:
+  - id: GS-ID-01
+    title: Admin login and logout
+    service: identity
+    role: admin
+    sessions:
+      admin:
+        login: none
+        via: admin
+    seedRefs: []
+    steps:
+      - name: main
+        method: GET
+        route: /admin/?muraAction=cLogin.main
+        as: admin
+        csrf: none
+      - name: login
+        method: POST
+        route: /admin/index.cfm
+        as: admin
+        csrf: fetch-form
+        csrfFrom: main
+        form:
+          muraAction: cLogin.login
+          username: admin
+          password: "${secret:admin}"
+          isAdminLogin: "true"
+          returnUrl: ""
+      - name: home
+        method: GET
+        route: /admin/
+        as: admin
+      - name: logout
+        method: GET
+        route: /admin/?muraAction=cLogin.logout
+        as: admin
+    compare:
+      - status
+      - headers
+      - auth
+      - dom
+    normalisationOverrides: []
+    covers:
+      - admin:clogin.main
+      - admin:clogin.login
+      - admin:home.redirect
+      - admin:clogin.logout
+  - id: GS-ID-01
+    title: Admin login and logout (copy)
+    service: identity
+    role: admin
+    sessions:
+      admin:
+        login: none
+        via: admin
+    seedRefs: []
+    steps:
+      - name: main
+        method: GET
+        route: /admin/?muraAction=cLogin.main
+        as: admin
+        csrf: none
+      - name: login
+        method: POST
+        route: /admin/index.cfm
+        as: admin
+        csrf: fetch-form
+        csrfFrom: main
+        form:
+          muraAction: cLogin.login
+          username: admin
+          password: "${secret:admin}"
+          isAdminLogin: "true"
+          returnUrl: ""
+      - name: home
+        method: GET
+        route: /admin/
+        as: admin
+      - name: logout
+        method: GET
+        route: /admin/?muraAction=cLogin.logout
+        as: admin
+    compare:
+      - status
+      - headers
+      - auth
+      - dom
+    normalisationOverrides: []
+    covers:
+      - admin:clogin.main
+      - admin:clogin.login
+      - admin:home.redirect
+      - admin:clogin.logout
