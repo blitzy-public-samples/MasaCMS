@@ -5,8 +5,11 @@ import type { SeedRandom } from './random.js';
 /** ContentID of every Masa site's home node, the parent of top-level content. */
 export const MASA_HOME_CONTENT_ID = '00000000000000000000000000000000001';
 
-/** ModuleID of the Masa Site Manager module, used for seeded files. */
+/** ModuleID of the Masa Site Manager module, used for seeded files and site-tree content. */
 export const MASA_DEFAULT_MODULE_ID = '00000000000000000000000000000000000';
+
+/** ModuleID of the Masa Forms module, also the parentID of every form. */
+export const MASA_FORMS_MODULE_ID = '00000000000000000000000000000000004';
 
 const HEX32 = /^[0-9A-Fa-f]{32}$/;
 

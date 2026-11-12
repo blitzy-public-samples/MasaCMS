@@ -105,12 +105,13 @@ describe('createOwnersClient', () => {
   it.each<RouteCase>([
     {
       name: 'export sends every parameter as query text',
-      call: (owners) => owners.export('people', { unit: UNIT, tenantId: TENANT, programId: 2, after: 'k1', match: { siteID: ['tenant-a'], Type: [2] }, limit: 500 }),
+      call: (owners) =>
+        owners.export('people', { unit: UNIT, tenantId: TENANT, programId: 2, after: 'k1', match: { siteID: ['tenant-a'], Type: [2] }, limit: 500, keys: ['s2:u1', 's2:u2'] }),
       request: {
         service: 'people',
         method: 'GET',
         path: '/internal/v1/migration/export',
-        query: { unit: UNIT, tenantId: TENANT, programId: '2', after: 'k1', match: '{"siteID":["tenant-a"],"Type":[2]}', limit: '500' },
+        query: { unit: UNIT, tenantId: TENANT, programId: '2', after: 'k1', match: '{"siteID":["tenant-a"],"Type":[2]}', limit: '500', keys: ['s2:u1', 's2:u2'] },
         userToken: null,
       },
       answer: exportPage('k2'),
@@ -251,6 +252,15 @@ describe('createOwnersClient', () => {
     expect(calls[0]?.timeoutMs).toBe(timeoutMs);
   });
 
+  it('position bounds its call by the timeoutMs it is given', async () => {
+    const { owners, calls } = routedClient({ 'people GET /internal/v1/migration/position': [{ body: POSITION_ANSWER }] });
+
+    await expect(owners.position('people', {}, { timeoutMs: 1_250 })).resolves.toEqual(POSITION_ANSWER);
+    expect(calls).toEqual([{ service: 'people', method: 'GET', path: '/internal/v1/migration/position', query: {}, userToken: null, timeoutMs: 1_250 }]);
+    expect(calls[0]?.timeoutMs).toBe(1_250);
+  });
+
+
   it.each<[string, ServiceResponse['headers'], Record<string, string>]>([
     ['a lower-cased header', { 'content-type': 'application/json', 'x-opt2-write-position': 'people=123,identity=120' }, { people: '123', identity: '120' }],
     ['a header named in another case', { [WRITE_POSITION_HEADER]: formatWritePosition({ people: '123', identity: '120' }) }, { people: '123', identity: '120' }],
@@ -266,13 +276,14 @@ describe('createOwnersClient', () => {
   it.each<[string, string | undefined]>([
     ['the first page', undefined],
     ['a given cursor', 'k0'],
-  ])('exportPages reads from %s until a page has no next, one request per page consumed', async (_label, after) => {
+  ])('exportPages reads from %s until a page has no next, one request per page consumed, each with the same keys', async (_label, after) => {
     const pages = [exportPage('k1'), exportPage('k2'), exportPage(null)];
     const { owners, calls } = routedClient({ 'people GET /internal/v1/migration/export': pages.map((body) => ({ body })) });
     const read: ExportResponse[] = [];
     const requestsAtEachPage: number[] = [];
+    const keys = ['s2:u1'];
 
-    for await (const page of owners.exportPages('people', { unit: UNIT, tenantId: TENANT, after, match: { siteID: ['tenant-a'] }, limit: 2 })) {
+    for await (const page of owners.exportPages('people', { unit: UNIT, tenantId: TENANT, after, match: { siteID: ['tenant-a'] }, limit: 2, keys })) {
       read.push(page);
       requestsAtEachPage.push(calls.length);
     }
@@ -280,7 +291,7 @@ describe('createOwnersClient', () => {
     expect(read).toEqual(pages);
     expect(requestsAtEachPage).toEqual([1, 2, 3]);
     expect(calls.map((call) => call.query)).toEqual(
-      [after, 'k1', 'k2'].map((cursor) => ({ unit: UNIT, tenantId: TENANT, after: cursor, match: '{"siteID":["tenant-a"]}', limit: '2' })),
+      [after, 'k1', 'k2'].map((cursor) => ({ unit: UNIT, tenantId: TENANT, after: cursor, match: '{"siteID":["tenant-a"]}', limit: '2', keys })),
     );
   });
 

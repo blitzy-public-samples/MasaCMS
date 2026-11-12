@@ -952,7 +952,7 @@
       "origin": "opt2",
       "source": {
         "path": "migration/sql/005_opt2_sync.sql",
-        "lines": [4, 14]
+        "lines": [4, 16]
       },
       "liveCatalog": true,
       "hasSiteId": false,
@@ -960,7 +960,7 @@
       "hasPrimaryKey": true,
       "primaryKey": ["owner", "tenant_id"],
       "rowIdentity": "key",
-      "columns": ["owner", "tenant_id", "cursor_xid", "cursor_seq", "applied_horizon", "batch_id", "rows_applied", "updated_at"],
+      "columns": ["owner", "tenant_id", "cursor_xid", "cursor_seq", "applied_horizon", "batch_id", "rows_applied", "updated_at", "pending_effects", "ready_horizon"],
       "serializedDocumentColumns": [],
       "tenantResolution": null,
       "owner": "migration",

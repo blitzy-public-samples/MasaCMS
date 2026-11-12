@@ -1,5 +1,4 @@
 // DLQ check: a tenant-less delivery lands on `<subscription>.dlq` without an effect, and one replay applies it exactly once.
-import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -29,6 +28,7 @@ import { cfUuid } from '@opt2/platform/legacy-compat';
 import { localTimestamp } from '@opt2/platform/outbox';
 import { TENANT_A, pubsubEmulatorAvailable, testEnvelope, withoutTenant } from '@opt2/platform/testing';
 
+import { defaultRunner } from '../lib/git.js';
 import { HARNESS_ROOT, repoPath, type EnvLike } from '../lib/paths.js';
 import { pollUntil, readOwnerExport, type SeamDeps } from './seams.js';
 
@@ -58,6 +58,10 @@ export const PRECONDITION_PULL_MS = 5_000;
 
 /** Seconds without a message after which each replay run stops. */
 export const REPLAY_IDLE_SECONDS = 5;
+
+// Departs from Rule "WIP - Minimal Change 2" (no timeouts), which does not bind this refactor: a stuck replay bin would otherwise outlive the landing bound.
+/** Longest run of one replay bin, in ms; well above its idle stop and {@link DEFAULT_LAND_TIMEOUT_MS}. */
+export const REPLAY_EXEC_TIMEOUT_MS = 120_000;
 
 /** Wait after the replayed effect appears before it is read again, in ms. */
 export const EFFECT_SETTLE_MS = 5_000;
@@ -131,7 +135,7 @@ export interface ReplayRun {
   stderr: string;
 }
 
-/** Runs `file` with `args` and `env` without a shell; resolves on any exit and rejects when it cannot start. */
+/** Runs `file` with `args` and `env` without a shell; resolves on any exit and rejects when it cannot start, or with code `ETIMEDOUT` past {@link REPLAY_EXEC_TIMEOUT_MS}. */
 export type ReplayExec = (file: string, args: readonly string[], env: EnvLike) => Promise<ReplayRun>;
 
 /** Collaborators of {@link runDlqCheck}; unset ones use the stub target, the Pub/Sub emulator and {@link OPT2_EVENTS_BIN}. */
@@ -288,15 +292,19 @@ export function emulatorDlqPubSub(options: { projectId: string; emulatorHost: st
   };
 }
 
-/** {@link ReplayExec} on `child_process.execFile` with UTF-8 output. */
-export const defaultReplayExec: ReplayExec = (file, args, env) =>
-  new Promise((resolve, reject) => {
-    execFile(file, [...args], { env, encoding: 'utf8', shell: false }, (error, stdout, stderr) => {
-      if (error === null) resolve({ exitCode: 0, stdout, stderr });
-      else if (typeof error.code === 'number') resolve({ exitCode: error.code, stdout, stderr });
-      else reject(error);
-    });
-  });
+/** {@link ReplayExec} on `defaultRunner` in the current directory; rejects with code `ETIMEDOUT` past {@link REPLAY_EXEC_TIMEOUT_MS}. */
+export const defaultReplayExec: ReplayExec = async (file, args, env) => {
+  try {
+    const { stdout, stderr } = await defaultRunner(file, args, { cwd: process.cwd(), env, timeoutMs: REPLAY_EXEC_TIMEOUT_MS });
+    return { exitCode: 0, stdout, stderr };
+  } catch (error) {
+    const { code, stdout, stderr } = error as { code?: unknown; stdout?: string; stderr?: string };
+    if (typeof code === 'number') return { exitCode: code, stdout: stdout ?? '', stderr: stderr ?? '' };
+    // The execFile error a timeout carries as its cause quotes the child's stderr, so it is dropped.
+    if (code === 'ETIMEDOUT') throw Object.assign(new Error((error as Error).message), { code });
+    throw error;
+  }
+};
 
 /** Arguments of one `opt2-events replay` run for `subscription`. */
 export function replayArgs(subscription: string): string[] {
@@ -333,9 +341,16 @@ function emptyReplay(): ReplayEvidence {
   return { exitCode: null, summary: null, republished: null };
 }
 
-/** Runs the replay bin once and records a failure unless it exits 0 having republished `expected` messages. */
+/** Runs the replay bin once and records a failure unless it exits 0 having republished `expected` messages; a timed-out run has a null exit code. */
 async function replayOnce(ctx: CheckContext, label: string, expected: number): Promise<ReplayEvidence> {
-  const run = await ctx.exec(OPT2_EVENTS_BIN, replayArgs(ctx.target.subscription), ctx.childEnv);
+  let run: ReplayRun;
+  try {
+    run = await ctx.exec(OPT2_EVENTS_BIN, replayArgs(ctx.target.subscription), ctx.childEnv);
+  } catch (err) {
+    if ((err as { code?: unknown } | null)?.code !== 'ETIMEDOUT') throw err;
+    ctx.evidence.failures.push(`${label} timed out after ${REPLAY_EXEC_TIMEOUT_MS} ms`);
+    return emptyReplay();
+  }
   const summary = parseReplaySummary(run.stdout);
   const count = summary?.[REPLAY_COUNT_KEY];
   const republished = typeof count === 'number' && Number.isSafeInteger(count) && count >= 0 ? count : null;

@@ -1,11 +1,11 @@
 // Full outbox replay check: republishes every producer's outbox and compares consumer state taken before and after.
-import { execFile } from 'node:child_process';
 import path from 'node:path';
 
 import { consumerOfSubscription } from '@opt2/platform/events';
 import { MIGRATION_PATH_PREFIX, tableChecksum, type InboxCounts, type PositionResponse } from '@opt2/platform/migration-kit';
 import { LOCAL_ONLY_PRODUCERS, OUTBOX_PRODUCERS } from '@opt2/platform/tasks';
 
+import { defaultRunner } from '../lib/git.js';
 import { createHarnessInvoker, type HarnessInvoker } from '../lib/invocation.js';
 import { REPO_ROOT, type EnvLike } from '../lib/paths.js';
 import { PACKAGE_NAMES, serviceUrls, type PackageName } from '../repro/ports.js';
@@ -35,6 +35,10 @@ export const DEFAULT_DRAIN: Readonly<Required<DrainBounds>> = Object.freeze({
   intervalMs: 2_000,
   stablePolls: 3,
 });
+
+// Departs from Rule "WIP - Minimal Change 2" (no timeouts), which does not bind this refactor: a stuck replay bin would otherwise outlive the drain bound.
+/** Longest run of one producer's full outbox replay, in ms; it republishes every row since `since`, so it gets far more than the drain bound. */
+export const REPLAY_BIN_TIMEOUT_MS = 10 * 60_000;
 
 /** Exit code and output of one command. */
 export interface ExecResult {
@@ -320,20 +324,24 @@ function lastJsonLine(stdout: string): unknown {
   }
 }
 
-/** Default {@link ExecFn}: `execFile` without a shell; an exit status resolves, a spawn failure or a signal rejects. */
-const execBin: ExecFn = (file, args, opts) =>
-  new Promise((resolve, reject) => {
-    execFile(
-      file,
-      [...args],
-      { cwd: opts.cwd, env: opts.env, encoding: 'utf8', maxBuffer: MAX_OUTPUT_BYTES },
-      (error, stdout, stderr) => {
-        if (error === null) resolve({ code: 0, stdout, stderr });
-        else if (typeof error.code === 'number') resolve({ code: error.code, stdout, stderr });
-        else reject(error);
-      },
-    );
-  });
+/** Default {@link ExecFn}: `defaultRunner`; an exit status resolves, a spawn failure, a signal or code `ETIMEDOUT` past {@link REPLAY_BIN_TIMEOUT_MS} rejects. */
+const execBin: ExecFn = async (file, args, opts) => {
+  try {
+    const { stdout, stderr } = await defaultRunner(file, args, {
+      cwd: opts.cwd,
+      env: opts.env,
+      maxBuffer: MAX_OUTPUT_BYTES,
+      timeoutMs: REPLAY_BIN_TIMEOUT_MS,
+    });
+    return { code: 0, stdout, stderr };
+  } catch (error) {
+    const { code, stdout, stderr } = error as { code?: unknown; stdout?: string; stderr?: string };
+    if (typeof code === 'number') return { code, stdout: stdout ?? '', stderr: stderr ?? '' };
+    // The execFile error a timeout carries as its cause quotes the child's stderr, so it is dropped.
+    if (code === 'ETIMEDOUT') throw Object.assign(new Error((error as Error).message), { code });
+    throw error;
+  }
+};
 
 /** Replays each producer's outbox from `since` under its own environment and diffs consumer snapshots taken at quiescence before and after. */
 export async function runOutboxReplay(deps: OutboxReplayDeps): Promise<OutboxReplayResult> {

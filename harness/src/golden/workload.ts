@@ -21,6 +21,7 @@ import {
   placeholderNames,
   secretValues,
   type ScenarioContextOptions,
+  type ScenarioInput,
   type SecretStore,
   type SeedStore,
 } from './session.js';
@@ -668,7 +669,10 @@ function collectStrings(value: unknown, out: Set<string>): void {
  * role account they name (`${user:<site>:<role>}`, `seed:<site>:<role>` logins). Refs resolve as at capture, so an
  * unresolvable one throws GoldenConfigError or MissingSecretError.
  */
-export function catalogueSeedKeys(scenarios: readonly Scenario[], stores: SeedKeyStores): Set<string> {
+export function catalogueSeedKeys(
+  scenarios: ReadonlyArray<ScenarioInput & Pick<Scenario, 'sessions'>>,
+  stores: SeedKeyStores,
+): Set<string> {
   const keys = new Set<string>();
   for (const scenario of scenarios) {
     const ctx = createScenarioContext(scenario, {

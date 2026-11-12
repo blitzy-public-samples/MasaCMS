@@ -2,7 +2,7 @@
 import { Buffer } from 'node:buffer';
 
 import sql from 'mssql';
-import type { Request } from 'mssql';
+import type { IResult, Request } from 'mssql';
 
 import { LEGACY_PROGRAM_ID_COLUMN, decodeRow, programTableName } from '@opt2/platform/migration-kit';
 import type { CanonicalColumn, CanonicalValue, ChangeOp, ProjectedChangeRow } from '@opt2/platform/migration-kit';
@@ -20,6 +20,12 @@ export interface RequestScope {
   request(): Request;
 }
 
+/** A Masa site-registry refresh or cache purge that a committed batch owes legacy. */
+export interface LegacyEffect {
+  kind: 'siteRefresh' | 'purgeCache';
+  siteId: string;
+}
+
 /** One stored checkpoint; xids and seq are decimal strings because xid8 values exceed 2^53. */
 export interface CheckpointRow {
   owner: string;
@@ -30,10 +36,14 @@ export interface CheckpointRow {
   batchId: string | null;
   rowsApplied: number;
   updatedAt: Date | null;
+  /** Effects committed batches still owe, refreshes first; empty when none. */
+  pendingEffects: LegacyEffect[];
+  /** While effects are owed, the horizon below which every batch's effects had run; null when none had. */
+  readyHorizon: string | null;
 }
 
-/** Checkpoint values one batch writes; the server sets `updated_at`. */
-export type CheckpointWrite = Omit<CheckpointRow, 'batchId' | 'updatedAt'> & { batchId: string };
+/** Checkpoint values one batch writes, with every effect the row owes after it; the server sets `updated_at` and `ready_horizon`. */
+export type CheckpointWrite = Omit<CheckpointRow, 'batchId' | 'updatedAt' | 'readyHorizon'> & { batchId: string };
 
 interface CheckpointRecord {
   owner: string;
@@ -44,14 +54,26 @@ interface CheckpointRecord {
   batch_id: string | null;
   rows_applied: number;
   updated_at: Date | null;
+  pending_effects: string | null;
+  ready_horizon: string | null;
 }
 
 // Decimals arrive as varchar so no xid passes through a JS number.
-const CHECKPOINT_SELECT = `SELECT owner, tenant_id, CONVERT(varchar(20), cursor_xid) AS cursor_xid, CONVERT(varchar(20), cursor_seq) AS cursor_seq, CONVERT(varchar(20), applied_horizon) AS applied_horizon, batch_id, rows_applied, updated_at FROM ${CHECKPOINT_TABLE}`;
+const CHECKPOINT_SELECT = `SELECT owner, tenant_id, CONVERT(varchar(20), cursor_xid) AS cursor_xid, CONVERT(varchar(20), cursor_seq) AS cursor_seq, CONVERT(varchar(20), applied_horizon) AS applied_horizon, batch_id, rows_applied, updated_at, pending_effects, CONVERT(varchar(20), ready_horizon) AS ready_horizon FROM ${CHECKPOINT_TABLE}`;
 
-const CHECKPOINT_UPSERT = `UPDATE ${CHECKPOINT_TABLE} WITH (UPDLOCK, HOLDLOCK) SET cursor_xid = CAST(@cursorXid AS decimal(20,0)), cursor_seq = CAST(@cursorSeq AS bigint), applied_horizon = CASE WHEN applied_horizon > CAST(@appliedHorizon AS decimal(20,0)) THEN applied_horizon ELSE CAST(@appliedHorizon AS decimal(20,0)) END, batch_id = @batchId, rows_applied = @rowsApplied, updated_at = SYSDATETIME() WHERE owner = @owner AND tenant_id = @tenantId;
-IF @@ROWCOUNT = 0 INSERT INTO ${CHECKPOINT_TABLE} (owner, tenant_id, cursor_xid, cursor_seq, applied_horizon, batch_id, rows_applied, updated_at) VALUES (@owner, @tenantId, CAST(@cursorXid AS decimal(20,0)), CAST(@cursorSeq AS bigint), CAST(@appliedHorizon AS decimal(20,0)), @batchId, @rowsApplied, SYSDATETIME());
+// SET expressions read the row before the update, so effects first owed keep the previous applied horizon as ready.
+const CHECKPOINT_UPSERT = `UPDATE ${CHECKPOINT_TABLE} WITH (UPDLOCK, HOLDLOCK) SET cursor_xid = CAST(@cursorXid AS decimal(20,0)), cursor_seq = CAST(@cursorSeq AS bigint), applied_horizon = CASE WHEN applied_horizon > CAST(@appliedHorizon AS decimal(20,0)) THEN applied_horizon ELSE CAST(@appliedHorizon AS decimal(20,0)) END, batch_id = @batchId, rows_applied = @rowsApplied, updated_at = SYSDATETIME(), pending_effects = @pendingEffects, ready_horizon = CASE WHEN @pendingEffects IS NULL THEN NULL WHEN pending_effects IS NULL THEN applied_horizon ELSE ready_horizon END WHERE owner = @owner AND tenant_id = @tenantId;
+IF @@ROWCOUNT = 0 INSERT INTO ${CHECKPOINT_TABLE} (owner, tenant_id, cursor_xid, cursor_seq, applied_horizon, batch_id, rows_applied, updated_at, pending_effects) VALUES (@owner, @tenantId, CAST(@cursorXid AS decimal(20,0)), CAST(@cursorSeq AS bigint), CAST(@appliedHorizon AS decimal(20,0)), @batchId, @rowsApplied, SYSDATETIME(), @pendingEffects);
 ${CHECKPOINT_SELECT} WHERE owner = @owner AND tenant_id = @tenantId;`;
+
+const CHECKPOINT_CLEAR_EFFECTS = `UPDATE ${CHECKPOINT_TABLE} SET pending_effects = NULL, ready_horizon = NULL WHERE owner = @owner AND tenant_id = @tenantId AND batch_id = @batchId`;
+
+function effectsOf(record: CheckpointRecord): LegacyEffect[] {
+  if (record.pending_effects === null) return [];
+  const effects: unknown = JSON.parse(record.pending_effects);
+  if (!Array.isArray(effects)) throw new TypeError(`pending_effects of ${record.owner} / ${record.tenant_id} is not a JSON array`);
+  return effects as LegacyEffect[];
+}
 
 function toCheckpoint(record: CheckpointRecord): CheckpointRow {
   return {
@@ -63,6 +85,8 @@ function toCheckpoint(record: CheckpointRecord): CheckpointRow {
     batchId: record.batch_id,
     rowsApplied: record.rows_applied,
     updatedAt: record.updated_at,
+    pendingEffects: effectsOf(record),
+    readyHorizon: record.ready_horizon,
   };
 }
 
@@ -71,8 +95,32 @@ function bindCheckpointKey(request: Request, owner: string, tenantId: string): v
   request.input('tenantId', sql.VarChar(36), tenantId);
 }
 
-/** Stored checkpoints, ordered by owner and tenant; `owners` keeps only those owners' rows. */
-export async function readCheckpoints(scope: RequestScope, filter: { owners?: readonly string[] } = {}): Promise<CheckpointRow[]> {
+/** Horizon below which every committed batch's rows and effects are in legacy; null while no batch's effects have run. */
+export function readyHorizonOf(row: Pick<CheckpointRow, 'appliedHorizon' | 'pendingEffects' | 'readyHorizon'>): string | null {
+  return row.pendingEffects.length === 0 ? row.appliedHorizon : row.readyHorizon;
+}
+
+/** Runs `text` on `request`, cancelling the request when `signal` aborts. */
+export async function cancellableQuery<T>(request: Request, text: string, signal: AbortSignal | undefined): Promise<IResult<T>> {
+  if (signal === undefined) return request.query<T>(text);
+  signal.throwIfAborted();
+  const cancel = (): void => {
+    request.cancel();
+  };
+  signal.addEventListener('abort', cancel, { once: true });
+  try {
+    return await request.query<T>(text);
+  } finally {
+    signal.removeEventListener('abort', cancel);
+  }
+}
+
+/** Stored checkpoints, ordered by owner and tenant; `owners` keeps only those owners' rows, and `signal` cancels the read. */
+export async function readCheckpoints(
+  scope: RequestScope,
+  filter: { owners?: readonly string[] } = {},
+  options: { signal?: AbortSignal } = {},
+): Promise<CheckpointRow[]> {
   const request = scope.request();
   let where = '';
   if (filter.owners !== undefined) {
@@ -84,7 +132,7 @@ export async function readCheckpoints(scope: RequestScope, filter: { owners?: re
     });
     where = ` WHERE owner IN (${names.join(', ')})`;
   }
-  const result = await request.query<CheckpointRecord>(`${CHECKPOINT_SELECT}${where} ORDER BY owner, tenant_id`);
+  const result = await cancellableQuery<CheckpointRecord>(request, `${CHECKPOINT_SELECT}${where} ORDER BY owner, tenant_id`, options.signal);
   return result.recordset.map(toCheckpoint);
 }
 
@@ -97,7 +145,7 @@ export async function readCheckpoint(scope: RequestScope, owner: string, tenantI
   return record === undefined ? null : toCheckpoint(record);
 }
 
-/** Writes the batch's checkpoint in the batch transaction and returns the stored row; the applied horizon never moves back. */
+/** Writes the batch's checkpoint and owed effects in the batch transaction and returns the stored row; the applied horizon never moves back. */
 export async function upsertCheckpoint(scope: RequestScope, row: CheckpointWrite): Promise<CheckpointRow> {
   const request = scope.request();
   bindCheckpointKey(request, row.owner, row.tenantId);
@@ -106,11 +154,20 @@ export async function upsertCheckpoint(scope: RequestScope, row: CheckpointWrite
   request.input('appliedHorizon', sql.VarChar(sql.MAX), row.appliedHorizon);
   request.input('batchId', sql.NVarChar(64), row.batchId);
   request.input('rowsApplied', sql.Int, row.rowsApplied);
+  request.input('pendingEffects', sql.NVarChar(sql.MAX), row.pendingEffects.length === 0 ? null : JSON.stringify(row.pendingEffects));
   // UPDATE and INSERT return no result set, so the first one is the closing SELECT's.
   const result = await request.query<CheckpointRecord>(CHECKPOINT_UPSERT);
   const stored = result.recordset[0];
   if (stored === undefined) throw new Error(`checkpoint of ${row.owner} / ${row.tenantId} was not stored`);
   return toCheckpoint(stored);
+}
+
+/** Clears the effects a checkpoint owes once they have run; a row a later batch rewrote keeps that batch's. */
+export async function clearPendingEffects(scope: RequestScope, row: Pick<CheckpointRow, 'owner' | 'tenantId' | 'batchId'>): Promise<void> {
+  const request = scope.request();
+  bindCheckpointKey(request, row.owner, row.tenantId);
+  request.input('batchId', sql.NVarChar(64), row.batchId);
+  await request.query(CHECKPOINT_CLEAR_EFFECTS);
 }
 
 /** A target change in legacy form: the physical legacy table and the decoded legacy images. */

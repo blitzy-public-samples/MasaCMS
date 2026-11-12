@@ -207,6 +207,24 @@ describe('row conversion', () => {
     expect(mapping.toTarget({ ...rest, SITEID: 'b' })).toMatchObject({ site_id: 'b' });
   });
 
+  it('maps a key encoding to the target key values toTarget gives, in key order', () => {
+    const composite = defineMapping({ ...allTags, key: ['siteID', 'at', 'n'] });
+    const target = composite.toTarget(legacyValues);
+    const keyed = composite.targetKey(composite.encodeLegacyKey(target));
+    expect(keyed).toEqual({ site_id: target.site_id, at: target.at, n: target.n });
+    expect(Object.keys(keyed)).toEqual(['site_id', 'at', 'n']);
+    expect(composite.targetKey('NNN')).toEqual({ site_id: null, at: null, n: null });
+  });
+
+  it.each<[string, string[] | null, string]>([
+    ['a keyless mapping', null, 's2:A1'],
+    ['an encoding of another type', ['n'], 's1:7'],
+    ['an encoding with trailing bytes', ['id'], 's2:A1N'],
+    ['a value text not in canonical form', ['n'], 'i3:007'],
+  ])('targetKey rejects %s', (_label, key, encoding) => {
+    expect(() => defineMapping({ ...allTags, key }).targetKey(encoding)).toThrow(MappingError);
+  });
+
   it('keyless mappings encode the whole row as key and hash it like legacy', () => {
     const keyless = defineMapping({ ...base, legacyTable: 'tsystemobjects', targetTable: 'programs_sites.system_object', key: null });
     expect(keyless.keyless).toBe(true);

@@ -13,7 +13,7 @@ import { datasetDigest, type Dataset } from '../src/dataset.js';
 import type { DirectClient } from '../src/direct.js';
 import { fixtureKeys, specForKey, type FixtureModule, type FixtureRow, type FixtureValue } from '../src/fixture-tables.js';
 import { run, type GenerateDeps } from '../src/generate.js';
-import { MASA_DEFAULT_MODULE_ID, MASA_HOME_CONTENT_ID } from '../src/ids.js';
+import { MASA_DEFAULT_MODULE_ID, MASA_FORMS_MODULE_ID, MASA_HOME_CONTENT_ID } from '../src/ids.js';
 import type { MasaData, MembershipRow } from '../src/masa.js';
 import { readDataset, type DatasetPart, type Manifest } from '../src/writer.js';
 
@@ -369,13 +369,16 @@ describe('credentials', () => {
 
 describe('counts', () => {
   const site = (row: { siteID: string }, siteID: SiteKey): boolean => row.siteID === siteID;
+  const siteTree = (siteID: SiteKey): MasaData['content'] =>
+    dataset.masa.content.filter((c) => site(c, siteID) && c.moduleID === MASA_DEFAULT_MODULE_ID);
   it.each([
     ['umbrella members', () => dataset.masa.users.filter((u) => site(u, 'umbrella') && u.isPublic === 1), 1000],
     ['umbrella categories', () => dataset.masa.categories.filter((c) => site(c, 'umbrella')), 100],
     ['umbrella files', () => dataset.masa.files.filter((f) => site(f, 'umbrella')), 20],
     ['tenant-a system users', () => dataset.masa.users.filter((u) => site(u, 'tenant-a') && u.isPublic === 0), 2000],
     ['tenant-a groups', () => dataset.masa.groups.filter((g) => site(g, 'tenant-a')), 50],
-    ['tenant-a content nodes', () => dataset.masa.content.filter((c) => site(c, 'tenant-a') && c.versions.length > 0), 5000],
+    ['tenant-a content nodes', () => siteTree('tenant-a').filter((c) => c.versions.length > 0), 5000],
+    ['tenant-a forms', () => dataset.masa.content.filter((c) => site(c, 'tenant-a') && c.type === 'Form'), 1],
     ['tenant-a timesheet days', () => rowsOf('Program_1.timesheet_day'), 20000],
     ['tenant-a finance records', () => rowsOf('Program_1.finance_record'), 3000],
     ['tenant-a survey responses', () => rowsOf('synthetic.survey_response').filter((r) => r.siteID === 'tenant-a'), 500],
@@ -383,7 +386,8 @@ describe('counts', () => {
     ['tenant-b system users', () => dataset.masa.users.filter((u) => site(u, 'tenant-b') && u.isPublic === 0), 180],
     ['tenant-b members', () => dataset.masa.users.filter((u) => site(u, 'tenant-b') && u.isPublic === 1), 20],
     ['tenant-b groups', () => dataset.masa.groups.filter((g) => site(g, 'tenant-b')), 10],
-    ['tenant-b content nodes', () => dataset.masa.content.filter((c) => site(c, 'tenant-b') && c.versions.length > 0), 300],
+    ['tenant-b content nodes', () => siteTree('tenant-b').filter((c) => c.versions.length > 0), 300],
+    ['tenant-b forms', () => dataset.masa.content.filter((c) => site(c, 'tenant-b') && c.type === 'Form'), 1],
     ['tenant-b timesheet days', () => rowsOf('Program_2.timesheet_day'), 2000],
     ['tenant-b finance records', () => rowsOf('Program_2.finance_record'), 300],
   ] as const)('%s', (_label, select, expected) => {
@@ -406,8 +410,8 @@ describe('counts', () => {
     groups: (s) => dataset.masa.groups.filter((g) => site(g, s)).length,
     categories: (s) => dataset.masa.categories.filter((c) => site(c, s)).length,
     files: (s) => dataset.masa.files.filter((f) => site(f, s)).length,
-    contentNodes: (s) => dataset.masa.content.filter((c) => site(c, s)).length,
-    maxVersionsPerNode: (s) => Math.max(0, ...dataset.masa.content.filter((c) => site(c, s)).map((c) => c.versions.length)),
+    contentNodes: (s) => siteTree(s).length,
+    maxVersionsPerNode: (s) => Math.max(0, ...siteTree(s).map((c) => c.versions.length)),
     timesheetDays: (s) => program(s, 'timesheet_day').length,
     daysPerTimesheet: daysPerSheet,
     timesheetEmployees: (s) => new Set(program(s, 'timesheet').map((row) => row.person_id)).size,
@@ -449,10 +453,17 @@ describe('ids', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it('parents content at the home node or seeded content and files at the default module', () => {
-    const nodes = new Map(dataset.masa.content.map((row) => [row.contentID, row.siteID]));
-    expect([...nodes.keys()].filter((id) => [MASA_HOME_CONTENT_ID, MASA_DEFAULT_MODULE_ID].includes(id))).toEqual([]);
-    expect(dataset.masa.content.filter((row) => row.parentID !== MASA_HOME_CONTENT_ID && nodes.get(row.parentID) !== row.siteID)).toEqual([]);
+  it('parents site-tree content at the home node or seeded content, forms at the Forms module and files at the default module', () => {
+    const { content } = dataset.masa;
+    const nodes = new Map(content.map((row) => [row.contentID, row.siteID]));
+    const modules = [MASA_HOME_CONTENT_ID, MASA_DEFAULT_MODULE_ID, MASA_FORMS_MODULE_ID];
+    expect([...nodes.keys()].filter((id) => modules.includes(id))).toEqual([]);
+    const tree = content.filter((row) => row.moduleID === MASA_DEFAULT_MODULE_ID);
+    expect(tree.filter((row) => row.parentID !== MASA_HOME_CONTENT_ID && nodes.get(row.parentID) !== row.siteID)).toEqual([]);
+    const forms = content.filter((row) => row.moduleID !== MASA_DEFAULT_MODULE_ID);
+    expect(forms.map((row) => [row.siteID, row.moduleID, row.parentID, row.type])).toEqual(
+      ['tenant-a', 'tenant-b'].map((siteID) => [siteID, MASA_FORMS_MODULE_ID, MASA_FORMS_MODULE_ID, 'Form']),
+    );
     expect(dataset.masa.files.filter((row) => row.moduleID !== MASA_DEFAULT_MODULE_ID)).toEqual([]);
   });
 

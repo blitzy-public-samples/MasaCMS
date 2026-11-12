@@ -60,7 +60,8 @@ function context(recorded: Recorded<unknown>): AdminRenderContext {
   return {
     labels,
     site,
-    session: recorded.session ?? ({} as AdminSession),
+    // The recordings ran on the en_US default site, whose session.locale is en_US.
+    session: { ...(recorded.session ?? ({} as AdminSession)), locale: 'en_US' },
     siteSettings: recorded.siteSettings ?? ({} as AdminSiteSettings),
     config: recorded.config ?? ({} as AdminRenderContext['config']),
     csrf: () => ({ token: TOKEN, expires: TOKEN }),
@@ -174,6 +175,23 @@ describe('renderLoadSiteFlat against recorded loadsiteflat responses', () => {
     const ctx = context(page1);
     const session = { ...ctx.session, siteId: 'other', flatViewArgs: {} };
     expect(() => renderLoadSiteFlat(flatModel(page1), { ...ctx, session })).toThrow(/OTHER|other/);
+  });
+
+  // ACF 2023 LSDateFormat(date, dateKeyFormat) and LSTimeFormat(date) after setLocale(locale); the recording is en_US's.
+  it.each([
+    { locale: 'de_DE', dateKeyFormat: 'DD.MM.YYYY', updated: '316.11.2026', due: '335.12.2026' },
+    { locale: 'en_GB', dateKeyFormat: 'DD/MM/YYYY', updated: '316/11/2026', due: '335/12/2026' },
+  ])('prints the due, updated and created dates under the $locale session', ({ locale, dateKeyFormat, updated, due }) => {
+    const recorded = readJson<Recorded<Omit<LoadSiteFlatModel, 'rows'> & { rows: RecordedFlatRow[] }>>(
+      'loadsiteflat/admin-report-approvals-duedate.json',
+    );
+    const ctx = context(recorded);
+    const result = renderLoadSiteFlat(flatModel(recorded), { ...ctx, session: { ...ctx.session, locale, dateKeyFormat } });
+    const legacy = readText('loadsiteflat/admin-report-approvals-duedate.html')
+      .replaceAll('11/316/2026', updated)
+      .replaceAll('12/335/2026', due)
+      .replace(/ 2:(\d\d:\d\d) PM/g, ' 14:$1');
+    expect(normalise(result.body)).toBe(normalise(legacy));
   });
 });
 

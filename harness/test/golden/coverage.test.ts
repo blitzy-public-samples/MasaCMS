@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   esapiUrlEncode,
   routeKeyForRequest,
@@ -11,7 +12,14 @@ import {
 } from '@opt2/platform/legacy-compat';
 import { routeKeyCaseOptions } from '@opt2/platform/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AuthMode, SeedRef, Step } from '../../src/golden/catalogue.js';
+import {
+  REHEARSAL_SCENARIO_IDS,
+  isRehearsalScenario,
+  scenarioSchema,
+  type AuthMode,
+  type SeedRef,
+  type Step,
+} from '../../src/golden/catalogue.js';
 import {
   FINDING_KINDS,
   INVENTORY_PATH,
@@ -24,6 +32,7 @@ import {
   coverageRouteResults,
   defaultRouteKeyOptions,
   fromRouteKeyRequest,
+  loadCoverageInputs,
   main,
   toRouteKeyRequest,
   type CoverageFinding,
@@ -32,7 +41,8 @@ import {
   type CutoverEntry,
   type InventoryItem,
 } from '../../src/golden/coverage.js';
-import { basicAuth } from '../../src/golden/session.js';
+import { SEED_CREDENTIALS_FILE, basicAuth, loadSecretStore, loadSeedStore } from '../../src/golden/session.js';
+import type { SeedKeyStores } from '../../src/golden/workload.js';
 import { runCli } from '../../src/lib/cli.js';
 import { repoPath } from '../../src/lib/paths.js';
 
@@ -44,6 +54,35 @@ const PINNED_SHA = (JSON.parse(readFileSync(repoPath('opt2/source-pin.json'), 'u
 
 const RESERVED_PERSON = '1A2B3C4D-0000-1111-2222333344445555';
 const RESERVED_USERNAME = 'rh-create-01';
+/** The username the seeded dataset holds for {@link RESERVED_PERSON}. */
+const RESERVED_PERSON_USERNAME = 'reserved.person';
+
+const DATASET_FILE = path.join('seed', 'dataset.json');
+const CREDENTIALS_FILE = path.join('secrets', SEED_CREDENTIALS_FILE);
+const MISUSE_CATALOGUE = fileURLToPath(new URL('../fixtures/golden/catalogue.reserved-misuse.yaml', import.meta.url));
+const SAMPLE_SEED_CONFIG = fileURLToPath(new URL('../fixtures/golden/seed-config.sample.json', import.meta.url));
+
+/** Reserved person `n` of the sample seed configuration. */
+function samplePerson(n: number): string {
+  return `99999999-0000-0000-00000000000000${String(n).padStart(2, '0')}`;
+}
+
+/** Writes each state-relative JSON file under `dir`; returns seed stores over it reading `configPath`. */
+async function seedStores(dir: string, files: Record<string, unknown>, configPath?: string): Promise<SeedKeyStores> {
+  for (const [file, json] of Object.entries(files)) {
+    await mkdir(path.dirname(path.join(dir, file)), { recursive: true });
+    await writeFile(path.join(dir, file), JSON.stringify(json), 'utf8');
+  }
+  const env = { OPT2_STATE_DIR: dir };
+  return { seed: loadSeedStore(env, { configPath }), secrets: loadSecretStore(env), env };
+}
+
+function datasetRef(as: string, dataPath: string, where?: SeedRef['where'], index?: number): SeedRef {
+  const ref: SeedRef = { as, source: 'dataset', path: dataPath };
+  if (where !== undefined) ref.where = where;
+  if (index !== undefined) ref.index = index;
+  return ref;
+}
 
 /** Mutable form of {@link CoverageInputs}, without the options (they hold functions `structuredClone` rejects). */
 interface Draft {
@@ -276,12 +315,12 @@ describe('checkCoverage', () => {
       RESERVED_PERSON,
     ],
     ['a username token', (s) => (s.steps[1]!.form!.username = RESERVED_USERNAME), RESERVED_USERNAME],
-    ['a username as an object key', (s) => (s.steps[1]!.form![RESERVED_USERNAME] = 'x'), RESERVED_USERNAME],
     [
-      'a reserved seed ref',
-      (s) => (s.seedRefs = [{ as: 'rh', source: 'reserved', path: 'reserved.rehearsal.persons' } satisfies SeedRef]),
-      'reserved.rehearsal.persons',
+      'an upper-cased username token',
+      (s) => (s.steps[1]!.form!.username = RESERVED_USERNAME.toUpperCase()),
+      RESERVED_USERNAME,
     ],
+    ['a username as an object key', (s) => (s.steps[1]!.form![RESERVED_USERNAME] = 'x'), RESERVED_USERNAME],
   ])('reports %s outside a rehearsal scenario, and allows it inside one', (_title, edit, value) => {
     const outside = checkCoverage(inputs((d) => edit(scenario(d, 'GS-PE-01'))));
     expect(outside).toEqual([{ kind: 'reserved-identity', scenario: 'GS-PE-01', value }]);
@@ -302,14 +341,6 @@ describe('checkCoverage', () => {
     },
   );
 
-  it('ignores dataset seed refs and reserved refs outside the rehearsal block', () => {
-    const refs: SeedRef[] = [
-      { as: 'user', source: 'dataset', path: 'masa.users' },
-      { as: 'other', source: 'reserved', path: 'reserved.performance' },
-    ];
-    expect(checkCoverage(inputs((d) => (scenario(d, 'GS-PE-01').seedRefs = refs)))).toEqual([]);
-  });
-
   it('reports every kind together, in FINDING_KINDS order', () => {
     const found = checkCoverage(
       inputs((d) => {
@@ -317,11 +348,278 @@ describe('checkCoverage', () => {
         const content = scenario(d, 'GS-CO-05');
         content.covers = ['api:content.nosuch'];
         content.steps[0]!.form = { owner: RESERVED_USERNAME };
+        content.seedRefs = [datasetRef('page', 'masa.content')];
         d.controllers.push({ actions: [{ routeKey: 'admin:cusers.editaddress', disposition: 'carry' }] });
       }),
     );
     expect(found.map((f) => f.kind)).toEqual([...FINDING_KINDS]);
     expect(countByKind(found)).toEqual(Object.fromEntries(FINDING_KINDS.map((kind) => [kind, 1])));
+  });
+});
+
+const REHEARSAL_CASES = [
+  ['GS-PE-RH-01', true],
+  ['GS-PE-RH-02', true],
+  ['GS-PE-RH-03', true],
+  ['GS-PE-RH-04', false],
+  ['GS-FI-RH-01', false],
+  ['GS-PE-01', false],
+] as const;
+
+describe('rehearsal scenarios', () => {
+  it('are exactly GS-PE-RH-01, GS-PE-RH-02 and GS-PE-RH-03', () => {
+    expect(REHEARSAL_SCENARIO_IDS).toEqual(['GS-PE-RH-01', 'GS-PE-RH-02', 'GS-PE-RH-03']);
+  });
+
+  it.each(REHEARSAL_CASES)('%s may use the reserved identities: %s', (id, rehearsal) => {
+    expect(isRehearsalScenario(id)).toBe(rehearsal);
+    const found = checkCoverage(
+      inputs((d) => {
+        const people = scenario(d, 'GS-PE-01');
+        people.id = id;
+        people.steps[1]!.form!.username = RESERVED_USERNAME;
+      }),
+    );
+    expect(found).toEqual(rehearsal ? [] : [{ kind: 'reserved-identity', scenario: id, value: RESERVED_USERNAME }]);
+  });
+
+  it.each(REHEARSAL_CASES)('%s replays under v0003: %s', (id, rehearsal) => {
+    const wanted = rehearsal ? 'v0003' : 'v0002';
+    const doc = (tableVersion: string): unknown => ({
+      id,
+      title: id,
+      service: 'people',
+      role: 'site-admin',
+      sessions: { admin: { login: 'admin', via: 'admin' } },
+      steps: [{ name: 'list', route: '/admin/?muraAction=cUsers.listUsers' }],
+      compare: ['status'],
+      covers: ['admin:cusers.listusers'],
+      tableVersion,
+    });
+    expect(scenarioSchema.safeParse(doc(wanted)).success).toBe(true);
+    const other = scenarioSchema.safeParse(doc(rehearsal ? 'v0002' : 'v0003'));
+    expect(other.error?.issues).toEqual([
+      expect.objectContaining({ path: ['tableVersion'], message: `must be ${wanted} for ${id}` }),
+    ]);
+  });
+});
+
+describe('checkCoverage seed selections', () => {
+  const SEED_CONFIG = {
+    reserved: {
+      rehearsal: { persons: [RESERVED_PERSON], usernames: [RESERVED_USERNAME] },
+      performance: { site: 'tenant-a' },
+    },
+  };
+  const DATASET = {
+    businessDate: '2026-06-30',
+    masa: {
+      users: [
+        { userID: 'FIXTURE-USER-0001', siteID: 'tenant-a', isPublic: 0, username: 'plain.person' },
+        { userID: RESERVED_PERSON, siteID: 'tenant-a', isPublic: 0, username: RESERVED_PERSON_USERNAME },
+      ],
+      memberships: [{ userID: RESERVED_PERSON, groupname: 'timesheets.employee', groupSiteID: 'tenant-a' }],
+    },
+  };
+  const CREDENTIALS = {
+    roles: { 'tenant-a': { 'site-admin': 'plain.person', 'timesheets.employee': 'Reserved.Person' } },
+  };
+  const EMPLOYEE = datasetRef('member', 'masa.memberships', { groupname: 'timesheets.employee' });
+
+  let dir: string;
+  let stores: Record<'seeded' | 'empty', SeedKeyStores>;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(os.tmpdir(), 'opt2-golden-coverage-seed-'));
+    const config = path.join(dir, 'seeded', 'seed.config.json');
+    const files = { [DATASET_FILE]: DATASET, [CREDENTIALS_FILE]: CREDENTIALS, 'seed.config.json': SEED_CONFIG };
+    stores = {
+      seeded: await seedStores(path.join(dir, 'seeded'), files, config),
+      empty: await seedStores(path.join(dir, 'empty'), {}, config),
+    };
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** {@link inputs} resolving seed selections against `mode`'s stores; `none` leaves them unloaded. */
+  function seeded(edit: (draft: Draft) => void, mode: 'seeded' | 'empty' | 'none' = 'seeded'): CoverageInputs {
+    return mode === 'none' ? inputs(edit) : { ...inputs(edit), seedStores: stores[mode] };
+  }
+
+  it.each<[string, (s: CoverageScenario) => void, string[]]>([
+    [
+      'a reserved seed ref',
+      (s) => (s.seedRefs = [{ as: 'rh', source: 'reserved', path: 'reserved.rehearsal.persons' }]),
+      ['reserved.rehearsal.persons', RESERVED_PERSON],
+    ],
+    [
+      'a users row selected by position',
+      (s) => (s.seedRefs = [datasetRef('user', 'masa.users', { siteID: 'tenant-a', isPublic: 0 }, 1)]),
+      [RESERVED_PERSON],
+    ],
+    [
+      'a users row selected from the end',
+      (s) => (s.seedRefs = [datasetRef('user', 'masa.users', {}, -1)]),
+      [RESERVED_PERSON],
+    ],
+    ['a membership row', (s) => (s.seedRefs = [EMPLOYEE]), [RESERVED_PERSON]],
+    [
+      'a users row whose where reads an earlier row',
+      (s) => (s.seedRefs = [EMPLOYEE, datasetRef('user', 'masa.users', { userID: '${seed.member.userID}' })]),
+      [RESERVED_PERSON],
+    ],
+    [
+      'a seeded role login',
+      (s) => (s.sessions = { employee: { login: 'seed:tenant-a:timesheets.employee', via: 'jsonapi' } }),
+      [RESERVED_PERSON],
+    ],
+    [
+      'a seeded role placeholder',
+      (s) => (s.steps[1]!.form!.username = '${user:tenant-a:timesheets.employee}'),
+      [RESERVED_PERSON],
+    ],
+    [
+      "a reserved person's dataset username in upper case",
+      (s) => (s.steps[1]!.form!.username = RESERVED_PERSON_USERNAME.toUpperCase()),
+      [RESERVED_PERSON],
+    ],
+  ])('reports %s resolving to a reserved identity, except in a rehearsal scenario', (_title, edit, values) => {
+    const outside = checkCoverage(seeded((d) => edit(scenario(d, 'GS-PE-01'))));
+    expect(outside).toEqual(values.map((value) => ({ kind: 'reserved-identity', scenario: 'GS-PE-01', value })));
+    for (const id of REHEARSAL_SCENARIO_IDS) {
+      const inside = checkCoverage(
+        seeded((d) => {
+          const people = scenario(d, 'GS-PE-01');
+          people.id = id;
+          edit(people);
+        }),
+      );
+      expect(inside).toEqual([]);
+    }
+  });
+
+  it('passes selections of unreserved rows and role accounts, and reserved refs outside the rehearsal block', () => {
+    const found = checkCoverage(
+      seeded((d) => {
+        const people = scenario(d, 'GS-PE-01');
+        const other: SeedRef = { as: 'other', source: 'reserved', path: 'reserved.performance' };
+        people.seedRefs = [datasetRef('user', 'masa.users'), other];
+        people.sessions = { siteAdmin: { login: 'seed:tenant-a:site-admin', via: 'admin' } };
+      }),
+    );
+    expect(found).toEqual([]);
+  });
+
+  it.each<[string, 'seeded' | 'empty' | 'none', (s: CoverageScenario) => void, (state: string) => string]>([
+    [
+      'a dataset ref without seed stores',
+      'none',
+      (s) => (s.seedRefs = [datasetRef('user', 'masa.users')]),
+      () => 'GS-PE-01: seedRef user: no seed dataset or credentials are loaded',
+    ],
+    [
+      'a seeded login without seed stores',
+      'none',
+      (s) => (s.sessions = { siteAdmin: { login: 'seed:tenant-a:site-admin', via: 'admin' } }),
+      () => '${user:tenant-a:site-admin}: no seed dataset or credentials are loaded',
+    ],
+    [
+      'a dataset ref the state directory has no dataset for',
+      'empty',
+      (s) => (s.seedRefs = [datasetRef('user', 'masa.users')]),
+      (state) => `GS-PE-01: seed dataset ${path.join(state, 'empty', DATASET_FILE)} does not exist`,
+    ],
+    [
+      'a ref no dataset row matches',
+      'seeded',
+      (s) => (s.seedRefs = [datasetRef('user', 'masa.users', { siteID: 'tenant-z' })]),
+      () => 'GS-PE-01: seedRef user: no row at index 0 among the 0 rows of masa.users matching {"siteID":"tenant-z"}',
+    ],
+    [
+      'a role the credentials lack',
+      'seeded',
+      (s) => (s.steps[1]!.form!.username = '${user:tenant-a:nosuch}'),
+      (state) => `\${user:tenant-a:nosuch} has no username in ${path.join(state, 'seeded', CREDENTIALS_FILE)}`,
+    ],
+  ])('fails closed on %s, except in a rehearsal scenario', (_title, mode, edit, message) => {
+    const outside = checkCoverage(seeded((d) => edit(scenario(d, 'GS-PE-01')), mode));
+    expect(outside).toEqual([{ kind: 'unresolved-seed-ref', scenario: 'GS-PE-01', message: message(dir) }]);
+    const inside = checkCoverage(
+      seeded((d) => {
+        const people = scenario(d, 'GS-PE-01');
+        people.id = 'GS-PE-RH-01';
+        edit(people);
+      }, mode),
+    );
+    expect(inside).toEqual([]);
+  });
+
+  it.each<[string, Record<string, unknown>, (state: string) => CoverageFinding[]]>([
+    [
+      'with its dataset',
+      {
+        [DATASET_FILE]: {
+          businessDate: '2026-06-30',
+          masa: {
+            users: [
+              { userID: 'FIXTURE-USER-0001', siteID: 'tenant-a', isPublic: 0, username: 'site.admin' },
+              { userID: samplePerson(1), siteID: 'tenant-a', isPublic: 0, username: 'pat.rehearsal' },
+            ],
+            memberships: [{ userID: samplePerson(1), groupname: 'timesheets.employee', groupSiteID: 'tenant-a' }],
+          },
+        },
+        [CREDENTIALS_FILE]: {
+          roles: {
+            'tenant-a': {
+              'site-admin': 'site.admin',
+              'finance.preparer': 'fin.preparer',
+              'timesheets.primary-approver': 'ts.approver',
+            },
+          },
+        },
+      },
+      () => [
+        { kind: 'reserved-identity', scenario: 'GS-PE-02', value: samplePerson(2) },
+        { kind: 'reserved-identity', scenario: 'GS-PE-RH-04', value: 'reserved.rehearsal.persons' },
+        { kind: 'reserved-identity', scenario: 'GS-PE-RH-04', value: samplePerson(3) },
+        { kind: 'reserved-identity', scenario: 'GS-FI-RH-01', value: 'rehearsal-04' },
+        { kind: 'reserved-identity', scenario: 'GS-ID-05', value: 'rehearsal-05' },
+        { kind: 'reserved-identity', scenario: 'GS-TS-01', value: samplePerson(1) },
+      ],
+    ],
+    [
+      'without a dataset or credentials',
+      {},
+      (state) => {
+        const noUsername = (role: string): string =>
+          `\${user:tenant-a:${role}} has no username in ${path.join(state, CREDENTIALS_FILE)}`;
+        return [
+          { kind: 'reserved-identity', scenario: 'GS-PE-02', value: samplePerson(2) },
+          { kind: 'reserved-identity', scenario: 'GS-PE-RH-04', value: 'reserved.rehearsal.persons' },
+          { kind: 'reserved-identity', scenario: 'GS-FI-RH-01', value: 'rehearsal-04' },
+          { kind: 'reserved-identity', scenario: 'GS-ID-05', value: 'rehearsal-05' },
+          { kind: 'unresolved-seed-ref', scenario: 'GS-PE-02', message: noUsername('site-admin') },
+          { kind: 'unresolved-seed-ref', scenario: 'GS-PE-RH-04', message: noUsername('site-admin') },
+          { kind: 'unresolved-seed-ref', scenario: 'GS-FI-RH-01', message: noUsername('finance.preparer') },
+          {
+            kind: 'unresolved-seed-ref',
+            scenario: 'GS-TS-01',
+            message: `GS-TS-01: seed dataset ${path.join(state, DATASET_FILE)} does not exist`,
+          },
+        ];
+      },
+    ],
+  ])('reports every misuse of the reserved-misuse sample catalogue %s', async (_title, files, expected) => {
+    const state = path.join(dir, 'sample');
+    await seedStores(state, files);
+    const loaded = await loadCoverageInputs(
+      { catalogue: MISUSE_CATALOGUE, seedConfig: SAMPLE_SEED_CONFIG },
+      { OPT2_STATE_DIR: state },
+    );
+    const kinds: ReadonlySet<string> = new Set(['reserved-identity', 'unresolved-seed-ref']);
+    expect(checkCoverage(loaded).filter((f) => kinds.has(f.kind))).toEqual(expected(state));
   });
 });
 
@@ -339,6 +637,7 @@ describe('countByKind', () => {
       'uncovered-admin-action': 0,
       'cover-not-exercised': 0,
       'reserved-identity': 0,
+      'unresolved-seed-ref': 0,
     });
   });
 });
@@ -696,7 +995,27 @@ describe('main', () => {
     expect(stderr()).toEqual(['uncovered-target api:content.findone strategies-content\n']);
   });
 
-  it.each([[['--version']], [['--catalogue']], [['--version=']], [['--catalogue=']], [['--inventory', 'x.json']]])(
+  it('reads the reserved identities from --seed-config', async () => {
+    const { version } = await writeInputs();
+    const run = await cli(['--version', version, '--catalogue', MISUSE_CATALOGUE, '--seed-config', SAMPLE_SEED_CONFIG]);
+    expect(run.code).toBe(1);
+    expect((await report()).findings).toContainEqual({
+      kind: 'reserved-identity',
+      scenario: 'GS-PE-02',
+      value: samplePerson(2),
+    });
+    expect(stderr()).toContain(`reserved-identity GS-PE-02 ${samplePerson(2)}\n`);
+  });
+
+  it.each([
+    [['--version']],
+    [['--catalogue']],
+    [['--seed-config']],
+    [['--version=']],
+    [['--catalogue=']],
+    [['--seed-config=']],
+    [['--inventory', 'x.json']],
+  ])(
     'exits 2 with the usage text and writes no report for %j',
     async (argv) => {
       const run = await cli(argv);

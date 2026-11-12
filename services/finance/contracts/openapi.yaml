@@ -1007,6 +1007,19 @@ paths:
           schema:
             type: string
             maxLength: 4096
+        - name: keys
+          in: query
+          required: false
+          description: Legacy key encodings as export rows carry them in `key`; the page holds only their rows and no object manifest.
+          style: form
+          explode: true
+          schema:
+            type: array
+            minItems: 1
+            maxItems: 100
+            items:
+              type: string
+              minLength: 1
         - $ref: '#/components/parameters/PageLimit'
       responses:
         '200':

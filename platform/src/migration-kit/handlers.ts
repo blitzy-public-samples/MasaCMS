@@ -76,6 +76,9 @@ export const DEFAULT_EXPORT_LIMIT = 1000;
 /** Largest export page. */
 export const MAX_EXPORT_LIMIT = 10_000;
 
+/** Most legacy keys one export request filters by. */
+export const MAX_EXPORT_KEYS = 100;
+
 /** Longest `match` text an export accepts. */
 export const MAX_EXPORT_MATCH_LENGTH = 4096;
 
@@ -122,7 +125,7 @@ export interface MigrationHandlerOptions {
   mappings: readonly Mapping[];
   units: readonly string[];
   db?: TenantDb;
-  /** Object manifest of a unit: an array is the whole manifest, returned with the first export page; a page is one manifest page, and the following pages ride on the following export pages. */
+  /** Object manifest of a unit: an array is the whole manifest, returned with the first export page; a page is one manifest page, and the following pages ride on the following export pages. Keyed export pages carry none. */
   exportObjects?(
     tx: TenantTx,
     scope: { unit: string; tenantId: string; after?: string; limit?: number },
@@ -305,6 +308,8 @@ const exportQuerySchema = z.strictObject({
   after: nonEmpty.optional(),
   match: exportMatchSchema.optional(),
   limit: pageLimit(MAX_EXPORT_LIMIT),
+  // A repeated query parameter arrives as an array, a single one as a string.
+  keys: z.union([nonEmpty.transform((key) => [key]), z.array(nonEmpty).min(1).max(MAX_EXPORT_KEYS)]).optional(),
 });
 
 const changesQuerySchema = z.strictObject({ ...tenantFields, after: nonEmpty.optional(), limit: pageLimit(MAX_CHANGES_LIMIT) });
@@ -390,6 +395,12 @@ interface ExportStart {
   readonly index: number;
   readonly key: string[] | undefined;
   readonly objects: string | undefined;
+}
+
+/** Target key tuples a keyed export selects, over one list of target key columns. */
+interface KeyFilter {
+  readonly columns: readonly string[];
+  readonly tuples: readonly (readonly unknown[])[];
 }
 
 /** A malformed request parameter detected after schema validation. */
@@ -547,6 +558,31 @@ function parseExportCursor(text: string, sources: readonly ExportSource[], hasMa
   return { index, key: cursor.key, objects: cursor.objects };
 }
 
+/**
+ * The source's key filters for legacy key encodings, one per distinct target key of its mappings; throws
+ * InvalidRequestError for a keyless mapping or a key that does not decode over a mapping's key columns.
+ */
+function keyFilters(source: ExportSource, keys: readonly string[]): KeyFilter[] {
+  const byColumns = new Map<string, { columns: string[]; tuples: Map<string, unknown[]> }>();
+  for (const { mapping } of source.mappings) {
+    for (const key of keys) {
+      let target: Record<string, unknown>;
+      try {
+        target = mapping.targetKey(key);
+      } catch (err) {
+        throw err instanceof MappingError ? new InvalidRequestError(`export keys do not fit the key of ${mapping.legacyTable}`) : err;
+      }
+      const columns = Object.keys(target);
+      const id = JSON.stringify(columns);
+      const filter = byColumns.get(id) ?? { columns, tuples: new Map<string, unknown[]>() };
+      const tuple = Object.values(target);
+      filter.tuples.set(JSON.stringify(tuple), tuple);
+      byColumns.set(id, filter);
+    }
+  }
+  return [...byColumns.values()].map(({ columns, tuples }) => ({ columns, tuples: [...tuples.values()] }));
+}
+
 /** `match` bound to target columns of `source`; undefined (export it whole) unless every mapping stores each entry's column in one text or integer column. */
 function matchTerms(source: ExportSource, match: ExportMatch): MatchTerm[] | undefined {
   const { definition } = source.mappings[0] as PreparedMapping;
@@ -582,7 +618,10 @@ function matchSql(terms: readonly MatchTerm[], bind: (value: string[]) => string
   return predicates.length === 0 ? 'false' : `(${predicates.join(' OR ')})`;
 }
 
-/** Up to `limit` rows of one table after the keyset position `after` and within `match`, each with its key values as text. */
+/**
+ * Up to `limit` rows of one table after the keyset position `after` and within `match`, each with its key values as text;
+ * `filters` keeps only rows of the listed keys.
+ */
 async function selectExportRows(
   tx: TenantTx,
   source: ExportSource,
@@ -590,6 +629,7 @@ async function selectExportRows(
   programId: number | undefined,
   match: readonly MatchTerm[] | undefined,
   limit: number,
+  filters: readonly KeyFilter[] | undefined,
 ): Promise<RepositoryRow[]> {
   const values: unknown[] = [tx.tenantId];
   const bind = (value: unknown): string => `$${String(values.push(value))}`;
@@ -600,6 +640,13 @@ async function selectExportRows(
     where.push(`(${source.orderExprs.join(', ')}) > (${params.join(', ')})`);
   }
   if (match !== undefined) where.push(matchSql(match, bind));
+  if (filters !== undefined) {
+    const matches = filters.map(({ columns, tuples }) => {
+      const rows = tuples.map((tuple) => `(${tuple.map(bind).join(', ')})`);
+      return `(${columns.map(ident).join(', ')}) IN (${rows.join(', ')})`;
+    });
+    where.push(`(${matches.join(' OR ')})`);
+  }
   const limitParam = bind(limit);
   const { rows } = await tx.query(
     `SELECT *, ARRAY[${source.keyColumns.map((name) => `(${ident(name)})::text`).join(', ')}] AS ${ident(EXPORT_CURSOR_COLUMN)}
@@ -607,8 +654,10 @@ async function selectExportRows(
       ORDER BY ${source.orderExprs.map((expr) => `${expr} NULLS FIRST`).join(', ')} LIMIT ${limitParam}`,
     values,
   ).catch((err: unknown) => {
-    // Column widths and NUL characters are beyond the canonical types; binding such a cursor value or programId raises SQLSTATE class 22.
-    throw (after !== undefined || programId !== undefined) && isDataException(err) ? new InvalidRequestError('export cursor key or programId does not fit its columns') : err;
+    // Column widths and NUL characters are beyond the canonical types; binding such a cursor value, programId or key raises SQLSTATE class 22.
+    throw (after !== undefined || programId !== undefined || filters !== undefined) && isDataException(err)
+      ? new InvalidRequestError('export cursor key, programId or keys do not fit their columns')
+      : err;
   });
   return rows;
 }
@@ -788,10 +837,11 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
     const tenantId = tenantOf(query);
     if (!unitSet.has(query.unit)) throw new InvalidRequestError(`${owner} declares no unit ${query.unit}`);
     const sources = sourcesByUnit.get(query.unit) ?? [];
-    const { programId } = query;
+    const { programId, keys } = query;
     if (programId !== undefined && sources.some((source) => !source.hasProgramColumn)) {
       throw new InvalidRequestError(`unit ${query.unit} is not folded from per-program tables`);
     }
+    const filters = keys === undefined ? undefined : sources.map((source) => keyFilters(source, keys));
     const start: ExportStart =
       query.after === undefined
         ? { index: 0, key: undefined, objects: undefined }
@@ -806,7 +856,7 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
       for (let index = start.index; index < sources.length && remaining > 0; index += 1) {
         const source = sources[index] as ExportSource;
         const match = query.match === undefined ? undefined : matchTerms(source, query.match);
-        const rows = await selectExportRows(tx, source, index === start.index ? start.key : undefined, programId, match, remaining);
+        const rows = await selectExportRows(tx, source, index === start.index ? start.key : undefined, programId, match, remaining, filters?.[index]);
         for (const { mapping } of source.mappings) {
           tables.push({
             unit: mapping.unit,
@@ -823,7 +873,8 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
       }
       const page: ExportResponse = { unit: query.unit, tenantId, tables, next: null };
       let objectsNext: string | null = null;
-      if (options.exportObjects !== undefined && (query.after === undefined || start.objects !== undefined)) {
+      // The manifest lists objects, not keyed rows, so a keyed page carries none.
+      if (options.exportObjects !== undefined && keys === undefined && (query.after === undefined || start.objects !== undefined)) {
         const scope = { unit: query.unit, tenantId, limit, ...(start.objects === undefined ? {} : { after: start.objects }) };
         const manifest = await options.exportObjects(tx, scope);
         if (Array.isArray(manifest)) {

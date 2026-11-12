@@ -220,6 +220,17 @@ describe('defaultRunner', () => {
     expect(error).toHaveProperty('stderr', expect.any(String));
   });
 
+  it('runs the child under exactly opts.env when given', async () => {
+    execFileSpy.mockClear();
+    const env = { OPT2_GIT_TEST_ENV: 'given' };
+    const script = "process.stdout.write(`${process.env.OPT2_GIT_TEST_ENV}:${process.env.PATH ?? 'no PATH'}`)";
+    await expect(defaultRunner(process.execPath, ['-e', script], { cwd: root, env })).resolves.toEqual({
+      stdout: 'given:no PATH',
+      stderr: '',
+    });
+    expect(execFileSpy.mock.calls[0]?.[2]).toEqual({ cwd: root, env, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, shell: false });
+  });
+
   it('defaults the deadline to ten minutes', () => {
     expect(DEFAULT_TIMEOUT_MS).toBe(10 * 60 * 1000);
   });

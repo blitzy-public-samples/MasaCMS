@@ -174,12 +174,17 @@ describe('CSRF and date fragments', () => {
     );
   });
 
-  it('prints the Site Manager updated cell with the session date mask', () => {
+  // ACF 2023 LSDateFormat/LSTimeFormat of 2026-11-10 09:06 after setLocale(locale).
+  it.each([
+    { locale: 'en_US', dateKeyFormat: 'MM/DD/YYYY', updated: '11/314/2026 9:06 AM', short: '11/10/26' },
+    { locale: 'de_DE', dateKeyFormat: 'DD.MM.YYYY', updated: '314.11.2026 09:06', short: '10.11.26' },
+    { locale: 'en_GB', dateKeyFormat: 'DD/MM/YYYY', updated: '314/11/2026 09:06', short: '10/11/2026' },
+  ])('prints the Site Manager updated cell with the $locale session date mask', ({ locale, dateKeyFormat, updated, short }) => {
     const lastUpdate = new Date(2026, 10, 10, 9, 6, 0);
-    expect(`${lsDateFormat(lastUpdate, 'MM/DD/YYYY')} ${lsTimeFormat(lastUpdate, 'short')}`).toBe('11/314/2026 9:06 AM');
-    expect(lsDateFormat(lastUpdate, 'short')).toBe('11/10/26');
-    expect(lsDateFormat(null, 'short')).toBe('');
-    expect(lsTimeFormat(null, 'short')).toBe('');
+    expect(`${lsDateFormat(lastUpdate, dateKeyFormat, locale)} ${lsTimeFormat(lastUpdate, 'short', locale)}`).toBe(updated);
+    expect(lsDateFormat(lastUpdate, 'short', locale)).toBe(short);
+    expect(lsDateFormat(null, 'short', locale)).toBe('');
+    expect(lsTimeFormat(null, 'short', locale)).toBe('');
   });
 });
 

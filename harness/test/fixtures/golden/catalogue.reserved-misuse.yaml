@@ -112,3 +112,105 @@ scenarios:
     normalisationOverrides: []
     covers:
       - "admin:cusers.update{type=2,action=update}"
+  - id: GS-PE-RH-04
+    title: Unlisted rehearsal-form id reading a reserved person
+    service: people
+    role: site-admin
+    sessions:
+      siteAdmin:
+        login: "seed:tenant-a:site-admin"
+        via: admin
+    seedRefs:
+      - as: rehearsalPerson
+        source: reserved
+        path: reserved.rehearsal.persons
+        index: 2
+    steps:
+      - name: form
+        method: GET
+        route: "/admin/?muraAction=cUsers.edituser&siteid=tenant-a&userid=${seed.rehearsalPerson}"
+        as: siteAdmin
+    compare:
+      - status
+      - dom
+    normalisationOverrides: []
+    covers:
+      - "admin:cusers.edituser"
+  - id: GS-FI-RH-01
+    title: Unlisted rehearsal-form id naming a reserved username
+    service: finance
+    role: finance.preparer
+    sessions:
+      preparer:
+        login: "seed:tenant-a:finance.preparer"
+        via: jsonapi
+    seedRefs: []
+    steps:
+      - name: create
+        method: POST
+        route: /legacy-fixtures/cfml/api.cfm/finance/records?siteid=tenant-a
+        as: preparer
+        csrf: "json-api:"
+        body:
+          title: Expenses of rehearsal-04
+          amount: "10.0000"
+          period: 2026-06
+    compare:
+      - status
+      - envelope
+    normalisationOverrides: []
+    covers:
+      - "fixture:finance/records@post"
+  - id: GS-ID-05
+    title: User search naming a reserved username in upper case
+    service: identity
+    role: admin
+    sessions:
+      admin:
+        login: admin
+        via: admin
+    seedRefs: []
+    steps:
+      - name: search
+        method: GET
+        route: /admin/?muraAction=cUsers.search&siteid=tenant-a&ispublic=0&search=REHEARSAL-05
+        as: admin
+    compare:
+      - status
+      - dom
+    normalisationOverrides: []
+    covers:
+      - "admin:cusers.search"
+  - id: GS-TS-01
+    title: Timesheet list selecting a reserved person through the dataset
+    service: timesheets
+    role: timesheets.primary-approver
+    sessions:
+      approver:
+        login: "seed:tenant-a:timesheets.primary-approver"
+        via: jsonapi
+    seedRefs:
+      - as: membership
+        source: dataset
+        path: masa.memberships
+        where:
+          groupname: timesheets.employee
+          groupSiteID: tenant-a
+        index: 0
+      - as: employee
+        source: dataset
+        path: masa.users
+        where:
+          userID: "${seed.membership.userID}"
+    steps:
+      - name: sheets
+        method: GET
+        route: "/legacy-fixtures/cfml/api.cfm/timesheets/sheets?siteid=tenant-a&person=${seed.employee.username}"
+        as: approver
+    compare:
+      - status
+      - envelope
+    normalisationOverrides: []
+    covers:
+      - "fixture:timesheets/sheets@get"
+

@@ -13,9 +13,14 @@ export const CATALOGUE_PATH: string = repoPath('harness/golden/catalogue.yaml');
 /** Scenario id form: `GS-<AREA>-NN`, or `GS-<AREA>-RH-NN` for a rollback-rehearsal scenario. */
 export const SCENARIO_ID_PATTERN = /^GS-[A-Z]+(-RH)?-\d{2}$/;
 
-/** Whether `id` names a rollback-rehearsal scenario (`GS-PE-RH-01` …). */
+/** The rollback-rehearsal scenarios: the only ones that replay under v0003 and may use the reserved identities. */
+export const REHEARSAL_SCENARIO_IDS = ['GS-PE-RH-01', 'GS-PE-RH-02', 'GS-PE-RH-03'] as const;
+
+const REHEARSAL_IDS: ReadonlySet<string> = new Set(REHEARSAL_SCENARIO_IDS);
+
+/** Whether `id` is one of {@link REHEARSAL_SCENARIO_IDS}. */
 export function isRehearsalScenario(id: string): boolean {
-  return id.includes('-RH-');
+  return REHEARSAL_IDS.has(id);
 }
 
 /** What a scenario compares between capture and replay. */
@@ -321,8 +326,9 @@ const rowSpec = z.strictObject({
   where: z
     .record(z.string().min(1), scalar)
     .refine((where) => Object.keys(where).length > 0, 'must bound the rows by at least one column'),
+  minRows: z.number().int().positive().optional(),
 });
-/** Legacy table whose canonical rows within `where` are compared. */
+/** Legacy table whose canonical rows within `where` are compared; a capture fails when legacy holds fewer than `minRows` there. */
 export type RowSpec = z.infer<typeof rowSpec>;
 
 const transitionSpec = z

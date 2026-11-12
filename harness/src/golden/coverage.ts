@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -11,17 +10,25 @@ import {
   type RouteKeyOptions,
   type RouteKeyRequest,
   type RouteKeyResult,
-  type VariantCondition,
-  type VariantDeclaration,
 } from '@opt2/platform/legacy-compat';
 import { z } from '@opt2/platform/service-kit';
-import { routeKeyCaseOptions } from '@opt2/platform/testing';
 import { CATALOGUE_PATH, isRehearsalScenario, loadCatalogue, type Scenario, type Step } from './catalogue.js';
-import { GoldenConfigError } from './errors.js';
-import { SEED_CONFIG_PATH, basicAuth, placeholderNames } from './session.js';
+import { GoldenConfigError, MissingSecretError } from './errors.js';
+import { defaultRouteKeyOptions } from './route-key-options.js';
+import {
+  SEED_CONFIG_PATH,
+  basicAuth,
+  loadSecretStore,
+  loadSeedStore,
+  placeholderNames,
+  type SeedStore,
+} from './session.js';
+import { catalogueSeedKeys, type SeedKeyStores } from './workload.js';
 import { isMainModule, parseFlags, runCli, UsageError, type CliOutcome } from '../lib/cli.js';
 import { repoPath, stateDir, type EnvLike } from '../lib/paths.js';
 import { readJson, stableStringify } from '../lib/report.js';
+
+export { VARIANTS_PATH, defaultRouteKeyOptions } from './route-key-options.js';
 
 /** Neutral CF UUID standing in for path segments and id-like placeholder values. */
 export const NEUTRAL_ID = '00000000-0000-0000-0000000000000000';
@@ -32,9 +39,6 @@ export const DEFAULT_VERSION_PATH: string = repoPath('gateway/cutover/versions/v
 /** Committed legacy inventory holding the admin controllers. */
 export const INVENTORY_PATH: string = repoPath('opt2/inventory/legacy-inventory.json');
 
-/** Committed variant declarations the gateway dispatches by. */
-export const VARIANTS_PATH: string = repoPath('gateway/cutover/variants.json');
-
 /** Finding kinds, in the order {@link checkCoverage} reports them. */
 export const FINDING_KINDS = [
   'unknown-cover',
@@ -43,6 +47,7 @@ export const FINDING_KINDS = [
   'uncovered-admin-action',
   'cover-not-exercised',
   'reserved-identity',
+  'unresolved-seed-ref',
 ] as const;
 export type CoverageFindingKind = (typeof FINDING_KINDS)[number];
 
@@ -53,7 +58,8 @@ export type CoverageFinding =
   | { kind: 'uncovered-legacy-write'; route: string }
   | { kind: 'uncovered-admin-action'; routeKey: string }
   | { kind: 'cover-not-exercised'; scenario: string; cover: string }
-  | { kind: 'reserved-identity'; scenario: string; value: string };
+  | { kind: 'reserved-identity'; scenario: string; value: string }
+  | { kind: 'unresolved-seed-ref'; scenario: string; message: string };
 
 const cutoverEntrySchema = z.object({
   route: z.string().min(1),
@@ -101,15 +107,19 @@ export interface ReservedRehearsal {
 
 /** The scenario fields the gate reads. */
 export type CoverageScenario = Pick<Scenario, 'id' | 'covers' | 'steps'> &
-  Partial<Pick<Scenario, 'seedRefs' | 'browser'>>;
+  Partial<Pick<Scenario, 'seedRefs' | 'browser' | 'sessions'>>;
 
-/** Everything {@link checkCoverage} checks; `options` default to {@link defaultRouteKeyOptions}. */
+/**
+ * Everything {@link checkCoverage} checks; `options` default to {@link defaultRouteKeyOptions}. `seedStores` resolve
+ * seedRefs and seeded role accounts; without them a scenario that has any reports `unresolved-seed-ref`.
+ */
 export interface CoverageInputs {
   scenarios: readonly CoverageScenario[];
   entries: readonly CutoverEntry[];
   controllers: readonly InventoryController[];
   reserved: ReservedRehearsal;
   options?: RouteKeyOptions;
+  seedStores?: SeedKeyStores;
 }
 
 /** The request fields of a step or candidate. */
@@ -118,39 +128,6 @@ export type StepRequest = Pick<Step, 'method' | 'route'> &
 
 /** A step as the gate expands it: its own request plus any capture candidates. */
 export type CoverageStep = StepRequest & Partial<Pick<Step, 'candidates'>>;
-
-const variantsFileSchema = z.object({
-  variants: z.array(
-    z.object({
-      route: z.string().min(1),
-      variant: z.string().min(1),
-      when: z.array(
-        z.custom<VariantCondition>(
-          (c) => typeof c === 'object' && c !== null && !Array.isArray(c),
-          'must be a condition',
-        ),
-      ),
-    }),
-  ),
-});
-
-let committedVariants: readonly VariantDeclaration[] | undefined;
-
-function readCommittedVariants(): readonly VariantDeclaration[] {
-  if (committedVariants === undefined) {
-    const parsed = variantsFileSchema.safeParse(JSON.parse(readFileSync(VARIANTS_PATH, 'utf8')));
-    if (!parsed.success) {
-      throw new GoldenConfigError(`${VARIANTS_PATH}: ${z.prettifyError(parsed.error)}`, { path: VARIANTS_PATH });
-    }
-    committedVariants = parsed.data.variants;
-  }
-  return committedVariants;
-}
-
-/** The shared route-key case registries (sites, remote functions) with the committed variants. */
-export function defaultRouteKeyOptions(): RouteKeyOptions {
-  return { ...routeKeyCaseOptions, variants: readCommittedVariants() };
-}
 
 // ---- Step → route-key request ----
 
@@ -428,22 +405,76 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** Reserved identities `scenario` references: person ids in any case, with or without dashes; usernames as tokens. */
-function reservedReferences(scenario: CoverageScenario, reserved: ReservedRehearsal): string[] {
-  const strings = stringsOf(scenario);
+function notLoaded(what: string): never {
+  throw new GoldenConfigError(`${what}: no seed dataset or credentials are loaded`);
+}
+
+/** Stores that resolve nothing, so a scenario with seedRefs or seeded role accounts reports them unresolved. */
+const UNLOADED_STORES: SeedKeyStores = {
+  seed: { select: (ref) => notLoaded(`seedRef ${ref.as}`), businessDate: () => notLoaded('${asOf}') },
+  secrets: {
+    secret: (name) => notLoaded(`\${secret:${name}}`),
+    username: (site, role) => notLoaded(`\${user:${site}:${role}}`),
+    values: () => [],
+  },
+  env: {},
+};
+
+/** How text refers to the reserved identities; each pattern carries the identity it reports. */
+interface ReservedMatcher {
+  /** Person ids, lower-cased with and without dashes. */
+  persons: ReadonlyArray<{ value: string; forms: readonly string[] }>;
+  /** Usernames as whole case-insensitive tokens, as legacy compares them. */
+  tokens: ReadonlyArray<{ value: string; token: RegExp }>;
+}
+
+/** Username the dataset holds for reserved person `person`; none when the dataset lacks the person or is unreadable. */
+function datasetUsername(person: string, seed: SeedStore): string[] {
+  try {
+    const row = seed.select({ as: 'reservedPerson', source: 'dataset', path: 'masa.users', where: { userID: person } });
+    const username = typeof row === 'object' && row !== null ? (row as Record<string, unknown>).username : undefined;
+    return typeof username === 'string' && username !== '' ? [username] : [];
+  } catch (err) {
+    if (err instanceof GoldenConfigError) return [];
+    throw err;
+  }
+}
+
+/** Matcher of `reserved`; a reserved person's dataset username reports as that person. */
+function reservedMatcher(reserved: ReservedRehearsal, stores: SeedKeyStores): ReservedMatcher {
+  const token = (value: string, username: string): { value: string; token: RegExp } => ({
+    value,
+    token: new RegExp(`(?<![\\w-])${escapeRegExp(username)}(?![\\w-])`, 'i'),
+  });
+  return {
+    persons: reserved.persons.map((value) => ({
+      value,
+      forms: [value.toLowerCase(), value.replaceAll('-', '').toLowerCase()],
+    })),
+    tokens: [
+      ...reserved.usernames.map((username) => token(username, username)),
+      ...reserved.persons.flatMap((person) => datasetUsername(person, stores.seed).map((name) => token(person, name))),
+    ],
+  };
+}
+
+/** Reserved identities among `strings`, plus the `reserved.rehearsal` seedRefs of `scenario`. */
+function reservedReferences(
+  scenario: CoverageScenario,
+  strings: readonly string[],
+  matcher: ReservedMatcher,
+): string[] {
   const lower = strings.map((s) => s.toLowerCase());
   const found = new Set<string>();
   // A reserved seedRef binds a rehearsal identity without spelling it out.
   for (const ref of scenario.seedRefs ?? []) {
     if (ref.source === 'reserved' && ref.path.startsWith('reserved.rehearsal')) found.add(ref.path);
   }
-  for (const person of reserved.persons) {
-    const forms = [person.toLowerCase(), person.replaceAll('-', '').toLowerCase()];
-    if (lower.some((s) => forms.some((form) => s.includes(form)))) found.add(person);
+  for (const { value, forms } of matcher.persons) {
+    if (lower.some((s) => forms.some((form) => s.includes(form)))) found.add(value);
   }
-  for (const username of reserved.usernames) {
-    const token = new RegExp(`(?<![\\w-])${escapeRegExp(username)}(?![\\w-])`);
-    if (strings.some((s) => token.test(s))) found.add(username);
+  for (const { value, token } of matcher.tokens) {
+    if (strings.some((s) => token.test(s))) found.add(value);
   }
   return [...found];
 }
@@ -457,8 +488,9 @@ function unexercisedCovers(scenario: CoverageScenario, opts: RouteKeyOptions): s
 /**
  * Every coverage gap, none short-circuiting: covers that match no cut-over entry (error keys aside); `target`
  * entries (bar the stub's and static entries the gateway or web serves itself), `legacy-write` entries and carried
- * admin actions no cover matches; covers no step of a non-browser scenario exercises; and reserved rehearsal
- * identities outside `GS-*-RH-*`.
+ * admin actions no cover matches; covers no step of a non-browser scenario exercises; reserved rehearsal identities a
+ * scenario outside `REHEARSAL_SCENARIO_IDS` names or selects through its seedRefs and seeded role accounts; and
+ * such selections that do not resolve.
  */
 export function checkCoverage(inputs: CoverageInputs): CoverageFinding[] {
   const opts = inputs.options ?? defaultRouteKeyOptions();
@@ -502,12 +534,24 @@ export function checkCoverage(inputs: CoverageInputs): CoverageFinding[] {
       findings.push({ kind: 'cover-not-exercised', scenario: scenario.id, cover });
     }
   }
+  const stores = inputs.seedStores ?? UNLOADED_STORES;
+  const matcher = reservedMatcher(inputs.reserved, stores);
+  const unresolved: CoverageFinding[] = [];
   for (const scenario of inputs.scenarios) {
     if (isRehearsalScenario(scenario.id)) continue;
-    for (const value of reservedReferences(scenario, inputs.reserved)) {
+    const strings = stringsOf(scenario);
+    const selecting = { ...scenario, sessions: scenario.sessions ?? {} };
+    try {
+      for (const key of catalogueSeedKeys([selecting], stores)) strings.push(key);
+    } catch (err) {
+      if (!(err instanceof GoldenConfigError || err instanceof MissingSecretError)) throw err;
+      unresolved.push({ kind: 'unresolved-seed-ref', scenario: scenario.id, message: err.message });
+    }
+    for (const value of reservedReferences(scenario, strings, matcher)) {
       findings.push({ kind: 'reserved-identity', scenario: scenario.id, value });
     }
   }
+  findings.push(...unresolved);
   return findings;
 }
 
@@ -528,8 +572,14 @@ export interface CoveragePaths {
   seedConfig?: string;
 }
 
-/** Reads and validates the catalogue, cut-over version, inventory controllers and reserved rehearsal identities. */
-export async function loadCoverageInputs(paths: CoveragePaths = {}): Promise<CoverageInputs> {
+/**
+ * Reads and validates the catalogue, cut-over version, inventory controllers and reserved rehearsal identities; the
+ * seed stores read `${OPT2_STATE_DIR}` seed dataset and credentials on first use.
+ */
+export async function loadCoverageInputs(
+  paths: CoveragePaths = {},
+  env: EnvLike = process.env,
+): Promise<CoverageInputs> {
   const [catalogue, version, inventory, seed] = await Promise.all([
     loadCatalogue(paths.catalogue ?? CATALOGUE_PATH),
     readJson(paths.version ?? DEFAULT_VERSION_PATH, versionSchema),
@@ -541,6 +591,7 @@ export async function loadCoverageInputs(paths: CoveragePaths = {}): Promise<Cov
     entries: version.entries,
     controllers: inventory.controllers,
     reserved: seed.reserved.rehearsal,
+    seedStores: { seed: loadSeedStore(env, { configPath: paths.seedConfig }), secrets: loadSecretStore(env), env },
   };
 }
 
@@ -549,27 +600,38 @@ function describeFinding(finding: CoverageFinding): string {
   return `${kind} ${Object.values(fields).join(' ')}`;
 }
 
-const USAGE = 'usage: tsx src/golden/coverage.ts [--version <cut-over version json>] [--catalogue <catalogue yaml>]';
+const USAGE =
+  'usage: tsx src/golden/coverage.ts [--version <cut-over version json>] [--catalogue <catalogue yaml>] ' +
+  '[--seed-config <seed config json>]';
 const HELP = `${USAGE}
 
 Checks that golden-scenario covers reach every target and legacy-write entry of the cut-over version and every
-carried admin action, that each cover is exercised by a step, and that only GS-*-RH-* scenarios use the reserved
-rehearsal identities. Writes \${OPT2_STATE_DIR}/golden/coverage.json; exits 1 on any finding.`;
+carried admin action, that each cover is exercised by a step, and that no scenario but GS-PE-RH-01, GS-PE-RH-02 and
+GS-PE-RH-03 names or selects a reserved rehearsal identity (--seed-config, default
+legacy-fixtures/seed/seed.config.json). SeedRefs and seeded role accounts resolve against
+\${OPT2_STATE_DIR}/seed/dataset.json and \${OPT2_STATE_DIR}/secrets/seed-credentials.json; one that does not resolve
+is a finding. Writes \${OPT2_STATE_DIR}/golden/coverage.json; exits 1 on any finding.`;
 
 /** CLI entry: writes `<state>/golden/coverage.json` and exits 1 when any finding exists. */
 export async function main(argv: string[], env: EnvLike = process.env): Promise<CliOutcome> {
   const { values } = parseFlags(argv, {
-    options: { version: { type: 'string' }, catalogue: { type: 'string' } },
+    options: { version: { type: 'string' }, catalogue: { type: 'string' }, 'seed-config': { type: 'string' } },
     usage: USAGE,
     help: HELP,
   });
   if (values.version === '') throw new UsageError('--version needs a path', USAGE);
   if (values.catalogue === '') throw new UsageError('--catalogue needs a path', USAGE);
+  if (values['seed-config'] === '') throw new UsageError('--seed-config needs a path', USAGE);
   const report = path.join(stateDir(env), 'golden', 'coverage.json');
-  const inputs = await loadCoverageInputs({
-    version: values.version === undefined ? undefined : path.resolve(values.version),
-    catalogue: values.catalogue === undefined ? undefined : path.resolve(values.catalogue),
-  });
+  const seedConfig = values['seed-config'];
+  const inputs = await loadCoverageInputs(
+    {
+      version: values.version === undefined ? undefined : path.resolve(values.version),
+      catalogue: values.catalogue === undefined ? undefined : path.resolve(values.catalogue),
+      seedConfig: seedConfig === undefined ? undefined : path.resolve(seedConfig),
+    },
+    env,
+  );
   const findings = checkCoverage(inputs);
   const byKind = countByKind(findings);
   const counts = {

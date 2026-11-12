@@ -140,6 +140,78 @@ describe('cfLsDateFormat', () => {
   ])('renders $mask as $expected for en_US', ({ mask, date, expected }) => {
     expect(cfLsDateFormat(date, mask)).toBe(expected);
   });
+
+  // ACF 2023 LSDateFormat(date, mask) after setLocale(locale).
+  const MAR = new Date(2026, 2, 2, 9, 6);
+  const SEP = new Date(2026, 8, 9);
+  const OCT = new Date(2026, 9, 29, 15, 4, 5);
+
+  it.each([
+    { locale: 'en_US', mask: 'long', date: OCT, expected: 'October 29, 2026' },
+    { locale: 'en_us', mask: 'MM/DD/YYYY', date: OCT, expected: '10/302/2026' },
+    { locale: 'agq_CM_#Latn', mask: 'dd mmm yyyy', date: OCT, expected: '29 Oct 2026' },
+    { locale: 'de_DE', mask: 'short', date: OCT, expected: '29.10.26' },
+    { locale: 'de_DE', mask: 'medium', date: OCT, expected: '29.10.2026' },
+    { locale: 'de_DE', mask: 'long', date: MAR, expected: '2. März 2026' },
+    { locale: 'de_DE', mask: 'full', date: OCT, expected: 'Donnerstag, 29. Oktober 2026' },
+    { locale: 'de_DE', mask: 'MM/DD/YYYY', date: OCT, expected: '10/302/2026' },
+    { locale: 'de_DE', mask: 'DD.MM.YYYY', date: OCT, expected: '302.10.2026' },
+    { locale: 'de_DE', mask: "'mmm' dd", date: OCT, expected: 'mmm 29' },
+    { locale: 'German (Standard)', mask: 'SHORT', date: SEP, expected: '09.09.26' },
+    { locale: 'en_GB', mask: 'short', date: OCT, expected: '29/10/2026' },
+    { locale: 'en_GB', mask: 'medium', date: SEP, expected: '9 Sept 2026' },
+    { locale: 'en_GB', mask: 'long', date: OCT, expected: '29 October 2026' },
+    { locale: 'English (UK)', mask: 'FULL', date: MAR, expected: 'Monday, 2 March 2026' },
+    { locale: 'en_GB', mask: 'DD/MM/YYYY', date: OCT, expected: '302/10/2026' },
+    { locale: 'en_CA', mask: 'short', date: OCT, expected: '2026-10-29' },
+    { locale: 'fa_IR', mask: 'MM/DD/YYYY', date: OCT, expected: '\u06f1\u06f0/\u06f3\u06f0\u06f2/\u06f2\u06f0\u06f2\u06f6' },
+    { locale: 'fa_IR', mask: 'iso', date: OCT, expected: '\u06f2\u06f0\u06f2\u06f6-\u06f1\u06f0-\u06f2\u06f9' },
+    { locale: 'ar_EG', mask: 'short', date: OCT, expected: '\u0662\u0669\u200f/\u0661\u0660\u200f/\u0662\u0660\u0662\u0666' },
+    { locale: 'ru_RU', mask: 'long', date: OCT, expected: '29 октября 2026 г.' },
+    { locale: 'zh_CN', mask: 'full', date: OCT, expected: '2026年10月29日星期四' },
+    { locale: 'th_TH', mask: 'full', date: OCT, expected: 'วันพฤหัสบดีที่ 29 ตุลาคม ค.ศ. 2026' },
+    { locale: 'ja_JP_JP_#u-ca-japanese', mask: 'full', date: OCT, expected: '2026年10月29日' },
+    { locale: 'Norwegian (Nynorsk)', mask: 'full', date: MAR, expected: 'mandag 2. mars 2026' },
+  ])('renders $mask in $locale as $expected', ({ locale, mask, date, expected }) => {
+    expect(cfLsDateFormat(date, mask, locale)).toBe(expected);
+  });
+
+  it.each([
+    { locale: 'en_US', mask: 'dd.mm.yyyy', instant: -61336051200000, expected: '06.05.0026' },
+    { locale: 'en_US', mask: 'short', instant: -61336051200000, expected: '5/6/26' },
+    { locale: 'English (US)', mask: 'full', instant: -14827400100000, expected: 'Tuesday, February 11, 1500' },
+    { locale: 'en_US', mask: 'medium', instant: -12219379200000, expected: 'Oct 4, 1582' },
+    { locale: 'en_US', mask: 'MM/DD/YYYY', instant: -12219292800000, expected: '10/278/1582' },
+    { locale: 'en_US_POSIX', mask: 'iso', instant: -59011459200000, expected: '0100-01-03' },
+    { locale: 'en_US', mask: 'long', instant: -62198755200000, expected: 'January 3, 2' },
+    { locale: 'en_US', mask: 'yy', instant: -62198755200000, expected: '02' },
+    { locale: 'en_US', mask: 'gg', instant: -62198755200000, expected: 'BC' },
+    { locale: 'English (US)', mask: 'dd mmm yyyy', instant: -62152833600000, expected: '17 Jun 0001' },
+    { locale: 'en_VI', mask: 'full', instant: -2208988801000, expected: 'Sunday, December 31, 1899' },
+    { locale: 'en_US', mask: 'short', instant: -2208988800000, expected: '1/1/00' },
+    { locale: 'en_US', mask: 'long', instant: 253402214400000, expected: 'December 31, 9999' },
+    { locale: 'de_DE', mask: 'dd.mm.yyyy', instant: -61336051200000, expected: '06.05.0026' },
+    { locale: 'de_DE', mask: 'full', instant: -14827400100000, expected: 'Dienstag, 11. Februar 1500' },
+    { locale: 'de_DE', mask: 'iso', instant: -12219292800000, expected: '1582-10-15' },
+    { locale: 'th_TH', mask: 'full', instant: -62198755200000, expected: 'วันศุกร์ที่ 3 มกราคม ก่อน ค.ศ. 2' },
+    { locale: 'th_TH_TH_#u-nu-thai', mask: 'full', instant: -62198755200000, expected: 'วันศุกร์ที่ 3 มกราคม ก่อน ค.ศ. 0002' },
+  ])('renders $instant in $locale from the Java calendar as $expected', ({ locale, mask, instant, expected }) => {
+    expect(withZone('UTC', () => cfLsDateFormat(new Date(instant), mask, locale))).toBe(expected);
+  });
+
+  it.each(['xx_YY', 'iw_IL'])('rejects %s as setLocale does', (locale) => {
+    expect(() => cfLsDateFormat(OCT, 'short', locale)).toThrow(
+      new RangeError(`${locale} must be one of the ColdFusion supported locales.`),
+    );
+  });
+
+  it.each(['mmm', 'mmmm', 'ddd', 'dddd', 'gg', 'e', 'dd mmm yyyy'])('rejects the de_DE text mask %s', (mask) => {
+    expect(() => cfLsDateFormat(OCT, mask, 'de_DE')).toThrow(RangeError);
+  });
+
+  it('rejects an invalid date in a locale', () => {
+    expect(() => cfLsDateFormat(new Date(Number.NaN), 'short', 'de_DE')).toThrow(new RangeError('Invalid date'));
+  });
 });
 
 describe('cfJavaDateFormat, cfHour and cfMinute', () => {

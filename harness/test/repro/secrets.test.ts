@@ -1,8 +1,21 @@
-import { createPrivateKey, createPublicKey, sign, verify } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFile, spawnSync } from 'node:child_process';
+import { createPrivateKey, createPublicKey, generateKeyPairSync, sign, verify } from 'node:crypto';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+  type PathLike,
+} from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LOCAL_SECRET_FILES, loadLocalSigningKeys, localSecretPath } from '@opt2/platform/auth';
 
@@ -10,11 +23,50 @@ import { runCli } from '../../src/lib/cli.js';
 import { HARNESS_ROOT, REPO_ROOT, type EnvLike } from '../../src/lib/paths.js';
 import { DB_SCHEMAS, SECRET_FILES, ensureLocalSecrets, main, readSecret } from '../../src/repro/secrets.js';
 
+/** The next call of `op` whose last argument ends with `target` (any call when unset) throws EIO. */
+const fault = vi.hoisted(() => ({ op: undefined as string | undefined, target: undefined as string | undefined }));
+/** Runs once, just before the next renameSync whose source ends with `source`. */
+const beforeRename = vi.hoisted(() => ({ source: undefined as string | undefined, run: (): void => undefined }));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const fs = await importOriginal<typeof import('node:fs')>();
+  const inject = (op: string, arg: unknown): void => {
+    if (fault.op !== op || (fault.target !== undefined && !String(arg).endsWith(fault.target))) return;
+    fault.op = undefined;
+    throw Object.assign(new Error(`injected ${op} failure`), { code: 'EIO' });
+  };
+  return {
+    ...fs,
+    fsyncSync: (fd: number): void => {
+      inject('fsyncSync', fd);
+      fs.fsyncSync(fd);
+    },
+    linkSync: (existing: PathLike, link: PathLike): void => {
+      inject('linkSync', link);
+      fs.linkSync(existing, link);
+    },
+    renameSync: (from: PathLike, to: PathLike): void => {
+      inject('renameSync', to);
+      if (beforeRename.source !== undefined && String(from).endsWith(beforeRename.source)) {
+        beforeRename.source = undefined;
+        beforeRename.run();
+      }
+      fs.renameSync(from, to);
+    },
+  };
+});
+
 const COMMAND = 'repro:secrets';
 const PRIVATE_PEM = LOCAL_SECRET_FILES.tokenSigningPrivateKey;
 const PUBLIC_PEM = LOCAL_SECRET_FILES.tokenSigningPublicKey;
 const PEM_PAIR = [PRIVATE_PEM, PUBLIC_PEM] as const;
+const RANDOM_NAMES = SECRET_FILES.filter((name) => !(PEM_PAIR as readonly string[]).includes(name));
 const RANDOM_HEX = /^[0-9a-f]{64}$/;
+const LOCK_NAME = '.secrets.lock';
+const HEX16 = '0123456789abcdef';
+const TSX = path.join(HARNESS_ROOT, 'node_modules', '.bin', 'tsx');
+const SCRIPT = 'harness/src/repro/secrets.ts';
+const execFileAsync = promisify(execFile);
 
 let root: string;
 let state: string;
@@ -27,12 +79,53 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  fault.op = undefined;
+  fault.target = undefined;
+  beforeRename.source = undefined;
   vi.restoreAllMocks();
   await rm(root, { recursive: true, force: true });
 });
 
-function secretsOf(dir: string): Map<string, string> {
-  return new Map(SECRET_FILES.map((name) => [name, readFileSync(path.join(dir, name), 'utf8')]));
+/** Asserts `dir` holds exactly the catalogue, owner-only, with a matching key pair and 64-hex random values. */
+function expectCompleteSecrets(dir: string): void {
+  expect(readdirSync(dir).sort()).toEqual([...SECRET_FILES]);
+  expect(modeOf(dir)).toBe(0o700);
+  const secrets = secretsOf(dir);
+  const privateKey = createPrivateKey(secrets.get(PRIVATE_PEM) ?? '');
+  expect(createPublicKey(privateKey).export({ type: 'spki', format: 'pem' })).toBe(secrets.get(PUBLIC_PEM));
+  for (const name of SECRET_FILES) {
+    expect(modeOf(path.join(dir, name)), name).toBe(0o600);
+  }
+  for (const name of RANDOM_NAMES) {
+    expect(secrets.get(name), name).toMatch(RANDOM_HEX);
+  }
+}
+
+/** Pid of a child process that has already exited and been reaped. */
+function exitedPid(): number {
+  const { pid } = spawnSync(process.execPath, ['-e', '']);
+  expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }));
+  return pid;
+}
+
+/** Creates `dir` with a lock directory holding the holder `entry`, or none; returns the lock's path. */
+function seedLock(dir: string, entry?: string): string {
+  const lock = path.join(dir, LOCK_NAME);
+  mkdirSync(lock, { recursive: true, mode: 0o700 });
+  if (entry !== undefined) writeFileSync(path.join(lock, entry), '');
+  return lock;
+}
+
+async function waitFor(condition: () => boolean, what: string): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+function secretsOf(dir: string, names: readonly string[] = SECRET_FILES): Map<string, string> {
+  return new Map(names.map((name) => [name, readFileSync(path.join(dir, name), 'utf8')]));
 }
 
 function modeOf(file: string): number {
@@ -192,6 +285,226 @@ describe('ensureLocalSecrets', () => {
     }
   });
 
+  it.each([
+    { label: 'nothing', name: 'bridge-hmac-key', content: '' },
+    { label: 'only whitespace', name: LOCAL_SECRET_FILES.pubsubPushKey, content: ' \n' },
+    { label: 'a truncated hex value', name: 'db-people-app', content: '0f1e2d3c4b5a' },
+    { label: '63 hex digits', name: 'storage-hmac-key', content: `${'a'.repeat(63)}\n` },
+  ])('replaces $name holding $label and keeps every other file', ({ name, content }) => {
+    const { dir } = ensureLocalSecrets({ env });
+    writeFileSync(path.join(dir, name), content);
+    const before = secretsOf(dir);
+
+    expect(ensureLocalSecrets({ env })).toEqual({ dir, created: [name], kept: SECRET_FILES.filter((n) => n !== name) });
+    const after = secretsOf(dir);
+    expect(after.get(name)).toMatch(RANDOM_HEX);
+    expect(modeOf(path.join(dir, name))).toBe(0o600);
+    for (const other of SECRET_FILES.filter((n) => n !== name)) {
+      expect(after.get(other), other).toBe(before.get(other));
+    }
+  });
+
+  it.each([
+    { label: 'an operator-chosen password', content: 'Operator chosen password 1!\n' },
+    { label: '64 hex digits and a newline', content: `${'b'.repeat(64)}\n` },
+    { label: 'uppercase hex', content: 'ABCDEF' },
+  ])('keeps a random secret holding $label byte for byte', ({ content }) => {
+    const { dir } = ensureLocalSecrets({ env });
+    writeFileSync(path.join(dir, 'db-gateway-app'), content);
+
+    expect(ensureLocalSecrets({ env })).toEqual({ dir, created: [], kept: [...SECRET_FILES] });
+    expect(readFileSync(path.join(dir, 'db-gateway-app'), 'utf8')).toBe(content);
+  });
+
+  it.each([
+    {
+      label: 'the public key of another pair',
+      file: PUBLIC_PEM,
+      content: () =>
+        generateKeyPairSync('rsa', {
+          modulusLength: 2048,
+          publicKeyEncoding: { type: 'spki', format: 'pem' },
+          privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+        }).publicKey,
+    },
+    {
+      label: 'a truncated private key',
+      file: PRIVATE_PEM,
+      content: (pem: string) => pem.slice(0, Math.floor(pem.length / 2)),
+    },
+    { label: 'nothing', file: PUBLIC_PEM, content: () => '' },
+    { label: 'text that is not a key', file: PRIVATE_PEM, content: () => 'not a key\n' },
+  ])('regenerates both halves when $file holds $label', ({ file, content }) => {
+    const { dir } = ensureLocalSecrets({ env });
+    const before = secretsOf(dir);
+    writeFileSync(path.join(dir, file), content(before.get(file) ?? ''));
+
+    expect(ensureLocalSecrets({ env })).toEqual({ dir, created: [...PEM_PAIR].sort(), kept: RANDOM_NAMES });
+    expectCompleteSecrets(dir);
+    const after = secretsOf(dir);
+    for (const half of PEM_PAIR) {
+      expect(after.get(half), half).not.toBe(before.get(half));
+    }
+    for (const name of RANDOM_NAMES) {
+      expect(after.get(name), name).toBe(before.get(name));
+    }
+  });
+
+  it.each([
+    { label: 'an exited process', entry: (): string | undefined => `${String(exitedPid())}.${HEX16}` },
+    { label: 'no holder', entry: (): string | undefined => undefined },
+    { label: 'no pid', entry: (): string | undefined => 'holder' },
+    { label: 'a pid beyond the kernel range', entry: (): string | undefined => `99999999999.${HEX16}` },
+  ])('takes over a lock naming $label and releases it afterwards', ({ entry }) => {
+    const dir = path.join(root, 'stale');
+    seedLock(dir, entry());
+
+    expect(ensureLocalSecrets({ dir })).toEqual({ dir, created: [...SECRET_FILES], kept: [] });
+    expectCompleteSecrets(dir);
+  });
+
+  it('fails naming the lock when a live process holds it past the wait, writing nothing', () => {
+    const dir = path.join(root, 'held');
+    const holder = `${String(process.ppid)}.${HEX16}`;
+    const lock = seedLock(dir, holder);
+    // Deadline taken at 0, one poll still inside it, the next past it.
+    vi.spyOn(performance, 'now')
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(Number.POSITIVE_INFINITY);
+
+    expect(() => ensureLocalSecrets({ dir })).toThrow(
+      `secrets lock ${lock} is still held by pid ${String(process.ppid)} after 30000 ms`,
+    );
+    expect(readdirSync(dir)).toEqual([LOCK_NAME]);
+    expect(readdirSync(lock)).toEqual([holder]);
+  });
+
+  it('keeps waiting, touching nothing, when a live holder took the lock after it judged the last stale', () => {
+    const dir = path.join(root, 'swapped');
+    const stale = `${String(exitedPid())}.${HEX16}`;
+    const lock = seedLock(dir, stale);
+    const live = `${String(process.ppid)}.${HEX16}`;
+    let taken = 0;
+    // Another waiter displaces the stale holder and publishes its own lock between this one's judgement and its move.
+    Object.assign(beforeRename, {
+      source: stale,
+      run: (): void => {
+        rmSync(path.join(lock, stale));
+        const other = path.join(root, 'other-waiter');
+        mkdirSync(other);
+        writeFileSync(path.join(other, live), '');
+        taken = statSync(other).ino;
+        renameSync(other, lock);
+      },
+    });
+    const sleep = vi.spyOn(Atomics, 'wait');
+    vi.spyOn(performance, 'now')
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(Number.POSITIVE_INFINITY);
+
+    expect(() => ensureLocalSecrets({ dir })).toThrow(
+      `secrets lock ${lock} is still held by pid ${String(process.ppid)} after 30000 ms`,
+    );
+    expect(beforeRename.source).toBeUndefined();
+    expect(sleep).toHaveBeenCalledOnce();
+    expect(readdirSync(dir)).toEqual([LOCK_NAME]);
+    expect(statSync(lock).ino).toBe(taken);
+    expect(readdirSync(lock)).toEqual([live]);
+  });
+
+  it('takes the lock when another waiter has already displaced the stale holder it judged', () => {
+    const dir = path.join(root, 'displaced');
+    const stale = `${String(exitedPid())}.${HEX16}`;
+    const lock = seedLock(dir, stale);
+    Object.assign(beforeRename, { source: stale, run: (): void => rmSync(path.join(lock, stale)) });
+
+    expect(ensureLocalSecrets({ dir })).toEqual({ dir, created: [...SECRET_FILES], kept: [] });
+    expect(beforeRename.source).toBeUndefined();
+    expectCompleteSecrets(dir);
+  });
+
+  it('removes what an exited writer staged or displaced and keeps every other file', () => {
+    const dir = path.join(root, 'sweep');
+    mkdirSync(dir, { mode: 0o700 });
+    const dead = String(exitedPid());
+    const stale = [
+      `.bridge-hmac-key.${dead}.${HEX16}.tmp`,
+      `.${LOCK_NAME}.${dead}.${HEX16}.tmp`,
+      `.db-stub-app.0.${HEX16}.tmp`,
+    ];
+    const others = [`.db-people-app.${String(process.ppid)}.${HEX16}.tmp`, `.notes.${dead}.${HEX16}.tmp`, 'notes.txt'];
+    for (const name of [...stale, ...others]) writeFileSync(path.join(dir, name), 'partial');
+    const stagedLock = path.join(dir, `.${LOCK_NAME}.${dead}.${'f'.repeat(16)}.tmp`);
+    mkdirSync(stagedLock);
+    writeFileSync(path.join(stagedLock, `${dead}.${HEX16}`), '');
+
+    ensureLocalSecrets({ dir });
+
+    expect(readdirSync(dir).sort()).toEqual([...SECRET_FILES, ...others].sort());
+  });
+
+  it.each([
+    {
+      label: 'moving the staged lock into place fails',
+      fail: { op: 'renameSync', target: LOCK_NAME },
+      prepare: (): void => undefined,
+      present: [] as string[],
+    },
+    {
+      label: 'flushing the staged private key fails',
+      fail: { op: 'fsyncSync', target: undefined },
+      prepare: (): void => undefined,
+      present: [] as string[],
+    },
+    {
+      label: 'linking a new bridge-hmac-key fails',
+      fail: { op: 'linkSync', target: 'bridge-hmac-key' },
+      prepare: (): void => undefined,
+      present: [...PEM_PAIR, LOCAL_SECRET_FILES.pubsubPushKey, 'storage-hmac-key'],
+    },
+    {
+      label: 'renaming over an empty bridge-hmac-key fails',
+      fail: { op: 'renameSync', target: 'bridge-hmac-key' },
+      prepare: (dir: string): void => {
+        ensureLocalSecrets({ dir });
+        writeFileSync(path.join(dir, 'bridge-hmac-key'), '');
+      },
+      present: [...SECRET_FILES],
+    },
+    {
+      label: 'a secret path is a directory',
+      fail: { op: undefined, target: undefined },
+      prepare: (dir: string): void => {
+        mkdirSync(path.join(dir, 'bridge-hmac-key'), { recursive: true });
+      },
+      present: [...PEM_PAIR, LOCAL_SECRET_FILES.pubsubPushKey, 'storage-hmac-key', 'bridge-hmac-key'],
+    },
+  ])('leaves no lock, staging file or partial secret when $label, and the next run completes', (testCase) => {
+    const { fail, prepare, present } = testCase;
+    const dir = path.join(root, 'faults');
+    prepare(dir);
+    Object.assign(fault, fail);
+
+    expect(() => ensureLocalSecrets({ dir })).toThrow(fail.op === undefined ? /EISDIR/ : `injected ${fail.op} failure`);
+    expect(readdirSync(dir).sort()).toEqual([...present].sort());
+    const left = secretsOf(dir, present.filter((name) => statSync(path.join(dir, name)).isFile()));
+    if (left.has(PRIVATE_PEM)) {
+      const derived = createPublicKey(left.get(PRIVATE_PEM) ?? '').export({ type: 'spki', format: 'pem' });
+      expect(derived).toBe(left.get(PUBLIC_PEM));
+    }
+    for (const name of RANDOM_NAMES.filter((n) => left.has(n))) {
+      expect(left.get(name), name).toMatch(/^(?:[0-9a-f]{64})?$/);
+    }
+
+    // Only the directory needs repair by hand; the rerun recovers every other failure itself.
+    const bridge = path.join(dir, 'bridge-hmac-key');
+    if (statSync(bridge, { throwIfNoEntry: false })?.isDirectory() === true) rmSync(bridge, { recursive: true });
+    ensureLocalSecrets({ dir });
+    expectCompleteSecrets(dir);
+  });
+
   it('tightens an existing secrets directory to owner-only', () => {
     const dir = path.join(state, 'secrets');
     mkdirSync(dir, { recursive: true, mode: 0o755 });
@@ -310,6 +623,38 @@ describe('repro:secrets CLI', () => {
     expect(JSON.parse(stdout)).toMatchObject({ dir, created: [...SECRET_FILES] });
     expect(existsSync(state)).toBe(false);
   });
+
+  it.each([
+    { label: 'releases it', stale: false },
+    { label: 'leaves it stale', stale: true },
+  ])('serialises processes queued on a holder that $label: one creates all, the rest keep all', async ({ stale }) => {
+    const dir = path.join(root, 'race');
+    const holder = `${String(process.pid)}.${HEX16}`;
+    const exited = `${String(exitedPid())}.${HEX16}`;
+    // Held by this process until every child has queued, so all of them contend for it at once.
+    const lock = seedLock(dir, holder);
+    const runs = Array.from({ length: 6 }, () =>
+      execFileAsync(TSX, [path.join(REPO_ROOT, SCRIPT), '--dir', dir], { cwd: HARNESS_ROOT, encoding: 'utf8' }),
+    );
+    const settled = Promise.allSettled(runs);
+    try {
+      const queued = (): number => readdirSync(dir).filter((name) => name.startsWith(`.${LOCK_NAME}.`)).length;
+      await waitFor(() => queued() === runs.length, 'every process to wait on the lock');
+    } finally {
+      // Renaming the entry to an exited pid leaves a stale lock that every waiter judges at the same poll.
+      if (stale) renameSync(path.join(lock, holder), path.join(lock, exited));
+      else rmSync(path.join(lock, holder));
+    }
+
+    expect((await settled).map(({ status }) => status)).toEqual(runs.map(() => 'fulfilled'));
+    const summaries = (await Promise.all(runs)).map(({ stdout }) => JSON.parse(stdout) as Record<string, unknown>);
+    const creators = summaries.filter((summary) => (summary.created as string[]).length > 0);
+    expect(creators).toEqual([{ command: SCRIPT, ok: true, code: 0, dir, created: [...SECRET_FILES], kept: [] }]);
+    expect(summaries.filter((summary) => !creators.includes(summary))).toEqual(
+      runs.slice(1).map(() => ({ command: SCRIPT, ok: true, code: 0, dir, created: [], kept: [...SECRET_FILES] })),
+    );
+    expectCompleteSecrets(dir);
+  }, 60_000);
 
   it('exits 2 with the usage text for an unknown flag and writes nothing', async () => {
     const { code, stdout } = await runSecretsCli(['--bogus']);

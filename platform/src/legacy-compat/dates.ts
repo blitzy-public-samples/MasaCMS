@@ -1,10 +1,14 @@
 // ColdFusion date arithmetic and masks as ACF 2023 renders them (en_US unless a locale is passed, process TZ = legacy server zone).
+import { acfDateLocale } from './acf-date-locales.js';
+import { type AcfDateNames, acfDateNames } from './acf-date-names.js';
 import { ACF_TIME_STYLES } from './acf-time-styles.js';
 import { javaDayOfWeek, javaEpochDay, localCivil } from './java-calendar.js';
 
 type Flavor = 'datetime' | 'date' | 'time';
 
 interface Fields {
+  /** 0 BC, 1 AD. */
+  era: number;
   year: number;
   month: number;
   day: number;
@@ -63,6 +67,7 @@ function fieldsOf(d: Date, utc: boolean): Fields {
   const month = (utc ? d.getUTCMonth() : d.getMonth()) + 1;
   const day = utc ? d.getUTCDate() : d.getDate();
   return {
+    era: year > 0 ? 1 : 0,
     year,
     month,
     day,
@@ -118,23 +123,25 @@ function toJavaPattern(mask: string, flavor: Flavor): string {
   return out;
 }
 
-/** Formats one run of a Java pattern letter. */
-function javaField(letter: string, count: number, f: Fields, fullMarker: boolean, markers: Markers): string {
+/** Formats one run of a Java pattern letter; text fields print `names`, or en_US's where it is undefined. */
+function javaField(letter: string, count: number, f: Fields, fullMarker: boolean, markers: Markers, names?: AcfDateNames): string {
   switch (letter) {
     case 'G':
-      return 'AD';
+      return names ? ((count >= 4 ? names.longEras : names.eras)[f.era] as string) : 'AD';
     case 'y':
       return count === 2 ? pad(f.year % 100, 2) : pad(f.year, count);
     case 'M': {
+      if (count < 3) return pad(f.month, count);
+      if (names) return (count >= 4 ? names.months : names.shortMonths)[f.month - 1] as string;
       const name = MONTHS[f.month - 1] as string;
-      if (count >= 4) return name;
-      return count === 3 ? name.slice(0, 3) : pad(f.month, count);
+      return count >= 4 ? name : name.slice(0, 3);
     }
     case 'd':
       return pad(f.day, count);
     case 'D':
       return pad(f.yearDay, count);
     case 'E': {
+      if (names) return (count >= 4 ? names.weekdays : names.shortWeekdays)[f.weekday] as string;
       const name = DAYS[f.weekday] as string;
       return count >= 4 ? name : name.slice(0, 3);
     }
@@ -162,8 +169,21 @@ function javaField(letter: string, count: number, f: Fields, fullMarker: boolean
   }
 }
 
-/** Renders a Java SimpleDateFormat pattern: quoted text, '' as a quote, runs of one letter as a field, digits from zeroDigit (a code point). */
-function renderJava(f: Fields, pattern: string, fullMarker: boolean, markers: Markers = AM_PM, zeroDigit = ZERO): string {
+/** Whether a pattern letter run prints text, which keeps its own digits. */
+const isTextField = (letter: string, count: number): boolean => 'aEG'.includes(letter) || (letter === 'M' && count >= 3);
+
+/**
+ * Renders a Java SimpleDateFormat pattern: quoted text, '' as a quote, runs of one letter as a field, numeric fields in
+ * digits from zeroDigit (a code point), text fields from `names` (en_US's when undefined).
+ */
+function renderJava(
+  f: Fields,
+  pattern: string,
+  fullMarker: boolean,
+  markers: Markers = AM_PM,
+  zeroDigit = ZERO,
+  names?: AcfDateNames,
+): string {
   let out = '';
   let i = 0;
   while (i < pattern.length) {
@@ -189,9 +209,9 @@ function renderJava(f: Fields, pattern: string, fullMarker: boolean, markers: Ma
     }
     let count = 1;
     while (pattern.charAt(i + count) === ch) count++;
-    const field = javaField(ch, count, f, fullMarker, markers);
+    const field = javaField(ch, count, f, fullMarker, markers, names);
     out +=
-      zeroDigit === ZERO || ch === 'a'
+      zeroDigit === ZERO || isTextField(ch, count)
         ? field
         : field.replace(/[0-9]/g, (digit) => String.fromCodePoint(zeroDigit + digit.charCodeAt(0) - ZERO));
     i += count;
@@ -199,16 +219,16 @@ function renderJava(f: Fields, pattern: string, fullMarker: boolean, markers: Ma
   return out;
 }
 
-function format(f: Fields, mask: string, flavor: Flavor): string {
+function format(f: Fields, mask: string, flavor: Flavor, names?: AcfDateNames): string {
   const key = mask.toLowerCase();
   const date = DATE_STYLES.get(key);
   const time = TIME_STYLES.get(key);
-  if (flavor === 'date' && date) return renderJava(f, date, true);
+  if (flavor === 'date' && date) return renderJava(f, date, true, AM_PM, ZERO, names);
   if (flavor === 'time' && time) return renderJava(f, time, true);
   if (flavor === 'datetime' && date && time) return renderJava(f, `${date}, ${time}`, true);
   if (key === 'long' || key === 'full' || key === 'iso') throw new RangeError(`Unsupported ColdFusion named mask '${mask}'`);
   // A single t prints A/P unless "tt" appears anywhere in the mask, quoted text included (t'tt' -> PMtt).
-  return renderJava(f, toJavaPattern(mask, flavor), /tt/i.test(mask));
+  return renderJava(f, toJavaPattern(mask, flavor), /tt/i.test(mask), AM_PM, ZERO, names);
 }
 
 const DAY_MS = 86_400_000;
@@ -297,8 +317,34 @@ export function cfDateFormat(d: Date, mask: string): string {
   return format(fieldsOf(d, false), mask, 'date');
 }
 
-/** CFML LSDateFormat for locale en_US, which ACF renders exactly as DateFormat. */
-export const cfLsDateFormat: (d: Date, mask: string) => string = cfDateFormat;
+/** LSDateFormat's named masks, in the order of the locale's Java date styles (acf-date-locales patterns 4-7). */
+const LS_DATE_STYLES = ['short', 'medium', 'long', 'full'];
+const EN_US_DATE_STYLES = LS_DATE_STYLES.map((style) => DATE_STYLES.get(style)).join('\n');
+
+/**
+ * CFML LSDateFormat under setLocale(javaLocale), any ACF supported locale name in any case, from the Java calendar
+ * fields. A locale with en_US's date data takes DateFormat's masks and names. Any other prints named masks in its Java
+ * date styles and custom masks in its digits; a custom mask with text fields throws RangeError, as ACF prints those
+ * context-dependently.
+ */
+export function cfLsDateFormat(d: Date, mask: string, javaLocale = 'en_US'): string {
+  const symbols = acfDateLocale(javaLocale);
+  const names = acfDateNames(javaLocale);
+  const time = ACF_TIME_STYLES.get(javaLocale.toLowerCase());
+  if (!symbols || !names || !time) throw new RangeError(`${javaLocale} must be one of the ColdFusion supported locales.`);
+  const styles = symbols.patterns.slice(4, 8);
+  const zeroDigit = time[4];
+  const enUsData = names === acfDateNames('en_US') && zeroDigit === ZERO && styles.join('\n') === EN_US_DATE_STYLES;
+  if (enUsData) return format(javaFieldsOf(d), mask, 'date', names);
+  const key = mask.toLowerCase();
+  const style = styles[LS_DATE_STYLES.indexOf(key)];
+  if (style !== undefined) return renderJava(javaFieldsOf(d), style, true, AM_PM, zeroDigit, names);
+  const pattern = key === 'iso' ? 'yyyy-MM-dd' : toJavaPattern(mask, 'date');
+  if (/[EG]|M{3}/.test(pattern.replace(/'[^']*'/g, ''))) {
+    throw new RangeError(`Unsupported LSDateFormat text mask '${mask}' for locale ${javaLocale}`);
+  }
+  return renderJava(javaFieldsOf(d), pattern, true, AM_PM, zeroDigit);
+}
 
 /** CFML TimeFormat: h/H hours, m/M/n minutes, s/S seconds, l/L ms, t A/P, tt AM/PM; named short/medium. */
 export function cfTimeFormat(d: Date, mask: string): string {
@@ -322,6 +368,7 @@ function javaFieldsOf(d: Date): Fields {
   const c = localCivil(t);
   const epochDay = javaEpochDay(c.year, c.month, c.day);
   return {
+    era: c.year > 0 ? 1 : 0,
     year: c.year > 0 ? c.year : 1 - c.year,
     month: c.month,
     day: c.day,

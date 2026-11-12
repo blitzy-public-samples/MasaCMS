@@ -48,8 +48,8 @@ export interface InflightDrainResult {
 
 /** The migration service's calls into the gateway's cut-over state. */
 export interface GatewayClient {
-  /** `cutoverStatus`. */
-  status(): Promise<CutoverStatus>;
+  /** `cutoverStatus`; `timeoutMs` bounds the call instead of the service client's timeout. */
+  status(options?: { timeoutMs?: number }): Promise<CutoverStatus>;
   /** `cutoverActivate`: activates the version, whose `previous` must be the active one, and commits a new epoch. */
   activate(tableVersion: string): Promise<CutoverActivateResponse>;
   /** `cutoverFreeze`: freezes entries of the active version and returns the status with the new epoch. */
@@ -161,7 +161,7 @@ export function createGatewayClient(deps: GatewayClientDeps): GatewayClient {
   const clock = deps.clock ?? systemClock;
   const sleep = deps.sleep ?? ((ms: number) => delay(ms));
 
-  async function call<T>(client: ServiceClient, operation: GatewayOperation, json?: unknown): Promise<T> {
+  async function call<T>(client: ServiceClient, operation: GatewayOperation, json?: unknown, timeoutMs?: number): Promise<T> {
     // The gateway sees only the calling workload's credential, never a user token from the request context.
     const response = await client.request<T>({
       service: GATEWAY_SERVICE,
@@ -169,12 +169,14 @@ export function createGatewayClient(deps: GatewayClientDeps): GatewayClient {
       path: operation.path,
       json,
       userToken: null,
+      timeoutMs,
     });
     if (!isSuccess(response.status)) throw new GatewayCallError(operation.operationId, response.status, response.body);
     return response.body;
   }
 
-  const status = (): Promise<CutoverStatus> => call<CutoverStatus>(migrationClient, OPERATIONS.status);
+  const status = (options: { timeoutMs?: number } = {}): Promise<CutoverStatus> =>
+    call<CutoverStatus>(migrationClient, OPERATIONS.status, undefined, options.timeoutMs);
 
   /** Polls the status until `settle` yields a result; after the deadline the last unsettled status builds the error. */
   async function poll<R>(

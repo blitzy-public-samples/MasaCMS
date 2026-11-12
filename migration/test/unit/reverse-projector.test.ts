@@ -5,8 +5,10 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSy
 import os from 'node:os';
 import path from 'node:path';
 
+import { serializeError } from '@opt2/platform/logging';
 import {
   CURSOR_START,
+  encodeKey,
   encodeRow,
   type CanonicalColumn,
   type ChangesResponse,
@@ -17,10 +19,16 @@ import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 
 import { loadConfig } from '../../src/config.js';
+import type { MigrationContext } from '../../src/context.js';
+import { GatewayCallError } from '../../src/cutover/gateway-client.js';
+import { currentAuthority } from '../../src/cutover/index.js';
 import type { CatalogColumn, TableCatalog } from '../../src/extract/index.js';
-import { Opt2SyncUnavailableError, STARTUP_COUNT_SQL } from '../../src/legacy/index.js';
-import { loadUnitCatalog } from '../../src/owners/index.js';
-import { OperationTracker } from '../../src/reverse/operations.js';
+import { BridgeError, Opt2SyncUnavailableError, STARTUP_COUNT_SQL } from '../../src/legacy/index.js';
+import { OwnerCallError, loadUnitCatalog, type DataOwner } from '../../src/owners/index.js';
+import type { LegacyEffect } from '../../src/reverse/apply-legacy.js';
+import { ProjectionTimeoutError, createAwaiter } from '../../src/reverse/await.js';
+import { createProjector } from '../../src/reverse/index.js';
+import { OperationTracker, ROSTER_PARTICIPANTS } from '../../src/reverse/operations.js';
 import {
   PROJECTOR_LOCK_KEY,
   createProjectorLoop,
@@ -137,6 +145,8 @@ interface CheckpointRecord {
   batch_id: string | null;
   rows_applied: number;
   updated_at: Date | null;
+  pending_effects: string | null;
+  ready_horizon: string | null;
 }
 
 interface LegacyOptions {
@@ -148,6 +158,8 @@ interface LegacyOptions {
   zeroRows?: RegExp;
   /** Writes matching this fail. */
   failOn?: RegExp;
+  /** Clearing owed effects fails. */
+  failClear?: boolean;
 }
 
 /** Legacy database answering exactly the projector's statements; checkpoint upserts stage per transaction until commit. */
@@ -163,6 +175,8 @@ function fakeLegacy(options: LegacyOptions = {}) {
     const key = `${String(params.owner)}|${String(params.tenantId)}`;
     const previous = staged.get(key) ?? committed.get(key);
     const horizon = String(params.appliedHorizon);
+    const pending = params.pendingEffects as string | null;
+    const ready = pending === null || previous === undefined ? null : previous.pending_effects === null ? previous.applied_horizon : previous.ready_horizon;
     const record: CheckpointRecord = {
       owner: String(params.owner),
       tenant_id: String(params.tenantId),
@@ -172,13 +186,25 @@ function fakeLegacy(options: LegacyOptions = {}) {
       batch_id: String(params.batchId),
       rows_applied: Number(params.rowsApplied),
       updated_at: null,
+      pending_effects: pending,
+      ready_horizon: ready,
     };
     staged.set(key, record);
     return reply([record]);
   };
 
+  /** Clears a committed row's owed effects when the batch that stored them still owns it, as one autocommitted statement. */
+  const clear = (params: Record<string, unknown>) => {
+    const record = committed.get(`${String(params.owner)}|${String(params.tenantId)}`);
+    if (record === undefined || record.batch_id !== params.batchId) return reply([], [0]);
+    if (options.failClear === true) throw new Error('clear failed');
+    committed.set(`${record.owner}|${record.tenant_id}`, { ...record, pending_effects: null, ready_horizon: null });
+    return reply([], [1]);
+  };
+
   const handle = (text: string, params: Record<string, unknown>, staged: Map<string, CheckpointRecord> | null) => {
     if (text.includes('sys.tables')) return reply([{ n: options.ready === false ? 0 : 1 }]);
+    if (text.startsWith('UPDATE opt2_sync.projector_checkpoint SET pending_effects = NULL')) return clear(params);
     if (text.startsWith('SELECT DISTINCT SiteID')) return reply((options.sites ?? [SITE]).map((SiteID) => ({ SiteID })));
     if (text === STARTUP_COUNT_SQL) return reply([{ n: startupCounts.shift() ?? 0 }]);
     if (text.startsWith('SELECT owner, tenant_id')) {
@@ -234,7 +260,11 @@ function fakeLegacy(options: LegacyOptions = {}) {
     committed,
     statements,
     log,
-    checkpoint: (owner: string) => committed.get(`${owner}|${TENANT}`),
+    /** Transactions begun so far, numbered from 1 in the order they began. */
+    begun: () => nextTx - 1,
+    checkpoint: (owner: string, tenantId = TENANT) => committed.get(`${owner}|${tenantId}`),
+    /** Commits a checkpoint row as an earlier cycle left it. */
+    seed: (record: CheckpointRecord) => committed.set(`${record.owner}|${record.tenant_id}`, record),
     /** Statements of committed transactions matching `pattern`. */
     applied: (pattern: RegExp) => statements.filter((statement) => isCommitted(statement.tx) && pattern.test(statement.sql)),
   };
@@ -286,16 +316,32 @@ interface OwnersOptions {
   exportRows?: Record<string, Record<string, unknown>[]>;
   /** Owner whose position read fails. */
   failPosition?: string;
+  /** Legacy transactions begun so far, recorded with each export call. */
+  transactions?: () => number;
 }
 
-function fakeOwners({ pages = {}, defaultHorizon = '200', exportRows = {}, failPosition }: OwnersOptions = {}) {
+interface ExportParams {
+  unit: string;
+  tenantId: string;
+  keys?: readonly string[];
+}
+
+function fakeOwners({ pages = {}, defaultHorizon = '200', exportRows = {}, failPosition, transactions }: OwnersOptions = {}) {
   const reads = new Map<string, number>();
   const changes: { owner: string; after: string }[] = [];
   const positions: string[] = [];
   const watermarks: { owner: string; legacyTable: string; direction: string }[] = [];
-  const exportPage = (params: { unit: string; tenantId: string }) => {
+  const exports: { owner: string; unit: string; keys?: readonly string[]; opened: number }[] = [];
+  /** A unit's export page; with `keys`, only rows whose legacy key encoding is listed. */
+  const exportPage = (params: ExportParams) => {
     const unit = UNITS[params.unit];
-    const rows = (exportRows[params.unit] ?? []).map((values) => ({ key: 'k', row: encodeRow(unit?.columns ?? [], values), hash: 'h' }));
+    const keyNames = unit === undefined ? [] : unitCatalog.keyColumnsOf(unit.legacyTable);
+    const rows = (exportRows[params.unit] ?? [])
+      .map((values) => {
+        const row = encodeRow(unit?.columns ?? [], values);
+        return { key: keyNames.length === 0 ? row : encodeKey(unit?.columns ?? [], keyNames, values), row, hash: 'h' };
+      })
+      .filter((row) => params.keys === undefined || params.keys.includes(row.key));
     return {
       unit: params.unit,
       tenantId: params.tenantId,
@@ -313,8 +359,9 @@ function fakeOwners({ pages = {}, defaultHorizon = '200', exportRows = {}, failP
       if (source === undefined) return page([], defaultHorizon, params.after);
       return typeof source === 'function' ? source(read) : source;
     },
-    export: async (_owner: string, params: { unit: string; tenantId: string }) => exportPage(params),
-    async *exportPages(_owner: string, params: { unit: string; tenantId: string }) {
+    export: async (_owner: string, params: ExportParams) => exportPage(params),
+    async *exportPages(owner: string, params: ExportParams) {
+      exports.push({ owner, unit: params.unit, keys: params.keys, opened: transactions?.() ?? 0 });
       yield exportPage(params);
     },
     async position(owner: string) {
@@ -328,7 +375,7 @@ function fakeOwners({ pages = {}, defaultHorizon = '200', exportRows = {}, failP
       return record;
     },
   };
-  return { owners, changes, positions, watermarks };
+  return { owners, changes, positions, watermarks, exports };
 }
 
 function fakeBridge() {
@@ -522,7 +569,12 @@ describe('runProjectorCycle streams', () => {
     expect(h.owners.watermarks).toEqual([{ owner, legacyTable, direction: 'reverse' }]);
   });
 
-  it('merges the other owners parts for the key into a split-table insert', async () => {
+  /** The tusers targets other than people.person, in ownership-file order. */
+  const otherTusersTargets = unitCatalog.unitsForLegacyTable('tusers').filter((target) => target.unit !== 'people.person');
+  /** A tusers key as owners' export rows encode it. */
+  const userKey = (id: string): string => encodeRow([{ name: 'UserID', type: 's' }], { UserID: id });
+
+  it('merges the other owners parts of the key into a split-table insert, asking them for that key alone before the batch transaction', async () => {
     const insert = changeRow([110, 1], 'person', 'people.person', 'insert', { after: { UserID: USER, SiteID: SITE, Fname: 'Grace' } });
     const legacy = fakeLegacy({ zeroRows: TUSERS_UPDATE });
     const owners = fakeOwners({
@@ -533,6 +585,7 @@ describe('runProjectorCycle streams', () => {
           { UserID: 'OTHER', UserName: 'other', Type: '2', SiteID: SITE },
         ],
       },
+      transactions: legacy.begun,
     });
     const result = await runProjectorCycle(harness({ legacy, owners }).ctx, cycleDeps());
     expect(result.errors).toEqual([]);
@@ -541,6 +594,51 @@ describe('runProjectorCycle streams', () => {
     expect(inserted?.sql).toMatch(/\(\[UserID\], \[SiteID\], \[Fname\], \[UserName\], \[Type\]\)/);
     expect(Object.values(inserted?.params ?? {})).toEqual(expect.arrayContaining([USER, SITE, 'Grace', 'grace', '2']));
     expect(Object.values(inserted?.params ?? {})).not.toContain('other');
+    const opened = (inserted?.tx ?? 0) - 1;
+    expect(owners.exports.filter((call) => call.keys !== undefined)).toEqual(
+      otherTusersTargets.map((target) => ({ owner: target.owner, unit: target.unit, keys: [userKey(USER)], opened })),
+    );
+    expect(owners.exports.filter((call) => call.keys === undefined).map((call) => call.unit)).toEqual(['people.person']);
+  });
+
+  it('asks the other owners for a batch of split-table inserts in chunks of 100 keys, all before the batch transaction', async () => {
+    const ids = Array.from({ length: 101 }, (_, n) => `U${String(n).padStart(3, '0')}`);
+    const rows = ids.map((id, n) => changeRow([110 + n, 1], 'person', 'people.person', 'insert', { after: { UserID: id, SiteID: SITE, Fname: `F${String(n)}` } }));
+    const legacy = fakeLegacy({ zeroRows: TUSERS_UPDATE });
+    const owners = fakeOwners({
+      pages: { [`people|${CURSOR_START}`]: page(rows, '999', CURSOR_START) },
+      exportRows: {
+        'identity.user_account': [
+          { UserID: ids[0], UserName: 'first', Type: '2', SiteID: SITE },
+          { UserID: ids[100], UserName: 'last', Type: '2', SiteID: SITE },
+        ],
+      },
+      transactions: legacy.begun,
+    });
+    const result = await runProjectorCycle(harness({ legacy, owners }).ctx, cycleDeps());
+    expect(result).toMatchObject({ rowsApplied: 101, errors: [] });
+    const inserts = legacy.applied(/^INSERT INTO \[dbo\]\.\[tusers\]/);
+    expect(inserts).toHaveLength(101);
+    const [tx, ...otherTx] = new Set(inserts.map((statement) => statement.tx));
+    expect(otherTx).toEqual([]);
+    const merged = inserts.filter((statement) => /\[UserName\]/.test(statement.sql)).map((statement) => Object.values(statement.params));
+    expect(merged).toEqual([expect.arrayContaining([ids[0], 'first']), expect.arrayContaining([ids[100], 'last'])]);
+    const keys = ids.map(userKey);
+    expect(owners.exports.filter((call) => call.keys !== undefined)).toEqual(
+      otherTusersTargets.flatMap((target) =>
+        [keys.slice(0, 100), keys.slice(100)].map((chunk) => ({ owner: target.owner, unit: target.unit, keys: chunk, opened: (tx ?? 0) - 1 })),
+      ),
+    );
+  });
+
+  it.each([
+    ['a split-table delete', 'people', changeRow([120, 1], 'person', 'people.person', 'delete', { before: { UserID: USER, SiteID: SITE, Fname: 'Ada' } })],
+    ['an update of a table that is not split', 'strategies-content', contentUpdate()],
+  ])('asks no other owner for parts when the batch holds only %s', async (_label, owner, row) => {
+    const owners = fakeOwners({ pages: { [`${owner}|${CURSOR_START}`]: page([row], '999', CURSOR_START) } });
+    const result = await runProjectorCycle(harness({ owners }).ctx, cycleDeps());
+    expect(result).toMatchObject({ rowsApplied: 1, errors: [] });
+    expect(owners.exports.map((call) => [call.unit, call.keys])).toEqual([[row.legacy[0]?.unit, undefined]]);
   });
 
   it('writes a file object through the bridge before the batch transaction and purges the content site', async () => {
@@ -748,6 +846,238 @@ describe('crash between the SQL Server commit and the mirror', () => {
   });
 });
 
+describe('owed legacy effects', () => {
+  const pages = { [`strategies-content|${CURSOR_START}`]: page([contentUpdate()], '301', CURSOR_START) };
+  const PURGE: LegacyEffect[] = [{ kind: 'purgeCache', siteId: SITE }];
+  const TCONTENT_UPDATE = /^UPDATE \[dbo\]\.\[tcontent\]/;
+
+  /** Barrier over the fake legacy database for the content write at xid 300, the cycle's tenant and authority. */
+  function barrier(h: ReturnType<typeof harness>) {
+    const awaiter = createAwaiter({
+      legacy: h.ctx.legacy,
+      owners: { position: () => Promise.resolve({ owner: 'strategies-content', position: '300', outbox: null, inbox: null }) },
+      authority: () => currentAuthority({ gateway: h.ctx.gateway, config: config.paths }),
+      catalog: unitCatalog,
+      tenants: () => Promise.resolve([TENANT]),
+      clock: { now: () => new Date(0) },
+      sleep: () => Promise.resolve(),
+      defaults: { timeoutMs: 0, pollIntervalMs: 1 },
+    });
+    return awaiter.awaitProjection({ positions: new Map([['strategies-content', '300']]) });
+  }
+
+  /** A checkpoint an earlier cycle committed while its batch's effects were still owed. */
+  function owedRecord(owner: string, tenantId: string, effects: LegacyEffect[]): CheckpointRecord {
+    const base = { owner, tenant_id: tenantId, cursor_xid: '50', cursor_seq: '1', applied_horizon: '51', batch_id: 'batch-old', rows_applied: 1, updated_at: null };
+    return { ...base, pending_effects: JSON.stringify(effects), ready_horizon: null };
+  }
+
+  it.each<[string, (h: ReturnType<typeof harness>, legacyOptions: LegacyOptions) => void, [string, string][]]>([
+    [
+      'the cache purge fails',
+      (h) => {
+        h.bridge.bridge.purgeCache = () => Promise.reject(new Error('bridge unavailable'));
+      },
+      [],
+    ],
+    [
+      'clearing them fails',
+      (_h, legacyOptions) => {
+        legacyOptions.failClear = true;
+      },
+      [['purgeCache', SITE]],
+    ],
+  ])('keeps them owed and the barrier pending when %s after commit, then the next cycle runs and clears them', async (_label, breakIt, firstCalls) => {
+    const legacyOptions: LegacyOptions = {};
+    const legacy = fakeLegacy(legacyOptions);
+    const db = fakeDb();
+    const owners = fakeOwners({ pages, defaultHorizon: '301' });
+    const first = harness({ legacy, db, owners });
+    breakIt(first, legacyOptions);
+
+    const failed = await runProjectorCycle(first.ctx, cycleDeps());
+
+    expect(failed.errors.map((error) => [error.owner, error.cursor])).toEqual([['strategies-content', '300:1']]);
+    expect(first.bridge.calls).toEqual(firstCalls);
+    expect(legacy.checkpoint('strategies-content')).toMatchObject({ cursor_xid: '300', applied_horizon: '301', pending_effects: JSON.stringify(PURGE), ready_horizon: null });
+    await expect(barrier(first)).rejects.toBeInstanceOf(ProjectionTimeoutError);
+
+    legacyOptions.failClear = false;
+    const next = harness({ legacy, db, owners });
+    expect(await runProjectorCycle(next.ctx, cycleDeps())).toMatchObject({ errors: [] });
+    expect(next.bridge.calls).toEqual([['purgeCache', SITE]]);
+    expect(legacy.checkpoint('strategies-content')).toMatchObject({ cursor_xid: '300', pending_effects: null, ready_horizon: null });
+    expect(legacy.applied(TCONTENT_UPDATE)).toHaveLength(1);
+    await expect(barrier(next)).resolves.toMatchObject({ positions: new Map([['strategies-content', '300']]) });
+  });
+
+  it('keeps them owed across a crash after the SQL Server commit and runs them once the projector restarts', async () => {
+    const legacy = fakeLegacy();
+    const db = fakeDb();
+    const owners = fakeOwners({ pages, defaultHorizon: '301' });
+    const crash = new Error('ProjectorCrashed');
+    const hooks: ProjectorHooks = { afterLegacyCommit: ({ owner }) => (owner === 'strategies-content' ? Promise.reject(crash) : Promise.resolve()) };
+    const crashed = harness({ legacy, db, owners });
+
+    await expect(createProjectorLoop(crashed.ctx, { hooks, startupGuard: refuseGuard }).runOnce()).rejects.toBe(crash);
+    expect(crashed.bridge.calls).toEqual([]);
+    expect(legacy.checkpoint('strategies-content')).toMatchObject({ cursor_xid: '300', pending_effects: JSON.stringify(PURGE) });
+    await expect(barrier(crashed)).rejects.toBeInstanceOf(ProjectionTimeoutError);
+
+    const restarted = harness({ legacy, db, owners });
+    expect(await createProjectorLoop(restarted.ctx, { startupGuard: refuseGuard }).runOnce()).toMatchObject({ errors: [] });
+    expect(restarted.bridge.calls).toEqual([['purgeCache', SITE]]);
+    expect(legacy.checkpoint('strategies-content')).toMatchObject({ pending_effects: null });
+    expect(legacy.applied(TCONTENT_UPDATE)).toHaveLength(1);
+    await expect(barrier(restarted)).resolves.toBeDefined();
+  });
+
+  it.each([
+    ['a streamed tenant', SITE],
+    ['a tenant whose site has left tsettings', 'gone-site'],
+  ])('runs and clears what an earlier cycle left owed for %s before streaming', async (_label, site) => {
+    const tenantId = tenantIdForSite(site);
+    const effects: LegacyEffect[] = [
+      { kind: 'siteRefresh', siteId: site },
+      { kind: 'purgeCache', siteId: site },
+    ];
+    const legacy = fakeLegacy();
+    legacy.seed(owedRecord('programs-sites', tenantId, effects));
+    const h = harness({ legacy });
+    const order: string[] = [];
+    const changes = h.owners.owners.changes.bind(h.owners.owners);
+    h.owners.owners.changes = (owner, params) => {
+      order.push(`changes:${owner}`);
+      return changes(owner, params);
+    };
+    const siteRefresh = h.bridge.bridge.siteRefresh.bind(h.bridge.bridge);
+    h.bridge.bridge.siteRefresh = (siteId) => {
+      order.push(`siteRefresh:${siteId}`);
+      return siteRefresh(siteId);
+    };
+
+    expect(await runProjectorCycle(h.ctx, cycleDeps())).toMatchObject({ errors: [] });
+    expect(h.bridge.calls).toEqual([
+      ['siteRefresh', site],
+      ['purgeCache', site],
+    ]);
+    expect(order[0]).toBe(`siteRefresh:${site}`);
+    expect(legacy.checkpoint('programs-sites', tenantId)).toMatchObject({ cursor_xid: '50', pending_effects: null, ready_horizon: null });
+  });
+
+  it('holds the barrier while a site that left tsettings still owes its refresh, until a later cycle runs and clears it', async () => {
+    const gone = tenantIdForSite('gone-site');
+    const effects: LegacyEffect[] = [
+      { kind: 'siteRefresh', siteId: 'gone-site' },
+      { kind: 'purgeCache', siteId: 'gone-site' },
+    ];
+    const legacy = fakeLegacy();
+    legacy.seed({ ...owedRecord('programs-sites', gone, effects), applied_horizon: '301' });
+    const h = harness({ legacy, owners: fakeOwners({ defaultHorizon: '301' }) });
+    const siteRefresh = h.bridge.bridge.siteRefresh.bind(h.bridge.bridge);
+    h.bridge.bridge.siteRefresh = () => Promise.reject(new Error('bridge unavailable'));
+    const ctx = { ...h.ctx, clock: { now: () => new Date() } } as unknown as MigrationContext;
+    const projector = createProjector(ctx, { startupGuard: refuseGuard });
+    const barrierOf = () => projector.awaitProjection({ positions: new Map([['programs-sites', '300']]), timeoutMs: 50 });
+
+    const failed = await projector.runOnce();
+
+    expect(failed.errors.map((error) => [error.owner, error.tenantId])).toEqual([['programs-sites', gone]]);
+    expect(legacy.checkpoint('programs-sites')).toMatchObject({ applied_horizon: '301', pending_effects: null });
+    const timeout: unknown = await barrierOf().catch((error: unknown) => error);
+    expect(timeout).toBeInstanceOf(ProjectionTimeoutError);
+    expect(timeout).toMatchObject({ pending: [{ owner: 'programs-sites', xid: '300', tenantsBehind: [gone] }] });
+
+    h.bridge.bridge.siteRefresh = siteRefresh;
+    expect(await projector.runOnce()).toMatchObject({ errors: [] });
+    expect(h.bridge.calls).toEqual([
+      ['siteRefresh', 'gone-site'],
+      ['purgeCache', 'gone-site'],
+    ]);
+    expect(legacy.checkpoint('programs-sites', gone)).toMatchObject({ pending_effects: null, ready_horizon: null });
+    await expect(barrierOf()).resolves.toMatchObject({ positions: new Map([['programs-sites', '300']]) });
+  });
+
+  it.each<[string, BridgeError, boolean]>([
+    ['answers unregistered site, which settles the purge', new BridgeError('jobs.purgeCache', 404, { error: 'notFound', message: 'unregistered site' }), true],
+    ['answers the bodiless 404 of the guard, which keeps it owed', new BridgeError('jobs.purgeCache', 404, ''), false],
+    ['answers unknown job, which keeps it owed', new BridgeError('jobs.purgeCache', 404, { error: 'notFound', message: 'unknown job' }), false],
+  ])('after a site delete, when the purge of the refreshed-away site %s', async (_label, purgeError, settled) => {
+    const deleted = changeRow([400, 1], 'site', 'programs_sites.site', 'delete', { before: { SiteID: SITE, Site: 'A' } });
+    const legacy = fakeLegacy();
+    const h = harness({ legacy, owners: fakeOwners({ pages: { [`programs-sites|${CURSOR_START}`]: page([deleted], '401', CURSOR_START) }, defaultHorizon: '401' }) });
+    h.bridge.bridge.siteRefresh = (siteId) => {
+      h.bridge.calls.push(['siteRefresh', siteId]);
+      return Promise.resolve({ refreshed: true, siteExists: false, serverTime: '2026-06-30T12:00:00' });
+    };
+    h.bridge.bridge.purgeCache = (siteId) => {
+      h.bridge.calls.push(['purgeCache', siteId]);
+      return Promise.reject(purgeError);
+    };
+    const ctx = { ...h.ctx, clock: { now: () => new Date() } } as unknown as MigrationContext;
+    const projector = createProjector(ctx, { startupGuard: refuseGuard });
+
+    const result = await projector.runOnce();
+
+    expect(legacy.applied(/^DELETE FROM \[dbo\]\.\[tsettings\]/)).toHaveLength(1);
+    expect(h.bridge.calls).toEqual([
+      ['siteRefresh', SITE],
+      ['purgeCache', SITE],
+    ]);
+    expect(result.errors.map((error) => error.owner)).toEqual(settled ? [] : ['programs-sites']);
+    expect(legacy.checkpoint('programs-sites')?.pending_effects).toBe(settled ? null : JSON.stringify([{ kind: 'siteRefresh', siteId: SITE }, { kind: 'purgeCache', siteId: SITE }]));
+    const barrier = projector.awaitProjection({ positions: new Map([['programs-sites', '400']]), timeoutMs: 50 });
+    if (settled) await expect(barrier).resolves.toBeDefined();
+    else await expect(barrier).rejects.toBeInstanceOf(ProjectionTimeoutError);
+  });
+
+  it('stops only the owing stream for the cycle when running what it owes fails', async () => {
+    const legacy = fakeLegacy();
+    legacy.seed(owedRecord('people', TENANT, PURGE));
+    const h = harness({ legacy });
+    h.bridge.bridge.purgeCache = () => Promise.reject(new Error('bridge unavailable'));
+
+    const result = await runProjectorCycle(h.ctx, cycleDeps());
+
+    expect(result.errors.map((error) => [error.owner, error.tenantId, error.cursor, error.error.message])).toEqual([['people', TENANT, '50:1', 'bridge unavailable']]);
+    expect(result.batches).toBe(config.dataOwners.length - 1);
+    expect(h.owners.changes.some((read) => read.owner === 'people')).toBe(false);
+    expect(legacy.checkpoint('people')).toMatchObject({ cursor_xid: '50', pending_effects: JSON.stringify(PURGE) });
+  });
+});
+
+describe('createProjector awaiter', () => {
+  it('bounds the gateway status call and cancels the live tsettings and checkpoint reads when the budget passes', async () => {
+    const h = harness();
+    let cancelled = 0;
+    const stalled = {
+      request() {
+        let fail: (error: Error) => void = () => undefined;
+        return {
+          input: () => undefined,
+          query: () =>
+            new Promise((_resolve, reject) => {
+              fail = reject;
+            }),
+          cancel: () => {
+            cancelled += 1;
+            fail(Object.assign(new Error('Canceled.'), { code: 'ECANCEL' }));
+          },
+        };
+      },
+    };
+    const ctx = { ...h.ctx, legacy: { ...h.ctx.legacy, live: () => Promise.resolve(stalled) } } as unknown as MigrationContext;
+
+    const error = await createProjector(ctx, { startupGuard: refuseGuard })
+      .awaitProjection({ positions: new Map([['people', '100']]), timeoutMs: 50 })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ProjectionTimeoutError);
+    expect(h.gateway.status).toHaveBeenCalledWith({ timeoutMs: 50 });
+    expect(cancelled).toBe(2);
+  });
+});
+
 describe('createProjectorLoop', () => {
   it('joins the cycle in flight, runs at the projection cadence once started, and stops', async () => {
     vi.useFakeTimers();
@@ -781,10 +1111,73 @@ describe('createProjectorLoop', () => {
       await vi.advanceTimersByTimeAsync(config.projection.idlePollMs * 2);
       await loop.stop();
       expect(h.logger.error).toHaveBeenCalledTimes(2);
-      expect(h.logger.error).toHaveBeenCalledWith({ error: expect.any(Opt2SyncUnavailableError) }, 'Reverse projector cycle failed');
+      expect(h.logger.error.mock.lastCall).toMatchObject([{ error: { type: 'Opt2SyncUnavailableError' } }, 'Reverse projector cycle failed']);
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('error logs', () => {
+  /** Remote answer body the logged error must not carry. */
+  const BODY = { detail: 'remote-body-marker' };
+  /** Roster participant with no stream this cycle, so its fence failure is logged rather than failing streams. */
+  const UNSTREAMED = 'unstreamed-owner';
+
+  it.each<[site: string, error: Error, run: (error: Error) => Promise<ReturnType<typeof harness>['logger']>, fields: Record<string, unknown>, message: string]>([
+    [
+      'stream failure',
+      new OwnerCallError('people', 'GET', '/internal/v1/migration/changes', 502, BODY),
+      async (error) => {
+        const h = harness();
+        const changes = h.owners.owners.changes.bind(h.owners.owners);
+        h.owners.owners.changes = async (owner, params) => (owner === 'people' ? Promise.reject(error) : changes(owner, params));
+        await runProjectorCycle(h.ctx, cycleDeps());
+        return h.logger;
+      },
+      { tenantId: TENANT },
+      `Reverse projection of people for tenant ${TENANT} stopped at cursor ${CURSOR_START}`,
+    ],
+    [
+      'fence position failure',
+      new OwnerCallError(UNSTREAMED as DataOwner, 'GET', '/internal/v1/migration/position', 503, BODY),
+      async (error) => {
+        const pages = { [`people|${CURSOR_START}`]: page([person('Grace', { operationId: OP })], '101', CURSOR_START, { [OP]: 'done' }) };
+        const h = harness({ owners: fakeOwners({ pages }) });
+        const position = h.owners.owners.position.bind(h.owners.owners);
+        h.owners.owners.position = async (owner) => (owner === UNSTREAMED ? Promise.reject(error) : position(owner));
+        const tracker = new OperationTracker({ participants: [...ROSTER_PARTICIPANTS, UNSTREAMED] });
+        await runProjectorCycle(h.ctx, { ...cycleDeps(), tracker });
+        return h.logger;
+      },
+      {},
+      `Reading the write position of ${UNSTREAMED} for operation fences failed`,
+    ],
+    [
+      'background cycle failure',
+      new GatewayCallError('cutoverStatus', 502, BODY),
+      async (error) => {
+        vi.useFakeTimers();
+        try {
+          const h = harness();
+          h.gateway.status.mockRejectedValue(error);
+          const loop = createProjectorLoop(h.ctx, { startupGuard: refuseGuard });
+          loop.start();
+          await vi.advanceTimersByTimeAsync(config.projection.idlePollMs);
+          await loop.stop();
+          return h.logger;
+        } finally {
+          vi.useRealTimers();
+        }
+      },
+      {},
+      'Reverse projector cycle failed',
+    ],
+  ])('logs a %s with the serialized error record and no remote body', async (_site, error, run, fields, message) => {
+    const logger = await run(error);
+    const call = logger.error.mock.calls.find(([, text]) => text === message);
+    expect(call?.[0]).toStrictEqual({ ...fields, error: serializeError(error) });
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain(BODY.detail);
   });
 });
 

@@ -3,7 +3,7 @@ import { Roles, SYNTHETIC_ROLES, type Role } from '@opt2/platform/auth';
 import { pdfBytes, pngBytes, sha256Hex, toBase64 } from './bytes.js';
 import { SITE_ORDER, roleGroupName, type SeedConfig, type SiteKey } from './config.js';
 import { printable } from './errors.js';
-import { MASA_DEFAULT_MODULE_ID, MASA_HOME_CONTENT_ID, cfUuidFrom } from './ids.js';
+import { MASA_DEFAULT_MODULE_ID, MASA_FORMS_MODULE_ID, MASA_HOME_CONTENT_ID, cfUuidFrom } from './ids.js';
 import type { SeedRandom } from './random.js';
 import type { Calendar } from './time.js';
 
@@ -93,12 +93,24 @@ export interface ContentVersion {
   active: 0 | 1;
 }
 
-/** Masa content node (`tcontent`) whose title and summary are those of its active version. */
+/** Display object placed on every version of a content node (`tcontentobjects`), in display order within its region. */
+export interface ContentObjectRow {
+  columnID: number;
+  object: 'form';
+  objectID: string;
+  name: string;
+}
+
+/**
+ * Masa content node (`tcontent`) whose title and summary are those of its active version: a site-tree Folder or Page,
+ * or a form-builder Form of the Forms module, whose version bodies hold the form definition JSON.
+ */
 export interface ContentRow {
   contentID: string;
   siteID: SiteKey;
+  moduleID: string;
   parentID: string;
-  type: 'Folder' | 'Page';
+  type: 'Folder' | 'Page' | 'Form';
   subType: 'Default';
   title: string;
   menuTitle: string;
@@ -106,6 +118,13 @@ export interface ContentRow {
   isNav: 0 | 1;
   display: 1;
   categoryIDs: string[];
+  objects: ContentObjectRow[];
+  /** Page hosting a form only: the contentID of the Form its objects display. */
+  formID?: string;
+  /** Form only: the message shown after a successful submission. */
+  responseMessage?: string;
+  /** Form only: the ids of its definition's fields, in page order. */
+  fieldIDs?: string[];
   versions: ContentVersion[];
 }
 
@@ -192,6 +211,18 @@ const FOLDER_SHARE = 0.02;
 const CATEGORIES_PER_TOP = 10;
 const MAX_GENERIC_GROUPS_PER_USER = 2;
 const MAX_CATEGORIES_PER_NODE = 3;
+const FORM_TITLE = 'OPT-2 Seed Contact Form';
+const FORM_HOST_TITLE = 'OPT-2 Seed Contact Page';
+const FORM_RESPONSE_MESSAGE = '<p>Thank you, your message has been received.</p>';
+// Every template of the installed default theme except blank.cfm renders region 2 below the body.
+const FORM_COLUMN_ID = 2;
+const FORM_SECTION_ID = '00000000-0000-0000-0000000000000000';
+/** Fields of the seeded form in page order; `validatetype` takes the form builder's values. */
+const FORM_FIELDS = [
+  { name: 'fullname', label: 'Full Name', fieldtype: 'textfield', isrequired: 1, validatetype: '' },
+  { name: 'email', label: 'Email', fieldtype: 'textfield', isrequired: 1, validatetype: 'email' },
+  { name: 'message', label: 'Message', fieldtype: 'textarea', isrequired: 0, validatetype: '' },
+] as const;
 
 interface Build {
   config: SeedConfig;
@@ -467,7 +498,158 @@ function buildCategories(b: Build, site: SiteRow, existing: readonly CategoryRow
   });
 }
 
-/** Content nodes counted for a site: folders under the home node first, then pages under home or a folder. */
+/**
+ * Form-builder definition (a Form's `tcontent.body`) in the JSON the admin form builder saves: one page of fields,
+ * each keyed by its id, with `muraormentities` off so Masa never generates `fb_*` entities for it; with its field ids.
+ */
+function formDefinition(b: Build, rng: SeedRandom): { body: string; fieldIDs: string[] } {
+  const formid = newId(b, rng);
+  const fields: Record<string, unknown> = {};
+  const page: string[] = [];
+  for (const field of FORM_FIELDS) {
+    const fieldid = newId(b, rng);
+    page.push(fieldid);
+    fields[fieldid] = {
+      fieldid,
+      sectionid: FORM_SECTION_ID,
+      validatemessage: '',
+      fieldtype: {
+        fieldtypeid: newId(b, rng),
+        islong: bit(field.fieldtype === 'textarea'),
+        datecreate: '',
+        fieldtype: field.fieldtype,
+        IsMultiSelect: 0,
+        moduleid: '',
+        datelastupdate: '',
+        rblabel: '',
+        displaytype: 'field',
+        bean: '',
+        isdata: 0,
+        label: '',
+      },
+      relatedid: '',
+      rblabel: '',
+      value: '',
+      config: {},
+      isrequired: field.isrequired,
+      label: field.label,
+      type: 'COMMON',
+      fieldtypeid: '',
+      datecreate: '',
+      cssstyle: '',
+      datelastupdate: '',
+      validateregex: '',
+      isactive: 1,
+      formid,
+      name: field.name,
+      placeholder: '',
+      islocked: 0,
+      validatetype: field.validatetype,
+      datasetid: '',
+      remoteid: '',
+      tooltip: '',
+      isdeleted: 0,
+      orderno: 0,
+      isentrytype: 'SINGLE',
+      params: '',
+    };
+  }
+  const body = JSON.stringify({
+    datasets: {},
+    form: {
+      datecreate: '',
+      fields,
+      pages: [page],
+      statuscode: 0,
+      datelastupdate: '',
+      formattributes: { muraormentities: 0 },
+      siteid: '',
+      formid,
+      isactive: 0,
+      name: '',
+      config: {},
+      notes: '',
+      remoteid: '',
+      iscurrent: 0,
+      package: '',
+      deletedfields: {},
+      fieldorder: [],
+    },
+  });
+  return { body, fieldIDs: page };
+}
+
+/** The site's Form, stored in the Forms module outside the site tree, and the Page under home that displays it in region 2. */
+function buildForm(b: Build, site: SiteRow): [form: ContentRow, host: ContentRow] {
+  const rng = fork(b, site.siteID, 'form');
+  const { faker } = rng;
+  const formID = newId(b, rng);
+  const [formSaved, hostSaved] = pair(b, rng);
+  const contentHistID = newId(b, rng);
+  const definition = formDefinition(b, rng);
+  const form: ContentRow = {
+    contentID: formID,
+    siteID: site.siteID,
+    moduleID: MASA_FORMS_MODULE_ID,
+    parentID: MASA_FORMS_MODULE_ID,
+    type: 'Form',
+    subType: 'Default',
+    title: FORM_TITLE,
+    menuTitle: FORM_TITLE,
+    summary: '',
+    isNav: 1,
+    display: 1,
+    categoryIDs: [],
+    objects: [],
+    responseMessage: FORM_RESPONSE_MESSAGE,
+    fieldIDs: definition.fieldIDs,
+    versions: [
+      {
+        contentHistID,
+        title: FORM_TITLE,
+        summary: '',
+        body: definition.body,
+        lastUpdate: formSaved,
+        approved: 1,
+        active: 1,
+      },
+    ],
+  };
+  const summary = `<p>${faker.lorem.sentence()}</p>`;
+  const host: ContentRow = {
+    contentID: newId(b, rng),
+    siteID: site.siteID,
+    moduleID: MASA_DEFAULT_MODULE_ID,
+    parentID: MASA_HOME_CONTENT_ID,
+    type: 'Page',
+    subType: 'Default',
+    title: FORM_HOST_TITLE,
+    menuTitle: FORM_HOST_TITLE,
+    summary,
+    isNav: 1,
+    display: 1,
+    categoryIDs: [],
+    objects: [{ columnID: FORM_COLUMN_ID, object: 'form', objectID: formID, name: FORM_TITLE }],
+    formID,
+    versions: [
+      {
+        contentHistID: newId(b, rng),
+        title: FORM_HOST_TITLE,
+        summary,
+        body: `<p>${faker.lorem.paragraph()}</p>`,
+        lastUpdate: hostSaved,
+        approved: 1,
+        active: 1,
+      },
+    ],
+  };
+  return [form, host];
+}
+
+/**
+ * Content nodes counted for a site: folders under the home node first, then pages under home or a folder, then the page
+ * hosting the site's form; the Form itself, a Forms-module item, precedes its host page and is not counted.
+ */
 function buildContent(b: Build, site: SiteRow, categories: readonly CategoryRow[]): ContentRow[] {
   const counts = b.config.sites[site.siteID].counts;
   if (counts.contentNodes === 0) return [];
@@ -492,7 +674,7 @@ function buildContent(b: Build, site: SiteRow, categories: readonly CategoryRow[
       MAX.title,
     );
 
-  return Array.from({ length: counts.contentNodes }, (_, i): ContentRow => {
+  const nodes = Array.from({ length: counts.contentNodes - 1 }, (_, i): ContentRow => {
     const type: ContentRow['type'] = i < folderCount ? 'Folder' : 'Page';
     const contentID = newId(b, rng);
     const parentID =
@@ -516,6 +698,7 @@ function buildContent(b: Build, site: SiteRow, categories: readonly CategoryRow[
     return {
       contentID,
       siteID: site.siteID,
+      moduleID: MASA_DEFAULT_MODULE_ID,
       parentID,
       type,
       subType: 'Default',
@@ -525,9 +708,11 @@ function buildContent(b: Build, site: SiteRow, categories: readonly CategoryRow[
       isNav: bit(rng.bool(0.8)),
       display: 1,
       categoryIDs: rng.pickMany(pooled, rng.int(0, Math.min(MAX_CATEGORIES_PER_NODE, pooled.length))),
+      objects: [],
       versions,
     };
   });
+  return [...nodes, ...buildForm(b, site)];
 }
 
 /** Pooled umbrella files: PNG images first, then PDF documents. */

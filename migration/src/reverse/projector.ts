@@ -2,10 +2,12 @@
 import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
 
+import { serializeError } from '@opt2/platform/logging';
 import {
   CURSOR_START,
   compareXid,
   decodeRow,
+  encodeRow,
   formatCanonicalTimestamp,
   formatCursor,
   parseCursor,
@@ -22,11 +24,13 @@ import { ownerByName, ownerBySchema } from '../config.js';
 import type { MigrationContext } from '../context.js';
 import { currentAuthority, type CurrentAuthority } from '../cutover/index.js';
 import { readTableCatalog, type TableCatalog } from '../extract/index.js';
-import { Opt2SyncUnavailableError, countStartupRows, opt2SyncReady, type LegacyDb } from '../legacy/index.js';
+import { BridgeError, Opt2SyncUnavailableError, countStartupRows, opt2SyncReady, type LegacyDb } from '../legacy/index.js';
 import type { DataOwner, LegacyTableTarget, Unit } from '../owners/index.js';
 
 import {
   applyLegacyChange,
+  cancellableQuery,
+  clearPendingEffects,
   decodeLegacyChange,
   readCheckpoints,
   summarise,
@@ -35,6 +39,7 @@ import {
   type ApplySummary,
   type CheckpointRow,
   type LegacyChange,
+  type LegacyEffect,
 } from './apply-legacy.js';
 import { FILE_OBJECT_UNIT, executeFileOps, isFileObjectChange, planFileOps } from './files.js';
 import { OperationTracker, classifyRow, splitAtHold, type FenceRequest, type RowDisposition, type TrackedOperation } from './operations.js';
@@ -122,6 +127,8 @@ const SETTINGS_TABLE = 'tsettings';
 const FILES_TABLE = 'tfiles';
 /** Schema of strategies-content, whose `content.file_object` manifest the file store follows. */
 const CONTENT_SCHEMA = FILE_OBJECT_UNIT.slice(0, FILE_OBJECT_UNIT.indexOf('.'));
+/** Legacy keys per owner export request: the `maxItems` of the export's `keys` parameter. */
+const EXPORT_KEYS_PER_REQUEST = 100;
 
 /** One owner's changelog in one tenant, as far as this cycle has read it. */
 interface Stream {
@@ -134,6 +141,8 @@ interface Stream {
   /** Operation the stream is parked at. */
   parkedAt: string | undefined;
   failed: boolean;
+  /** Effects its committed SQL Server checkpoint still owes legacy. */
+  pendingEffects: LegacyEffect[];
 }
 
 /** A stream's rows of one batch and the checkpoint the batch commits for it. */
@@ -197,6 +206,21 @@ function byPosition(a: { xid: string; seq: string }, b: { xid: string; seq: stri
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
+/** The effects of every list once each, in first-seen order with site refreshes before cache purges. */
+function mergeEffects(lists: readonly (readonly LegacyEffect[])[]): LegacyEffect[] {
+  const unique = new Map<string, LegacyEffect>();
+  for (const effect of lists.flat()) unique.set(JSON.stringify([effect.kind, effect.siteId]), effect);
+  const all = [...unique.values()];
+  return [...all.filter((effect) => effect.kind === 'siteRefresh'), ...all.filter((effect) => effect.kind === 'purgeCache')];
+}
+
+/** The bridge's 404 for a site the registry does not hold, such as a deleted one; its caches left the registry with it. */
+function isUnregisteredSite(error: unknown): boolean {
+  if (!(error instanceof BridgeError) || error.status !== 404 || typeof error.body !== 'object' || error.body === null) return false;
+  const body = error.body as { error?: unknown; message?: unknown };
+  return body.error === 'notFound' && body.message === 'unregistered site';
+}
+
 function isDboTable(change: LegacyChange, table: string): boolean {
   return change.physicalTable.schema.toLowerCase() === 'dbo' && change.physicalTable.table.toLowerCase() === table;
 }
@@ -227,11 +251,11 @@ function keyText(columns: readonly string[], image: Readonly<Record<string, Cano
 
 /**
  * Legacy site of each tenant, from the live `tsettings` site ids; the first site in order wins when two fold to one tenant.
- * Site ids keep their spelling, without the trailing spaces SQL Server ignores.
+ * Site ids keep their spelling, without the trailing spaces SQL Server ignores; `signal` cancels the read.
  */
-export async function liveTenantSites(legacy: Pick<LegacyDb, 'live'>): Promise<Map<string, string>> {
+export async function liveTenantSites(legacy: Pick<LegacyDb, 'live'>, options: { signal?: AbortSignal } = {}): Promise<Map<string, string>> {
   const pool = await legacy.live();
-  const result = await pool.request().query<{ SiteID: string }>(LIVE_SITES_SQL);
+  const result = await cancellableQuery<{ SiteID: string }>(pool.request(), LIVE_SITES_SQL, options.signal);
   const sites = result.recordset
     .map((row) => row.SiteID.replace(/ +$/, ''))
     .filter((site) => site !== '')
@@ -244,17 +268,66 @@ export async function liveTenantSites(legacy: Pick<LegacyDb, 'live'>): Promise<M
   return tenants;
 }
 
-/** Other owners' legacy images of split-table rows, each unit's export indexed by legacy key once per batch. */
+/** The change's after-image key as owners' export rows encode it: its key columns in ownership order, typed as its images. */
+function exportKey(keyColumns: readonly string[], change: LegacyChange): string {
+  const image = change.after ?? {};
+  const columns = keyColumns.map((name): CanonicalColumn => {
+    const lower = name.toLowerCase();
+    const column = change.columns.find((candidate) => candidate.name.toLowerCase() === lower);
+    if (column === undefined) throw new Error(`Images of ${change.unit} carry no key column ${name} of ${change.legacyTable}`);
+    return { ...column, name };
+  });
+  return encodeRow(columns, Object.fromEntries(keyColumns.map((name) => [name, valueAt(image, name) ?? null])));
+}
+
+/** Identity of one other unit's parts in the change's tenant and program. */
+function partsId(unit: string, change: LegacyChange): string {
+  return JSON.stringify([unit, change.tenantId, change.programId ?? null]);
+}
+
+/** The keys a batch needs of one other unit in one tenant and program. */
+interface PartsRequest {
+  readonly target: LegacyTableTarget;
+  /** A change of the request's tenant, program and legacy table. */
+  readonly change: LegacyChange;
+  readonly keyColumns: readonly string[];
+  /** Export key encodings by key text. */
+  readonly keys: Map<string, string>;
+}
+
+/** Other owners' legacy images of a batch's split-table rows, fetched by legacy key before the batch transaction opens. */
 class OtherParts {
   readonly #ctx: Pick<ProjectorContext, 'catalog' | 'owners'>;
-  readonly #indexes = new Map<string, Promise<Map<string, Record<string, CanonicalValue>[]>>>();
+  /** Images by parts identity, then by requested key text; a requested key without rows holds none. */
+  readonly #indexes = new Map<string, Map<string, Record<string, CanonicalValue>[]>>();
 
   constructor(ctx: Pick<ProjectorContext, 'catalog' | 'owners'>) {
     this.#ctx = ctx;
   }
 
-  /** Every other unit's values for the change's legacy key, in ownership-file order. */
-  async fetch(change: LegacyChange): Promise<Record<string, CanonicalValue>[]> {
+  /** Fetches the other units' parts of every split-table change that may insert its after-image; deletes never merge parts. */
+  async preload(changes: readonly LegacyChange[]): Promise<void> {
+    const { catalog } = this.#ctx;
+    const wanted = new Map<string, PartsRequest>();
+    for (const change of changes) {
+      if (change.after === undefined || !catalog.isSplit(change.legacyTable)) continue;
+      const keyColumns = catalog.keyColumnsOf(change.legacyTable);
+      if (keyColumns.length === 0) continue;
+      const text = keyText(keyColumns, change.after);
+      const encoded = exportKey(keyColumns, change);
+      for (const target of catalog.unitsForLegacyTable(change.legacyTable)) {
+        if (target.unit === change.unit) continue;
+        const id = partsId(target.unit, change);
+        const request = wanted.get(id) ?? { target, change, keyColumns, keys: new Map<string, string>() };
+        request.keys.set(text, encoded);
+        wanted.set(id, request);
+      }
+    }
+    for (const [id, request] of wanted) this.#indexes.set(id, await this.#load(request));
+  }
+
+  /** Every other unit's preloaded values for the change's legacy key, in ownership-file order. */
+  fetch(change: LegacyChange): Record<string, CanonicalValue>[] {
     const { catalog } = this.#ctx;
     const keyColumns = catalog.keyColumnsOf(change.legacyTable);
     if (keyColumns.length === 0) return [];
@@ -262,42 +335,33 @@ class OtherParts {
     const parts: Record<string, CanonicalValue>[] = [];
     for (const target of catalog.unitsForLegacyTable(change.legacyTable)) {
       if (target.unit === change.unit) continue;
-      const index = await this.#indexOf(target, change, keyColumns);
-      parts.push(...(index.get(key) ?? []));
+      const images = this.#indexes.get(partsId(target.unit, change))?.get(key);
+      if (images === undefined) throw new Error(`Parts of ${target.unit} for ${change.legacyTable} were not fetched before the batch transaction`);
+      parts.push(...images);
     }
     return parts;
   }
 
-  #indexOf(
-    target: LegacyTableTarget,
-    change: LegacyChange,
-    keyColumns: readonly string[],
-  ): Promise<Map<string, Record<string, CanonicalValue>[]>> {
-    const id = JSON.stringify([target.unit, change.tenantId, change.programId ?? null]);
-    let index = this.#indexes.get(id);
-    if (index === undefined) {
-      index = this.#load(target, change, keyColumns);
-      this.#indexes.set(id, index);
-    }
-    return index;
-  }
-
-  async #load(
-    target: LegacyTableTarget,
-    change: LegacyChange,
-    keyColumns: readonly string[],
-  ): Promise<Map<string, Record<string, CanonicalValue>[]>> {
+  /** The request's keys from the unit's owner, in chunks the export accepts, keeping only the requested keys' rows. */
+  async #load({ target, change, keyColumns, keys }: PartsRequest): Promise<Map<string, Record<string, CanonicalValue>[]>> {
     const { catalog, owners } = this.#ctx;
     const generic = genericTable(catalog, change.legacyTable);
-    const index = new Map<string, Record<string, CanonicalValue>[]>();
-    const params = { unit: target.unit, tenantId: change.tenantId, ...(change.programId === undefined ? {} : { programId: change.programId }) };
-    for await (const page of owners.exportPages(target.owner, params)) {
-      for (const table of page.tables) {
-        if (table.unit !== target.unit || genericTable(catalog, table.legacyTable) !== generic) continue;
-        for (const row of table.rows) {
-          const values = decodeRow(table.columns, row.row);
-          const key = keyText(keyColumns, values);
-          index.set(key, [...(index.get(key) ?? []), values]);
+    const index = new Map([...keys.keys()].map((key): [string, Record<string, CanonicalValue>[]] => [key, []]));
+    const encoded = [...keys.values()];
+    for (let from = 0; from < encoded.length; from += EXPORT_KEYS_PER_REQUEST) {
+      const params = {
+        unit: target.unit,
+        tenantId: change.tenantId,
+        ...(change.programId === undefined ? {} : { programId: change.programId }),
+        keys: encoded.slice(from, from + EXPORT_KEYS_PER_REQUEST),
+      };
+      for await (const page of owners.exportPages(target.owner, params)) {
+        for (const table of page.tables) {
+          if (table.unit !== target.unit || genericTable(catalog, table.legacyTable) !== generic) continue;
+          for (const row of table.rows) {
+            const values = decodeRow(table.columns, row.row);
+            index.get(keyText(keyColumns, values))?.push(values);
+          }
         }
       }
     }
@@ -341,7 +405,7 @@ class ProjectorCycle {
     this.#filesProjected = ctx.catalog.unitsOfOwner(this.#contentOwner).some((unit) => feedsFiles(unit) && authority.isTargetAuthoritative(unit.id));
   }
 
-  /** Reads every stream from its checkpoint, then releases or passes over parked operations until nothing progresses. */
+  /** Runs effects earlier batches owe, then reads every stream from its checkpoint and settles parked operations until nothing progresses. */
   async run(): Promise<void> {
     const projected = new Set([...this.#authority.targetUnits].map((unit) => this.#ctx.catalog.ownerOf(unit)));
     const owners = this.#ctx.config.dataOwners.filter((owner) => projected.has(owner));
@@ -351,10 +415,12 @@ class ProjectorCycle {
       for (const tenantId of this.#tenantSites.keys()) {
         const row = stored.get(streamKey(owner, tenantId));
         const checkpoint = row === undefined ? CURSOR_START : cursorOfCheckpoint(row);
-        this.#streams.set(streamKey(owner, tenantId), { owner, tenantId, checkpoint, scanEnd: undefined, parkedAt: undefined, failed: false });
+        const pendingEffects = row?.pendingEffects ?? [];
+        this.#streams.set(streamKey(owner, tenantId), { owner, tenantId, checkpoint, scanEnd: undefined, parkedAt: undefined, failed: false, pendingEffects });
       }
     }
     try {
+      await this.#recoverEffects(checkpoints);
       for (const stream of this.#streams.values()) await this.#runStreamSafely(stream);
       await this.#settleOperations();
     } finally {
@@ -445,7 +511,7 @@ class ProjectorCycle {
       stream.failed = true;
       this.#result.errors.push({ owner: stream.owner, tenantId: stream.tenantId, cursor: stream.checkpoint, error: err });
       this.#ctx.logger.error(
-        { tenantId: stream.tenantId, error: err },
+        { tenantId: stream.tenantId, error: serializeError(err) },
         `Reverse projection of ${stream.owner} for tenant ${stream.tenantId} stopped at cursor ${stream.checkpoint}`,
       );
     }
@@ -500,7 +566,7 @@ class ProjectorCycle {
         this.#unfenced.add(owner);
         const streams = this.#streamsOf(owner);
         if (streams.length > 0) this.#fail(streams, error);
-        else this.#ctx.logger.error({ error: toError(error) }, `Reading the write position of ${owner} for operation fences failed`);
+        else this.#ctx.logger.error({ error: serializeError(error) }, `Reading the write position of ${owner} for operation fences failed`);
       }
     }
     return fenced;
@@ -561,9 +627,10 @@ class ProjectorCycle {
   }
 
   /**
-   * One batch: file-store operations first, since the bridge may read `tfiles` rows this batch's transaction would lock;
-   * then every change in `(xid, seq)` order and every part's checkpoint in one SQL Server transaction; then the hooks,
-   * checkpoint mirrors, site refreshes, cache purges and reverse watermarks.
+   * One batch: file-store operations first, since the bridge may read `tfiles` rows this batch's transaction would lock,
+   * and the other owners' parts its split-table rows may merge; then every change in `(xid, seq)` order and every
+   * part's checkpoint, with the site refreshes and cache purges it owes, in one SQL Server transaction; then the hooks,
+   * checkpoint mirrors, owed effects and reverse watermarks.
    */
   async #project(parts: readonly BatchPart[]): Promise<void> {
     const { hooks } = this.#deps;
@@ -586,6 +653,7 @@ class ProjectorCycle {
       if (!catalogs.has(key)) catalogs.set(key, await readTableCatalog(pool, change.physicalTable));
     }
     const others = new OtherParts(this.#ctx);
+    await others.preload(changes);
     const batchId = randomUUID();
     const write = async (tx: Transaction): Promise<CheckpointRow[]> => {
       for (const change of changes) await applyLegacyChange(tx, change, this.#applyOptions(change, catalogs, others));
@@ -601,6 +669,7 @@ class ProjectorCycle {
             appliedHorizon: part.appliedHorizon,
             batchId,
             rowsApplied: part.changes.length,
+            pendingEffects: mergeEffects([part.stream.pendingEffects, effects]),
           }),
         );
       }
@@ -608,8 +677,12 @@ class ProjectorCycle {
     };
 
     const summary = summarise(changes);
+    const effects = this.#effectsOf(decoded, summary);
     const { stored, guardError } = await this.#commit(write, summary.touchesTcontent);
-    for (const part of decoded) part.stream.checkpoint = part.endCursor;
+    for (const [index, part] of decoded.entries()) {
+      part.stream.checkpoint = part.endCursor;
+      part.stream.pendingEffects = stored[index]?.pendingEffects ?? [];
+    }
     this.#result.batches += 1;
     this.#result.rowsApplied += changes.length;
     this.#result.skipped += decoded.reduce((sum, part) => sum + part.targetOnly, 0);
@@ -618,7 +691,7 @@ class ProjectorCycle {
       await callHook(() => hooks?.afterLegacyCommit?.({ owner: part.stream.owner, tenantId: part.stream.tenantId, batchId }));
     }
     for (const row of stored) await this.#mirror(row);
-    await this.#afterCommit(decoded, summary);
+    await this.#afterCommit(decoded, stored);
     if (guardError !== undefined) throw guardError;
   }
 
@@ -674,7 +747,7 @@ class ProjectorCycle {
       split: catalog.isSplit(change.legacyTable),
       ownedColumns: target.ownedColumns,
       keyColumns: catalog.keyColumnsOf(change.legacyTable),
-      fetchOtherParts: (merged) => others.fetch(merged),
+      fetchOtherParts: (merged) => Promise.resolve(others.fetch(merged)),
     };
   }
 
@@ -728,13 +801,12 @@ class ProjectorCycle {
     });
   }
 
-  /** Refreshes Masa's site registry after `tsettings` changes, purges the touched sites' caches and records reverse watermarks. */
-  async #afterCommit(parts: readonly DecodedPart[], summary: ApplySummary): Promise<void> {
-    const { bridge, owners, clock } = this.#ctx;
-    const changes = parts.flatMap((part) => part.changes);
+  /** Effects a batch owes legacy: site refreshes after `tsettings` changes, then purges of touched sites after content or site rows. */
+  #effectsOf(parts: readonly DecodedPart[], summary: ApplySummary): LegacyEffect[] {
+    const effects: LegacyEffect[] = [];
     if (summary.touchesTsettings) {
-      const settings = summarise(changes.filter((change) => isDboTable(change, SETTINGS_TABLE)));
-      for (const siteId of settings.siteIds) await bridge.siteRefresh(siteId);
+      const settings = summarise(parts.flatMap((part) => part.changes).filter((change) => isDboTable(change, SETTINGS_TABLE)));
+      for (const siteId of settings.siteIds) effects.push({ kind: 'siteRefresh', siteId });
     }
     const touching = parts.filter((part) => part.changes.length > 0 || part.fileRows.length > 0);
     if (summary.touchesTsettings || touching.some((part) => part.stream.owner === this.#contentOwner)) {
@@ -743,8 +815,59 @@ class ProjectorCycle {
         const site = this.#tenantSites.get(part.stream.tenantId);
         if (site !== undefined) sites.add(site);
       }
-      for (const siteId of sites) await bridge.purgeCache(siteId);
+      for (const siteId of sites) effects.push({ kind: 'purgeCache', siteId });
     }
+    return effects;
+  }
+
+  /** Runs effects in order through the bridge; a failure propagates and leaves them owed, except a purge of an unregistered site. */
+  async #runEffects(effects: readonly LegacyEffect[]): Promise<void> {
+    const { bridge } = this.#ctx;
+    for (const { kind, siteId } of effects) {
+      if (kind === 'siteRefresh') await bridge.siteRefresh(siteId);
+      else {
+        await bridge.purgeCache(siteId).catch((error: unknown) => {
+          if (!isUnregisteredSite(error)) throw error;
+        });
+      }
+    }
+  }
+
+  /** Runs the effects the checkpoints owe once each, then clears them from every checkpoint and from its streams. */
+  async #settleEffects(rows: readonly CheckpointRow[], streams: readonly Stream[]): Promise<void> {
+    const owing = rows.filter((row) => row.pendingEffects.length > 0);
+    if (owing.length === 0) return;
+    await this.#runEffects(mergeEffects(owing.map((row) => row.pendingEffects)));
+    const pool = await this.#ctx.legacy.live();
+    for (const row of owing) await clearPendingEffects(pool, row);
+    for (const stream of streams) stream.pendingEffects = [];
+  }
+
+  /** Settles what earlier cycles' committed batches still owe; a failure stops the owing streams for this cycle. */
+  async #recoverEffects(checkpoints: readonly CheckpointRow[]): Promise<void> {
+    const owing = checkpoints.filter((row) => row.pendingEffects.length > 0);
+    if (owing.length === 0) return;
+    // A tenant whose site left `tsettings` has no stream, yet still owes the refresh that drops its site.
+    const streams = owing.map((row): Stream => this.#streamOf(row.owner, row.tenantId) ?? this.#unstreamed(row));
+    try {
+      await this.#settleEffects(owing, streams);
+    } catch (error) {
+      this.#fail(streams, error);
+    }
+  }
+
+  /** A stream this cycle does not read, standing for a checkpoint so that its failure is reported. */
+  #unstreamed(row: CheckpointRow): Stream {
+    const checkpoint = cursorOfCheckpoint(row);
+    // Checkpoints are read for data owners only.
+    const owner = row.owner as DataOwner;
+    return { owner, tenantId: row.tenantId, checkpoint, scanEnd: undefined, parkedAt: undefined, failed: false, pendingEffects: row.pendingEffects };
+  }
+
+  /** Settles the effects the batch's stored checkpoints owe, then records reverse watermarks. */
+  async #afterCommit(parts: readonly DecodedPart[], stored: readonly CheckpointRow[]): Promise<void> {
+    const { owners, clock } = this.#ctx;
+    await this.#settleEffects(stored, parts.map((part) => part.stream));
     const finishedAt = formatCanonicalTimestamp(clock.now());
     for (const part of parts) {
       for (const legacyTable of new Set(part.changes.map((change) => change.legacyTable))) {
@@ -818,7 +941,7 @@ export function createProjectorLoop(ctx: ProjectorContext, options: ProjectorLoo
       timer = undefined;
       void runOnce()
         .catch((error: unknown) => {
-          ctx.logger.error({ error: toError(error) }, 'Reverse projector cycle failed');
+          ctx.logger.error({ error: serializeError(error) }, 'Reverse projector cycle failed');
         })
         .finally(schedule);
     }, ctx.config.projection.idlePollMs);

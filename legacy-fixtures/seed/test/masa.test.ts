@@ -6,8 +6,8 @@ import { loadConfig, type SeedConfig, type SiteKey } from '../src/config.js';
 import { createRandom } from '../src/random.js';
 import { createCalendar } from '../src/time.js';
 import { sha256Hex } from '../src/bytes.js';
-import { MASA_HOME_CONTENT_ID, MASA_DEFAULT_MODULE_ID } from '../src/ids.js';
-import { buildMasa, indexMasa, type MasaData, type MasaIndex } from '../src/masa.js';
+import { MASA_HOME_CONTENT_ID, MASA_DEFAULT_MODULE_ID, MASA_FORMS_MODULE_ID } from '../src/ids.js';
+import { buildMasa, indexMasa, type ContentRow, type MasaData, type MasaIndex } from '../src/masa.js';
 
 const CONFIG_PATH = fileURLToPath(new URL('../seed.config.json', import.meta.url));
 const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
@@ -26,15 +26,16 @@ beforeAll(async () => {
 
 describe('masa counts', () => {
   it.each([
-    ['umbrella', 0, 1000, 0, 100, 0],
-    ['tenant-a', 2000, 0, 50, 0, 5000],
-    ['tenant-b', 180, 20, 10, 10, 300],
-  ] as const)('%s: system %i members %i groups %i categories %i content %i', (site, sys, mem, groups, cats, content) => {
+    ['umbrella', 0, 1000, 0, 100, 0, 0],
+    ['tenant-a', 2000, 0, 50, 0, 5000, 1],
+    ['tenant-b', 180, 20, 10, 10, 300, 1],
+  ] as const)('%s: system %i members %i groups %i categories %i content %i forms %i', (site, sys, mem, groups, cats, content, forms) => {
     expect(index.systemUsers(site as SiteKey)).toHaveLength(sys);
     expect(index.members(site as SiteKey)).toHaveLength(mem);
     expect(index.groups(site as SiteKey)).toHaveLength(groups);
     expect(masa.categories.filter((c) => c.siteID === site)).toHaveLength(cats);
-    expect(masa.content.filter((c) => c.siteID === site)).toHaveLength(content);
+    expect(masa.content.filter((c) => c.siteID === site && c.moduleID === MASA_DEFAULT_MODULE_ID)).toHaveLength(content);
+    expect(masa.content.filter((c) => c.siteID === site && c.moduleID === MASA_FORMS_MODULE_ID)).toHaveLength(forms);
   });
   it('totals and key order', () => {
     expect(Object.keys(masa)).toEqual(['sites', 'groups', 'users', 'memberships', 'categories', 'content', 'files', 'oauthClients']);
@@ -175,7 +176,7 @@ describe('masa categories, content and files', () => {
   });
   it('content', () => {
     for (const site of ['tenant-a', 'tenant-b'] as const) {
-      const rows = masa.content.filter((c) => c.siteID === site);
+      const rows = masa.content.filter((c) => c.siteID === site && c.moduleID === MASA_DEFAULT_MODULE_ID);
       const seen = new Set<string>([MASA_HOME_CONTENT_ID]);
       const folders = rows.filter((c) => c.type === 'Folder');
       expect(folders.length).toBe(Math.round(rows.length * 0.02));
@@ -200,8 +201,58 @@ describe('masa categories, content and files', () => {
         expect(c.categoryIDs.length).toBeLessThanOrEqual(3);
         expect(new Set(c.categoryIDs).size).toBe(c.categoryIDs.length);
         for (const id of c.categoryIDs) expect(pool.has(id)).toBe(true);
+        expect(c).not.toHaveProperty('responseMessage');
+        expect(c).not.toHaveProperty('fieldIDs');
       }
+      expect(rows.filter((c) => c.objects.length > 0 || c.formID !== undefined)).toEqual([rows[rows.length - 1]]);
     }
+  });
+  it.each(['tenant-a', 'tenant-b'] as const)('%s form and the page hosting it', (site) => {
+    const rows = masa.content.filter((c) => c.siteID === site);
+    const form = rows.find((c) => c.type === 'Form') as ContentRow;
+    const host = rows[rows.length - 1] as ContentRow;
+    expect(rows.indexOf(form)).toBe(rows.length - 2);
+    expect(form).toMatchObject({
+      moduleID: MASA_FORMS_MODULE_ID,
+      parentID: MASA_FORMS_MODULE_ID,
+      title: 'OPT-2 Seed Contact Form',
+      menuTitle: 'OPT-2 Seed Contact Form',
+      isNav: 1,
+      objects: [],
+      categoryIDs: [],
+    });
+    expect(form.responseMessage).toMatch(/^<p>.+<\/p>$/);
+    expect(form).not.toHaveProperty('formID');
+    expect(form.versions.map((v) => [v.title, v.approved, v.active])).toEqual([[form.title, 1, 1]]);
+    const def = JSON.parse(form.versions[0]!.body) as {
+      datasets: object;
+      form: { formid: string; fields: Record<string, Record<string, unknown>>; pages: string[][]; fieldorder: unknown[]; formattributes: { muraormentities: number } };
+    };
+    expect(def.datasets).toEqual({});
+    expect([def.form.fieldorder, def.form.formattributes.muraormentities]).toEqual([[], 0]);
+    expect(def.form.pages).toHaveLength(1);
+    expect(Object.keys(def.form.fields)).toEqual(def.form.pages[0]);
+    expect(form.fieldIDs).toEqual(def.form.pages[0]);
+    const fields = def.form.pages[0]!.map((id) => def.form.fields[id]!);
+    expect(fields.map((f) => [f.name, f.isrequired, f.validatetype, (f.fieldtype as { fieldtype: string }).fieldtype])).toEqual([
+      ['fullname', 1, '', 'textfield'],
+      ['email', 1, 'email', 'textfield'],
+      ['message', 0, '', 'textarea'],
+    ]);
+    for (const [id, f] of Object.entries(def.form.fields)) {
+      expect([f.fieldid, f.formid, f.isactive, f.isdeleted]).toEqual([id, def.form.formid, 1, 0]);
+      expect((f.fieldtype as { fieldtypeid: string }).fieldtypeid).toMatch(CF_UUID);
+    }
+    expect(host).toMatchObject({
+      moduleID: MASA_DEFAULT_MODULE_ID,
+      parentID: MASA_HOME_CONTENT_ID,
+      type: 'Page',
+      title: 'OPT-2 Seed Contact Page',
+      formID: form.contentID,
+      objects: [{ columnID: 2, object: 'form', objectID: form.contentID, name: form.title }],
+    });
+    expect(host.versions).toHaveLength(1);
+    expect(form.versions[0]!.lastUpdate < host.versions[0]!.lastUpdate).toBe(true);
   });
   it('files', () => {
     const png = masa.files.filter((f) => f.fileExt === 'png');
@@ -251,10 +302,10 @@ describe('masa determinism', () => {
     const full = structuredClone(config);
     full.historyDays = 1;
     for (const site of ['tenant-a', 'tenant-b'] as const) {
-      Object.assign(full.sites[site].counts, { contentNodes: 1, maxVersionsPerNode: 1440 });
+      Object.assign(full.sites[site].counts, { contentNodes: 2, maxVersionsPerNode: 1440 });
     }
     const { content } = build(full);
-    expect(content).toHaveLength(2);
+    expect(content.map((c) => c.type)).toEqual(['Page', 'Form', 'Page', 'Page', 'Form', 'Page']);
     for (const c of content) {
       expect(c.versions.length).toBeLessThanOrEqual(1440);
       for (let i = 1; i < c.versions.length; i += 1) expect(c.versions[i - 1]!.lastUpdate < c.versions[i]!.lastUpdate).toBe(true);

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  capturedLogOffsets,
   findSeamTrace,
   mintTraceparent,
   readCapturedLogLines,
@@ -207,6 +208,34 @@ describe('readCapturedLogLines', () => {
 
     expect(summary).toMatchObject({ linesChecked: 5, invalid: 2 });
     expect(summary.invalidSamples.map((sample) => sample.source)).toEqual(['people', 'people']);
+  });
+
+  it('reads only the lines each package logged after capturedLogOffsets, and counts an absent log as empty', async () => {
+    await fs.writeFile(path.join(stateRoot, 'people.log'), 'before-1\nbefore-2\n');
+    await fs.writeFile(
+      path.join(stateRoot, 'up.json'),
+      JSON.stringify({
+        processes: {
+          people: { pid: 4112, cwd: stateRoot, command: 'node dist/main.js', log: 'people.log' },
+          gateway: { pid: 4101, cwd: stateRoot, command: 'node dist/main.js', log: 'gateway.log' },
+        },
+      }),
+    );
+
+    const fromOffsets = capturedLogOffsets({ env, packages: ['people', 'gateway'] });
+    await fs.appendFile(path.join(stateRoot, 'people.log'), 'after-1\n');
+    await fs.writeFile(path.join(stateRoot, 'gateway.log'), 'after-2\n');
+
+    expect(fromOffsets).toEqual({ people: 18, gateway: 0 });
+    expect([...readCapturedLogLines({ env, packages: ['people', 'gateway'], fromOffsets })]).toEqual([
+      { source: 'people', line: 'after-1' },
+      { source: 'gateway', line: 'after-2' },
+    ]);
+    expect([...readCapturedLogLines({ env, packages: ['people'] })].map((entry) => entry.line)).toEqual([
+      'before-1',
+      'before-2',
+      'after-1',
+    ]);
   });
 });
 

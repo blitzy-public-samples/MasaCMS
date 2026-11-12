@@ -29,6 +29,7 @@ import { createScenarioContext, session, type Origin, type ScenarioContext } fro
 import {
   DEFAULT_MAILPIT_URL,
   MAIL_QUIET_MS,
+  MissingRowsError,
   RENDER_VARIANTS,
   SETTLE_POLL_MS,
   SettleTimeoutError,
@@ -2437,6 +2438,43 @@ describe('collectSideEffects', () => {
     expect(rows['identity.user_account']?.rows).toStrictEqual(encoded(ACCOUNT_COLUMNS, [U1, U2, U3]));
     const perScope = [STAT, STAT, OTHER_STAT];
     expect(rows['communications.email_stat']?.rows).toStrictEqual(encoded(STAT_COLUMNS, [...perScope, ...perScope]));
+  });
+
+  it.each([
+    { minRows: 4, error: undefined },
+    { minRows: 5, error: 'GS-SE-01: rows: tusers holds 4 legacy rows within {"siteid":"default"}, fewer than its minRows 5' },
+  ])('holds a scope of four legacy rows, split over three units, to minRows $minRows', async ({ minRows, error }) => {
+    const { ctx, scenario, deps } = await world(['rows'], [{ ...BY_SITE, minRows }]);
+
+    const run = collectSideEffects(ctx, scenario, 'legacy', deps);
+
+    if (error === undefined) {
+      expect((await run).rows).toStrictEqual({
+        'identity.group_account': LEGACY_USERS[2],
+        'identity.user_account': LEGACY_USERS[0],
+        'people.person': LEGACY_USERS[1],
+      });
+    } else {
+      const err = await failure(run);
+      expect(err).toBeInstanceOf(MissingRowsError);
+      expect(err.message).toBe(error);
+    }
+  });
+
+  it('leaves minRows to capture, so legacy rows after a gateway replay are not held to it', async () => {
+    const http = userExports(fakeHttp());
+    const sql = await fakeSql(legacyDb());
+    const ctx = await context(http, 'gateway');
+    const rows = [{ table: 'tusers', where: { username: 'Fixture-Ada' }, minRows: 2 }];
+
+    const effects = await collectSideEffects(ctx, { compare: ['rows'], rows, steps: [] }, 'gateway', {
+      fetch: http.fetch,
+      mssql: sql.mssql,
+      ownership: OWNERSHIP,
+      invoker: await fixtureInvoker(),
+    });
+
+    expect(effects.legacyRows?.['identity.user_account']?.rows).toStrictEqual(encoded(ACCOUNT_COLUMNS, [U1]));
   });
 
   it('collects target export rows on the gateway, with the legacy rows after replay beside them', async () => {

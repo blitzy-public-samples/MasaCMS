@@ -148,11 +148,17 @@ function renderTimeSelector(name: string, time: Date | null, defaultHour: number
 }
 
 /** `core/mura/customtags/datetimeselector.cfm`; a date over 50 years ahead prints blank but keeps its time selects. */
-function renderDateTimeSelector(a: DateTimeSelectorAttrs, dateKeyFormat: string, dayParts: boolean, now: Date): string {
+function renderDateTimeSelector(
+  a: DateTimeSelectorAttrs,
+  dateKeyFormat: string,
+  locale: string,
+  dayParts: boolean,
+  now: Date,
+): string {
   const datetime = a.datetime !== null && yearsBetween(now, a.datetime) > 50 ? null : a.datetime;
   const o = new CfmlOutput();
   o.text('\n<input type="text" autocomplete="off" class="datepicker ').value(attr('')).ws().value(attr('span3'));
-  o.text(' mura-datepicker').value(attr(a.name)).text('" value="').value(lsDateFormat(datetime, dateKeyFormat));
+  o.text(' mura-datepicker').value(attr(a.name)).text('" value="').value(lsDateFormat(datetime, dateKeyFormat, locale));
   o.text('" maxlength="12" id="mura-datepicker-').value(attr(a.name)).text('"/>').ws().ws();
   o.value(renderTimeSelector(a.name, a.datetime, a.defaultHour ?? 0, a.defaultMinute ?? 0, dayParts)).ws();
   o.text('\n<input type="hidden" id="mura-').value(attr(a.name)).text('" name="').value(attr(a.name));
@@ -285,24 +291,25 @@ function parseJson(text: string): unknown {
   }
 }
 
-/** `cfobject.parseDateArg(arg)` (cfobject.cfc:474-497) for a value of the stored interval. */
-function parseDateArg(value: unknown): Date | '' {
+/** `cfobject.parseDateArg(arg)` (cfobject.cfc:474-497) for a value of the stored interval, under `setLocale(locale)`. */
+function parseDateArg(value: unknown, locale: string): Date | '' {
   if (value instanceof Date) return value;
   let text = simpleText(value);
   if (/\d\d\d\d-\d\d-\d\dT\d\d:\d\d:\d\d/.test(text)) text = text.replace('T', ' ');
-  if (cfLsIsDate(text)) return cfLsParseDateTime(text);
+  if (cfLsIsDate(text, locale)) return cfLsParseDateTime(text, locale);
   return cfIsDateText(text) ? cfParseDateTimeText(text) : '';
 }
 
 /**
  * `contentIntervalManager.deserializeInterval` (contentIntervalManager.cfc:165-228) over the stored version values;
- * `serverTimeZone` is the legacy server's default zone id.
+ * `serverTimeZone` is the legacy server's default zone id; `locale` is `session.locale`, which reads the stored end date.
  */
 export function displayIntervalValues(
   interval: string | null,
   displayStart: Date | null,
   displayStop: Date | null,
   serverTimeZone: string,
+  locale: string,
 ): DisplayIntervalValues {
   const raw = interval ?? '';
   const parsed = parseJson(raw);
@@ -343,7 +350,7 @@ export function displayIntervalValues(
     repeats: flag(data.get('repeats')),
     allday: flag(data.get('allday')),
     end: simpleText(data.get('end')),
-    endon: parseDateArg(data.get('endon')),
+    endon: parseDateArg(data.get('endon'), locale),
     endafter: numberOrText(data.get('endafter')),
     daysofweek: simpleText(data.get('daysofweek')),
     timezone: simpleText(data.get('timezone')),
@@ -761,11 +768,11 @@ function quickEditTemplates(o: CfmlOutput, model: QuickEditModel, key: (k: strin
 function quickEditDisplay(o: CfmlOutput, model: QuickEditModel, ctx: AdminRenderContext): void {
   const key = (k: string): string => ctx.labels.key(k);
   const field = (k: string): string => key(`sitemanager.content.fields.${k}`);
-  const dateKeyFormat = ctx.session.dateKeyFormat;
+  const { dateKeyFormat, locale } = ctx.session;
   const scheduler = model.quickEditScheduler === true;
   const display = simpleText(model.content.display);
   const dateTime = (a: DateTimeSelectorAttrs): string =>
-    renderDateTimeSelector(a, dateKeyFormat, model.localeHasDayParts, model.now);
+    renderDateTimeSelector(a, dateKeyFormat, locale, model.localeHasDayParts, model.now);
 
   o.ws().ws().text('\n\t\t<div class="mura-control-group">\n\t\t\t <select name="display" id="mura-display" onchange="javascript: ');
   if (scheduler) o.text("this.selectedIndex==2?toggleDisplay2('editDates',true):");
@@ -871,7 +878,7 @@ function quickEditDisplay(o: CfmlOutput, model: QuickEditModel, ctx: AdminRender
   o.text('\n\t\t\t\t</label>\n\t\t\t\t\t</span>\n\t\t\t\t\t<span class="mura-interval-end" id="mura-interval-end-on" style="display:none">');
   o.text('\n\t\t\t\t\t\t<input type="text" id="displayIntervalEndOn" name="displayIntervalEndOn"');
   o.text(' class="mura-repeat-option datepicker mura-datepickerdisplayIntervalEndOn" value="');
-  o.value(lsDateFormat(interval.endon === '' ? null : interval.endon, dateKeyFormat)).text('" maxlength="12"/>\n\t\t\t\t\t\t');
+  o.value(lsDateFormat(interval.endon === '' ? null : interval.endon, dateKeyFormat, locale)).text('" maxlength="12"/>\n\t\t\t\t\t\t');
   if (!isCalendar) {
     o.ws().value(dateTime({ name: 'displayStop', datetime: model.displayStop, defaultHour: 23, defaultMinute: 59 })).ws();
   }

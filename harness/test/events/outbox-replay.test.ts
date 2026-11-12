@@ -23,6 +23,7 @@ import {
   CONSUMER_EFFECT_UNITS,
   DEFAULT_DRAIN,
   QuiescenceTimeoutError,
+  REPLAY_BIN_TIMEOUT_MS,
   runOutboxReplay,
   snapshotConsumers,
   waitForQuiescence,
@@ -725,12 +726,13 @@ describe('runOutboxReplay default runner', () => {
     const [file, args, options] = childProcess.execFile.mock.calls[0] ?? [];
     expect(file).toBe(binOf('people'));
     expect(args).toEqual(['replay', '--since', SINCE]);
-    expect(options).toMatchObject({
+    expect(options).toEqual({
       cwd: processEntry('people').cwd,
       env: { ...baseEnv(), ...processEntry('people').env },
       encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+      shell: false,
     });
-    expect(options).not.toHaveProperty('shell');
     expect(result.replays).toEqual([{ service: 'people', exitCode, summary: { republished: 2 } }]);
     expect(result.unchanged).toBe(exitCode === 0);
   });
@@ -739,6 +741,45 @@ describe('runOutboxReplay default runner', () => {
     const spawnFailure = Object.assign(new Error('spawn opt2-outbox ENOENT'), { code: 'ENOENT' });
 
     await expect(runWithExecFile(spawnFailure)).rejects.toBe(spawnFailure);
+  });
+
+  it.each([
+    { label: 'dies on SIGTERM', diesOn: 'SIGTERM', kills: [['SIGTERM']], destroyed: 0 },
+    { label: 'ignores every signal', diesOn: null, kills: [['SIGTERM'], ['SIGKILL']], destroyed: 1 },
+  ])('ends a bin that $label past REPLAY_BIN_TIMEOUT_MS and rejects with a bare ETIMEDOUT', async ({ diesOn, kills, destroyed }) => {
+    const { deps } = await setup();
+    writeUp(processes(['people']));
+    let callback: ExecFileCallback | undefined;
+    const stdio = [{ destroy: vi.fn() }, { destroy: vi.fn() }, { destroy: vi.fn() }];
+    const kill = vi.fn((signal: string) => {
+      // execFile's own error quotes the child's stderr.
+      const died = Object.assign(new Error(`Command failed: ${binOf('people')}\nchild-stderr`), { killed: true, code: null, signal });
+      if (signal === diesOn) callback?.(died, 'child-stdout', 'child-stderr');
+      return true;
+    });
+    childProcess.execFile.mockImplementation((...args: unknown[]) => {
+      callback = args[3] as ExecFileCallback;
+      return { exitCode: null, signalCode: null, kill, stdio };
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let settled = false;
+      const pending = runOutboxReplay({ ...deps, producers: ['people'], consumers: ['identity'], since: SINCE }).catch(
+        (err: unknown) => err,
+      );
+      void pending.finally(() => (settled = true));
+      while (!settled) await vi.advanceTimersByTimeAsync(60_000);
+      const error = await pending;
+
+      expect(error).toBeInstanceOf(Error);
+      expect(error).toMatchObject({ code: 'ETIMEDOUT', message: `${binOf('people')} timed out after ${REPLAY_BIN_TIMEOUT_MS} ms` });
+      expect((error as Error).cause).toBeUndefined();
+      expect(childProcess.execFile).toHaveBeenCalledTimes(1);
+      expect(kill.mock.calls).toEqual(kills);
+      for (const stream of stdio) expect(stream.destroy).toHaveBeenCalledTimes(destroyed);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

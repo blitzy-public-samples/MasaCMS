@@ -13,6 +13,7 @@ import {
 } from '@opt2/platform/legacy-compat';
 import type { Extraction, MultipartSpec, PollSpec, Scenario, SettleSpec, Step, StepExpectation } from './catalogue.js';
 import { GoldenConfigError } from './errors.js';
+import { defaultRouteKeyOptions } from './route-key-options.js';
 import {
   DEFAULT_SITE,
   appReloadKey,
@@ -123,7 +124,7 @@ export interface StepRunOptions {
   settle?: SettleHook;
   /** Replay: candidate the golden set kept; without one the step's own request is sent. */
   candidateIndex?: CandidateChoice;
-  /** Legacy registries for route keys, such as the inventory's variants; the reload key defaults from the env. */
+  /** Route-key registries and variants (default {@link defaultRouteKeyOptions}); the reload key defaults from the env. */
   routeKeyOptions?: RouteKeyOptions;
   /** Fetch for the fresh session of an `anonymous` step; pass the one the context was built with. */
   fetch?: FetchLike;
@@ -540,7 +541,8 @@ function routeKeyOf(ctx: ScenarioContext, request: RecordedRequest, body: Resolv
     input.multipartFileNames = body.files.map((file) => ({ field: file.name, filename: file.filename }));
   }
   if (body.kind === 'json') input.jsonBody = body.value;
-  return routeKeyForRequest(input, { appReloadKey: appReloadKey(ctx.env), ...opts.routeKeyOptions }).key;
+  const base = opts.routeKeyOptions ?? defaultRouteKeyOptions();
+  return routeKeyForRequest(input, { appReloadKey: appReloadKey(ctx.env), ...base }).key;
 }
 
 /** Sends `shape` once in the step's session, with the step's auth and CSRF tokens, and remembers the response. */

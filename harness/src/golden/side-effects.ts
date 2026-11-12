@@ -184,6 +184,11 @@ export class SettleTimeoutError extends SideEffectError {
   override readonly name: string = 'SettleTimeoutError';
 }
 
+/** A row scope holds fewer legacy rows after capture than its `minRows`. */
+export class MissingRowsError extends SideEffectError {
+  override readonly name: string = 'MissingRowsError';
+}
+
 /** One target of a legacy table in `opt2/table-ownership.json`. */
 export interface OwnershipTarget {
   unit: string;
@@ -791,6 +796,14 @@ export async function legacyRows(
   spec: ResolvedRowSpec,
   deps: { mssql: ReadOnlyMssql; ownership: TableOwnership },
 ): Promise<RowSnapshot[]> {
+  return (await scanLegacyRows(spec, deps)).snapshots;
+}
+
+/** {@link legacyRows} with `matched`, the number of legacy rows within `spec.where` before any unit predicate. */
+async function scanLegacyRows(
+  spec: ResolvedRowSpec,
+  deps: { mssql: ReadOnlyMssql; ownership: TableOwnership },
+): Promise<{ snapshots: RowSnapshot[]; matched: number }> {
   const { mssql, ownership } = deps;
   const ref = resolveLegacyTable(ownership, spec.table);
   const catalog = await readCatalog(mssql, ref.schema, ref.table);
@@ -820,7 +833,7 @@ export async function legacyRows(
     const encodings = rows.filter((_, i) => mask[i]).map((row) => encodeRow(columns, row));
     snapshots.push(snapshotOf(ownership, ref, plan.target, columns, encodings));
   }
-  return snapshots;
+  return { snapshots, matched: rows.length };
 }
 
 
@@ -1395,7 +1408,9 @@ export function settleHook(
 // --- Aggregation --------------------------------------------------------------------------------------------------
 
 function resolveRowSpec(spec: RowSpec, ctx: ScenarioContext): ResolvedRowSpec {
-  return { table: spec.table, where: resolvePlaceholders(spec.where, ctx) };
+  const resolved: ResolvedRowSpec = { table: spec.table, where: resolvePlaceholders(spec.where, ctx) };
+  if (spec.minRows !== undefined) resolved.minRows = spec.minRows;
+  return resolved;
 }
 
 /** Snapshots keyed by unit in sorted order; a unit several scopes reach holds each keyed row once, keyless rows per scope. */
@@ -1416,6 +1431,7 @@ function mergeSnapshots(snapshots: readonly RowSnapshot[]): Record<string, RowSn
 /**
  * Side effects of a finished scenario run on `origin`, computing only the kinds in `scenario.compare`. Rows are the
  * legacy snapshot on legacy; on the gateway they are the target export, with the legacy rows after replay in `legacyRows`.
+ * On legacy, a row scope holding fewer rows than its `minRows` throws MissingRowsError.
  */
 export async function collectSideEffects(
   ctx: ScenarioContext,
@@ -1442,7 +1458,16 @@ export async function collectSideEffects(
       const mssql = await rt.mssql();
       const ownership = await rt.ownership();
       const legacy: RowSnapshot[] = [];
-      for (const spec of specs) legacy.push(...(await legacyRows(spec, { mssql, ownership })));
+      for (const spec of specs) {
+        const { snapshots, matched } = await scanLegacyRows(spec, { mssql, ownership });
+        if (origin === 'legacy' && spec.minRows !== undefined && matched < spec.minRows) {
+          throw new MissingRowsError(
+            `${ctx.scenarioId}: rows: ${spec.table} holds ${matched} legacy rows within ${JSON.stringify(spec.where)}, ` +
+              `fewer than its minRows ${spec.minRows}`,
+          );
+        }
+        legacy.push(...snapshots);
+      }
       if (origin === 'legacy') {
         effects.rows = mergeSnapshots(legacy);
       } else {

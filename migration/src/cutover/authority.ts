@@ -18,10 +18,11 @@ export interface CurrentAuthority {
   anyTarget: boolean;
 }
 
-/** Inputs of {@link currentAuthority}: the gateway's status call and the absolute cut-over paths. */
+/** Inputs of {@link currentAuthority}: the gateway's status call, the absolute cut-over paths and an optional status-call bound. */
 export interface CurrentAuthorityDeps {
   gateway: Pick<GatewayClient, 'status'>;
   config: Pick<ResolvedPaths, 'cutoverDir' | 'groupsFile'>;
+  timeoutMs?: number;
 }
 
 function allLegacy(groups: GroupsFile): Map<string, Authority> {
@@ -31,9 +32,9 @@ function allLegacy(groups: GroupsFile): Map<string, Authority> {
 }
 
 /** Authority of every unit under the version the gateway reports active; no active version means all `legacy`. */
-export async function currentAuthority({ gateway, config }: CurrentAuthorityDeps): Promise<CurrentAuthority> {
+export async function currentAuthority({ gateway, config, timeoutMs }: CurrentAuthorityDeps): Promise<CurrentAuthority> {
   // Only the version and epoch are taken from the status: authority comes from the committed version file and groups.json alone.
-  const { tableVersion, epoch } = await gateway.status();
+  const { tableVersion, epoch } = await gateway.status({ timeoutMs });
   const groups = loadGroups(config.groupsFile);
   const units = tableVersion === null ? allLegacy(groups) : unitAuthority(loadVersion(config.cutoverDir, tableVersion), groups);
   const targetUnits = new Set(

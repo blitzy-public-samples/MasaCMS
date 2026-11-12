@@ -489,7 +489,7 @@ describe('runStep requests', () => {
       },
     };
     expect(record.request.body).toStrictEqual(expected);
-    expect(record.routeKey).toBe('admin:carch.multifileupload');
+    expect(record.routeKey).toBe('admin:carch.multifileupload{upload=image}');
   });
 
   it('rejects an unknown multipart fixture before sending anything', async () => {

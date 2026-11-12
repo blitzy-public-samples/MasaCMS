@@ -1,24 +1,25 @@
-// Gateway authorisation matrix: every declared route of every routed package, probed through the gateway per subject.
-import { execFile } from 'node:child_process';
+// Gateway authorisation matrix: every declared route the gateway reaches, probed at its edge paths per subject.
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { LOCAL_USER_TOKEN, Roles, UndeclaredRouteError } from '@opt2/platform/auth';
 import {
-  ADMIN_LOGIN_REDIRECT_ACTION,
-  ADMIN_NOACCESS_ACTION,
-  LEGACY_ERROR_MAP,
-  cfUuid,
-  parseAdminUrl,
-  type LegacyErrorSpec,
-  type ParsedAdminUrl,
-} from '@opt2/platform/legacy-compat';
-import { baseEnvSchema, createService, loadEnv, type BaseEnv, type FastifyInstance } from '@opt2/platform/service-kit';
+  REQUEST_ID_HEADER,
+  baseEnvSchema,
+  createService,
+  loadEnv,
+  type BaseEnv,
+  type FastifyInstance,
+} from '@opt2/platform/service-kit';
+import { loadStorageHmacKey } from '@opt2/platform/storage';
 import { ROLE_SET, TENANT_A, testVerifier, writeTestSecrets, type RoleSubject } from '@opt2/platform/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import type { HttpResult, HttpSession } from '../../src/lib/http.js';
+import { capturedLogOffsets, readCapturedLogLines } from '../../src/events/traces.js';
+import { defaultRunner } from '../../src/lib/git.js';
+import { loadInventoryVariants } from '../../src/inventory/route-keys.js';
+import type { HttpSession } from '../../src/lib/http.js';
 import { stateDir } from '../../src/lib/paths.js';
 import { stableStringify } from '../../src/lib/report.js';
 import {
@@ -32,8 +33,26 @@ import {
   type Expectation,
   type LoadedMatrix,
   type MatrixDiff,
-  type Observation,
 } from '../../src/security/authz-matrix.js';
+import {
+  classifyResponse,
+  gatewayReach,
+  indexRequestRecords,
+  loadCutoverVersion,
+  localFileSigner,
+  newProbeRequestId,
+  reachAccounting,
+  reachVerdicts,
+  skipReason,
+  type GatewayPath,
+  type ProbedRoute,
+  type ReachMap,
+  type ReachProbe,
+  type ReachState,
+  type ReachVerdict,
+  type RequestRecordIndex,
+  type SkippedCell,
+} from '../../src/security/gateway-reach.js';
 import {
   gatewaySession,
   redactSecrets,
@@ -49,7 +68,9 @@ const HOOK_TIMEOUT_MS = 45 * 60_000;
 const MAX_IN_FLIGHT = 8;
 const FINDINGS_SHOWN = 20;
 
-const execFileAsync = promisify(execFile);
+// Departs from Rule "WIP - Minimal Change 2" (no timeouts), which does not bind this refactor: a stuck export would otherwise outlive the hook bound.
+/** Longest run of one package's `opt2-auth matrix` export; a fraction of the hook bound, which spans every export and the probes. */
+const MATRIX_EXPORT_TIMEOUT_MS = 5 * 60_000;
 
 /** The ROLE_SET subject named `name`. */
 function roleSubject(name: string): RoleSubject {
@@ -73,46 +94,16 @@ const FORGED_CONTEXT_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   'X-OPT2-Roles': `${Roles.s2},${Roles.platformOperator}`,
 });
 
-const READ_ONLY_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD']);
-const SITE_PARAMS: ReadonlySet<string> = new Set(['siteid', 'site']);
-/** A Fastify path token: an escaped colon, a named parameter with an optional regex, or a wildcard. */
-const PATH_TOKEN = /::|:(\w+)(?:\([^)]*\))?|\*/g;
-const ADMIN_ROOT = /^\/admin\/?$/i;
+/** Lifetime of the signed-file probe URLs, in seconds: they are signed once and sent within the hook bound. */
+const SIGNED_PROBE_TTL_S = HOOK_TIMEOUT_MS / 1000;
 
-/** Error-map rows with which the JSON API refuses a request's credentials. */
-const AUTH_ERRORS: readonly LegacyErrorSpec[] = [
-  LEGACY_ERROR_MAP.authorization,
-  LEGACY_ERROR_MAP.invalidAccessToken,
-  LEGACY_ERROR_MAP.accessTokenExpired,
-];
+/** Relay target filled into the gateway's `:service`: an unknown one is answered by the not-found handler, whose log names no relay route. */
+const RELAY_PROBE_SERVICE = 'identity';
 
-/** Lower-cased admin access-gate actions and the deny status each stands for. */
-const GATE_ACTIONS: ReadonlyMap<string, number> = new Map([
-  ['clogin.main', 401],
-  [ADMIN_LOGIN_REDIRECT_ACTION.toLowerCase(), 401],
-  [ADMIN_NOACCESS_ACTION.toLowerCase(), 403],
-]);
-
-/** Why an expected-allow cell is left unsent. */
-type SkipReason = 'session-ending' | 'not-read-only';
-
-/** An expectation left unsent, with its reason. */
-interface SkippedCell extends Pick<Expectation, 'package' | 'method' | 'url' | 'subject'> {
-  reason: SkipReason;
-}
-
-/** An observation with the raw response status and what decided its verdict. */
-interface Probe extends Observation {
-  observedStatus: number;
-  detail: string;
-}
-
-/** Verdict on one response; a denial's `status` is the 401 or 403 its refusal shape stands for. */
-interface Verdict {
-  verdict: 'denied' | 'allowed';
-  status: number;
-  detail: string;
-}
+/** Longest wait for the owners' request records of the probes, which their processes write after answering. */
+const EVIDENCE_WAIT_MS = 30_000;
+const EVIDENCE_POLL_MS = 1_000;
+const REACH_STATES: readonly ReachState[] = ['proven-by-control', 'proven-by-owner-denial', 'not-sent', 'failed'];
 
 /** Session and credential headers one probe is sent with. */
 interface ProbeClient {
@@ -120,55 +111,15 @@ interface ProbeClient {
   headers: Record<string, string>;
 }
 
-/** Concrete path of a route template: site params as tenant-a, other params as unknown CF UUIDs, `*` as a suffix. */
-function fillPath(url: string): string {
-  return url.replace(PATH_TOKEN, (token: string, name: string | undefined) => {
-    if (token === '::') return ':';
-    if (name === undefined) return `opt2-authz-probe/${cfUuid()}`;
-    return SITE_PARAMS.has(name.toLowerCase()) ? TENANT_A.siteId : cfUuid();
-  });
+/** One expectation sent to one edge path of its route. */
+interface ProbeCell {
+  expectation: Expectation;
+  path: GatewayPath;
 }
 
-/** The credential-refusal error row a Masa JSON envelope body carries, if any. */
-function authErrorOf(text: string): LegacyErrorSpec | undefined {
-  let body: unknown;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    return undefined;
-  }
-  const error = (body as { error?: { code?: unknown; message?: unknown } } | null)?.error;
-  return AUTH_ERRORS.find((spec) => error?.code === spec.code && error?.message === spec.message);
-}
-
-/** Whether `location` is legacy `backUp()`'s target without a Referer: `./`, or the admin root naming no action. */
-function isBackUpTarget(location: string, base: string, action: ParsedAdminUrl | undefined): boolean {
-  if (location === './') return true;
-  return action === undefined && URL.canParse(location, base) && ADMIN_ROOT.test(new URL(location, base).pathname);
-}
-
-/** Whether a response refused the request, read from its status, its envelope or its admin redirect. */
-function classify(result: HttpResult): Verdict {
-  const { status } = result;
-  const denied = (as: number, detail: string): Verdict => ({ verdict: 'denied', status: as, detail });
-  if (status === 401 || status === 403) return denied(status, `HTTP ${status}`);
-  // No route answers this caller; diffOutcomes counts only 401 and 403 as denies, so it is recorded as a 403.
-  if (status === 404) return denied(403, 'HTTP 404');
-  const authError = authErrorOf(result.text);
-  if (authError !== undefined) {
-    return denied(authError.status, `HTTP ${status} ${authError.code}: ${authError.message}`);
-  }
-  const location = result.headers.location;
-  if (status >= 300 && status < 400 && typeof location === 'string') {
-    const action = parseAdminUrl(location);
-    const target = action === undefined ? undefined : `${action.circuit}.${action.action}`.toLowerCase();
-    const gate = target === undefined ? undefined : GATE_ACTIONS.get(target);
-    if (gate !== undefined) return denied(gate, `HTTP ${status} to ${target}`);
-    if (isBackUpTarget(location, result.url, action)) return denied(403, `HTTP ${status} to the back-up target`);
-    const path = URL.canParse(location, result.url) ? new URL(location, result.url).pathname : 'an unparsable location';
-    return { verdict: 'allowed', status, detail: `HTTP ${status} to ${target ?? path}` };
-  }
-  return { verdict: 'allowed', status, detail: `HTTP ${status}` };
+/** Identity of a route across matrix cells and reach entries. */
+function routeKey(route: Pick<Expectation, 'package' | 'method' | 'url'>): string {
+  return `${route.package}|${route.method}|${route.url}`;
 }
 
 /** Runs `task` on each item in order with at most `limit` in flight; the first failure stops dispatch and rejects. */
@@ -190,27 +141,26 @@ async function runPool<T>(items: readonly T[], limit: number, task: (item: T) =>
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
 }
 
-/** Why an expected-allow cell is left unsent, or undefined to send it; expected denies are always sent. */
-function skipReason(expectation: Expectation): SkipReason | undefined {
-  if (expectation.outcome === 'deny') return undefined;
-  if (/logout/i.test(expectation.url)) return 'session-ending';
-  return READ_ONLY_METHODS.has(expectation.method) ? undefined : 'not-read-only';
-}
-
-/** Cells to send, grouped by subject in SUBJECT_ORDER with each subject's denies first, and the cells left unsent. */
-function sendPlan(expected: readonly Expectation[]): { send: Expectation[]; skipped: SkippedCell[] } {
-  const send: Expectation[] = [];
+/** Cells to send, one per expectation and edge path of a probed route, by subject in SUBJECT_ORDER, denies first. */
+function sendPlan(
+  expected: readonly Expectation[],
+  probed: readonly ProbedRoute[],
+): { send: ProbeCell[]; skipped: SkippedCell[] } {
+  const pathsOf = new Map(probed.map((route) => [routeKey(route), route.paths]));
+  const send: ProbeCell[] = [];
   const skipped: SkippedCell[] = [];
   for (const expectation of expected) {
-    const reason = skipReason(expectation);
-    if (reason === undefined) {
-      send.push(expectation);
-    } else {
-      const { package: pkg, method, url, subject } = expectation;
-      skipped.push({ package: pkg, method, url, subject, reason });
+    for (const path of pathsOf.get(routeKey(expectation)) ?? []) {
+      const reason = skipReason(expectation, path);
+      if (reason === undefined) {
+        send.push({ expectation, path });
+      } else {
+        const { package: pkg, method, url, subject } = expectation;
+        skipped.push({ package: pkg, method, url, subject, path: path.path, reason });
+      }
     }
   }
-  const rank = (cell: Expectation): number =>
+  const rank = ({ expectation: cell }: ProbeCell): number =>
     (SUBJECT_RANK.get(cell.subject) ?? SUBJECT_ORDER.length) * 2 + (cell.outcome === 'deny' ? 0 : 1);
   return { send: send.sort((a, b) => rank(a) - rank(b)), skipped };
 }
@@ -225,9 +175,12 @@ async function exportMatrices(): Promise<LoadedMatrix[]> {
     // buildApp reads its configuration from the environment, so each export runs with the env up.sh started it with.
     const env = { ...process.env, ...processes[pkg.name]?.env };
     try {
-      await execFileAsync(command, args, { cwd, env });
+      await defaultRunner(command, args, { cwd, env, timeoutMs: MATRIX_EXPORT_TIMEOUT_MS });
     } catch (err) {
       const { code, stderr } = err as { code?: unknown; stderr?: unknown };
+      if (code === 'ETIMEDOUT') {
+        throw new Error(`opt2-auth matrix export of ${pkg.name} timed out after ${MATRIX_EXPORT_TIMEOUT_MS} ms`);
+      }
       const output = typeof stderr === 'string' ? stderr : '';
       throw new Error(`opt2-auth matrix export of ${pkg.name} failed (exit ${String(code)}): ${redactSecrets(output)}`);
     }
@@ -235,8 +188,8 @@ async function exportMatrices(): Promise<LoadedMatrix[]> {
   return loadMatrices(dir);
 }
 
-/** Sends every cell through the gateway and returns its observations; a subject's session opens at its first cell. */
-async function probeAll(cells: readonly Expectation[]): Promise<Probe[]> {
+/** Sends every cell to its edge path under a fresh `x-request-id` and returns its observations; a subject's session opens at its first cell. */
+async function probeAll(cells: readonly ProbeCell[]): Promise<ReachProbe[]> {
   const sessions = new Map<string, Promise<SubjectSession>>();
   const forgedAs = roleSubject(Roles.s2);
   const clientFor = async (subject: string): Promise<ProbeClient> => {
@@ -252,33 +205,53 @@ async function probeAll(cells: readonly Expectation[]): Promise<Probe[]> {
     const { session, invocationHeaders } = await opened;
     return { session, headers: invocationHeaders ?? {} };
   };
-  const probes: Probe[] = [];
-  await runPool(cells, MAX_IN_FLIGHT, async (cell) => {
-    const { session, headers } = await clientFor(cell.subject);
+  const probes: ReachProbe[] = [];
+  await runPool(cells, MAX_IN_FLIGHT, async ({ expectation, path }) => {
+    const { session, headers } = await clientFor(expectation.subject);
+    const requestId = newProbeRequestId();
     const result = await session.request({
-      method: cell.method,
-      path: fillPath(cell.url),
-      headers: { ...FORGED_CONTEXT_HEADERS, ...headers },
+      method: expectation.method,
+      path: path.path,
+      headers: { ...FORGED_CONTEXT_HEADERS, ...headers, [REQUEST_ID_HEADER]: requestId },
       followRedirects: false,
     });
-    const { status, detail } = classify(result);
-    const { package: pkg, method, url, subject } = cell;
-    probes.push({ package: pkg, method, url, subject, status, observedStatus: result.status, detail });
+    const { status, detail } = classifyResponse(result);
+    const { package: pkg, method, url, subject } = expectation;
+    const sentTo = { path: path.path, ...(path.entry === undefined ? {} : { entry: path.entry.route }) };
+    probes.push({ package: pkg, method, url, subject, status, observedStatus: result.status, detail, requestId, ...sentTo });
   });
   return probes;
 }
 
+/** Verdicts over the owners' log lines written since `fromOffsets`, re-read until no route fails or EVIDENCE_WAIT_MS passes. */
+async function awaitVerdicts(
+  judge: (index: RequestRecordIndex) => ReachVerdict[],
+  packages: readonly string[],
+  fromOffsets: Readonly<Record<string, number>>,
+): Promise<ReachVerdict[]> {
+  // Rule "WIP - Minimal Change 2" bans new timeouts but does not bind this refactor; owners log after they answer.
+  const deadline = Date.now() + EVIDENCE_WAIT_MS;
+  for (;;) {
+    const verdicts = judge(indexRequestRecords(readCapturedLogLines({ packages, fromOffsets })));
+    if (!verdicts.some((verdict) => verdict.state === 'failed') || Date.now() >= deadline) return verdicts;
+    await sleep(EVIDENCE_POLL_MS);
+  }
+}
+
 /** Asserts that `result` holds no unexpected allow, listing the first findings and their total on failure. */
 function expectNoUnexpectedAllows(result: MatrixDiff): void {
-  const shown = result.unexpectedAllows
-    .slice(0, FINDINGS_SHOWN)
-    .map(({ observation: o }) => `${o.package} ${o.method} ${o.url} as ${o.subject}: HTTP ${o.status}`);
+  const shown = result.unexpectedAllows.slice(0, FINDINGS_SHOWN).map(({ observation: o }) => {
+    const sentTo = 'path' in o ? String(o.path) : o.url;
+    return `${o.package} ${o.method} ${o.url} at ${sentTo} as ${o.subject}: HTTP ${o.status}`;
+  });
   const total = result.unexpectedAllows.length;
   expect(shown, `${total} unexpected allow(s); the first ${shown.length} are listed`).toEqual([]);
 }
 
 describe('gateway authorisation matrix', () => {
   let loaded: LoadedMatrix[];
+  let reach: ReachMap;
+  let verdicts: ReachVerdict[];
   let diff: MatrixDiff;
   let forgedDiff: MatrixDiff;
   let probing = false;
@@ -286,26 +259,55 @@ describe('gateway authorisation matrix', () => {
   beforeAll(async () => {
     await requireTableVersion(TABLE_VERSION);
     loaded = await exportMatrices();
+    const [version, { variants }, hmacKey] = await Promise.all([
+      loadCutoverVersion(TABLE_VERSION),
+      loadInventoryVariants(),
+      loadStorageHmacKey(stateDir()),
+    ]);
+    const sign = localFileSigner(hmacKey, Math.floor(Date.now() / 1000) + SIGNED_PROBE_TTL_S);
+    reach = gatewayReach({
+      matrices: loaded,
+      version,
+      variants,
+      sign,
+      gatewayParams: { service: RELAY_PROBE_SERVICE },
+    });
     const expected = loaded.flatMap((matrix) => expectationsFor(matrix, ROLE_SET));
     const forgedExpected = expected
       .filter((expectation) => expectation.subject === ANONYMOUS_SUBJECT)
       .map((expectation) => ({ ...expectation, subject: FORGED_SUBJECT }));
-    const { send, skipped } = sendPlan([...expected, ...forgedExpected]);
+    const { send, skipped } = sendPlan([...expected, ...forgedExpected], reach.probed);
+    const owners = [...new Set(reach.probed.map((route) => route.package))];
+    const fromOffsets = capturedLogOffsets({ packages: owners });
     probing = true;
     const probes = await probeAll(send);
     const forged = (entry: { subject: string }): boolean => entry.subject === FORGED_SUBJECT;
     const role = (entry: { subject: string }): boolean => !forged(entry);
-    // Only sent cells are judged, so `missing` names lost probes, never the skipped cells reported beside it.
-    diff = diffOutcomes(send.filter(role), probes.filter(role));
-    forgedDiff = diffOutcomes(send.filter(forged), probes.filter(forged));
+    // Only sent cells are judged; skipped and unreached cells are reported on their own, so `missing` names lost probes.
+    const sent = [...new Set(send.map((cell) => cell.expectation))];
+    diff = diffOutcomes(sent.filter(role), probes.filter(role));
+    forgedDiff = diffOutcomes(sent.filter(forged), probes.filter(forged));
+    const judge = (index: RequestRecordIndex): ReachVerdict[] =>
+      reachVerdicts(reach.probed, [...expected, ...forgedExpected], probes, skipped, index);
+    verdicts = await awaitVerdicts(judge, owners, fromOffsets);
     const securityDir = join(stateDir(), 'security');
     await mkdir(securityDir, { recursive: true });
     const report = {
       tableVersion: TABLE_VERSION,
       packages: loaded.map(({ package: name, file, matrix }) => ({ name, file, routes: matrix.routes.length })),
       subjects: SUBJECT_ORDER,
+      reach: {
+        reachable: { count: reach.probed.length, routes: reach.probed },
+        notProbed: { count: reach.notProbed.length, routes: reach.notProbed },
+      },
       sent: probes.length,
       skipped: { count: skipped.length, entries: skipped },
+      ownerEvidence: {
+        counts: Object.fromEntries(
+          REACH_STATES.map((state) => [state, verdicts.filter((verdict) => verdict.state === state).length]),
+        ),
+        routes: verdicts,
+      },
       diff,
       forgedDiff,
     };
@@ -319,6 +321,23 @@ describe('gateway authorisation matrix', () => {
 
   it('loads one route matrix per routed package', () => {
     expect(loaded.map((matrix) => matrix.package)).toEqual(ROUTED_PACKAGES.map((pkg) => pkg.name));
+  });
+
+  it('accounts for every non-edge declared route exactly once, as probed or as covered by its package suite', () => {
+    expect(reachAccounting(loaded, reach)).toEqual({ missing: [], repeated: [], undeclared: [] });
+  });
+
+  it("proves from the owner's own request log that its route handled every route probed through the gateway", () => {
+    const failed = verdicts.filter((verdict) => verdict.state === 'failed');
+    const shown = failed.slice(0, FINDINGS_SHOWN).map((verdict) => {
+      const judged = verdict.judged
+        .slice(0, FINDINGS_SHOWN)
+        .map((probe) => `${probe.subject} HTTP ${probe.observedStatus}, owner ${probe.ownerStatus ?? 'no record'}`);
+      const more = verdict.judged.length - judged.length;
+      const listed = more > 0 ? [...judged, `${more} more in gateway-matrix.json`] : judged;
+      return `${verdict.package} ${verdict.method} ${verdict.url}: ${verdict.reason ?? ''} [${listed.join('; ')}]`;
+    });
+    expect(shown, `${failed.length} route(s) without owner evidence; the first ${shown.length} are listed`).toEqual([]);
   });
 
   it('reports zero unexpected allows for every route and role subject', () => {

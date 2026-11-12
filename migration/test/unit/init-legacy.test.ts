@@ -34,6 +34,8 @@ const CHECKPOINT_COLUMNS = [
   'batch_id',
   'rows_applied',
   'updated_at',
+  'pending_effects',
+  'ready_horizon',
 ];
 const MASA_TABLES = [
   'tcontent',

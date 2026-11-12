@@ -110,6 +110,19 @@ describe('currentAuthority', () => {
     expect(fake.calls()).toBe(2);
   });
 
+  it.each([1_250, undefined])('bounds the status call by timeoutMs %s', async (timeoutMs) => {
+    const seen: ({ timeoutMs?: number } | undefined)[] = [];
+    const gateway = {
+      status: (options?: { timeoutMs?: number }) => {
+        seen.push(options);
+        return Promise.resolve(statusBody({ tableVersion: 'v0001' }));
+      },
+    };
+    await currentAuthority({ gateway, config: { cutoverDir: CUTOVER_DIR, groupsFile: GROUPS_FILE }, timeoutMs });
+
+    expect(seen).toEqual([{ timeoutMs }]);
+  });
+
   it('rejects when the active version file is absent', async () => {
     await expect(currentAuthority(deps(statusBody({ tableVersion: 'v9999' })))).rejects.toMatchObject({ code: 'ENOENT' });
   });

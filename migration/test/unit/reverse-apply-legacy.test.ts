@@ -13,14 +13,17 @@ import {
   ProjectionConflictError,
   applyLegacyChange,
   bindValue,
+  clearPendingEffects,
   decodeLegacyChange,
   readCheckpoint,
   readCheckpoints,
+  readyHorizonOf,
   summarise,
   upsertCheckpoint,
   type ApplyLegacyOptions,
   type CheckpointRow,
   type LegacyChange,
+  type LegacyEffect,
 } from '../../src/reverse/apply-legacy.js';
 
 const TENANT = '0b0c4f7e-3f7a-4c1e-9a55-1d2b3c4d5e6f';
@@ -216,8 +219,12 @@ describe('bindValue', () => {
 });
 
 describe('projector checkpoint', () => {
-  const SELECT = `SELECT owner, tenant_id, CONVERT(varchar(20), cursor_xid) AS cursor_xid, CONVERT(varchar(20), cursor_seq) AS cursor_seq, CONVERT(varchar(20), applied_horizon) AS applied_horizon, batch_id, rows_applied, updated_at FROM ${CHECKPOINT_TABLE}`;
+  const SELECT = `SELECT owner, tenant_id, CONVERT(varchar(20), cursor_xid) AS cursor_xid, CONVERT(varchar(20), cursor_seq) AS cursor_seq, CONVERT(varchar(20), applied_horizon) AS applied_horizon, batch_id, rows_applied, updated_at, pending_effects, CONVERT(varchar(20), ready_horizon) AS ready_horizon FROM ${CHECKPOINT_TABLE}`;
   const UPDATED_AT = new Date('2026-03-01T10:00:00.000Z');
+  const EFFECTS: LegacyEffect[] = [
+    { kind: 'siteRefresh', siteId: 'tenant-a' },
+    { kind: 'purgeCache', siteId: 'tenant-a' },
+  ];
   const RECORD = {
     owner: 'people',
     tenant_id: TENANT,
@@ -227,6 +234,8 @@ describe('projector checkpoint', () => {
     batch_id: 'batch-7',
     rows_applied: 2,
     updated_at: UPDATED_AT,
+    pending_effects: null,
+    ready_horizon: null,
   };
   const ROW: CheckpointRow = {
     owner: 'people',
@@ -237,18 +246,54 @@ describe('projector checkpoint', () => {
     batchId: 'batch-7',
     rowsApplied: 2,
     updatedAt: UPDATED_AT,
+    pendingEffects: [],
+    readyHorizon: null,
   };
+  const OWING_RECORD = { ...RECORD, pending_effects: JSON.stringify(EFFECTS), ready_horizon: '18446744073709550999' };
+  const OWING_ROW: CheckpointRow = { ...ROW, pendingEffects: EFFECTS, readyHorizon: '18446744073709550999' };
 
   it('lives in the opt2_sync schema of the legacy database', () => {
     expect(CHECKPOINT_TABLE).toBe('opt2_sync.projector_checkpoint');
   });
 
-  it('reads every checkpoint ordered by owner and tenant with xids as exact decimal text', async () => {
-    const tx = fakeTx({ recordset: [RECORD] });
+  it('reads every checkpoint ordered by owner and tenant with xids as exact decimal text and owed effects parsed', async () => {
+    const tx = fakeTx({ recordset: [RECORD, OWING_RECORD] });
 
-    await expect(readCheckpoints(tx.scope)).resolves.toEqual([ROW]);
+    await expect(readCheckpoints(tx.scope)).resolves.toEqual([ROW, OWING_ROW]);
     expect(tx.statements()).toEqual([`${SELECT} ORDER BY owner, tenant_id`]);
     expect(tx.issued[0]?.params).toEqual({});
+  });
+
+  it('rejects owed effects that are not a JSON array', async () => {
+    const tx = fakeTx({ recordset: [{ ...RECORD, pending_effects: '{"kind":"purgeCache"}' }] });
+
+    await expect(readCheckpoints(tx.scope)).rejects.toThrow(new TypeError(`pending_effects of people / ${TENANT} is not a JSON array`));
+  });
+
+  it('cancels its SQL Server request when the signal aborts', async () => {
+    let fail: (error: Error) => void = () => undefined;
+    const request = {
+      input: vi.fn(),
+      query: () =>
+        new Promise((_resolve, reject) => {
+          fail = reject;
+        }),
+      cancel: vi.fn(() => fail(Object.assign(new Error('Canceled.'), { code: 'ECANCEL' }))),
+    };
+    const controller = new AbortController();
+
+    const read = readCheckpoints({ request: () => request as unknown as Request }, { owners: ['people'] }, { signal: controller.signal });
+    controller.abort();
+
+    await expect(read).rejects.toMatchObject({ code: 'ECANCEL' });
+    expect(request.cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads nothing once its signal has aborted', async () => {
+    const tx = fakeTx({ recordset: [RECORD] });
+
+    await expect(readCheckpoints(tx.scope, {}, { signal: AbortSignal.abort() })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(tx.issued).toEqual([]);
   });
 
   it('reads only the named owners', async () => {
@@ -283,15 +328,18 @@ describe('projector checkpoint', () => {
     });
   });
 
-  it('upserts in one statement that keeps the greater applied horizon and returns the stored row', async () => {
-    const tx = fakeTx({ recordset: [RECORD] });
-    const write = { owner: 'people', tenantId: TENANT, cursorXid: '18446744073709551000', cursorSeq: '9007199254740993', appliedHorizon: '18446744073709551001', batchId: 'batch-7', rowsApplied: 2 };
+  it.each([
+    { label: 'no owed effects as NULL', pendingEffects: [], bound: null, record: RECORD, expected: ROW },
+    { label: 'owed effects as a JSON array', pendingEffects: EFFECTS, bound: JSON.stringify(EFFECTS), record: OWING_RECORD, expected: OWING_ROW },
+  ])('upserts in one statement that keeps the greater applied horizon, stores $label and returns the stored row', async ({ pendingEffects, bound, record, expected }) => {
+    const tx = fakeTx({ recordset: [record] });
+    const write = { owner: 'people', tenantId: TENANT, cursorXid: '18446744073709551000', cursorSeq: '9007199254740993', appliedHorizon: '18446744073709551001', batchId: 'batch-7', rowsApplied: 2, pendingEffects };
 
-    await expect(upsertCheckpoint(tx.scope, write)).resolves.toEqual(ROW);
+    await expect(upsertCheckpoint(tx.scope, write)).resolves.toEqual(expected);
     expect(tx.request).toHaveBeenCalledTimes(1);
     expect(tx.statements()[0]?.split('\n')).toEqual([
-      `UPDATE ${CHECKPOINT_TABLE} WITH (UPDLOCK, HOLDLOCK) SET cursor_xid = CAST(@cursorXid AS decimal(20,0)), cursor_seq = CAST(@cursorSeq AS bigint), applied_horizon = CASE WHEN applied_horizon > CAST(@appliedHorizon AS decimal(20,0)) THEN applied_horizon ELSE CAST(@appliedHorizon AS decimal(20,0)) END, batch_id = @batchId, rows_applied = @rowsApplied, updated_at = SYSDATETIME() WHERE owner = @owner AND tenant_id = @tenantId;`,
-      `IF @@ROWCOUNT = 0 INSERT INTO ${CHECKPOINT_TABLE} (owner, tenant_id, cursor_xid, cursor_seq, applied_horizon, batch_id, rows_applied, updated_at) VALUES (@owner, @tenantId, CAST(@cursorXid AS decimal(20,0)), CAST(@cursorSeq AS bigint), CAST(@appliedHorizon AS decimal(20,0)), @batchId, @rowsApplied, SYSDATETIME());`,
+      `UPDATE ${CHECKPOINT_TABLE} WITH (UPDLOCK, HOLDLOCK) SET cursor_xid = CAST(@cursorXid AS decimal(20,0)), cursor_seq = CAST(@cursorSeq AS bigint), applied_horizon = CASE WHEN applied_horizon > CAST(@appliedHorizon AS decimal(20,0)) THEN applied_horizon ELSE CAST(@appliedHorizon AS decimal(20,0)) END, batch_id = @batchId, rows_applied = @rowsApplied, updated_at = SYSDATETIME(), pending_effects = @pendingEffects, ready_horizon = CASE WHEN @pendingEffects IS NULL THEN NULL WHEN pending_effects IS NULL THEN applied_horizon ELSE ready_horizon END WHERE owner = @owner AND tenant_id = @tenantId;`,
+      `IF @@ROWCOUNT = 0 INSERT INTO ${CHECKPOINT_TABLE} (owner, tenant_id, cursor_xid, cursor_seq, applied_horizon, batch_id, rows_applied, updated_at, pending_effects) VALUES (@owner, @tenantId, CAST(@cursorXid AS decimal(20,0)), CAST(@cursorSeq AS bigint), CAST(@appliedHorizon AS decimal(20,0)), @batchId, @rowsApplied, SYSDATETIME(), @pendingEffects);`,
       `${SELECT} WHERE owner = @owner AND tenant_id = @tenantId;`,
     ]);
     expect(tx.issued[0]?.params).toEqual({
@@ -302,13 +350,36 @@ describe('projector checkpoint', () => {
       appliedHorizon: { type: sql.VarChar(sql.MAX), value: '18446744073709551001' },
       batchId: { type: sql.NVarChar(64), value: 'batch-7' },
       rowsApplied: { type: sql.Int, value: 2 },
+      pendingEffects: { type: sql.NVarChar(sql.MAX), value: bound },
     });
   });
 
   it('rejects an upsert that returns no stored row', async () => {
-    const write = { owner: 'people', tenantId: TENANT, cursorXid: '10', cursorSeq: '1', appliedHorizon: '11', batchId: 'batch-1', rowsApplied: 0 };
+    const write = { owner: 'people', tenantId: TENANT, cursorXid: '10', cursorSeq: '1', appliedHorizon: '11', batchId: 'batch-1', rowsApplied: 0, pendingEffects: [] };
 
     await expect(upsertCheckpoint(fakeTx({ recordset: [] }).scope, write)).rejects.toThrow(`checkpoint of people / ${TENANT} was not stored`);
+  });
+
+  it('clears the owed effects of the batch that stored them', async () => {
+    const tx = fakeTx({ rowsAffected: [1] });
+
+    await expect(clearPendingEffects(tx.scope, OWING_ROW)).resolves.toBeUndefined();
+    expect(tx.statements()).toEqual([
+      `UPDATE ${CHECKPOINT_TABLE} SET pending_effects = NULL, ready_horizon = NULL WHERE owner = @owner AND tenant_id = @tenantId AND batch_id = @batchId`,
+    ]);
+    expect(tx.issued[0]?.params).toEqual({
+      owner: { type: sql.NVarChar(64), value: 'people' },
+      tenantId: { type: sql.VarChar(36), value: TENANT },
+      batchId: { type: sql.NVarChar(64), value: 'batch-7' },
+    });
+  });
+
+  it.each([
+    { label: 'the applied horizon when nothing is owed', row: ROW, expected: '18446744073709551001' },
+    { label: 'the ready horizon while effects are owed', row: OWING_ROW, expected: '18446744073709550999' },
+    { label: 'null while effects are owed and none ever ran', row: { ...OWING_ROW, readyHorizon: null }, expected: null },
+  ])('readyHorizonOf gives $label', ({ row, expected }) => {
+    expect(readyHorizonOf(row)).toBe(expected);
   });
 });
 
@@ -756,12 +827,12 @@ describe('applyLegacyChange on a table without a primary key', () => {
 
 describe('a projector batch', () => {
   it('writes its changes and its checkpoint through the one transaction it is given, never ending it', async () => {
-    const record = { owner: 'people', tenant_id: TENANT, cursor_xid: '901', cursor_seq: '8', applied_horizon: '902', batch_id: 'batch-9', rows_applied: 2, updated_at: null };
+    const record = { owner: 'people', tenant_id: TENANT, cursor_xid: '901', cursor_seq: '8', applied_horizon: '902', batch_id: 'batch-9', rows_applied: 2, updated_at: null, pending_effects: null, ready_horizon: null };
     const tx = fakeTx({ rowsAffected: [1] }, { rowsAffected: [1] }, { recordset: [record] });
 
     await applyLegacyChange(tx.scope, change('update', TUSERS, { before: { UserID: 'u1' }, after: { UserID: 'u1', Fname: 'Grace' } }), options(TUSERS));
     await applyLegacyChange(tx.scope, change('delete', TLOG, { before: { entry: 'login', qty: null } }), options(TLOG));
-    const stored = await upsertCheckpoint(tx.scope, { owner: 'people', tenantId: TENANT, cursorXid: '901', cursorSeq: '8', appliedHorizon: '902', batchId: 'batch-9', rowsApplied: 2 });
+    const stored = await upsertCheckpoint(tx.scope, { owner: 'people', tenantId: TENANT, cursorXid: '901', cursorSeq: '8', appliedHorizon: '902', batchId: 'batch-9', rowsApplied: 2, pendingEffects: [] });
 
     expect(stored).toMatchObject({ cursorXid: '901', cursorSeq: '8', appliedHorizon: '902', batchId: 'batch-9', rowsApplied: 2, updatedAt: null });
     expect(tx.request).toHaveBeenCalledTimes(3);

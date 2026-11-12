@@ -78,6 +78,7 @@ const CTX: AdminRenderContext = {
     nextN: 20,
     dateKeyFormat: 'MM/DD/YYYY',
     rb: 'en',
+    locale: 'en_US',
     openSectionList: '',
     flatViewArgs: {},
     copyContentId: '',
@@ -321,6 +322,17 @@ describe('renderLoadCommentsPage', () => {
       const body = renderLoadCommentsPage(pageModel({ rows: [row] }), CTX).body;
       expect(body).toMatch(/<img src="http:\/\/www\.gravatar\.com\/avatar\/[0-9a-f]{64}" \/>/);
     }
+  });
+
+  // ACF 2023 LSDateFormat(entered, 'long') and LSTimeFormat(entered, 'short') after setLocale(locale).
+  it.each([
+    { locale: 'en_US', expected: 'October 29, 2026, 3:04 PM' },
+    { locale: 'de_DE', expected: '29. Oktober 2026, 15:04' },
+    { locale: 'en_GB', expected: '29 October 2026, 15:04' },
+  ])('prints the thread date and time under the $locale session', ({ locale, expected }) => {
+    const row = { ...pageRow(C1), comment: { ...C1, entered: new Date(2026, 9, 29, 15, 4, 5) } };
+    const body = renderLoadCommentsPage(pageModel({ rows: [row] }), { ...CTX, session: { ...CTX.session, locale } }).body;
+    expect(body).toContain(`<dd class="date-time">\n\t\t\t\t\t${expected}\n\t\t\t\t</dd>`);
   });
 
   it('prints an empty parent name when the parent comment is gone, and the NULL-entered default', () => {

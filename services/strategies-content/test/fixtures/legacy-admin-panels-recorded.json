@@ -1766,6 +1766,92 @@
      "email": "lock@example.com"
     }
    }
+  },
+  "fss01": {
+   "request": "/admin/?muraAction=carch.loadcategoryfeaturestartstop&siteid=default&categoryAssignment=01&catTrim=cat1",
+   "status": 200,
+   "contentType": "text/html;charset=UTF-8",
+   "body": "\n\t<div class=\"categoryassignmentcontent\">\n\t\t<a class=\"dropdown-toggle mura-quickEditItem\"class=\"mura-quickEditItem\">\n\t\t\t\n\t\t\t\t\t<i class=\"mi-check\" title=\"Yes\"></i><span>Yes</span>\n\t\t\t\t\n\t\t</a>\n\t\t<input type=\"hidden\" id=\"categoryAssigncat1\" name=\"categoryAssigncat1\" value=\"01\"/>\n\t\t\n\t</div>\n"
+  },
+  "fss1_0": {
+   "request": "/admin/?muraAction=carch.loadcategoryfeaturestartstop&siteid=default&categoryAssignment=1.0&catTrim=cat1",
+   "status": 200,
+   "contentType": "text/html;charset=UTF-8",
+   "body": "\n\t<div class=\"categoryassignmentcontent\">\n\t\t<a class=\"dropdown-toggle mura-quickEditItem\"class=\"mura-quickEditItem\">\n\t\t\t\n\t\t\t\t\t<i class=\"mi-check\" title=\"Yes\"></i><span>Yes</span>\n\t\t\t\t\n\t\t</a>\n\t\t<input type=\"hidden\" id=\"categoryAssigncat1\" name=\"categoryAssigncat1\" value=\"1.0\"/>\n\t\t\n\t</div>\n"
+  },
+  "fss1e0": {
+   "request": "/admin/?muraAction=carch.loadcategoryfeaturestartstop&siteid=default&categoryAssignment=1e0&catTrim=cat1",
+   "status": 200,
+   "contentType": "text/html;charset=UTF-8",
+   "body": "\n\t<div class=\"categoryassignmentcontent\">\n\t\t<a class=\"dropdown-toggle mura-quickEditItem\"class=\"mura-quickEditItem\">\n\t\t\t\n\t\t\t\t\t<i class=\"mi-check\" title=\"Yes\"></i><span>Yes</span>\n\t\t\t\t\n\t\t</a>\n\t\t<input type=\"hidden\" id=\"categoryAssigncat1\" name=\"categoryAssigncat1\" value=\"1e0\"/>\n\t\t\n\t</div>\n"
+  },
+  "fss1_5": {
+   "request": "/admin/?muraAction=carch.loadcategoryfeaturestartstop&siteid=default&categoryAssignment=1.5&catTrim=cat1",
+   "status": 200,
+   "contentType": "text/html;charset=UTF-8",
+   "body": "\n\t<div class=\"categoryassignmentcontent\">\n\t\t<a class=\"dropdown-toggle mura-quickEditItem\"class=\"mura-quickEditItem\">\n\t\t\t\n\t\t\t\t\t<i class=\"mi-ban\" title=\"No\"></i><span>No</span>\n\t\t\t\t\n\t\t</a>\n\t\t<input type=\"hidden\" id=\"categoryAssigncat1\" name=\"categoryAssigncat1\" value=\"1.5\"/>\n\t\t\n\t</div>\n"
+  },
+  "fss1dot": {
+   "request": "/admin/?muraAction=carch.loadcategoryfeaturestartstop&siteid=default&categoryAssignment=1.&catTrim=cat1",
+   "status": 200,
+   "contentType": "text/html;charset=UTF-8",
+   "body": "\n\t<div class=\"categoryassignmentcontent\">\n\t\t<a class=\"dropdown-toggle mura-quickEditItem\"class=\"mura-quickEditItem\">\n\t\t\t\n\t\t\t\t\t<i class=\"mi-ban\" title=\"No\"></i><span>No</span>\n\t\t\t\t\n\t\t</a>\n\t\t<input type=\"hidden\" id=\"categoryAssigncat1\" name=\"categoryAssigncat1\" value=\"1.\"/>\n\t\t\n\t</div>\n"
+  },
+  "fssneg0": {
+   "request": "/admin/?muraAction=carch.loadcategoryfeaturestartstop&siteid=default&categoryAssignment=-0&catTrim=cat1",
+   "status": 200,
+   "contentType": "text/html;charset=UTF-8",
+   "body": "\n\t<div class=\"categoryassignmentcontent\">\n\t\t<a class=\"dropdown-toggle mura-quickEditItem\"class=\"mura-quickEditItem\">\n\t\t\t\n\t\t\t\t\t<i class=\"mi-ban\" title=\"No\"></i><span>No</span>\n\t\t\t\t\n\t\t</a>\n\t\t<input type=\"hidden\" id=\"categoryAssigncat1\" name=\"categoryAssigncat1\" value=\"-0\"/>\n\t\t\n\t</div>\n"
+  },
+  "fss02": {
+   "request": "/admin/?muraAction=carch.loadcategoryfeaturestartstop&siteid=default&categoryAssignment=02&catTrim=cat1&featurestart=10/29/2026&featurestop=11/30/2026&startHour=3&startMinute=04&startDayPart=PM&stopHour=11&stopMinute=59&stopDayPart=PM",
+   "status": 200,
+   "contentType": "text/html;charset=UTF-8",
+   "body": "\n\t<div class=\"categoryassignmentcontent scheduled\">\n\t\t<a class=\"dropdown-toggle mura-quickEditItem\" rel=\"tooltip\" title=\"10&#x2f;29&#x2f;26&nbsp;-&nbsp;11/30/26\">\n\t\t\t\n\t\t\t\t\t<i class=\"mi-calendar\" title=\"10&#x2f;29&#x2f;26&nbsp;-&nbsp;11/30/26\"></i> \n\t\t\t\t\n\t\t</a>\n\t\t<input type=\"hidden\" id=\"categoryAssigncat1\" name=\"categoryAssigncat1\" value=\"02\"/>\n\t\t\n\t\t\t<input type=\"hidden\" id=\"featureStartcat1\" name=\"featureStartcat1\" value=\"10/302/2026\">\n\t\t\t<input type=\"hidden\" id=\"startHourcat1\" name=\"startHourcat1\" value=\"3\">\n\t\t\t<input type=\"hidden\" id=\"startMinutecat1\" name=\"startMinutecat1\" value=\"04\">\n\t\t\t<input type=\"hidden\" id=\"startDayPartcat1\" name=\"startDayPartcat1\" value=\"PM\">\n\t\t\t<input type=\"hidden\" id=\"featureStopcat1\" name=\"featureStopcat1\" value=\"11/334/2026\">\n\t\t\t<input type=\"hidden\" id=\"stopHourcat1\" name=\"stopHourcat1\" value=\"11\">\n\t\t\t<input type=\"hidden\" id=\"stopMinutecat1\" name=\"stopMinutecat1\" value=\"59\">\n\t\t\t<input type=\"hidden\" id=\"stopDayPartcat1\" name=\"stopDayPartcat1\" value=\"PM\">\n\t\t\n\t</div>\n"
+  },
+  "fss02_de_DE": {
+   "request": "/admin/?muraAction=carch.loadcategoryfeaturestartstop&siteid=default&categoryAssignment=02&catTrim=cat1&featurestart=29.10.26&featurestop=30.11.2026&startHour=15&startMinute=04&startDayPart=&stopHour=23&stopMinute=59&stopDayPart=",
+   "status": 200,
+   "contentType": "text/html;charset=UTF-8",
+   "body": "\n\t<div class=\"categoryassignmentcontent scheduled\">\n\t\t<a class=\"dropdown-toggle mura-quickEditItem\" rel=\"tooltip\" title=\"29.10.26&nbsp;-&nbsp;30.11.26\">\n\t\t\t\n\t\t\t\t\t<i class=\"mi-calendar\" title=\"29.10.26&nbsp;-&nbsp;30.11.26\"></i> \n\t\t\t\t\n\t\t</a>\n\t\t<input type=\"hidden\" id=\"categoryAssigncat1\" name=\"categoryAssigncat1\" value=\"02\"/>\n\t\t\n\t\t\t<input type=\"hidden\" id=\"featureStartcat1\" name=\"featureStartcat1\" value=\"302.10.2026\">\n\t\t\t<input type=\"hidden\" id=\"startHourcat1\" name=\"startHourcat1\" value=\"15\">\n\t\t\t<input type=\"hidden\" id=\"startMinutecat1\" name=\"startMinutecat1\" value=\"04\">\n\t\t\t<input type=\"hidden\" id=\"startDayPartcat1\" name=\"startDayPartcat1\" value=\"\">\n\t\t\t<input type=\"hidden\" id=\"featureStopcat1\" name=\"featureStopcat1\" value=\"334.11.2026\">\n\t\t\t<input type=\"hidden\" id=\"stopHourcat1\" name=\"stopHourcat1\" value=\"23\">\n\t\t\t<input type=\"hidden\" id=\"stopMinutecat1\" name=\"stopMinutecat1\" value=\"59\">\n\t\t\t<input type=\"hidden\" id=\"stopDayPartcat1\" name=\"stopDayPartcat1\" value=\"\">\n\t\t\n\t</div>\n",
+   "scenario": {
+    "sessionLocale": "de_DE",
+    "dateKeyFormat": "DD.MM.YYYY"
+   },
+   "note": "Default site siteLocale set to de_DE on a disposable legacy copy, so session.locale is de_DE and session.dateKeyFormat DD.MM.YYYY."
+  },
+  "fss2_ts_de_DE": {
+   "request": "/admin/?muraAction=carch.loadcategoryfeaturestartstop&siteid=default&categoryAssignment=2&catTrim=cat1&featurestart=2026-03-02%2009:06:00&featurestop=&startHour=9&startMinute=06&startDayPart=&stopHour=&stopMinute=&stopDayPart=",
+   "status": 200,
+   "contentType": "text/html;charset=UTF-8",
+   "body": "\n\t<div class=\"categoryassignmentcontent scheduled\">\n\t\t<a class=\"dropdown-toggle mura-quickEditItem\" rel=\"tooltip\" title=\"02.03.26&nbsp;-&nbsp;\">\n\t\t\t\n\t\t\t\t\t<i class=\"mi-calendar\" title=\"02.03.26&nbsp;-&nbsp;\"></i> \n\t\t\t\t\n\t\t</a>\n\t\t<input type=\"hidden\" id=\"categoryAssigncat1\" name=\"categoryAssigncat1\" value=\"2\"/>\n\t\t\n\t\t\t<input type=\"hidden\" id=\"featureStartcat1\" name=\"featureStartcat1\" value=\"61.03.2026\">\n\t\t\t<input type=\"hidden\" id=\"startHourcat1\" name=\"startHourcat1\" value=\"9\">\n\t\t\t<input type=\"hidden\" id=\"startMinutecat1\" name=\"startMinutecat1\" value=\"06\">\n\t\t\t<input type=\"hidden\" id=\"startDayPartcat1\" name=\"startDayPartcat1\" value=\"\">\n\t\t\t<input type=\"hidden\" id=\"featureStopcat1\" name=\"featureStopcat1\" value=\"\">\n\t\t\t<input type=\"hidden\" id=\"stopHourcat1\" name=\"stopHourcat1\" value=\"\">\n\t\t\t<input type=\"hidden\" id=\"stopMinutecat1\" name=\"stopMinutecat1\" value=\"\">\n\t\t\t<input type=\"hidden\" id=\"stopDayPartcat1\" name=\"stopDayPartcat1\" value=\"\">\n\t\t\n\t</div>\n",
+   "scenario": {
+    "sessionLocale": "de_DE",
+    "dateKeyFormat": "DD.MM.YYYY"
+   },
+   "note": "Default site siteLocale set to de_DE on a disposable legacy copy, so session.locale is de_DE and session.dateKeyFormat DD.MM.YYYY."
+  },
+  "fss02_en_GB": {
+   "request": "/admin/?muraAction=carch.loadcategoryfeaturestartstop&siteid=default&categoryAssignment=02&catTrim=cat1&featurestart=29/10/2026&featurestop=30/11/26&startHour=15&startMinute=04&startDayPart=&stopHour=23&stopMinute=59&stopDayPart=",
+   "status": 200,
+   "contentType": "text/html;charset=UTF-8",
+   "body": "\n\t<div class=\"categoryassignmentcontent scheduled\">\n\t\t<a class=\"dropdown-toggle mura-quickEditItem\" rel=\"tooltip\" title=\"29&#x2f;10&#x2f;2026&nbsp;-&nbsp;30/11/2026\">\n\t\t\t\n\t\t\t\t\t<i class=\"mi-calendar\" title=\"29&#x2f;10&#x2f;2026&nbsp;-&nbsp;30/11/2026\"></i> \n\t\t\t\t\n\t\t</a>\n\t\t<input type=\"hidden\" id=\"categoryAssigncat1\" name=\"categoryAssigncat1\" value=\"02\"/>\n\t\t\n\t\t\t<input type=\"hidden\" id=\"featureStartcat1\" name=\"featureStartcat1\" value=\"302/10/2026\">\n\t\t\t<input type=\"hidden\" id=\"startHourcat1\" name=\"startHourcat1\" value=\"15\">\n\t\t\t<input type=\"hidden\" id=\"startMinutecat1\" name=\"startMinutecat1\" value=\"04\">\n\t\t\t<input type=\"hidden\" id=\"startDayPartcat1\" name=\"startDayPartcat1\" value=\"\">\n\t\t\t<input type=\"hidden\" id=\"featureStopcat1\" name=\"featureStopcat1\" value=\"334/11/2026\">\n\t\t\t<input type=\"hidden\" id=\"stopHourcat1\" name=\"stopHourcat1\" value=\"23\">\n\t\t\t<input type=\"hidden\" id=\"stopMinutecat1\" name=\"stopMinutecat1\" value=\"59\">\n\t\t\t<input type=\"hidden\" id=\"stopDayPartcat1\" name=\"stopDayPartcat1\" value=\"\">\n\t\t\n\t</div>\n",
+   "scenario": {
+    "sessionLocale": "en_GB",
+    "dateKeyFormat": "DD/MM/YYYY"
+   },
+   "note": "Default site siteLocale set to en_GB on a disposable legacy copy, so session.locale is en_GB and session.dateKeyFormat DD/MM/YYYY."
+  },
+  "fss2_ts_en_GB": {
+   "request": "/admin/?muraAction=carch.loadcategoryfeaturestartstop&siteid=default&categoryAssignment=2&catTrim=cat1&featurestart=2026-03-02%2009:06:00&featurestop=&startHour=9&startMinute=06&startDayPart=&stopHour=&stopMinute=&stopDayPart=",
+   "status": 200,
+   "contentType": "text/html;charset=UTF-8",
+   "body": "\n\t<div class=\"categoryassignmentcontent scheduled\">\n\t\t<a class=\"dropdown-toggle mura-quickEditItem\" rel=\"tooltip\" title=\"02&#x2f;03&#x2f;2026&nbsp;-&nbsp;\">\n\t\t\t\n\t\t\t\t\t<i class=\"mi-calendar\" title=\"02&#x2f;03&#x2f;2026&nbsp;-&nbsp;\"></i> \n\t\t\t\t\n\t\t</a>\n\t\t<input type=\"hidden\" id=\"categoryAssigncat1\" name=\"categoryAssigncat1\" value=\"2\"/>\n\t\t\n\t\t\t<input type=\"hidden\" id=\"featureStartcat1\" name=\"featureStartcat1\" value=\"61/03/2026\">\n\t\t\t<input type=\"hidden\" id=\"startHourcat1\" name=\"startHourcat1\" value=\"9\">\n\t\t\t<input type=\"hidden\" id=\"startMinutecat1\" name=\"startMinutecat1\" value=\"06\">\n\t\t\t<input type=\"hidden\" id=\"startDayPartcat1\" name=\"startDayPartcat1\" value=\"\">\n\t\t\t<input type=\"hidden\" id=\"featureStopcat1\" name=\"featureStopcat1\" value=\"\">\n\t\t\t<input type=\"hidden\" id=\"stopHourcat1\" name=\"stopHourcat1\" value=\"\">\n\t\t\t<input type=\"hidden\" id=\"stopMinutecat1\" name=\"stopMinutecat1\" value=\"\">\n\t\t\t<input type=\"hidden\" id=\"stopDayPartcat1\" name=\"stopDayPartcat1\" value=\"\">\n\t\t\n\t</div>\n",
+   "scenario": {
+    "sessionLocale": "en_GB",
+    "dateKeyFormat": "DD/MM/YYYY"
+   },
+   "note": "Default site siteLocale set to en_GB on a disposable legacy copy, so session.locale is en_GB and session.dateKeyFormat DD/MM/YYYY."
   }
  }
 }

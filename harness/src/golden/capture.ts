@@ -64,6 +64,7 @@ import {
   type RecordedRequest,
   type StepGap,
   type StepRecord,
+  type StepRunOptions,
 } from './steps.js';
 import { isMainModule, parseFlags, runCli, UsageError, type CliOutcome } from '../lib/cli.js';
 import { opt2Path, repoPath, stateDir, type EnvLike } from '../lib/paths.js';
@@ -590,6 +591,8 @@ export interface CaptureDeps {
   /** Progress lines; default stderr. */
   log?: (line: string) => void;
   exceptions?: AppendExceptionOptions;
+  /** Route-key registries and variants recorded keys use; default the coverage gate's committed ones. */
+  routeKeyOptions?: StepRunOptions['routeKeyOptions'];
 }
 
 function stderrLine(line: string): void {
@@ -652,6 +655,7 @@ export async function captureScenario(scenario: Scenario, deps: CaptureDeps): Pr
     mode: 'capture',
     settle: settleHook(ctx, scenario, sideDeps),
     fetch: deps.fetch,
+    routeKeyOptions: deps.routeKeyOptions,
   });
   const effects = await collectSideEffects(ctx, scenario, 'legacy', sideDeps);
   const secrets = secretValues(ctx);

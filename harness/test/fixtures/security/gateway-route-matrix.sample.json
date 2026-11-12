@@ -1,0 +1,168 @@
+{
+  "routes": [
+    {
+      "method": "DELETE",
+      "url": "/*",
+      "transport": "service",
+      "public": true,
+      "edge": true,
+      "siteCheck": true
+    },
+    {
+      "method": "GET",
+      "url": "/*",
+      "transport": "service",
+      "public": true,
+      "edge": true,
+      "siteCheck": true
+    },
+    {
+      "method": "HEAD",
+      "url": "/*",
+      "transport": "service",
+      "public": true,
+      "edge": true,
+      "siteCheck": true
+    },
+    {
+      "method": "OPTIONS",
+      "url": "/*",
+      "transport": "service",
+      "public": true,
+      "edge": true,
+      "siteCheck": true
+    },
+    {
+      "method": "PATCH",
+      "url": "/*",
+      "transport": "service",
+      "public": true,
+      "edge": true,
+      "siteCheck": true
+    },
+    {
+      "method": "POST",
+      "url": "/*",
+      "transport": "service",
+      "public": true,
+      "edge": true,
+      "siteCheck": true
+    },
+    {
+      "method": "PUT",
+      "url": "/*",
+      "transport": "service",
+      "public": true,
+      "edge": true,
+      "siteCheck": true
+    },
+    {
+      "method": "GET",
+      "url": "/healthz",
+      "transport": "service",
+      "public": true,
+      "siteCheck": true
+    },
+    {
+      "method": "POST",
+      "url": "/internal/v1/cutover/activate",
+      "transport": "service",
+      "requires": [
+        "platform.operator"
+      ],
+      "siteCheck": true
+    },
+    {
+      "method": "POST",
+      "url": "/internal/v1/cutover/freeze",
+      "transport": "service",
+      "requires": [
+        "platform.operator"
+      ],
+      "siteCheck": true
+    },
+    {
+      "method": "GET",
+      "url": "/internal/v1/cutover/status",
+      "transport": "service",
+      "requires": [
+        "platform.operator",
+        "platform.migration"
+      ],
+      "siteCheck": true
+    },
+    {
+      "method": "POST",
+      "url": "/internal/v1/cutover/unfreeze",
+      "transport": "service",
+      "requires": [
+        "platform.operator"
+      ],
+      "siteCheck": true
+    },
+    {
+      "method": "POST",
+      "url": "/internal/v1/inflight::clear-orphans",
+      "transport": "service",
+      "requires": [
+        "platform.operator",
+        "platform.migration"
+      ],
+      "siteCheck": true
+    },
+    {
+      "method": "POST",
+      "url": "/internal/v1/legacy-sessions/:sid(.+)::mark-used",
+      "transport": "service",
+      "requires": [
+        "service:identity"
+      ],
+      "siteCheck": true
+    },
+    {
+      "method": "DELETE",
+      "url": "/internal/v1/relay/:service/*",
+      "transport": "service",
+      "requires": [
+        "service:web"
+      ],
+      "siteCheck": false
+    },
+    {
+      "method": "GET",
+      "url": "/internal/v1/relay/:service/*",
+      "transport": "service",
+      "requires": [
+        "service:web"
+      ],
+      "siteCheck": false
+    },
+    {
+      "method": "PATCH",
+      "url": "/internal/v1/relay/:service/*",
+      "transport": "service",
+      "requires": [
+        "service:web"
+      ],
+      "siteCheck": false
+    },
+    {
+      "method": "POST",
+      "url": "/internal/v1/relay/:service/*",
+      "transport": "service",
+      "requires": [
+        "service:web"
+      ],
+      "siteCheck": false
+    },
+    {
+      "method": "PUT",
+      "url": "/internal/v1/relay/:service/*",
+      "transport": "service",
+      "requires": [
+        "service:web"
+      ],
+      "siteCheck": false
+    }
+  ]
+}

@@ -118,6 +118,7 @@ const SESSION: AdminSession = {
   nextN: 20,
   dateKeyFormat: 'MM/DD/YYYY',
   rb: 'en',
+  locale: 'en_US',
   openSectionList: '',
   flatViewArgs: {},
   copyContentId: '',
@@ -200,9 +201,30 @@ describe('category assignment panels', () => {
     };
   };
 
-  it.each(['fss0', 'fss1', 'fss2', 'fss2_blank', 'fss2_startonly'])('renders loadcategoryfeaturestartstop as recorded in %s', (name) => {
+  it.each([
+    'fss0',
+    'fss1',
+    'fss2',
+    'fss2_blank',
+    'fss2_startonly',
+    'fss01',
+    'fss1_0',
+    'fss1e0',
+    'fss1_5',
+    'fss1dot',
+    'fssneg0',
+    'fss02',
+  ])('renders loadcategoryfeaturestartstop as recorded in %s', (name) => {
     expectRecorded(renderLoadCategoryFeatureStartStop(model(name), context()), name);
   });
+
+  it.each(['fss02_de_DE', 'fss2_ts_de_DE', 'fss02_en_GB', 'fss2_ts_en_GB'])(
+    'renders loadcategoryfeaturestartstop as recorded under the session locale of %s',
+    (name) => {
+      const { sessionLocale, dateKeyFormat } = scenario<{ sessionLocale: string; dateKeyFormat: string }>(name);
+      expectRecorded(renderLoadCategoryFeatureStartStop(model(name), context({ session: { locale: sessionLocale, dateKeyFormat } })), name);
+    },
+  );
 
   it.each(['catassign0', 'catassign1', 'catassign2', 'catassign2_12'])('renders loadcategoryassignment as recorded in %s', (name) => {
     expectRecorded(renderLoadCategoryAssignment(model(name), context()), name);
@@ -628,20 +650,30 @@ function statusModel(s: StatusScenario): StatusModalModel {
 }
 
 describe('renderStatusModal', () => {
+  const home: StatusModalModel = {
+    mode: '',
+    content: { active: 1, approved: 1, lastupdate: new Date(2026, 10, 10, 9, 6, 12), changesetid: null, approvalStatus: '' },
+    user: { isNew: true, fullName: '' },
+    requiresApproval: false,
+    showApprovalStatus: false,
+    lockType: '',
+    hasChangesets: true,
+    changesetName: undefined,
+    membershipIds: '',
+    resourcePath: '',
+  };
+
   it('renders the published home version as recorded', () => {
-    const model: StatusModalModel = {
-      mode: '',
-      content: { active: 1, approved: 1, lastupdate: new Date(2026, 10, 10, 9, 6, 12), changesetid: null, approvalStatus: '' },
-      user: { isNew: true, fullName: '' },
-      requiresApproval: false,
-      showApprovalStatus: false,
-      lockType: '',
-      hasChangesets: true,
-      changesetName: undefined,
-      membershipIds: '',
-      resourcePath: '',
-    };
-    expectRecorded(bare(renderStatusModal(model, context())), 'status');
+    expectRecorded(bare(renderStatusModal(home, context())), 'status');
+  });
+
+  // ACF 2023 LSDateFormat(date, dateKeyFormat) and LSTimeFormat(date, 'short') after setLocale(locale).
+  it.each([
+    { locale: 'de_DE', dateKeyFormat: 'DD.MM.YYYY', created: '314.11.2026<br />\n\t\t\t09:06' },
+    { locale: 'en_GB', dateKeyFormat: 'DD/MM/YYYY', created: '314/11/2026<br />\n\t\t\t09:06' },
+  ])('prints the created-on date and time under the $locale session', ({ locale, dateKeyFormat, created }) => {
+    const body = bare(renderStatusModal(home, context({ session: { locale, dateKeyFormat } }))).body;
+    expect(body).toBe(recorded('status').body.replace('11/314/2026<br />\n\t\t\t9:06 AM', created));
   });
 
   const names = Object.keys(RECORDED).filter((name) => name.startsWith('sm_'));

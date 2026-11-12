@@ -1,15 +1,13 @@
 // Takes, reads and drops snapshots: copy-only backups of the live legacy database restored read-only beside it.
-import { chmod, mkdir, rm } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import path from 'node:path';
 
 import sql from 'mssql';
-import type { ConnectionPool, IResult, ISqlType, Request } from 'mssql';
 
 import type { MigrationContext } from '../context.js';
 import type { MigrationEnv } from '../env.js';
 import { clearCatalogCache } from '../extract/catalog.js';
 import { buildFileManifest, FileStoreUnsupportedError, type FilesContext } from '../files/manifest.js';
-import { MASTER_DATABASE } from '../legacy/legacy-db.js';
 import { snapshotsDir } from '../paths.js';
 // The `source_sha` column is NOT NULL; the pin is read through the one existing pin reader rather than a second parser.
 import { readSourceSha } from '../reports/source-pin.js';
@@ -28,6 +26,8 @@ import {
   snapshotDatabaseNameFor,
   type FileListRow,
 } from './backup.js';
+import { prepareBackupDir } from './backup-dir.js';
+import { runMasterStatement, SnapshotError } from './master.js';
 
 /** Kinds `migration.snapshot.kind` accepts. */
 export const SNAPSHOT_KINDS = ['seed', 'workload', 'transition', 'rebaseline', 'checkpoint', 'feed'] as const;
@@ -44,15 +44,18 @@ export type FileStoreOutcome =
   | { status: 'unsupported'; fileStore: string; siteId: string }
   | { status: 'error'; message: string };
 
-/** One snapshot: its read-only database, backup file and LSNs (as text, since `numeric(25,0)` exceeds safe integers). */
+/**
+ * One snapshot: its read-only database, backup file and LSNs (as text, since `numeric(25,0)` exceeds safe integers;
+ * `null` until the backup completes).
+ */
 export interface SnapshotRecord {
   seq: number;
   kind: SnapshotKind;
   state: SnapshotState;
   databaseName: string;
   backupPath: string;
-  checkpointLsn: string;
-  lastLsn: string;
+  checkpointLsn: string | null;
+  lastLsn: string | null;
   takenAt: Date;
   /** Transition whose lease holder took the snapshot, if any. */
   transitionId: string | null;
@@ -82,17 +85,8 @@ export interface DropSnapshotResult {
   manifestRowsDeleted: number;
 }
 
-/** A named, typed parameter of a master statement. */
-export interface MasterStatementInput {
-  name: string;
-  type: ISqlType;
-  value: unknown;
-}
-
-/** Raised when a snapshot cannot be taken, read or dropped. */
-export class SnapshotError extends Error {
-  override readonly name: string = 'SnapshotError';
-}
+export { runMasterStatement, SnapshotError } from './master.js';
+export type { MasterStatementInput } from './master.js';
 
 /** The units one lease holder keeps. */
 export interface SnapshotLeaseHolder {
@@ -124,20 +118,15 @@ export class SnapshotNotFoundError extends SnapshotError {
   }
 }
 
-// BACKUP and RESTORE outlast the driver's 15 s default request timeout, which would cancel them.
-const SNAPSHOT_REQUEST_TIMEOUT_MS = 30 * 60 * 1000;
-
-// mssql 12 accepts per-request overrides as a second constructor argument; @types/mssql 12.3 declares only the first.
-const RequestWithOverrides = sql.Request as unknown as new (
-  parent: ConnectionPool,
-  overrides: { requestTimeout: number },
-) => Request;
-
+// Serialises sequence reservation, so two snapshots never read the same MAX(seq).
+const SNAPSHOT_LOCK_KEY = 'migration.snapshot';
+const LOCK_SNAPSHOTS_SQL = 'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))';
 const LEASES_SQL = 'SELECT unit, holder_id, kind FROM migration.unit_lease ORDER BY holder_id, unit';
 const NEXT_SEQ_SQL = 'SELECT COALESCE(MAX(seq) + 1, 0) AS seq FROM migration.snapshot';
-const INSERT_SNAPSHOT_SQL =
-  'INSERT INTO migration.snapshot (seq, database_name, backup_file, checkpoint_lsn, last_lsn, kind, transition_id, ' +
-  "state, manifest_complete, taken_at, source_sha) VALUES ($1, $2, $3, $4, $5, $6, $7, 'creating', false, $8, $9)";
+const RESERVE_SNAPSHOT_SQL =
+  'INSERT INTO migration.snapshot (seq, database_name, backup_file, kind, transition_id, state, manifest_complete, ' +
+  "taken_at, source_sha) VALUES ($1, $2, $3, $4, $5, 'creating', false, $6, $7)";
+const COMPLETE_SNAPSHOT_SQL = 'UPDATE migration.snapshot SET checkpoint_lsn = $2, last_lsn = $3, taken_at = $4 WHERE seq = $1';
 const SET_STATE_SQL = 'UPDATE migration.snapshot SET state = $2 WHERE seq = $1';
 const SELECT_SNAPSHOT =
   'SELECT s.seq, s.kind, s.state, s.database_name, s.backup_file, s.checkpoint_lsn::text AS checkpoint_lsn, ' +
@@ -156,8 +145,8 @@ interface SnapshotRow {
   state: SnapshotState;
   database_name: string;
   backup_file: string;
-  checkpoint_lsn: string;
-  last_lsn: string;
+  checkpoint_lsn: string | null;
+  last_lsn: string | null;
   taken_at: Date;
   transition_id: string | null;
   source_sha: string;
@@ -179,30 +168,17 @@ interface FileListRecord {
   FileId: string | number;
 }
 
-/** Runs `sqlText` on `master` with the snapshot request timeout: as a plain batch, or with `inputs` through sp_executesql. */
-export async function runMasterStatement<R = Record<string, unknown>>(
-  ctx: Pick<SnapshotContext, 'legacy'>,
-  sqlText: string,
-  inputs: readonly MasterStatementInput[] = [],
-): Promise<IResult<R>> {
-  const pool = await ctx.legacy.database(MASTER_DATABASE);
-  const request = new RequestWithOverrides(pool, { requestTimeout: SNAPSHOT_REQUEST_TIMEOUT_MS });
-  if (inputs.length === 0) return request.batch<R>(sqlText);
-  for (const input of inputs) request.input(input.name, input.type, input.value);
-  return request.query<R>(sqlText);
-}
-
 /** Name of the read-only database holding snapshot `seq` of the live legacy database. */
 export function snapshotDatabaseName(env: Pick<MigrationEnv, 'MURA_DATABASE'>, seq: number): string {
   return snapshotDatabaseNameFor(env.MURA_DATABASE, seq);
 }
 
-// `failed` is set only when the manifest build threw, so it carries no other cause.
+// Once the backup completed and its LSNs are recorded, `failed` is set only when the manifest build threw.
 const MANIFEST_FAILED_MESSAGE = 'building the file manifest failed';
 
 function fileStoreOf(row: SnapshotRow): FileStoreOutcome | null {
   if (row.manifest_complete) return { status: 'ok', objects: row.objects };
-  return row.state === 'failed' ? { status: 'error', message: MANIFEST_FAILED_MESSAGE } : null;
+  return row.state === 'failed' && row.checkpoint_lsn !== null ? { status: 'error', message: MANIFEST_FAILED_MESSAGE } : null;
 }
 
 function toRecord(row: SnapshotRow): SnapshotRecord {
@@ -263,14 +239,34 @@ function blockingLeases(rows: readonly LeaseRecord[], holderId: string | undefin
   return [...byHolder.values()];
 }
 
-/** Checks that only the caller's own transition holds leases, and allocates the next sequence; first snapshot is 0. */
-async function allocateSeq(ctx: Pick<SnapshotContext, 'db'>, holderId: string | undefined): Promise<number> {
+/** Sequence, database and backup file a `creating` row reserves for one snapshot attempt. */
+interface Reservation {
+  seq: number;
+  databaseName: string;
+  backupPath: string;
+}
+
+/**
+ * Under the snapshot lock, checks that only the caller's own transition holds leases and records the next sequence as
+ * a `creating` row without LSNs; the first snapshot is 0.
+ */
+async function reserveSnapshot(
+  ctx: Pick<SnapshotContext, 'db' | 'env' | 'clock'>,
+  opts: TakeSnapshotOptions,
+  sourceSha: string,
+): Promise<Reservation> {
   return ctx.db.withMetadata(async (tx) => {
+    await tx.query(LOCK_SNAPSHOTS_SQL, [SNAPSHOT_LOCK_KEY]);
     const leases = await tx.query<LeaseRecord>(LEASES_SQL);
-    const blocking = blockingLeases(leases.rows, holderId);
+    const blocking = blockingLeases(leases.rows, opts.holderId);
     if (blocking.length > 0) throw new SnapshotBlockedError(blocking);
     const next = await tx.query<{ seq: number }>(NEXT_SEQ_SQL);
-    return next.rows[0]?.seq ?? 0;
+    const seq = next.rows[0]?.seq ?? 0;
+    const databaseName = snapshotDatabaseName(ctx.env, seq);
+    const backupPath = path.posix.join(snapshotsDir(ctx.env.OPT2_STATE_DIR), backupFileName(seq));
+    const row = [seq, databaseName, backupPath, opts.kind, opts.holderId ?? null, ctx.clock.now(), sourceSha];
+    await tx.query(RESERVE_SNAPSHOT_SQL, row);
+    return { seq, databaseName, backupPath };
   });
 }
 
@@ -332,26 +328,36 @@ async function setState(ctx: Pick<SnapshotContext, 'db'>, seq: number, state: Sn
   await ctx.db.withMetadata((tx) => tx.query(SET_STATE_SQL, [seq, state]));
 }
 
+/** Marks snapshot `seq` failed; returns `error` to rethrow, or an AggregateError adding the marking error when that fails. */
+async function markFailed(ctx: Pick<SnapshotContext, 'db'>, seq: number, error: unknown, what: string): Promise<unknown> {
+  try {
+    await setState(ctx, seq, 'failed');
+  } catch (markError) {
+    return new AggregateError([error, markError], `${what}, and so did marking it failed`);
+  }
+  return error;
+}
+
 function elapsedMs(ctx: Pick<SnapshotContext, 'clock'>, since: Date): number {
   return ctx.clock.now().getTime() - since.getTime();
 }
 
-/**
- * Backs up the live legacy database copy-only, restores it read-only as the next snapshot database, records it in
- * `migration.snapshot` and builds its file manifest. Call only at a quiesced point.
- * @throws SnapshotBlockedError, before any SQL Server statement, when a window or another transition holds unit leases.
- */
-export async function takeSnapshot(ctx: SnapshotContext, opts: TakeSnapshotOptions): Promise<SnapshotRecord> {
-  const sourceSha = readSourceSha(ctx.config.paths.sourcePin);
-  const seq = await allocateSeq(ctx, opts.holderId);
-  const databaseName = snapshotDatabaseName(ctx.env, seq);
-  const dir = snapshotsDir(ctx.env.OPT2_STATE_DIR);
-  const backupPath = path.posix.join(dir, backupFileName(seq));
-  await mkdir(dir, { recursive: true });
-  // SQL Server writes the backup as its own service account.
-  await chmod(dir, 0o777);
+/** LSNs of a completed backup and the instants it started, completed and was restored. */
+interface CompletedBackup {
+  checkpointLsn: string;
+  lastLsn: string;
+  startedAt: Date;
+  takenAt: Date;
+  restoredAt: Date;
+}
 
-  // No row has `seq`, so a database of that name is left over from a run that failed before recording it.
+/** Backs up the live database into the reserved file, restores it read-only and records the backup's LSNs on the row. */
+async function backUpAndRestore(ctx: SnapshotContext, reserved: Reservation): Promise<CompletedBackup> {
+  const { seq, databaseName, backupPath } = reserved;
+  await prepareBackupDir(ctx, backupPath);
+
+  // This attempt reserved `seq`, so a database of that name belongs to no recorded attempt, e.g. it outlived a
+  // re-bootstrapped migration schema.
   if (await databaseExists(ctx, databaseName)) {
     ctx.logger.warn(`dropping ${databaseName}, left by an unrecorded snapshot ${String(seq)}`);
     await runMasterStatement(ctx, dropDatabaseSql(databaseName));
@@ -363,21 +369,35 @@ export async function takeSnapshot(ctx: SnapshotContext, opts: TakeSnapshotOptio
   await restoreReadOnly(ctx, seq, databaseName, backupPath);
   const { checkpointLsn, lastLsn } = await readBackupLsns(ctx, backupPath);
   const restoredAt = ctx.clock.now();
+  await ctx.db.withMetadata((tx) => tx.query(COMPLETE_SNAPSHOT_SQL, [seq, checkpointLsn, lastLsn, takenAt]));
+  return { checkpointLsn, lastLsn, startedAt, takenAt, restoredAt };
+}
 
+/**
+ * Reserves the next sequence as a `creating` row, backs up the live legacy database copy-only into the reserved file,
+ * restores it read-only as the snapshot database, records the backup's LSNs and builds its file manifest; a failure
+ * after the reservation marks the row `failed`. Call only at a quiesced point.
+ * @throws SnapshotBlockedError, before any SQL Server statement, when a window or another transition holds unit leases.
+ */
+export async function takeSnapshot(ctx: SnapshotContext, opts: TakeSnapshotOptions): Promise<SnapshotRecord> {
+  const sourceSha = readSourceSha(ctx.config.paths.sourcePin);
+  const reserved = await reserveSnapshot(ctx, opts, sourceSha);
+  const { seq, databaseName, backupPath } = reserved;
+
+  let backup: CompletedBackup;
+  try {
+    backup = await backUpAndRestore(ctx, reserved);
+  } catch (error) {
+    throw await markFailed(ctx, seq, error, `Snapshot ${String(seq)} failed`);
+  }
+  const { checkpointLsn, lastLsn, startedAt, takenAt, restoredAt } = backup;
   const transitionId = opts.holderId ?? null;
-  const row = [seq, databaseName, backupPath, checkpointLsn, lastLsn, opts.kind, transitionId, takenAt, sourceSha];
-  await ctx.db.withMetadata((tx) => tx.query(INSERT_SNAPSHOT_SQL, row));
 
   let fileStore: Exclude<FileStoreOutcome, { status: 'error' }>;
   try {
     fileStore = await buildManifestOutcome(ctx, seq);
   } catch (error) {
-    try {
-      await setState(ctx, seq, 'failed');
-    } catch (markError) {
-      throw new AggregateError([error, markError], `File manifest of snapshot ${String(seq)} failed, and so did marking it failed`);
-    }
-    throw error;
+    throw await markFailed(ctx, seq, error, `File manifest of snapshot ${String(seq)} failed`);
   }
   await setState(ctx, seq, 'ready');
 

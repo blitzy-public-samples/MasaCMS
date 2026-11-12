@@ -14,6 +14,7 @@ import { migrationKitSql } from '../../src/migration-kit/ddl.js';
 import { GATE_WAIT_MS, endOperation, isMigrationAuthority } from '../../src/migration-kit/gates.js';
 import {
   DEFAULT_EXPORT_LIMIT,
+  MAX_EXPORT_KEYS,
   MAX_EXPORT_MATCH_LENGTH,
   MIGRATION_PATH_PREFIX,
   registerMigrationHandlers,
@@ -424,7 +425,7 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
     return app.inject({ method: 'POST', url: `${MIGRATION_PATH_PREFIX}${route}`, headers, payload: payload as Record<string, unknown> });
   }
 
-  function get(route: string, query: Record<string, string> = {}, headers: Record<string, string> = migration): Promise<LightMyRequestResponse> {
+  function get(route: string, query: Record<string, string | string[]> = {}, headers: Record<string, string> = migration): Promise<LightMyRequestResponse> {
     return app.inject({ method: 'GET', url: `${MIGRATION_PATH_PREFIX}${route}`, headers, query });
   }
 
@@ -464,7 +465,7 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
     return res.json<WatermarkRecord[]>();
   }
 
-  async function exportPage(query: Record<string, string>): Promise<ExportResponse> {
+  async function exportPage(query: Record<string, string | string[]>): Promise<ExportResponse> {
     const res = await get('/export', query);
     expect(res.statusCode, res.body).toBe(200);
     return res.json<ExportResponse>();
@@ -808,6 +809,57 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
     expect(pages.slice(1).every((page) => !('objects' in page))).toBe(true);
   });
 
+  it('exports only the rows of one key or of repeated keys, paged by its keyset cursor and without the object manifest', async () => {
+    const site = freshSite();
+    const values = ['i1', 'i2', 'i3', 'i4', 'i5'].map((id, index) => item(id, site, `Item ${id}`, index));
+    await applied({ batchId: `${site}-k1`, legacyTable: 'tItems', siteId: site, columns: ITEM_LEGACY, rows: rowsOf(ITEM_LEGACY, values.map((v): [RowOp, LegacyValues] => ['upsert', v])) });
+    const rowOf = (index: number): ExportRow => exported(ITEM_LEGACY, ['ItemID'], values[index] as LegacyValues);
+    const keyOf = (id: string): string => encodeKey(ITEM_LEGACY, ['ItemID'], { ItemID: id });
+
+    const single = await exportPage({ unit: 'mk.item', siteId: site, keys: keyOf('i3') });
+    expect(single).toEqual({ unit: 'mk.item', tenantId: tenantIdForSite(site), tables: [expect.objectContaining({ legacyTable: 'tItems', rows: [rowOf(2)] })], next: null });
+    const most = Array.from({ length: MAX_EXPORT_KEYS }, (_, n) => keyOf(n === 0 ? 'i5' : `absent-${String(n)}`));
+    expect((await exportPage({ unit: 'mk.item', siteId: site, keys: most })).tables.flatMap((table) => table.rows)).toEqual([rowOf(4)]);
+
+    const keys = [keyOf('i4'), keyOf('i2'), keyOf('absent'), keyOf('i4')];
+    const pages: ExportResponse[] = [];
+    let after: string | null = null;
+    do {
+      pages.push(await exportPage({ unit: 'mk.item', siteId: site, keys, limit: '1', ...(after === null ? {} : { after }) }));
+      after = pages.at(-1)?.next ?? null;
+    } while (after !== null && pages.length < 5);
+    expect(pages.map((page) => page.tables.flatMap((table) => table.rows))).toEqual([[rowOf(1)], [rowOf(3)], []]);
+    expect(pages.map((page) => page.next === null)).toEqual([false, false, true]);
+    expect(pages.some((page) => 'objects' in page)).toBe(false);
+  });
+
+  it('filters a folded unit by legacy key across its programs, or within the one programId names', async () => {
+    const site = freshSite();
+    const scores = { siteId: site, columns: SCORE_LEGACY };
+    await applied({ ...scores, batchId: `${site}-k1`, legacyTable: 'Program_1.Scores', rows: rowsOf(SCORE_LEGACY, [['upsert', { ScoreID: 's1', Points: 10 }], ['upsert', { ScoreID: 's2', Points: 20 }]]) });
+    await applied({ ...scores, batchId: `${site}-k2`, legacyTable: 'Program_2.Scores', rows: rowsOf(SCORE_LEGACY, [['upsert', { ScoreID: 's1', Points: 30 }]]) });
+    const keys = encodeKey(SCORE_LEGACY, ['ScoreID'], { ScoreID: 's1' });
+    const rows = async (query: Record<string, string>): Promise<ExportRow[][]> =>
+      (await exportPage({ unit: 'mk.score', siteId: site, keys, ...query })).tables.map((table) => table.rows);
+
+    expect(await rows({})).toEqual([[exported(SCORE_LEGACY, ['ScoreID'], { ScoreID: 's1', Points: 10 }, 1), exported(SCORE_LEGACY, ['ScoreID'], { ScoreID: 's1', Points: 30 }, 2)]]);
+    expect(await rows({ programId: '2' })).toEqual([[exported(SCORE_LEGACY, ['ScoreID'], { ScoreID: 's1', Points: 30 }, 2)]]);
+  });
+
+  it('filters every mapping of a shared target table by the same keys', async () => {
+    const site = freshSite();
+    await applied({
+      batchId: `${site}-k1`,
+      legacyTable: 'tNotes',
+      siteId: site,
+      columns: NOTE_LEGACY,
+      rows: rowsOf(NOTE_LEGACY, [['upsert', { NoteID: 'n1', Type: 'Memo', Body: 'one' }], ['upsert', { NoteID: 'n2', Type: 'Memo', Body: 'two' }]]),
+    });
+    const page = await exportPage({ unit: 'mk.memo', siteId: site, keys: [encodeKey(MEMO_LEGACY, ['NoteID'], { NoteID: 'n2' })] });
+    const row = exported(MEMO_LEGACY, ['NoteID'], { NoteID: 'n2', Body: 'two' });
+    expect(page.tables.map((table) => [table.legacyTable, table.rows])).toEqual([['tNotes', [row]], ['tNoteArchive', [row]]]);
+  });
+
   /** A fresh site's items i1–i5, by id, whose names and quantities the match cases select from. */
   async function matchItems(): Promise<{ site: string; byId: Record<string, LegacyValues> }> {
     const site = freshSite();
@@ -841,6 +893,13 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
     expect([first.next, rest.next]).toEqual([cursorText({ table: 'item', key: ['i2'] }), null]);
   });
 
+  it('exports only the listed keys that also fall within the match', async () => {
+    const { site, byId } = await matchItems();
+    const keys = ['i1', 'i3'].map((id) => encodeKey(ITEM_LEGACY, ['ItemID'], { ItemID: id }));
+    const page = await exportPage({ unit: 'mk.item', siteId: site, keys, match: JSON.stringify({ Name: ['alpha'] }) });
+    expect(page.tables.flatMap((table) => table.rows)).toEqual([exported(ITEM_LEGACY, ['ItemID'], byId.i1 as LegacyValues)]);
+  });
+
   it.each([
     ['an undeclared unit', { unit: 'mk.ghost', siteId: 'tenant-a' }],
     ['a programId for a unit without legacy_program_id', { unit: 'mk.item', siteId: 'tenant-a', programId: '1' }],
@@ -868,13 +927,23 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
     ['a limit of 0', { unit: 'mk.item', siteId: 'tenant-a', limit: '0' }],
     ['a limit above 10000', { unit: 'mk.item', siteId: 'tenant-a', limit: '10001' }],
     ['an unknown parameter', { unit: 'mk.item', siteId: 'tenant-a', page: '1' }],
+    ['keys for a keyless unit', { unit: 'mk.tag_member', siteId: 'tenant-a', keys: encodeRow(TAG_LEGACY, { Label: 'a', Weight: 1 }) }],
+    ['a key that is not a key encoding', { unit: 'mk.item', siteId: 'tenant-a', keys: 'i1' }],
+    ['a key encoded with another type than its key column', { unit: 'mk.score', siteId: 'tenant-a', keys: encodeRow([{ name: 'ScoreID', type: 'i' }], { ScoreID: '1' }) }],
+    ['a malformed key beside valid ones', { unit: 'mk.item', siteId: 'tenant-a', keys: [encodeKey(ITEM_LEGACY, ['ItemID'], { ItemID: 'i1' }), 's9:i1'] }],
+    ['an empty key', { unit: 'mk.item', siteId: 'tenant-a', keys: '' }],
+    ['a key with a NUL character for a text key column', { unit: 'mk.item', siteId: 'tenant-a', keys: encodeKey(ITEM_LEGACY, ['ItemID'], { ItemID: 'a\u0000b' }) }],
+    [
+      'more keys than one request takes',
+      { unit: 'mk.item', siteId: 'tenant-a', keys: Array.from({ length: MAX_EXPORT_KEYS + 1 }, (_, n) => encodeKey(ITEM_LEGACY, ['ItemID'], { ItemID: `i${String(n)}` })) },
+    ],
     ['a match that is not JSON', { unit: 'mk.item', siteId: 'tenant-a', match: '{"Name":' }],
     ['a match that is not a JSON object', { unit: 'mk.item', siteId: 'tenant-a', match: '["Name"]' }],
     ['a match naming no column', { unit: 'mk.item', siteId: 'tenant-a', match: '{}' }],
     ['a match entry without values', { unit: 'mk.item', siteId: 'tenant-a', match: '{"Name":[]}' }],
     ['a match value that is neither text nor an integer', { unit: 'mk.item', siteId: 'tenant-a', match: '{"Qty":[1.5]}' }],
     ['a match longer than its maximum', { unit: 'mk.item', siteId: 'tenant-a', match: JSON.stringify({ Name: ['x'.repeat(MAX_EXPORT_MATCH_LENGTH)] }) }],
-  ] as [string, Record<string, string>][])('rejects an export with %s as invalidParameters', async (_label, query) => {
+  ] as [string, Record<string, string | string[]>][])('rejects an export with %s as invalidParameters', async (_label, query) => {
     expectRejected(await get('/export', query));
   });
 

@@ -53,6 +53,7 @@ const ctx: AdminRenderContext = {
     nextN: 20,
     dateKeyFormat: 'MM/DD/YYYY',
     rb: 'en_US',
+    locale: 'en_US',
     openSectionList: '',
     flatViewArgs: {},
     copyContentId: '',
@@ -173,7 +174,7 @@ function quickEdit(node: string, attribute: string, over: Partial<QuickEditModel
     },
     displayStart: n.start,
     displayStop: n.stop,
-    displayInterval: displayIntervalValues(n.displayinterval, n.start, n.stop, 'Etc/UTC'),
+    displayInterval: displayIntervalValues(n.displayinterval, n.start, n.stop, 'Etc/UTC', 'en_US'),
     parentType: n.parentType,
     requestPtype: 'Page',
     templates: TEMPLATES,
@@ -212,6 +213,15 @@ describe('renderLoadQuickEdit', () => {
     );
   });
 
+  // ACF 2023 LSDateFormat(date, session.dateKeyFormat) after setLocale(locale); the recording is en_US's.
+  it.each([
+    { locale: 'de_DE', dateKeyFormat: 'DD.MM.YYYY', start: '185.07.2026', stop: '273.09.2026' },
+    { locale: 'en_GB', dateKeyFormat: 'DD/MM/YYYY', start: '185/07/2026', stop: '273/09/2026' },
+  ])('prints the schedule dates under the $locale session', ({ locale, dateKeyFormat, start, stop }) => {
+    const body = renderLoadQuickEdit(quickEdit('ev', 'display'), { ...ctx, session: { ...ctx.session, locale, dateKeyFormat } }).body;
+    expect(body).toBe(fixture('qe-ev-display').replace('07/185/2026', start).replaceAll('09/273/2026', stop));
+  });
+
   it('answers the drafts notice for a node with drafts', () => {
     expect(renderLoadQuickEdit(quickEdit('alpha', 'display', { hasDrafts: true }), ctx).body).toBe(fixture('qe-delta-display'));
   });
@@ -223,7 +233,7 @@ describe('renderLoadQuickEdit', () => {
         availableTimeZones: ['Europe/Paris', 'America/New_York', 'Etc/UTC', 'America/Chicago'],
         localeHasDayParts: false,
         quickEditScheduler: true,
-        displayInterval: { ...displayIntervalValues(LAUNCH_INTERVAL, null, null, 'Etc/UTC'), timezone: 'America/New_York' },
+        displayInterval: { ...displayIntervalValues(LAUNCH_INTERVAL, null, null, 'Etc/UTC', 'en_US'), timezone: 'America/New_York' },
       }),
       ctx,
     ).body;
@@ -245,7 +255,7 @@ describe('renderLoadQuickEdit', () => {
 
 describe('displayIntervalValues', () => {
   it('reads the stored JSON with CFML key case and parses the end date', () => {
-    const v = displayIntervalValues(LAUNCH_INTERVAL, null, null, 'Etc/UTC');
+    const v = displayIntervalValues(LAUNCH_INTERVAL, null, null, 'Etc/UTC', 'en_US');
     expect(v).toMatchObject({ type: 'weekly', every: 2, repeats: 1, allday: 0, end: 'on', endafter: '1', daysofweek: '2,4', timezone: 'Etc/UTC' });
     expect(v.endon).toEqual(new Date(2026, 8, 30));
   });
@@ -257,11 +267,33 @@ describe('displayIntervalValues', () => {
     ['{"type":"monthly","daysofweek":"3","endon":"2026-01-02T10:00:00","end":"on"}', null, null, { daysofweek: '3', endon: new Date(2026, 0, 2, 10) }],
     ['{"type":"weekly","endon":"soon","end":"on"}', null, null, { endon: '', daysofweek: '' }],
   ])('deserializes %j', (raw, start, stop, expected) => {
-    expect(displayIntervalValues(raw, start, stop, 'Etc/UTC')).toMatchObject(expected);
+    expect(displayIntervalValues(raw, start, stop, 'Etc/UTC', 'en_US')).toMatchObject(expected);
+  });
+
+  // ACF 2023 cfobject.parseDateArg(endon) after setLocale(locale); '' where it reads no date.
+  const OCT_29 = new Date(2026, 9, 29);
+  const ENDON_ACF: readonly (readonly [text: string, de_DE: Date | '', en_GB: Date | '', en_US: Date | ''])[] = [
+    ['29.10.2026', OCT_29, OCT_29, OCT_29],
+    ['10/29/2026', OCT_29, OCT_29, OCT_29],
+    ['29/10/2026', OCT_29, OCT_29, OCT_29],
+    ['2026-10-29T00:00:00', OCT_29, OCT_29, OCT_29],
+    ['2026-10-29', OCT_29, OCT_29, OCT_29],
+    ['x', '', '', ''],
+    ['05/06/2026', new Date(2026, 5, 5), new Date(2026, 5, 5), new Date(2026, 4, 6)],
+    ['29. Oktober 2026', OCT_29, '', ''],
+    ['10/29/2026 2:30 PM', new Date(2026, 9, 29, 14, 30), new Date(2026, 9, 29, 14, 30), new Date(2026, 9, 29, 14, 30)],
+  ];
+  it.each(
+    ENDON_ACF.flatMap(([text, ...byLocale]) =>
+      (['de_DE', 'en_GB', 'en_US'] as const).map((locale, i) => ({ text, locale, expected: byLocale[i] })),
+    ),
+  )('reads endon $text under the $locale session as ACF does', ({ text, locale, expected }) => {
+    const interval = JSON.stringify({ type: 'daily', end: 'on', endon: text });
+    expect(displayIntervalValues(interval, null, null, 'Etc/UTC', locale).endon).toEqual(expected);
   });
 
   it('fails where CFML cannot read the interval as a struct', () => {
-    expect(() => displayIntervalValues('[1]', null, null, 'Etc/UTC')).toThrow(TypeError);
+    expect(() => displayIntervalValues('[1]', null, null, 'Etc/UTC', 'en_US')).toThrow(TypeError);
   });
 });
 

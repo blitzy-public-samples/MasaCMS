@@ -303,6 +303,23 @@
 		variables.envelope.raise("invalidParameters", "Row #arguments.row.contentID# has a stored content history that differs from its versions");
 	}
 
+	/** Returns Masa's objectlist<columnID> fields for a row's display objects: a JSON array of [object, name, objectID] per region, in row order. */
+	struct function objectLists(required struct row) {
+		local.regions = {};
+		for (local.object in rowValue(arguments.row, "objects", [])) {
+			local.field = "objectlist" & int(local.object.columnID);
+			if (!structKeyExists(local.regions, local.field)) {
+				local.regions[local.field] = [];
+			}
+			arrayAppend(local.regions[local.field], [local.object.object, local.object.name, local.object.objectID]);
+		}
+		local.lists = {};
+		for (local.field in local.regions) {
+			local.lists[local.field] = serializeJSON(local.regions[local.field]);
+		}
+		return local.lists;
+	}
+
 	/** Saves each content node's missing versions oldest first, so Masa writes one tcontent history row per version. */
 	struct function seedContent(required array rows) {
 		local.inserted = 0;
@@ -318,6 +335,7 @@
 			local.node = {
 				"contentID" = local.row.contentID,
 				"siteID" = local.row.siteID,
+				"moduleID" = rowValue(local.row, "moduleID", "00000000000000000000000000000000000"),
 				"parentID" = local.row.parentID,
 				"type" = local.row.type,
 				"subType" = rowValue(local.row, "subType", "Default"),
@@ -330,6 +348,11 @@
 			for (local.categoryID in local.categoryIDs) {
 				local.node["categoryAssign" & replace(local.categoryID, "-", "", "all")] = 0;
 			}
+			if (structKeyExists(local.row, "responseMessage")) {
+				local.node["responseMessage"] = local.row.responseMessage;
+			}
+			// contentManager.save writes the saved version's tcontentobjects rows from its objectlist<columnID> fields.
+			structAppend(local.node, objectLists(local.row));
 			// The dataset's contentHistID is never passed: Masa always generates it, and a given one would be read as the version to edit.
 			for (local.k = local.saved + 1; local.k <= arrayLen(local.row.versions); local.k++) {
 				local.version = local.row.versions[local.k];

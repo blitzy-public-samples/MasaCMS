@@ -553,22 +553,45 @@ export function validateLogLines(lines: Iterable<string | CapturedLogLine>): Log
 export interface ReadCapturedLogLinesOptions {
   env?: EnvLike;
   packages?: readonly string[];
+  /** Byte offset per package from {@link capturedLogOffsets}; a line it cuts is skipped. */
+  fromOffsets?: Readonly<Record<string, number>>;
 }
 
-/** Non-blank lines of each listed package's up.json log, streamed per iteration; throws naming a package with no log path. */
-export function readCapturedLogLines(opts: ReadCapturedLogLinesOptions = {}): Iterable<CapturedLogLine> {
+/** Each listed package's up.json log file; throws naming a package with no log path. */
+function capturedLogFiles(opts: ReadCapturedLogLinesOptions): { source: string; file: string }[] {
   const { processes } = readUpState({ env: opts.env });
-  const logs = (opts.packages ?? PACKAGE_NAMES).map((name) => {
+  return (opts.packages ?? PACKAGE_NAMES).map((name) => {
     const entry = processes[name];
     if (entry?.log === undefined) {
       throw new Error(`${upStatePath(opts.env)} records no log file for package ${name}`);
     }
     return { source: name, file: path.resolve(entry.cwd, entry.log) };
   });
+}
+
+/** Current byte size of each listed package's up.json log, 0 when absent; pass it as `fromOffsets` to read later lines only. */
+export function capturedLogOffsets(opts: Omit<ReadCapturedLogLinesOptions, 'fromOffsets'> = {}): Record<string, number> {
+  const offsets: Record<string, number> = {};
+  for (const { source, file } of capturedLogFiles(opts)) {
+    try {
+      offsets[source] = statSync(file).size;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw err;
+      }
+      offsets[source] = 0;
+    }
+  }
+  return offsets;
+}
+
+/** Non-blank lines of each listed package's up.json log, streamed per iteration; throws naming a package with no log path. */
+export function readCapturedLogLines(opts: ReadCapturedLogLinesOptions = {}): Iterable<CapturedLogLine> {
+  const logs = capturedLogFiles(opts);
   return {
     *[Symbol.iterator]() {
       for (const { source, file } of logs) {
-        for (const line of fileLines(file)) {
+        for (const line of fileLines(file, opts.fromOffsets?.[source] ?? 0)) {
           yield { source, line };
         }
       }

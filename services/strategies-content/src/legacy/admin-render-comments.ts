@@ -612,6 +612,7 @@ function commentAvatar(row: CommentsPageRow, email: string, ctx: AdminRenderCont
 /** ccomments.loadcommentspage (loadcommentspage.cfm): the comment thread window shown in a comment's modal. */
 export function renderLoadCommentsPage(model: LoadCommentsPageModel, ctx: AdminRenderContext): CommentsRenderResult {
   const { labels } = ctx;
+  const { locale } = ctx.session;
   const { rows } = model;
   const { startRow, endRow } = commentsPageWindow(model);
   const o = new CfmlOutput();
@@ -644,8 +645,8 @@ export function renderLoadCommentsPage(model: LoadCommentsPageModel, ctx: AdminR
     }
     // setParagraphs only wraps in <p>: esapiEncode('html') already turned tabs, line breaks, ':', '/' and '@' into entities.
     o.text('\n\t\t\t\t</dt>\n\t\t\t\t<dd class="comment">\n\t\t\t\t\t').text(`<p>${esapiEncode('html', comment.comments)}</p>`);
-    o.text('\n\t\t\t\t</dd>\n\t\t\t\t<dd class="date-time">\n\t\t\t\t\t').text(lsDateFormat(comment.entered, 'long'));
-    o.text(', ').text(lsTimeFormat(comment.entered, 'short')).text('\n\t\t\t\t</dd>\n\t\t\t</dl>\n\t\t');
+    o.text('\n\t\t\t\t</dd>\n\t\t\t\t<dd class="date-time">\n\t\t\t\t\t').text(lsDateFormat(comment.entered, 'long', locale));
+    o.text(', ').text(lsTimeFormat(comment.entered, 'short', locale)).text('\n\t\t\t\t</dd>\n\t\t\t</dl>\n\t\t');
   }
   o.ws();
   const below = rows[endRow];

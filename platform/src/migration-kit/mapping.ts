@@ -72,6 +72,8 @@ export interface Mapping {
   encodeLegacy(targetRow: Readonly<Record<string, unknown>>): string;
   /** Canonical key encoding of the target row; the whole-row encoding for keyless mappings. */
   encodeLegacyKey(targetRow: Readonly<Record<string, unknown>>): string;
+  /** pg parameters of the key's target columns for an `encodeLegacyKey` encoding; throws MappingError when keyless or it does not decode. */
+  targetKey(encoding: string): Record<string, unknown>;
   /** Owned values (and a split discriminator column) of a row encoded over `columns`, keyed by legacy name. */
   decodeLegacy(columns: readonly CanonicalColumn[], encoding: string): Record<string, CanonicalValue>;
 }
@@ -296,6 +298,19 @@ export function defineMapping(spec: MappingSpec): Mapping {
   const encodeLegacyKey = (targetRow: Readonly<Record<string, unknown>>): string =>
     frozenKey === null ? encodeLegacy(targetRow) : encodeKey(legacyColumns, frozenKey, toLegacy(targetRow));
 
+  const keyColumns = (frozenKey ?? []).map((name) => byLegacy.get(name.toLowerCase()) as MappingColumn);
+  const keyLegacyColumns = keyColumns.map((column) => canonicalColumn(column.legacy, column));
+  const targetKey = (encoding: string): Record<string, unknown> => {
+    if (frozenKey === null) throw new MappingError(table, 'a keyless mapping has no key');
+    let decoded: Record<string, CanonicalValue>;
+    try {
+      decoded = decodeRow(keyLegacyColumns, encoding);
+    } catch (cause) {
+      throw new MappingError(table, 'key encoding does not match the key columns', { cause });
+    }
+    return Object.fromEntries(keyColumns.map((column): [string, unknown] => [column.target, targetValue(table, column, decoded[column.legacy])]));
+  };
+
   const decodeLegacy = (requestColumns: readonly CanonicalColumn[], encoding: string): Record<string, CanonicalValue> => {
     let decoded: Record<string, CanonicalValue>;
     try {
@@ -337,6 +352,7 @@ export function defineMapping(spec: MappingSpec): Mapping {
     toLegacy,
     encodeLegacy,
     encodeLegacyKey,
+    targetKey,
     decodeLegacy,
   } satisfies Mapping);
 }

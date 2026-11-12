@@ -3140,14 +3140,18 @@ scenarios:
     sessions:
       admin: {login: admin, via: admin}
     seedRefs:
-      - {as: formNode, source: dataset, path: masa.content, where: {siteID: tenant-a, type: Page}, index: 1}
+      - {as: formNode, source: dataset, path: masa.content, where: {siteID: tenant-a, type: Form}, index: 0}
     steps:
       - name: dialogs
         method: GET
-        route: /admin/?muraAction=${matrix.action}&siteid=tenant-a&formid=${seed.formNode.contentID}
+        route: /admin/?muraAction=${matrix.action}&siteid=tenant-a&formid=${seed.formNode.contentID}&dialog=message-delete-row&fieldtype=field-textfield
         as: admin
         matrix:
-          action: [cForm.getDialog, cForm.getForm, cForm.getField, cForm.getFieldType, cForm.getFieldTemplate, cForm.getDataset]
+          action: [cForm.getDialog, cForm.getForm, cForm.getField, cForm.getFieldType, cForm.getFieldTemplate]
+      - name: dataset
+        method: GET
+        route: /admin/?muraAction=cForm.getDataset&siteid=tenant-a&formid=${seed.formNode.contentID}&datasetid=&fieldid=${seed.formNode.fieldIDs.0}
+        as: admin
       - name: export
         method: GET
         route: /admin/?muraAction=cForm.export&siteid=tenant-a&contentid=${seed.formNode.contentID}
@@ -3158,15 +3162,15 @@ scenarios:
         as: admin
         form:
           siteid: tenant-a
-          formimport: ''
+          formzip: ''
           contentid: ${seed.formNode.contentID}
       - name: data-manager
         method: GET
-        route: /admin/?muraAction=cArch.datamanager&siteid=tenant-a&contentid=${seed.formNode.contentID}&moduleid=00000000000000000000000000000000000
+        route: /admin/?muraAction=cArch.datamanager&siteid=tenant-a&contentid=${seed.formNode.contentID}&moduleid=00000000000000000000000000000000004
         as: admin
       - name: download-data
         method: GET
-        route: /admin/?muraAction=cArch.downloaddata&siteid=tenant-a&contentid=${seed.formNode.contentID}&columns=fixed
+        route: /admin/?muraAction=cArch.downloaddata&siteid=tenant-a&contentid=${seed.formNode.contentID}&date1=&hour1=0&minute1=0&date2=&hour2=23&minute2=59&sortBy=Entered&sortDirection=asc&filterBy=&keywords=&columns=fixed
         as: admin
     compare: [status, headers, dom, export]
     normalisationOverrides: {}
@@ -3480,18 +3484,45 @@ scenarios:
       visitor: {login: none, via: public}
       rest: {login: 'seed:tenant-a:system-user', via: rest-basic}
     seedRefs:
-      - {as: page, source: dataset, path: masa.content, where: {siteID: tenant-a, type: Page}, index: 0}
+      - {as: site, source: dataset, path: masa.sites, where: {siteID: tenant-a}}
+      - {as: form, source: dataset, path: masa.content, where: {siteID: tenant-a, type: Form}}
+      - {as: page, source: dataset, path: masa.content, where: {siteID: tenant-a, formID: '${seed.form.contentID}'}}
     steps:
-      - name: saveform
-        method: POST
-        route: /tenant-a/?linkServID=${seed.page.contentID}
+      - name: host-page
+        method: GET
+        route: /?linkServID=${seed.page.contentID}
         as: visitor
         auth: session
+        headers:
+          X-Forwarded-Host: ${seed.site.domain}
+        expected: withheld
+        decisionListRef: page:render
+      - name: form-tokens
+        method: GET
+        route: /_api/json/v1/tenant-a/generateCSRFTokens?context=${seed.form.contentID}
+        as: visitor
+        extract:
+          csrfToken: {from: body, path: data.csrf_token}
+          csrfExpires: {from: body, path: data.csrf_token_expires}
+      - name: saveform
+        method: POST
+        route: /?linkServID=${seed.page.contentID}
+        as: visitor
+        auth: session
+        headers:
+          X-Forwarded-Host: ${seed.site.domain}
         form:
           saveform: '1'
-          formid: ${seed.page.contentID}
+          formid: ${seed.form.contentID}
           siteid: tenant-a
-          gs_field: GS-PUB-05
+          fullname: GS PUB-05 Visitor
+          email: gs-pub-05-page@seed.opt2.test
+          message: Sent while the page renders
+          formfield1234567891: '1'
+          formfield1234567892: '1'
+          formfield1234567894: ''
+          csrf_token: ${form-tokens.csrfToken}
+          csrf_token_expires: ${form-tokens.csrfExpires}
         expected: withheld
         decisionListRef: page:saveform
       - name: async-saveform
@@ -3499,13 +3530,20 @@ scenarios:
         route: /_api/json/v1/tenant-a/
         as: visitor
         auth: session
+        csrf: json-api:${seed.form.contentID}
         form:
           method: processAsyncObject
           object: form
-          objectid: ${seed.page.contentID}
+          objectid: ${seed.form.contentID}
+          contentid: ${seed.page.contentID}
           saveform: 'true'
           siteid: tenant-a
-          gs_field: GS-PUB-05
+          fullname: GS PUB-05 Visitor
+          email: gs-pub-05-async@seed.opt2.test
+          message: Sent through processAsyncObject
+          formfield1234567891: '1'
+          formfield1234567892: '1'
+          formfield1234567894: ''
         expected: withheld
         decisionListRef: api:processasyncobject{saveform}
       - name: async-render
@@ -3528,10 +3566,16 @@ scenarios:
         form:
           method: processAsyncObject
           object: form
-          objectid: ${seed.page.contentID}
+          objectid: ${seed.form.contentID}
+          contentid: ${seed.page.contentID}
           saveform: 'true'
           siteid: tenant-a
-          gs_field: GS-PUB-05 REST
+          fullname: GS PUB-05 System User
+          email: gs-pub-05-rest@seed.opt2.test
+          message: Sent through the REST API
+          formfield1234567891: '1'
+          formfield1234567892: '1'
+          formfield1234567894: ''
         expected: withheld
         decisionListRef: api:processasyncobject{saveform}
       - name: rest-async-render
@@ -3548,7 +3592,8 @@ scenarios:
         decisionListRef: api:processasyncobject
     compare: [status, envelope, dom, rows]
     rows:
-      - {table: tformresponsepackets, where: {formid: '${seed.page.contentID}'}}
+      - {table: tformresponsepackets, where: {formid: '${seed.form.contentID}'}, minRows: 2}
+      - {table: tformresponsequestions, where: {formid: '${seed.form.contentID}'}, minRows: 6}
     normalisationOverrides: {}
     covers:
       - page:saveform
@@ -3556,6 +3601,8 @@ scenarios:
       - api:processasyncobject
       - rest:processasyncobject{saveform}
       - rest:processasyncobject
+      - page:render
+      - api:generatecsrftokens
   - id: GS-UI-01
     title: 'Site Manager tree: expand, page and move a node'
     service: strategies-content

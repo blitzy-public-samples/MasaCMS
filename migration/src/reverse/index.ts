@@ -8,9 +8,9 @@ import { createProjectorLoop, liveTenantSites, type CycleResult, type ProjectorH
 export { PROJECTOR_LOCK_KEY } from './projector.js';
 export type { ProjectorHooks, StartupGuardRunner, CycleResult } from './projector.js';
 export { ProjectionTimeoutError } from './await.js';
-export type { AwaitProjectionRequest, AwaitProjectionResult, PendingPosition } from './await.js';
+export type { AwaitProjectionRequest, AwaitProjectionResult, PendingPosition, ReadBudget } from './await.js';
 export { CHECKPOINT_TABLE, readCheckpoints, ProjectionConflictError } from './apply-legacy.js';
-export type { CheckpointRow } from './apply-legacy.js';
+export type { CheckpointRow, LegacyEffect } from './apply-legacy.js';
 
 /** The reverse projector loop together with the read-after-write barrier over its checkpoints. */
 export interface Projector {
@@ -27,8 +27,8 @@ export function createProjector(ctx: MigrationContext, opts: { hooks?: Projector
     legacy: ctx.legacy,
     owners: ctx.owners,
     catalog: ctx.catalog,
-    authority: () => currentAuthority({ gateway: ctx.gateway, config: ctx.config.paths }),
-    tenants: async () => loop.lastTenants() ?? [...(await liveTenantSites(ctx.legacy)).keys()],
+    authority: ({ timeoutMs }) => currentAuthority({ gateway: ctx.gateway, config: ctx.config.paths, timeoutMs }),
+    tenants: async ({ signal }) => loop.lastTenants() ?? [...(await liveTenantSites(ctx.legacy, { signal })).keys()],
     clock: ctx.clock,
     defaults: { timeoutMs: ctx.config.projection.defaultAwaitTimeoutMs, pollIntervalMs: ctx.config.projection.idlePollMs },
   });

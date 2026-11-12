@@ -69,8 +69,11 @@ function fakeLegacy() {
   return { legacy, connection, opened };
 }
 
+/** A stored row's state; a reservation whose backup never completed carries no LSNs. */
+type StoredRow = SnapshotState | { state: SnapshotState; backupCompleted: false };
+
 /** migration.snapshot holding one row per entry of `rows`, read through the snapshot lookup. */
-function fakeMigrationDb(rows: ReadonlyMap<number, SnapshotState>) {
+function fakeMigrationDb(rows: ReadonlyMap<number, StoredRow>) {
   const queries: unknown[][] = [];
   const tx = {
     schema: 'migration',
@@ -82,7 +85,9 @@ function fakeMigrationDb(rows: ReadonlyMap<number, SnapshotState>) {
         return Promise.reject(new Error(`unexpected statement: ${String(text)}`));
       }
       const seq = values?.[0] as number;
-      const state = rows.get(seq);
+      const stored = rows.get(seq);
+      const state = typeof stored === 'object' ? stored.state : stored;
+      const completed = typeof stored !== 'object';
       const row =
         state === undefined
           ? []
@@ -93,8 +98,8 @@ function fakeMigrationDb(rows: ReadonlyMap<number, SnapshotState>) {
                 state,
                 database_name: `${DATABASE}_opt2_snap_${String(seq)}`,
                 backup_file: path.posix.join(snapshotsDir(STATE_DIR), backupFileName(seq)),
-                checkpoint_lsn: '45000000012300001',
-                last_lsn: '45000000013100001',
+                checkpoint_lsn: completed ? '45000000012300001' : null,
+                last_lsn: completed ? '45000000013100001' : null,
                 taken_at: new Date('2026-06-30T10:00:00'),
                 transition_id: null,
                 source_sha: '696383140578f8dea3ece26f80cd7bfb370ddf0f',
@@ -126,7 +131,7 @@ function steppingClock(...instants: string[]) {
   };
 }
 
-function fakeContext(rows: ReadonlyMap<number, SnapshotState>) {
+function fakeContext(rows: ReadonlyMap<number, StoredRow>) {
   const legacy = fakeLegacy();
   const migration = fakeMigrationDb(rows);
   const info = vi.fn();
@@ -141,6 +146,14 @@ function fakeContext(rows: ReadonlyMap<number, SnapshotState>) {
 }
 
 const backupOf = (seq: number): string => path.posix.join(snapshotsDir(STATE_DIR), backupFileName(seq));
+
+/** A refused restore: case label, stored rows, expected error class and message. */
+type RefusalCase = readonly [
+  label: string,
+  rows: ReadonlyMap<number, StoredRow>,
+  errorType: typeof SnapshotError | typeof SnapshotNotFoundError,
+  message: string,
+];
 
 describe('restoreLiveFromSnapshot', () => {
   it.each(['ready', 'failed', 'creating'] as const)(
@@ -175,7 +188,7 @@ describe('restoreLiveFromSnapshot', () => {
     );
   });
 
-  it.each([
+  it.each<RefusalCase>([
     ['an unknown sequence', new Map<number, SnapshotState>(), SnapshotNotFoundError, 'Snapshot 7 does not exist'],
     [
       'a dropped snapshot',
@@ -183,6 +196,12 @@ describe('restoreLiveFromSnapshot', () => {
       SnapshotError,
       `Snapshot 7 was dropped, so its backup ${backupOf(7)} no longer exists`,
     ],
+    ...(['creating', 'failed'] as const).map((state) => [
+      `a ${state} reservation whose backup never completed`,
+      new Map<number, StoredRow>([[7, { state, backupCompleted: false }]]),
+      SnapshotError,
+      `Snapshot 7 (${state}) has no completed backup, so ${backupOf(7)} cannot be restored`,
+    ] as const),
   ])('refuses %s before any SQL Server call', async (_case, rows, errorType, message) => {
     const { ctx, info, legacy, migration } = fakeContext(rows);
 

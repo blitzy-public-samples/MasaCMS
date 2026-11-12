@@ -12,7 +12,10 @@ export interface RestoreLiveResult {
   durationMs: number;
 }
 
-/** Overwrites the live legacy database from snapshot `seq`'s backup; throws `SnapshotError` first for an unknown or dropped snapshot. */
+/**
+ * Overwrites the live legacy database from snapshot `seq`'s backup; throws `SnapshotError` first for an unknown or
+ * dropped snapshot, or one whose backup never completed.
+ */
 export async function restoreLiveFromSnapshot(
   ctx: Pick<SnapshotContext, 'env' | 'db' | 'legacy' | 'clock' | 'logger'>,
   seq: number,
@@ -20,6 +23,11 @@ export async function restoreLiveFromSnapshot(
   const snapshot = await requireSnapshot(ctx, seq);
   if (snapshot.state === 'dropped') {
     throw new SnapshotError(`Snapshot ${String(seq)} was dropped, so its backup ${snapshot.backupPath} no longer exists`);
+  }
+  if (snapshot.checkpointLsn === null) {
+    throw new SnapshotError(
+      `Snapshot ${String(seq)} (${snapshot.state}) has no completed backup, so ${snapshot.backupPath} cannot be restored`,
+    );
   }
   const database = ctx.env.MURA_DATABASE;
   const { backupPath } = snapshot;

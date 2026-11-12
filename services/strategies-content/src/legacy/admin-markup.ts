@@ -8,8 +8,8 @@ import {
   cfEq,
   cfListToArray,
   cfLsDateFormat,
+  cfLsTimeFormat,
   cfNumberString,
-  cfTimeFormat,
   cfToBoolean,
   esapiUrlEncode,
   renderCsrfFields,
@@ -236,6 +236,8 @@ export interface AdminSession extends AdminSessionState {
   dateKeyFormat: string;
   /** `session.rb`: the admin resource-bundle locale. */
   rb: string;
+  /** `session.locale`: the Java locale setLocale runs the admin request under, e.g. `de_DE`. */
+  locale: string;
 }
 
 /** settingsBean values the views read for the request's site. */
@@ -295,14 +297,14 @@ export function renderCsrfTokensForm(tokens: CsrfTokens): string {
   return renderCsrfFields(tokens, 'form');
 }
 
-/** CF `LSDateFormat(date, mask)` for en_US (`short`, `long`, `session.dateKeyFormat`); a NULL column prints ''. */
-export function lsDateFormat(date: Date | null, mask: string): string {
-  return date === null ? '' : cfLsDateFormat(date, mask);
+/** CF `LSDateFormat(date, mask)` under `session.locale` (`short`, `long`, `session.dateKeyFormat`); NULL prints ''. */
+export function lsDateFormat(date: Date | null, mask: string, locale: string): string {
+  return date === null ? '' : cfLsDateFormat(date, mask, locale);
 }
 
-/** CF `LSTimeFormat(date, mask)` for en_US (`short` prints `9:06 AM`); a NULL column prints ''. */
-export function lsTimeFormat(date: Date | null, mask: string): string {
-  return date === null ? '' : cfTimeFormat(date, mask);
+/** CF `LSTimeFormat(date, mask)` under `session.locale` (`short`, `medium`); a NULL column prints ''. */
+export function lsTimeFormat(date: Date | null, mask: string, locale: string): string {
+  return date === null ? '' : cfLsTimeFormat(date, mask, locale);
 }
 
 /** The paging struct of `utility.getNextN`. */

@@ -707,6 +707,7 @@ function renderFlatRow(out: CfOut, row: SiteFlatRow, model: LoadSiteFlatModel, c
 function renderNodeMeta(out: CfOut, row: SiteFlatRow, ctx: AdminRenderContext, tagLabel: string): void {
   const { labels, session } = ctx;
   const dateMask = session.dateKeyFormat;
+  const { locale } = session;
   if (row.majorversion !== null && row.majorversion !== 0) {
     out.t('<li class="version">', labels.key('sitemanager.version'), ': <strong>', num(row.majorversion), '.');
     out.t(num(row.minorversion), '</strong></li>');
@@ -714,10 +715,10 @@ function renderNodeMeta(out: CfOut, row: SiteFlatRow, ctx: AdminRenderContext, t
   out.ws();
   const dueDate = row.duedate ?? null;
   if (dueDate !== null) {
-    out.t('<li class="duedate">', labels.key('sitemanager.duedate'), ': <strong>', lsDateFormat(dueDate, dateMask));
+    out.t('<li class="duedate">', labels.key('sitemanager.duedate'), ': <strong>', lsDateFormat(dueDate, dateMask, locale));
     out.t('</strong></li></');
   } else if (row.expires !== null) {
-    out.t('<li class="expiration">', labels.key('sitemanager.expiration'), ': <strong>', lsDateFormat(row.expires, dateMask));
+    out.t('<li class="expiration">', labels.key('sitemanager.expiration'), ': <strong>', lsDateFormat(row.expires, dateMask, locale));
     out.t('</strong></li>');
   }
   out.ws();
@@ -737,15 +738,15 @@ function renderNodeMeta(out: CfOut, row: SiteFlatRow, ctx: AdminRenderContext, t
   out.t('</dd>\n\t\t\t\t\t');
   const tags = str(row.tags);
   if (tags !== '') out.t('<li class="tags">', tagLabel, ': <strong>', tags, '</strong></li>');
-  const updated = [lsDateFormat(row.lastupdate, dateMask), lsTimeFormat(row.lastupdate, 'medium'), str(row.lastupdateby)];
+  const updated = [lsDateFormat(row.lastupdate, dateMask, locale), lsTimeFormat(row.lastupdate, 'medium', locale), str(row.lastupdateby)];
   out.t('\n\t\t\t\t\t<li class="type">', labels.key('sitemanager.type'), ': <strong>', str(row.type), ' (', str(row.subtype));
   out.t(')</strong></li>\n\t\t\t\t\t<li class="updated-short" title="');
   out.t(labels.messageFormat(labels.key('sitemanager.lastupdatedlong'), updated));
   if (row.created !== null) {
-    const created = [lsDateFormat(row.created, dateMask), lsTimeFormat(row.created, 'medium')];
+    const created = [lsDateFormat(row.created, dateMask, locale), lsTimeFormat(row.created, 'medium', locale)];
     out.t(' / ', labels.messageFormat(labels.key('sitemanager.createdlong'), created));
   }
-  out.t(' ">', labels.key('sitemanager.lastupdated'), ': <strong>', lsDateFormat(row.lastupdate, dateMask), '</strong></li>');
+  out.t(' ">', labels.key('sitemanager.lastupdated'), ': <strong>', lsDateFormat(row.lastupdate, dateMask, locale), '</strong></li>');
 }
 
 /** The `pagination` savecontent (loadsiteflat.cfm:391-410). */

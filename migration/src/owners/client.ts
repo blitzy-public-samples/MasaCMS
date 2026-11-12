@@ -66,6 +66,8 @@ export interface ExportParams {
   /** Legacy columns with the values a row must hold in any one of them; the owner may return more rows. */
   match?: Readonly<Record<string, readonly (string | number)[]>>;
   limit?: number;
+  /** Legacy key encodings, as export rows carry them, sent as a repeated parameter; the pages then hold only their rows and no manifest. */
+  keys?: readonly string[];
 }
 
 /** Query of one change-feed page; `after` is cursor text, `CURSOR_START` before the first row. */
@@ -135,8 +137,8 @@ export interface OwnersClient {
   exportPages(owner: DataOwner, params: ExportParams): AsyncIterable<ExportResponse>;
   /** One commit-safe change-feed page: the `ChangesPage` fields with legacy projections and operation statuses. */
   changes(owner: DataOwner, params: ChangesParams): Promise<ChangesResponse>;
-  /** Current write position and drain counts, with the receipts and published events `params` asks for. */
-  position(owner: DataOwner, params?: PositionParams): Promise<PositionResponse>;
+  /** Current write position and drain counts, with the receipts and published events `params` asks for; `timeoutMs` bounds the call. */
+  position(owner: DataOwner, params?: PositionParams, options?: { timeoutMs?: number }): Promise<PositionResponse>;
   /** @returns the watermark of `legacyTable` and `direction`, or null when the owner has none. */
   watermark(owner: DataOwner, legacyTable: string, direction: WatermarkDirection): Promise<WatermarkRecord | null>;
   /** Stores a watermark and returns it as stored. */
@@ -258,6 +260,7 @@ export function createOwnersClient(options: CreateOwnersClientOptions): OwnersCl
       after: params.after,
       match: params.match === undefined ? undefined : JSON.stringify(params.match),
       limit: decimal(params.limit),
+      keys: params.keys === undefined ? undefined : [...params.keys],
     };
     return (await call<ExportResponse>(owner, 'GET', EXPORT_PATH, { query })).body;
   }
@@ -287,9 +290,9 @@ export function createOwnersClient(options: CreateOwnersClientOptions): OwnersCl
       return (await call<ChangesResponse>(owner, 'GET', CHANGES_PATH, { query })).body;
     },
 
-    async position(owner, params = {}) {
+    async position(owner, params = {}, options = {}) {
       const query = { eventIds: params.eventIds?.join(','), publishedTopics: params.publishedTopics?.join(',') };
-      return (await call<PositionResponse>(owner, 'GET', POSITION_PATH, { query })).body;
+      return (await call<PositionResponse>(owner, 'GET', POSITION_PATH, { query, timeoutMs: options.timeoutMs })).body;
     },
 
     async watermark(owner, legacyTable, direction) {

@@ -35,6 +35,7 @@ import {
   EXPECTED_DLQ_REASON,
   OPT2_EVENTS_BIN,
   PRECONDITION_PULL_MS,
+  REPLAY_EXEC_TIMEOUT_MS,
   REPLAY_IDLE_SECONDS,
   STUB_DLQ_SUBSCRIPTION,
   STUB_EFFECT_UNIT,
@@ -747,6 +748,52 @@ describe('runDlqCheck', () => {
     expect(clock.sleeps).toEqual([]);
   });
 
+  it.each([
+    {
+      label: 'the replay, stopping before reading the effect',
+      run: 1,
+      failure: `replay timed out after ${REPLAY_EXEC_TIMEOUT_MS} ms`,
+      replay: { exitCode: null, summary: null, republished: null },
+      effect: { before: 0, after: null },
+      secondReplay: { exitCode: null, summary: null, republished: null, effectAfter: null },
+      reads: 2,
+      sleeps: [],
+    },
+    {
+      label: 'the second replay',
+      run: 2,
+      failure: `second replay timed out after ${REPLAY_EXEC_TIMEOUT_MS} ms`,
+      replay: { exitCode: 0, republished: 1 },
+      effect: { before: 0, after: 1 },
+      secondReplay: { exitCode: null, summary: null, republished: null, effectAfter: 1 },
+      reads: 5,
+      sleeps: [EFFECT_SETTLE_MS],
+    },
+  ])('records a timed-out run of $label', async ({ run, failure, replay, effect, secondReplay, reads, sleeps }) => {
+    const { runner, clock, requests, deps } = dlqStack();
+    let runs = 0;
+    const exec: ReplayExec = async (file, args, env) => {
+      runs += 1;
+      if (runs !== run) return runner.exec(file, args, env);
+      throw Object.assign(new Error(`${file} timed out after ${REPLAY_EXEC_TIMEOUT_MS} ms`), { code: 'ETIMEDOUT' });
+    };
+    const result = await runDlqCheck({ ...deps, exec });
+    expect(result.passed).toBe(false);
+    expect(failuresOf(result)).toEqual([failure]);
+    expect(result.evidence.replay).toMatchObject(replay);
+    expect(result.evidence.effect).toEqual(effect);
+    expect(result.evidence.secondReplay).toEqual(secondReplay);
+    expect(runs).toBe(run);
+    expect(requests).toHaveLength(reads);
+    expect(clock.sleeps).toEqual(sleeps);
+  });
+
+  it('propagates a replay run that fails to start', async () => {
+    const { deps } = dlqStack();
+    const spawnFailure = Object.assign(new Error('spawn opt2-events ENOENT'), { code: 'ENOENT' });
+    await expect(runDlqCheck({ ...deps, exec: () => Promise.reject(spawnFailure) })).rejects.toBe(spawnFailure);
+  });
+
   it.each(['replayed some messages\n', '{"replayed":-1}\n', '{"replayed":"1"}\n'])(
     'fails a replay run whose output %j carries no summary count',
     async (stdout) => {
@@ -941,7 +988,7 @@ describe('replay bin', () => {
     expect(vi.mocked(execFile)).toHaveBeenCalledWith(
       OPT2_EVENTS_BIN,
       replayArgs(SUBSCRIPTION),
-      { env, encoding: 'utf8', shell: false },
+      { cwd: process.cwd(), env, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, shell: false },
       expect.any(Function),
     );
   });
@@ -949,6 +996,36 @@ describe('replay bin', () => {
   it('rejects when the bin cannot start', async () => {
     answerExec(Object.assign(new Error('spawn opt2-events ENOENT'), { code: 'ENOENT' }), '', '');
     await expect(defaultReplayExec(OPT2_EVENTS_BIN, replayArgs(SUBSCRIPTION), {})).rejects.toThrow('spawn opt2-events ENOENT');
+  });
+
+  it.each([
+    { label: 'dies on SIGTERM', diesOn: 'SIGTERM', kills: [['SIGTERM']], destroyed: 0 },
+    { label: 'ignores every signal', diesOn: null, kills: [['SIGTERM'], ['SIGKILL']], destroyed: 1 },
+  ])('ends a bin that $label past REPLAY_EXEC_TIMEOUT_MS and rejects with a bare ETIMEDOUT', async ({ diesOn, kills, destroyed }) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    type Callback = (err: Error | null, out: string, errOut: string) => void;
+    let callback: Callback | undefined;
+    const stdio = [{ destroy: vi.fn() }, { destroy: vi.fn() }, { destroy: vi.fn() }];
+    const kill = vi.fn((signal: string) => {
+      // execFile's own error quotes the child's stderr.
+      const died = Object.assign(new Error(`Command failed: ${OPT2_EVENTS_BIN}\nchild-stderr`), { killed: true, code: null, signal });
+      if (signal === diesOn) callback?.(died, 'child-stdout', 'child-stderr');
+      return true;
+    });
+    const answer = (_file: string, _args: readonly string[], _options: unknown, cb: Callback): unknown => {
+      callback = cb;
+      return { exitCode: null, signalCode: null, kill, stdio };
+    };
+    vi.mocked(execFile).mockImplementationOnce(answer as unknown as typeof execFile);
+    const env = { GOOGLE_CLOUD_PROJECT: PROJECT, OPT2_DLQ_TEST_MARKER: 'env-marker' };
+    const pending = defaultReplayExec(OPT2_EVENTS_BIN, replayArgs(SUBSCRIPTION), env).catch((err: unknown) => err);
+    await vi.runAllTimersAsync();
+    const error = await pending;
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({ code: 'ETIMEDOUT', message: `${OPT2_EVENTS_BIN} timed out after ${REPLAY_EXEC_TIMEOUT_MS} ms` });
+    expect((error as Error).cause).toBeUndefined();
+    expect(kill.mock.calls).toEqual(kills);
+    for (const stream of stdio) expect(stream.destroy).toHaveBeenCalledTimes(destroyed);
   });
 });
 

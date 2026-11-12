@@ -154,6 +154,15 @@ describe('gateway client calls', () => {
     expect(error).toMatchObject({ operation: 'cutoverActivate', status, body });
   });
 
+  it.each([
+    { label: 'the timeoutMs it is given', options: { timeoutMs: 1_250 }, timeoutMs: 1_250 },
+    { label: "the service client's timeout without one", options: undefined, timeoutMs: undefined },
+  ])('bounds a status call by $label', async ({ options, timeoutMs }) => {
+    const { gateway, calls } = setup(() => json(200, statusBody()));
+    await gateway.status(options);
+    expect(calls.map((c) => c.req.timeoutMs)).toEqual([timeoutMs]);
+  });
+
   it('propagates transport failures unchanged', async () => {
     const unavailable = new ServiceUnavailableError('gateway', Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }));
     const { gateway } = setup(() => {

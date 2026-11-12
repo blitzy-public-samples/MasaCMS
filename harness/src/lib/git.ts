@@ -3,13 +3,13 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, open, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { REPO_ROOT, assertOutsideRepo } from './paths.js';
+import { REPO_ROOT, assertOutsideRepo, type EnvLike } from './paths.js';
 
-/** Runs `file` with `args` directly, without a shell, and resolves with its decoded output. */
+/** Runs `file` with `args` directly, without a shell, and resolves with its decoded output; `env`, when given, replaces the inherited environment. */
 export type ProcessRunner = (
   file: string,
   args: readonly string[],
-  opts: { cwd: string; maxBuffer?: number; timeoutMs?: number },
+  opts: { cwd: string; env?: EnvLike; maxBuffer?: number; timeoutMs?: number },
 ) => Promise<{ stdout: string; stderr: string }>;
 
 const DEFAULT_MAX_BUFFER = 64 * 1024 * 1024;
@@ -46,7 +46,13 @@ export const defaultRunner: ProcessRunner = (file, args, opts) =>
     const child = execFile(
       file,
       [...args],
-      { cwd: opts.cwd, encoding: 'utf8', maxBuffer: opts.maxBuffer ?? DEFAULT_MAX_BUFFER, shell: false },
+      {
+        cwd: opts.cwd,
+        ...(opts.env === undefined ? {} : { env: opts.env }),
+        encoding: 'utf8',
+        maxBuffer: opts.maxBuffer ?? DEFAULT_MAX_BUFFER,
+        shell: false,
+      },
       settle,
     );
     // git removes its lock files on SIGTERM, so SIGKILL follows only a child still running after the grace.

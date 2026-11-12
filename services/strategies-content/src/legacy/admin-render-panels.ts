@@ -112,9 +112,9 @@ function viewResult(o: CfOutput, muraSessionEffects?: PanelMuraSessionEffects): 
   return result;
 }
 
-/** `LSDateFormat(text, mask)` of a request or bean string: blank prints '', other text formats the date it parses to. */
-function lsDateText(text: string, mask: string): string {
-  return lsDateFormat(cfLsDateOf(text), mask);
+/** `LSDateFormat(text, mask)` under `locale` of a request or bean string: '' when blank, else the date it parses to. */
+function lsDateText(text: string, mask: string, locale: string): string {
+  return lsDateFormat(cfLsDateOf(text, locale), mask, locale);
 }
 
 /** `<cfif not isNumeric(rc.categoryAssignment)><cfset rc.categoryAssignment=0></cfif>`. */
@@ -262,7 +262,7 @@ export function renderLoadCategoryAssignment(model: CategoryAssignmentModel, ctx
   o.t('>\n\n\t\t\t<div class="mura-control-group">\n\t\t\t\t<label>');
   o.e(labels.key('sitemanager.content.fields.startdatetime'));
   o.t('</label>\n\t\t\t\t<input type="text" id="mura-quickEdit-featureStart" value="');
-  o.e(lsDateText(model.featureStart, ctx.session.dateKeyFormat));
+  o.e(lsDateText(model.featureStart, ctx.session.dateKeyFormat, ctx.session.locale));
   o.t('" class="textAlt datepicker mura-quickEdit-datepicker"><br />\n\n\t\t\t\t');
   featureTimeSelects(
     o,
@@ -275,7 +275,7 @@ export function renderLoadCategoryAssignment(model: CategoryAssignmentModel, ctx
   );
   o.e(labels.key('sitemanager.content.fields.stopdatetime'));
   o.t('</label>\n\t\t\t\t<input type="text" id="mura-quickEdit-featureStop" value="');
-  o.e(lsDateText(model.featureStop, ctx.session.dateKeyFormat));
+  o.e(lsDateText(model.featureStop, ctx.session.dateKeyFormat, ctx.session.locale));
   o.t('" class="textAlt datepicker mura-quickEdit-datepicker"><br />\n\n\t\t\t\t');
   featureTimeSelects(
     o,
@@ -311,11 +311,11 @@ function hiddenScheduleFields(o: CfOutput, catTrim: string, fields: ReadonlyArra
 /** `carch.loadcategoryfeaturestartstop` (loadcategoryfeaturestartstop.cfm): the category's feature cell and fields. */
 export function renderLoadCategoryFeatureStartStop(model: CategoryFeatureModel, ctx: AdminRenderContext): PanelRenderResult {
   const { labels } = ctx;
-  const { dateKeyFormat } = ctx.session;
+  const { dateKeyFormat, locale } = ctx.session;
   const assignment = numericOrZero(model.categoryAssignment);
   const scheduled = cfEq(assignment, '2');
   const featureWindow = (): string =>
-    `${esapiEncode('html_attr', lsDateText(model.featureStart, 'short'))}&nbsp;-&nbsp;${lsDateText(model.featureStop, 'short')}`;
+    `${esapiEncode('html_attr', lsDateText(model.featureStart, 'short', locale))}&nbsp;-&nbsp;${lsDateText(model.featureStop, 'short', locale)}`;
   const o = new CfOutput();
   o.t('\n\t<div class="categoryassignmentcontent');
   if (scheduled) o.t(' scheduled');
@@ -335,9 +335,9 @@ export function renderLoadCategoryFeatureStartStop(model: CategoryFeatureModel, 
     o.e(esapiEncode('html', labels.key(key)));
     o.t('</span>\n\t\t\t\t');
   };
-  if (assignment === '1') {
+  if (cfEq(assignment, '1')) {
     icon('mi-check', 'sitemanager.yes');
-  } else if (assignment === '2') {
+  } else if (scheduled) {
     o.t('\n\t\t\t\t\t<i class="mi-calendar" title="');
     o.e(featureWindow());
     o.t('"></i> \n\t\t\t\t');
@@ -353,11 +353,11 @@ export function renderLoadCategoryFeatureStartStop(model: CategoryFeatureModel, 
   o.t('"/>\n\t\t');
   if (scheduled) {
     hiddenScheduleFields(o, model.catTrim, [
-      ['featureStart', lsDateText(model.featureStart, dateKeyFormat)],
+      ['featureStart', lsDateText(model.featureStart, dateKeyFormat, locale)],
       ['startHour', esapiEncode('html_attr', model.startHour)],
       ['startMinute', esapiEncode('html_attr', model.startMinute)],
       ['startDayPart', esapiEncode('html_attr', model.startDayPart)],
-      ['featureStop', lsDateText(model.featureStop, dateKeyFormat)],
+      ['featureStop', lsDateText(model.featureStop, dateKeyFormat, locale)],
       ['stopHour', esapiEncode('html_attr', model.stopHour)],
       ['stopMinute', esapiEncode('html_attr', model.stopMinute)],
       ['stopDayPart', esapiEncode('html_attr', model.stopDayPart)],
@@ -1188,7 +1188,7 @@ function renderAttribute(attribute: ExtendAttributeModel, theValue: string, read
   switch (attributeType(attribute)) {
     case 'textbox':
     case 'text': {
-      const value = cfEq(validation, 'date') ? lsDateText(renderValue, ctx.session.dateKeyFormat) : renderValue;
+      const value = cfEq(validation, 'date') ? lsDateText(renderValue, ctx.session.dateKeyFormat, ctx.session.locale) : renderValue;
       if (cfEq(validation, 'color')) {
         o.t(
           '\n\n\t\t\t\t\t\t\t<div class="input-group mura-colorpicker">\n\t\t\t\t\t\t\t\t<span class="input-group-addon">' +
@@ -1832,11 +1832,11 @@ function statusModalApproval(o: CfOutput, model: StatusModalModel, approval: Sta
       o.t(' ');
       o.e(labels.key('approvalchains.on'));
       o.t(' ');
-      o.e(lsDateFormat(action.created, ctx.session.dateKeyFormat));
+      o.e(lsDateFormat(action.created, ctx.session.dateKeyFormat, ctx.session.locale));
       o.t(' ');
       o.e(labels.key('approvalchains.at'));
       o.t(' ');
-      o.e(lsTimeFormat(action.created, 'short'));
+      o.e(lsTimeFormat(action.created, 'short', ctx.session.locale));
       o.t('</em>\t\t\n\t\t\t\t</dd>\n\t\t\t\n\t\t\t');
     }
     o.t('\n\t\t\t</dl>\n\t\t\t');
@@ -1953,9 +1953,9 @@ export function renderStatusModal(model: StatusModalModel, ctx: AdminRenderConte
   o.t('</p>\n\t\t</dd>\n\t</dl>\n\t\n\t<dl class="created-on">\n\t\t<dt>');
   o.e(labels.key('sitemanager.content.createdon'));
   o.t('</dt>\n\t\t<dd>\n\t\t\t<i class="mi-calendar"></i>\n\t\t\t<p>');
-  o.e(lsDateFormat(content.lastupdate, ctx.session.dateKeyFormat));
+  o.e(lsDateFormat(content.lastupdate, ctx.session.dateKeyFormat, ctx.session.locale));
   o.t('<br />\n\t\t\t');
-  o.e(lsTimeFormat(content.lastupdate, 'short'));
+  o.e(lsTimeFormat(content.lastupdate, 'short', ctx.session.locale));
   o.t('</p>\n\t\t</dd>\n\t</dl>\n\t\n\t<dl>\n\t\t<dt>');
   o.e(labels.key('sitemanager.content.status'));
   o.t('</dt>\n\t\t<dd');
@@ -2092,9 +2092,9 @@ function draftPromptRow(o: CfOutput, ctx: AdminRenderContext, histId: string, ti
   o.t('">');
   o.e(esapiEncode('html', title));
   o.t(`</a></td>${lead}<td>`);
-  o.e(lsDateFormat(lastUpdate, ctx.session.dateKeyFormat));
+  o.e(lsDateFormat(lastUpdate, ctx.session.dateKeyFormat, ctx.session.locale));
   o.t(' ');
-  o.e(lsTimeFormat(lastUpdate, 'medium'));
+  o.e(lsTimeFormat(lastUpdate, 'medium', ctx.session.locale));
   o.t(`</td>${lead}<td>`);
   o.e(esapiEncode('html', lastUpdateBy));
   o.t('</td>');
@@ -2208,9 +2208,9 @@ function draftPromptMessage(model: DraftPromptModel, lock: DraftPromptLock, targ
           o.t('"  tabindex="-1" class="draft-prompt-option">');
           o.e(esapiEncode('html', row.title));
           o.t('</a></td>\n\t\t\t\t\t\t\t\t\t<td>');
-          o.e(lsDateFormat(row.lastupdate, ctx.session.dateKeyFormat));
+          o.e(lsDateFormat(row.lastupdate, ctx.session.dateKeyFormat, ctx.session.locale));
           o.t(' ');
-          o.e(lsTimeFormat(row.lastupdate, 'medium'));
+          o.e(lsTimeFormat(row.lastupdate, 'medium', ctx.session.locale));
           o.t('</td>\n\t\t\t\t\t\t\t\t\t<td>');
           o.e(esapiEncode('html', row.lastupdateby));
           o.t('</td>\n\t\t\t\t\t\t\t\t');
@@ -2223,9 +2223,9 @@ function draftPromptMessage(model: DraftPromptModel, lock: DraftPromptLock, targ
           o.t('" tabindex="-1" class="draft-prompt-approval">');
           o.e(esapiEncode('html', row.title));
           o.t('</a></td>\n\t\t\t\t\t\t\t\t\t<td>');
-          o.e(lsDateFormat(row.lastupdate, ctx.session.dateKeyFormat));
+          o.e(lsDateFormat(row.lastupdate, ctx.session.dateKeyFormat, ctx.session.locale));
           o.t(' ');
-          o.e(lsTimeFormat(row.lastupdate, 'medium'));
+          o.e(lsTimeFormat(row.lastupdate, 'medium', ctx.session.locale));
           o.t('</td>\n\t\t\t\t\t\t\t\t\t<td>');
           o.e(esapiEncode('html', row.lastupdateby));
           o.t('</td>\n\n\t\t\t\t\t\t\t\t');
