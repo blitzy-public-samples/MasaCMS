@@ -2,7 +2,7 @@
   "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
   "generatedBy": "gateway/src/cutover/build-groups.ts",
   "inputs": {
-    "inventorySha256": "e02aeb4f28f10120d2885894f938f06b62e2e2c2764b44016398a681531f82c1",
+    "inventorySha256": "9bfd7b37c8620385db96321ff82614d434ad67b178d2d0c673b5d8d7457233a1",
     "tableOwnershipSha256": "2b00ce2dfd25c42a94340161baefcedafe12bb85e9311c31cce9ef254eee88d1"
   },
   "groups": [

@@ -562,7 +562,7 @@
 		variables.failure = {"type" = listLast(e.type, "."), "message" = e.message};
 	} catch (any e) {
 		writeLog(type = "Error", file = "exception", text = exceptionLogRecord(e));
-		// The exception stays out of the envelope: with debugging on it would be echoed, and it can hold row values.
+		// The exception stays out of the envelope: it can hold row values.
 		variables.failure = {"type" = "server_error", "message" = ""};
 	}
 

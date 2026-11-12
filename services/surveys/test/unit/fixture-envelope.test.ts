@@ -43,6 +43,7 @@ const ENVELOPE_CFC_ERROR_MAP = {
   invalidParameters: { status: 400, code: 'invalid_request', message: 'Invalid parameters' },
   invalidMethodCall: { status: 400, code: 'invalid_request', message: 'Invalid method call' },
   badRequest: { status: 400, code: 'invalid_request', message: 'Bad Request' },
+  invalidTokens: { status: 400, code: 'invalid_request', message: 'Invalid CSRF tokens' },
   forbidden: { status: 403, code: 'invalid_request', message: 'Insufficient Account Permissions' },
   notFound: { status: 404, code: 'invalid_request', message: 'Not Found' },
   conflict: { status: 409, code: 'invalid_request', message: 'Conflict' },
@@ -101,7 +102,7 @@ describe('fixture error map', () => {
   });
 
   it('reuses the LEGACY_ERROR_MAP rows of the JSON API types envelope.cfc also maps', () => {
-    expect(FIXTURE_LEGACY_ERROR_TYPES).toEqual(['authorization', 'invalidParameters', 'invalidMethodCall', 'badRequest', 'server_error']);
+    expect(FIXTURE_LEGACY_ERROR_TYPES).toEqual(['authorization', 'invalidParameters', 'invalidMethodCall', 'badRequest', 'invalidTokens', 'server_error']);
     expect(Object.isFrozen(FIXTURE_LEGACY_ERROR_TYPES)).toBe(true);
     for (const type of FIXTURE_LEGACY_ERROR_TYPES) {
       expect(LEGACY_ERROR_MAP[type]).toStrictEqual(ENVELOPE_CFC_ERROR_MAP[type as EnvelopeErrorType]);

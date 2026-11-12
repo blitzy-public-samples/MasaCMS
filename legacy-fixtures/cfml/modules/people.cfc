@@ -67,11 +67,12 @@ component output="false" hint="Person archive records, with blackout of the pers
 		return {"data" = variables.envelope.rows(local.qry)[1]};
 	}
 
-	private any function gate(required struct route) hint="Requires login and site-admin rights, then returns the route's person." {
+	private any function gate(required struct route) hint="Requires login, site-admin rights and, for a write, a CSRF token, then returns the route's person." {
 		variables.auth.requireLogin();
 		if (!variables.auth.isSiteAdmin()) {
 			variables.envelope.raise("forbidden");
 		}
+		variables.auth.requireCsrf();
 		return requirePerson(arguments.route);
 	}
 

@@ -62,6 +62,8 @@ paths:
       x-opt2-requires:
         - esignature.signer
       parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
         - $ref: '#/components/parameters/FixtureDocumentName'
         - $ref: '#/components/parameters/FixtureDocumentBase64'
         - $ref: '#/components/parameters/FixtureSignerUserId'
@@ -71,7 +73,7 @@ paths:
         '200':
           $ref: '#/components/responses/FixtureRequestCreated'
         '400':
-          $ref: '#/components/responses/FixtureBadRequest'
+          $ref: '#/components/responses/FixtureWriteBadRequest'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
@@ -95,6 +97,8 @@ paths:
       x-opt2-requires:
         - esignature.signer
       parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
         - $ref: '#/components/parameters/FixtureTypedName'
       requestBody:
         $ref: '#/components/requestBodies/SignForm'
@@ -102,7 +106,7 @@ paths:
         '200':
           $ref: '#/components/responses/FixtureRequestSigned'
         '400':
-          $ref: '#/components/responses/FixtureBadRequest'
+          $ref: '#/components/responses/FixtureWriteBadRequest'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
@@ -189,6 +193,8 @@ paths:
         - esignature.signer
         - esignature.auditor
       parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
         - $ref: '#/components/parameters/FixtureEntries'
       requestBody:
         $ref: '#/components/requestBodies/VerifySuppliedForm'
@@ -196,7 +202,7 @@ paths:
         '200':
           $ref: '#/components/responses/FixtureVerifyResult'
         '400':
-          $ref: '#/components/responses/FixtureBadRequest'
+          $ref: '#/components/responses/FixtureWriteBadRequest'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
@@ -886,6 +892,20 @@ components:
       schema:
         type: string
         minLength: 1
+    CsrfTokenHeader:
+      name: X-csrf_token
+      in: header
+      required: false
+      description: CSRF token, an alternative to the `csrf_token` field.
+      schema:
+        type: string
+    CsrfExpiresHeader:
+      name: X-csrf_token_expires
+      in: header
+      required: false
+      description: CSRF token expiry `yyMMddHHnnsslll`, an alternative to the `csrf_token_expires` field.
+      schema:
+        type: string
     FixtureDocumentName:
       name: documentName
       in: query
@@ -1100,6 +1120,19 @@ components:
                     $ref: '#/components/schemas/VerifyResult'
     FixtureBadRequest:
       description: '`invalidParameters` (`Invalid parameters`): an unknown site, invalid paging, document, signer, typed name, supplied chain or migration input; or `badRequest` (`Bad Request`) for a rejected migration batch.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/FixtureErrorEnvelope'
+    FixtureWriteBadRequest:
+      description: '`invalidTokens` (`Invalid CSRF tokens`): no valid CSRF token of the request id context, empty for `esignature/requests`; or `invalidParameters` (`Invalid parameters`): an unknown site, invalid document, signer, typed name or supplied chain.'
       headers:
         Generator:
           $ref: '#/components/headers/Generator'

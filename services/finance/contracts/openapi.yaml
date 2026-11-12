@@ -56,13 +56,16 @@ paths:
       x-opt2-transport: service
       x-opt2-requires:
         - finance.preparer
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
       requestBody:
         $ref: '#/components/requestBodies/FinanceRecordForm'
       responses:
         '200':
           $ref: '#/components/responses/FixtureRecordCreated'
         '400':
-          $ref: '#/components/responses/FixtureBadRequest'
+          $ref: '#/components/responses/FixtureWriteBadRequest'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
@@ -116,6 +119,9 @@ paths:
       x-opt2-requires:
         - finance.preparer
         - finance.approver
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
       requestBody:
         required: false
         description: Read only by `edit`, which requires all three fields.
@@ -130,7 +136,7 @@ paths:
         '200':
           $ref: '#/components/responses/FixtureRecordTransitioned'
         '400':
-          $ref: '#/components/responses/FixtureBadRequest'
+          $ref: '#/components/responses/FixtureWriteBadRequest'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
@@ -215,13 +221,16 @@ paths:
       x-opt2-transport: service
       x-opt2-requires:
         - finance.preparer
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
       requestBody:
         $ref: '#/components/requestBodies/AttachmentUpload'
       responses:
         '200':
           $ref: '#/components/responses/FixtureAttachmentCreated'
         '400':
-          $ref: '#/components/responses/FixtureBadRequest'
+          $ref: '#/components/responses/FixtureWriteBadRequest'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
@@ -1149,6 +1158,20 @@ components:
       required: true
       schema:
         $ref: '#/components/schemas/TransitionAction'
+    CsrfTokenHeader:
+      name: X-csrf_token
+      in: header
+      required: false
+      description: CSRF token, an alternative to the `csrf_token` field.
+      schema:
+        type: string
+    CsrfExpiresHeader:
+      name: X-csrf_token_expires
+      in: header
+      required: false
+      description: CSRF token expiry `yyMMddHHnnsslll`, an alternative to the `csrf_token_expires` field.
+      schema:
+        type: string
     PushKey:
       name: key
       in: query
@@ -1377,6 +1400,19 @@ components:
                     $ref: '#/components/schemas/FinanceRollupPage'
     FixtureBadRequest:
       description: '`invalidParameters`: an unknown site, a site without a program, invalid record fields, paging or a missing file; or `badRequest`.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/FixtureErrorEnvelope'
+    FixtureWriteBadRequest:
+      description: '`invalidTokens` (`Invalid CSRF tokens`): no valid CSRF token of the record id context, empty for `finance/records`; `invalidParameters`: an unknown site, a site without a program, invalid record fields or a missing file; or `badRequest`.'
       headers:
         Generator:
           $ref: '#/components/headers/Generator'

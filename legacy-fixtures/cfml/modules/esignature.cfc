@@ -218,13 +218,14 @@ component output="false" hint="SYNTHETIC e-signature fixture: typed-name signing
 		return verdict(local.qry);
 	}
 
-	private struct function authorizeChainReader(required struct route) hint="Returns the route's request row for an auditor, or for a signer who is its signer; raises authorization, forbidden or notFound in check order." {
+	private struct function authorizeChainReader(required struct route) hint="Returns the route's request row for an auditor, or for a signer who is its signer; raises authorization, forbidden, invalidTokens (a write without a valid CSRF token) or notFound in check order." {
 		variables.auth.requireLogin();
 		local.held = variables.auth.rolesHeld();
 		local.isAuditor = arrayFindNoCase(local.held, "esignature.auditor") > 0;
 		if (!local.isAuditor && !arrayFindNoCase(local.held, "esignature.signer")) {
 			variables.envelope.raise("forbidden");
 		}
+		variables.auth.requireCsrf();
 		local.row = loadRequest(arguments.route);
 		if (!local.isAuditor && compareNoCase(local.row.signer_user_id, variables.auth.userId())) {
 			variables.envelope.raise("forbidden");

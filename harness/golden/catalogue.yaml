@@ -1089,6 +1089,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/people/persons/${seed.archivePerson.userID}/archive?siteid=tenant-a
         as: siteAdmin
+        csrf: json-api:${seed.archivePerson.userID}
         body:
           effectiveFrom: '2026-06-01'
         settle: seam:people.person.archived.v1
@@ -1108,6 +1109,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/people/persons/${seed.archivePerson.userID}/archive?siteid=tenant-a
         as: siteAdmin
+        csrf: json-api:${seed.archivePerson.userID}
         body:
           effectiveFrom: '2026-06-01'
     compare: [status, envelope, rows]
@@ -4070,6 +4072,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/people/persons/${seed.rehearsalArchive}/archive?siteid=tenant-a
         as: siteAdmin
+        csrf: json-api:${seed.rehearsalArchive}
         body:
           effectiveFrom: '2026-06-01'
         settle: seam:people.person.archived.v1
@@ -4089,6 +4092,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/people/persons/${seed.rehearsalArchive}/archive?siteid=tenant-a
         as: siteAdmin
+        csrf: json-api:${seed.rehearsalArchive}
         body:
           effectiveFrom: '2026-06-01'
     compare: [status, envelope, rows]
@@ -4122,6 +4126,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/timesheets/days/${seed.day.day_id}/submit?siteid=tenant-a
         as: employee
+        csrf: json-api:${seed.day.day_id}
       - name: sheet-after
         method: GET
         route: /legacy-fixtures/cfml/api.cfm/timesheets/sheets/${seed.sheet.timesheet_id}?siteid=tenant-a&asOf=${asOf}
@@ -4169,14 +4174,17 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/timesheets/days/${seed.day.day_id}/submit?siteid=tenant-a
         as: employee
+        csrf: json-api:${seed.day.day_id}
       - name: primary-approve
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/timesheets/days/${seed.day.day_id}/primary-approve?siteid=tenant-a
         as: primary
+        csrf: json-api:${seed.day.day_id}
       - name: secondary-approve
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/timesheets/days/${seed.day.day_id}/secondary-approve?siteid=tenant-a
         as: secondary
+        csrf: json-api:${seed.day.day_id}
       - name: status
         method: GET
         route: /legacy-fixtures/cfml/api.cfm/timesheets/sheets/${seed.sheet.timesheet_id}/status?siteid=tenant-a&asOf=${asOf}
@@ -4210,10 +4218,12 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/timesheets/days/${seed.dayA.day_id}/submit?siteid=tenant-a
         as: employee
+        csrf: json-api:${seed.dayA.day_id}
       - name: primary-return
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/timesheets/days/${seed.dayA.day_id}/return?siteid=tenant-a
         as: primary
+        csrf: json-api:${seed.dayA.day_id}
         body:
           comment: GS-TS-03 hours missing
       - name: status-returned
@@ -4224,28 +4234,34 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/timesheets/days/${seed.dayA.day_id}/resubmit?siteid=tenant-a
         as: employee
+        csrf: json-api:${seed.dayA.day_id}
       - name: primary-approve-a
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/timesheets/days/${seed.dayA.day_id}/primary-approve?siteid=tenant-a
         as: primary
+        csrf: json-api:${seed.dayA.day_id}
       - name: submit-b
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/timesheets/days/${seed.dayB.day_id}/submit?siteid=tenant-a
         as: employee
+        csrf: json-api:${seed.dayB.day_id}
       - name: primary-approve-b
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/timesheets/days/${seed.dayB.day_id}/primary-approve?siteid=tenant-a
         as: primary
+        csrf: json-api:${seed.dayB.day_id}
       - name: secondary-return
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/timesheets/days/${seed.dayB.day_id}/return?siteid=tenant-a
         as: secondary
+        csrf: json-api:${seed.dayB.day_id}
         body:
           comment: GS-TS-03 wrong project
       - name: resubmit-b
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/timesheets/days/${seed.dayB.day_id}/resubmit?siteid=tenant-a
         as: employee
+        csrf: json-api:${seed.dayB.day_id}
     compare: [status, envelope, transitions, rows]
     rows:
       - {table: Program_1.timesheet_day, where: {day_id: '${seed.dayA.day_id}'}}
@@ -4344,6 +4360,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/people/persons/${seed.blackoutPerson.userID}/archive?siteid=tenant-a
         as: siteAdmin
+        csrf: json-api:${seed.blackoutPerson.userID}
         body:
           effectiveFrom: '2026-01-01'
         settle: seam:people.person.archived.v1
@@ -4351,14 +4368,17 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/timesheets/days/${seed.blackoutDay.day_id}/submit?siteid=tenant-a
         as: employee
+        csrf: json-api:${seed.blackoutDay.day_id}
       - name: wrong-role
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/timesheets/days/${seed.draftDay.day_id}/submit?siteid=tenant-a
         as: secondary
+        csrf: json-api:${seed.draftDay.day_id}
       - name: illegal-state
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/timesheets/days/${seed.submittedDay.day_id}/submit?siteid=tenant-a
         as: employee
+        csrf: json-api:${seed.submittedDay.day_id}
     compare: [status, envelope, transitions, rows]
     rows:
       - {table: Program_1.timesheet_day, where: {day_id: '${seed.blackoutDay.day_id}'}}
@@ -4386,6 +4406,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records?siteid=tenant-a
         as: preparer
+        csrf: 'json-api:'
         body:
           title: GS-FI-01 approved
           amount: '1250.0000'
@@ -4396,14 +4417,17 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records/${approved.id}/submit?siteid=tenant-a
         as: preparer
+        csrf: json-api:${approved.id}
       - name: approve-1
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records/${approved.id}/approve?siteid=tenant-a
         as: approver
+        csrf: json-api:${approved.id}
       - name: resubmitted
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records?siteid=tenant-a
         as: preparer
+        csrf: 'json-api:'
         body:
           title: GS-FI-01 resubmitted
           amount: '310.5000'
@@ -4414,22 +4438,27 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records/${resubmitted.id}/submit?siteid=tenant-a
         as: preparer
+        csrf: json-api:${resubmitted.id}
       - name: reject-2
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records/${resubmitted.id}/reject?siteid=tenant-a
         as: approver
+        csrf: json-api:${resubmitted.id}
       - name: resubmit-2
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records/${resubmitted.id}/resubmit?siteid=tenant-a
         as: preparer
+        csrf: json-api:${resubmitted.id}
       - name: approve-2
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records/${resubmitted.id}/approve?siteid=tenant-a
         as: approver
+        csrf: json-api:${resubmitted.id}
       - name: rejected
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records?siteid=tenant-a
         as: preparer
+        csrf: 'json-api:'
         body:
           title: GS-FI-01 rejected twice
           amount: '99.9900'
@@ -4440,18 +4469,22 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records/${rejected.id}/submit?siteid=tenant-a
         as: preparer
+        csrf: json-api:${rejected.id}
       - name: reject-3
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records/${rejected.id}/reject?siteid=tenant-a
         as: approver
+        csrf: json-api:${rejected.id}
       - name: resubmit-3
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records/${rejected.id}/resubmit?siteid=tenant-a
         as: preparer
+        csrf: json-api:${rejected.id}
       - name: reject-3b
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records/${rejected.id}/reject?siteid=tenant-a
         as: approver
+        csrf: json-api:${rejected.id}
       - name: detail
         method: GET
         route: /legacy-fixtures/cfml/api.cfm/finance/records/${resubmitted.id}?siteid=tenant-a
@@ -4495,6 +4528,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records?siteid=tenant-a
         as: preparer
+        csrf: 'json-api:'
         body:
           title: GS-FI-02 record
           amount: '42.0000'
@@ -4505,22 +4539,27 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records/${record.id}/approve?siteid=tenant-a
         as: approver
+        csrf: json-api:${record.id}
       - name: submit-as-approver
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records/${record.id}/submit?siteid=tenant-a
         as: approver
+        csrf: json-api:${record.id}
       - name: submit
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records/${record.id}/submit?siteid=tenant-a
         as: preparer
+        csrf: json-api:${record.id}
       - name: approve
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records/${record.id}/approve?siteid=tenant-a
         as: approver
+        csrf: json-api:${record.id}
       - name: edit-approved
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records/${record.id}/edit?siteid=tenant-a
         as: preparer
+        csrf: json-api:${record.id}
         body:
           title: GS-FI-02 record edited
           amount: '43.0000'
@@ -4547,6 +4586,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records?siteid=tenant-a
         as: preparer
+        csrf: 'json-api:'
         body:
           title: GS-FI-03 record
           amount: '500.0000'
@@ -4557,6 +4597,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records/${record.id}/edit?siteid=tenant-a
         as: preparer
+        csrf: json-api:${record.id}
         body:
           title: GS-FI-03 record
           amount: '525.2500'
@@ -4565,14 +4606,17 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records/${record.id}/submit?siteid=tenant-a
         as: preparer
+        csrf: json-api:${record.id}
       - name: reject
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records/${record.id}/reject?siteid=tenant-a
         as: approver
+        csrf: json-api:${record.id}
       - name: edit-rejected
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records/${record.id}/edit?siteid=tenant-a
         as: preparer
+        csrf: json-api:${record.id}
         body:
           title: GS-FI-03 record corrected
           amount: '520.0000'
@@ -4611,6 +4655,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records?siteid=tenant-a
         as: preparer
+        csrf: 'json-api:'
         body:
           title: GS-FI-04 record
           amount: '75.0000'
@@ -4621,6 +4666,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/finance/records/${record.id}/attachments?siteid=tenant-a
         as: preparer
+        csrf: json-api:${record.id}
         multipart:
           fields: {}
           files:
@@ -4681,6 +4727,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/surveys/surveys?siteid=tenant-a
         as: manager
+        csrf: 'json-api:'
         body:
           title: GS-SU-01 Survey
         extract:
@@ -4689,6 +4736,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/surveys/surveys/${survey.id}/schedule?siteid=tenant-a
         as: manager
+        csrf: json-api:${survey.id}
         body:
           launchAt: '2026-07-01T09:00:00'
           reminders:
@@ -4765,6 +4813,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/surveys/surveys?siteid=tenant-a
         as: manager
+        csrf: 'json-api:'
         body:
           title: GS-SU-02 Survey
         extract:
@@ -4773,6 +4822,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/surveys/surveys/${survey.id}/responses?siteid=tenant-a
         as: respondent
+        csrf: json-api:${survey.id}
         body:
           answers: '{"q1":"yes","q2":"4"}'
       - name: responses
@@ -4802,6 +4852,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/surveys/surveys?siteid=tenant-a
         as: manager
+        csrf: 'json-api:'
         body:
           title: GS-SU-03 Multi-site Survey
         extract:
@@ -4810,6 +4861,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/surveys/surveys/${survey.id}/targets/bulk?siteid=tenant-a
         as: manager
+        csrf: json-api:${survey.id}
         body:
           targets:
             - siteID: tenant-b
@@ -4819,6 +4871,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/surveys/surveys/${survey.id}/responses?siteid=tenant-b
         as: respondentB
+        csrf: json-api:${survey.id}
         body:
           answers: '{"q1":"no"}'
       - name: responses
@@ -4855,6 +4908,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/reporting/exports?siteid=tenant-a
         as: exporter
+        csrf: 'json-api:'
         body:
           definitionId: ${seed.definition.definition_id}
           format: xlsx
@@ -4874,6 +4928,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/reporting/exports?siteid=tenant-a
         as: exporter
+        csrf: 'json-api:'
         body:
           definitionId: ${seed.definition.definition_id}
           format: csv
@@ -4893,6 +4948,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/reporting/exports?siteid=tenant-a
         as: exporter
+        csrf: 'json-api:'
         body:
           definitionId: ${seed.definition.definition_id}
           format: pdf
@@ -4952,6 +5008,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/reporting/exports?siteid=tenant-a
         as: exporter
+        csrf: 'json-api:'
         body:
           definitionId: ${seed.broken.definition_id}
           format: csv
@@ -4982,6 +5039,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/communications/templates?siteid=tenant-a
         as: sender
+        csrf: 'json-api:'
         body:
           name: GS-CM-01 Welcome
           subject: Welcome {{fname}}
@@ -5025,6 +5083,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/communications/messages?siteid=tenant-a
         as: sender
+        csrf: 'json-api:'
         body:
           templateId: ${seed.template.template_id}
           to: gs-cm-02@seed.opt2.test
@@ -5064,6 +5123,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/esignature/requests?siteid=tenant-a
         as: signer
+        csrf: 'json-api:'
         body:
           documentName: gs-es-01.txt
           documentBase64: R1MtRVMgZ29sZGVuIGRvY3VtZW50
@@ -5074,12 +5134,14 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/esignature/requests/${request.id}/sign?siteid=tenant-a
         as: signer
+        csrf: json-api:${request.id}
         body:
           typedName: Golden Signer
       - name: sign-again
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/esignature/requests/${request.id}/sign?siteid=tenant-a
         as: signer
+        csrf: json-api:${request.id}
         body:
           typedName: Golden Signer
       - name: list
@@ -5128,6 +5190,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/esignature/requests?siteid=tenant-a
         as: signer
+        csrf: 'json-api:'
         body:
           documentName: gs-es-02.txt
           documentBase64: R1MtRVMgZ29sZGVuIGRvY3VtZW50
@@ -5138,6 +5201,7 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/esignature/requests/${request.id}/sign?siteid=tenant-a
         as: signer
+        csrf: json-api:${request.id}
         body:
           typedName: Golden Signer
       - name: audit
@@ -5161,12 +5225,14 @@ scenarios:
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/esignature/requests/${request.id}/verify?siteid=tenant-a
         as: auditor
+        csrf: json-api:${request.id}
         body:
           entries: ${audit.items}
       - name: verify-tampered
         method: POST
         route: /legacy-fixtures/cfml/api.cfm/esignature/requests/${request.id}/verify?siteid=tenant-a
         as: auditor
+        csrf: json-api:${request.id}
         body:
           entries:
             - ${audit.first}

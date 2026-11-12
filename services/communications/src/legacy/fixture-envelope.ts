@@ -56,6 +56,7 @@ export const FIXTURE_LEGACY_ERROR_TYPES: readonly LegacyApiErrorType[] = Object.
   'invalidParameters',
   'invalidMethodCall',
   'badRequest',
+  'invalidTokens',
   'server_error',
 ] as const);
 

@@ -68,6 +68,8 @@ paths:
         - $ref: '#/components/parameters/FixtureSiteId'
         - $ref: '#/components/parameters/UseDataNamespace'
         - $ref: '#/components/parameters/MethodOverride'
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
       requestBody:
         $ref: '#/components/requestBodies/FixtureTemplateCall'
       responses:
@@ -87,7 +89,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/FixtureTemplateEnvelope'
         '400':
-          $ref: '#/components/responses/FixtureBadRequest'
+          $ref: '#/components/responses/FixtureWriteBadRequest'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
@@ -151,6 +153,8 @@ paths:
         - $ref: '#/components/parameters/FixtureSiteId'
         - $ref: '#/components/parameters/UseDataNamespace'
         - $ref: '#/components/parameters/MethodOverride'
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
       requestBody:
         $ref: '#/components/requestBodies/FixtureMessageCall'
       responses:
@@ -170,7 +174,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/FixtureMessageDetailEnvelope'
         '400':
-          $ref: '#/components/responses/FixtureBadRequest'
+          $ref: '#/components/responses/FixtureWriteBadRequest'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
@@ -1120,6 +1124,20 @@ components:
       description: HTTP method the fixture dispatches on instead of the request method.
       schema:
         type: string
+    CsrfTokenHeader:
+      name: X-csrf_token
+      in: header
+      required: false
+      description: CSRF token, an alternative to the `csrf_token` field.
+      schema:
+        type: string
+    CsrfExpiresHeader:
+      name: X-csrf_token_expires
+      in: header
+      required: false
+      description: CSRF token expiry `yyMMddHHnnsslll`, an alternative to the `csrf_token_expires` field.
+      schema:
+        type: string
     FixtureMessageId:
       name: id
       in: path
@@ -1278,6 +1296,32 @@ components:
                         const: invalid_request
                       message:
                         enum:
+                          - Invalid parameters
+                          - Bad Request
+    FixtureWriteBadRequest:
+      description: 'Fixture 400 of a write: `invalidTokens` (`Invalid CSRF tokens`) without a valid CSRF token of the empty context; `invalidParameters` for an unknown site or an invalid parameter; or `badRequest`.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureError'
+              - type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        const: invalid_request
+                      message:
+                        enum:
+                          - Invalid CSRF tokens
                           - Invalid parameters
                           - Bad Request
     FixtureUnauthorized:

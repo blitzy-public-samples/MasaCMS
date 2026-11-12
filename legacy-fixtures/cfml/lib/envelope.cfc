@@ -48,6 +48,7 @@ component output="false" hint="Masa-shaped JSON envelope and value formats for t
 			'invalidParameters' = {'status' = 400, 'code' = 'invalid_request', 'message' = 'Invalid parameters'},
 			'invalidMethodCall' = {'status' = 400, 'code' = 'invalid_request', 'message' = 'Invalid method call'},
 			'badRequest' = {'status' = 400, 'code' = 'invalid_request', 'message' = 'Bad Request'},
+			'invalidTokens' = {'status' = 400, 'code' = 'invalid_request', 'message' = 'Invalid CSRF tokens'},
 			'forbidden' = {'status' = 403, 'code' = 'invalid_request', 'message' = 'Insufficient Account Permissions'},
 			'notFound' = {'status' = 404, 'code' = 'invalid_request', 'message' = 'Not Found'},
 			'conflict' = {'status' = 409, 'code' = 'invalid_request', 'message' = 'Conflict'},
@@ -65,8 +66,7 @@ component output="false" hint="Masa-shaped JSON envelope and value formats for t
 		required string type,
 		required string method,
 		struct params={},
-		string message="",
-		any exception
+		string message=""
 	) hint="Writes the Masa error envelope for a short or opt2fixture.-prefixed type (unknown types answer 500) and ends the request." {
 		local.key = reReplaceNoCase(arguments.type, "^opt2fixture\.", "");
 		local.entry = structKeyExists(variables.errorMap, local.key) ? variables.errorMap[local.key] : variables.errorMap['server_error'];
@@ -74,9 +74,6 @@ component output="false" hint="Masa-shaped JSON envelope and value formats for t
 		local.error = [:];
 		local.error['code'] = local.entry.code;
 		local.error['message'] = len(arguments.message) ? arguments.message : local.entry.message;
-		if (!isNull(arguments.exception) && application.configBean.getDebuggingEnabled()) {
-			local.error['stacktrace'] = arguments.exception;
-		}
 
 		respond(local.entry.status, arguments.method, arguments.params, 'error', local.error);
 	}

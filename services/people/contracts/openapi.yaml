@@ -2595,6 +2595,8 @@ paths:
       parameters:
         - $ref: '#/components/parameters/SiteIdQuery'
         - $ref: '#/components/parameters/MethodOverrideHeader'
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
       requestBody:
         $ref: '#/components/requestBodies/ArchiveCall'
       responses:
@@ -2602,7 +2604,7 @@ paths:
           $ref: '#/components/responses/ArchiveWritten'
         '400':
           $ref: '#/components/responses/BadRequest'
-          description: '`invalidParameters` for an unknown site or an `effectiveFrom` that is not a `yyyy-mm-dd` date from 1753 on, or `badRequest` for a person already archived.'
+          description: '`invalidTokens` "Invalid CSRF tokens" without a valid CSRF token of context `{userId}`; `invalidParameters` for an unknown site or an `effectiveFrom` that is not a `yyyy-mm-dd` date from 1753 on; or `badRequest` for a person already archived.'
         '401':
           $ref: '#/components/responses/Unauthorized'
           description: '`authorization` without a logged-in user.'

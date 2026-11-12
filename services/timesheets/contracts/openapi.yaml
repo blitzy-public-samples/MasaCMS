@@ -155,6 +155,9 @@ paths:
       security:
         - userToken: []
           invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
       requestBody:
         required: false
         description: Merged with the query string as legacy merges url, form and a JSON body; later sources win.
@@ -169,7 +172,7 @@ paths:
         '200':
           $ref: '#/components/responses/FixtureDayActionOk'
         '400':
-          $ref: '#/components/responses/FixtureBadRequest'
+          $ref: '#/components/responses/FixtureWriteBadRequest'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
@@ -807,6 +810,20 @@ components:
       description: Day lifecycle action; any other value answers 404 `notFound`.
       schema:
         $ref: '#/components/schemas/DayAction'
+    CsrfTokenHeader:
+      name: X-csrf_token
+      in: header
+      required: false
+      description: CSRF token, an alternative to the `csrf_token` field.
+      schema:
+        type: string
+    CsrfExpiresHeader:
+      name: X-csrf_token_expires
+      in: header
+      required: false
+      description: CSRF token expiry `yyMMddHHnnsslll`, an alternative to the `csrf_token_expires` field.
+      schema:
+        type: string
     PushKey:
       name: key
       in: query
@@ -947,6 +964,32 @@ components:
                         const: invalid_request
                       message:
                         enum:
+                          - Invalid parameters
+                          - Bad Request
+    FixtureWriteBadRequest:
+      description: 'Fixture 400 of a write: `invalidTokens` (`Invalid CSRF tokens`) without a valid CSRF token of the day id context; `invalidParameters` for an unknown site, a site without a program or a bad comment; or `badRequest`.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureError'
+              - type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        const: invalid_request
+                      message:
+                        enum:
+                          - Invalid CSRF tokens
                           - Invalid parameters
                           - Bad Request
     FixtureUnauthorized:

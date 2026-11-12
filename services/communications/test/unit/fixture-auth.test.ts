@@ -1,15 +1,24 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Check order, statuses and fixture error bodies of the communications fixture auth port (legacy-fixtures/cfml/lib/auth.cfc). */
 import { readFileSync } from 'node:fs';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Roles, SYNTHETIC_ROLES, type UserClaims } from '@opt2/platform/auth';
-import { createService, loadEnv, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
+import {
+  createService,
+  CSRF_CONSUME_PATH,
+  IDENTITY_SERVICE,
+  loadEnv,
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest,
+} from '@opt2/platform/service-kit';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { mintUserToken, testVerifier } from '@opt2/platform/testing';
 import { fixtureHandler, fixtureMethod, fixtureSuccess } from '../../src/legacy/fixture-envelope.js';
 import {
   FIXTURE_ROLES,
   requireAny,
+  requireCsrf,
   requireLogin,
   resolveSite,
   rolesHeld,
@@ -22,14 +31,21 @@ const FIXTURE_ROUTE = { config: { opt2: { public: true as const, siteCheck: fals
 const USER_ID = '6F9619FF-8B86-D011-B42D00C04FC964FF';
 const MESSAGE_ID = '7A1B2C3D-4E5F-6071-8293A4B5C6D7E8F9';
 const KNOWN_SITES = new Set(['default', 'tenant-a', 'tenant-b', 'umbrella']);
-const lookup: FixtureSiteLookup = { siteExists: (siteId) => Promise.resolve(KNOWN_SITES.has(siteId.toLowerCase())) };
+const lookup: FixtureSiteLookup = {
+  registeredSite: (siteId) => Promise.resolve(KNOWN_SITES.has(siteId.toLowerCase()) ? siteId.toLowerCase() : undefined),
+};
 
 const INVALID_PARAMETERS = { code: 'invalid_request', message: 'Invalid parameters' };
 const DENIED = { code: 'invalid_request', message: 'Insufficient Account Permissions' };
+const INVALID_TOKENS = { code: 'invalid_request', message: 'Invalid CSRF tokens' };
 
-/** A request carrying only the verified auth context, as the platform hooks attach it. */
-function requestWith(user?: UserClaims): FastifyRequest {
-  return { opt2Auth: { user, roles: user?.roles ?? [], transport: 'service' } } as unknown as FastifyRequest;
+const EXPIRES = '260630120000123';
+const PARAM_TOKENS = { csrf_token: 'PARAM-TOKEN', csrf_token_expires: EXPIRES };
+const HEADER_TOKENS = { 'x-csrf_token': 'HEADER-TOKEN', 'x-csrf_token_expires': '260630120000999' };
+
+/** A request carrying the verified auth context, as the platform hooks attach it, and optional headers and body. */
+function requestWith(user?: UserClaims, headers: Record<string, string> = {}, body?: unknown): FastifyRequest {
+  return { opt2Auth: { user, roles: user?.roles ?? [], transport: 'service' }, headers, body } as unknown as FastifyRequest;
 }
 
 /** Verified claims of a tenant-a user holding `roles`. */
@@ -50,10 +66,12 @@ function claims(roles: string[], s2 = false): UserClaims {
   };
 }
 
-/** Resolved site, or the thrown error type, of one direct resolveSite call. */
-async function siteOutcome(params: Record<string, unknown>, user?: UserClaims): Promise<string> {
+/** Resolved site, or the thrown error type, of one direct resolveSite call; `jsonBody` makes it a JSON request. */
+async function siteOutcome(params: Record<string, unknown>, user?: UserClaims, jsonBody?: unknown): Promise<string> {
+  const request =
+    jsonBody === undefined ? requestWith(user) : requestWith(user, { 'content-type': 'application/json; charset=utf-8' }, jsonBody);
   try {
-    return `site:${await resolveSite(requestWith(user), params, lookup)}`;
+    return `site:${await resolveSite(request, params, lookup)}`;
   } catch (error) {
     return `error:${(error as { type: string }).type}`;
   }
@@ -74,16 +92,29 @@ describe('FIXTURE_ROLES', () => {
 
 describe('direct checks', () => {
   it.each<[string, Record<string, unknown>, UserClaims | undefined, string]>([
-    ['the supplied site, as spelled', { SiteID: 'TENANT-A' }, claims([]), 'site:TENANT-A'],
+    ['the registered id of a case-variant site', { SiteID: 'TENANT-A' }, claims([]), 'site:tenant-a'],
     ['the token site when siteid is absent', {}, claims([]), 'site:tenant-a'],
     ['the token site when siteid is null', { siteid: null }, claims([]), 'site:tenant-a'],
     ['a guest caller with a known site', { siteid: 'tenant-b' }, undefined, 'site:tenant-b'],
-    ['a guest caller without a site', { siteid: '' }, undefined, 'error:invalidParameters'],
+    ['a guest caller with an empty site, as default', { siteid: '' }, undefined, 'site:default'],
+    ['a guest caller without a site, as default', {}, undefined, 'site:default'],
+    ['a url or form site trimmed of spaces and controls', { siteid: ' \u0000TENANT-A\t\r\n' }, claims([]), 'site:tenant-a'],
+    ['a whitespace-only url or form site, as default', { siteid: ' \t' }, undefined, 'site:default'],
+    ['a site padded by a non-ASCII space', { siteid: '\u00a0tenant-a' }, claims([]), 'error:invalidParameters'],
     ['an unknown site before the token-site check', { siteid: 'nosuch' }, claims([]), 'error:invalidParameters'],
     ['a non-string siteid', { siteid: ['tenant-a'] }, claims([]), 'error:invalidParameters'],
     ['another site than the token site', { siteid: 'tenant-b' }, claims([]), 'error:forbidden'],
   ])('resolveSite with %s', async (_case, params, user, expected) => {
     expect(await siteOutcome(params, user)).toBe(expected);
+  });
+
+  it.each<[string, Record<string, unknown>, Record<string, unknown>, UserClaims | undefined, string]>([
+    ['a case-variant site', { siteid: 'TENANT-A' }, { siteid: 'TENANT-A' }, claims([]), 'site:tenant-a'],
+    ['a padded site, untrimmed', { siteid: ' tenant-a' }, { SiteID: ' tenant-a' }, claims([]), 'error:invalidParameters'],
+    ['a whitespace-only site, untrimmed', { siteid: ' ' }, { siteid: ' ' }, undefined, 'error:invalidParameters'],
+    ['no siteid, beside a padded query siteid', { siteid: ' tenant-a' }, {}, claims([]), 'site:tenant-a'],
+  ])('resolveSite with a JSON body holding %s', async (_case, params, body, user, expected) => {
+    expect(await siteOutcome(params, user, body)).toBe(expected);
   });
 
   it('requireLogin returns the verified claims, and throws authorization when anonymous', () => {
@@ -120,6 +151,67 @@ describe('direct checks', () => {
   it('userId is the token subject, and empty when anonymous', () => {
     expect(userId(requestWith(claims([])))).toBe(USER_ID);
     expect(userId(requestWith())).toBe('');
+  });
+});
+
+describe('requireCsrf', () => {
+  const SENDER = claims([Roles.communicationsSender]);
+
+  /** A `method` request with url `query` and `headers`, whose identity client answers consume calls with `valid`. */
+  function csrfRequest(
+    method: string,
+    user: UserClaims | undefined,
+    query: Record<string, string>,
+    headers: Record<string, string> = {},
+    valid = true,
+  ): { request: FastifyRequest; consume: ReturnType<typeof vi.fn> } {
+    const consume = vi.fn(async () => ({ status: 200, headers: {}, body: { valid } }));
+    const request = {
+      method,
+      headers,
+      query,
+      body: undefined,
+      opt2Auth: { user, roles: user?.roles ?? [], transport: 'service' },
+      server: { opt2: { client: { request: consume } } },
+    } as unknown as FastifyRequest;
+    return { request, consume };
+  }
+
+  it.each<[string, string, UserClaims | undefined, Record<string, string>]>([
+    ['a GET', 'GET', SENDER, {}],
+    ['a HEAD', 'HEAD', SENDER, {}],
+    ['a POST overridden to GET', 'POST', SENDER, { 'x-http-method-override': 'get' }],
+    ['an anonymous POST', 'POST', undefined, {}],
+  ])('skips %s without calling identity', async (_case, method, user, headers) => {
+    const { request, consume } = csrfRequest(method, user, {}, headers);
+    await expect(requireCsrf(request, {} as FastifyReply, '')).resolves.toBeUndefined();
+    expect(consume).not.toHaveBeenCalled();
+  });
+
+  it.each<[string, Record<string, string>, string, string]>([
+    ['the param token', {}, PARAM_TOKENS.csrf_token, EXPIRES],
+    ['the X-csrf_token headers over the params', HEADER_TOKENS, 'HEADER-TOKEN', '260630120000999'],
+  ])('has identity consume %s for the collection context once per request', async (_case, headers, token, expires) => {
+    const { request, consume } = csrfRequest('POST', SENDER, PARAM_TOKENS, headers);
+    await requireCsrf(request, {} as FastifyReply, '');
+    await requireCsrf(request, {} as FastifyReply, '');
+    expect(consume).toHaveBeenCalledTimes(1);
+    expect(consume).toHaveBeenCalledWith({
+      service: IDENTITY_SERVICE,
+      method: 'POST',
+      path: CSRF_CONSUME_PATH,
+      json: { sessionId: SENDER.sid, token, expires, context: '' },
+    });
+  });
+
+  it.each<[string, Record<string, string>, boolean, number]>([
+    ['a token identity rejects', PARAM_TOKENS, false, 1],
+    ['no token, without calling identity', { csrf_token_expires: EXPIRES }, true, 0],
+    ['no expiry, without calling identity', { csrf_token: 'PARAM-TOKEN' }, true, 0],
+  ])('throws invalidTokens for %s', async (_case, query, valid, identityCalls) => {
+    const { request, consume } = csrfRequest('POST', SENDER, query, {}, valid);
+    await expect(requireCsrf(request, {} as FastifyReply, '')).rejects.toMatchObject({ type: 'invalidTokens' });
+    expect(consume).toHaveBeenCalledTimes(identityCalls);
   });
 });
 
@@ -196,7 +288,8 @@ describe('fixture check order through app.inject', () => {
     readonly [string, Record<string, unknown>, { roles: string[]; site?: string } | undefined, number, unknown]
   > = [
     ['an anonymous caller with an unknown site', { siteid: 'nosuch' }, undefined, 400, INVALID_PARAMETERS],
-    ['an anonymous caller without a site', {}, undefined, 400, INVALID_PARAMETERS],
+    ['an anonymous caller without a site, as default', {}, undefined, 401, DENIED],
+    ['an anonymous caller with an empty site, as default', { siteid: '' }, undefined, 401, DENIED],
     ['an anonymous caller with a valid site', { siteid: 'tenant-a' }, undefined, 401, DENIED],
     ['a sender with an unknown site', { siteid: 'nosuch' }, { roles: [Roles.communicationsSender] }, 400, INVALID_PARAMETERS],
     ['a sender token for another site', { siteid: 'tenant-b' }, { roles: [Roles.communicationsSender] }, 403, DENIED],
@@ -238,4 +331,93 @@ describe('fixture check order through app.inject', () => {
       else expect(res.body.error).toEqual(DENIED);
     },
   );
+
+  it.each<[string, string, number]>([
+    ['a case-variant site', 'TENANT-A', 200],
+    ['a site padded with spaces and a tab', ' tenant-a\t', 200],
+    ['a whitespace-only site, as the token site', ' ', 200],
+    ['a site padded by a non-ASCII space', '\u00a0tenant-a', 400],
+  ])('GET templates resolves the registered id of a query siteid holding %s', async (_case, siteid, status) => {
+    const res = await call('GET', `${PREFIX}/templates`, { siteid }, { roles: [Roles.systemUser, FIXTURE_ROLES.sender] });
+    expect(res.status).toBe(status);
+    if (status === 200) expect(res.body.data).toEqual({ siteid: 'tenant-a', userid: USER_ID });
+    else expect(res.body.error).toEqual(INVALID_PARAMETERS);
+  });
+});
+
+describe('requireCsrf check order through app.inject', () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    app = await createService({
+      name: 'communications',
+      version: '1.0.0',
+      env: loadEnv(undefined, {
+        PORT: '8115',
+        OPT2_SERVICE_NAME: 'communications',
+        OPT2_ENV: 'local',
+        OPT2_JWKS_URL: 'http://127.0.0.1:9/jwks',
+        OPT2_TOKEN_ISSUER: 'opt2-local-identity',
+        OPT2_TOKEN_AUDIENCE: 'opt2-local',
+        TZ: 'UTC',
+      }),
+      verifierOverride: testVerifier('communications'),
+    });
+    app.post(
+      `${PREFIX}/messages`,
+      FIXTURE_ROUTE,
+      fixtureHandler(fixtureMethod('messages'), async (request, reply, ctx) => {
+        const siteid = await resolveSite(request, ctx.params, lookup);
+        requireAny(request, [FIXTURE_ROLES.sender]);
+        await requireCsrf(request, reply, '');
+        return fixtureSuccess(reply, { ...ctx, data: { siteid } });
+      }),
+    );
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.opt2.shutdown();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Injects a tenant-a JSON message POST with `headers`, carrying a user token when `roles` is given. */
+  async function send(roles: string[] | undefined, headers: Record<string, string>) {
+    const auth: Record<string, string> = {};
+    if (roles !== undefined) auth.authorization = `Bearer ${await mintUserToken({ site: 'tenant-a', roles, sub: USER_ID })}`;
+    return app.inject({
+      method: 'POST',
+      url: `${PREFIX}/messages`,
+      headers: { ...auth, ...headers, 'content-type': 'application/json' },
+      payload: JSON.stringify({ siteid: 'tenant-a', templateId: MESSAGE_ID }),
+    });
+  }
+
+  it.each<[string, string[] | undefined, Record<string, string>, boolean, number, unknown, number]>([
+    ['an anonymous caller', undefined, HEADER_TOKENS, true, 401, DENIED, 0],
+    ['a user without communications.sender, before the token check', [Roles.systemUser], {}, true, 403, DENIED, 0],
+    ['a sender without a token', [FIXTURE_ROLES.sender], {}, true, 400, INVALID_TOKENS, 0],
+    ['a sender whose token identity rejects', [FIXTURE_ROLES.sender], HEADER_TOKENS, false, 400, INVALID_TOKENS, 1],
+  ])('answers a message POST from %s in check order', async (_case, roles, headers, valid, status, error, calls) => {
+    const consume = vi.spyOn(app.opt2.client, 'request').mockResolvedValue({ status: 200, headers: {}, body: { valid } });
+    const res = await send(roles, headers);
+    expect(res.statusCode).toBe(status);
+    expect(res.json()).toMatchObject({ method: 'communications.messages', error });
+    expect(consume).toHaveBeenCalledTimes(calls);
+  });
+
+  it('runs a sender message POST once identity consumes its token for the collection context', async () => {
+    const consume = vi.spyOn(app.opt2.client, 'request').mockResolvedValue({ status: 200, headers: {}, body: { valid: true } });
+    const res = await send([FIXTURE_ROLES.sender], HEADER_TOKENS);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ data: { siteid: 'tenant-a' } });
+    expect(consume).toHaveBeenCalledTimes(1);
+    expect(consume.mock.calls[0]?.[0]).toMatchObject({
+      path: CSRF_CONSUME_PATH,
+      json: { token: HEADER_TOKENS['x-csrf_token'], context: '' },
+    });
+  });
 });

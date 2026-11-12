@@ -56,6 +56,7 @@
 			}
 		}
 	}
+	variables.auth.forRoute(variables.route, variables.headers);
 
 	// Returns a log-record.v1 JSON line for an unhandled exception, free of request values and exception text.
 	string function exceptionLogRecord(required any exception) {
@@ -111,7 +112,8 @@
 		variables.failure = {"type" = listLast(e.type, "."), "message" = e.message};
 	} catch (any e) {
 		writeLog(type="Error", file="exception", text=exceptionLogRecord(e));
-		variables.failure = {"type" = "server_error", "message" = "", "exception" = e};
+		// The exception stays in the log: it holds SQL and paths, and the target cannot reproduce Masa's debug stacktrace.
+		variables.failure = {"type" = "server_error", "message" = ""};
 	}
 
 	if (structKeyExists(variables, "failure")) {

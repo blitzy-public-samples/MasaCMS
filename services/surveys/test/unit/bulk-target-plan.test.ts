@@ -60,8 +60,9 @@ function thrown(fn: () => unknown): unknown {
   return undefined;
 }
 
-/** A tenant-A transaction answering registry lookups from `registry` (keys lower-case), logging them and grant inserts, refusing other SQL. */
+/** A tenant-A transaction answering registry lookups from `registry` (canonical site id to tenant), logging them and grant inserts, refusing other SQL. */
 function recordingTx(registry: ReadonlyMap<string, string>, log: Step[]): TenantTx {
+  const sites = [...registry];
   return {
     kind: 'tenant',
     tenantId: TENANT_A,
@@ -69,13 +70,18 @@ function recordingTx(registry: ReadonlyMap<string, string>, log: Step[]): Tenant
     onCommit: () => undefined,
     query<R extends QueryResultRow = QueryResultRow>(text: string | QueryConfig, values: unknown[] = []): Promise<QueryResult<R>> {
       const sql = typeof text === 'string' ? text : text.text;
-      const table = /^(?:SELECT tenant_id FROM|INSERT INTO) surveys\.(tenant_registry|tenant_grant) /.exec(sql)?.[1];
-      if (table === undefined) {
+      const match = /^(?:SELECT (tenant_id|site_id) FROM|INSERT INTO) surveys\.(tenant_registry|tenant_grant) /.exec(sql);
+      if (match === null) {
         return Promise.reject(new Error(`unexpected SQL: ${sql}`));
       }
-      log.push([table, values]);
-      const tenant = table === 'tenant_registry' ? registry.get(String(values[0]).toLowerCase()) : undefined;
-      const rows = tenant === undefined ? [] : [{ tenant_id: tenant }];
+      const [, column, table] = match;
+      log.push([table ?? '', values]);
+      const key = String(values[0]);
+      const site =
+        column === 'tenant_id'
+          ? sites.find(([siteId]) => siteId.toLowerCase() === key.toLowerCase())
+          : sites.find(([, tenant]) => column === 'site_id' && tenant === key);
+      const rows = site === undefined ? [] : [column === 'site_id' ? { site_id: site[0] } : { tenant_id: site[1] }];
       return Promise.resolve({ command: '', rowCount: rows.length, oid: 0, fields: [], rows } as unknown as QueryResult<R>);
     },
   };
@@ -147,6 +153,15 @@ describe('parseBulkTargets', () => {
     ['an object siteID', [{ siteID: { id: 'tenant-b' } }]],
     ['an array siteID in JSON text', '[{"siteID":["tenant-b"]}]'],
     ['one bad item among good ones', [{ siteID: 'tenant-b' }, { siteID: '' }]],
+    ['a siteID over 25 characters', [{ siteID: 's'.repeat(26) }]],
+    ['a groupName over 255 characters', [{ siteID: 'tenant-b', groupName: 'g'.repeat(256) }]],
+    ['a groupName over 255 UTF-16 units', [{ siteID: 'tenant-b', groupName: '\u{1F600}'.repeat(128) }]],
+    ['a number token kept as written past 255 characters', `[{"siteID":"tenant-b","groupName":1${'0'.repeat(400)}}]`],
+    ['an object groupName', [{ siteID: 'tenant-b', groupName: { a: 1 } }]],
+    ['an array groupName in JSON text', '[{"siteID":"tenant-b","groupName":["Staff"]}]'],
+    ['siteID first spelled siteid', '[{"siteid":"tenant-a","siteID":"tenant-b"}]'],
+    ['siteID first spelled with a dotless i', '[{"siteıd":"tenant-a","siteID":"tenant-b"}]'],
+    ['a repeated siteID whose last value is empty', '[{"siteID":"tenant-b","siteID":""}]'],
   ])('raises invalidParameters for %s', (_case, input) => {
     const error = thrown(() => parseBulkTargets(input));
 
@@ -166,11 +181,11 @@ describe('parseBulkTargets', () => {
     ['an empty array', [], []],
     ['empty JSON array text', '[]', []],
     [
-      'JSON numbers by their source text',
-      '[{"siteID":1.50,"groupName":10.0},{"siteID":12345678901234567890}]',
+      'JSON number tokens as ACF reads them',
+      '[{"siteID":1.50,"groupName":10.0},{"siteID":12345678901234567890,"groupName":-0}]',
       [
-        { siteid: '1.50', groupName: '10.0' },
-        { siteid: '12345678901234567890', groupName: null },
+        { siteid: '1.5', groupName: '10.0' },
+        { siteid: '1.2345678901234567E19', groupName: '0' },
       ],
     ],
     [
@@ -178,60 +193,93 @@ describe('parseBulkTargets', () => {
       [
         { siteID: 7, groupName: 2.5 },
         { siteID: true, groupName: false },
+        { siteID: 2 ** 63, groupName: Number.POSITIVE_INFINITY },
       ],
       [
         { siteid: '7', groupName: '2.5' },
         { siteid: 'true', groupName: 'false' },
+        { siteid: '9.223372036854776E18', groupName: 'Infinity' },
       ],
     ],
     [
-      'an absent, null, object or array groupName as a whole-site target',
-      [{ siteID: 'a' }, { siteID: 'b', groupName: null }, { siteID: 'c', groupName: { name: 'Staff' } }, { siteID: 'd', groupName: ['Staff'] }],
+      'an absent or null groupName as a whole-site target',
+      [{ siteID: 'a' }, { siteID: 'b', groupName: null }],
       [
         { siteid: 'a', groupName: null },
         { siteid: 'b', groupName: null },
-        { siteid: 'c', groupName: null },
-        { siteid: 'd', groupName: null },
       ],
     ],
     ['an empty groupName as a named group', [{ siteID: 'tenant-b', groupName: '' }], [{ siteid: 'tenant-b', groupName: '' }]],
     ['a blank siteID as given', [{ siteID: '   ' }], [{ siteid: '   ', groupName: null }]],
     ['keys other than exact-case siteID and groupName as absent', [{ siteID: 'tenant-b', groupname: 'Staff', extra: 1 }], [{ siteid: 'tenant-b', groupName: null }]],
     [
-      'values beyond the OPENJSON column lengths truncated',
-      [{ siteID: 's'.repeat(30), groupName: 'g'.repeat(300) }],
-      [{ siteid: 's'.repeat(25), groupName: 'g'.repeat(255) }],
+      'case-variant keys by their first spelling and last value',
+      '[{"siteID":"tenant-b","SITEID":"tenant-a","groupName":"x","GROUPNAME":"y"},{"siteID":"tenant-b","GROUPNAME":"y","groupName":"x"},' +
+        '{"siteID":"tenant-b","groupName":"x","groupname":null},{"siteID":"","siteID":"tenant-b"}]',
+      [
+        { siteid: 'tenant-a', groupName: 'y' },
+        { siteid: 'tenant-b', groupName: null },
+        { siteid: 'tenant-b', groupName: null },
+        { siteid: 'tenant-b', groupName: null },
+      ],
     ],
-  ])('reads %s as the procedure does', (_case, input, expected) => {
+    [
+      'values at the column lengths in full',
+      [
+        { siteID: 's'.repeat(25), groupName: 'g'.repeat(255) },
+        { siteID: 'tenant-b', groupName: '\u{1F600}'.repeat(127) },
+      ],
+      [
+        { siteid: 's'.repeat(25), groupName: 'g'.repeat(255) },
+        { siteid: 'tenant-b', groupName: '\u{1F600}'.repeat(127) },
+      ],
+    ],
+    [
+      'every repeated target, for the site check',
+      [
+        { siteID: 'tenant-b', groupName: 'Staff' },
+        { siteID: 'tenant-b ', groupName: 'STAFF' },
+      ],
+      [
+        { siteid: 'tenant-b', groupName: 'Staff' },
+        { siteid: 'tenant-b ', groupName: 'STAFF' },
+      ],
+    ],
+  ])('reads %s as the fixture does', (_case, input, expected) => {
     expect(parseBulkTargets(input)).toEqual(expected);
   });
 
-  it('collapses duplicates case-insensitively and ignoring trailing spaces, keeping the first spelling in input order', () => {
-    const input = [
-      { siteID: 'tenant-b', groupName: 'Staff' },
-      { siteID: 'tenant-a' },
-      { siteID: 'TENANT-B  ', groupName: 'staff ' },
-      { siteID: 'Tenant-A', groupName: null },
-      { siteID: 'tenant-a', groupName: '' },
-      { siteID: 'tenant-a', groupName: '  ' },
-      { siteID: ' tenant-a' },
-      { siteID: 'tenant-a', groupName: 'Staff' },
-      { siteID: 'tenant-a ', groupName: 'STAFF' },
-    ];
-
-    expect(parseBulkTargets(input)).toEqual([
-      { siteid: 'tenant-b', groupName: 'Staff' },
-      { siteid: 'tenant-a', groupName: null },
-      { siteid: 'tenant-a', groupName: '' },
-      { siteid: ' tenant-a', groupName: null },
-      { siteid: 'tenant-a', groupName: 'Staff' },
-    ]);
-  });
-
-  it('collapses values that become equal once truncated to the column length', () => {
-    expect(parseBulkTargets([{ siteID: `${'x'.repeat(25)}1` }, { siteID: `${'X'.repeat(25)}2` }])).toEqual([
-      { siteid: 'x'.repeat(25), groupName: null },
-    ]);
+  it.each<[string, string]>([
+    ['7', '7'],
+    ['-0', '0'],
+    ['9223372036854775807', '9223372036854775807'],
+    ['9223372036854775808', '9.223372036854776E18'],
+    ['1.50', '1.5'],
+    ['-2.5', '-2.5'],
+    ['0.5', '0.5'],
+    ['10.0', '10.0'],
+    ['1E+2', '100.0'],
+    ['1e7', '1.0E7'],
+    ['0.001', '0.001'],
+    ['0.0001', '1.0E-4'],
+    ['1e-7', '1.0E-7'],
+    ['9999999.5', '9999999.5'],
+    ['123456789.123', '1.23456789123E8'],
+    ['7.321888428079e18', '7.3218884280789996E18'],
+    ['2.3951739517395173e-3', '0.0023951739517395175'],
+    ['8.840628406284062e12', '8.840628406284062E12'],
+    ['7.838383838383838e14', '7.838383838383838E14'],
+    ['2e23', '1.9999999999999998E23'],
+    ['1e23', '9.999999999999999E22'],
+    ['1.5e300', '1.5E300'],
+    ['5e-324', '4.9E-324'],
+    ['1e-321', '1.0E-321'],
+    ['-0.0', '-0.0'],
+    ['1e-400', '0.0'],
+    ['1e400', '1e400'],
+    ['-1e400', '-1e400'],
+  ])('stores the groupName number token %s as the fixture does, %j', (token, stored) => {
+    expect(parseBulkTargets(`[{"siteID":"tenant-b","groupName":${token}}]`)).toEqual([{ siteid: 'tenant-b', groupName: stored }]);
   });
 });
 
@@ -281,6 +329,28 @@ describe('bulkTarget', () => {
     });
   });
 
+  it('collapses duplicates case-insensitively and ignoring trailing spaces, keeping the first spelling in input order', () => {
+    const input = [
+      { siteID: 'tenant-b', groupName: 'Staff' },
+      { siteID: 'tenant-a' },
+      { siteID: 'TENANT-B  ', groupName: 'staff ' },
+      { siteID: 'Tenant-A', groupName: null },
+      { siteID: 'tenant-a', groupName: '' },
+      { siteID: 'tenant-a', groupName: '  ' },
+      { siteID: ' tenant-a' },
+      { siteID: 'tenant-a', groupName: 'Staff' },
+      { siteID: 'tenant-a ', groupName: 'STAFF' },
+    ];
+
+    expect(bulkTarget([], input).toInsert).toEqual([
+      { siteid: 'tenant-b', groupName: 'Staff' },
+      { siteid: 'tenant-a', groupName: null },
+      { siteid: 'tenant-a', groupName: '' },
+      { siteid: ' tenant-a', groupName: null },
+      { siteid: 'tenant-a', groupName: 'Staff' },
+    ]);
+  });
+
   it('counts the existing targets an empty input leaves in total', () => {
     expect(bulkTarget([targetRow('tenant-a', null), targetRow('tenant-b', 'Staff')], '[]')).toEqual({ toInsert: [], inserted: 0, total: 2 });
   });
@@ -306,49 +376,56 @@ describe('bulkTarget', () => {
 });
 
 describe('applyBulkTarget', () => {
-  it('inserts the planned targets, then grants survey-response once to each other registered tenant of the targeted sites', async () => {
+  it('inserts the planned targets under their registered site ids, then grants survey-response once to each other targeted tenant', async () => {
     const { deps, tx, log, tenants, insertTargets } = setup({
       existing: [targetRow('tenant-b', 'Staff')],
-      registry: { 'tenant-a': TENANT_A, 'tenant-b': TENANT_B, 'tenant-c': TENANT_C, 'tenant-c-alias': TENANT_C },
-      counts: { inserted: 4, total: 6 },
+      registry: { 'tenant-a': TENANT_A, 'tenant-b': TENANT_B, 'Tenant-C': TENANT_C },
+      counts: { inserted: 4, total: 5 },
     });
     const input = JSON.stringify([
       { siteID: 'tenant-b', groupName: 'Staff' },
-      { siteID: 'TENANT-B ' },
+      { siteID: 'TENANT-B' },
       { siteID: 'tenant-a' },
-      { siteID: 'tenant-d' },
-      { siteID: 'tenant-c  ' },
-      { siteID: 'tenant-c-alias', groupName: 'Board' },
+      { siteID: 'tenant-c', groupName: 'Board' },
+      { siteID: 'TENANT-C' },
+      { siteID: 'tenant-b' },
     ]);
 
     const result = await applyBulkTarget(deps, { tenantId: TENANT_A, surveyId: SURVEY_ID, input });
 
-    expect(result).toEqual({ inserted: 4, total: 6 });
+    expect(result).toEqual({ inserted: 4, total: 5 });
     expect(tenants).toEqual([TENANT_A]);
     expect(SURVEY_RESPONSE_GRANT).toBe('survey-response');
     expect(log).toEqual([
       ['findSurvey', SURVEY_ID],
+      ['tenant_registry', ['tenant-b']],
+      ['tenant_registry', [TENANT_B]],
+      ['tenant_registry', ['TENANT-B']],
+      ['tenant_registry', [TENANT_B]],
+      ['tenant_registry', ['tenant-a']],
+      ['tenant_registry', [TENANT_A]],
+      ['tenant_registry', ['tenant-c']],
+      ['tenant_registry', [TENANT_C]],
+      ['tenant_registry', ['TENANT-C']],
+      ['tenant_registry', [TENANT_C]],
       ['listTargets', SURVEY_ID],
       [
         'insertTargets',
         [
           SURVEY_ID,
           [
-            { siteId: 'TENANT-B ', groupName: null },
+            { siteId: 'tenant-b', groupName: null },
             { siteId: 'tenant-a', groupName: null },
-            { siteId: 'tenant-d', groupName: null },
-            { siteId: 'tenant-c  ', groupName: null },
-            { siteId: 'tenant-c-alias', groupName: 'Board' },
+            { siteId: 'Tenant-C', groupName: 'Board' },
+            { siteId: 'Tenant-C', groupName: null },
           ],
         ],
       ],
       ['tenant_registry', ['tenant-b']],
       ['tenant_grant', [TENANT_A, TENANT_B, 'survey-response', SURVEY_ID]],
       ['tenant_registry', ['tenant-a']],
-      ['tenant_registry', ['tenant-d']],
-      ['tenant_registry', ['tenant-c']],
+      ['tenant_registry', ['Tenant-C']],
       ['tenant_grant', [TENANT_A, TENANT_C, 'survey-response', SURVEY_ID]],
-      ['tenant_registry', ['tenant-c-alias']],
     ]);
     expect(insertTargets.mock.calls[0]?.[0]).toBe(tx);
     expect(insertTargets.mock.calls[0]).toHaveLength(3);
@@ -362,11 +439,29 @@ describe('applyBulkTarget', () => {
     const result = await applyBulkTarget(deps, { tenantId: TENANT_A, surveyId: SURVEY_ID, input: [{ siteID: 'Tenant-B' }] });
 
     expect(result).toEqual({ inserted: 0, total: 1 });
-    expect(log.slice(2)).toEqual([
-      ['insertTargets', [SURVEY_ID, []]],
+    expect(log.slice(1)).toEqual([
       ['tenant_registry', ['Tenant-B']],
+      ['tenant_registry', [TENANT_B]],
+      ['listTargets', SURVEY_ID],
+      ['insertTargets', [SURVEY_ID, []]],
+      ['tenant_registry', ['tenant-b']],
       ['tenant_grant', [TENANT_A, TENANT_B, 'survey-response', SURVEY_ID]],
     ]);
+  });
+
+  it.each<[string, unknown]>([
+    ['an unregistered site', [{ siteID: 'tenant-d' }]],
+    ['a site with a trailing space', [{ siteID: 'tenant-b ' }]],
+    ['a site with a leading space', [{ siteID: ' tenant-b' }]],
+    ['an unregistered site after a registered one', [{ siteID: 'tenant-b' }, { siteID: 'TENANT-B ', groupName: 'Staff' }]],
+  ])('answers invalidParameters for %s before reading targets or writing', async (_case, input) => {
+    const { deps, log } = setup({ registry: { 'tenant-b': TENANT_B } });
+
+    const error = await applyBulkTarget(deps, { tenantId: TENANT_A, surveyId: SURVEY_ID, input }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(LegacyApiError);
+    expect(error).toMatchObject({ type: 'invalidParameters' });
+    expect(log.map(([step]) => step).filter((step) => step !== 'tenant_registry')).toEqual(['findSurvey']);
   });
 
   it.each([
@@ -387,6 +482,6 @@ describe('applyBulkTarget', () => {
     const { deps, log } = setup({ registry: { 'tenant-b': TENANT_B }, insertError: failure });
 
     await expect(applyBulkTarget(deps, { tenantId: TENANT_A, surveyId: SURVEY_ID, input: [{ siteID: 'tenant-b' }] })).rejects.toBe(failure);
-    expect(log.map(([step]) => step)).toEqual(['findSurvey', 'listTargets', 'insertTargets']);
+    expect(log.map(([step]) => step)).toEqual(['findSurvey', 'tenant_registry', 'tenant_registry', 'listTargets', 'insertTargets']);
   });
 });

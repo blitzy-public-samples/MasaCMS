@@ -92,6 +92,8 @@ paths:
         - userToken: []
           invocationCredential: []
       parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
         - $ref: '#/components/parameters/FixtureTitleQuery'
       requestBody:
         $ref: '#/components/requestBodies/FixtureCreateSurveyCall'
@@ -120,7 +122,7 @@ paths:
                       data:
                         $ref: '#/components/schemas/FixtureSurveyDetail'
         '400':
-          $ref: '#/components/responses/FixtureBadRequest'
+          $ref: '#/components/responses/FixtureWriteBadRequest'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
@@ -198,6 +200,8 @@ paths:
         - userToken: []
           invocationCredential: []
       parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
         - $ref: '#/components/parameters/FixtureLaunchAtQuery'
         - $ref: '#/components/parameters/FixtureRemindersQuery'
       requestBody:
@@ -227,7 +231,7 @@ paths:
                       data:
                         $ref: '#/components/schemas/FixtureSurveyDetail'
         '400':
-          $ref: '#/components/responses/FixtureBadRequest'
+          $ref: '#/components/responses/FixtureWriteBadRequest'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
@@ -258,6 +262,8 @@ paths:
         - userToken: []
           invocationCredential: []
       parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
         - $ref: '#/components/parameters/FixtureTargetsQuery'
       requestBody:
         $ref: '#/components/requestBodies/FixtureBulkTargetCall'
@@ -286,7 +292,7 @@ paths:
                       data:
                         $ref: '#/components/schemas/FixtureBulkTargetResult'
         '400':
-          $ref: '#/components/responses/FixtureBadRequest'
+          $ref: '#/components/responses/FixtureWriteBadRequest'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
@@ -360,7 +366,7 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: fixtureSubmitSurveyResponse
-      summary: Stores a logged-in user's answers from the survey's site or a targeted site under the survey's site.
+      summary: Stores the answers of a member of the request site, the survey's site or a targeted site, under the survey's site.
       tags:
         - fixture
       x-opt2-transport: service
@@ -371,6 +377,8 @@ paths:
         - userToken: []
           invocationCredential: []
       parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
         - $ref: '#/components/parameters/FixtureAnswersQuery'
       requestBody:
         $ref: '#/components/requestBodies/FixtureResponseCall'
@@ -399,12 +407,12 @@ paths:
                       data:
                         $ref: '#/components/schemas/FixtureSurveyResponse'
         '400':
-          $ref: '#/components/responses/FixtureBadRequest'
+          $ref: '#/components/responses/FixtureWriteBadRequest'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
           $ref: '#/components/responses/FixtureForbidden'
-          description: The request site is neither the survey's site nor a targeted site, or a platform refusal.
+          description: The caller is not a member of the request site, that site is neither the survey's site nor a targeted site, or a platform refusal.
         '404':
           $ref: '#/components/responses/FixtureNotFound'
         '500':
@@ -1651,6 +1659,20 @@ components:
       description: HTTP method the fixture dispatches on instead of the request method.
       schema:
         type: string
+    CsrfTokenHeader:
+      name: X-csrf_token
+      in: header
+      required: false
+      description: CSRF token, an alternative to the `csrf_token` field.
+      schema:
+        type: string
+    CsrfExpiresHeader:
+      name: X-csrf_token_expires
+      in: header
+      required: false
+      description: CSRF token expiry `yyMMddHHnnsslll`, an alternative to the `csrf_token_expires` field.
+      schema:
+        type: string
     FixtureSurveyId:
       name: id
       in: path
@@ -1864,6 +1886,27 @@ components:
   responses:
     FixtureBadRequest:
       description: 'Fixture 400 `invalidParameters` (message `Invalid parameters`) for an unknown site or an invalid parameter.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureErrorEnvelope'
+              - type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        const: invalid_request
+    FixtureWriteBadRequest:
+      description: 'Fixture 400 of a write: `invalidTokens` (message `Invalid CSRF tokens`) without a valid CSRF token of the survey id context, empty for `surveys/surveys`; or `invalidParameters` (message `Invalid parameters`) for an unknown site or an invalid parameter.'
       headers:
         Generator:
           $ref: '#/components/headers/Generator'

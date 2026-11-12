@@ -19,9 +19,10 @@ BEGIN
 	SELECT STUFF(CONVERT([char] (36), NEWID()), 24, 1, ''), @survey_id, [d].[siteID], [d].[groupName], @now
 	FROM (
 		SELECT DISTINCT [j].[siteID], [j].[groupName]
+		-- Text is parsed at nvarchar(4000) because OPENJSON truncates silently; an oversized value fails on the target column instead.
 		FROM OPENJSON(@json) WITH (
-			[siteID] [nvarchar] (25) '$.siteID',
-			[groupName] [nvarchar] (255) '$.groupName'
+			[siteID] [nvarchar] (4000) '$.siteID',
+			[groupName] [nvarchar] (4000) '$.groupName'
 		) AS [j]
 	) AS [d]
 	WHERE NOT EXISTS (

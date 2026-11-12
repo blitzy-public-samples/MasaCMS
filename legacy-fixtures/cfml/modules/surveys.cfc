@@ -252,7 +252,6 @@ component output="false" hint="SYNTHETIC surveys fixture: surveys, launch and re
 	private struct function bulkTarget(required struct route, required date now) hint="Adds the distinct site and group targets of a JSON array through usp_survey_bulk_target and returns {inserted, total}." {
 		variables.auth.requireAny(variables.managerRole);
 		local.survey = findSurvey(arguments.route.id, arguments.route.siteid);
-		local.raw = paramValue(arguments.route.params, "targets");
 		local.targets = arrayParam(arguments.route.params, "targets", true);
 		if (!allHaveValue(local.targets, "siteID")) {
 			variables.envelope.raise("invalidParameters");
@@ -261,11 +260,31 @@ component output="false" hint="SYNTHETIC surveys fixture: surveys, launch and re
 			"EXEC synthetic.usp_survey_bulk_target @survey_id = :id, @json = :json, @now = :now",
 			{
 				id = sqlParam(local.survey.survey_id, "cf_sql_char"),
-				json = sqlParam(isSimpleValue(local.raw) ? local.raw : serializeJSON(local.targets), "cf_sql_longnvarchar"),
+				json = sqlParam(serializeJSON(targetRows(local.targets)), "cf_sql_longnvarchar"),
 				now = sqlParam(arguments.now, "cf_sql_timestamp")
 			}
 		);
 		return {"data" = variables.envelope.rows(local.qry)[1]};
+	}
+
+	private array function targetRows(required array targets) hint="Returns allHaveValue-checked targets as string-typed {siteID, groupName} structs, siteID canonical and groupName omitted when absent or null; raises invalidParameters for an unknown site or a complex or over-255-character groupName." {
+		local.result = [];
+		for (local.target in arguments.targets) {
+			local.hasGroup = arrayFind(structKeyArray(local.target), "groupName") && !isNull(local.target.groupName);
+			if (!application.settingsManager.siteExists(local.target.siteID)
+				|| (local.hasGroup && (!isSimpleValue(local.target.groupName) || len(local.target.groupName) > 255))) {
+				variables.envelope.raise("invalidParameters");
+			}
+			local.row = [:];
+			local.row["siteID"] = application.settingsManager.getSite(local.target.siteID).getSiteID();
+			if (local.hasGroup) {
+				local.row["groupName"] = local.target.groupName;
+			}
+			// Typed as strings so serializeJSON never turns numeric-looking text into JSON numbers.
+			local.row.setMetadata({"siteID" = {type = "string"}, "groupName" = {type = "string"}});
+			arrayAppend(local.result, local.row);
+		}
+		return local.result;
 	}
 
 	private struct function listResponses(required struct route) hint="Lists one page of the responses of a survey in the site." {
@@ -279,8 +298,12 @@ component output="false" hint="SYNTHETIC surveys fixture: surveys, launch and re
 		);
 	}
 
-	private struct function createResponse(required struct route, required date now) hint="Stores a logged-in user's answers, from the survey's own site or a targeted site, under the survey's site." {
+	private struct function createResponse(required struct route, required date now) hint="Stores the answers of a member of the request site, which must own or be targeted by the survey, under the survey's site with that site as respondentSiteID." {
 		variables.auth.requireLogin();
+		if (!variables.auth.isSiteMember()) {
+			variables.envelope.raise("forbidden");
+		}
+		variables.auth.requireCsrf();
 		local.qry = queryExecute(
 			"SELECT v.survey_id, v.siteID,
 				CASE WHEN v.siteID = :siteid

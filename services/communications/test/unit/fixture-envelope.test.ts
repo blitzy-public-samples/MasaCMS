@@ -44,6 +44,7 @@ const ENVELOPE_CFC_ERROR_MAP = {
   invalidParameters: { status: 400, code: 'invalid_request', message: 'Invalid parameters' },
   invalidMethodCall: { status: 400, code: 'invalid_request', message: 'Invalid method call' },
   badRequest: { status: 400, code: 'invalid_request', message: 'Bad Request' },
+  invalidTokens: { status: 400, code: 'invalid_request', message: 'Invalid CSRF tokens' },
   forbidden: { status: 403, code: 'invalid_request', message: 'Insufficient Account Permissions' },
   notFound: { status: 404, code: 'invalid_request', message: 'Not Found' },
   conflict: { status: 409, code: 'invalid_request', message: 'Conflict' },

@@ -27,7 +27,7 @@ These fixtures are a synthetic legacy oracle for the six synthetic modules (comm
 | `cfml/api.cfm` | Front controller for every module route |
 | `cfml/seed.cfm` | Seed loader for the generated dataset |
 | `cfml/lib/envelope.cfc` | Masa envelope, error map, paging and value formats |
-| `cfml/lib/auth.cfc` | Masa-session authentication, role-group authorisation, site and program resolution |
+| `cfml/lib/auth.cfc` | Masa-session authentication, role-group authorisation, CSRF validation, site and program resolution |
 | `cfml/modules/<module>.cfc` | One handler per module: `people`, `timesheets`, `finance`, `surveys`, `reporting`, `communications`, `esignature` |
 | `seed/` | Fixed-seed dataset generator, package `@opt2/legacy-fixtures-seed` |
 
@@ -110,7 +110,8 @@ The ColdFusion process also reads these variables on its start command:
 
 - Base: `/legacy-fixtures/cfml/api.cfm/`; path grammar `<module>/<resource>[/<id>][/<action>][/<tail>]`. A path outside it answers 404.
 - Parameters merge as Masa's JSON API merges them: query, then form, then an `application/json` body, each overwriting the earlier. `X-HTTP-Method-Override` replaces the HTTP method.
-- `siteid` defaults to the session user's site; an unknown site answers 400 `invalidParameters`. The envelope `method` is `<module>.<resource>[.<action>][.<tail>]`.
+- A logged-in call with a method other than GET or HEAD needs a single-use Masa CSRF token from `generateCSRFTokens`, with the route's `{id}` segment as context (empty for collection routes such as `finance/records`). It travels as `csrf_token` and `csrf_token_expires` parameters, or as `X-csrf_token` and `X-csrf_token_expires` headers, which win over the parameters. A missing, used, expired or wrong-context token answers 400 `invalidTokens`. Task callbacks are exempt.
+- `siteid` defaults to the session user's site, else `default`; routes use the site's canonical id (`TENANT-A` resolves to `tenant-a`). An unknown site answers 400 `invalidParameters`. The envelope `method` is `<module>.<resource>[.<action>][.<tail>]`.
 - Every route is a carry route to its module's service by definition (AAP 0.5.6). The gateway keys it with `platform/src/legacy-compat/route-key.ts` rule 5: `fixture:<module>/<resource>[/{id}][/<segment>…]@<method>`, for example `fixture:people/persons/{id}/archive@post`, with the override honoured.
 - In the tables below, "any of" lists the groups the module's gate admits; where an action names its own role, the procedure checks it against the transition table and answers 403 for the wrong role and 409 for an illegal state.
 
@@ -156,9 +157,9 @@ Gate: any of `timesheets.employee`, `timesheets.primary-approver`, `timesheets.s
 | POST | `surveys/surveys` | `surveys.manager` | — | `title`; creates a DRAFT survey |
 | GET | `surveys/surveys/{id}` | `surveys.manager` | — | Survey with schedule, reminders and targets |
 | POST | `surveys/surveys/{id}/schedule` | `surveys.manager` | — | `launchAt`, `reminders[].offsetMinutes` (seam 2). Replaces the ACF tasks `opt2-survey-<id>-launch` and `opt2-survey-<id>-reminder-<n>`, addressed to `OPT2_GATEWAY_ORIGIN`. 409 unless DRAFT or SCHEDULED |
-| POST | `surveys/surveys/{id}/targets/bulk` | `surveys.manager` | `usp_survey_bulk_target` | `targets`, a JSON array of site and group targets |
+| POST | `surveys/surveys/{id}/targets/bulk` | `surveys.manager` | `usp_survey_bulk_target` | `targets`, a JSON array of site and group targets. Each needs an existing `siteID` and a `groupName` of at most 255 characters, else `invalidParameters` |
 | GET | `surveys/surveys/{id}/responses` | `surveys.manager` | — | Paged |
-| POST | `surveys/surveys/{id}/responses` | any logged-in user of the survey's site or a targeted site | — | `answers`. Stored under the survey's site with `respondentSiteID` |
+| POST | `surveys/surveys/{id}/responses` | a logged-in member of `siteid`: S2, a private-pool user or a public-pool account of that site, which must own or be targeted by the survey (else 403) | — | `answers`. Stored under the survey's site with `respondentSiteID` = the verified `siteid` |
 | GET | `surveys/surveys/{id}/tasks` | `surveys.manager` | — | Current ACF tasks with kind, callback route and offset |
 | GET, POST | `surveys/surveys/{id}/launch` | task callback: `opt2TaskToken` | — | Marks the survey LAUNCHED once |
 | GET, POST | `surveys/surveys/{id}/remind` | task callback: `opt2TaskToken` | — | `reminder=<n>`; stamps the reminder sent once |
@@ -216,6 +217,7 @@ There is no `esignature/requests/{id}` read route; it answers 404.
 - The names and scope (`privateUserPool`) are exactly those of `services/identity/config/role-map.json`, which maps them to target roles when identity mints a token. Permission denials therefore compare one-to-one with the target (AAP 0.4.4).
 - The people archive requires S2 or membership of the site's private-pool `Admin` group, the target's `s2` or `site-admin`.
 - A logged-in user without a required group answers 403 `forbidden`.
+- A write's CSRF token (see Routes) is validated after the role check and before the route's own 404, 400 and 409 answers. The survey task callbacks authorise by task token alone and take no CSRF token.
 
 ## Formats
 
@@ -225,6 +227,7 @@ There is no `esignature/requests/{id}` read route; it answers 404.
 | Status | Error type | `error.code` | Raised for |
 |---|---|---|---|
 | 400 | `invalidParameters`, `invalidMethodCall`, `badRequest` | `invalid_request` | Bad or missing parameters, unknown site, repeated archive |
+| 400 | `invalidTokens` | `invalid_request` | A logged-in write without a valid CSRF token; the message is `Invalid CSRF tokens` |
 | 401 | `authorization` | `invalid_request` | No Masa login |
 | 403 | `forbidden` | `invalid_request` | Wrong role, wrong signer, wrong task token |
 | 404 | `notFound` | `invalid_request` | Unknown route, or a row outside the request site |

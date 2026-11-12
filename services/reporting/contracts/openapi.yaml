@@ -86,6 +86,8 @@ paths:
         - $ref: '#/components/parameters/FixtureSiteId'
         - $ref: '#/components/parameters/UseDataNamespace'
         - $ref: '#/components/parameters/MethodOverride'
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
       requestBody:
         $ref: '#/components/requestBodies/FixtureCreateExportCall'
       responses:
@@ -105,7 +107,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/FixtureExportJobEnvelope'
         '400':
-          $ref: '#/components/responses/FixtureBadRequest'
+          $ref: '#/components/responses/FixtureWriteBadRequest'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
@@ -1020,6 +1022,20 @@ components:
       description: HTTP method the fixture dispatches on instead of the request method.
       schema:
         type: string
+    CsrfTokenHeader:
+      name: X-csrf_token
+      in: header
+      required: false
+      description: CSRF token, an alternative to the `csrf_token` field.
+      schema:
+        type: string
+    CsrfExpiresHeader:
+      name: X-csrf_token_expires
+      in: header
+      required: false
+      description: CSRF token expiry `yyMMddHHnnsslll`, an alternative to the `csrf_token_expires` field.
+      schema:
+        type: string
     FixtureExportId:
       name: id
       in: path
@@ -1174,6 +1190,31 @@ components:
                         const: invalid_request
                       message:
                         const: Invalid parameters
+    FixtureWriteBadRequest:
+      description: 'Fixture 400 of a write: `invalidTokens` (`Invalid CSRF tokens`) without a valid CSRF token of the empty context; or `invalidParameters`: an unknown site, a site without a program, or an invalid `format` or `asOf`.'
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/FixtureError'
+              - type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        const: invalid_request
+                      message:
+                        enum:
+                          - Invalid CSRF tokens
+                          - Invalid parameters
     FixtureUnauthorized:
       description: 'Fixture 401 `authorization` without a logged-in session user, or the platform''s refusal of a presented credential.'
       headers:

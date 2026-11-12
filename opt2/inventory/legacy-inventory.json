@@ -140817,8 +140817,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
-      "csrfContext": null,
-      "csrfValidation": "none",
+      "csrfContext": "",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -140911,8 +140911,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
-      "csrfContext": null,
-      "csrfValidation": "none",
+      "csrfContext": "",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141040,8 +141040,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
-      "csrfContext": null,
-      "csrfValidation": "none",
+      "csrfContext": "route.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141114,8 +141114,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
-      "csrfContext": null,
-      "csrfValidation": "none",
+      "csrfContext": "route.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141226,8 +141226,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
-      "csrfContext": null,
-      "csrfValidation": "none",
+      "csrfContext": "",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141242,8 +141242,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          84,
-          103
+          85,
+          104
         ]
       },
       "owningService": "finance",
@@ -141273,8 +141273,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              104,
-              104
+              144,
+              144
             ]
           },
           "condition": null,
@@ -141291,8 +141291,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              109,
-              109
+              149,
+              149
             ]
           },
           "condition": null,
@@ -141309,8 +141309,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              129,
-              129
+              175,
+              175
             ]
           },
           "condition": null,
@@ -141327,8 +141327,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              131,
-              131
+              177,
+              177
             ]
           },
           "condition": null,
@@ -141338,8 +141338,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
-      "csrfContext": null,
-      "csrfValidation": "none",
+      "csrfContext": "route.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141354,8 +141354,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          161,
-          171
+          163,
+          173
         ]
       },
       "owningService": "finance",
@@ -141391,8 +141391,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          115,
-          123
+          116,
+          124
         ]
       },
       "owningService": "finance",
@@ -141428,8 +141428,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          125,
-          159
+          126,
+          161
         ]
       },
       "owningService": "finance",
@@ -141458,8 +141458,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/finance.cfc",
             "lines": [
-              136,
-              136
+              138,
+              138
             ]
           },
           "condition": null,
@@ -141469,8 +141469,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
-      "csrfContext": null,
-      "csrfValidation": "none",
+      "csrfContext": "route.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141485,8 +141485,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          84,
-          103
+          85,
+          104
         ]
       },
       "owningService": "finance",
@@ -141516,8 +141516,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              104,
-              104
+              144,
+              144
             ]
           },
           "condition": null,
@@ -141534,8 +141534,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              109,
-              109
+              149,
+              149
             ]
           },
           "condition": null,
@@ -141552,8 +141552,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              129,
-              129
+              175,
+              175
             ]
           },
           "condition": null,
@@ -141570,8 +141570,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              131,
-              131
+              177,
+              177
             ]
           },
           "condition": null,
@@ -141581,8 +141581,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
-      "csrfContext": null,
-      "csrfValidation": "none",
+      "csrfContext": "route.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141597,8 +141597,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          84,
-          103
+          85,
+          104
         ]
       },
       "owningService": "finance",
@@ -141628,8 +141628,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              104,
-              104
+              144,
+              144
             ]
           },
           "condition": null,
@@ -141646,8 +141646,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              109,
-              109
+              149,
+              149
             ]
           },
           "condition": null,
@@ -141664,8 +141664,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              129,
-              129
+              175,
+              175
             ]
           },
           "condition": null,
@@ -141682,8 +141682,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              131,
-              131
+              177,
+              177
             ]
           },
           "condition": null,
@@ -141693,8 +141693,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
-      "csrfContext": null,
-      "csrfValidation": "none",
+      "csrfContext": "route.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141709,8 +141709,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          84,
-          103
+          85,
+          104
         ]
       },
       "owningService": "finance",
@@ -141740,8 +141740,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              104,
-              104
+              144,
+              144
             ]
           },
           "condition": null,
@@ -141758,8 +141758,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              109,
-              109
+              149,
+              149
             ]
           },
           "condition": null,
@@ -141776,8 +141776,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              129,
-              129
+              175,
+              175
             ]
           },
           "condition": null,
@@ -141794,8 +141794,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              131,
-              131
+              177,
+              177
             ]
           },
           "condition": null,
@@ -141805,8 +141805,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
-      "csrfContext": null,
-      "csrfValidation": "none",
+      "csrfContext": "route.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141821,8 +141821,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          84,
-          103
+          85,
+          104
         ]
       },
       "owningService": "finance",
@@ -141852,8 +141852,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              104,
-              104
+              144,
+              144
             ]
           },
           "condition": null,
@@ -141870,8 +141870,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              109,
-              109
+              149,
+              149
             ]
           },
           "condition": null,
@@ -141888,8 +141888,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              129,
-              129
+              175,
+              175
             ]
           },
           "condition": null,
@@ -141906,8 +141906,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              131,
-              131
+              177,
+              177
             ]
           },
           "condition": null,
@@ -141917,8 +141917,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
-      "csrfContext": null,
-      "csrfValidation": "none",
+      "csrfContext": "route.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -141933,8 +141933,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          105,
-          113
+          106,
+          114
         ]
       },
       "owningService": "finance",
@@ -141970,8 +141970,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          80,
-          82
+          81,
+          83
         ]
       },
       "owningService": "finance",
@@ -142007,8 +142007,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          51,
-          58
+          52,
+          59
         ]
       },
       "owningService": "finance",
@@ -142044,8 +142044,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          60,
-          78
+          61,
+          79
         ]
       },
       "owningService": "finance",
@@ -142075,8 +142075,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              21,
-              21
+              41,
+              41
             ]
           },
           "condition": null,
@@ -142093,8 +142093,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              24,
-              24
+              44,
+              44
             ]
           },
           "condition": null,
@@ -142111,8 +142111,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              129,
-              129
+              175,
+              175
             ]
           },
           "condition": null,
@@ -142129,8 +142129,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              131,
-              131
+              177,
+              177
             ]
           },
           "condition": null,
@@ -142140,8 +142140,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
-      "csrfContext": null,
-      "csrfValidation": "none",
+      "csrfContext": "",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -142156,8 +142156,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/finance.cfc",
         "lines": [
-          173,
-          181
+          175,
+          183
         ]
       },
       "owningService": "finance",
@@ -142291,8 +142291,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
-      "csrfContext": null,
-      "csrfValidation": "none",
+      "csrfContext": "route.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -142477,8 +142477,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
-      "csrfContext": null,
-      "csrfValidation": "none",
+      "csrfContext": "",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -142493,8 +142493,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          356,
-          365
+          379,
+          388
         ]
       },
       "owningService": "surveys",
@@ -142523,8 +142523,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              360,
-              360
+              383,
+              383
             ]
           },
           "condition": null,
@@ -142550,8 +142550,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          356,
-          365
+          379,
+          388
         ]
       },
       "owningService": "surveys",
@@ -142580,8 +142580,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              360,
-              360
+              383,
+              383
             ]
           },
           "condition": null,
@@ -142607,8 +142607,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          367,
-          394
+          390,
+          417
         ]
       },
       "owningService": "surveys",
@@ -142637,8 +142637,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              386,
-              386
+              409,
+              409
             ]
           },
           "condition": null,
@@ -142664,8 +142664,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          367,
-          394
+          390,
+          417
         ]
       },
       "owningService": "surveys",
@@ -142694,8 +142694,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              386,
-              386
+              409,
+              409
             ]
           },
           "condition": null,
@@ -142721,8 +142721,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          271,
-          280
+          290,
+          299
         ]
       },
       "owningService": "surveys",
@@ -142758,8 +142758,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          282,
-          320
+          301,
+          343
         ]
       },
       "owningService": "surveys",
@@ -142788,8 +142788,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              304,
-              304
+              327,
+              327
             ]
           },
           "condition": null,
@@ -142799,8 +142799,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
-      "csrfContext": null,
-      "csrfValidation": "none",
+      "csrfContext": "route.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -142924,8 +142924,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
-      "csrfContext": null,
-      "csrfValidation": "none",
+      "csrfContext": "route.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -142941,7 +142941,7 @@
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
           252,
-          269
+          268
         ]
       },
       "owningService": "surveys",
@@ -142982,8 +142982,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
-      "csrfContext": null,
-      "csrfValidation": "none",
+      "csrfContext": "route.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -142998,8 +142998,8 @@
       "source": {
         "path": "legacy-fixtures/cfml/modules/surveys.cfc",
         "lines": [
-          322,
-          354
+          345,
+          377
         ]
       },
       "owningService": "surveys",
@@ -143150,8 +143150,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
-      "csrfContext": null,
-      "csrfValidation": "none",
+      "csrfContext": "",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -143226,8 +143226,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
-      "csrfContext": null,
-      "csrfValidation": "none",
+      "csrfContext": "route.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -143302,8 +143302,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
-      "csrfContext": null,
-      "csrfValidation": "none",
+      "csrfContext": "route.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -143378,8 +143378,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
-      "csrfContext": null,
-      "csrfValidation": "none",
+      "csrfContext": "route.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -143454,8 +143454,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
-      "csrfContext": null,
-      "csrfValidation": "none",
+      "csrfContext": "route.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -143530,8 +143530,8 @@
       "conditionalWrites": [],
       "unresolvedCalls": [],
       "sessionless": false,
-      "csrfContext": null,
-      "csrfValidation": "none",
+      "csrfContext": "route.id",
+      "csrfValidation": "validates",
       "sessionEffects": "none",
       "expected": null,
       "correction": null,
@@ -185633,8 +185633,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/finance.cfc",
             "lines": [
-              136,
-              136
+              138,
+              138
             ]
           },
           "op": "insert",
@@ -185712,8 +185712,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              21,
-              21
+              41,
+              41
             ]
           },
           "op": "insert",
@@ -185734,8 +185734,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              104,
-              104
+              144,
+              144
             ]
           },
           "op": "update",
@@ -185817,8 +185817,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              24,
-              24
+              44,
+              44
             ]
           },
           "op": "insert",
@@ -185839,8 +185839,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              109,
-              109
+              149,
+              149
             ]
           },
           "op": "insert",
@@ -185923,8 +185923,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              129,
-              129
+              175,
+              175
             ]
           },
           "op": "delete",
@@ -185950,8 +185950,8 @@
           "source": {
             "path": "legacy-fixtures/sql/finance/200_procedures.program.sql",
             "lines": [
-              131,
-              131
+              177,
+              177
             ]
           },
           "op": "insert",
@@ -187130,7 +187130,7 @@
           ],
           "trigger": "scheduler",
           "sessionEffects": "none",
-          "condition": "the opt2-survey-<id>-launch and opt2-survey-<id>-reminder-<n> cfschedule tasks that scheduleSurvey creates (surveys.cfc:174-190) call launchCallback (356-365, survey status and launched_at) and remindCallback (367-394, reminder sent_at) with a valid opt2TaskToken",
+          "condition": "the opt2-survey-<id>-launch and opt2-survey-<id>-reminder-<n> cfschedule tasks that scheduleSurvey creates (surveys.cfc:174-190) call launchCallback (379-388, survey status and launched_at) and remindCallback (390-417, reminder sent_at) with a valid opt2TaskToken",
           "override": "harness/inventory/writer-overrides.yaml#wov:fixture-survey-tasks"
         },
         {
@@ -187183,8 +187183,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              360,
-              360
+              383,
+              383
             ]
           },
           "op": "update",
@@ -187277,7 +187277,7 @@
           ],
           "trigger": "scheduler",
           "sessionEffects": "none",
-          "condition": "the opt2-survey-<id>-launch and opt2-survey-<id>-reminder-<n> cfschedule tasks that scheduleSurvey creates (surveys.cfc:174-190) call launchCallback (356-365, survey status and launched_at) and remindCallback (367-394, reminder sent_at) with a valid opt2TaskToken",
+          "condition": "the opt2-survey-<id>-launch and opt2-survey-<id>-reminder-<n> cfschedule tasks that scheduleSurvey creates (surveys.cfc:174-190) call launchCallback (379-388, survey status and launched_at) and remindCallback (390-417, reminder sent_at) with a valid opt2TaskToken",
           "override": "harness/inventory/writer-overrides.yaml#wov:fixture-survey-tasks"
         },
         {
@@ -187330,8 +187330,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              386,
-              386
+              409,
+              409
             ]
           },
           "op": "update",
@@ -187412,8 +187412,8 @@
           "source": {
             "path": "legacy-fixtures/cfml/modules/surveys.cfc",
             "lines": [
-              304,
-              304
+              327,
+              327
             ]
           },
           "op": "insert",

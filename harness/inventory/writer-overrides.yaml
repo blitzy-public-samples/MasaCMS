@@ -40,7 +40,7 @@ writers:
     keyScope: [id]
     trigger: scheduler
     sessionEffects: none
-    condition: "the opt2-survey-<id>-launch and opt2-survey-<id>-reminder-<n> cfschedule tasks that scheduleSurvey creates (surveys.cfc:174-190) call launchCallback (356-365, survey status and launched_at) and remindCallback (367-394, reminder sent_at) with a valid opt2TaskToken"
+    condition: "the opt2-survey-<id>-launch and opt2-survey-<id>-reminder-<n> cfschedule tasks that scheduleSurvey creates (surveys.cfc:174-190) call launchCallback (379-388, survey status and launched_at) and remindCallback (390-417, reminder sent_at) with a valid opt2TaskToken"
     preventedBy: fixture-survey-tasks
     reason: "ACF tasks the fixture registers at run time issue these requests, so no inventoried entry point carries their scheduler trigger."
 
