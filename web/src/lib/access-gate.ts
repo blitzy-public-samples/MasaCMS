@@ -52,6 +52,11 @@ export function applicationGate(req: AdminRequest): GateDecision {
   return ALLOW;
 }
 
+/** Handlers answer a GatewayDenialError with this: clogin.logout for its 401, cMessage.noaccess for its 403. */
+export function deniedGate(status: 401 | 403): GateDecision {
+  return redirectTo(adminActionPath(status === 401 ? ADMIN_LOGIN_REDIRECT_ACTION : ADMIN_NOACCESS_ACTION));
+}
+
 /**
  * Controller `secure()`: anonymous users go to the login form with a return URL, logged-in users back to the referrer.
  * @throws TypeError For an anonymous request carrying no registry domains, since the browser's Host is never trusted.

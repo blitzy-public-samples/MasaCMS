@@ -140,6 +140,35 @@ export function isUnavailable(value: unknown): boolean {
   return typeof status === 'number' && UNAVAILABLE_STATUSES.has(status);
 }
 
+/** The owning service answered 401 or 403; handlers answer it with the legacy access gate's redirect. */
+export class GatewayDenialError extends Error {
+  override readonly name: string = 'GatewayDenialError';
+
+  constructor(
+    readonly service: WebServiceName,
+    readonly operation: string,
+    readonly status: 401 | 403,
+  ) {
+    super(`${operation} answered HTTP ${status}`);
+  }
+}
+
+/** A facade answer as {@link okBody} reads it. */
+type CallResult<T> = { readonly ok: true; readonly body: T } | { readonly ok: false; readonly status: number };
+
+/**
+ * The 2xx body of `operation`'s answer from `service`.
+ * @throws GatewayDenialError For 401 or 403.
+ * @throws Error For any other non-2xx status.
+ */
+export function okBody<T>(response: CallResult<T>, service: WebServiceName, operation: string): T {
+  if (response.ok) return response.body;
+  if (response.status === 401 || response.status === 403) {
+    throw new GatewayDenialError(service, operation, response.status);
+  }
+  throw new Error(`${operation} answered HTTP ${response.status}`);
+}
+
 /** Web's invocation credential, minted by the auth runtime (local signer or Google ID token). */
 const webInvocationMinter: InvocationMinter = {
   async headersFor(target, opts) {
@@ -252,6 +281,7 @@ async function send<T>(
   service: WebServiceName,
   req: GatewayRequest,
   rawBody: boolean,
+  serviceClient: ServiceClient | undefined,
 ): Promise<GatewayResponse<T>> {
   const headers = lowerCased(req.headers);
   headers[REQUEST_ID_HEADER] = ctx.requestId;
@@ -274,7 +304,9 @@ async function send<T>(
   };
   let response: ServiceResponse<Buffer>;
   try {
-    response = await withInboundTrace(ctx.inbound, headers, () => processServiceClient().request<Buffer>(request));
+    response = await withInboundTrace(ctx.inbound, headers, () =>
+      (serviceClient ?? processServiceClient()).request<Buffer>(request),
+    );
   } catch (error) {
     if (error instanceof ServiceUnavailableError) throw new GatewayUnavailableError(service, undefined, error);
     throw error;
@@ -534,11 +566,11 @@ async function bytesOf(body: MultipartBody['body']): Promise<Buffer> {
   return body instanceof Uint8Array ? Buffer.from(body) : Buffer.from(await new Response(body).arrayBuffer());
 }
 
-/** The service calls of one web request, carrying its user token, request id and trace context. */
-export function createGatewayClient(ctx: GatewayCallContext): GatewayClient {
+/** The service calls of one web request (user token, request id, trace context), over `serviceClient` when given. */
+export function createGatewayClient(ctx: GatewayCallContext, serviceClient?: ServiceClient): GatewayClient {
   const core: CoreCalls = {
-    call: <T>(service: WebServiceName, request: GatewayRequest) => send<T>(ctx, service, request, false),
-    raw: (service, request) => send<Buffer>(ctx, service, request, true),
+    call: <T>(service: WebServiceName, request: GatewayRequest) => send<T>(ctx, service, request, false, serviceClient),
+    raw: (service, request) => send<Buffer>(ctx, service, request, true, serviceClient),
   };
   return {
     ...core,

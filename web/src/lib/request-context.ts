@@ -1,13 +1,21 @@
 // The legacy admin request context (FW/1 rc, admin session, site data and flags) every screen reads (server-only).
 import { isDeepStrictEqual } from 'node:util';
-import { Roles, hasAnyRole, isCoreModuleId, moduleRole, type UserClaims } from '@opt2/platform/auth';
+import {
+  AuthDenial,
+  Roles,
+  assertSiteMatches,
+  hasAnyRole,
+  isCoreModuleId,
+  moduleRole,
+  type UserClaims,
+} from '@opt2/platform/auth';
 import { cfEq, cfListToArray, fallbackSiteId, parseCookieHeader, setCookieLegacy } from '@opt2/platform/legacy-compat';
 import type { components as IdentityComponents } from '@/generated/clients/identity';
 import type { components as ProgramsSitesComponents } from '@/generated/clients/programs-sites';
 import type { WebAuth } from './auth';
 import { dateKeyFor, localeHasDayParts, type DateKey } from './dates';
 import { legacySettings } from './env';
-import type { GatewayClient } from './gateway-client';
+import { okBody, type GatewayClient } from './gateway-client';
 import { loadHrefDomains } from './href-domains';
 // CF2Java's full locale table lives with the resource bundles; it is reused here rather than duplicated.
 import { cf2Java } from './resource-bundles/rb';
@@ -176,7 +184,7 @@ export interface AdminRequest {
   readonly serverName: string;
   /** `cgi.http_host`. */
   readonly httpHost: string;
-  /** The session site's trusted sanitizeHref domains; loaded only for anonymous requests, whose gate reads them. */
+  /** Trusted sanitizeHref domains of the token's site, else the session site; loaded only for anonymous requests. */
   readonly hrefDomains?: HrefDomains;
 }
 
@@ -495,14 +503,6 @@ function hostName(host: string): string {
 
 const ANONYMOUS_USER: SessionUser = { isLoggedIn: false, userID: '' };
 
-type CallResult<T> = { readonly ok: true; readonly body: T } | { readonly ok: false; readonly status: number };
-
-/** The 2xx body of a service call; any other status fails the request. */
-function okBody<T>(response: CallResult<T>, operation: string): T {
-  if (response.ok) return response.body;
-  throw new Error(`${operation} answered HTTP ${response.status}`);
-}
-
 /** Session state identity holds: the user struct, the sites the user may administer and the stored admin values. */
 interface IdentitySession {
   readonly mura: SessionUser;
@@ -523,16 +523,17 @@ async function loadIdentitySession(
     auth.userToken === undefined ? undefined : gateway.identity.adminSessionState(),
   ]);
   return {
-    mura: current === undefined ? ANONYMOUS_USER : okBody(current, 'getCurrentSession').user,
-    sites: sites === undefined ? [] : okBody(sites, 'listCurrentSessionSites').sites,
-    adminState: adminState === undefined ? {} : okBody(adminState, 'getAdminSessionState'),
+    mura: current === undefined ? ANONYMOUS_USER : okBody(current, 'identity', 'getCurrentSession').user,
+    sites: sites === undefined ? [] : okBody(sites, 'identity', 'listCurrentSessionSites').sites,
+    adminState: adminState === undefined ? {} : okBody(adminState, 'identity', 'getAdminSessionState'),
   };
 }
 
 /**
  * Persists the request's session writes, `alerts` excepted (identity keeps them on the user struct), in one identity
  * call; sends nothing without a user token or a value to store.
- * @throws Error When identity answers a non-2xx status.
+ * @throws GatewayDenialError When identity answers 401 or 403.
+ * @throws Error When identity answers any other non-2xx status.
  */
 export async function saveSessionWrites(
   gateway: GatewayClient,
@@ -544,7 +545,7 @@ export async function saveSessionWrites(
   ) as Omit<AdminSessionWrites, 'alerts'>;
   const state: StoredAdminState = paramArray === undefined ? values : { ...values, paramArray: [...paramArray] };
   if (auth.userToken === undefined || Object.keys(state).length === 0) return;
-  okBody(await gateway.identity.saveAdminSessionState(state), 'saveAdminSessionState');
+  okBody(await gateway.identity.saveAdminSessionState(state), 'identity', 'saveAdminSessionState');
 }
 
 const objectEntries = (value: unknown): Array<[string, unknown]> =>
@@ -601,26 +602,32 @@ interface SiteLookup {
   readonly site?: SiteData;
 }
 
-/** A site as programs-sites reads it; undefined when it refuses this user the read. */
-async function readSite(
-  gateway: GatewayClient,
-  siteId: string,
-  defaultLocale: string,
-): Promise<SiteLookup | undefined> {
+/**
+ * A site as programs-sites reads it.
+ * @throws GatewayDenialError When programs-sites refuses this user the read (401 or 403).
+ */
+async function readSite(gateway: GatewayClient, siteId: string, defaultLocale: string): Promise<SiteLookup> {
   const response = await gateway.programsSites.getShellSite(siteId);
-  if (response.ok) {
-    const { isNew, site } = response.body;
-    return isNew === 1 ? { exists: false } : { exists: true, site: siteDataOf(site, defaultLocale) };
-  }
   // The contract rejects an id longer than a tsettings SiteID, which names no site.
-  if (response.status === 400) return { exists: false };
-  if (response.status === 401 || response.status === 403) return undefined;
-  throw new Error(`getShellSite answered HTTP ${response.status}`);
+  if (!response.ok && response.status === 400) return { exists: false };
+  const { isNew, site } = okBody(response, 'programs-sites', 'getShellSite');
+  return isNew === 1 ? { exists: false } : { exists: true, site: siteDataOf(site, defaultLocale) };
+}
+
+/** Whether services accept `siteId` under a token of `claims`, by the platform's case-insensitive site check. */
+function tokenServesSite(claims: Pick<UserClaims, 'site'>, siteId: string): boolean {
+  try {
+    assertSiteMatches(siteId, claims);
+    return true;
+  } catch (error) {
+    if (error instanceof AuthDenial) return false;
+    throw error;
+  }
 }
 
 // Services serve only the token's site, so any other site is known to exist only through the identity-computed site
 // list, and its locale falls back to the default locale.
-/** Per-request site lookups, each site read at most once. */
+/** Per-request site lookups, each site read at most once; a denied read rejects with GatewayDenialError. */
 function siteLookups(
   gateway: GatewayClient,
   canRead: (siteId: string) => boolean,
@@ -719,7 +726,10 @@ function initialSession(identity: IdentitySession, sessionHistory: number): Sess
   };
 }
 
-/** The admin request context legacy establishes before a controller or view runs. */
+/**
+ * The admin request context legacy establishes before a controller or view runs.
+ * @throws GatewayDenialError When identity or programs-sites answers 401 or 403.
+ */
 export async function buildAdminRequest(input: AdminRequestInput): Promise<AdminRequest> {
   const { headers, auth, gateway, mode } = input;
   const settings = legacySettings();
@@ -763,7 +773,8 @@ export async function buildAdminRequest(input: AdminRequestInput): Promise<Admin
 
   const lookup = siteLookups(
     gateway,
-    (siteId) => isLoggedIn && (isS2 || isSiteAdmin || roles.includes(Roles.systemUser)) && user?.site === siteId,
+    (siteId) =>
+      isLoggedIn && (isS2 || isSiteAdmin || roles.includes(Roles.systemUser)) && tokenServesSite(user, siteId),
     session.siteArray,
     settings.defaultLocale,
   );
@@ -798,9 +809,9 @@ export async function buildAdminRequest(input: AdminRequestInput): Promise<Admin
 
   const forwardedHost = listFirst(headers.get('x-forwarded-host') ?? '', ',').trim();
   const userAgent = headers.get('user-agent') ?? '';
-  // An empty session site means rc.siteid was not switched to; programs-sites, which knows every site, resolves it as
-  // legacy's set-up and getSite do: the named site when it exists, else `default`.
-  const hrefSiteId = session.siteid === '' ? rcSiteId : session.siteid;
+  // programs-sites serves only a presented token's site, and resolves an empty or unknown id to `default` as legacy's
+  // getSite does. Without a token, an empty session site means rc.siteid was not switched to, so that id is sent.
+  const hrefSiteId = user !== undefined ? user.site : session.siteid === '' ? rcSiteId : session.siteid;
   const hrefDomains = isLoggedIn ? undefined : await loadHrefDomains(gateway, hrefSiteId, forwardedHost);
   return {
     mode,

@@ -801,6 +801,39 @@ describe('setServiceClientForTests', () => {
     expect(fake.requests).toHaveLength(1);
   });
 
+  it('sends each client created with its own service client through that client alone', async () => {
+    const stubbed = (body: string) => {
+      const request = vi.fn<(req: ServiceRequest) => Promise<ServiceResponse>>(async () => ({
+        status: 200,
+        headers: { 'content-type': 'text/plain' },
+        body: Buffer.from(body),
+      }));
+      return { request, client: { request: request as ServiceClient['request'], close: () => Promise.resolve() } };
+    };
+    const first = stubbed('first');
+    const second = stubbed('second');
+    route('GET', 'people', '/v1/x', OK);
+    const firstClient = createGatewayClient(ANONYMOUS, first.client);
+    const secondClient = createGatewayClient({ requestId: 'req-second', inbound: {} }, second.client);
+
+    const answers = [
+      await secondClient.get('finance', '/v1/y'),
+      await firstClient.get('people', '/v1/x'),
+      await createGatewayClient(ANONYMOUS).get('people', '/v1/x'),
+      await firstClient.raw('people', { method: 'GET', path: '/v1/z' }),
+    ];
+
+    expect(answers.map(({ body }) => body)).toEqual(['second', 'first', { ok: true }, Buffer.from('first')]);
+    expect(first.request.mock.calls.map(([req]) => [req.path, req.headers])).toEqual([
+      ['/opt2/svc/people/v1/x', { [REQUEST_ID_HEADER]: 'req-anonymous' }],
+      ['/opt2/svc/people/v1/z', { [REQUEST_ID_HEADER]: 'req-anonymous' }],
+    ]);
+    expect(second.request.mock.calls.map(([req]) => [req.path, req.headers])).toEqual([
+      ['/opt2/svc/finance/v1/y', { [REQUEST_ID_HEADER]: 'req-second' }],
+    ]);
+    expect(fake.requests.map(requestLine)).toEqual(['GET /opt2/svc/people/v1/x']);
+  });
+
   it('keeps the client built at first use until reset, then rebuilds from the environment', async () => {
     route('GET', 'people', '/v1/x', OK);
     const refused = await startFakeGateway();

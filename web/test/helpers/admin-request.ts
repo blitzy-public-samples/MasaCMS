@@ -1,7 +1,9 @@
 // AdminRequest builders for gate, shell and screen tests: legacy post-set-up defaults, presets and the real builder path.
 import {
+  AuthDenial,
   LOCAL_USER_TOKEN,
   Roles,
+  assertSiteMatches,
   hasAnyRole,
   isCoreModuleId,
   moduleRole,
@@ -206,9 +208,21 @@ function claimFlags(user: UserClaims | undefined): ClaimFlags {
 const listsSites = (flags: ClaimFlags): boolean =>
   flags.isLoggedIn && hasAnyRole(flags.roles, [Roles.systemUser, Roles.s2]);
 
+/** Whether the platform's case-insensitive site check accepts `siteId` under `user`'s token. */
+function tokenServesSite(user: UserClaims | undefined, siteId: string): boolean {
+  if (user === undefined) return false;
+  try {
+    assertSiteMatches(siteId, user);
+    return true;
+  } catch (error) {
+    if (error instanceof AuthDenial) return false;
+    throw error;
+  }
+}
+
 /** Whether programs-sites serves `siteId` to the user, so the request carries its site data. */
 const readsSite = (user: UserClaims | undefined, flags: ClaimFlags, siteId: string): boolean =>
-  flags.isLoggedIn && (flags.isPrivateUser || flags.isSiteAdmin) && user?.site === siteId;
+  flags.isLoggedIn && (flags.isPrivateUser || flags.isSiteAdmin) && tokenServesSite(user, siteId);
 
 /** `session.mura` identity holds for `user`: the anonymous struct, or the user with loginByQuery's pool markers. */
 function sessionUserOf(user: UserClaims | undefined, flags: ClaimFlags): SessionUser {

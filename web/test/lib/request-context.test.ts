@@ -1,10 +1,11 @@
 // Tests of the legacy admin request set-up: FW/1 context, admin session, site data, cookies and request flags.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { INVOCATION_HEADER } from '@opt2/platform/auth';
+import { AuthDenial, INVOCATION_HEADER, assertSiteMatches } from '@opt2/platform/auth';
 import type { MintUserTokenInput } from '@opt2/platform/testing';
+import { secure } from '@/lib/access-gate';
 import { authenticateRequest, type WebAuth } from '@/lib/auth';
 import { resetLegacySettingsForTests } from '@/lib/env';
-import { GatewayUnavailableError } from '@/lib/gateway-client';
+import { GatewayDenialError, GatewayUnavailableError, type WebServiceName } from '@/lib/gateway-client';
 import {
   ORIGINAL_URL_HEADER,
   applyDefaults,
@@ -27,6 +28,7 @@ import {
   routeKey,
   type FakeGatewayClient,
   type FakeReply,
+  type FakeRoute,
   type FakeRouteTable,
 } from '../helpers/fake-gateway';
 import {
@@ -90,6 +92,22 @@ const TENANT_A_RECORD: SiteRecord = {
 };
 
 const siteReply = (record: SiteRecord, isNew: 0 | 1 = 0): FakeReply => ({ status: 200, body: { site: record, isNew } });
+
+/** `reply` behind programs-sites' site check: with a user token, a path or query `siteid` other than `site` gets 403. */
+function siteChecked(site: string, reply: FakeReply): FakeRoute {
+  return (request) => {
+    if (request.headers.authorization === undefined) return reply;
+    const shellSiteId = /\/v1\/sites\/([^/]+)\/shell$/.exec(request.path)?.[1];
+    const supplied = [shellSiteId === undefined ? [] : decodeURIComponent(shellSiteId), request.query['siteid'] ?? []];
+    try {
+      for (const siteid of supplied.flat()) assertSiteMatches(siteid, { site });
+    } catch (error) {
+      if (error instanceof AuthDenial) return { status: error.statusCode };
+      throw error;
+    }
+    return reply;
+  };
+}
 
 function sessionReply(subject: WebTestSubject, user: Partial<SessionUser>): FakeReply {
   return {
@@ -571,18 +589,51 @@ describe('buildAdminRequest', () => {
       expect(request.sessionWrites.alerts).toBeUndefined();
     });
 
-    it.each<[string, FakeRouteTable, WebTestSubjectKey, string]>([
-      ['a refused session', { [CURRENT_SESSION]: { status: 401 } }, 'admin', 'getCurrentSession answered HTTP 401'],
+    it.each<[string, FakeRouteTable, WebTestSubjectKey, WebServiceName, string, 401 | 403]>([
+      ['a refused session', { [CURRENT_SESSION]: { status: 401 } }, 'admin', 'identity', 'getCurrentSession', 401],
       [
         'a refused site list',
         { [SESSION_SITES]: { status: 403 } },
         'qaEditor',
-        'listCurrentSessionSites answered HTTP 403',
+        'identity',
+        'listCurrentSessionSites',
+        403,
       ],
-      ['a refused admin state', { [ADMIN_STATE]: { status: 401 } }, 'member', 'getAdminSessionState answered HTTP 401'],
-      ['a failing site read', { [siteRoute('default')]: { status: 500 } }, 'admin', 'getShellSite answered HTTP 500'],
-    ])('fails on %s', async (_label, routes, subject, message) => {
-      await expect(build({ subject, routes, target: '/admin/?siteid=default' })).rejects.toThrow(message);
+      ['a refused admin state', { [ADMIN_STATE]: { status: 401 } }, 'member', 'identity', 'getAdminSessionState', 401],
+      [
+        'an unauthenticated site read',
+        { [siteRoute('default')]: { status: 401 } },
+        'admin',
+        'programs-sites',
+        'getShellSite',
+        401,
+      ],
+      [
+        'a forbidden site read',
+        { [siteRoute('default')]: { status: 403 } },
+        'admin',
+        'programs-sites',
+        'getShellSite',
+        403,
+      ],
+    ])('raises a GatewayDenialError on %s', async (_label, routes, subject, service, operation, status) => {
+      const built = build({ subject, routes, target: '/admin/?siteid=default' });
+
+      await expect(built).rejects.toBeInstanceOf(GatewayDenialError);
+      await expect(built).rejects.toMatchObject({
+        name: 'GatewayDenialError',
+        service,
+        operation,
+        status,
+        message: `${operation} answered HTTP ${status}`,
+      });
+    });
+
+    it('fails on a failing site read', async () => {
+      const built = build({ routes: { [siteRoute('default')]: { status: 500 } }, target: '/admin/?siteid=default' });
+
+      await expect(built).rejects.toThrow('getShellSite answered HTTP 500');
+      await expect(built).rejects.not.toBeInstanceOf(GatewayDenialError);
     });
 
     it('fails closed when the gateway is unavailable', async () => {
@@ -759,11 +810,27 @@ describe('buildAdminRequest', () => {
       expect(request.session).toMatchObject({ siteid: 'default', locale: 'en_US', dateKeyFormat: 'MM/DD/YYYY' });
     });
 
+    it.each<[string, string, FakeRouteTable]>([
+      ['a requested spelling', '/admin/?siteid=TENANT-A', {}],
+      ['a stored spelling', '/admin/', { [ADMIN_STATE]: { status: 200, body: { siteid: 'TENANT-A' } } }],
+    ])("reads the token's site under %s in another case", async (_label, target, routes) => {
+      const { request, gateway } = await build({
+        subject: 'qaEditor',
+        claims: { site: 'tenant-a' },
+        target,
+        routes: { ...routes, [siteRoute('TENANT-A')]: siteChecked('tenant-a', siteReply(TENANT_A_RECORD)) },
+      });
+
+      expect(callsOf(gateway).filter((call) => call.startsWith('programs-sites'))).toEqual([
+        'programs-sites /v1/sites/TENANT-A/shell',
+      ]);
+      expect(request.site).toMatchObject({ siteid: 'tenant-a', javaLocale: 'de_DE', record: TENANT_A_RECORD });
+      expect(request.session).toMatchObject({ siteid: 'TENANT-A', locale: 'de_DE', dateKeyFormat: 'DD.MM.YYYY' });
+    });
+
     it.each<[string, FakeReply, string]>([
       ['a new site', siteReply({ SiteID: 'default' }, 1), ''],
       ['a rejected id', { status: 400 }, ''],
-      ['an unauthenticated read', { status: 401 }, 'default'],
-      ['a forbidden read', { status: 403 }, 'default'],
     ])('reads existence of %s', async (_label, reply, siteid) => {
       const { request, gateway } = await build({
         target: '/admin/?siteid=default',
@@ -806,6 +873,39 @@ describe('buildAdminRequest', () => {
         frontEndProxyLoc: 'https://www.example.test',
       });
       expect(request.session).toMatchObject({ moduleid: USERS_MODULE, frontEndProxyLoc: 'https://www.example.test' });
+    });
+  });
+
+  describe('registry domains of an anonymous-session token', () => {
+    it.each<[string, string, string]>([
+      ['a requested site the stored session site differs from', 'default', 'tenant-a'],
+      ['a stored session site the requested site differs from', 'tenant-a', 'default'],
+    ])("asks programs-sites for the token's site over %s", async (_label, storedSiteId, tokenSiteId) => {
+      const domains = { allowedDomains: ['localhost', `${tokenSiteId}.example`], siteDomain: `${tokenSiteId}.example` };
+      const { request, gateway } = await build({
+        subject: 'member',
+        claims: { sub: '', site: tokenSiteId },
+        user: { isLoggedIn: false, userID: '' },
+        target: `/admin/?muraAction=cusers.list&siteid=${tokenSiteId}`,
+        headers: { 'x-forwarded-host': 'evil.example' },
+        routes: {
+          [ADMIN_STATE]: { status: 200, body: { siteid: storedSiteId } },
+          [HREF_DOMAINS]: siteChecked(tokenSiteId, { status: 200, body: domains }),
+        },
+      });
+
+      expect(request.isLoggedIn).toBe(false);
+      expect(request.session.siteid).toBe(storedSiteId);
+      expect(gateway.calls.filter(({ path }) => path === '/v1/href-domains')).toEqual([
+        expect.objectContaining({ query: { siteid: tokenSiteId } }),
+      ]);
+      expect(request.hrefDomains).toEqual(domains);
+      expect(secure(request)).toEqual({
+        kind: 'redirect',
+        location: expect.stringMatching(
+          new RegExp(`^\\./\\?muraAction=cLogin\\.main&returnURL=http%3A%2F%2F${tokenSiteId}\\.example%2Fadmin%2F`),
+        ),
+      });
     });
   });
 
@@ -1163,14 +1263,29 @@ describe('admin session state', () => {
 
     it.each<[number, string | typeof GatewayUnavailableError]>([
       [400, 'saveAdminSessionState answered HTTP 400'],
-      [401, 'saveAdminSessionState answered HTTP 401'],
       [500, 'saveAdminSessionState answered HTTP 500'],
       [503, GatewayUnavailableError],
     ])('fails on an HTTP %i answer', async (status, error) => {
       const auth = await authFor(SUBJECTS.qaEditor);
       const gateway = fakeGatewayClient({ [SAVE_ADMIN_STATE]: { status } }, { userToken: auth.userToken });
+      const saved = saveSessionWrites(gateway, auth, { siteid: 'default' });
 
-      await expect(saveSessionWrites(gateway, auth, { siteid: 'default' })).rejects.toThrow(error);
+      await expect(saved).rejects.toThrow(error);
+      await expect(saved).rejects.not.toBeInstanceOf(GatewayDenialError);
+    });
+
+    it.each<401 | 403>([401, 403])('raises a GatewayDenialError on an HTTP %i answer', async (status) => {
+      const auth = await authFor(SUBJECTS.qaEditor);
+      const gateway = fakeGatewayClient({ [SAVE_ADMIN_STATE]: { status } }, { userToken: auth.userToken });
+      const saved = saveSessionWrites(gateway, auth, { siteid: 'default' });
+
+      await expect(saved).rejects.toBeInstanceOf(GatewayDenialError);
+      await expect(saved).rejects.toMatchObject({
+        service: 'identity',
+        operation: 'saveAdminSessionState',
+        status,
+        message: `saveAdminSessionState answered HTTP ${status}`,
+      });
     });
   });
 });

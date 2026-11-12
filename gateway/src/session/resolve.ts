@@ -282,6 +282,17 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
     return session(adopted.sessionId, adopted.epoch, 'target-primary', row, reissue(cookies, adopted.setCookie));
   }
 
+  /** Target-primary adoption of the legacy session describe attaches, or opens when the cookies attach none. */
+  async function openIntoTarget(request: SessionRequestInput, siteId: string | undefined): Promise<SessionResolution> {
+    const described = await describeSession(request, requestCookies(request));
+    const observed = absorbLegacySetCookies(described.setCookies).sessionCookies;
+    const cookies = { ...requestCookies(request, observed), ...observed };
+    const adoption = await adopt(request, liveCookies(cookies), described.body, cookies, 'target-primary', siteId);
+    if (adoption === undefined) return none();
+    const { adopted, row } = adoption;
+    return session(adopted.sessionId, adopted.epoch, 'target-primary', row, reissue(cookies, adopted.setCookie));
+  }
+
   /** Sessionless REST: identity applies legacy's credential rules and may answer on legacy's behalf. */
   async function restSession(
     request: SessionRequestInput,
@@ -303,11 +314,11 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
     return check.state === 'active' ? session(outcome.sessionId, check.epoch, mode, undefined, []) : none();
   }
 
-  /** Target-primary: identity-issued cookies name the session; legacy cookies opened before cut-over are adopted. */
+  /** Target-primary: identity-issued cookies name the session; otherwise describe's legacy session is adopted. */
   async function targetPrimarySession(request: SessionRequestInput, siteId: string | undefined) {
     const found = await targetSession(request);
     if (found !== undefined) return session(found.sessionId, found.epoch, 'target-primary', found.row, []);
-    return adoptIntoTarget(request, siteId);
+    return openIntoTarget(request, siteId);
   }
 
   /**

@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, renderCsrfFields } from '@opt2/platform/legacy-compat';
 import type { components } from '@/generated/clients/identity';
 import { createCsrfRenderer, type CsrfFormat, type CsrfTokens } from '@/lib/csrf';
-import { GatewayUnavailableError } from '@/lib/gateway-client';
+import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-client';
 import { toString } from '@/lib/html';
 import { CSRF_BY_CONTEXT, CSRF_LOGIN, CSRF_UPDATECORE } from '../fixtures/identity/csrf';
 import {
@@ -174,12 +174,17 @@ describe('createCsrfRenderer tokens', () => {
     );
   });
 
-  it('rejects when identity refuses the call', async () => {
+  it('rejects with GatewayDenialError when identity refuses the call', async () => {
     const gateway = fakeGatewayClient({ [ISSUE_TOKENS]: issueFrom(CSRF_BY_CONTEXT) });
 
-    await expect(createCsrfRenderer(gateway).tokens('login')).rejects.toThrow(
-      'identity issueCsrfTokens answered HTTP 401',
-    );
+    const rejected = createCsrfRenderer(gateway).tokens('login');
+    await expect(rejected).rejects.toBeInstanceOf(GatewayDenialError);
+    await expect(rejected).rejects.toMatchObject({
+      service: 'identity',
+      operation: 'issueCsrfTokens',
+      status: 401,
+      message: 'issueCsrfTokens answered HTTP 401',
+    });
   });
 
   it('rejects when identity issues no pair for the context', async () => {

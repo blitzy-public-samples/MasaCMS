@@ -1,27 +1,28 @@
-// Fakes of web's only outbound path, the gateway relay: a loopback HTTP server and an in-memory GatewayClient.
+// Fakes of web's only outbound path, the gateway relay: a loopback HTTP server, and the production GatewayClient
+// over an in-memory platform client.
 import { readFileSync } from 'node:fs';
 import { createServer, type IncomingHttpHeaders, type IncomingMessage } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { REQUEST_ID_HEADER } from '@opt2/platform/service-kit';
+import { INVOCATION_HEADER } from '@opt2/platform/auth';
+import {
+  REQUEST_ID_HEADER,
+  ServiceUnavailableError,
+  type ServiceClient,
+  type ServiceRequest,
+  type ServiceResponse,
+} from '@opt2/platform/service-kit';
 import { GATEWAY_SERVICE_PREFIX } from '@/lib/env';
 import {
-  GatewayUnavailableError,
-  type FormInput,
+  WEB_SERVICE_NAMES,
+  createGatewayClient,
   type GatewayClient,
-  type GatewayRequest,
-  type GatewayResponse,
   type HttpMethod,
-  type IdentityFacade,
-  type MultipartBody,
-  type ProgramsSitesFacade,
-  type QueryInput,
   type ServicePath,
   type WebServiceName,
 } from '@/lib/gateway-client';
 
 const JSON_CONTENT_TYPE = 'application/json;charset=utf-8';
 const FORM_CONTENT_TYPE = 'application/x-www-form-urlencoded';
-const UNAVAILABLE_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
 // Request targets are origin-form; the base only lets URL parse them.
 const TARGET_BASE = 'http://fake-gateway.invalid';
 
@@ -257,96 +258,6 @@ export type FakeGatewayClient = GatewayClient & {
   reset(): void;
 };
 
-type LowerMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
-
-const HTTP_METHODS: Readonly<Record<LowerMethod, HttpMethod>> = {
-  get: 'GET',
-  post: 'POST',
-  put: 'PUT',
-  patch: 'PATCH',
-  delete: 'DELETE',
-};
-
-type CoreCalls = Pick<GatewayClient, 'call' | 'raw'>;
-
-interface FacadeInput {
-  readonly params?: Readonly<Record<string, unknown>>;
-  readonly query?: QueryInput;
-  readonly json?: unknown;
-  readonly form?: FormInput;
-  readonly body?: Buffer | string;
-  readonly headers?: Readonly<Record<string, string>>;
-}
-
-// The helpers below mirror the private request encoding of `@/lib/gateway-client`, so in-memory calls match the wire.
-
-function isQueryObject(value: unknown): value is Readonly<Record<string, string | number | boolean>> {
-  return typeof value === 'object' && !Array.isArray(value);
-}
-
-function queryParams(query: QueryInput): URLSearchParams {
-  if (query instanceof URLSearchParams) return query;
-  const params = new URLSearchParams();
-  for (const [name, value] of Object.entries(query)) {
-    if (value === null || value === undefined) continue;
-    if (isQueryObject(value)) {
-      for (const [key, item] of Object.entries(value)) params.append(key, String(item));
-    } else {
-      for (const item of [value].flat()) params.append(name, String(item));
-    }
-  }
-  return params;
-}
-
-function withQuery(path: string, query: QueryInput | undefined): string {
-  const search = query === undefined ? '' : queryParams(query).toString();
-  return search === '' ? path : `${path}${path.includes('?') ? '&' : '?'}${search}`;
-}
-
-function encodeForm(form: FormInput): string {
-  const entries: Iterable<readonly [string, unknown]> =
-    Symbol.iterator in form
-      ? (form as Iterable<readonly [string, unknown]>)
-      : Object.entries(form).flatMap(([name, value]) => [value].flat().map((item): [string, string] => [name, item]));
-  const params = new URLSearchParams();
-  for (const [name, value] of entries) {
-    if (typeof value !== 'string') throw new TypeError(`Form field ${name} is a file; send it with postMultipart`);
-    params.append(name, value);
-  }
-  return params.toString();
-}
-
-function fillPath(template: ServicePath, params: Readonly<Record<string, unknown>> = {}): ServicePath {
-  return template.replace(/\{([^}]+)\}/g, (_segment, name: string) => {
-    const value = params[name];
-    if (value === undefined || value === null) throw new TypeError(`Missing path parameter ${name} of ${template}`);
-    return encodeURIComponent(String(value));
-  }) as ServicePath;
-}
-
-function facadeRequest(method: LowerMethod, path: ServicePath, input: FacadeInput = {}): GatewayRequest {
-  const { params, ...parts } = input;
-  return { ...parts, method: HTTP_METHODS[method], path: fillPath(path, params) };
-}
-
-async function bytesOf(body: MultipartBody['body']): Promise<Buffer> {
-  return body instanceof Uint8Array ? Buffer.from(body) : Buffer.from(await new Response(body).arrayBuffer());
-}
-
-/** The body as the platform service client decodes it: JSON parsed, `text/*` as UTF-8, anything else a Buffer. */
-function decodeBody(bytes: Buffer, contentType: string | string[] | undefined): unknown {
-  const type = mediaType(contentType);
-  if (isJsonType(type)) {
-    if (bytes.length === 0) return undefined;
-    try {
-      return JSON.parse(bytes.toString('utf8')) as unknown;
-    } catch (error) {
-      throw new Error('Service gateway (called by web) answered with invalid JSON', { cause: error });
-    }
-  }
-  return type.startsWith('text/') ? bytes.toString('utf8') : bytes;
-}
-
 /** Response headers as undici reports them: a header sent once is a string, a repeated one an array. */
 function receivedHeaders(headers: Record<string, string | string[]>): Record<string, string | string[]> {
   const result: Record<string, string | string[]> = {};
@@ -357,43 +268,45 @@ function receivedHeaders(headers: Record<string, string | string[]>): Record<str
   return result;
 }
 
-/** A contract-typed facade of `service` over `core`. */
-function serviceFacade<F>(core: CoreCalls, service: WebServiceName): F {
-  const untyped = {
-    service,
-    call: async (method: LowerMethod, path: ServicePath, input?: FacadeInput) =>
-      core.call(service, facadeRequest(method, path, input)),
-    raw: async (method: LowerMethod, path: ServicePath, input?: FacadeInput) =>
-      core.raw(service, facadeRequest(method, path, input)),
-  };
-  // As in gateway-client: the contract types constrain callers; at runtime every operation is the same request shape.
-  return untyped as unknown as F;
+const RELAY_PREFIX = `${GATEWAY_SERVICE_PREFIX}/`;
+
+/** The relayed service named by the first segment of `path` under the gateway's service prefix. */
+function relayedService(path: string): WebServiceName {
+  const name = path.startsWith(RELAY_PREFIX) ? path.slice(RELAY_PREFIX.length).split('/')[0] : undefined;
+  const service = WEB_SERVICE_NAMES.find((known) => known === name);
+  if (service === undefined) throw new TypeError(`${path} is not a gateway service path`);
+  return service;
 }
 
-function identityFacade(core: CoreCalls): IdentityFacade {
-  const facade = serviceFacade<Pick<IdentityFacade, 'service' | 'call' | 'raw'>>(core, 'identity');
-  return {
-    ...facade,
-    currentSession: () => facade.call('get', '/v1/sessions/current'),
-    sessionSites: () => facade.call('get', '/v1/sessions/current/sites'),
-    adminSessionState: () => facade.call('get', '/v1/sessions/current/admin-state'),
-    saveAdminSessionState: (state) => facade.call('post', '/v1/sessions/current/admin-state', { json: state }),
-    csrfTokens: (contexts) => facade.call('post', '/v1/csrf/tokens', { json: { contexts } }),
-  };
+/** `req` as the gateway receives it from the platform client, which mints no invocation credential here. */
+function receivedRequest(req: ServiceRequest): RecordedRequest {
+  if (req.query !== undefined || req.form !== undefined) {
+    throw new TypeError('Web sends its query in the path and its form as the body');
+  }
+  const headers = lowerCased(req.headers);
+  if (headers[REQUEST_ID_HEADER] === '') delete headers[REQUEST_ID_HEADER];
+  delete headers[INVOCATION_HEADER];
+  if (typeof req.userToken === 'string') headers.authorization = `Bearer ${req.userToken}`;
+  else delete headers.authorization;
+  let body = req.body;
+  if (req.json !== undefined) {
+    headers['content-type'] = 'application/json';
+    body = JSON.stringify(req.json);
+  }
+  const bytes = typeof body === 'string' ? Buffer.from(body, 'utf8') : (body ?? Buffer.alloc(0));
+  return recordRequest(req.method, req.path, headers, bytes);
 }
 
-function programsSitesFacade(core: CoreCalls): ProgramsSitesFacade {
-  const facade = serviceFacade<Pick<ProgramsSitesFacade, 'service' | 'call' | 'raw'>>(core, 'programs-sites');
-  return {
-    ...facade,
-    listSites: (query) => facade.call('get', '/v1/sites', { query }),
-    getSite: (siteId) => facade.call('get', '/v1/sites/{siteId}', { params: { siteId } }),
-    getShellSite: (siteId) => facade.call('get', '/v1/sites/{siteId}/shell', { params: { siteId } }),
-    hrefDomains: (siteid) => facade.call('get', '/v1/href-domains', { query: { siteid } }),
-  };
+/** Headers of `req` the caller set: without the request id and a form body's content type, which web adds. */
+function callerHeaders(req: ServiceRequest): Record<string, string> {
+  const headers = lowerCased(req.headers);
+  delete headers[REQUEST_ID_HEADER];
+  const formBody = req.json === undefined && typeof req.body === 'string';
+  if (formBody && headers['content-type'] === FORM_CONTENT_TYPE) delete headers['content-type'];
+  return headers;
 }
 
-/** An in-memory `GatewayClient` answering from `routes` with the HTTP fake's keys and replies; nothing is sent. */
+/** The production `GatewayClient` over its own in-memory platform client answering `routes`; nothing is sent. */
 export function fakeGatewayClient(
   routes: FakeRouteTable = {},
   options: FakeGatewayClientOptions = {},
@@ -402,85 +315,42 @@ export function fakeGatewayClient(
   const calls: FakeCall[] = [];
   let failure: { readonly error?: Error } | undefined;
 
-  /** Records one call, then answers it as the real client would: 502, 503 and 504 throw, every other status returns. */
-  async function dispatch<T>(service: WebServiceName, req: GatewayRequest, raw: boolean): Promise<GatewayResponse<T>> {
-    const headers = lowerCased(req.headers);
-    if (options.requestId !== undefined) headers[REQUEST_ID_HEADER] = options.requestId;
-    // As on the wire, caller-set credentials never pass: `authorization` is the call's user token or absent.
-    delete headers['x-serverless-authorization'];
-    if (options.userToken === undefined) delete headers.authorization;
-    else headers.authorization = `Bearer ${options.userToken}`;
-    let body = req.body;
-    if (req.json !== undefined) {
-      headers['content-type'] = 'application/json';
-      body = JSON.stringify(req.json);
-    } else if (req.form !== undefined) {
-      headers['content-type'] = FORM_CONTENT_TYPE;
-      body = encodeForm(req.form);
-    }
-    const prefix = `${GATEWAY_SERVICE_PREFIX}/${service}`;
-    const request = recordRequest(
-      req.method,
-      withQuery(`${prefix}${req.path}`, req.query),
-      headers,
-      typeof body === 'string' ? Buffer.from(body, 'utf8') : (body ?? Buffer.alloc(0)),
-    );
-    calls.push({
-      service,
-      method: req.method,
-      path: request.path.slice(prefix.length),
-      ...(Object.keys(request.query).length > 0 ? { query: request.query } : {}),
-      ...(req.json !== undefined ? { json: req.json } : {}),
-      ...(request.form !== undefined ? { form: request.form } : {}),
-      ...(req.headers !== undefined ? { headers: lowerCased(req.headers) } : {}),
-      ...(options.userToken !== undefined ? { userToken: options.userToken } : {}),
-      ...(options.requestId !== undefined ? { requestId: options.requestId } : {}),
-    });
-
-    if (failure !== undefined) throw failure.error ?? new GatewayUnavailableError(service);
-    const reply = await answer(table, request);
-    if (UNAVAILABLE_STATUSES.has(reply.status)) throw new GatewayUnavailableError(service, reply.status);
-    const replyHeaders = receivedHeaders(reply.headers);
-    const cookies = reply.headers['set-cookie'];
-    const location = replyHeaders.location;
-    return {
-      status: reply.status,
-      ok: reply.status >= 200 && reply.status < 300,
-      headers: replyHeaders,
-      body: (raw ? reply.bytes : decodeBody(reply.bytes, replyHeaders['content-type'])) as T,
-      setCookies: cookies === undefined ? [] : [cookies].flat(),
-      location: Array.isArray(location) ? location[0] : location,
-    };
-  }
-
-  const core: CoreCalls = {
-    call: <T>(service: WebServiceName, request: GatewayRequest) => dispatch<T>(service, request, false),
-    raw: (service, request) => dispatch<Buffer>(service, request, true),
+  const transport: ServiceClient = {
+    /** Records the call, then answers it from `table` with the bytes web's raw-body requests ask for. */
+    async request<T>(req: ServiceRequest): Promise<ServiceResponse<T>> {
+      const request = receivedRequest(req);
+      const service = relayedService(request.path);
+      const headers = callerHeaders(req);
+      calls.push({
+        service,
+        method: req.method,
+        path: request.path.slice(`${RELAY_PREFIX}${service}`.length),
+        ...(Object.keys(request.query).length > 0 ? { query: request.query } : {}),
+        ...(req.json !== undefined ? { json: req.json } : {}),
+        ...(request.form !== undefined ? { form: request.form } : {}),
+        ...(Object.keys(headers).length > 0 ? { headers } : {}),
+        ...(options.userToken !== undefined ? { userToken: options.userToken } : {}),
+        ...(options.requestId !== undefined ? { requestId: options.requestId } : {}),
+      });
+      if (failure !== undefined) {
+        const refused = Object.assign(new Error('connect ECONNREFUSED (fake gateway)'), { code: 'ECONNREFUSED' });
+        throw failure.error ?? new ServiceUnavailableError('gateway', refused);
+      }
+      const reply = await answer(table, request);
+      return { status: reply.status, headers: receivedHeaders(reply.headers), body: reply.bytes as unknown as T };
+    },
+    // Nothing to release: the transport holds no connection.
+    close: () => Promise.resolve(),
   };
 
+  // An absent request id travels as '', which `receivedRequest` drops, so none is recorded.
+  const client = createGatewayClient(
+    { userToken: options.userToken, requestId: options.requestId ?? '', inbound: {} },
+    transport,
+  );
+
   return {
-    ...core,
-    get: (service, path, opts = {}) => core.call(service, { ...opts, method: 'GET', path }),
-    post: (service, path, json, opts = {}) => core.call(service, { ...opts, method: 'POST', path, json }),
-    postForm: (service, path, form, opts = {}) => core.call(service, { ...opts, method: 'POST', path, form }),
-    postMultipart: async (service, path, multipart, opts = {}) =>
-      core.call(service, {
-        ...opts,
-        method: 'POST',
-        path,
-        headers: { ...opts.headers, 'content-type': multipart.contentType },
-        body: await bytesOf(multipart.body),
-      }),
-    identity: identityFacade(core),
-    people: serviceFacade<GatewayClient['people']>(core, 'people'),
-    programsSites: programsSitesFacade(core),
-    strategiesContent: serviceFacade<GatewayClient['strategiesContent']>(core, 'strategies-content'),
-    communications: serviceFacade<GatewayClient['communications']>(core, 'communications'),
-    reporting: serviceFacade<GatewayClient['reporting']>(core, 'reporting'),
-    surveys: serviceFacade<GatewayClient['surveys']>(core, 'surveys'),
-    timesheets: serviceFacade<GatewayClient['timesheets']>(core, 'timesheets'),
-    finance: serviceFacade<GatewayClient['finance']>(core, 'finance'),
-    eSignature: serviceFacade<GatewayClient['eSignature']>(core, 'e-signature'),
+    ...client,
     calls,
     setRoute: (key, route) => {
       table.set(key, route);
@@ -495,4 +365,3 @@ export function fakeGatewayClient(
     },
   };
 }
-

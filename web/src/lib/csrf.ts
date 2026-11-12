@@ -1,7 +1,7 @@
 // Legacy `renderCSRFTokens` output on reproduced admin screens, over token pairs identity issues (server-only).
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, renderCsrfFields, type CsrfTokens } from '@opt2/platform/legacy-compat';
 import type { components } from '@/generated/clients/identity';
-import type { GatewayClient } from './gateway-client';
+import { okBody, type GatewayClient } from './gateway-client';
 import { raw, type SafeHtml } from './html';
 
 export type { CsrfTokens };
@@ -27,12 +27,14 @@ export interface CsrfRenderer {
 
 type IssuedTokens = components['schemas']['CsrfTokenSet']['tokens'][number];
 
-/** The pairs identity issues for `contexts`, keyed by context; unavailability propagates as `GatewayUnavailableError`. */
+/**
+ * The pairs identity issues for `contexts`, keyed by context; unavailability propagates as `GatewayUnavailableError`.
+ * @throws GatewayDenialError When identity answers 401 or 403.
+ */
 async function issue(gateway: GatewayClient, contexts: readonly string[]): Promise<ReadonlyMap<string, CsrfTokens>> {
-  const response = await gateway.identity.csrfTokens([...contexts]);
-  if (!response.ok) throw new Error(`identity issueCsrfTokens answered HTTP ${response.status}`);
+  const { tokens } = okBody(await gateway.identity.csrfTokens([...contexts]), 'identity', 'issueCsrfTokens');
   return new Map(
-    response.body.tokens.map((issued: IssuedTokens): [string, CsrfTokens] => [
+    tokens.map((issued: IssuedTokens): [string, CsrfTokens] => [
       issued.context,
       { token: issued[CSRF_FIELD_TOKEN], expires: issued[CSRF_FIELD_EXPIRES] },
     ]),

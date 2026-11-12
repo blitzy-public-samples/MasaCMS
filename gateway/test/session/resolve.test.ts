@@ -364,29 +364,50 @@ describe('target-primary target-bound requests', () => {
     );
   });
 
-  it('does not adopt a session ColdFusion created while describing', async () => {
-    const s = setup({
-      describe: () => ({
-        body: describeBody('NEW'),
-        setCookies: [setCookieLegacy({ name: 'JSESSIONID', value: 'NEW-J' })],
-      }),
-    });
-    expect(
-      await s.resolver.resolveSession(request('JSESSIONID=STALE'), { family: 'api', mode: 'target-primary' }),
-    ).toEqual({
-      kind: 'none',
-      setCookies: [],
-    });
-    expect(s.calls).toEqual(['check:STALE', 'describe']);
-  });
+  /** ColdFusion's describe answer when the cookies attach no session: new session cookies and a non-session one. */
+  const opened = [
+    setCookieLegacy({ name: 'CFID', value: 'N-CFID', expires: 'never' }, {}, NOW),
+    setCookieLegacy({ name: 'CFTOKEN', value: 'N-CFTOKEN', expires: 'never' }, {}, NOW),
+    'MXP_TRACKINGID=TRACK-1;expires=Tue, 30-Jun-2076 12:00:00 GMT;path=/;',
+  ];
+  const tail = (setCookie: string | undefined = '') => setCookie.slice(setCookie.indexOf(';') + 1);
 
-  it('a request without session cookies has no session and calls nobody', async () => {
-    const s = setup();
-    expect(await s.resolver.resolveSession(request('MXP=1'), { family: 'admin', mode: 'target-primary' })).toEqual({
-      kind: 'none',
-      setCookies: [],
+  it.each<[string, string, JarCookies, string[], string | undefined]>([
+    ['no session cookies', 'MXP=1', {}, [], undefined],
+    ['a stale JSESSIONID', 'JSESSIONID=STALE; MXP=1', cookie('JSESSIONID', 'STALE'), ['check:STALE'], undefined],
+    [
+      'a stale CFID and CFTOKEN',
+      'CFID=S-CFID; CFTOKEN=S-CFTOKEN',
+      { ...cookie('CFID', 'S-CFID'), ...cookie('CFTOKEN', 'S-CFTOKEN') },
+      [],
+      'tenant-a',
+    ],
+  ])('adopts the session ColdFusion opens for a request with %s', async (_label, header, sent, checks, siteId) => {
+    const s = setup({ describe: () => ({ body: describeBody('NEW'), setCookies: opened }) });
+    const resolution = asSession(
+      await s.resolver.resolveSession(request(header), { family: 'admin', mode: 'target-primary', siteId }),
+    );
+
+    expect(resolution).toMatchObject({ sessionId: ADOPTED_ID, epoch: ADOPTED_EPOCH, mode: 'target-primary' });
+    expect(s.calls).toEqual([...checks, 'describe', 'jar.find', 'adopt', 'jar.rebind']);
+    expect(s.described).toEqual([{ cookies: sent, userAgent: 'Mozilla/5.0' }]);
+    expect(s.adopted).toEqual([{ describe: describeBody('NEW'), siteId: siteId ?? 'default' }]);
+    const row = s.rows.get(ADOPTED_ID);
+    expect(row).toMatchObject({ legacySessionId: 'NEW', mode: 'target-primary', hydratedEpoch: ADOPTED_EPOCH });
+    expect(row?.cookies).toEqual({
+      ...sent,
+      ...cookie('CFID', 'N-CFID', tail(opened[0])),
+      ...cookie('CFTOKEN', 'N-CFTOKEN', tail(opened[1])),
     });
-    expect(s.calls).toEqual([]);
+    expect(resolution.legacyCookies).toEqual(row?.cookies);
+    expect([...resolution.setCookies].sort()).toEqual(
+      [
+        opened[0]?.replace('N-CFID', 'T-CFID'),
+        opened[1]?.replace('N-CFTOKEN', 'T-CFTOKEN'),
+        setCookieLegacy({ name: 'JSESSIONID', value: ADOPTED_ID }),
+      ].sort(),
+    );
+    expect(resolution.setCookies.join('\n')).not.toMatch(/N-CFID|N-CFTOKEN|S-CF|STALE|MXP_TRACKINGID/);
   });
 });
 

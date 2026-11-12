@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { secure } from '@/lib/access-gate';
 import { resetLegacySettingsForTests } from '@/lib/env';
+import { GatewayDenialError } from '@/lib/gateway-client';
 import { ORIGINAL_URL_HEADER, type AdminRequest } from '@/lib/request-context';
 import type { HrefDomains } from '@/lib/urls';
 import { adminS2Request, anonymousRequest, buildTestAdminRequest } from '../helpers/admin-request';
@@ -173,12 +174,17 @@ describe('secure() of an anonymous request', () => {
     expect(() => secure(request)).toThrow(TypeError);
   });
 
-  it('fails the request when programs-sites refuses the read', async () => {
+  it('raises a GatewayDenialError when programs-sites refuses the read', async () => {
     const gateway = fakeGatewayClient({ [HREF_DOMAINS]: { status: 403 } });
 
-    await expect(buildTestAdminRequest({ circuit: 'cusers', action: 'list', gateway })).rejects.toThrow(
-      'getHrefDomains answered HTTP 403',
-    );
+    const built = buildTestAdminRequest({ circuit: 'cusers', action: 'list', gateway });
+    await expect(built).rejects.toBeInstanceOf(GatewayDenialError);
+    await expect(built).rejects.toMatchObject({
+      service: 'programs-sites',
+      operation: 'getHrefDomains',
+      status: 403,
+      message: 'getHrefDomains answered HTTP 403',
+    });
   });
 });
 
