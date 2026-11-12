@@ -1,0 +1,143 @@
+<div id="mura-login">
+
+	<div class="block mura-focus-block animated"  id="mura-login-panel">
+
+		
+  <div class="focus-block-header">
+  	<img src="/admin/assets/images/masa-logo-black@2x.png" class="mura-logo">
+  </div><!-- /focus-block-header -->
+
+
+		<div class="block-content">
+
+				
+
+				
+				<!-- mura-primary-login-token -->
+
+				
+						<form novalidate="novalidate" id="loginForm" name="frmLogin" method="post" action="index.cfm" onsubmit="return submitForm(this);">
+						  
+
+							<div class="mura-control-group">
+							<label>
+								Username
+							</label>
+								<input id="username" name="username" type="text" autofocus="autofocus">
+							</div>
+
+							<div class="mura-control-group">
+								<label>Password</label>
+								<input id="password" type="password" name="password" autocomplete="off">
+					  	</div>
+
+							
+									<div class="mura-control-group half" id="remember-me">
+									  <label class="css-input switch switch-sm switch-primary">
+										  <input type="checkbox" id="rememberMe" name="rememberMe" value="1" ><span></span> Remember me
+									  </label>
+									</div>
+								
+								<div class="mura-control-group half">
+									
+									<label></label>
+								  <select name="rb">
+										<option value="en_US">English</option>
+										
+										<option value="da">Danish</option>
+										<option value="de">Deutsch</option>
+										<option value="nl">Dutch</option>
+										<option value="fil">Filipino</option>
+										<option value="fr">Fran&ccedil;ais</option>
+										<option value="hu">Hungarian</option>
+										<option value="id">Indonesian</option>
+										<option value="it">Italian</option>
+										<option value="pt">Portuguese</option>
+										<option value="ru">Русский</option>
+										<option value="es">Spanish</option>
+									</select>
+								</div>
+
+							
+
+							<div class="mura-focus-actions">
+								<button type="submit"> Log In</button>
+							</div>
+
+							<input name="returnUrl" type="hidden" value="">
+							<input type="hidden" name="muraAction" value="cLogin.login">
+							<input type="hidden" name="isAdminLogin" value="true">
+							<input type="hidden" name="compactDisplay" value="false">
+							<input type="hidden" name="csrf_token" value="<token>" /><input type="hidden" name="csrf_token_expires" value="<token>" />
+						</form>
+
+						
+							<div id="pw-link">
+								<label><a href="#" onclick="return false;">Forget your password?</a></label>
+							</div>
+						
+
+				</div><!-- /block-content -->
+			</div><!-- /mura-focus-block -->
+
+		<div class="block mura-focus-block animated" id="mura-password-panel" style="display:none;">
+
+			
+  <div class="focus-block-header">
+  	<img src="/admin/assets/images/masa-logo-black@2x.png" class="mura-logo">
+  </div><!-- /focus-block-header -->
+
+
+	  	  <div class="block-content">
+
+						
+							<form novalidate="novalidate" id="sendLogin" name="sendLogin" method="post" action="./?muraAction=cLogin.main" onsubmit="return submitForm(this);">
+
+							<div class="mura-control-group">
+								<h2>Forget your password?</h2>
+									  
+									<p id="pw-response" class=" clear-both"> Enter your email address to recover your account information. </p>
+									<div class="mura-control-group">
+										<label>Email Address</label>
+										<input id="email" name="email" type="text" autofocus="autofocus">
+									</div>
+							</div>
+							<div class="mura-focus-actions">
+							 	<input type="submit" class="btn" value="Submit" />
+							 </div>
+							<input type="hidden" name="status" value="sendlogin" />
+							<input name="returnURL" type="hidden" value="">
+							<input type="hidden" name="isAdminLogin" value="true">
+							<input type="hidden" name="compactDisplay" value="false">
+						   </form>
+
+						<div id="login-link">
+							 <label><a href="#" onclick="return false;">Return to login</a></label>
+						</div>
+
+						
+
+			</div><!-- /block-content -->
+		</div><!-- /mura-focus-block -->
+
+</div><!-- /mura-login -->
+
+
+<script type="text/javascript">
+jQuery(document).ready(function(){
+
+
+	jQuery('#pw-link a').click(function(){
+		jQuery('#mura-login-panel').removeClass('flipInY').addClass('flipOutY').hide();
+		jQuery('#mura-password-panel').removeClass('flipOutY').show().addClass('flipInY');
+		document.getElementById('email').focus();
+	});
+	jQuery('#login-link a').click(function(){
+		jQuery('#mura-password-panel').removeClass('flipInY').addClass('flipOutY').hide();
+		jQuery('#pw-response').removeClass('alert').removeClass('alert-error').html('Enter&#x20;your&#x20;email&#x20;address&#x20;to&#x20;recover&#x20;your&#x20;account&#x20;information.');
+		jQuery('#mura-login-panel').removeClass('flipOutY').show().addClass('flipInY');
+		document.getElementById('username').focus();
+	});
+
+});
+</script>

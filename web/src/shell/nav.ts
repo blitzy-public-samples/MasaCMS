@@ -108,7 +108,7 @@ const listFindNoCase = (list: string, value: string): boolean =>
 const when = (flag: boolean, markup: SafeHtml): SafeHtml | null => (flag ? markup : null);
 
 /** URL-scope names: the forwarded request target's query, else the pairs of `rc.currentURL`. */
-function urlScopeNames(ctx: AdminRequest): ReadonlySet<string> {
+export function urlScopeNames(ctx: AdminRequest): ReadonlySet<string> {
   const target = ctx.headers.get(ORIGINAL_URL_HEADER);
   const names =
     target === null

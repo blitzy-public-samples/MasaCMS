@@ -44,6 +44,16 @@ export type ScreenOwner = 'identity' | 'people' | 'programs-sites' | 'strategies
 /** FW/1 request context a screen reads. */
 export type Rc = AdminRequest['rc'];
 
+/** A redirect- or raw-mode request body as web received it. */
+export interface ScreenRequestBody {
+  /** The inbound `content-type`, multipart boundary included. */
+  readonly contentType: string;
+  /** The body bytes, for relaying unchanged (`GatewayClient.postMultipart` takes this object as is). */
+  readonly body: Uint8Array;
+  /** Fields and file parts in body order; empty for a body that is neither urlencoded nor multipart. */
+  readonly form: FormData | URLSearchParams;
+}
+
 /** Everything a screen receives for one request. */
 export interface ScreenContext {
   /** FW/1-merged rc, session, site, user and flags. */
@@ -58,6 +68,8 @@ export interface ScreenContext {
   hooks: ShellHooks;
   /** Injectable clock. */
   now: Date;
+  /** The request body; absent in page mode and on requests without one. */
+  body?: ScreenRequestBody;
 }
 
 /** Request-decidable branch of an action; `key` as in the route key, e.g. `type=2,action=add`. */
@@ -78,22 +90,26 @@ export interface RawBody {
   setCookies?: string[];
 }
 
-/** Outcome of a redirect-mode action; `setCookies` are service `Set-Cookie` values, relayed unchanged and in order. */
+/** Service `Set-Cookie` values a submit outcome relays unchanged and in order, sent after the request set-up's own. */
+interface RelayedCookies {
+  setCookies?: readonly string[];
+}
+
+/** Outcome of a redirect-mode action. */
 export type SubmitResult =
   /** FW/1 `redirect()`. */
-  | {
+  | ({
       kind: 'redirect';
       action: string;
       append?: string;
       preserve?: string;
       path?: string;
       queryString?: string;
-      setCookies?: readonly string[];
-    }
+    } & RelayedCookies)
   /** `cflocation`, or a service `Location` passed through. */
-  | { kind: 'location'; location: string; setCookies?: readonly string[] }
+  | ({ kind: 'location'; location: string } & RelayedCookies)
   /** Validation re-render inside the shell. */
-  | { kind: 'render'; view: ShellView; status?: number }
+  | ({ kind: 'render'; view: ShellView; status?: number } & RelayedCookies)
   /** An action that writes, then emits a bare body. */
   | { kind: 'raw'; response: RawBody };
 
@@ -111,9 +127,14 @@ interface ScreenBase<D> {
   load?(ctx: ScreenContext): Promise<D>;
 }
 
+/** FW/1 `redirect()` a page action's controller issues instead of rendering its view. */
+export type PageRedirect = Extract<SubmitResult, { kind: 'redirect' }>;
+
 /** A view rendered inside the shell. */
 export interface PageScreen<D = unknown> extends ScreenBase<D> {
   mode: 'page';
+  /** Controller step evaluated after the gate and before `load`; a result answers with that redirect instead. */
+  redirect?(ctx: ScreenContext): PageRedirect | undefined;
   render(ctx: ScreenContext, data: D): ShellView | Promise<ShellView>;
 }
 
@@ -158,6 +179,8 @@ export interface Opt2ScreenDefinition<D = any> {
   screen: string;
   roles: readonly Role[];
   service: WebServiceName;
+  /** Check run after the application gate; without one, access is the owning service's decision. */
+  gate?: ScreenGate;
   load(ctx: ScreenContext): Promise<D>;
   render(ctx: ScreenContext, data: D): ShellView | Promise<ShellView>;
 }
@@ -168,6 +191,8 @@ export interface Opt2ActionDefinition {
   action: string;
   roles: readonly Role[];
   service: WebServiceName;
+  /** Check run after the application gate; without one, access is the owning service's decision. */
+  gate?: ScreenGate;
   submit(ctx: ScreenContext): Promise<SubmitResult>;
 }
 
@@ -274,6 +299,8 @@ export const NOT_BUILT_VARIANTS: readonly NotBuiltVariant[] = Object.freeze([
   notBuilt('csettings', 'updatesite', 'action=add', equals('action', 'Add')),
   notBuilt('csettings', 'updatesite', 'action=delete', equals('action', 'Delete')),
   notBuilt('csettings', 'updatesite', 'action=update', equals('action', 'Update')),
+  // The core auto-updater rewrites the legacy web root, so this branch of the carried list stays legacy-served.
+  notBuilt('csettings', 'list', 'action=updatecore', equals('action', 'updateCore')),
   notBuilt('carch', 'update', 'upload=image', IMAGE_UPLOAD_CONDITION),
   notBuilt('carch', 'update', 'approved=1', truthy('approved')),
   notBuilt('carch', 'update', 'notify', nonEmpty('notify')),
