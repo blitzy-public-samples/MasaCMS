@@ -115,8 +115,25 @@
 		return int(url[arguments.name]);
 	}
 
+	/** Raises invalidParameters naming the row's dataset offset and the field unless each field, and each optional field present, is a Masa site id string. */
+	void function requireSiteIDs(required array rows, required string fields, string optional = "") {
+		for (local.i = 1; local.i <= arrayLen(arguments.rows); local.i++) {
+			for (local.field in listToArray(arguments.fields & "," & arguments.optional)) {
+				if (listFindNoCase(arguments.optional, local.field) && !structKeyExists(arguments.rows[local.i], local.field)) {
+					continue;
+				}
+				local.value = rowValue(arguments.rows[local.i], local.field, {});
+				// Masa's add-site form keeps only word characters and hyphens, and tsettings.siteID holds 25.
+				if (!isInstanceOf(local.value, "java.lang.String") || !len(local.value) || len(local.value) > 25 || reFind("[^A-Za-z0-9_-]", local.value)) {
+					variables.envelope.raise("invalidParameters", "Row at offset #variables.call.offset + local.i - 1# has an invalid #local.field#");
+				}
+			}
+		}
+	}
+
 	/** Creates each absent site through settingsManager.create, which also creates its private-pool Admin group. */
 	struct function seedSites(required array rows) {
+		requireSiteIDs(arguments.rows, "siteID,publicUserPoolID,privateUserPoolID,categoryPoolID,filePoolID,displayPoolID", "contentPoolID");
 		local.inserted = 0;
 		// A seeded site takes the installed default site's theme, as Masa's add-site form preselects an installed theme.
 		local.theme = application.settingsManager.getSite("default").getTheme();
@@ -186,19 +203,39 @@
 		return {"total" = arrayLen(arguments.rows), "inserted" = local.inserted};
 	}
 
-	/** Creates each absent Type 2 user with its dataset id and its password from the request's credentials. */
+	/** True when password matches the stored Masa password the way userUtility.lookupByCredentials checks it at login. */
+	boolean function passwordMatches(required string password, required string stored) {
+		local.config = application.configBean;
+		if (!local.config.getEncryptPasswords()) {
+			return arguments.stored eq arguments.password;
+		}
+		return (local.config.getJavaEnabled() && local.config.getBCryptPasswords() && application.utility.checkBCryptHash(arguments.password, arguments.stored))
+			|| hash(arguments.password, local.config.getDefaultHashAlgorithm()) eq arguments.stored;
+	}
+
+	/** Creates each absent Type 2 user with its dataset id and brings each existing one to its password from the request's credentials. */
 	struct function seedUsers(required array rows, required any credentials) {
 		local.inserted = 0;
 		for (local.row in arguments.rows) {
 			local.remoteID = remoteIdOf(local.row, "userID");
-			if (found(application.userManager.readByRemoteID(local.remoteID, local.row.siteID))) {
+			local.password = secretFor(arguments.credentials, [local.row.siteID, local.row.username], local.row.userID);
+			local.existing = application.userManager.readByRemoteID(local.remoteID, local.row.siteID);
+			// Several matches leave no single account to bring to the supplied password.
+			if (isArray(local.existing)) {
+				variables.envelope.raise("invalidParameters", "Row #local.row.userID# matches several users");
+			}
+			if (found(local.existing)) {
+				if (!passwordMatches(local.password, application.userManager.readUserPassword(local.existing.getUserID()))) {
+					local.update = {"userID" = local.existing.getUserID(), "siteID" = local.existing.getSiteID(), "password" = local.password};
+					requireValid(application.userManager.update(local.update, false, false), local.row.userID);
+				}
 				continue;
 			}
 			local.data = rowData(local.row);
 			local.data.type = 2;
 			local.data.s2 = 0;
 			local.data.remoteID = local.remoteID;
-			local.data.password = secretFor(arguments.credentials, [local.row.siteID, local.row.username], local.row.userID);
+			local.data.password = local.password;
 			if (len(rowValue(local.row, "groupID"))) {
 				local.groups = [];
 				for (local.groupID in listToArray(local.row.groupID)) {
@@ -244,12 +281,37 @@
 		return {"total" = arrayLen(arguments.rows), "inserted" = local.inserted};
 	}
 
-	/** Saves each absent content node's versions oldest first, so Masa writes one tcontent history row per version. */
+	/** Returns how many leading versions of the row its stored Masa history holds, or raises invalidParameters when it matches no such prefix. */
+	numeric function savedVersions(required struct row, required query hist) {
+		local.stored = [];
+		for (local.i = arguments.hist.recordCount; local.i >= 1; local.i--) {
+			arrayAppend(local.stored, arguments.hist.menuTitle[local.i] & chr(9) & (arguments.hist.approved[local.i] ? 1 : 0));
+		}
+		local.kept = [];
+		for (local.k = 1; local.k <= arrayLen(arguments.row.versions); local.k++) {
+			local.version = arguments.row.versions[local.k];
+			local.approved = rowValue(local.version, "approved", 0) ? 1 : 0;
+			// An approved version saved over a stored one archives it, and with purgeDrafts Masa then deletes every draft.
+			if (local.approved && local.k > 1 && application.configBean.getPurgeDrafts()) {
+				local.kept = arrayFilter(local.kept, (entry) => right(entry, 1) == "1");
+			}
+			arrayAppend(local.kept, local.version.title & chr(9) & local.approved);
+			if (!compare(arrayToList(local.kept, chr(10)), arrayToList(local.stored, chr(10)))) {
+				return local.k;
+			}
+		}
+		variables.envelope.raise("invalidParameters", "Row #arguments.row.contentID# has a stored content history that differs from its versions");
+	}
+
+	/** Saves each content node's missing versions oldest first, so Masa writes one tcontent history row per version. */
 	struct function seedContent(required array rows) {
 		local.inserted = 0;
 		for (local.row in arguments.rows) {
 			local.remoteID = remoteIdOf(local.row, "contentID");
-			if (found(application.contentManager.read(remoteID = local.remoteID, siteID = local.row.siteID))) {
+			local.hist = application.contentManager.getHist(local.row.contentID, local.row.siteID);
+			local.saved = local.hist.recordCount ? savedVersions(local.row, local.hist) : 0;
+			if ((local.saved && local.saved == arrayLen(local.row.versions))
+				|| (!local.saved && found(application.contentManager.read(remoteID = local.remoteID, siteID = local.row.siteID)))) {
 				continue;
 			}
 			local.categoryIDs = rowValue(local.row, "categoryIDs", []);
@@ -269,7 +331,8 @@
 				local.node["categoryAssign" & replace(local.categoryID, "-", "", "all")] = 0;
 			}
 			// The dataset's contentHistID is never passed: Masa always generates it, and a given one would be read as the version to edit.
-			for (local.version in local.row.versions) {
+			for (local.k = local.saved + 1; local.k <= arrayLen(local.row.versions); local.k++) {
+				local.version = local.row.versions[local.k];
 				local.data = duplicate(local.node);
 				local.data.title = local.version.title;
 				local.data.menuTitle = local.version.title;
@@ -319,17 +382,23 @@
 		return {"total" = arrayLen(arguments.rows), "inserted" = local.inserted};
 	}
 
-	/** Saves each absent OAuth client with its dataset id and its secret from the request's credentials. */
+	/** Saves each absent OAuth client with its dataset id and brings each existing one to its secret from the request's credentials. */
 	struct function seedOAuthClients(required array rows, required any credentials) {
 		local.inserted = 0;
 		for (local.row in arguments.rows) {
+			local.secret = secretFor(arguments.credentials, [local.row.clientID], local.row.clientID);
 			local.client = application.serviceFactory.getBean("oauthClient").loadBy(clientid = local.row.clientID);
 			if (!local.client.getIsNew()) {
+				if (compare(local.client.getClientSecret(), local.secret)) {
+					local.client.set("clientsecret", local.secret);
+					local.client.save();
+					requireValid(local.client, local.row.clientID);
+				}
 				continue;
 			}
 			local.client.set({
 				"clientid" = local.row.clientID,
-				"clientsecret" = secretFor(arguments.credentials, [local.row.clientID], local.row.clientID),
+				"clientsecret" = local.secret,
 				"siteid" = local.row.siteID,
 				"userid" = rowValue(local.row, "userID"),
 				"name" = local.row.name,
@@ -479,6 +548,8 @@
 					variables.envelope.raise("invalidParameters", "Every row must be an object");
 				}
 			}
+			// Masa interpolates a row's siteID into SQL and file paths, for example when it saves a child category or a file.
+			requireSiteIDs(local.rows, "", "siteID");
 			local.credentials = rowValue(local.body, "credentials", {});
 			switch (local.part) {
 				case "sites":

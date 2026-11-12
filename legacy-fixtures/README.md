@@ -64,18 +64,18 @@ SQL objects per module (`Program_N.` marks per-program objects):
 1. **Capability check.** `sqlcmd` reaches `${MURA_DATABASE}` with `CREATE SCHEMA` permission (or the three schemas already exist); the `cfpm` packages `spreadsheet`, `document`, `mail` and `scheduler` are installed; the Mailpit API and SMTP listener answer. Any failure is a reason in `fixtures.json`, and nothing is loaded.
 2. **SQL load.** Every `sql/**/*.sql` file runs in `LC_ALL=C` path order. A `*.program.sql` file runs once per program listed in `synthetic.program_site`.
 3. **Transition tables.** `opt2/reports/state-machines/finance.json` and `timesheets.json` are loaded through `synthetic.usp_load_transitions` into `synthetic.finance_transition` and `synthetic.timesheet_transition` (plus the blackout rule in `synthetic.transition_rule`), and the row counts are checked. The fixture procedures enforce these tables, so the oracle and the target share one lifecycle definition (AAP 0.4.5).
-4. **Status.** `${OPT2_STATE_DIR}/fixtures.json` is written atomically.
+4. **Status.** `${OPT2_STATE_DIR}/fixtures.json` is written atomically. It reads `available: false`, `in progress` while a run is under way, and an interrupted run (`SIGINT`, `SIGTERM`) leaves `error: <step>: interrupted`.
 
 | Variable | Use |
 |---|---|
 | `MURA_DATABASE`, `MURA_DBUSERNAME`, `MURA_DBPASSWORD` | Required. The legacy database; the password reaches `sqlcmd` only through `SQLCMDPASSWORD` |
 | `MURA_DBHOST`, `MURA_DBPORT` | Default `127.0.0.1`, `1433` |
-| `OPT2_STATE_DIR` | Default `$HOME/.opt2/state`. Must be absolute and outside the checkout |
+| `OPT2_STATE_DIR` | Default `$HOME/.opt2/state`. Must be absolute and outside the checkout. Runs sharing it take turns (`flock` on `fixtures/lock`) |
 | `MAILPIT_API_URL`, `SMTP_HOST`, `SMTP_PORT` | Mailpit check. Default `http://127.0.0.1:8025`, `127.0.0.1`, `1025` |
 | `OPT2_LEGACY_SERVER_NAME` | CommandBox server whose `cfpm` list is read. Default `opt2-legacy` |
-| `SQLCMD`, `CFPM_CMD` | Optional explicit `sqlcmd` and `cfpm` executables |
+| `SQLCMD`, `CFPM_CMD` | Optional explicit `sqlcmd` and `cfpm` executables. A set `SQLCMD` that is not an executable file is an unexpected error, with no fallback to `PATH` |
 
-Exit status: 0 once `fixtures.json` is written (whether available or not), 1 on an unexpected error (also recorded as `available: false`), 2 on a usage or `OPT2_STATE_DIR` error.
+Exit status: 0 once `fixtures.json` is written (whether available or not), 1 on an unexpected error, an unusable `SQLCMD` or an interrupt (also recorded as `available: false`), 2 on a usage or `OPT2_STATE_DIR` error.
 
 `fixtures.json` is `{ "available": true|false, "reason": "<text>", "checkedAt": "<ISO-8601 UTC>" }`. Both repro commands read it. With `available: false` (AAP 0.7.6):
 
@@ -103,7 +103,9 @@ The ColdFusion process also reads these variables on its start command:
 - Finance parts (`Program_<id>.finance_record`, `finance_record_version`, `finance_attachment`) require `businessDate`, the dataset's `businessDate` in `manifest.json` (`2026-06-30` with the committed `seed.config.json`). It is the `@now` of the `usp_finance_rollup` run that follows in the same transaction. Missing or malformed, it answers 400 `invalidParameters`. Other parts ignore it.
 - Example, the second of `tenant-a`'s three 1,000-row finance-record parts (`chunkRows: 1000`): `POST /legacy-fixtures/cfml/seed.cfm?part=fixtures.Program_1.finance_record&offset=1000&limit=1000&businessDate=2026-06-30`, with that part file (`array: fixtures.Program_1.finance_record`, `offset: 1000`) as the body.
 - With `fixtures=false`, fixture parts answer 400 `badRequest`.
-- The response reports `{part, offset, limit, total, inserted}`, so a repeated part inserts nothing new. Credentials are never echoed.
+- A Masa row's `siteID`, and each pool id of a `sites` row, must be a string of 1–25 ASCII letters, digits, `_` or `-`, as Masa's add-site form admits. Otherwise the part answers 400 `invalidParameters` naming the row offset and field, and writes nothing.
+- The response reports `{part, offset, limit, total, inserted}`, so a repeated part inserts nothing new. A content node holding only its leading versions gets the rest and counts as inserted; one whose stored history differs answers 400 `invalidParameters`. Credentials are never echoed.
+- A `users` or `oauthClients` part also brings existing seeded accounts to the credentials it carries, so a regenerated `credentials.json` holds after a reload; an account already on them is not rewritten.
 - `harness/repro/lib/seed-legacy.mjs` posts every `manifest.json` part in order (fixture parts are skipped under `--fixtures false`), with `part`, `offset`, `limit`, `businessDate` from `manifest.json`, and `fixtures`.
 
 ## Routes

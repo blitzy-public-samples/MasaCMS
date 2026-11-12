@@ -52,7 +52,7 @@ EOF
 # Writes fixtures.json atomically: write_status <true|false> <reason>.
 write_status() {
   local tmp
-  tmp="$(mktemp "$OPT2_STATE_DIR/.fixtures.json.XXXXXX")" || return 1
+  tmp="$(mktemp "$OPT2_STATE_DIR/.fixtures.json.$$.XXXXXX")" || return 1
   if ! node -e '
     const [available, reason] = process.argv.slice(1);
     const status = { available: available === "true", reason, checkedAt: new Date().toISOString() };
@@ -69,6 +69,8 @@ fail() {
   trap - ERR
   (( BASH_SUBSHELL == 0 )) || exit 1
   printf 'load-fixtures: error: %s: %s\n' "$STEP" "$1" >&2
+  # A signal trapped inside write_status leaves its temporary file; the pid in the name spares concurrent runs.
+  rm -f -- "$OPT2_STATE_DIR/.fixtures.json.$$."* || true
   write_status false "error: $STEP: $1" || printf 'load-fixtures: could not write %s\n' "$STATUS_FILE" >&2
   exit 1
 }
@@ -82,15 +84,21 @@ join_by() {
   for part in "$@"; do JOINED+="$separator$part"; done
 }
 
-# Sets SQLCMD_BIN and SQLCMD_ARGS; returns 1 when no sqlcmd is installed.
+# Sets SQLCMD_BIN and SQLCMD_ARGS; returns 1 when no sqlcmd is installed and fails when a set SQLCMD is not an executable file.
 resolve_sqlcmd() {
   local candidate help
-  for candidate in "${SQLCMD:-}" "$(command -v sqlcmd || true)" /opt/mssql-tools18/bin/sqlcmd /opt/mssql-tools/bin/sqlcmd; do
-    if [[ -n "$candidate" && -x "$candidate" ]]; then
-      SQLCMD_BIN="$candidate"
-      break
-    fi
-  done
+  if [[ -n "${SQLCMD:-}" ]]; then
+    [[ -f "$SQLCMD" && -x "$SQLCMD" ]] || fail "SQLCMD=$SQLCMD is not an executable file"
+    # A bare name runs the file tested here, not a PATH lookup.
+    if [[ "$SQLCMD" == */* ]]; then SQLCMD_BIN="$SQLCMD"; else SQLCMD_BIN="./$SQLCMD"; fi
+  else
+    for candidate in "$(command -v sqlcmd || true)" /opt/mssql-tools18/bin/sqlcmd /opt/mssql-tools/bin/sqlcmd; do
+      if [[ -n "$candidate" && -x "$candidate" ]]; then
+        SQLCMD_BIN="$candidate"
+        break
+      fi
+    done
+  fi
   [[ -n "$SQLCMD_BIN" ]] || return 1
   SQLCMD_ARGS=(-S "$MURA_DBHOST,$MURA_DBPORT" -U "$MURA_DBUSERNAME" -d "$MURA_DATABASE" -b -I -l "$SQLCMD_LOGIN_TIMEOUT")
   # The tools18 build encrypts by default, so it must trust the local server's self-signed certificate.
@@ -111,6 +119,7 @@ sql() {
     SQL_ERROR="sqlcmd timed out after $SQL_DEADLINE s"
   elif (( rc != 0 )); then
     SQL_ERROR="$(sed -e '/^[[:space:]]*$/d' "$SQLCMD_OUT" | tail -n 1)"
+    [[ -n "$SQL_ERROR" ]] || SQL_ERROR="no output from $SQLCMD_BIN"
     SQL_ERROR="sqlcmd exited $rc: ${SQL_ERROR:0:300}"
   fi
   return "$rc"
@@ -277,8 +286,14 @@ WORK_DIR="$OPT2_STATE_DIR/fixtures"
 SQLCMD_OUT="$WORK_DIR/sqlcmd.out"
 
 trap 'fail "exit $? at line $LINENO"' ERR
+trap 'fail interrupted' INT TERM
 
 mkdir -p "$WORK_DIR"
+# Runs on one state directory share WORK_DIR, so they take turns.
+exec 9>"$WORK_DIR/lock"
+flock 9
+# Replaced by the run's outcome, so a killed run never leaves an earlier "fixtures loaded".
+write_status false "in progress"
 for name in MURA_DATABASE MURA_DBUSERNAME MURA_DBPASSWORD; do
   [[ -n "${!name}" ]] || fail "$name is not set"
 done
