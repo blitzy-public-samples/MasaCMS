@@ -37,6 +37,9 @@ export interface CreateSmtpTransportOptions {
 /** Domain part of every Message-ID the service and the legacy fixture assign. */
 export const MESSAGE_ID_DOMAIN = 'opt2.local';
 
+/** Connection, greeting and socket-inactivity limit of every SMTP session, the fixture cfmail's 10 s timeout. */
+export const SMTP_TIMEOUT_MS = 10_000;
+
 /** Message-ID header value for a message id. */
 export function messageIdHeader(messageId: string): string {
   return `<${messageId}@${MESSAGE_ID_DOMAIN}>`;
@@ -87,8 +90,15 @@ function parseCredential(credential: string): { user: string; pass: string } {
 export function createSmtpTransport(options: CreateSmtpTransportOptions): MailTransport {
   const { host, port, credential } = options;
   const auth = credential === undefined ? undefined : parseCredential(credential);
+  const timeouts = {
+    connectionTimeout: SMTP_TIMEOUT_MS,
+    greetingTimeout: SMTP_TIMEOUT_MS,
+    socketTimeout: SMTP_TIMEOUT_MS,
+  };
   const transporter = nodemailer.createTransport(
-    auth ? { host, port, secure: port === 465, requireTLS: port !== 465, auth } : { host, port, secure: false },
+    auth
+      ? { host, port, secure: port === 465, requireTLS: port !== 465, auth, ...timeouts }
+      : { host, port, secure: false, ...timeouts },
   );
   return {
     async send(mail) {

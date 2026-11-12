@@ -8,6 +8,7 @@ import { z, type Clock } from '@opt2/platform/service-kit';
 
 import type { MigrationContext } from '../context.js';
 import type { MigrationEnv } from '../env.js';
+import type { components } from '../generated/openapi.js';
 import {
   SCHEDULER_KEYS,
   SchedulerStateConflictError,
@@ -36,8 +37,8 @@ export function defaultNativeTasksFile(env: Pick<MigrationEnv, 'OPT2_PRISTINE_DI
  * - `tasks`: every task in the bridge wire shape
  *   `{task, group, url, port, interval, startDate, startTime, requestTimeOut, operation, paused}`.
  *
- * The import also accepts a `box cfconfig export` document carrying `capturedAt`, `ping` and `scheduledTasks` (an array, or an
- * object keyed by task name), and the `SchedulerImportRequest` body `{nativeTasks, ping}`.
+ * The file import also accepts a `box cfconfig export` document carrying `capturedAt`, `ping` and `scheduledTasks` (an array, or
+ * an object keyed by task name).
  */
 export interface NativeTasksFile {
   capturedAt: string | null;
@@ -67,6 +68,9 @@ export interface SchedulerImportResult {
   taskCount: number;
   sourceSha256: string;
 }
+
+/** The HTTP `SchedulerImportRequest` body, validated against the contract where it is received. */
+export type SchedulerImportRequest = components['schemas']['SchedulerImportRequest'];
 
 /** Raised when a capture is not valid JSON or fails its schema. */
 export class SchedulerImportError extends Error {
@@ -112,7 +116,7 @@ function exportedTasks(value: unknown): unknown {
   return isRecord(value) ? Object.entries(value).map(([key, entry]) => exportedTask(entry, key)) : value;
 }
 
-/** The capture in the `native-tasks.json` form, before schema validation. */
+/** A file capture in the `native-tasks.json` form, before schema validation. */
 function fileShapeOf(raw: unknown): unknown {
   if (!isRecord(raw)) {
     throw new SchedulerImportError('The native task capture must be a JSON object');
@@ -126,14 +130,16 @@ function fileShapeOf(raw: unknown): unknown {
       tasks: exportedTasks(raw.scheduledTasks),
     };
   }
-  if (Array.isArray(raw.nativeTasks)) {
-    return { capturedAt: null, originalPing: raw.ping, siteMonitorTask: null, tasks: exportedTasks(raw.nativeTasks) };
-  }
-  throw new SchedulerImportError('The native task capture has no tasks, scheduledTasks or nativeTasks array');
+  throw new SchedulerImportError('The native task capture has neither a tasks array nor scheduledTasks');
+}
+
+function sortedTasks(tasks: readonly NativeTask[]): NativeTask[] {
+  return [...tasks].sort((a, b) => compare(a.task, b.task) || compare(a.group, b.group));
 }
 
 /**
- * Validates a capture in any accepted form and returns it in the `native-tasks.json` form, tasks sorted by name then group.
+ * Validates a file capture in the `native-tasks.json` or `box cfconfig export` form and returns it in the `native-tasks.json`
+ * form, tasks sorted by name then group.
  * @throws SchedulerImportError naming every schema issue.
  */
 export function normaliseNativeTasksFile(raw: unknown): NativeTasksFile {
@@ -143,8 +149,7 @@ export function normaliseNativeTasksFile(raw: unknown): NativeTasksFile {
       cause: parsed.error,
     });
   }
-  const tasks = [...parsed.data.tasks].sort((a, b) => compare(a.task, b.task) || compare(a.group, b.group));
-  return { ...parsed.data, tasks };
+  return { ...parsed.data, tasks: sortedTasks(parsed.data.tasks) };
 }
 
 /** JSON with object keys sorted recursively and no whitespace. */
@@ -177,17 +182,35 @@ export function nativeTasksDigest(doc: NativeTasksFile): string {
   return createHash('sha256').update(canonicalJson(content)).digest('hex');
 }
 
+type ImportDeps = { db: SchedulerDb; clock: Clock };
+
 /**
- * Stores a capture as the `nativeTasks` record and the site-monitor definition it holds, in one transaction.
- * @param raw any form `normaliseNativeTasksFile` accepts, the `SchedulerImportRequest` body included.
+ * Stores a file capture as the `nativeTasks` record and the site-monitor definition it holds, in one transaction.
+ * @param raw any form `normaliseNativeTasksFile` accepts.
  * @throws SchedulerImportError when `raw` is invalid.
  * @throws SchedulerStateConflictError when a different capture arrives after the site monitor was handed off to the target.
  */
-export async function importNativeTasks(
-  deps: { db: SchedulerDb; clock: Clock },
-  raw: unknown,
-): Promise<SchedulerImportResult> {
-  const doc = normaliseNativeTasksFile(raw);
+export async function importNativeTasks(deps: ImportDeps, raw: unknown): Promise<SchedulerImportResult> {
+  return storeCapture(deps, normaliseNativeTasksFile(raw));
+}
+
+/**
+ * Stores a `SchedulerImportRequest` body as `importNativeTasks` stores a file; it carries no capture time or monitor name.
+ * @throws SchedulerImportError when a task entry fails the task schema.
+ * @throws SchedulerStateConflictError when a different capture arrives after the site monitor was handed off to the target.
+ */
+export async function importSchedulerRequest(deps: ImportDeps, body: SchedulerImportRequest): Promise<SchedulerImportResult> {
+  const parsed = nativeTasksFileSchema.shape.tasks.safeParse(exportedTasks(body.nativeTasks));
+  if (!parsed.success) {
+    throw new SchedulerImportError(`The scheduler import nativeTasks fail the task schema: ${z.prettifyError(parsed.error)}`, {
+      cause: parsed.error,
+    });
+  }
+  return storeCapture(deps, { capturedAt: null, originalPing: body.ping, siteMonitorTask: null, tasks: sortedTasks(parsed.data) });
+}
+
+/** Writes a normalised capture and the site-monitor definition it holds in one transaction, unless its digest is already stored. */
+async function storeCapture(deps: ImportDeps, doc: NativeTasksFile): Promise<SchedulerImportResult> {
   const sourceSha256 = nativeTasksDigest(doc);
   const { siteMonitor, siteMonitorTask } = resolveSiteMonitor(doc);
   const now = deps.clock.now();

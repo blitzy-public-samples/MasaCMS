@@ -18,6 +18,7 @@ import {
   draftHist,
   draftList,
   draftPromptData,
+  expireAssignments,
   expiringContent,
   fileJoinColumns,
   hasComments,
@@ -25,13 +26,22 @@ import {
   hasTagCloud,
   hist,
   lockedContentCount,
+  mergeRelatedContent,
+  nest,
   objectInheritance,
   objects,
+  pageCount,
   pendingChangesets,
   poolFileMatches,
   privateSearch,
+  privateSearchFileIds,
   publicSearch,
+  readActive,
+  readActiveByFilename,
+  relatedCandidates,
   relatedContent,
+  relatedLinks,
+  sections,
   submissionsQuery,
   tagCloud,
   top,
@@ -67,6 +77,8 @@ const CAT3 = cfId('T', 3);
 const HOME_FILE = cfId('F', 1);
 const IMG = cfId('F', 2);
 const PDF = cfId('F', 3);
+/** A pool image no content references. */
+const ORPHAN = cfId('F', 4);
 
 const MODULE = SITE_TREE_MODULE_ID;
 const HOME = cfId('C', 1);
@@ -86,6 +98,15 @@ const [P_V1, P_V2, P_V3, P_V4] = [1, 2, 3, 4].map((n) => cfId('H', 20 + n)) as [
 const HOME_OLD = cfId('H', 11);
 const Q_DRAFT = cfId('H', 31);
 const B_VERSION = cfId('H', 90);
+/** Tenant B content of `TENANT_B.siteId`: a page an A version relates to, and a page whose version relates to A's `SB`. */
+const [BX, BY] = [1, 2].map((n) => cfId('X', n)) as [string, string];
+const POOL = [SITE, TENANT_B.siteId];
+/** A tenant B site whose content, assignments, requests and files keep mixed-case legacy spellings. */
+const MX = 'mixedcase';
+const [MXP, MFILE, MFORM, MFOLDER, MLINK, MCAL, MEVENT, MCOMP, MIMAGE, MDRAFT, MAPPROVE] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((n) => cfId('W', n)) as [
+  string, string, string, string, string, string, string, string, string, string, string,
+];
+const MPNG = cfId('W', 20);
 
 const TOP_COLUMNS = [
   'contenthistid', 'contentid', 'moduleid', 'approved', 'filename', 'active', 'type', 'subtype', 'orderno', 'parentid', 'title',
@@ -209,6 +230,7 @@ async function seedTenantA(tx: TenantTx): Promise<void> {
     { fileid: HOME_FILE, siteid: SITE, filename: 'home.jpg', fileext: 'jpg', filesize: 10, contenttype: 'image', contentsubtype: 'jpeg', caption: 'Home' },
     { fileid: IMG, siteid: SITE, filename: 'photo.png', fileext: 'png', filesize: 20, contenttype: 'image', contentsubtype: 'png', caption: 'Orchid photo' },
     { fileid: PDF, siteid: SITE, filename: 'brochure.pdf', fileext: 'pdf', filesize: 30, contenttype: 'application', contentsubtype: 'pdf', credits: 'Orchid Society' },
+    { fileid: ORPHAN, siteid: SITE, filename: 'orphan.png', fileext: 'png', filesize: 40, contenttype: 'image', contentsubtype: 'png', caption: 'orchid' },
   ]);
   await insert(tx, 'file_metadata', [{ metaid: cfId('M', 1), fileid: IMG, contenthistid: v(SF), contentid: SF, siteid: SITE, alttext: 'Meta alt' }]);
   await insert(tx, 'extend_data', [{ baseid: v(SE), attributeid: 1, siteid: SITE, attributevalue: 'Orchid lover' }]);
@@ -259,6 +281,7 @@ async function seedTenantA(tx: TenantTx): Promise<void> {
       [SB, RCSET1, 3],
       [SC, RCSET1, 2],
       [R, null, 4],
+      [BX, RCSET1, 1],
     ].map(([relatedid, relatedcontentsetid, orderno]) => ({ contenthistid: P_V2, relatedid, contentid: P, siteid: SITE, relatedcontentsetid, orderno })),
   );
   await insert(tx, 'extend_rc_set', [{ relatedcontentsetid: RCSET1, siteid: SITE, name: 'Featured' }]);
@@ -289,6 +312,33 @@ async function seedTenantA(tx: TenantTx): Promise<void> {
   ]);
 }
 
+/** Site `MX` in tenant B: children of `MXP` stored with lower-case types, a future event under a lower-case calendar, and mixed-case assignment, request and extension values. */
+async function seedMixedCase(tx: TenantTx): Promise<void> {
+  const mx = (contentid: string, title: string, fields: Row = {}): Row => page(contentid, v(contentid), title, { siteid: MX, ...fields });
+  await insert(tx, 'content', [
+    mx(MODULE, 'Site Manager', { type: 'Module', parentid: null }),
+    mx(MXP, 'Mixed parent'),
+    mx(MFILE, 'Willow brochure', { type: 'file', parentid: MXP, orderno: 1, filename: 'willow.pdf', expires: at('2026-07-01T00:00') }),
+    mx(MFORM, 'Willow form', { type: 'form', parentid: MXP, orderno: 2, moduleid: FORMS_MODULE }),
+    mx(MFOLDER, 'Willow folder', { type: 'folder', parentid: MXP, orderno: 3 }),
+    mx(MLINK, 'Link', { type: 'link', parentid: MXP, orderno: 4, body: 'willow' }),
+    mx(MCAL, 'Calendar', { type: 'calendar', parentid: MXP, orderno: 5 }),
+    mx(MIMAGE, 'Picture', { type: 'FILE', parentid: MXP, orderno: 6, fileid: MPNG }),
+    mx(MEVENT, 'Willow event', { parentid: MCAL, display: 2, displaystart: at('2026-07-01T00:00') }),
+    mx(MCOMP, 'Willow box', { type: 'component', moduleid: COMPONENTS_MODULE, isnav: 0, moduleassign: SITE_TREE_MODULE_ID }),
+    mx(MDRAFT, 'Draft item', { approved: 0, lastupdate: at('2026-03-01T09:00') }),
+    mx(MAPPROVE, 'Approval item', { approved: 0, lastupdate: at('2026-03-02T09:00') }),
+  ]);
+  await insert(tx, 'file', [{ fileid: MPNG, siteid: MX, filename: 'willow.PNG', fileext: 'PNG', caption: 'Willow picture' }]);
+  await insert(tx, 'content_assignment', [
+    { contentid: MFILE, contenthistid: v(MFILE), siteid: MX, userid: USER, type: 'EXPIRE' },
+    { contentid: MDRAFT, contenthistid: v(MDRAFT), siteid: MX, userid: USER, type: 'Draft' },
+  ]);
+  await insert(tx, 'approval_request', [{ requestid: cfId('W', 30), siteid: MX, userid: OTHER, groupid: G1, status: 'pending', contenthistid: v(MAPPROVE) }]);
+  await insert(tx, 'content_related', [{ contenthistid: v(MXP), relatedid: MEVENT, contentid: MXP, siteid: MX, orderno: 1 }]);
+  await insert(tx, 'content_tag', [{ contenthistid: v(MEVENT), contentid: MEVENT, siteid: MX, tag: 'Willow' }]);
+}
+
 const inA = <T>(fn: (tx: TenantTx) => Promise<T>): Promise<T> => withTenant(handle.app, TENANT_A.tenantId, fn);
 const inB = <T>(fn: (tx: TenantTx) => Promise<T>): Promise<T> => withTenant(handle.app, TENANT_B.tenantId, fn);
 const ids = (rows: readonly Row[], column = 'contentid'): unknown[] => rows.map((row) => row[column]);
@@ -302,7 +352,15 @@ describe.skipIf(!(await pgAvailable()))('repo/content-queries history, drafts, s
     });
     await ensureUnitGates(handle.app, CONTENT_UNITS);
     await inA(seedTenantA);
-    await inB((tx) => insert(tx, 'content', [page(P, B_VERSION, 'Tenant B page', { lastupdate: at('2026-05-01T09:00') })]));
+    await inB(async (tx) => {
+      await insert(tx, 'content', [
+        page(P, B_VERSION, 'Tenant B page', { lastupdate: at('2026-05-01T09:00') }),
+        page(BX, v(BX), 'hedge', { siteid: TENANT_B.siteId, orderno: 15, created: at('2026-03-01T00:00') }),
+        page(BY, v(BY), 'apiary', { siteid: TENANT_B.siteId }),
+      ]);
+      await insert(tx, 'content_related', [{ contenthistid: v(BY), relatedid: SB, contentid: BY, siteid: TENANT_B.siteId, orderno: 1 }]);
+      await seedMixedCase(tx);
+    });
   });
 
   afterAll(async () => {
@@ -509,17 +567,44 @@ describe.skipIf(!(await pgAvailable()))('repo/content-queries history, drafts, s
     expect(row).toMatchObject({ fileid: IMG, fileext: 'png', filesize: 20, assocfilename: 'photo.png', filealttext: 'Meta alt' });
   });
 
+  it.each<[string, Omit<PrivateSearchArgs, 'siteId'>, string[]]>([
+    ['an image search, images or not', { keywords: 'orchid', searchType: 'IMAGE' }, [HOME_FILE, IMG, PDF]],
+    ['a file search by tag', { keywords: '', tag: 'flowers', searchType: 'file' }, [HOME_FILE, IMG, PDF]],
+    ['a section', { keywords: 'orchid', searchType: 'file', sectionId: HOME.toLowerCase() }, [HOME_FILE]],
+    ['another module', { keywords: 'orchid', searchType: 'file', moduleId: COMPONENTS_MODULE }, []],
+    ['a default search', { keywords: 'orchid' }, []],
+    ['neither keywords nor a tag', { keywords: '  ', searchType: 'image' }, []],
+  ])('privateSearchFileIds reads the files of active versions in scope for %s', async (_label, args, expected) => {
+    expect(await inA((tx) => privateSearchFileIds(tx, { siteId: SITE, ...args }))).toEqual(expected);
+  });
+
   it.each([
     ['image', 'orchid', { fileIds: [HOME_FILE, IMG], keywordFileIds: [IMG] }],
     ['FILE', ' ORCHID ', { fileIds: [HOME_FILE, IMG, PDF], keywordFileIds: [IMG, PDF] }],
     ['image', '', { fileIds: [HOME_FILE, IMG], keywordFileIds: [] }],
     ['default', 'orchid', { fileIds: [], keywordFileIds: [] }],
-  ])('poolFileMatches answers a %s search for %j', async (searchType, keywords, expected) => {
-    expect(await inA((tx) => poolFileMatches(tx, { keywords, searchType }))).toEqual(expected);
+  ])('poolFileMatches answers a %s search for %j over the referenced files only', async (searchType, keywords, expected) => {
+    const fileIds = await inA((tx) => privateSearchFileIds(tx, { siteId: SITE, keywords: 'orchid', searchType: 'file' }));
+    expect(fileIds).not.toContain(ORPHAN);
+    expect(await inA((tx) => poolFileMatches(tx, { keywords, searchType, fileIds }))).toEqual(expected);
+  });
+
+  it.each<[string, readonly string[], number, { fileIds: string[]; keywordFileIds: string[] }]>([
+    ['no listed file without a query', [], 1000, { fileIds: [], keywordFileIds: [] }],
+    ['a listed file by any case', [ORPHAN.toLowerCase()], 1000, { fileIds: [ORPHAN], keywordFileIds: [ORPHAN] }],
+    ['one id per batch, repeated ids once, in file id order', [PDF, IMG.toLowerCase(), HOME_FILE, PDF.toLowerCase(), MISSING], 1, { fileIds: [HOME_FILE, IMG, PDF], keywordFileIds: [IMG, PDF] }],
+  ])('poolFileMatches reads %s', async (_label, fileIds, batchSize, expected) => {
+    expect(await inA((tx) => poolFileMatches(tx, { keywords: 'orchid', searchType: 'file', fileIds }, batchSize))).toEqual(expected);
+  });
+
+  it('poolFileMatches rejects a batch size that is not a positive integer', async () => {
+    await expect(inA((tx) => poolFileMatches(tx, { keywords: 'orchid', searchType: 'file', fileIds: [IMG] }, 0))).rejects.toThrow(RangeError);
   });
 
   it('privateSearch over a pooled file tenant matches by pool file ids and returns the file id for fileJoinColumns', async () => {
-    const pooledFiles = await inA((tx) => poolFileMatches(tx, { keywords: 'orchid', searchType: 'image' }));
+    const fileIds = await inA((tx) => privateSearchFileIds(tx, { siteId: SITE, keywords: 'orchid', searchType: 'image' }));
+    const pooledFiles = await inA((tx) => poolFileMatches(tx, { keywords: 'orchid', searchType: 'image', fileIds }));
+    expect(pooledFiles.fileIds).not.toContain(ORPHAN);
     const rows = await inA((tx) => privateSearch(tx, { siteId: SITE, keywords: 'orchid', searchType: 'image', pooledFiles }));
     expect(ids(rows)).toEqual([SF]);
     expect(Object.keys(rows[0] ?? {})).toEqual(PRIVATE_COLUMNS);
@@ -589,6 +674,65 @@ describe.skipIf(!(await pgAvailable()))('repo/content-queries history, drafts, s
     await expect(inA((tx) => relatedContent(tx, { siteId: SITE, contentHistId: P_V2, today: TODAY, sortBy: 'rating' }))).rejects.toThrow(
       new ContentQueryError('Sort by rating references tcontentstats, which getRelatedContent does not join'),
     );
+  });
+
+  it('relatedContent in one tenant transaction cannot join a link to content kept in another pool tenant', async () => {
+    const args = { siteId: SITE, contentHistId: P_V2, today: TODAY, contentPoolSiteIds: POOL };
+    expect(ids(await inA((tx) => relatedContent(tx, args)))).toEqual([SB, SC, SA]);
+    expect(await inB((tx) => relatedContent(tx, args))).toEqual([]);
+  });
+
+  it.each<[string, Partial<RelatedContentArgs>, string[]]>([
+    ['every link in insertion order', {}, [SA, SB, SC, R, BX]],
+    ['a related-content set', { relatedContentSetId: RCSET1.toLowerCase() }, [SB, SC, BX]],
+    ['set 0 as the default set', { relatedContentSetId: '0' }, [SA, R]],
+    ['the Default set name with unnamed links', { name: 'default' }, [SA, R]],
+    ['no version', { contentHistId: MISSING }, []],
+  ])('relatedLinks reads %s', async (_label, args, expected) => {
+    const links = await inA((tx) => relatedLinks(tx, { contentHistId: P_V2, ...args }));
+    expect(ids(links, 'relatedid')).toEqual(expected);
+    if (links.length > 0) expect(Object.keys(links[0] ?? {})).toEqual(['relatedid', 'contentid', 'relatedcontentsetid', 'orderno']);
+  });
+
+  it.each<[string, Partial<RelatedContentArgs>, string[]]>([
+    ['content order', {}, [SB, BX, SC, SA]],
+    ['a related-content set by link order', { relatedContentSetId: RCSET1 }, [BX, SC, SB]],
+    ['a set name by link order', { name: 'FEATURED' }, [BX, SC, SB]],
+    ['a case-insensitive menu title sort', { sortBy: 'menutitle', sortDirection: 'desc' }, [SB, SA, BX, SC]],
+    ['creation date', { sortBy: 'created' }, [SB, SA, BX, SC]],
+  ])('relatedLinks, relatedCandidates in each pool tenant and mergeRelatedContent read a forward relation across pool tenants by %s', async (_label, sort, expected) => {
+    const args: RelatedContentArgs = { siteId: SITE, contentHistId: P_V2, today: TODAY, contentPoolSiteIds: POOL, ...sort };
+    const links = await inA((tx) => relatedLinks(tx, args));
+    const candidates = [await inA((tx) => relatedCandidates(tx, { ...args, links })), await inB((tx) => relatedCandidates(tx, { ...args, links }))];
+    const rows = await inA((tx) => mergeRelatedContent(tx, args, candidates));
+    expect(ids(rows)).toEqual(expected);
+    expect(rows.map((row) => Object.keys(row))).toEqual(rows.map(() => RELATED_COLUMNS));
+    expect(rows.find((row) => row.contentid === BX)).toMatchObject({
+      siteid: TENANT_B.siteId,
+      relatedfromcontentid: P,
+      relatedcontentsetid: RCSET1,
+      orderno: 15,
+      parenttype: '',
+    });
+  });
+
+  it('relatedCandidates in each pool tenant and mergeRelatedContent read the versions relating to content across pool tenants', async () => {
+    const args: RelatedContentArgs = { siteId: SITE, contentHistId: '', today: TODAY, contentPoolSiteIds: POOL, reverse: true, reverseContentId: SB };
+    const candidates = [await inA((tx) => relatedCandidates(tx, args)), await inB((tx) => relatedCandidates(tx, args))];
+    expect(candidates.map((tenant) => ids(tenant.map((candidate) => candidate.row)))).toEqual([[P], [BY]]);
+    const rows = await inA((tx) => mergeRelatedContent(tx, args, candidates));
+    expect(ids(rows)).toEqual([BY, P]);
+    expect(rows[0]).toMatchObject({ relatedfromcontentid: BY, siteid: TENANT_B.siteId, menutitle: 'apiary' });
+  });
+
+  it('relatedCandidates answers no links with no rows, rejects links on a reverse read, and mergeRelatedContent keeps legacy sort failures', async () => {
+    const args: RelatedContentArgs = { siteId: SITE, contentHistId: P_V2, today: TODAY, contentPoolSiteIds: POOL };
+    expect(await inA((tx) => relatedCandidates(tx, { ...args, links: [] }))).toEqual([]);
+    await expect(inA((tx) => relatedCandidates(tx, { ...args, reverse: true, reverseContentId: SB, links: [] }))).rejects.toThrow(TypeError);
+    const inPoolB = await inB((tx) => relatedCandidates(tx, { ...args, links: [{ relatedid: BX, contentid: P, relatedcontentsetid: null, orderno: 7 }] }));
+    expect(inPoolB).toMatchObject([{ row: { contentid: BX, relatedcontentsetid: null }, linkOrderNo: 7, created: at('2026-03-01T00:00') }]);
+    expect(await inA((tx) => mergeRelatedContent(tx, args, [[], inPoolB]))).toEqual(inPoolB.map((candidate) => candidate.row));
+    await expect(inA((tx) => mergeRelatedContent(tx, { ...args, sortBy: 'comments' }, []))).rejects.toThrow(ContentQueryError);
   });
 
   it.each([
@@ -663,6 +807,28 @@ describe.skipIf(!(await pgAvailable()))('repo/content-queries history, drafts, s
     expect(await inA((tx) => commentCount(tx, { siteId: SITE, contentId: P.toLowerCase(), ...flags }))).toBe(expected);
   });
 
+  it.each<[string, (tx: TenantTx) => Promise<unknown>, unknown]>([
+    ['readActive a version stored as type file', async (tx) => ids(await readActive(tx, { siteId: MX, contentId: MFILE }), 'contenthistid'), [v(MFILE)]],
+    ['readActive a version stored as type form', async (tx) => ids(await readActive(tx, { siteId: MX, contentId: MFORM }), 'contenthistid'), [v(MFORM)]],
+    ['readActiveByFilename a file by filename', async (tx) => ids(await readActiveByFilename(tx, { siteId: MX, filename: 'Willow.PDF' }), 'contenthistid'), [v(MFILE)]],
+    ['nest the tree children of every listed type', async (tx) => ids(await nest(tx, { parentId: MXP, siteId: MX })), [MFILE, MFORM, MFOLDER, MLINK, MCAL, MIMAGE]],
+    ['sections the folders and calendars', async (tx) => ids(await sections(tx, { siteId: MX })), [MFOLDER, MCAL]],
+    ['pageCount the pages, folders, files and calendars', (tx) => pageCount(tx, { siteId: MX }), [{ counter: 8 }]],
+    ['components a component', async (tx) => ids(await components(tx, { moduleId: SITE_TREE_MODULE_ID, siteId: MX })), [MCOMP]],
+    ['privateSearch every search type, never a link by its body', async (tx) => ids(await privateSearch(tx, { siteId: MX, keywords: 'willow' })), [MCOMP, MFILE, MEVENT, MFOLDER, MFORM]],
+    ['privateSearch a PNG as an image', async (tx) => ids(await privateSearch(tx, { siteId: MX, keywords: 'willow', searchType: 'image' })), [MIMAGE]],
+    ['poolFileMatches a PNG as an image', (tx) => poolFileMatches(tx, { keywords: 'willow', searchType: 'image', fileIds: [MPNG] }), { fileIds: [MPNG], keywordFileIds: [MPNG] }],
+    ['publicSearch files, folders and a future event under a calendar', async (tx) => ids(await publicSearch(tx, { siteId: MX, keywords: 'willow', today: TODAY })), [MFILE, MEVENT, MFOLDER]],
+    ['relatedContent a future event under a calendar', async (tx) => ids(await relatedContent(tx, { siteId: MX, contentHistId: v(MXP), today: TODAY })), [MEVENT]],
+    ['tagCloud the tags of a future event under a calendar', (tx) => tagCloud(tx, { siteId: MX, today: TODAY }), [{ tag: 'Willow', tagcount: 1 }]],
+    ['expireAssignments an EXPIRE assignment', (tx) => expireAssignments(tx, { contentHistId: v(MFILE) }), [{ userid: USER }]],
+    ['expiringContent content with an EXPIRE assignment', (tx) => expiringContent(tx, { siteId: MX, userId: USER, today: TODAY }), [{ contentid: MFILE }]],
+    ['draftList a Draft assignment', async (tx) => ids(await draftList(tx, { siteId: MX, userId: USER }), 'contenthistid'), [v(MDRAFT)]],
+    ['approvalsQuery a pending request', async (tx) => ids(await approvalsQuery(tx, { siteId: MX, groupIds: null }), 'contenthistid'), [v(MAPPROVE)]],
+  ])('compares stored legacy spellings case-insensitively: %s', async (_label, read, expected) => {
+    expect(await inB(read)).toEqual(expected);
+  });
+
   it('makes every read wait out an executing window and fail with UnitReadBlockedError', async () => {
     const holderId = `window-${randomUUID()}`;
     await closeGates(handle.app, { units: CONTENT_UNITS, holderId, phase: 'executing', allowLegacy: true });
@@ -678,10 +844,16 @@ describe.skipIf(!(await pgAvailable()))('repo/content-queries history, drafts, s
         ['expiringContent', (tx) => expiringContent(tx, { siteId: SITE, userId: USER, today: TODAY })],
         ['lockedContentCount', (tx) => lockedContentCount(tx, { siteId: SITE, userId: USER })],
         ['draftPromptData', (tx) => draftPromptData(tx, { contentId: P, siteId: SITE })],
-        ['poolFileMatches', (tx) => poolFileMatches(tx, { keywords: 'orchid', searchType: 'file' })],
+        ['poolFileMatches', (tx) => poolFileMatches(tx, { keywords: 'orchid', searchType: 'file', fileIds: [IMG] })],
+        ['privateSearchFileIds', (tx) => privateSearchFileIds(tx, { siteId: SITE, keywords: 'orchid', searchType: 'file' })],
         ['privateSearch', (tx) => privateSearch(tx, { siteId: SITE, keywords: 'orchid' })],
         ['publicSearch', (tx) => publicSearch(tx, { siteId: SITE, keywords: 'orchid', today: TODAY })],
         ['relatedContent', (tx) => relatedContent(tx, { siteId: SITE, contentHistId: P_V2, today: TODAY })],
+        ['relatedLinks', (tx) => relatedLinks(tx, { contentHistId: P_V2 })],
+        [
+          'relatedCandidates',
+          (tx) => relatedCandidates(tx, { siteId: SITE, contentHistId: P_V2, today: TODAY, links: [{ relatedid: SB, contentid: P, relatedcontentsetid: null, orderno: 1 }] }),
+        ],
         ['usage', (tx) => usage(tx, { siteId: SITE, objectId: CMP1 })],
         ['tagCloud', (tx) => tagCloud(tx, { siteId: SITE, today: TODAY })],
         ['objects', (tx) => objects(tx, { columnId: 2, contentHistId: P_V2, siteId: SITE })],

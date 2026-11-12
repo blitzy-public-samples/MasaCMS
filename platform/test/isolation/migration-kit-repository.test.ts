@@ -192,6 +192,42 @@ describe('repository calls rejected before any statement', () => {
       'has no column shade',
     ],
     [
+      'an insertAbsent into a keyless table',
+      (tx: TenantTx) => repo.insertAbsent(tx, 'tag_member', [{ label: 'a', weight: 1 }], ['label']),
+      'tag_member',
+      'has no primary key; write it with insert, deleteOne or replaceOne',
+    ],
+    [
+      'an insertAbsent without conflict columns',
+      (tx: TenantTx) => repo.insertAbsent(tx, 'item', [{ item_id: 'a' }], []),
+      'item',
+      'conflict must name declared columns other than tenant_id',
+    ],
+    [
+      'an insertAbsent conflict on an undeclared column',
+      (tx: TenantTx) => repo.insertAbsent(tx, 'item', [{ item_id: 'a' }], ['sku']),
+      'item',
+      'conflict must name declared columns other than tenant_id',
+    ],
+    [
+      'an insertAbsent conflict on tenant_id',
+      (tx: TenantTx) => repo.insertAbsent(tx, 'item', [{ item_id: 'a' }], ['tenant_id']),
+      'item',
+      'conflict must name declared columns other than tenant_id',
+    ],
+    [
+      'an insertAbsent row with an undeclared column',
+      (tx: TenantTx) => repo.insertAbsent(tx, 'item', [{ item_id: 'a' }, { item_id: 'b', colour: 'red' }], ['name']),
+      'item',
+      'has no column colour',
+    ],
+    [
+      'an insertAbsent row of another tenant',
+      (tx: TenantTx) => repo.insertAbsent(tx, 'item', [{ item_id: 'a' }, { tenant_id: OTHER_TENANT, item_id: 'b' }], ['name']),
+      'item',
+      `row tenant ${OTHER_TENANT} is not the transaction tenant ${TENANT}`,
+    ],
+    [
       'a transaction on another schema',
       (tx: TenantTx) => elsewhere.insert(tx, 'item', { item_id: 'a' }),
       undefined,
@@ -216,6 +252,7 @@ describe('repository calls rejected before any statement', () => {
 
   it.each([
     ['insert', (tx: TenantTx) => repo.insert(tx, 'item', { item_id: 'a' })],
+    ['insertAbsent', (tx: TenantTx) => repo.insertAbsent(tx, 'item', [{ item_id: 'a' }], ['name'])],
     ['update', (tx: TenantTx) => repo.update(tx, 'item', { item_id: 'a' }, { qty: 1 })],
     ['upsert', (tx: TenantTx) => repo.upsert(tx, 'item', { item_id: 'a' })],
     ['delete', (tx: TenantTx) => repo.delete(tx, 'item', { item_id: 'a' })],
@@ -230,6 +267,31 @@ describe('repository calls rejected before any statement', () => {
       const kept = await db.withTenant(TENANT, (tx) => Promise.resolve(tx));
       await expect(call(kept)).rejects.toBeInstanceOf(OutsideTenantTransactionError);
       expect(statements).toEqual(['BEGIN', expect.stringContaining("set_config('app.tenant_id'"), 'COMMIT']);
+    },
+  );
+
+  it('answers an insertAbsent of no rows with no rows, no gate and no statement', async () => {
+    const { db, statements } = recordingDb(BASE);
+    await expect(db.withTenant(TENANT, (tx) => repo.insertAbsent(tx, 'item', [], ['name']))).resolves.toEqual([]);
+    expect(statements).toEqual(['BEGIN', expect.stringContaining("set_config('app.tenant_id'"), 'COMMIT']);
+  });
+
+  const ungatedItems = createRepository({ owner: OWNER, schema: BASE, tables: [{ ...ITEM, unit: undefined }] });
+  it.each([
+    ['three columns bound by the row statement', (i: number) => ({ item_id: `i${i}`, name: `n${i}`, qty: i }), Math.floor((65_535 - 1) / 3)],
+    ['one column bound by the changelog statement', (i: number) => ({ item_id: `i${i}` }), Math.floor((65_535 - 11) / 2)],
+  ] as [string, (i: number) => RepositoryRow, number][])(
+    'splits an insertAbsent of one row above the chunk size into two row statements within the parameter limit (%s)',
+    async (_label, row, chunk) => {
+      const { db, statements } = recordingDb(BASE);
+      const rows = Array.from({ length: chunk + 1 }, (_, i) => row(i));
+      // The recording database inserts nothing, so no changelog statement follows.
+      await expect(db.withTenant(TENANT, (tx) => ungatedItems.insertAbsent(tx, 'item', rows, ['name']))).resolves.toEqual([]);
+      const inserts = statements.filter((text) => text.startsWith('INSERT INTO'));
+      expect(inserts.map((text) => text.match(/\(\$1[,)]/g)?.length)).toEqual([chunk, 1]);
+      const highest = inserts.map((text) => [...text.matchAll(/\$(\d+)/g)].reduce((max, [, n]) => Math.max(max, Number(n)), 0));
+      expect(highest[0]).toBeLessThanOrEqual(65_535);
+      expect(statements.filter((text) => text.includes('changelog'))).toEqual([]);
     },
   );
 });
@@ -339,6 +401,21 @@ describe.skipIf(!available)('repository writes against PostgreSQL', () => {
     return encodeRow(ITEM_COLUMNS, row);
   }
 
+  /** `tx` appending the text of each statement it runs to `seen` and counting its commit callbacks in `registered`. */
+  function recordingTx(tx: TenantTx, seen: string[], registered: { count: number }): TenantTx {
+    return {
+      ...tx,
+      query: ((text: string | { text: string }, values?: unknown[]) => {
+        seen.push(typeof text === 'string' ? text : text.text);
+        return tx.query(text, values);
+      }) as TenantTx['query'],
+      onCommit: (cb, onError) => {
+        registered.count += 1;
+        tx.onCommit(cb, onError);
+      },
+    };
+  }
+
   it('commits an insert with one changelog row carrying the request actor, clock time and target origin', async () => {
     const tenant = freshTenant();
     const store = requestStore('req-insert');
@@ -387,6 +464,101 @@ describe.skipIf(!available)('repository writes against PostgreSQL', () => {
     expect(await handle.app.withTenant(tenant, (tx) => repo.findByKey(tx, 'item', { item_id: 'r1' }))).toBeNull();
     expect(await changelog(tenant)).toEqual([]);
     expect(store.writePositions.size).toBe(0);
+  });
+
+  it('insertAbsent inserts the rows whose conflict columns are free in input order, logging them in one changelog statement', async () => {
+    const tenant = freshTenant();
+    const taken = await handle.app.withTenant(tenant, (tx) => repo.insert(tx, 'item', { item_id: 'a0', name: 'Taken', qty: 0 }));
+    const store = requestStore('req-absent');
+    const seen: string[] = [];
+    const registered = { count: 0 };
+    const inserted = await runWithRequestContext(store, () =>
+      handle.app.withTenant(tenant, (tx) =>
+        repo.insertAbsent(
+          recordingTx(tx, seen, registered),
+          'item',
+          [
+            { item_id: 'a3', name: 'Third', qty: 3 },
+            { tenant_id: tenant.toUpperCase(), item_id: 'a1', name: 'Taken', qty: 1 },
+            { item_id: 'a2', name: 'Second', qty: undefined },
+            { item_id: 'a4', name: 'Second', qty: 4 },
+          ],
+          ['name'],
+        ),
+      ),
+    );
+    expect(inserted).toEqual([
+      { tenant_id: tenant, item_id: 'a3', name: 'Third', qty: 3 },
+      { tenant_id: tenant, item_id: 'a2', name: 'Second', qty: null },
+    ]);
+
+    const [seeded, ...log] = await changelog(tenant);
+    expect(seeded).toMatchObject({ key: encodeKey(ITEM_COLUMNS, ['item_id'], taken) });
+    expect(log).toEqual(
+      inserted.map((row) => ({
+        xid: log[0]?.xid,
+        table: 'item',
+        op: 'insert',
+        key: encodeKey(ITEM_COLUMNS, ['item_id'], row),
+        before: null,
+        after: keyedImage(row),
+        columns: ['item_id', 'name', 'qty'],
+        origin: 'target',
+        actor_user_id: 'user-1',
+        actor_service: 'people',
+        at: localTimestamp(CLOCK.now()),
+        request_id: 'req-absent',
+        operation_id: null,
+      })),
+    );
+    expect(seen.filter((text) => text.startsWith('INSERT INTO'))).toEqual([
+      expect.stringContaining(`"${handle.schema}"."item"`),
+      expect.stringContaining(`"${handle.schema}"."changelog"`),
+    ]);
+    expect(registered.count).toBe(1);
+    expect(store.writePositions).toEqual(new Map([[OWNER, log[0]?.xid]]));
+    const stored = await handle.app.withTenant(tenant, async (tx) => [
+      await repo.findByKey(tx, 'item', { item_id: 'a0' }),
+      await repo.findByKey(tx, 'item', { item_id: 'a1' }),
+      await repo.findByKey(tx, 'item', { item_id: 'a4' }),
+    ]);
+    expect(stored).toEqual([taken, null, null]);
+  });
+
+  it('insertAbsent writes a batch one row above the chunk size in statements PostgreSQL accepts at its parameter limit', async () => {
+    const tenant = freshTenant();
+    const chunk = Math.floor((65_535 - 11) / 2);
+    const rows = Array.from({ length: chunk + 1 }, (_, i) => ({ item_id: `c${i}` }));
+    const seen: string[] = [];
+    const { inserted, logged } = await handle.app.withTenant(tenant, async (tx) => ({
+      inserted: await repo.insertAbsent(recordingTx(tx, seen, { count: 0 }), 'item', rows, ['name']),
+      logged: (await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM ${handle.schema}.changelog`)).rows[0]?.n,
+    }));
+    expect(inserted).toHaveLength(chunk + 1);
+    expect(inserted[chunk]).toEqual({ tenant_id: tenant, item_id: `c${chunk}`, name: null, qty: null });
+    expect(logged).toBe(chunk + 1);
+    expect(seen.filter((text) => text.startsWith('INSERT INTO')).map((text) => text.includes('"changelog"'))).toEqual([false, true, false, true]);
+  });
+
+  it('rolls insertAbsent rows and their changelog rows back together', async () => {
+    const tenant = freshTenant();
+    const err = await failure(() =>
+      handle.app.withTenant(tenant, async (tx) => {
+        await repo.insertAbsent(tx, 'item', [{ item_id: 'x1', name: 'X1', qty: 1 }, { item_id: 'x2', name: 'X2', qty: 2 }], ['name']);
+        throw new Error('abort');
+      }),
+    );
+    expect(err).toMatchObject({ message: 'abort' });
+    expect(await handle.app.withTenant(tenant, (tx) => repo.findByKey(tx, 'item', { item_id: 'x1' }))).toBeNull();
+    expect(await changelog(tenant)).toEqual([]);
+  });
+
+  it('insertAbsent propagates a primary-key violation of a row whose conflict columns are free', async () => {
+    const tenant = freshTenant();
+    await handle.app.withTenant(tenant, (tx) => repo.insert(tx, 'item', { item_id: 'k1', name: 'Kept', qty: 1 }));
+    const err = await failure(() => handle.app.withTenant(tenant, (tx) => repo.insertAbsent(tx, 'item', [{ item_id: 'k1', name: 'Other', qty: 2 }], ['name'])));
+    expect(err).toMatchObject({ code: '23505' });
+    expect(await changelog(tenant)).toHaveLength(1);
   });
 
   it('logs an update with before and after images, only the changed columns and the caller provenance', async () => {
@@ -655,6 +827,30 @@ describe.skipIf(!available)('repository writes against PostgreSQL', () => {
     const err = await failure(() => handle.app.withTenant(tenant, (tx) => repo.upsert(tx, 'item', { item_id: 'l1', name: 'L', qty: 1 })));
     expect(err).toBeInstanceOf(UnitNotAuthoritativeError);
     expect(err).toMatchObject({ units: [ITEM_UNIT], reason: 'unit-not-authoritative' });
+  });
+
+  it.each([
+    ['closed', GateClosedError],
+    ['legacy', UnitNotAuthoritativeError],
+  ] as [GateState, new (...args: never[]) => Error][])('fails insertAbsent under a %s item gate with its gate error and writes nothing', async (state, expected) => {
+    const tenant = freshTenant();
+    await setGate(ITEM_UNIT, state);
+    const err = await failure(() =>
+      withGatedTenant(handle.app, tenant, (tx) => repo.insertAbsent(tx, 'item', [{ item_id: 'g1', name: 'G', qty: 1 }], ['name']), { budgetMs: 150 }),
+    );
+    expect(err).toBeInstanceOf(expected);
+    expect(err).toMatchObject({ units: [ITEM_UNIT] });
+    expect(await changelog(tenant)).toEqual([]);
+  });
+
+  it('lets a migration-authority insertAbsent pass a legacy gate with the caller origin', async () => {
+    const tenant = freshTenant();
+    await setGate(ITEM_UNIT, 'legacy');
+    const authority = createMigrationAuthority({ batchId: 'batch-absent' });
+    await handle.app.withTenant(tenant, (tx) =>
+      repo.insertAbsent(tx, 'item', [{ item_id: 'm1', name: 'M', qty: 1 }], ['name'], { authority, origin: 'backfill', operationId: 'op-absent' }),
+    );
+    expect((await changelog(tenant)).map((change) => [change.op, change.origin, change.operation_id])).toEqual([['insert', 'backfill', 'op-absent']]);
   });
 
   it('gates a write whose authority was never issued by createMigrationAuthority', async () => {

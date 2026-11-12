@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  diffCoverage,
   encodeKey,
   encodeRow,
   mappingCoverage,
@@ -16,11 +17,12 @@ import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA } from '@opt2/platform/testing';
 import { addressMapping } from '../../src/migration/mappings/address.js';
 import { extendAttributeMapping } from '../../src/migration/mappings/extend-attribute.js';
-import { extendDataMapping } from '../../src/migration/mappings/extend-data.js';
+import { classExtendDataMapping, extendDataMapping } from '../../src/migration/mappings/extend-data.js';
 import { EXTEND_RCSET_MAPPINGS, extendRcsetMapping } from '../../src/migration/mappings/extend-rcset.js';
 import { extendSetMapping } from '../../src/migration/mappings/extend-set.js';
 import { extendSubtypeMapping } from '../../src/migration/mappings/extend-subtype.js';
 import { favoriteMapping } from '../../src/migration/mappings/favorite.js';
+import { PEOPLE_MAPPINGS } from '../../src/migration/mappings/index.js';
 import { interestMapping } from '../../src/migration/mappings/interest.js';
 import { personArchiveMapping } from '../../src/migration/mappings/person-archive.js';
 import { personMapping } from '../../src/migration/mappings/person.js';
@@ -32,6 +34,7 @@ interface OwnershipTarget {
   unit: string;
   owner: string;
   rowPredicate: string | null;
+  columnPolicy: 'whole-table' | 'explicit';
   keyColumns: string[];
   ownedColumns: string[];
 }
@@ -63,6 +66,7 @@ const MAPPINGS: readonly Mapping[] = [
   extendAttributeMapping,
   extendRcsetMapping,
   extendDataMapping,
+  classExtendDataMapping,
   personArchiveMapping,
 ];
 
@@ -103,6 +107,22 @@ function expectedTenant(table: OwnershipTable): TenantSource {
   return { kind: 'parent', parentLegacyTable: table.tenantParent?.table ?? '', columns: { [child]: parent } };
 }
 
+/** The legacy columns table ownership assigns to people, keyed as `mappingCoverage` keys a mapping with the target's split. */
+function assignedPeopleCoverage(): Record<string, string[]> {
+  const coverage: Record<string, string[]> = {};
+  for (const table of OWNERSHIP.tables) {
+    for (const target of table.targets.filter((entry) => entry.unit.startsWith('people.'))) {
+      const split = expectedSplit(table, target.rowPredicate);
+      const values = split === undefined ? [] : typeof split.value === 'object' ? split.value : [split.value];
+      const key = split === undefined ? table.table : `${table.table}{${split.by}=${values.map(String).join(',')}}`;
+      // A whole-table target owns every live catalog column; its ownedColumns list only the static set.
+      const columns = target.columnPolicy === 'whole-table' ? table.columns : [...target.keyColumns, ...target.ownedColumns];
+      coverage[key] = [...(coverage[key] ?? []), ...columns];
+    }
+  }
+  return coverage;
+}
+
 describe('people mappings against table ownership', () => {
   it.each(CASES)('maps %s onto exactly the key and owned columns of its people unit, in catalog order', (_legacyTable, mapping) => {
     const { table, target } = ownershipOf(mapping);
@@ -139,10 +159,39 @@ describe('people mappings against table ownership', () => {
       'tclassextendattributes{baseTable=tusers,tusersaddresses}',
       'tclassextendrcsets{baseTable=tusers,tusersaddresses}',
       'tclassextenddatauseractivity{Type=2}',
+      'tclassextenddata{baseTable=tusers,tusersaddresses}',
       'synthetic.person_archive',
     ]);
     expect(EXTEND_RCSET_MAPPINGS).toStrictEqual([extendRcsetMapping]);
     expect(TRASH_MAPPINGS).toStrictEqual([trashMapping]);
+  });
+
+  it('registers exactly these mappings in the frozen barrel, in this order', () => {
+    const order: readonly Mapping[] = [
+      personMapping,
+      addressMapping,
+      interestMapping,
+      tagMapping,
+      favoriteMapping,
+      extendSubtypeMapping,
+      extendSetMapping,
+      extendAttributeMapping,
+      ...EXTEND_RCSET_MAPPINGS,
+      extendDataMapping,
+      classExtendDataMapping,
+      personArchiveMapping,
+      ...TRASH_MAPPINGS,
+    ];
+
+    expect(Object.isFrozen(PEOPLE_MAPPINGS)).toBe(true);
+    expect(PEOPLE_MAPPINGS).toHaveLength(order.length);
+    PEOPLE_MAPPINGS.forEach((mapping, index) => expect(mapping).toBe(order[index]));
+    expect(PEOPLE_MAPPINGS.filter((mapping) => !MAPPINGS.includes(mapping)).map((mapping) => mapping.legacyTable)).toStrictEqual([]);
+    expect(MAPPINGS.filter((mapping) => !PEOPLE_MAPPINGS.includes(mapping)).map((mapping) => mapping.legacyTable)).toStrictEqual([]);
+  });
+
+  it('covers exactly the legacy columns table ownership assigns to people units', () => {
+    expect(diffCoverage(assignedPeopleCoverage(), mappingCoverage(PEOPLE_MAPPINGS))).toStrictEqual({ missing: {}, extra: {} });
   });
 });
 
@@ -187,6 +236,11 @@ describe('split discriminators', () => {
     ['an extended value of a group', extendDataMapping, { baseID: 'G-A' }, 1, false],
     ['an extended value of a Type=2 user\'s address, by its owner\'s Type as text', extendDataMapping, { baseID: 'ADDR-A' }, '2 ', true],
     ['an extended value whose owner does not resolve', extendDataMapping, { baseID: 'X' }, null, false],
+    ['a class-extension value of a user subtype', classExtendDataMapping, { attributeID: 1 }, 'tusers', true],
+    ['a class-extension value of an address subtype, ignoring padding', classExtendDataMapping, { attributeID: 2 }, 'tusersaddresses ', true],
+    ['a class-extension value of a content subtype', classExtendDataMapping, { attributeID: 3 }, 'tcontent', false],
+    ['a class-extension value of a site subtype', classExtendDataMapping, { attributeID: 4 }, 'tsettings', false],
+    ['a class-extension value whose attribute chain does not resolve', classExtendDataMapping, { attributeID: 5 }, null, false],
     ['an archive row, which has no split', personArchiveMapping, {}, undefined, true],
   ])('answers %s', (_label, mapping, row, discriminator, accepted) => {
     expect(mapping.acceptsRow(row, discriminator)).toBe(accepted);
@@ -274,7 +328,7 @@ describe('mapping construction against a drifted table definition', () => {
     vi.resetModules();
   });
 
-  type Definition = 'PERSON' | 'ADDRESS' | 'INTEREST' | 'TAG' | 'FAVORITE' | 'EXTEND_SET' | 'EXTEND_ATTRIBUTE' | 'EXTEND_RCSET' | 'EXTEND_DATA';
+  type Definition = 'PERSON' | 'ADDRESS' | 'INTEREST' | 'TAG' | 'FAVORITE' | 'EXTEND_SET' | 'EXTEND_ATTRIBUTE' | 'EXTEND_RCSET' | 'EXTEND_DATA' | 'CLASS_EXTEND_DATA';
 
   it.each<{ legacyTable: string; definition: Definition; dropped: string; message: string; load: () => Promise<unknown> }>([
     { legacyTable: 'tusers', definition: 'PERSON', dropped: 'IMService', message: 'people.person has no column imservice', load: () => import('../../src/migration/mappings/person.js') },
@@ -286,6 +340,7 @@ describe('mapping construction against a drifted table definition', () => {
     { legacyTable: 'tclassextendattributes', definition: 'EXTEND_ATTRIBUTE', dropped: 'defaultValue', message: 'people.extend_attribute declares no column for defaultValue', load: () => import('../../src/migration/mappings/extend-attribute.js') },
     { legacyTable: 'tclassextendrcsets', definition: 'EXTEND_RCSET', dropped: 'orderNo', message: 'people.extend_rc_set declares no column for orderNo', load: () => import('../../src/migration/mappings/extend-rcset.js') },
     { legacyTable: 'tclassextenddatauseractivity', definition: 'EXTEND_DATA', dropped: 'numericvalue', message: 'people.extend_data_user_activity declares no column for numericvalue', load: () => import('../../src/migration/mappings/extend-data.js') },
+    { legacyTable: 'tclassextenddata', definition: 'CLASS_EXTEND_DATA', dropped: 'attributeValue', message: 'people.extend_data declares no column for attributeValue', load: () => import('../../src/migration/mappings/extend-data.js') },
   ])('refuses to build $legacyTable when its target lacks the column for $dropped', async ({ legacyTable, definition, dropped, message, load }) => {
     vi.resetModules();
     vi.doMock('../../src/repo/tables.js', async (importOriginal) => {

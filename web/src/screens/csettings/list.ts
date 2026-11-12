@@ -5,6 +5,7 @@ import { parseLegacyDate } from '@/lib/dates';
 import { legacySettings } from '@/lib/env';
 import { okBody } from '@/lib/gateway-client';
 import { encodeHtml, encodeHtmlAttr, encodeJs, html, join, raw, type SafeHtml } from '@/lib/html';
+import { setSessionMuraValue } from '@/lib/request-context';
 import type { PageScreen, Rc, ScreenContext } from '../registry';
 
 type SiteListItem = components['schemas']['SiteListItem'];
@@ -45,8 +46,6 @@ export function renderLegacyErrors(errors: Readonly<Record<string, string>>): Sa
   return raw(`<div class="alert alert-error"><span>${out}</span></div>`);
 }
 
-// identity serves `session.mura` but has no operation that changes its values, so the view's reset of `errors` to ""
-// is not stored: a struct there keeps showing until identity's copy of the session changes.
 /** `getCurrentUser().getValue("errors")` when it is a non-empty struct. */
 function sessionErrors(ctx: ScreenContext): Record<string, string> | undefined {
   const { mura } = ctx.req.session;
@@ -409,6 +408,8 @@ export const listScreen: Omit<
     const view: TableView = { byOrderNo, staging, deployColumns: staging && !byOrderNo };
     await ctx.csrf.prefetch(csrfContexts(sites));
     const errors = sessionErrors(ctx);
+    // The view clears the errors it read on every render: `getCurrentUser().setValue("errors", "")`.
+    setSessionMuraValue(ctx.req, 'errors', '');
     const alert = errors === undefined ? null : html`
 \t\t${renderLegacyErrors(errors)}
 \t\t`;

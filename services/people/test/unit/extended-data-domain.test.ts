@@ -24,8 +24,9 @@ import {
   type ExtendSaveContext,
   type ExtendedAttribute,
 } from '../../src/domain/extended-data.js';
+import { enPeopleMessages, type PeopleMessageKey, type PeopleMessages } from '../../src/domain/messages.js';
 import { normaliseParams } from '../../src/domain/person.js';
-import { createPeopleRepository, type PeopleRepository } from '../../src/repo/repository.js';
+import { createPeopleRepository, type ExtendAttributeFilter, type PeopleRepository } from '../../src/repo/repository.js';
 import {
   EXTEND_ATTRIBUTE,
   EXTEND_SET,
@@ -133,6 +134,11 @@ function bpcharEq(a: string | null, b: string): boolean {
   return a !== null && a.replace(/ +$/, '') === b.replace(/ +$/, '');
 }
 
+/** SQL Server text equality under its case-insensitive collation; NULL matches nothing. */
+function sqlServerEq(a: string | null, b: string): boolean {
+  return a !== null && a.replace(/ +$/, '').toLowerCase() === b.replace(/ +$/, '').toLowerCase();
+}
+
 /** An ascending comparator over `keys`, NULLs first. */
 function byKeys<T>(...keys: Array<(row: T) => string | number | null>): (a: T, b: T) => number {
   return (a, b) => {
@@ -159,14 +165,15 @@ interface MemoryRepository {
   repo: PeopleRepository;
   data: ExtendDataRow[];
   writes: Array<{ method: 'replaceExtendData' | 'deleteExtendDataForBase'; baseId: string; ctx: WriteContext | undefined }>;
+  attributeFilters: ExtendAttributeFilter[];
 }
 
 type ExtendMethods = 'listExtendData' | 'replaceExtendData' | 'deleteExtendDataForBase' | 'listExtendSubtypes' | 'listExtendSets' | 'listExtendAttributes';
 
-/** The extended-data methods of PeopleRepository over arrays, with the filters and orderings their SQL applies. */
+/** The extended-data methods of PeopleRepository over arrays, with the filters and orderings their SQL applies; records each attribute filter. */
 function memoryRepository(definitions: Definitions = {}): MemoryRepository {
   const { subtypes = [], sets = [], attributes = [] } = definitions;
-  const store: Omit<MemoryRepository, 'repo'> = { data: [...(definitions.data ?? [])], writes: [] };
+  const store: Omit<MemoryRepository, 'repo'> = { data: [...(definitions.data ?? [])], writes: [], attributeFilters: [] };
   let nextDataId = Math.max(0, ...store.data.map((row) => row.dataid)) + 1;
   const remove = (match: (row: ExtendDataRow) => boolean): number => {
     const before = store.data.length;
@@ -205,12 +212,13 @@ function memoryRepository(definitions: Definitions = {}): MemoryRepository {
       return sets.filter((row) => subtypeIds.some((id) => bpcharEq(row.subtypeid, id))).sort(byKeys<ExtendSetRow>((r) => r.orderno, (r) => r.extendsetid));
     },
     async listExtendAttributes(_tx, filter) {
+      store.attributeFilters.push(filter);
       return attributes
         .filter(
           (row) =>
-            (filter.setIds === undefined || filter.setIds.some((id) => bpcharEq(row.extendsetid, id))) &&
+            (filter.setIds === undefined || filter.setIds.some((id) => sqlServerEq(row.extendsetid, id))) &&
             (filter.attributeIds === undefined || filter.attributeIds.includes(row.attributeid)) &&
-            (filter.siteId === undefined || row.siteid === filter.siteId),
+            (filter.siteId === undefined || sqlServerEq(row.siteid, filter.siteId)),
         )
         .sort(byKeys<ExtendAttributeRow>((r) => r.orderno, (r) => r.name?.toLowerCase() ?? null, (r) => r.attributeid));
     },
@@ -303,7 +311,7 @@ describe('extendedDataRequested', () => {
 });
 
 describe('loadSubmittedAttributes', () => {
-  const { repo } = memoryRepository({
+  const definitions = {
     attributes: [
       attributeRow(30, 'C', { extendsetid: 'SET-A'.padEnd(35) }),
       attributeRow(10, 'A', { siteid: 'tenant-b' }),
@@ -312,24 +320,33 @@ describe('loadSubmittedAttributes', () => {
       attributeRow(50, 'E', { type: 'File', siteid: 'TENANT-A' }),
       attributeRow(60, 'F', { extendsetid: 'SET-C' }),
     ],
-  });
+  };
 
-  it.each<[string, string, boolean, number[]]>([
+  it.each<[string, string, boolean, number[], ExtendAttributeFilter[]]>([
     [
       'every site for validation, set ids matched as SQL Server does, NULL types left out [legacy: core/mura/extend/extendManager.cfc:381-387]',
       'SET-A,set-b',
       false,
       [10, 30, 40, 50],
+      [{ setIds: ['SET-A', 'set-b'] }],
     ],
-    ['only the save site, compared case-insensitively, for a save [legacy: core/mura/extend/extendManager.cfc:480-487,563-570]', 'SET-A,set-b', true, [30, 40, 50]],
-    ['nothing for an empty set list', '', false, []],
-  ])('reads %s', async (_label, setIds, forSave, expected) => {
-    const rows = await loadSubmittedAttributes(repo, TX, setIds, SITE, { forSave });
+    [
+      'only the save site, compared case-insensitively, for a save [legacy: core/mura/extend/extendManager.cfc:480-487,563-570]',
+      'SET-A,set-b',
+      true,
+      [30, 40, 50],
+      [{ setIds: ['SET-A', 'set-b'], siteId: SITE }],
+    ],
+    ['nothing for an empty set list', '', false, [], []],
+  ])('reads %s, filtered by the repository', async (_label, setIds, forSave, expected, filters) => {
+    const memory = memoryRepository(definitions);
+    const rows = await loadSubmittedAttributes(memory.repo, TX, setIds, SITE, { forSave });
     expect(rows.map((row) => row.attributeId)).toStrictEqual(expected);
+    expect(memory.attributeFilters).toStrictEqual(filters);
   });
 
   it('returns each attribute in the query shape', async () => {
-    const [row] = await loadSubmittedAttributes(repo, TX, 'SET-A', SITE, { forSave: false });
+    const [row] = await loadSubmittedAttributes(memoryRepository(definitions).repo, TX, 'SET-A', SITE, { forSave: false });
     expect(row).toStrictEqual({ attributeId: 10, name: 'A', validation: '', message: '', type: 'TextBox', extendSetId: 'SET-A', siteId: 'tenant-b' });
   });
 });
@@ -347,8 +364,21 @@ describe('validateExtendedData [legacy: core/mura/extend/extendManager.cfc:362-4
   ];
   const STRICT = { stricthtml: true, stricthtmlexclude: '' };
 
-  function validate(params: Record<string, unknown>, config: Pick<ExtendConfig, 'stricthtml' | 'stricthtmlexclude'> = EXTEND_CONFIG_DEFAULTS, locale?: string) {
-    return validateExtendedData(ATTRIBUTES, normaliseParams({ extendSetID: 'SET-A', ...params }), config, locale);
+  // The French texts of the site bundle [legacy: core/mura/resourceBundle/resources/fr.properties:681-683].
+  const FR_TEXTS: Partial<Record<PeopleMessageKey, string>> = {
+    'params.errordate': '{1} doit être une date valide.',
+    'params.erroremail': '{1} doit être un email valide.',
+    'params.errornumeric': '{1} doit être un chiffre.',
+  };
+  const french: PeopleMessages = (siteId, key) => FR_TEXTS[key] ?? enPeopleMessages(siteId, key);
+
+  function validate(
+    params: Record<string, unknown>,
+    config: Pick<ExtendConfig, 'stricthtml' | 'stricthtmlexclude'> = EXTEND_CONFIG_DEFAULTS,
+    locale?: string,
+    rb?: PeopleMessages,
+  ) {
+    return validateExtendedData(ATTRIBUTES, normaliseParams({ extendSetID: 'SET-A', ...params }), config, locale, rb);
   }
 
   it.each<[string, Record<string, unknown>]>([
@@ -443,6 +473,35 @@ describe('validateExtendedData [legacy: core/mura/extend/extendManager.cfc:362-4
 
   it('refuses a complex value as ACF does', () => {
     expect(() => validate({ bio: ['a'] })).toThrow('Complex object types cannot be converted to simple values.');
+  });
+
+  it.each<[string, Record<string, unknown>, Record<string, string>]>([
+    ['a Date that is no date', { birthday: 'not a date' }, { Birthday: 'BIRTHDAY doit être une date valide.' }],
+    ['a Numeric with a thousands separator', { shoe: '1,000' }, { Shoe: 'SHOE doit être un chiffre.' }],
+    ['an Email without a top-level domain', { contact: 'pat@example' }, { Contact: 'CONTACT doit être un email valide.' }],
+  ])('reports %s in the French site bundle [legacy: core/mura/extend/extendManager.cfc:372-373,409,417,425]', (_label, params, expected) => {
+    expect(validate({ siteID: 'site-fr', ...params }, EXTEND_CONFIG_DEFAULTS, undefined, french)).toStrictEqual(expected);
+  });
+
+  it.each<[string, Record<string, unknown>, string, string]>([
+    ['the override of the posted site', { siteID: 'tenant-b' }, 'tenant-b', 'Pointure SHOE invalide'],
+    ['the default text of another site', { siteID: 'tenant-c' }, 'tenant-c', 'SHOE must be numeric.'],
+    ['a blank site id for an input without one', {}, '', 'SHOE must be numeric.'],
+  ])('formats %s', (_label, params, siteId, expected) => {
+    const sites: string[] = [];
+    const rb: PeopleMessages = (site, key) => {
+      sites.push(site);
+      return site === 'tenant-b' && key === 'params.errornumeric' ? 'Pointure {1} invalide' : enPeopleMessages(site, key);
+    };
+    expect(validate({ ...params, shoe: 'abc' }, EXTEND_CONFIG_DEFAULTS, undefined, rb)).toStrictEqual({ Shoe: expected });
+    expect(sites).toStrictEqual([siteId]);
+  });
+
+  it.each<[string, ExtendedAttribute, Pick<ExtendConfig, 'stricthtml' | 'stricthtmlexclude'>, Record<string, unknown>, Record<string, string>]>([
+    ['the attribute message', attribute(3, 'Shoe', { validation: 'Numeric', message: 'Enter a size' }), EXTEND_CONFIG_DEFAULTS, { shoe: 'abc' }, { Shoe: 'Enter a size' }],
+    ['the stricthtml text', attribute(5, 'Bio'), STRICT, { bio: '<b>hi</b>' }, { Bioencoding: "The field 'Bio' contains invalid characters." }],
+  ])('keeps %s unlocalized in the French site bundle', (_label, attr, config, params, expected) => {
+    expect(validateExtendedData([attr], normaliseParams({ extendSetID: 'SET-A', siteID: 'site-fr', ...params }), config, undefined, french)).toStrictEqual(expected);
   });
 });
 
@@ -727,6 +786,21 @@ describe('extendSetData [legacy: core/mura/extend/extendData.cfc:218-371,406-440
     const result = await read(scope);
     expect(result.entries).toStrictEqual(entries);
     expect(result.extendSetId).toBe(extendSetId);
+  });
+
+  it.each<[string, ExtendDataScope | undefined, ExtendDataRow[], ExtendAttributeFilter[]]>([
+    ['the stored attribute ids of every site without a scope', undefined, STORED, [{ attributeIds: [1, 8, 99] }]],
+    [
+      'the stored attribute ids of the scope site, then the attributes of the scope sets',
+      { siteId: SITE, type: 'User', subtype: 'Gold' },
+      STORED,
+      [{ attributeIds: [1, 8, 99], siteId: SITE }, { setIds: ['SET-DEFAULT', 'SET-GOLD-1', 'SET-GOLD-2'] }],
+    ],
+    ['no attributes without stored rows or scope sets', { siteId: SITE, type: 'USER', subtype: 'Default' }, [], []],
+  ])('fetches %s', async (_label, scope, data, filters) => {
+    const memory = memoryRepository({ subtypes: SUBTYPES, sets: SETS, attributes: ATTRIBUTES, data });
+    await extendSetData(memory.repo, TX, BASE, scope);
+    expect(memory.attributeFilters).toStrictEqual(filters);
   });
 
   it('leaves out NULL values with saveEmptyExtendedValues off, so their defaults union in', async () => {

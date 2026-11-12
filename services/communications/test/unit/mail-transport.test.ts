@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   MESSAGE_ID_DOMAIN,
   type OutgoingMail,
+  SMTP_TIMEOUT_MS,
   cfTrim,
   createSmtpTransport,
   messageIdHeader,
@@ -78,11 +79,19 @@ describe('sendTextBody', () => {
 });
 
 describe('createSmtpTransport', () => {
+  const timeouts = { connectionTimeout: 10_000, greetingTimeout: 10_000, socketTimeout: 10_000 };
+
+  it('limits every SMTP wait to the fixture cfmail timeout of 10 s', () => {
+    expect(SMTP_TIMEOUT_MS).toBe(10_000);
+  });
+
   it('opens a plain SMTP transport without a credential', () => {
     createSmtpTransport({ host: 'smtp.test', port: 2525 });
 
     expect(mailer.createTransport).toHaveBeenCalledTimes(1);
-    expect(mailer.createTransport.mock.calls[0]).toStrictEqual([{ host: 'smtp.test', port: 2525, secure: false }]);
+    expect(mailer.createTransport.mock.calls[0]).toStrictEqual([
+      { host: 'smtp.test', port: 2525, secure: false, ...timeouts },
+    ]);
   });
 
   it.each([
@@ -93,7 +102,7 @@ describe('createSmtpTransport', () => {
 
     expect(mailer.createTransport).toHaveBeenCalledTimes(1);
     expect(mailer.createTransport.mock.calls[0]).toStrictEqual([
-      { host: 'relay.test', port, secure, requireTLS, auth: { user: 'c45-user', pass: 'c45-pass' } },
+      { host: 'relay.test', port, secure, requireTLS, auth: { user: 'c45-user', pass: 'c45-pass' }, ...timeouts },
     ]);
   });
 

@@ -214,6 +214,7 @@ describe('committed inputs', () => {
     expect(resolve('/opt2/files/content-files/tenant/file.png')).toBe('opt2:/opt2/files/content-files/**');
     expect(resolve('/opt2/admin/timesheets/sheets')).toBe('opt2:/opt2/admin/timesheets/**');
     expect(entryOf(v0002, 'opt2:/opt2/files/finance-attachments/**')).toMatchObject({ owningService: 'finance', units: ['finance.attachment'] });
+    expect(entryOf(v0002, 'opt2:/opt2/files/reporting-exports/**')).toMatchObject({ owningService: 'reporting', units: ['reporting.export_job'] });
     expect(entryOf(v0002, 'opt2:/opt2/files/content-files/**')?.units).toEqual(['content.file']);
   });
 

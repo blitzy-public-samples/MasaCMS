@@ -69,6 +69,8 @@ interface Rendered {
   readonly markup: string;
   readonly model: DomModel;
   readonly gateway: FakeGatewayClient;
+  /** The request after the render, with the session writes it queued. */
+  readonly req: AdminRequest;
 }
 
 async function renderList(
@@ -77,10 +79,11 @@ async function renderList(
   partial: AdminRequestPartial = {},
 ): Promise<Rendered> {
   const gateway = csrfGateway();
-  const view = await screen.render(contextFor(listRequest(rc, partial), gateway), { sites });
+  const ctx = contextFor(listRequest(rc, partial), gateway);
+  const view = await screen.render(ctx, { sites });
   expect(isSafeHtml(view.body)).toBe(true);
   const markup = toString(view.body);
-  return { markup, model: fragmentModel(markup), gateway };
+  return { markup, model: fragmentModel(markup), gateway, req: ctx.req };
 }
 
 /** The contexts identity was asked to issue, in call order. */
@@ -432,6 +435,39 @@ describe('csettings.list', () => {
 
       expect(model.alerts).toEqual([]);
       expect(markup).not.toContain('alert-error');
+    });
+
+    it.each([
+      { label: 'a struct', mura: { errors: { name: 'Bad name.' } }, key: 'errors' },
+      { label: 'a struct named Errors', mura: { Errors: { name: 'Bad name.' } }, key: 'Errors' },
+      { label: 'no errors value', mura: {}, key: 'errors' },
+    ])('queues the reset of the session errors after reading $label', async ({ mura, key }) => {
+      const { req } = await renderList(SITE_LIST, {}, { session: { mura } });
+
+      expect(req.sessionWrites.muraValues).toEqual({ errors: '' });
+      expect(req.session.mura[key]).toBe('');
+    });
+
+    it('shows no error alert once the queued reset is stored', async () => {
+      const mura = { errors: { name: 'The Site Name is required.' } };
+      const first = await renderList(SITE_LIST, {}, { session: { mura } });
+      const muraValues = first.req.sessionWrites.muraValues;
+
+      const next = await renderList(SITE_LIST, {}, { session: { mura, muraValues } });
+
+      expect(first.model.alerts).toEqual([{ text: 'The Site Name is required.', className: 'alert alert-error' }]);
+      expect(next.model.alerts).toEqual([]);
+      expect(next.req.sessionWrites).not.toHaveProperty('muraValues');
+    });
+
+    it.each([
+      { label: "the user struct's", session: { mura: { errors: '' } } },
+      { label: 'the stored post-login', session: { mura: { errors: { a: 'A' } }, muraValues: { ERRORS: '' } } },
+    ])('queues no write when $label errors are already ""', async ({ session }) => {
+      const { req, model } = await renderList(SITE_LIST, {}, { session });
+
+      expect(model.alerts).toEqual([]);
+      expect(req.sessionWrites).not.toHaveProperty('muraValues');
     });
   });
 

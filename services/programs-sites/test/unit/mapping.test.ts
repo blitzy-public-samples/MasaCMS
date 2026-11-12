@@ -37,6 +37,7 @@ interface OwnershipTarget {
 
 interface OwnershipTable {
   table: string;
+  columns: string[];
   siteIdColumn: string | null;
   rowIdentity: 'key' | 'multiset';
   split?: { by: string };
@@ -71,6 +72,16 @@ const OWNED_TARGETS: readonly OwnedTarget[] = OWNERSHIP.tables.flatMap((table) =
     .filter((target) => OWNED_UNITS.has(target.unit))
     .map((target) => ({ table, target, coverageKey: coverageKeyOf(table, target) })),
 );
+
+/** Legacy columns the targets own per coverage key; a whole-table target owns every live column of its table. */
+function expectedCoverage(targets: readonly OwnedTarget[]): Record<string, string[]> {
+  const expected: Record<string, string[]> = {};
+  for (const { table, target, coverageKey } of targets) {
+    const owned = target.columnPolicy === 'whole-table' ? table.columns : [...target.keyColumns, ...(target.ownedColumns ?? [])];
+    expected[coverageKey] = [...new Set([...(expected[coverageKey] ?? []), ...owned])];
+  }
+  return expected;
+}
 
 /** The one mapping of the target's legacy table onto its unit. */
 function mappingFor({ table, target }: OwnedTarget): Mapping {
@@ -140,15 +151,30 @@ function discriminatorOf(mapping: Mapping): string | number | undefined {
 
 describe('programs-sites mapping coverage', () => {
   it('maps exactly the legacy columns table ownership assigns to programs-sites', () => {
-    const actual = mappingCoverage(mappings);
-    // A whole-table target may omit ownedColumns; it is then checked for its table and unit only.
-    const expected = Object.fromEntries(
-      OWNED_TARGETS.map(({ target, coverageKey }) => [coverageKey, target.ownedColumns ?? actual[coverageKey] ?? []]),
-    );
-    const diff = diffCoverage(expected, actual);
+    const diff = diffCoverage(expectedCoverage(OWNED_TARGETS), mappingCoverage(mappings));
 
     expect(diff, JSON.stringify(diff, null, 2)).toStrictEqual({ missing: {}, extra: {} });
   });
+
+  it.each(OWNED_TARGETS.map((entry) => [entry.coverageKey, entry] as const))(
+    'gives %s a column policy expectedCoverage reads, a whole-table one owning exactly its catalog columns',
+    (_coverageKey, { table, target }) => {
+      expect(['whole-table', 'explicit']).toContain(target.columnPolicy);
+      if (target.columnPolicy === 'whole-table') expect(target.ownedColumns ?? table.columns).toStrictEqual(table.columns);
+    },
+  );
+
+  it.each(OWNED_TARGETS.map((entry) => [entry.coverageKey, entry] as const))(
+    'fails coverage of %s naming a live column added to its catalog but not mapped',
+    (coverageKey, entry) => {
+      const column = 'opt2_synthetic_unmapped_live_column';
+      const table = { ...entry.table, columns: [...entry.table.columns, column] };
+      const targets = OWNED_TARGETS.map((owned) => (owned === entry ? { ...owned, table } : owned));
+      const diff = diffCoverage(expectedCoverage(targets), mappingCoverage(mappings));
+
+      expect(diff).toStrictEqual({ missing: { [coverageKey]: [column] }, extra: {} });
+    },
+  );
 
   it.each(OWNED_TARGETS.map((entry) => [entry.coverageKey, entry.target.unit, entry] as const))(
     'maps %s onto %s with a non-empty column list, its key, row identity and site tenant',

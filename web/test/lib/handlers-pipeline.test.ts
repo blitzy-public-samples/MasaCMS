@@ -58,6 +58,17 @@ vi.mock('@/screens/registry', async () => {
     {
       ...base,
       circuit: 'carch',
+      action: 'list',
+      mode: 'page',
+      load: (ctx: ScreenContext) => {
+        ctx.req = { ...ctx.req, sessionWrites: { ...ctx.req.sessionWrites, moduleid: '00000000000000000000000000000000003' } };
+        return Promise.resolve('derived');
+      },
+      render: (_ctx: ScreenContext, text: string) => ({ body: markup`<p id="derived">${text}</p>` }),
+    },
+    {
+      ...base,
+      circuit: 'carch',
       action: 'loadsitemanager',
       mode: 'json',
       json: () => ({ contentType: 'application/json; charset=utf-8', body: new TextEncoder().encode('{"a" : 1}') }),
@@ -347,6 +358,15 @@ describe('page mode', () => {
 
     await expect(renderAdminPage(LIST, {}, await forwarded())).rejects.toBe(probe.renderError);
     expect(loggedLines()).toEqual([expect.objectContaining({ statusCode: 500, error: probe.renderError })]);
+  });
+
+  it('persists the writes of a request a screen derived in place of its own, with the set-up writes it carries', async () => {
+    const result = await renderAdminPage({ circuit: 'carch', action: 'list' }, { muraAction: 'carch.list' }, await forwarded());
+
+    expect(result.kind === 'document' && String(result.document.body)).toContain('<p id="derived">derived</p>');
+    expect(savedStates().map(({ json }) => json)).toEqual([
+      expect.objectContaining({ moduleid: '00000000000000000000000000000000003', siteid: 'default' }),
+    ]);
   });
 });
 

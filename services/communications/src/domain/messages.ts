@@ -1,6 +1,6 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Messages as the fixture `communications.cfc` serves them: compose and queue, send over SMTP, confirm through Mailpit, list and detail. */
-import { LegacyApiError, cfDateTimeFormat, javaTrim } from '@opt2/platform/legacy-compat';
+import { LegacyApiError, cfDateTimeFormat, cfNumberString, javaTrim } from '@opt2/platform/legacy-compat';
 import { serializeError } from '@opt2/platform/logging';
 import { withGatedTenant, type WriteContext } from '@opt2/platform/migration-kit';
 import { withTenant, type TenantTx } from '@opt2/platform/tenancy';
@@ -135,9 +135,16 @@ function variablesParam(input: MessageInput): Readonly<Record<string, string | n
   return value as Record<string, string | number | boolean>;
 }
 
+/** CFML toString of a simple value: strings as is, booleans YES/NO, numbers as ACF prints them. */
+function simpleText(value: string | number | boolean): string {
+  if (typeof value === 'number') return cfNumberString(value);
+  if (typeof value === 'boolean') return value ? 'YES' : 'NO';
+  return value;
+}
+
 /** Replaces each `{{key}}` whose key equals a `values` key case-sensitively, in one pass; other placeholders stay as written. */
 function substitute(text: string, values: Readonly<Record<string, string | number | boolean>>): string {
-  return text.replace(PLACEHOLDER, (placeholder, key: string) => (Object.hasOwn(values, key) ? String(values[key]) : placeholder));
+  return text.replace(PLACEHOLDER, (placeholder, key: string) => (Object.hasOwn(values, key) ? simpleText(values[key]!) : placeholder));
 }
 
 /** The template's content with `variables` filled in; throws the fixture's `notFound` when the tenant has no such template. */

@@ -23,10 +23,10 @@ export function openDaysForBlackout(tx: TenantTx, repo: TimesheetsRepository, qu
 /** Mirrors `usp_apply_blackout` in the transaction tenant; returns the number of blackout rows inserted. */
 export async function applyBlackout(tx: TenantTx, repo: TimesheetsRepository, input: BlackoutInput): Promise<number> {
   const days = await openDaysForBlackout(tx, repo, { personId: input.personId, effectiveFrom: input.effectiveFrom });
-  let inserted = 0;
-  // One statement at a time: the transaction holds a single connection, and the procedure inserts in @days key order.
-  for (const day of days) {
-    const created = await repo.insertBlackoutIfAbsent(tx, {
+  // One set insert in the locked days' key order, as the procedure inserts from @days.
+  return repo.insertBlackoutsIfAbsent(
+    tx,
+    days.map((day) => ({
       blackout_id: cfUuid(),
       day_id: day.day_id,
       person_id: input.personId,
@@ -34,8 +34,6 @@ export async function applyBlackout(tx: TenantTx, repo: TimesheetsRepository, in
       reason: PERSON_ARCHIVED_REASON,
       created: input.now,
       legacy_program_id: day.legacy_program_id,
-    });
-    if (created) inserted += 1;
-  }
-  return inserted;
+    })),
+  );
 }

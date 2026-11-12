@@ -98,16 +98,24 @@ export interface AdminSessionState {
   /** Ids of the sites the user may administer (module `…000`), as identity computes them. */
   readonly siteArray: readonly string[];
   readonly s2IsPrivate: boolean;
-  /** `session.mura`: the user struct identity holds for the session. */
+  /** `session.mura`: the user struct identity holds for the session, with `muraValues` laid over it. */
   readonly mura: SessionUser;
+  /** `session.mura` values set since login, under their legacy names. */
+  readonly muraValues: Readonly<Record<string, unknown>>;
+  /** `isDefined('session.hasdefaultpassword')`, which only identity's login sets. */
+  readonly hasDefaultPassword: boolean;
+  /** `session['m<moduleid>'].topid` keyed by `m<moduleid>`. */
+  readonly moduleTopIds: Readonly<Record<string, string>>;
   /** FW/1 preserved contexts keyed by preserve key (`session['__fw1<key>']`). */
   readonly flash: Readonly<Record<string, Readonly<Record<string, string>>>>;
   /** `session.__fw1NextPreserveKey`. */
   readonly nextPreserveKey: number;
 }
 
-/** Session values the request set-up changed; `dateKey` is rebuilt from `locale` and is not persisted. */
-export type AdminSessionWrites = Partial<Omit<AdminSessionState, 'dateKey' | 'siteArray' | 's2IsPrivate' | 'mura'>>;
+/** Session values a request changed; derived values and the login-set `hasDefaultPassword` are not persisted. */
+export type AdminSessionWrites = Partial<
+  Omit<AdminSessionState, 'dateKey' | 'siteArray' | 's2IsPrivate' | 'mura' | 'hasDefaultPassword'>
+>;
 
 /** The session site as programs-sites returns it, with the values the admin reads named. */
 export interface SiteData {
@@ -530,8 +538,8 @@ async function loadIdentitySession(
 }
 
 /**
- * Persists the request's session writes, `alerts` excepted (identity keeps them on the user struct), in one identity
- * call; sends nothing without a user token or a value to store.
+ * Persists the request's session writes, `alerts` excepted (identity keeps them on the user struct) and `muraValues`
+ * sent as identity's `mura`, in one identity call; sends nothing without a user token or a value to store.
  * @throws GatewayDenialError When identity answers 401 or 403.
  * @throws Error When identity answers any other non-2xx status.
  */
@@ -540,16 +548,62 @@ export async function saveSessionWrites(
   auth: WebAuth,
   writes: Readonly<AdminSessionWrites>,
 ): Promise<void> {
-  const { paramArray, ...values } = Object.fromEntries(
+  const { paramArray, muraValues, ...values } = Object.fromEntries(
     Object.entries(writes).filter(([key]) => key !== 'alerts'),
   ) as Omit<AdminSessionWrites, 'alerts'>;
-  const state: StoredAdminState = paramArray === undefined ? values : { ...values, paramArray: [...paramArray] };
+  const state: StoredAdminState = {
+    ...values,
+    ...(paramArray === undefined ? {} : { paramArray: [...paramArray] }),
+    ...(muraValues === undefined ? {} : { mura: { ...muraValues } }),
+  };
   if (auth.userToken === undefined || Object.keys(state).length === 0) return;
   okBody(await gateway.identity.saveAdminSessionState(state), 'identity', 'saveAdminSessionState');
 }
 
 const objectEntries = (value: unknown): Array<[string, unknown]> =>
   typeof value === 'object' && value !== null ? Object.entries(value) : [];
+
+/** `struct` with `values` assigned as CFML assigns struct keys: a key equal ignoring case keeps its stored name. */
+function assignStruct<T extends Readonly<Record<string, unknown>>>(
+  struct: T,
+  values: Readonly<Record<string, unknown>>,
+): T {
+  const assigned: Record<string, unknown> = { ...struct };
+  for (const [name, value] of Object.entries(values)) {
+    const lower = name.toLowerCase();
+    assigned[Object.keys(assigned).find((key) => key.toLowerCase() === lower) ?? name] = value;
+  }
+  return assigned as T;
+}
+
+/** A `session.mura` value by case-insensitive name. */
+function sessionMuraValue(mura: SessionUser, name: string): unknown {
+  const lower = name.toLowerCase();
+  return Object.entries(mura).find(([key]) => key.toLowerCase() === lower)?.[1];
+}
+
+/** The user struct and post-login values of a session. */
+export type SessionMura = Pick<AdminSessionState, 'mura' | 'muraValues'>;
+
+/** `session.mura[name] = value` (`getCurrentUser().setValue`): `session` itself when `mura` already holds `value`. */
+export function withSessionMuraValue(session: SessionMura, name: string, value: unknown): SessionMura {
+  if (isDeepStrictEqual(sessionMuraValue(session.mura, name), value)) return session;
+  return {
+    mura: assignStruct(session.mura, { [name]: value }),
+    muraValues: assignStruct(session.muraValues, { [name]: value }),
+  };
+}
+
+/** {@link withSessionMuraValue} on `req.session` in place, queuing the post-login values in `req.sessionWrites`. */
+export function setSessionMuraValue(req: AdminRequest, name: string, value: unknown): void {
+  const next = withSessionMuraValue(req.session, name, value);
+  if (next === req.session) return;
+  // Both are typed read-only for screens, but are this request's own objects, which the handler persists from.
+  const session = req.session as { -readonly [K in keyof SessionMura]: SessionMura[K] };
+  session.mura = next.mura;
+  session.muraValues = next.muraValues;
+  (req.sessionWrites as SessionWriteLog).muraValues = next.muraValues;
+}
 
 /** `session.mura.alerts` of the user struct, with `type` and `text` read as strings. */
 function alertsOf(mura: SessionUser): Record<string, Record<string, AdminAlert>> {
@@ -694,8 +748,10 @@ type SessionWriteLog = { -readonly [K in WritableKey]?: AdminSessionState[K] };
 
 /** The session scope before this request's set-up: identity's stored values, else the legacy `cfparam` defaults. */
 function initialSession(identity: IdentitySession, sessionHistory: number): SessionDraft {
-  const memberships = cfListToArray(identity.mura.memberships ?? '', ',');
   const stored = identity.adminState;
+  const muraValues = stored.mura ?? {};
+  const mura = assignStruct(identity.mura, muraValues);
+  const memberships = cfListToArray(mura.memberships ?? '', ',');
   return {
     siteid: stored.siteid ?? '',
     userFilesPath: stored.userFilesPath ?? '',
@@ -708,7 +764,7 @@ function initialSession(identity: IdentitySession, sessionHistory: number): Sess
     dateKeyFormat: stored.dateKeyFormat ?? '',
     localeHasDayParts: stored.localeHasDayParts ?? true,
     dashboardSpan: stored.dashboardSpan ?? dashboardSpanFor(sessionHistory),
-    alerts: alertsOf(identity.mura),
+    alerts: alertsOf(mura),
     paramArray: stored.paramArray ?? [],
     paramCount: stored.paramCount ?? 0,
     paramCircuit: stored.paramCircuit ?? '',
@@ -720,7 +776,10 @@ function initialSession(identity: IdentitySession, sessionHistory: number): Sess
     frontEndProxyLoc: stored.frontEndProxyLoc ?? '',
     siteArray: identity.sites.map(({ siteID }) => siteID),
     s2IsPrivate: memberships.includes('S2IsPrivate'),
-    mura: identity.mura,
+    mura,
+    muraValues,
+    hasDefaultPassword: stored.hasdefaultpassword !== undefined,
+    moduleTopIds: stored.moduleTopIds ?? {},
     flash: stored.flash ?? {},
     nextPreserveKey: stored.nextPreserveKey ?? 1,
   };

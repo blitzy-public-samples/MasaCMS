@@ -1,10 +1,11 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Reporting table definitions against the target DDL, the fixture DDL, the ownership file and the platform repository contract. */
+/** Reporting table definitions and mapping coverage against the target DDL, the fixture DDL, the ownership file and the platform repository contract. */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { canonicalTypeForPostgres, canonicalTypeForSqlServer, createRepository } from '@opt2/platform/migration-kit';
+import { canonicalTypeForPostgres, canonicalTypeForSqlServer, createRepository, diffCoverage, mappingCoverage } from '@opt2/platform/migration-kit';
 import { BUCKETS, InvalidObjectKeyError } from '@opt2/platform/storage';
 import { cfUuid } from '@opt2/platform/legacy-compat';
+import { mappings } from '../../src/migration/mappings/index.js';
 import {
   EXPORT_BUCKET,
   EXPORT_DEFINITION,
@@ -30,12 +31,21 @@ interface OwnershipTarget {
   unit: string;
   table: string;
   keyColumns: string[];
+  columnPolicy: 'whole-table' | 'explicit';
   ownedColumns: string[];
+  /** Object-backed column → bucket of its bytes. */
+  objectColumns?: Record<string, string>;
+}
+
+interface OwnershipTable {
+  table: string;
+  columns: string[];
+  targets: OwnershipTarget[];
 }
 
 interface Ownership {
   units: { unit: string; owner: string; table: string }[];
-  tables: { table: string; targets: OwnershipTarget[] }[];
+  tables: OwnershipTable[];
 }
 
 const read = (relative: string): string => readFileSync(new URL(relative, import.meta.url), 'utf8');
@@ -106,7 +116,8 @@ describe.each(OWNED_TABLES.map((definition) => [definition.table, definition] as
     const target = ownershipTarget(definition.unit);
     expect(target.table).toBe(table);
     expect(lower(target.keyColumns)).toEqual(definition.key);
-    const owned = lower(target.ownedColumns).filter((column) => column !== EXPORT_OUTPUT_FIELD);
+    const objects = lower(Object.keys(target.objectColumns ?? {}));
+    const owned = lower(target.ownedColumns).filter((column) => !objects.includes(column));
     expect(definition.columns.map((column) => column.name).filter((column) => !TARGET_ONLY.includes(column))).toEqual(owned);
   });
 });
@@ -131,6 +142,7 @@ describe('reporting tables', () => {
 
   it('stores export bytes in a platform bucket, keyed in the fixture output position', () => {
     expect(BUCKETS).toContain(EXPORT_BUCKET);
+    expect(ownershipTarget(EXPORT_JOB.unit).objectColumns).toEqual({ [EXPORT_OUTPUT_FIELD]: EXPORT_BUCKET });
     const names = EXPORT_JOB.columns.map((column) => column.name);
     expect(names).not.toContain(EXPORT_OUTPUT_FIELD);
     const outputPosition = fixtureTable('export_job').findIndex((column) => column.name === EXPORT_OUTPUT_FIELD);
@@ -139,6 +151,57 @@ describe('reporting tables', () => {
 
   it('catalogues all twenty tsessiontracking columns', () => {
     expect(TSESSIONTRACKING.columns.filter((column) => column.name !== 'tenant_id')).toHaveLength(20);
+  });
+});
+
+/** A reporting target of the ownership file with its legacy table. */
+interface OwnedTarget {
+  table: OwnershipTable;
+  target: OwnershipTarget;
+}
+
+const OWNED_UNITS: ReadonlySet<string> = new Set(OWNERSHIP.units.filter((unit) => unit.owner === OWNER).map((unit) => unit.unit));
+const OWNED_TARGETS: readonly OwnedTarget[] = OWNERSHIP.tables.flatMap((table) =>
+  table.targets.filter((target) => OWNED_UNITS.has(target.unit)).map((target) => ({ table, target })),
+);
+
+/** Legacy columns ownership assigns to a target: the catalog's columns when whole-table, else its key and owned columns. */
+function assignedColumns({ table, target }: OwnedTarget): string[] {
+  return target.columnPolicy === 'whole-table' ? table.columns : [...new Set([...target.keyColumns, ...target.ownedColumns])];
+}
+
+/** Assigned columns outside the target's object columns, which the row mappings cover. */
+function canonicalColumns(entry: OwnedTarget): string[] {
+  const objects = lower(Object.keys(entry.target.objectColumns ?? {}));
+  return assignedColumns(entry).filter((column) => !objects.includes(column.toLowerCase()));
+}
+
+describe('reporting mapping coverage', () => {
+  it('maps exactly the legacy columns ownership assigns to reporting, besides its object columns', () => {
+    expect(OWNED_TARGETS.map(({ target }) => target.unit).sort()).toEqual([...UNITS].sort());
+    const expected: Record<string, string[]> = {};
+    for (const entry of OWNED_TARGETS) (expected[entry.table.table] ??= []).push(...canonicalColumns(entry));
+    const diff = diffCoverage(expected, mappingCoverage(mappings));
+
+    expect(diff, JSON.stringify(diff, null, 2)).toStrictEqual({ missing: {}, extra: {} });
+  });
+
+  it('splits the assigned columns into canonical and object columns without overlap, output the one object column', () => {
+    const split = OWNED_TARGETS.map((entry) => ({
+      assigned: lower(assignedColumns(entry)),
+      canonical: lower(canonicalColumns(entry)),
+      objects: lower(Object.keys(entry.target.objectColumns ?? {})),
+    }));
+    for (const { assigned, canonical, objects } of split) {
+      expect(objects.filter((column) => !assigned.includes(column))).toEqual([]);
+      expect([...canonical, ...objects].sort()).toEqual([...assigned].sort());
+    }
+    const total = (key: keyof (typeof split)[number]): number => split.reduce((sum, columns) => sum + columns[key].length, 0);
+    expect([total('assigned'), total('canonical'), total('objects')]).toEqual([39, 38, 1]);
+    const objectColumns = OWNED_TARGETS.flatMap(({ table, target }) =>
+      Object.entries(target.objectColumns ?? {}).map(([column, bucket]) => [table.table, column, bucket]),
+    );
+    expect(objectColumns).toEqual([['synthetic.export_job', EXPORT_OUTPUT_FIELD, EXPORT_BUCKET]]);
   });
 });
 

@@ -337,6 +337,68 @@ describe('health, deny by default and legacy headers', () => {
   });
 });
 
+describe('no-case path prefixes', () => {
+  const PREFIXES = ['/_api/sitemonitor', '/index.cfm/_api/sitemonitor'];
+
+  /** A service with a public probe under each prefix and one internal path, each echoing the URL it was routed under. */
+  async function probed(overrides: Partial<CreateServiceOptions> = { noCasePathPrefixes: PREFIXES }): Promise<FastifyInstance> {
+    const { app } = await build(overrides);
+    for (const url of [...PREFIXES.map((prefix) => `${prefix}*`), '/internal/v1/probe']) {
+      app.get(url, { config: { opt2: { public: true } } }, async (request) => ({ url: request.url, originalUrl: request.originalUrl }));
+    }
+    return app;
+  }
+
+  it.each([
+    ['/_API/SITEMONITOR/', '/_api/sitemonitor/'],
+    ['/_Api/SiteMonitor?siteid=Tenant-A&x=%2F&y=%41', '/_api/sitemonitor?siteid=Tenant-A&x=%2F&y=%41'],
+    ['/_api/%53ITEMONITOR%2FRest?siteid=x', '/_api/sitemonitor%2FRest?siteid=x'],
+    ['/%5F%61pi/sitemonitorX', '/_api/sitemonitorX'],
+    ['/_api%2Fsitemonitor', '/_api/sitemonitor'],
+    ['/_API%2fSITEMONITOR/', '/_api/sitemonitor/'],
+    ['/Index.CFM/_Api/SiteMonitor/', '/index.cfm/_api/sitemonitor/'],
+    ['/_api/sitemonitor', '/_api/sitemonitor'],
+  ])('routes %s under the declared spelling as %s', async (url, routed) => {
+    const app = await probed();
+    const res = await app.inject({ method: 'GET', url });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toStrictEqual({ url: routed, originalUrl: url });
+  });
+
+  it.each([
+    ['a double-encoded slash', '/_api%252Fsitemonitor', 404],
+    ['a malformed escape', '/_API/%ZZitemonitor', 400],
+    ['an incomplete UTF-8 escape', '/_API/%C3itemonitor', 400],
+    ['a shorter path', '/_API/SITEMONITO', 404],
+    ['a prefix not at the start', '/x/_API/SITEMONITOR', 404],
+    ['an internal path in another case', '/INTERNAL/v1/probe', 404],
+  ])('leaves %s (%s) unrouted with %i', async (_label, url, status) => {
+    const app = await probed();
+    const res = await app.inject({ method: 'GET', url });
+    expect(res.statusCode).toBe(status);
+  });
+
+  it('routes the longest matching prefix under its own spelling', async () => {
+    const { app } = await build({ noCasePathPrefixes: ['/_api', '/_api/sitemonitor'] });
+    app.get('/_api/*', { config: { opt2: { public: true } } }, async (request) => request.url);
+    const res = await app.inject({ method: 'GET', url: '/_API/SITEMONITOR/Run' });
+    expect(res.body).toBe('/_api/sitemonitor/Run');
+  });
+
+  it.each([{}, { noCasePathPrefixes: [] }])('keeps routing case-sensitive with %j', async (overrides) => {
+    const app = await probed(overrides);
+    expect((await app.inject({ method: 'GET', url: '/_API/SITEMONITOR/' })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'GET', url: '/_api/sitemonitor/' })).statusCode).toBe(200);
+  });
+
+  it.each(['_api/sitemonitor', '', '/_api?x', '/a#b', '/a%20b', '/a b', '/ümlaut'])(
+    'rejects the prefix %j with a TypeError',
+    async (prefix) => {
+      await expect(build({ noCasePathPrefixes: [prefix] })).rejects.toBeInstanceOf(TypeError);
+    },
+  );
+});
+
 describe('legacy error mapping', () => {
   async function failing(error: unknown, url = '/fail'): Promise<FastifyInstance> {
     const { app } = await build();

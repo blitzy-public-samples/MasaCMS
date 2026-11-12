@@ -16,6 +16,8 @@ import {
   resolveAction,
   restoreFlashContext,
   saveSessionWrites,
+  setSessionMuraValue,
+  withSessionMuraValue,
   type AdminMode,
   type AdminRequest,
   type AdminRequestInput,
@@ -1230,7 +1232,96 @@ describe('admin session state', () => {
     expect(request.sessionWrites.dashboardSpan).toBe(7);
   });
 
+  it.each<[string, StoredState, boolean]>([
+    ['a stored true', { hasdefaultpassword: true }, true],
+    ['a stored false', { hasdefaultpassword: false }, true],
+    ['no stored key', {}, false],
+  ])('reads session.hasdefaultpassword as defined for %s', async (_label, stored, defined) => {
+    const { request } = await build({ subject: 'admin', target: '/admin/', routes: identityStore(stored).routes });
+
+    expect(request.session.hasDefaultPassword).toBe(defined);
+  });
+
+  it("lays the stored post-login values over identity's user struct by case-insensitive name", async () => {
+    const moduleTopIds = { m00000000000000000000000000000000000: 'C1', m00000000000000000000000000000000003: 'C3' };
+    const mura = { FNAME: 'Adele', errors: '', objectInstanceId: 'I1' };
+
+    const { request } = await build({
+      subject: 'qaEditor',
+      target: '/admin/',
+      user: { fname: 'Ada', Errors: { name: 'Bad' } },
+      routes: identityStore({ moduleTopIds, mura }).routes,
+    });
+
+    expect(request.session.mura).toMatchObject({ fname: 'Adele', Errors: '', objectInstanceId: 'I1' });
+    expect(request.session.mura).not.toHaveProperty('FNAME');
+    expect(request.session.muraValues).toEqual(mura);
+    expect(request.session.moduleTopIds).toEqual(moduleTopIds);
+    expect(Object.keys(request.sessionWrites).filter((key) => ['muraValues', 'moduleTopIds'].includes(key))).toEqual([]);
+  });
+
+  describe('setSessionMuraValue', () => {
+    it('sets the value on the request and queues the post-login values, which the next request restores', async () => {
+      const store = identityStore({ mura: { objectInstanceId: 'I1' } });
+      const first = await build({
+        subject: 'qaEditor',
+        target: '/admin/',
+        user: { Errors: { name: 'Bad' } },
+        routes: store.routes,
+      });
+
+      setSessionMuraValue(first.request, 'errors', '');
+      const auth = await authFor(SUBJECTS.qaEditor);
+      await saveSessionWrites(first.gateway, auth, first.request.sessionWrites);
+      const second = await build({ subject: 'qaEditor', target: '/admin/', user: { Errors: { name: 'Bad' } }, routes: store.routes });
+
+      expect(first.request.session.mura).toMatchObject({ Errors: '', objectInstanceId: 'I1' });
+      expect(first.request.session.muraValues).toEqual({ objectInstanceId: 'I1', errors: '' });
+      expect(first.request.sessionWrites.muraValues).toBe(first.request.session.muraValues);
+      expect(store.state()['mura']).toEqual({ objectInstanceId: 'I1', errors: '' });
+      expect(second.request.session.mura).toMatchObject({ Errors: '', objectInstanceId: 'I1' });
+    });
+
+    it.each<[string, Partial<SessionUser>, StoredState]>([
+      ['the user struct', { errors: '' }, {}],
+      ['the stored post-login values', {}, { mura: { ERRORS: '' } }],
+    ])('queues nothing when %s already holds the value', async (_label, user, stored) => {
+      const { request } = await build({ subject: 'qaEditor', target: '/admin/', user, routes: identityStore(stored).routes });
+      const { mura, muraValues } = request.session;
+
+      setSessionMuraValue(request, 'errors', '');
+
+      expect(request.session.mura).toBe(mura);
+      expect(request.session.muraValues).toBe(muraValues);
+      expect(request.sessionWrites).not.toHaveProperty('muraValues');
+    });
+
+    it('leaves the session it is given unchanged in its pure form', () => {
+      const session = { mura: { isLoggedIn: true, userID: 'U1', Errors: { a: 'A' } }, muraValues: {} };
+
+      const next = withSessionMuraValue(session, 'errors', '');
+
+      expect(next).toEqual({ mura: { isLoggedIn: true, userID: 'U1', Errors: '' }, muraValues: { errors: '' } });
+      expect(session).toEqual({ mura: { isLoggedIn: true, userID: 'U1', Errors: { a: 'A' } }, muraValues: {} });
+    });
+  });
+
   describe('saveSessionWrites', () => {
+    it("sends the post-login values as identity's mura and never the login-set default-password flag", async () => {
+      const store = identityStore({ hasdefaultpassword: true });
+      const { request, gateway } = await build({ subject: 'admin', target: '/admin/', routes: store.routes });
+      const auth = await authFor(SUBJECTS.admin);
+      setSessionMuraValue(request, 'objectInstanceId', 'I2');
+
+      await saveSessionWrites(gateway, auth, request.sessionWrites);
+
+      const [saved] = saves(gateway) as Array<Record<string, unknown>>;
+      expect(saved?.['mura']).toEqual({ objectInstanceId: 'I2' });
+      expect(saved?.['mura']).not.toBe(request.session.muraValues);
+      expect(Object.keys(saved ?? {}).filter((key) => /muraValues|hasdefaultpassword/i.test(key))).toEqual([]);
+      expect(store.state()).toMatchObject({ hasdefaultpassword: true, mura: { objectInstanceId: 'I2' } });
+    });
+
     it('sends the writes but alerts in one save', async () => {
       const auth = await authFor(SUBJECTS.qaEditor);
       const gateway = fakeGatewayClient(identityStore().routes, { userToken: auth.userToken });

@@ -158,6 +158,18 @@ function storedSnapshot(row: SessionRow): Readonly<LoginSnapshot> {
   return row.login_snapshot === null ? ANONYMOUS_LOGIN_SNAPSHOT : (JSON.parse(row.login_snapshot) as LoginSnapshot);
 }
 
+/** Admin-state key of the `session.mura` values set since the last login. */
+const MURA_VALUES_KEY = 'mura';
+
+/** `admin_state` JSON text without the post-login `session.mura` values, which a new user struct replaces. */
+function withoutMuraValues(adminState: string | null): string | null {
+  if (adminState === null) return null;
+  const state = JSON.parse(adminState) as Record<string, unknown>;
+  if (!Object.hasOwn(state, MURA_VALUES_KEY)) return adminState;
+  delete state[MURA_VALUES_KEY];
+  return JSON.stringify(state);
+}
+
 /** A struct value by key, matched case-insensitively as CFML struct keys are. */
 function structValue(struct: Readonly<Record<string, unknown>>, key: string): unknown {
   if (Object.hasOwn(struct, key)) return struct[key];
@@ -299,8 +311,8 @@ export async function applyLogin(deps: SessionDeps, login: LoginApplication): Pr
     state: 'active',
     jar_ref: prior?.jar_ref ?? null,
     ended_at: null,
-    // setUserStruct replaces only session.mura; the other session-scope values stay.
-    admin_state: prior?.admin_state ?? null,
+    // setUserStruct replaces session.mura, post-login values included; the other session-scope values stay.
+    admin_state: withoutMuraValues(prior?.admin_state ?? null),
     epoch: nextEpoch(prior),
   };
   await rebuildSession(deps, sessionId, located, tenantId, values);
@@ -342,7 +354,7 @@ export async function adoptLegacySession(deps: SessionDeps, describe: LegacyDesc
     state: 'active',
     jar_ref: jarRef,
     ended_at: null,
-    admin_state: located?.row.admin_state ?? null,
+    admin_state: withoutMuraValues(located?.row.admin_state ?? null),
     epoch: nextEpoch(located?.row),
   };
   await rebuildSession(deps, sessionId, located, tenantId, values, (tx) => importUsedTokens(repo, tx, sessionId, usedTokens));

@@ -28,7 +28,8 @@ import {
 import { runSiteMonitor } from '../../src/jobs/sitemonitor.js';
 import { readState, writeCursor } from '../../src/repo/sitemonitor-state.js';
 import { UNITS } from '../../src/repo/tables.js';
-import { registerSiteMonitorRoutes } from '../../src/routes/sitemonitor.js';
+import { SITEMONITOR_RUN_PREFIXES, registerSiteMonitorRoutes } from '../../src/routes/sitemonitor.js';
+import { buildTestApp } from '../helpers/app.js';
 
 vi.mock('../../src/jobs/sitemonitor.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/jobs/sitemonitor.js')>();
@@ -179,6 +180,7 @@ beforeAll(async () => {
     }),
     verifierOverride: testVerifier('programs-sites'),
     clock,
+    noCasePathPrefixes: SITEMONITOR_RUN_PREFIXES,
     pool: db,
     logger: createLogger({ service: 'programs-sites', version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
   });
@@ -255,6 +257,35 @@ describe('route declarations', () => {
   });
 });
 
+describe('letter case of the legacy paths', () => {
+  const PASS = { theTime: RUN_AT, lastMonitored: SEEDED, steps: [] };
+
+  it.each([
+    ['GET', '/INTERNAL/v1/sitemonitor/state', 'service:migration'],
+    ['PUT', '/internal/v1/SITEMONITOR/state', 'service:migration'],
+    ['POST', '/Internal/v1/jobs/sitemonitor', 'service:tasks-invoker'],
+  ] as const)('answers %s %s with 404 and never runs the monitor', async (method, url, caller) => {
+    const res = await app.inject({ method, url, headers: await headersAs(caller) });
+
+    expect(res.statusCode).toBe(404);
+    expect(runSpy).not.toHaveBeenCalled();
+  });
+
+  it('runs the monitor for GET /_API/SITEMONITOR/ on the app buildApp composes', async () => {
+    runSpy.mockResolvedValueOnce(PASS);
+    const { app: built } = await buildTestApp();
+    try {
+      const res = await built.inject({ method: 'GET', url: '/_API/SITEMONITOR/' });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toBe('');
+      expect(runSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      await built.opt2.shutdown();
+    }
+  });
+});
+
 describe.skipIf(!available)('cursor state', () => {
   it('reads null fields before the cursor row exists', async () => {
     await withTenant(db, SYSTEM_TENANT_ID, (tx) => tx.query(`DELETE FROM ${tx.schema}.sitemonitor_state`));
@@ -314,6 +345,10 @@ describe.skipIf(!available)('public legacy run', () => {
     ['GET', '/_api/sitemonitorX?siteid=tenant-b'],
     ['GET', '/index.cfm/_api/sitemonitor/'],
     ['POST', '/index.cfm/_api/sitemonitor'],
+    ['GET', '/_API/SITEMONITOR/'],
+    ['POST', '/Index.CFM/_Api/SiteMonitor'],
+    ['GET', '/_api/%53ITEMONITOR?siteid=x'],
+    ['GET', '/_api%2Fsitemonitor'],
   ] as const)('%s %s runs one pass and answers the empty legacy page', async (method, url) => {
     const res = await app.inject({ method, url });
 

@@ -3,6 +3,7 @@ import {
   RepositoryError,
   acquireWriteGates,
   createRepository,
+  isMigrationAuthority,
   qualified,
   type Repository,
   type RepositoryRow,
@@ -10,7 +11,7 @@ import {
 } from '@opt2/platform/migration-kit';
 import type { QueryResultRow, TenantTx } from '@opt2/platform/tenancy';
 import { systemClock, type Clock } from '@opt2/platform/service-kit';
-import { LEGACY_ADMIN_SENTINEL_ID, cfUuid, isCfUuid } from '@opt2/platform/legacy-compat';
+import { LEGACY_ADMIN_SENTINEL_ID, cfEq, cfUuid, isCfUuid } from '@opt2/platform/legacy-compat';
 import * as contentQueries from './content-queries.js';
 import { ContentQueryError, SqlParams, type SortDirection } from './content-queries.js';
 import * as feedQueries from './feed-queries.js';
@@ -129,8 +130,32 @@ export type Patch<R, Fixed extends keyof R = never> = { [K in Exclude<keyof R, '
 /** A patch, or a function that derives one from the locked row (null leaves the row unchanged). */
 export type PatchOf<R, Fixed extends keyof R = never> = Patch<R, Fixed> | ((row: R) => Patch<R, Fixed> | null);
 
+/** A page of a list read: `limit` rows after the first `offset` (default 0). */
+export interface RowPage {
+  limit: number;
+  offset?: number;
+}
+
+/** One page of a list read and the count of every row the unpaged read returns. */
+export interface PagedRows<R> {
+  rows: R[];
+  total: number;
+}
+
+/** Rows per batch of the batched all-results reads. */
+export const DEFAULT_ROW_BATCH_SIZE = 500;
+
 type Ctx = WriteContext | undefined;
 type TableDef = { readonly table: string; readonly key: readonly string[] | null; readonly unit?: string };
+
+/** A list read's SELECT without its ORDER BY, the ORDER BY clause, and the bound values. */
+interface BuiltSelect {
+  readonly select: string;
+  readonly order: string;
+  readonly values: readonly unknown[];
+}
+
+let batchCursorCount = 0;
 
 /** The forms a stored single-case CF id may take for a caller-supplied id. */
 function idForms(ids: readonly string[]): string[] {
@@ -845,6 +870,55 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     return platform.read(tx, unitsOf(...defs), async () => (await tx.query<R>(sql, [...values])).rows);
   }
 
+  /** One page of a built SELECT over `defs` in its order, with the count of all its rows, read behind their units' window phase. */
+  function selectPage<R extends QueryResultRow>(tx: TenantTx, defs: readonly TableDef[], built: BuiltSelect, page: RowPage): Promise<PagedRows<R>> {
+    return platform.read(tx, unitsOf(...defs), async () => {
+      const count = `SELECT count(*)::integer AS total FROM (${built.select}) q`;
+      const [{ total }] = (await tx.query<{ total: number }>(count, [...built.values])).rows as [{ total: number }];
+      const offset = page.offset ?? 0;
+      if (offset >= total) {
+        return { rows: [], total };
+      }
+      const next = built.values.length;
+      const sql = `${built.select} ${built.order} LIMIT $${next + 1} OFFSET $${next + 2}`;
+      return { rows: (await tx.query<R>(sql, [...built.values, page.limit, offset])).rows, total };
+    });
+  }
+
+  /** Every row of a built SELECT over `defs` in its order, `batchSize` rows per cursor FETCH, read behind their units' window phase. */
+  async function* selectBatches<R extends QueryResultRow>(
+    tx: TenantTx,
+    defs: readonly TableDef[],
+    built: BuiltSelect,
+    batchSize: number = DEFAULT_ROW_BATCH_SIZE,
+  ): AsyncGenerator<R[], void, undefined> {
+    if (!Number.isSafeInteger(batchSize) || batchSize <= 0) {
+      throw new ContentQueryError(`Invalid batch size ${batchSize}`);
+    }
+    batchCursorCount += 1;
+    const cursor = `content_rows_${batchCursorCount}`;
+    await platform.read(tx, unitsOf(...defs), () => tx.query(`DECLARE ${cursor} NO SCROLL CURSOR FOR ${built.select} ${built.order}`, [...built.values]));
+    // A failed FETCH aborts the transaction, so a CLOSE after it would only mask the error.
+    let fetched = true;
+    try {
+      for (;;) {
+        fetched = false;
+        const { rows } = await tx.query<R>(`FETCH FORWARD ${batchSize} FROM ${cursor}`);
+        fetched = true;
+        if (rows.length > 0) {
+          yield rows;
+        }
+        if (rows.length < batchSize) {
+          return;
+        }
+      }
+    } finally {
+      if (fetched) {
+        await tx.query(`CLOSE ${cursor}`);
+      }
+    }
+  }
+
   /** The rows of `def` that `build` selects, locked FOR UPDATE in key order once the unit's write gate is held. */
   function lockRows<R extends QueryResultRow>(tx: TenantTx, def: TableDef, build: (p: SqlParams) => string, ctx: Ctx): Promise<R[]> {
     const p = new SqlParams(1);
@@ -924,12 +998,38 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
 
   // ---- shared deletes ----
 
-  /** extendManager.deleteExtendedData: removes the extend rows of `baseId` and returns its File attribute values. */
-  async function deleteExtendData(tx: TenantTx, baseId: string, ctx: Ctx): Promise<string[]> {
-    const rows = await lockRows<ExtendDataRow>(tx, EXTEND_DATA, (p) => idEq(p, 'baseid', baseId), ctx);
+  /** `rows` ordered by the first of `ids` that `idOf(row)` matches as `idIn` does, keeping lock order within each id. */
+  function inIdOrder<R>(rows: readonly R[], ids: readonly string[], idOf: (row: R) => string | null): R[] {
+    const trimEnd = (value: string): string => value.replace(/ +$/, '');
+    const rank = new Map<string, number>();
+    ids.forEach((id, index) => {
+      for (const form of idForms([id]).map(trimEnd)) {
+        if (!rank.has(form)) {
+          rank.set(form, index);
+        }
+      }
+    });
+    return rows
+      .map((row) => ({ row, rank: rank.get(trimEnd(idOf(row) ?? '')) ?? ids.length }))
+      .sort((a, b) => a.rank - b.rank)
+      .map(({ row }) => row);
+  }
+
+  /** extendManager.deleteExtendedData for each of `baseIds` under one lock; returns their File attribute values in base order. */
+  async function deleteExtendDataOf(tx: TenantTx, baseIds: readonly string[], ctx: Ctx): Promise<string[]> {
+    if (baseIds.length === 0) {
+      return [];
+    }
+    const locked = await lockRows<ExtendDataRow>(tx, EXTEND_DATA, (p) => idIn(p, 'baseid', baseIds), ctx);
+    const rows = inIdOrder(locked, baseIds, (row) => row.baseid);
     const fileIds = await fileAttributeValues(tx, rows);
     await deleteEach(tx, EXTEND_DATA, rows, ctx);
     return fileIds;
+  }
+
+  /** extendManager.deleteExtendedData: removes the extend rows of `baseId` and returns its File attribute values. */
+  function deleteExtendData(tx: TenantTx, baseId: string, ctx: Ctx): Promise<string[]> {
+    return deleteExtendDataOf(tx, [baseId], ctx);
   }
 
   /** Values of the File-type attributes among `rows` (extendManager.cfc:1064-1077). */
@@ -950,19 +1050,35 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     );
   }
 
-  /** approvalRequest.delete for each request of a version, its actions first. */
-  async function deleteRequestsOfVersion(tx: TenantTx, contentHistId: string, ctx: Ctx): Promise<ApprovalRequestRow[]> {
-    return deleteRequestRows(tx, await lockRows<ApprovalRequestRow>(tx, APPROVAL_REQUEST, (p) => idEq(p, 'contenthistid', contentHistId), ctx), ctx);
+  /** approvalRequest.delete for each request of versions `histIds`, in version order, under one lock. */
+  async function deleteRequestsOfVersions(tx: TenantTx, histIds: readonly string[], ctx: Ctx): Promise<ApprovalRequestRow[]> {
+    if (histIds.length === 0) {
+      return [];
+    }
+    const requests = await lockRows<ApprovalRequestRow>(tx, APPROVAL_REQUEST, (p) => idIn(p, 'contenthistid', histIds), ctx);
+    return deleteRequestRows(tx, inIdOrder(requests, histIds, (row) => row.contenthistid), ctx);
+  }
+
+  /** contentDAO.deleteVersionedObjects for each of versions `histIds`, in version order, under one lock. */
+  async function deleteVersionedObjectsOf(tx: TenantTx, histIds: readonly string[], ctx: Ctx): Promise<FileMetadataRow[]> {
+    if (histIds.length === 0) {
+      return [];
+    }
+    const rows = await lockRows<FileMetadataRow>(tx, FILE_METADATA, (p) => idIn(p, 'contenthistid', histIds), ctx);
+    return deleteEach(tx, FILE_METADATA, inIdOrder(rows, histIds, (row) => row.contenthistid), ctx);
   }
 
   /** contentDAO.deleteVersionedObjects: the versioned `file_metadata` rows of one version or of every version of an item. */
   function deleteVersionedObjects(tx: TenantTx, target: VersionedObjectsTarget, ctx?: WriteContext): Promise<FileMetadataRow[]> {
-    return deleteWhere<FileMetadataRow>(
-      tx,
-      FILE_METADATA,
-      (p) => ('contentHistId' in target ? idEq(p, 'contenthistid', target.contentHistId) : `${idEq(p, 'contentid', target.contentId)} AND siteid = ${p.add(target.siteId)}`),
-      ctx,
-    );
+    if ('contentHistId' in target) {
+      return deleteVersionedObjectsOf(tx, [target.contentHistId], ctx);
+    }
+    return deleteWhere<FileMetadataRow>(tx, FILE_METADATA, (p) => `${idEq(p, 'contentid', target.contentId)} AND siteid = ${p.add(target.siteId)}`, ctx);
+  }
+
+  /** The non-null `contenthistid` of each of `versions`, in order. */
+  function histIdsOf(versions: readonly ContentRow[]): string[] {
+    return versions.flatMap((version) => (version.contenthistid === null ? [] : [version.contenthistid]));
   }
 
   /** The child rows `contentDAO` removes with versions `histIds` of `siteId`. */
@@ -1016,9 +1132,9 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       tx,
       CONTENT_ASSIGNMENT,
       (p) =>
-        args.type === 'expire'
-          ? `${idEq(p, 'contenthistid', args.id)} AND type = ${p.add(args.type)}`
-          : `${idEq(p, 'contentid', args.id)} AND siteid = ${p.add(args.siteId)} AND type = ${p.add(args.type)}`,
+        cfEq(args.type, 'expire')
+          ? `${idEq(p, 'contenthistid', args.id)} AND ${ciEq(p, 'type', args.type)}`
+          : `${idEq(p, 'contentid', args.id)} AND siteid = ${p.add(args.siteId)} AND ${ciEq(p, 'type', args.type)}`,
       ctx,
     );
   }
@@ -1069,19 +1185,16 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     if (versions.length === 0) {
       return { versions: [], extendFileIds: [] };
     }
-    const histIds = versions.flatMap((version) => (version.contenthistid === null ? [] : [version.contenthistid]));
-    const extendFileIds: string[] = [];
+    const histIds = histIdsOf(versions);
     await deleteVersionChildren(tx, histIds, siteId, { objects: true }, ctx);
-    for (const histId of histIds) {
-      extendFileIds.push(...(await deleteExtendData(tx, histId, ctx)));
-      if (opts.requests) {
-        await deleteRequestsOfVersion(tx, histId, ctx);
-      }
-      await deleteVersionedObjects(tx, { contentHistId: histId }, ctx);
+    const extendFileIds = await deleteExtendDataOf(tx, histIds, ctx);
+    if (opts.requests) {
+      await deleteRequestsOfVersions(tx, histIds, ctx);
     }
+    await deleteVersionedObjectsOf(tx, histIds, ctx);
     await deleteVersionChildren(tx, histIds, siteId, { categories: true, related: true, tags: true }, ctx);
     const removed = await deleteEach(tx, CONTENT, versions, ctx);
-    return { versions: removed, extendFileIds: distinctValues(extendFileIds) };
+    return { versions: removed, extendFileIds };
   }
 
   /** The inactive versions of an item that are neither pending approval nor, unless `approvedToo`, approved. */
@@ -1190,22 +1303,15 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       }
       await updateVersions(tx, { siteId: args.siteId, parentId: args.contentId }, { parentid: args.parentId }, ctx);
       const versions = await lockVersions(tx, { siteId: args.siteId, contentId: args.contentId }, ctx);
-      const extendFileIds: string[] = [];
-      for (const version of versions) {
-        if (version.contenthistid === null) {
-          continue;
-        }
-        extendFileIds.push(...(await deleteExtendData(tx, version.contenthistid, ctx)));
-        await deleteRequestsOfVersion(tx, version.contenthistid, ctx);
-        // Active versions keep their versioned objects so a trash restore finds them.
-        if (version.active !== 1) {
-          await deleteVersionedObjects(tx, { contentHistId: version.contenthistid }, ctx);
-        }
-      }
+      const histIds = histIdsOf(versions);
+      const extendFileIds = await deleteExtendDataOf(tx, histIds, ctx);
+      await deleteRequestsOfVersions(tx, histIds, ctx);
+      // Active versions keep their versioned objects so a trash restore finds them.
+      await deleteVersionedObjectsOf(tx, histIdsOf(versions.filter((version) => version.active !== 1)), ctx);
       const removed = await deleteEach(tx, CONTENT, versions, ctx);
       const item = (p: SqlParams): string => `${idEq(p, 'contentid', args.contentId)} AND siteid = ${p.add(args.siteId)}`;
       await deleteWhere(tx, CONTENT_ASSIGNMENT, item, ctx);
-      if (args.type !== 'Form' && args.type !== 'Component') {
+      if (!cfEq(args.type ?? '', 'Form') && !cfEq(args.type ?? '', 'Component')) {
         await deleteWhere(tx, REMOTE_POINTER, item, ctx);
         await deleteWhere(tx, CONTENT_OBJECT, item, ctx);
         await deleteWhere(tx, CONTENT_TAG, item, ctx);
@@ -1219,7 +1325,7 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       } else {
         await deleteWhere(tx, CONTENT_OBJECT, (p) => `${idEq(p, 'objectid', args.contentId)} AND siteid = ${p.add(args.siteId)}`, ctx);
       }
-      return { versions: removed, extendFileIds: distinctValues(extendFileIds) };
+      return { versions: removed, extendFileIds };
     },
 
     /** contentDAO.deleteHistAll: removes the archived and unassigned draft versions not pending approval, then old source maps. */
@@ -1244,7 +1350,7 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       const versions = await lockVersions(tx, { contentHistIds: [args.contentHistId], siteId: args.siteId }, ctx);
       const removed = await deleteEach(tx, CONTENT, versions, ctx);
       await deleteVersionChildren(tx, [args.contentHistId], args.siteId, { tags: true, objects: true, categories: true }, ctx);
-      await deleteWhere(tx, CONTENT_ASSIGNMENT, (p) => `${idEq(p, 'contenthistid', args.contentHistId)} AND type = 'expire'`, ctx);
+      await deleteWhere(tx, CONTENT_ASSIGNMENT, (p) => `${idEq(p, 'contenthistid', args.contentHistId)} AND lower(rtrim(type)) = 'expire'`, ctx);
       await deleteVersionedObjects(tx, { contentHistId: args.contentHistId }, ctx);
       return { versions: removed, extendFileIds };
     },
@@ -1317,7 +1423,7 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       args: { contentId: string; contentHistId: string; siteId: string; type: string; userIds: readonly string[] },
       ctx?: WriteContext,
     ): Promise<ContentAssignmentRow[]> {
-      await deleteContentAssignments(tx, { id: args.type === 'expire' ? args.contentHistId : args.contentId, siteId: args.siteId, type: args.type }, ctx);
+      await deleteContentAssignments(tx, { id: cfEq(args.type, 'expire') ? args.contentHistId : args.contentId, siteId: args.siteId, type: args.type }, ctx);
       return insertEach<ContentAssignmentRow>(
         tx,
         CONTENT_ASSIGNMENT,
@@ -1543,6 +1649,15 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
   }
   const versionFiles = listVersionFiles;
 
+  /** Takes the `content.file` write gate for a unit-less `file_object` write; a migration apply passes any gate state. */
+  function gateFileObjectWrite(tx: TenantTx, ctx: Ctx): Promise<void> {
+    return platform.read(tx, [], async () => {
+      if (!isMigrationAuthority(ctx?.authority)) {
+        await acquireWriteGates(tx, unitsOf(FILE));
+      }
+    });
+  }
+
   const files = {
     ...fileQueries,
 
@@ -1617,7 +1732,8 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     },
 
     /** Records a stored object of `content-files`, or updates the row with the same object key. */
-    upsertFileObject(tx: TenantTx, row: FileObjectInput, ctx?: WriteContext): Promise<FileObjectRow> {
+    async upsertFileObject(tx: TenantTx, row: FileObjectInput, ctx?: WriteContext): Promise<FileObjectRow> {
+      await gateFileObjectWrite(tx, ctx);
       return platform.upsert<FileObjectRow>(
         tx,
         FILE_OBJECT.table,
@@ -1627,7 +1743,8 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     },
 
     /** Removes the manifest row of one stored object. */
-    deleteFileObject(tx: TenantTx, args: { objectKey: string }, ctx?: WriteContext): Promise<FileObjectRow | null> {
+    async deleteFileObject(tx: TenantTx, args: { objectKey: string }, ctx?: WriteContext): Promise<FileObjectRow | null> {
+      await gateFileObjectWrite(tx, ctx);
       return platform.delete<FileObjectRow>(tx, FILE_OBJECT.table, { object_key: args.objectKey }, ctx);
     },
 
@@ -1761,8 +1878,8 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     return updated ?? null;
   }
 
-  /** contentDAO.readComments: a content item's comments, optionally with their reply counts. */
-  function listComments(tx: TenantTx, args: ListCommentsArgs): Promise<CommentListRow[]> {
+  /** contentDAO.readComments' SELECT. */
+  function commentListSelect(tx: TenantTx, args: ListCommentsArgs): BuiltSelect {
     const p = new SqlParams(1);
     const isEditor = args.isEditor === true;
     const includeSpam = args.includeSpam === true;
@@ -1783,13 +1900,17 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     if (args.filterByParentId !== false) {
       filters.push(args.parentId !== undefined && args.parentId !== '' ? idEq(p, 'c.parentid', args.parentId) : 'c.parentid IS NULL');
     }
-    return select<CommentListRow>(
-      tx,
-      [COMMENT],
-      `SELECT ${commentColumns('c')}, ${kids} FROM ${name(COMMENT)} c${join} WHERE ${filters.join(' AND ')}${visibility('c')}` +
-        ` ORDER BY ${orderKey('c.entered', sqlDirection(args.sortOrder ?? 'asc'))}, c.commentid`,
-      [tx.tenantId, ...p.values],
-    );
+    return {
+      select: `SELECT ${commentColumns('c')}, ${kids} FROM ${name(COMMENT)} c${join} WHERE ${filters.join(' AND ')}${visibility('c')}`,
+      order: `ORDER BY ${orderKey('c.entered', sqlDirection(args.sortOrder ?? 'asc'))}, c.commentid`,
+      values: [tx.tenantId, ...p.values],
+    };
+  }
+
+  /** contentDAO.readComments: a content item's comments, optionally with their reply counts. */
+  function listComments(tx: TenantTx, args: ListCommentsArgs): Promise<CommentListRow[]> {
+    const built = commentListSelect(tx, args);
+    return select<CommentListRow>(tx, [COMMENT], `${built.select} ${built.order}`, built.values);
   }
 
   const comments = {
@@ -1868,6 +1989,16 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     },
 
     listComments,
+
+    /** contentDAO.readComments, one page in its order with the count of all its rows. */
+    async listCommentsPage(tx: TenantTx, args: ListCommentsArgs, page: RowPage): Promise<PagedRows<CommentListRow>> {
+      return selectPage<CommentListRow>(tx, [COMMENT], commentListSelect(tx, args), page);
+    },
+
+    /** contentDAO.readComments, every row in its order, `batchSize` rows per batch. */
+    async *listCommentBatches(tx: TenantTx, args: ListCommentsArgs, batchSize?: number): AsyncGenerator<CommentListRow[], void, undefined> {
+      yield* selectBatches<CommentListRow>(tx, [COMMENT], commentListSelect(tx, args), batchSize);
+    },
 
     /** contentDAO.readRecentComments; legacy's default `approvedOnly` names a column the table lacks, so it fails as legacy does. */
     recentComments(
@@ -2362,6 +2493,34 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     return `${ciEq(p, column, value)} AND siteid = ${p.add(lookup.siteId)}`;
   }
 
+  /** changesetManager.getQuery's SELECT; its tag filter reads from `fromt tchangesettagassign`, which fails, so a tag filter throws here too. */
+  function changesetListSelect(tx: TenantTx, args: ChangesetQueryArgs): BuiltSelect {
+    if (args.tag !== undefined && args.tag !== '') {
+      throw new ContentQueryError("Incorrect syntax near 'tchangesettagassign'");
+    }
+    const p = new SqlParams(1);
+    const filters = [`tenant_id = $1`, `siteid = ${p.add(args.siteId)}`];
+    if (args.published !== undefined && Number.isFinite(args.published)) filters.push(`published = ${p.add(Math.trunc(args.published))}`);
+    if (args.publishDate !== undefined) {
+      filters.push(`(publishdate > ${p.add(args.publishDate)}${args.publishDateOnly === false ? ' OR publishdate IS NULL' : ''})`);
+    }
+    if (args.openOnly === true) filters.push(`(closedate > ${p.add(clock.now())} OR closedate IS NULL)`);
+    if (args.keywords !== undefined && args.keywords !== '') {
+      filters.push(`(${ciLike(p, 'name', `%${args.keywords}%`)} OR ${ciLike(p, 'description', `%${args.keywords}%`)})`);
+    }
+    const order =
+      args.sortBy !== undefined && args.sortBy.toLowerCase() === 'publishdate'
+        ? `${orderKey('publishdate', 'desc')}, ${orderKey('lower(name)', 'asc')}`
+        : `${orderKey('published', 'asc')}, ${orderKey('lower(name)', 'asc')}`;
+    return {
+      select:
+        'SELECT changesetid, siteid, name, description, created, publishdate, published, lastupdate, lastupdateby, remoteid, remotepubdate, remotesourceurl' +
+        ` FROM ${name(CHANGESET)} WHERE ${filters.join(' AND ')}`,
+      order: `ORDER BY ${order}, changesetid`,
+      values: [tx.tenantId, ...p.values],
+    };
+  }
+
   const changesets = {
     /** changesetManager.save of a new change set: stamps `created` and `lastupdate`, then writes the assignments. */
     async insertChangeset(tx: TenantTx, row: ChangesetInput, assignments: ChangesetAssignmentsInput = {}, ctx?: WriteContext): Promise<ChangesetRow> {
@@ -2457,31 +2616,19 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     },
 
     /** changesetManager.getQuery; its tag filter reads from `fromt tchangesettagassign`, which fails, so a tag filter fails here too. */
-    changesetQuery(tx: TenantTx, args: ChangesetQueryArgs): Promise<ChangesetListRow[]> {
-      if (args.tag !== undefined && args.tag !== '') {
-        return Promise.reject(new ContentQueryError("Incorrect syntax near 'tchangesettagassign'"));
-      }
-      const p = new SqlParams(1);
-      const filters = [`tenant_id = $1`, `siteid = ${p.add(args.siteId)}`];
-      if (args.published !== undefined && Number.isFinite(args.published)) filters.push(`published = ${p.add(Math.trunc(args.published))}`);
-      if (args.publishDate !== undefined) {
-        filters.push(`(publishdate > ${p.add(args.publishDate)}${args.publishDateOnly === false ? ' OR publishdate IS NULL' : ''})`);
-      }
-      if (args.openOnly === true) filters.push(`(closedate > ${p.add(clock.now())} OR closedate IS NULL)`);
-      if (args.keywords !== undefined && args.keywords !== '') {
-        filters.push(`(${ciLike(p, 'name', `%${args.keywords}%`)} OR ${ciLike(p, 'description', `%${args.keywords}%`)})`);
-      }
-      const order =
-        args.sortBy !== undefined && args.sortBy.toLowerCase() === 'publishdate'
-          ? `${orderKey('publishdate', 'desc')}, ${orderKey('lower(name)', 'asc')}`
-          : `${orderKey('published', 'asc')}, ${orderKey('lower(name)', 'asc')}`;
-      return select<ChangesetListRow>(
-        tx,
-        [CHANGESET],
-        'SELECT changesetid, siteid, name, description, created, publishdate, published, lastupdate, lastupdateby, remoteid, remotepubdate, remotesourceurl' +
-          ` FROM ${name(CHANGESET)} WHERE ${filters.join(' AND ')} ORDER BY ${order}, changesetid`,
-        [tx.tenantId, ...p.values],
-      );
+    async changesetQuery(tx: TenantTx, args: ChangesetQueryArgs): Promise<ChangesetListRow[]> {
+      const built = changesetListSelect(tx, args);
+      return select<ChangesetListRow>(tx, [CHANGESET], `${built.select} ${built.order}`, built.values);
+    },
+
+    /** changesetManager.getQuery, one page in its order with the count of all its rows. */
+    async changesetQueryPage(tx: TenantTx, args: ChangesetQueryArgs, page: RowPage): Promise<PagedRows<ChangesetListRow>> {
+      return selectPage<ChangesetListRow>(tx, [CHANGESET], changesetListSelect(tx, args), page);
+    },
+
+    /** changesetManager.getQuery, every row in its order, `batchSize` rows per batch. */
+    async *changesetQueryBatches(tx: TenantTx, args: ChangesetQueryArgs, batchSize?: number): AsyncGenerator<ChangesetListRow[], void, undefined> {
+      yield* selectBatches<ChangesetListRow>(tx, [CHANGESET], changesetListSelect(tx, args), batchSize);
     },
 
     /** changesetManager.getPendingByContentID: the unpublished change sets holding a version of the item. */
@@ -2599,10 +2746,12 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
 
   // ---- approvals ----
 
-  /** approvalRequest.delete for each request: its actions first (cascade="delete"), then the request. */
+  /** approvalRequest.delete for each request: the actions of all of them under one lock first (cascade="delete"), then the requests. */
   async function deleteRequestRows(tx: TenantTx, requests: readonly ApprovalRequestRow[], ctx: Ctx): Promise<ApprovalRequestRow[]> {
-    for (const request of requests) {
-      await deleteWhere(tx, APPROVAL_ACTION, (p) => idEq(p, 'requestid', request.requestid), ctx);
+    const requestIds = requests.map((request) => request.requestid);
+    if (requestIds.length > 0) {
+      const actions = await lockRows<ApprovalActionRow>(tx, APPROVAL_ACTION, (p) => idIn(p, 'requestid', requestIds), ctx);
+      await deleteEach(tx, APPROVAL_ACTION, inIdOrder(actions, requestIds, (row) => row.requestid), ctx);
     }
     return deleteEach(tx, APPROVAL_REQUEST, requests, ctx);
   }
@@ -2868,6 +3017,42 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     return rows.map((row) => row.formfield).join(',');
   }
 
+  /** dataCollectionManager.getData's SELECT. */
+  function formResponseSelect(tx: TenantTx, args: FormResponsesArgs): BuiltSelect {
+    const p = new SqlParams(1);
+    const fieldNames = args.fieldNames ?? [];
+    const sortBy = args.sortBy ?? '';
+    const keywords = args.keywords ?? '';
+    const byEntered = sortBy.toLowerCase() === 'entered';
+    // listFind, as legacy uses it here, is case-sensitive.
+    const byField = sortBy !== '' && !byEntered && fieldNames.includes(sortBy);
+    const joins: string[] = [];
+    const filters = [`r.tenant_id = $1`, `r.siteid = ${p.add(args.siteId)}`, idEq(p, 'r.formid', args.formId)];
+    if (byField) {
+      joins.push(`LEFT JOIN ${name(FORM_RESPONSE_QUESTION)} e ON (e.tenant_id = r.tenant_id AND r.responseid = e.responseid)`);
+      filters.push(ciEq(p, 'e.formfield', sortBy));
+    }
+    if (args.start !== undefined) filters.push(`r.entered >= ${p.add(args.start)}`);
+    if (args.stop !== undefined) filters.push(`r.entered <= ${p.add(args.stop)}`);
+    if (keywords !== '') {
+      joins.push(`LEFT JOIN ${name(FORM_RESPONSE_QUESTION)} k ON (k.tenant_id = r.tenant_id AND r.responseid = k.responseid)`);
+      filters.push(ciLike(p, 'k.pollvalue', keywords));
+      if (args.filterBy !== undefined && args.filterBy !== '' && fieldNames.includes(args.filterBy)) {
+        filters.push(ciEq(p, 'k.formfield', args.filterBy));
+      }
+    }
+    const order = byEntered
+      ? orderKey('r.entered', sqlDirection(args.sortDirection ?? 'asc'))
+      : byField
+        ? orderKey('lower(e.pollvalue)', sqlDirection(args.sortDirection ?? 'asc'))
+        : orderKey('r.entered', 'asc');
+    return {
+      select: `SELECT r.* FROM ${name(FORM_RESPONSE_PACKET)} r ${joins.join(' ')} WHERE ${filters.join(' AND ')}`,
+      order: `ORDER BY ${order}, r.responseid`,
+      values: [tx.tenantId, ...p.values],
+    };
+  }
+
   const forms = {
     /** dataCollectionManager.update of a new submission. */
     insertResponse(tx: TenantTx, input: FormResponseInput, ctx?: WriteContext): Promise<FormResponseWrite> {
@@ -2899,39 +3084,18 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
 
     /** dataCollectionManager.getData: a form's packets, filtered by date and an unwildcarded poll-value LIKE, sorted by date or one field. */
     responses(tx: TenantTx, args: FormResponsesArgs): Promise<FormResponsePacketRow[]> {
-      const p = new SqlParams(1);
-      const fieldNames = args.fieldNames ?? [];
-      const sortBy = args.sortBy ?? '';
-      const keywords = args.keywords ?? '';
-      const byEntered = sortBy.toLowerCase() === 'entered';
-      // listFind, as legacy uses it here, is case-sensitive.
-      const byField = sortBy !== '' && !byEntered && fieldNames.includes(sortBy);
-      const joins: string[] = [];
-      const filters = [`r.tenant_id = $1`, `r.siteid = ${p.add(args.siteId)}`, idEq(p, 'r.formid', args.formId)];
-      if (byField) {
-        joins.push(`LEFT JOIN ${name(FORM_RESPONSE_QUESTION)} e ON (e.tenant_id = r.tenant_id AND r.responseid = e.responseid)`);
-        filters.push(ciEq(p, 'e.formfield', sortBy));
-      }
-      if (args.start !== undefined) filters.push(`r.entered >= ${p.add(args.start)}`);
-      if (args.stop !== undefined) filters.push(`r.entered <= ${p.add(args.stop)}`);
-      if (keywords !== '') {
-        joins.push(`LEFT JOIN ${name(FORM_RESPONSE_QUESTION)} k ON (k.tenant_id = r.tenant_id AND r.responseid = k.responseid)`);
-        filters.push(ciLike(p, 'k.pollvalue', keywords));
-        if (args.filterBy !== undefined && args.filterBy !== '' && fieldNames.includes(args.filterBy)) {
-          filters.push(ciEq(p, 'k.formfield', args.filterBy));
-        }
-      }
-      const order = byEntered
-        ? orderKey('r.entered', sqlDirection(args.sortDirection ?? 'asc'))
-        : byField
-          ? orderKey('lower(e.pollvalue)', sqlDirection(args.sortDirection ?? 'asc'))
-          : orderKey('r.entered', 'asc');
-      return select<FormResponsePacketRow>(
-        tx,
-        [FORM_RESPONSE_PACKET, FORM_RESPONSE_QUESTION],
-        `SELECT r.* FROM ${name(FORM_RESPONSE_PACKET)} r ${joins.join(' ')} WHERE ${filters.join(' AND ')} ORDER BY ${order}, r.responseid`,
-        [tx.tenantId, ...p.values],
-      );
+      const built = formResponseSelect(tx, args);
+      return select<FormResponsePacketRow>(tx, [FORM_RESPONSE_PACKET, FORM_RESPONSE_QUESTION], `${built.select} ${built.order}`, built.values);
+    },
+
+    /** dataCollectionManager.getData, one page in its order with the count of all its rows. */
+    async responsesPage(tx: TenantTx, args: FormResponsesArgs, page: RowPage): Promise<PagedRows<FormResponsePacketRow>> {
+      return selectPage<FormResponsePacketRow>(tx, [FORM_RESPONSE_PACKET, FORM_RESPONSE_QUESTION], formResponseSelect(tx, args), page);
+    },
+
+    /** dataCollectionManager.getData, every row in its order, `batchSize` rows per batch. */
+    async *responseBatches(tx: TenantTx, args: FormResponsesArgs, batchSize?: number): AsyncGenerator<FormResponsePacketRow[], void, undefined> {
+      yield* selectBatches<FormResponsePacketRow>(tx, [FORM_RESPONSE_PACKET, FORM_RESPONSE_QUESTION], formResponseSelect(tx, args), batchSize);
     },
 
     fullFieldList,

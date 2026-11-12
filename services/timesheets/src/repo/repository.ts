@@ -1,6 +1,6 @@
 // SYNTHETIC: timesheets - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** The only data-access path of schema `timesheets`: gated, audited writes through the platform repository and gated reads in the fixture's order. */
-import { acquireWriteGates, awaitReadable, createRepository, qualified, type Repository, type WriteContext } from '@opt2/platform/migration-kit';
+import { awaitReadable, createRepository, qualified, type Repository, type WriteContext } from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import type { Clock } from '@opt2/platform/service-kit';
 import { APPROVAL_ACTION, BLACKOUT, TIMESHEET, TIMESHEET_DAY, TIMESHEETS_SCHEMA, tables } from './tables.js';
@@ -54,10 +54,10 @@ export type TimesheetsRepository = Repository & {
   /** Inserts one `approval_action` audit row. */
   insertApprovalAction(tx: TenantTx, row: NewRow<ApprovalActionRow>, ctx?: WriteContext): Promise<ApprovalActionRow>;
   /**
-   * Inserts the blackout unless its day already has one.
-   * @returns true when a row was inserted, false when the day was already blacked out.
+   * Inserts, in one audited batch, each blackout whose day has none yet.
+   * @returns the number of blackouts inserted.
    */
-  insertBlackoutIfAbsent(tx: TenantTx, row: NewRow<BlackoutRow>, ctx?: WriteContext): Promise<boolean>;
+  insertBlackoutsIfAbsent(tx: TenantTx, rows: readonly NewRow<BlackoutRow>[], ctx?: WriteContext): Promise<number>;
   /** One page of the tenant's sheets matching `filter`, as `usp_timesheet_status_list` pages them, and their count; RangeError for paging out of bounds. */
   listSheets(tx: TenantTx, filter: SheetFilter): Promise<SheetPage>;
   /** The sheet `timesheetId`, or null. */
@@ -93,7 +93,6 @@ function statementsFor(schema: string) {
   // Ids are fixed-format uppercase CF UUIDs, so byte order ("C") equals the fixture's Latin1_General_BIN2 and its default collation;
   // bpchar casts compare ids as the char(35) columns store them, without truncating a longer argument.
   return Object.freeze({
-    blackoutOfDay: `SELECT 1 FROM ${blackouts} WHERE "day_id" = $1::bpchar`,
     countSheets: `SELECT count(*)::integer AS "total" FROM ${sheets} t${sheetFilter}`,
     // timesheet_list_idx carries the tenant and this order, so a page is read in index order.
     sheets:
@@ -135,14 +134,9 @@ export function createTimesheetsRepository(options: { clock?: Clock; schema?: st
     return base.insert<ApprovalActionRow>(tx, APPROVAL_ACTION.table, row, ctx);
   }
 
-  async function insertBlackoutIfAbsent(tx: TenantTx, row: NewRow<BlackoutRow>, ctx?: WriteContext): Promise<boolean> {
-    // Gated before the existence check, so a closed gate fails the call even when the day is already blacked out.
-    await acquireWriteGates(tx, [BLACKOUT.unit]);
-    // The platform insert has no do-nothing-on-conflict form; checking first keeps a skipped blackout free of a changelog row.
-    const { rows } = await tx.query(sql.blackoutOfDay, [row.day_id]);
-    if (rows.length > 0) return false;
-    await base.insert(tx, BLACKOUT.table, row, ctx);
-    return true;
+  async function insertBlackoutsIfAbsent(tx: TenantTx, rows: readonly NewRow<BlackoutRow>[], ctx?: WriteContext): Promise<number> {
+    // UNIQUE (tenant_id, day_id): a day already blacked out is skipped and gets no changelog row.
+    return (await base.insertAbsent(tx, BLACKOUT.table, rows, ['day_id'], ctx)).length;
   }
 
   async function listSheets(tx: TenantTx, { siteid, personId, pageIndex, itemsPerPage }: SheetFilter): Promise<SheetPage> {
@@ -196,7 +190,7 @@ export function createTimesheetsRepository(options: { clock?: Clock; schema?: st
     ...base,
     updateDayState,
     insertApprovalAction,
-    insertBlackoutIfAbsent,
+    insertBlackoutsIfAbsent,
     listSheets,
     getSheet,
     daysOfSheet,

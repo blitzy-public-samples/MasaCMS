@@ -194,8 +194,43 @@ describe.skipIf(!available)('message domain against PostgreSQL', () => {
       body_html: '<b>{{name}}</b>',
       from_address: 'me@example.org',
     });
-    expect(fromObject).toMatchObject({ subject: 'Hi true {{Name}}', body_text: 'x {{missing}} true' });
+    expect(fromObject).toMatchObject({ subject: 'Hi YES {{Name}}', body_text: 'x {{missing}} YES' });
     expect(withoutVariables).toMatchObject({ subject: 'Hi {{name}} {{Name}}', body_text: 'x {{missing}} {{name}}' });
+  });
+
+  it.each<[string, unknown]>([
+    [
+      'an object',
+      {
+        name: 'Ann',
+        flag: true,
+        off: false,
+        n: 10,
+        f: 1.5,
+        big: 1e20,
+        third: 0.3333333333333333,
+        neg: -0.5,
+        s: 'true',
+        whole: 3,
+        tiny: 0.00001,
+        wide: 1234567.891234567,
+        huge: 1.2345678901234567e19,
+      },
+    ],
+    [
+      'a JSON string',
+      '{"name":"Ann","flag":true,"off":false,"n":10,"f":1.50,"big":1e20,"third":0.3333333333333333,"neg":-0.5,"s":"true",' +
+        '"whole":3.0,"tiny":0.00001,"wide":1234567.891234567,"huge":12345678901234567890}',
+    ],
+  ])('fills simple values from %s as CFML toString renders them', async (_case, variables) => {
+    const template = 'Hi {{name}} flag={{flag}} off={{off}} n={{n}} f={{f}} big={{big}} third={{third}} neg={{neg}} s={{s}} {{Name}} {{missing}}';
+    const filled = 'Hi Ann flag=YES off=NO n=10 f=1.5 big=1E+020 third=0.333333333333 neg=-0.5 s=true {{Name}} {{missing}}';
+    const templateId = await newTemplate(template, template, '<p>{{whole}} {{tiny}} {{wide}} {{huge}}</p>');
+
+    const detail = await submit({ templateId, to: TO, variables });
+
+    expect(detail).toMatchObject({ subject: filled, body_text: filled, body_html: '<p>3 1E-005 1234567.89123 1.23456789012E+019</p>' });
+    expect(sent.map((mail) => [mail.subject, mail.text])).toEqual([[filled, filled]]);
   });
 
   it('answers notFound for an unknown template before reading variables, storing nothing', async () => {

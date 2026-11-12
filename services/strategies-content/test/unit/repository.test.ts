@@ -246,6 +246,58 @@ describe.skipIf(!(await pgAvailable()))('repo/repository', () => {
     expect(home).toEqual({ versions: [], extendFileIds: [] });
   });
 
+  it.each<[string, number, [number, number, number]]>([
+    ['Form', 1, [1, 1, 0]],
+    ['form', 2, [1, 1, 0]],
+    ['COMPONENT', 3, [1, 1, 0]],
+    ['page', 4, [0, 0, 1]],
+  ])('deleteContent of type %s takes the legacy branch of its type in any case', async (type, n, [pointers, links, placements]) => {
+    const id = cfId('L', 10 + n);
+    await inA(async (tx) => {
+      await repo.content.insertVersion(tx, version(id, cfId('M', 10 + n), { type }));
+      await repo.content.upsertRemotePointer(tx, { contentid: id, siteid: SITE, remoteid: `r${n}`, created: 'now' });
+      await repo.content.replaceRelatedItems(tx, cfId('M', 30 + n), SITE, [{ contentid: cfId('L', 30 + n), relatedid: id }]);
+      await repo.content.replaceObjects(tx, cfId('M', 20 + n), [{ objectid: id, object: 'form', contentid: cfId('L', 20 + n), name: 'n', orderno: 1, siteid: SITE, columnid: 1 }]);
+    });
+    await inA((tx) => repo.content.deleteContent(tx, { contentId: id, siteId: SITE, parentId: null, type }));
+    const left = (table: string, column: string): Promise<number> =>
+      inA(async (tx) => (await tx.query(`SELECT 1 FROM ${handle.schema}.${table} WHERE ${column} = $1`, [id])).rows.length);
+    expect([await left('content_remote_pointer', 'contentid'), await left('content_related', 'relatedid'), await left('content_object', 'objectid')]).toEqual([
+      pointers,
+      links,
+      placements,
+    ]);
+  });
+
+  it('selects, replaces and deletes expire and draft assignments in any case, keeping the stored spelling', async () => {
+    const id = cfId('N', 31);
+    const hist = cfId('N', 32);
+    const other = cfId('N', 33);
+    const [u1, u2, u3, u4] = [31, 32, 33, 34].map((k) => cfId('U', k)) as [string, string, string, string];
+    await inA(async (tx) => {
+      await repo.content.insertVersion(tx, version(id, hist));
+      await repo.content.insertContentAssignment(tx, { contentid: id, contenthistid: hist, siteid: SITE, userid: u1, type: 'Expire' });
+      await repo.content.insertContentAssignment(tx, { contentid: id, contenthistid: other, siteid: SITE, userid: u2, type: 'expire' });
+      await repo.content.insertContentAssignment(tx, { contentid: id, contenthistid: other, siteid: SITE, userid: u4, type: 'Draft' });
+    });
+    const assignments = (): Promise<[string | null, string | null, string | null][]> =>
+      inA(async (tx) =>
+        (
+          await tx.query<{ contenthistid: string; userid: string; type: string }>(
+            `SELECT contenthistid, userid, type FROM ${handle.schema}.content_assignment WHERE contentid = $1 ORDER BY userid`,
+            [id],
+          )
+        ).rows.map((row) => [row.contenthistid, row.userid, row.type]),
+      );
+    await inA((tx) => repo.content.replaceContentAssignments(tx, { contentId: id, contentHistId: hist, siteId: SITE, type: 'EXPIRE', userIds: [u3] }));
+    expect(await assignments()).toEqual([[other, u2, 'expire'], [hist, u3, 'EXPIRE'], [other, u4, 'Draft']]);
+    await inA((tx) => repo.content.deleteVersion(tx, { contentHistId: hist, siteId: SITE }));
+    expect(await assignments()).toEqual([[other, u2, 'expire'], [other, u4, 'Draft']]);
+    await inA((tx) => repo.content.deleteContentAssignments(tx, { id, siteId: SITE, type: 'DRAFT' }));
+    await inA((tx) => repo.content.deleteContentAssignments(tx, { id: other, siteId: SITE, type: 'eXpire' }));
+    expect(await assignments()).toEqual([]);
+  });
+
   it('upserts stats as the stats bean saves them and computes ratings', async () => {
     const key = { contentId: cfId('N', 1), siteId: SITE };
     const created = await inA((tx) => repo.stats.setLock(tx, { ...key, lockId: cfId('U', 2), lockType: 'node' }));

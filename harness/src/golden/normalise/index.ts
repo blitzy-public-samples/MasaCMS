@@ -69,6 +69,8 @@ export interface NormalisedStep {
   body?: unknown;
   domModel?: DomModel;
   export?: ExportModel;
+  /** JSON of a step comparing transitions but no body; read by `stateTransitions` only, never compared. */
+  transitionBody?: unknown;
   maskedPaths: Record<string, KnownIssueId>;
 }
 
@@ -353,7 +355,8 @@ async function responseBody(
 
 /**
  * One step record normalised for comparison, continuing the side's id ordinals. Parts are produced in a fixed order
- * (status, headers, auth, body) and only for the kinds the step compares (its own `compare`, else the scenario's).
+ * (status, headers, auth, body) and only for the kinds the step compares (its own `compare`, else the scenario's); a
+ * step comparing transitions but no body keeps its JSON body as `transitionBody` instead.
  */
 export async function normaliseStep(record: StepRecord, ctx: NormaliseContext): Promise<NormalisedStep> {
   const rules = rulesForScenario(ctx.rules, ctx.scenario);
@@ -377,6 +380,10 @@ export async function normaliseStep(record: StepRecord, ctx: NormaliseContext): 
     const { maskedPaths, ...body } = await responseBody(response, text, { ids, rules, kinds, masks });
     Object.assign(step, body);
     bodyMasks = maskedPaths;
+  } else if (kinds.has('transitions') && text !== undefined) {
+    // Without `dom` in `kinds`, only JSON is structured, as envelope or body.
+    const json = structuredBody(response.contentType, text, { ids, rules, kinds, masks });
+    if (json !== undefined) step.transitionBody = json.envelope ?? json.body;
   }
   // Header, cookie, status and body masks first; DOM paths never displace them.
   return { ...step, maskedPaths: { ...bodyMasks, ...pathMasks(step, masks) } };
@@ -541,8 +548,9 @@ function eachObject(value: unknown, visit: (entry: Record<string, unknown>) => v
 }
 
 /**
- * Ordered state sequence per aggregate (rules `transitions`): every object of a step's envelope or JSON body holding a
- * `state` (else `status`) string and an aggregate id placeholder, in step order. Sorted by aggregate placeholder.
+ * Ordered state sequence per aggregate (rules `transitions`): every object of a step's envelope, JSON body or
+ * transition body holding a `state` (else `status`) string and an aggregate id placeholder, in step order. Sorted by
+ * aggregate placeholder.
  */
 export function stateTransitions(steps: readonly NormalisedStep[], opts: CompareOptions): StateTransitions[] {
   const rules = rulesForScenario(opts.rules, opts.scenario);
@@ -550,7 +558,7 @@ export function stateTransitions(steps: readonly NormalisedStep[], opts: Compare
   const bound = routeBoundFields(opts.scenario);
   const sequences = new Map<string, string[]>();
   for (const step of [...steps].sort((a, b) => a.index - b.index)) {
-    for (const part of [step.envelope, step.body]) {
+    for (const part of [step.envelope, step.body, step.transitionBody]) {
       eachObject(part, (entry) => {
         const state = stateOf(entry);
         const aggregate = state === undefined ? undefined : aggregateOf(entry, bound, pattern);
@@ -597,16 +605,53 @@ function stepIdentity(step: NormalisedStep): Record<string, unknown> {
   return { index, routeKey, ...(matrixKey === undefined ? {} : { matrixKey }) };
 }
 
-/** Differences of one golden and replay step pair, classified by the union of both sides' masked paths. */
+/** Cookies paired by name and occurrence: a pair by field, the rest as one `missing` or `extra` at its own index. */
+function diffCookies(
+  expected: NormalisedAuth['cookies'],
+  actual: NormalisedAuth['cookies'],
+  step: string,
+  out: Difference[],
+): void {
+  const unpaired = new Map<string, number[]>();
+  actual.forEach((cookie, index) => unpaired.set(cookie.name, [...(unpaired.get(cookie.name) ?? []), index]));
+  expected.forEach((cookie, index) => {
+    const path = `auth.cookies[${index}]`;
+    const match = unpaired.get(cookie.name)?.shift();
+    if (match === undefined) out.push(difference(step, path, 'missing', cookie, undefined));
+    else diffValues(cookie, actual[match], path, step, out);
+  });
+  for (const index of [...unpaired.values()].flat()) {
+    out.push(difference(step, `auth.cookies[${index}]`, 'extra', undefined, actual[index]));
+  }
+}
+
+// Cookies pair by name; the other auth fields compare by value.
+function diffAuth(expected: NormalisedAuth, actual: NormalisedAuth, step: string, out: Difference[]): void {
+  const { cookies: expectedCookies, ...expectedRest } = expected;
+  const { cookies: actualCookies, ...actualRest } = actual;
+  diffCookies(expectedCookies, actualCookies, step, out);
+  diffValues(expectedRest, actualRest, 'auth', step, out);
+}
+
+/** Differences of one step pair; `missing` reads the golden masks, `extra` the replay masks, the rest both sides'. */
 function compareSteps(golden: NormalisedStep, replay: NormalisedStep, scenario: Scenario): Difference[] {
   const out: Difference[] = [];
   if (stepKinds(scenario, golden.name).has('status') && golden.status !== replay.status) {
     out.push(difference(golden.name, 'status', 'status', golden.status, replay.status));
   }
-  for (const part of STEP_PARTS) diffValues(golden[part], replay[part], part, golden.name, out);
+  for (const part of STEP_PARTS) {
+    if (part === 'auth' && golden.auth !== undefined && replay.auth !== undefined) {
+      diffAuth(golden.auth, replay.auth, golden.name, out);
+    } else {
+      diffValues(golden[part], replay[part], part, golden.name, out);
+    }
+  }
   // A committed set may hold an empty `maskedPaths` as `[]`; spreading reads either form.
-  const masked: Record<string, KnownIssueId> = { ...replay.maskedPaths, ...golden.maskedPaths };
-  return applyMasks(out, { maskedPathsByStep: new Map([[golden.name, masked]]) });
+  const sides = { golden: { ...golden.maskedPaths }, replay: { ...replay.maskedPaths } };
+  return applyMasks(out, {
+    maskedPathsByStep: new Map([[golden.name, { ...sides.replay, ...sides.golden }]]),
+    maskedSidesByStep: new Map([[golden.name, sides]]),
+  });
 }
 
 function sameStates(a: readonly string[], b: readonly string[]): boolean {

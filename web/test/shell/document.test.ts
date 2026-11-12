@@ -24,7 +24,13 @@ import {
 } from '@/shell/document';
 import { OPT2_NAV_MODULES as NAV_MODULES } from '@/shell/nav';
 import { CSRF_UPDATECORE } from '../fixtures/identity/csrf';
-import { adminS2Request, anonymousRequest, editorRequest, noSitesRequest } from '../helpers/admin-request';
+import {
+  adminS2Request,
+  anonymousRequest,
+  buildTestAdminRequest,
+  editorRequest,
+  noSitesRequest,
+} from '../helpers/admin-request';
 import { domModel } from '../helpers/dom-model';
 import { fakeGatewayClient, routeKey, type FakeCall, type FakeGatewayClient } from '../helpers/fake-gateway';
 
@@ -268,6 +274,15 @@ describe('loadShellData', () => {
   });
 
   it.each([
+    { name: 'stored true', adminState: { hasdefaultpassword: true }, expected: true },
+    { name: 'stored false, as only its presence counts', adminState: { hasdefaultpassword: false }, expected: true },
+    { name: 'absent', adminState: {}, expected: false },
+  ])('reads the default-password flag when session.hasdefaultpassword is $name', async ({ adminState, expected }) => {
+    const ctx = await buildTestAdminRequest({ circuit: 'cUsers', action: 'list', user: 'admin', sessionState: { adminState } });
+    expect((await load(ctx)).user.hasDefaultPassword).toBe(expected);
+  });
+
+  it.each([
     { name: 'passwords never expire', expire: undefined, created: '2020-01-01T00:00:00.000', expired: false },
     { name: 'the password is younger than the limit', expire: '30', created: '2026-06-15T12:00:00.000', expired: false },
     { name: 'the password is older than the limit', expire: '30', created: '2026-05-01T12:00:00.000', expired: true },
@@ -366,6 +381,20 @@ describe('renderAdminDocument', () => {
     expect($('#user-tools-name').text().trim()).toBe('Ada Admin');
     expect($('[data-alertid="passwordexpirednotice"]').length).toBe(1);
     expect(toString(doc.body)).toContain(`action=updateCore${UPDATE_CORE_QUERY}`);
+  });
+
+  it.each([
+    { name: 'not dismissed', alerts: { default: {} }, shown: 1 },
+    { name: 'dismissed', alerts: { default: { defaultpasswordnotice: { type: '', text: '' } } }, shown: 0 },
+  ])('renders the default-password notice login flagged $shown time(s) when $name', async ({ alerts, shown }) => {
+    const ctx = await buildTestAdminRequest({
+      circuit: 'cUsers',
+      action: 'list',
+      user: 'admin',
+      sessionState: { mura: { alerts }, adminState: { hasdefaultpassword: true } },
+    });
+    const $ = $of(await documentFor(ctx));
+    expect($('[data-alertid="defaultpasswordnotice"]').length).toBe(shown);
   });
 
   it.each([

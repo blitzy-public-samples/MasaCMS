@@ -220,7 +220,7 @@ Each unit is one target table; `newTables` in the JSON lists target-only tables,
 | `synthetic.survey_target` | `surveys.survey_target` | Tenant of its `synthetic.survey`; `siteID` names the targeted site |
 | `synthetic.survey_response` | `surveys.survey_response` | Tenant from `siteID`, the survey's site; `respondentSiteID` is the respondent's site, matching the survey-response tenant grant |
 | `synthetic.export_definition` | `reporting.export_definition` | Tenant from `siteID` |
-| `synthetic.export_job` | `reporting.export_job` | Tenant from `siteID` |
+| `synthetic.export_job` | `reporting.export_job` | Tenant from `siteID`; the output bytes become objects in bucket `reporting-exports`, and the row keeps the object key |
 | `synthetic.message_template` | `communications.message_template` | Tenant from `siteID` |
 | `synthetic.message` | `communications.message` | Tenant from `siteID` |
 | `synthetic.delivery_status` | `communications.delivery_status` | Tenant of its `synthetic.message` |

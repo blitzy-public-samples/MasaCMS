@@ -17,7 +17,7 @@ import {
   type SchedulerBackgroundRecord,
   type SchedulerRouteDeps,
 } from '../../src/routes/scheduler.js';
-import { importNativeTasks, readSchedulerState, type SchedulerImportResult, type SiteMonitorRecord } from '../../src/scheduler/index.js';
+import { importSchedulerRequest, readSchedulerState, type SchedulerImportResult, type SiteMonitorRecord } from '../../src/scheduler/index.js';
 
 type Operation = Record<string, unknown>;
 
@@ -129,7 +129,7 @@ let backgroundRecord: SchedulerBackgroundRecord;
 // The scheduler service's `state` and `importState`, as createSchedulerService binds them, over the in-memory table and a live describe.
 const scheduler = {
   state: vi.fn<SchedulerRouteDeps['scheduler']['state']>(async () => ({ stored: await readSchedulerState(store.db(), clock.now()), live })),
-  importState: vi.fn<SchedulerRouteDeps['scheduler']['importState']>((body) => importNativeTasks({ db: store.db(), clock }, body)),
+  importState: vi.fn<SchedulerRouteDeps['scheduler']['importState']>((body) => importSchedulerRequest({ db: store.db(), clock }, body)),
 };
 const background = { get: vi.fn(() => Promise.resolve(backgroundRecord)) };
 let app: FastifyInstance;
@@ -273,18 +273,25 @@ describe('schedulerStateImport', () => {
     expect(again.json()).toEqual(first.json());
   });
 
+  // Only a contract-valid body whose task entry fails the task schema reaches the import.
   it.each([
-    ['no task list', { ping: true }],
-    ['a task without a name', { ping: true, nativeTasks: [{ URL: 'http://localhost/' }] }],
-    ['no ping', { nativeTasks: [] }],
-    ['an array', []],
-  ])('answers %s with the legacy 400 without reading state', async (_label, body) => {
+    ['no task list', { ping: true }, false],
+    ['a task without a name', { ping: true, nativeTasks: [{ URL: 'http://localhost/' }] }, true],
+    ['no ping', { nativeTasks: [] }, false],
+    ['an array', [], false],
+    ['a ping that is not a boolean', { nativeTasks: [], ping: 'not-a-boolean' }, false],
+    ['an extra top-level key', { ...importBody(true, MONITOR), siteMonitorTask: MONITOR_NAME }, false],
+    ['the native-tasks.json file form', { capturedAt: '2026-06-30T11:00:00Z', originalPing: true, tasks: [MONITOR] }, false],
+    ['a box cfconfig export', { capturedAt: '2026-06-30T11:00:00Z', ping: true, scheduledTasks: importBody(true, MONITOR).nativeTasks }, false],
+    ['a task entry that is not an object', { nativeTasks: ['siteMonitor'], ping: true }, false],
+  ])('answers %s with the legacy 400 without reading state', async (_label, body, reachesImport) => {
     const res = await importCapture(body);
 
     expect(res.statusCode).toBe(400);
     expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request', message: 'Invalid parameters' } });
     expect(store.rows.size).toBe(0);
     expect(scheduler.state).not.toHaveBeenCalled();
+    expect(scheduler.importState).toHaveBeenCalledTimes(reachesImport ? 1 : 0);
   });
 
   it('answers a body that is not JSON, which service-kit parses to no body, with the legacy 400', async () => {
@@ -292,7 +299,7 @@ describe('schedulerStateImport', () => {
 
     expect(res.statusCode).toBe(400);
     expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request', message: 'Invalid parameters' } });
-    expect(scheduler.importState).toHaveBeenCalledExactlyOnceWith(undefined);
+    expect(scheduler.importState).not.toHaveBeenCalled();
     expect(store.rows.size).toBe(0);
   });
 

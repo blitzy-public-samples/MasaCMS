@@ -2,6 +2,7 @@
 // fileManager.requestHasRestrictedFiles) and its merge with identity's prepare errors into legacy's errors struct.
 import { domainToASCII } from 'node:url';
 import { cfEq, cfHash, cfNumberString, cfToBoolean, javaTrim } from '@opt2/platform/legacy-compat';
+import { EN_PEOPLE_MESSAGES, enPeopleMessages, type PeopleMessages } from './messages.js';
 import type { UserValues } from './person.js';
 
 /**
@@ -9,10 +10,10 @@ import type { UserValues } from './person.js';
  * `sitemanager.requesthasrestrictedfiles` and userBean's literal blank-site message (userBean.cfc:508).
  */
 export const PEOPLE_MESSAGES = Object.freeze({
-  emailRequired: "The 'Email Address' field is required.",
-  captchaError: "The 'Security Code' entered was not correct.",
-  captchaSpam: 'This submission has been marked as spam.',
-  restrictedFiles: 'The posted request contained restricted file types',
+  emailRequired: EN_PEOPLE_MESSAGES['user.emailrequired'],
+  captchaError: EN_PEOPLE_MESSAGES['captcha.error'],
+  captchaSpam: EN_PEOPLE_MESSAGES['captcha.spam'],
+  restrictedFiles: EN_PEOPLE_MESSAGES['sitemanager.requesthasrestrictedfiles'],
   siteIdMissing: "The 'SiteID' variable is missing.",
 });
 
@@ -717,19 +718,21 @@ function postedClientFileName(postedFiles: ReadonlyMap<string, string>, field: s
 /**
  * People's part of userBean.validate (userBean.cfc:467-511), in the order it sets errors: `email`, `SecurityCode`
  * and `Spam`, or `siteid` alone for a blank site id. Identity's prepare answers the `password` and `username` checks.
+ * `rb` gives the texts of the user's site bundle.
  */
 export function validatePersonValues(
   values: Pick<UserValues, 'siteid' | 'type' | 'email' | 'hkey' | 'ukey' | 'passedprotect'>,
+  rb: PeopleMessages = enPeopleMessages,
 ): LegacyErrors {
   if (javaTrim(values.siteid) === '') return { siteid: PEOPLE_MESSAGES.siteIdMissing };
   const errors: LegacyErrors = {};
   const type = typeof values.type === 'number' ? cfNumberString(values.type) : values.type;
-  if (cfEq(type, '2') && cfEq(values.email, '')) errors.email = PEOPLE_MESSAGES.emailRequired;
+  if (cfEq(type, '2') && cfEq(values.email, '')) errors.email = rb(values.siteid, 'user.emailrequired');
   // The captcha key is hashed with configBean's defaultHashAlgorithm, CFMX_COMPAT.
   if (values.hkey !== '' && !cfEq(values.hkey, cfHash(values.ukey, 'CFMX_COMPAT'))) {
-    errors.SecurityCode = PEOPLE_MESSAGES.captchaError;
+    errors.SecurityCode = rb(values.siteid, 'captcha.error');
   }
-  if (!cfToBoolean(values.passedprotect)) errors.Spam = PEOPLE_MESSAGES.captchaSpam;
+  if (!cfToBoolean(values.passedprotect)) errors.Spam = rb(values.siteid, 'captcha.spam');
   return errors;
 }
 
@@ -787,19 +790,24 @@ export interface UserErrorParts {
   people: Readonly<LegacyErrors>;
   /** requestHasRestrictedFiles' answer. */
   restrictedFiles?: boolean;
+  /** The user's site id, whose bundle gives the restricted-file message; '' when omitted. */
+  siteId?: string;
 }
 
 /**
  * The errors struct of a Type=2 save, set in legacy's order (extended data, identity's checks, people's checks, the
  * restricted-file flag; userBean.cfc:458-511, userManager.cfc:476-479, 617-620) and keyed in ACF's iteration order.
+ * `rb` gives the restricted-file text of the user's site bundle.
  */
-export function mergeUserErrors(parts: UserErrorParts): LegacyErrors {
+export function mergeUserErrors(parts: UserErrorParts, rb: PeopleMessages = enPeopleMessages): LegacyErrors {
   const sequence: Array<[string, string | LegacyErrors]> = [
     ...acfStructOrder(Object.entries(parts.extended)),
     ...Object.entries(parts.identity ?? {}),
     ...Object.entries(parts.people),
   ];
-  if (parts.restrictedFiles === true) sequence.push(['requestHasRestrictedFiles', PEOPLE_MESSAGES.restrictedFiles]);
+  if (parts.restrictedFiles === true) {
+    sequence.push(['requestHasRestrictedFiles', rb(parts.siteId ?? '', 'sitemanager.requesthasrestrictedfiles')]);
+  }
   return errorsObject(acfStructOrder(sequence));
 }
 

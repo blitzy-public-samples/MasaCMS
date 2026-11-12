@@ -57,6 +57,8 @@ export interface CreateServiceOptions<E extends BaseEnv = BaseEnv> {
   logger?: Logger;
   /** Defaults to {@link defaultSurfaceOf}. */
   surfaceOf?: (request: FastifyRequest) => LegacySurface;
+  /** Path prefixes routed in any letter case, as legacy compares them; a matching path is routed under the spelling given here. */
+  noCasePathPrefixes?: readonly string[];
 }
 
 /** Process runtime of one service, decorated as `app.opt2`. */
@@ -125,6 +127,47 @@ function stateOf(request: FastifyRequest): KitRequestState {
 function pathOf(request: FastifyRequest): string {
   const query = request.url.indexOf('?');
   return query === -1 ? request.url : request.url.slice(0, query);
+}
+
+/** Shape of a no-case prefix: a `/`-led printable-ASCII path without `%`, `?` or `#`. */
+const NO_CASE_PREFIX = /^\/(?:(?![%?#])[!-~])*$/;
+
+/** Index just past the lead of `url` that reads as `prefix` ignoring case, each `%XX` decoded to its byte; -1 when none. */
+function noCaseLeadEnd(url: string, prefix: string): number {
+  const want = prefix.toLowerCase();
+  let at = 0;
+  for (let i = 0; i < want.length; i += 1) {
+    let got = url.charAt(at);
+    if (got === '%') {
+      try {
+        // `%2F` reads as `/`, as the legacy container decodes it before contentServer compares the path.
+        got = decodeURIComponent(url.slice(at, at + 3));
+      } catch {
+        // A malformed escape is left for the router to reject.
+        return -1;
+      }
+      at += 3;
+    } else {
+      at += 1;
+    }
+    if (got.toLowerCase() !== want.charAt(i)) return -1;
+  }
+  return at;
+}
+
+/** Fastify `rewriteUrl` respelling the longest of `prefixes` that a raw URL starts with, ignoring case, as declared; the rest stays byte for byte. */
+function noCaseRewrite(prefixes: readonly string[]): (req: { url?: string }) => string {
+  const invalid = prefixes.find((prefix) => !NO_CASE_PREFIX.test(prefix));
+  if (invalid !== undefined) throw new TypeError(`noCasePathPrefixes entry ${JSON.stringify(invalid)} is not a /-led ASCII path`);
+  const longestFirst = [...prefixes].sort((a, b) => b.length - a.length);
+  return (req) => {
+    const url = req.url ?? '';
+    for (const prefix of longestFirst) {
+      const end = noCaseLeadEnd(url, prefix);
+      if (end !== -1) return prefix + url.slice(end);
+    }
+    return url;
+  };
 }
 
 /** A key-value object, including fast-querystring's null-rooted dictionaries; never arrays, buffers or streams. */
@@ -249,10 +292,11 @@ async function openPool(env: BaseEnv, schema: string, logger: Logger): Promise<T
 
 /** Builds a service's Fastify instance with auth, context, parsers, legacy headers and errors, health, logging and shutdown; routes come after. */
 export async function createService<E extends BaseEnv>(options: CreateServiceOptions<E>): Promise<FastifyInstance> {
-  const { name, version, env, clock = systemClock, surfaceOf = defaultSurfaceOf } = options;
+  const { name, version, env, clock = systemClock, surfaceOf = defaultSurfaceOf, noCasePathPrefixes = [] } = options;
   if (options.pool !== undefined && options.schema !== undefined) {
     throw new TypeError('createService accepts either pool or schema, not both');
   }
+  const rewriteUrl = noCasePathPrefixes.length === 0 ? undefined : noCaseRewrite(noCasePathPrefixes);
   const logger =
     options.logger ??
     createLogger({ service: name, version, env: env.OPT2_ENV, googleCloudProject: env.GOOGLE_CLOUD_PROJECT });
@@ -270,6 +314,7 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
     // Routes answer only the methods they register; a route serving HEAD declares it.
     exposeHeadRoutes: false,
     routerOptions: { ignoreTrailingSlash: true },
+    ...(rewriteUrl === undefined ? {} : { rewriteUrl }),
   });
 
   let closing: Promise<void> | undefined;

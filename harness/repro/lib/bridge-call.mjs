@@ -12,18 +12,19 @@ const USAGE = `Usage: node bridge-call.mjs <file> <op> [options]
 Calls <origin>/gateway/legacy-bridge/cfml/<file>.cfm?op=<op> (jobs.cfm?job=<op>) with an assertion
 signed for <file>.<op>, and prints the response body (contract: gateway/legacy-bridge/README.md).
 
-  <file>                  session | jobs | scheduler | site | files
+  <file>                  jobs | scheduler | site | files
   <op>                    the page's op, or the job name for jobs
   --site <id>             siteid query parameter, also signed as the assertion's siteId
-  --query <k=v>           extra query parameter, repeatable (theTime, lastMonitored, value, since, name, ...)
+  --query <k=v>           extra query parameter, repeatable (theTime, lastMonitored, value, name, ...)
   --json <body>|@<path>   JSON request body for POST (default {})
   --origin <url>          legacy origin (default LEGACY_ORIGIN, else http://127.0.0.1:\${OPT2_LEGACY_PORT:-$PORT})
-  --method GET|POST       default GET for describe, list, usedSince, getCursor and get, POST otherwise
+  --method GET|POST       default GET for describe, list, getCursor and get, POST otherwise
   --timeout-s <n>         request timeout in seconds (default 120)
   --help                  print this help
 
 Key: OPT2_BRIDGE_HMAC_KEY, else \${OPT2_STATE_DIR:-$HOME/.opt2/state}/secrets/bridge-hmac-key.
 files put takes a raw byte body and is not supported.
+session ops act on a browser's legacy session, which only gateway/src/session/bridge-client.ts sends, and are not supported.
 Exit status: 0 2xx answer, 1 failure, 2 usage.
 `;
 
@@ -37,8 +38,8 @@ const OPTIONS = /** @type {const} */ ({
   help: { type: 'boolean' },
 });
 
-const FILES = new Set(['session', 'jobs', 'scheduler', 'site', 'files']);
-const GET_OPS = new Set(['describe', 'list', 'usedSince', 'getCursor', 'get']);
+const FILES = new Set(['jobs', 'scheduler', 'site', 'files']);
+const GET_OPS = new Set(['describe', 'list', 'getCursor', 'get']);
 // The URL scope is case-insensitive in ColdFusion, and these names are bound into the assertion.
 const RESERVED_QUERY = new Set(['op', 'job', 'siteid']);
 const KEY_FILE = 'bridge-hmac-key';
@@ -86,6 +87,12 @@ function parseCommandLine(argv, env) {
   }
   const { values, positionals } = parsed;
   if (values.help === true) return { help: true };
+  if (positionals[0] === 'session') {
+    throw new UsageError(
+      "session ops act on a browser's legacy session (its CFID/CFTOKEN/JSESSIONID cookies, sid, sub and browser User-Agent), " +
+        'which only the gateway session client gateway/src/session/bridge-client.ts sends',
+    );
+  }
 
   const [file, op, ...extra] = positionals;
   if (file === undefined || op === undefined || op === '') throw new UsageError('missing <file> or <op>');
@@ -118,7 +125,7 @@ function parseCommandLine(argv, env) {
 function readBody(json) {
   if (json === undefined) return '{}';
   if (!json.startsWith('@')) {
-    // The parse error is not echoed: a body can carry session secrets.
+    // The parse error is not echoed: it can quote the body.
     if (parseJson(json) === undefined) throw new UsageError('--json is not valid JSON');
     return json;
   }

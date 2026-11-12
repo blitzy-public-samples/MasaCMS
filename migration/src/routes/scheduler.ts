@@ -1,7 +1,7 @@
 /** `schedulerStateGet` and `schedulerStateImport`: the captured native ColdFusion tasks and the site-monitor hand-off state. */
 import { Roles, type Opt2RouteConfig } from '@opt2/platform/auth';
 import { LegacyApiError, buildEnvelope, reportedMethod, serializeResponse } from '@opt2/platform/legacy-compat';
-import { sendLegacyResponse, type FastifyInstance, type FastifyReply } from '@opt2/platform/service-kit';
+import { sendLegacyResponse, z, type FastifyInstance, type FastifyReply } from '@opt2/platform/service-kit';
 
 import type { paths } from '../generated/openapi.js';
 import {
@@ -9,6 +9,7 @@ import {
   SchedulerStateConflictError,
   schedulerStateView,
   type BackgroundStateView,
+  type SchedulerImportRequest,
   type SchedulerService,
   type SchedulerStateView,
 } from '../scheduler/index.js';
@@ -42,6 +43,11 @@ const ROUTE_AUTH: Opt2RouteConfig = Object.freeze({
   requires: Object.freeze([Roles.platformOperator]),
 });
 
+const importBodySchema = z.strictObject({
+  nativeTasks: z.array(z.looseObject({})),
+  ping: z.boolean().nullable(),
+}) satisfies z.ZodType<SchedulerImportRequest>;
+
 /** The contract's `BackgroundState`: `since` only while it is set. */
 function backgroundView(record: SchedulerBackgroundRecord): BackgroundStateView {
   return record.since == null ? { suspended: record.suspended } : { suspended: record.suspended, since: record.since };
@@ -64,9 +70,11 @@ export function registerSchedulerRoutes(app: FastifyInstance, deps: SchedulerRou
   app.get<{ Reply: SchedulerStateView }>(STATE_PATH, { config: { opt2: ROUTE_AUTH } }, () => currentState(deps));
 
   app.post<{ Body: unknown }>(IMPORT_URL, { config: { opt2: ROUTE_AUTH } }, async (request, reply) => {
+    const body = importBodySchema.safeParse(request.body);
+    if (!body.success) throw new LegacyApiError('invalidParameters');
     try {
-      // The import normalises and validates the raw body itself, so it is validated exactly once.
-      await deps.scheduler.importState(request.body);
+      // The contract leaves task entries open, so an entry that fails the task schema is still the legacy 400.
+      await deps.scheduler.importState(body.data);
     } catch (error) {
       if (error instanceof SchedulerImportError) throw new LegacyApiError('invalidParameters');
       if (error instanceof SchedulerStateConflictError) return sendConflict(reply, error);

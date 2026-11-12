@@ -498,7 +498,7 @@ describe('suspend and resume', () => {
 });
 
 describe('scheduler status', () => {
-  it('imports a capture through importNativeTasks', async () => {
+  it('imports a request body through importSchedulerRequest', async () => {
     const { h, service } = harness([]);
     const result = await service().importState({ nativeTasks: [{ ...MONITOR }], ping: true });
     expect(result).toMatchObject({ imported: true, reason: 'imported', nativeExisted: true, taskCount: 1 });

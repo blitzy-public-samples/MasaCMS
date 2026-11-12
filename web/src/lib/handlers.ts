@@ -240,8 +240,8 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
           decision.kind === 'redirect'
             ? { answer: answers.redirect(decision.location, req.pendingSetCookies, context) }
             : await dispatch.run(ctx, context);
-        // Read after the screen ran, so values a screen recorded on the request are stored too.
-        await saveSessionWrites(gateway, auth, { ...req.sessionWrites, ...outcome.writes });
+        // Read from the screen's request after it ran: a screen may record values on it or replace it with its own.
+        await saveSessionWrites(gateway, auth, { ...ctx.req.sessionWrites, ...outcome.writes });
         return outcome.answer;
       } catch (error) {
         failure = error;

@@ -199,7 +199,7 @@ export interface ExtendDataReplacement {
   row: ExtendDataValues | null;
 }
 
-/** Filters of `listExtendAttributes`; each given filter must match. */
+/** Filters of `listExtendAttributes`; each given filter must match, set and site ids as SQL Server compares them. */
 export interface ExtendAttributeFilter {
   setIds?: readonly string[];
   attributeIds?: readonly number[];
@@ -472,9 +472,11 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     ` AND ($3::text[] IS NULL OR ${ciText('type')} = ANY (SELECT ${ciText('t')} FROM unnest($3::text[]) AS t))` +
     ' ORDER BY lower(type) ASC NULLS FIRST, lower(subtype) ASC NULLS FIRST, subtypeid';
   const setsSql = `SELECT * FROM ${set} WHERE tenant_id = $1 AND subtypeid = ANY($2::bpchar[]) ORDER BY orderno ASC NULLS FIRST, extendsetid`;
+  // SQL Server's char equality, leakproof and so indexable under forced RLS: bpchar ignores trailing spaces, legacy_char_ci compares the rest.
   const attributesSql =
-    `SELECT * FROM ${attribute} WHERE tenant_id = $1 AND ($2::bpchar[] IS NULL OR extendsetid = ANY($2::bpchar[]))` +
-    ' AND ($3::integer[] IS NULL OR attributeid = ANY($3::integer[])) AND ($4::text IS NULL OR siteid = $4)' +
+    `SELECT * FROM ${attribute} WHERE tenant_id = $1` +
+    ` AND ($2::bpchar[] IS NULL OR (extendsetid COLLATE ${qualified(schema, 'legacy_char_ci')}) = ANY ($2::bpchar[]))` +
+    ` AND ($3::integer[] IS NULL OR attributeid = ANY($3::integer[])) AND ($4::text IS NULL OR ${ciText('siteid')} = ${ciText('$4::text')})` +
     ' ORDER BY orderno ASC NULLS FIRST, lower(name) ASC NULLS FIRST, attributeid';
   // The fixture's archive order (legacy-fixtures/cfml/modules/people.cfc findArchives).
   const archiveSql =

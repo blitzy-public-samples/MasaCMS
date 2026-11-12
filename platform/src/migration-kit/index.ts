@@ -112,6 +112,7 @@ export {
   setGatePhase,
   openGates,
   requestMigrationAuthority,
+  isMigrationAuthority,
 } from './gates.js';
 export type {
   UnitGate,

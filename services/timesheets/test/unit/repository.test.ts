@@ -189,7 +189,7 @@ describe.skipIf(!available)('timesheets repository against PostgreSQL', () => {
       const updated = await repository.updateDayState(tx, { dayId: d.day_id, state: 'SUBMITTED', lastupdate: NOW, lastupdatebyid: ACTOR });
       expect(updated).toMatchObject({ day_id: d.day_id, state: 'SUBMITTED', lastupdatebyid: ACTOR, hours: '7.5000' });
       expect(await repository.insertApprovalAction(tx, approval(d.day_id))).toMatchObject({ tenant_id: tenantId, day_id: d.day_id });
-      expect(await repository.insertBlackoutIfAbsent(tx, blackout(d.day_id))).toBe(true);
+      expect(await repository.insertBlackoutsIfAbsent(tx, [blackout(d.day_id)])).toBe(1);
       expect(await written(tx)).toEqual([
         { op: 'update', table: 'timesheet_day', columns: ['state', 'lastupdate', 'lastupdatebyid'] },
         {
@@ -210,14 +210,19 @@ describe.skipIf(!available)('timesheets repository against PostgreSQL', () => {
   it('inserts one blackout per day and skips a repeat without a changelog row', async () => {
     const s = sheet();
     const d = day(s.timesheet_id);
-    await seed(s, [d]);
-    expect(await inTenant((tx) => repository.insertBlackoutIfAbsent(tx, blackout(d.day_id)))).toBe(true);
+    const next = day(s.timesheet_id, { work_date: new Date(2026, 5, 2) });
+    await seed(s, [d, next]);
+    expect(await inTenant((tx) => repository.insertBlackoutsIfAbsent(tx, [blackout(d.day_id)]))).toBe(1);
     await inTenant(async (tx) => {
-      expect(await repository.insertBlackoutIfAbsent(tx, blackout(d.day_id))).toBe(false);
+      expect(await repository.insertBlackoutsIfAbsent(tx, [blackout(d.day_id)])).toBe(0);
       expect(await written(tx)).toEqual([]);
     });
-    expect(await count('SELECT count(*) AS n FROM <s>.blackout')).toBe(1);
-    expect(await count(`SELECT count(*) AS n FROM <s>.changelog WHERE "table" = 'blackout'`)).toBe(1);
+    await inTenant(async (tx) => {
+      expect(await repository.insertBlackoutsIfAbsent(tx, [blackout(d.day_id), blackout(next.day_id)])).toBe(1);
+      expect((await written(tx)).map(({ op, table }) => [op, table])).toEqual([['insert', 'blackout']]);
+    });
+    expect(await count('SELECT count(*) AS n FROM <s>.blackout')).toBe(2);
+    expect(await count(`SELECT count(*) AS n FROM <s>.changelog WHERE "table" = 'blackout'`)).toBe(2);
   });
 
   describe('with every gate closed', () => {
@@ -228,14 +233,14 @@ describe.skipIf(!available)('timesheets repository against PostgreSQL', () => {
       const d = day(s.timesheet_id);
       dayId = d.day_id;
       await seed(s, [d]);
-      await inTenant((tx) => repository.insertBlackoutIfAbsent(tx, blackout(d.day_id)));
+      await inTenant((tx) => repository.insertBlackoutsIfAbsent(tx, [blackout(d.day_id)]));
       await closeGates(handle.app, { units: TIMESHEETS_UNITS, holderId: 'repository-test' });
     });
 
     it.each<[string, (tx: TenantTx) => Promise<unknown>]>([
       ['updateDayState', (tx) => repository.updateDayState(tx, { dayId, state: 'SUBMITTED', lastupdate: NOW, lastupdatebyid: ACTOR })],
       ['insertApprovalAction', (tx) => repository.insertApprovalAction(tx, approval(dayId))],
-      ['insertBlackoutIfAbsent on a blacked-out day', (tx) => repository.insertBlackoutIfAbsent(tx, blackout(dayId))],
+      ['insertBlackoutsIfAbsent on a blacked-out day', (tx) => repository.insertBlackoutsIfAbsent(tx, [blackout(dayId)])],
     ])('%s rejects with GateClosedError after the budget', async (_name, write) => {
       await expect(withGatedTenant(handle.app, tenantId, write, SHORT_BUDGET)).rejects.toBeInstanceOf(GateClosedError);
     });
@@ -243,7 +248,7 @@ describe.skipIf(!available)('timesheets repository against PostgreSQL', () => {
 
   it('rejects target writes while the unit is legacy-authoritative', async () => {
     await setGates('legacy');
-    await expect(inTenant((tx) => repository.insertBlackoutIfAbsent(tx, blackout(cfUuid())))).rejects.toBeInstanceOf(UnitNotAuthoritativeError);
+    await expect(inTenant((tx) => repository.insertBlackoutsIfAbsent(tx, [blackout(cfUuid())]))).rejects.toBeInstanceOf(UnitNotAuthoritativeError);
   });
 
   it('blocks reads of a unit whose window executes and leaves other units readable', async () => {
@@ -279,10 +284,9 @@ describe.skipIf(!available)('timesheets repository against PostgreSQL', () => {
       await seed(s3, [otherPerson]);
       await seed(s4);
       await seed(elsewhere);
-      await inTenant(async (tx) => {
-        await repository.insertBlackoutIfAbsent(tx, blackout(submittedBlackedOut.day_id, { person_id: P1 }));
-        await repository.insertBlackoutIfAbsent(tx, blackout(blackedOut.day_id, { person_id: P1 }));
-      });
+      await inTenant((tx) =>
+        repository.insertBlackoutsIfAbsent(tx, [blackout(submittedBlackedOut.day_id, { person_id: P1 }), blackout(blackedOut.day_id, { person_id: P1 })]),
+      );
     });
 
     it('lists sheets by period start, person and sheet id, filtered by site and person', async () => {
@@ -385,7 +389,7 @@ describe.skipIf(!available)('timesheets repository against PostgreSQL', () => {
       expect((await repository.openDaysOfPerson(tx, { personId: ACTOR, effectiveFrom: new Date(2026, 0, 1) })).map((row) => row.day_id)).toEqual([d.day_id]);
       locked.fire();
       await release.promise;
-      await repository.insertBlackoutIfAbsent(tx, blackout(d.day_id));
+      await repository.insertBlackoutsIfAbsent(tx, [blackout(d.day_id)]);
     });
     await locked.promise;
     const action = inTenant((tx) => repository.dayWithBlackout(tx, d.day_id, { forUpdate: true }));

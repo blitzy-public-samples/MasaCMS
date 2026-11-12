@@ -10,7 +10,7 @@ import type { CutoverVersion } from '../cutover/index.js';
 import type { components } from '../generated/openapi.js';
 import type { SchedulerDescription } from '../legacy/index.js';
 import type { AdoptScheduledTask, AdoptScheduledTasksRequest, UnitCatalog } from '../owners/index.js';
-import { importNativeTasks, type SchedulerImportResult } from './import.js';
+import { importSchedulerRequest, type SchedulerImportRequest, type SchedulerImportResult } from './import.js';
 import {
   SCHEDULER_KEYS,
   SURVEY_TASK_PREFIX,
@@ -114,8 +114,8 @@ export class SchedulerHandoffError extends Error {
 export interface SchedulerService {
   /** The stored records and the live scheduler; a bridge error propagates unwrapped. */
   state(): Promise<SchedulerStatus>;
-  /** Imports a native task capture in any form `importNativeTasks` accepts. */
-  importState(body: unknown): Promise<SchedulerImportResult>;
+  /** Imports a validated `SchedulerImportRequest` body with `importSchedulerRequest`. */
+  importState(body: SchedulerImportRequest): Promise<SchedulerImportResult>;
   /** Pauses the legacy tasks whose steps write `units` before the gateway freeze, capturing the survey definitions first. */
   pauseFor(units: Iterable<string>, scope: SchedulerScope): Promise<PauseResult>;
   /** After activation, deletes the native monitor, seeds programs-sites' cursor and enables its chain when a native task existed. */
@@ -430,7 +430,7 @@ export function createSchedulerService(ctx: SchedulerContext, options: Scheduler
   return {
     state: () => schedulerStatus(ctx),
 
-    importState: (body) => importNativeTasks({ db: ctx.db, clock: ctx.clock }, body),
+    importState: (body) => importSchedulerRequest({ db: ctx.db, clock: ctx.clock }, body),
 
     async pauseFor(units, scope) {
       const unitList = [...units];

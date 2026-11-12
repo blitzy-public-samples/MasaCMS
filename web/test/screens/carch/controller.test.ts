@@ -1,4 +1,4 @@
-// carch controller before() against admin/core/controllers/carch.cfc 15-109: module gate, rc defaults, module-id sync.
+// carch controller before() against admin/core/controllers/carch.cfc 15-109: module gate, rc defaults, session effects.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { secure, type GateDecision } from '@/lib/access-gate';
 import type { AdminRequest } from '@/lib/request-context';
@@ -9,6 +9,7 @@ import {
   CONTENT_MODULE_ID,
   FORM_MODULE_ID,
   ROOT_CONTENT_ID,
+  SESSION_TOP_IDS,
   VARIATION_MODULE_ID,
 } from '@/screens/carch/model';
 import {
@@ -17,6 +18,7 @@ import {
   editorRequest,
   makeAdminRequest,
   siteAdminRequest,
+  type AdminRequestPartial,
 } from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
 import type { WebTestSubjectKey } from '../../helpers/tokens';
@@ -36,7 +38,7 @@ afterEach(() => {
 
 const carchRequest = (
   rc: Readonly<Record<string, string>> = {},
-  session: { readonly moduleid?: string } = {},
+  session: AdminRequestPartial['session'] = {},
   subject: WebTestSubjectKey = 'admin',
 ): AdminRequest => makeAdminRequest({ circuit: 'carch', item: 'list', rc, session }, subject);
 
@@ -179,19 +181,73 @@ describe('applyCarchDefaults', () => {
     expect(out.sessionWrites).toBe(req.sessionWrites);
   });
 
-  it('writes only session keys the admin session store declares', () => {
+  it('queues the object instance id, module id and module tops it changes, and nothing else', () => {
     const out = applyCarchDefaults(carchRequest({ instanceid: 'I1', moduleid: COMPONENT_MODULE_ID }));
-    expect(out.sessionWrites).toEqual({ moduleid: COMPONENT_MODULE_ID });
+    expect(out.sessionWrites).toEqual({
+      muraValues: { objectInstanceId: 'I1' },
+      moduleid: COMPONENT_MODULE_ID,
+      moduleTopIds: SESSION_TOP_IDS,
+    });
+    expect(out.session).toMatchObject({ muraValues: { objectInstanceId: 'I1' }, mura: { objectInstanceId: 'I1' } });
     expect([out.session.keywords, out.session.openSectionList]).toEqual(['', '']);
   });
 
   it('keeps earlier session writes and is idempotent', () => {
     const base = carchRequest({ moduleid: FORM_MODULE_ID });
     const out = applyCarchDefaults({ ...base, sessionWrites: { rb: 'en_US' } });
-    expect(out.sessionWrites).toEqual({ rb: 'en_US', moduleid: FORM_MODULE_ID });
+    expect(out.sessionWrites).toEqual({ rb: 'en_US', moduleid: FORM_MODULE_ID, moduleTopIds: SESSION_TOP_IDS });
     const again = applyCarchDefaults(out);
     expect({ ...again.rc }).toEqual({ ...out.rc });
     expect(again.sessionWrites).toEqual(out.sessionWrites);
+  });
+});
+
+describe('session object instance and module tops', () => {
+  const CONTENT_KEY = `m${CONTENT_MODULE_ID}`;
+  const LONG_KEY = `m${LONG_VARIATION_ID}`;
+
+  it.each([
+    ['without a topid', {}, SESSION_TOP_IDS],
+    ['with a topid', { topid: 'T1' }, { ...SESSION_TOP_IDS, [CONTENT_KEY]: 'T1' }],
+  ])('writes every module default and the current top on the first request %s', (_case, rc, tops) => {
+    const out = applyCarchDefaults(carchRequest(rc));
+    expect(out.sessionWrites.moduleTopIds).toEqual(tops);
+    expect(out.session.moduleTopIds).toEqual(tops);
+  });
+
+  it.each([
+    ['absent', {}],
+    ['empty', { topid: '' }],
+  ])('reuses the stored topid of the module when rc.topid is %s', (_case, rc) => {
+    const out = applyCarchDefaults(carchRequest(rc, { moduleTopIds: { [CONTENT_KEY]: 'T9' } }));
+    expect(out.rc['topid']).toBe('T9');
+    expect(out.sessionWrites.moduleTopIds).toEqual({ ...SESSION_TOP_IDS, [CONTENT_KEY]: 'T9' });
+  });
+
+  it('reuses the topid a request stored for the 36-character id', () => {
+    const first = applyCarchDefaults(carchRequest({ moduleid: LONG_VARIATION_ID, topid: 'T36' }));
+    const next = applyCarchDefaults(
+      carchRequest({ moduleid: LONG_VARIATION_ID }, { moduleid: LONG_VARIATION_ID, moduleTopIds: first.session.moduleTopIds }),
+    );
+    expect(first.sessionWrites.moduleTopIds?.[LONG_KEY]).toBe('T36');
+    expect(next.rc['topid']).toBe('T36');
+  });
+
+  it('writes nothing on the ajax path, whatever rc carries', () => {
+    const req = carchRequest({ ajaxrequest: 'true', instanceid: 'I1', moduleid: FORM_MODULE_ID, topid: 'T1' });
+    const out = applyCarchDefaults(req);
+    expect(out.session).toBe(req.session);
+    expect(out.sessionWrites).toBe(req.sessionWrites);
+  });
+
+  it.each([
+    ['no instance id', {}, {}],
+    ['the stored instance id', { instanceid: 'I1' }, { objectInstanceId: 'I1' }],
+  ])('writes nothing when the session already holds the module, its tops and %s', (_case, rc, muraValues) => {
+    const req = carchRequest(rc, { moduleid: CONTENT_MODULE_ID, moduleTopIds: SESSION_TOP_IDS, muraValues });
+    const out = applyCarchDefaults(req);
+    expect(out.sessionWrites).toEqual({});
+    expect(out.session).toBe(req.session);
   });
 });
 
@@ -218,7 +274,7 @@ describe('module id sync and topid', () => {
     const req = carchRequest(rc, { moduleid: stored });
     const out = applyCarchDefaults(req);
     expect([out.session.moduleid, out.rc['moduleid'], out.rc['topid']]).toEqual([sessionAfter, rcAfter, topId]);
-    expect(out.sessionWrites).toEqual(sessionAfter === req.session.moduleid ? {} : { moduleid: sessionAfter });
+    expect(out.sessionWrites.moduleid).toBe(sessionAfter === req.session.moduleid ? undefined : sessionAfter);
   });
 
   it('replaces an empty topid with the module default', () => {

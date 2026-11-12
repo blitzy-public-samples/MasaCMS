@@ -20,6 +20,7 @@ import {
   createPeopleRepository,
   lastUpdateInfo,
   type AuditActor,
+  type ExtendAttributeFilter,
   type PeopleRepository,
   type PersonInput,
   type PersonQuery,
@@ -346,6 +347,37 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
       expect(ids(await inTenant((tx) => repo.listExtendAttributes(tx, { setIds: ['SET1'] })), 'attributeid')).toEqual(['10', '20', '30']);
       const filtered = await inTenant((tx) => repo.listExtendAttributes(tx, { attributeIds: [20, 30], siteId: siteid }));
       expect(ids(filtered, 'attributeid')).toEqual(['20', '30']);
+    });
+
+    describe('attribute filters, as SQL Server compares set and site ids', () => {
+      const site = `Ci-${cfUuid()}`;
+      let seeded: Promise<void> | undefined;
+      // Seeded on first use, after beforeEach has opened the gates.
+      const seed = (): Promise<void> =>
+        (seeded ??= inTenant(async (tx) => {
+          const attributes = [
+            [101, 'CI-SET', site],
+            [102, 'ci-set', site.toUpperCase()],
+            [103, null, site],
+            [104, 'CI-SET', null],
+            [105, 'CI-OTHER', `${site}  `],
+          ] as const;
+          for (const [attributeid, extendsetid, siteid] of attributes) {
+            await repo.insert(tx, 'extend_attribute', { attributeid, extendsetid, siteid, name: `a${attributeid}`, orderno: 0 });
+          }
+        }));
+
+      it.each<[string, ExtendAttributeFilter, number[]]>([
+        ['set ids in another case', { setIds: ['ci-SET'] }, [101, 102, 104]],
+        ['set ids with trailing spaces', { setIds: ['CI-SET   '] }, [101, 102, 104]],
+        ['a site id in another case', { setIds: ['CI-SET', 'ci-other'], siteId: site.toLowerCase() }, [101, 102, 105]],
+        ['a site id with trailing spaces', { attributeIds: [101, 102, 103, 104, 105], siteId: `${site}   ` }, [101, 102, 103, 105]],
+        ['no NULL set id, even for an empty id', { attributeIds: [103, 104], setIds: [''] }, []],
+        ['no NULL site id, even for an empty id', { attributeIds: [103, 104], siteId: '' }, []],
+      ])('match %s', async (_label, filter, expected) => {
+        await seed();
+        expect((await inTenant((tx) => repo.listExtendAttributes(tx, filter))).map((row) => row.attributeid)).toEqual(expected);
+      });
     });
   });
 

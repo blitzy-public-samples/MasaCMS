@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { cfHash } from '@opt2/platform/legacy-compat';
+import { enPeopleMessages, type PeopleMessageKey, type PeopleMessages } from '../../src/domain/messages.js';
 import { USER_BEAN_DEFAULTS } from '../../src/domain/person.js';
 import {
   FM_ALLOWED_EXTENSIONS,
@@ -13,6 +14,7 @@ import {
   requestHasRestrictedFiles,
   validateAddressValues,
   validatePersonValues,
+  type LegacyErrors,
   type RestrictedFilesOptions,
 } from '../../src/domain/validation.js';
 
@@ -29,6 +31,27 @@ const options = (overrides: Partial<RestrictedFilesOptions> = {}): RestrictedFil
   ...overrides,
 });
 
+const legacyFile = (path: string) => readFileSync(fileURLToPath(new URL(`../../../../${path}`, import.meta.url)), 'utf8');
+
+/** The value of `key` in a `.properties` text. */
+const bundleText = (bundle: string, key: string) => new RegExp(`^${key.replaceAll('.', '\\.')}=([^\\r\\n]*)`, 'm').exec(bundle)?.[1];
+
+// The French texts of the site bundle [legacy: core/modules/v1/core_assets/resource_bundles/fr.properties:17,21,204].
+const FR_TEXTS: Partial<Record<PeopleMessageKey, string>> = {
+  'user.emailrequired': "Le champ 'Adresse Email' est requis.",
+  'captcha.error': "Le « Code de Sécurité » saisi n'était pas correct.",
+  'captcha.spam': 'Cette proposition a été signalé comme spam.',
+};
+const french: PeopleMessages = (siteId, key) => FR_TEXTS[key] ?? enPeopleMessages(siteId, key);
+
+/** A resolver that records its lookups and overrides every text of site tenant-b. */
+function overridingRb(lookups: string[]): PeopleMessages {
+  return (siteId, key) => {
+    lookups.push(`${siteId}:${key}`);
+    return siteId === 'tenant-b' ? `[tenant-b] ${key}` : enPeopleMessages(siteId, key);
+  };
+}
+
 describe('messages and extension lists', () => {
   it('carries the English bundle texts and the configBean defaults', () => {
     expect(PEOPLE_MESSAGES).toEqual({
@@ -42,6 +65,18 @@ describe('messages and extension lists', () => {
     const setting = (name: string) => new RegExp(`variables\\.instance\\.${name}='([^']*)'`).exec(configBean)?.[1];
     expect(FM_ALLOWED_EXTENSIONS).toBe(setting('FMAllowedExtensions'));
     expect(FM_PUBLIC_ALLOWED_EXTENSIONS).toBe(setting('FMPublicAllowedExtensions'));
+  });
+
+  it.each<[PeopleMessageKey, string]>([
+    ['params.errordate', 'core/mura/resourceBundle/resources/en.properties'],
+    ['params.erroremail', 'core/mura/resourceBundle/resources/en.properties'],
+    ['params.errornumeric', 'core/mura/resourceBundle/resources/en.properties'],
+    ['user.emailrequired', 'core/mura/resourceBundle/resources/en.properties'],
+    ['sitemanager.requesthasrestrictedfiles', 'core/mura/resourceBundle/resources/en.properties'],
+    ['captcha.error', 'core/modules/v1/core_assets/resource_bundles/en.properties'],
+    ['captcha.spam', 'core/modules/v1/core_assets/resource_bundles/en.properties'],
+  ])('defaults %s to its text in %s', (key, file) => {
+    expect(enPeopleMessages('default', key)).toBe(bundleText(legacyFile(file), key));
   });
 });
 
@@ -68,6 +103,35 @@ describe('validatePersonValues', () => {
   it('sets email, SecurityCode and Spam in legacy order', () => {
     const errors = validatePersonValues(person({ email: '', hkey: 'bad', ukey: CAPTCHA_KEY, passedprotect: false }));
     expect(Object.keys(errors)).toEqual(['email', 'SecurityCode', 'Spam']);
+  });
+
+  it.each([
+    ['an empty email', { email: '' }, { email: "Le champ 'Adresse Email' est requis." }],
+    ['a captcha mismatch', { email: 'a@b.c', hkey: `${CAPTCHA_HASH}x`, ukey: CAPTCHA_KEY }, { SecurityCode: "Le « Code de Sécurité » saisi n'était pas correct." }],
+    ['a failed form protection', { email: 'a@b.c', passedprotect: 'no' }, { Spam: 'Cette proposition a été signalé comme spam.' }],
+    ['the unlocalized blank-site message', { siteid: '', email: '' }, { siteid: "The 'SiteID' variable is missing." }],
+  ])('reports %s in the French site bundle [legacy: core/mura/user/userBean.cfc:482,488,493,508]', (_name, overrides, expected) => {
+    expect(validatePersonValues(person({ siteid: 'site-fr', ...overrides }), french)).toEqual(expected);
+  });
+
+  it.each<[string, LegacyErrors, string[]]>([
+    [
+      'tenant-b',
+      { email: '[tenant-b] user.emailrequired', SecurityCode: '[tenant-b] captcha.error', Spam: '[tenant-b] captcha.spam' },
+      ['tenant-b:user.emailrequired', 'tenant-b:captcha.error', 'tenant-b:captcha.spam'],
+    ],
+    [
+      'tenant-c',
+      { email: PEOPLE_MESSAGES.emailRequired, SecurityCode: PEOPLE_MESSAGES.captchaError, Spam: PEOPLE_MESSAGES.captchaSpam },
+      ['tenant-c:user.emailrequired', 'tenant-c:captcha.error', 'tenant-c:captcha.spam'],
+    ],
+    [' ', { siteid: PEOPLE_MESSAGES.siteIdMissing }, []],
+  ])('reads the bundle of user site %j in legacy order', (siteid, expected, looked) => {
+    const lookups: string[] = [];
+    const errors = validatePersonValues(person({ siteid, email: '', hkey: 'bad', ukey: CAPTCHA_KEY, passedprotect: false }), overridingRb(lookups));
+    expect(errors).toEqual(expected);
+    expect(Object.keys(errors)).toEqual(Object.keys(expected));
+    expect(lookups).toEqual(looked);
   });
 });
 
@@ -114,6 +178,17 @@ describe('mergeUserErrors', () => {
   it('lets a later key in another casing take the value under the first spelling', () => {
     const errors = mergeUserErrors({ extended: { Email: 'ext' }, people: { email: PEOPLE_MESSAGES.emailRequired } });
     expect(errors).toEqual({ Email: PEOPLE_MESSAGES.emailRequired });
+  });
+
+  it.each<[string, string | undefined, string[], string]>([
+    ['the override of the user site', 'tenant-b', ['tenant-b:sitemanager.requesthasrestrictedfiles'], '[tenant-b] sitemanager.requesthasrestrictedfiles'],
+    ['the default text of another site', 'tenant-c', ['tenant-c:sitemanager.requesthasrestrictedfiles'], PEOPLE_MESSAGES.restrictedFiles],
+    ['a blank site id when none is given', undefined, [':sitemanager.requesthasrestrictedfiles'], PEOPLE_MESSAGES.restrictedFiles],
+  ])('sets the restricted-file message from %s [legacy: core/mura/user/userManager.cfc:477,638]', (_label, siteId, looked, expected) => {
+    const lookups: string[] = [];
+    const errors = mergeUserErrors({ extended: {}, people: {}, restrictedFiles: true, siteId }, overridingRb(lookups));
+    expect(errors).toEqual({ requestHasRestrictedFiles: expected });
+    expect(lookups).toEqual(looked);
   });
 
   it('adds nothing for passing parts and keeps a __proto__ attribute as data', () => {

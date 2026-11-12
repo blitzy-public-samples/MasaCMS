@@ -3,7 +3,7 @@
   "generatedBy": "gateway/src/cutover/build-groups.ts",
   "inputs": {
     "inventorySha256": "9bfd7b37c8620385db96321ff82614d434ad67b178d2d0c673b5d8d7457233a1",
-    "tableOwnershipSha256": "2b00ce2dfd25c42a94340161baefcedafe12bb85e9311c31cce9ef254eee88d1"
+    "tableOwnershipSha256": "bfd9983f4a940b840fc8942f2f70ff1b1e9872a37f404bb33c44298b284632fb"
   },
   "groups": [
     {

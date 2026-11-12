@@ -99,8 +99,7 @@ function shellUser(ctx: AdminRequest, now: Date): ShellUser {
     fname: mura.fname ?? '',
     lname: mura.lname ?? '',
     passwordExpired: passwordExpired(ctx, now),
-    // Identity's session state holds no `session.hasdefaultpassword`, so the default-password notice never shows.
-    hasDefaultPassword: false,
+    hasDefaultPassword: ctx.session.hasDefaultPassword,
   };
 }
 

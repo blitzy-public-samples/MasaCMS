@@ -174,7 +174,7 @@ paths:
   /_api/sitemonitor:
     get:
       operationId: sitemonitorRunGet
-      summary: Runs the site-monitor orchestrator; every path starting `/_api/sitemonitor`, also behind `/index.cfm`, is the same route.
+      summary: Runs the site-monitor orchestrator; every path starting `/_api/sitemonitor` in any letter case, also behind `/index.cfm`, is the same route.
       x-opt2-transport: service
       x-opt2-public: true
       security: []
@@ -190,7 +190,7 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: sitemonitorRunPost
-      summary: Runs the site-monitor orchestrator; every path starting `/_api/sitemonitor`, also behind `/index.cfm`, is the same route.
+      summary: Runs the site-monitor orchestrator; every path starting `/_api/sitemonitor` in any letter case, also behind `/index.cfm`, is the same route.
       x-opt2-transport: service
       x-opt2-public: true
       security: []

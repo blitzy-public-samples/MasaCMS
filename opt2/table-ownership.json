@@ -5019,7 +5019,11 @@
           "keyColumns": ["job_id"],
           "columnPolicy": "whole-table",
           "ownedColumns": ["job_id", "siteID", "definition_id", "format", "state", "requested_by_id", "created", "started_at", "finished_at", "error", "file_name", "content_type", "output", "output_sha256"],
-          "ruleSteps": [1]
+          "ruleSteps": [1],
+          "objectColumns": {
+            "output": "reporting-exports"
+          },
+          "notes": "The output bytes become objects in bucket reporting-exports, and the row keeps the object key."
         }
       ]
     },

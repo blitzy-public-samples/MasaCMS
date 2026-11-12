@@ -36,7 +36,8 @@ export type CookieMaskField = 'rotation';
  * Where a mask applies inside a step.
  * `dom`: elements matching `selector`, only those whose text or value matches `textPattern`, and only the listed
  * model `attributes` when given; resolved by the DOM model. `header`: that response header, narrowed to the
- * Set-Cookie values of `cookieNames` when given. `cookie`: the named cookie entries, or only their `field`.
+ * Set-Cookie values of `cookieNames` when given. `cookie`: the named cookie entries being missing or extra, or,
+ * with `field`, a difference in that field.
  */
 export type MaskLocation =
   | { kind: 'dom'; selector: string; textPattern?: RegExp; attributes?: readonly string[] }
@@ -67,12 +68,21 @@ export interface MaskableStep {
   export?: unknown;
 }
 
-/** Masked paths per step name, the union of the golden and replay maps of that step. */
+/** The masked paths of one step on each side. */
+export interface MaskedSides {
+  golden: Readonly<Record<string, KnownIssueId>>;
+  replay: Readonly<Record<string, KnownIssueId>>;
+}
+
+/** Masked paths per step name: the union of both sides, and optionally each side for `missing`/`extra` differences. */
 export interface MaskContext {
   maskedPathsByStep: ReadonlyMap<string, Readonly<Record<string, KnownIssueId>>>;
+  maskedSidesByStep?: ReadonlyMap<string, MaskedSides>;
 }
 
 const WILDCARD = '*';
+// The path of one whole cookie entry, as cookie locations resolve it.
+const COOKIE_ENTRY = /^auth\.cookies\[\d+\]$/;
 
 // Body representations of a normalised step, with the compare kind each belongs to.
 const BODY_KINDS: ReadonlyArray<readonly [keyof MaskableStep, CompareKind | undefined]> = [
@@ -93,10 +103,16 @@ function routeMatches(routeKeys: readonly string[], routeKey: string | RouteKeyR
   return routeKeys.some((candidate) => normaliseRouteKey(candidate) === key);
 }
 
-// Presence or absence of the cookie covers its whole entry; equality across login is the rotation field alone.
-function cookieLocation(name: string, observations: KnownIssueScope['observations']): MaskLocation {
-  const rotationOnly = observations !== undefined && observations.every((o) => o === 'value-equal-across-login');
-  return rotationOnly ? { kind: 'cookie', name, field: 'rotation' } : { kind: 'cookie', name };
+// Presence or absence masks the cookie entry being missing or extra; equality across login masks its rotation field.
+function cookieLocations(name: string, observations: KnownIssueScope['observations']): MaskLocation[] {
+  const locations: MaskLocation[] = [];
+  if (observations === undefined || observations.some((o) => o !== 'value-equal-across-login')) {
+    locations.push({ kind: 'cookie', name });
+  }
+  if (observations === undefined || observations.includes('value-equal-across-login')) {
+    locations.push({ kind: 'cookie', name, field: 'rotation' });
+  }
+  return locations;
 }
 
 function ruleLocations(scope: KnownIssueScope, setCookieHeader: string): MaskLocation[] {
@@ -115,7 +131,7 @@ function ruleLocations(scope: KnownIssueScope, setCookieHeader: string): MaskLoc
         ? { kind: 'header', name, cookieNames: [...scope.cookieNames] }
         : { kind: 'header', name },
   );
-  const cookies = (scope.cookieNames ?? []).map((name) => cookieLocation(name, scope.observations));
+  const cookies = (scope.cookieNames ?? []).flatMap((name) => cookieLocations(name, scope.observations));
   return [...dom, ...headers, ...cookies];
 }
 
@@ -137,7 +153,7 @@ function toMask(rule: KnownIssueRule, flagged: boolean, setCookieHeader: string)
  * Masks that apply to one step: those whose scenarios and route keys both list it, plus the one its catalogue
  * `knownIssue` names, which also brings that mask's step parts (status, body).
  * @param routeKey The step's live route key; a string matches by normalised equality.
- * Throws `GoldenConfigError` when the step names an unknown known issue, or one not declared for this scenario.
+ * Throws `GoldenConfigError` when the step names an unknown known issue, or one not declared for its scenario or route.
  */
 export function masksFor(
   scenarioId: string,
@@ -157,9 +173,10 @@ export function masksFor(
   for (const rule of rules.knownIssues) {
     const isFlag = rule.id === flagged;
     if (isFlag) {
-      // A flag outside the mask's declared scenarios would mask beyond its scope, so it is a configuration error.
+      // A flag outside the mask's declared scenarios or routes would mask beyond its scope: a configuration error.
       const allowed = rule.scope.steps?.appliesTo ?? rule.appliesTo;
       if (!listed(allowed, scenarioId)) fail(`is declared for ${allowed.join(', ')} only`);
+      if (!routeMatches(rule.routeKeys, routeKey)) fail(`is declared for routes ${rule.routeKeys.join(', ')} only`);
     }
     if (isFlag || (listed(rule.appliesTo, scenarioId) && routeMatches(rule.routeKeys, routeKey))) {
       masks.push(toMask(rule, isFlag, rules.auth.cookies.header));
@@ -234,28 +251,46 @@ export function pathMasks(step: MaskableStep, masks: readonly KnownIssueMask[]):
   return masked;
 }
 
-function covers(maskedPath: string, path: string): boolean {
+// A masked cookie entry covers only that entry being missing or extra; any other masked path covers itself and below.
+function covers(maskedPath: string, path: string, kind: DifferenceKind): boolean {
+  if (COOKIE_ENTRY.test(maskedPath)) return path === maskedPath && (kind === 'missing' || kind === 'extra');
   return path === maskedPath || path.startsWith(`${maskedPath}.`) || path.startsWith(`${maskedPath}[`);
 }
 
 // The most specific masked path covering `path` names the mask.
-function coveringMask(path: string, masked: Readonly<Record<string, KnownIssueId>> | undefined): KnownIssueId | undefined {
+function coveringMask(
+  path: string,
+  kind: DifferenceKind,
+  masked: Readonly<Record<string, KnownIssueId>> | undefined,
+): KnownIssueId | undefined {
   let best: { path: string; id: KnownIssueId } | undefined;
   for (const [maskedPath, id] of Object.entries(masked ?? {})) {
-    if (covers(maskedPath, path) && (best === undefined || maskedPath.length > best.path.length)) {
+    if (covers(maskedPath, path, kind) && (best === undefined || maskedPath.length > best.path.length)) {
       best = { path: maskedPath, id };
     }
   }
   return best?.id;
 }
 
+// A missing value exists on the golden side only and an extra one on the replay side only.
+function maskedPathsFor(
+  ctx: MaskContext,
+  step: string,
+  kind: DifferenceKind,
+): Readonly<Record<string, KnownIssueId>> | undefined {
+  const sides = ctx.maskedSidesByStep?.get(step);
+  if (sides !== undefined && kind === 'missing') return sides.golden;
+  if (sides !== undefined && kind === 'extra') return sides.replay;
+  return ctx.maskedPathsByStep.get(step);
+}
+
 /**
- * Classifies each difference: `known-issue` with its `maskId` when its path equals or lies under a masked path of
- * its step, otherwise `difference`. Returns new objects in input order.
+ * Classifies each difference: `known-issue` with its `maskId` when a masked path of its step covers it, otherwise
+ * `difference`. Returns new objects in input order.
  */
 export function applyMasks(differences: readonly Difference[], ctx: MaskContext): Difference[] {
   return differences.map(({ step, path, kind, expected, actual }): Difference => {
-    const maskId = coveringMask(path, ctx.maskedPathsByStep.get(step));
+    const maskId = coveringMask(path, kind, maskedPathsFor(ctx, step, kind));
     return maskId === undefined
       ? { step, path, kind, expected, actual, classification: 'difference' }
       : { step, path, kind, expected, actual, classification: 'known-issue', maskId };

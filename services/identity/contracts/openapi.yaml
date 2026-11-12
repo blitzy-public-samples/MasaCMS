@@ -4750,6 +4750,19 @@ components:
         nextPreserveKey:
           type: integer
           description: '`session.__fw1NextPreserveKey`.'
+        hasdefaultpassword:
+          type: boolean
+          readOnly: true
+          description: '`session.hasdefaultpassword`, which login sets for `admin`/`admin`; readers test its presence.'
+        moduleTopIds:
+          type: object
+          description: '`session[''m<moduleid>''].topid` keyed by the legacy session key `m<moduleid>` (carch `before()`).'
+          additionalProperties:
+            type: string
+        mura:
+          type: object
+          description: '`session.mura` values set since the last login (e.g. `errors`, `objectInstanceId`) under their legacy names; they overlay the login snapshot''s user struct.'
+          additionalProperties: true
     LoginRequest:
       type: object
       description: The admin login form, or the MFA challenge form when `attemptChallenge` is true.

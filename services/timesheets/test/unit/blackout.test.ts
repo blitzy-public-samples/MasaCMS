@@ -56,8 +56,17 @@ function input(personId: string, archiveId = cfUuid()): BlackoutInput {
   return { personId, effectiveFrom: EFFECTIVE_FROM, archiveId, now: NOW };
 }
 
+/** `tx` appending the text of each statement it runs to `seen`. */
+function recording(tx: TenantTx, seen: string[]): TenantTx {
+  const query = ((text, values) => {
+    seen.push(typeof text === 'string' ? text : text.text);
+    return tx.query(text, values);
+  }) as TenantTx['query'];
+  return { ...tx, query };
+}
+
 describe('applyBlackout over a stub repository', () => {
-  it('inserts one blackout per open day in the repository order and counts only the rows inserted', async () => {
+  it('inserts one blackout per open day in the repository order in one batch and returns the count inserted', async () => {
     const tx = { kind: 'tenant', tenantId: TENANT_A.tenantId } as unknown as TenantTx;
     const personId = cfUuid();
     const days = [
@@ -65,15 +74,15 @@ describe('applyBlackout over a stub repository', () => {
       { ...day(cfUuid(), new Date(2026, 5, 2), 'RETURNED', 1), tenant_id: TENANT_A.tenantId },
     ];
     const openDaysOfPerson = vi.fn(async () => days);
-    // The second day gets a blackout from a concurrent archive between the read and the insert.
-    const insertBlackoutIfAbsent = vi.fn(async (_tx: TenantTx, row: New<BlackoutRow>) => row.day_id === days[0]?.day_id);
-    const repo = { openDaysOfPerson, insertBlackoutIfAbsent } as unknown as TimesheetsRepository;
+    // One day gets a blackout from a concurrent archive between the read and the insert.
+    const insertBlackoutsIfAbsent = vi.fn(async (_tx: TenantTx, rows: readonly New<BlackoutRow>[]) => rows.length - 1);
+    const repo = { openDaysOfPerson, insertBlackoutsIfAbsent } as unknown as TimesheetsRepository;
     const given = input(personId);
 
     await expect(applyBlackout(tx, repo, given)).resolves.toBe(1);
     expect(openDaysOfPerson).toHaveBeenCalledExactlyOnceWith(tx, { personId, effectiveFrom: EFFECTIVE_FROM });
-    expect(insertBlackoutIfAbsent.mock.calls.map(([callTx]) => callTx)).toEqual([tx, tx]);
-    expect(insertBlackoutIfAbsent.mock.calls.map(([, row]) => row)).toEqual(
+    expect(insertBlackoutsIfAbsent).toHaveBeenCalledExactlyOnceWith(
+      tx,
       days.map((d) => ({
         blackout_id: expect.stringMatching(CF_UUID),
         day_id: d.day_id,
@@ -86,12 +95,12 @@ describe('applyBlackout over a stub repository', () => {
     );
   });
 
-  it('inserts nothing for a person without open days', async () => {
+  it('returns 0 for a person without open days', async () => {
     const tx = {} as TenantTx;
-    const insertBlackoutIfAbsent = vi.fn();
-    const repo = { openDaysOfPerson: async () => [], insertBlackoutIfAbsent } as unknown as TimesheetsRepository;
+    const insertBlackoutsIfAbsent = vi.fn(async () => 0);
+    const repo = { openDaysOfPerson: async () => [], insertBlackoutsIfAbsent } as unknown as TimesheetsRepository;
     await expect(applyBlackout(tx, repo, input(cfUuid()))).resolves.toBe(0);
-    expect(insertBlackoutIfAbsent).not.toHaveBeenCalled();
+    expect(insertBlackoutsIfAbsent).toHaveBeenCalledExactlyOnceWith(tx, []);
   });
 });
 
@@ -192,6 +201,36 @@ describe.skipIf(!available)('applyBlackout against PostgreSQL', () => {
       expect(rows).toEqual([]);
     });
     expect(await blackouts(days)).toHaveLength(2);
+  });
+
+  it('blacks out any number of open days with the same statements: one blackout insert and one changelog insert', async () => {
+    async function statementsOf(openDays: number): Promise<string[]> {
+      const person = cfUuid();
+      const own = sheet(person);
+      const days = Array.from({ length: openDays + 1 }, (_, i) => day(own.timesheet_id, new Date(2026, 5, 1 + i)));
+      await seed(own, days);
+      await inTenant((tx) => applyBlackout(tx, repository, { ...input(person), effectiveFrom: (days[openDays] as New<TimesheetDayRow>).work_date }));
+      const seen: string[] = [];
+      await inTenant(async (tx) => {
+        await expect(applyBlackout(recording(tx, seen), repository, input(person))).resolves.toBe(openDays);
+        const { rows } = await tx.query(`SELECT op, "table" FROM ${handle.schema}.changelog WHERE xid = pg_current_xact_id() ORDER BY seq`);
+        expect(rows).toEqual(Array.from({ length: openDays }, () => ({ op: 'insert', table: 'blackout' })));
+      });
+      return seen;
+    }
+
+    const few = await statementsOf(2);
+    const many = await statementsOf(8);
+    expect(many).toHaveLength(few.length);
+    expect(many.filter((text) => text.startsWith('INSERT INTO'))).toEqual([
+      expect.stringContaining(`."blackout"`),
+      expect.stringContaining(`."changelog"`),
+    ]);
+  });
+
+  it('returns 0 without taking the blackout gate for a person without open days', async () => {
+    await closeGates(handle.app, { units: ['timesheets.blackout'], holderId: 'blackout-test' });
+    await expect(withGatedTenant(handle.app, TENANT_A.tenantId, (tx) => applyBlackout(tx, repository, input(personId)), SHORT_BUDGET)).resolves.toBe(0);
   });
 
   it('leaves the same person days of another tenant untouched', async () => {

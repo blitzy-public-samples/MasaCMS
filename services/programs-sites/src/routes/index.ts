@@ -9,7 +9,7 @@ import { registerImageSizeRoutes } from './image-sizes.js';
 import { registerJsonApiSiteRoutes } from './json-api-site.js';
 import { registerSiteRoutes } from './sites.js';
 
-export { registerSiteMonitorRoutes } from './sitemonitor.js';
+export { SITEMONITOR_RUN_PREFIXES, registerSiteMonitorRoutes } from './sitemonitor.js';
 export type { SiteMonitorRouteDeps } from './sitemonitor.js';
 export type { ImageSizeRouteDeps } from './image-sizes.js';
 export type { JsonApiSiteRouteDeps } from './json-api-site.js';

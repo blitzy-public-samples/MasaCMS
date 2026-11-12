@@ -225,11 +225,126 @@ describe('xlsxModel', () => {
 });
 
 describe('pdfModel', () => {
+  interface PdfInfo {
+    Producer: string;
+    Creator: string;
+    CreationDate: string;
+    ModDate: string;
+    Title: string;
+  }
+
+  const pdfString = (text: string): string => `(${text.replace(/[\\()]/g, '\\$&')})`;
+
+  /**
+   * PDF 1.4 in tiny.pdf's layout: catalog, page tree, a page and content stream per text, Helvetica, optional /Info.
+   * `order` lists the page tree's kids as indexes into `texts`; by default the pages follow `texts`.
+   */
+  function pdfBytes(texts: readonly string[], options: { info?: PdfInfo; order?: readonly number[] } = {}): Buffer {
+    const fontObject = 3 + 2 * texts.length;
+    const kids = (options.order ?? texts.map((_text, i) => i)).map((i) => `${3 + 2 * i} 0 R`);
+    const bodies = [
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      `<< /Type /Pages /Kids [${kids.join(' ')}] /Count ${kids.length} >>`,
+      ...texts.flatMap((text, i) => {
+        const stream = `BT /F1 12 Tf 72 720 Td ${pdfString(text)} Tj ET`;
+        return [
+          `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${fontObject} 0 R >> >> ` +
+            `/Contents ${4 + 2 * i} 0 R >>`,
+          `<< /Length ${Buffer.byteLength(stream, 'latin1')} >>\nstream\n${stream}\nendstream`,
+        ];
+      }),
+      '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    ];
+    if (options.info !== undefined) {
+      const entries = Object.entries(options.info).map(([key, value]) => `/${key} ${pdfString(value)}`);
+      bodies.push(`<< ${entries.join(' ')} >>`);
+    }
+    let pdf = '%PDF-1.4\n';
+    const offsets = bodies.map((body, i) => {
+      const offset = pdf.length;
+      pdf += `${i + 1} 0 obj\n${body}\nendobj\n`;
+      return offset;
+    });
+    const xref = pdf.length;
+    const info = options.info === undefined ? '' : ` /Info ${bodies.length} 0 R`;
+    pdf += `xref\n0 ${bodies.length + 1}\n0000000000 65535 f \n`;
+    pdf += offsets.map((offset) => `${String(offset).padStart(10, '0')} 00000 n \n`).join('');
+    pdf += `trailer\n<< /Size ${bodies.length + 1} /Root 1 0 R${info} >>\nstartxref\n${xref}\n%%EOF\n`;
+    return Buffer.from(pdf, 'latin1');
+  }
+
+  const REPORT_PAGES = ['Registrations report', 'Ines Arkin 1234.5000', 'Total registrations 4'];
+  const INFO_A: PdfInfo = {
+    Producer: 'Adobe ColdFusion cfdocument',
+    Creator: 'Masa CMS',
+    CreationDate: 'D:20260601080000Z',
+    ModDate: 'D:20260602080000Z',
+    Title: 'Registrations',
+  };
+  const INFO_B: PdfInfo = {
+    Producer: 'PDFKit',
+    Creator: 'opt2-reporting',
+    CreationDate: 'D:20260715173000Z',
+    ModDate: 'D:20260716173000Z',
+    Title: 'Registrations',
+  };
+
   it('reads the text of each page', async () => {
     expect(await pdfModel(tinyPdf, createIdOrdinals(), rules)).toStrictEqual({
       kind: 'pdf',
       pages: ['Fixture report page 1'],
     });
+  });
+
+  it('builds tiny.pdf byte for byte from its page text', () => {
+    expect(pdfBytes(['Fixture report page 1']).equals(tinyPdf)).toBe(true);
+  });
+
+  it('reads every page of a multi-page document in order', async () => {
+    expect(await pdfModel(pdfBytes(REPORT_PAGES), createIdOrdinals(), rules)).toStrictEqual({
+      kind: 'pdf',
+      pages: ['Registrations report', 'Ines Arkin 1234.5000', 'Total registrations 4'],
+    });
+  });
+
+  it.each<{ name: string; texts: string[]; order?: number[]; pages: string[]; differing: number[] }>([
+    {
+      name: 'changed text on page 3',
+      texts: ['Registrations report', 'Ines Arkin 1234.5000', 'Total registrations 5'],
+      pages: ['Registrations report', 'Ines Arkin 1234.5000', 'Total registrations 5'],
+      differing: [2],
+    },
+    {
+      name: 'pages 2 and 3 swapped in the page tree',
+      texts: ['Registrations report', 'Ines Arkin 1234.5000', 'Total registrations 4'],
+      order: [0, 2, 1],
+      pages: ['Registrations report', 'Total registrations 4', 'Ines Arkin 1234.5000'],
+      differing: [1, 2],
+    },
+  ])('keeps $name as a difference through exportModel', async ({ texts, order, pages, differing }) => {
+    const capture = await pdfModel(pdfBytes(REPORT_PAGES), createIdOrdinals(), rules);
+    const bytes = pdfBytes(texts, { order });
+    const response = recorded('application/pdf', { bytesBase64: bytes.toString('base64') }, sha256Hex(bytes));
+    const replay = await exportModel(response, createIdOrdinals(), rules);
+
+    expect(replay).toStrictEqual({ kind: 'pdf', pages });
+    expect(replay).not.toStrictEqual(capture);
+    expect(pages.flatMap((text, i) => (text === capture.pages[i] ? [] : [i]))).toStrictEqual(differing);
+  });
+
+  it('compares extracted text, never document metadata or bytes', async () => {
+    const a = pdfBytes(REPORT_PAGES, { info: INFO_A });
+    const b = pdfBytes(REPORT_PAGES, { info: INFO_B });
+
+    expect(fileModel({ bytes: b, contentType: 'application/pdf' }).sha256).not.toBe(
+      fileModel({ bytes: a, contentType: 'application/pdf' }).sha256,
+    );
+    const modelA = await pdfModel(a, createIdOrdinals(), rules);
+    expect(modelA).toStrictEqual({
+      kind: 'pdf',
+      pages: ['Registrations report', 'Ines Arkin 1234.5000', 'Total registrations 4'],
+    });
+    expect(await pdfModel(b, createIdOrdinals(), rules)).toStrictEqual(modelA);
   });
 });
 

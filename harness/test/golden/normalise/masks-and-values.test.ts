@@ -9,14 +9,17 @@ import {
   masksFor,
   pathMasks,
   type Difference,
+  type DifferenceKind,
   type KnownIssueMask,
   type MaskContext,
+  type MaskLocation,
   type MaskableStep,
 } from '../../../src/golden/normalise/masks.js';
 import {
   loadRules,
   type KnownIssueId,
   type KnownIssueRule,
+  type KnownIssueScope,
   type NormaliseRules,
 } from '../../../src/golden/normalise/rules.js';
 import {
@@ -132,29 +135,40 @@ describe('masksFor', () => {
     });
   });
 
-  it('scopes session-rotation to the session Set-Cookie values and whole session cookie entries', () => {
+  it('scopes session-rotation to the session Set-Cookie values and each session cookie presence and rotation', () => {
     expect(maskFor('session-rotation', 'GS-ID-01', LOGIN, rules)?.locations).toStrictEqual([
       { kind: 'header', name: 'Set-Cookie', cookieNames: ['CFID', 'CFTOKEN', 'JSESSIONID'] },
       { kind: 'cookie', name: 'CFID' },
+      { kind: 'cookie', name: 'CFID', field: 'rotation' },
       { kind: 'cookie', name: 'CFTOKEN' },
+      { kind: 'cookie', name: 'CFTOKEN', field: 'rotation' },
       { kind: 'cookie', name: 'JSESSIONID' },
+      { kind: 'cookie', name: 'JSESSIONID', field: 'rotation' },
     ]);
   });
 
-  it('limits a cookie mask to rotation when it observes only value equality, masking other headers whole', () => {
+  const PRESENCE: MaskLocation = { kind: 'cookie', name: 'CFID' };
+  const ROTATION: MaskLocation = { kind: 'cookie', name: 'CFID', field: 'rotation' };
+  it.each<[string, KnownIssueScope['observations'], MaskLocation[]]>([
+    ['only value equality as its rotation', ['value-equal-across-login'], [ROTATION]],
+    ['only presence as its entry', ['presence'], [PRESENCE]],
+    ['only absence as its entry', ['absence'], [PRESENCE]],
+    ['presence and value equality as both', ['presence', 'value-equal-across-login'], [PRESENCE, ROTATION]],
+    ['no observations as both', undefined, [PRESENCE, ROTATION]],
+  ])('maps a cookie mask observing %s, masking other headers whole', (_label, observations, cookies) => {
     const issue: KnownIssueRule = {
       ...knownIssue('session-rotation'),
       scope: {
         headers: ['X-Session', 'set-cookie'],
         cookieNames: ['CFID'],
-        observations: ['value-equal-across-login'],
+        ...(observations === undefined ? {} : { observations }),
       },
     };
     const [mask] = masksFor('GS-ID-01', LOGIN, { ...rules, knownIssues: [issue] });
     expect(mask?.locations).toStrictEqual([
       { kind: 'header', name: 'X-Session' },
       { kind: 'header', name: 'set-cookie', cookieNames: ['CFID'] },
-      { kind: 'cookie', name: 'CFID', field: 'rotation' },
+      ...cookies,
     ]);
   });
 
@@ -171,12 +185,12 @@ describe('masksFor', () => {
     expect(kinds(maskFor('header-search-404', 'GS-CO-06', 'admin:carch.list', rules))).toStrictEqual(['dom', 'dom']);
   });
 
-  it('brings a flagged mask onto a route its route keys do not list', () => {
+  it.each<[string, string | RouteKeyResult]>([
+    ['an authored', 'admin:cusers.edituser'],
+    ['a computed', { ...LOGIN, key: 'admin:cusers.edituser', baseKey: 'admin:cusers.edituser', httpMethod: 'GET' }],
+  ])('keeps a flagged default-member once on %s route key its route keys list', (_label, routeKey) => {
     const step = { name: 'save', knownIssue: 'default-member' };
-    expect(idsOf(masksFor('GS-ID-05', 'admin:carch.list', rules, step))).toStrictEqual([
-      ...WILDCARD_MASKS,
-      'default-member',
-    ]);
+    expect(idsOf(masksFor('GS-ID-05', routeKey, rules, step))).toStrictEqual([...WILDCARD_MASKS, 'default-member']);
   });
 
   it.each([
@@ -192,6 +206,12 @@ describe('masksFor', () => {
       'GS-CO-01',
       'default-member',
       'is declared for GS-ID-05, GS-ID-06, GS-PE-01, GS-PE-02, GS-PE-RH-01, GS-PE-RH-02 only',
+    ],
+    [
+      'default-member on a route its route keys do not list',
+      'GS-ID-05',
+      'default-member',
+      'is declared for routes admin:cusers.editgroup, admin:cusers.edituser only',
     ],
   ])('rejects a step flagged with %s', (_label, scenarioId, flag, reason) => {
     const err = configError(() => masksFor(scenarioId, 'admin:carch.list', rules, { name: 'step1', knownIssue: flag }));
@@ -225,7 +245,7 @@ describe('pathMasks', () => {
     ...(compareKinds === undefined ? {} : { compareKinds }),
   });
 
-  it('maps the session Set-Cookie entries and auth cookies of a login step to session-rotation', () => {
+  it('maps the session Set-Cookie values, cookie entries and rotations of a login step to session-rotation', () => {
     const step: MaskableStep = {
       status: 302,
       headers: { 'set-cookie': ['CFID=1;path=/', 'other=2', 'CFTOKEN=3; Path=/'], 'content-type': 'text/html' },
@@ -236,7 +256,9 @@ describe('pathMasks', () => {
       'headers.set-cookie[0]': 'session-rotation',
       'headers.set-cookie[2]': 'session-rotation',
       'auth.cookies[0]': 'session-rotation',
+      'auth.cookies[0].rotation': 'session-rotation',
       'auth.cookies[2]': 'session-rotation',
+      'auth.cookies[2].rotation': 'session-rotation',
     });
   });
 
@@ -308,35 +330,57 @@ describe('applyMasks', () => {
           envelope: 'header-search-404',
           'envelope.data.when': 'date-mask',
           'auth.cookies[0]': 'session-rotation',
+          'auth.cookies[0].rotation': 'session-rotation',
         },
       ],
     ]),
   };
-  const difference = (step: string, path: string): Difference => ({
+  const difference = (step: string, path: string, kind: DifferenceKind = 'changed'): Difference => ({
     step,
     path,
-    kind: 'changed',
+    kind,
     expected: 'a',
     actual: 'b',
     classification: 'difference',
   });
+  const classified = (diff: Difference, maskId: KnownIssueId | undefined): Difference =>
+    maskId === undefined ? diff : { ...diff, classification: 'known-issue', maskId };
 
-  it.each<[string, string, KnownIssueId | undefined]>([
-    ['login', 'status', 'header-search-404'],
-    ['login', 'statusText', undefined],
-    ['login', 'envelope.data.items[0]', 'header-search-404'],
-    ['login', 'envelope.data.when', 'date-mask'],
-    ['login', 'envelope.data.when.day', 'date-mask'],
-    ['login', 'auth.cookies[0].value', 'session-rotation'],
-    ['login', 'auth.cookies[1]', undefined],
-    ['logout', 'status', undefined],
-  ])('classifies step %s path %s by its most specific covering mask (%s)', (step, path, maskId) => {
-    const [result] = applyMasks([difference(step, path)], ctx);
-    expect(result).toStrictEqual(
-      maskId === undefined
-        ? difference(step, path)
-        : { ...difference(step, path), classification: 'known-issue', maskId },
-    );
+  it.each<[string, string, DifferenceKind, KnownIssueId | undefined]>([
+    ['login', 'status', 'changed', 'header-search-404'],
+    ['login', 'statusText', 'changed', undefined],
+    ['login', 'envelope.data.items[0]', 'changed', 'header-search-404'],
+    ['login', 'envelope.data.when', 'changed', 'date-mask'],
+    ['login', 'envelope.data.when.day', 'changed', 'date-mask'],
+    ['login', 'auth.cookies[0]', 'missing', 'session-rotation'],
+    ['login', 'auth.cookies[0]', 'extra', 'session-rotation'],
+    ['login', 'auth.cookies[0]', 'changed', undefined],
+    ['login', 'auth.cookies[0].rotation', 'changed', 'session-rotation'],
+    ['login', 'auth.cookies[0].secure', 'changed', undefined],
+    ['login', 'auth.cookies[0].value', 'changed', undefined],
+    ['login', 'auth.cookies[0].sameSite', 'missing', undefined],
+    ['login', 'auth.cookies[1]', 'changed', undefined],
+    ['logout', 'status', 'changed', undefined],
+  ])('classifies step %s path %s (%s) by its most specific covering mask (%s)', (step, path, kind, maskId) => {
+    const [result] = applyMasks([difference(step, path, kind)], ctx);
+    expect(result).toStrictEqual(classified(difference(step, path, kind), maskId));
+  });
+
+  it.each<[DifferenceKind, string, KnownIssueId | undefined]>([
+    ['missing', 'auth.cookies[0]', 'session-rotation'],
+    ['extra', 'auth.cookies[0]', undefined],
+    ['extra', 'auth.cookies[1]', 'session-rotation'],
+    ['missing', 'auth.cookies[1]', undefined],
+    ['changed', 'auth.cookies[1].rotation', 'session-rotation'],
+  ])('classifies kind %s at %s by its own side under per-side masks (%s)', (kind, path, maskId) => {
+    const golden = { 'auth.cookies[0]': 'session-rotation' } as const;
+    const replay = { 'auth.cookies[1]': 'session-rotation', 'auth.cookies[1].rotation': 'session-rotation' } as const;
+    const sides: MaskContext = {
+      maskedPathsByStep: new Map([['login', { ...golden, ...replay }]]),
+      maskedSidesByStep: new Map([['login', { golden, replay }]]),
+    };
+    const [result] = applyMasks([difference('login', path, kind)], sides);
+    expect(result).toStrictEqual(classified(difference('login', path, kind), maskId));
   });
 
   it('returns new objects in input order, dropping a stale classification', () => {

@@ -57,6 +57,17 @@ export interface Repository {
   units(): string[];
   /** Inserts `row` under the transaction tenant (keyless rows get their hash and next occurrence) and returns the stored row. */
   insert<R = RepositoryRow>(tx: TenantTx, table: string, row: RepositoryRow, ctx?: WriteContext): Promise<R>;
+  /**
+   * Inserts each row of a keyed table whose tenant and `conflict` values no stored row holds, with one changelog row each.
+   * @returns the rows inserted, in input order.
+   */
+  insertAbsent<R = RepositoryRow>(
+    tx: TenantTx,
+    table: string,
+    rows: readonly RepositoryRow[],
+    conflict: readonly string[],
+    ctx?: WriteContext,
+  ): Promise<R[]>;
   /** Sets `patch` on the row with `key`; null when no row has it. */
   update<R = RepositoryRow>(tx: TenantTx, table: string, key: RepositoryRow, patch: RepositoryRow, ctx?: WriteContext): Promise<R | null>;
   /** Inserts `row`, or sets its non-key columns on the stored row with the same key. */
@@ -85,6 +96,11 @@ const OCCURRENCE_COLUMN = 'occurrence';
 const KEYLESS_MANAGED: ReadonlySet<string> = new Set([TENANT_COLUMN, ROW_HASH_COLUMN, OCCURRENCE_COLUMN]);
 const TENANT_ONLY: ReadonlySet<string> = new Set([TENANT_COLUMN]);
 const ADVISORY_LOCK_SQL = 'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))';
+/** PostgreSQL's limit on the bind parameters of one statement. */
+const MAX_BIND_PARAMETERS = 65_535;
+/** Parameters a batched changelog insert shares across its rows, and those each row adds (key and after image). */
+const CHANGE_SHARED_PARAMETERS = 11;
+const CHANGE_ROW_PARAMETERS = 2;
 
 type TableKind = 'keyed' | 'keyless' | 'any';
 
@@ -211,6 +227,46 @@ async function insertRow(tx: TenantTx, t: PreparedTable, values: RepositoryRow, 
   return rows[0];
 }
 
+/** Throws unless `conflict` names declared columns other than `tenant_id`. */
+function checkConflict(t: PreparedTable, conflict: readonly string[]): void {
+  if (conflict.length === 0 || !conflict.every((column) => column !== TENANT_COLUMN && t.columnNames.has(column))) {
+    throw new RepositoryError(`conflict must name declared columns other than ${TENANT_COLUMN}`, t.definition.table);
+  }
+}
+
+/** Rows per batched insert so that neither its row statement nor its changelog statement exceeds MAX_BIND_PARAMETERS. */
+function rowsPerStatement(columnCount: number): number {
+  return Math.min(
+    Math.floor((MAX_BIND_PARAMETERS - 1) / Math.max(columnCount, 1)),
+    Math.floor((MAX_BIND_PARAMETERS - CHANGE_SHARED_PARAMETERS) / CHANGE_ROW_PARAMETERS),
+  );
+}
+
+/** One multi-row insert of `rows` that skips each row whose tenant and `conflict` values a stored row holds; returns the rows inserted. */
+async function insertRowsAbsent(
+  tx: TenantTx,
+  t: PreparedTable,
+  rows: readonly RepositoryRow[],
+  columns: readonly string[],
+  conflict: readonly string[],
+): Promise<RepositoryRow[]> {
+  const values: unknown[] = [tx.tenantId];
+  const tuples = rows.map((row) => {
+    const cells = columns.map((column) => {
+      if (row[column] === undefined) return 'DEFAULT';
+      values.push(row[column]);
+      return `$${values.length}`;
+    });
+    return `(${['$1', ...cells].join(', ')})`;
+  });
+  const { rows: stored } = await tx.query(
+    `INSERT INTO ${t.name} (${[TENANT_COLUMN, ...columns].map(ident).join(', ')}) VALUES ${tuples.join(', ')}` +
+      ` ON CONFLICT (${[TENANT_COLUMN, ...conflict].map(ident).join(', ')}) DO NOTHING RETURNING *`,
+    values,
+  );
+  return stored;
+}
+
 async function selectRow(tx: TenantTx, t: PreparedTable, keyVals: unknown[], forUpdate: boolean): Promise<RepositoryRow | undefined> {
   const { rows } = await tx.query(`SELECT * FROM ${t.name} WHERE ${keyWhere(t, 1)}${forUpdate ? ' FOR UPDATE' : ''}`, keyVals);
   return rows[0];
@@ -264,10 +320,10 @@ async function insertOccurrence(tx: TenantTx, t: PreparedTable, row: RepositoryR
 
 /** Builds the repository of `schema`; throws RepositoryError for a platform, duplicate or malformed table definition. */
 export function createRepository({ owner, schema, tables, clock = systemClock }: RepositoryOptions): Repository {
-  const changelogInsert =
+  const changelogInto =
     `INSERT INTO ${qualified(schema, CHANGELOG_TABLE)}` +
-    ' (tenant_id, "table", op, key, before, after, columns, origin, actor_user_id, actor_service, at, request_id, operation_id)' +
-    ' VALUES ($1, $2, $3, $4, $5, $6, $7::text[], $8, $9, $10, $11, $12, $13) RETURNING xid::text AS xid';
+    ' (tenant_id, "table", op, key, before, after, columns, origin, actor_user_id, actor_service, at, request_id, operation_id)';
+  const changelogInsert = `${changelogInto} VALUES ($1, $2, $3, $4, $5, $6, $7::text[], $8, $9, $10, $11, $12, $13) RETURNING xid::text AS xid`;
   const prepared = new Map<string, PreparedTable>();
   for (const def of tables) {
     if (prepared.has(def.table)) {
@@ -313,29 +369,27 @@ export function createRepository({ owner, schema, tables, clock = systemClock }:
     }
   }
 
-  async function logChange(tx: TenantTx, t: PreparedTable, change: Change, ctx: WriteContext): Promise<void> {
+  /** Origin, actors, time, request and operation of a changelog row, in changelog column order. */
+  function provenance(ctx: WriteContext): unknown[] {
     const request = currentRequestContext();
-    const { rows } = await tx.query<{ xid: string }>(changelogInsert, [
-      tx.tenantId,
-      t.definition.table,
-      change.op,
-      change.key,
-      change.before,
-      change.after,
-      change.columns,
+    return [
       ctx.origin ?? 'target',
       ctx.actorUserId ?? request?.user?.sub ?? null,
       ctx.actorService ?? request?.service?.name ?? null,
       localTimestamp(clock.now()),
       ctx.requestId ?? request?.requestId ?? null,
       ctx.operationId ?? null,
-    ]);
+    ];
+  }
+
+  /** Records the xid of `logged` as the owner write position when `tx` commits, once per transaction. */
+  function recordPosition(tx: TenantTx, logged: readonly { xid: string }[]): void {
     if (positioned.has(tx)) {
       return;
     }
     positioned.add(tx);
     // Every changelog row of one transaction carries the same xid.
-    const xid = (rows[0] as { xid: string }).xid;
+    const xid = (logged[0] as { xid: string }).xid;
     tx.onCommit(() => {
       // recordWritePosition throws outside a request, where no response carries the position.
       if (currentRequestContext() !== undefined) {
@@ -344,8 +398,35 @@ export function createRepository({ owner, schema, tables, clock = systemClock }:
     });
   }
 
+  async function logChange(tx: TenantTx, t: PreparedTable, change: Change, ctx: WriteContext): Promise<void> {
+    const { rows } = await tx.query<{ xid: string }>(changelogInsert, [
+      tx.tenantId,
+      t.definition.table,
+      change.op,
+      change.key,
+      change.before,
+      change.after,
+      change.columns,
+      ...provenance(ctx),
+    ]);
+    recordPosition(tx, rows);
+  }
+
   function insertChange(t: PreparedTable, stored: RepositoryRow): Change {
     return { op: 'insert', key: changeKey(t, stored), before: null, after: image(t, stored), columns: t.dataNames };
+  }
+
+  /** Writes the insert changelog rows of `stored`, which is not empty, in one statement and in its order. */
+  async function logInserts(tx: TenantTx, t: PreparedTable, stored: readonly RepositoryRow[], ctx: WriteContext): Promise<void> {
+    const changes = stored.map((row) => insertChange(t, row));
+    const { op, before, columns } = changes[0] as Change;
+    const values: unknown[] = [tx.tenantId, t.definition.table, op, before, columns, ...provenance(ctx)];
+    const tuples = changes.map((change) => {
+      values.push(change.key, change.after);
+      return `($1, $2, $3, $${values.length - 1}, $4, $${values.length}, $5::text[], $6, $7, $8, $9, $10, $11)`;
+    });
+    const { rows } = await tx.query<{ xid: string }>(`${changelogInto} VALUES ${tuples.join(', ')} RETURNING xid::text AS xid`, values);
+    recordPosition(tx, rows);
   }
 
   function deleteChange(t: PreparedTable, removed: RepositoryRow): Change {
@@ -367,6 +448,37 @@ export function createRepository({ owner, schema, tables, clock = systemClock }:
     }
     await logChange(tx, t, insertChange(t, stored), ctx);
     return stored as R;
+  }
+
+  async function insertAbsent<R = RepositoryRow>(
+    tx: TenantTx,
+    table: string,
+    rows: readonly RepositoryRow[],
+    conflict: readonly string[],
+    ctx: WriteContext = {},
+  ): Promise<R[]> {
+    const t = open(tx, table, 'keyed');
+    checkConflict(t, conflict);
+    for (const row of rows) {
+      checkRow(t, tx, row);
+    }
+    if (rows.length === 0) {
+      return [];
+    }
+    await gate(tx, t, ctx);
+    const writable = rows.map((row) => writableValues(row));
+    const present = new Set(writable.flatMap((row) => Object.keys(row)));
+    const columns = t.dataNames.filter((column) => present.has(column));
+    const size = rowsPerStatement(columns.length);
+    const inserted: RepositoryRow[] = [];
+    for (let start = 0; start < writable.length; start += size) {
+      const stored = await insertRowsAbsent(tx, t, writable.slice(start, start + size), columns, conflict);
+      if (stored.length > 0) {
+        await logInserts(tx, t, stored, ctx);
+        inserted.push(...stored);
+      }
+    }
+    return inserted as R[];
   }
 
   async function update<R = RepositoryRow>(
@@ -499,6 +611,7 @@ export function createRepository({ owner, schema, tables, clock = systemClock }:
     definition: (table: string): TableDefinition => lookup(table).definition,
     units: (): string[] => [...declaredUnits],
     insert,
+    insertAbsent,
     update,
     upsert,
     delete: remove,

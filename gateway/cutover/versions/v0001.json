@@ -16387,7 +16387,9 @@
       "state": "legacy",
       "kind": "read",
       "group": null,
-      "units": [],
+      "units": [
+        "reporting.export_job"
+      ],
       "disposition": "carry"
     },
     {

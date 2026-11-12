@@ -14,6 +14,7 @@ import {
   SchedulerImportError,
   defaultNativeTasksFile,
   importNativeTasks,
+  importSchedulerRequest,
   importSchedulerState,
   nativeTasksDigest,
   normaliseNativeTasksFile,
@@ -215,20 +216,11 @@ describe('normaliseNativeTasksFile', () => {
     });
   });
 
-  it('accepts the SchedulerImportRequest body, which carries no capture time, with the digest of the file form', () => {
-    const body = { nativeTasks: Object.values(CFCONFIG_CAPTURE.scheduledTasks), ping: true };
-    const normalised = normaliseNativeTasksFile(body);
-    expect(normalised.capturedAt).toBeNull();
-    expect(normalised.tasks).toEqual([MONITOR, SURVEY]);
-    expect(normaliseNativeTasksFile(normalised)).toEqual(normalised);
-    expect(nativeTasksDigest(normalised)).toBe(nativeTasksDigest(normaliseNativeTasksFile(CAPTURE)));
-  });
-
   it.each([
     ['an array', [CAPTURE], 'must be a JSON object'],
-    ['a document without tasks', { capturedAt: CAPTURED_AT, ping: false }, 'has no tasks, scheduledTasks or nativeTasks'],
+    ['a document without tasks', { capturedAt: CAPTURED_AT, ping: false }, 'has neither a tasks array nor scheduledTasks'],
     ['a cfconfig export without a capture time', { ping: true, scheduledTasks: CFCONFIG_CAPTURE.scheduledTasks }, 'capturedAt'],
-    ['a request body without ping', { nativeTasks: [] }, 'originalPing'],
+    ['the HTTP request body, which is not a file form', { nativeTasks: [cfconfigTask(MONITOR)], ping: true }, 'has neither'],
     ['a capture time that is not a date-time', { ...CAPTURE, capturedAt: 'yesterday' }, 'capturedAt'],
     ['a task without a name', { ...CAPTURE, tasks: [{ ...MONITOR, task: '' }] }, 'tasks'],
     ['a task record that is not an object', { capturedAt: CAPTURED_AT, scheduledTasks: ['siteMonitor'] }, 'tasks'],
@@ -300,12 +292,6 @@ describe('importNativeTasks', () => {
     expect(table.stored('sitemonitor').definition).toEqual(custom);
   });
 
-  it('stores the import time as the capture time of a request body', async () => {
-    const table = new SchedulerTable();
-    await importNativeTasks(deps(table, T2), { nativeTasks: [cfconfigTask(MONITOR)], ping: null });
-    expect(table.stored('nativeTasks')).toMatchObject({ capturedAt: T2.toISOString(), originalPing: null });
-  });
-
   it('replaces a different capture before the hand-off', async () => {
     const table = new SchedulerTable();
     await importNativeTasks(deps(table), CAPTURE);
@@ -329,11 +315,41 @@ describe('importNativeTasks', () => {
     expect(table.inserts).toBe(inserts);
     await expect(importNativeTasks(deps(table, T2), CFCONFIG_CAPTURE)).resolves.toMatchObject({ reason: 'unchanged' });
   });
+});
+
+describe('importSchedulerRequest', () => {
+  it.each([true, null])('stores a body with ping %s at the import time, sorted, with the digest of the same file capture', async (ping) => {
+    const table = new SchedulerTable();
+    const body = { nativeTasks: Object.values(CFCONFIG_CAPTURE.scheduledTasks).reverse(), ping };
+
+    const outcome = await importSchedulerRequest(deps(table, T2), body);
+    const sourceSha256 = nativeTasksDigest(normaliseNativeTasksFile({ ...CAPTURE, originalPing: ping }));
+    expect(outcome).toEqual({ imported: true, reason: 'imported', nativeExisted: true, siteMonitorTask: MONITOR_NAME, taskCount: 2, sourceSha256 });
+    expect(table.stored('nativeTasks')).toEqual({
+      capturedAt: T2.toISOString(),
+      originalPing: ping,
+      siteMonitorTask: MONITOR_NAME,
+      tasks: [MONITOR, SURVEY],
+      sourceSha256,
+      importedAt: T2.toISOString(),
+    });
+    expect(JSON.stringify(table.rows.get('nativeTasks'))).not.toContain('not-stored');
+  });
+
+  it('rejects a task entry that fails the task schema with SchedulerImportError, writing nothing', async () => {
+    const table = new SchedulerTable();
+    const error = await importSchedulerRequest(deps(table), { nativeTasks: [{ URL: 'http://localhost/' }], ping: true }).catch(
+      (reason: unknown) => reason,
+    );
+    expect(error).toBeInstanceOf(SchedulerImportError);
+    expect((error as SchedulerImportError).message).toContain('nativeTasks fail the task schema');
+    expect(table.inserts).toBe(0);
+  });
 
   it.each([
     ['before', {}],
     ['after', { state: 'target', handedOffAt: T1.toISOString() }],
-  ] as const)('reports the request body of a capture whose file names its monitor unchanged %s the hand-off', async (_when, handOff) => {
+  ] as const)('reports the body of a capture whose file names its monitor unchanged %s the hand-off', async (_when, handOff) => {
     const table = new SchedulerTable();
     const imported = await importNativeTasks(deps(table), CAPTURE);
     const monitor = { ...table.stored('sitemonitor'), ...handOff };
@@ -341,7 +357,7 @@ describe('importNativeTasks', () => {
     const inserts = table.inserts;
 
     const body = { nativeTasks: Object.values(CFCONFIG_CAPTURE.scheduledTasks), ping: true };
-    await expect(importNativeTasks(deps(table, T2), body)).resolves.toEqual({ ...imported, imported: false, reason: 'unchanged' });
+    await expect(importSchedulerRequest(deps(table, T2), body)).resolves.toEqual({ ...imported, imported: false, reason: 'unchanged' });
     expect(table.inserts).toBe(inserts);
     expect(table.stored('sitemonitor')).toEqual(monitor);
   });

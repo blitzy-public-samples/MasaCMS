@@ -432,6 +432,22 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
     });
 
     it.each([
+      ['a target login', (sessionId: string) => login(sessionId)],
+      [
+        'a legacy login seen at adoption',
+        (sessionId: string) => adoptLegacySession(deps(), describeLegacy(sessionId, LEGACY_USER, { csrfSecretKey: RELOGIN_SECRET }), { mode: 'legacy-primary' }),
+      ],
+    ])('drops the post-login session.mura values on %s, keeping the other admin state', async (_label, relogin) => {
+      const sessionId = nextSessionId();
+      await login(sessionId);
+      await setColumns(sessionId, TENANT_A, { admin_state: JSON.stringify({ rb: 'en', mura: { errors: '', objectInstanceId: 'I1' } }) });
+
+      await relogin(sessionId);
+
+      expect(JSON.parse((await stored(sessionId, TENANT_A))?.admin_state ?? 'null')).toEqual({ rb: 'en' });
+    });
+
+    it.each([
       ['true', true, TENANT_A],
       ["'TRUE'", 'TRUE', TENANT_A],
       ["'yes'", 'yes', TENANT_A],

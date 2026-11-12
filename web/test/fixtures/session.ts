@@ -50,6 +50,9 @@ const SESSION_DEFAULTS = {
   membersOnly: 'false',
   visitorStatus: 'All',
   frontEndProxyLoc: '',
+  muraValues: {},
+  hasDefaultPassword: false,
+  moduleTopIds: {},
   flash: {},
   nextPreserveKey: 1,
 } as const;

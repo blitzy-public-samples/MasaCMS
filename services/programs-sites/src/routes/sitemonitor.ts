@@ -21,8 +21,9 @@ export interface SiteMonitorRouteDeps {
   serviceUrls: Record<string, string>;
 }
 
-// Legacy matches any path starting with `/_api/sitemonitor` (contentServer.cfc:669), directly or behind `/index.cfm`.
-const RUN_PATHS: readonly string[] = Object.freeze(['/_api/sitemonitor*', '/index.cfm/_api/sitemonitor*']);
+/** Public-run prefixes; legacy compares them in any letter case (contentServer.cfc:669, 783), so createService routes them case-insensitively. */
+export const SITEMONITOR_RUN_PREFIXES: readonly string[] = Object.freeze(['/_api/sitemonitor', '/index.cfm/_api/sitemonitor']);
+const RUN_PATHS: readonly string[] = Object.freeze(SITEMONITOR_RUN_PREFIXES.map((prefix) => `${prefix}*`));
 const TASK_PATH = '/internal/v1/jobs/sitemonitor';
 const STATE_PATH = '/internal/v1/sitemonitor/state';
 

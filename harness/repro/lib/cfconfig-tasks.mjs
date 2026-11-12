@@ -10,7 +10,8 @@ Commands:
   capture --export <cfconfig.json> --ping <true|false> --webroot <path>
           --out-native <file> --out-cfconfig <file> [--captured-at <iso>]
       Writes the native-tasks.json capture that opt2-migrate scheduler import loads, and an exact
-      copy of the export for down.sh; refuses to overwrite either file.
+      copy of the export for down.sh; refuses to overwrite a completed capture, and completes one
+      interrupted after its copy was written when the export is unchanged.
   pause-all --in <file> --out <file>
       Marks every task Paused (--out may equal --in).
   drop-prefix --prefix <p> --in <file> --out <file>
@@ -217,27 +218,47 @@ function writeReplace(file, value) {
 }
 
 /**
- * Publishes each `[file, value]` as a new file, in order; nothing is written when any file exists.
- * A hard link publishes atomically and, unlike rename, fails on an existing target; files already published are removed on failure.
+ * Publishes `value` as the new file `file` by hard-linking a flushed temp file, which, unlike rename, fails on an existing target.
+ * @returns false when `file` already exists.
  */
-function publishNew(outputs) {
-  const existing = outputs.find(([file]) => fs.existsSync(file));
-  if (existing !== undefined) throw new InputError(`refusing to overwrite ${existing[0]}`);
-  const published = [];
+function linkNew(file, value) {
+  const temp = writeTemp(file, value);
   try {
-    for (const [file, value] of outputs) {
-      const temp = writeTemp(file, value);
-      try {
-        fs.linkSync(temp, file);
-      } catch (error) {
-        throw error.code === 'EEXIST' ? new InputError(`refusing to overwrite ${file}`) : error;
-      } finally {
-        fs.rmSync(temp, { force: true });
-      }
-      published.push(file);
-    }
+    fs.linkSync(temp, file);
+    return true;
   } catch (error) {
-    for (const file of published) fs.rmSync(file, { force: true });
+    if (error.code === 'EEXIST') return false;
+    throw error;
+  } finally {
+    fs.rmSync(temp, { force: true });
+  }
+}
+
+/** Flushes directory `dir`, so the files linked into it survive a crash. */
+function syncDir(dir) {
+  const fd = fs.openSync(dir, 'r');
+  try {
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** True when `a` and `b` are the same JSON value, object keys in any order. */
+function sameJson(a, b) {
+  if (Array.isArray(a)) return Array.isArray(b) && a.length === b.length && a.every((item, i) => sameJson(item, b[i]));
+  if (!isRecord(a)) return a === b;
+  if (!isRecord(b)) return false;
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((key) => Object.hasOwn(b, key) && sameJson(a[key], b[key]));
+}
+
+/** True when `file` holds `value` as JSON, object keys in any order; false when it is unreadable or holds anything else. */
+function holdsJson(file, value) {
+  try {
+    return sameJson(readJson(file), value);
+  } catch (error) {
+    if (error instanceof InputError) return false;
     throw error;
   }
 }
@@ -251,7 +272,10 @@ function printNames(list, json) {
   }
 }
 
-/** `capture`: the native-tasks.json capture and the verbatim CFConfig copy, the copy published first because the capture marks completion. */
+/**
+ * `capture`: the verbatim CFConfig copy, then the native-tasks.json capture derived from it, which marks completion.
+ * A copy left without its capture is kept and completed when it holds the same export; a completed capture is never overwritten.
+ */
 function capture(opts) {
   const originalPing = PING_VALUES.get(opts.ping.toLowerCase());
   if (originalPing === undefined) throw new UsageError('--ping must be true or false');
@@ -262,18 +286,28 @@ function capture(opts) {
   if (path.resolve(opts['out-native']) === path.resolve(opts['out-cfconfig'])) {
     throw new UsageError('--out-native and --out-cfconfig must differ');
   }
-  const { doc, tasks } = readCfconfig(opts.export);
-  const nativeTasks = tasks.map(nativeTask);
+  const nativeFile = opts['out-native'];
+  const copyFile = opts['out-cfconfig'];
+  if (fs.existsSync(nativeFile)) throw new InputError(`refusing to overwrite ${nativeFile}`);
+  const { doc } = readCfconfig(opts.export);
+  if (!linkNew(copyFile, doc)) {
+    if (!holdsJson(copyFile, doc)) {
+      throw new InputError(
+        `${copyFile} is left from an interrupted capture of a different export, without ${nativeFile}; remove it to capture again`,
+      );
+    }
+    process.stderr.write(`cfconfig-tasks: ${copyFile} already holds this export; completing its capture\n`);
+  }
+  syncDir(path.dirname(copyFile));
+  const nativeTasks = readCfconfig(copyFile).tasks.map(nativeTask);
   const native = {
     capturedAt,
     originalPing,
     siteMonitorTask: siteMonitorTaskName(nativeTasks, opts.webroot),
     tasks: nativeTasks,
   };
-  publishNew([
-    [opts['out-cfconfig'], doc],
-    [opts['out-native'], native],
-  ]);
+  if (!linkNew(nativeFile, native)) throw new InputError(`refusing to overwrite ${nativeFile}`);
+  syncDir(path.dirname(nativeFile));
 }
 
 /** `pause-all`: every task Paused, plus `paused: true` where a task carries that legacy flag. */

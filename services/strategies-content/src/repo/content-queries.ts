@@ -481,9 +481,9 @@ function featureClause(p: SqlParams, alias: string, now: Date): string {
 }
 
 
-/** A constant SQL string list; never used for caller input. */
-function sqlStrings(values: readonly string[]): string {
-  return values.map((value) => `'${value}'`).join(', ');
+/** SQL Server `expr IN (values)` for constant `values`, never caller input: case-insensitive, trailing spaces ignored. */
+function ciLiterals(expr: string, values: readonly string[]): string {
+  return `lower(rtrim(${expr})) IN (${values.map((value) => `'${value.toLowerCase()}'`).join(', ')})`;
 }
 
 // contentDAO's variables.fieldlist, in its order.
@@ -623,7 +623,7 @@ async function readActiveWhere(
   await readable(tx, 'content', 'file', 'approval_request');
   const active = p.include(activeClause('tcontent', args.preview, { liveOnly: false, offset: p.next }));
   const type =
-    args.type !== undefined && args.type !== '' ? ciEq(p, 'tcontent.type', args.type) : `tcontent.type IN (${sqlStrings(types)})`;
+    args.type !== undefined && args.type !== '' ? ciEq(p, 'tcontent.type', args.type) : ciLiterals('tcontent.type', types);
   return run(
     tx,
     `${versionSelect(tx.schema)} WHERE ${where} AND ${active} AND tcontent.siteid = ${p.add(args.siteId)} AND ${type}`,
@@ -683,7 +683,7 @@ export async function readActiveByFilename(
 ): Promise<ContentVersionRow[]> {
   const p = new SqlParams();
   const filename = args.filename === '' ? 'tcontent.filename IS NULL' : ciEq(p, 'tcontent.filename', args.filename.toLowerCase());
-  const where = `${filename} AND tcontent.type IN (${sqlStrings(['Page', 'Folder', 'Calendar', 'Gallery', 'File', 'Link'])})`;
+  const where = `${filename} AND ${ciLiterals('tcontent.type', ['Page', 'Folder', 'Calendar', 'Gallery', 'File', 'Link'])}`;
   return readActiveWhere(tx, p, where, args, VERSION_TYPES.filter((type) => type !== 'Module'));
 }
 
@@ -889,7 +889,7 @@ export async function expireAssignments(tx: TenantTx, args: { contentHistId: str
   return run(
     tx,
     `SELECT userid FROM ${qualified(tx.schema, CONTENT_ASSIGNMENT.table)}` +
-      ` WHERE ${idEq(p, 'contenthistid', args.contentHistId)} AND type = 'expire'`,
+      ` WHERE ${idEq(p, 'contenthistid', args.contentHistId)} AND ${ciLiterals('type', ['expire'])}`,
     p.values,
   );
 }
@@ -1447,7 +1447,7 @@ export async function nest(
       `${aggregation ? ', count(tcontent2.parentid)::integer AS haskids' : ''}` +
       ` FROM ${t.content} tcontent ${joins.filter((join) => join !== '').join(' ')}` +
       ` WHERE tcontent.siteid = ${p.add(args.siteId)} AND ${idEq(p, 'tcontent.parentid', args.parentId)}` +
-      ` AND tcontent.active = 1 AND tcontent.type IN (${sqlStrings(NEST_TYPES)})${search}${groupBy} ORDER BY ${order}`,
+      ` AND tcontent.active = 1 AND ${ciLiterals('tcontent.type', NEST_TYPES)}${search}${groupBy} ORDER BY ${order}`,
     p.values,
   );
 }
@@ -1464,7 +1464,7 @@ export async function sections(tx: TenantTx, args: { siteId: string; type?: stri
   const p = new SqlParams();
   const type =
     args.type === undefined || args.type === ''
-      ? "(tcontent.type = 'Folder' OR tcontent.type = 'Calendar' OR tcontent.type = 'Gallery')"
+      ? ciLiterals('tcontent.type', ['Folder', 'Calendar', 'Gallery'])
       : ciEq(p, 'tcontent.type', args.type);
   return run(
     tx,
@@ -1481,7 +1481,7 @@ export async function pageCount(tx: TenantTx, args: { siteId: string }): Promise
   return run(
     tx,
     `SELECT count(contentid)::integer AS counter FROM ${qualified(tx.schema, CONTENT.table)}` +
-      ` WHERE type IN (${sqlStrings(['Page', 'Folder', 'File', 'Calendar', 'Gallery'])}) AND active = 1 AND siteid = ${p.add(args.siteId)}`,
+      ` WHERE ${ciLiterals('type', ['Page', 'Folder', 'File', 'Calendar', 'Gallery'])} AND active = 1 AND siteid = ${p.add(args.siteId)}`,
     p.values,
   );
 }
@@ -1525,7 +1525,7 @@ export async function components(tx: TenantTx, args: { moduleId: string; siteId:
   const p = new SqlParams();
   const branch = (display: number): string =>
     `(tcontent.active = 1) AND (tcontent.display = ${display}) AND (tcontent.approved = 1) AND (tcontent.siteid = ${p.add(args.siteId)})` +
-    ` AND (tcontent.type = 'Component') AND ${ciLike(p, 'tcontent.moduleassign', `%${args.moduleId}%`)}`;
+    ` AND (${ciLiterals('tcontent.type', ['Component'])}) AND ${ciLike(p, 'tcontent.moduleassign', `%${args.moduleId}%`)}`;
   return run(
     tx,
     `SELECT tcontent.contentid, tcontent.menutitle, tcontent.body, tcontent.title, tcontent.filename FROM ${qualified(tx.schema, CONTENT.table)} tcontent` +
@@ -1674,60 +1674,167 @@ export type PendingChangesetRow = DraftHistRow & {
   changesetid: string;
 };
 
-/** The history read of versions of `contentId` in `siteId` under `select`, `joins` and `where`, newest first. */
-async function historyOf<R extends Record<string, unknown>>(
-  tx: TenantTx,
-  args: { contentId: string; siteId: string },
-  select: string,
-  joins: string,
-  where: string,
-): Promise<R[]> {
-  await readable(tx, 'content', 'approval_request', 'changeset');
-  const t = tablesFor(tx.schema);
-  const p = new SqlParams();
-  return run(
-    tx,
-    `SELECT ${columns(CONTENT, 'tcontent', HISTORY_FIELDS)}, ${select},` +
-      ' tapprovalrequests.status AS approvalstatus, tapprovalrequests.requestid, tapprovalrequests.groupid AS approvalgroupid' +
-      ` FROM ${t.content} tcontent ${joins}` +
-      ` LEFT JOIN ${t.approvalRequest} tapprovalrequests ON (tcontent.contenthistid = tapprovalrequests.contenthistid)` +
-      ` WHERE ${idEq(p, 'tcontent.contentid', args.contentId)} AND tcontent.siteid = ${p.add(args.siteId)}${where}` +
-      ` ORDER BY ${orderKey('tcontent.lastupdate', 'desc')}`,
-    p.values,
+/** A history read, named after its `contentGateway` function. */
+export type HistoryRead = 'hist' | 'draftHist' | 'pendingChangesets' | 'archiveHist';
+
+/** The row type of each history read. */
+export interface HistoryRows {
+  hist: HistRow;
+  draftHist: DraftHistRow;
+  pendingChangesets: PendingChangesetRow;
+  archiveHist: DraftHistRow;
+}
+
+// Each read's columns after HISTORY_FIELDS, its tchangesets join ('' for none) and its filter.
+const HISTORY_READS: Record<HistoryRead, { select: string; changesets: '' | 'LEFT' | 'INNER'; where: string }> = {
+  hist: {
+    select:
+      'tcontent.siteid, tcontent.featurestart, tcontent.featurestop, tcontent.changesetid, tchangesets.name AS changesetname,' +
+      ' tchangesets.published AS changsetpublished, tchangesets.publishdate AS changesetpublishdate, tcontent.majorversion, tcontent.minorversion',
+    changesets: 'LEFT',
+    where: '',
+  },
+  draftHist: { select: 'tcontent.path', changesets: '', where: ' AND tcontent.approved = 0 AND tcontent.changesetid IS NULL' },
+  pendingChangesets: {
+    select: 'tcontent.path, tchangesets.publishdate AS changesetpublishdate, tchangesets.name AS changesetname, tchangesets.changesetid',
+    changesets: 'INNER',
+    where: ' AND tcontent.approved = 0 AND tcontent.changesetid IS NOT NULL',
+  },
+  archiveHist: { select: 'tcontent.path', changesets: '', where: ' AND tcontent.approved = 1 AND tcontent.active = 0' },
+};
+
+// Legacy's `order by tcontent.lastupdate desc`, ties in SQL Server's clustered (tcontent_id) scan order, then by request.
+const HISTORY_ORDER = `${orderKey('tcontent.lastupdate', 'desc')}, tcontent.tcontent_id ASC, ${orderKey('tapprovalrequests.requestid', 'asc')}`;
+
+/** The select list of `read`. */
+function historySelect(read: HistoryRead): string {
+  return (
+    `SELECT ${columns(CONTENT, 'tcontent', HISTORY_FIELDS)}, ${HISTORY_READS[read].select},` +
+    ' tapprovalrequests.status AS approvalstatus, tapprovalrequests.requestid, tapprovalrequests.groupid AS approvalgroupid'
   );
+}
+
+/** The FROM, joins and WHERE of `read` over the versions of `contentId` in `siteId`, bound into `p`. */
+function historyFrom(tx: TenantTx, read: HistoryRead, args: { contentId: string; siteId: string }, p: SqlParams): string {
+  const t = tablesFor(tx.schema);
+  const { changesets, where } = HISTORY_READS[read];
+  const changesetJoin = changesets === '' ? '' : ` ${changesets} JOIN ${t.changeset} tchangesets ON (tcontent.changesetid = tchangesets.changesetid)`;
+  return (
+    ` FROM ${t.content} tcontent${changesetJoin}` +
+    ` LEFT JOIN ${t.approvalRequest} tapprovalrequests ON (tcontent.contenthistid = tapprovalrequests.contenthistid)` +
+    ` WHERE ${idEq(p, 'tcontent.contentid', args.contentId)} AND tcontent.siteid = ${p.add(args.siteId)}${where}`
+  );
+}
+
+/** Every row of `read` over the versions of `contentId` in `siteId`, newest first. */
+async function historyOf<K extends HistoryRead>(tx: TenantTx, read: K, args: { contentId: string; siteId: string }): Promise<HistoryRows[K][]> {
+  await readable(tx, 'content', 'approval_request', 'changeset');
+  const p = new SqlParams();
+  return run<HistoryRows[K]>(tx, `${historySelect(read)}${historyFrom(tx, read, args, p)} ORDER BY ${HISTORY_ORDER}`, p.values);
 }
 
 /** contentGateway.getHist: every version of a content item, newest first, with its change set and approval request. */
 export function hist(tx: TenantTx, args: { contentId: string; siteId: string }): Promise<HistRow[]> {
-  return historyOf<HistRow>(
-    tx,
-    args,
-    'tcontent.siteid, tcontent.featurestart, tcontent.featurestop, tcontent.changesetid, tchangesets.name AS changesetname,' +
-      ' tchangesets.published AS changsetpublished, tchangesets.publishdate AS changesetpublishdate, tcontent.majorversion, tcontent.minorversion',
-    `LEFT JOIN ${qualified(tx.schema, CHANGESET.table)} tchangesets ON (tcontent.changesetid = tchangesets.changesetid)`,
-    '',
-  );
+  return historyOf(tx, 'hist', args);
 }
 
 /** contentGateway.getDraftHist: the unapproved versions outside change sets, newest first. */
 export function draftHist(tx: TenantTx, args: { contentId: string; siteId: string }): Promise<DraftHistRow[]> {
-  return historyOf<DraftHistRow>(tx, args, 'tcontent.path', '', ' AND tcontent.approved = 0 AND tcontent.changesetid IS NULL');
+  return historyOf(tx, 'draftHist', args);
 }
 
 /** contentGateway.getPendingChangesets: the unapproved versions in change sets, newest first. */
 export function pendingChangesets(tx: TenantTx, args: { contentId: string; siteId: string }): Promise<PendingChangesetRow[]> {
-  return historyOf<PendingChangesetRow>(
-    tx,
-    args,
-    'tcontent.path, tchangesets.publishdate AS changesetpublishdate, tchangesets.name AS changesetname, tchangesets.changesetid',
-    `INNER JOIN ${qualified(tx.schema, CHANGESET.table)} tchangesets ON (tcontent.changesetid = tchangesets.changesetid)`,
-    ' AND tcontent.approved = 0 AND tcontent.changesetid IS NOT NULL',
-  );
+  return historyOf(tx, 'pendingChangesets', args);
 }
 
 /** contentGateway.getArchiveHist: the approved versions no longer active, newest first. */
 export function archiveHist(tx: TenantTx, args: { contentId: string; siteId: string }): Promise<DraftHistRow[]> {
-  return historyOf<DraftHistRow>(tx, args, 'tcontent.path', '', ' AND tcontent.approved = 1 AND tcontent.active = 0');
+  return historyOf(tx, 'archiveHist', args);
+}
+
+/** Largest history page or batch size (LEGACY_MAX_ROWS). */
+export const HISTORY_MAX_PAGE = LEGACY_MAX_ROWS;
+/** Rows per `historyBatches` batch by default. */
+export const HISTORY_BATCH_SIZE = 500;
+
+/** At most `limit` rows of a history read after its first `offset` rows (default 0). */
+export interface HistoryPaging {
+  limit: number;
+  offset?: number;
+}
+
+/** One page of a history read and the read's full row count. */
+export interface HistoryPage<R> {
+  rows: R[];
+  total: number;
+}
+
+/** Throws a RangeError unless `value` is an integer from `min` to `max`. */
+function checkHistoryCount(name: string, value: number, min: number, max: number): void {
+  if (!Number.isInteger(value) || value < min || value > max) throw new RangeError(`${name} must be an integer from ${min} to ${max}`);
+}
+
+/** A page of a contentGateway history read (getHist and its siblings) with its total, for version history screens and JSON API findVersionHistory. */
+export async function historyPage<K extends HistoryRead>(
+  tx: TenantTx,
+  read: K,
+  args: { contentId: string; siteId: string },
+  paging: HistoryPaging,
+): Promise<HistoryPage<HistoryRows[K]>> {
+  const offset = paging.offset ?? 0;
+  checkHistoryCount('limit', paging.limit, 1, HISTORY_MAX_PAGE);
+  checkHistoryCount('offset', offset, 0, Number.MAX_SAFE_INTEGER);
+  await readable(tx, 'content', 'approval_request', 'changeset');
+  const c = new SqlParams();
+  const [counted] = await run<{ total: number }>(tx, `SELECT count(*)::integer AS total${historyFrom(tx, read, args, c)}`, c.values);
+  const total = counted?.total ?? 0;
+  if (offset >= total) return { rows: [], total };
+  const p = new SqlParams();
+  const from = historyFrom(tx, read, args, p);
+  const rows = await run<HistoryRows[K]>(
+    tx,
+    `${historySelect(read)}${from} ORDER BY ${HISTORY_ORDER} LIMIT ${p.add(paging.limit)} OFFSET ${p.add(offset)}`,
+    p.values,
+  );
+  return { rows, total };
+}
+
+/** Every row of a contentGateway history read (getHist and its siblings) in keyset batches of history order, where legacy needs every row. */
+export async function* historyBatches<K extends HistoryRead>(
+  tx: TenantTx,
+  read: K,
+  args: { contentId: string; siteId: string },
+  batchSize = HISTORY_BATCH_SIZE,
+): AsyncGenerator<HistoryRows[K][]> {
+  checkHistoryCount('batchSize', batchSize, 1, HISTORY_MAX_PAGE);
+  await readable(tx, 'content', 'approval_request', 'changeset');
+  // HISTORY_ORDER without NULLs: a null lastupdate sorts last descending as -infinity, a null request first as ''.
+  const lastUpdate = "COALESCE(tcontent.lastupdate, '-infinity'::timestamp(3))";
+  const requestId = "COALESCE(tapprovalrequests.requestid, '')";
+  type Cursor = { tcontent_id: number; lastupdate: Date | null; requestid: string | null };
+  let after: Cursor | undefined;
+  for (;;) {
+    const p = new SqlParams();
+    const from = historyFrom(tx, read, args, p);
+    let seek = '';
+    if (after !== undefined) {
+      const [u, k, r] = [`${p.add(after.lastupdate ?? '-infinity')}::timestamp(3)`, p.add(after.tcontent_id), p.add(after.requestid ?? '')];
+      seek =
+        ` AND (${lastUpdate} < ${u} OR (${lastUpdate} = ${u}` +
+        ` AND (tcontent.tcontent_id > ${k} OR (tcontent.tcontent_id = ${k} AND ${requestId} > ${r}))))`;
+    }
+    const rows = await run<Cursor & Record<string, unknown>>(
+      tx,
+      `${historySelect(read)}, tcontent.tcontent_id${from}${seek}` +
+        ` ORDER BY ${lastUpdate} DESC, tcontent.tcontent_id ASC, ${requestId} ASC LIMIT ${p.add(batchSize)}`,
+      p.values,
+    );
+    after = rows.at(-1);
+    if (after === undefined) return;
+    yield rows.map((row) => Object.fromEntries(Object.entries(row).filter(([column]) => column !== 'tcontent_id'))) as HistoryRows[K][];
+    if (rows.length < batchSize) return;
+  }
 }
 
 /** The ORDER BY of legacy's query-of-queries: validated sort fields of `fields`, the direction applying to the last. */
@@ -1831,7 +1938,7 @@ export async function draftList(tx: TenantTx, args: DraftListPaging & { siteId: 
     ` AND module.siteid = ${p.add(args.siteId)} AND draft.siteid = ${p.add(args.siteId)}` +
     (withActive ? ` AND active.siteid = ${p.add(args.siteId)}` : '');
   const assigned = (on: 'active' | 'draft'): string =>
-    `INNER JOIN ${t.assignment} tcontentassignments ON (${on}.contentid = tcontentassignments.contentid AND tcontentassignments.type = 'draft')`;
+    `INNER JOIN ${t.assignment} tcontentassignments ON (${on}.contentid = tcontentassignments.contentid AND ${ciLiterals('tcontentassignments.type', ['draft'])})`;
   const newerDraft = (by: string): string =>
     `${select('active')} FROM ${t.content} active INNER JOIN ${t.content} draft ON active.contentid = draft.contentid ${module}` +
     ` ${by} LEFT JOIN ${t.file} tfiles ON active.fileid = tfiles.fileid ${statsJoin}` +
@@ -1890,7 +1997,7 @@ async function pendingRequests(
     ` LEFT JOIN ${t.changeset} tchangesets ON (draft.changesetid = tchangesets.changesetid)` +
     ` INNER JOIN ${t.approvalRequest} tapprovalrequests ON (tapprovalrequests.contenthistid = draft.contenthistid)` +
     ` WHERE draft.siteid = ${p.add(args.siteId)} AND (draft.active = 0 OR draft.active = 1 AND draft.approved = 0)` +
-    ` AND tapprovalrequests.status = 'Pending'${requester(p)}${dayBounds(p, 'active.lastupdate', args)}` +
+    ` AND ${ciLiterals('tapprovalrequests.status', ['Pending'])}${requester(p)}${dayBounds(p, 'active.lastupdate', args)}` +
     ` GROUP BY ${selected}, draft.isnav, module.siteid`;
   const limit = args.limit !== undefined ? ` LIMIT ${p.add(Math.trunc(args.limit))}` : '';
   return run(tx, `SELECT * FROM (${query}) d ORDER BY ${order}${limit}`, p.values);
@@ -1928,7 +2035,7 @@ export async function expiringContent(
     `SELECT contentid FROM ${t.content} WHERE ${ciEq(p, 'lastupdatebyid', args.userId)} AND active = 1 AND siteid = ${p.add(args.siteId)}` +
       ` AND ${window('expires')}` +
       ` UNION SELECT tcontent.contentid FROM ${t.content} tcontent INNER JOIN ${t.assignment} tcontentassignments` +
-      " ON (tcontent.contenthistid = tcontentassignments.contenthistid AND tcontentassignments.type = 'expire')" +
+      ` ON (tcontent.contenthistid = tcontentassignments.contenthistid AND ${ciLiterals('tcontentassignments.type', ['expire'])})` +
       ` WHERE tcontent.active = 1 AND tcontent.siteid = ${p.add(args.siteId)} AND ${idEq(p, 'tcontentassignments.userid', args.userId)}` +
       ` AND ${window('tcontent.expires')} ORDER BY contentid LIMIT ${LEGACY_MAX_ROWS}`,
     p.values,
@@ -1995,38 +2102,71 @@ export async function draftPromptData(
 const SEARCH_TYPES = ['Page', 'Folder', 'Calendar', 'File', 'Link', 'Gallery', 'Form', 'Component', 'Variation'];
 // getPrivateSearch's default moduleid list: the site tree, components and forms.
 const PRIVATE_SEARCH_MODULES = [SITE_TREE_MODULE_ID, '00000000000000000000000000000000003', '00000000000000000000000000000000004'];
+// File ids per poolFileMatches lookup.
+const POOL_FILE_BATCH = 1000;
 
 /**
  * The files of a site's file pool that a private image or file search matches, for a site whose file pool is another
- * tenant: from `poolFileMatches`, run by the caller in the file-pool tenant.
+ * tenant. The caller reads `privateSearchFileIds` in the content tenant, `poolFileMatches` with those ids in the
+ * file-pool tenant, then `privateSearch` with these as `pooledFiles`.
  */
 export interface PooledFileMatches {
-  /** The files the search may return: images for an image search, every file for a file search. */
+  /** The listed files the search may return: images for an image search, every file for a file search. */
   fileIds: readonly string[];
   /** Those of them whose caption, credits, alt text or filename contain the keywords. */
   keywordFileIds: readonly string[];
 }
 
-/** The file-pool half of an image or file `privateSearch` for a site whose files are kept in this tenant's pool. */
-export async function poolFileMatches(tx: TenantTx, args: { keywords: string; searchType: string }): Promise<PooledFileMatches> {
+/**
+ * The file-pool half of an image or file `privateSearch` for a site whose files are kept in this tenant's pool, over
+ * the `fileIds` from `privateSearchFileIds`, looked up `batchSize` ids at a time; results are sorted by file id.
+ */
+export async function poolFileMatches(
+  tx: TenantTx,
+  args: { keywords: string; searchType: string; fileIds: readonly string[] },
+  batchSize = POOL_FILE_BATCH,
+): Promise<PooledFileMatches> {
   const searchType = args.searchType.toLowerCase();
-  if (searchType !== 'image' && searchType !== 'file') {
+  if ((searchType !== 'image' && searchType !== 'file') || args.fileIds.length === 0) {
     return { fileIds: [], keywordFileIds: [] };
+  }
+  if (!Number.isInteger(batchSize) || batchSize < 1) {
+    throw new RangeError(`poolFileMatches needs a positive integer batch size, not ${batchSize}`);
   }
   await readable(tx, 'file');
   const kw = args.keywords.trim();
-  const p = new SqlParams();
-  const image = searchType === 'image' ? `tfiles.fileext IN (${sqlStrings(IMAGE_EXTENSIONS)})` : 'TRUE';
-  const matches =
-    kw === ''
-      ? 'FALSE'
-      : ['caption', 'credits', 'alttext', 'filename'].map((column) => ciLike(p, `tfiles.${column}`, `%${kw}%`)).join(' OR ');
-  const rows = await run<{ fileid: string; matches: boolean }>(
-    tx,
-    `SELECT tfiles.fileid, (${matches}) AS matches FROM ${qualified(tx.schema, FILE.table)} tfiles WHERE ${image} ORDER BY tfiles.fileid`,
-    p.values,
-  );
-  return { fileIds: rows.map((row) => row.fileid), keywordFileIds: rows.filter((row) => row.matches).map((row) => row.fileid) };
+  const ids = [...new Map(args.fileIds.map((id) => [id.toLowerCase(), id])).values()];
+  const image = searchType === 'image' ? ciLiterals('tfiles.fileext', IMAGE_EXTENSIONS) : 'TRUE';
+  const batches: { fileid: string; matches: boolean }[][] = [];
+  for (let start = 0; start < ids.length; start += batchSize) {
+    const p = new SqlParams();
+    const matches =
+      kw === ''
+        ? 'FALSE'
+        : ['caption', 'credits', 'alttext', 'filename'].map((column) => ciLike(p, `tfiles.${column}`, `%${kw}%`)).join(' OR ');
+    batches.push(
+      await run<{ fileid: string; matches: boolean }>(
+        tx,
+        `SELECT tfiles.fileid, (${matches}) AS matches FROM ${qualified(tx.schema, FILE.table)} tfiles` +
+          ` WHERE ${idIn(p, 'tfiles.fileid', ids.slice(start, start + batchSize))} AND ${image} ORDER BY tfiles.fileid`,
+        p.values,
+      ),
+    );
+  }
+  const rows = batches.flat();
+  const matched = new Set(rows.filter((row) => row.matches).map((row) => row.fileid));
+  // Rows of several batches are merged in the database's own fileid order.
+  const fileIds =
+    batches.filter((batch) => batch.length > 0).length > 1
+      ? (
+          await run<{ fileid: string }>(
+            tx,
+            'SELECT f.fileid FROM unnest($1::bpchar[]) AS f(fileid) ORDER BY f.fileid',
+            [rows.map((row) => row.fileid)],
+          )
+        ).map((row) => row.fileid)
+      : rows.map((row) => row.fileid);
+  return { fileIds, keywordFileIds: fileIds.filter((id) => matched.has(id)) };
 }
 
 /** Arguments of `privateSearch`, as `contentGateway.getPrivateSearch` names them. */
@@ -2119,11 +2259,46 @@ const PRIVATE_SEARCH_FIELDS = [
   'expires',
 ] as const satisfies readonly ColumnOf<typeof CONTENT>[];
 
+/** getPrivateSearch's module ids: the CF list `moduleId`, else the site tree, components and forms. */
+function privateSearchModules(args: PrivateSearchArgs): string[] {
+  return args.moduleId === undefined ? PRIVATE_SEARCH_MODULES : cfList(args.moduleId);
+}
+
+/** getPrivateSearch's site, content type and section scope of `tcontent`; a file search spans `filePoolSiteIds`. */
+function privateSearchScope(p: SqlParams, args: PrivateSearchArgs, fileSearch: boolean): string {
+  return (
+    (fileSearch ? `tcontent.siteid = ANY(${p.add(args.filePoolSiteIds ?? [args.siteId])}::text[])` : `tcontent.siteid = ${p.add(args.siteId)}`) +
+    ` AND ${ciLiterals('tcontent.type', SEARCH_TYPES)}` +
+    (args.sectionId !== undefined && args.sectionId !== '' ? ` AND ${ciLike(p, 'tcontent.path', `%${args.sectionId}%`)}` : '')
+  );
+}
+
+/**
+ * The content half of a pooled image or file getPrivateSearch: the distinct files of the active versions in its site,
+ * type, section and module scope, none without keywords or a tag. Read in the content tenant for `poolFileMatches`.
+ */
+export async function privateSearchFileIds(tx: TenantTx, args: PrivateSearchArgs): Promise<string[]> {
+  const searchType = (args.searchType ?? 'default').toLowerCase();
+  if ((searchType !== 'image' && searchType !== 'file') || (args.keywords.trim() === '' && (args.tag ?? '') === '')) {
+    return [];
+  }
+  await readable(tx, 'content');
+  const p = new SqlParams();
+  const rows = await run<{ fileid: string }>(
+    tx,
+    `SELECT DISTINCT tcontent.fileid FROM ${qualified(tx.schema, CONTENT.table)} tcontent` +
+      ` WHERE tcontent.active = 1 AND tcontent.fileid IS NOT NULL AND ${privateSearchScope(p, args, true)}` +
+      ` AND ${idIn(p, 'tcontent.moduleid', privateSearchModules(args))} ORDER BY tcontent.fileid`,
+    p.values,
+  );
+  return rows.map((row) => row.fileid);
+}
+
 /**
  * contentGateway.getPrivateSearch (admin `carch.search`, `cnav.searchsitedata`, associated-file search): up to 1000
  * versions matching `keywords` or `tag`, exact title matches first. Where the site's file pool is another tenant the
- * caller passes `pooledFiles`; `fileid` is then the version's file when it is one of the pool's files, and the other
- * file columns are null for the caller to fill with `fileJoinColumns` there.
+ * caller passes `pooledFiles` (see `PooledFileMatches`); `fileid` is then the version's file when it is one of the
+ * pool's files, and the other file columns are null for the caller to fill with `fileJoinColumns` there.
  */
 export async function privateSearch(tx: TenantTx, args: PrivateSearchArgs): Promise<PrivateSearchRow[]> {
   const kw = args.keywords.trim();
@@ -2142,7 +2317,7 @@ export async function privateSearch(tx: TenantTx, args: PrivateSearchArgs): Prom
   );
   const t = tablesFor(tx.schema);
   const p = new SqlParams();
-  const modules = args.moduleId === undefined ? PRIVATE_SEARCH_MODULES : cfList(args.moduleId);
+  const modules = privateSearchModules(args);
   const fileColumns =
     pooled === undefined
       ? 'tfiles.filesize, tfiles.fileext, tfiles.fileid, tfiles.filename AS assocfilename'
@@ -2161,7 +2336,7 @@ export async function privateSearch(tx: TenantTx, args: PrivateSearchArgs): Prom
   const fileRequired = (inner: boolean): string =>
     pooled !== undefined && inner ? ` AND ${idIn(p, 'tcontent.fileid', pooled.fileIds)}` : '';
   const imageOnly = (): string =>
-    searchType === 'image' && pooled === undefined ? `tfiles.fileext IN (${sqlStrings(IMAGE_EXTENSIONS)}) AND ` : '';
+    searchType === 'image' && pooled === undefined ? `${ciLiterals('tfiles.fileext', IMAGE_EXTENSIONS)} AND ` : '';
   const from = (innerFile: boolean, withTag: boolean): string =>
     ` FROM ${t.content} tcontent LEFT JOIN ${t.content} tcontent2 ON (tcontent.contentid = tcontent2.parentid)` +
     ` LEFT JOIN ${t.stats} tcontentstats ON (tcontent.contentid = tcontentstats.contentid AND tcontent.siteid = tcontentstats.siteid)` +
@@ -2169,10 +2344,7 @@ export async function privateSearch(tx: TenantTx, args: PrivateSearchArgs): Prom
     (withTag ? ` INNER JOIN ${t.tag} tcontenttags ON (tcontent.contenthistid = tcontenttags.contenthistid)` : '') +
     ` LEFT JOIN ${t.fileMetadata} tcontentfilemetadata ON (tcontent.fileid = tcontentfilemetadata.fileid` +
     ' AND tcontent.contenthistid = tcontentfilemetadata.contenthistid)';
-  const scope = (): string =>
-    (fileSearch ? `tcontent.siteid = ANY(${p.add(args.filePoolSiteIds ?? [args.siteId])}::text[])` : `tcontent.siteid = ${p.add(args.siteId)}`) +
-    ` AND tcontent.type IN (${sqlStrings(SEARCH_TYPES)})` +
-    (args.sectionId !== undefined && args.sectionId !== '' ? ` AND ${ciLike(p, 'tcontent.path', `%${args.sectionId}%`)}` : '');
+  const scope = (): string => privateSearchScope(p, args, fileSearch);
   const keywordMatch = (): string => {
     const like = (expr: string): string => ciLike(p, expr, `%${kw}%`);
     const fileMatches = !fileSearch
@@ -2183,7 +2355,7 @@ export async function privateSearch(tx: TenantTx, args: PrivateSearchArgs): Prom
     const metadataMatches = fileSearch ? ['tcontentfilemetadata.caption', 'tcontentfilemetadata.credits', 'tcontentfilemetadata.alttext'].map(like) : [];
     return (
       `(${[like('tcontent.title'), like('tcontent.menutitle'), like('tcontent.summary'), ...fileMatches, ...metadataMatches].join(' OR ')}` +
-      ` OR (tcontent.type NOT IN ('Link', 'File') AND ${ciLike(p, 'tcontent.body', `%${args.keywords}%`)})` +
+      ` OR (NOT (${ciLiterals('tcontent.type', ['Link', 'File'])}) AND ${ciLike(p, 'tcontent.body', `%${args.keywords}%`)})` +
       ` OR tcontent.contenthistid IN (SELECT DISTINCT tcontent.contenthistid FROM ${t.extendData} tclassextenddata` +
       ` INNER JOIN ${t.content} tcontent ON (tclassextenddata.baseid = tcontent.contenthistid)` +
       ` WHERE tcontent.active = 1 AND tcontent.siteid = ${p.add(args.siteId)} AND ${like('tclassextenddata.attributevalue')}))` +
@@ -2305,7 +2477,7 @@ export async function publicSearch(tx: TenantTx, args: PublicSearchArgs): Promis
             : '') +
           ')'
         : `(${like('tcontent.title')} OR ${like('tcontent.menutitle')} OR ${like('tcontent.metakeywords')} OR ${like('tcontent.summary')}` +
-          ` OR (tcontent.type NOT IN ('Link', 'File') AND ${like('tcontent.body')}) OR ${like('tcontent.credits')}` +
+          ` OR (NOT (${ciLiterals('tcontent.type', ['Link', 'File'])}) AND ${like('tcontent.body')}) OR ${like('tcontent.credits')}` +
           ` OR tcontent.contenthistid IN (SELECT DISTINCT tcontent.contenthistid FROM ${t.extendData} tclassextenddata` +
           ` INNER JOIN ${t.content} tcontent ON (tclassextenddata.baseid = tcontent.contenthistid)` +
           ` WHERE tcontent.active = 1 AND tcontent.siteid = ${p.add(args.siteId)} AND ${like('tclassextenddata.attributevalue')}))`;
@@ -2333,9 +2505,9 @@ export async function publicSearch(tx: TenantTx, args: PublicSearchArgs): Promis
       (tag !== '' ? ` INNER JOIN ${t.tag} tcontenttags ON (tcontent.contenthistid = tcontenttags.contenthistid)` : '') +
       ` WHERE (tcontent.active = 1 AND tcontent.approved = 1 AND tcontent.siteid = ${p.add(args.siteId)})` +
       ` AND (tcontent.display = 2 AND ((tcontent.displaystart <= ${p.add(args.today)}` +
-      ` AND (tcontent.displaystop >= ${p.add(args.today)} OR tcontent.displaystop IS NULL)) OR tparent.type = 'Calendar')` +
+      ` AND (tcontent.displaystop >= ${p.add(args.today)} OR tcontent.displaystop IS NULL)) OR ${ciLiterals('tparent.type', ['Calendar'])})` +
       ' OR tcontent.display = 1)' +
-      ` AND tcontent.type IN (${sqlStrings(['Page', 'Folder', 'Calendar', 'File', 'Link', 'Gallery'])})` +
+      ` AND ${ciLiterals('tcontent.type', ['Page', 'Folder', 'Calendar', 'File', 'Link', 'Gallery'])}` +
       ` AND tcontent.releasedate IS ${released ? 'NOT ' : ''}NULL` +
       (args.sectionId !== undefined && args.sectionId !== '' ? ` AND ${ciLike(p, 'tcontent.path', `%${args.sectionId}%`)}` : '') +
       ` AND ${match} AND tcontent.searchexclude = 0${categories} AND ${mobileClause('tcontent', args.mobile)}`
@@ -2449,63 +2621,185 @@ function relatedOrder(sortBy: string, direction: SortDirection, bySet: boolean):
   }
 }
 
-/**
- * contentGateway.getRelatedContent for content entities: the content a version relates to (or, with `reverse`, the
- * versions relating to content), before the caller's interval expansion of live rows. Content-pool sites are other
- * tenants, so the caller runs this once per tenant of the pool and merges in this order. File columns are null where
- * the site's file pool is another tenant; the caller fills them with `fileJoinColumns` there.
- */
-export async function relatedContent(tx: TenantTx, args: RelatedContentArgs): Promise<RelatedContentRow[]> {
-  const reverse = args.reverse === true;
+/** getRelatedContent's set arguments as legacy coerces them: set `0` is the site tree's. */
+function relatedSet(args: Pick<RelatedContentArgs, 'relatedContentSetId' | 'name'>): { setId: string; name: string } {
+  return { setId: args.relatedContentSetId === '0' ? SITE_TREE_MODULE_ID : (args.relatedContentSetId ?? ''), name: args.name ?? '' };
+}
+
+/** getRelatedContent's coerced set arguments and ORDER BY. */
+function relatedSort(args: RelatedContentArgs): { setId: string; name: string; order: string } {
   let sortBy = (args.sortBy ?? 'orderno').toLowerCase();
   let direction = sortDirectionOf(args.sortDirection);
   if (!RELATED_SORTS.has(sortBy)) {
     sortBy = 'orderno';
   }
-  if (reverse && sortBy === 'orderno') {
+  if (args.reverse === true && sortBy === 'orderno') {
     sortBy = 'menutitle';
     direction = 'asc';
   }
-  const setId = args.relatedContentSetId === '0' ? SITE_TREE_MODULE_ID : (args.relatedContentSetId ?? '');
-  const name = args.name ?? '';
-  const order = relatedOrder(sortBy, direction, setId !== '' || name !== '');
-  await readable(tx, 'content', 'file', 'content_related', ...(name !== '' ? (['extend_rc_set'] as const) : []));
+  const { setId, name } = relatedSet(args);
+  return { setId, name, order: relatedOrder(sortBy, direction, setId !== '' || name !== '') };
+}
+
+/** getRelatedContent's set or set-name predicate on `tcr` and `tcrs`, with its leading AND; `Default` also matches links without a set. */
+function relatedSetFilter(p: SqlParams, setId: string, name: string): string {
+  if (name !== '') {
+    return ` AND (${ciEq(p, 'tcrs.name', name)}${name.toLowerCase() === 'default' ? ' OR tcrs.name IS NULL' : ''})`;
+  }
+  if (setId !== '') {
+    return ` AND (${idEq(p, 'tcr.relatedcontentsetid', setId)}${setId === SITE_TREE_MODULE_ID ? ' OR tcr.relatedcontentsetid IS NULL' : ''})`;
+  }
+  return '';
+}
+
+/** A link of a forward getRelatedContent, joined to its destination content in each content-pool tenant. */
+export type RelatedLinkRow = Pick<ContentRelatedRow, 'relatedid' | 'contentid' | 'relatedcontentsetid' | 'orderno'>;
+
+/** getRelatedContent's links of the versions `contentHistId` in the set or set name, read in the versions' tenant. */
+export async function relatedLinks(
+  tx: TenantTx,
+  args: Pick<RelatedContentArgs, 'contentHistId' | 'relatedContentSetId' | 'name'>,
+): Promise<RelatedLinkRow[]> {
+  const { setId, name } = relatedSet(args);
+  await readable(tx, 'content_related', ...(name !== '' ? (['extend_rc_set'] as const) : []));
+  const t = tablesFor(tx.schema);
+  const p = new SqlParams();
+  const linked = idIn(p, 'tcr.contenthistid', cfList(args.contentHistId));
+  return run(
+    tx,
+    `SELECT tcr.relatedid, tcr.contentid, tcr.relatedcontentsetid, tcr.orderno FROM ${t.related} tcr` +
+      (name !== '' ? ` LEFT JOIN ${t.relatedContentSet} tcrs ON (tcr.relatedcontentsetid = tcrs.relatedcontentsetid)` : '') +
+      ` WHERE ${linked}${relatedSetFilter(p, setId, name)} ORDER BY tcr.relatedcontentid`,
+    p.values,
+  );
+}
+
+/** A row of `relatedCandidates` with the keys `mergeRelatedContent` orders it by beyond its legacy columns. */
+export interface RelatedCandidate {
+  row: RelatedContentRow;
+  /** The link's `orderno`, which a set or set-name read orders by. */
+  linkOrderNo: number | null;
+  created: Date | null;
+}
+
+type RelatedCandidateQueryRow = RelatedContentRow & { relatedlinkorderno: number | null; relatedcreated: Date | null };
+
+/**
+ * contentGateway.getRelatedContent in this tenant, each row with its merge keys. `links` from `relatedLinks` make a
+ * forward read join them to this tenant's content instead of reading this tenant's links.
+ */
+export async function relatedCandidates(
+  tx: TenantTx,
+  args: RelatedContentArgs & { links?: readonly RelatedLinkRow[] },
+): Promise<RelatedCandidate[]> {
+  const reverse = args.reverse === true;
+  const { links } = args;
+  if (links !== undefined && reverse) {
+    throw new TypeError('relatedCandidates takes links only for a forward read');
+  }
+  const { setId, name, order } = relatedSort(args);
+  if (links !== undefined && links.length === 0) {
+    return [];
+  }
+  await readable(
+    tx,
+    'content',
+    'file',
+    ...(links === undefined ? (['content_related'] as const) : []),
+    ...(links === undefined && name !== '' ? (['extend_rc_set'] as const) : []),
+  );
   const t = tablesFor(tx.schema);
   const p = new SqlParams();
   const pool = args.contentPoolSiteIds ?? [args.siteId];
   const nowAdjusted = timespanInterval(args.today);
-  const link = reverse ? '(tcontent.contenthistid = tcr.contenthistid)' : '(tcontent.contentid = tcr.relatedid)';
-  const linked = reverse ? idIn(p, 'tcr.relatedid', cfList(args.reverseContentId)) : idIn(p, 'tcr.contenthistid', cfList(args.contentHistId));
-  let set = '';
-  if (name !== '') {
-    set = ` AND (${ciEq(p, 'tcrs.name', name)}${name.toLowerCase() === 'default' ? ' OR tcrs.name IS NULL' : ''})`;
-  } else if (setId !== '') {
-    set = ` AND (${idEq(p, 'tcr.relatedcontentsetid', setId)}${setId === SITE_TREE_MODULE_ID ? ' OR tcr.relatedcontentsetid IS NULL' : ''})`;
+  let join: string;
+  let linked = '';
+  if (links === undefined) {
+    const link = reverse ? '(tcontent.contenthistid = tcr.contenthistid)' : '(tcontent.contentid = tcr.relatedid)';
+    join =
+      ` INNER JOIN ${t.related} tcr ON ${link}` +
+      (name !== '' ? ` LEFT JOIN ${t.relatedContentSet} tcrs ON (tcr.relatedcontentsetid = tcrs.relatedcontentsetid)` : '');
+    linked =
+      (reverse ? idIn(p, 'tcr.relatedid', cfList(args.reverseContentId)) : idIn(p, 'tcr.contenthistid', cfList(args.contentHistId))) +
+      `${relatedSetFilter(p, setId, name)} AND `;
+  } else {
+    join =
+      ` INNER JOIN unnest(${p.add(links.map((l) => l.relatedid))}::bpchar[], ${p.add(links.map((l) => l.contentid))}::bpchar[],` +
+      ` ${p.add(links.map((l) => l.relatedcontentsetid))}::text[], ${p.add(links.map((l) => l.orderno))}::integer[])` +
+      ' AS tcr(relatedid, contentid, relatedcontentsetid, orderno) ON (tcontent.contentid = tcr.relatedid)';
   }
   const live =
     args.liveOnly === false
       ? ' AND tcontent.active = 1'
       : ` AND ${p.include(activeClause('tcontent', args.preview, { offset: p.next }))}` +
         ` AND ((tcontent.display = 2 AND ((tcontent.displaystart >= ${p.add(args.today)}` +
-        ` AND tcontent.parentid IN (SELECT tcalendar.contentid FROM ${t.content} tcalendar WHERE tcalendar.type = 'Calendar'` +
+        ` AND tcontent.parentid IN (SELECT tcalendar.contentid FROM ${t.content} tcalendar WHERE ${ciLiterals('tcalendar.type', ['Calendar'])}` +
         ` AND ${p.include(activeClause('tcalendar', args.preview, { offset: p.next }))} AND tcalendar.siteid = ANY(${p.add(pool)}::text[])))` +
         ` OR (tcontent.displaystart <= ${p.add(nowAdjusted)} AND (tcontent.displaystop >= ${p.add(nowAdjusted)}` +
         ' OR tcontent.displaystop IS NULL)))) OR (tcontent.display = 1))';
-  return run(
+  const rows = await run<RelatedCandidateQueryRow>(
     tx,
     'SELECT tcontent.title, tcontent.releasedate, tcontent.menutitle, tcontent.lastupdate, tcontent.lastupdatebyid, tcontent.summary,' +
       ' tcontent.filename, tcontent.type, tcontent.contentid, tcontent.target, tcontent.targetparams, tcontent.restricted,' +
       ' tcontent.restrictgroups, tcontent.displaystart, tcontent.displaystop, tcontent.orderno, tcontent.sortby, tcontent.sortdirection,' +
       ' tcontent.fileid, tcontent.credits, tcontent.remotesource, tcontent.remotesourceurl, tcontent.remoteurl, tcontent.subtype,' +
       ' tfiles.filesize, tfiles.fileext, tcontent.path, tcontent.siteid, tcontent.contenthistid, tcr.contentid AS relatedfromcontentid,' +
-      " tcr.relatedcontentsetid, tcontent.displayinterval, tcontent.display, ''::text AS parenttype" +
-      ` FROM ${t.content} tcontent LEFT JOIN ${t.file} tfiles ON (tcontent.fileid = tfiles.fileid)` +
-      ` INNER JOIN ${t.related} tcr ON ${link}` +
-      (name !== '' ? ` LEFT JOIN ${t.relatedContentSet} tcrs ON (tcr.relatedcontentsetid = tcrs.relatedcontentsetid)` : '') +
-      ` WHERE ${linked}${set} AND tcontent.siteid = ANY(${p.add(pool)}::text[])` +
+      " tcr.relatedcontentsetid, tcontent.displayinterval, tcontent.display, ''::text AS parenttype," +
+      ' tcr.orderno AS relatedlinkorderno, tcontent.created AS relatedcreated' +
+      ` FROM ${t.content} tcontent LEFT JOIN ${t.file} tfiles ON (tcontent.fileid = tfiles.fileid)${join}` +
+      ` WHERE ${linked}tcontent.siteid = ANY(${p.add(pool)}::text[])` +
       `${args.navOnly === true ? ' AND tcontent.isnav = 1' : ''}${live} AND ${mobileClause('tcontent', args.mobile)} ORDER BY ${order}`,
     p.values,
   );
+  return rows.map(({ relatedlinkorderno, relatedcreated, ...row }) => ({ row, linkOrderNo: relatedlinkorderno, created: relatedcreated }));
+}
+
+/**
+ * contentGateway.getRelatedContent for content entities in this tenant: the content a version relates to (or, with
+ * `reverse`, the versions relating to content), before the caller's interval expansion of live rows. File columns are
+ * null where the site's file pool is another tenant; the caller fills them with `fileJoinColumns` there. Over a
+ * content pool of several tenants, a forward read is `relatedLinks` in the versions' tenant, `relatedCandidates` with
+ * those links in each registered pool tenant, then `mergeRelatedContent`; a reverse read is `relatedCandidates` in
+ * each pool tenant, then `mergeRelatedContent`.
+ */
+export async function relatedContent(tx: TenantTx, args: RelatedContentArgs): Promise<RelatedContentRow[]> {
+  return (await relatedCandidates(tx, args)).map((candidate) => candidate.row);
+}
+
+/**
+ * Merges the `relatedCandidates` of every content-pool tenant, outer array in pool order, into getRelatedContent's
+ * ORDER BY as the database sorts it; ties keep pool order. Reads no table.
+ */
+export async function mergeRelatedContent(
+  tx: TenantTx,
+  args: RelatedContentArgs,
+  candidates: readonly (readonly RelatedCandidate[])[],
+): Promise<RelatedContentRow[]> {
+  const { order } = relatedSort(args);
+  const all = candidates.flat();
+  if (all.length <= 1) {
+    return all.map((candidate) => candidate.row);
+  }
+  const p = new SqlParams();
+  const keys = [
+    `${p.add(all.map((_, i) => i))}::integer[]`,
+    `${p.add(all.map((c) => c.row.orderno))}::integer[]`,
+    `${p.add(all.map((c) => c.linkOrderNo))}::integer[]`,
+    ...(['menutitle', 'title', 'type', 'subtype'] as const).map((key) => `${p.add(all.map((c) => c.row[key]))}::text[]`),
+    ...(['lastupdate', 'releasedate', 'displaystart', 'displaystop'] as const).map((key) => `${p.add(all.map((c) => c.row[key]))}::timestamp(3)[]`),
+    `${p.add(all.map((c) => c.created))}::timestamp(3)[]`,
+  ];
+  const rows = await run<{ i: number }>(
+    tx,
+    `SELECT tcontent.i FROM unnest(${keys.join(', ')}) AS tcontent(i, orderno, linkorderno, menutitle, title, type, subtype,` +
+      ' lastupdate, releasedate, displaystart, displaystop, created) CROSS JOIN LATERAL (SELECT tcontent.linkorderno AS orderno) tcr' +
+      ` ORDER BY ${order}, tcontent.i`,
+    p.values,
+  );
+  return rows.flatMap(({ i }) => {
+    const candidate = all[i];
+    return candidate === undefined ? [] : [candidate.row];
+  });
 }
 
 /** A version using a display object, as `getUsage` selects it. */
@@ -2589,7 +2883,7 @@ export async function tagCloud(
       (args.parentId !== undefined && args.parentId !== '' ? ` AND ${idEq(p, 'tcontent.parentid', args.parentId)}` : '') +
       (args.categoryIds !== undefined ? ` AND ${idIn(p, 'tcontentcategoryassign.categoryid', args.categoryIds)}` : '') +
       ` AND ${group} AND (tcontent.display = 1 OR (tcontent.display = 2 AND ((tcontent.displaystart <= ${p.add(args.today)}` +
-      ` AND (tcontent.displaystop >= ${p.add(args.today)} OR tcontent.displaystop IS NULL))${siteTree ? " OR tparent.type = 'Calendar'" : ''})))` +
+      ` AND (tcontent.displaystop >= ${p.add(args.today)} OR tcontent.displaystop IS NULL))${siteTree ? ` OR ${ciLiterals('tparent.type', ['Calendar'])}` : ''})))` +
       ` AND ${mobileClause('tcontent', args.mobile)}` +
       ' GROUP BY lower(rtrim(tcontenttags.tag)) ORDER BY lower(rtrim(tcontenttags.tag))',
     p.values,

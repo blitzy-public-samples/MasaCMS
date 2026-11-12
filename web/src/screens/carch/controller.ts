@@ -1,7 +1,14 @@
 // The carch controller's before(): the Site Manager module gate and the rc and session defaults every cArch action reads.
+import { isDeepStrictEqual } from 'node:util';
 import { cfEq, cfToBoolean, cfUuid } from '@opt2/platform/legacy-compat';
 import type { GateDecision, ScreenGate } from '@/lib/access-gate';
-import { applyDefaults, type AdminRequest, type RequestContext } from '@/lib/request-context';
+import {
+  applyDefaults,
+  withSessionMuraValue,
+  type AdminRequest,
+  type AdminSessionWrites,
+  type RequestContext,
+} from '@/lib/request-context';
 import type { ScreenOwner } from '../registry';
 import { CARCH_SESSION_MODULE_IDS, CONTENT_MODULE_ID, SESSION_TOP_IDS } from './model';
 
@@ -136,10 +143,17 @@ function syncModuleId(rc: RcDraft, sessionModuleId: string): string {
   return moduleId;
 }
 
-/** `session['m<moduleId>'].topid` as before() defaults it; the 36-character id has none, so its lookup fails as in ACF. */
-function sessionTopId(moduleId: string): string {
+/** The session module tops with before()'s default added for each `m<moduleid>` key the session lacks. */
+function moduleTopsWithDefaults(stored: Readonly<Record<string, string>>): Record<string, string> {
+  const tops = { ...stored };
+  for (const [key, topId] of Object.entries(SESSION_TOP_IDS)) if (!Object.hasOwn(tops, key)) tops[key] = topId;
+  return tops;
+}
+
+/** `session['m<moduleId>'].topid`, failing as ACF does when the session holds none for the module. */
+function sessionTopId(tops: Readonly<Record<string, string>>, moduleId: string): string {
   const key = `m${moduleId}`;
-  const topId = SESSION_TOP_IDS[key];
+  const topId = tops[key];
   if (topId === undefined) {
     throw new TypeError(
       `Element ${key.toUpperCase()} is undefined in a Java object of type class coldfusion.runtime.MemorySessionScope.`,
@@ -150,7 +164,8 @@ function sessionTopId(moduleId: string): string {
 
 /**
  * The request as carch before() leaves it: rc defaults where a key is absent, the synced module id and topid, and the
- * `session.moduleid` write queued in `sessionWrites`. Screens use the returned request in place of `req`.
+ * changed `session.mura.objectInstanceId`, `session.moduleid` and module tops queued in `sessionWrites`. Screens use
+ * the returned request in place of `req`.
  * @throws TypeError For an rc flag CFML cannot read as a boolean, or a module whose session topid is undefined.
  */
 export function applyCarchDefaults(req: AdminRequest): AdminRequest {
@@ -158,27 +173,35 @@ export function applyCarchDefaults(req: AdminRequest): AdminRequest {
   const rc = new RcDraft(applyDefaults(req.rc));
   const ajaxRequest = rc.param('ajaxrequest', 'false');
   rc.param('moduleid', CONTENT_MODULE_ID);
-  rc.param('instanceid', '');
+  const instanceId = rc.param('instanceid', '');
   if (cfToBoolean(ajaxRequest)) return { ...req, rc: rc.toContext() };
 
   rc.paramAll(pageDefaults());
   if (!cfToBoolean(rc.param('ommitPublishingTab', 'false'))) rc.paramAll(PUBLISHING_TAB_DEFAULTS);
   if (!cfToBoolean(rc.param('ommitAdvancedTab', 'false'))) rc.paramAll(ADVANCED_TAB_DEFAULTS);
   if (!cfToBoolean(rc.param('ommitRelatedContentTab', 'false'))) rc.paramAll(RELATED_CONTENT_TAB_DEFAULTS);
+  const user = instanceId === '' ? req.session : withSessionMuraValue(req.session, 'objectInstanceId', instanceId);
   rc.paramAll(TRAILING_DEFAULTS);
 
-  // Only session.moduleid is kept. session.keywords is always defined by the request set-up; session.mura
-  // (objectInstanceId, viewDepth, nextN) is identity's user struct, which admin session writes exclude; and the admin
-  // session store has no session['m<moduleid>'] key, so a module's topid is not remembered between requests.
+  // session.mura.viewDepth and nextN stay unset: the served shell site carries no ViewDepth or NextN.
+  // session.keywords is always defined by the request set-up.
   const moduleId = syncModuleId(rc, req.session.moduleid);
-  const topId = rc.get('topid');
-  if (topId === undefined || topId === '') rc.set('topid', sessionTopId(moduleId));
+  const tops = moduleTopsWithDefaults(req.session.moduleTopIds);
+  const requestedTopId = rc.get('topid');
+  const topId = requestedTopId === undefined || requestedTopId === '' ? sessionTopId(tops, moduleId) : requestedTopId;
+  rc.set('topid', topId);
+  tops[`m${moduleId}`] = topId;
 
-  if (moduleId === req.session.moduleid) return { ...req, rc: rc.toContext() };
+  const writes: AdminSessionWrites = {
+    ...(user.muraValues === req.session.muraValues ? {} : { muraValues: user.muraValues }),
+    ...(moduleId === req.session.moduleid ? {} : { moduleid: moduleId }),
+    ...(isDeepStrictEqual(tops, req.session.moduleTopIds) ? {} : { moduleTopIds: tops }),
+  };
+  if (Object.keys(writes).length === 0) return { ...req, rc: rc.toContext() };
   return {
     ...req,
     rc: rc.toContext(),
-    session: { ...req.session, moduleid: moduleId },
-    sessionWrites: { ...req.sessionWrites, moduleid: moduleId },
+    session: { ...req.session, moduleid: moduleId, moduleTopIds: tops, mura: user.mura, muraValues: user.muraValues },
+    sessionWrites: { ...req.sessionWrites, ...writes },
   };
 }

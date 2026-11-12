@@ -57,7 +57,7 @@ function loginMail(message: MessageRow, to: string, fromEmail: string): Outgoing
 export function applyLoginMail(deps: MailDeps): ConsumerDefinition<IdentityLoginMailRequestedV1Payload>['apply'] {
   return async (tx, envelope) => {
     const { payload } = envelope;
-    // An outbox replay carries a new eventId for a message an earlier event already stored.
+    // A distinct event naming an already-stored messageId stores and sends nothing.
     if ((await findMessage(tx, payload.messageId)) !== null) {
       return;
     }

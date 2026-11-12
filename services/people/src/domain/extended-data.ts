@@ -21,6 +21,7 @@ import {
 } from '@opt2/platform/legacy-compat';
 import type { ExtendDataReplacement, ExtendDataValues, PeopleRepository } from '../repo/repository.js';
 import type { ExtendAttributeRow, ExtendDataRow, ExtendSetRow, ExtendSubtypeRow } from '../repo/tables.js';
+import { EN_PEOPLE_MESSAGES, enPeopleMessages, type PeopleMessageKey, type PeopleMessages } from './messages.js';
 
 /** The configBean settings the extended-data operations read. */
 export interface ExtendConfig {
@@ -40,9 +41,9 @@ export const EXTEND_CONFIG_DEFAULTS: Readonly<ExtendConfig> = Object.freeze({
 
 /** English texts of the `params.error*` keys validateExtendedData formats (en.properties:829-831). */
 export const EXTEND_MESSAGES = Object.freeze({
-  errordate: '{1} must be a valid date.',
-  erroremail: '{1} must be a valid email.',
-  errornumeric: '{1} must be numeric.',
+  errordate: EN_PEOPLE_MESSAGES['params.errordate'],
+  erroremail: EN_PEOPLE_MESSAGES['params.erroremail'],
+  errornumeric: EN_PEOPLE_MESSAGES['params.errornumeric'],
 });
 
 /** One `tclassextendattributes` row as the validate and save queries select it; NULL columns read as ''. */
@@ -310,10 +311,10 @@ export async function loadSubmittedAttributes(
 ): Promise<ExtendedAttribute[]> {
   const setIds = cfList(extendSetIds);
   if (setIds.length === 0) return [];
-  // Read unfiltered and matched here: SQL Server compares the inlined ids and the site case-insensitively.
-  const rows = await repo.listExtendAttributes(tx, {});
+  // The repository matches the inlined ids and the site as SQL Server does.
+  const rows = await repo.listExtendAttributes(tx, opts.forSave ? { setIds, siteId } : { setIds });
   return rows
-    .filter((row) => row.type !== null && setIds.some((id) => sqlEq(row.extendsetid, id)) && (!opts.forSave || sqlEq(row.siteid, siteId)))
+    .filter((row) => row.type !== null)
     .sort((a, b) => a.attributeid - b.attributeid)
     .map(toExtendedAttribute);
 }
@@ -331,19 +332,22 @@ export async function extendSetData(
 ): Promise<ExtendSetData> {
   const siteId = scope?.siteId ?? '';
   const stored = await repo.listExtendData(tx, [baseId]);
-  const attributes = await repo.listExtendAttributes(tx, {});
+  const attributeIds = [...new Set(stored.map((row) => row.attributeid))];
+  // The inner join on attributeID, with the site predicate only when the bean has a site.
+  const attributes =
+    attributeIds.length === 0 ? [] : await repo.listExtendAttributes(tx, siteId === '' ? { attributeIds } : { attributeIds, siteId });
   const byId = new Map(attributes.map((attribute) => [attribute.attributeid, attribute]));
   const rows: { name: string; extendSetId: string; value: ExtendValue }[] = [];
   const storedIds = new Set<number>();
   for (const row of stored) {
     const attribute = byId.get(row.attributeid);
-    if (attribute === undefined || (siteId !== '' && !sqlEq(attribute.siteid, siteId))) continue;
+    if (attribute === undefined) continue;
     if (!config.saveEmptyExtendedValues && row.attributevalue === null) continue;
     storedIds.add(row.attributeid);
     rows.push({ name: attribute.name ?? '', extendSetId: attribute.extendsetid ?? '', value: storedValue(row, attribute) });
   }
   if (scope !== undefined && siteId !== '' && scope.type !== '' && scope.subtype !== '') {
-    for (const { set, attribute } of await definitionRows(repo, tx, scope, attributes)) {
+    for (const { set, attribute } of await definitionRows(repo, tx, scope)) {
       if (storedIds.has(attribute.attributeid)) continue;
       rows.push({ name: attribute.name ?? '', extendSetId: set.extendsetid, value: dynamicDefault(attribute.defaultvalue) });
     }
@@ -366,7 +370,6 @@ async function definitionRows(
   repo: PeopleRepository,
   tx: TenantTx,
   scope: ExtendDataScope,
-  attributes: readonly ExtendAttributeRow[],
 ): Promise<{ subtype: ExtendSubtypeRow; set: ExtendSetRow; attribute: ExtendAttributeRow }[]> {
   const withBase = !NON_BASE_TYPES.includes(scope.type.toLowerCase());
   const ownSubtype = scope.subtype.toLowerCase() !== 'default';
@@ -376,6 +379,7 @@ async function definitionRows(
       (row.type === scope.type || (withBase && row.type === 'Base')) && ((ownSubtype && row.subtype === scope.subtype) || row.subtype === 'Default'),
   );
   const sets = await repo.listExtendSets(tx, subtypes.map((row) => row.subtypeid));
+  const attributes = sets.length === 0 ? [] : await repo.listExtendAttributes(tx, { setIds: sets.map((row) => row.extendsetid) });
   const joined: { rank: number; subtype: ExtendSubtypeRow; set: ExtendSetRow; attribute: ExtendAttributeRow }[] = [];
   // listExtendSubtypes already returns type then subtype order, so a subtype's position stands for those two keys.
   for (const [rank, subtype] of subtypes.entries()) {
@@ -405,14 +409,17 @@ export function castColumnFor(attribute: Pick<ExtendedAttribute, 'validation'>, 
 
 /**
  * validateExtendedData (extendManager.cfc:362-437) for the non-File attributes of the input's `extendsetid`; `input`
- * is keyed by lower-cased names. Only non-empty values are checked; error keys follow CFML struct casing.
+ * is keyed by lower-cased names. Only non-empty values are checked; error keys follow CFML struct casing. `rb` gives
+ * the default error texts of the input's `siteid` bundle.
  */
 export function validateExtendedData(
   attributes: readonly ExtendedAttribute[],
   input: ReadonlyMap<string, unknown>,
   config: Pick<ExtendConfig, 'stricthtml' | 'stricthtmlexclude'>,
   locale: string = DEFAULT_LOCALE,
+  rb: PeopleMessages = enPeopleMessages,
 ): Record<string, string> {
+  const siteId = cfText(lookup(input, 'siteid') ?? '');
   const errors: Record<string, string> = {};
   const spellings = new Map<string, string>();
   const setIds = submittedSetIds(input);
@@ -422,18 +429,18 @@ export function validateExtendedData(
     const value = postedValue(attribute, input);
     if (value === undefined || cfText(value) === '') continue;
     const validation = attribute.validation.toLowerCase();
-    let failed: keyof typeof EXTEND_MESSAGES | undefined;
+    let failed: PeopleMessageKey | undefined;
     if (DATE_VALIDATIONS.has(validation)) {
-      if (!isDateValue(value, locale)) failed = 'errordate';
+      if (!isDateValue(value, locale)) failed = 'params.errordate';
     } else if (validation === 'numeric') {
-      if (!cfIsNumeric(value)) failed = 'errornumeric';
+      if (!cfIsNumeric(value)) failed = 'params.errornumeric';
     } else if (validation === 'email') {
-      if (!EMAIL.test(javaTrim(cfText(value)))) failed = 'erroremail';
+      if (!EMAIL.test(javaTrim(cfText(value)))) failed = 'params.erroremail';
     } else if (config.stricthtml && !sqlEq(attribute.type, 'HTMLEditor') && !excluded.includes(attribute.name) && HTML_TAG.test(cfText(value))) {
       setCi(errors, spellings, `${attribute.name}encoding`, `The field '${attribute.name}' contains invalid characters.`);
     }
     if (failed !== undefined) {
-      const message = attribute.message !== '' ? attribute.message : messageFormat(EXTEND_MESSAGES[failed], attribute.name.toUpperCase());
+      const message = attribute.message !== '' ? attribute.message : messageFormat(rb(siteId, failed), attribute.name.toUpperCase());
       setCi(errors, spellings, attribute.name, message);
     }
   }

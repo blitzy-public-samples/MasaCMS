@@ -38,10 +38,11 @@ export {
   nativeTasksDigest,
   defaultNativeTasksFile,
   importNativeTasks,
+  importSchedulerRequest,
   importSchedulerState,
   SchedulerImportError,
 } from './import.js';
-export type { NativeTasksFile, SchedulerImportResult } from './import.js';
+export type { NativeTasksFile, SchedulerImportRequest, SchedulerImportResult } from './import.js';
 
 export {
   createSchedulerService,

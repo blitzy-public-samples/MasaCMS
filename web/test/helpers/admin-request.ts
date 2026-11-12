@@ -22,10 +22,12 @@ import {
   nextSessionSite,
   requestScopes,
   resolveAction,
+  withSessionMuraValue,
   type AdminMode,
   type AdminRequest,
   type AdminRequestInput,
   type AdminSessionState,
+  type SessionMura,
   type SiteData,
 } from '@/lib/request-context';
 import { fakeGatewayClient, routeKey, type FakeGatewayClient, type FakeReply } from './fake-gateway';
@@ -350,18 +352,27 @@ export function makeAdminRequest(
       frontEndProxyLoc: '',
       siteArray: listsSites(flags) ? [change.siteid] : [],
       mura: sessionUserOf(user, flags),
+      muraValues: {},
+      hasDefaultPassword: false,
+      moduleTopIds: {},
       flash: {},
       nextPreserveKey: 1,
     },
     sessionOverrides,
   );
+  // The builder lays the stored post-login values over identity's user struct.
+  const { mura } = Object.entries(stored.muraValues).reduce<SessionMura>(
+    (current, [name, value]) => withSessionMuraValue(current, name, value),
+    { mura: stored.mura, muraValues: {} },
+  );
   const dateKey = dateKeyFor(stored.locale);
   const session: AdminSessionState = {
     ...stored,
+    mura,
     dateKey,
     dateKeyFormat: dateKey.dateKeyFormat,
     localeHasDayParts: localeHasDayParts(stored.locale),
-    s2IsPrivate: (stored.mura.memberships ?? '').split(',').includes('S2IsPrivate'),
+    s2IsPrivate: (mura.memberships ?? '').split(',').includes('S2IsPrivate'),
   };
 
   // FW/1 replaces rc.muraAction with the qualified action before the admin set-up runs (admin/framework.cfc 626-630).
@@ -449,8 +460,12 @@ export interface TestAdminRequestInput {
   readonly user?: WebTestSubjectKey;
   /** Gateway to seed; routes it already holds are kept. */
   readonly gateway?: FakeGatewayClient;
-  /** Identity's session state: user-struct fields and the administered site ids. */
-  readonly sessionState?: { readonly mura?: Partial<SessionUser>; readonly siteArray?: readonly string[] };
+  /** Identity's session state: user-struct fields, the administered site ids and the stored admin state. */
+  readonly sessionState?: {
+    readonly mura?: Partial<SessionUser>;
+    readonly siteArray?: readonly string[];
+    readonly adminState?: Readonly<Record<string, unknown>>;
+  };
   /** Columns laid over the `tsettings` row of the requested site. */
   readonly site?: Partial<SiteRecord>;
   /** Headers laid over the default browser headers. */
@@ -499,7 +514,7 @@ export async function buildTestAdminRequest(input: TestAdminRequestInput): Promi
       },
     },
     [SESSION_SITES_ROUTE]: { status: 200, body: { sites: siteArray.map(sessionSiteOf) } },
-    [ADMIN_STATE_ROUTE]: { status: 200, body: {} },
+    [ADMIN_STATE_ROUTE]: { status: 200, body: input.sessionState?.adminState ?? {} },
     [HREF_DOMAINS_ROUTE]: { status: 200, body: TEST_HREF_DOMAINS },
   };
   for (const id of new Set([siteId, user?.site ?? 'default', 'default'])) {

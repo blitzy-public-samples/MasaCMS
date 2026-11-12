@@ -166,6 +166,36 @@ describe('session pool markers', () => {
   });
 });
 
+describe('stored admin state', () => {
+  const moduleTopIds = { m00000000000000000000000000000000000: 'C1' };
+  const muraValues = { FNAME: 'Adele', objectInstanceId: 'I1' };
+  const sessionOf = ({ session }: AdminRequest) => ({
+    mura: session.mura,
+    muraValues: session.muraValues,
+    moduleTopIds: session.moduleTopIds,
+    hasDefaultPassword: session.hasDefaultPassword,
+  });
+
+  it.each<[string, Readonly<Record<string, unknown>> | undefined, AdminRequestPartial['session']]>([
+    ['nothing stored', undefined, {}],
+    [
+      'stored post-login values, module tops and the default-password flag',
+      { hasdefaultpassword: true, moduleTopIds, mura: muraValues },
+      { muraValues, moduleTopIds, hasDefaultPassword: true },
+    ],
+  ])('gives makeAdminRequest the session the real builder reads from %s', async (_label, adminState, session) => {
+    const built = await buildTestAdminRequest({
+      circuit: 'carch',
+      action: 'list',
+      user: 'admin',
+      sessionState: { mura: { fname: 'Ada' }, adminState },
+    });
+    const made = makeAdminRequest({ circuit: 'carch', item: 'list', session: { ...session, mura: { fname: 'Ada' } } }, 'admin');
+
+    expect(sessionOf(made)).toEqual(sessionOf(built));
+  });
+});
+
 describe('application gate over the pool markers', () => {
   const usersList = { circuit: 'cusers', item: 'list', session: { siteArray: [] } } as const;
   const PRIVATE = { s2IsPrivate: true } as const;
