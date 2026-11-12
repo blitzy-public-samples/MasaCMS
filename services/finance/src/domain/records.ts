@@ -17,6 +17,7 @@ import {
   listVersions as queryVersions,
   type Page,
   type PeriodScope,
+  type RecordFilter,
   type RecordPage,
   type RecordPaging,
 } from '../repo/queries.js';
@@ -178,9 +179,9 @@ export async function getRecord(tx: TenantTx, id: string): Promise<FinanceRecord
   return record;
 }
 
-/** One page of the tenant's records in fixture order, with the total count. */
-export function listRecords(tx: TenantTx, paging: RecordPaging): Promise<RecordPage> {
-  return queryRecordPage(tx, paging);
+/** One page of the tenant's records matching `filter` in fixture order, with the count of all matches. */
+export function listRecords(tx: TenantTx, paging: RecordPaging, filter: RecordFilter = {}): Promise<RecordPage> {
+  return queryRecordPage(tx, paging, filter);
 }
 
 /** One page of record `recordId`'s version rows by version, with their total; throws `notFound` when the record is missing. */

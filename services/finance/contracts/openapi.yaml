@@ -13,6 +13,8 @@ tags:
     description: Fixture routes, answered byte-shaped like `legacy-fixtures/cfml/modules/finance.cfc`.
   - name: v1
     description: JSON API of the OPT-2 finance screens; a breaking change takes a /v2/ prefix.
+  - name: v2
+    description: Paged reads of the OPT-2 finance screens, each list answered with the count of all its rows.
   - name: internal
     description: Local file, push-delivery, migration and health routes.
 security:
@@ -302,13 +304,14 @@ paths:
   /v1/finance/records:
     get:
       operationId: listRecords
-      summary: Lists the tenant's finance records for the record list screen.
+      summary: Lists the tenant's finance records for the record list screen and reporting exports.
       tags:
         - v1
       x-opt2-transport: service
       x-opt2-requires:
         - finance.preparer
         - finance.approver
+        - reporting.exporter
       parameters:
         - name: state
           in: query
@@ -647,6 +650,185 @@ paths:
           $ref: '#/components/responses/FixtureServerError'
         '503':
           $ref: '#/components/responses/LegacyUnavailable503'
+  /v2/finance/records/{id}:
+    parameters:
+      - $ref: '#/components/parameters/RecordId'
+    get:
+      operationId: getRecordV2
+      summary: Reads one record with the first page of its version history and of its attachment metadata.
+      tags:
+        - v2
+      x-opt2-transport: service
+      x-opt2-requires:
+        - finance.preparer
+        - finance.approver
+      responses:
+        '200':
+          description: The record detail with the count of its versions and of its attachments.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                additionalProperties: false
+                properties:
+                  data:
+                    $ref: '#/components/schemas/FinanceRecordDetailPage'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /v2/finance/records/{id}/versions:
+    parameters:
+      - $ref: '#/components/parameters/RecordId'
+    get:
+      operationId: listRecordVersionsV2
+      summary: Lists one page of a record's version rows in version order.
+      tags:
+        - v2
+      x-opt2-transport: service
+      x-opt2-requires:
+        - finance.preparer
+        - finance.approver
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: One page of the record's versions and the count of all of them.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - total
+                additionalProperties: false
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FinanceRecordVersion'
+                  total:
+                    type: integer
+                    minimum: 0
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /v2/finance/records/{id}/attachments:
+    parameters:
+      - $ref: '#/components/parameters/RecordId'
+    get:
+      operationId: listRecordAttachmentsV2
+      summary: Lists one page of a record's attachment metadata, without content.
+      tags:
+        - v2
+      x-opt2-transport: service
+      x-opt2-requires:
+        - finance.preparer
+        - finance.approver
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: One page of the record's attachments and the count of all of them.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - total
+                additionalProperties: false
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FinanceAttachment'
+                  total:
+                    type: integer
+                    minimum: 0
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+  /v2/finance/rollups:
+    get:
+      operationId: listRollupsV2
+      summary: Lists one page of the tenant's record count and total amount per period and state.
+      tags:
+        - v2
+      x-opt2-transport: service
+      x-opt2-requires:
+        - finance.preparer
+        - finance.approver
+      parameters:
+        - name: asOf
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+            examples:
+              - '2026-06-30'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: One page of the rollup rows ordered by period, then state, and the count of all of them.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - total
+                additionalProperties: false
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FinanceRollup'
+                  total:
+                    type: integer
+                    minimum: 0
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
 
   /opt2/files/finance-attachments/{tenantId}/{objectName}:
     parameters:
@@ -818,6 +1000,13 @@ paths:
           schema:
             type: string
             minLength: 1
+        - name: match
+          in: query
+          required: false
+          description: JSON object of legacy column to values; rows matching any entry, compared as SQL Server does. The owner may return more rows.
+          schema:
+            type: string
+            maxLength: 4096
         - $ref: '#/components/parameters/PageLimit'
       responses:
         '200':
@@ -1133,6 +1322,25 @@ components:
       name: itemsPerPage
       in: query
       required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 50
+    Page:
+      name: page
+      in: query
+      required: false
+      description: Page of a `/v2` list, from 1.
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: pageSize
+      in: query
+      required: false
+      description: Rows per page of a `/v2` list.
       schema:
         type: integer
         minimum: 1
@@ -1788,6 +1996,34 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/FinanceAttachment'
+      unevaluatedProperties: false
+    FinanceRecordDetailPage:
+      description: A record with the first page of its versions and of its attachment metadata, and the count of each.
+      allOf:
+        - $ref: '#/components/schemas/FinanceRecordFields'
+        - type: object
+          required:
+            - versions
+            - versions_total
+            - attachments
+            - attachments_total
+          properties:
+            versions:
+              type: array
+              maxItems: 50
+              items:
+                $ref: '#/components/schemas/FinanceRecordVersion'
+            versions_total:
+              type: integer
+              minimum: 0
+            attachments:
+              type: array
+              maxItems: 50
+              items:
+                $ref: '#/components/schemas/FinanceAttachment'
+            attachments_total:
+              type: integer
+              minimum: 0
       unevaluatedProperties: false
     FinanceRecordVersion:
       type: object

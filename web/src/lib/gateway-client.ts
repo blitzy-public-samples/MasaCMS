@@ -1,4 +1,6 @@
 // Web's only data path: service calls relayed by the gateway under GATEWAY_SERVICE_PREFIX (server-only).
+import { Readable } from 'node:stream';
+import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
 import type { InvocationMinter } from '@opt2/platform/auth';
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import {
@@ -87,18 +89,30 @@ export interface GatewayRequest {
   readonly json?: unknown;
   /** Body sent as `application/x-www-form-urlencoded`, fields in the given order; takes precedence over `body`. */
   readonly form?: FormInput;
-  /** Raw body; the caller sets its content type in `headers`. */
-  readonly body?: Buffer | string;
+  /** Raw body; the caller sets its content type in `headers`, and a stream's content-length, else it is chunked. */
+  readonly body?: Buffer | string | Readable;
   readonly headers?: Readonly<Record<string, string>>;
 }
 
 /** Query and headers of the convenience calls. */
 export type GatewayRequestOptions = Pick<GatewayRequest, 'query' | 'headers'>;
 
+/** A body of known size that streams from its start on every `stream()` call; a `Blob` is one. */
+export interface ReplayableBody {
+  readonly size: number;
+  stream(): ReadableStream<Uint8Array>;
+}
+
 /** A multipart body relayed with its original `content-type`, boundary included. */
 export interface MultipartBody {
   readonly contentType: string;
-  readonly body: ReadableStream<Uint8Array> | Blob | ArrayBuffer | Uint8Array;
+  readonly body: ReadableStream<Uint8Array> | Blob | ArrayBuffer | Uint8Array | ReplayableBody;
+}
+
+/** The request body and headers that relay a multipart body. */
+export interface MultipartRelay {
+  readonly body: Buffer | Readable;
+  readonly headers: Readonly<Record<string, string>>;
 }
 
 /** The gateway's answer with every status, headers and body as relayed. */
@@ -391,7 +405,7 @@ export type OperationInput<Op> = PathInputOf<Op> &
   QueryInputOf<Op> & {
     readonly json?: JsonBodyOf<Op>;
     readonly form?: FormInput;
-    readonly body?: Buffer | string;
+    readonly body?: GatewayRequest['body'];
     readonly headers?: Readonly<Record<string, string>>;
   };
 
@@ -513,7 +527,7 @@ interface UntypedInput {
   readonly query?: QueryInput;
   readonly json?: unknown;
   readonly form?: FormInput;
-  readonly body?: Buffer | string;
+  readonly body?: GatewayRequest['body'];
   readonly headers?: Readonly<Record<string, string>>;
 }
 
@@ -569,9 +583,18 @@ function programsSitesFacade(core: CoreCalls): ProgramsSitesFacade {
   };
 }
 
-// Buffered, not streamed: the platform client sends only Buffer or string bodies.
-async function bytesOf(body: MultipartBody['body']): Promise<Buffer> {
-  return body instanceof Uint8Array ? Buffer.from(body) : Buffer.from(await new Response(body).arrayBuffer());
+// The DOM and node:stream/web declare the same global ReadableStream separately.
+const readableOf = (stream: ReadableStream<Uint8Array>): Readable =>
+  Readable.fromWeb(stream as NodeReadableStream<Uint8Array>);
+
+/** The unbuffered relay of `multipart`: bytes as a Buffer view, a sized body with its length, a bare stream chunked. */
+export function multipartRelay(multipart: MultipartBody): MultipartRelay {
+  const { contentType, body } = multipart;
+  const headers = { 'content-type': contentType };
+  if (body instanceof Uint8Array) return { body: Buffer.from(body.buffer, body.byteOffset, body.byteLength), headers };
+  if (body instanceof ArrayBuffer) return { body: Buffer.from(body), headers };
+  if (body instanceof ReadableStream) return { body: readableOf(body), headers };
+  return { body: readableOf(body.stream()), headers: { ...headers, 'content-length': String(body.size) } };
 }
 
 /** The service calls of one web request (user token, request id, trace context), over `serviceClient` when given. */
@@ -585,14 +608,16 @@ export function createGatewayClient(ctx: GatewayCallContext, serviceClient?: Ser
     get: (service, path, options = {}) => core.call(service, { ...options, method: 'GET', path }),
     post: (service, path, json, options = {}) => core.call(service, { ...options, method: 'POST', path, json }),
     postForm: (service, path, form, options = {}) => core.call(service, { ...options, method: 'POST', path, form }),
-    postMultipart: async (service, path, multipart, options = {}) =>
-      core.call(service, {
+    postMultipart: async (service, path, multipart, options = {}) => {
+      const relay = multipartRelay(multipart);
+      return core.call(service, {
         ...options,
         method: 'POST',
         path,
-        headers: { ...options.headers, 'content-type': multipart.contentType },
-        body: await bytesOf(multipart.body),
-      }),
+        headers: { ...options.headers, ...relay.headers },
+        body: relay.body,
+      });
+    },
     identity: identityFacade(core),
     people: serviceFacade(core, 'people'),
     programsSites: programsSitesFacade(core),

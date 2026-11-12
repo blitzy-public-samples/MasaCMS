@@ -105,12 +105,12 @@ describe('createOwnersClient', () => {
   it.each<RouteCase>([
     {
       name: 'export sends every parameter as query text',
-      call: (owners) => owners.export('people', { unit: UNIT, tenantId: TENANT, programId: 2, after: 'k1', limit: 500 }),
+      call: (owners) => owners.export('people', { unit: UNIT, tenantId: TENANT, programId: 2, after: 'k1', match: { siteID: ['tenant-a'], Type: [2] }, limit: 500 }),
       request: {
         service: 'people',
         method: 'GET',
         path: '/internal/v1/migration/export',
-        query: { unit: UNIT, tenantId: TENANT, programId: '2', after: 'k1', limit: '500' },
+        query: { unit: UNIT, tenantId: TENANT, programId: '2', after: 'k1', match: '{"siteID":["tenant-a"],"Type":[2]}', limit: '500' },
         userToken: null,
       },
       answer: exportPage('k2'),
@@ -272,14 +272,16 @@ describe('createOwnersClient', () => {
     const read: ExportResponse[] = [];
     const requestsAtEachPage: number[] = [];
 
-    for await (const page of owners.exportPages('people', { unit: UNIT, tenantId: TENANT, after, limit: 2 })) {
+    for await (const page of owners.exportPages('people', { unit: UNIT, tenantId: TENANT, after, match: { siteID: ['tenant-a'] }, limit: 2 })) {
       read.push(page);
       requestsAtEachPage.push(calls.length);
     }
 
     expect(read).toEqual(pages);
     expect(requestsAtEachPage).toEqual([1, 2, 3]);
-    expect(calls.map((call) => call.query)).toEqual([after, 'k1', 'k2'].map((cursor) => ({ unit: UNIT, tenantId: TENANT, after: cursor, limit: '2' })));
+    expect(calls.map((call) => call.query)).toEqual(
+      [after, 'k1', 'k2'].map((cursor) => ({ unit: UNIT, tenantId: TENANT, after: cursor, match: '{"siteID":["tenant-a"]}', limit: '2' })),
+    );
   });
 
   it.each<[string, WatermarkRecord[], WatermarkRecord | null]>([

@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 
 import {
   LEGACY_PROGRAM_ID_COLUMN,
+  MAX_EXPORT_MATCH_LENGTH,
   decodeRow,
   encodeKey,
   encodeRow,
@@ -35,14 +36,14 @@ import {
   rowInScope,
   streamLegacyTable,
   type CanonicalRow,
+  type CatalogColumn,
   type ExtractScope,
-  type LegacyTableRef,
   type ScopeFilter,
 } from '../extract/index.js';
 import { SUPPORTED_FILE_STORE, objectKey, parseStoredName, storePath, type StoredName } from '../files/index.js';
 import type { components } from '../generated/openapi.js';
 import { UnsupportedFileStoreError, quoteIdent, type LegacyDb, type LegacyFileEntry } from '../legacy/index.js';
-import { OwnerCallError, type DataOwner, type LegacyTableTarget, type Unit, type UnitCatalog } from '../owners/index.js';
+import { OwnerCallError, type DataOwner, type ExportParams, type LegacyTableTarget, type Unit, type UnitCatalog } from '../owners/index.js';
 import { FILE_OBJECT_UNIT } from '../reverse/files.js';
 
 /** `windowOpen`'s scope: the writers' keyScope values, or the whole table. */
@@ -109,7 +110,7 @@ const PROGRAM_COLUMN: CanonicalColumn = Object.freeze({ name: LEGACY_PROGRAM_ID_
 const LIVE_SITES_SQL = 'SELECT [SiteID], [filePoolID] FROM [dbo].[tsettings]';
 const PROGRAM_SITES_SQL = 'SELECT [program_id], [siteID] FROM [synthetic].[program_site]';
 // The image columns stay unread: only ownership and the parts of each object's content type are needed.
-const LIVE_FILES_SQL = 'SELECT [fileID], [siteID], [contentType], [contentSubType], [fileExt] FROM [dbo].[tfiles]';
+const LIVE_FILE_COLUMNS = ['siteID', 'contentType', 'contentSubType', 'fileExt'];
 const FILES_TABLE = 'tfiles';
 const FILES_TENANT_SOURCE: TenantSource = { kind: 'site', column: 'siteID' };
 const OCTET_STREAM = 'application/octet-stream';
@@ -170,8 +171,7 @@ interface ClassRule {
   readonly candidates: readonly string[];
 }
 
-// The unit catalog keeps only units, targets and keys; tenant rules and the joins behind split predicates are read
-// from the same ownership file here, since no shared resolver of them is among this module's dependencies.
+// The unit catalog keeps only units, targets and keys, so tenant rules and split-predicate joins are read from the ownership file itself.
 /** Ownership-file facts of one legacy table that tenant resolution and split predicates need. */
 interface TableFacts {
   readonly name: string;
@@ -449,36 +449,42 @@ class ImportSession {
     return objects;
   }
 
-  /** Applies one tenant's rows in batches of the backfill size, one batch run per `Program_<id>`. */
-  async send(target: ApplyTarget, rows: readonly PlannedRow[]): Promise<void> {
+  /** Applies one tenant's rows as they arrive in backfill-size batches per `Program_<id>`, then the remainders in program order; returns the rows sent. */
+  async send(target: ApplyTarget, rows: AsyncIterable<PlannedRow>): Promise<number> {
+    const size = this.ctx.config.backfill.batchRows;
     const byProgram = new Map<number | undefined, ApplyRow[]>();
-    for (const planned of rows) {
+    let sent = 0;
+    for await (const planned of rows) {
       const group = byProgram.get(planned.programId) ?? [];
       group.push(planned.row);
       byProgram.set(planned.programId, group);
+      sent += 1;
+      if (group.length < size) continue;
+      byProgram.delete(planned.programId);
+      await this.#apply(target, planned.programId, group);
     }
-    const size = this.ctx.config.backfill.batchRows;
-    for (const [programId, group] of [...byProgram].sort(([a], [b]) => (a ?? -1) - (b ?? -1))) {
-      for (let start = 0; start < group.length; start += size) {
-        const request: ApplyRequest = {
-          batchId: this.nextBatchId(target.owner, target.table),
-          origin: 'legacy-window',
-          legacyTable: target.legacyTable,
-          tenantId: target.tenantId,
-          ...(programId === undefined ? {} : { legacyProgramId: programId }),
-          columns: target.columns,
-          units: [target.unit],
-          holderId: this.input.windowId,
-          rows: group.slice(start, start + size),
-        };
-        const response = await this.ctx.owners.apply(target.owner, request);
-        const stats = (this.result.perOwner[target.owner] ??= { batches: 0, rows: 0 });
-        stats.batches += 1;
-        stats.rows += response.applied;
-        this.result.rowsImported += response.applied;
-        this.addPositions(response.writePositions);
-      }
-    }
+    for (const [programId, group] of [...byProgram].sort(([a], [b]) => (a ?? -1) - (b ?? -1))) await this.#apply(target, programId, group);
+    return sent;
+  }
+
+  async #apply(target: ApplyTarget, programId: number | undefined, rows: ApplyRow[]): Promise<void> {
+    const request: ApplyRequest = {
+      batchId: this.nextBatchId(target.owner, target.table),
+      origin: 'legacy-window',
+      legacyTable: target.legacyTable,
+      tenantId: target.tenantId,
+      ...(programId === undefined ? {} : { legacyProgramId: programId }),
+      columns: target.columns,
+      units: [target.unit],
+      holderId: this.input.windowId,
+      rows,
+    };
+    const response = await this.ctx.owners.apply(target.owner, request);
+    const stats = (this.result.perOwner[target.owner] ??= { batches: 0, rows: 0 });
+    stats.batches += 1;
+    stats.rows += response.applied;
+    this.result.rowsImported += response.applied;
+    this.addPositions(response.writePositions);
   }
 
   async #readSites(): Promise<readonly LiveSite[]> {
@@ -684,40 +690,48 @@ function projected(layout: TableLayout, row: CanonicalRow, table: string): Value
   return values;
 }
 
-/** One tenant's export rows of one legacy table of a unit, and the table definition the owner reported. */
-interface TenantExport {
-  readonly tenantId: string;
-  readonly definition: ExportTable | undefined;
-  readonly rows: ExportTable['rows'];
-}
-
-/** Every export page of `unit` in `tenantId`, keeping the rows of `table` and recording the object manifest the pages carry. */
-async function readTenantExport(session: ImportSession, owner: DataOwner, unit: string, table: string, tenantId: string): Promise<TenantExport> {
+/** Reads every export page `params` names, handing each page's `table` entry to `onTable` as it arrives; records the pages' object manifest. */
+async function readTenantExport(
+  session: ImportSession,
+  owner: DataOwner,
+  params: ExportParams,
+  table: string,
+  onTable: (exported: ExportTable) => void,
+): Promise<void> {
   const key = tableKey(table);
-  let definition: ExportTable | undefined;
-  const rows: ExportTable['rows'] = [];
   const objects: ObjectManifestEntry[] = [];
-  for await (const page of session.ctx.owners.exportPages(owner, { unit, tenantId })) {
+  for await (const page of session.ctx.owners.exportPages(owner, params)) {
     objects.push(...(page.objects ?? []));
     for (const exported of page.tables) {
-      if (exported.unit !== unit || genericTableKey(session.ctx.catalog, exported.legacyTable) !== key) continue;
-      definition ??= exported;
-      rows.push(...exported.rows);
+      if (exported.unit === params.unit && genericTableKey(session.ctx.catalog, exported.legacyTable) === key) onTable(exported);
     }
   }
-  session.recordManifest(unit, tenantId, objects);
-  return { tenantId, definition, rows };
+  session.recordManifest(params.unit, params.tenantId, objects);
+}
+
+/** Owner export filter of a scoped read: each term's live column with its values; none for a whole-table filter or one too long to send. */
+function exportMatchOf(filter: ScopeFilter): ExportParams['match'] {
+  if (filter.kind !== 'filtered') return undefined;
+  const match = Object.fromEntries(filter.terms.map((term) => [term.column.name, term.values]));
+  return JSON.stringify(match).length <= MAX_EXPORT_MATCH_LENGTH ? match : undefined;
+}
+
+/** How one table is compared: the owner's table definition, its layout, and the scope and filter both sides read with. */
+interface TablePlan {
+  readonly definition: ExportTable;
+  readonly layout: TableLayout;
+  readonly scope: ExtractScope;
+  readonly filter: ScopeFilter;
 }
 
 /** The scope both sides read with and its filter, widened to the whole table when the export lacks a column the filter tests. */
-async function tableScope(
+function tableScope(
   session: ImportSession,
   table: string,
-  physical: string | LegacyTableRef,
+  columns: readonly CatalogColumn[],
+  filter: ScopeFilter,
   layout: TableLayout,
-): Promise<{ scope: ExtractScope; filter: ScopeFilter }> {
-  const { columns } = await readTableCatalog(await session.ctx.legacy.live(), physical);
-  const filter = buildScopeFilter(columns, session.scope);
+): { scope: ExtractScope; filter: ScopeFilter } {
   const testable = filter.terms.every((term) => layout.compare.some((column) => column.name.toLowerCase() === term.column.name.toLowerCase()));
   if (testable) return { scope: session.scope, filter };
   // A target row whose scope column the owner does not export cannot be placed in or out of scope, and leaving it out
@@ -726,18 +740,17 @@ async function tableScope(
   return { scope: 'table', filter: buildScopeFilter(columns, 'table') };
 }
 
-/** Apply rows turning `before` (target) into `after` (legacy): upserts and deletes for keyed mappings, one insert or delete per occurrence otherwise. */
-async function plannedRows(
+/** Apply rows turning `before` (target) into `after` (legacy) as the diff finds them: upserts and deletes for keyed mappings, one insert or delete per occurrence otherwise. */
+async function* plannedRows(
   layout: TableLayout,
   writableColumns: readonly string[] | undefined,
   selector: RowSelector,
   applyColumns: readonly CanonicalColumn[],
   before: readonly CanonicalRow[],
   after: readonly CanonicalRow[],
-): Promise<PlannedRow[]> {
-  const planned: PlannedRow[] = [];
+): AsyncGenerator<PlannedRow, void, undefined> {
   const { carried, discriminator } = selector;
-  const add = (op: ApplyRow['op'], row: CanonicalRow): void => {
+  const plan = (op: ApplyRow['op'], row: CanonicalRow): PlannedRow => {
     let encoding = row.encoding;
     if (carried !== undefined) {
       const name = carried.column.name;
@@ -746,20 +759,18 @@ async function plannedRows(
     } else if (layout.folded) {
       encoding = encodeRow(applyColumns, row.row);
     }
-    planned.push({ programId: row.legacyProgramId, row: { op, row: encoding, ...(discriminator === undefined ? {} : { discriminator }) } });
+    return { programId: row.legacyProgramId, row: { op, row: encoding, ...(discriminator === undefined ? {} : { discriminator }) } };
   };
   if (layout.keyNames.length > 0) {
     for await (const change of diffKeyedStreams(before, after, { columns: layout.compare, ...(writableColumns === undefined ? {} : { writableColumns }) })) {
-      if (change.op === 'delete') add('delete', change.before);
-      else add('upsert', change.after);
+      yield change.op === 'delete' ? plan('delete', change.before) : plan('upsert', change.after);
     }
-    return planned;
+    return;
   }
   for await (const change of diffMultisetStreams(before, after)) {
-    for (let index = 0; index < change.removed; index++) add('delete', change.row);
-    for (let index = 0; index < change.added; index++) add('insert', change.row);
+    for (let index = 0; index < change.removed; index++) yield plan('delete', change.row);
+    for (let index = 0; index < change.added; index++) yield plan('insert', change.row);
   }
-  return planned;
 }
 
 function programText(row: ExportTable['rows'][number], table: string): string {
@@ -772,51 +783,68 @@ async function importTable(session: ImportSession, unit: string, table: string, 
   const { ctx } = session;
   const deps = { legacy: ctx.legacy, catalog: ctx.catalog };
   const shape = await describeLegacyTable(deps, { table });
-  const exports = new Map<string, TenantExport>();
-  for (const tenantId of await session.tenants()) exports.set(tenantId, await readTenantExport(session, target.owner, unit, table, tenantId));
-  const definition = [...exports.values()].find((exported) => exported.definition !== undefined)?.definition;
-  if (definition === undefined) throw new Error(`${target.owner} exports no ${table} table for unit ${unit}`);
-  const layout = layoutOf(definition, target, shape.folded);
-  const { scope, filter } = await tableScope(session, table, shape.parts[0]?.ref ?? table, layout);
+  const { columns: liveColumns } = await readTableCatalog(await ctx.legacy.live(), shape.parts[0]?.ref ?? table);
+  const liveFilter = buildScopeFilter(liveColumns, session.scope);
+  const match = exportMatchOf(liveFilter);
 
+  // The owner may return more rows than the match names, so each tenant's rows are filtered here as they arrive.
+  const first: { plan?: TablePlan } = {};
   const targetByTenant = new Map<string, CanonicalRow[]>();
   const tenantOfKey = new Map<string, string>();
-  const addTarget = (exported: TenantExport): void => {
+  const readTarget = (tenantId: string): Promise<void> => {
     const rows: CanonicalRow[] = [];
-    for (const exportRow of exported.rows) {
-      const values: Values = decodeRow(definition.columns, exportRow.row);
-      if (layout.folded) values[LEGACY_PROGRAM_ID_COLUMN] = programText(exportRow, table);
-      if (!rowInScope(filter, values)) continue;
-      const row = canonicalRowOf(table, layout, values, exportRow.legacyProgramId);
-      rows.push(row);
-      if (!tenantOfKey.has(row.key)) tenantOfKey.set(row.key, exported.tenantId);
-    }
-    targetByTenant.set(exported.tenantId, rows);
+    targetByTenant.set(tenantId, rows);
+    return readTenantExport(session, target.owner, { unit, tenantId, match }, table, (exported) => {
+      if (first.plan === undefined) {
+        const layout = layoutOf(exported, target, shape.folded);
+        first.plan = { definition: exported, layout, ...tableScope(session, table, liveColumns, liveFilter, layout) };
+      }
+      const { definition, layout, filter } = first.plan;
+      for (const exportRow of exported.rows) {
+        const values: Values = decodeRow(definition.columns, exportRow.row);
+        if (layout.folded) values[LEGACY_PROGRAM_ID_COLUMN] = programText(exportRow, table);
+        if (!rowInScope(filter, values)) continue;
+        const row = canonicalRowOf(table, layout, values, exportRow.legacyProgramId);
+        rows.push(row);
+        if (!tenantOfKey.has(row.key)) tenantOfKey.set(row.key, tenantId);
+      }
+    });
   };
-  for (const exported of exports.values()) addTarget(exported);
+  for (const tenantId of await session.tenants()) await readTarget(tenantId);
+  if (first.plan === undefined) throw new Error(`${target.owner} exports no ${table} table for unit ${unit}`);
+  const { definition, layout, scope } = first.plan;
 
-  const sources: CanonicalRow[] = [];
-  for await (const row of streamLegacyTable(deps, { table, scope })) sources.push(row);
-  const selector = await rowSelectorFor(session, table, target, shape.columns, layout.columns, sources);
+  const selector = await rowSelectorFor(session, table, target, shape.columns, layout.columns, []);
   const carried = selector.carried?.column;
   const applyColumns = carried === undefined ? layout.columns : [...layout.columns, carried];
-  const tenants = await rowTenantsFor(session, table, sources);
   const legacyByTenant = new Map<string, CanonicalRow[]>();
-  for (const source of sources) {
-    const values = projected(layout, source, table);
-    if (carried !== undefined) values[carried.name] = valueOf(source.row, carried.name) as CanonicalValue;
-    const row = canonicalRowOf(table, layout, values, source.legacyProgramId);
-    const known = tenantOfKey.get(row.key);
-    if (!selector.accepts(source, known !== undefined)) continue;
-    // A row placed through its parent or program keeps the tenant its owner holds it in; a site-sourced row follows
-    // its site, which the owner checks against the batch tenant.
-    const tenantId = tenants.siteSourced ? tenants.tenantOf(source) : (known ?? tenants.tenantOf(source));
-    const rows = legacyByTenant.get(tenantId) ?? [];
-    rows.push(row);
-    legacyByTenant.set(tenantId, rows);
+  const place = async (sources: readonly CanonicalRow[]): Promise<void> => {
+    const accepting = await rowSelectorFor(session, table, target, shape.columns, layout.columns, sources);
+    const tenants = await rowTenantsFor(session, table, sources);
+    for (const source of sources) {
+      const values = projected(layout, source, table);
+      if (carried !== undefined) values[carried.name] = valueOf(source.row, carried.name) as CanonicalValue;
+      const row = canonicalRowOf(table, layout, values, source.legacyProgramId);
+      const known = tenantOfKey.get(row.key);
+      if (!accepting.accepts(source, known !== undefined)) continue;
+      // A row placed through its parent or program keeps the tenant its owner holds it in; a site-sourced row follows
+      // its site, which the owner checks against the batch tenant.
+      const tenantId = tenants.siteSourced ? tenants.tenantOf(source) : (known ?? tenants.tenantOf(source));
+      const rows = legacyByTenant.get(tenantId) ?? [];
+      rows.push(row);
+      legacyByTenant.set(tenantId, rows);
+    }
+  };
+  let chunk: CanonicalRow[] = [];
+  for await (const source of streamLegacyTable(deps, { table, scope })) {
+    chunk.push(source);
+    if (chunk.length < ctx.config.backfill.batchRows) continue;
+    await place(chunk);
+    chunk = [];
   }
+  await place(chunk);
   for (const tenantId of legacyByTenant.keys()) {
-    if (!exports.has(tenantId)) addTarget(await readTenantExport(session, target.owner, unit, table, tenantId));
+    if (!targetByTenant.has(tenantId)) await readTarget(tenantId);
   }
 
   const writableColumns = target.ownedColumns === 'whole-table' ? undefined : target.ownedColumns;
@@ -824,10 +852,10 @@ async function importTable(session: ImportSession, unit: string, table: string, 
   for (const tenantId of [...new Set([...targetByTenant.keys(), ...legacyByTenant.keys()])].sort()) {
     const before = (targetByTenant.get(tenantId) ?? []).sort(compareCanonicalRows);
     const after = (legacyByTenant.get(tenantId) ?? []).sort(compareCanonicalRows);
-    const planned = await plannedRows(layout, writableColumns, selector, applyColumns, before, after);
-    if (planned.length === 0) continue;
-    await session.send({ owner: target.owner, unit, table, legacyTable: definition.legacyTable, tenantId, columns: applyColumns }, planned);
-    sent += planned.length;
+    targetByTenant.delete(tenantId);
+    legacyByTenant.delete(tenantId);
+    const rows = plannedRows(layout, writableColumns, selector, applyColumns, before, after);
+    sent += await session.send({ owner: target.owner, unit, table, legacyTable: definition.legacyTable, tenantId, columns: applyColumns }, rows);
   }
   if (sent > 0) ctx.logger.info(`window ${session.input.windowId} sent ${String(sent)} ${table} changes to ${target.owner} unit ${unit}`);
 }
@@ -865,11 +893,17 @@ async function fileDirs(session: ImportSession): Promise<string[]> {
   return [...dirs.values()].sort();
 }
 
-/** Live `tfiles` rows by upper-cased trimmed `fileID`. */
-async function liveFiles(session: ImportSession): Promise<Map<string, LiveFile>> {
-  const pool = await session.ctx.legacy.live();
-  const result = await pool.request().query<LiveFile & { fileID: string }>(LIVE_FILES_SQL);
-  return new Map(result.recordset.map((row): [string, LiveFile] => [row.fileID.trim().toUpperCase(), row]));
+/** Live `tfiles` rows of `fileIds`, by upper-cased `fileID`. */
+async function liveFiles(session: ImportSession, fileIds: readonly string[]): Promise<Map<string, LiveFile>> {
+  const found = await session.lookups.find(FILES_TABLE, 'fileID', LIVE_FILE_COLUMNS, fileIds);
+  const files = new Map<string, LiveFile>();
+  for (const fileId of fileIds) {
+    const row = found.get(norm(fileId) ?? '')?.[0];
+    if (row === undefined) continue;
+    const text = (column: string): string | null => (typeof row[column] === 'string' ? row[column] : null);
+    files.set(fileId.toUpperCase(), { siteID: text('siteID'), contentType: text('contentType'), contentSubType: text('contentSubType'), fileExt: text('fileExt') });
+  }
+  return files;
 }
 
 /**
@@ -880,7 +914,6 @@ async function liveFiles(session: ImportSession): Promise<Map<string, LiveFile>>
 async function importFiles(session: ImportSession, unit: string, owner: DataOwner): Promise<void> {
   const { ctx } = session;
   const dirs = await fileDirs(session);
-  const files = await liveFiles(session);
   const lookups: TenantLookups = { umbrellaSiteId: session.umbrellaSiteId };
   const planned: PlannedObject[] = [];
   const present = new Set<string>();
@@ -889,9 +922,12 @@ async function importFiles(session: ImportSession, unit: string, owner: DataOwne
     if (listing.fileStore !== SUPPORTED_FILE_STORE) {
       throw new UnsupportedFileStoreError('files.list', { error: 'unsupportedFileStore', message: listing.fileStore });
     }
-    for (const file of listing.files) {
+    const stored = listing.files.flatMap((file) => {
       const name = parseStoredName(file.name);
-      if (name === null) continue;
+      return name === null ? [] : [{ file, name }];
+    });
+    const files = await liveFiles(session, stored.map(({ name }) => name.fileId));
+    for (const { file, name } of stored) {
       const row = files.get(name.fileId.toUpperCase());
       // A file without a `tfiles` row resolves to the umbrella tenant as an orphan, as the backfill places it.
       const resolved = resolveTenant(FILES_TENANT_SOURCE, { siteID: row?.siteID ?? null }, lookups);

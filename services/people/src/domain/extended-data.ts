@@ -373,17 +373,19 @@ async function definitionRows(
 ): Promise<{ subtype: ExtendSubtypeRow; set: ExtendSetRow; attribute: ExtendAttributeRow }[]> {
   const withBase = !NON_BASE_TYPES.includes(scope.type.toLowerCase());
   const ownSubtype = scope.subtype.toLowerCase() !== 'default';
-  // listExtendSubtypes matches siteid exactly, as the query of queries does.
+  // listExtendSubtypes matches siteid case-insensitively, so it is matched exactly here, as the query of queries does.
   const subtypes = (await repo.listExtendSubtypes(tx, { siteId: scope.siteId })).filter(
     (row) =>
-      (row.type === scope.type || (withBase && row.type === 'Base')) && ((ownSubtype && row.subtype === scope.subtype) || row.subtype === 'Default'),
+      row.siteid === scope.siteId &&
+      (row.type === scope.type || (withBase && row.type === 'Base')) &&
+      ((ownSubtype && row.subtype === scope.subtype) || row.subtype === 'Default'),
   );
   const sets = await repo.listExtendSets(tx, subtypes.map((row) => row.subtypeid));
   const attributes = sets.length === 0 ? [] : await repo.listExtendAttributes(tx, { setIds: sets.map((row) => row.extendsetid) });
   const joined: { rank: number; subtype: ExtendSubtypeRow; set: ExtendSetRow; attribute: ExtendAttributeRow }[] = [];
   // listExtendSubtypes already returns type then subtype order, so a subtype's position stands for those two keys.
   for (const [rank, subtype] of subtypes.entries()) {
-    for (const set of sets.filter((row) => row.subtypeid === subtype.subtypeid)) {
+    for (const set of sets.filter((row) => sqlEq(row.subtypeid, subtype.subtypeid))) {
       for (const attribute of attributes.filter((row) => sqlEq(row.extendsetid, set.extendsetid))) joined.push({ rank, subtype, set, attribute });
     }
   }

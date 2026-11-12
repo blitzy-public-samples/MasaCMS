@@ -46,6 +46,44 @@ const LOOKUP_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', publi
 const SITE_MANAGER_MODULE = '00000000000000000000000000000000000';
 const HOME_CONTENT = '00000000000000000000000000000000001';
 
+const CF_UUID = {
+  type: 'string',
+  minLength: 35,
+  maxLength: 35,
+  pattern: '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}$',
+} as const;
+
+const TEXT = { type: 'string' } as const;
+
+// ContentId, ModuleId and ModulePermissionsUpdate as the contract declares them; Fastify validates them once, before the handler.
+const PATH_ID = { type: 'string', minLength: 35, maxLength: 35 } as const;
+
+const CONTENT_PARAMS = { type: 'object', required: ['contentId'], properties: { contentId: PATH_ID } } as const;
+
+const MODULE_PARAMS = { type: 'object', required: ['moduleId'], properties: { moduleId: PATH_ID } } as const;
+
+// Fastify's Ajv coerces a value of no listed type into the first listed one. Listing `array` first turns null and unlisted
+// scalars into lists that `items` or `contains: false` refuses, and keeps a one-item list from collapsing into a string.
+const GROUP_IDS = { type: ['array', 'string'], items: CF_UUID } as const;
+const FORM_VALUE = { type: ['array', 'string', 'number', 'boolean'], contains: false } as const;
+
+/** An anchored pattern matching `field` in any letter case, as the merged CFML scope matches keys. */
+function anyCase(field: string): string {
+  return `^${field.replace(/[a-z]/g, (letter) => `[${letter.toUpperCase()}${letter}]`)}$`;
+}
+
+const MODULE_UPDATE_BODY = {
+  type: 'object',
+  additionalProperties: FORM_VALUE,
+  patternProperties: {
+    [anyCase('groupid')]: GROUP_IDS,
+    [anyCase('topid')]: TEXT,
+    [anyCase('moduleid')]: TEXT,
+    [anyCase('csrf_token')]: TEXT,
+    [anyCase('csrf_token_expires')]: TEXT,
+  },
+} as const;
+
 /** `updatemodule` redirects in legacy test order, each to `action` with `siteid` and then `extra` appended. */
 const MODULE_REDIRECTS: ReadonlyArray<readonly [moduleId: string, action: string, extra: Readonly<Record<string, string>>]> = [
   ['00000000000000000000000000000000004', 'cUsers.list', {}],
@@ -88,11 +126,11 @@ function rcSiteId(request: FastifyRequest, user: UserClaims): string {
   return typeof supplied === 'string' && supplied !== '' ? supplied : user.site;
 }
 
-/** `rc.groupid` as the list loop reads it: a comma list or its items, `''` when absent [legacy: core/mura/permission.cfc:652]. */
+/** `rc.groupid` as the list loop reads it: a comma list or its items, a simple value as its string, `''` when absent [legacy: core/mura/permission.cfc:652]. */
 function rcGroupIds(request: FastifyRequest): string | string[] {
   const value = rcValue(request, 'groupid');
-  if (Array.isArray(value)) return value.map(String);
-  return typeof value === 'string' ? value : '';
+  if (value === undefined) return '';
+  return Array.isArray(value) ? value.map(String) : String(value);
 }
 
 /** SQL Server equality of two `char(35)` ids: case-insensitive, trailing spaces ignored. */
@@ -113,7 +151,7 @@ export async function registerAdminPermissionRoutes(app: FastifyInstance, deps: 
   // [legacy: admin/core/controllers/cperm.cfc:110-112, admin/core/views/cperm/main.cfm:77-78,141,166,182]
   app.get<{ Params: ContentParams; Reply: Schemas['ContentPermissions'] }>(
     '/v1/permissions/content/:contentId',
-    { config: { opt2: ROUTE_AUTH } },
+    { schema: { params: CONTENT_PARAMS }, config: { opt2: ROUTE_AUTH } },
     async (request) => {
       const user = userOf(request.opt2Auth);
       const { contentId } = request.params;
@@ -128,7 +166,7 @@ export async function registerAdminPermissionRoutes(app: FastifyInstance, deps: 
   // [legacy: admin/core/controllers/cperm.cfc:114-117, admin/core/views/cperm/module.cfm:77,103,113,126]
   app.get<{ Params: ModuleParams; Reply: Schemas['ModulePermissions'] }>(
     '/v1/permissions/modules/:moduleId',
-    { config: { opt2: ROUTE_AUTH } },
+    { schema: { params: MODULE_PARAMS }, config: { opt2: ROUTE_AUTH } },
     async (request) => {
       const user = userOf(request.opt2Auth);
       const { moduleId } = request.params;
@@ -149,7 +187,7 @@ export async function registerAdminPermissionRoutes(app: FastifyInstance, deps: 
   // [legacy: admin/core/controllers/cperm.cfc:119-160, core/mura/permission.cfc:643-669]
   app.put<{ Params: ModuleParams; Reply: Schemas['ModulePermissionsResult'] }>(
     '/v1/permissions/modules/:moduleId',
-    { config: { opt2: ROUTE_AUTH } },
+    { schema: { params: MODULE_PARAMS, body: MODULE_UPDATE_BODY }, config: { opt2: ROUTE_AUTH } },
     async (request) => {
       const user = userOf(request.opt2Auth);
       const { moduleId } = request.params;

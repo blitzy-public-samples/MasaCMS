@@ -63,6 +63,8 @@ export interface ExportParams {
   programId?: number;
   /** `next` of the previous page; absent for the first page, which carries the object manifest or, for an owner paging it, its first page. */
   after?: string;
+  /** Legacy columns with the values a row must hold in any one of them; the owner may return more rows. */
+  match?: Readonly<Record<string, readonly (string | number)[]>>;
   limit?: number;
 }
 
@@ -254,6 +256,7 @@ export function createOwnersClient(options: CreateOwnersClientOptions): OwnersCl
       tenantId: params.tenantId,
       programId: decimal(params.programId),
       after: params.after,
+      match: params.match === undefined ? undefined : JSON.stringify(params.match),
       limit: decimal(params.limit),
     };
     return (await call<ExportResponse>(owner, 'GET', EXPORT_PATH, { query })).body;

@@ -6,10 +6,10 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { cfHash } from '@opt2/platform/legacy-compat';
-import { createLogger } from '@opt2/platform/logging';
+import { REDACTED, createLogger, validateLogRecord } from '@opt2/platform/logging';
 import { closeGates, ensureUnitGates, openGates, registerWritePositionHeader } from '@opt2/platform/migration-kit';
 import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { createLocalStorageAdapter, type LocalStorageAdapter } from '@opt2/platform/storage';
@@ -58,6 +58,9 @@ describe.skipIf(!available)('finance fixture routes', () => {
   let identity: http.Server;
   let app: FastifyInstance;
   const consumed: Array<{ sessionId: string; token: string; context: string }> = [];
+  const logLines: string[] = [];
+  /** Spies on each request logger's `error`, holding the calls before the logger serializes them. */
+  const errorSpies: { mock: { calls: unknown[][] } }[] = [];
 
   beforeAll(async () => {
     handle = await createThrowawaySchema({ service: 'finance', migrationsDir: fileURLToPath(new URL('../../db/migrations', import.meta.url)) });
@@ -106,7 +109,10 @@ describe.skipIf(!available)('finance fixture routes', () => {
       }),
       verifierOverride: testVerifier('finance'),
       pool: handle.app,
-      logger: createLogger({ service: 'finance', version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
+      logger: createLogger({ service: 'finance', version: '1.0.0', env: 'local', destination: { write: (line: string) => void logLines.push(line) } }),
+    });
+    app.addHook('onRequest', async (request) => {
+      errorSpies.push(vi.spyOn(request.log, 'error'));
     });
     registerWritePositionHeader(app);
     const clock = fixedClock(NOW);
@@ -161,11 +167,11 @@ describe.skipIf(!available)('finance fixture routes', () => {
     return res.json().data;
   }
 
-  /** A multipart body with one part named `field`. */
-  function multipart(field: string, fileName?: string): Buffer {
+  /** A multipart body with one part named `field` of content type `type`. */
+  function multipart(field: string, fileName?: string, type = 'application/pdf'): Buffer {
     const disposition = fileName === undefined ? `name="${field}"` : `name="${field}"; filename="${fileName}"`;
     return Buffer.concat([
-      Buffer.from(`--${BOUNDARY}\r\nContent-Disposition: form-data; ${disposition}\r\nContent-Type: application/pdf\r\n\r\n`),
+      Buffer.from(`--${BOUNDARY}\r\nContent-Disposition: form-data; ${disposition}\r\nContent-Type: ${type}\r\n\r\n`),
       fileName === undefined ? Buffer.from('not a file') : FILE_BYTES,
       Buffer.from(`\r\n--${BOUNDARY}--\r\n`),
     ]);
@@ -265,6 +271,22 @@ describe.skipIf(!available)('finance fixture routes', () => {
     expect([after.state, after.version]).toEqual(['IN-PROGRESS', 1]);
   });
 
+  it('logs an unhandled exception as its serialized error record, without the request parameter values', async () => {
+    const [before, spiesBefore] = [logLines.length, errorSpies.length];
+    const res = await get('/records?pageIndex=1%D9%A1&note=finance-log-probe');
+    expect([res.statusCode, res.json().error.code]).toEqual([500, 'server_error']);
+    const record = { type: 'Error', message: REDACTED, stack: expect.stringMatching(/^Error: \[REDACTED\](?:\n {4}at \S.*)+$/) };
+    const calls = errorSpies.slice(spiesBefore).flatMap((spy) => spy.mock.calls);
+    const [fields] = calls.find(([, message]) => message === 'unhandled fixture exception') ?? [];
+    expect(fields).toStrictEqual({ error: record });
+    const lines = logLines.slice(before).filter((line) => line.includes('unhandled fixture exception'));
+    expect(lines).toHaveLength(1);
+    const [line] = lines.map((text) => JSON.parse(text) as Record<string, unknown>);
+    expect(validateLogRecord(line)).toStrictEqual({ valid: true, errors: [] });
+    expect(line?.error).toStrictEqual(record);
+    for (const value of ['1\u0661', '1%D9%A1', 'finance-log-probe', 'non-ASCII']) expect(lines.join('')).not.toContain(value);
+  });
+
   it('creates, reads, edits and moves a record through its lifecycle with one version row each, rebuilding the rollup', async () => {
     const created = await post('/records', PREPARER, VALID);
     expect(created.json()).toMatchObject({ method: 'finance.records', data: { siteid: 'tenant-a', amount: '1250.5000', state: 'IN-PROGRESS', version: 1 } });
@@ -333,6 +355,13 @@ describe.skipIf(!available)('finance fixture routes', () => {
       'content-disposition': `attachment; filename="scan _.pdf"; filename*=UTF-8''scan%20%C3%A9.pdf`,
     });
     expect(file.headers.etag).toBeUndefined();
+  });
+
+  it('answers a file name longer than its nvarchar(255) column with server_error, storing nothing', async () => {
+    const { record_id: id } = await createRecord();
+    const res = await upload(id, multipart('file', `${'a'.repeat(252)}.pdf`));
+    expect([res.statusCode, res.body]).toEqual([500, errorBody('finance.records.attachments', 'server_error', 'Unhandled Exception')]);
+    expect((await get(`/records/${id}/attachments`)).json().data).toMatchObject({ items: [], totalitems: 0 });
   });
 
   it('fails a write closed with the legacy 503 while the finance units are legacy-authoritative', async () => {

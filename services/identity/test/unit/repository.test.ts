@@ -349,9 +349,15 @@ describe.skipIf(!available)('identity repository against PostgreSQL', () => {
     expect(await inTenant((tx) => repo.permissionsFor(tx, { contentId: node, siteId: 'site-a', type: 'Editor' }))).toEqual([]);
 
     const moduleId = '00000000000000000000000000000000008';
-    await gated((tx) => repo.replaceModulePermissions(tx, { moduleId, siteId: 'site-a', groupIds: [id(1, 'G'), '', id(2, 'G')] }));
+    const granted = await gated((tx) => repo.replaceModulePermissions(tx, { moduleId, siteId: 'site-a', groupIds: [id(1, 'G'), '', id(2, 'G')] }));
+    expect([granted.rows.map((row) => row.groupid), granted.removed]).toEqual([[id(1, 'G'), id(2, 'G')], []]);
     expect(await inTenant((tx) => repo.moduleGrants(tx, [id(2, 'G'), id(3, 'G')], 'site-a'))).toEqual([{ contentId: moduleId, groupId: id(2, 'G') }]);
     expect(await inTenant((tx) => repo.moduleGrants(tx, [], 'site-a'))).toEqual([]);
+    const regranted = await gated((tx) => repo.replaceModulePermissions(tx, { moduleId, siteId: 'site-a', groupIds: [id(2, 'G')] }));
+    expect(regranted.removed.map((row) => [row.groupid, row.type])).toEqual([
+      [id(1, 'G'), 'module'],
+      [id(2, 'G'), 'module'],
+    ]);
     await expect(gated((tx) => repo.replaceModulePermissions(tx, { moduleId, siteId: 'site-a', groupIds: [id(1, 'G'), id(1, 'G')] }))).rejects.toMatchObject({
       code: '23505',
     });

@@ -25,6 +25,7 @@ const CLOCK = fixedClock(new Date(2026, 5, 30, 12, 0, 0));
 const SITE = 'tenant-a';
 const TENANT_A = tenantIdForSite(SITE);
 const BUDGET_MS = 300;
+const STEP_WAIT_MS = 5_000;
 
 function id(n: number, prefix: string): string {
   return `${prefix}0000000-0000-0000-${String(n).padStart(16, '0')}`;
@@ -33,6 +34,7 @@ function id(n: number, prefix: string): string {
 const G1 = id(1, 'G');
 const G2 = id(2, 'G');
 const G3 = id(3, 'G');
+const G4 = id(4, 'G');
 
 describe('group node verdicts', () => {
   it('keeps the getGroupPerm precedence Editor, Author, Read, Deny', () => {
@@ -69,6 +71,42 @@ function recordingEvents(fail = false): Pick<IdentityEvents, 'publishPermissionC
       if (fail) return Promise.reject(new Error('outbox write failed'));
       published.push({ tenantId: tx.tenantId, groupId: input.groupId, siteId: input.siteId, rows: input.rows.map((row) => `${row.contentid}:${row.type}`) });
       return Promise.resolve(null);
+    },
+  };
+}
+
+/** Settles as `promise` does, or rejects once `ms` pass first. */
+async function within<T>(promise: Promise<T>, ms: number, step: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`${step} did not happen within ${ms} ms`)), ms);
+  });
+  try {
+    return await Promise.race([promise, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** A step hook given the backend pid of its transaction. */
+type StepHook = (pid: number) => Promise<void>;
+
+/** A hook that resolves `reached` with its pid on arrival, then waits until `release` is called. */
+function holdPoint(): { hook: StepHook; reached: Promise<number>; release: () => void } {
+  let arrive: (pid: number) => void = () => undefined;
+  let release: () => void = () => undefined;
+  const reached = new Promise<number>((resolve) => {
+    arrive = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return {
+    reached,
+    release,
+    hook: async (pid) => {
+      arrive(pid);
+      await released;
     },
   };
 }
@@ -121,6 +159,58 @@ describe.skipIf(!available)('permission operations against PostgreSQL', () => {
 
   async function moduleGroupIds(moduleId: string): Promise<string[]> {
     return (await permittedGroups(deps(), { siteId: SITE, contentId: moduleId })).map((row) => row.groupid);
+  }
+
+  async function backendPid(tx: TenantTx): Promise<number> {
+    return Number((await tx.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]?.pid);
+  }
+
+  /** The repository with `replaceModulePermissions` running `before` and `after` around the real replacement. */
+  function hookedRepo(hooks: { before?: StepHook; after?: StepHook }): PermissionDeps['repo'] {
+    return {
+      ...repo,
+      async replaceModulePermissions(tx, input, ctx) {
+        const pid = await backendPid(tx);
+        await hooks.before?.(pid);
+        const replaced = await repo.replaceModulePermissions(tx, input, ctx);
+        await hooks.after?.(pid);
+        return replaced;
+      },
+    };
+  }
+
+  /** The repository with `groupPermissions` running `before` and `after` around the real state read. */
+  function hookedReadRepo(hooks: { before?: StepHook; after?: StepHook }): PermissionDeps['repo'] {
+    return {
+      ...repo,
+      async groupPermissions(tx, groupId, siteId, ctx) {
+        const pid = await backendPid(tx);
+        await hooks.before?.(pid);
+        const rows = await repo.groupPermissions(tx, groupId, siteId, ctx);
+        await hooks.after?.(pid);
+        return rows;
+      },
+    };
+  }
+
+  /** Resolves once backend `pid` waits for an advisory lock, polling for at most STEP_WAIT_MS. */
+  async function waitsOnAdvisoryLock(pid: number): Promise<void> {
+    const deadline = Date.now() + STEP_WAIT_MS;
+    while (
+      (await handle.adminPool.query("SELECT 1 FROM pg_locks WHERE pid = $1 AND locktype = 'advisory' AND NOT granted", [pid])).rowCount === 0
+    ) {
+      if (Date.now() > deadline) throw new Error(`backend ${pid} did not wait for an advisory lock within ${STEP_WAIT_MS} ms`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
+  /** Expects the last state published for each group to equal its stored rows in SITE. */
+  async function expectLastStatesStored(published: readonly PublishedPermission[]): Promise<void> {
+    const last = new Map(published.map((event) => [event.groupId, event.rows]));
+    for (const [groupId, rows] of last) {
+      const stored = await gated(SITE, (tx) => repo.groupPermissions(tx, groupId, SITE));
+      expect(rows, groupId).toEqual(stored.map((row) => `${row.contentid}:${row.type}`));
+    }
   }
 
   beforeAll(async () => {
@@ -208,6 +298,92 @@ describe.skipIf(!available)('permission operations against PostgreSQL', () => {
     expect(cleared).toEqual({ rows: [], changedGroupIds: [G1, G2, G3] });
     expect(events.published.map((event) => event.rows.includes(`${moduleId}:module`))).toEqual([false, false, false]);
     expect(await moduleGroupIds(moduleId)).toEqual([]);
+  });
+
+  it('announces every grant it deletes, including one another replacement committed after its transaction began', async () => {
+    const moduleId = nextModule();
+    await updateModulePermissions(deps(), { siteId: SITE, moduleId, groupIds: [G1] });
+    const held = holdPoint();
+    const first = recordingEvents();
+    const second = recordingEvents();
+
+    const replacing = updateModulePermissions({ ...deps(first), repo: hookedRepo({ before: held.hook }) }, { siteId: SITE, moduleId, groupIds: [G3] });
+    try {
+      await within(held.reached, STEP_WAIT_MS, 'the first replacement reaching its grant replacement');
+      await within(updateModulePermissions(deps(second), { siteId: SITE, moduleId, groupIds: [G1, G2] }), STEP_WAIT_MS, 'the second replacement');
+    } finally {
+      held.release();
+      await Promise.allSettled([replacing]);
+    }
+
+    const replaced = await replacing;
+    expect(replaced.changedGroupIds).toEqual([G1, G2, G3]);
+    expect(first.published.map((event) => [event.groupId, event.rows.includes(`${moduleId}:module`)])).toEqual([
+      [G1, false],
+      [G2, false],
+      [G3, true],
+    ]);
+    expect(await moduleGroupIds(moduleId)).toEqual([G3]);
+    await expectLastStatesStored([...second.published, ...first.published]);
+  });
+
+  it.each([
+    ['overlapping lists', [G1, G2], [G2, G3]],
+    ['disjoint lists', [G1], [G2, G3]],
+  ])('serializes two concurrent replacements of one module with %s, keeping the list committed last', async (_label, firstList, secondList) => {
+    const moduleId = nextModule();
+    const held = holdPoint();
+    const entered = holdPoint();
+    entered.release();
+    const first = recordingEvents();
+    const second = recordingEvents();
+
+    const replacingFirst = updateModulePermissions({ ...deps(first), repo: hookedRepo({ after: held.hook }) }, { siteId: SITE, moduleId, groupIds: firstList });
+    const replacingSecond = within(held.reached, STEP_WAIT_MS, 'the first replacement holding its module').then(() =>
+      updateModulePermissions({ ...deps(second), repo: hookedRepo({ before: entered.hook }) }, { siteId: SITE, moduleId, groupIds: secondList }),
+    );
+    try {
+      await waitsOnAdvisoryLock(await within(entered.reached, STEP_WAIT_MS, 'the second replacement starting'));
+    } finally {
+      held.release();
+      await Promise.allSettled([replacingFirst, replacingSecond]);
+    }
+
+    const [firstResult, secondResult] = await Promise.all([replacingFirst, replacingSecond]);
+    expect(firstResult.rows.map((row) => row.groupid)).toEqual(firstList);
+    expect(secondResult.rows.map((row) => row.groupid)).toEqual(secondList);
+    expect(secondResult.changedGroupIds).toEqual([G1, G2, G3]);
+    expect(await moduleGroupIds(moduleId)).toEqual(secondList);
+    await expectLastStatesStored([...first.published, ...second.published]);
+  });
+
+  it("reads a group's state for publishing only after a concurrent replacement of another module granting the group commits", async () => {
+    const [firstModule, secondModule] = [nextModule(), nextModule()];
+    const held = holdPoint();
+    const entered = holdPoint();
+    entered.release();
+    const first = recordingEvents();
+    const second = recordingEvents();
+
+    const replacingFirst = updateModulePermissions(
+      { ...deps(first), repo: hookedReadRepo({ after: held.hook }) },
+      { siteId: SITE, moduleId: firstModule, groupIds: [G4] },
+    );
+    const replacingSecond = within(held.reached, STEP_WAIT_MS, 'the first replacement reading its group state').then(() =>
+      updateModulePermissions({ ...deps(second), repo: hookedReadRepo({ before: entered.hook }) }, { siteId: SITE, moduleId: secondModule, groupIds: [G4] }),
+    );
+    try {
+      // The second replacement's own module lock is free, so its advisory wait is the group lock the first one holds.
+      await waitsOnAdvisoryLock(await within(entered.reached, STEP_WAIT_MS, 'the second replacement reading its group state'));
+    } finally {
+      held.release();
+      await Promise.allSettled([replacingFirst, replacingSecond]);
+    }
+
+    await Promise.all([replacingFirst, replacingSecond]);
+    expect(first.published.map((event) => [event.groupId, event.rows])).toEqual([[G4, [`${firstModule}:module`]]]);
+    expect(second.published.map((event) => [event.groupId, event.rows])).toEqual([[G4, [`${firstModule}:module`, `${secondModule}:module`]]]);
+    await expectLastStatesStored([...first.published, ...second.published]);
   });
 
   it('rolls the grant replacement back when a permission event cannot be written', async () => {

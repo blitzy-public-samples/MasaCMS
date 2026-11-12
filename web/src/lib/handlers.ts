@@ -10,7 +10,6 @@ import {
   type PageRedirect,
   type RawBody,
   type ScreenContext,
-  type ScreenRequestBody,
   type SubmitResult,
   type UploadPart,
 } from '../screens/registry';
@@ -35,6 +34,7 @@ import {
   type AdminSessionWrites,
   type RequestContext,
 } from './request-context';
+import { receiveRequestBody, type ReceivedBody } from './request-body';
 import { rbFor } from './resource-bundles/rb';
 import {
   downloadResponse,
@@ -86,9 +86,6 @@ export type AdminPageResult =
 
 /** FW/1 `maxNumContextsPreserved` of the admin. */
 const MAX_PRESERVED_CONTEXTS = 10;
-
-const MULTIPART_FORM = 'multipart/form-data';
-const URLENCODED_FORM = 'application/x-www-form-urlencoded';
 
 /** How one entry point answers each pipeline outcome. */
 interface Answers<T> {
@@ -157,25 +154,6 @@ interface Dispatch<T> {
 /** Looks up the screen serving the built request; undefined answers not-found. */
 type Resolve<T> = (req: AdminRequest, uploads: readonly UploadPart[]) => Dispatch<T> | undefined;
 
-/** A parsed request body and the form scope it gives. */
-interface ParsedBody {
-  readonly body?: ScreenRequestBody;
-  readonly form: FormData | URLSearchParams;
-}
-
-/** The body as received and its form scope: the fields of an urlencoded or multipart body, else none. */
-async function readBody(request: Request): Promise<ParsedBody> {
-  if (request.body === null) return { form: new URLSearchParams() };
-  const contentType = request.headers.get('content-type') ?? '';
-  const bytes = new Uint8Array(await request.arrayBuffer());
-  const type = (contentType.split(';')[0] ?? '').trim().toLowerCase();
-  const form =
-    type === MULTIPART_FORM
-      ? await new Response(bytes, { headers: { 'content-type': contentType } }).formData()
-      : new URLSearchParams(type === URLENCODED_FORM ? new TextDecoder().decode(bytes) : '');
-  return { body: { contentType, body: bytes, form }, form };
-}
-
 /** File parts of a form scope, as the registry's upload variants read them. */
 function uploadsOf(form: FormData | URLSearchParams): UploadPart[] {
   if (form instanceof URLSearchParams) return [];
@@ -195,8 +173,8 @@ function answerFailure<T>(error: unknown, answers: Answers<T>, context: LegacyRe
 
 /**
  * Authenticates, builds the request context, resolves and gates the screen, runs it, persists the session writes in
- * one identity call and writes the request's one log line. Unavailability, refused credentials and service denials
- * become `answers` and persist nothing; any other error is logged and rethrown.
+ * one identity call and writes the request's one log line in its span. Unavailability, refused credentials and service
+ * denials become `answers` and persist nothing; any other error is logged and rethrown. A staged body is then removed.
  */
 async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>, resolve: Resolve<T>): Promise<T> {
   const started = performance.now();
@@ -206,54 +184,11 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
   let user: WebAuth['user'];
   let statusCode = 500;
   let failure: unknown;
-  try {
-    await ensureTracing();
-    const answer = await withRequestSpan(`${input.method} ${route}`, input.headers, async () => {
-      try {
-        const auth = await authenticateRequest(input.headers, input.path);
-        user = auth.user;
-        const parsed = input.bodySource === undefined ? undefined : await readBody(input.bodySource);
-        const gateway = createGatewayClient({ userToken: auth.userToken, requestId, inbound: input.headers });
-        const req = await buildAdminRequest({
-          params: input.route,
-          searchParams: input.searchParams,
-          headers: input.headers,
-          form: parsed?.form,
-          auth,
-          gateway,
-          mode: input.mode,
-        });
-        context = { locale: req.session.locale, acceptEncoding: context.acceptEncoding };
-        const dispatch = resolve(req, parsed === undefined ? [] : uploadsOf(parsed.form));
-        if (dispatch === undefined) return answers.notFound(context);
-        const ctx: ScreenContext = {
-          req,
-          gateway,
-          csrf: createCsrfRenderer(gateway),
-          rb: rbFor(req.session.rb),
-          hooks: shellHooks,
-          now: systemClock.now(),
-          body: parsed?.body,
-        };
-        const decision = await runGate(req, dispatch.gate);
-        const outcome: Outcome<T> =
-          decision.kind === 'redirect'
-            ? { answer: answers.redirect(decision.location, req.pendingSetCookies, context) }
-            : await dispatch.run(ctx, context);
-        // Read from the screen's request after it ran: a screen may record values on it or replace it with its own.
-        await saveSessionWrites(gateway, auth, { ...ctx.req.sessionWrites, ...outcome.writes });
-        return outcome.answer;
-      } catch (error) {
-        failure = error;
-        return answerFailure(error, answers, context);
-      }
-    });
-    statusCode = answers.statusOf(answer);
-    return answer;
-  } catch (error) {
-    failure ??= error;
-    throw error;
-  } finally {
+  let logged = false;
+  // Called in the request span, so the line carries its trace fields; again outside it only if the span never ran.
+  const logOnce = (): void => {
+    if (logged) return;
+    logged = true;
     logRequest({
       route,
       httpMethod: input.method,
@@ -264,6 +199,70 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
       tenantId: user?.tid,
       error: failure,
     });
+  };
+  const answerRequest = async (): Promise<T> => {
+    let received: ReceivedBody | undefined;
+    try {
+      const auth = await authenticateRequest(input.headers, input.path);
+      user = auth.user;
+      received = input.bodySource === undefined ? undefined : await receiveRequestBody(input.bodySource);
+      const gateway = createGatewayClient({ userToken: auth.userToken, requestId, inbound: input.headers });
+      const req = await buildAdminRequest({
+        params: input.route,
+        searchParams: input.searchParams,
+        headers: input.headers,
+        form: received?.form,
+        auth,
+        gateway,
+        mode: input.mode,
+      });
+      context = { locale: req.session.locale, acceptEncoding: context.acceptEncoding };
+      const dispatch = resolve(req, received === undefined ? [] : uploadsOf(received.form));
+      if (dispatch === undefined) return answers.notFound(context);
+      const ctx: ScreenContext = {
+        req,
+        gateway,
+        csrf: createCsrfRenderer(gateway),
+        rb: rbFor(req.session.rb),
+        hooks: shellHooks,
+        now: systemClock.now(),
+        body: received?.body,
+      };
+      const decision = await runGate(req, dispatch.gate);
+      const outcome: Outcome<T> =
+        decision.kind === 'redirect'
+          ? { answer: answers.redirect(decision.location, req.pendingSetCookies, context) }
+          : await dispatch.run(ctx, context);
+      // Read from the screen's request after it ran: a screen may record values on it or replace it with its own.
+      await saveSessionWrites(gateway, auth, { ...ctx.req.sessionWrites, ...outcome.writes });
+      return outcome.answer;
+    } catch (error) {
+      failure = error;
+      return answerFailure(error, answers, context);
+    } finally {
+      // The screen's relays have completed and the answer holds only service replies, never the staged body.
+      await received?.dispose?.();
+    }
+  };
+  try {
+    await ensureTracing();
+    return await withRequestSpan(`${input.method} ${route}`, input.headers, async () => {
+      try {
+        const answer = await answerRequest();
+        statusCode = answers.statusOf(answer);
+        return answer;
+      } catch (error) {
+        failure = error;
+        throw error;
+      } finally {
+        logOnce();
+      }
+    });
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    logOnce();
   }
 }
 

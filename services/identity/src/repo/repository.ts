@@ -69,6 +69,7 @@ const ONE_MINUTE_MS = 60_000;
 /** Width of the legacy `char(35)` id columns. */
 const ID_WIDTH = 35;
 const OPEN_OPERATION_STATES: readonly AccountOperationState[] = ['prepared', 'committed'];
+const ADVISORY_LOCK_SQL = 'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))';
 
 /** DAO `cfqueryparam null="#value eq ''#"`: an empty string is stored as NULL [legacy: core/mura/user/userDAO.cfc:304-343]. */
 function daoNull(value: string | null | undefined): string | null {
@@ -442,7 +443,7 @@ export interface IdentityRepository extends Repository {
 
   /** The permissions of a node, optionally of one type [legacy: core/mura/permission.cfc:203-218,623-630]. */
   permissionsFor(tx: TenantTx, input: { contentId: string; siteId: string; type?: string }): Promise<PermissionRow[]>;
-  /** Every permission row of `groupId` in `siteId`, by content id then type. A migration apply's `ctx` reads without the window-phase wait. */
+  /** Every permission row of `groupId` in `siteId`, by content id then type, serialized per group until commit. A migration apply's `ctx` reads without the window-phase wait. */
   groupPermissions(tx: TenantTx, groupId: string, siteId: string, ctx?: WriteContext): Promise<PermissionRow[]>;
   /** Replaces every permission of a node with `grants`, inserted in order [legacy: core/mura/permission.cfc:518-547]. */
   replaceNodePermissions(
@@ -450,12 +451,12 @@ export interface IdentityRepository extends Repository {
     input: { contentId: string; siteId: string; grants: readonly PermissionGrant[] },
     ctx?: WriteContext,
   ): Promise<PermissionRow[]>;
-  /** Replaces every permission of a module with `module` grants of `groupIds`, duplicates not removed [legacy: core/mura/permission.cfc:643-663]. */
+  /** Replaces every permission of a module with `module` grants of `groupIds`, duplicates not removed, serialized per module; returns the inserted and deleted rows [legacy: core/mura/permission.cfc:643-663]. */
   replaceModulePermissions(
     tx: TenantTx,
     input: { moduleId: string; siteId: string; groupIds: readonly string[] },
     ctx?: WriteContext,
-  ): Promise<PermissionRow[]>;
+  ): Promise<{ rows: PermissionRow[]; removed: PermissionRow[] }>;
   /** The `module` grants of `groupIds` in `siteId`, by module then group. */
   moduleGrants(tx: TenantTx, groupIds: readonly string[], siteId: string): Promise<ModuleGrant[]>;
 
@@ -1287,18 +1288,26 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     return readUnits<PermissionRow>(tx, PERMISSION.unit, permissionsSql, [tx.tenantId, input.contentId, input.siteId, input.type ?? null]);
   }
 
-  function groupPermissions(tx: TenantTx, groupId: string, siteId: string, ctx?: WriteContext): Promise<PermissionRow[]> {
+  /** Serializes state reads of `groupId` until commit, so each follows the last publisher's commit, then reads its every permission row in `siteId`. */
+  async function groupPermissions(tx: TenantTx, groupId: string, siteId: string, ctx?: WriteContext): Promise<PermissionRow[]> {
+    await tx.query(ADVISORY_LOCK_SQL, [`${schema}.${PERMISSION.table}.group:${tx.tenantId}:${charKey(groupId)}`]);
     return readAsWriter<PermissionRow>(tx, PERMISSION.unit, groupPermissionsSql, [tx.tenantId, groupId, siteId], ctx);
   }
 
-  /** Locks and deletes every permission of the node or module `contentId` in `siteId`. */
-  async function deletePermissions(tx: TenantTx, contentId: string, siteId: string, ctx: WriteContext): Promise<void> {
+  /** Serializes replacements of the node or module `contentId`, then locks and deletes its every permission in `siteId`; returns the deleted rows. */
+  async function deletePermissions(tx: TenantTx, contentId: string, siteId: string, ctx: WriteContext): Promise<PermissionRow[]> {
+    await tx.query(ADVISORY_LOCK_SQL, [`${schema}.${PERMISSION.table}:${tx.tenantId}:${charKey(contentId)}`]);
     const stale = await readUnits<Pick<PermissionRow, 'contentid' | 'groupid' | 'siteid' | 'type'>>(tx, PERMISSION.unit, lockPermissionsSql, [
       tx.tenantId,
       contentId,
       siteId,
     ]);
-    await deleteKeys(tx, PERMISSION.table, stale, ctx);
+    const removed: PermissionRow[] = [];
+    for (const key of stale) {
+      const row = await base.delete<PermissionRow>(tx, PERMISSION.table, key, ctx);
+      if (row !== null) removed.push(row);
+    }
+    return removed;
   }
 
   async function replaceNodePermissions(
@@ -1319,15 +1328,15 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     tx: TenantTx,
     input: { moduleId: string; siteId: string; groupIds: readonly string[] },
     ctx: WriteContext = {},
-  ): Promise<PermissionRow[]> {
-    await deletePermissions(tx, input.moduleId, input.siteId, ctx);
+  ): Promise<{ rows: PermissionRow[]; removed: PermissionRow[] }> {
+    const removed = await deletePermissions(tx, input.moduleId, input.siteId, ctx);
     const inserted: PermissionRow[] = [];
     // A CFML list loop skips empty items; repeated ids are inserted again and fail on the key, as legacy's insert does.
     for (const groupId of input.groupIds.filter((id) => id !== '')) {
       const row = { contentid: input.moduleId, groupid: groupId, siteid: input.siteId, type: 'module' };
       inserted.push(await base.insert<PermissionRow>(tx, PERMISSION.table, row, ctx));
     }
-    return inserted;
+    return { rows: inserted, removed };
   }
 
   async function moduleGrants(tx: TenantTx, groupIds: readonly string[], siteId: string): Promise<ModuleGrant[]> {

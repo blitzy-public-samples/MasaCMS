@@ -447,12 +447,16 @@ describe('relayCarchRaw', () => {
     ]);
   });
 
-  it.each<[string, () => MultipartBody['body']]>([
-    ['Uint8Array', () => new TextEncoder().encode(MULTIPART)],
-    ['ArrayBuffer', () => new TextEncoder().encode(MULTIPART).buffer],
-    ['Blob', () => new Blob([MULTIPART])],
-    ['ReadableStream', () => new Blob([MULTIPART]).stream()],
-  ])('posts a %s multipart body unchanged', async (_name, body) => {
+  const SIZE = Buffer.byteLength(MULTIPART);
+  const SIZED = { 'content-length': String(SIZE) };
+
+  it.each<[string, () => MultipartBody['body'], Readonly<Record<string, string>>]>([
+    ['Uint8Array', () => new TextEncoder().encode(MULTIPART), {}],
+    ['ArrayBuffer', () => new TextEncoder().encode(MULTIPART).buffer, {}],
+    ['Blob', () => new Blob([MULTIPART]), SIZED],
+    ['sized re-readable source', () => ({ size: SIZE, stream: () => new Blob([MULTIPART]).stream() }), SIZED],
+    ['ReadableStream', () => new Blob([MULTIPART]).stream(), {}],
+  ])('posts a %s multipart body unchanged', async (_name, body, framing) => {
     let received: RecordedRequest | undefined;
     const route = (request: RecordedRequest) => {
       received = request;
@@ -473,7 +477,7 @@ describe('relayCarchRaw', () => {
         method: 'POST',
         path: '/v1/raw/carch/update',
         query: { siteid: SITE },
-        headers: { ...SENT_CSRF, 'content-type': MULTIPART_TYPE },
+        headers: { ...SENT_CSRF, 'content-type': MULTIPART_TYPE, ...framing },
       },
     ]);
   });

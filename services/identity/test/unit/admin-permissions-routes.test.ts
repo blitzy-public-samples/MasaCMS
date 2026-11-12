@@ -1,4 +1,4 @@
-/** The `cperm` main, module and updatemodule routes and the reverse lookup over a throwaway `identity` schema: contract shape, s2 and site-admin access, node verdicts, module grants, the posted `moduleid` as CSRF context and redirect key, and the token-site lookup. */
+/** The `cperm` main, module and updatemodule routes and the reverse lookup over a throwaway `identity` schema: contract shape, s2 and site-admin access, request validation, node verdicts, module grants, the posted `moduleid` as CSRF context and redirect key, and the token-site lookup. */
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -340,6 +340,25 @@ describe('updatemodule redirects', () => {
   });
 });
 
+describe('request validation', () => {
+  const routes: [Method, (id: string) => string, Payload | undefined][] = [
+    ['GET', contentUrl, undefined],
+    ['GET', moduleUrl, undefined],
+    ['PUT', moduleUrl, new URLSearchParams({ moduleid: USERS_MODULE })],
+  ];
+
+  it.each(['C', NODE.slice(1), `${NODE}0`].flatMap((id) => routes.map(([method, url, payload]) => [method, url(id), payload] as const)))(
+    'answer %s %s, whose id is not 35 characters, with the shared invalidParameters 400 before any read or write',
+    async (method, url, payload) => {
+      const res = await send(method, url, await headersFor([Roles.s2]), payload);
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({ error: { code: 'invalid_request', message: 'Invalid parameters' } });
+      expect(events.published).toEqual([]);
+    },
+  );
+});
+
 describe.skipIf(!available)('cperm screens against PostgreSQL', () => {
   /** Inserts an active session of the admin user under the test secret and returns its id. */
   async function newSession(): Promise<string> {
@@ -502,6 +521,98 @@ describe.skipIf(!available)('cperm screens against PostgreSQL', () => {
     expect(postedContext.json()).toEqual({ written: true, redirect });
     expect((await moduleGrants(pathModule))[0]).toEqual({ authors: true, Editors: false });
     expect((await moduleGrants(SITE_MANAGER_MODULE))[0]).toEqual({ authors: false, Editors: false });
+  });
+
+  /** Headers of an s2 user in a new session carrying a CSRF token for `moduleId`. */
+  async function tokenHeadersFor(moduleId: string): Promise<Record<string, string>> {
+    const { token, expires } = tokenFor(moduleId);
+    return { ...(await headersFor([Roles.s2], await newSession())), [CSRF_HEADER_TOKEN]: token, [CSRF_HEADER_EXPIRES]: expires };
+  }
+
+  /** The names of the groups `cperm.module` shows as granted, system groups first. */
+  async function grantedNames(moduleId: string): Promise<string[]> {
+    return (await moduleGrants(moduleId)).flatMap((list) => Object.keys(list).filter((name) => list[name]));
+  }
+
+  it.each<[string, Record<string, unknown> | undefined]>([
+    ['no body', undefined],
+    ['an object groupid', { groupid: { id: UNKNOWN_GROUP } }],
+    ['a null groupid', { groupid: null }],
+    ['a numeric groupid', { groupid: 5 }],
+    ['a groupid list holding an object', { groupid: [UNKNOWN_GROUP, { id: UNKNOWN_GROUP }] }],
+    ['a groupid list holding null', { groupid: [null] }],
+    ['a one-item groupid list holding a non-CfUuid string', { groupid: ['not-a-group'] }],
+    ['a groupid list holding a non-CfUuid string', { groupid: [UNKNOWN_GROUP, 'not-a-group'] }],
+    ['a null groupid under another casing', { GroupID: null }],
+    ['a numeric groupid under another casing', { GroupID: 5 }],
+    ['a boolean groupid under another casing', { GroupID: true }],
+    ['an object groupid under another casing', { GroupID: { id: UNKNOWN_GROUP } }],
+    ['a groupid list holding null under another casing', { GroupID: [null] }],
+    ['a groupid list holding a non-CfUuid string under another casing', { GroupID: ['not-a-group'] }],
+    ['an object moduleid under another casing', { groupid: UNKNOWN_GROUP, ModuleID: { id: USERS_MODULE } }],
+    ['an object csrf_token under another casing', { groupid: UNKNOWN_GROUP, CSRF_Token: { token: UNKNOWN_GROUP } }],
+    ['an object-valued other field', { groupid: UNKNOWN_GROUP, router: { url: './' } }],
+    ['a list-valued other field', { groupid: UNKNOWN_GROUP, siteid: [SITE] }],
+  ])('refuse a save with %s with the shared invalidParameters 400, leaving its token unconsumed and the grants unwritten', async (_label, payload) => {
+    const moduleId = '00000000000000000000000000000000009';
+    const headers = await tokenHeadersFor(moduleId);
+    await gated(SITE, (tx) => repo.replaceModulePermissions(tx, { moduleId, siteId: SITE, groupIds: [groups.authors] }));
+
+    const refused = await send('PUT', moduleUrl(moduleId), headers, payload);
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json()).toMatchObject({ error: { code: 'invalid_request', message: 'Invalid parameters' } });
+    expect(refused.headers['x-opt2-write-position']).toBeUndefined();
+    expect([relay.calls, events.published]).toEqual([[], []]);
+    expect(await grantedNames(moduleId)).toEqual(['authors']);
+
+    const saved = await send('PUT', moduleUrl(moduleId), headers, { groupid: groups.members });
+    expect(saved.json()).toMatchObject({ written: true });
+    expect(relay.calls).toHaveLength(1);
+    expect(await grantedNames(moduleId)).toEqual(['Members']);
+  });
+
+  it.each<[string, () => Payload, string[]]>([
+    [
+      "the legacy form's checkboxes and hidden fields",
+      () =>
+        new URLSearchParams([
+          ['groupid', groups.editors],
+          ['groupid', groups.umbrellaAdmin],
+          ['router', 'http://localhost/admin/?muraAction=cPerm.module'],
+          ['siteid', SITE],
+          ['topid', HOME_CONTENT],
+          ['moduleid', '00000000000000000000000000000000015'],
+          ...Object.entries(csrfFields('00000000000000000000000000000000015')),
+        ]),
+      ['Editors', 'Admin'],
+    ],
+    ['a JSON comma list', () => ({ groupid: `${groups.authors},${groups.members}` }), ['authors', 'Members']],
+    ['a form comma list in one field', () => new URLSearchParams({ groupid: `${groups.editors},${groups.members}` }), ['Editors', 'Members']],
+    ['a form groupid spelled in another case', () => new URLSearchParams({ GroupID: groups.editors }), ['Editors']],
+    [
+      'repeated form groupid checkboxes and hidden fields spelled in other cases',
+      () => {
+        const { token, expires } = tokenFor('00000000000000000000000000000000015');
+        return new URLSearchParams([
+          ['GroupID', groups.editors],
+          ['GroupID', groups.umbrellaAdmin],
+          ['TopID', HOME_CONTENT],
+          ['ModuleID', '00000000000000000000000000000000015'],
+          ['CSRF_Token', token],
+          ['CSRF_Token_Expires', expires],
+        ]);
+      },
+      ['Editors', 'Admin'],
+    ],
+    ['a JSON groupid array spelled in capitals', () => ({ GROUPID: [groups.authors, groups.members] }), ['authors', 'Members']],
+    ['JSON numbers and booleans in other fields', () => ({ groupid: [groups.authors], activeTab: 2, compactDisplay: false }), ['authors']],
+  ])('save %s as the CFML list loop reads it', async (_label, payload, granted) => {
+    const moduleId = '00000000000000000000000000000000015';
+
+    const saved = await send('PUT', moduleUrl(moduleId), await tokenHeadersFor(moduleId), payload());
+
+    expect(saved.json()).toEqual({ written: true, redirect: { action: 'cComments.default', params: { siteid: SITE } } });
+    expect(await grantedNames(moduleId)).toEqual(granted);
   });
 
   // tenant-a pools its public users in umbrella, so umbrella's lookup reaches tenant-a's Admin group; the token carries no roles.

@@ -1,5 +1,5 @@
 // SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Finance rollup domain: the pure grouping, and rebuilds and reads against a throwaway `finance` schema. */
+/** Finance rollup domain: SQL-grouped rebuilds and paged reads against a throwaway `finance` schema. */
 import { fileURLToPath } from 'node:url';
 import fc from 'fast-check';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -10,8 +10,9 @@ import { createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } 
 import { FINANCE_STATES } from '../../src/domain/lifecycle.transitions.js';
 import { formatMoney, sumMoney, type Money } from '../../src/domain/money.js';
 import { FinanceDomainError, createRecord, transitionRecord, type FinanceActor, type FinanceDomainDeps } from '../../src/domain/records.js';
-import { computeRollups, getRollups, listRollups, rebuildRollups, type RollupRow, type RollupSourceRow } from '../../src/domain/rollup.js';
-import { createFinanceRepository, type NewFinanceRollup } from '../../src/repo/repository.js';
+import { getRollups, rebuildRollups, type RollupRow } from '../../src/domain/rollup.js';
+import type { RecordPaging } from '../../src/repo/queries.js';
+import { createFinanceRepository } from '../../src/repo/repository.js';
 import { UNITS, type FinanceRollupRow } from '../../src/repo/tables.js';
 
 const NOW = new Date(2026, 5, 30, 0, 0, 0, 0);
@@ -19,7 +20,16 @@ const LATER = new Date(2026, 6, 1, 12, 30, 15, 120);
 // 999999999999999.9999, the largest numeric(19,4) value, as Money.
 const MAX: Money = 9_999_999_999_999_999_999n;
 const PROGRAM_ID = 7;
+// A program no tenant of the schema is bound to.
+const FOREIGN_PROGRAM_ID = PROGRAM_ID + 1;
 const PREPARER = ['finance.preparer'];
+const FIRST_PAGE: RecordPaging = { pageIndex: 1, itemsPerPage: 1000 };
+
+/** One record a grouping case seeds; `program` defaults to the case tenant's own program. */
+type Seed = { period: string; state: string; amount: Money; program?: number };
+
+/** Period, state, count and four-decimal total of one rollup group. */
+type Summary = [string, string, number, string];
 
 /** Code-point order of two texts, as COLLATE "C" orders them. */
 function binary(a: string, b: string): number {
@@ -27,7 +37,7 @@ function binary(a: string, b: string): number {
 }
 
 /** Period, state, count and four-decimal total of each domain rollup row. */
-function summary(rows: readonly RollupRow[]): [string, string, number, string][] {
+function summary(rows: readonly RollupRow[]): Summary[] {
   return rows.map((row) => [row.period, row.state, row.recordCount, formatMoney(row.totalAmount)]);
 }
 
@@ -36,49 +46,15 @@ function storedSummary(rows: readonly FinanceRollupRow[]): [string, string, numb
   return rows.map((row) => [row.period, row.state, row.record_count, row.total_amount, row.computed_at.getTime(), row.legacy_program_id, row.tenant_id]);
 }
 
-describe('computeRollups', () => {
-  const record = fc.record({
-    period: fc.constantFrom('2025-12', '2026-01', '2026-06', '2026-09', '2026-10'),
-    state: fc.constantFrom(...FINANCE_STATES),
-    amount: fc.bigInt({ min: -MAX, max: MAX }),
-  });
-
-  it('keeps every record count and the exact grand total in unique groups ordered by period, then state', () => {
-    fc.assert(
-      fc.property(fc.array(record, { maxLength: 200 }), (records: RollupSourceRow[]) => {
-        const rows = computeRollups(records, NOW);
-        expect(sumMoney(rows.map((row) => row.totalAmount))).toBe(sumMoney(records.map((r) => r.amount)));
-        expect(rows.reduce((count, row) => count + row.recordCount, 0)).toBe(records.length);
-        expect(rows).toEqual([...rows].sort((a, b) => binary(a.period, b.period) || binary(a.state, b.state)));
-        for (const row of rows) {
-          const members = records.filter((r) => r.period === row.period && r.state === row.state);
-          expect(row).toEqual({ ...row, recordCount: members.length, totalAmount: sumMoney(members.map((m) => m.amount)), computedAt: NOW });
-        }
-        expect(new Set(rows.map((row) => `${row.period}\n${row.state}`)).size).toBe(rows.length);
-      }),
-    );
-  });
-
-  it.each([
-    ['no records', [], []],
-    [
-      'hyphenated states in binary order',
-      [
-        { period: '2026-10', state: 'REJECTED', amount: 1n },
-        { period: '2026-10', state: 'RE-SUBMITTED', amount: 2n },
-        { period: '2026-09', state: 'SUBMITTED', amount: 3n },
-        { period: '2026-10', state: 'REJECTED', amount: -4n },
-      ],
-      [
-        ['2026-09', 'SUBMITTED', 1, '0.0003'],
-        ['2026-10', 'RE-SUBMITTED', 1, '0.0002'],
-        ['2026-10', 'REJECTED', 2, '-0.0003'],
-      ],
-    ],
-  ] as [string, RollupSourceRow[], [string, string, number, string][]][])('groups %s', (_label, records, expected) => {
-    expect(summary(computeRollups(records, NOW))).toEqual(expected);
-  });
-});
+/** `tx` that appends the row count of every query result it answers to `counts`. */
+function counting(tx: TenantTx, counts: number[]): TenantTx {
+  const query = (async (text: string, values?: unknown[]) => {
+    const result = await tx.query(text, values);
+    counts.push(result.rows.length);
+    return result;
+  }) as TenantTx['query'];
+  return { ...tx, query };
+}
 
 /** Storage port the rollup paths never touch. */
 function unusedStorage(): StoragePort {
@@ -108,14 +84,7 @@ describe.skipIf(!available)('finance rollup domain against PostgreSQL', () => {
     await ensureUnitGates(handle.app, UNITS);
     await closeGates(handle.app, { units: UNITS, holderId: 'rollup-domain-test', allowLegacy: true });
     await openGates(handle.app, { units: UNITS, holderId: 'rollup-domain-test', state: 'open' });
-    await handle.app.withTenant(tenant, (tx) =>
-      tx.query(`INSERT INTO ${handle.schema}.program_binding (tenant_id, site_id, legacy_program_id, updated_at) VALUES ($1, $2, $3, $4)`, [
-        tenant,
-        site,
-        PROGRAM_ID,
-        NOW,
-      ]),
-    );
+    await bind(site, PROGRAM_ID);
   });
 
   afterAll(async () => {
@@ -140,6 +109,157 @@ describe.skipIf(!available)('finance rollup domain against PostgreSQL', () => {
     return rows.map((row) => `${row.op} ${row.table} ${row.actor_user_id ?? '-'}`);
   }
 
+  /** Binds the tenant of `siteId` to program `programId`; returns the tenant id. */
+  async function bind(siteId: string, programId: number): Promise<string> {
+    const id = tenantIdForSite(siteId);
+    await inTenant(
+      (tx) =>
+        tx.query(
+          `INSERT INTO ${handle.schema}.program_binding (tenant_id, site_id, legacy_program_id, updated_at) VALUES ($1, $2, $3, $4)`,
+          [id, siteId, programId, NOW],
+        ),
+      id,
+    );
+    return id;
+  }
+
+  let nextProgramId = PROGRAM_ID + 2;
+
+  /** Seeds `seeds` under a fresh tenant with its own program, rebuilds through `wrap(tx)` at NOW; returns rebuilt and stored rows. */
+  async function rebuiltFrom(
+    seeds: readonly Seed[],
+    wrap: (tx: TenantTx) => TenantTx = (tx) => tx,
+  ): Promise<{ rows: RollupRow[]; stored: FinanceRollupRow[]; tenantId: string; programId: number }> {
+    const programId = nextProgramId++;
+    const siteId = `rollup-domain-p${programId}`;
+    const tenantId = await bind(siteId, programId);
+    return inTenant(async (tx) => {
+      for (const seed of seeds) {
+        await deps.repository.insertRecord(tx, {
+          tenant_id: tx.tenantId,
+          siteid: siteId,
+          title: 'Seed',
+          amount: formatMoney(seed.amount),
+          period: seed.period,
+          state: seed.state,
+          version: 1,
+          created: NOW,
+          createdbyid: actor.userId,
+          lastupdate: null,
+          lastupdatebyid: null,
+          legacy_program_id: seed.program ?? programId,
+        });
+      }
+      const rows = await rebuildRollups(wrap(tx), deps, { now: NOW });
+      return { rows, stored: (await getRollups(tx, { paging: FIRST_PAGE })).rows, tenantId, programId };
+    }, tenantId);
+  }
+
+  it.each<[string, Seed[], Summary[]]>([
+    ['no records', [], []],
+    [
+      'hyphenated states in binary order',
+      [
+        { period: '2026-10', state: 'REJECTED', amount: 1n },
+        { period: '2026-10', state: 'RE-SUBMITTED', amount: 2n },
+        { period: '2026-09', state: 'SUBMITTED', amount: 3n },
+        { period: '2026-10', state: 'REJECTED', amount: -4n },
+      ],
+      [
+        ['2026-09', 'SUBMITTED', 1, '0.0003'],
+        ['2026-10', 'RE-SUBMITTED', 1, '0.0002'],
+        ['2026-10', 'REJECTED', 2, '-0.0003'],
+      ],
+    ],
+    [
+      'exact totals beyond Number precision',
+      [
+        { period: '2026-06', state: 'APPROVED', amount: MAX - 1n },
+        { period: '2026-06', state: 'APPROVED', amount: 1n },
+        { period: '2026-07', state: 'APPROVED', amount: 1000n },
+        { period: '2026-07', state: 'APPROVED', amount: 2000n },
+        { period: '2026-08', state: 'REJECTED', amount: 1n - MAX },
+        { period: '2026-08', state: 'REJECTED', amount: -1n },
+      ],
+      [
+        ['2026-06', 'APPROVED', 2, '999999999999999.9999'],
+        ['2026-07', 'APPROVED', 2, '0.3000'],
+        ['2026-08', 'REJECTED', 2, '-999999999999999.9999'],
+      ],
+    ],
+    [
+      'negative amounts',
+      [
+        { period: '2026-06', state: 'REJECTED', amount: -1_2500n },
+        { period: '2026-06', state: 'REJECTED', amount: -2_5000n },
+        { period: '2026-06', state: 'REJECTED', amount: 1n },
+        { period: '2026-07', state: 'SUBMITTED', amount: -5000n },
+        { period: '2026-07', state: 'SUBMITTED', amount: 5000n },
+      ],
+      [
+        ['2026-06', 'REJECTED', 3, '-3.7499'],
+        ['2026-07', 'SUBMITTED', 2, '0.0000'],
+      ],
+    ],
+    [
+      'only the records of the tenant program',
+      [
+        { period: '2026-06', state: 'SUBMITTED', amount: 1n },
+        { period: '2026-06', state: 'SUBMITTED', amount: 2n, program: FOREIGN_PROGRAM_ID },
+        { period: '2026-08', state: 'APPROVED', amount: 3n, program: FOREIGN_PROGRAM_ID },
+      ],
+      [['2026-06', 'SUBMITTED', 1, '0.0001']],
+    ],
+  ])('groups %s, stamping and storing each group', async (_label, seeds, expected) => {
+    const { rows, stored, tenantId, programId } = await rebuiltFrom(seeds);
+    expect(summary(rows)).toEqual(expected);
+    expect(rows.every((row) => row.computedAt === NOW)).toBe(true);
+    expect(storedSummary(stored)).toEqual(expected.map((row) => [...row, NOW.getTime(), programId, tenantId]));
+  });
+
+  it('keeps every record count and the exact grand total in unique groups ordered by period, then state', async () => {
+    const seed = fc.record({
+      period: fc.constantFrom('2025-12', '2026-01', '2026-06', '2026-09', '2026-10'),
+      state: fc.constantFrom(...FINANCE_STATES),
+      // Bounded so that no group of up to 40 records totals beyond numeric(19,4).
+      amount: fc.bigInt({ min: -MAX / 40n, max: MAX / 40n }),
+    });
+    await fc.assert(
+      fc.asyncProperty(fc.array(seed, { maxLength: 40 }), async (seeds: Seed[]) => {
+        const { rows } = await rebuiltFrom(seeds);
+        expect(sumMoney(rows.map((row) => row.totalAmount))).toBe(sumMoney(seeds.map((s) => s.amount)));
+        expect(rows.reduce((count, row) => count + row.recordCount, 0)).toBe(seeds.length);
+        expect(rows).toEqual([...rows].sort((a, b) => binary(a.period, b.period) || binary(a.state, b.state)));
+        for (const row of rows) {
+          const members = seeds.filter((s) => s.period === row.period && s.state === row.state);
+          expect(row).toEqual({
+            ...row,
+            recordCount: members.length,
+            totalAmount: sumMoney(members.map((m) => m.amount)),
+            computedAt: NOW,
+          });
+        }
+        expect(new Set(rows.map((row) => `${row.period}\n${row.state}`)).size).toBe(rows.length);
+      }),
+      { numRuns: 20 },
+    );
+  });
+
+  it('transfers one row per group, not one per record', async () => {
+    const seeds = Array.from({ length: 30 }, (_, i): Seed => ({
+      period: '2026-06',
+      state: i % 2 === 0 ? 'APPROVED' : 'REJECTED',
+      amount: 1n,
+    }));
+    const counts: number[] = [];
+    const { rows } = await rebuiltFrom(seeds, (tx) => counting(tx, counts));
+    expect(summary(rows)).toEqual([
+      ['2026-06', 'APPROVED', 15, '0.0015'],
+      ['2026-06', 'REJECTED', 15, '0.0015'],
+    ]);
+    expect(Math.max(...counts)).toBeLessThanOrEqual(rows.length);
+  });
+
   it('rebuilds from the program records with one changelog row per replaced row, and repeats identically', async () => {
     await inTenant(async (tx) => {
       const travel = await createRecord(tx, deps, { title: 'Travel', amount: 12_3450n, period: '2026-06' }, actor);
@@ -163,7 +283,7 @@ describe.skipIf(!available)('finance rollup domain against PostgreSQL', () => {
       return rows;
     });
     expect(summary(first)).toEqual(expected);
-    const stored = await inTenant((tx) => listRollups(tx));
+    const stored = (await inTenant((tx) => getRollups(tx, { paging: FIRST_PAGE }))).rows;
     expect(storedSummary(stored)).toEqual(expected.map((row) => [...row, NOW.getTime(), PROGRAM_ID, tenant]));
 
     const second = await inTenant(async (tx) => {
@@ -172,7 +292,7 @@ describe.skipIf(!available)('finance rollup domain against PostgreSQL', () => {
       return rows;
     });
     expect(second).toEqual(first);
-    expect(storedSummary(await inTenant((tx) => listRollups(tx)))).toEqual(storedSummary(stored));
+    expect(storedSummary((await inTenant((tx) => getRollups(tx, { paging: FIRST_PAGE }))).rows)).toEqual(storedSummary(stored));
   });
 
   it('stamps every row with the rebuild instant and pages the stored rows as the fixture read does', async () => {
@@ -183,44 +303,25 @@ describe.skipIf(!available)('finance rollup domain against PostgreSQL', () => {
     expect(page.rows.map((row) => [row.period, row.state, row.computed_at.getTime()])).toEqual(
       rebuilt.slice(2, 4).map((row) => [row.period, row.state, LATER.getTime()]),
     );
-    const all = await inTenant((tx) => getRollups(tx));
-    expect(all).toEqual({ rows: await inTenant((tx) => listRollups(tx)), total: rebuilt.length });
+    const all = await inTenant((tx) => getRollups(tx, { paging: FIRST_PAGE }));
+    expect(all.total).toBe(rebuilt.length);
+    expect(all.rows.map((row) => [row.period, row.state, row.record_count, row.total_amount, row.computed_at.getTime()])).toEqual(
+      summary(rebuilt).map((row) => [...row, LATER.getTime()]),
+    );
   });
 
-  it('rebuilds inside the write transaction exactly as PostgreSQL groups the records in binary order', async () => {
+  it('counts a record written earlier in the same transaction', async () => {
     const rows = await inTenant(async (tx) => {
       const { record } = await createRecord(tx, deps, { title: 'Desk', amount: 1_0000n, period: '2027-01' }, actor);
       return rebuildRollups(tx, deps, { now: record.created });
     });
-    const grouped = await inTenant(async (tx) => {
-      const { rows: sql } = await tx.query<{ period: string; state: string; n: number; total: string }>(
-        `SELECT period, state, count(*)::integer AS n, sum(amount)::text AS total FROM ${handle.schema}.record` +
-          ` WHERE legacy_program_id = ${PROGRAM_ID} GROUP BY period, state ORDER BY period COLLATE "C", state COLLATE "C"`,
-      );
-      return sql;
-    });
-    expect(summary(rows)).toEqual(grouped.map((group) => [group.period, group.state, group.n, group.total]));
+    expect(summary(rows).filter(([period]) => period === '2027-01')).toEqual([['2027-01', 'IN-PROGRESS', 1, '1.0000']]);
   });
 
   it('refuses to rebuild for a tenant without a program and reads no rows for it', async () => {
     const rebuild = inTenant((tx) => rebuildRollups(tx, deps, { now: NOW }), unbound);
     await expect(rebuild).rejects.toBeInstanceOf(FinanceDomainError);
     await expect(rebuild).rejects.toMatchObject({ type: 'invalidParameters' });
-    expect(await inTenant((tx) => listRollups(tx), unbound)).toEqual([]);
-    expect(await inTenant((tx) => getRollups(tx), unbound)).toEqual({ rows: [], total: 0 });
-  });
-
-  it('lists every stored row past one full page', async () => {
-    const rows: NewFinanceRollup[] = Array.from({ length: 1001 }, (_, i) => ({
-      period: `p${String(i).padStart(4, '0')}`,
-      state: 'APPROVED',
-      record_count: 1,
-      total_amount: '1.0000',
-      computed_at: NOW,
-      legacy_program_id: PROGRAM_ID,
-    }));
-    await inTenant((tx) => deps.repository.replaceRollups(tx, rows));
-    const listed = await inTenant((tx) => listRollups(tx));
-    expect(listed.map((row) => row.period)).toEqual(rows.map((row) => row.period));
+    expect(await inTenant((tx) => getRollups(tx, { paging: FIRST_PAGE }), unbound)).toEqual({ rows: [], total: 0 });
   });
 });

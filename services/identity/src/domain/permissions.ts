@@ -133,9 +133,8 @@ export async function updateModulePermissions(deps: PermissionDeps, input: Modul
     deps.db,
     tenant,
     async (tx) => {
-      const before = await deps.repo.permissionsFor(tx, { contentId: moduleId, siteId });
-      const rows = await deps.repo.replaceModulePermissions(tx, { moduleId, siteId, groupIds });
-      const changedGroupIds = distinctGroupIds([...rows, ...before]);
+      const { rows, removed } = await deps.repo.replaceModulePermissions(tx, { moduleId, siteId, groupIds });
+      const changedGroupIds = distinctGroupIds([...rows, ...removed]);
       await publishGroupStates(deps, tx, siteId, changedGroupIds);
       return { rows, changedGroupIds };
     },

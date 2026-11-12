@@ -14,6 +14,7 @@ import { migrationKitSql } from '../../src/migration-kit/ddl.js';
 import { GATE_WAIT_MS, endOperation, isMigrationAuthority } from '../../src/migration-kit/gates.js';
 import {
   DEFAULT_EXPORT_LIMIT,
+  MAX_EXPORT_MATCH_LENGTH,
   MIGRATION_PATH_PREFIX,
   registerMigrationHandlers,
   type AppliedChange,
@@ -807,6 +808,39 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
     expect(pages.slice(1).every((page) => !('objects' in page))).toBe(true);
   });
 
+  /** A fresh site's items i1–i5, by id, whose names and quantities the match cases select from. */
+  async function matchItems(): Promise<{ site: string; byId: Record<string, LegacyValues> }> {
+    const site = freshSite();
+    const values = [item('i1', site, 'Alpha', 1), item('i2', site, 'alpha  ', 2), item('i3', site, 'Beta', 3), item('i4', site, 'Älpha', 4), { ...item('i5', site, '', -5), Name: null }];
+    await applied({ batchId: `${site}-m1`, legacyTable: 'tItems', siteId: site, columns: ITEM_LEGACY, rows: rowsOf(ITEM_LEGACY, values.map((v): [RowOp, LegacyValues] => ['upsert', v])) });
+    return { site, byId: Object.fromEntries(values.map((v) => [String(v.ItemID), v])) };
+  }
+
+  it.each([
+    ['a text value in another case and with trailing spaces, plus the non-ASCII name', { NAME: ['ALPHA   '] }, ['i1', 'i2', 'i4']],
+    ['integer values given as text and as JSON numbers', { qty: [' +3 ', -5, 'x', '1.5'] }, ['i3', 'i5']],
+    ['either of two entries, plus the non-ASCII name', { Name: ['beta'], Qty: [1] }, ['i1', 'i3', 'i4']],
+    ['no row, for entries whose values cannot equal a stored value', { Name: ['a\u0000'], Qty: ['x'] }, []],
+    ['every row, for an entry naming a column the mapping does not store', { Name: ['beta'], Ghost: ['x'] }, ['i1', 'i2', 'i3', 'i4', 'i5']],
+  ] as [string, Record<string, (string | number)[]>, string[]][])('exports, for a match, %s', async (_label, match, ids) => {
+    const { site, byId } = await matchItems();
+    const page = await exportPage({ unit: 'mk.item', siteId: site, match: JSON.stringify(match) });
+    expect(page.tables).toEqual([
+      { unit: 'mk.item', legacyTable: 'tItems', targetTable: 'mk.item', keyless: false, columns: ITEM_LEGACY, rows: ids.map((id) => exported(ITEM_LEGACY, ['ItemID'], byId[id] as LegacyValues)) },
+    ]);
+    expect(page.objects).toEqual(objectsOf('mk.item', tenantIdForSite(site)));
+  });
+
+  it('pages a matched export with the keyset cursor when each page repeats the match', async () => {
+    const { site, byId } = await matchItems();
+    const match = JSON.stringify({ name: ['alpha'] });
+    const first = await exportPage({ unit: 'mk.item', siteId: site, match, limit: '2' });
+    const rest = await exportPage({ unit: 'mk.item', siteId: site, match, limit: '2', after: first.next ?? '' });
+    const rows = (...ids: string[]) => ids.map((id) => exported(ITEM_LEGACY, ['ItemID'], byId[id] as LegacyValues));
+    expect([first, rest].map((page) => page.tables.flatMap((table) => table.rows))).toEqual([rows('i1', 'i2'), rows('i4')]);
+    expect([first.next, rest.next]).toEqual([cursorText({ table: 'item', key: ['i2'] }), null]);
+  });
+
   it.each([
     ['an undeclared unit', { unit: 'mk.ghost', siteId: 'tenant-a' }],
     ['a programId for a unit without legacy_program_id', { unit: 'mk.item', siteId: 'tenant-a', programId: '1' }],
@@ -834,6 +868,12 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
     ['a limit of 0', { unit: 'mk.item', siteId: 'tenant-a', limit: '0' }],
     ['a limit above 10000', { unit: 'mk.item', siteId: 'tenant-a', limit: '10001' }],
     ['an unknown parameter', { unit: 'mk.item', siteId: 'tenant-a', page: '1' }],
+    ['a match that is not JSON', { unit: 'mk.item', siteId: 'tenant-a', match: '{"Name":' }],
+    ['a match that is not a JSON object', { unit: 'mk.item', siteId: 'tenant-a', match: '["Name"]' }],
+    ['a match naming no column', { unit: 'mk.item', siteId: 'tenant-a', match: '{}' }],
+    ['a match entry without values', { unit: 'mk.item', siteId: 'tenant-a', match: '{"Name":[]}' }],
+    ['a match value that is neither text nor an integer', { unit: 'mk.item', siteId: 'tenant-a', match: '{"Qty":[1.5]}' }],
+    ['a match longer than its maximum', { unit: 'mk.item', siteId: 'tenant-a', match: JSON.stringify({ Name: ['x'.repeat(MAX_EXPORT_MATCH_LENGTH)] }) }],
   ] as [string, Record<string, string>][])('rejects an export with %s as invalidParameters', async (_label, query) => {
     expectRejected(await get('/export', query));
   });
@@ -1255,6 +1295,56 @@ describe.skipIf(!available)('migration endpoints of a service without outbox, in
   ])('rejects %s as invalidParameters when the owner has no object manifest', async (_label, cursor) => {
     const res = await app.inject({ method: 'GET', url: `${MIGRATION_PATH_PREFIX}/export`, headers, query: { unit: 'mk.item', siteId: 'tenant-a', after: cursorText(cursor) } });
     expectRejected(res);
+  });
+});
+
+describe.skipIf(!available)('migration export match over a table whose mappings store different columns', () => {
+  const NARROW_ARCHIVE = defineMapping({ legacyTable: 'tNoteArchive', targetTable: 'mk.memo', columns: MEMO_COLUMNS.slice(0, 1), key: ['NoteID'] });
+  let handle: ThrowawaySchema;
+  let app: FastifyInstance;
+  let headers: Record<string, string>;
+
+  beforeAll(async () => {
+    handle = await createThrowawaySchema({ service: `${OWNER}-match`, schemaName: BASE, extraSql: [migrationKitSql(BASE), TABLES_SQL] });
+    app = await serviceApp(handle.app);
+    registerWritePositionHeader(app);
+    registerMigrationHandlers(app, {
+      owner: OWNER,
+      repository: createRepository({ owner: OWNER, schema: handle.schema, tables: TABLES }),
+      mappings: [NOTE_MAPPING, NARROW_ARCHIVE],
+      units: ['mk.memo'],
+    });
+    await app.ready();
+    headers = await authHeadersFor(subject('service:migration'), { audience: OWNER });
+    const notes = rowsOf(NOTE_LEGACY, [
+      ['upsert', { NoteID: 'n1', Type: 'Memo', Body: 'kept' }],
+      ['upsert', { NoteID: 'n2', Type: 'Memo', Body: 'other' }],
+    ]);
+    const res = await app.inject({
+      method: 'POST',
+      url: `${MIGRATION_PATH_PREFIX}/apply`,
+      headers,
+      payload: { batchId: 'match-notes', origin: 'backfill', legacyTable: 'tNotes', siteId: 'tenant-a', columns: NOTE_LEGACY, rows: notes },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+  });
+
+  afterAll(async () => {
+    await app.close();
+    await handle.drop();
+  });
+
+  it.each([
+    ['filters both mappings by a column both store', { noteid: ['N1'] }, ['n1']],
+    ['exports both mappings whole for a column one does not store', { Body: ['kept'] }, ['n1', 'n2']],
+  ] as [string, Record<string, string[]>, string[]][])('%s', async (_label, match, ids) => {
+    const res = await app.inject({ method: 'GET', url: `${MIGRATION_PATH_PREFIX}/export`, headers, query: { unit: 'mk.memo', siteId: 'tenant-a', match: JSON.stringify(match) } });
+    expect(res.statusCode, res.body).toBe(200);
+    const keys = ids.map((id) => encodeKey(MEMO_LEGACY, ['NoteID'], { NoteID: id }));
+    expect(res.json<ExportResponse>().tables.map((table) => [table.legacyTable, table.rows.map((row) => row.key)])).toEqual([
+      ['tNotes', keys],
+      ['tNoteArchive', keys],
+    ]);
   });
 });
 

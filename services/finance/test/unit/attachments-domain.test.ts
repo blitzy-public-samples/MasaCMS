@@ -5,6 +5,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { LegacyApiError, isCfUuid } from '@opt2/platform/legacy-compat';
@@ -15,6 +16,7 @@ import { StorageObjectNotFoundError, createLocalStorageAdapter, type LocalStorag
 import { tenantDbFromPool, tenantIdForSite, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { createThrowawaySchema, fixedClock, pgAvailable, testVerifier, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
+  AttachmentColumnTooLongError,
   fixtureFileHeaders,
   getAttachment,
   listAttachments,
@@ -36,6 +38,8 @@ const ACTOR_B: FinanceActor = { userId: '22222222-2222-3333-4444555566667777', s
 const MISSING_ID = '00000000-0000-0000-0000000000000000';
 const FIRST_PAGE = { pageIndex: 1, itemsPerPage: 50 };
 const BYTES = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x00, 0xff, 0x0a, 0x0d, 0x7f, 0x80]);
+/** `BYTES` as a spooled multipart part hands them over: counted, hashed and read through a new stream each time. */
+const UPLOADED = { size: BYTES.length, sha256: createHash('sha256').update(BYTES).digest('hex'), body: () => Readable.from([BYTES]) };
 
 // Content-Disposition values envelope.cfc sendFile answered on ACF 2023 for these file names.
 const ORACLE_DISPOSITIONS: ReadonlyArray<readonly [fileName: string, disposition: string]> = [
@@ -123,7 +127,7 @@ describe.skipIf(!available)('finance attachment domain against PostgreSQL', () =
   }
 
   function upload(recordId: string, fields: Partial<AttachmentUpload> = {}, uploadDeps = deps): Promise<FinanceAttachmentRow> {
-    const file: AttachmentUpload = { recordId, fileName: 'scan.PDF', contentType: 'application/pdf', bytes: BYTES, ...fields };
+    const file: AttachmentUpload = { recordId, fileName: 'scan.PDF', contentType: 'application/pdf', ...UPLOADED, ...fields };
     return inTenant((tx) => uploadAttachment(tx, uploadDeps, file, ACTOR_A));
   }
 
@@ -191,10 +195,10 @@ describe.skipIf(!available)('finance attachment domain against PostgreSQL', () =
     deps = { repository: createFinanceRepository({ db: handle.app, stagingDb, storage, clock }), storage, clock };
   });
 
-  it('stores the bytes under <tenant>/<attachment id>.<ext> and writes their size and SHA-256 with one changelog row', async () => {
+  it('streams the bytes under <tenant>/<attachment id>.<ext> and writes their size and SHA-256 with one changelog row', async () => {
     const recordId = await newRecord();
     const { row, changelog } = await inTenant(async (tx) => {
-      const written = await uploadAttachment(tx, deps, { recordId, fileName: 'Scan.PDF', contentType: 'application/pdf', bytes: BYTES }, ACTOR_A);
+      const written = await uploadAttachment(tx, deps, { recordId, fileName: 'Scan.PDF', contentType: 'application/pdf', ...UPLOADED }, ACTOR_A);
       const { rows } = await tx.query<{ op: string; table: string; actor_user_id: string }>(
         `SELECT op, "table", actor_user_id FROM ${handle.schema}.changelog WHERE xid = pg_current_xact_id() ORDER BY seq`,
       );
@@ -235,6 +239,42 @@ describe.skipIf(!available)('finance attachment domain against PostgreSQL', () =
     await setGates('legacy');
     await expect(upload(recordId, {}, { ...deps, storage: watched })).rejects.toBeInstanceOf(UnitNotAuthoritativeError);
     expect(putKeys).toEqual([]);
+  });
+
+  // The fixture stores file_name in nvarchar(255) and content_type in nvarchar(100), whose lengths count UTF-16 units.
+  it.each([
+    ['a file name and content type at their limits', `${'a'.repeat(251)}.pdf`, 'x'.repeat(100), `${'a'.repeat(251)}.pdf`, 'x'.repeat(100)],
+    ['an astral file name at the limit in UTF-16 units', `${'a'.repeat(249)}😀.pdf`, 'text/plain', `${'a'.repeat(249)}😀.pdf`, 'text/plain'],
+    ['spaces past both limits', `a.pdf${' '.repeat(300)}`, `application/pdf${' '.repeat(90)}`, `a.pdf${' '.repeat(250)}`, `application/pdf${' '.repeat(85)}`],
+  ])('stores %s as SQL Server keeps them', async (_case, fileName, contentType, storedName, storedType) => {
+    const recordId = await newRecord();
+    const row = await upload(recordId, { fileName, contentType });
+    expect([row.file_name, row.content_type]).toEqual([storedName, storedType]);
+    expect(await inTenant((tx) => getAttachment(tx, recordId, row.attachment_id))).toEqual(row);
+    expect(await storage.head(ATTACHMENT_BUCKET, row.object_key)).toEqual({ size: BYTES.length, sha256: row.sha256, contentType: storedType });
+  });
+
+  it.each([
+    ['a file name one unit too long', { fileName: `${'a'.repeat(252)}.pdf` }, 'file_name', 255],
+    ['an astral character crossing the file name limit', { fileName: `${'a'.repeat(250)}.pdf😀` }, 'file_name', 255],
+    ['a tab past the file name limit', { fileName: `${'a'.repeat(251)}.pdf\t` }, 'file_name', 255],
+    ['a no-break space after a space past the content type limit', { contentType: `${'x'.repeat(100)} \u00a0` }, 'content_type', 100],
+    ['an ideographic space past the content type limit', { contentType: `${'x'.repeat(100)}\u3000` }, 'content_type', 100],
+  ] as const)('refuses %s as the fixture insert fails, writing no row and storing no bytes', async (_case, fields, column, limit) => {
+    const recordId = await newRecord();
+    const putKeys: string[] = [];
+    const watched: StoragePort = {
+      ...storage,
+      put: (bucket, key, body, opts) => {
+        putKeys.push(key);
+        return storage.put(bucket, key, body, opts);
+      },
+    };
+    const error: unknown = await upload(recordId, fields, { ...deps, storage: watched }).catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(AttachmentColumnTooLongError);
+    expect(error).toMatchObject({ column, limit, message: `Attachment ${column} is longer than its ${limit}-character column` });
+    expect(putKeys).toEqual([]);
+    expect(await inTenant((tx) => listAttachments(tx, recordId, FIRST_PAGE))).toEqual({ rows: [], total: 0 });
   });
 
   it('rolls the row back when storing the bytes fails', async () => {

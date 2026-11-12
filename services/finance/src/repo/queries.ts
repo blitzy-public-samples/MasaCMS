@@ -31,6 +31,12 @@ export interface Page<R> {
 /** One page of the tenant's records and the count of all of them. */
 export type RecordPage = Page<FinanceRecordRow>;
 
+/** Record list filters; each one given narrows both the page and its count. */
+export type RecordFilter = { state?: string; period?: string };
+
+/** The filtered record columns, in placeholder order. */
+const RECORD_FILTER_COLUMNS = ['state', 'period'] as const satisfies readonly (keyof RecordFilter & keyof FinanceRecordRow)[];
+
 /** Attachment rows read per page of the object manifest's keyset iteration. */
 export const MANIFEST_PAGE_SIZE = 1000;
 
@@ -50,7 +56,7 @@ interface Statements {
   readonly record: string;
   readonly recordForUpdate: string;
   readonly countRecords: string;
-  readonly recordPage: string;
+  readonly recordList: string;
   readonly countVersions: string;
   readonly versionPage: string;
   readonly countAttachments: string;
@@ -84,7 +90,7 @@ function statementsFor(schema: string): Statements {
     record: `${record} WHERE "record_id" = $1`,
     recordForUpdate: `${record} WHERE "record_id" = $1 FOR UPDATE`,
     countRecords: count(FINANCE_RECORD),
-    recordPage: `${record} ORDER BY "created", "record_id" COLLATE "C" LIMIT $1 OFFSET $2`,
+    recordList: record,
     countVersions: `${count(FINANCE_RECORD_VERSION)} WHERE "record_id" = $1`,
     versionPage: `${version} WHERE "record_id" = $1 ORDER BY "version" LIMIT $2 OFFSET $3`,
     countAttachments: `${count(FINANCE_ATTACHMENT)} WHERE "record_id" = $1`,
@@ -102,6 +108,21 @@ function statementsFor(schema: string): Statements {
       ` coalesce(sum("amount") FILTER (WHERE "amount" < 0), 0)::text AS "negative" FROM ${qualified(schema, FINANCE_RECORD.table)}` +
       ' WHERE "legacy_program_id" = $1 AND "period" = $2 AND "record_id" IS DISTINCT FROM $3',
   });
+}
+
+/** The count and page statements of the records matching `filter`, sharing one WHERE, and its parameters in placeholder order. */
+function recordListSql(statements: Statements, filter: RecordFilter): { sql: { count: string; page: string }; params: string[] } {
+  const params: string[] = [];
+  const terms: string[] = [];
+  for (const column of RECORD_FILTER_COLUMNS) {
+    const value = filter[column];
+    if (value === undefined) continue;
+    params.push(value);
+    terms.push(`"${column}" = $${params.length}`);
+  }
+  const where = terms.length === 0 ? '' : ` WHERE ${terms.join(' AND ')}`;
+  const order = ` ORDER BY "created", "record_id" COLLATE "C" LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+  return { sql: { count: `${statements.countRecords}${where}`, page: `${statements.recordList}${where}${order}` }, params };
 }
 
 /**
@@ -135,11 +156,11 @@ export async function findRecord(
   return rows[0] ?? null;
 }
 
-/** One page of the tenant's records by `created`, then id, and their total, read as envelope.cfc `queryPage()` reads it. */
-export async function listRecords(tx: TenantTx, paging: RecordPaging): Promise<RecordPage> {
-  const statements = statementsFor(tx.schema);
+/** One page of the tenant's records matching `filter` by `created`, then id, and their total, read as envelope.cfc `queryPage()` reads it. */
+export async function listRecords(tx: TenantTx, paging: RecordPaging, filter: RecordFilter = {}): Promise<RecordPage> {
+  const { sql, params } = recordListSql(statementsFor(tx.schema), filter);
   await awaitReadable(tx, [FINANCE_RECORD.unit]);
-  return queryPage<FinanceRecordRow>(tx, { count: statements.countRecords, page: statements.recordPage }, [], paging);
+  return queryPage<FinanceRecordRow>(tx, sql, params, paging);
 }
 
 /** One page of record `recordId`'s version rows by version, and their total. */

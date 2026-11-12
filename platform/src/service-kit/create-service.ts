@@ -1,4 +1,11 @@
 // Fastify factory of @opt2/platform/service-kit: auth, request context, legacy body parsing, headers, errors, logging and shutdown.
+import { createHash, randomUUID } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { open, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { Transform, type Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import cookie from '@fastify/cookie';
 import formbody from '@fastify/formbody';
 import multipart, { type MultipartFile, type MultipartValue } from '@fastify/multipart';
@@ -90,12 +97,24 @@ declare module 'fastify' {
   }
 }
 
-/** One buffered multipart file part. */
+/** One multipart file part, spooled to a temporary file that is deleted once the response ends. */
 interface MultipartFileData {
   field: string;
   filename: string;
   mimetype: string;
-  data: Buffer;
+  size: number;
+  /** Lowercase hex SHA-256 of the part's bytes. */
+  sha256: string;
+  /** A new read stream of the part's bytes; valid until the response ends. */
+  stream(): Readable;
+}
+
+/** A file part as `onFile` spooled it: its temporary file, byte count and SHA-256. */
+interface SpooledFile {
+  part: MultipartFile;
+  filepath: string;
+  size: number;
+  sha256: string;
 }
 
 /** A legacy-compat response object; `statusText` sets the reason phrase. */
@@ -109,13 +128,16 @@ interface LegacyResponse {
 const CONTEXT = Symbol('opt2.service-kit.context');
 const FILES = Symbol('opt2.service-kit.files');
 const BODY_LIMIT = Symbol('opt2.service-kit.body-limit');
+const RESPONSE_CLOSED = Symbol('opt2.service-kit.response-closed');
 
 /** Per-request state kept on module-private symbols. */
 interface KitRequestState {
   [CONTEXT]: RequestContextStore | null;
-  [FILES]: MultipartFile[] | null;
+  [FILES]: SpooledFile[] | null;
   /** The body-limit error that aborted the request's multipart parse. */
   [BODY_LIMIT]: FastifyError | null;
+  /** Whether a multipart request's response has closed, after which the plugin no longer deletes listed uploads. */
+  [RESPONSE_CLOSED]: boolean;
 }
 
 const ADMIN_PREFIXES: readonly string[] = ['/admin/', '/admin-actions/', '/admin-raw/'];
@@ -235,13 +257,15 @@ export function legacyParamsOf(request: FastifyRequest): Record<string, unknown>
   return params;
 }
 
-/** The buffered multipart file parts of a request, in body order. */
+/** The spooled multipart file parts of a request, in body order. */
 export function multipartFilesOf(request: FastifyRequest): MultipartFileData[] {
-  return (stateOf(request)[FILES] ?? []).map((part) => ({
+  return (stateOf(request)[FILES] ?? []).map(({ part, filepath, size, sha256 }) => ({
     field: part.fieldname,
     filename: part.filename,
     mimetype: part.mimetype,
-    data: part.value as Buffer,
+    size,
+    sha256,
+    stream: () => createReadStream(filepath),
   }));
 }
 
@@ -314,6 +338,8 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
     // Routes answer only the methods they register; a route serving HEAD declares it.
     exposeHeadRoutes: false,
     routerOptions: { ignoreTrailingSlash: true },
+    // Merged onto Fastify's Ajv defaults; admits multi-type schemas without strict-mode warnings.
+    ajv: { customOptions: { allowUnionTypes: true } },
     ...(rewriteUrl === undefined ? {} : { rewriteUrl }),
   });
 
@@ -338,6 +364,7 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
   app.decorateRequest(CONTEXT, null, []);
   app.decorateRequest(FILES, null, []);
   app.decorateRequest(BODY_LIMIT, null, []);
+  app.decorateRequest(RESPONSE_CLOSED, false, []);
 
   await app.register(cookie);
   await app.register(formbody);
@@ -346,13 +373,32 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
     limits: { fileSize: LEGACY_POST_LIMIT_BYTES, fieldSize: LEGACY_POST_LIMIT_BYTES },
     async onFile(part) {
       const state = stateOf(this);
+      const filepath = path.join(tmpdir(), `opt2-upload-${randomUUID()}`);
+      const file = await open(filepath, 'wx', 0o600);
+      if (state[RESPONSE_CLOSED]) {
+        // The plugin's premature-close cleanup has already run, so a file listed now would outlive the request.
+        await file.close();
+        await rm(filepath, { force: true });
+        throw new this.server.multipartErrors.PrematureCloseError();
+      }
+      // Listed once it exists and before it is written, so the plugin's response and premature-close cleanup delete it on every outcome.
+      (this.tmpUploads ??= []).push(filepath);
+      const hash = createHash('sha256');
+      let size = 0;
+      const digest = new Transform({
+        transform(chunk: Buffer, _encoding, callback) {
+          size += chunk.length;
+          hash.update(chunk);
+          callback(null, chunk);
+        },
+      });
       try {
-        part.value = await part.toBuffer();
+        await pipeline(part.file, digest, file.createWriteStream());
       } catch (err) {
         // A file the body limit destroyed reports a premature close; the limit is the request's error.
         throw state[BODY_LIMIT] ?? err;
       }
-      (state[FILES] ??= []).push(part);
+      (state[FILES] ??= []).push({ part, filepath, size, sha256: hash.digest('hex') });
     },
   });
   // Multipart reads the raw request past bodyLimit, so its bytes are counted against the same limit here.
@@ -369,6 +415,10 @@ export async function createService<E extends BaseEnv>(options: CreateServiceOpt
       done(tooLarge());
       return;
     }
+    // Fires after the multipart plugin's own close listener, which deletes the uploads listed so far.
+    reply.raw.once('close', () => {
+      stateOf(request)[RESPONSE_CLOSED] = true;
+    });
     const raw = request.raw;
     let received = 0;
     const count = (chunk: Buffer): void => {

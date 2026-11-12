@@ -60,10 +60,19 @@ const UNIQUE_VIOLATION = '23505';
 const ID_WIDTH = 35;
 /** PostgreSQL's name for the unnamed `UNIQUE (tenant_id, person_id, effective_from)` of 0004_roster_archive.sql. */
 const ARCHIVE_UNIQUE_CONSTRAINT = 'person_archive_tenant_id_person_id_effective_from_key';
-/** The partial unique index on `roster_operation.user_id` over open states (0004_roster_archive.sql). */
+/** The case-insensitive unique index on `(tenant_id, person_id, effective_from)` (0007_person_lookup_indexes.sql). */
+const ARCHIVE_CI_UNIQUE_INDEX = 'person_archive_tenant_ci_person_effective_uidx';
+/** The partial unique index on the case-insensitive `roster_operation.user_id` over open states (0007_person_lookup_indexes.sql). */
 const OPEN_ROSTER_INDEX = 'roster_operation_open_user_uidx';
-const ADVISORY_LOCK_SQL = 'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))';
 const NEXT_IDS_SQL = 'SELECT nextval(pg_get_serial_sequence($1, $2)::regclass)::text AS id FROM generate_series(1, $3::integer)';
+/** SQL Server's char/varchar equality collation (0006_extend_attribute_set_ci_index.sql), as identity and programs-sites define it. */
+const LEGACY_CHAR_CI_COLLATION = 'legacy_char_ci';
+/** Rows per page when a caller gives no limit. */
+const DEFAULT_PAGE_SIZE = 500;
+/** The most rows one page returns. */
+const MAX_PAGE_SIZE = 1000;
+/** `getSearch`'s `maxrows` on SQL Server [legacy: core/mura/user/userGateway.cfc:129-134]. */
+const SEARCH_MAX_ROWS = 2100;
 
 /** DAO `cfqueryparam null="#iif(x neq '',…)#"`: an empty string is stored as NULL [legacy: core/mura/user/userDAO.cfc:304-343]. */
 function daoNull(value: string | null | undefined): string | null {
@@ -77,11 +86,6 @@ function cfTrim(value: string): string {
   while (start < end && value.charCodeAt(start) <= 0x20) start += 1;
   while (end > start && value.charCodeAt(end - 1) <= 0x20) end -= 1;
   return value.slice(start, end);
-}
-
-/** The SQL Server `char` key equality form: trailing spaces stripped, A-Z and À-Þ case folded. */
-function charKey(value: string): string {
-  return value.replace(/ +$/, '').replace(/[A-Z\u00C0-\u00DE]/g, (c) => c.toLowerCase());
 }
 
 /** A posted id the legacy `char(35)` column can hold; legacy swallows the insert error of any other [legacy: core/mura/user/userDAO.cfc:597-614]. */
@@ -98,6 +102,38 @@ function isUniqueViolation(err: unknown, constraint: string): boolean {
 /** The next `row_version` of a stored row; pg returns int8 as a decimal string. */
 function nextRowVersion(current: string): string {
   return String(BigInt(current) + 1n);
+}
+
+/** `limit` when it is a positive integer; throws RangeError otherwise. */
+function positiveLimit(limit: number, what: string): number {
+  if (!Number.isInteger(limit) || limit <= 0) {
+    throw new RangeError(`${what} must be a positive integer, got ${limit}`);
+  }
+  return limit;
+}
+
+/** Rows of one page: `limit`, else the default, capped at the page maximum. */
+function pageSize(limit: number | undefined): number {
+  return limit === undefined ? DEFAULT_PAGE_SIZE : Math.min(positiveLimit(limit, 'page limit'), MAX_PAGE_SIZE);
+}
+
+/** The page of the first `take` rows of `found`, which holds one row more when another page follows. */
+function pageOf<R, C>(found: readonly R[], take: number, cursorOf: (row: R) => C): Page<R, C> {
+  const rows = found.slice(0, take);
+  const last = rows.at(-1);
+  return { rows, next: found.length > take && last !== undefined ? cursorOf(last) : null };
+}
+
+/** Every row of a keyset listing, fetched a page at a time, stopping after `cap` rows. */
+async function collect<R, C>(fetch: (after: C | null, take: number) => Promise<Page<R, C>>, cap = Number.POSITIVE_INFINITY): Promise<R[]> {
+  const rows: R[] = [];
+  let after: C | null = null;
+  do {
+    const page = await fetch(after, Math.min(MAX_PAGE_SIZE, cap - rows.length));
+    rows.push(...page.rows);
+    after = page.next;
+  } while (after !== null && rows.length < cap);
+  return rows;
 }
 
 /** A legacy column limit: a text width in UTF-16 code units, the `tinyint` range, a finite `float` or the `datetime` range. */
@@ -223,7 +259,32 @@ export interface PersonSearch {
   orUserIds?: readonly string[];
   /** When given, only these users can match. */
   restrictUserIds?: readonly string[];
+  /** Most rows returned; legacy's 2100 when omitted. */
   limit?: number;
+}
+
+/** Paging of a keyset listing: `after` is the previous page's `next`; `limit` defaults to 500 and is capped at 1000. */
+export interface PageOptions<C> {
+  after?: C | null;
+  limit?: number;
+}
+
+/** One page of a keyset listing; `next` resumes after its last row and is null on the last page. */
+export interface Page<R, C> {
+  rows: R[];
+  next: C | null;
+}
+
+/** The position after one person of an ordering: its order-key values as PostgreSQL returned them, then its userid. */
+export interface PersonCursor {
+  keys: readonly unknown[];
+  userid: string;
+}
+
+/** The position after one operation of the stale roster-operation listing. */
+export interface RosterOperationCursor {
+  updatedAt: Date;
+  operationId: string;
 }
 
 /** An address to insert as `createAddress` does; a missing `addressid` gets a new CF UUID, other missing values the `addressBean` defaults ('' and 0). */
@@ -318,14 +379,17 @@ export class LegacyStorageError extends RepositoryError {
   }
 }
 
-/** The platform repository of schema `people` plus typed helpers; every helper runs in the caller's open tenant transaction. */
+/**
+ * The platform repository of schema `people` plus typed helpers; every helper runs in the caller's open tenant transaction.
+ * Id and site arguments match stored values as SQL Server's case-insensitive, trailing-space-blind collation does; rows keep their stored spelling.
+ */
 export interface PeopleRepository extends Repository {
   /** The underlying platform repository, as `registerMigrationHandlers` takes it. */
   readonly base: Repository;
 
   /** The person `userId`; null when absent. */
   findPerson(tx: TenantTx, userId: string): Promise<PersonRow | null>;
-  /** The persons of `userIds` in input order; missing ids are omitted. */
+  /** The persons of `userIds`, each once at its first input position; missing ids are omitted. */
   findPersons(tx: TenantTx, userIds: readonly string[]): Promise<PersonRow[]>;
   /** Inserts a person as `userDAO.create` does, with `row_version` 1, or one past its tombstone [legacy: core/mura/user/userDAO.cfc:300-347]. */
   insertPerson(tx: TenantTx, input: PersonInput, ctx?: WriteContext): Promise<PersonRow>;
@@ -337,10 +401,18 @@ export interface PeopleRepository extends Repository {
   recordPersonTombstone(tx: TenantTx, userId: string, rowVersion: string, ctx?: WriteContext): Promise<PersonTombstoneRow>;
   /** Persons of user-pool site `siteId`, optionally only `userIds`, by last then first name, NULLs first [legacy: core/mura/user/userGateway.cfc:712-713]. */
   listPersonsForSite(tx: TenantTx, siteId: string, opts?: { userIds?: readonly string[] }): Promise<PersonRow[]>;
+  /** One keyset page of `listPersonsForSite`. */
+  pagePersonsForSite(
+    tx: TenantTx,
+    siteId: string,
+    opts?: PageOptions<PersonCursor> & { userIds?: readonly string[] },
+  ): Promise<Page<PersonRow, PersonCursor>>;
   /** The person-column part of `getSearch`: none for an empty term, else a LIKE match on name, company, email or job title, by last name. */
   searchPersons(tx: TenantTx, search: PersonSearch): Promise<PersonRow[]>;
-  /** Persons matching `query`, by its order (default last then first name). */
+  /** Persons matching `query`, by its order (default last then first name); `query.limit` caps the total. */
   queryPersons(tx: TenantTx, query: PersonQuery): Promise<PersonRow[]>;
+  /** One keyset page of the persons matching `query`, by its order. */
+  pageQueryPersons(tx: TenantTx, query: Omit<PersonQuery, 'limit'>, opts?: PageOptions<PersonCursor>): Promise<Page<PersonRow, PersonCursor>>;
 
   /** The person's addresses, primary first [legacy: core/mura/user/userDAO.cfc:862-871]. */
   listAddresses(tx: TenantTx, userId: string): Promise<AddressRow[]>;
@@ -399,6 +471,12 @@ export interface PeopleRepository extends Repository {
   findOpenRosterOperation(tx: TenantTx, userId: string): Promise<RosterOperationRow | null>;
   /** Started or people-committed operations last updated before `olderThan`, oldest first. */
   listStaleRosterOperations(tx: TenantTx, olderThan: Date): Promise<RosterOperationRow[]>;
+  /** One keyset page of `listStaleRosterOperations`. */
+  pageStaleRosterOperations(
+    tx: TenantTx,
+    olderThan: Date,
+    opts?: PageOptions<RosterOperationCursor>,
+  ): Promise<Page<RosterOperationRow, RosterOperationCursor>>;
 
   /** Inserts or replaces the projection row of `row.group_id`. */
   upsertGroupName(tx: TenantTx, row: GroupNameInput, ctx?: WriteContext): Promise<GroupNameRow>;
@@ -406,6 +484,8 @@ export interface PeopleRepository extends Repository {
   deleteGroupName(tx: TenantTx, groupId: string, ctx?: WriteContext): Promise<boolean>;
   /** Projection rows of `groupIds` (all when omitted), by group id. */
   listGroupNames(tx: TenantTx, groupIds?: readonly string[]): Promise<GroupNameRow[]>;
+  /** One keyset page of `listGroupNames`; a cursor is the stored group id of a page's last row. */
+  pageGroupNames(tx: TenantTx, opts?: PageOptions<string> & { groupIds?: readonly string[] }): Promise<Page<GroupNameRow, string>>;
 }
 
 /** Settings of `createPeopleRepository`; `schema` differs from `people` only for throwaway test schemas. */
@@ -475,11 +555,63 @@ function conditionSql(condition: PersonCondition, bind: (value: unknown) => stri
   }
 }
 
-/** One ORDER BY key: text case-insensitively, NULLs lowest as in SQL Server. */
-function orderSql(order: PersonOrder): string {
+/** WHERE terms of a person read and the parameters they bind. */
+interface PersonFilter {
+  where: readonly string[];
+  params: readonly unknown[];
+}
+
+/** One sort key of a person ordering. */
+interface PersonOrderKey {
+  expression: string;
+  descending: boolean;
+}
+
+/** The sort key of `order`: text case-insensitively. */
+function orderKey(order: PersonOrder): PersonOrderKey {
   const { sql: column, text } = personColumn(order.column);
-  const key = text ? `lower(${column})` : column;
-  return order.direction === 'desc' ? `${key} DESC NULLS LAST` : `${key} ASC NULLS FIRST`;
+  return { expression: text ? `lower(${column})` : column, descending: order.direction === 'desc' };
+}
+
+/** One ORDER BY key: NULLs lowest as in SQL Server. */
+function orderSql(key: PersonOrderKey): string {
+  return key.descending ? `${key.expression} DESC NULLS LAST` : `${key.expression} ASC NULLS FIRST`;
+}
+
+/** The column alias carrying the value of sort key `index`. */
+function orderAlias(index: number): string {
+  return `__order_${index}`;
+}
+
+/** Rows after `cursor` in `keys` order then userid, binding the cursor values through `bind`. */
+function afterSql(keys: readonly PersonOrderKey[], cursor: PersonCursor, bind: (value: unknown) => string): string {
+  if (cursor.keys.length !== keys.length) {
+    throw new RangeError(`person cursor holds ${cursor.keys.length} sort keys, the ordering ${keys.length}`);
+  }
+  const later: string[] = [];
+  const equal: string[] = [];
+  keys.forEach(({ expression, descending }, index) => {
+    const value = cursor.keys[index];
+    const param = value === null || value === undefined ? null : bind(value);
+    // NULLs sort first ascending, so every value follows a NULL; they sort last descending, so nothing follows one.
+    if (param === null) {
+      if (!descending) later.push([...equal, `${expression} IS NOT NULL`].join(' AND '));
+      equal.push(`${expression} IS NULL`);
+    } else {
+      later.push([...equal, descending ? `(${expression} < ${param} OR ${expression} IS NULL)` : `${expression} > ${param}`].join(' AND '));
+      equal.push(`${expression} = ${param}`);
+    }
+  });
+  later.push([...equal, `userid > ${bind(cursor.userid)}`].join(' AND '));
+  return `(${later.map((term) => `(${term})`).join(' OR ')})`;
+}
+
+/** A binder that appends each value to `params` and returns its placeholder. */
+function binder(params: unknown[]): (value: unknown) => string {
+  return (value) => {
+    params.push(value);
+    return `$${params.length}`;
+  };
 }
 
 /** Builds the people repository over the platform repository of `OWNED_TABLES`. */
@@ -498,61 +630,85 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
   const archive = name(PERSON_ARCHIVE);
   const rosterOperation = name(ROSTER_OPERATION);
   const groupName = name(GROUP_NAME);
+  const trash = name(TRASH);
+  const personTombstone = name(PERSON_TOMBSTONE);
 
-  // SQL Server sorts NULL lowest and compares names case-insensitively; userid makes ties deterministic.
-  const personOrder = 'lower(lname) ASC NULLS FIRST, lower(fname) ASC NULLS FIRST, userid';
-  // A bpchar[] keeps userid uncast, so the (tenant_id, userid) key applies.
-  const personsByIdSql = `SELECT * FROM ${person} WHERE tenant_id = $1 AND userid = ANY($2::bpchar[])`;
-  const lockPersonSql = `SELECT userid, row_version FROM ${person} WHERE tenant_id = $1 AND userid = $2 FOR UPDATE`;
-  const personsForSiteSql =
-    `SELECT * FROM ${person} WHERE tenant_id = $1 AND siteid = $2 AND ($3::bpchar[] IS NULL OR userid = ANY($3::bpchar[]))` +
-    ` ORDER BY ${personOrder}`;
+  const legacyCi = qualified(schema, LEGACY_CHAR_CI_COLLATION);
+  // Indexes on `<id> COLLATE legacyCi` serve these comparisons; an rtrim(lower(...)) form could not, because forced row
+  // security keeps predicates with non-leakproof functions of a column out of index conditions.
+  /** The char(35) id `column` equals the parameter `param` as SQL Server compares char ids: case-insensitively, trailing spaces ignored. */
+  const idEquals = (column: string, param: string): string => `${column} COLLATE ${legacyCi} = ${param}::bpchar`;
+  /** The char(35) id `column` equals an element of the array parameter `param`, compared as `idEquals` does. */
+  const idIn = (column: string, param: string): string => `${column} COLLATE ${legacyCi} = ANY (${param}::bpchar[])`;
+  // The text-to-bpchar cast is a binary relabel, not a function, so the comparison stays leakproof and keeps the column's statistics.
+  /** The text site id `column` equals the parameter `param` as SQL Server compares varchar: case-insensitively, trailing spaces ignored. */
+  const siteEquals = (column: string, param: string): string => `${column}::bpchar COLLATE ${legacyCi} = ${param}::bpchar`;
+  /** The text site id `column` equals an element of the array parameter `param`, compared as `siteEquals` does. */
+  const siteIn = (column: string, param: string): string => `${column}::bpchar COLLATE ${legacyCi} = ANY (${param}::bpchar[])`;
+
+  // A person matching several spellings is returned once, at the first of them.
+  const personsByIdSql =
+    `SELECT p.* FROM ${person} AS p WHERE p.tenant_id = $1 AND ${idIn('p.userid', '$2')}` +
+    ` ORDER BY (SELECT min(u.n) FROM unnest($2::bpchar[]) WITH ORDINALITY AS u(v, n) WHERE ${idEquals('p.userid', 'u.v')})`;
+  const personByIdSql = `SELECT * FROM ${person} WHERE tenant_id = $1 AND ${idEquals('userid', '$2')}`;
+  const lockPersonSql = `SELECT userid, row_version FROM ${person} WHERE tenant_id = $1 AND ${idEquals('userid', '$2')} FOR UPDATE`;
   // The term is not escaped, so % and _ stay wildcards as in SQL Server; ESCAPE '' keeps a backslash literal.
   const searchPersonsSql =
-    `SELECT * FROM ${person} WHERE tenant_id = $1 AND siteid = $2` +
+    `SELECT * FROM ${person} WHERE tenant_id = $1 AND ${siteEquals('siteid', '$2')}` +
     " AND (lname ILIKE $3 ESCAPE '' OR fname ILIKE $3 ESCAPE '' OR company ILIKE $3 ESCAPE '' OR email ILIKE $3 ESCAPE ''" +
-    " OR jobtitle ILIKE $3 ESCAPE '' OR userid = ANY($4::bpchar[]))" +
-    ' AND ($5::bpchar[] IS NULL OR userid = ANY($5::bpchar[]))' +
+    ` OR jobtitle ILIKE $3 ESCAPE '' OR ${idIn('userid', '$4')})` +
+    ` AND ($5::bpchar[] IS NULL OR ${idIn('userid', '$5')})` +
     ' ORDER BY lower(lname) ASC NULLS FIRST, userid LIMIT $6';
-  const addressesSql = `SELECT * FROM ${address} WHERE tenant_id = $1 AND userid = $2 ORDER BY isprimary DESC NULLS LAST, addressid`;
+  const addressesSql = `SELECT * FROM ${address} WHERE tenant_id = $1 AND ${idEquals('userid', '$2')} ORDER BY isprimary DESC NULLS LAST, addressid`;
   const lockOtherPrimariesSql =
-    `SELECT addressid FROM ${address} WHERE tenant_id = $1 AND userid = $2 AND addressid <> $3` +
+    `SELECT addressid FROM ${address} WHERE tenant_id = $1 AND ${idEquals('userid', '$2')} AND addressid COLLATE ${legacyCi} <> $3::bpchar` +
     ' AND isprimary IS DISTINCT FROM 0 ORDER BY addressid FOR UPDATE';
-  const lockAddressSql = `SELECT isprimary FROM ${address} WHERE tenant_id = $1 AND addressid = $2 FOR UPDATE`;
+  const addressByIdSql = `SELECT * FROM ${address} WHERE tenant_id = $1 AND ${idEquals('addressid', '$2')}`;
+  const lockAddressSql = `SELECT addressid, isprimary FROM ${address} WHERE tenant_id = $1 AND ${idEquals('addressid', '$2')} FOR UPDATE`;
   const lockInterestsSql =
-    `SELECT categoryid FROM ${interest} WHERE tenant_id = $1 AND userid = $2` +
-    ' AND ($3::bpchar[] IS NULL OR categoryid = ANY($3::bpchar[])) ORDER BY categoryid FOR UPDATE';
-  const interestIdsSql = `SELECT categoryid FROM ${interest} WHERE tenant_id = $1 AND userid = $2`;
-  const lockTagsSql = `SELECT tagid FROM ${tag} WHERE tenant_id = $1 AND userid = $2 ORDER BY tagid FOR UPDATE`;
-  const favoritesSql = `SELECT * FROM ${favorite} WHERE tenant_id = $1 AND userid = $2 ORDER BY datecreated, favoriteid`;
-  const extendDataSql = `SELECT * FROM ${extendData} WHERE tenant_id = $1 AND baseid = ANY($2::bpchar[]) ORDER BY baseid, attributeid, dataid`;
-  const lockExtendByBaseSql = `SELECT dataid FROM ${extendData} WHERE tenant_id = $1 AND baseid = $2 ORDER BY dataid FOR UPDATE`;
+    `SELECT userid, categoryid FROM ${interest} WHERE tenant_id = $1 AND ${idEquals('userid', '$2')}` +
+    ` AND ($3::bpchar[] IS NULL OR ${idIn('categoryid', '$3')}) ORDER BY categoryid FOR UPDATE`;
+  // The submitted ids to insert, in input order: storable ($4), not held by the user and unequal to an earlier storable id.
+  const newInterestsSql =
+    'SELECT u.v AS categoryid FROM unnest($3::text[], $4::boolean[]) WITH ORDINALITY AS u(v, storable, n) WHERE u.storable' +
+    ` AND NOT EXISTS (SELECT 1 FROM ${interest} AS i WHERE i.tenant_id = $1 AND ${idEquals('i.userid', '$2')} AND ${idEquals('i.categoryid', 'u.v')})` +
+    ' AND NOT EXISTS (SELECT 1 FROM unnest($3::text[], $4::boolean[]) WITH ORDINALITY AS e(v, storable, n)' +
+    ` WHERE e.n < u.n AND e.storable AND ${idEquals('e.v::bpchar', 'u.v')}) ORDER BY u.n`;
+  const lockTagsSql = `SELECT tagid FROM ${tag} WHERE tenant_id = $1 AND ${idEquals('userid', '$2')} ORDER BY tagid FOR UPDATE`;
+  const favoritesSql = `SELECT * FROM ${favorite} WHERE tenant_id = $1 AND ${idEquals('userid', '$2')} ORDER BY datecreated, favoriteid`;
+  const extendDataSql = `SELECT * FROM ${extendData} WHERE tenant_id = $1 AND ${idIn('baseid', '$2')} ORDER BY baseid, attributeid, dataid`;
+  const lockExtendByBaseSql = `SELECT dataid FROM ${extendData} WHERE tenant_id = $1 AND ${idEquals('baseid', '$2')} ORDER BY dataid FOR UPDATE`;
   const lockExtendByAttributesSql =
-    `SELECT dataid, attributeid FROM ${extendData} WHERE tenant_id = $1 AND baseid = $2 AND attributeid = ANY($3::integer[]) ORDER BY dataid FOR UPDATE`;
+    `SELECT dataid, attributeid FROM ${extendData} WHERE tenant_id = $1 AND ${idEquals('baseid', '$2')}` +
+    ' AND attributeid = ANY($3::integer[]) ORDER BY dataid FOR UPDATE';
   // The schema holds only the people split (baseTable tusers or tusersaddresses), so no baseTable predicate is needed.
   const subtypesSql =
-    `SELECT * FROM ${subtype} WHERE tenant_id = $1 AND siteid = $2` +
+    `SELECT * FROM ${subtype} WHERE tenant_id = $1 AND ${siteEquals('siteid', '$2')}` +
     ` AND ($3::text[] IS NULL OR ${ciText('type')} = ANY (SELECT ${ciText('t')} FROM unnest($3::text[]) AS t))` +
     ' ORDER BY lower(type) ASC NULLS FIRST, lower(subtype) ASC NULLS FIRST, subtypeid';
-  const setsSql = `SELECT * FROM ${set} WHERE tenant_id = $1 AND subtypeid = ANY($2::bpchar[]) ORDER BY orderno ASC NULLS FIRST, extendsetid`;
-  // SQL Server's char equality, leakproof and so indexable under forced RLS: bpchar ignores trailing spaces, legacy_char_ci compares the rest.
+  const setsSql = `SELECT * FROM ${set} WHERE tenant_id = $1 AND ${idIn('subtypeid', '$2')} ORDER BY orderno ASC NULLS FIRST, extendsetid`;
   const attributesSql =
-    `SELECT * FROM ${attribute} WHERE tenant_id = $1` +
-    ` AND ($2::bpchar[] IS NULL OR (extendsetid COLLATE ${qualified(schema, 'legacy_char_ci')}) = ANY ($2::bpchar[]))` +
-    ` AND ($3::integer[] IS NULL OR attributeid = ANY($3::integer[])) AND ($4::text IS NULL OR ${ciText('siteid')} = ${ciText('$4::text')})` +
+    `SELECT * FROM ${attribute} WHERE tenant_id = $1 AND ($2::bpchar[] IS NULL OR ${idIn('extendsetid', '$2')})` +
+    ` AND ($3::integer[] IS NULL OR attributeid = ANY($3::integer[])) AND ($4::text IS NULL OR ${siteEquals('siteid', '$4')})` +
     ' ORDER BY orderno ASC NULLS FIRST, lower(name) ASC NULLS FIRST, attributeid';
+  const trashByIdSql = `SELECT objectid FROM ${trash} WHERE tenant_id = $1 AND ${idEquals('objectid', '$2')}`;
   // The fixture's archive order (legacy-fixtures/cfml/modules/people.cfc findArchives).
   const archiveSql =
-    `SELECT * FROM ${archive} WHERE tenant_id = $1 AND person_id = $2 AND ($3::timestamp IS NULL OR effective_from = $3)` +
+    `SELECT * FROM ${archive} WHERE tenant_id = $1 AND ${idEquals('person_id', '$2')} AND ($3::timestamp IS NULL OR effective_from = $3)` +
     ' ORDER BY effective_from, archive_id LIMIT 1';
+  // The id is hashed under the collation, so every spelling of one person takes the same lock.
+  const archiveLockSql = `SELECT pg_advisory_xact_lock(hashtext($1::text), hashbpchar($2::bpchar COLLATE ${legacyCi}))`;
   const openRosterSql =
-    `SELECT * FROM ${rosterOperation} WHERE tenant_id = $1 AND user_id = $2 AND state = ANY($3::text[])` +
+    `SELECT * FROM ${rosterOperation} WHERE tenant_id = $1 AND ${idEquals('user_id', '$2')} AND state = ANY($3::text[])` +
     ' ORDER BY started_at, operation_id LIMIT 1';
   const staleRosterSql =
     `SELECT * FROM ${rosterOperation} WHERE tenant_id = $1 AND state = ANY($2::text[]) AND updated_at < $3` +
-    ' ORDER BY updated_at, operation_id';
+    ' AND ($4::timestamp IS NULL OR (updated_at, operation_id) > ($4::timestamp, $5::bpchar)) ORDER BY updated_at, operation_id LIMIT $6';
   const groupNamesSql =
-    `SELECT * FROM ${groupName} WHERE tenant_id = $1 AND ($2::bpchar[] IS NULL OR group_id = ANY($2::bpchar[])) ORDER BY group_id`;
+    `SELECT * FROM ${groupName} WHERE tenant_id = $1 AND ($2::bpchar[] IS NULL OR ${idIn('group_id', '$2')})` +
+    ' AND ($3::bpchar IS NULL OR group_id > $3::bpchar) ORDER BY group_id LIMIT $4';
+  const lockGroupNameSql = `SELECT group_id FROM ${groupName} WHERE tenant_id = $1 AND ${idEquals('group_id', '$2')} FOR UPDATE`;
+  const tombstoneSql = `SELECT userid, row_version FROM ${personTombstone} WHERE tenant_id = $1 AND ${idEquals('userid', '$2')}`;
 
   /** Selects rows of unit tables once no window phase blocks reading `units`. */
   function readUnits<R extends QueryResultRow>(tx: TenantTx, units: string | readonly string[], sql: string, params: readonly unknown[]): Promise<R[]> {
@@ -578,21 +734,13 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     return rows.map(({ id }) => Number(id)).sort((a, b) => a - b);
   }
 
-  function findPerson(tx: TenantTx, userId: string): Promise<PersonRow | null> {
-    return base.findByKey<PersonRow>(tx, PERSON.table, { userid: userId });
+  async function findPerson(tx: TenantTx, userId: string): Promise<PersonRow | null> {
+    return (await readUnits<PersonRow>(tx, PERSON.unit, personByIdSql, [tx.tenantId, userId]))[0] ?? null;
   }
 
   async function findPersons(tx: TenantTx, userIds: readonly string[]): Promise<PersonRow[]> {
     if (userIds.length === 0) return [];
-    const rows = await readUnits<PersonRow>(tx, PERSON.unit, personsByIdSql, [tx.tenantId, [...userIds]]);
-    // bpchar pads short ids, so rows and inputs are matched with their trailing spaces stripped.
-    const byId = new Map(rows.map((row) => [row.userid.replace(/ +$/, ''), row]));
-    const found: PersonRow[] = [];
-    for (const id of new Set(userIds.map((userId) => userId.replace(/ +$/, '')))) {
-      const row = byId.get(id);
-      if (row !== undefined) found.push(row);
-    }
-    return found;
+    return readUnits<PersonRow>(tx, PERSON.unit, personsByIdSql, [tx.tenantId, [...userIds]]);
   }
 
   async function insertPerson(tx: TenantTx, input: PersonInput, ctx: WriteContext = {}): Promise<PersonRow> {
@@ -643,20 +791,78 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     return base.update<PersonRow>(tx, PERSON.table, { userid: current.userid }, stored, ctx);
   }
 
-  async function personTombstoneVersion(tx: TenantTx, userId: string): Promise<string | null> {
-    return (await base.findByKey<PersonTombstoneRow>(tx, PERSON_TOMBSTONE.table, { userid: userId }))?.row_version ?? null;
+  /** The tombstone of `userId`, locked when `lock` is set; undefined when none. */
+  async function tombstoneOf(tx: TenantTx, userId: string, lock = false): Promise<Pick<PersonTombstoneRow, 'userid' | 'row_version'> | undefined> {
+    return (await select<Pick<PersonTombstoneRow, 'userid' | 'row_version'>>(tx, lock ? `${tombstoneSql} FOR UPDATE` : tombstoneSql, [tx.tenantId, userId]))[0];
   }
 
-  function recordPersonTombstone(tx: TenantTx, userId: string, rowVersion: string, ctx: WriteContext = {}): Promise<PersonTombstoneRow> {
-    return base.upsert<PersonTombstoneRow>(tx, PERSON_TOMBSTONE.table, { userid: userId, row_version: rowVersion }, ctx);
+  async function personTombstoneVersion(tx: TenantTx, userId: string): Promise<string | null> {
+    return (await tombstoneOf(tx, userId))?.row_version ?? null;
+  }
+
+  async function recordPersonTombstone(tx: TenantTx, userId: string, rowVersion: string, ctx: WriteContext = {}): Promise<PersonTombstoneRow> {
+    // A stored tombstone keeps its id spelling.
+    const stored = await tombstoneOf(tx, userId, true);
+    return base.upsert<PersonTombstoneRow>(tx, PERSON_TOMBSTONE.table, { userid: stored?.userid ?? userId, row_version: rowVersion }, ctx);
+  }
+
+  /** WHERE terms of the persons of user-pool site `siteId`, optionally only `userIds`, over their bound parameters. */
+  function siteFilter(tx: TenantTx, siteId: string, userIds: readonly string[] | undefined): PersonFilter {
+    const where = ['tenant_id = $1', siteEquals('siteid', '$2')];
+    if (userIds === undefined) return { where, params: [tx.tenantId, siteId] };
+    return { where: [...where, idIn('userid', '$3')], params: [tx.tenantId, siteId, [...userIds]] };
+  }
+
+  /** WHERE terms of the persons matching `query`, over their bound parameters; throws RepositoryError for an unknown column. */
+  function queryFilter(tx: TenantTx, query: Omit<PersonQuery, 'limit'>): PersonFilter {
+    const params: unknown[] = [tx.tenantId];
+    const bind = binder(params);
+    const where = ['tenant_id = $1'];
+    if (query.siteIds !== undefined) where.push(siteIn('siteid', bind([...query.siteIds])));
+    if (query.userIds !== undefined) where.push(idIn('userid', bind([...query.userIds])));
+    const conditions = (query.conditions ?? []).map((condition) => conditionSql(condition, bind));
+    if (conditions.length > 0) where.push(`(${conditions.join(query.combine === 'or' ? ' OR ' : ' AND ')})`);
+    return { where, params };
+  }
+
+  /** The `take` persons of `filter` after `after`, in `orderBy` order then userid; the sort-key values ride along under alias columns. */
+  async function personPage(
+    tx: TenantTx,
+    filter: PersonFilter,
+    orderBy: readonly PersonOrder[],
+    after: PersonCursor | null | undefined,
+    take: number,
+  ): Promise<Page<PersonRow, PersonCursor>> {
+    const params = [...filter.params];
+    const bind = binder(params);
+    const keys = orderBy.map(orderKey);
+    const aliases = keys.map((_, index) => orderAlias(index));
+    const where = after === null || after === undefined ? filter.where : [...filter.where, afterSql(keys, after, bind)];
+    const columns = ['*', ...keys.map((key, index) => `${key.expression} AS "${orderAlias(index)}"`)].join(', ');
+    const order = [...keys.map(orderSql), 'userid'].join(', ');
+    const sql = `SELECT ${columns} FROM ${person} WHERE ${where.join(' AND ')} ORDER BY ${order} LIMIT ${bind(take + 1)}`;
+    const found = await readUnits<RepositoryRow>(tx, PERSON.unit, sql, params);
+    const page = pageOf(found, take, (row) => ({ keys: aliases.map((alias) => row[alias]), userid: row.userid as string }));
+    const hidden = new Set(aliases);
+    const rows = page.rows.map((row) => Object.fromEntries(Object.entries(row).filter(([column]) => !hidden.has(column))) as PersonRow);
+    return { rows, next: page.next };
   }
 
   function listPersonsForSite(tx: TenantTx, siteId: string, opts: { userIds?: readonly string[] } = {}): Promise<PersonRow[]> {
-    const only = opts.userIds === undefined ? null : [...opts.userIds];
-    return readUnits<PersonRow>(tx, PERSON.unit, personsForSiteSql, [tx.tenantId, siteId, only]);
+    const filter = siteFilter(tx, siteId, opts.userIds);
+    return collect((after: PersonCursor | null, take) => personPage(tx, filter, DEFAULT_PERSON_ORDER, after, take));
+  }
+
+  async function pagePersonsForSite(
+    tx: TenantTx,
+    siteId: string,
+    opts: PageOptions<PersonCursor> & { userIds?: readonly string[] } = {},
+  ): Promise<Page<PersonRow, PersonCursor>> {
+    return personPage(tx, siteFilter(tx, siteId, opts.userIds), DEFAULT_PERSON_ORDER, opts.after, pageSize(opts.limit));
   }
 
   async function searchPersons(tx: TenantTx, search: PersonSearch): Promise<PersonRow[]> {
+    const limit = search.limit === undefined ? SEARCH_MAX_ROWS : positiveLimit(search.limit, 'search limit');
     // getSearch adds `and 0=1` for an empty search term.
     if (search.term === '') return [];
     const params = [
@@ -665,34 +871,37 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
       `%${search.term}%`,
       [...(search.orUserIds ?? [])],
       search.restrictUserIds === undefined ? null : [...search.restrictUserIds],
-      search.limit ?? null,
+      limit,
     ];
     return readUnits<PersonRow>(tx, PERSON.unit, searchPersonsSql, params);
   }
 
-  function queryPersons(tx: TenantTx, query: PersonQuery): Promise<PersonRow[]> {
-    const params: unknown[] = [tx.tenantId];
-    const bind = (value: unknown): string => {
-      params.push(value);
-      return `$${params.length}`;
-    };
-    const where = ['tenant_id = $1'];
-    if (query.siteIds !== undefined) where.push(`siteid = ANY(${bind([...query.siteIds])}::text[])`);
-    if (query.userIds !== undefined) where.push(`userid = ANY(${bind([...query.userIds])}::bpchar[])`);
-    const conditions = (query.conditions ?? []).map((condition) => conditionSql(condition, bind));
-    if (conditions.length > 0) where.push(`(${conditions.join(query.combine === 'or' ? ' OR ' : ' AND ')})`);
-    const order = [...(query.orderBy ?? DEFAULT_PERSON_ORDER).map(orderSql), 'userid'].join(', ');
-    const limit = query.limit === undefined ? '' : ` LIMIT ${bind(query.limit)}`;
-    const sql = `SELECT * FROM ${person} WHERE ${where.join(' AND ')} ORDER BY ${order}${limit}`;
-    return readUnits<PersonRow>(tx, PERSON.unit, sql, params);
+  async function queryPersons(tx: TenantTx, query: PersonQuery): Promise<PersonRow[]> {
+    const cap = query.limit === undefined ? Number.POSITIVE_INFINITY : positiveLimit(query.limit, 'query limit');
+    const filter = queryFilter(tx, query);
+    const orderBy = query.orderBy ?? DEFAULT_PERSON_ORDER;
+    return collect((after: PersonCursor | null, take) => personPage(tx, filter, orderBy, after, take), cap);
+  }
+
+  async function pageQueryPersons(
+    tx: TenantTx,
+    query: Omit<PersonQuery, 'limit'>,
+    opts: PageOptions<PersonCursor> = {},
+  ): Promise<Page<PersonRow, PersonCursor>> {
+    return personPage(tx, queryFilter(tx, query), query.orderBy ?? DEFAULT_PERSON_ORDER, opts.after, pageSize(opts.limit));
   }
 
   function listAddresses(tx: TenantTx, userId: string): Promise<AddressRow[]> {
     return readUnits<AddressRow>(tx, ADDRESS.unit, addressesSql, [tx.tenantId, userId]);
   }
 
-  function findAddress(tx: TenantTx, addressId: string): Promise<AddressRow | null> {
-    return base.findByKey<AddressRow>(tx, ADDRESS.table, { addressid: addressId });
+  async function findAddress(tx: TenantTx, addressId: string): Promise<AddressRow | null> {
+    return (await readUnits<AddressRow>(tx, ADDRESS.unit, addressByIdSql, [tx.tenantId, addressId]))[0] ?? null;
+  }
+
+  /** Locks the address `addressId` and returns its stored id and primary flag; undefined when absent. */
+  async function lockAddress(tx: TenantTx, addressId: string): Promise<Pick<AddressRow, 'addressid' | 'isprimary'> | undefined> {
+    return (await readUnits<Pick<AddressRow, 'addressid' | 'isprimary'>>(tx, ADDRESS.unit, lockAddressSql, [tx.tenantId, addressId]))[0];
   }
 
   async function insertAddress(tx: TenantTx, input: AddressInput, ctx: WriteContext = {}): Promise<AddressRow> {
@@ -742,7 +951,10 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
       addressemail: daoNull(input.addressemail),
       hours: daoNull(input.hours),
     };
-    return base.update<AddressRow>(tx, ADDRESS.table, { addressid: addressId }, legacyStorable(ADDRESS.table, patch), ctx);
+    // SQL Server rejects an unstorable value even when the UPDATE matches no row; the platform write keys on the stored id spelling.
+    const stored = legacyStorable(ADDRESS.table, patch);
+    const target = await lockAddress(tx, addressId);
+    return target === undefined ? null : base.update<AddressRow>(tx, ADDRESS.table, { addressid: target.addressid }, stored, ctx);
   }
 
   /** Deletes every extended value stored under `baseId`. */
@@ -753,7 +965,8 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
 
   async function deleteAddress(tx: TenantTx, addressId: string, ctx: WriteContext = {}): Promise<boolean> {
     // Legacy also deletes tcontentratings rows of the address; that table belongs to strategies-content.
-    const removed = await base.delete(tx, ADDRESS.table, { addressid: addressId }, ctx);
+    const target = await lockAddress(tx, addressId);
+    const removed = target === undefined ? null : await base.delete(tx, ADDRESS.table, { addressid: target.addressid }, ctx);
     await deleteExtendRows(tx, addressId, ctx);
     return removed !== null;
   }
@@ -764,9 +977,9 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     for (const { addressid } of others) {
       await base.update(tx, ADDRESS.table, { addressid }, { isprimary: 0 }, ctx);
     }
-    const target = (await select<{ isprimary: number | null }>(tx, lockAddressSql, [tx.tenantId, addressId]))[0];
+    const target = await lockAddress(tx, addressId);
     if (target !== undefined && target.isprimary !== 1) {
-      await base.update(tx, ADDRESS.table, { addressid: addressId }, { isprimary: 1 }, ctx);
+      await base.update(tx, ADDRESS.table, { addressid: target.addressid }, { isprimary: 1 }, ctx);
     }
   }
 
@@ -778,15 +991,15 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     ctx: WriteContext = {},
   ): Promise<InterestRow[]> {
     const scope = opts.scopeCategoryIds === undefined ? null : [...opts.scopeCategoryIds];
-    const stale = await readUnits<{ categoryid: string }>(tx, INTEREST.unit, lockInterestsSql, [tx.tenantId, userId, scope]);
-    await deleteKeys(tx, INTEREST.table, stale.map(({ categoryid }) => ({ userid: userId, categoryid })), ctx);
-    // Legacy swallows each failed insert, so an id the key already holds, or one too long for char(35), is skipped.
-    const held = new Set((await select<{ categoryid: string }>(tx, interestIdsSql, [tx.tenantId, userId])).map((row) => charKey(row.categoryid)));
+    const stale = await readUnits<Pick<InterestRow, 'userid' | 'categoryid'>>(tx, INTEREST.unit, lockInterestsSql, [tx.tenantId, userId, scope]);
+    await deleteKeys(tx, INTEREST.table, stale, ctx);
+    // Legacy swallows each failed insert, so an id the key already holds, or one too long for char(35), is skipped;
+    // SQL selects them, so the skipped ids are exactly those the key's unique index would reject.
+    const storable = categoryIds.map((categoryId) => storableId(categoryId));
+    const fresh = await select<{ categoryid: string }>(tx, newInterestsSql, [tx.tenantId, userId, [...categoryIds], storable]);
     const inserted: InterestRow[] = [];
-    for (const categoryId of categoryIds) {
-      if (!storableId(categoryId) || held.has(charKey(categoryId))) continue;
-      inserted.push(await base.insert<InterestRow>(tx, INTEREST.table, { userid: userId, categoryid: categoryId }, ctx));
-      held.add(charKey(categoryId));
+    for (const { categoryid } of fresh) {
+      inserted.push(await base.insert<InterestRow>(tx, INTEREST.table, { userid: userId, categoryid }, ctx));
     }
     return inserted;
   }
@@ -879,7 +1092,7 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
   }
 
   async function insertTrashIfAbsent(tx: TenantTx, row: TrashInput, ctx: WriteContext = {}): Promise<TrashRow | null> {
-    if ((await base.findByKey(tx, TRASH.table, { objectid: row.objectid })) !== null) {
+    if ((await readUnits(tx, TRASH.unit, trashByIdSql, [tx.tenantId, row.objectid])).length > 0) {
       return null;
     }
     return base.insert<TrashRow>(tx, TRASH.table, legacyStorable(TRASH.table, row), ctx);
@@ -892,7 +1105,7 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
 
   async function insertPersonArchive(tx: TenantTx, row: PersonArchiveInput, ctx: WriteContext = {}): Promise<PersonArchiveRow> {
     // The fixture rejects any second archive of a person, serialising archives per person (UPDLOCK, HOLDLOCK); this lock does the same.
-    await tx.query(ADVISORY_LOCK_SQL, [`${schema}.${PERSON_ARCHIVE.table}:${tx.tenantId}:${charKey(row.person_id)}`]);
+    await tx.query(archiveLockSql, [`${schema}.${PERSON_ARCHIVE.table}:${tx.tenantId}:`, row.person_id]);
     if ((await findPersonArchive(tx, row.person_id)) !== null) {
       throw new DuplicateArchiveError(row.person_id);
     }
@@ -905,7 +1118,7 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
       return await base.insert<PersonArchiveRow>(tx, PERSON_ARCHIVE.table, stored, ctx);
     } catch (err) {
       // PostgreSQL has aborted the transaction, so the error must leave it.
-      if (isUniqueViolation(err, ARCHIVE_UNIQUE_CONSTRAINT)) {
+      if (isUniqueViolation(err, ARCHIVE_UNIQUE_CONSTRAINT) || isUniqueViolation(err, ARCHIVE_CI_UNIQUE_INDEX)) {
         throw new DuplicateArchiveError(row.person_id, { cause: err });
       }
       throw err;
@@ -963,20 +1176,63 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     return (await select<RosterOperationRow>(tx, openRosterSql, [tx.tenantId, userId, [...OPEN_ROSTER_STATES]]))[0] ?? null;
   }
 
-  function listStaleRosterOperations(tx: TenantTx, olderThan: Date): Promise<RosterOperationRow[]> {
-    return select<RosterOperationRow>(tx, staleRosterSql, [tx.tenantId, [...RECOVERABLE_ROSTER_STATES], olderThan]);
+  /** The `take` stale roster operations after `after`, oldest first. */
+  async function staleRosterPage(
+    tx: TenantTx,
+    olderThan: Date,
+    after: RosterOperationCursor | null | undefined,
+    take: number,
+  ): Promise<Page<RosterOperationRow, RosterOperationCursor>> {
+    const params = [tx.tenantId, [...RECOVERABLE_ROSTER_STATES], olderThan, after?.updatedAt ?? null, after?.operationId ?? null, take + 1];
+    const found = await select<RosterOperationRow>(tx, staleRosterSql, params);
+    return pageOf(found, take, (row) => ({ updatedAt: row.updated_at, operationId: row.operation_id }));
   }
 
-  function upsertGroupName(tx: TenantTx, row: GroupNameInput, ctx: WriteContext = {}): Promise<GroupNameRow> {
-    return base.upsert<GroupNameRow>(tx, GROUP_NAME.table, row, ctx);
+  function listStaleRosterOperations(tx: TenantTx, olderThan: Date): Promise<RosterOperationRow[]> {
+    return collect((after: RosterOperationCursor | null, take) => staleRosterPage(tx, olderThan, after, take));
+  }
+
+  async function pageStaleRosterOperations(
+    tx: TenantTx,
+    olderThan: Date,
+    opts: PageOptions<RosterOperationCursor> = {},
+  ): Promise<Page<RosterOperationRow, RosterOperationCursor>> {
+    return staleRosterPage(tx, olderThan, opts.after, pageSize(opts.limit));
+  }
+
+  /** Locks the projection row of `groupId` and returns its stored group id; undefined when absent. */
+  async function lockGroupName(tx: TenantTx, groupId: string): Promise<string | undefined> {
+    return (await select<{ group_id: string }>(tx, lockGroupNameSql, [tx.tenantId, groupId]))[0]?.group_id;
+  }
+
+  async function upsertGroupName(tx: TenantTx, row: GroupNameInput, ctx: WriteContext = {}): Promise<GroupNameRow> {
+    // A stored row keeps its id spelling.
+    const stored = await lockGroupName(tx, row.group_id);
+    return base.upsert<GroupNameRow>(tx, GROUP_NAME.table, stored === undefined ? row : { ...row, group_id: stored }, ctx);
   }
 
   async function deleteGroupName(tx: TenantTx, groupId: string, ctx: WriteContext = {}): Promise<boolean> {
-    return (await base.delete(tx, GROUP_NAME.table, { group_id: groupId }, ctx)) !== null;
+    const stored = await lockGroupName(tx, groupId);
+    return stored !== undefined && (await base.delete(tx, GROUP_NAME.table, { group_id: stored }, ctx)) !== null;
+  }
+
+  /** The `take` projection rows of `groupIds` (all when omitted) after group id `after`, by group id. */
+  async function groupNamePage(
+    tx: TenantTx,
+    groupIds: readonly string[] | undefined,
+    after: string | null | undefined,
+    take: number,
+  ): Promise<Page<GroupNameRow, string>> {
+    const found = await select<GroupNameRow>(tx, groupNamesSql, [tx.tenantId, groupIds === undefined ? null : [...groupIds], after ?? null, take + 1]);
+    return pageOf(found, take, (row) => row.group_id);
   }
 
   function listGroupNames(tx: TenantTx, groupIds?: readonly string[]): Promise<GroupNameRow[]> {
-    return select<GroupNameRow>(tx, groupNamesSql, [tx.tenantId, groupIds === undefined ? null : [...groupIds]]);
+    return collect((after: string | null, take) => groupNamePage(tx, groupIds, after, take));
+  }
+
+  async function pageGroupNames(tx: TenantTx, opts: PageOptions<string> & { groupIds?: readonly string[] } = {}): Promise<Page<GroupNameRow, string>> {
+    return groupNamePage(tx, opts.groupIds, opts.after, pageSize(opts.limit));
   }
 
   return Object.freeze({
@@ -989,8 +1245,10 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     personTombstoneVersion,
     recordPersonTombstone,
     listPersonsForSite,
+    pagePersonsForSite,
     searchPersons,
     queryPersons,
+    pageQueryPersons,
     listAddresses,
     findAddress,
     insertAddress,
@@ -1014,8 +1272,10 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     findRosterOperation,
     findOpenRosterOperation,
     listStaleRosterOperations,
+    pageStaleRosterOperations,
     upsertGroupName,
     deleteGroupName,
     listGroupNames,
+    pageGroupNames,
   });
 }

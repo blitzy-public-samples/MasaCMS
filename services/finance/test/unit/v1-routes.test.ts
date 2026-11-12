@@ -1,5 +1,5 @@
 // SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** `/v1/finance` routes through app.inject over a throwaway `finance` schema and the local storage adapter, each answer checked against the contract. */
+/** `/v1` and `/v2` finance routes through app.inject over a throwaway `finance` schema and the local storage adapter, each answer checked against the contract. */
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -35,6 +35,8 @@ const APPROVER_ID = 'BBBBBBBB-1111-2222-3333444455556666';
 const MISSING_ID = '00000000-0000-0000-0000000000000000';
 const RECORDS = '/v1/finance/records';
 const ROLLUPS = '/v1/finance/rollups';
+const V2_RECORDS = '/v2/finance/records';
+const V2_ROLLUPS = '/v2/finance/rollups';
 // One site per concern, so record lists and rollups see only that test's records.
 const SITE_LIST = 'v1-list';
 const SITE_LIFECYCLE = 'v1-lifecycle';
@@ -70,7 +72,7 @@ function multipartBody(part: NonNullable<Call['part']>, boundary: string): Buffe
 
 const available = await pgAvailable();
 
-describe.skipIf(!available)('finance /v1 routes', () => {
+describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
   let handle: ThrowawaySchema;
   let stagingDb: TenantDb;
   let stateDir: string;
@@ -176,8 +178,8 @@ describe.skipIf(!available)('finance /v1 routes', () => {
     await setGates('open');
   });
 
-  it('declares exactly the contract /v1 operations with their requires and transport', () => {
-    const routes = collectRouteMatrix(app).routes.filter((route) => route.url.startsWith('/v1/'));
+  it('declares exactly the contract /v1 and /v2 operations with their requires and transport', () => {
+    const routes = collectRouteMatrix(app).routes.filter((route) => /^\/v[12]\//.test(route.url));
     expect(routes.map((route) => `${route.method} ${route.url}`)).toEqual([
       `GET ${RECORDS}`,
       `GET ${RECORDS}/:id`,
@@ -187,6 +189,10 @@ describe.skipIf(!available)('finance /v1 routes', () => {
       `POST ${RECORDS}/:id/transitions/:action`,
       `GET ${RECORDS}/:id/versions`,
       `GET ${ROLLUPS}`,
+      `GET ${V2_RECORDS}/:id`,
+      `GET ${V2_RECORDS}/:id/attachments`,
+      `GET ${V2_RECORDS}/:id/versions`,
+      `GET ${V2_ROLLUPS}`,
     ]);
     for (const route of routes) {
       const operation = OPENAPI.paths[route.url.replace(/:(\w+)/g, '{$1}')]?.[route.method.toLowerCase()];
@@ -330,10 +336,181 @@ describe.skipIf(!available)('finance /v1 routes', () => {
     });
   });
 
+  describe('complete /v1 lists and paged /v2 lists', () => {
+    const SITE_PAGED = 'v1-paged';
+    const DEFAULT_PAGE_SIZE = 50;
+    const ROWS = DEFAULT_PAGE_SIZE + 1;
+    const site = { site: SITE_PAGED };
+    let id: string;
+
+    /** The first `count` periods from 2022-01, in order. */
+    const periods = (count: number): string[] =>
+      Array.from({ length: count }, (_, n) => `${2022 + Math.floor(n / 12)}-${String((n % 12) + 1).padStart(2, '0')}`);
+
+    /** Inserts `count` rollup rows of `siteId`'s program `programId`, one per period of `periods(count)`. */
+    async function seedRollups(siteId: string, programId: number, count: number): Promise<void> {
+      await handle.app.withTenant(tenantIdForSite(siteId), (tx) =>
+        tx.query(
+          `INSERT INTO ${handle.schema}.rollup (tenant_id, period, state, record_count, total_amount, computed_at, legacy_program_id)
+           SELECT $1, to_char(date '2022-01-01' + (n - 1) * interval '1 month', 'YYYY-MM'), 'IN-PROGRESS', n, n, $2, $3
+           FROM generate_series(1, $4::integer) AS n`,
+          [tx.tenantId, NOW, programId, count],
+        ),
+      );
+    }
+
+    /** Each list: its `/v1` and `/v2` URL, its row key, and the keys of all its rows in order. */
+    const LISTS: [string, () => string, () => string, (row: Record<string, any>) => unknown, () => unknown[]][] = [
+      [
+        'versions',
+        () => `${RECORDS}/${id}/versions`,
+        () => `${V2_RECORDS}/${id}/versions`,
+        (row) => row.version,
+        () => Array.from({ length: ROWS }, (_, n) => n + 1),
+      ],
+      [
+        'attachments',
+        () => `${RECORDS}/${id}/attachments`,
+        () => `${V2_RECORDS}/${id}/attachments`,
+        (row) => row.file_name,
+        () => Array.from({ length: ROWS }, (_, n) => `f${n + 1}.pdf`),
+      ],
+      ['rollups', () => ROLLUPS, () => V2_ROLLUPS, (row) => row.period, () => periods(ROWS)],
+    ];
+
+    beforeAll(async () => {
+      await setGates('open');
+      await bind(SITE_PAGED, 5);
+      id = await seed(SITE_PAGED, { title: 'History', amount: 1n, period: '2026-06' });
+      await seedRollups(SITE_PAGED, 5, ROWS);
+      await handle.app.withTenant(tenantIdForSite(SITE_PAGED), async (tx) => {
+        const params = [tx.tenantId, id, PREPARER_ID, NOW, ROWS];
+        await tx.query(
+          `INSERT INTO ${handle.schema}.record_version (tenant_id, version_id, record_id, version, state, title, amount, period, action, actor_user_id, created, legacy_program_id)
+           SELECT $1, 'EEEEEEEE-0000-0000-' || lpad(n::text, 16, '0'), $2, n, 'IN-PROGRESS', 'History', 1, '2026-06', 'edit', $3, $4, 5
+           FROM generate_series(2, $5::integer) AS n`,
+          params,
+        );
+        await tx.query(
+          `INSERT INTO ${handle.schema}.attachment (tenant_id, attachment_id, record_id, file_name, content_type, size_bytes, sha256, object_key, created, createdbyid, legacy_program_id)
+           SELECT $1, 'DDDDDDDD-0000-0000-' || lpad(n::text, 16, '0'), $2, 'f' || n || '.pdf', 'application/pdf', 1, repeat('a', 64), 'k-' || n,
+                  $4::timestamp + n * interval '1 second', $3, 5
+           FROM generate_series(1, $5::integer) AS n`,
+          params,
+        );
+      });
+    });
+
+    it.each(LISTS)('answers every one of the %s on /v1 without a count, whatever page is asked', async (_case, v1, v2, key, keys) => {
+      const complete = await call('GET', v1(), site);
+      expect([complete.status, Object.keys(complete.body), complete.body.data.map(key)]).toEqual([200, ['data'], keys()]);
+      expect((await call('GET', `${v1()}?page=2&pageSize=1`, site)).body).toEqual(complete.body);
+      expect((await call('GET', `${v2()}?pageSize=1000`, site)).body).toEqual({ ...complete.body, total: ROWS });
+    });
+
+    it('embeds every version and attachment in the /v1 detail', async () => {
+      const detail = (await call('GET', `${RECORDS}/${id}`, site)).body.data;
+      const versions = (await call('GET', `${RECORDS}/${id}/versions`, site)).body.data;
+      const attachments = (await call('GET', `${RECORDS}/${id}/attachments`, site)).body.data;
+      expect([detail.versions.length, detail.attachments.length]).toEqual([ROWS, ROWS]);
+      expect([detail.versions, detail.attachments]).toEqual([versions, attachments]);
+      expect(Object.keys(detail).filter((field) => field.endsWith('_total'))).toEqual([]);
+    });
+
+    it('embeds the first page of versions and of attachments in the /v2 detail, with the count of each', async () => {
+      const complete = (await call('GET', `${RECORDS}/${id}`, site)).body.data;
+      const res = await call('GET', `${V2_RECORDS}/${id}`, site);
+      expect([res.status, res.body.data]).toEqual([
+        200,
+        {
+          ...complete,
+          versions: complete.versions.slice(0, DEFAULT_PAGE_SIZE),
+          versions_total: ROWS,
+          attachments: complete.attachments.slice(0, DEFAULT_PAGE_SIZE),
+          attachments_total: ROWS,
+        },
+      ]);
+    });
+
+    it.each(LISTS)('pages the %s on /v2 with the count of all, and answers an empty page past the end', async (_case, _v1, v2, key, keys) => {
+      const page = async (query: string): Promise<Record<string, any>> => (await call('GET', `${v2()}${query}`, site)).body;
+      const all = (await page('?pageSize=1000')).data as Record<string, any>[];
+      expect(all.map(key)).toEqual(keys());
+      expect(await page('')).toEqual({ data: all.slice(0, DEFAULT_PAGE_SIZE), total: ROWS });
+      expect(await page('?page=2')).toEqual({ data: [all[DEFAULT_PAGE_SIZE]], total: ROWS });
+      expect(await page('?page=2&pageSize=2')).toEqual({ data: all.slice(2, 4), total: ROWS });
+      expect(await page('?page=3')).toEqual({ data: [], total: ROWS });
+    });
+
+    it.each(
+      ['?pageSize=1001', '?page=0'].flatMap((query) =>
+        [`${V2_RECORDS}/${MISSING_ID}/versions`, `${V2_RECORDS}/${MISSING_ID}/attachments`, V2_ROLLUPS].map((url) => `${url}${query}`),
+      ),
+    )('refuses %s as invalidParameters', async (url) => {
+      expect((await call('GET', url, site)).status).toBe(400);
+    });
+
+    it('answers a /v1 record list page above the /v2 page size maximum', async () => {
+      const res = await call('GET', `${RECORDS}?pageSize=1001`, site);
+      expect([res.status, res.body.data.map((row: { record_id: string }) => row.record_id), res.body.total]).toEqual([200, [id], 1]);
+    });
+
+    it('answers every /v1 rollup past the 1000-row scan page', async () => {
+      const SITE_SCAN = 'v1-scan';
+      const SCAN_ROWS = 1001;
+      await bind(SITE_SCAN, 7);
+      await seedRollups(SITE_SCAN, 7, SCAN_ROWS);
+      const complete = (await call('GET', ROLLUPS, { site: SITE_SCAN })).body.data as Record<string, any>[];
+      expect(complete.map((row) => row.period)).toEqual(periods(SCAN_ROWS));
+      const last = await call('GET', `${V2_ROLLUPS}?page=2&pageSize=1000`, { site: SITE_SCAN });
+      expect(last.body).toEqual({ data: complete.slice(1000), total: SCAN_ROWS });
+    });
+  });
+
+  describe('lowercase-spelled ids', () => {
+    const SITE_CASE = 'v1-case';
+    const site = { site: SITE_CASE };
+    let id: string;
+    let aid: string;
+
+    beforeAll(async () => {
+      await setGates('open');
+      await bind(SITE_CASE, 6);
+      id = await seed(SITE_CASE, { title: 'Case', amount: 1n, period: '2026-06' });
+      const upload = await call('POST', `${RECORDS}/${id}/attachments`, { ...site, part: { name: 'file', filename: 'a.pdf', body: '%PDF' } });
+      aid = upload.body.data.attachment_id as string;
+    });
+
+    it.each([
+      ['the record detail', (record: string) => `${RECORDS}/${record}`],
+      ['the version list', (record: string) => `${RECORDS}/${record}/versions`],
+      ['the attachment list', (record: string) => `${RECORDS}/${record}/attachments`],
+      ['a download URL', (record: string, attachment: string) => `${RECORDS}/${record}/attachments/${attachment}/download-url`],
+      ['the /v2 record detail', (record: string) => `${V2_RECORDS}/${record}`],
+      ['the /v2 version list', (record: string) => `${V2_RECORDS}/${record}/versions`],
+      ['the /v2 attachment list', (record: string) => `${V2_RECORDS}/${record}/attachments`],
+    ])('reads %s as the stored upper-case ids answer it', async (_case, url) => {
+      const lower = await call('GET', url(id.toLowerCase(), aid.toLowerCase()), site);
+      const stored = await call('GET', url(id, aid), site);
+      expect([lower.status, stored.status]).toEqual([200, 200]);
+      expect(lower.body).toEqual(stored.body);
+    });
+
+    it('uploads to and transitions the stored record', async () => {
+      const upload = await call('POST', `${RECORDS}/${id.toLowerCase()}/attachments`, { ...site, part: { name: 'file', filename: 'b.pdf', body: '%PDF' } });
+      expect([upload.status, upload.body.data.record_id]).toEqual([200, id]);
+      const submit = await call('POST', `${RECORDS}/${id.toLowerCase()}/transitions/submit`, site);
+      expect([submit.status, submit.body.data]).toEqual([200, expect.objectContaining({ record_id: id, state: 'SUBMITTED', version: 2 })]);
+    });
+  });
+
   it.each([
     ['the record detail', `${RECORDS}/${MISSING_ID}`, 404, 'finance.records', 'Not Found'],
     ['the version list', `${RECORDS}/${MISSING_ID}/versions`, 404, 'finance.records.versions', 'Not Found'],
     ['the attachment list', `${RECORDS}/${MISSING_ID}/attachments`, 404, 'finance.records.attachments', 'Not Found'],
+    ['the /v2 record detail', `${V2_RECORDS}/${MISSING_ID}`, 404, 'finance.records', 'Not Found'],
+    ['the /v2 version list', `${V2_RECORDS}/${MISSING_ID}/versions`, 404, 'finance.records.versions', 'Not Found'],
+    ['the /v2 attachment list', `${V2_RECORDS}/${MISSING_ID}/attachments`, 404, 'finance.records.attachments', 'Not Found'],
   ])('answers a missing record on %s with the fixture notFound', async (_case, url, status, method, message) => {
     expect(await call('GET', url, { site: SITE_OTHER })).toMatchObject({ status, body: fixtureError(method, message) });
   });
@@ -341,6 +518,7 @@ describe.skipIf(!available)('finance /v1 routes', () => {
   it.each([
     ['the record list', RECORDS, 'finance.records'],
     ['the rollups', ROLLUPS, 'finance.rollups'],
+    ['the /v2 rollups', V2_ROLLUPS, 'finance.rollups'],
   ])('answers a tenant without a program on %s with invalidParameters', async (_case, url, method) => {
     expect(await call('GET', url, { site: SITE_UNBOUND })).toMatchObject({ status: 400, body: fixtureError(method, 'Invalid parameters') });
   });
@@ -348,6 +526,7 @@ describe.skipIf(!available)('finance /v1 routes', () => {
   it("keeps another tenant's records out of reach", async () => {
     const id = await seed(SITE_OTHER, { title: 'Private', amount: 1n, period: '2026-06' });
     expect((await call('GET', `${RECORDS}/${id}`, { site: SITE_LIST })).status).toBe(404);
+    expect((await call('GET', `${V2_RECORDS}/${id}`, { site: SITE_LIST })).status).toBe(404);
     expect((await call('POST', `${RECORDS}/${id}/transitions/submit`, { site: SITE_LIST })).status).toBe(404);
   });
 
@@ -361,11 +540,58 @@ describe.skipIf(!available)('finance /v1 routes', () => {
     expect((await call(method, url, { site: SITE_LIST, ...request })).status).toBe(status);
   });
 
+  describe('a reporting exporter', () => {
+    const SITE_EXPORT = 'v1-export';
+    const EXPORTER = { roles: [Roles.reportingExporter], sub: 'CCCCCCCC-1111-2222-3333444455556666' } as const;
+    let june: string;
+    let may: string;
+
+    beforeAll(async () => {
+      await bind(SITE_EXPORT, 9);
+      june = await seed(SITE_EXPORT, { title: 'Travel', amount: 9_805_000n, period: '2026-06' });
+      may = await seed(SITE_EXPORT, { title: 'Licence', amount: 3_157_500n, period: '2026-05' });
+    });
+
+    it.each([
+      ['every record', '?page=1&pageSize=1000', () => ({ ids: [june, may].sort(), total: 2 })],
+      ['a state and a period', '?state=IN-PROGRESS&period=2026-06', () => ({ ids: [june], total: 1 })],
+    ])('lists records for its export: %s', async (_case, query, expected) => {
+      const res = await call('GET', `${RECORDS}${query}`, { site: SITE_EXPORT, ...EXPORTER });
+      const { ids, total } = expected();
+      expect([res.status, res.body.data.map((row: { record_id: string }) => row.record_id), res.body.total]).toEqual([200, ids, total]);
+    });
+
+    it.each([
+      ['the record detail', 'GET', (id: string) => `${RECORDS}/${id}`],
+      ['the version list', 'GET', (id: string) => `${RECORDS}/${id}/versions`],
+      ['the attachment list', 'GET', (id: string) => `${RECORDS}/${id}/attachments`],
+      ['a download URL', 'GET', (id: string) => `${RECORDS}/${id}/attachments/${MISSING_ID}/download-url`],
+      ['the rollups', 'GET', () => `${ROLLUPS}?asOf=2026-06-30`],
+      ['the /v2 record detail', 'GET', (id: string) => `${V2_RECORDS}/${id}`],
+      ['the /v2 version list', 'GET', (id: string) => `${V2_RECORDS}/${id}/versions`],
+      ['the /v2 attachment list', 'GET', (id: string) => `${V2_RECORDS}/${id}/attachments`],
+      ['the /v2 rollups', 'GET', () => `${V2_ROLLUPS}?asOf=2026-06-30`],
+      ['a transition', 'POST', (id: string) => `${RECORDS}/${id}/transitions/submit`],
+    ] as const)('refuses it %s', async (_case, method, url) => {
+      expect((await call(method, url(may), { site: SITE_EXPORT, ...EXPORTER })).status).toBe(403);
+    });
+  });
+
   it('fails a write closed with the legacy 503 while the target is not write-authoritative', async () => {
     const id = await seed(SITE_OTHER, { title: 'Closed', amount: 1n, period: '2026-06' });
     await setGates('legacy');
     const res = await call('POST', `${RECORDS}/${id}/transitions/submit`, { site: SITE_OTHER });
     expect(res).toMatchObject({ status: 503, body: { apiversion: 'v1', error: { code: 'server_error', message: 'Unhandled Exception' } } });
+  });
+
+  it('answers a content type longer than its fixture column with server_error, storing nothing', async () => {
+    const id = await seed(SITE_OTHER, { title: 'Overlong type', amount: 1n, period: '2026-06' });
+    const part = { name: 'file', filename: 'a.txt', type: `text/${'x'.repeat(96)}`, body: 'a' };
+    expect(await call('POST', `${RECORDS}/${id}/attachments`, { site: SITE_OTHER, part })).toMatchObject({
+      status: 500,
+      body: { error: { code: 'server_error', message: 'Unhandled Exception' } },
+    });
+    expect((await call('GET', `${RECORDS}/${id}/attachments`, { site: SITE_OTHER })).body.data).toEqual([]);
   });
 
   it('leaves errors it does not map to the service-kit handler', async () => {

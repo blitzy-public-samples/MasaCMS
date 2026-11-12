@@ -1,7 +1,8 @@
 // SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Finance attachments: uploads into `finance-attachments`, the attachment reads of finance.cfc, its file response and signed download URLs. */
+import type { Readable } from 'node:stream';
 import { LegacyApiError, cfUuid } from '@opt2/platform/legacy-compat';
-import { sha256Hex, type WriteContext } from '@opt2/platform/migration-kit';
+import type { WriteContext } from '@opt2/platform/migration-kit';
 import type { FastifyReply } from '@opt2/platform/service-kit';
 import { SIGNED_URL_TTL_S } from '@opt2/platform/storage';
 import type { TenantTx } from '@opt2/platform/tenancy';
@@ -9,8 +10,8 @@ import { FinanceDomainError, getRecord, type FinanceActor, type FinanceDomainDep
 import { findAttachment, listAttachments as queryAttachments, type Page, type RecordPaging } from '../repo/queries.js';
 import { ATTACHMENT_BUCKET, attachmentObjectKey, type FinanceAttachmentRow } from '../repo/tables.js';
 
-/** An uploaded file part, already validated at the route boundary. */
-export type AttachmentUpload = { recordId: string; fileName: string; contentType: string; bytes: Buffer };
+/** An uploaded file part, already validated at the route boundary: its byte count, lowercase hex SHA-256 and a reader of its bytes. */
+export type AttachmentUpload = { recordId: string; fileName: string; contentType: string; size: number; sha256: string; body: () => Readable };
 
 /** A time-limited download URL with its expiry as ISO-8601 UTC, the contract's `SignedUrl`. */
 export type AttachmentDownloadUrl = { url: string; expiresAt: string };
@@ -18,6 +19,26 @@ export type AttachmentDownloadUrl = { url: string; expiresAt: string };
 /** What an attachment file response describes: the stored name and content type, and the byte length sent. */
 export type FixtureFileMeta = { contentType: string; fileName: string; size: number };
 
+/** The `nvarchar` length of each `finance_attachment` text column in the fixture. */
+const TEXT_COLUMN_LIMITS = Object.freeze({ file_name: 255, content_type: 100 });
+
+/** A `finance_attachment` text column the fixture bounds. */
+export type AttachmentTextColumn = keyof typeof TEXT_COLUMN_LIMITS;
+
+/** Raised, as the fixture's insert fails, for upload text longer than its `nvarchar` column; names the column, never the value. */
+export class AttachmentColumnTooLongError extends Error {
+  override readonly name = 'AttachmentColumnTooLongError';
+
+  constructor(
+    readonly column: AttachmentTextColumn,
+    readonly limit: number,
+  ) {
+    super(`Attachment ${column} is longer than its ${limit}-character column`);
+  }
+}
+
+// The only excess SQL Server drops instead of failing the insert.
+const SPACES_ONLY = /^ +$/;
 // POSIX [[:cntrl:]] as ACF's reFind matches it: ASCII C0 and DEL only, not U+0080-U+009F.
 const CONTROL_CHAR = /[\u0000-\u001F\u007F]/;
 // Per code point, as Java's String.replaceAll("[^\x00-\x7F]", "_") replaces.
@@ -33,6 +54,14 @@ const UNSENDABLE_HEADER_BYTE = /[\u0000-\u0008\u000A-\u001F\u007F]/g;
 /** Provenance of an attachment write by `actor`. */
 function writeContext(actor: FinanceActor): WriteContext {
   return { actorUserId: actor.userId };
+}
+
+/** `value` as SQL Server stores it in `column`, by UTF-16 length: whole, or cut when only spaces exceed it; else throws `AttachmentColumnTooLongError`. */
+function columnText(column: AttachmentTextColumn, value: string): string {
+  const limit = TEXT_COLUMN_LIMITS[column];
+  if (value.length <= limit) return value;
+  if (SPACES_ONLY.test(value.slice(limit))) return value.slice(0, limit);
+  throw new AttachmentColumnTooLongError(column, limit);
 }
 
 /** `filename*` value of `fileName`: its UTF-8 bytes, each outside attr-char as uppercase `%XX`. */
@@ -78,7 +107,10 @@ export function fixtureFileHeaders(meta: FixtureFileMeta): Record<string, string
   return fileHeaders(contentDisposition(meta.fileName), meta.size, meta.contentType);
 }
 
-/** Stores `upload` as an attachment of its record by `actor` and returns the written row; throws `notFound` when the record is missing. */
+/**
+ * Stores `upload` as an attachment of its record by `actor` and returns the written row; throws `notFound` when the record is missing,
+ * then `AttachmentColumnTooLongError` when its file name or content type does not fit the fixture column.
+ */
 export async function uploadAttachment(
   tx: TenantTx,
   deps: FinanceDomainDeps,
@@ -86,18 +118,20 @@ export async function uploadAttachment(
   actor: FinanceActor,
 ): Promise<FinanceAttachmentRow> {
   const record = await getRecord(tx, upload.recordId);
+  const fileName = columnText('file_name', upload.fileName);
+  const contentType = columnText('content_type', upload.contentType);
   const attachmentId = cfUuid();
-  const objectKey = attachmentObjectKey(tx.tenantId, attachmentId, upload.fileName);
+  const objectKey = attachmentObjectKey(tx.tenantId, attachmentId, fileName);
   const row = await deps.repository.insertAttachment(
     tx,
     {
       tenant_id: tx.tenantId,
       attachment_id: attachmentId,
       record_id: record.record_id,
-      file_name: upload.fileName,
-      content_type: upload.contentType,
-      size_bytes: upload.bytes.length,
-      sha256: sha256Hex(upload.bytes),
+      file_name: fileName,
+      content_type: contentType,
+      size_bytes: upload.size,
+      sha256: upload.sha256,
       object_key: objectKey,
       created: deps.clock.now(),
       createdbyid: actor.userId,
@@ -105,9 +139,8 @@ export async function uploadAttachment(
     },
     writeContext(actor),
   );
-  // Stored only after the row is written, as migration applies store theirs, so a write the repository rejects
-  // (a closed unit gate, say) stores no bytes; a failed store throws and rolls the row back with `tx`.
-  await deps.storage.put(ATTACHMENT_BUCKET, objectKey, upload.bytes, { contentType: upload.contentType });
+  // Streamed only after the row is written, so a write the repository rejects stores no bytes; a failed store rolls the row back with `tx`.
+  await deps.storage.put(ATTACHMENT_BUCKET, objectKey, upload.body(), { contentType });
   return row;
 }
 

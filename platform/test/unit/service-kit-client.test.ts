@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import {
   context,
   ROOT_CONTEXT,
@@ -448,6 +449,12 @@ describe('createServiceClient with its own Agent', () => {
         setTimeout(() => res.end('late'), 2_000).unref();
         return;
       }
+      if (req.url === '/echo') {
+        const chunks: Buffer[] = [];
+        req.on('data', (chunk: Buffer) => chunks.push(chunk));
+        req.on('end', () => res.end(Buffer.concat(chunks)));
+        return;
+      }
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify({ ok: true }));
     });
@@ -490,6 +497,31 @@ describe('createServiceClient with its own Agent', () => {
     await client.close();
     expect(err).toBeInstanceOf(ServiceUnavailableError);
     expect((err as Error).message).toBe('Service echo unavailable (ECONNREFUSED)');
+  });
+
+  it.each<[string, Record<string, string>, { 'content-length'?: string; 'transfer-encoding'?: string }]>([
+    ['with its caller-set content-length', { 'Content-Length': '11' }, { 'content-length': '11' }],
+    ['chunked without one', {}, { 'transfer-encoding': 'chunked' }],
+  ])('streams a Readable body byte-identical %s', async (_label, headers, framing) => {
+    const bytes = Buffer.from([0x00, 0xff, 0x0d, 0x0a, 0x2d, 0x2d, 0x80, 0x7b, 0x01, 0x02, 0x03]);
+    const client = ownClient();
+    const res = await client.request<Buffer>({
+      service: 'echo',
+      method: 'POST',
+      path: '/echo',
+      body: Readable.from([bytes.subarray(0, 4), bytes.subarray(4)], { objectMode: false }),
+      headers: { 'Content-Type': 'application/octet-stream', ...headers },
+      rawBody: true,
+    });
+    await client.close();
+    expect(res.body.equals(bytes)).toBe(true);
+    expect(seen).toHaveLength(1);
+    const { 'content-length': length, 'transfer-encoding': encoding } = seen[0]?.headers ?? {};
+    expect({ 'content-length': length, 'transfer-encoding': encoding }).toEqual({
+      'content-length': undefined,
+      'transfer-encoding': undefined,
+      ...framing,
+    });
   });
 
   it('bounds a slow callee by the timeout', async () => {

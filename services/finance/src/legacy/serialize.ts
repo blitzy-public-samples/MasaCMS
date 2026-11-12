@@ -4,6 +4,7 @@ import { cfDateTimeFormat } from '@opt2/platform/legacy-compat';
 import type { FinanceState } from '../domain/lifecycle.transitions.js';
 import { formatMoney, moneyFromNumeric } from '../domain/money.js';
 import type { RollupRow } from '../domain/rollup.js';
+import type { Page } from '../repo/queries.js';
 import type { FinanceAttachmentRow, FinanceRecordRow, FinanceRecordVersionRow, FinanceRollupRow } from '../repo/tables.js';
 
 // envelope.cfc rows() renders datetime columns with this dateTimeFormat mask before serialization, not through the serializer's date hint.
@@ -61,6 +62,14 @@ export type FixtureRollup = {
 
 /** A record with its versions and attachment metadata, the contract's `FinanceRecordDetail`. */
 export type FixtureRecordDetail = FixtureRecord & { versions: FixtureVersion[]; attachments: FixtureAttachment[] };
+
+/** A record with one page of its versions and of its attachments and the count of each, the contract's `FinanceRecordDetailPage`. */
+export type FixtureRecordDetailPage = FixtureRecord & {
+  versions: FixtureVersion[];
+  versions_total: number;
+  attachments: FixtureAttachment[];
+  attachments_total: number;
+};
 
 /** Fixture text of a stored datetime in the process (legacy server) zone, or '' for NULL. */
 function timestamp(value: Date | null): string {
@@ -147,4 +156,19 @@ export function recordDetail(
   attachments: readonly FinanceAttachmentRow[],
 ): FixtureRecordDetail {
   return { ...recordRow(row), versions: versions.map(versionRow), attachments: attachments.map(attachmentRow) };
+}
+
+/** Projects a record with a page of its versions and of its attachments onto `FinanceRecordDetailPage`, each page's rows in order. */
+export function recordDetailPage(
+  row: FinanceRecordRow,
+  versions: Page<FinanceRecordVersionRow>,
+  attachments: Page<FinanceAttachmentRow>,
+): FixtureRecordDetailPage {
+  return {
+    ...recordRow(row),
+    versions: versions.rows.map(versionRow),
+    versions_total: versions.total,
+    attachments: attachments.rows.map(attachmentRow),
+    attachments_total: attachments.total,
+  };
 }

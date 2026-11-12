@@ -3,6 +3,8 @@
 import { readFileSync } from 'node:fs';
 import { createServer, type IncomingHttpHeaders, type IncomingMessage } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { Readable } from 'node:stream';
+import { buffer } from 'node:stream/consumers';
 import { INVOCATION_HEADER } from '@opt2/platform/auth';
 import {
   REQUEST_ID_HEADER,
@@ -279,7 +281,7 @@ function relayedService(path: string): WebServiceName {
 }
 
 /** `req` as the gateway receives it from the platform client, which mints no invocation credential here. */
-function receivedRequest(req: ServiceRequest): RecordedRequest {
+async function receivedRequest(req: ServiceRequest): Promise<RecordedRequest> {
   if (req.query !== undefined || req.form !== undefined) {
     throw new TypeError('Web sends its query in the path and its form as the body');
   }
@@ -293,7 +295,10 @@ function receivedRequest(req: ServiceRequest): RecordedRequest {
     headers['content-type'] = 'application/json';
     body = JSON.stringify(req.json);
   }
-  const bytes = typeof body === 'string' ? Buffer.from(body, 'utf8') : (body ?? Buffer.alloc(0));
+  let bytes: Buffer;
+  if (typeof body === 'string') bytes = Buffer.from(body, 'utf8');
+  else if (body instanceof Readable) bytes = await buffer(body);
+  else bytes = body ?? Buffer.alloc(0);
   return recordRequest(req.method, req.path, headers, bytes);
 }
 
@@ -318,7 +323,7 @@ export function fakeGatewayClient(
   const transport: ServiceClient = {
     /** Records the call, then answers it from `table` with the bytes web's raw-body requests ask for. */
     async request<T>(req: ServiceRequest): Promise<ServiceResponse<T>> {
-      const request = receivedRequest(req);
+      const request = await receivedRequest(req);
       const service = relayedService(request.path);
       const headers = callerHeaders(req);
       calls.push({

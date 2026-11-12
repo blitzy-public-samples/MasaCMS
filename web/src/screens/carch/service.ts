@@ -3,7 +3,15 @@ import { isDeepStrictEqual } from 'node:util';
 import { LEGACY_HTML_CONTENT_TYPE } from '@opt2/platform/legacy-compat';
 import type { components, paths } from '@/generated/clients/strategies-content';
 import { secure, type GateDecision } from '@/lib/access-gate';
-import { okBody, type FormInput, type GatewayClient, type GatewayResponse, type MultipartBody } from '@/lib/gateway-client';
+import {
+  multipartRelay,
+  okBody,
+  type FormInput,
+  type GatewayClient,
+  type GatewayResponse,
+  type MultipartBody,
+  type MultipartRelay,
+} from '@/lib/gateway-client';
 import type { AdminRequest, AdminSessionWrites } from '@/lib/request-context';
 import { boundAdminUrl } from '@/lib/urls';
 import type { RawBody, Rc, ScreenContext, SubmitResult } from '../registry';
@@ -51,7 +59,7 @@ type Answer<T> = (GatewayResponse<T> & { readonly ok: true }) | (GatewayResponse
 /** Body and headers of a POST. */
 interface PostInput {
   readonly form?: FormInput;
-  readonly body?: Buffer;
+  readonly body?: MultipartRelay['body'];
   readonly headers: Readonly<Record<string, string>>;
 }
 
@@ -259,12 +267,11 @@ function csrfHeaders(req: AdminRequest): Record<string, string> {
 }
 
 /** A POST of the rc fields URL-encoded, or of the multipart body as received. */
-async function postInput(req: AdminRequest, rc: Rc, multipart: MultipartBody | undefined): Promise<PostInput> {
+function postInput(req: AdminRequest, rc: Rc, multipart: MultipartBody | undefined): PostInput {
   const headers = csrfHeaders(req);
   if (multipart === undefined) return { form: Object.entries(rc), headers };
-  const { contentType, body } = multipart;
-  const bytes = body instanceof Uint8Array ? Buffer.from(body) : Buffer.from(await new Response(body).arrayBuffer());
-  return { body: bytes, headers: { ...headers, 'content-type': contentType } };
+  const relay = multipartRelay(multipart);
+  return { body: relay.body, headers: { ...headers, ...relay.headers } };
 }
 
 /** The controller `secure()` decision for `req`, which always redirects. */
@@ -328,7 +335,7 @@ export async function carchWrite(
   { rc = ctx.req.rc, multipart }: CarchCallOptions = {},
 ): Promise<CarchOutcome<CarchWriteResult>> {
   const { operation, call } = WRITE_CALLS[action];
-  const input = await postInput(ctx.req, rc, multipart);
+  const input = postInput(ctx.req, rc, multipart);
   return settle(ctx.req, operation, await call(ctx.gateway.strategiesContent, rc, input));
 }
 
@@ -369,7 +376,7 @@ export async function relayCarchRaw(
       ? await sc.raw('get', path, { query: { params: rcFields(rc) }, headers: csrfHeaders(ctx.req) })
       : await sc.raw('post', path, {
           query: declared(rc, 'siteid'),
-          ...(await postInput(ctx.req, rc, multipart)),
+          ...postInput(ctx.req, rc, multipart),
         });
   if (res.status === 401 || res.status === 403) {
     const { location } = secureRedirect(ctx.req);

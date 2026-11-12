@@ -493,12 +493,25 @@ describe('queries and bodies', () => {
     'latin1',
   );
 
-  it.each<[string, () => MultipartBody['body']]>([
-    ['Uint8Array', () => new Uint8Array(MULTIPART)],
-    ['ArrayBuffer', () => new Uint8Array(MULTIPART).buffer],
-    ['Blob', () => new Blob([new Uint8Array(MULTIPART)])],
-    ['ReadableStream', () => new Blob([new Uint8Array(MULTIPART)]).stream()],
-  ])('relays a multipart %s body unchanged with its own content type', async (_kind, body) => {
+  const LENGTH = { 'content-length': String(MULTIPART.length) };
+  const CHUNKED = { 'transfer-encoding': 'chunked' };
+
+  it.each<[string, () => MultipartBody['body'], Readonly<Record<string, string>>]>([
+    ['Uint8Array', () => new Uint8Array(MULTIPART), LENGTH],
+    [
+      'Uint8Array view into a larger buffer',
+      () => new Uint8Array(Buffer.concat([Buffer.from('xx'), MULTIPART, Buffer.from('yy')])).subarray(2, -2),
+      LENGTH,
+    ],
+    ['ArrayBuffer', () => new Uint8Array(MULTIPART).buffer, LENGTH],
+    ['Blob', () => new Blob([new Uint8Array(MULTIPART)]), LENGTH],
+    [
+      'sized re-readable source',
+      () => ({ size: MULTIPART.length, stream: () => new Blob([new Uint8Array(MULTIPART)]).stream() }),
+      LENGTH,
+    ],
+    ['ReadableStream', () => new Blob([new Uint8Array(MULTIPART)]).stream(), CHUNKED],
+  ])('relays a multipart %s body unchanged with its own content type', async (_kind, body, framing) => {
     const contentType = 'multipart/form-data; boundary=B0UND';
 
     await createGatewayClient(ANONYMOUS).postMultipart(
@@ -511,8 +524,19 @@ describe('queries and bodies', () => {
     const request = onlyRequest();
     expect(requestLine(request)).toBe('POST /opt2/svc/strategies-content/v1/files');
     expect(request.query).toEqual({ siteid: 'default' });
-    expect(request.headers).toMatchObject({ 'content-type': contentType, 'x-csrf-token': 'T' });
+    expect(request.headers).toMatchObject({ 'content-type': contentType, 'x-csrf-token': 'T', ...framing });
+    expect(request.headers['content-length'] === undefined).toBe(framing === CHUNKED);
     expect(request.bytes).toEqual(MULTIPART);
+  });
+
+  it('streams a re-readable source afresh for each relay', async () => {
+    const source = { size: MULTIPART.length, stream: () => new Blob([new Uint8Array(MULTIPART)]).stream() };
+    const multipart = { contentType: 'multipart/form-data; boundary=B0UND', body: source };
+    const client = createGatewayClient(ANONYMOUS);
+
+    for (let sent = 0; sent < 2; sent++) await client.postMultipart('strategies-content', '/v1/files', multipart);
+
+    expect(fake.requests.map(({ bytes }) => bytes)).toEqual([MULTIPART, MULTIPART]);
   });
 });
 

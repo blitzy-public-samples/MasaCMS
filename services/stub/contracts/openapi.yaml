@@ -256,6 +256,13 @@ paths:
           schema:
             type: string
             minLength: 1
+        - name: match
+          in: query
+          required: false
+          description: JSON object of legacy column to values; rows matching any entry, compared as SQL Server does. The owner may return more rows.
+          schema:
+            type: string
+            maxLength: 4096
         - $ref: '#/components/parameters/PageLimit'
       responses:
         '200':

@@ -1,5 +1,6 @@
 // Service-to-service HTTP client of @opt2/platform/service-kit: one undici call per request, bounded by one timeout.
 import { channel } from 'node:diagnostics_channel';
+import type { Readable } from 'node:stream';
 import { Agent, errors, request, type Dispatcher } from 'undici';
 import { untilAborted } from '../auth/deadline.js';
 import { INVOCATION_HEADER, type InvocationMinter } from '../auth/index.js';
@@ -23,8 +24,8 @@ export interface ServiceRequest {
   json?: unknown;
   /** Body sent as `application/x-www-form-urlencoded`; array values repeat the key. */
   form?: Record<string, string | string[]>;
-  /** Raw body; the caller sets its content type in `headers`. */
-  body?: Buffer | string;
+  /** Raw body; the caller sets its content type in `headers`, and a stream's content-length, else it is chunked. */
+  body?: Buffer | string | Readable;
   headers?: Record<string, string>;
   /** User token for `Authorization`: undefined forwards the request context's token, null sends none. */
   userToken?: string | null;
@@ -121,7 +122,7 @@ function appendAll(params: URLSearchParams, entries: Record<string, string | str
   return params;
 }
 
-function encodeBody(req: ServiceRequest, headers: Record<string, string>): string | Buffer | undefined {
+function encodeBody(req: ServiceRequest, headers: Record<string, string>): ServiceRequest['body'] {
   if (req.json !== undefined) {
     headers['content-type'] = 'application/json';
     return JSON.stringify(req.json);

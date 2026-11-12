@@ -1,8 +1,12 @@
+import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { createServer, type IncomingMessage } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
+import { text } from 'node:stream/consumers';
 import type { DestinationStream } from 'pino';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -145,6 +149,10 @@ function multipartBody(boundary: string, parts: Array<{ name: string; value: str
 }
 
 const MIB = 1024 * 1024;
+
+function sha256Hex(bytes: string | Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
 
 /** A lazily generated multipart body of `count` file or field parts of `mib` MiB each, with its length and the bytes pulled from it so far. */
 function lazyMultipartBody(
@@ -562,7 +570,7 @@ describe('body parsing and legacy params', () => {
       bodyIsUndefined: request.body === undefined,
       isBuffer: Buffer.isBuffer(request.body),
       params: legacyParamsOf(request),
-      files: multipartFilesOf(request).map(({ data, ...file }) => ({ ...file, data: data.toString('utf8') })),
+      files: await Promise.all(multipartFilesOf(request).map(async ({ stream, ...file }) => ({ ...file, data: await text(stream()) }))),
     }));
     return app;
   }
@@ -614,7 +622,7 @@ describe('body parsing and legacy params', () => {
     expect(res.json().params).toStrictEqual({ q: 'z', tag: 'x,y', a: '1,2', SiteID: 'tenant-b' });
   });
 
-  it('takes multipart field values and file names, and buffers the files in body order', async () => {
+  it('takes multipart field values and file names, and spools the files in body order with their size and SHA-256', async () => {
     const app = await echo();
     const boundary = 'opt2boundary';
     const res = await app.inject({
@@ -634,9 +642,9 @@ describe('body parsing and legacy params', () => {
     expect(res.json()).toMatchObject({
       params: { title: 'Hello', newFile: 'a.png,c.gif', tag: 'one,two', attach: 'b.pdf' },
       files: [
-        { field: 'newFile', filename: 'a.png', mimetype: 'image/png', data: 'png-bytes' },
-        { field: 'attach', filename: 'b.pdf', mimetype: 'application/pdf', data: '%PDF' },
-        { field: 'newFile', filename: 'c.gif', mimetype: 'image/gif', data: 'gif-bytes' },
+        { field: 'newFile', filename: 'a.png', mimetype: 'image/png', data: 'png-bytes', size: 9, sha256: sha256Hex('png-bytes') },
+        { field: 'attach', filename: 'b.pdf', mimetype: 'application/pdf', data: '%PDF', size: 4, sha256: sha256Hex('%PDF') },
+        { field: 'newFile', filename: 'c.gif', mimetype: 'image/gif', data: 'gif-bytes', size: 9, sha256: sha256Hex('gif-bytes') },
       ],
     });
   });
@@ -669,10 +677,20 @@ describe('body parsing and legacy params', () => {
     },
   );
 
-  it('still buffers every file of a multipart body just under the post limit', async () => {
+  it('still spools every file of a multipart body just under the post limit, counting and hashing each in full', async () => {
     const { app } = await build();
     app.post('/sizes', { config: { opt2: { public: true } } }, (request) =>
-      multipartFilesOf(request).map(({ filename, data }) => ({ filename, size: data.length })),
+      Promise.all(
+        multipartFilesOf(request).map(async ({ filename, size, sha256, stream }) => {
+          const read = createHash('sha256');
+          let length = 0;
+          for await (const chunk of stream() as AsyncIterable<Buffer>) {
+            length += chunk.length;
+            read.update(chunk);
+          }
+          return { filename, size, sha256, read: { size: length, sha256: read.digest('hex') } };
+        }),
+      ),
     );
     const boundary = 'opt2boundary';
     const { body, length } = lazyMultipartBody(boundary, 'file', 3, 33);
@@ -684,7 +702,95 @@ describe('body parsing and legacy params', () => {
       payload: body,
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toStrictEqual(['part0.bin', 'part1.bin', 'part2.bin'].map((filename) => ({ filename, size: 33 * MIB })));
+    const sent = { size: 33 * MIB, sha256: sha256Hex(Buffer.alloc(33 * MIB, 'x')) };
+    expect(res.json()).toStrictEqual(['part0.bin', 'part1.bin', 'part2.bin'].map((filename) => ({ filename, ...sent, read: sent })));
+  });
+
+  it.each([
+    {
+      outcome: 'a handled request',
+      status: 200,
+      body: (boundary: string): string | Readable =>
+        multipartBody(boundary, [
+          { name: 'a', value: 'one', filename: 'a.txt' },
+          { name: 'b', value: 'two', filename: 'b.txt' },
+        ]),
+    },
+    {
+      outcome: 'a multipart body over the post limit',
+      status: 400,
+      body: (boundary: string): string | Readable => lazyMultipartBody(boundary, 'file', 4, 75).body,
+    },
+  ])('deletes every spooled temporary file once it has answered $outcome', async ({ status, body }) => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'opt2-create-service-spool-'));
+    vi.stubEnv('TMPDIR', dir);
+    try {
+      const { app } = await build();
+      const during: boolean[] = [];
+      app.post('/spool', { config: { opt2: { public: true } } }, async (request) => {
+        during.push(...(request.tmpUploads ?? []).map((file) => existsSync(file)));
+        return multipartFilesOf(request).length;
+      });
+      // Added after the multipart plugin's, so it runs once that plugin's cleanup has finished.
+      const responded = new Promise<string[]>((resolve) => {
+        app.addHook('onResponse', async (request) => resolve(request.tmpUploads ?? []));
+      });
+      const boundary = 'opt2boundary';
+      const res = await app.inject({
+        method: 'POST',
+        url: '/spool',
+        headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+        payload: body(boundary),
+      });
+      expect(res.statusCode).toBe(status);
+      const after = await responded;
+      expect(after).toHaveLength(2);
+      expect(after.every((file) => path.dirname(file) === dir && path.basename(file).startsWith('opt2-upload-'))).toBe(true);
+      expect(during).toEqual(status === 200 ? [true, true] : []);
+      expect(after.filter((file) => existsSync(file))).toEqual([]);
+      expect(await readdir(dir)).toEqual([]);
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('spools no file part once the response has closed, answering badRequest without reaching the handler', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'opt2-create-service-spool-'));
+    vi.stubEnv('TMPDIR', dir);
+    try {
+      const { app } = await build();
+      let handled = false;
+      app.post('/spool', { config: { opt2: { public: true } } }, async () => {
+        handled = true;
+        return 'handled';
+      });
+      // Added after the service kit's hook: the response closes, as on a client disconnect, before the parts are read.
+      app.addHook('preParsing', (_request, reply, payload, done) => {
+        reply.raw.emit('close');
+        done(null, payload);
+      });
+      const answered = new Promise<number>((resolve) => {
+        app.addHook('onResponse', async (_request, reply) => resolve(reply.statusCode));
+      });
+      const boundary = 'opt2boundary';
+      // light-my-request rejects once the response closes; the answer is read from onResponse.
+      const injected = app
+        .inject({
+          method: 'POST',
+          url: '/spool',
+          headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+          payload: multipartBody(boundary, [{ name: 'a', value: 'one', filename: 'a.txt' }]),
+        })
+        .catch((err: unknown) => err);
+      expect(await answered).toBe(400);
+      await injected;
+      expect(handled).toBe(false);
+      expect(await readdir(dir)).toEqual([]);
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('hands other content types to the handler as a raw Buffer', async () => {

@@ -12,6 +12,7 @@ import type { ScreenGate } from '@/lib/access-gate';
 import type { CsrfRenderer } from '@/lib/csrf';
 import type { GatewayClient, WebServiceName } from '@/lib/gateway-client';
 import type { SafeHtml } from '@/lib/html';
+import type { RequestBody } from '@/lib/request-body';
 import type { AdminRequest } from '@/lib/request-context';
 import type { RbLookup } from '@/lib/resource-bundles/rb';
 import type { SecondaryMenuCircuit, ShellHooks, ShellView } from '@/shell/document';
@@ -45,14 +46,7 @@ export type ScreenOwner = 'identity' | 'people' | 'programs-sites' | 'strategies
 export type Rc = AdminRequest['rc'];
 
 /** A redirect- or raw-mode request body as web received it. */
-export interface ScreenRequestBody {
-  /** The inbound `content-type`, multipart boundary included. */
-  readonly contentType: string;
-  /** The body bytes, for relaying unchanged (`GatewayClient.postMultipart` takes this object as is). */
-  readonly body: Uint8Array;
-  /** Fields and file parts in body order; empty for a body that is neither urlencoded nor multipart. */
-  readonly form: FormData | URLSearchParams;
-}
+export type ScreenRequestBody = RequestBody;
 
 /** Everything a screen receives for one request. */
 export interface ScreenContext {

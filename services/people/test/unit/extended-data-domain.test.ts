@@ -129,13 +129,8 @@ function saveContext(config: Partial<ExtendConfig> = {}, locale?: string): Exten
   return { siteId: SITE, config: { ...EXTEND_CONFIG_DEFAULTS, ...config }, write: WRITE, locale };
 }
 
-/** PostgreSQL CHAR(n) equality, which ignores trailing spaces. */
-function bpcharEq(a: string | null, b: string): boolean {
-  return a !== null && a.replace(/ +$/, '') === b.replace(/ +$/, '');
-}
-
-/** SQL Server text equality under its case-insensitive collation; NULL matches nothing. */
-function sqlServerEq(a: string | null, b: string): boolean {
+/** The repository's id and site equality: case-insensitive, trailing spaces ignored. */
+function idEq(a: string | null, b: string): boolean {
   return a !== null && a.replace(/ +$/, '').toLowerCase() === b.replace(/ +$/, '').toLowerCase();
 }
 
@@ -183,14 +178,14 @@ function memoryRepository(definitions: Definitions = {}): MemoryRepository {
   const methods: Pick<PeopleRepository, ExtendMethods> = {
     async listExtendData(_tx, baseIds) {
       return store.data
-        .filter((row) => baseIds.some((id) => bpcharEq(row.baseid, id)))
+        .filter((row) => baseIds.some((id) => idEq(row.baseid, id)))
         .sort(byKeys<ExtendDataRow>((r) => r.baseid, (r) => r.attributeid, (r) => r.dataid));
     },
     async replaceExtendData(_tx, baseId, entries, ctx) {
       store.writes.push({ method: 'replaceExtendData', baseId, ctx });
       const inserted: ExtendDataRow[] = [];
       for (const { attributeId, row } of entries) {
-        remove((stored) => bpcharEq(stored.baseid, baseId) && stored.attributeid === attributeId);
+        remove((stored) => idEq(stored.baseid, baseId) && stored.attributeid === attributeId);
         if (row === null) continue;
         const stored: ExtendDataRow = { tenant_id: TENANT, dataid: nextDataId++, baseid: baseId, attributeid: attributeId, ...row };
         store.data.push(stored);
@@ -200,25 +195,25 @@ function memoryRepository(definitions: Definitions = {}): MemoryRepository {
     },
     async deleteExtendDataForBase(_tx, baseId, ctx) {
       store.writes.push({ method: 'deleteExtendDataForBase', baseId, ctx });
-      return remove((row) => bpcharEq(row.baseid, baseId));
+      return remove((row) => idEq(row.baseid, baseId));
     },
     async listExtendSubtypes(_tx, filter) {
       const types = filter.types?.map((type) => type.replace(/ +$/, '').toLowerCase());
       return subtypes
-        .filter((row) => row.siteid === filter.siteId && (types === undefined || types.includes((row.type ?? '').replace(/ +$/, '').toLowerCase())))
+        .filter((row) => idEq(row.siteid, filter.siteId) && (types === undefined || types.includes((row.type ?? '').replace(/ +$/, '').toLowerCase())))
         .sort(byKeys<ExtendSubtypeRow>((r) => r.type?.toLowerCase() ?? null, (r) => r.subtype?.toLowerCase() ?? null, (r) => r.subtypeid));
     },
     async listExtendSets(_tx, subtypeIds) {
-      return sets.filter((row) => subtypeIds.some((id) => bpcharEq(row.subtypeid, id))).sort(byKeys<ExtendSetRow>((r) => r.orderno, (r) => r.extendsetid));
+      return sets.filter((row) => subtypeIds.some((id) => idEq(row.subtypeid, id))).sort(byKeys<ExtendSetRow>((r) => r.orderno, (r) => r.extendsetid));
     },
     async listExtendAttributes(_tx, filter) {
       store.attributeFilters.push(filter);
       return attributes
         .filter(
           (row) =>
-            (filter.setIds === undefined || filter.setIds.some((id) => sqlServerEq(row.extendsetid, id))) &&
+            (filter.setIds === undefined || filter.setIds.some((id) => idEq(row.extendsetid, id))) &&
             (filter.attributeIds === undefined || filter.attributeIds.includes(row.attributeid)) &&
-            (filter.siteId === undefined || sqlServerEq(row.siteid, filter.siteId)),
+            (filter.siteId === undefined || idEq(row.siteid, filter.siteId)),
         )
         .sort(byKeys<ExtendAttributeRow>((r) => r.orderno, (r) => r.name?.toLowerCase() ?? null, (r) => r.attributeid));
     },
@@ -749,6 +744,19 @@ describe('extendSetData [legacy: core/mura/extend/extendData.cfc:218-371,406-440
     ]);
     expect(result.data).toEqual({ Nickname: 'Pat', Elsewhere: 'stored elsewhere' });
     expect(result.extendSetId).toBe('SET-DEFAULT,SET-OTHER');
+  });
+
+  it('joins sets to subtypes ignoring id case, and unions only subtypes of the exact scope site as the query of queries does', async () => {
+    const { repo } = memoryRepository({
+      subtypes: [subtypeRow('ST-CASE', 'User', 'Default'), subtypeRow('ST-SITE-CASE', 'User', 'Default', SITE.toUpperCase())],
+      sets: [setRow('SET-CASE', 'st-case', 1), setRow('SET-SITE-CASE', 'ST-SITE-CASE', 1)],
+      attributes: [
+        attributeRow(1, 'Spelled', { extendsetid: 'SET-CASE', defaultvalue: 'joined' }),
+        attributeRow(2, 'Cased', { extendsetid: 'SET-SITE-CASE', defaultvalue: 'other site spelling' }),
+      ],
+    });
+    const result = await extendSetData(repo, TX, BASE, { siteId: SITE, type: 'User', subtype: 'Default' });
+    expect(result.entries).toStrictEqual([['Spelled', 'joined']]);
   });
 
   it('keeps only attributes of the scope site, compared case-insensitively, and unions nothing without a type', async () => {

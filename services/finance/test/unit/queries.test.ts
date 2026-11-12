@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import { UnitReadBlockedError, closeGates, ensureUnitGates, openGates, withGatedTenant, type GatePhase } from '@opt2/platform/migration-kit';
-import type { TenantTx } from '@opt2/platform/tenancy';
+import { tenantIdForSite, type TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
   attachmentObjects,
@@ -18,6 +18,7 @@ import {
   listVersions,
   periodTotals,
   type Page,
+  type RecordFilter,
   type RecordPaging,
 } from '../../src/repo/queries.js';
 import { FINANCE_ATTACHMENT, FINANCE_RECORD, FINANCE_RECORD_VERSION, FINANCE_ROLLUP, UNITS } from '../../src/repo/tables.js';
@@ -40,13 +41,28 @@ const B_RECORD = cfId('B', 2);
 const A_ATTACHMENT_LATER = cfId('C', 21);
 const A_ATTACHMENT_EARLIER = cfId('C', 22);
 const B_ATTACHMENT = cfId('C', 31);
+const FILTER_SITE = 'finance-query-filter';
+const FILTER_RECORDS = [
+  { id: cfId('G', 4), created: '2026-06-01 10:00:00.000', state: 'IN-PROGRESS', period: '2026-06' },
+  { id: cfId('G', 2), created: '2026-06-02 10:00:00.000', state: 'SUBMITTED', period: '2026-06' },
+  { id: cfId('G', 3), created: '2026-05-03 10:00:00.000', state: 'SUBMITTED', period: '2026-05' },
+  { id: cfId('G', 5), created: '2026-05-04 10:00:00.000', state: 'IN-PROGRESS', period: '2026-05' },
+  { id: cfId('G', 1), created: '2026-06-01 10:00:00.000', state: 'SUBMITTED', period: '2026-06' },
+];
 
-/** Inserts one IN-PROGRESS record of amount 1234.5 in the transaction tenant. */
-async function insertRecord(tx: TenantTx, recordId: string, created: string, program: number, siteId: string): Promise<void> {
+/** Inserts one record of amount 1234.5 in the transaction tenant, IN-PROGRESS in period 2026-06 unless `fields` say otherwise. */
+async function insertRecord(
+  tx: TenantTx,
+  recordId: string,
+  created: string,
+  program: number,
+  siteId: string,
+  fields: { state?: string; period?: string } = {},
+): Promise<void> {
   await tx.query(
     `INSERT INTO ${handle.schema}.record (tenant_id, record_id, siteid, title, amount, period, state, version, created, createdbyid, legacy_program_id)
-     VALUES ($1, $2, $3, 'Title', 1234.5, '2026-06', 'IN-PROGRESS', 1, $4, $5, $6)`,
-    [tx.tenantId, recordId, siteId, created, ACTOR, program],
+     VALUES ($1, $2, $3, 'Title', 1234.5, $7, $8, 1, $4, $5, $6)`,
+    [tx.tenantId, recordId, siteId, created, ACTOR, program, fields.period ?? '2026-06', fields.state ?? 'IN-PROGRESS'],
   );
 }
 
@@ -125,6 +141,45 @@ describe.skipIf(!(await pgAvailable()))('finance read queries', () => {
       expect(pages.map((page) => page.rows.length)).toEqual([2, 2, 1]);
       expect(pages.flatMap((page) => page.rows.map((row) => row.record_id))).toEqual(fixtureOrder(A_RECORDS));
       expect(await listRecords(tx, { pageIndex: 4, itemsPerPage: 2 })).toEqual({ rows: [], total: 5 });
+    });
+  });
+
+  describe('filtered record lists', () => {
+    const tenantId = tenantIdForSite(FILTER_SITE);
+
+    beforeAll(async () => {
+      await handle.app.withTenant(tenantId, async (tx) => {
+        for (const { id, created, state, period } of FILTER_RECORDS) await insertRecord(tx, id, created, 1, FILTER_SITE, { state, period });
+      });
+    });
+
+    it.each<[string, RecordFilter]>([
+      ['no filter', {}],
+      ['a state only', { state: 'SUBMITTED' }],
+      ['a period only', { period: '2026-06' }],
+      ['a state and a period', { state: 'SUBMITTED', period: '2026-06' }],
+      ['a state no record holds', { state: 'APPROVED' }],
+      ['a state and a period no record holds together', { state: 'IN-PROGRESS', period: '2026-07' }],
+    ])('counts and pages %s in SQL, in fixture order', async (_case, filter) => {
+      const matching = FILTER_RECORDS.filter((row) => Object.entries(filter).every(([column, value]) => row[column as keyof RecordFilter] === value));
+      const expected = fixtureOrder(matching);
+      await handle.app.withTenant(tenantId, async (tx) => {
+        const seen: string[] = [];
+        const pages: Page<{ record_id: string }>[] = [];
+        for (let pageIndex = 1; pageIndex <= Math.max(expected.length, 1); pageIndex++) {
+          pages.push(await listRecords(recording(tx, seen), { pageIndex, itemsPerPage: 1 }, filter));
+        }
+        expect(pages.map((page) => page.total)).toEqual(pages.map(() => expected.length));
+        expect(pages.flatMap((page) => page.rows.map((row) => row.record_id))).toEqual(expected);
+        expect(await listRecords(recording(tx, seen), { pageIndex: expected.length + 1, itemsPerPage: 1 }, filter)).toEqual({
+          rows: [],
+          total: expected.length,
+        });
+        const terms = Object.keys(filter).map((column) => `"${column}" = $`);
+        const statements = seen.filter((text) => text.includes('."record"'));
+        expect(statements.length).toBeGreaterThan(0);
+        for (const text of statements) expect([terms.every((term) => text.includes(term)), text.includes(' WHERE ')]).toEqual([true, terms.length > 0]);
+      });
     });
   });
 

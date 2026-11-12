@@ -76,6 +76,9 @@ export const DEFAULT_EXPORT_LIMIT = 1000;
 /** Largest export page. */
 export const MAX_EXPORT_LIMIT = 10_000;
 
+/** Longest `match` text an export accepts. */
+export const MAX_EXPORT_MATCH_LENGTH = 4096;
+
 /** Origins of a migration apply; the reverse projector skips their changelog rows. */
 export const APPLY_ORIGINS = ['backfill', 'migration-feed', 'legacy-window'] as const;
 
@@ -237,6 +240,8 @@ const ROW_HASH_COLUMN = 'legacy_row_hash';
 const OCCURRENCE_COLUMN = 'occurrence';
 const WATERMARK_COLUMNS =
   "legacy_table, direction, snapshot_seq::text AS snapshot_seq, backup_lsn::text AS backup_lsn, to_char(finished_at, 'YYYY-MM-DD\"T\"HH24:MI:SS.MS') AS finished_at";
+const INTEGER_TEXT = /^\s*[+-]?\d+\s*$/;
+const UPPER_ASCII = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
 const nonEmpty = z.string().min(1);
 const digits = z.string().regex(/^(0|[1-9]\d{0,14})$/).transform(Number);
@@ -276,11 +281,29 @@ const applyBodySchema = z.strictObject({
   watermark: z.strictObject(watermarkFields).optional(),
 });
 
+const exportMatchSchema = z
+  .string()
+  .max(MAX_EXPORT_MATCH_LENGTH)
+  .transform((text, ctx): unknown => {
+    try {
+      return JSON.parse(text);
+    } catch {
+      ctx.addIssue({ code: 'custom', message: 'match must be JSON text' });
+      return z.NEVER;
+    }
+  })
+  .pipe(
+    z
+      .record(z.string(), z.array(z.union([z.string(), z.int()])).min(1))
+      .refine((entries) => Object.keys(entries).length > 0, 'match must name a column'),
+  );
+
 const exportQuerySchema = z.strictObject({
   unit: nonEmpty,
   ...tenantFields,
   programId: digits.optional(),
   after: nonEmpty.optional(),
+  match: exportMatchSchema.optional(),
   limit: pageLimit(MAX_EXPORT_LIMIT),
 });
 
@@ -336,6 +359,7 @@ export type WatermarkInput = z.input<typeof watermarkBodySchema>;
 type ApplyBody = z.output<typeof applyBodySchema>;
 type GateBody = z.output<typeof gateBodySchema>;
 type Watermark = z.output<typeof watermarkBodySchema>;
+type ExportMatch = z.output<typeof exportMatchSchema>;
 
 /** A mapping with the repository table it writes and its target-to-legacy column names. */
 interface PreparedMapping {
@@ -352,6 +376,13 @@ interface ExportSource {
   readonly orderExprs: readonly string[];
   readonly hasProgramColumn: boolean;
   readonly mappings: PreparedMapping[];
+}
+
+/** One `match` entry bound to the target column every mapping of a source stores it in. */
+interface MatchTerm {
+  readonly column: string;
+  readonly type: 's' | 'i';
+  readonly values: readonly (string | number)[];
 }
 
 /** Where an export page resumes: the source index and key it reads after, and the manifest position while a paged manifest continues. */
@@ -516,29 +547,64 @@ function parseExportCursor(text: string, sources: readonly ExportSource[], hasMa
   return { index, key: cursor.key, objects: cursor.objects };
 }
 
-/** Up to `limit` rows of one table after the keyset position `after`, each with its key values as text. */
+/** `match` bound to target columns of `source`; undefined (export it whole) unless every mapping stores each entry's column in one text or integer column. */
+function matchTerms(source: ExportSource, match: ExportMatch): MatchTerm[] | undefined {
+  const { definition } = source.mappings[0] as PreparedMapping;
+  const terms: MatchTerm[] = [];
+  for (const [name, values] of Object.entries(match)) {
+    const wanted = name.toLowerCase();
+    const targets = new Set(source.mappings.map(({ mapping }) => mapping.columns.find((column) => column.legacy.toLowerCase() === wanted)?.target));
+    const [column] = targets;
+    const type = definition.columns.find((stored) => stored.name === column)?.type;
+    if (targets.size !== 1 || column === undefined || (type !== 's' && type !== 'i')) return undefined;
+    terms.push({ column, type, values });
+  }
+  return terms;
+}
+
+/** OR of `terms` compared as SQL Server does, also true for non-ASCII text the caller compares itself; `false` when no term has a value. */
+function matchSql(terms: readonly MatchTerm[], bind: (value: string[]) => string): string {
+  const predicates = terms.flatMap(({ column, type, values }) => {
+    const text = `(${ident(column)})::text`;
+    if (type === 's') {
+      const wanted = values.map((value) => String(value).replace(/ +$/, '').toLowerCase()).filter((value) => !value.includes('\u0000'));
+      if (wanted.length === 0) return [];
+      return [
+        `(translate(rtrim(${text}, ' '), '${UPPER_ASCII}', '${UPPER_ASCII.toLowerCase()}') = ANY(${bind(wanted)}::text[])` +
+          ` OR octet_length(${text}) <> char_length(${text}))`,
+      ];
+    }
+    const integers = values.flatMap((value) => (typeof value === 'number' || INTEGER_TEXT.test(value) ? [BigInt(value).toString()] : []));
+    // Canonical integer columns include booleans, whose text is true or false.
+    const wanted = integers.flatMap((value) => (value === '1' ? [value, 'true'] : value === '0' ? [value, 'false'] : [value]));
+    return wanted.length === 0 ? [] : [`${text} = ANY(${bind(wanted)}::text[])`];
+  });
+  return predicates.length === 0 ? 'false' : `(${predicates.join(' OR ')})`;
+}
+
+/** Up to `limit` rows of one table after the keyset position `after` and within `match`, each with its key values as text. */
 async function selectExportRows(
   tx: TenantTx,
   source: ExportSource,
   after: readonly string[] | undefined,
   programId: number | undefined,
+  match: readonly MatchTerm[] | undefined,
   limit: number,
 ): Promise<RepositoryRow[]> {
   const values: unknown[] = [tx.tenantId];
+  const bind = (value: unknown): string => `$${String(values.push(value))}`;
   const where = ['"tenant_id" = $1'];
-  if (programId !== undefined) {
-    values.push(programId);
-    where.push(`${ident(LEGACY_PROGRAM_ID_COLUMN)} = $${values.length}`);
-  }
+  if (programId !== undefined) where.push(`${ident(LEGACY_PROGRAM_ID_COLUMN)} = ${bind(programId)}`);
   if (after !== undefined) {
-    const params = after.map((value) => `$${values.push(value)}`);
+    const params = after.map(bind);
     where.push(`(${source.orderExprs.join(', ')}) > (${params.join(', ')})`);
   }
-  values.push(limit);
+  if (match !== undefined) where.push(matchSql(match, bind));
+  const limitParam = bind(limit);
   const { rows } = await tx.query(
     `SELECT *, ARRAY[${source.keyColumns.map((name) => `(${ident(name)})::text`).join(', ')}] AS ${ident(EXPORT_CURSOR_COLUMN)}
        FROM ${qualified(tx.schema, source.table)} WHERE ${where.join(' AND ')}
-      ORDER BY ${source.orderExprs.map((expr) => `${expr} NULLS FIRST`).join(', ')} LIMIT $${values.length}`,
+      ORDER BY ${source.orderExprs.map((expr) => `${expr} NULLS FIRST`).join(', ')} LIMIT ${limitParam}`,
     values,
   ).catch((err: unknown) => {
     // Column widths and NUL characters are beyond the canonical types; binding such a cursor value or programId raises SQLSTATE class 22.
@@ -739,7 +805,8 @@ export function registerMigrationHandlers(app: FastifyInstance, options: Migrati
       let rowsNext: { table: string; key: string[] } | null = null;
       for (let index = start.index; index < sources.length && remaining > 0; index += 1) {
         const source = sources[index] as ExportSource;
-        const rows = await selectExportRows(tx, source, index === start.index ? start.key : undefined, programId, remaining);
+        const match = query.match === undefined ? undefined : matchTerms(source, query.match);
+        const rows = await selectExportRows(tx, source, index === start.index ? start.key : undefined, programId, match, remaining);
         for (const { mapping } of source.mappings) {
           tables.push({
             unit: mapping.unit,

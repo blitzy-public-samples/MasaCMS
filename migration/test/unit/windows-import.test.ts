@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 
 import type { Logger } from '@opt2/platform/logging';
-import { decodeRow, encodeRow, type ApplyRequest, type CanonicalColumn, type ExportResponse, type ObjectManifestEntry } from '@opt2/platform/migration-kit';
+import { MAX_EXPORT_MATCH_LENGTH, decodeRow, encodeRow, type ApplyRequest, type CanonicalColumn, type ExportResponse, type ObjectManifestEntry } from '@opt2/platform/migration-kit';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
 import type { ConnectionPool } from 'mssql';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -12,7 +12,7 @@ import { loadConfig } from '../../src/config.js';
 import { clearCatalogCache, compareKeyValues, type KeyValue } from '../../src/extract/index.js';
 import { objectKey, type StoredVariant } from '../../src/files/index.js';
 import { UnsupportedFileStoreError, type BridgeClient, type FileListing, type LegacyDb, type LegacyFileEntry } from '../../src/legacy/index.js';
-import { OwnerCallError, UnknownUnitError, loadUnitCatalog, type OwnersClient, type PutObjectParams } from '../../src/owners/index.js';
+import { OwnerCallError, UnknownUnitError, loadUnitCatalog, type ExportParams, type OwnersClient, type PutObjectParams } from '../../src/owners/index.js';
 import {
   WindowImportError,
   importWindow,
@@ -204,18 +204,29 @@ interface UnitExportSpec {
 /** Export-row field carrying the row's `Program_<id>` for folded tables. */
 const PROGRAM = '__program';
 
-/** Fake owners: exports served per unit and tenant in pages of two rows; applies and object uploads recorded. */
-function fakeOwners(units: Record<string, UnitExportSpec>, options: { failApply?: Error } = {}) {
+/** `rows` that `match` selects as an owner compares them; all of them when the export lacks a match column. */
+function matchedRows(columns: readonly CanonicalColumn[], rows: Row[], match: ExportParams['match']): Row[] {
+  if (match === undefined) return rows;
+  const entries = Object.entries(match).map(([name, values]) => ({ column: columns.find((column) => column.name.toLowerCase() === name.toLowerCase()), values: new Set(values.map(norm)) }));
+  if (entries.some(({ column }) => column === undefined)) return rows;
+  return rows.filter((row) => entries.some(({ column, values }) => values.has(norm(row[column?.name ?? '']))));
+}
+
+/** Fake owners: exports served per unit and tenant in pages of two rows, filtered by `match` when `honourMatch`; export params, applies and object uploads recorded. */
+function fakeOwners(units: Record<string, UnitExportSpec>, options: { failApply?: Error; honourMatch?: boolean } = {}) {
   const applies: { owner: string; request: ApplyRequest }[] = [];
   const puts: { params: PutObjectParams; bytes: Uint8Array }[] = [];
+  const exports: ExportParams[] = [];
   let xid = 100;
   const siteOf = (tenantId: string, spec: UnitExportSpec | undefined): string | undefined =>
     Object.keys({ ...spec?.rows, ...spec?.objects }).find((site) => tenantIdForSite(site) === tenantId);
-  async function* exportPages(_owner: string, params: { unit: string; tenantId: string }): AsyncGenerator<ExportResponse> {
+  async function* exportPages(_owner: string, params: ExportParams): AsyncGenerator<ExportResponse> {
+    exports.push(params);
     await Promise.resolve();
     const spec = units[params.unit];
     const site = spec === undefined ? undefined : siteOf(params.tenantId, spec);
-    const rows = (site === undefined ? [] : (spec?.rows?.[site] ?? [])).map((row) => {
+    const stored = site === undefined ? [] : (spec?.rows?.[site] ?? []);
+    const rows = (options.honourMatch === true ? matchedRows(spec?.columns ?? [], stored, params.match) : stored).map((row) => {
       const encoded = encodeRow(spec?.columns ?? [], row);
       return { key: encoded, row: encoded, hash: sha(encoded), ...(row[PROGRAM] === undefined ? {} : { legacyProgramId: Number(row[PROGRAM]) }) };
     });
@@ -253,7 +264,7 @@ function fakeOwners(units: Record<string, UnitExportSpec>, options: { failApply?
     applies.flatMap(({ owner, request }) =>
       request.rows.map((row) => ({ owner, op: row.op, discriminator: row.discriminator, tenantId: request.tenantId, values: decodeRow(request.columns, row.row) })),
     );
-  return { owners, applies, puts, appliedRows };
+  return { owners, applies, puts, appliedRows, exports };
 }
 
 /** Fake bridge: one `fileDir` listing per store directory, with the bytes of each stored name. */
@@ -463,6 +474,62 @@ describe('importWindow', () => {
     expect(await run(1)).toEqual(first);
     const retry = await run(2);
     expect(retry.some((id) => first.includes(id))).toBe(false);
+  });
+
+  it.each([
+    ['the live scope column for a key scope', { keys: { siteid: 'tenant-a' } }, { siteID: ['tenant-a'] }],
+    ['no match for a table scope', { table: true }, undefined],
+    ['no match for a scope value too long to send', { keys: { siteid: 'x'.repeat(MAX_EXPORT_MATCH_LENGTH) } }, undefined],
+  ] as [string, ImportInput['scope'], ExportParams['match']][])('reads every tenant export once with %s', async (_label, scope, match) => {
+    const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.survey': SURVEY_TABLE });
+    const fake = fakeOwners({ 'surveys.survey': SURVEY_EXPORT });
+    await importWindow(contextOf({ legacy, owners: fake.owners }), windowInput(['surveys.survey'], scope));
+    const tenants = [...new Set(TSETTINGS.rows.map((row) => tenantIdForSite(String(row.SiteID))))].sort();
+    expect(fake.exports).toEqual(tenants.map((tenantId) => ({ unit: 'surveys.survey', tenantId, match })));
+  });
+
+  it('applies the same rows whether the owner honours the match or returns more rows', async () => {
+    const run = async (honourMatch: boolean) => {
+      const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.survey': SURVEY_TABLE });
+      const fake = fakeOwners({ 'surveys.survey': SURVEY_EXPORT }, { honourMatch });
+      await importWindow(contextOf({ legacy, owners: fake.owners }), windowInput(['surveys.survey'], { keys: { siteid: 'TENANT-A' } }));
+      return fake.appliedRows().map(({ tenantId, op, values }) => [tenantId, op, values.survey_id]);
+    };
+    const honoured = await run(true);
+    expect(honoured).toEqual([
+      [TENANT_A, 'upsert', '1'],
+      [TENANT_A, 'delete', '2'],
+      [TENANT_A, 'upsert', '3'],
+    ]);
+    expect(await run(false)).toEqual(honoured);
+  });
+
+  it('streams a folded table of two programs into full batches as each program fills, then the remainders in program order', async () => {
+    const daySpec = (days: number[]): TableSpec => ({ columns: [int('day_id'), int('hours')], primaryKey: ['day_id'], rows: days.map((day) => ({ day_id: day, hours: 8 })) });
+    const run = async () => {
+      const { legacy } = fakeLegacy({
+        'dbo.tsettings': TSETTINGS,
+        'synthetic.program_site': { columns: [int('program_id'), varchar('siteID', 25)], primaryKey: ['program_id'], rows: [{ program_id: 1, siteID: 'tenant-a' }, { program_id: 2, siteID: 'tenant-a' }] },
+        'Program_1.timesheet_day': daySpec([1, 2, 3]),
+        'Program_2.timesheet_day': daySpec([1, 2]),
+      });
+      const fake = fakeOwners({ 'timesheets.timesheet_day': { legacyTable: 'timesheet_day', columns: [i('day_id'), i('hours')], rows: { 'tenant-a': [] } } });
+      await importWindow(contextOf({ legacy, owners: fake.owners, batchRows: 2 }), windowInput(['timesheets.timesheet_day'], { table: true }));
+      return fake.applies.map(({ request }) => ({
+        batchId: request.batchId,
+        tenantId: request.tenantId,
+        programId: request.legacyProgramId,
+        days: request.rows.map((row) => decodeRow(request.columns, row.row).day_id),
+      }));
+    };
+    const first = await run();
+    const table = loadUnitCatalog(loadConfig().paths.tableOwnership).legacyTablesOf('timesheets.timesheet_day')[0] ?? '';
+    expect(first).toEqual([
+      { batchId: windowBatchId('W1', 1, 'timesheets', table, 0), tenantId: TENANT_A, programId: 1, days: ['1', '2'] },
+      { batchId: windowBatchId('W1', 1, 'timesheets', table, 1), tenantId: TENANT_A, programId: 2, days: ['1', '2'] },
+      { batchId: windowBatchId('W1', 1, 'timesheets', table, 2), tenantId: TENANT_A, programId: 1, days: ['3'] },
+    ]);
+    expect(await run()).toEqual(first);
   });
 
   it('wraps an owner failure in WindowImportError naming the owner and table', async () => {
@@ -678,6 +745,28 @@ describe('importWindow', () => {
     expect(Buffer.from(fake.puts[0]?.bytes ?? []).equals(small)).toBe(true);
     expect(result).toMatchObject({ objectsTransferred: 1, objectsRemoved: [keyOf(FILE_2, '', 'png')], rowsImported: 0 });
     expect(result.writePositions.get('strategies-content')).toBe('900');
+  });
+
+  it('reads the tfiles rows of the listed files only', async () => {
+    const bytes = Buffer.from('png-bytes');
+    const fileRow = (fileID: string) => ({ fileID, siteID: 'tenant-b', contentType: 'image', contentSubType: 'png', fileExt: 'png' });
+    const files: TableSpec = {
+      columns: [varchar('fileID', 35), varchar('siteID', 25), varchar('contentType'), varchar('contentSubType'), varchar('fileExt')],
+      primaryKey: ['fileID'],
+      rows: [fileRow(FILE_1), fileRow(FILE_2)],
+    };
+    const { bridge } = fakeBridge({ 'tenant-b': { files: [{ name: `${FILE_1}.png`, bytes }, { name: `${FILE_1}_small.png`, bytes }, { name: 'readme.txt', bytes }] } });
+    const { legacy, db } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'dbo.tfiles': files });
+    const fake = fakeOwners({ 'content.file': { legacyTable: 'tfiles', columns: [s('fileID')] } });
+    await importWindow(contextOf({ legacy, owners: fake.owners, bridge }), windowInput(['content.file_object'], { keys: { siteid: 'tenant-b' } }));
+
+    expect(db.queries.filter((query) => query.includes('[tfiles]'))).toEqual([
+      'SELECT [fileID] AS [k], [siteID] AS [v0], [contentType] AS [v1], [contentSubType] AS [v2], [fileExt] AS [v3] FROM [dbo].[tfiles] WHERE [fileID] IN (@p0)',
+    ]);
+    expect(fake.puts.map(({ params }) => [params.tenantId, params.fileId, params.variant, params.contentType])).toEqual([
+      [TENANT_B, FILE_1, '', 'image/png'],
+      [TENANT_B, FILE_1, '_small', 'image/png'],
+    ]);
   });
 
   it('lets UnsupportedFileStoreError through unwrapped', async () => {

@@ -270,7 +270,7 @@ describe('in-memory client parity with the production client over HTTP', () => {
         method: 'POST',
         path: '/v1/files',
         query: { siteid: 'default' },
-        headers: { 'content-type': MULTIPART_TYPE },
+        headers: { 'content-type': MULTIPART_TYPE, 'content-length': String(MULTIPART.length) },
         userToken: USER_TOKEN,
         requestId: REQUEST_ID,
       },

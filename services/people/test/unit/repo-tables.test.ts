@@ -35,6 +35,7 @@ const SCHEMA = 'people';
 const MIGRATIONS = new URL('../../db/migrations/', import.meta.url);
 const OWNERSHIP = JSON.parse(readFileSync(new URL('../../../../opt2/table-ownership.json', import.meta.url), 'utf8')) as Ownership;
 const ROSTER_SQL = readFileSync(new URL('0004_roster_archive.sql', MIGRATIONS), 'utf8');
+const LOOKUP_SQL = readFileSync(new URL('0007_person_lookup_indexes.sql', MIGRATIONS), 'utf8');
 const CREATE_TABLE = /^CREATE TABLE (\w+)\.(\w+) \(\n([\s\S]*?)\n\);/gm;
 const COLUMN = /^"?([a-z_0-9]+)"? (.+?)(?= NOT NULL| NULL| DEFAULT | PRIMARY KEY| UNIQUE| CHECK | GENERATED |$)/;
 const CONSTRAINT = /^(PRIMARY KEY|UNIQUE) /;
@@ -62,9 +63,9 @@ function migrationTables(): Map<string, DdlTable> {
   return tables;
 }
 
-/** The quoted values of an `IN (...)` list matched by `pattern`. */
-function inList(pattern: RegExp): string[] {
-  return (pattern.exec(ROSTER_SQL)?.[1] ?? '').split(',').map((value) => value.trim().replace(/^'|'$/g, ''));
+/** The quoted values of an `IN (...)` list matched by `pattern` in `sql`. */
+function inList(pattern: RegExp, sql = ROSTER_SQL): string[] {
+  return (pattern.exec(sql)?.[1] ?? '').split(',').map((value) => value.trim().replace(/^'|'$/g, ''));
 }
 
 const DDL = migrationTables();
@@ -146,6 +147,11 @@ describe('people tables', () => {
   it('matches the roster_operation state CHECK and the open-operation partial unique index', () => {
     expect([...ROSTER_STATES]).toEqual(inList(/state text NOT NULL CHECK \(state IN \(([^)]*)\)\)/));
     expect([...OPEN_ROSTER_STATES]).toEqual(inList(/ON people\.roster_operation \(user_id\)\s+WHERE state IN \(([^)]*)\)/));
+    // 0007 replaces the 0004 index with its case-insensitive form under the same name.
+    expect(LOOKUP_SQL).toContain('DROP INDEX people.roster_operation_open_user_uidx;');
+    expect([...OPEN_ROSTER_STATES]).toEqual(
+      inList(/INDEX roster_operation_open_user_uidx ON people\.roster_operation \(user_id COLLATE people\.legacy_char_ci\)\s+WHERE state IN \(([^)]*)\)/, LOOKUP_SQL),
+    );
     expect(RECOVERABLE_ROSTER_STATES.every((state) => (OPEN_ROSTER_STATES as readonly string[]).includes(state))).toBe(true);
     expect(RECOVERABLE_ROSTER_STATES).not.toContain('halted');
   });

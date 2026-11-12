@@ -1,11 +1,14 @@
 // The handlers' request pipeline in every response mode, over a test screen registry and the loopback gateway fake.
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INVOCATION_HEADER } from '@opt2/platform/auth';
 import { LEGACY_ERROR_PAGE_HTML } from '@opt2/platform/legacy-compat';
 import type { ScreenGate } from '@/lib/access-gate';
-import { setServiceClientForTests } from '@/lib/gateway-client';
+import { GatewayUnavailableError, setServiceClientForTests } from '@/lib/gateway-client';
 import { html } from '@/lib/html';
-import { logRequest, type RequestLogFields } from '@/lib/telemetry';
+import { ensureTracing, logRequest, type RequestLogFields } from '@/lib/telemetry';
 import type { PageRedirect, ScreenContext, ScreenRequestBody, SubmitResult, UploadPart } from '@/screens/registry';
 import { promptCountsZero } from '../fixtures/strategies-content/prompts';
 import { siteRecordFor } from '../helpers/admin-request';
@@ -17,6 +20,7 @@ const probe = vi.hoisted(() => ({
   submit: undefined as SubmitResult | undefined,
   uploads: undefined as readonly UploadPart[] | undefined,
   body: undefined as ScreenRequestBody | undefined,
+  inspect: undefined as ((ctx: ScreenContext) => Promise<void>) | undefined,
   renderError: undefined as Error | undefined,
   redirect: undefined as PageRedirect | undefined,
   steps: [] as string[],
@@ -35,6 +39,7 @@ vi.mock('@/screens/registry', async () => {
   const base = { owner: 'people', gate: open };
   const submitted = async (ctx: ScreenContext): Promise<SubmitResult> => {
     probe.body = ctx.body;
+    await probe.inspect?.(ctx);
     if (probe.submit === undefined) throw new Error('No submit outcome installed');
     return probe.submit;
   };
@@ -231,6 +236,7 @@ beforeEach(async () => {
     submit: undefined,
     uploads: undefined,
     body: undefined,
+    inspect: undefined,
     renderError: undefined,
     redirect: undefined,
     steps: [],
@@ -367,6 +373,18 @@ describe('page mode', () => {
     expect(loggedLines()).toEqual([expect.objectContaining({ statusCode: 500, error: probe.renderError })]);
   });
 
+  it('logs a tracing start-up failure once and rethrows it without calling a service', async () => {
+    const failure = new Error('tracing failed');
+    vi.mocked(ensureTracing).mockRejectedValueOnce(failure);
+
+    await expect(renderAdminPage(LIST, {}, await forwarded())).rejects.toBe(failure);
+    expect(fake.requests).toHaveLength(0);
+    expect(loggedLines()).toEqual([
+      expect.objectContaining({ route: 'page:cusers.list', statusCode: 500, requestId: 'req-pipeline', error: failure }),
+    ]);
+    expect(loggedLines()[0]?.userId).toBeUndefined();
+  });
+
   it('persists the writes of a request a screen derived in place of its own, with the set-up writes it carries', async () => {
     const result = await renderAdminPage({ circuit: 'carch', action: 'list' }, { muraAction: 'carch.list' }, await forwarded());
 
@@ -489,23 +507,50 @@ describe('redirect mode', () => {
     expect(await response.text()).toContain('<p id="error">invalid</p>');
   });
 
-  it('hands the multipart body, its fields and its file parts to the screen and the registry', async () => {
+  it.each<{ outcome: string; failure?: Error; status?: number }>([
+    { outcome: 'its answer', status: 200 },
+    { outcome: 'a mapped failure', failure: new GatewayUnavailableError('people', 503), status: 503 },
+    { outcome: 'a rethrown failure', failure: new RangeError('screen failed') },
+  ])('stages the multipart body for the screen and removes it after $outcome', async ({ failure, status }) => {
     const form = new FormData();
     form.append('title', 'Report');
     form.append('newfile', new File(['%PDF'], 'report.pdf', { type: 'application/pdf' }));
     const encoded = new Request('http://web/', { method: 'POST', body: form });
     const contentType = encoded.headers.get('content-type') ?? '';
-    const bytes = new Uint8Array(await encoded.arrayBuffer());
+    const bytes = Buffer.from(await encoded.arrayBuffer());
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'opt2-web-pipeline-'));
+    let reads: Buffer[] = [];
+    let staged: string[] = [];
+    probe.inspect = async (ctx) => {
+      const source = ctx.body?.body;
+      if (source === undefined) return;
+      const read = async (): Promise<Buffer> => Buffer.from(await new Response(source.stream()).arrayBuffer());
+      reads = [await read(), await read()];
+      staged = await readdir(tmp);
+      if (failure !== undefined) throw failure;
+    };
     probe.submit = { kind: 'raw', response: { contentType: 'text/plain', body: 'success' } };
 
-    const request = await postRequest('/admin-actions/cusers/update', bytes, contentType);
-    const response = await handleAdminAction(request, UPDATE);
+    vi.stubEnv('TMPDIR', tmp);
+    try {
+      const request = await postRequest('/admin-actions/cusers/update', bytes, contentType);
+      const answered = handleAdminAction(request, UPDATE);
+      if (status === undefined) await expect(answered).rejects.toBe(failure);
+      else expect((await answered).status).toBe(status);
+      expect(await readdir(tmp)).toEqual([]);
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(tmp, { recursive: true, force: true });
+    }
 
-    expect(await response.text()).toBe('success');
+    expect(staged).toEqual([expect.stringMatching(/^opt2-web-upload-/)]);
+    expect(reads).toEqual([bytes, bytes]);
     expect(probe.uploads).toEqual([{ field: 'newfile', filename: 'report.pdf' }]);
     expect(probe.body?.contentType).toBe(contentType);
-    expect(Buffer.from(probe.body?.body ?? []).equals(Buffer.from(bytes))).toBe(true);
+    expect(probe.body?.body.size).toBe(bytes.length);
     expect(probe.body?.form.get('title')).toBe('Report');
+    expect(probe.body?.form.get('newfile')).toMatchObject({ name: 'report.pdf', type: 'application/pdf', size: 0 });
+    expect(loggedLines()).toEqual([expect.objectContaining({ statusCode: status ?? 500, error: failure })]);
   });
 
   it('gives a bodiless request an empty form scope and no body', async () => {

@@ -2,7 +2,7 @@
 /** Fixture row projections against `envelope.rows()` output recorded from the legacy oracle. */
 import { describe, expect, it } from 'vitest';
 import type { RollupRow } from '../../src/domain/rollup.js';
-import { attachmentRow, recordDetail, recordRow, rollupRow, versionRow } from '../../src/legacy/serialize.js';
+import { attachmentRow, recordDetail, recordDetailPage, recordRow, rollupRow, versionRow } from '../../src/legacy/serialize.js';
 import type { FinanceAttachmentRow, FinanceRecordRow, FinanceRecordVersionRow, FinanceRollupRow } from '../../src/repo/tables.js';
 
 const RECORD_ID = '0A1B2C3D-4E5F-6A7B-8C9D0E1F2A3B4C5D';
@@ -168,6 +168,27 @@ describe('recordDetail', () => {
     const detail = recordDetail(record, [version, first], [attachment]);
     expect(detail).toEqual({ ...recordRow(record), versions: [versionRow(version), versionRow(first)], attachments: [attachmentRow(attachment)] });
     expect(recordDetail(record, [], [])).toEqual({ ...recordRow(record), versions: [], attachments: [] });
+  });
+});
+
+describe('recordDetailPage', () => {
+  it('embeds a page of versions and of attachments in the given order, with the count of each', () => {
+    const first = { ...version, version_id: ATTACHMENT_ID, version: 1, action: 'create' };
+    const detail = recordDetailPage(record, { rows: [version, first], total: 60 }, { rows: [attachment], total: 1 });
+    expect(detail).toEqual({
+      ...recordRow(record),
+      versions: [versionRow(version), versionRow(first)],
+      versions_total: 60,
+      attachments: [attachmentRow(attachment)],
+      attachments_total: 1,
+    });
+    expect(recordDetailPage(record, { rows: [], total: 0 }, { rows: [], total: 0 })).toEqual({
+      ...recordRow(record),
+      versions: [],
+      versions_total: 0,
+      attachments: [],
+      attachments_total: 0,
+    });
   });
 });
 
