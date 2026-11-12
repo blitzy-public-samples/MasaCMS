@@ -119,7 +119,7 @@ function cfUrlEncodedFormat(s: string): string {
 }
 
 /** ACF isValid('URL', s). */
-function isCfUrl(s: string): boolean {
+export function isCfUrl(s: string): boolean {
   return CF_URL.test(javaTrim(s));
 }
 

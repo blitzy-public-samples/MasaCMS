@@ -1,0 +1,72 @@
+
+<style>
+	td.actions a:hover {
+		text-decoration: none;
+	}
+</style>
+
+
+	
+	<div class="mura-control-group">
+		<label>Search for Comments</label>
+		<div class="mura-input-set">
+			<input type="text" name="keywords" value="Car&quot;&lt;" id="rcSearch" placeholder="Search"/>
+			<button type="submit" name="btnSearch" id="btnSearch" class="btn"><i class="mi-search"></i></button>
+		</div>
+	</div>
+
+	<div id="advancedSearch">
+		<div class="mura-control-group">
+				<label>Comment Status</label>
+					<select name="commentStatus" id="commentStatusSelector">
+						<option value="">All</option>
+						
+							<option value="Unapproved">Unapproved</option>
+						
+							<option value="Approved">Approved</option>
+						
+							<option value="Spam" selected="selected">Spam</option>
+						
+							<option value="Deleted">Deleted</option>
+						
+					</select>
+				</div>
+			<div class="mura-control-group">
+			<div class="date-range-selector">
+				<label>Comment Date Range</label>
+				<div class="mura-control justify">
+					<label class="label-inline">
+						From
+						<input type="text" name="startDate" id="startDate" class="datepicker mura-custom-datepicker" placeholder="Start Date" value="11&#x2f;309&#x2f;2026" />
+						To
+						<input type="text" name="endDate" id="endDate" class="datepicker mura-custom-datepicker" placeholder="End Date" value="11&#x2f;316&#x2f;2026" />
+					</label>
+				</div>
+			</div>
+			
+		</div>
+		<div class="mura-control-group">
+			<div class="mura-control-justify">
+				<label>Available Categories</label>
+				<div id="mura-list-tree">
+					<ul class="categories checkboxTree"><li><input type="checkbox" name="categoryID" class="checkbox" value="CA000000-0000-0000-00000000000000A1"/> Alpha</li><li><input type="checkbox" name="categoryID" class="checkbox" value="CA000000-0000-0000-00000000000000N1"/> News &amp; &lt;Events&gt;<ul class="categories"><li>Local</li><li><input type="checkbox" name="categoryID" class="checkbox" value="CA000000-0000-0000-00000000000000W1"/> World<ul class="categories"><li>Deep</li></ul></li></ul></li></ul>
+				</div>
+			</div>
+		</div>
+		<input type="hidden" id="sortBy" name="sortBy" value="name">
+		<input type="hidden" id="sortDirection" name="sortDirection" value="desc">
+		<input type="hidden" id="nextN" name="nextN" value="25">
+		<input type="hidden" id="pageNo" name="pageNo" value="1">
+	</div>
+
+	<div class="mura-control-group">
+		
+
+		
+			<div class="mura-layout-row">
+				<div>
+					<div class="help-block-empty">No spam comments found.</div>
+				</div>
+			</div>
+		
+	</div>

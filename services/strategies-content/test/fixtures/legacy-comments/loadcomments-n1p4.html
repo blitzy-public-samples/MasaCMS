@@ -1,0 +1,371 @@
+
+<style>
+	td.actions a:hover {
+		text-decoration: none;
+	}
+</style>
+
+
+	
+	<div class="mura-control-group">
+		<label>Search for Comments</label>
+		<div class="mura-input-set">
+			<input type="text" name="keywords" value="" id="rcSearch" placeholder="Search"/>
+			<button type="submit" name="btnSearch" id="btnSearch" class="btn"><i class="mi-search"></i></button>
+		</div>
+	</div>
+
+	<div id="advancedSearch">
+		<div class="mura-control-group">
+				<label>Comment Status</label>
+					<select name="commentStatus" id="commentStatusSelector">
+						<option value="">All</option>
+						
+							<option value="Unapproved">Unapproved</option>
+						
+							<option value="Approved">Approved</option>
+						
+							<option value="Spam">Spam</option>
+						
+							<option value="Deleted">Deleted</option>
+						
+					</select>
+				</div>
+			<div class="mura-control-group">
+			<div class="date-range-selector">
+				<label>Comment Date Range</label>
+				<div class="mura-control justify">
+					<label class="label-inline">
+						From
+						<input type="text" name="startDate" id="startDate" class="datepicker mura-custom-datepicker" placeholder="Start Date" value="11&#x2f;01&#x2f;2026" />
+						To
+						<input type="text" name="endDate" id="endDate" class="datepicker mura-custom-datepicker" placeholder="End Date" value="11&#x2f;30&#x2f;2026" />
+					</label>
+				</div>
+			</div>
+			
+		</div>
+		<div class="mura-control-group">
+			<div class="mura-control-justify">
+				<label>Available Categories</label>
+				<div id="mura-list-tree">
+					<ul class="categories checkboxTree"><li><input type="checkbox" name="categoryID" class="checkbox" value="CA000000-0000-0000-00000000000000A1"/> Alpha</li><li><input type="checkbox" name="categoryID" class="checkbox" value="CA000000-0000-0000-00000000000000N1"/> News &amp; &lt;Events&gt;<ul class="categories"><li>Local</li><li><input type="checkbox" name="categoryID" class="checkbox" value="CA000000-0000-0000-00000000000000W1"/> World<ul class="categories"><li>Deep</li></ul></li></ul></li></ul>
+				</div>
+			</div>
+		</div>
+		<input type="hidden" id="sortBy" name="sortBy" value="flagCount">
+		<input type="hidden" id="sortDirection" name="sortDirection" value="asc">
+		<input type="hidden" id="nextN" name="nextN" value="1">
+		<input type="hidden" id="pageNo" name="pageNo" value="4">
+	</div>
+
+	<div class="mura-control-group">
+		
+
+		
+			
+			<form name="frmUpdate" id="frmUpdate">
+				<input type="hidden" name="bulkedit" id="bulkedit" value="" />
+				
+				<div class="mura-layout-row">
+					<div>
+						<div class="commentform-actions">
+							<div class="btn-group">
+								<a class="btn dropdown-toggle" data-toggle="dropdown" href="#">
+									Mark As
+									<span class="caret"></span>
+								</a>
+								<ul class="dropdown-menu">
+									<li><a href="#" class="bulkEdit" data-alertmessage="Are you sure you want to approve the selected comments?" data-action="approve"><i class="mi-check"></i> Approved</a></li>
+									<li><a href="#" class="bulkEdit" data-alertmessage="Are you sure you want to mark the selected comments as spam?" data-action="spam"><i class="mi-flag"></i> Spam</a></li>
+									<li><a href="#" class="bulkEdit" data-alertmessage="Are you sure you want to delete the selected comments?" data-action="delete"><i class="mi-trash"></i> Deleted</a></li>
+								</ul>
+							</div>
+							<div class="btn-group">
+								<a class="btn dropdown-toggle" data-toggle="dropdown" href="#">
+									Comments Per Page
+									<span class="caret"></span>
+								</a>
+								<ul class="dropdown-menu">
+									<li><a href="#" class="nextN" data-nextn="10">10</a></li>
+									<li><a href="#" class="nextN" data-nextn="25">25</a></li>
+									<li><a href="#" class="nextN" data-nextn="50">50</a></li>
+									<li><a href="#" class="nextN" data-nextn="100">100</a></li>
+									<li><a href="#" class="nextN" data-nextn="250">250</a></li>
+									<li><a href="#" class="nextN" data-nextn="500">500</a></li>
+									<li><a href="#" class="nextN" data-nextn="1000">1000</a></li>
+									<li><a href="#" class="nextN" data-nextn="10000">ALL</a></li>
+								</ul>
+							</div>
+						</div>
+
+				
+				
+					<div class="pull-right">
+						<ul class="pagination">
+							
+							
+							<li class="pageNo">
+								<a hre="#" data-pageno="3"><i class="mi-angle-left"></i></a>
+							</li>
+							
+							
+								<li>
+									
+									<a href="#" data-pageno="1" class="pageNo">
+										1
+									</a>
+								</li>
+							
+								<li>
+									
+									<a href="#" data-pageno="2" class="pageNo">
+										2
+									</a>
+								</li>
+							
+								<li>
+									
+									<a href="#" data-pageno="3" class="pageNo">
+										3
+									</a>
+								</li>
+							
+								<li class="disabled">
+									
+									<a href="#" data-pageno="4" class="lClass active">
+										4
+									</a>
+								</li>
+							
+								<li>
+									
+									<a href="#" data-pageno="5" class="pageNo">
+										5
+									</a>
+								</li>
+							
+							<li class="pageNo">
+								<a href="#" data-pageno="5"><i class="mi-angle-right"></i></a>
+							</li>
+						</ul>
+					</div>
+				
+			
+					</div>
+				</div>
+				<br />
+
+				<table class="mura-table-grid">
+					<thead>
+						<tr>
+							<th class="actions"></th>
+							<th>
+								
+									<a id="checkall" href="#" title="Select All"><i class="mi-check"></i></a>
+								
+							</th>
+							<th>
+								<a class="sort" data-sortby="entered" data-sortdirection="desc" data-nextn="1" title="Sort By Date/Time" href="#">Date</a>
+							</th>
+							<th>
+								<a class="sort" data-sortby="entered" data-sortdirection="desc" data-nextn="1" title="Sort By Date/Time" href="#">Time</a>
+							</th>
+							<th>
+								<a class="sort" data-sortby="name" data-sortdirection="desc" data-nextn="1" title="Sort By Name" href="#">User</a>
+							</th>
+							<th class="var-width">Comment</th>
+							<th>Status</th>
+							<th>
+								<a class="sort" data-sortby="flagCount" data-sortdirection="desc" href="#">Flag Count</a>
+							</th>
+						</tr>
+					</thead>
+
+					<tbody>
+						
+						
+
+							
+							<div id="comment-C2000000-0000-0000-0000000000000002" data-contentid="DEADBEEF-0000-0000-0000000000000000" data-commentid="C2000000-0000-0000-0000000000000002" class="modal fade" role="dialog">
+								<div class="modal-dialog">
+									<div class="modal-content">
+										<div class="modal-header">
+											<button type="button" class="close" data-dismiss="modal" aria-hidden="true" title="Close Comments"><i class="mi-close"></i></button>
+
+											<p>
+												
+												
+													<h1><i class="mi-external-link"></i> Content Missing</h1>
+												
+
+											
+											</p>
+										</div>
+										<div class="modal-body">
+											
+										</div>
+										<div class="modal-footer">
+											<div class="pull-right">
+												
+												
+													<a href="#" class="singleEdit btn" data-commentid="C2000000-0000-0000-0000000000000002" data-action="delete"><i class="mi-trash"></i> Delete</a>
+													
+														<a href="#" class="singleEdit btn" data-commentid="C2000000-0000-0000-0000000000000002" data-action="spam"><i class="mi-flag"></i> Spam</a>
+														
+															<a href="#" class="singleEdit btn" data-commentid="C2000000-0000-0000-0000000000000002" data-action="approve"><i class="mi-check"></i> Approve</a>
+														
+											</div>
+										</div>
+									</div>	
+								</div>	
+							</div>
+							
+
+							<tr>
+								
+								<td class="actions">
+									<a class="show-actions" href="javascript:;"  onclick="showTableControls(this);"><i class="mi-ellipsis-v"></i></a>
+									<div class="actions-menu hide">
+										<ul class="actions-list">
+											<li><a href="#comment-C2000000-0000-0000-0000000000000002" data-toggle="modal"><i class="mi-comments"></i>Comments</a></li>
+											
+											<li><a href="mailto:bob&#x40;example.com"><i class="mi-envelope"></i>Email</a></li>
+										</ul>
+									</div>
+								</td>
+								
+								<td>
+									<input type="checkbox" name="ckUpdate" class="checkall" value="C2000000-0000-0000-0000000000000002" />
+								</td>
+
+								
+								<td>
+									<a href="#comment-C2000000-0000-0000-0000000000000002" data-toggle="modal" title="Commented on: ">
+										26/11/11
+									</a>
+								</td>
+
+								
+								<td>
+									<a href="#comment-C2000000-0000-0000-0000000000000002" data-toggle="modal" title="Commented on: ">
+										9:45 PM
+									</a>
+								</td>
+
+								
+								<td>
+									<a href="#comment-C2000000-0000-0000-0000000000000002" data-toggle="modal">
+										Bob
+									</a>
+								</td>
+
+								
+
+								<td class="var-width">
+									
+									<a href="#comment-C2000000-0000-0000-0000000000000002" data-toggle="modal">word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word  ...</a>
+								</td>
+
+								<td>
+									
+										<i class="mi-ban"></i>
+									
+								</td>
+
+								<td>
+									3
+								</td>
+							</tr>
+						
+						
+					</tbody>
+				</table>
+			</form>
+
+			
+			<div class="view-controls mura-layout-row">
+				<div class="btn-group dropup">
+					<a class="btn dropdown-toggle" data-toggle="dropdown" href="#">
+						Mark As
+						<span class="caret"></span>
+					</a>
+					<ul class="dropdown-menu">
+						<li><a href="#" class="bulkEdit" data-alertmessage="Are you sure you want to approve the selected comments?" data-action="approve"><i class="mi-check"></i> Approved</a></li>
+						<li><a href="#" class="bulkEdit" data-alertmessage="Are you sure you want to mark the selected comments as spam?" data-action="spam"><i class="mi-flag"></i> Spam</a></li>
+						<li><a href="#" class="bulkEdit" data-alertmessage="Are you sure you want to delete the selected comments?" data-action="delete"><i class="mi-trash"></i> Deleted</a></li>
+					</ul>
+				</div>
+				<div class="btn-group dropup">
+					<a class="btn dropdown-toggle" data-toggle="dropdown" href="#">
+						Comments Per Page
+						<span class="caret"></span>
+					</a>
+					<ul class="dropdown-menu">
+						<li><a href="#" class="nextN" data-nextn="10">10</a></li>
+						<li><a href="#" class="nextN" data-nextn="25">25</a></li>
+						<li><a href="#" class="nextN" data-nextn="50">50</a></li>
+						<li><a href="#" class="nextN" data-nextn="100">100</a></li>
+						<li><a href="#" class="nextN" data-nextn="250">250</a></li>
+						<li><a href="#" class="nextN" data-nextn="500">500</a></li>
+						<li><a href="#" class="nextN" data-nextn="1000">1000</a></li>
+						<li><a href="#" class="nextN" data-nextn="10000">ALL</a></li>
+					</ul>
+				</div>
+
+				
+				
+					<div class="pull-right">
+						<ul class="pagination">
+							
+							
+							<li class="pageNo">
+								<a hre="#" data-pageno="3">&laquo;</a>
+							</li>
+							
+							
+								<li>
+									
+									<a href="#" data-pageno="1" class="pageNo">
+										1
+									</a>
+								</li>
+							
+								<li>
+									
+									<a href="#" data-pageno="2" class="pageNo">
+										2
+									</a>
+								</li>
+							
+								<li>
+									
+									<a href="#" data-pageno="3" class="pageNo">
+										3
+									</a>
+								</li>
+							
+								<li class="disabled">
+									
+									<a href="#" data-pageno="4" class="lClass active">
+										4
+									</a>
+								</li>
+							
+								<li>
+									
+									<a href="#" data-pageno="5" class="pageNo">
+										5
+									</a>
+								</li>
+							
+							<li class="pageNo">
+								<a href="#" data-pageno="5">&raquo;</a>
+							</li>
+						</ul>
+					</div>
+				
+			</div>
+			
+		
+	</div>
