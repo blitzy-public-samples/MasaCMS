@@ -1,7 +1,7 @@
 // cform.getFieldType relay: contract path and parameters, byte-exact body and content type, no web-side defaults.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createCsrfRenderer } from '@/lib/csrf';
-import { GatewayUnavailableError } from '@/lib/gateway-client';
+import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-client';
 import { createResourceBundles } from '@/lib/resource-bundles/rb';
 import { getFieldType } from '@/screens/cform/getfieldtype';
 import type { ScreenContext } from '@/screens/registry';
@@ -83,7 +83,7 @@ describe('getFieldType', () => {
   });
 
   it.each<[string, FakeReply]>([
-    ['a denial', { status: 403, headers: { 'content-type': LEGACY_JSON }, body: '{"error":"forbidden"}' }],
+    ['a non-denial 4xx', { status: 404, headers: { 'content-type': LEGACY_JSON }, body: '{"error":"not_found"}' }],
     [
       'a legacy error page',
       { status: 500, headers: { 'content-type': 'text/html;charset=UTF-8' }, body: '<h1>Error</h1>' },
@@ -97,6 +97,15 @@ describe('getFieldType', () => {
     expect(result.status).toBe(reply.status);
     expect(result.contentType).toBe(reply.headers?.['content-type'] ?? '');
     expect(Buffer.from(result.body as Uint8Array).toString('utf8')).toBe(reply.body);
+  });
+
+  it.each([401, 403] as const)('raises GatewayDenialError for HTTP %i instead of relaying it', async (status) => {
+    gateway.setRoute(ROUTE, { status, headers: { 'content-type': LEGACY_JSON }, body: '{}' });
+
+    const error = await getFieldType(contextFor({ fieldType: 'field-dropdown' })).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(GatewayDenialError);
+    expect(error).toMatchObject({ service: 'strategies-content', status, operation: `GET ${PATH}` });
   });
 
   it.each([

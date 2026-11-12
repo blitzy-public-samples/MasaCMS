@@ -1,4 +1,5 @@
 // cform.getField: the form-builder field bean JSON, relayed from strategies-content (server-only).
+import { assertNotDenied } from '@/lib/gateway-client';
 import type { RawBody, ScreenContext } from '../registry';
 
 // Sent only when the request carries them, so the service applies the controller's StructKeyExists defaults.
@@ -15,6 +16,7 @@ export async function getField(ctx: ScreenContext): Promise<RawBody> {
     query: { siteid: rc.siteid },
     form,
   });
+  assertNotDenied(response, 'strategies-content', 'POST /v1/raw/cform/getfield');
   const contentType = response.headers['content-type'];
   return {
     status: response.status,

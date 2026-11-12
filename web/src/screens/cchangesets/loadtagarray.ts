@@ -1,4 +1,4 @@
-import type { GatewayResponse } from '@/lib/gateway-client';
+import { assertNotDenied, type GatewayResponse } from '@/lib/gateway-client';
 import type { FragmentScreen, RawBody, ScreenContext } from '@/screens/registry';
 
 const TAG_ARRAY_PATH = '/v1/raw/cchangesets/loadtagarray';
@@ -23,6 +23,7 @@ export const changesetLoadTagArrayScreen: Omit<FragmentScreen, 'gate'> = Object.
     const response = await ctx.gateway.strategiesContent.raw('get', TAG_ARRAY_PATH, {
       query: { params: { ...ctx.req.rc } },
     });
+    assertNotDenied(response, 'strategies-content', `GET ${TAG_ARRAY_PATH}`);
     return { status: response.status, contentType: contentTypeOf(response), body: response.body };
   },
 });

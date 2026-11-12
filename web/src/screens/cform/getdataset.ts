@@ -1,4 +1,5 @@
 // `cform.getDataset`: the form-builder dataset JSON, built by strategies-content and relayed unchanged (server-only).
+import { assertNotDenied } from '@/lib/gateway-client';
 import type { RawBody, ScreenContext } from '../registry';
 
 const OPERATION = 'POST /v1/raw/cform/getdataset';
@@ -17,6 +18,7 @@ export async function getDataset(ctx: ScreenContext): Promise<RawBody> {
     query: { siteid: rc.siteid },
     form,
   });
+  assertNotDenied(response, 'strategies-content', OPERATION);
   const contentType = [response.headers['content-type'] ?? []].flat()[0];
   if (contentType === undefined) {
     throw new Error(`${OPERATION} answered HTTP ${response.status} without a content type`);

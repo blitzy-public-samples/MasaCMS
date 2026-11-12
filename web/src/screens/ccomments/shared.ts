@@ -1,6 +1,6 @@
 // The ccomments circuit's controller gate, site default and strategies-content relay (server-only).
 import type { ScreenGate } from '@/lib/access-gate';
-import { GatewayDenialError, type GatewayResponse } from '@/lib/gateway-client';
+import { assertNotDenied, type GatewayResponse } from '@/lib/gateway-client';
 import type { AdminRequest } from '@/lib/request-context';
 import type { RawBody, ScreenContext, ScreenOwner } from '../registry';
 
@@ -39,17 +39,10 @@ function actionParams(req: AdminRequest): Record<string, string> {
   return Object.fromEntries(Object.entries(req.rc).filter(([name]) => name.toLowerCase() !== 'siteid'));
 }
 
-/** Throws GatewayDenialError for a 401 or 403, which handlers answer with the legacy gate redirect. */
-function assertNotDenied(response: GatewayResponse<Buffer>, operation: string): void {
-  if (response.status === 401 || response.status === 403) {
-    throw new GatewayDenialError(CCOMMENTS_OWNER, operation, response.status);
-  }
-}
-
 // The views set only their content type; every other service header is web's own legacy base set or transport framing.
 /** The service's status, content type, bytes and cookies, unchanged. */
 function rawBodyOf(response: GatewayResponse<Buffer>, operation: string): RawBody {
-  assertNotDenied(response, operation);
+  assertNotDenied(response, CCOMMENTS_OWNER, operation);
   const contentType = [response.headers['content-type'] ?? []].flat()[0];
   if (contentType === undefined) throw new TypeError(`${operation} answered without a Content-Type`);
   return {
@@ -68,14 +61,14 @@ async function relayEdit(ctx: ScreenContext, action: 'bulkedit' | 'singleedit', 
   const form = actionParams(ctx.req);
   if (action === 'bulkedit') {
     const written = await facade.raw('post', '/v1/sites/{siteid}/comments/bulk', { params: { siteid }, form });
-    assertNotDenied(written, 'POST /v1/sites/{siteid}/comments/bulk');
+    assertNotDenied(written, CCOMMENTS_OWNER, 'POST /v1/sites/{siteid}/comments/bulk');
   } else {
     const commentid = ctx.req.rc['commentid'] ?? '';
     const written = await facade.raw('post', '/v1/sites/{siteid}/comments/{commentid}', {
       params: { siteid, commentid },
       form,
     });
-    assertNotDenied(written, 'POST /v1/sites/{siteid}/comments/{commentid}');
+    assertNotDenied(written, CCOMMENTS_OWNER, 'POST /v1/sites/{siteid}/comments/{commentid}');
   }
   const view = await facade.raw('get', '/v1/raw/ccomments/ajax', { query: { siteid } });
   return rawBodyOf(view, 'GET /v1/raw/ccomments/ajax');

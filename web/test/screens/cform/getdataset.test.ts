@@ -1,6 +1,6 @@
 // Tests of the cform.getdataset relay to strategies-content, against the in-memory gateway client.
 import { describe, expect, it } from 'vitest';
-import { GatewayUnavailableError } from '@/lib/gateway-client';
+import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-client';
 import type { RawBody, ScreenContext } from '@/screens/registry';
 import { getDataset } from '@/screens/cform/getdataset';
 import { adminS2Request } from '../../helpers/admin-request';
@@ -93,6 +93,17 @@ describe('getDataset', () => {
 
     expect(error).toBeInstanceOf(GatewayUnavailableError);
     expect(error).toMatchObject({ service: 'strategies-content', status: 503 });
+  });
+
+  it.each([401, 403] as const)('raises GatewayDenialError for HTTP %i instead of relaying it', async (status) => {
+    const gateway = fakeGatewayClient({
+      [ROUTE]: { status, headers: { 'content-type': 'application/json;charset=utf-8' }, body: '{}' },
+    });
+
+    const error = await getDataset(contextFor({ fieldID: FIELD_ID }, gateway)).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(GatewayDenialError);
+    expect(error).toMatchObject({ service: 'strategies-content', status, operation: `POST ${PATH}` });
   });
 
   it('rejects an answer without a content type rather than inventing one', async () => {

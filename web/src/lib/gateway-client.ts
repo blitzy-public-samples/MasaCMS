@@ -183,6 +183,20 @@ export function okBody<T>(response: CallResult<T>, service: WebServiceName, oper
   throw new Error(`${operation} answered HTTP ${response.status}`);
 }
 
+/**
+ * Lets any answer of `operation` from `service` through except a denial.
+ * @throws GatewayDenialError For 401 or 403.
+ */
+export function assertNotDenied(
+  response: { readonly status: number },
+  service: WebServiceName,
+  operation: string,
+): void {
+  if (response.status === 401 || response.status === 403) {
+    throw new GatewayDenialError(service, operation, response.status);
+  }
+}
+
 /** Web's invocation credential, minted by the auth runtime (local signer or Google ID token). */
 const webInvocationMinter: InvocationMinter = {
   async headersFor(target, opts) {

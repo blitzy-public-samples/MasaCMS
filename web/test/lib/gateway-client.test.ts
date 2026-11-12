@@ -13,8 +13,10 @@ import {
 } from '@opt2/platform/service-kit';
 import { testVerifier } from '@opt2/platform/testing';
 import {
+  GatewayDenialError,
   GatewayUnavailableError,
   WEB_SERVICE_NAMES,
+  assertNotDenied,
   createGatewayClient,
   isUnavailable,
   setServiceClientForTests,
@@ -815,6 +817,38 @@ describe('isUnavailable', () => {
     { label: 'undefined', value: undefined, expected: false },
   ])('is $expected for $label', ({ value, expected }) => {
     expect(isUnavailable(value)).toBe(expected);
+  });
+});
+
+describe('assertNotDenied', () => {
+  const operation = 'GET /v1/raw/cform/getfieldtype';
+
+  it.each<{ status: number; denied: boolean }>([
+    { status: 401, denied: true },
+    { status: 403, denied: true },
+    { status: 200, denied: false },
+    { status: 302, denied: false },
+    { status: 404, denied: false },
+    { status: 500, denied: false },
+  ])('raises GatewayDenialError for HTTP $status: $denied', ({ status, denied }) => {
+    let thrown: unknown;
+    try {
+      assertNotDenied({ status }, 'strategies-content', operation);
+    } catch (caught) {
+      thrown = caught;
+    }
+
+    expect(thrown instanceof GatewayDenialError).toBe(denied);
+    expect(thrown).toEqual(
+      denied
+        ? expect.objectContaining({
+            service: 'strategies-content',
+            operation,
+            status,
+            message: `${operation} answered HTTP ${status}`,
+          })
+        : undefined,
+    );
   });
 });
 

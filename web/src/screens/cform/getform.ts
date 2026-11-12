@@ -1,4 +1,5 @@
 // cform.getForm: strategies-content builds the form bean JSON; web relays its bytes unchanged (server-only).
+import { assertNotDenied } from '@/lib/gateway-client';
 import type { RawBody, ScreenContext } from '../registry';
 
 /** Relays `cform.getForm`, forwarding `siteid` and, only when the request carries it, `formID`. */
@@ -10,6 +11,7 @@ export async function getForm(ctx: ScreenContext): Promise<RawBody> {
     query: { siteid },
     form: formID === undefined ? {} : { formID },
   });
+  assertNotDenied(response, 'strategies-content', 'POST /v1/raw/cform/getform');
   const contentType = response.headers['content-type'];
   return {
     status: response.status,

@@ -1,6 +1,6 @@
 // cform.getForm relay against cform.cfc getForm(), json.cfm and the strategies-content contract.
 import { describe, expect, it } from 'vitest';
-import { GatewayUnavailableError } from '@/lib/gateway-client';
+import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-client';
 import { getForm } from '@/screens/cform/getform';
 import type { RawBody, ScreenContext } from '@/screens/registry';
 import { adminS2Request } from '../../helpers/admin-request';
@@ -62,7 +62,11 @@ describe('getForm', () => {
       { status: 500, headers: { 'content-type': 'text/html;charset=UTF-8' }, body: '<h1>500 Error</h1>' },
       'text/html;charset=UTF-8',
     ],
-    ['a denial', { status: 403, headers: { 'content-type': LEGACY_JSON }, body: '{"error":"forbidden"}' }, LEGACY_JSON],
+    [
+      'a non-denial 4xx',
+      { status: 404, headers: { 'content-type': LEGACY_JSON }, body: '{"error":"not_found"}' },
+      LEGACY_JSON,
+    ],
     ['an answer without a content type, with an empty one', { status: 200, body: FORM_JSON }, ''],
     [
       'the first of repeated content types',
@@ -80,6 +84,15 @@ describe('getForm', () => {
       contentType,
       body: reply.body,
     });
+  });
+
+  it.each([401, 403] as const)('raises GatewayDenialError for HTTP %i instead of relaying it', async (status) => {
+    const gateway = fakeGatewayClient({ [ROUTE]: { status, headers: { 'content-type': LEGACY_JSON }, body: '{}' } });
+
+    const error = await getForm(contextFor({ formID: FORM_ID }, gateway)).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(GatewayDenialError);
+    expect(error).toMatchObject({ service: 'strategies-content', status, operation: `POST ${PATH}` });
   });
 
   it.each<[string, (gateway: FakeGatewayClient) => void]>([

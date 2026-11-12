@@ -1,7 +1,7 @@
 // cChangesets.loadtagarray against cchangesets/loadtagarray.cfm: the owner's tag-array bytes, relayed unchanged.
 import { describe, expect, it } from 'vitest';
 import { createCsrfRenderer } from '@/lib/csrf';
-import { GatewayUnavailableError } from '@/lib/gateway-client';
+import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-client';
 import type { AdminRequest } from '@/lib/request-context';
 import { rbFor } from '@/lib/resource-bundles/rb';
 import { changesetLoadTagArrayScreen } from '@/screens/cchangesets/loadtagarray';
@@ -66,7 +66,7 @@ describe('cChangesets.loadtagarray', () => {
     { name: 'encoded tags', reply: viewReply(TWO_TAGS), text: TWO_TAGS },
     {
       name: 'a legacy error envelope',
-      reply: { status: 401, headers: { 'content-type': 'application/json;charset=utf-8' }, body: '{"error":"x"}' },
+      reply: { status: 500, headers: { 'content-type': 'application/json;charset=utf-8' }, body: '{"error":"x"}' },
       text: '{"error":"x"}',
     },
   ])('relays $name with its status, content type and bytes unchanged', async ({ reply, text }) => {
@@ -78,6 +78,15 @@ describe('cChangesets.loadtagarray', () => {
       body: text,
     });
     expect(raw.headers).toBeUndefined();
+  });
+
+  it.each([401, 403] as const)('raises GatewayDenialError for HTTP %i instead of relaying it', async (status) => {
+    const reply: FakeReply = { status, headers: { 'content-type': 'application/json;charset=utf-8' }, body: '{}' };
+
+    const error = await render(fakeGatewayClient({ [ROUTE]: reply })).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(GatewayDenialError);
+    expect(error).toMatchObject({ service: 'strategies-content', status, operation: `GET ${PATH}` });
   });
 
   it('fails on an answer without a Content-Type', async () => {
