@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   GateClosedError,
+  RepositoryError,
   UnitNotAuthoritativeError,
   UnitReadBlockedError,
   ensureUnitGates,
@@ -20,7 +21,7 @@ import {
   type ExtendDataValues,
   type ProgramsSitesRepository,
 } from '../../src/repo/repository.js';
-import { SITE, UNITS, type SiteRow } from '../../src/repo/tables.js';
+import { SITE, UNITS, type ExtendDataRow, type SiteRow } from '../../src/repo/tables.js';
 
 const CLOCK = fixedClock(new Date(2026, 5, 30, 12, 0, 0));
 const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
@@ -31,6 +32,7 @@ const OTHER_SUBTYPE = 'S0000000-0000-0000-0000000000000002';
 const BASE_ID = 'B0000000-0000-0000-0000000000000001';
 const SIZE_ID = 'ABCDEF00-AAAA-AAAA-AAAAAAAAAAAAAAAA';
 const VALUES: ExtendDataValues = { attributevalue: '5', stringvalue: '5', datetimevalue: null, numericvalue: 5, remoteid: '' };
+const IMPORTED_DATA_ID = 2147483000;
 
 function siteRow(siteid: string, orderno: number | null): Record<string, unknown> {
   return { siteid, site: `Site ${siteid}`, emailbroadcasterlimit: 0, orderno, deploy: 0, lastdeployment: LAST_DEPLOYMENT };
@@ -272,18 +274,49 @@ describe.skipIf(!available)('programs-sites repository against PostgreSQL', () =
       });
     });
 
-    it('replaces every row of one base and attribute, one changelog row per write, and leaves other attributes', async () => {
+    it('replaces every row of one base and attribute under fresh ascending negative ids, one changelog row per write, and leaves other rows', async () => {
+      await gated((tx) => repository.insert(tx, 'extend_data', { dataid: IMPORTED_DATA_ID, baseid: BASE_ID, attributeid: 12, siteid: 'alpha', attributevalue: 'imported' }));
       const logged = (await changelog()).length;
-      const stored = await gated((tx) =>
-        repository.replaceSiteExtendData(tx, { baseId: BASE_ID, siteId: 'alpha', attributeId: 10, dataId: 4, values: VALUES }),
-      );
+      const replace = (): Promise<ExtendDataRow | null> =>
+        gated((tx) => repository.replaceSiteExtendData(tx, { baseId: BASE_ID, siteId: 'alpha', attributeId: 10, values: VALUES }));
 
-      expect(stored).toMatchObject({ dataid: 4, baseid: BASE_ID, attributeid: 10, siteid: 'alpha', ...VALUES });
-      expect((await changelog()).slice(logged).map((row) => row.op)).toEqual(['delete', 'delete', 'insert']);
+      const first = await replace();
+      const second = await replace();
+
+      expect(first).toMatchObject({ dataid: -2147483648, baseid: BASE_ID, attributeid: 10, siteid: 'alpha', ...VALUES });
+      expect(second).toMatchObject({ dataid: -2147483647 });
+      expect(second?.dataid).toBeGreaterThan(first?.dataid ?? 0);
+      expect((await changelog()).slice(logged).map((row) => row.op)).toEqual(['delete', 'delete', 'insert', 'delete', 'insert']);
       expect((await inTenant((tx) => repository.readSiteExtendData(tx, BASE_ID))).map((row) => [row.attributeid, row.dataid])).toEqual([
-        [10, 4],
+        [10, -2147483647],
         [11, 3],
+        [12, IMPORTED_DATA_ID],
       ]);
+    });
+
+    it('fails with a RepositoryError and writes nothing when dataid has no sequence', async () => {
+      const owned = async (target: string): Promise<void> => {
+        const client = await handle.migratorPool.connect();
+        try {
+          await client.query(`SET ROLE ${handle.roles.owner}`);
+          await client.query(`ALTER SEQUENCE ${handle.schema}.extend_data_dataid_seq OWNED BY ${target}`);
+        } finally {
+          await client.query('RESET ROLE');
+          client.release();
+        }
+      };
+      await owned('NONE');
+      try {
+        const failure = await gated((tx) =>
+          repository.replaceSiteExtendData(tx, { baseId: BASE_ID, siteId: 'alpha', attributeId: 10, values: VALUES }),
+        ).catch((err: unknown) => err);
+
+        expect(failure).toBeInstanceOf(RepositoryError);
+        expect(failure).toMatchObject({ message: 'extend_data: column dataid has no id sequence' });
+        expect((await inTenant((tx) => repository.readSiteExtendData(tx, BASE_ID))).map((row) => row.dataid)).toEqual([1, 2, 3]);
+      } finally {
+        await owned(`${handle.schema}.extend_data.dataid`);
+      }
     });
 
     it('only deletes when the values are null', async () => {

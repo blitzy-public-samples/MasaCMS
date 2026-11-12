@@ -48,8 +48,6 @@ const OTHER_SET = 'E0000000-0000-0000-0000000000000004';
 const SIZE_ID = 'A0000000-0000-0000-0000000000000001';
 const LAST_DEPLOYMENT = new Date(2026, 0, 2, 3, 4, 5, 6);
 const LAUNCH = new Date(2026, 2, 4, 5, 6, 7, 0);
-const GENERATED_ID_MIN = 2 ** 30;
-const GENERATED_ID_MAX = 2 ** 31;
 const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
 
 function claimsFor(site: string, s2 = true): UserClaims {
@@ -279,10 +277,6 @@ function announced(): { tenantId: string; siteId: string; rowVersion: bigint | n
 
 function replacements(repo: FakeRepo): SiteExtendDataReplacement[] {
   return repo.replaceSiteExtendData.mock.calls.map(([, replacement]) => replacement);
-}
-
-function dataIdOf(replacement: SiteExtendDataReplacement | undefined): number | undefined {
-  return replacement !== undefined && 'dataId' in replacement ? replacement.dataId : undefined;
 }
 
 function updatedColumns(repo: FakeRepo): Readonly<Record<string, unknown>> {
@@ -763,31 +757,16 @@ describe('updateSite extended data', () => {
     expect(written.map((entry) => entry.attributeId)).toEqual([1, 2, 3, 6]);
     expect(written).toMatchObject([
       { baseId: BASE_ID, siteId: 'tenant-a', values: { attributevalue: 'blue', stringvalue: 'blue', datetimevalue: null, numericvalue: null, remoteid: '' } },
-      { values: { attributevalue: null, stringvalue: '', datetimevalue: null, numericvalue: null }, dataId: 7 },
-      { values: { attributevalue: "{ts '2026-03-04 05:06:07'}", datetimevalue: LAUNCH, numericvalue: null }, dataId: 9 },
-      { values: { attributevalue: 'kept', stringvalue: 'kept' }, dataId: 11 },
+      { values: { attributevalue: null, stringvalue: '', datetimevalue: null, numericvalue: null } },
+      { values: { attributevalue: "{ts '2026-03-04 05:06:07'}", datetimevalue: LAUNCH, numericvalue: null } },
+      { values: { attributevalue: 'kept', stringvalue: 'kept' } },
     ]);
-    const generated = dataIdOf(written[0]);
-    expect(generated).toBeGreaterThanOrEqual(GENERATED_ID_MIN);
-    expect(generated).toBeLessThan(GENERATED_ID_MAX);
     expect(repo.replaceSiteExtendData.mock.calls.every(([, , ctx]) => ctx === write)).toBe(true);
     expect(repo.readSiteExtendDefinitions).toHaveBeenCalledWith(expect.anything(), 'tenant-a');
     expect(repo.readSiteExtendData).toHaveBeenCalledWith(expect.anything(), BASE_ID);
     const order = [...repo.replaceSiteExtendData.mock.invocationCallOrder, ...repo.updateSiteRow.mock.invocationCallOrder];
     expect(order).toEqual([...order].sort((a, b) => a - b));
     expect(announced()).toHaveLength(1);
-  });
-
-  it('draws the same generated dataid for the same base and attribute on a re-run', async () => {
-    const first = extendHarness();
-    const second = extendHarness();
-    const data = { siteid: 'tenant-a', extendSetID: SET_1, ext1: 'blue' };
-
-    await first.domain.updateSite(first.db, claimsFor('tenant-a'), 'tenant-a', data);
-    await second.domain.updateSite(second.db, claimsFor('tenant-a'), 'tenant-a', { ...data, ext1: 'green' });
-
-    expect(replacements(first.repo)[0]?.attributeId).toBe(1);
-    expect(dataIdOf(replacements(first.repo)[0])).toBe(dataIdOf(replacements(second.repo)[0]));
   });
 
   it('deletes emptied values without reinserting them and defaults a NULL-stored value when empty values are not saved', async () => {
@@ -799,7 +778,7 @@ describe('updateSite extended data', () => {
     const [color, ...rest] = replacements(repo);
     expect(color).toMatchObject({ attributeId: 1, values: { attributevalue: 'red' } });
     expect(rest).toEqual([
-      { baseId: BASE_ID, siteId: 'tenant-a', attributeId: 2, values: { attributevalue: '5', stringvalue: '5', datetimevalue: null, numericvalue: 5, remoteid: '' }, dataId: 7 },
+      { baseId: BASE_ID, siteId: 'tenant-a', attributeId: 2, values: { attributevalue: '5', stringvalue: '5', datetimevalue: null, numericvalue: 5, remoteid: '' } },
       { baseId: BASE_ID, siteId: 'tenant-a', attributeId: 3, values: null },
       { baseId: BASE_ID, siteId: 'tenant-a', attributeId: 6, values: null },
     ]);
@@ -824,7 +803,7 @@ describe('updateSite extended data', () => {
 
     await domain.updateSite(db, claimsFor('tenant-a'), 'tenant-a', { siteid: 'tenant-a', extendSetID: SET_1, tagline: 'posted tagline' });
 
-    expect(replacements(repo)).toMatchObject([{ attributeId: 1, values: { attributevalue: 'posted tagline' }, dataId: 5 }]);
+    expect(replacements(repo)).toMatchObject([{ attributeId: 1, values: { attributevalue: 'posted tagline' } }]);
   });
 
   it.each(['ext5', 'logo', 'extDelete5', 'extDeletelogo'])('refuses a posted File attribute under %s with a legacy 503 and writes nothing', async (key) => {
@@ -847,12 +826,58 @@ describe('updateSite extended data', () => {
     expect(writesOf(repo)).toEqual([]);
   });
 
-  it('refuses date text for a date attribute with a legacy 503 and writes nothing', async () => {
+  // The admin forms post a Date attribute as datepicker text (MM/DD/YYYY) and a DateTime one as {ts '...'} text.
+  it.each<{ posted: Record<string, string>; attributevalue: string; datetimevalue: Date }>([
+    { posted: { launch: '11/12/2026' }, attributevalue: "{ts '2026-11-12 00:00:00'}", datetimevalue: new Date(2026, 10, 12) },
+    { posted: { ext3: "{ts '2026-11-12 10:30:00'}" }, attributevalue: "{ts '2026-11-12 10:30:00'}", datetimevalue: new Date(2026, 10, 12, 10, 30) },
+    { posted: { launch: '11/12/2026', siteLocale: 'German (Standard)' }, attributevalue: "{ts '2026-11-12 00:00:00'}", datetimevalue: new Date(2026, 10, 12) },
+  ])('reads posted date text $posted in the stored site locale and writes its timestamp', async ({ posted, attributevalue, datetimevalue }) => {
     const { db, domain, repo } = extendHarness();
 
-    const update = domain.updateSite(db, claimsFor('tenant-a'), 'tenant-a', { siteid: 'tenant-a', extendSetID: SET_1, launch: '2026-01-01' });
+    await domain.updateSite(db, claimsFor('tenant-a'), 'tenant-a', { siteid: 'tenant-a', extendSetID: SET_1, ...posted });
 
-    await expect(update).rejects.toMatchObject({ name: 'LegacyServiceUnavailableError', reason: 'extend-date-text' });
+    expect(replacements(repo).find((entry) => entry.attributeId === 3)?.values).toEqual({ stringvalue: attributevalue, remoteid: '', attributevalue, datetimevalue, numericvalue: null });
+    expect(repo.updateSiteRow).toHaveBeenCalledOnce();
+  });
+
+  // ACF 2023 under setLocale('de_DE'): lsParseDateTime('12.11.2026') is 2026-11-12.
+  it('reads date text in a stored German (Standard) site locale', async () => {
+    const { db, domain, repo, store } = extendHarness();
+    store.sites.set(TENANT_A, [siteRow('tenant-a', { sitelocale: 'German (Standard)' })]);
+
+    await domain.updateSite(db, claimsFor('tenant-a'), 'tenant-a', { siteid: 'tenant-a', extendSetID: SET_1, launch: '12.11.2026' });
+
+    const attributevalue = "{ts '2026-11-12 00:00:00'}";
+    expect(replacements(repo).find((entry) => entry.attributeId === 3)?.values).toEqual({ stringvalue: attributevalue, remoteid: '', attributevalue, datetimevalue: new Date(2026, 10, 12), numericvalue: null });
+  });
+
+  it('fails date text when the stored site locale is one setLocale refuses and writes nothing', async () => {
+    const { db, domain, repo, store } = extendHarness();
+    store.sites.set(TENANT_A, [siteRow('tenant-a', { sitelocale: 'korean (south korea)' })]);
+
+    const update = domain.updateSite(db, claimsFor('tenant-a'), 'tenant-a', { siteid: 'tenant-a', extendSetID: SET_1, launch: '11/12/2026' });
+
+    await expect(update).rejects.toMatchObject({ name: 'Error', message: 'ko_KY must be one of the ColdFusion supported locales.' });
+    expect(writesOf(repo)).toEqual([]);
+  });
+
+  it('reads date text in the server locale ctx.locale names over a stored German (Standard) site locale', async () => {
+    const { db, domain, repo, store } = extendHarness();
+    store.sites.set(TENANT_A, [siteRow('tenant-a', { sitelocale: 'German (Standard)' })]);
+
+    await domain.updateSite(db, claimsFor('tenant-a'), 'tenant-a', { siteid: 'tenant-a', extendSetID: SET_1, launch: '11/12/2026' }, { locale: '' });
+
+    const attributevalue = "{ts '2026-11-12 00:00:00'}";
+    expect(replacements(repo).find((entry) => entry.attributeId === 3)?.values).toEqual({ stringvalue: attributevalue, remoteid: '', attributevalue, datetimevalue: new Date(2026, 10, 12), numericvalue: null });
+    expect(repo.updateSiteRow).toHaveBeenCalledOnce();
+  });
+
+  it('fails date text the timestamp binding refuses with a server error and writes nothing', async () => {
+    const { db, domain, repo } = extendHarness();
+
+    const update = domain.updateSite(db, claimsFor('tenant-a'), 'tenant-a', { siteid: 'tenant-a', extendSetID: SET_1, launch: 'next week' });
+
+    await expect(update).rejects.toMatchObject({ name: 'Error', message: 'next week is an invalid date or time string.' });
     expect(writesOf(repo)).toEqual([]);
   });
 
@@ -872,7 +897,7 @@ describe('extendDataRows', () => {
   const color = attribute(1, 'color');
   const size = attribute(2, 'size', { validation: 'numeric' });
   const launch = attribute(3, 'launch', { validation: 'DateTime' });
-  const options = { saveEmptyExtendedValues: true };
+  const options = { saveEmptyExtendedValues: true, siteLocale: '' };
 
   it('reads ext<attributeID> before the name, case-insensitively, the last matching key winning', () => {
     const rows = extendDataRows(BASE_ID, [color], { SITEID: 'tenant-a', EXT1: '', Color: 'green', color: 'teal' }, options);
@@ -921,11 +946,71 @@ describe('extendDataRows', () => {
     expect(row?.values).toEqual({ stringvalue: "{ts '2026-03-04 05:06:07'}", remoteid: '', attributevalue: "{ts '2026-03-04 05:06:07'}", datetimevalue: LAUNCH, numericvalue: null });
   });
 
+  // Expected columns are those ACF 2023 (English (US)) inserts for the posted text (extendManager.cfc:503-544).
+  it.each<{ value: unknown; attributevalue: string; datetimevalue: Date }>([
+    { value: '2026-01-01', attributevalue: "{ts '2026-01-01 00:00:00'}", datetimevalue: new Date(2026, 0, 1) },
+    { value: '11.12.2026', attributevalue: "{ts '2026-12-11 00:00:00'}", datetimevalue: new Date(2026, 11, 11) },
+    { value: '11-12-2026', attributevalue: "{ts '2026-11-12 00:00:00'}", datetimevalue: new Date(2026, 10, 12) },
+    { value: 'November 12, 2026 10:30 AM', attributevalue: "{ts '2026-11-12 10:30:00'}", datetimevalue: new Date(2026, 10, 12, 10, 30) },
+    { value: '12345', attributevalue: '12345', datetimevalue: new Date(1933, 9, 18) },
+    { value: 12345, attributevalue: '12345', datetimevalue: new Date(1933, 9, 18) },
+    { value: "{ts '2026-11-12 10:30:00.999'}", attributevalue: "{ts '2026-11-12 10:30:00'}", datetimevalue: new Date(2026, 10, 12, 10, 30, 1, 0) },
+  ])('writes date attribute value $value as $attributevalue with its timestamp', ({ value, attributevalue, datetimevalue }) => {
+    const [row] = extendDataRows(BASE_ID, [launch], { siteid: 'tenant-a', ext3: value }, { ...options, siteLocale: 'English (US)' });
+
+    expect(row?.values).toEqual({ stringvalue: attributevalue, remoteid: '', attributevalue, datetimevalue, numericvalue: null });
+  });
+
+  it.each<{ value: string; error: Record<string, string> }>([
+    { value: 'abc', error: { name: 'Error', message: 'abc is an invalid date or time string.' } },
+    { value: '1/1/1500', error: { name: 'Error', message: 'The conversion of a datetime2 data type to a datetime data type resulted in an out-of-range value.' } },
+    { value: '   ', error: { name: 'Error', message: 'The cf_sql_timestamp value is empty' } },
+    { value: '11/12/2026 10:30:15 AM EST', error: { name: 'LegacyServiceUnavailableError', reason: 'date-text-zone' } },
+  ])('refuses date attribute text $value as legacy does', ({ value, error }) => {
+    expect(() => extendDataRows(BASE_ID, [launch], { siteid: 'tenant-a', launch: value }, options)).toThrow(expect.objectContaining(error));
+  });
+
+  // parseDateTime builds a zone-named instant on a Calendar seeded with the clock, so it keeps the clock's milliseconds.
+  it('reads date text naming a time zone at the clock milliseconds', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(Date.UTC(2026, 10, 11, 23, 1, 22, 250)));
+    try {
+      const [row] = extendDataRows(BASE_ID, [launch], { siteid: 'tenant-a', launch: '11/12/2026 10:30 EST' }, options);
+
+      expect(row?.values).toMatchObject({ datetimevalue: new Date(Date.UTC(2026, 10, 12, 15, 30, 0, 250)) });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // ACF 2023 after setLocale(CF2Java(siteLocale)), with the attribute values legacy stores.
+  it.each<{ siteLocale: string; value: string; datetimevalue: Date }>([
+    { siteLocale: 'German (Standard)', value: '12.11.26', datetimevalue: new Date(2026, 10, 12) },
+    { siteLocale: 'de_DE', value: '12. November 2026', datetimevalue: new Date(2026, 10, 12) },
+    { siteLocale: 'Japanese', value: '2026/11/12', datetimevalue: new Date(2026, 10, 12) },
+    { siteLocale: 'French (Standard)', value: '12/11/2026', datetimevalue: new Date(2026, 10, 12) },
+    { siteLocale: 'French (Standard)', value: '2026/11/12', datetimevalue: new Date(2026, 10, 12) },
+    { siteLocale: 'Norwegian (Bokmal)', value: '11/12/2026', datetimevalue: new Date(2026, 11, 11) },
+  ])('reads date text $value in site locale $siteLocale', ({ siteLocale, value, datetimevalue }) => {
+    const [row] = extendDataRows(BASE_ID, [launch], { siteid: 'tenant-a', launch: value }, { ...options, siteLocale });
+
+    expect(row?.values).toMatchObject({ datetimevalue });
+  });
+
+  it('fails date text in a site locale setLocale refuses, but stores a Date there', () => {
+    const unsupported = { ...options, siteLocale: 'xx' };
+
+    expect(() => extendDataRows(BASE_ID, [launch], { siteid: 'tenant-a', launch: '12.11.2026' }, unsupported)).toThrow(
+      expect.objectContaining({ name: 'Error', message: 'xx must be one of the ColdFusion supported locales.' }),
+    );
+    expect(extendDataRows(BASE_ID, [launch], { siteid: 'tenant-a', launch: LAUNCH }, unsupported)[0]?.values).toMatchObject({ datetimevalue: LAUNCH });
+  });
+
   it('writes an empty value as NULL value columns, or only deletes it when empty values are not saved', () => {
     const data = { siteid: 'tenant-a', ext1: '' };
 
     expect(extendDataRows(BASE_ID, [color], data, options)[0]?.values).toEqual({ stringvalue: '', remoteid: '', attributevalue: null, datetimevalue: null, numericvalue: null });
-    expect(extendDataRows(BASE_ID, [color], data, { saveEmptyExtendedValues: false })[0]?.values).toBeNull();
+    expect(extendDataRows(BASE_ID, [color], data, { saveEmptyExtendedValues: false, siteLocale: '' })[0]?.values).toBeNull();
   });
 
   it('rejects a complex value as text', () => {

@@ -1,14 +1,19 @@
 /** Business operations of the carried `csettings` site actions and the JSON API `site` entity (core/mura/settings). */
-import { createHash } from 'node:crypto';
 import { AuthDenial, assertSiteMatches, type UserClaims } from '@opt2/platform/auth';
 import {
   LegacyServiceUnavailableError,
   cfDateTimeFormat,
-  cfIsDate,
+  cfIsDateText,
   cfIsNumeric,
+  cfLsIsDate,
+  cfLsParseDateTime,
   cfNumberString,
+  cfParseDateTimeText,
+  cfTimestampParam,
   cfToNumber,
   cfUuid,
+  masaCf2Java,
+  sqlServerDatetime,
 } from '@opt2/platform/legacy-compat';
 import { withGatedTenant, type MigrationHandlerOptions, type WriteContext } from '@opt2/platform/migration-kit';
 import { localTimestamp, type OutboxOrigin } from '@opt2/platform/outbox';
@@ -62,9 +67,15 @@ export interface SiteOrderInput extends SiteListOptions {
   deploy?: string;
 }
 
-/** Provenance of an update's writes; the request context supplies the actor and request id otherwise. */
+/** Request context of an update. */
 export interface SiteUpdateContext {
+  /** Provenance of the update's writes; the request context supplies the actor and request id otherwise. */
   write?: WriteContext;
+  /**
+   * The CF locale the request reads extended date text in; the stored site's `siteLocale` when omitted, as admin
+   * requests reset the session locale to it. '' is the server locale.
+   */
+  locale?: string;
 }
 
 /** Dependencies of `createSitesDomain`. */
@@ -79,6 +90,8 @@ export interface SitesDomainDeps {
 /** Options of `extendDataRows`. */
 export interface ExtendDataOptions {
   saveEmptyExtendedValues: boolean;
+  /** The request locale its date text is read in, as a `siteLocale` value (settingsBean.cfc:647-654). */
+  siteLocale: string;
 }
 
 /** One attribute's extended-data replacement: delete its rows for `baseId`, then insert `values` unless null. */
@@ -118,9 +131,6 @@ const DATE_VALIDATIONS: ReadonlySet<string> = new Set(['date', 'datetime']);
 
 // legacy: core/mura/content/contentRenderer.cfc:2704, the tags setDynamicContent evaluates as CFML.
 const DYNAMIC_CONTENT = /(\[sava\]|\[mura\]|\[m\]).+?(\[\/sava\]|\[\/mura\]|\[\/m\])/i;
-
-// Legacy dataID is a global IDENTITY that starts at 1; ids generated here stay above that range (int4 max is 2^31-1).
-const GENERATED_DATA_ID_BASE = 2 ** 30;
 
 const COLUMN_TYPES: ReadonlyMap<string, string> = new Map(SITE.columns.map((column) => [column.name, column.type]));
 
@@ -360,21 +370,26 @@ function autocompletedValues(
 
 
 /** saveExtendedData's coercion of a found value by attribute validation (extendManager.cfc:507-523). */
-function coerceExtendValue(value: unknown, validation: string): unknown {
+function coerceExtendValue(value: unknown, validation: string, siteLocale: string): unknown {
   if (!cfLen(value)) return value;
   if (DATE_VALIDATIONS.has(validation)) {
-    if (cfIsDate(value)) return value;
-    // Legacy reads date text with lsParseDateTime, which has no port; failing closed keeps the stored value intact.
-    throw new LegacyServiceUnavailableError(
-      'Date text of an extended attribute needs the legacy date parser',
-      'auto',
-      'extend-date-text',
-    );
+    // lsIsDate and isDate read only text (and dates, kept as they are).
+    if (typeof value !== 'string') return value;
+    // The request's setLocale(CF2Java(siteLocale)); cfLsIsDate throws setLocale's refusal of an unsupported name.
+    const locale = masaCf2Java(siteLocale);
+    // lsIsDate is lsParseDateTime succeeding, so legacy's fallback to parseDateTime in its catch never runs.
+    if (cfLsIsDate(value, locale)) return cfLsParseDateTime(value, locale);
+    // Other text stays text, which the cf_sql_timestamp binding of extendValues then refuses as legacy's does.
+    return cfIsDateText(value) ? cfParseDateTimeText(value) : value;
   }
   return validation === 'numeric' && !cfIsNumeric(value) ? '' : value;
 }
 
-/** The value columns saveExtendedData inserts (extendManager.cfc:527-556); NULL value columns for an empty value. */
+/**
+ * The value columns saveExtendedData inserts (extendManager.cfc:527-556); NULL value columns for an empty value. A date
+ * attribute's value binds as cf_sql_timestamp into tclassextenddata's SQL Server `datetime` column, whose refusals are
+ * legacy's errors.
+ */
 function extendValues(value: unknown, validation: string, remoteId: string): ExtendDataValues {
   const text = cfString(value);
   const common = { stringvalue: text.slice(0, 250), remoteid: remoteId };
@@ -382,7 +397,7 @@ function extendValues(value: unknown, validation: string, remoteId: string): Ext
   return {
     ...common,
     attributevalue: text,
-    datetimevalue: DATE_VALIDATIONS.has(validation) && value instanceof Date ? value : null,
+    datetimevalue: DATE_VALIDATIONS.has(validation) ? sqlServerDatetime(cfTimestampParam(value)) : null,
     numericvalue: validation === 'numeric' ? cfToNumber(value) : null,
   };
 }
@@ -395,7 +410,7 @@ export function extendDataRows(
   baseId: string,
   attributes: readonly ExtendAttributeRow[],
   data: Readonly<Record<string, unknown>>,
-  { saveEmptyExtendedValues }: ExtendDataOptions,
+  { saveEmptyExtendedValues, siteLocale }: ExtendDataOptions,
 ): ExtendDataWrite[] {
   const siteId = cfString(lookup(data, 'siteID') ?? '');
   const remote = lookup(data, 'remoteID');
@@ -406,7 +421,7 @@ export function extendDataRows(
     const byName = lookup(data, attribute.name ?? '');
     if (byId === undefined && byName === undefined) continue;
     const validation = (attribute.validation ?? '').toLowerCase();
-    const value = coerceExtendValue(cfLen(byId) ? byId : cfLen(byName) ? byName : '', validation);
+    const value = coerceExtendValue(cfLen(byId) ? byId : cfLen(byName) ? byName : '', validation, siteLocale);
     const values = cfLen(value) || saveEmptyExtendedValues ? extendValues(value, validation, remoteId) : null;
     writes.push({ baseId, siteId, attributeId: attribute.attributeid, values });
   }
@@ -443,17 +458,6 @@ function savedAttributes(
   };
 }
 
-/**
- * The `dataid` of a new extend value row, which legacy draws from its IDENTITY: the replaced row's lowest id, else a
- * stable id in [2^30, 2^31) derived from base and attribute, so a re-run of the unit of work picks the same id.
- */
-function newDataId(baseId: string, attributeId: number, stored: readonly ExtendDataRow[]): number {
-  const replaced = stored.filter((row) => row.attributeid === attributeId).map((row) => row.dataid);
-  if (replaced.length > 0) return Math.min(...replaced);
-  const digest = createHash('sha256').update(`${baseId}:${attributeId}`).digest();
-  return GENERATED_DATA_ID_BASE + (digest.readUInt32BE(0) % GENERATED_DATA_ID_BASE);
-}
-
 /** An integer element of a CFML list, as `listGetAt` and the SQL `int` column read it; throws like legacy's 500. */
 function listInteger(list: readonly string[], index: number, name: string): number {
   const value = list[index];
@@ -487,8 +491,16 @@ export function createSitesDomain({
     await writeSiteChanged(tx, { siteId: row.siteid, rowVersion, payload: siteChangedPayload(row), origin });
   }
 
-  /** settingsManager.update's `saveExtendedData(bean.getBaseID(), bean.getAllValues())` (settingsManager.cfc:267-269). */
-  async function saveExtendedData(tx: TenantTx, bean: SiteBean, write: WriteContext | undefined): Promise<void> {
+  /**
+   * settingsManager.update's `saveExtendedData(bean.getBaseID(), bean.getAllValues())` (settingsManager.cfc:267-269),
+   * its date text read in `siteLocale`'s locale.
+   */
+  async function saveExtendedData(
+    tx: TenantTx,
+    bean: SiteBean,
+    write: WriteContext | undefined,
+    siteLocale: string,
+  ): Promise<void> {
     const siteId = getSiteText(bean, 'siteID');
     const baseId = getSiteText(bean, 'baseID');
     const defs = await repo.readSiteExtendDefinitions(tx, siteId);
@@ -502,12 +514,8 @@ export function createSitesDomain({
         'foreign-branch',
       );
     }
-    for (const row of extendDataRows(baseId, plain, values, { saveEmptyExtendedValues })) {
-      const replacement =
-        row.values === null
-          ? { ...row, values: null }
-          : { ...row, values: row.values, dataId: newDataId(baseId, row.attributeId, stored) };
-      await repo.replaceSiteExtendData(tx, replacement, write);
+    for (const row of extendDataRows(baseId, plain, values, { saveEmptyExtendedValues, siteLocale })) {
+      await repo.replaceSiteExtendData(tx, row, write);
     }
   }
 
@@ -574,7 +582,8 @@ export function createSitesDomain({
         return { written: true, errors: contractErrors(errors), site: toSite(bean, row) };
       }
       if (cfLen(lookup(data, 'extendSetID'))) {
-        await saveExtendedData(tx, bean, ctx.write);
+        // Admin requests read in the stored site's locale, set before the update runs (admin/Application.cfc:384-399).
+        await saveExtendedData(tx, bean, ctx.write, ctx.locale ?? getSiteText(storedBean, 'siteLocale'));
       }
       const updated = await repo.updateSiteRow(tx, row, updateColumnValues(bean, config), ctx.write);
       if (updated === null) {

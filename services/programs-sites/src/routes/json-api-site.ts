@@ -397,7 +397,8 @@ export async function registerJsonApiSiteRoutes(app: FastifyInstance, deps: Json
     if (user === undefined || !canWriteSite(user)) {
       throw new LegacyApiError('authorization', { method: reported, methodCtx });
     }
-    const result = await deps.sites.updateSite(deps.db, user, site.siteId, params);
+    // The JSON API save sets no request locale, so date text is read in the server locale.
+    const result = await deps.sites.updateSite(deps.db, user, site.siteId, params, { locale: '' });
     const saveErrors = getSiteValue(applySet(readBean(stored), params), 'saveErrors');
     const reloaded = loadedBean(await readSiteRow(call.tenantId, site), call.scopeSiteId);
     const reapply = !(cfIsBoolean(saveErrors) && cfToBoolean(saveErrors)) && hasSiteErrors(result.errors);

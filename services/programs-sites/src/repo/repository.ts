@@ -1,5 +1,12 @@
 /** The only write path of schema `programs_sites`: the platform repository plus the site, image-size and site extend helpers. */
-import { createRepository, qualified, type Repository, type RepositoryRow, type WriteContext } from '@opt2/platform/migration-kit';
+import {
+  RepositoryError,
+  createRepository,
+  qualified,
+  type Repository,
+  type RepositoryRow,
+  type WriteContext,
+} from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import type { Clock } from '@opt2/platform/service-kit';
 import { cfUuid } from '@opt2/platform/legacy-compat';
@@ -64,11 +71,13 @@ export interface SiteExtendDefinitions {
 /** Value columns of one `extend_data` row. */
 export type ExtendDataValues = Pick<ExtendDataRow, 'attributevalue' | 'stringvalue' | 'datetimevalue' | 'numericvalue' | 'remoteid'>;
 
-/** One attribute's stored value for `baseId`; `values: null` only deletes, otherwise the new row needs `dataId`, which has no column default. */
-export type SiteExtendDataReplacement = { baseId: string; siteId: string; attributeId: number } & (
-  | { values: null }
-  | { values: ExtendDataValues; dataId: number }
-);
+/** One attribute's stored value for `baseId`; `values: null` only deletes. */
+export interface SiteExtendDataReplacement {
+  baseId: string;
+  siteId: string;
+  attributeId: number;
+  values: ExtendDataValues | null;
+}
 
 /** The platform repository of schema `programs_sites` plus typed helpers; every helper runs in the caller's open tenant transaction. */
 export interface ProgramsSitesRepository extends Repository {
@@ -94,7 +103,7 @@ export interface ProgramsSitesRepository extends Repository {
   readSiteExtendDefinitions(tx: TenantTx, siteId: string): Promise<SiteExtendDefinitions>;
   /** Every stored extend value of `baseId`, by `attributeid` then `dataid`. */
   readSiteExtendData(tx: TenantTx, baseId: string): Promise<ExtendDataRow[]>;
-  /** Deletes every row of the replacement's base and attribute, then inserts its values; returns the inserted row, or null. */
+  /** Deletes every row of the replacement's base and attribute, then inserts its values under a new `dataid`; returns the inserted row, or null. */
   replaceSiteExtendData(tx: TenantTx, replacement: SiteExtendDataReplacement, ctx?: WriteContext): Promise<ExtendDataRow | null>;
 }
 
@@ -144,6 +153,7 @@ export function createProgramsSitesRepository({ clock, schema = SCHEMA }: Progra
     ' WHERE r.tenant_id = $1 AND r.siteid = $2 ORDER BY r.orderno ASC NULLS FIRST, r.relatedcontentsetid';
   const extendDataSql = `SELECT * FROM ${data} WHERE tenant_id = $1 AND baseid = $2 ORDER BY attributeid, dataid`;
   const lockExtendDataSql = `SELECT dataid FROM ${data} WHERE tenant_id = $1 AND baseid = $2 AND attributeid = $3 ORDER BY dataid FOR UPDATE`;
+  const nextIdSql = 'SELECT nextval(pg_get_serial_sequence($1, $2)::regclass)::text AS id';
 
   function readSite(tx: TenantTx, siteId: string): Promise<SiteRow | null> {
     return base.findByKey<SiteRow>(tx, SITE.table, { siteid: siteId });
@@ -229,6 +239,19 @@ export function createProgramsSitesRepository({ clock, schema = SCHEMA }: Progra
     return base.read(tx, EXTEND_DATA.unit, async () => (await tx.query<ExtendDataRow>(extendDataSql, [tx.tenantId, baseId])).rows);
   }
 
+  /** The next target `dataid`: the negative, ascending sequence 0004_extend_data_id_sequence.sql owns by the column. */
+  async function nextDataId(tx: TenantTx): Promise<number> {
+    const id = await base.read(
+      tx,
+      EXTEND_DATA.unit,
+      async () => (await tx.query<{ id: string | null }>(nextIdSql, [data, 'dataid'])).rows[0]?.id ?? null,
+    );
+    if (id === null) {
+      throw new RepositoryError('column dataid has no id sequence', EXTEND_DATA.table);
+    }
+    return Number(id);
+  }
+
   async function replaceSiteExtendData(
     tx: TenantTx,
     replacement: SiteExtendDataReplacement,
@@ -247,7 +270,7 @@ export function createProgramsSitesRepository({ clock, schema = SCHEMA }: Progra
       return null;
     }
     const row: Omit<ExtendDataRow, 'tenant_id'> = {
-      dataid: replacement.dataId,
+      dataid: await nextDataId(tx),
       baseid: baseId,
       attributeid: attributeId,
       siteid: siteId,

@@ -226,6 +226,7 @@ ALTER TABLE programs_sites.extend_set ENABLE ROW LEVEL SECURITY; ALTER TABLE pro
 CREATE POLICY tenant_isolation ON programs_sites.extend_set
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+CREATE INDEX extend_set_tenant_subtypeid_idx ON programs_sites.extend_set (tenant_id, subtypeid);
 
 CREATE TABLE programs_sites.extend_attribute (
   tenant_id uuid NOT NULL,
@@ -252,6 +253,7 @@ ALTER TABLE programs_sites.extend_attribute ENABLE ROW LEVEL SECURITY; ALTER TAB
 CREATE POLICY tenant_isolation ON programs_sites.extend_attribute
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+CREATE INDEX extend_attribute_tenant_extendsetid_idx ON programs_sites.extend_attribute (tenant_id, extendsetid);
 
 CREATE TABLE programs_sites.extend_rc_set (
   tenant_id uuid NOT NULL,
@@ -268,6 +270,7 @@ ALTER TABLE programs_sites.extend_rc_set ENABLE ROW LEVEL SECURITY; ALTER TABLE 
 CREATE POLICY tenant_isolation ON programs_sites.extend_rc_set
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+CREATE INDEX extend_rc_set_tenant_subtypeid_idx ON programs_sites.extend_rc_set (tenant_id, subtypeid);
 
 CREATE TABLE programs_sites.trash (
   tenant_id uuid NOT NULL,

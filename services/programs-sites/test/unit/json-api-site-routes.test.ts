@@ -626,6 +626,7 @@ describe('save', () => {
         expect.objectContaining({ site: 'tenant-a', tid: TENANT_A.tenantId, s2: true }),
         'tenant-a',
         posted,
+        { locale: '' },
       );
       expect(reads()).toEqual([
         [TENANT_A.tenantId, 'tenant-a'],
@@ -696,6 +697,7 @@ describe('save', () => {
       expect.objectContaining({ site: 'tenant-a', s2: true }),
       'tenant-a',
       expect.objectContaining({ domain: 'saved.example.test' }),
+      { locale: '' },
     );
   });
 
@@ -750,6 +752,7 @@ describe('save', () => {
       expect.anything(),
       'tenant-a',
       expect.objectContaining({ method: 'Save', id: 'tenant-a' }),
+      { locale: '' },
     );
   });
 
@@ -815,6 +818,7 @@ describe('save', () => {
       expect.anything(),
       'tenant-a',
       expect.objectContaining({ id: 'TENANT-A ' }),
+      { locale: '' },
     );
   });
 
@@ -829,6 +833,7 @@ describe('save', () => {
       expect.objectContaining({ site: UUID_SITE }),
       UUID_SITE,
       expect.anything(),
+      { locale: '' },
     );
   });
 });

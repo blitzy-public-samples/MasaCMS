@@ -5,8 +5,7 @@ import { getSiteText, readBean, type SiteBean, type SiteRow } from '../legacy/si
 // listToArray(value, chr(13)&chr(10)): each character is a delimiter on its own, and empty elements are dropped.
 const LINE_BREAKS = /[\r\n]+/;
 
-// CFML truth of a bean flag (true/yes, false/no or a number; the setters store numeric text), kept local because
-// legacy-compat's cfToBoolean is outside this file's declared dependencies.
+// CFML truth of a bean flag: true/yes, false/no or a number (the setters store numeric text).
 function cfBoolean(value: string): boolean {
   return /^(?:true|yes)$/i.test(value) || (!/^(?:false|no)$/i.test(value) && Number(value) !== 0);
 }
