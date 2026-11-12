@@ -30,7 +30,10 @@ import { TENANT_A, TENANT_B, createThrowawaySchema, pgAvailable, testPgConfig, t
 const OWNER = 'isochg';
 const CLOCK = fixedClock('2026-06-30T12:00:00');
 const STAMP = '2026-06-30 12:00:00.000';
-const HORIZON_WAIT_MS = 30_000;
+// The horizon is cluster-wide, so another client's long transaction on a shared cluster can hold it back this long.
+const HORIZON_WAIT_MS = 120_000;
+/** Timeout of a test that waits on the horizon once. */
+const HORIZON_TEST_TIMEOUT_MS = HORIZON_WAIT_MS + 30_000;
 const PAGE_LIMIT = 100;
 
 const NOTE_COLUMNS: CanonicalColumn[] = [
@@ -242,7 +245,7 @@ describe('changelog hook and commit-safe cursor against PostgreSQL', () => {
         operationId: null,
       },
     ]);
-  });
+  }, HORIZON_TEST_TIMEOUT_MS);
 
   it('logs an update with both images and only its changed columns, and a delete with its before image only', async () => {
     const tenant = freshTenant();
@@ -264,7 +267,7 @@ describe('changelog hook and commit-safe cursor against PostgreSQL', () => {
     ]);
     expect(rows[1]).toMatchObject({ before: encodeRow(NOTE_COLUMNS, inserted), after: encodeRow(NOTE_COLUMNS, updated), columns: ['body'] });
     expect(rows[2]).toMatchObject({ before: encodeRow(NOTE_COLUMNS, updated), after: null, columns: NOTE_DATA });
-  });
+  }, HORIZON_TEST_TIMEOUT_MS);
 
   it('logs an upsert as the insert or update it resolved to', async () => {
     const tenant = freshTenant();
@@ -280,7 +283,7 @@ describe('changelog hook and commit-safe cursor against PostgreSQL', () => {
       ['update', ['body']],
     ]);
     expect(rows[1]?.after).toBe(encodeRow(NOTE_COLUMNS, { tenant_id: tenant, id, body: 'second', row_version: 0 }));
-  });
+  }, HORIZON_TEST_TIMEOUT_MS);
 
   it('rolls back the row, its changelog row and its write position together', async () => {
     const tenant = freshTenant();
@@ -303,7 +306,7 @@ describe('changelog hook and commit-safe cursor against PostgreSQL', () => {
     expect(isApplied(lostXid, page.horizon)).toBe(true);
     expect(keysOf(page)).toEqual([kept.key]);
     expect(await withTenant(handle.app, tenant, (tx) => repo.findByKey(tx, 'note', { id }))).toBeNull();
-  });
+  }, HORIZON_TEST_TIMEOUT_MS);
 
   it('stores identical keyless rows as numbered occurrences and deletes exactly one with its full before image', async () => {
     const tenant = freshTenant();
@@ -345,7 +348,7 @@ describe('changelog hook and commit-safe cursor against PostgreSQL', () => {
       legacy_row_hash: hash,
       occurrence: '2',
     });
-  });
+  }, HORIZON_TEST_TIMEOUT_MS);
 
   it('withholds the rows of an open older transaction and of every newer one, then returns them in (xid, seq) order', async () => {
     const tenant = TENANT_A.tenantId;
@@ -397,13 +400,13 @@ describe('changelog hook and commit-safe cursor against PostgreSQL', () => {
 
     const next = await readChanges(handle.app, { tenantId: tenant, after: page.cursor, limit: PAGE_LIMIT });
     expect(next).toMatchObject({ rows: [], cursor: page.cursor, complete: true });
-  });
+  }, HORIZON_TEST_TIMEOUT_MS);
 
   it('never shows one tenant the changes of another', async () => {
     const written = await commitNote(TENANT_B.tenantId, 'b only');
     expect(keysOf(await settled(TENANT_B.tenantId, written.xid))).toContain(written.key);
     expect(keysOf(await settled(TENANT_A.tenantId, written.xid))).not.toContain(written.key);
-  });
+  }, HORIZON_TEST_TIMEOUT_MS);
 
   it('reports a current position at or past the latest committed write, applied once a horizon passes it', async () => {
     const tenant = freshTenant();
@@ -415,7 +418,7 @@ describe('changelog hook and commit-safe cursor against PostgreSQL', () => {
     const page = await settled(tenant, position);
     expect(isApplied(written.xid, page.horizon)).toBe(true);
     expect(keysOf(page)).toEqual([written.key]);
-  });
+  }, HORIZON_TEST_TIMEOUT_MS);
 
   it('records the committed transaction xid as the request write position of its owner', async () => {
     const tenant = freshTenant();
@@ -449,7 +452,7 @@ describe('changelog hook and commit-safe cursor against PostgreSQL', () => {
     }
     expect(seen).toEqual(keys);
     expect(completes).toEqual([...Array<boolean>(Math.floor(keys.length / limit)).fill(false), true]);
-  });
+  }, HORIZON_TEST_TIMEOUT_MS);
 
   it('orders rows numerically where seq crosses a decimal digit boundary', async () => {
     const tenant = freshTenant();
@@ -461,7 +464,7 @@ describe('changelog hook and commit-safe cursor against PostgreSQL', () => {
     });
     const { rows } = await settled(tenant, xid);
     expect(rows.map((row) => [row.seq, row.key])).toEqual(noteIds.map((id, i) => [String(9_999_999_999 + i), noteKey(id)]));
-  });
+  }, HORIZON_TEST_TIMEOUT_MS);
 
   it('rejects a tenant id that is not a UUID', async () => {
     await expect(readChanges(handle.app, { tenantId: 'tenant-a' })).rejects.toThrow(InvalidTenantIdError);

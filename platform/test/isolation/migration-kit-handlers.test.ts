@@ -49,7 +49,10 @@ const OWNER = 'mk-handlers';
 const BASE = 'mk_handlers';
 const UNITS = ['mk.item', 'mk.tag_member', 'mk.memo', 'mk.score'];
 const SORTED_UNITS = [...UNITS].sort();
-const HORIZON_WAIT_MS = 30_000;
+// The horizon is cluster-wide, so another client's long transaction on a shared cluster can hold it back this long.
+const HORIZON_WAIT_MS = 120_000;
+/** Timeout of a test that waits on the horizon once. */
+const HORIZON_TEST_TIMEOUT_MS = HORIZON_WAIT_MS + 30_000;
 
 const ENV: BaseEnv = loadEnv(undefined, {
   PORT: '26012',
@@ -897,7 +900,7 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
     const first = await get('/changes', { tenantId, limit: '1' });
     const firstRow = page.rows[0];
     expect(first.json()).toMatchObject({ rows: [{ seq: firstRow?.seq }], cursor: `${firstRow?.xid}:${firstRow?.seq}`, complete: false });
-  });
+  }, HORIZON_TEST_TIMEOUT_MS);
 
   it('reports each operation of a page as the status hook answers it, else open while registered, else done', async () => {
     const site = freshSite();
@@ -920,7 +923,7 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
     } finally {
       await endOperation(handle.app, 'op-open');
     }
-  });
+  }, HORIZON_TEST_TIMEOUT_MS);
 
   it.each([
     ['a malformed cursor', { siteId: 'tenant-a', after: 'x' }],

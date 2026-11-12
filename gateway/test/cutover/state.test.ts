@@ -26,6 +26,7 @@ import {
   ActivationRejected,
   CutoverConflict,
   INSTANCE_RETENTION_SECONDS,
+  REFRESH_INTERVAL_MS,
   SNAPSHOT_MAX_AGE_MS,
   createCutoverState,
   type CutoverState,
@@ -444,7 +445,11 @@ describe.skipIf(!available)('cut-over state against PostgreSQL', () => {
     expect(state.active()).toBeUndefined();
 
     failing = false;
-    await vi.waitFor(() => expect(state.active()?.table.tableVersion).toBe('v0001'), { timeout: 1500, interval: 25 });
+    // The next tick is up to one interval away; a refresh outlasting the maximum age returns stale and the loop retries at once.
+    await vi.waitFor(() => expect(state.active()?.table.tableVersion).toBe('v0001'), {
+      timeout: REFRESH_INTERVAL_MS + 2 * SNAPSHOT_MAX_AGE_MS,
+      interval: 25,
+    });
     expect(state.epoch()).toBe(epoch);
     expect(state.isFrozen(FROZEN_ROUTE)).toBe(true);
     expect(state.isFrozen('admin:carch.audit')).toBe(false);

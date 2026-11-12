@@ -163,72 +163,83 @@ describe('renderXlsx', () => {
   });
 });
 
+const rowsText = (rows: readonly (readonly string[])[]): string => rows.map((row) => row.join(' ')).join(' ');
+const repeated = (word: string, count: number): string => Array.from({ length: count }, () => word).join(' ');
+const LONG_ROWS = Array.from({ length: 120 }, (_, i) => [`ROW-${String(i + 1).padStart(3, '0')}`, `value ${String(i + 1)}`]);
+const SPLIT_LABELS = Array.from({ length: 12 }, (_, i) => `c${String(i + 1)}`);
+const SPLIT_TAIL = '09DF-B1D1-6E2AD3839353D5E2';
+
 describe('renderPdf', () => {
-  it('draws the title, then the header row, then every row in order on one page', async () => {
-    const table = tableOf('Finance records', ['record_id', 'title', 'amount'], [
-      [RECORD_ID, 'Travel, hotel', '1250.5000'],
-      ['B2C3D4E5-F607-1829-3A4B5C6D7E8F90A1', 'Say "hi"', ''],
-    ]);
-    expect(await pdfPages((await renderPdf(input(table))).bytes)).toEqual([
-      `Finance records record_id title amount ${RECORD_ID} Travel, hotel 1250.5000 B2C3D4E5-F607-1829-3A4B5C6D7E8F90A1 Say "hi"`,
-    ]);
-  });
-
-  it('keeps a column at its widest value and wraps only the column with words to spare', async () => {
-    const title = 'Purchase order - Bespoke Marble Sausages for the quarterly offsite and the travel that goes with it';
-    const table = tableOf('Wide', ['record_id', 'title', 'amount', 'period', 'state'], [[RECORD_ID, title, '22993.5100', '2026-03', 'IN-PROGRESS']]);
-    const [page] = await pdfPages((await renderPdf(input(table))).bytes);
-    expect(page).toBe(`Wide record_id title amount period state ${RECORD_ID} ${title} 22993.5100 2026-03 IN-PROGRESS`);
-  });
-
-  it('omits characters outside Windows-1252, keeps Windows-1252 ones and collapses whitespace as HTML does', async () => {
-    const table = tableOf('Caf\u00e9 \u65e5\u672c', ['label'], [
-      ['caf\u00e9 \u20ac5 \u201cq\u201d \u2014 \u0160 \u2122'],
-      ['\u65e5\u672c \u{1F600} e\u0301 \u0085x'],
-      ['line\nfeed\ttab   two'],
-      ['soft\u00adhyphen'],
-    ]);
-    expect(await pdfPages((await renderPdf(input(table))).bytes)).toEqual([
-      'Caf\u00e9 label caf\u00e9 \u20ac5 \u201cq\u201d \u2014 \u0160 \u2122 e x line feed tab two soft-hyphen',
-    ]);
-  });
-
-  it('extracts a no-break space as a space', async () => {
-    const [page] = await pdfPages((await renderPdf(input(tableOf('t', ['v'], [['a\u00a0b']])))).bytes);
-    expect(page).toBe('t v a b');
-  });
-
-  it('paginates a long table with the header row on the first page only and every row once, in order', async () => {
-    const rows = Array.from({ length: 120 }, (_, i) => [`ROW-${String(i + 1).padStart(3, '0')}`, `value ${String(i + 1)}`]);
-    const pages = await pdfPages((await renderPdf(input(tableOf('Long', ['code', 'label'], rows)))).bytes);
-    expect(pages).toHaveLength(3);
-    expect(pages[0]?.startsWith('Long code label ROW-001 value 1')).toBe(true);
-    expect(pages.slice(1).every((page) => page.startsWith('ROW-') && !page.includes('code label'))).toBe(true);
-    expect(pages.join(' ')).toBe(`Long code label ${rows.map((row) => row.join(' ')).join(' ')}`);
-  });
-
-  it('runs a row taller than a page on across pages without losing text', async () => {
-    const labels = Array.from({ length: 40 }, (_, i) => `c${String(i + 1)}`);
-    const tall = labels.map(() => Array.from({ length: 60 }, () => 'word').join(' '));
-    const end = labels.map((_, i) => (i === 0 ? 'END' : ''));
-    const pages = await pdfPages((await renderPdf(input(tableOf('Tall', labels, [tall, end])))).bytes);
-    const text = pages.join('');
-    expect(pages.length).toBeGreaterThanOrEqual(4);
-    expect(['w', 'o', 'r', 'd'].map((char) => text.split(char).length - 1)).toEqual([2400, 2400, 2400, 2400]);
-    expect(pages[0]?.startsWith('Tall c')).toBe(true);
-    expect(pages[0]).not.toMatch(/[word]/);
-    expect(pages.at(-1)?.endsWith('E N D')).toBe(true);
-  });
-
-  it('continues a title longer than a page on the next page, then draws the table', async () => {
-    const title = Array.from({ length: 400 }, () => 'Heading').join(' ');
-    const pages = await pdfPages((await renderPdf(input(tableOf(title, ['code'], [['ROW-1']])))).bytes);
-    expect(pages.length).toBeGreaterThan(1);
-    expect(pages.join(' ')).toBe(`${title} code ROW-1`);
-  });
-
-  it('draws nothing for an empty title and a table without columns', async () => {
-    expect(await pdfPages((await renderPdf(input(tableOf('', [], [[], []])))).bytes)).toEqual(['']);
+  // Each expectation is the text pdfjs-dist extracts, page by page, from the fixture's cfdocument output for the table.
+  it.each([
+    {
+      name: 'a one-page table, Times stretched to the Serif widths the layout measured',
+      table: SAMPLE,
+      pages: [
+        `Finance records record_id t i t l e a m o u n t c r e a t e d ${RECORD_ID} Travel, h o t e l 1250.5000 2026-06-30 09:00:00.000 ` +
+          'B2C3D4E5-F607-1829-3A4B5C6D7E8F90A1 Say "hi" 0012 C3D4E5F6-0718-293A-4B5C6D7E8F90A1B2 line feed c r r e t u r n crlf end ' +
+          'D4E5F607-1829-3A4B-5C6D7E8F90A1B2C3 p a d d e d c a f \u00e9 =SUM(A1)',
+      ],
+    },
+    {
+      name: 'a table without rows as its title and header row',
+      table: tableOf('Finance records', LABELS, []),
+      pages: ['Finance records record_id t i t l e a m o u n t c r e a t e d'],
+    },
+    {
+      name: 'empty cells as no text',
+      table: tableOf('Nulls', ['a', 'b', 'c'], [['', 'x', ''], ['', '', ''], ['z', '', 'w']]),
+      pages: ['N u l l s a b c x z w'],
+    },
+    {
+      name: 'only Windows-1252 characters, with whitespace collapsed as HTML does',
+      table: tableOf('Caf\u00e9 \u65e5\u672c', ['label'], [
+        ['caf\u00e9 \u20ac5 \u201cq\u201d \u2014 \u0160 \u2122'],
+        ['\u65e5\u672c \u{1F600} e\u0301 \u0085x'],
+        ['line\nfeed\ttab   two'],
+        ['soft\u00adhyphen'],
+        ['a\u00a0b'],
+        ['zero\u200bwidth\u200b\u200bspace'],
+      ]),
+      pages: ['C a f \u00e9 l a b e l caf\u00e9 \u20ac5 \u201cq\u201d \u2014 \u0160 \u2122 e x line feed tab two s o f t - h y p h e n a b zerowidthspace'],
+    },
+    {
+      name: 'a long table broken after rows 36, 76 and 116, with the header row on the first page only',
+      table: tableOf('Long', ['code', 'label'], LONG_ROWS),
+      pages: [
+        `Long c o d e l a b e l ${rowsText(LONG_ROWS.slice(0, 36))}`,
+        rowsText(LONG_ROWS.slice(36, 76)),
+        rowsText(LONG_ROWS.slice(76, 116)),
+        rowsText(LONG_ROWS.slice(116)),
+      ],
+    },
+    {
+      name: 'a row taller than a page over nine pages, its one-line cell centred on the fifth',
+      table: tableOf('Tall', ['k', 'v'], [['0'.repeat(60), 'abcdefgh '.repeat(400)], ['y', 'x']]),
+      pages: [
+        `Tall k v ${repeated('abcdefgh', 43)}`,
+        ...Array.from({ length: 3 }, () => repeated('abcdefgh', 48)),
+        `${'0'.repeat(60)} ${repeated('abcdefgh', 48)}`,
+        ...Array.from({ length: 3 }, () => repeated('abcdefgh', 48)),
+        `${repeated('abcdefgh', 21)} y x`,
+      ],
+    },
+    {
+      name: 'a title longer than a page before the table',
+      table: tableOf('Heading '.repeat(400), ['code'], [['ROW-1']]),
+      pages: [...Array.from({ length: 4 }, () => repeated('Heading', 100)), 'c o d e ROW-1'],
+    },
+    {
+      name: 'a table wider than the page at the smallest font in column parts',
+      table: tableOf('Split', SPLIT_LABELS, [SPLIT_LABELS.map(() => RECORD_ID)]),
+      pages: [
+        `Split c 1 c 2 c 3 c 4 c 5 c 6 ${repeated(RECORD_ID, 6)}`,
+        `c 6 c 7 c 8 c 9 c10 c11 c12 ${SPLIT_TAIL} ${repeated(RECORD_ID, 6)}`,
+      ],
+    },
+    { name: 'an empty title and a table without columns as one blank page', table: tableOf('', [], [[], []]), pages: [''] },
+  ])('draws $name', async ({ table, pages }) => {
+    expect(await pdfPages((await renderPdf(input(table))).bytes)).toEqual(pages);
   });
 
   it.each([

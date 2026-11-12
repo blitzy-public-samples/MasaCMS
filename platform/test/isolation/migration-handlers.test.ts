@@ -53,7 +53,10 @@ const OWNER = 'isomh';
 const NOTE_UNIT = 'isomh.note';
 const AUTHOR = 'isomh-author';
 const ROUTE_GATE_BUDGET_MS = 1_000;
-const HORIZON_WAIT_MS = 30_000;
+// The horizon is cluster-wide, so another client's long transaction on a shared cluster can hold it back this long.
+const HORIZON_WAIT_MS = 120_000;
+/** Timeout of a test that waits on the horizon twice. */
+const HORIZON_TWICE_TEST_TIMEOUT_MS = 2 * HORIZON_WAIT_MS + 30_000;
 
 const ENV = loadEnv(baseEnvSchema, {
   PORT: '65000',
@@ -325,7 +328,7 @@ describe('migration endpoints beside a gated target write route', () => {
         columns: ['Body'],
       },
     ]);
-  });
+  }, HORIZON_TWICE_TEST_TIMEOUT_MS);
 
   it('exports target-written and applied rows with the reconciliation checksum of the stored rows', async () => {
     await transitionTo('open');
