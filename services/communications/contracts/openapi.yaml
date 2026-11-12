@@ -50,6 +50,8 @@ paths:
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
           $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
         '500':
           $ref: '#/components/responses/FixtureServerError'
         '503':
@@ -94,6 +96,8 @@ paths:
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
           $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
         '500':
           $ref: '#/components/responses/FixtureServerError'
         '503':
@@ -135,6 +139,8 @@ paths:
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
           $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
         '500':
           $ref: '#/components/responses/FixtureServerError'
         '503':
@@ -1375,7 +1381,7 @@ components:
                       message:
                         const: Insufficient Account Permissions
     FixtureNotFound:
-      description: Fixture 404 `notFound` for a message or template outside the site.
+      description: Fixture 404 `notFound` for a message or template outside the site, or an `X-HTTP-Method-Override` naming a method the path does not declare.
       headers:
         Generator:
           $ref: '#/components/headers/Generator'

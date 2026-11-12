@@ -358,6 +358,9 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+          description: A different capture after the site monitor was handed off to the target.
   /internal/v1/background:suspend:
     post:
       operationId: backgroundSuspend
@@ -365,6 +368,12 @@ paths:
       x-opt2-transport: service
       x-opt2-requires:
         - platform.operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackgroundRecord'
       responses:
         '200':
           description: Background work is suspended.
@@ -372,6 +381,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BackgroundState'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -1062,6 +1073,60 @@ components:
           type: boolean
         since:
           type: string
+          format: date-time
+    BackgroundRecord:
+      type: object
+      description: What `opt2-ops drain-and-suspend` paused, so `opt2-ops resume` restores exactly that.
+      required:
+        - suspended
+        - since
+        - reason
+        - pushConfigs
+        - pausedQueues
+        - pausedTasks
+      additionalProperties: false
+      properties:
+        suspended:
+          type: boolean
+        since:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        reason:
+          type:
+            - string
+            - 'null'
+        pushConfigs:
+          type: object
+          description: Saved push config per subscription id, applied again on resume.
+          additionalProperties:
+            type: object
+            additionalProperties: true
+        pausedQueues:
+          type: array
+          items:
+            type: object
+            required:
+              - service
+              - queue
+            additionalProperties: false
+            properties:
+              service:
+                type: string
+                minLength: 1
+              queue:
+                type: string
+                minLength: 1
+        pausedTasks:
+          type: array
+          description: ACF task names the scheduler paused.
+          items:
+            type: string
+        resumedAt:
+          type:
+            - string
+            - 'null'
           format: date-time
     SchedulerState:
       type: object

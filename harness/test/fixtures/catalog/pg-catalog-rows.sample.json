@@ -1,0 +1,437 @@
+{
+  "tables": [
+    {
+      "schema": "communications",
+      "table": "changelog",
+      "relrowsecurity": true,
+      "relforcerowsecurity": true,
+      "tenantIdPresent": true,
+      "tenantIdType": "uuid",
+      "tenantIdNotNull": true
+    },
+    {
+      "schema": "content",
+      "table": "changelog",
+      "relrowsecurity": true,
+      "relforcerowsecurity": true,
+      "tenantIdPresent": true,
+      "tenantIdType": "uuid",
+      "tenantIdNotNull": true
+    },
+    {
+      "schema": "esignature",
+      "table": "changelog",
+      "relrowsecurity": true,
+      "relforcerowsecurity": true,
+      "tenantIdPresent": true,
+      "tenantIdType": "uuid",
+      "tenantIdNotNull": true
+    },
+    {
+      "schema": "finance",
+      "table": "changelog",
+      "relrowsecurity": true,
+      "relforcerowsecurity": true,
+      "tenantIdPresent": true,
+      "tenantIdType": "uuid",
+      "tenantIdNotNull": true
+    },
+    {
+      "schema": "identity",
+      "table": "changelog",
+      "relrowsecurity": true,
+      "relforcerowsecurity": true,
+      "tenantIdPresent": true,
+      "tenantIdType": "uuid",
+      "tenantIdNotNull": true
+    },
+    {
+      "schema": "people",
+      "table": "outbox",
+      "relrowsecurity": true,
+      "relforcerowsecurity": true,
+      "tenantIdPresent": true,
+      "tenantIdType": "uuid",
+      "tenantIdNotNull": true
+    },
+    {
+      "schema": "people",
+      "table": "person",
+      "relrowsecurity": true,
+      "relforcerowsecurity": true,
+      "tenantIdPresent": true,
+      "tenantIdType": "uuid",
+      "tenantIdNotNull": true
+    },
+    {
+      "schema": "people",
+      "table": "tenant_registry",
+      "relrowsecurity": false,
+      "relforcerowsecurity": false,
+      "tenantIdPresent": true,
+      "tenantIdType": "uuid",
+      "tenantIdNotNull": true
+    },
+    {
+      "schema": "programs_sites",
+      "table": "changelog",
+      "relrowsecurity": true,
+      "relforcerowsecurity": true,
+      "tenantIdPresent": true,
+      "tenantIdType": "uuid",
+      "tenantIdNotNull": true
+    },
+    {
+      "schema": "reporting",
+      "table": "changelog",
+      "relrowsecurity": true,
+      "relforcerowsecurity": true,
+      "tenantIdPresent": true,
+      "tenantIdType": "uuid",
+      "tenantIdNotNull": true
+    },
+    {
+      "schema": "stub",
+      "table": "changelog",
+      "relrowsecurity": true,
+      "relforcerowsecurity": true,
+      "tenantIdPresent": true,
+      "tenantIdType": "uuid",
+      "tenantIdNotNull": true
+    },
+    {
+      "schema": "surveys",
+      "table": "changelog",
+      "relrowsecurity": true,
+      "relforcerowsecurity": true,
+      "tenantIdPresent": true,
+      "tenantIdType": "uuid",
+      "tenantIdNotNull": true
+    },
+    {
+      "schema": "timesheets",
+      "table": "blackout",
+      "relrowsecurity": true,
+      "relforcerowsecurity": false,
+      "tenantIdPresent": true,
+      "tenantIdType": "uuid",
+      "tenantIdNotNull": true
+    }
+  ],
+  "policies": [
+    {
+      "schemaname": "communications",
+      "tablename": "changelog",
+      "policyname": "tenant_isolation",
+      "permissive": "PERMISSIVE",
+      "cmd": "ALL",
+      "qual": "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)",
+      "with_check": "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)"
+    },
+    {
+      "schemaname": "content",
+      "tablename": "changelog",
+      "policyname": "tenant_isolation",
+      "permissive": "PERMISSIVE",
+      "cmd": "ALL",
+      "qual": "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)",
+      "with_check": "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)"
+    },
+    {
+      "schemaname": "esignature",
+      "tablename": "changelog",
+      "policyname": "tenant_isolation",
+      "permissive": "PERMISSIVE",
+      "cmd": "ALL",
+      "qual": "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)",
+      "with_check": "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)"
+    },
+    {
+      "schemaname": "finance",
+      "tablename": "changelog",
+      "policyname": "tenant_isolation",
+      "permissive": "PERMISSIVE",
+      "cmd": "ALL",
+      "qual": "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)",
+      "with_check": "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)"
+    },
+    {
+      "schemaname": "identity",
+      "tablename": "changelog",
+      "policyname": "tenant_isolation",
+      "permissive": "PERMISSIVE",
+      "cmd": "ALL",
+      "qual": "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)",
+      "with_check": "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)"
+    },
+    {
+      "schemaname": "people",
+      "tablename": "outbox",
+      "policyname": "tenant_isolation",
+      "permissive": "PERMISSIVE",
+      "cmd": "ALL",
+      "qual": "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)",
+      "with_check": "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)"
+    },
+    {
+      "schemaname": "people",
+      "tablename": "person",
+      "policyname": "tenant_isolation",
+      "permissive": "PERMISSIVE",
+      "cmd": "ALL",
+      "qual": "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)",
+      "with_check": "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)"
+    },
+    {
+      "schemaname": "programs_sites",
+      "tablename": "changelog",
+      "policyname": "tenant_isolation",
+      "permissive": "PERMISSIVE",
+      "cmd": "ALL",
+      "qual": "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)",
+      "with_check": "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)"
+    },
+    {
+      "schemaname": "reporting",
+      "tablename": "changelog",
+      "policyname": "tenant_isolation",
+      "permissive": "PERMISSIVE",
+      "cmd": "ALL",
+      "qual": "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)",
+      "with_check": "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)"
+    },
+    {
+      "schemaname": "stub",
+      "tablename": "changelog",
+      "policyname": "tenant_isolation",
+      "permissive": "PERMISSIVE",
+      "cmd": "ALL",
+      "qual": "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)",
+      "with_check": "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)"
+    },
+    {
+      "schemaname": "surveys",
+      "tablename": "changelog",
+      "policyname": "tenant_isolation",
+      "permissive": "PERMISSIVE",
+      "cmd": "ALL",
+      "qual": "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)",
+      "with_check": "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)"
+    },
+    {
+      "schemaname": "timesheets",
+      "tablename": "blackout",
+      "policyname": "tenant_isolation",
+      "permissive": "PERMISSIVE",
+      "cmd": "ALL",
+      "qual": "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)",
+      "with_check": "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)"
+    }
+  ],
+  "roles": [
+    {
+      "rolname": "communications_app",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "communications_migrator",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "communications_owner",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "content_app",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "content_migrator",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "content_owner",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "esignature_app",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "esignature_migrator",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "esignature_owner",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "finance_app",
+      "rolsuper": false,
+      "rolbypassrls": true
+    },
+    {
+      "rolname": "finance_migrator",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "finance_owner",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "gateway_app",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "gateway_migrator",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "gateway_owner",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "identity_app",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "identity_migrator",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "identity_owner",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "migration_app",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "migration_migrator",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "migration_owner",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "people_app",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "people_migrator",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "people_owner",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "programs_sites_app",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "programs_sites_migrator",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "programs_sites_owner",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "reporting_app",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "reporting_migrator",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "reporting_owner",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "stub_app",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "stub_migrator",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "stub_owner",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "surveys_app",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "surveys_migrator",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "surveys_owner",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "timesheets_app",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "timesheets_migrator",
+      "rolsuper": false,
+      "rolbypassrls": false
+    },
+    {
+      "rolname": "timesheets_owner",
+      "rolsuper": false,
+      "rolbypassrls": false
+    }
+  ],
+  "memberships": [
+    {
+      "member": "people_migrator",
+      "ancestor": "people_owner",
+      "via": [],
+      "rolsuper": false,
+      "rolbypassrls": false
+    }
+  ]
+}

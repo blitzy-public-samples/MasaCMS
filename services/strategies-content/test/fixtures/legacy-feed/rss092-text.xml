@@ -1,0 +1,58 @@
+<?xml version="1.0" ?>
+		<rss version="0.92"
+			xmlns:dc="http://purl.org/dc/elements/1.1/">
+			<channel>
+				<title>Probe 092 text</title>
+				<link>http://localhost:21080</link>
+				<description>Desc &amp; &lt;d&gt; &quot;q&quot; &apos;a&apos; &#xe9;</description>
+				<webMaster>admin@example.com</webMaster>
+				<language>en-us</language>
+			
+					<item>
+						<title>Alpha &amp; &lt;Beta&gt; &quot;q&quot; &apos;a&apos; caf&#xe9;&#xa0;€</title>
+						<description><![CDATA[Hello link  café & more
+line2... ]]></description>
+						<link>http://localhost:21080/rss-probe/alpha-q-a-cafe/</link>
+						<guid isPermaLink="true">http://localhost:21080/rss-probe/alpha-q-a-cafe/</guid>
+						<dc:date>Wed, 04 Mar 2026 05:06:07 GMT</dc:date>
+						
+					</item>
+			
+					<item>
+						<title>Bravo</title>
+						<description><![CDATA[Only body text &amp; stuff... ]]></description>
+						<link>http://localhost:21080/rss-probe/bravo/</link>
+						<guid isPermaLink="true">http://localhost:21080/rss-probe/bravo/</guid>
+						<dc:date>Thu, 12 Nov 2026 08:50:09 GMT</dc:date>
+						
+					</item>
+			
+					<item>
+						<title>Charlie</title>
+						<description><![CDATA[word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word ... ]]></description>
+						<link>http://localhost:21080/rss-probe/charlie/</link>
+						<guid isPermaLink="true">http://localhost:21080/rss-probe/charlie/</guid>
+						<dc:date>Sun, 01 Feb 2026 00:00:00 GMT</dc:date>
+						
+					</item>
+			
+					<item>
+						<title>Delta</title>
+						<description><![CDATA[Delta summary... ]]></description>
+						<link>http://localhost:21080/rss-probe/delta/</link>
+						<guid isPermaLink="true">http://localhost:21080/rss-probe/delta/</guid>
+						<dc:date>Thu, 12 Nov 2026 08:50:09 GMT</dc:date>
+						
+					</item>
+			
+					<item>
+						<title>Echo</title>
+						<description><![CDATA[File body... ]]></description>
+						<link>http://localhost:21080/rss-probe/echo/</link>
+						<guid isPermaLink="true">http://localhost:21080/rss-probe/echo/</guid>
+						<dc:date>Thu, 12 Nov 2026 08:53:47 GMT</dc:date>
+						<enclosure url="http://localhost:21080/_api/render/file/?fileID=15A180F6-BD5F-82C0-1ED6DE7462FC2744&amp;fileEXT=.txt" length="77" type="text/plain" />
+					</item>
+			
+			</channel>
+		</rss> 

@@ -100,7 +100,7 @@ export function requireAny(request: FastifyRequest, roles: readonly string[]): U
 const csrfValidated = new WeakSet<FastifyRequest>();
 
 /** The method api.cfm dispatches on: a non-empty X-HTTP-Method-Override, else the request method, upper-cased. */
-function fixtureHttpMethod(request: FastifyRequest): string {
+export function fixtureHttpMethod(request: FastifyRequest): string {
   const override = request.headers['x-http-method-override'];
   const value = Array.isArray(override) ? override[0] : override;
   return (value === undefined || value === '' ? request.method : value).toUpperCase();

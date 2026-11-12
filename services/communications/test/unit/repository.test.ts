@@ -401,6 +401,22 @@ describe.skipIf(!available)('communications repository writes against PostgreSQL
     ]);
   });
 
+  it('resolves a function target route with the row id, on insert and on reactivation', async () => {
+    const route = (scheduledTaskId: string): string => `/internal/v1/tasks/reminders/${scheduledTaskId}`;
+    const [inserted] = await inTenant((tx) =>
+      repository.insertScheduledTasks(tx, [launchTask({ queueTaskName: 'opt2-survey-S1-launch-v9', targetRoute: route })]),
+    );
+    const [adopted] = await inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask()]));
+    const adoptedId = adopted?.row.scheduled_task_id ?? '';
+    await inTenant((tx) => repository.setScheduledTaskStatus(tx, adoptedId, 'cancelled'));
+
+    const [reactivated] = await inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask({ targetRoute: route })]));
+
+    expect(inserted?.target_route).toBe(route(inserted?.scheduled_task_id ?? ''));
+    expect(reactivated?.row).toMatchObject({ scheduled_task_id: adoptedId, target_route: route(adoptedId) });
+  });
+
+
   it.each(['done', 'superseded'] as const)('returns a %s adoption unchanged', async (status) => {
     const [adopted] = await inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask()]));
     const stored = await inTenant((tx) => repository.setScheduledTaskStatus(tx, adopted?.row.scheduled_task_id ?? '', status));

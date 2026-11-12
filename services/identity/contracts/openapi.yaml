@@ -2708,7 +2708,7 @@ paths:
       x-opt2-transport: service
       x-opt2-requires:
         - service:gateway
-      x-opt2-fastify-path: /internal/v1/sessions/:sid::end
+      x-opt2-fastify-path: /internal/v1/sessions/:sid(.+)::end
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       requestBody:
         required: true

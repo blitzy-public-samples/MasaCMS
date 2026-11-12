@@ -1,0 +1,18 @@
+# Contract sample: timesheets skeleton for the topology derivation test
+openapi: 3.1.0
+info:
+  title: timesheets
+  version: 1.0.0
+  x-source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f
+x-opt2-calls: []
+paths:
+  /internal/v1/events/timesheets.people.person.archived.v1:
+    post:
+      operationId: pushPersonArchived
+      summary: Push delivery of people.person.archived.v1
+      x-opt2-transport: pubsub-push
+      x-opt2-requires:
+        - service:pubsub-invoker
+      responses:
+        '204':
+          description: Acknowledged

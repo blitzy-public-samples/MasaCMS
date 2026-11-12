@@ -33,9 +33,10 @@ const STATUS_SPACING_MS = 10;
 const ADOPTED: ScheduledTaskOrigin = 'adopted';
 const ADVISORY_LOCK_SQL = 'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))';
 
-/** Columns a new or reactivated task takes from its schedule: `scheduled`, not yet enqueued or dequeued. */
+/** Columns a new or reactivated task `scheduledTaskId` takes from its schedule: `scheduled`, not yet enqueued or dequeued. */
 function scheduleColumns(
   task: NewAdoptedScheduledTask,
+  scheduledTaskId: string,
 ): Omit<ScheduledTaskRow, 'tenant_id' | 'scheduled_task_id' | 'task_name' | 'origin' | 'created_at' | 'updated_at'> {
   return {
     queue: task.queue,
@@ -46,7 +47,7 @@ function scheduleColumns(
     reminder_n: task.n ?? null,
     schedule_time: task.scheduleTime,
     status: 'scheduled',
-    target_route: task.targetRoute,
+    target_route: typeof task.targetRoute === 'string' ? task.targetRoute : task.targetRoute(scheduledTaskId),
     schedule_version: task.scheduleVersion,
     enqueued_at: null,
     dequeued_at: null,
@@ -106,7 +107,8 @@ export interface NewScheduledTask {
   /** 1-based reminder ordinal (`reminder_n`); absent or null for a launch. */
   n?: number | null;
   scheduleTime: Date;
-  targetRoute: string;
+  /** Route the task calls; a function receives the row's id, which a reminder's route names and only the repository assigns. */
+  targetRoute: string | ((scheduledTaskId: string) => string);
   scheduleVersion: number;
   origin: ScheduledTaskOrigin;
 }
@@ -240,11 +242,12 @@ export function createCommunicationsRepository({ clock, schema = SCHEMA }: Commu
 
   /** Inserts `task` as a new row created at `now`. */
   function insertScheduledTask(tx: TenantTx, task: NewScheduledTask, now: Date, ctx: WriteContext): Promise<ScheduledTaskRow> {
+    const scheduledTaskId = cfUuid();
     const row: Omit<ScheduledTaskRow, 'tenant_id'> = {
-      scheduled_task_id: cfUuid(),
+      scheduled_task_id: scheduledTaskId,
       task_name: task.taskName,
       origin: task.origin,
-      ...scheduleColumns(task),
+      ...scheduleColumns(task, scheduledTaskId),
       created_at: now,
       updated_at: now,
     };
@@ -277,7 +280,7 @@ export function createCommunicationsRepository({ clock, schema = SCHEMA }: Commu
       return { row: current, created: false };
     }
     // Restoration cancelled this adoption; the name keeps one adopted row, so the same row is scheduled again.
-    const row = await updateScheduledTask(tx, current.scheduled_task_id, scheduleColumns(task), ctx);
+    const row = await updateScheduledTask(tx, current.scheduled_task_id, scheduleColumns(task, current.scheduled_task_id), ctx);
     return { row: row as ScheduledTaskRow, created: true };
   }
 
