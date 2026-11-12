@@ -201,6 +201,9 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: The gateway's cut-over status could not be read.
   /internal/v1/legacy-steps:
     post:
       operationId: legacyStepRun
