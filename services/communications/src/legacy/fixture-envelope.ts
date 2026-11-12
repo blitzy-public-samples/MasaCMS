@@ -204,14 +204,16 @@ export function fixturePage(params: FixtureParams): FixturePage {
   return { pageIndex, itemsPerPage, offset: (pageIndex - 1) * itemsPerPage };
 }
 
-/** envelope.cfc listResponse() data for a list() or queryPage() result. */
-function listResultData(result: FixtureListResult): FixtureListData {
+/** envelope.cfc listResponse() data for a list() or queryPage() result; `items` keep the type of `list`. */
+export function listResultData<T = unknown>(
+  result: Omit<FixtureListResult, 'list'> & { list: readonly T[] },
+): FixtureListData & { items: T[] } {
   const paged = result.totalItems !== undefined;
   const totalItems = result.totalItems ?? result.list.length;
   const { pageIndex, itemsPerPage } = result;
   const startIndex = (pageIndex - 1) * itemsPerPage + 1;
   const endIndex = Math.min(startIndex + itemsPerPage - 1, totalItems);
-  let items: unknown[];
+  let items: T[];
   if (startIndex > totalItems) items = [];
   else if (paged) items = [...result.list];
   else items = result.list.slice(startIndex - 1, endIndex);

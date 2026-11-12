@@ -1,0 +1,207 @@
+# Golden catalogue sample: four valid scenarios.
+sourceSha: "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+scenarios:
+  - id: GS-ID-01
+    title: Admin login and logout
+    service: identity
+    role: admin
+    sessions:
+      admin:
+        login: none
+        via: admin
+    seedRefs: []
+    steps:
+      - name: main
+        method: GET
+        route: /admin/?muraAction=cLogin.main
+        as: admin
+        csrf: none
+      - name: login
+        method: POST
+        route: /admin/index.cfm
+        as: admin
+        csrf: fetch-form
+        csrfFrom: main
+        form:
+          muraAction: cLogin.login
+          username: admin
+          password: "${secret:admin}"
+          isAdminLogin: "true"
+          returnUrl: ""
+      - name: home
+        method: GET
+        route: /admin/
+        as: admin
+      - name: logout
+        method: GET
+        route: /admin/?muraAction=cLogin.logout
+        as: admin
+    compare:
+      - status
+      - headers
+      - auth
+      - dom
+    normalisationOverrides: []
+    covers:
+      - admin:clogin.main
+      - admin:clogin.login
+      - admin:home.redirect
+      - admin:clogin.logout
+  - id: GS-CO-05
+    title: JSON API content read
+    service: strategies-content
+    role: anonymous
+    sessions:
+      anon:
+        login: none
+        via: public
+    seedRefs:
+      - as: page
+        source: dataset
+        path: masa.content
+        where:
+          siteID: tenant-a
+          type: Page
+        index: 0
+    steps:
+      - name: findone
+        method: GET
+        route: "/index.cfm/_api/json/v1/tenant-a/content/${seed.page.contentid}"
+        as: anon
+        auth: anonymous
+        csrf: none
+        extract:
+          contentid:
+            from: body
+            path: data.contentid
+    compare:
+      - status
+      - envelope
+      - headers
+    normalisationOverrides: []
+    covers:
+      - api:content.findone
+  - id: GS-PE-01
+    title: People roster create
+    service: people
+    role: site-admin
+    sessions:
+      siteAdmin:
+        login: none
+        via: admin
+    seedRefs: []
+    steps:
+      - name: main
+        method: GET
+        route: /admin/?muraAction=cLogin.main
+        as: siteAdmin
+        csrf: none
+      - name: login
+        method: POST
+        route: /admin/index.cfm
+        as: siteAdmin
+        csrf: fetch-form
+        csrfFrom: main
+        form:
+          muraAction: cLogin.login
+          username: "${user:tenant-a:site-admin}"
+          password: "${secret:seed:${user:tenant-a:site-admin}}"
+          isAdminLogin: "true"
+          returnUrl: ""
+      - name: form
+        method: GET
+        route: /admin/?muraAction=cUsers.edituser&siteid=tenant-a&userid=
+        as: siteAdmin
+        # Legacy checks the update's CSRF token against the new user id carried only in form1's action URL.
+        extract:
+          userid:
+            from: dom
+            selector: "form[name=form1]"
+            attr: action
+            param: userid
+      - name: create
+        method: POST
+        route: "/admin/?muraAction=cUsers.update&userid=${form.userid}&routeid="
+        as: siteAdmin
+        csrf: fetch-form
+        csrfFrom: form
+        form:
+          type: "2"
+          action: Add
+          siteid: tenant-a
+          usernameNoCache: pe01-created
+          passwordNoCache: "${secret:generated:pe01-created}"
+          password2: "${secret:generated:pe01-created}"
+          fname: Pat
+          lname: Example
+          email: pe01-created@example.test
+          isPublic: "0"
+          groupid: ""
+    compare:
+      - status
+      - dom
+    normalisationOverrides: []
+    covers:
+      - "admin:cusers.update{type=2,action=add}"
+  - id: GS-PE-RH-01
+    title: Rehearsal roster create
+    service: people
+    role: site-admin
+    tableVersion: v0003
+    sessions:
+      siteAdmin:
+        login: none
+        via: admin
+    seedRefs: []
+    steps:
+      - name: main
+        method: GET
+        route: /admin/?muraAction=cLogin.main
+        as: siteAdmin
+        csrf: none
+      - name: login
+        method: POST
+        route: /admin/index.cfm
+        as: siteAdmin
+        csrf: fetch-form
+        csrfFrom: main
+        form:
+          muraAction: cLogin.login
+          username: "${user:tenant-a:site-admin}"
+          password: "${secret:seed:${user:tenant-a:site-admin}}"
+          isAdminLogin: "true"
+          returnUrl: ""
+      - name: form
+        method: GET
+        route: /admin/?muraAction=cUsers.edituser&siteid=tenant-a&userid=
+        as: siteAdmin
+        extract:
+          userid:
+            from: dom
+            selector: "form[name=form1]"
+            attr: action
+            param: userid
+      - name: create
+        method: POST
+        route: "/admin/?muraAction=cUsers.update&userid=${form.userid}&routeid="
+        as: siteAdmin
+        csrf: fetch-form
+        csrfFrom: form
+        form:
+          type: "2"
+          action: Add
+          siteid: tenant-a
+          usernameNoCache: rehearsal-01
+          passwordNoCache: "${secret:generated:rehearsal-01}"
+          password2: "${secret:generated:rehearsal-01}"
+          fname: Pat
+          lname: Example
+          email: rehearsal-01@example.test
+          isPublic: "0"
+          groupid: ""
+    compare:
+      - status
+      - dom
+    normalisationOverrides: []
+    covers:
+      - "admin:cusers.update{type=2,action=add}"
