@@ -22,6 +22,9 @@ function cellText(value: string): string {
 /** Renders the header row of column labels, then every row, into one worksheet. */
 export async function renderXlsx({ job, table }: ExportWriterInput): Promise<ExportRendering> {
   const workbook = new ExcelJS.Workbook();
+  // Dated like the PDF, at the job's start, so exceljs never stamps the workbook from the clock.
+  workbook.created = job.started_at ?? job.created;
+  workbook.modified = workbook.created;
   const sheet = workbook.addWorksheet(SHEET_NAME);
   // Every value is a string, so exceljs stores a string cell, never a number or date, as the fixture's "string" cells.
   [table.columns.map((column) => column.label), ...table.rows].forEach((values, r) => {

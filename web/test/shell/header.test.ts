@@ -8,6 +8,7 @@ import type { AdminRequest } from '@/lib/request-context';
 import { rbFor } from '@/lib/resource-bundles/rb';
 import { renderHeader, userPromptTally } from '@/shell/header';
 import type { ShellContext, ShellData, ShellSite, UserPrompts } from '@/shell/types';
+import { PROMPT_TALLY_NONZERO, promptCountsNonZero as NON_ZERO, promptCountsZero as ZERO } from '../fixtures/strategies-content/prompts';
 import { adminS2Request, makeAdminRequest, unservedEditorRequest, type AdminRequestPartial } from '../helpers/admin-request';
 import { fragmentModel } from '../helpers/dom-model';
 
@@ -15,8 +16,6 @@ const CONTENT_MODULE_ID = '00000000000000000000000000000000000';
 const HOME_ID = '00000000000000000000000000000000001';
 const rb = rbFor('en_US');
 
-const ZERO: UserPrompts = { drafts: 0, submissions: 0, approvals: 0, expires: 0, pendingChangesets: 0 };
-const NON_ZERO: UserPrompts = { drafts: 3, submissions: 2, approvals: 1, expires: 4, pendingChangesets: 2 };
 const DEFAULT_SITE: ShellSite = { siteId: 'default', site: 'Default', showDashboard: false };
 
 /** `n` sites named in list order. */
@@ -301,7 +300,7 @@ describe('user tools', () => {
   it('lists the non-zero prompts, the tally badge and the divider', () => {
     const markup = render(shellFor(adminS2Request(), { prompts: NON_ZERO }));
     const $ = load(markup);
-    expect($('#user-tools-selector button .badge').text()).toBe('12');
+    expect($('#user-tools-selector button .badge').text()).toBe(String(PROMPT_TALLY_NONZERO));
     const items = $('ul.mura-user-tools > li');
     expect(items.toArray().map((el) => $(el).text().trim())).toEqual([
       '3 Drafts',
@@ -359,7 +358,7 @@ describe('user tools', () => {
 
 describe('userPromptTally', () => {
   it.each<[UserPrompts, number]>([
-    [NON_ZERO, 12],
+    [NON_ZERO, PROMPT_TALLY_NONZERO],
     [ZERO, 0],
     [{ ...ZERO, drafts: 2, pendingChangesets: 5 }, 7],
   ])('sums %j to %i', (prompts, tally) => {

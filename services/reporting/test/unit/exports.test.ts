@@ -147,6 +147,20 @@ describe('renderXlsx', () => {
     const sheets = await xlsxSheets((await renderXlsx(input(tableOf('t', ['v'], [[value]])))).bytes);
     expect(sheets[0]?.rows[1]).toEqual([[value, ExcelJS.ValueType.String]]);
   });
+
+  it('stores only the header row for a table without rows', async () => {
+    const sheets = await xlsxSheets((await renderXlsx(input(tableOf('t', ['a', 'b'], [])))).bytes);
+    expect(sheets).toEqual([{ name: 'export', rows: [[['a', ExcelJS.ValueType.String], ['b', ExcelJS.ValueType.String]]] }]);
+  });
+
+  it.each([
+    { name: 'start', changes: {}, date: '2026-06-30T09:00:01.000Z' },
+    { name: 'creation, before it starts', changes: { started_at: null }, date: '2026-06-30T09:00:00.000Z' },
+  ])('dates the workbook at the job $name', async ({ changes, date }) => {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(Uint8Array.from((await renderXlsx(input(SAMPLE, changes))).bytes).buffer);
+    expect([workbook.created.toISOString(), workbook.modified.toISOString()]).toEqual([date, date]);
+  });
 });
 
 describe('renderPdf', () => {
