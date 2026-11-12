@@ -14,9 +14,9 @@ export const noaccessGate: ScreenGate = (req) =>
     ? { kind: 'redirect', location: `${legacySettings().context}/` }
     : { kind: 'allow' };
 
-/** configBean `getAdminEmail()`: `MURA_ADMINEMAIL`, else the settings template's empty `adminemail`. */
+/** configBean `getAdminEmail()`, from the typed legacy settings. */
 export function noaccessAdminEmail(): string {
-  return process.env.MURA_ADMINEMAIL ?? '';
+  return legacySettings().adminEmail;
 }
 
 /**

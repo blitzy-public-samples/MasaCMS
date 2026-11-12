@@ -32,6 +32,8 @@ export interface LegacySettings {
   readonly context: string;
   readonly adminDir: string;
   readonly adminDomain: string;
+  /** configBean `getAdminEmail()`: the no-access page's contact address. */
+  readonly adminEmail: string;
   readonly adminSSL: boolean;
   /** Minutes. */
   readonly sessionTimeout: number;
@@ -154,6 +156,7 @@ const SETTING_RULES: { readonly [K in keyof RuledSettings]: SettingRule<RuledSet
     apply: (dir) => (dir === '' || dir === '/' ? undefined : dir.startsWith('/') ? dir : `/${dir}`),
   },
   adminDomain: { key: 'admindomain', template: '', fallback: '', apply: asIs },
+  adminEmail: { key: 'adminemail', template: '', fallback: '', apply: asIs },
   adminSSL: { key: 'adminssl', template: 'false', fallback: false, apply: cfBoolean },
   sessionTimeout: { key: 'sessiontimeout', template: '180', fallback: 180, apply: cfVal },
   // Not a configBean property; the admin layout reads it with defaultValue=true.
