@@ -2,9 +2,14 @@
 import { describe, expect, it, vi, type Mock } from 'vitest';
 import { html, isSafeHtml, toString, type SafeHtml } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
+import { carchSecondaryMenu } from '@/screens/carch/secondary-menu';
+import { ccategorySecondaryMenu } from '@/screens/ccategory/secondary-menu';
+import { cchangesetsSecondaryMenu } from '@/screens/cchangesets/secondary-menu';
+import { cfeedSecondaryMenu } from '@/screens/cfeed/secondary-menu';
 import { renderSecondaryMenu, selectSecondaryMenus, type SecondaryMenuKey } from '@/shell/secondary-menu';
 import type { SecondaryMenuCircuit, ShellHooks } from '@/shell/types';
 import { adminS2Request } from '../helpers/admin-request';
+import { fragmentModel, normaliseIds } from '../helpers/dom-model';
 
 const Z = '00000000000000000000000000000000';
 
@@ -190,5 +195,98 @@ describe('renderSecondaryMenu', () => {
     const ctx: AdminRequest = { ...base, session: { ...base.session, siteid: '' } };
     expect(render(ctx, hooks)).toEqual('');
     expect(called(renderers)).toEqual([]);
+  });
+});
+
+const REAL_HOOKS: ShellHooks = {
+  secondaryMenus: {
+    carch: carchSecondaryMenu,
+    cchangesets: cchangesetsSecondaryMenu,
+    ccategory: ccategorySecondaryMenu,
+    cfeed: cfeedSecondaryMenu,
+  },
+};
+
+const CHANGESETS = moduleOf('014');
+const CATEGORIES = moduleOf('010');
+const COLLECTIONS = moduleOf('011');
+
+// Each view's include as the ACF 2023 oracle served it to the admin on `default`. No legacy layout includes the
+// dispatcher, so its reference is these includes concatenated in include order.
+
+// Oracle captures of cArch.datamanager on module 000 and cArch.multiFileUpload on module 004: no case for the action.
+const LEGACY_CARCH_NO_CASE = '\n<div class="nav-module-specific btn-group">\n\t\n</div>\n';
+// Oracle capture of cChangesets.list.
+const LEGACY_CCHANGESETS_LIST =
+  '<div class="nav-module-specific btn-group">\n\t\t\n\t\t\t\t' +
+  '<a class="btn" title="Add Change Set" href="./?muraAction=cChangesets.edit&changesetID=&siteid=default">' +
+  '<i class="mi-plus-circle"></i> Add Change Set</a>\n\t\t\t\t\n\t\t\t\t' +
+  `<a class="btn " href="./?muraAction=cPerm.module&contentid=${CHANGESETS}&siteid=default&moduleid=${CHANGESETS}">` +
+  '<i class="mi-group"></i> Permissions</a>\n\t\t\t\t\n\t</div>';
+// cchangesets/dsp_secondary_menu.cfm:79-80,105-106 with no case for the action, under ACF whitespace management.
+const LEGACY_CCHANGESETS_NO_CASE = '<div class="nav-module-specific btn-group">\n\t\t\n\t</div>';
+// Oracle capture of cFeed.list.
+const LEGACY_CFEED_LIST =
+  '<div class="nav-module-specific btn-group">\n\t\n\t\t\t' +
+  '<a class="btn" title="Add Local Index" href="./?muraAction=cFeed.edit&feedID=&siteid=default&type=Local">' +
+  '<i class="mi-plus-circle"></i> Add Local Index</a>\n\t\t\t' +
+  '<a class="btn" title="Add Remote Feed" href="./?muraAction=cFeed.edit&feedID=&siteid=default&type=Remote">' +
+  '<i class="mi-plus-circle"></i> Add Remote Feed</a>\n\t\t\t\n\t\t\t' +
+  `<a class="btn " href="./?muraAction=cPerm.module&contentid=${COLLECTIONS}&siteid=default&moduleid=${COLLECTIONS}">` +
+  '<i class="mi-group"></i> Permissions</a>\n\t\t\t\n\t</div>';
+// Oracle capture of cFeed.edit for a new collection; cfeed/dsp_secondary_menu.cfm:91 skips the feed link as it does
+// without rc.feedBean.
+const LEGACY_CFEED_BACK =
+  '<div class="nav-module-specific btn-group">\n\t\n\t\t\t' +
+  '<a class="btn" href="./?muraAction=cFeed.list&siteid=default">' +
+  '<i class="mi-arrow-circle-left"></i> Back to Collections</a>\n\t\t\t\n\t</div>';
+// Oracle capture of cCategory.list.
+const LEGACY_CCATEGORY_LIST =
+  '<div class="nav-module-specific btn-group">\n\t\n\t\t\t\t' +
+  '<a class="btn" title="Add Category" href="./?muraAction=cCategory.edit&categoryID=&parentID=&siteid=default">' +
+  '<i class="mi-plus-circle"></i> Add Category</a>\n\t\t\t\n\t\t\t\t' +
+  `<a class="btn " href="./?muraAction=cPerm.module&contentid=${CATEGORIES}&siteid=default&moduleid=${CATEGORIES}">` +
+  '<i class="mi-group"></i> Permissions</a>\n\t\t\t\n</div>';
+// Oracle capture of cCategory.edit for a new category.
+const LEGACY_CCATEGORY_BACK =
+  '<div class="nav-module-specific btn-group">\n\t\n\t\t\t' +
+  '<a class="btn" title="Add Category" href="./?muraAction=cCategory.list&categoryID=&parentID=&siteid=default">' +
+  '<i class="mi-arrow-circle-left"></i> Back to Categories</a>\n\t\t\n</div>';
+
+/** An S2 admin request on `<circuit>.<item>` whose `rc.moduleid` ends in `suffix`. */
+const actionRequest = (circuit: string, item: string, suffix: string): AdminRequest =>
+  adminS2Request({ circuit, item, rc: { moduleid: moduleOf(suffix) } });
+
+type ReferenceCase = readonly [circuit: string, item: string, moduleSuffix: string, legacy: readonly string[]];
+
+const REFERENCES: readonly ReferenceCase[] = [
+  ['cChangesets', 'list', '000', [LEGACY_CARCH_NO_CASE, LEGACY_CCHANGESETS_LIST]],
+  ['cFeed', 'import1', '004', [LEGACY_CFEED_BACK, LEGACY_CARCH_NO_CASE]],
+  ['cFeed', 'list', '', [LEGACY_CFEED_LIST]],
+  ['cCategory', 'list', '', [LEGACY_CCATEGORY_LIST]],
+  ['cCategory', 'edit', '', [LEGACY_CCATEGORY_BACK]],
+  ['cPerm', 'module', '014', [LEGACY_CCHANGESETS_NO_CASE]],
+  ['cPerm', 'module', '011', [LEGACY_CFEED_BACK]],
+  ['cPerm', 'module', '010', [LEGACY_CCATEGORY_BACK]],
+  ['cPerm', 'main', '003', [LEGACY_CARCH_NO_CASE]],
+];
+
+describe('renderSecondaryMenu with the screen hooks', () => {
+  it.each(REFERENCES)('renders %s %s on module %j as the legacy includes', (circuit, item, suffix, legacy) => {
+    const markup = render(actionRequest(circuit, item, suffix), REAL_HOOKS);
+    const reference = legacy.join('');
+
+    expect(markup).toBe(reference);
+    expect(normaliseIds(fragmentModel(markup))).toEqual(normaliseIds(fragmentModel(reference)));
+  });
+
+  // carch/dsp_secondary_menu.cfm:94 reads rc.perm, which only the carch controller sets.
+  it.each([
+    ['cFeed', '004'],
+    ['cCategory', '003'],
+  ])('fails as CFML does for %s.list on module %s, whose carch list reads rc.perm', (circuit, suffix) => {
+    expect(() => renderSecondaryMenu(actionRequest(circuit, 'list', suffix), REAL_HOOKS)).toThrow(
+      expect.objectContaining({ name: 'TypeError', message: 'Element PERM is undefined in RC.' }),
+    );
   });
 });

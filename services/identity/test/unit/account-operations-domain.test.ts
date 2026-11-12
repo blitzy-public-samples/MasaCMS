@@ -2,14 +2,16 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { ensureUnitGates, openOperations, registerOperation, withGatedTenant } from '@opt2/platform/migration-kit';
 import { createOutbox } from '@opt2/platform/outbox';
 import type { Clock } from '@opt2/platform/service-kit';
-import { tenantIdForSite, withMetadata, withTenant, type TenantTx } from '@opt2/platform/tenancy';
+import { tenantIdForSite, withMetadata, withTenant, type QueryConfig, type QueryResultRow, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { createCapturingPublisher, createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
   ACCOUNT_OPERATION_UNITS,
+  AccountSaveHaltedError,
   DEFAULT_ACCOUNT_SETTINGS,
   EN_ACCOUNT_MESSAGES,
   OperationBlockedError,
@@ -29,13 +31,14 @@ import {
   type PrepareInput,
   type PrepareResult,
 } from '../../src/domain/account-operations.js';
-import { applyLogin, endSession } from '../../src/domain/sessions.js';
+import { applyLogin, endSession, ensureSession, sessionState } from '../../src/domain/sessions.js';
 import { createIdentityEvents, identityPayloadValidators, MEMBERSHIP_CHANGED_TOPIC } from '../../src/events/publish.js';
 import { verifyLegacyPassword } from '../../src/legacy/hash.js';
 import { createIdentityRepository, type AccountInput, type GroupInput, type IdentityRepository } from '../../src/repo/repository.js';
 import {
   IDENTITY_UNITS,
   LOGIN_STATE,
+  SESSION,
   type AccountOperationKind,
   type AccountOperationRow,
   type LoginSnapshot,
@@ -241,6 +244,13 @@ describe.skipIf(!available)('account operations against PostgreSQL', () => {
     });
   }
 
+  async function changelogCount(operationId: string, site: string): Promise<number> {
+    return withTenant(handle.app, tenantIdForSite(site), async (tx) => {
+      const { rows } = await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM ${handle.schema}.changelog WHERE operation_id = $1`, [operationId]);
+      return (rows[0] as { n: number }).n;
+    });
+  }
+
   /** The repository with `insertAccountOperation` held until two callers reach it, so both checked the user as open first. */
   function latchedOperationInserts(): IdentityRepository {
     let arrived = 0;
@@ -398,6 +408,51 @@ describe.skipIf(!available)('account operations against PostgreSQL', () => {
       expect(await operationOf(prepare.operationId)).toBeNull();
       expect(await registered(prepare.operationId)).toBe(false);
       expect((await accountOf(userId))?.username ?? null).toBe(existing ? username : null);
+    });
+
+    it.each([
+      ['a private tenant-a user saved public', SITE_A, 0, EDITORS, { isPublic: 1 }, UMBRELLA],
+      ['a private tenant-a user saved with switchToPublic', SITE_A, 0, EDITORS, { isPublic: 0, switchToPublic: true }, UMBRELLA],
+      ['a public umbrella member saved private', UMBRELLA, 1, MEMBERS, { isPublic: 0 }, SITE_A],
+      ['a public umbrella member saved with switchToPrivate', UMBRELLA, 1, MEMBERS, { isPublic: 1, switchToPrivate: true }, SITE_A],
+    ] as const)('halts the pool move of %s with the legacy 503 and leaves both tenants untouched', async (_label, home, ispublic, group, visibility, pool) => {
+      const userId = await seedUser(uname('mover'), { site: home, account: { ispublic }, groupIds: [group] });
+      const before = { account: await accountOf(userId, home), credential: await credentialOf(userId, home), groupIds: await membershipsOf(userId, home) };
+      const prepare = input('update', userId, { ...visibility, username: uname('moved'), password: 'Secret12' }, { siteId: pool });
+
+      const halted: unknown = await prepareAccountOperation(deps(), prepare).catch((err: unknown) => err);
+
+      expect(halted).toBeInstanceOf(AccountSaveHaltedError);
+      expect(halted).toBeInstanceOf(LegacyServiceUnavailableError);
+      expect(halted).toMatchObject({ userId, halt: 'pool-move', reason: 'account-pool-move', surface: 'auto' });
+      for (const site of [home, pool]) {
+        expect(await operationOf(prepare.operationId, site)).toBeNull();
+        expect(await eventsOf(prepare.operationId, site)).toEqual([]);
+        expect(await changelogCount(prepare.operationId, site)).toBe(0);
+      }
+      expect(await registered(prepare.operationId)).toBe(false);
+      expect({ account: await accountOf(userId, home), credential: await credentialOf(userId, home), groupIds: await membershipsOf(userId, home) }).toEqual(before);
+      expect(await accountOf(userId, pool)).toBeNull();
+    });
+
+    it('answers a pool move posting a taken username with the legacy username error, as legacy validates before it writes', async () => {
+      const userId = await seedUser(uname('stay'));
+      const prepare = input('update', userId, { username: 'bea', isPublic: 1 }, { siteId: UMBRELLA });
+
+      expect(await prepareAccountOperation(deps(), prepare)).toEqual({ outcome: 'invalid', errors: { username: usernameMessage('bea') } });
+      expect(await registered(prepare.operationId)).toBe(false);
+    });
+
+    it('prepares an update of a public umbrella member saved public in its own pool tenant', async () => {
+      const username = uname('pooled');
+      const userId = await seedUser(username, { site: UMBRELLA, account: { ispublic: 1 }, groupIds: [MEMBERS] });
+      const prepare = input('update', userId, { isPublic: 1 }, { siteId: UMBRELLA });
+
+      const result = await prepareAccountOperation(deps(), prepare);
+
+      expect(result).toMatchObject({ outcome: 'prepared', operation: { state: 'prepared', before: { account: { username, siteid: UMBRELLA, ispublic: 1 }, groupIds: [MEMBERS] } } });
+      expect(await operationOf(prepare.operationId, UMBRELLA)).toMatchObject({ state: 'prepared', kind: 'update' });
+      expect(await registered(prepare.operationId)).toBe(true);
     });
 
     it.each([
@@ -940,6 +995,151 @@ describe.skipIf(!available)('account operations against PostgreSQL', () => {
       const snapshot = JSON.parse((await sessionOf(sessionId, UMBRELLA))?.login_snapshot ?? '{}') as LoginSnapshot;
       expect(snapshot.roleList).toBe(`Members;${UMBRELLA};1,S2IsPublic;${UMBRELLA},S2IsPublic,${prepare.change.username};username;${UMBRELLA}`);
     });
+
+    /** The repository with the last-login touch inside the re-login's session write failing. */
+    function failingRelogin(): IdentityRepository {
+      return { ...repo, touchLastLogin: async () => Promise.reject(new Error('connection lost')) };
+    }
+
+    /** The repository with the committed → finished move failing, after any re-login committed. */
+    function failingFinishStep(): IdentityRepository {
+      return {
+        ...repo,
+        async setAccountOperationState(tx, operationId, from, to, patch, ctx) {
+          if (to === 'finished') throw new Error('connection lost');
+          return repo.setAccountOperationState(tx, operationId, from, to, patch, ctx);
+        },
+      };
+    }
+
+    /** A latch that opens once `count` callers arrived. */
+    function latch(count: number): { arrive: () => void; opened: Promise<void> } {
+      let arrived = 0;
+      let open: () => void = () => undefined;
+      const opened = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+      return {
+        opened,
+        arrive: () => {
+          arrived += 1;
+          if (arrived === count) open();
+        },
+      };
+    }
+
+    /** The repository holding two re-logins' credential reads until both arrive, and each committed → finished move until both tried to settle the session effect. */
+    function racingFinishes(): IdentityRepository {
+      const reads = latch(2);
+      const settles = latch(2);
+      return {
+        ...repo,
+        async readCredential(tx, userId) {
+          reads.arrive();
+          await reads.opened;
+          return repo.readCredential(tx, userId);
+        },
+        async lockAccountOperation(tx, operationId) {
+          const row = await repo.lockAccountOperation(tx, operationId);
+          settles.arrive();
+          return row;
+        },
+        async setAccountOperationState(tx, operationId, from, to, patch, ctx) {
+          if (to === 'finished') await settles.opened;
+          return repo.setAccountOperationState(tx, operationId, from, to, patch, ctx);
+        },
+      };
+    }
+
+    /** Committed changelog rows of `table` in tenant-a, narrowed to `operationId` and to keys holding `keyPart` when given. */
+    function changes(table: string, match: { operationId?: string; keyPart?: string }): Promise<number> {
+      return withTenant(handle.app, TENANT_A, async (tx) => {
+        const { rows } = await tx.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM ${handle.schema}.changelog WHERE "table" = $1` +
+            ' AND ($2::text IS NULL OR operation_id = $2) AND ($3::text IS NULL OR position($3 in key) > 0)',
+          [table, match.operationId ?? null, match.keyPart ?? null],
+        );
+        return (rows[0] as { n: number }).n;
+      });
+    }
+
+    it.each([
+      ['its re-login', failingRelogin, 0],
+      ['its finish step after the re-login committed', failingFinishStep, 1],
+    ] as const)('keeps the user closed when a finish fails in %s and logs the session in exactly once across repeated finishes', async (_label, failing, bumped) => {
+      const userId = await seedUser(uname('again'));
+      const sessionId = await loggedIn(userId, 'again');
+      const epoch = Number((await sessionOf(sessionId))?.epoch);
+      const prepare = input('update', userId, { groupIds: [AUTHORS] });
+      await committed(prepare, { sessionEffects: { reloginSessionId: sessionId } });
+      now = LATER;
+
+      await expect(finishAccountOperation(deps({ repo: failing() }), prepare.operationId)).rejects.toThrow('connection lost');
+
+      expect(await operationOf(prepare.operationId)).toMatchObject({ state: 'committed' });
+      expect(await registered(prepare.operationId)).toBe(true);
+      expect((await eventsOf(prepare.operationId)).map((event) => event.held)).toEqual([true]);
+      expect((await sessionOf(sessionId))?.epoch).toBe(String(epoch + bumped));
+
+      const outcome = await finishAccountOperation(deps(), prepare.operationId);
+      const relogged = await sessionOf(sessionId);
+
+      expect(outcome).toEqual({ outcome: 'stepped', step: { operationId: prepare.operationId, userId, state: 'finished' } });
+      expect(relogged).toMatchObject({ user_id: userId, state: 'active', epoch: String(epoch + 1) });
+      expect(JSON.parse(relogged?.login_snapshot ?? '{}')).toMatchObject({ lastlogin: '2026-06-30T09:15:00.120' });
+      expect(await loginStateOf(userId)).toMatchObject({ lastlogin: LATER });
+      expect(await changes(LOGIN_STATE.table, { operationId: prepare.operationId })).toBe(1);
+      expect(await registered(prepare.operationId)).toBe(false);
+      expect((await eventsOf(prepare.operationId)).map((event) => event.held)).toEqual([false]);
+
+      expect(await finishAccountOperation(deps(), prepare.operationId)).toEqual(outcome);
+      expect(await sessionOf(sessionId)).toEqual(relogged);
+    });
+
+    it('logs the session in once when two finishes of the operation race', async () => {
+      const userId = await seedUser(uname('race'));
+      const sessionId = await loggedIn(userId, 'race');
+      const epoch = Number((await sessionOf(sessionId))?.epoch);
+      const sessionWrites = await changes(SESSION.table, { keyPart: sessionId });
+      const prepare = input('update', userId, {});
+      await committed(prepare, { sessionEffects: { reloginSessionId: sessionId } });
+      const racing = deps({ repo: racingFinishes() });
+
+      const outcomes = await Promise.all([finishAccountOperation(racing, prepare.operationId), finishAccountOperation(racing, prepare.operationId)]);
+
+      const stepped = { outcome: 'stepped', step: { operationId: prepare.operationId, userId, state: 'finished' } };
+      expect(outcomes).toEqual([stepped, stepped]);
+      expect(await sessionOf(sessionId)).toMatchObject({ user_id: userId, epoch: String(epoch + 1) });
+      expect(await changes(SESSION.table, { keyPart: sessionId })).toBe(sessionWrites + 1);
+      expect(await changes(LOGIN_STATE.table, { operationId: prepare.operationId })).toBe(1);
+      expect(await operationOf(prepare.operationId)).toMatchObject({ state: 'finished' });
+      expect(await registered(prepare.operationId)).toBe(false);
+    });
+
+    it.each([
+      ['the session is unknown', 'unknown', {}],
+      ['the session has ended', 'ended', {}],
+      ['the saved account is inactive', 'active', { inActive: 1 }],
+    ] as const)('records a re-login that applied nothing because %s, so a repeated finish leaves a session opened since', async (_label, session, changes) => {
+      const sessions = { db: handle.app, repo, clock };
+      const userId = await seedUser(uname('noop'));
+      const sessionId = session === 'unknown' ? `S-${next('D')}` : await loggedIn(userId, 'noop');
+      if (session === 'ended') await endSession(sessions, sessionId);
+      const prepare = input('update', userId, changes);
+      await committed(prepare, { sessionEffects: { reloginSessionId: sessionId } });
+
+      await expect(finishAccountOperation(deps({ repo: failingFinishStep() }), prepare.operationId)).rejects.toThrow('connection lost');
+
+      expect(JSON.parse((await operationOf(prepare.operationId))?.pending_change ?? '{}')).toMatchObject({ sessionEffectsSettled: true });
+      await ensureSession(sessions, { sessionId, mode: 'target-primary' });
+      const opened = await sessionState(sessions, sessionId);
+
+      expect((await finishAccountOperation(deps(), prepare.operationId)).outcome).toBe('stepped');
+
+      expect(await sessionState(sessions, sessionId)).toEqual(opened);
+      expect(await loginStateOf(userId)).toMatchObject({ lastlogin: LAST_LOGIN });
+      expect(await operationOf(prepare.operationId)).toMatchObject({ state: 'finished' });
+    });
   });
 
   describe('operation status', () => {
@@ -979,6 +1179,46 @@ describe.skipIf(!available)('account operations against PostgreSQL', () => {
         [umbrellaOp.operationId]: 'open',
       });
       expect(await operationStatus(handle.app, [])).toEqual({});
+    });
+
+    it('issues one lookup per registered tenant for the ids still unresolved, resolving duplicate ids, and stops once none remain', async () => {
+      const open = await prepared(input('update', await seedUser(uname('batch')), {}));
+      const done = await prepared(input('update', await seedUser(uname('batch')), {}));
+      await commitAccountOperation(deps(), done.operationId);
+      await finishAccountOperation(deps(), done.operationId);
+      const rolledBack = await prepared(input('create', next('A'), { isPublic: 1 }, { siteId: UMBRELLA }));
+      await abortAccountOperation(deps(), rolledBack.operationId);
+      const unknown = next('C');
+      const lookups: string[] = [];
+      const counting: TenantDb = {
+        schema: handle.app.schema,
+        withTenant: (tenantId, fn) =>
+          handle.app.withTenant(tenantId, (tx) =>
+            fn({
+              ...tx,
+              query: <R extends QueryResultRow>(text: string | QueryConfig, values?: unknown[]) => {
+                lookups.push(tenantId);
+                return tx.query<R>(text, values);
+              },
+            }),
+          ),
+        withMetadata: (fn, options) => handle.app.withMetadata(fn, options),
+        end: () => handle.app.end(),
+      };
+      const inSiteOrder = (sites: string[]): string[] => sites.map((site) => tenantIdForSite(site));
+
+      const statuses = await operationStatus(counting, [open.operationId, done.operationId, open.operationId, rolledBack.operationId, `${done.operationId} `, unknown]);
+
+      expect(statuses).toEqual({
+        [open.operationId]: 'open',
+        [done.operationId]: 'done',
+        [`${done.operationId} `]: 'done',
+        [rolledBack.operationId]: 'rolled-back',
+      });
+      expect(lookups).toEqual(inSiteOrder([CHAIN, SITE_A, SITE_B, SITE_C, UMBRELLA]));
+      lookups.length = 0;
+      expect(await operationStatus(counting, [open.operationId, done.operationId, open.operationId])).toEqual({ [open.operationId]: 'open', [done.operationId]: 'done' });
+      expect(lookups).toEqual(inSiteOrder([CHAIN, SITE_A]));
     });
   });
 

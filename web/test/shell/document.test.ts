@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Roles, moduleRole } from '@opt2/platform/auth';
 import { renderCsrfFields } from '@opt2/platform/legacy-compat';
 import { createCsrfRenderer } from '@/lib/csrf';
 import { resetLegacySettingsForTests } from '@/lib/env';
@@ -24,12 +25,14 @@ import {
 } from '@/shell/document';
 import { OPT2_NAV_MODULES as NAV_MODULES } from '@/shell/nav';
 import { CSRF_UPDATECORE } from '../fixtures/identity/csrf';
+import { PROMPT_TALLY_NONZERO, promptCountsNonZero, promptCountsZero } from '../fixtures/strategies-content/prompts';
 import {
   adminS2Request,
   anonymousRequest,
   buildTestAdminRequest,
   editorRequest,
   noSitesRequest,
+  unservedEditorRequest,
 } from '../helpers/admin-request';
 import { domModel } from '../helpers/dom-model';
 import { fakeGatewayClient, routeKey, type FakeCall, type FakeGatewayClient } from '../helpers/fake-gateway';
@@ -41,20 +44,24 @@ const RB = rbFor('en_US');
 const HOOKS: ShellHooks = { secondaryMenus: {} };
 const VIEW_MARK = '<!--VIEW-->';
 
-const LIST_SITES = routeKey('GET', 'programs-sites', '/v1/sites');
+const USER_SITES = routeKey('GET', 'programs-sites', '/v1/user-sites');
 const ISSUE_TOKENS = routeKey('POST', 'identity', '/v1/csrf/tokens');
-const LIST_SITES_CALL: FakeCall = {
-  service: 'programs-sites',
-  method: 'GET',
-  path: '/v1/sites',
-  query: { sortBy: 'site', sortDirection: 'asc' },
-};
+const USER_SITES_CALL: FakeCall = { service: 'programs-sites', method: 'GET', path: '/v1/user-sites' };
 const UPDATE_CORE_CALL: FakeCall = {
   service: 'identity',
   method: 'POST',
   path: '/v1/csrf/tokens',
   json: { contexts: ['updatecore'] },
 };
+const HEADER_PROMPTS = routeKey('GET', 'strategies-content', '/v1/sites/default/header-prompts');
+const HEADER_PROMPTS_CALL: FakeCall = {
+  service: 'strategies-content',
+  method: 'GET',
+  path: '/v1/sites/default/header-prompts',
+};
+/** Session site data of a site with Change Sets enabled. */
+const CHANGESET_SITE = { hasChangesets: true, record: { hasChangesets: 1 } } as const;
+const CHANGESETS_ROLE = moduleRole(`${Z}014`);
 const UPDATE_CORE_QUERY = renderCsrfFields(
   { token: CSRF_UPDATECORE.csrf_token, expires: CSRF_UPDATECORE.csrf_token_expires },
   'url',
@@ -90,24 +97,25 @@ const skeleton = (markup: string, regions: Regions): string =>
     return page.slice(0, from) + marker + page.slice(to + end.length);
   }, markup);
 
-/** One row of programs-sites' site list. */
+/** One row of programs-sites' user site list, its dashboard hidden unless `extra` shows it. */
 const listed = (siteid: string, site: string | null, extra: Record<string, unknown> = {}) => ({
   siteid,
   site,
-  domain: 'localhost',
   orderno: 1,
-  deploy: 0,
-  lastDeployment: null,
+  domain: 'localhost',
+  domainAlias: null,
+  showDashboard: 0,
   ...extra,
 });
 
 const DEFAULT_SITES = [listed('default', 'Default')];
 
-/** An in-memory gateway answering the site list with `sites` and identity's Update Core token pair. */
+/** An in-memory gateway answering the user's sites with `sites`, identity's Update Core token pair and no `default` prompt. */
 function shellGateway(sites: readonly unknown[] = DEFAULT_SITES): FakeGatewayClient {
   return fakeGatewayClient({
-    [LIST_SITES]: { status: 200, body: sites },
+    [USER_SITES]: { status: 200, body: { sites } },
     [ISSUE_TOKENS]: { status: 200, body: { tokens: [CSRF_UPDATECORE] } },
+    [HEADER_PROMPTS]: { status: 200, body: promptCountsZero },
   });
 }
 
@@ -145,7 +153,17 @@ describe('selectLayout', () => {
     { compactDisplay: 'true', layout: 'compact' },
     { compactDisplay: 'TRUE', layout: 'compact' },
     { compactDisplay: 'True', layout: 'compact' },
+    { compactDisplay: '1', layout: 'compact' },
+    { compactDisplay: 'yes', layout: 'compact' },
+    { compactDisplay: ' yes', layout: 'compact' },
+    { compactDisplay: '1.0', layout: 'compact' },
+    { compactDisplay: '01', layout: 'compact' },
     { compactDisplay: 'false', layout: 'template' },
+    { compactDisplay: ' true', layout: 'template' },
+    { compactDisplay: 'true ', layout: 'template' },
+    { compactDisplay: '0', layout: 'template' },
+    { compactDisplay: 'no', layout: 'template' },
+    { compactDisplay: '1.', layout: 'template' },
     { compactDisplay: '', layout: 'template' },
     { compactDisplay: undefined, layout: 'template' },
   ])('chooses $layout for compactDisplay "$compactDisplay"', ({ compactDisplay, layout }) => {
@@ -164,15 +182,16 @@ describe('loadShellData', () => {
     { name: 'a compact request', ctx: () => adminS2Request({ circuit: 'cArch', item: 'edit', rc: { compactDisplay: 'true' } }) },
     { name: 'a session without a site', ctx: () => withoutSessionSite(adminS2Request({ circuit: 'cUsers', item: 'list' })) },
     { name: 'a public member', ctx: () => noSitesRequest({ s2IsPrivate: false }, { circuit: 'cEditProfile', item: 'edit' }) },
-  ])('loads no site list or tokens for $name', async ({ ctx }) => {
+  ])('loads no site list, prompt counts or tokens for $name', async ({ ctx }) => {
     const gateway = shellGateway();
     const data = await load(ctx(), gateway);
     expect(gateway.calls).toEqual([]);
     expect(data.userSites).toEqual([]);
+    expect(data.prompts).toEqual(promptCountsZero);
     expect(data.updateCoreCsrfQuery).toBe('');
   });
 
-  it('lists every site by name for S2 users and renders the Update Core tokens', async () => {
+  it("lists the owner's sites for S2 users, each with its own dashboard flag, and renders the Update Core tokens", async () => {
     const gateway = shellGateway([
       listed('default', 'Default'),
       listed('tenant-a', 'Tenant A', { showDashboard: 1 }),
@@ -180,10 +199,10 @@ describe('loadShellData', () => {
     ]);
     const ctx = adminS2Request({ circuit: 'cUsers', item: 'list', site: { record: { showDashboard: 1 } } });
     const data = await load(ctx, gateway);
-    expect(gateway.calls).toHaveLength(2);
-    expect(gateway.calls).toEqual(expect.arrayContaining([LIST_SITES_CALL, UPDATE_CORE_CALL]));
+    expect(gateway.calls).toHaveLength(3);
+    expect(gateway.calls).toEqual(expect.arrayContaining([USER_SITES_CALL, UPDATE_CORE_CALL, HEADER_PROMPTS_CALL]));
     expect(data.userSites).toEqual([
-      { siteId: 'default', site: 'Default', showDashboard: true },
+      { siteId: 'default', site: 'Default', showDashboard: false },
       { siteId: 'tenant-a', site: 'Tenant A', showDashboard: true },
       { siteId: 'tenant-b', site: '', showDashboard: false },
     ]);
@@ -195,45 +214,43 @@ describe('loadShellData', () => {
     resetLegacySettingsForTests();
     const gateway = shellGateway();
     const data = await load(adminS2Request({ circuit: 'cUsers', item: 'list' }), gateway);
-    expect(gateway.calls).toEqual([LIST_SITES_CALL]);
+    expect(gateway.calls).toHaveLength(2);
+    expect(gateway.calls).toEqual(expect.arrayContaining([USER_SITES_CALL, HEADER_PROMPTS_CALL]));
     expect(data.updateCoreCsrfQuery).toBe('');
   });
 
-  it('orders the administered sites of other private users by name, without the S2-only site list', async () => {
-    const ctx = editorRequest({
-      circuit: 'cArch',
-      item: 'list',
-      adminSites: [
-        { siteID: 'zeta', site: 'Zeta' },
-        { siteID: 'b', site: 'beta' },
-        { siteID: 'default', site: 'Default' },
-        { siteID: 'a', site: 'Alpha' },
-      ],
-      site: { record: { showDashboard: 1 } },
-    });
-    const gateway = shellGateway();
+  it("keeps the owner's name order and each site's own dashboard flag for other private users", async () => {
+    const ctx = editorRequest({ circuit: 'cArch', item: 'list', site: { record: { showDashboard: 1 } } });
+    const gateway = shellGateway([
+      listed('a', 'Alpha'),
+      listed('b', 'beta', { showDashboard: 1 }),
+      listed('default', 'Default'),
+      listed('zeta', 'Zeta'),
+    ]);
     const data = await load(ctx, gateway);
-    expect(gateway.calls).toEqual([]);
+    expect(gateway.calls).toHaveLength(2);
+    expect(gateway.calls).toEqual(expect.arrayContaining([USER_SITES_CALL, HEADER_PROMPTS_CALL]));
     expect(data.userSites).toEqual([
       { siteId: 'a', site: 'Alpha', showDashboard: false },
-      { siteId: 'b', site: 'beta', showDashboard: false },
-      { siteId: 'default', site: 'Default', showDashboard: true },
+      { siteId: 'b', site: 'beta', showDashboard: true },
+      { siteId: 'default', site: 'Default', showDashboard: false },
       { siteId: 'zeta', site: 'Zeta', showDashboard: false },
     ]);
     expect(data.updateCoreCsrfQuery).toBe('');
   });
 
-  it('lists no site for a private user administering none', async () => {
-    const gateway = shellGateway();
+  it('lists no site for a private user the owner lists none for', async () => {
+    const gateway = shellGateway([]);
     const data = await load(noSitesRequest({ s2IsPrivate: true }, { circuit: 'cArch', item: 'list' }), gateway);
-    expect(gateway.calls).toEqual([]);
+    expect(gateway.calls).toEqual([USER_SITES_CALL]);
     expect(data.userSites).toEqual([]);
   });
 
   it('rejects when programs-sites refuses the site list', async () => {
     const gateway = fakeGatewayClient({
-      [LIST_SITES]: { status: 403, body: {} },
+      [USER_SITES]: { status: 403, body: {} },
       [ISSUE_TOKENS]: { status: 200, body: { tokens: [CSRF_UPDATECORE] } },
+      [HEADER_PROMPTS]: { status: 200, body: promptCountsZero },
     });
     await expect(load(adminS2Request({ circuit: 'cUsers', item: 'list' }), gateway)).rejects.toBeInstanceOf(
       GatewayDenialError,
@@ -248,14 +265,70 @@ describe('loadShellData', () => {
     );
   });
 
-  it('passes the labels and clock through and holds no prompts, plugins, server facts or export directory', async () => {
+  it('passes the labels and clock through and holds no plugins, server facts or export directory', async () => {
     const data = await load(adminS2Request({ circuit: 'cUsers', item: 'list' }));
     expect(data.rb).toBe(RB);
     expect(data.now).toBe(NOW);
-    expect(data.prompts).toEqual({ drafts: 0, submissions: 0, approvals: 0, expires: 0, pendingChangesets: 0 });
     expect(data.sitePlugins).toEqual([]);
     expect(data.server).toBeNull();
     expect(data.exportLocationExists).toBe(false);
+  });
+
+  it('loads the session site prompt counts into the header badges and their tally', async () => {
+    const gateway = shellGateway();
+    gateway.setRoute(HEADER_PROMPTS, { status: 200, body: promptCountsNonZero });
+    const ctx = adminS2Request({ circuit: 'cUsers', item: 'list', site: CHANGESET_SITE });
+    const data = await load(ctx, gateway);
+    expect(gateway.calls).toContainEqual(HEADER_PROMPTS_CALL);
+    expect(data.prompts).toEqual(promptCountsNonZero);
+    const $ = $of(renderAdminDocument(ctx, { body: raw(VIEW_MARK) }, HOOKS, data));
+    expect($('#user-tools-selector .dropdown-toggle .badge').text()).toBe(String(PROMPT_TALLY_NONZERO));
+    expect($('.mura-user-tools .badge').map((_, badge) => $(badge).text()).get()).toEqual(['3', '2', '1', '4', '2']);
+  });
+
+  it.each([
+    { name: 'the site has no change sets', ctx: () => adminS2Request({ circuit: 'cUsers', item: 'list' }), pending: 0 },
+    {
+      name: 'the user lacks the Change Sets module',
+      ctx: () => editorRequest({ circuit: 'cArch', item: 'list', site: CHANGESET_SITE }),
+      pending: 0,
+    },
+    {
+      name: 'the user lacks the Site Manager module',
+      ctx: () =>
+        editorRequest({ circuit: 'cArch', item: 'list', site: CHANGESET_SITE, user: { roles: [Roles.systemUser, CHANGESETS_ROLE] } }),
+      pending: 0,
+    },
+    {
+      name: 'the user holds both modules on a change-set site',
+      ctx: () =>
+        editorRequest({
+          circuit: 'cArch',
+          item: 'list',
+          site: CHANGESET_SITE,
+          user: { roles: [Roles.systemUser, CHANGESETS_ROLE, moduleRole(`${Z}000`)] },
+        }),
+      pending: promptCountsNonZero.pendingChangesets,
+    },
+  ])('shows $pending pending change-set approvals when $name', async ({ ctx, pending }) => {
+    const gateway = shellGateway();
+    gateway.setRoute(HEADER_PROMPTS, { status: 200, body: promptCountsNonZero });
+    expect((await load(ctx(), gateway)).prompts).toEqual({ ...promptCountsNonZero, pendingChangesets: pending });
+  });
+
+  it('loads no prompt counts for a session site the token does not serve', async () => {
+    const gateway = shellGateway();
+    const data = await load(unservedEditorRequest({ circuit: 'cArch', item: 'list' }), gateway);
+    expect(gateway.calls).toEqual([USER_SITES_CALL]);
+    expect(data.prompts).toEqual(promptCountsZero);
+  });
+
+  it('rejects when strategies-content refuses the prompt counts', async () => {
+    const gateway = shellGateway();
+    gateway.setRoute(HEADER_PROMPTS, { status: 403, body: {} });
+    await expect(load(editorRequest({ circuit: 'cArch', item: 'list' }), gateway)).rejects.toBeInstanceOf(
+      GatewayDenialError,
+    );
   });
 
   it('defaults the clock to the current time', async () => {

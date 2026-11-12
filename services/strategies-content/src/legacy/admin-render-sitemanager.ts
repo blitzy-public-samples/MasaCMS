@@ -8,6 +8,7 @@
  */
 import {
   LEGACY_ADMIN_SENTINEL_ID,
+  adminUrl,
   cfEq,
   cfIsNumeric,
   cfListToArray,
@@ -15,6 +16,7 @@ import {
   cfToBoolean,
   cfToNumber,
   javaTrim,
+  type AdminParam,
 } from '@opt2/platform/legacy-compat';
 import {
   cfHtmlEditFormat,
@@ -113,6 +115,12 @@ function num(v: number | null | undefined): string {
 /** A text column as `#value#` prints it. */
 function str(v: string | number | null | undefined): string {
   return typeof v === 'number' ? cfNumberString(v) : (v ?? '');
+}
+
+/** The views' relative admin link `./?muraAction=<circuit>.<item>&…`; `action` is `<circuit>.<item>`. */
+function viewAdminUrl(action: `${string}.${string}`, params: AdminParam[]): string {
+  const dot = action.indexOf('.');
+  return adminUrl({ circuit: action.slice(0, dot), action: action.slice(dot + 1), params, adminDir: '.', context: '' });
 }
 
 /** ACF `NumberFormat(n, mask)` for the `9` and `9.99` masks: half-up on the decimal digits ACF prints for `n`. */
@@ -559,11 +567,16 @@ function renderFlatRow(out: CfOut, row: SiteFlatRow, model: LoadSiteFlatModel, c
     verdict === 'editor' &&
     row.islocked !== 1 &&
     !cfEq(contentId, HOME_ID);
-  const query =
-    `contentid=${contentId}&type=${type}&parentid=${parentId}&topid=${esapiEncode('url', topId)}` +
-    `&siteid=${esapiEncode('url', siteId)}&moduleid=${moduleId}`;
-  const editLink = `./?muraAction=cArch.edit&contenthistid=${histId}&${query}&startrow=${str(startRow)}`;
-  const listLink = (action: string): string => `./?muraAction=${action}&${query}&startrow=${esapiEncode('url', startRow)}`;
+  const query: AdminParam[] = [
+    ['contentid', contentId, 'raw'],
+    ['type', type, 'raw'],
+    ['parentid', parentId, 'raw'],
+    ['topid', topId],
+    ['siteid', siteId],
+    ['moduleid', moduleId, 'raw'],
+  ];
+  const editLink = viewAdminUrl('cArch.edit', [['contenthistid', histId, 'raw'], ...query, ['startrow', str(startRow), 'raw']]);
+  const listLink = (action: `${string}.${string}`): string => viewAdminUrl(action, [...query, ['startrow', str(startRow)]]);
   const previewable = cfEq(moduleId, SITE_TREE_MODULE) || (cfEq(moduleId, '00000000000000000000000000000000099') && cfEq(type, 'Variation'));
   const url = (): string => contentUrl(ctx.site, row, { complete: true });
 
@@ -594,10 +607,16 @@ function renderFlatRow(out: CfOut, row: SiteFlatRow, model: LoadSiteFlatModel, c
     out.t('\n\t\t\t\t\t\t <li class="version-history"><a title="Version History" href="', listLink('cArch.hist'));
     out.t('"><i class="mi-history"></i></a></li>\n\n\t\t\t\t\t\t');
     if (cfEq(type, 'Form')) {
+      const manageData = viewAdminUrl('cArch.datamanager', [
+        ['contentid', contentId],
+        ['siteid', siteId],
+        ['topid', topId],
+        ['moduleid', moduleId],
+        ['type', 'Form', 'raw'],
+        ['parentid', parentId],
+      ]);
       out.t('\n\t\t\t\t \t\t\t<li class="manage-data"><a title="', labels.key('sitemanager.content.managedata'));
-      out.t('"  href="./?muraAction=cArch.datamanager&contentid=', esapiEncode('url', contentId), '&siteid=');
-      out.t(esapiEncode('url', siteId), '&topid=', esapiEncode('url', topId), '&moduleid=', esapiEncode('url', moduleId));
-      out.t('&type=Form&parentid=', esapiEncode('url', parentId), '"><i class="mi-wrench"></i></a></li>\n\t\t\t\t \t\t');
+      out.t('"  href="', manageData, '"><i class="mi-wrench"></i></a></li>\n\t\t\t\t \t\t');
     }
     out.ws();
     if (isSiteAdmin(session, siteSettings.privateUserPoolId) || isS2(session)) {
@@ -612,10 +631,18 @@ function renderFlatRow(out: CfOut, row: SiteFlatRow, model: LoadSiteFlatModel, c
       const confirm = listFindNoCase(RECURSIVE_DELETE_TYPES, type)
         ? labels.messageFormat(labels.key('sitemanager.content.deletecontentrecursiveconfirm'), menuTitle)
         : labels.key('sitemanager.content.deletecontentconfirm');
-      out.t('\n\t\t\t\t\t        <li class="delete"><a title="', labels.key('sitemanager.delete'), '" href="./?muraAction=cArch.update');
-      out.t('&contentid=', contentId, '&type=', type, '&action=deleteall&topid=', esapiEncode('url', topId), '&siteid=');
-      out.t(esapiEncode('url', siteId), '&moduleid=', moduleId, '&parentid=', esapiEncode('url', parentId), '&startrow=');
-      out.t(esapiEncode('url', startRow), renderCsrfTokensUrl(ctx.csrf(`${contentId}deleteall`)), '"');
+      const deleteLink = viewAdminUrl('cArch.update', [
+        ['contentid', contentId, 'raw'],
+        ['type', type, 'raw'],
+        ['action', 'deleteall', 'raw'],
+        ['topid', topId],
+        ['siteid', siteId],
+        ['moduleid', moduleId, 'raw'],
+        ['parentid', parentId],
+        ['startrow', str(startRow)],
+      ]);
+      out.t('\n\t\t\t\t\t        <li class="delete"><a title="', labels.key('sitemanager.delete'), '" href="', deleteLink);
+      out.t(renderCsrfTokensUrl(ctx.csrf(`${contentId}deleteall`)), '"');
       out.t(`onclick="return confirmDialog('${esapiEncode('javascript', confirm)}',this.href)"`);
       out.t('>\n\t\t\t\t\t\t\t<i class="mi-trash"></i></a></li>\n\t\t\t\t\t    ');
     } else if (!cfEq(eventText(event, 'locking'), 'all')) {
@@ -1004,16 +1031,22 @@ class NewContentMenu {
     this.icons = model.customIcons ?? NO_CUSTOM_ICONS;
   }
 
-  /** `./?muraAction=<action>&contentid=&parentid=…` as the template writes it; `subType` is not encoded. */
-  href(action: string, type: string, moduleId: string, subtype?: string, extra = ''): string {
+  /** `./?muraAction=<action>&contentid=&parentid=…` as the template writes it; `type` and `subType` are not encoded. */
+  href(action: `${string}.${string}`, type: string, moduleId: string, subtype?: string, extra: AdminParam[] = []): string {
     const m = this.model;
-    const sub = subtype === undefined ? '' : `&subType=${subtype}`;
-    return (
-      `./?muraAction=${action}&contentid=&parentid=${esapiEncode('url', m.contentId)}&parenthistid=` +
-      `${esapiEncode('url', m.contentHistId)}&type=${type}${sub}&topid=${esapiEncode('url', m.topId)}&siteid=` +
-      `${esapiEncode('url', m.siteId)}&moduleid=${moduleId}&ptype=${esapiEncode('url', m.ptype)}&frontend=` +
-      `${esapiEncode('url', m.compactDisplay)}${extra}`
-    );
+    return viewAdminUrl(action, [
+      ['contentid', '', 'raw'],
+      ['parentid', m.contentId],
+      ['parenthistid', m.contentHistId],
+      ['type', type, 'raw'],
+      ...(subtype === undefined ? [] : [['subType', subtype, 'raw'] satisfies AdminParam]),
+      ['topid', m.topId],
+      ['siteid', m.siteId],
+      ['moduleid', moduleId],
+      ['ptype', m.ptype],
+      ['frontend', m.compactDisplay],
+      ...extra,
+    ]);
   }
 
   icon(type: string, subtype: string): string {
@@ -1120,37 +1153,38 @@ export function renderLoadNewContentMenu(model: NewContentMenuModel, ctx: AdminR
   out.t('\n\t<div class="add-content-ui">\n\t\t<ul>\n\t\t').ws();
 
   const menu = new NewContentMenu(out, model, ctx);
-  const moduleUrl = esapiEncode('url', model.moduleId);
+  const { moduleId } = model;
   const deep = { depth: 7, tail: 6, inlineTip: false };
   const subtypeLayout = { depth: 8, tail: 7, inlineTip: true };
   if (cfEq(model.moduleId, FORMS_MODULE)) {
     for (const type of ['Form', 'Folder']) {
       menu.defaultItem(type, (description) => {
-        if (type !== 'Form') return menu.typeItem(type, description, menu.href('cArch.edit', type, moduleUrl), deep);
+        if (type !== 'Form') return menu.typeItem(type, description, menu.href('cArch.edit', type, moduleId), deep);
         const flat = { depth: 7, tail: 7, inlineTip: false };
-        menu.typeItem(type, description, menu.href('cArch.edit', type, moduleUrl, undefined, '&formType=builder'), flat, labels.key('sitemanager.addform'));
+        const builder = menu.href('cArch.edit', type, moduleId, undefined, [['formType', 'builder', 'raw']]);
+        menu.typeItem(type, description, builder, flat, labels.key('sitemanager.addform'));
         if (!model.allowSimpleHtmlForms) return;
         menuItem(out, flat, {
           liClass: `new${type}simple`,
           description: str(description),
-          href: menu.href('cArch.edit', type, moduleUrl, undefined, '&formType=editor'),
+          href: menu.href('cArch.edit', type, moduleId, undefined, [['formType', 'editor', 'raw']]),
           linkId: `new${type}Link`,
           icon: menu.icon(type, 'default'),
           span: labels.key('sitemanager.addformsimple'),
         });
       });
-      if (type === 'Form') menu.subtypeItems(type, moduleUrl, subtypeLayout);
+      if (type === 'Form') menu.subtypeItems(type, moduleId, subtypeLayout);
     }
   } else if (cfEq(model.moduleId, COMPONENTS_MODULE)) {
     for (const type of ['Component', 'Folder']) {
       const layout = { depth: 6, tail: 5, inlineTip: false };
-      menu.defaultItem(type, (description) => menu.typeItem(type, description, menu.href('cArch.edit', type, moduleUrl), layout));
-      if (type === 'Component') menu.subtypeItems(type, moduleUrl, subtypeLayout);
+      menu.defaultItem(type, (description) => menu.typeItem(type, description, menu.href('cArch.edit', type, moduleId), layout));
+      if (type === 'Component') menu.subtypeItems(type, moduleId, subtypeLayout);
     }
   } else if (cfEq(model.moduleId, VARIATIONS_MODULE)) {
     // The view's `Variation` subtype block never runs: its loop list is Folder,File.
     for (const type of ['Folder', 'File']) {
-      menu.defaultItem(type, (description) => menu.typeItem(type, description, menu.href('cArch.edit', type, moduleUrl), deep));
+      menu.defaultItem(type, (description) => menu.typeItem(type, description, menu.href('cArch.edit', type, moduleId), deep));
     }
     menu.multiUploadItem(5);
   } else if (!cfEq(model.ptype, 'Gallery')) {

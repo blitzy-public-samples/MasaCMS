@@ -1,12 +1,14 @@
-// Signed client of the legacy bridge's session.cfm: describe, hydrate, CSRF ledger and end of a ColdFusion session.
+// Signed clients of the legacy bridge: session.cfm (describe, hydrate, CSRF ledger, end) and site.cfm's site list.
 import { BRIDGE_ASSERTION_HEADER, isLegacySessionCookie, signBridgeAssertion } from '@opt2/platform/legacy-compat';
 import { SERVICE_CALL_TIMEOUT_MS, ServiceUnavailableError, type Clock } from '@opt2/platform/service-kit';
 import type { LegacyDescribe, LegacyDescribeUser, LegacyUsedToken } from './identity-client.js';
 
 export type { LegacyDescribe, LegacyDescribeUser, LegacyUsedToken } from './identity-client.js';
 
-const SESSION_PAGE = '/gateway/legacy-bridge/cfml/session.cfm';
+const BRIDGE_DIR = '/gateway/legacy-bridge/cfml';
 const BRIDGE_SERVICE = 'legacy-bridge';
+// A call without session cookies gets a throwaway session, which Masa keeps for 2 s only for a bot-like agent.
+const BOT_USER_AGENT = 'opt2-legacy-bridge-bot';
 // The bridge refuses assertions expiring within 60 s of its JVM start, so a shorter TTL fails right after a legacy restart.
 const ASSERTION_TTL_SECONDS = 60;
 
@@ -93,7 +95,7 @@ export interface BridgeClient {
   end(cookies: LegacyCookies, call: BridgeSessionCall): Promise<BridgeResult<EndResult>>;
 }
 
-/** Construction options of {@link createBridgeClient}. */
+/** Construction options of {@link createBridgeClient} and {@link createSiteListClient}. */
 export interface BridgeClientOptions {
   /** `LEGACY_ORIGIN`, addressed directly. */
   legacyOrigin: string;
@@ -101,6 +103,12 @@ export interface BridgeClientOptions {
   hmacKey: string;
   clock: Clock;
   fetch?: typeof fetch;
+}
+
+/** The gateway's read of the legacy site registry through `site.cfm`. */
+export interface SiteListClient {
+  /** `op=list`: the site ids `settingsManager.siteExists` accepts. */
+  listSites(): Promise<string[]>;
 }
 
 type SessionOp = 'describe' | 'hydrate' | 'markUsed' | 'usedSince' | 'end';
@@ -134,10 +142,10 @@ function errorToken(text: string): string | undefined {
   }
 }
 
-/** The legacy-shaped 503 for a non-2xx bridge answer. */
-function httpFailure(op: SessionOp, status: number, error: string | undefined): ServiceUnavailableError {
+/** The legacy-shaped 503 for a non-2xx bridge answer to `<page>.<op>`. */
+function httpFailure(pageOp: string, status: number, error: string | undefined): ServiceUnavailableError {
   const detail = error === undefined ? '' : ` ${error}`;
-  const cause = Object.assign(new Error(`legacy bridge session.${op} answered HTTP ${String(status)}${detail}`), {
+  const cause = Object.assign(new Error(`legacy bridge ${pageOp} answered HTTP ${String(status)}${detail}`), {
     code: `HTTP_${String(status)}`,
     status,
     error,
@@ -145,18 +153,18 @@ function httpFailure(op: SessionOp, status: number, error: string | undefined): 
   return new ServiceUnavailableError(BRIDGE_SERVICE, cause);
 }
 
-/** Creates the bridge session client; every call carries a freshly signed single-use assertion. */
-export function createBridgeClient(opts: BridgeClientOptions): BridgeClient {
+/** Sender of one bridge page's ops; every call carries a freshly signed single-use assertion for `<page>.<op>`. */
+function bridgeSender<Op extends string>(opts: BridgeClientOptions, page: 'session' | 'site') {
   const origin = opts.legacyOrigin.replace(/\/+$/, '');
   const doFetch: typeof fetch = opts.fetch ?? ((input, init) => globalThis.fetch(input, init));
 
-  async function send<T>(
-    op: SessionOp,
+  return async function send<T>(
+    op: Op,
     spec: OpSpec,
     cookies: LegacyCookies,
     call: BridgeCallOptions = {},
   ): Promise<BridgeResult<T>> {
-    let target = `${origin}${SESSION_PAGE}?op=${op}`;
+    let target = `${origin}${BRIDGE_DIR}/${page}.cfm?op=${op}`;
     for (const [name, value] of Object.entries(spec.query ?? {})) target += `&${name}=${encodeURIComponent(value)}`;
 
     const headers: Record<string, string> = { Accept: 'application/json' };
@@ -171,7 +179,7 @@ export function createBridgeClient(opts: BridgeClientOptions): BridgeClient {
     // Signed last, right before sending, so no assertion outlives its one request.
     headers[BRIDGE_ASSERTION_HEADER] = signBridgeAssertion(
       {
-        op: `session.${op}`,
+        op: `${page}.${op}`,
         sid: call.legacySessionId,
         sub: spec.sub,
         ttlSeconds: ASSERTION_TTL_SECONDS,
@@ -195,7 +203,7 @@ export function createBridgeClient(opts: BridgeClientOptions): BridgeClient {
     } catch (err) {
       throw new ServiceUnavailableError(BRIDGE_SERVICE, err);
     }
-    if (!response.ok) throw httpFailure(op, response.status, errorToken(text));
+    if (!response.ok) throw httpFailure(`${page}.${op}`, response.status, errorToken(text));
 
     let parsed: T;
     try {
@@ -204,7 +212,12 @@ export function createBridgeClient(opts: BridgeClientOptions): BridgeClient {
       throw new ServiceUnavailableError(BRIDGE_SERVICE, err);
     }
     return { body: parsed, setCookies: response.headers.getSetCookie() };
-  }
+  };
+}
+
+/** Creates the bridge session client; every call carries a freshly signed single-use assertion. */
+export function createBridgeClient(opts: BridgeClientOptions): BridgeClient {
+  const send = bridgeSender<SessionOp>(opts, 'session');
 
   return {
     describe: (cookies, call) => send<LegacyDescribe>('describe', { method: 'GET' }, cookies, call),
@@ -219,5 +232,22 @@ export function createBridgeClient(opts: BridgeClientOptions): BridgeClient {
       send<UsedSinceResult>('usedSince', { method: 'GET', query: { since } }, cookies, call),
 
     end: (cookies, call) => send<EndResult>('end', { method: 'POST' }, cookies, call),
+  };
+}
+
+/** Creates the signed `site.cfm?op=list` client; a body without a `sites` array of ids fails closed. */
+export function createSiteListClient(opts: BridgeClientOptions): SiteListClient {
+  const send = bridgeSender<'list'>(opts, 'site');
+
+  return {
+    async listSites() {
+      const { body } = await send<{ sites?: unknown } | null>('list', { method: 'GET' }, {}, { userAgent: BOT_USER_AGENT });
+      const sites = body?.sites;
+      // serializeJSON may write a numeric-looking site id as a JSON number.
+      if (!Array.isArray(sites) || !sites.every((id) => typeof id === 'string' || typeof id === 'number')) {
+        throw new ServiceUnavailableError(BRIDGE_SERVICE, new Error('legacy bridge site.list answered no list of site ids'));
+      }
+      return sites.map(String);
+    },
   };
 }

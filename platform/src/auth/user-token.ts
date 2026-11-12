@@ -10,6 +10,9 @@ export const LOCAL_USER_TOKEN = {
   algorithm: 'RS256',
 } as const;
 
+/** Identity Platform uid of the anonymous principal, verified as `sub` ''; 36 characters, longer than any char(35) Masa `UserID` and within the uid limit. */
+export const ANONYMOUS_PRINCIPAL_UID = 'opt2.identity.anonymous-principal.v1';
+
 /** Google's JWKS for Identity Platform (securetoken) ID tokens. */
 export const GOOGLE_SECURETOKEN_JWKS_URL =
   'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com';
@@ -38,7 +41,7 @@ export interface UserTokenVerifier {
 // they are not faults of the presented token, so they propagate like a refused connection instead of a 401.
 const KEY_SOURCE_FAILURES: ReadonlySet<string> = new Set(['ERR_JWKS_TIMEOUT', 'ERR_JOSE_GENERIC', 'ERR_JWKS_INVALID']);
 
-/** Creates a verifier checking the RS256 signature, `iss`, `aud`, `exp` and the claim shape. */
+/** Creates a verifier checking the RS256 signature, `iss`, `aud`, `exp` and the claim shape; the anonymous principal yields `sub` ''. */
 export function createUserTokenVerifier(opts: UserTokenVerifierOptions): UserTokenVerifier {
   const keys: JWTVerifyGetKey = 'keySet' in opts ? opts.keySet : createRemoteJWKSet(new URL(opts.jwksUrl));
   const verifyOptions = { issuer: opts.issuer, audience: opts.audience, algorithms: ['RS256'] };
@@ -58,7 +61,7 @@ export function createUserTokenVerifier(opts: UserTokenVerifierOptions): UserTok
       if (!parsed.success) {
         throw AuthDenial.invalidToken();
       }
-      return parsed.data;
+      return parsed.data.sub === ANONYMOUS_PRINCIPAL_UID ? { ...parsed.data, sub: '' } : parsed.data;
     },
   };
 }

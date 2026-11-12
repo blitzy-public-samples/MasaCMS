@@ -552,6 +552,10 @@ export interface IdentityRepository extends Repository {
   insertAccountOperation(tx: TenantTx, row: AccountOperationInput, ctx?: WriteContext): Promise<AccountOperationRow>;
   /** The operation `operationId`; null when absent. */
   findAccountOperation(tx: TenantTx, operationId: string): Promise<AccountOperationRow | null>;
+  /** The operation `operationId`, locked FOR UPDATE until `tx` ends; null when absent. */
+  lockAccountOperation(tx: TenantTx, operationId: string): Promise<AccountOperationRow | null>;
+  /** The recorded operations among `operationIds`, by operation id, matched as findAccountOperation matches one; ids never recorded have no row. */
+  findAccountOperations(tx: TenantTx, operationIds: readonly string[]): Promise<AccountOperationRow[]>;
   /** The oldest open operation of the user or the username; null when none. */
   findOpenAccountOperation(tx: TenantTx, lookup: OpenOperationLookup): Promise<AccountOperationRow | null>;
   /** Moves the operation to `to` when its state is one of `fromStates`, setting `patch`; false otherwise. */
@@ -748,6 +752,8 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     ` AND (($3::text IS NOT NULL AND user_id = $3) OR ($4::text IS NOT NULL AND (username::bpchar COLLATE ${legacyCi}) = $4::bpchar))` +
     ' ORDER BY created_at, operation_id LIMIT 1';
   const lockOperationSql = `SELECT state FROM ${accountOperation} WHERE tenant_id = $1 AND operation_id = $2 FOR UPDATE`;
+  const lockOperationRowSql = `SELECT * FROM ${accountOperation} WHERE tenant_id = $1 AND operation_id = $2 FOR UPDATE`;
+  const operationsByIdsSql = `SELECT * FROM ${accountOperation} WHERE tenant_id = $1 AND operation_id = ANY($2::bpchar[]) ORDER BY operation_id`;
   const contactsByEmailSql =
     `SELECT * FROM ${personContact} WHERE tenant_id = $1 AND (email::bpchar COLLATE ${legacyCi}) = $2::bpchar ORDER BY user_id`;
   const accountsByEmailSql =
@@ -1587,6 +1593,14 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     return base.findByKey<AccountOperationRow>(tx, ACCOUNT_OPERATION.table, { operation_id: operationId });
   }
 
+  async function lockAccountOperation(tx: TenantTx, operationId: string): Promise<AccountOperationRow | null> {
+    return (await select<AccountOperationRow>(tx, lockOperationRowSql, [tx.tenantId, operationId]))[0] ?? null;
+  }
+
+  async function findAccountOperations(tx: TenantTx, operationIds: readonly string[]): Promise<AccountOperationRow[]> {
+    return operationIds.length === 0 ? [] : select<AccountOperationRow>(tx, operationsByIdsSql, [tx.tenantId, [...operationIds]]);
+  }
+
   async function findOpenAccountOperation(tx: TenantTx, lookup: OpenOperationLookup): Promise<AccountOperationRow | null> {
     const params = [tx.tenantId, [...OPEN_OPERATION_STATES], lookup.userId ?? null, lookup.username ?? null];
     return (await select<AccountOperationRow>(tx, openOperationSql, params))[0] ?? null;
@@ -1740,6 +1754,8 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     purgeCsrfClaims,
     insertAccountOperation,
     findAccountOperation,
+    lockAccountOperation,
+    findAccountOperations,
     findOpenAccountOperation,
     setAccountOperationState,
     upsertPersonContact,

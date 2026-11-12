@@ -11,6 +11,7 @@ import {
   envUrl,
   loadEnv,
   optionalEnvString,
+  publisherEmulatorHost,
   requiredEnvString,
 } from '../../src/service-kit/env.js';
 
@@ -281,6 +282,37 @@ describe('loadEnv', () => {
     for (const key of Object.keys(baseEnvSchema.shape)) vi.stubEnv(key, key === 'TZ' ? tz : localEnv[key]);
 
     expect(() => loadEnv()).toThrow(/\n {2}TZ: must be an IANA time zone name/);
+  });
+});
+
+describe('publisherEmulatorHost', () => {
+  it.each([
+    ['the local emulator host', localEnv, 'localhost:8085'],
+    ['no host in the cloud', cloudEnv, undefined],
+  ])('returns %s', (_case, source, expected) => {
+    expect(publisherEmulatorHost(loadEnv(baseEnvSchema, source))).toBe(expected);
+  });
+
+  it.each([
+    ['missing', undefined, 'local', 'is required when OPT2_ENV=local'],
+    ['blank', '  ', 'local', 'is required when OPT2_ENV=local'],
+    ['without a port', 'pubsub-emulator-host', 'local', 'Invalid string: must match pattern'],
+    ['out of port range', 'pubsub-emulator-host:65536', 'local', 'port must be from 1 to 65535'],
+    ['set in the cloud', 'pubsub-emulator-host:8085', 'cloud', 'must be unset when OPT2_ENV=cloud'],
+  ] as const)('rejects a host that is %s, naming the variable but not its value', (_case, host, mode, issue) => {
+    const env = { ...loadEnv(baseEnvSchema, mode === 'local' ? localEnv : cloudEnv), PUBSUB_EMULATOR_HOST: host };
+    let error: unknown;
+    try {
+      publisherEmulatorHost(env);
+    } catch (thrown) {
+      error = thrown;
+    }
+
+    expect(error).toBeInstanceOf(EnvValidationError);
+    const { message, issues } = error as EnvValidationError;
+    expect(issues).toEqual([expect.stringContaining(`PUBSUB_EMULATOR_HOST: ${issue}`)]);
+    expect(message.startsWith(`${env.OPT2_SERVICE_NAME}: invalid environment\n  PUBSUB_EMULATOR_HOST: ${issue}`)).toBe(true);
+    if (host?.trim()) expect(message).not.toContain(host);
   });
 });
 

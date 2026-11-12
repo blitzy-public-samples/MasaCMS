@@ -19,6 +19,8 @@ import {
   type ExportResponse,
   type PositionResponse,
 } from '@opt2/platform/migration-kit';
+import { baseEnvSchema, envUrl, optionalEnvString, z } from '@opt2/platform/service-kit';
+import { tenantIdForSite } from '@opt2/platform/tenancy';
 import {
   SERVICES,
   SETTLE_KINDS,
@@ -35,6 +37,7 @@ import { createHttpSession, type FetchLike, type HttpResult, type HttpSession } 
 import { createReadOnlyMssql, type ReadOnlyMssql } from '../lib/mssql.js';
 import { createHarnessInvoker, type HarnessInvoker } from '../lib/invocation.js';
 import { opt2Path, repoPath, type EnvLike } from '../lib/paths.js';
+import { CutoverRequestFailed, cutoverStatus } from '../repro/cutover.js';
 
 export type { RowSpec, TaskSpec } from './catalogue.js';
 
@@ -127,13 +130,40 @@ export interface SideEffects {
   legacyRows?: Record<string, RowSnapshot>;
 }
 
+/** Side-effect variables of the environment: the `OPT2_SERVICE_URLS` map and the Mailpit API base, blank counting as unset. */
+export const sideEffectEnvSchema = z.object({
+  OPT2_SERVICE_URLS: baseEnvSchema.shape.OPT2_SERVICE_URLS,
+  MAILPIT_API_URL: optionalEnvString(envUrl()).transform((url) => url ?? DEFAULT_MAILPIT_URL),
+});
+
+/** Validated side-effect configuration; URLs carry no trailing slash. */
+export interface SideEffectConfig {
+  /** Service base URLs by service name. */
+  serviceUrls: Readonly<Record<string, string>>;
+  mailpitUrl: string;
+}
+
+/** Parses `env` into a {@link SideEffectConfig}; throws GoldenConfigError naming each invalid variable path. */
+export function resolveSideEffectConfig(env: EnvLike = process.env): SideEffectConfig {
+  const parsed = sideEffectEnvSchema.safeParse(env);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`);
+    throw new GoldenConfigError(`invalid side-effect configuration: ${issues.join('; ')}`);
+  }
+  return { serviceUrls: parsed.data.OPT2_SERVICE_URLS, mailpitUrl: parsed.data.MAILPIT_API_URL };
+}
+
 /** Injectable collaborators; absent ones are created from the scenario environment and released afterwards. */
 export interface SideEffectDeps {
+  /** Resolved configuration; else parsed from the scenario environment once per call or hook. */
+  config?: SideEffectConfig;
   fetch?: FetchLike;
   /** Caller-owned legacy client; never closed here. */
   mssql?: ReadOnlyMssql;
   invoker?: HarnessInvoker;
   ownership?: TableOwnership;
+  /** Cut-over groups; else `gateway/cutover/groups.json`. */
+  groups?: CutoverGroups;
   sleep?: (ms: number) => Promise<void>;
   /** Milliseconds since the epoch. */
   now?: () => number;
@@ -202,19 +232,21 @@ export interface TableOwnership {
   units: OwnershipUnit[];
 }
 
+/** One group of `gateway/cutover/groups.json`: the units sharing one write authority. */
+export interface CutoverGroup {
+  id: string;
+  units: string[];
+}
+
+/** The parts of `gateway/cutover/groups.json` this module reads. */
+export interface CutoverGroups {
+  groups: CutoverGroup[];
+}
+
 /** A row scope with its placeholders resolved. */
 export type ResolvedRowSpec = RowSpec;
 
 type Scalar = string | number | boolean;
-
-function envValue(env: EnvLike, name: string): string | undefined {
-  const value = env[name];
-  return value === undefined || value === '' ? undefined : value;
-}
-
-function trimSlash(url: string): string {
-  return url.replace(/\/+$/, '');
-}
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -239,31 +271,15 @@ function okJson<T>(result: HttpResult, what: string): T {
   return result.json<T>();
 }
 
-/** Base URL of service `name` from the `OPT2_SERVICE_URLS` JSON map. */
-export function serviceUrl(env: EnvLike, name: string): string {
-  const url = asRecord(serviceUrlMap(env))?.[name];
-  if (typeof url !== 'string' || url === '') {
+/** Base URL of service `name` from the resolved `OPT2_SERVICE_URLS` map. */
+export function serviceUrl(config: SideEffectConfig, name: string): string {
+  const url = Object.hasOwn(config.serviceUrls, name) ? config.serviceUrls[name] : undefined;
+  if (url === undefined) {
     throw new GoldenConfigError(
       `OPT2_SERVICE_URLS has no URL for ${name}; harness/src/repro/ports.ts --service-urls prints the local map`,
     );
   }
-  return trimSlash(url);
-}
-
-function serviceUrlMap(env: EnvLike): unknown {
-  const raw = envValue(env, 'OPT2_SERVICE_URLS');
-  if (raw === undefined) return {};
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    throw new GoldenConfigError('OPT2_SERVICE_URLS is not a JSON object');
-  }
-}
-
-/** Catalogue services `OPT2_SERVICE_URLS` lists, in catalogue order. */
-function servicesWithUrls(env: EnvLike): string[] {
-  const map = asRecord(serviceUrlMap(env)) ?? {};
-  return SERVICES.filter((name) => typeof map[name] === 'string' && map[name] !== '');
+  return url;
 }
 
 interface Clock {
@@ -319,8 +335,10 @@ interface MailpitMessage {
   HTML?: string | null;
 }
 
-function mailpit(env: EnvLike, fetch: FetchLike | undefined): HttpSession {
-  return createHttpSession({ baseUrl: trimSlash(envValue(env, 'MAILPIT_API_URL') ?? DEFAULT_MAILPIT_URL), fetch });
+type MailDeps = Pick<SideEffectDeps, 'fetch' | 'config'>;
+
+function mailpit(env: EnvLike, deps: MailDeps): HttpSession {
+  return createHttpSession({ baseUrl: (deps.config ?? resolveSideEffectConfig(env)).mailpitUrl, fetch: deps.fetch });
 }
 
 async function mailPage(s: HttpSession, start: number, limit: number): Promise<MailpitList> {
@@ -333,13 +351,13 @@ async function mailPage(s: HttpSession, start: number, limit: number): Promise<M
 }
 
 /** Messages Mailpit holds. */
-export async function mailCount(env: EnvLike = process.env, deps: Pick<SideEffectDeps, 'fetch'> = {}): Promise<number> {
-  return (await mailPage(mailpit(env, deps.fetch), 0, 1)).total;
+export async function mailCount(env: EnvLike = process.env, deps: MailDeps = {}): Promise<number> {
+  return (await mailPage(mailpit(env, deps), 0, 1)).total;
 }
 
 /** Deletes every Mailpit message, then requires the list to report 0; run before capture, before replay and between scenarios. */
-export async function resetMailpit(env: EnvLike = process.env, deps: Pick<SideEffectDeps, 'fetch'> = {}): Promise<void> {
-  const s = mailpit(env, deps.fetch);
+export async function resetMailpit(env: EnvLike = process.env, deps: MailDeps = {}): Promise<void> {
+  const s = mailpit(env, deps);
   const deleted = await s.request({ method: 'DELETE', path: '/api/v1/messages' });
   if (deleted.status !== 200) throw new SideEffectError(`Mailpit DELETE /api/v1/messages answered ${deleted.status}`);
   const { total } = await mailPage(s, 0, 1);
@@ -358,8 +376,8 @@ function htmlBodyText(html: string): string {
 }
 
 /** Every Mailpit message with its headers, sorted by subject, then first recipient; header dropping is the normaliser's. */
-export async function collectMail(env: EnvLike = process.env, deps: Pick<SideEffectDeps, 'fetch'> = {}): Promise<MailMessage[]> {
-  const s = mailpit(env, deps.fetch);
+export async function collectMail(env: EnvLike = process.env, deps: MailDeps = {}): Promise<MailMessage[]> {
+  const s = mailpit(env, deps);
   const ids: string[] = [];
   for (let start = 0; ; ) {
     const page = await mailPage(s, start, MAILPIT_PAGE);
@@ -393,9 +411,10 @@ export async function collectMail(env: EnvLike = process.env, deps: Pick<SideEff
 export async function waitForMail(
   env: EnvLike,
   timeoutMs: number,
-  deps: Pick<SideEffectDeps, 'fetch' | 'sleep' | 'now'> = {},
+  deps: Pick<SideEffectDeps, 'fetch' | 'config' | 'sleep' | 'now'> = {},
 ): Promise<number> {
-  return waitUntilQuiet(() => mailCount(env, deps), {
+  const mail: MailDeps = { fetch: deps.fetch, config: deps.config ?? resolveSideEffectConfig(env) };
+  return waitUntilQuiet(() => mailCount(env, mail), {
     timeoutMs,
     quietMs: MAIL_QUIET_MS,
     ready: (count) => count > 0,
@@ -419,6 +438,21 @@ export async function loadTableOwnership(path: string = opt2Path('table-ownershi
     throw new GoldenConfigError(`table ownership ${path} has no tables and units arrays`, { path });
   }
   return { tables: record.tables as OwnershipTable[], units: record.units as OwnershipUnit[] };
+}
+
+const cutoverGroupsSchema = z.object({ groups: z.array(z.object({ id: z.string(), units: z.array(z.string()) })) });
+
+/** Reads `gateway/cutover/groups.json`; throws GoldenConfigError when it cannot be read or lacks groups of ids and units. */
+export async function loadCutoverGroups(path: string = repoPath('gateway', 'cutover', 'groups.json')): Promise<CutoverGroups> {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(await readFile(path, 'utf8')) as unknown;
+  } catch (err) {
+    throw new GoldenConfigError(`cut-over groups ${path} cannot be read: ${(err as Error).message}`, { path, cause: err });
+  }
+  const parsed = cutoverGroupsSchema.safeParse(doc);
+  if (!parsed.success) throw new GoldenConfigError(`cut-over groups ${path} has no groups of ids and units`, { path });
+  return parsed.data;
 }
 
 /** A legacy table as read: its physical schema and name, its `Program_<n>` id, and its ownership entry. */
@@ -795,6 +829,8 @@ export async function legacyRows(
 /** Collaborators of {@link targetRows}; the legacy client only reads the site registry and `synthetic.program_site`. */
 export interface TargetRowDeps {
   env: EnvLike;
+  /** Resolved configuration; else parsed from `env` once per call. */
+  config?: SideEffectConfig;
   mssql: ReadOnlyMssql;
   ownership: TableOwnership;
   invoker: HarnessInvoker;
@@ -879,12 +915,13 @@ async function exportSites(mssql: ReadOnlyMssql, ref: LegacyTableRef, terms: rea
 /** Every export page of `target.unit` in each site's tenant, keeping the tables of this legacy table. */
 async function fetchUnitExport(
   deps: TargetRowDeps,
+  config: SideEffectConfig,
   ref: LegacyTableRef,
   target: OwnershipTarget,
   sites: readonly string[],
 ): Promise<UnitExport> {
   const owner = unitOwner(deps.ownership, target);
-  const base = serviceUrl(deps.env, owner);
+  const base = serviceUrl(config, owner);
   const s = createHttpSession({ baseUrl: base, fetch: deps.fetch });
   const nameKey = legacyNameKey(ref.entry.table);
   let columns: CanonicalColumn[] | undefined;
@@ -916,6 +953,7 @@ async function fetchUnitExport(
  * unit that does (people.person by identity.user_account's `UserID` for a `username` scope).
  */
 export async function targetRows(spec: ResolvedRowSpec, deps: TargetRowDeps): Promise<RowSnapshot[]> {
+  const config = deps.config ?? resolveSideEffectConfig(deps.env);
   const ref = resolveLegacyTable(deps.ownership, spec.table);
   const terms = scalarTerms(spec.where, ref.entry.table);
   const sites = await exportSites(deps.mssql, ref, terms);
@@ -923,7 +961,7 @@ export async function targetRows(spec: ResolvedRowSpec, deps: TargetRowDeps): Pr
   const exportOf = (target: OwnershipTarget): Promise<UnitExport> => {
     let pending = exports.get(target.unit);
     if (pending === undefined) {
-      pending = fetchUnitExport(deps, ref, target, sites);
+      pending = fetchUnitExport(deps, config, ref, target, sites);
       exports.set(target.unit, pending);
     }
     return pending;
@@ -1084,26 +1122,31 @@ export async function collectFiles(refs: readonly FileRef[], ctx: ScenarioContex
 /** Collaborators shared by the waits and the collection of one call; `close` releases only what it created. */
 interface Runtime extends Clock {
   env: EnvLike;
+  config: SideEffectConfig;
   fetch: FetchLike | undefined;
   invoker(): Promise<HarnessInvoker>;
   mssql(): Promise<ReadOnlyMssql>;
   ownership(): Promise<TableOwnership>;
+  groups(): Promise<CutoverGroups>;
   close(): Promise<void>;
 }
 
-function runtime(env: EnvLike, deps: SideEffectDeps): Runtime {
+function runtime(env: EnvLike, config: SideEffectConfig, deps: SideEffectDeps): Runtime {
   const clock = clockOf(deps);
   let invoker: Promise<HarnessInvoker> | undefined;
   let mssql: Promise<ReadOnlyMssql> | undefined;
   let ownership: Promise<TableOwnership> | undefined;
+  let groups: Promise<CutoverGroups> | undefined;
   return {
     sleep: clock.sleep,
     now: clock.now,
     env,
+    config,
     fetch: deps.fetch,
     invoker: () => (invoker ??= deps.invoker === undefined ? createHarnessInvoker({ caller: 'migration', env }) : Promise.resolve(deps.invoker)),
     mssql: () => (mssql ??= deps.mssql === undefined ? createReadOnlyMssql(env) : Promise.resolve(deps.mssql)),
     ownership: () => (ownership ??= deps.ownership === undefined ? loadTableOwnership() : Promise.resolve(deps.ownership)),
+    groups: () => (groups ??= deps.groups === undefined ? loadCutoverGroups() : Promise.resolve(deps.groups)),
     async close() {
       if (mssql === undefined || deps.mssql !== undefined) return;
       // A client that never connected has nothing to close, and its error already reached the caller.
@@ -1114,7 +1157,7 @@ function runtime(env: EnvLike, deps: SideEffectDeps): Runtime {
 }
 
 async function ownerPosition(rt: Runtime, owner: string, query: Record<string, string>): Promise<PositionResponse> {
-  const base = serviceUrl(rt.env, owner);
+  const base = serviceUrl(rt.config, owner);
   const headers = await (await rt.invoker()).headersFor({ callee: owner, url: base });
   const result = await createHttpSession({ baseUrl: base, fetch: rt.fetch }).get(`${MIGRATION_PATH_PREFIX}/position`, {
     query,
@@ -1219,32 +1262,73 @@ async function awaitSeam(rt: Runtime, topic: string | undefined, timeoutMs: numb
   }
 }
 
+const groupAuthoritySchema = z.object({ groupAuthority: z.record(z.string(), z.enum(['legacy', 'target'])) });
+
+/** Owners of the units in the groups the gateway's active cut-over version makes `target`-authoritative. */
+async function projectedOwners(rt: Runtime, gatewayUrl: string): Promise<Set<string>> {
+  const invoker = await rt.invoker();
+  const status = await cutoverStatus({ gatewayUrl, env: rt.env, invoker, fetch: rt.fetch }).catch((err: unknown) => {
+    if (err instanceof CutoverRequestFailed) {
+      throw new SideEffectError(`gateway cut-over status answered ${err.status}`, { cause: err });
+    }
+    throw err;
+  });
+  const parsed = groupAuthoritySchema.safeParse(status);
+  if (!parsed.success) throw new SideEffectError('gateway cut-over status carries no groupAuthority of legacy or target');
+  const targetGroups = new Set(
+    Object.entries(parsed.data.groupAuthority)
+      .filter(([, authority]) => authority === 'target')
+      .map(([id]) => id),
+  );
+  const owners = new Set<string>();
+  if (targetGroups.size === 0) return owners;
+  const [groups, ownership] = await Promise.all([rt.groups(), rt.ownership()]);
+  for (const group of groups.groups) {
+    if (!targetGroups.has(group.id)) continue;
+    for (const unit of group.units) {
+      const owner = ownership.units.find((u) => u.unit === unit)?.owner;
+      if (owner === undefined) {
+        throw new GoldenConfigError(`settle projection: unit ${unit} of group ${group.id} is not in opt2/table-ownership.json`);
+      }
+      owners.add(owner);
+    }
+  }
+  return owners;
+}
+
+/** Tenants the projector streams: `tenantIdForSite` of each live `tsettings` site without trailing spaces, sorted. */
+async function liveTenants(mssql: ReadOnlyMssql): Promise<string[]> {
+  const rows = await mssql.readOnlyQuery<{ siteId: unknown }>('SELECT [SiteID] AS siteId FROM [dbo].[tsettings]');
+  const sites = rows
+    .map((row) => (typeof row.siteId === 'string' ? row.siteId.replace(/ +$/, '') : ''))
+    .filter((site) => site !== '');
+  return [...new Set(sites.map(tenantIdForSite))].sort();
+}
+
 /**
- * Waits until the reverse projector's checkpoints (`opt2_sync.projector_checkpoint` in the legacy database) pass each
- * owner's write position at the call, read through its `GET /internal/v1/migration/position`. As in the migration
- * service's awaiter, only owners the projector checkpoints are awaited, and each of them must hold, for every tenant the
- * projector streams, an applied horizon above the position; a missing tenant checkpoint is behind. Owners: `owner`,
- * else every service `OPT2_SERVICE_URLS` lists. The migration service's `projectionAwait` admits only the gateway's
- * service role, so the harness reads the projector's checkpoints itself.
+ * Waits until `opt2_sync.projector_checkpoint` holds, for each awaited owner in every live tenant, an applied horizon
+ * above the owner's write position at the call; a missing checkpoint is behind. Awaited: `owner`, else every owner of a
+ * `target`-authoritative unit. The checkpoints are read here because migration's `projectionAwait` admits only the gateway.
  */
-async function awaitProjection(rt: Runtime, owner: string | undefined, timeoutMs: number): Promise<void> {
-  const owners = owner === undefined ? servicesWithUrls(rt.env) : [owner];
-  if (owners.length === 0) throw new GoldenConfigError('settle projection: OPT2_SERVICE_URLS lists no service');
+async function awaitProjection(rt: Runtime, gatewayUrl: string, owner: string | undefined, timeoutMs: number): Promise<void> {
+  if (owner !== undefined && !(await rt.ownership()).units.some((unit) => unit.owner === owner)) {
+    throw new GoldenConfigError(`settle projection: ${owner} owns no unit of opt2/table-ownership.json`);
+  }
+  const owners = [...(await projectedOwners(rt, gatewayUrl))].filter((name) => owner === undefined || name === owner).sort();
+  if (owners.length === 0) return;
   const positions = new Map<string, string>();
   for (const name of owners) positions.set(name, (await ownerPosition(rt, name, {})).position);
   const mssql = await rt.mssql();
   const deadline = rt.now() + timeoutMs;
   for (;;) {
+    const tenants = await liveTenants(mssql);
     const rows = await mssql.readOnlyQuery<{ owner: string; tenantId: string; horizon: string }>(
       'SELECT [owner] AS owner, [tenant_id] AS tenantId, CONVERT(varchar(20), [applied_horizon]) AS horizon ' +
         'FROM [opt2_sync].[projector_checkpoint]',
     );
-    // Every streamed tenant is checkpointed for each projected owner, so the union of checkpoint tenants is the stream.
-    const tenants = [...new Set(rows.map((row) => lower(row.tenantId.trim())))];
     const horizons = new Map(rows.map((row) => [`${row.owner}\u0000${lower(row.tenantId.trim())}`, row.horizon]));
     const lagging: string[] = [];
     for (const [name, position] of positions) {
-      if (!rows.some((row) => row.owner === name)) continue;
       for (const tenant of tenants) {
         const horizon = horizons.get(`${name}\u0000${tenant}`);
         if (horizon === undefined || !isApplied(position, horizon)) lagging.push(`${name}/${tenant}`);
@@ -1278,10 +1362,11 @@ export function settleHook(
   scenario?: Pick<Scenario, 'steps' | 'tasks'>,
   deps: SideEffectDeps = {},
 ): SettleHook {
+  const config = deps.config ?? resolveSideEffectConfig(ctx.env);
   return async (spec, timeoutMs) => {
     const [kind, target] = splitSettle(spec);
     if (kind === 'mail') {
-      await waitForMail(ctx.env, timeoutMs, deps);
+      await waitForMail(ctx.env, timeoutMs, { ...deps, config });
       return;
     }
     if (kind === 'tasks') {
@@ -1298,9 +1383,9 @@ export function settleHook(
       return;
     }
     if (ctx.origin === 'legacy') return;
-    const rt = runtime(ctx.env, deps);
+    const rt = runtime(ctx.env, config, deps);
     try {
-      await (kind === 'seam' ? awaitSeam(rt, target, timeoutMs) : awaitProjection(rt, target, timeoutMs));
+      await (kind === 'seam' ? awaitSeam(rt, target, timeoutMs) : awaitProjection(rt, ctx.baseUrl, target, timeoutMs));
     } finally {
       await rt.close();
     }
@@ -1343,13 +1428,14 @@ export async function collectSideEffects(
   }
   const kinds = new Set<string>(scenario.compare);
   const effects: SideEffects = { mail: [], rows: {}, tasks: [], files: [] };
-  const rt = runtime(ctx.env, deps);
+  const config = deps.config ?? resolveSideEffectConfig(ctx.env);
+  const rt = runtime(ctx.env, config, deps);
   try {
     if (kinds.has('mail')) {
       // ColdFusion spools mail asynchronously and a scenario comparing mail need not declare a settle, so mail is read
       // only once Mailpit has gone quiet.
-      await waitForMail(ctx.env, deps.mailTimeoutMs ?? DEFAULT_SETTLE_TIMEOUT_MS, deps);
-      effects.mail = await collectMail(ctx.env, deps);
+      await waitForMail(ctx.env, deps.mailTimeoutMs ?? DEFAULT_SETTLE_TIMEOUT_MS, { ...deps, config });
+      effects.mail = await collectMail(ctx.env, { fetch: deps.fetch, config });
     }
     if (kinds.has('rows')) {
       const specs = (scenario.rows ?? []).map((spec) => resolveRowSpec(spec, ctx));
@@ -1360,7 +1446,7 @@ export async function collectSideEffects(
       if (origin === 'legacy') {
         effects.rows = mergeSnapshots(legacy);
       } else {
-        const rowDeps: TargetRowDeps = { env: ctx.env, mssql, ownership, invoker: await rt.invoker(), fetch: deps.fetch };
+        const rowDeps: TargetRowDeps = { env: ctx.env, config, mssql, ownership, invoker: await rt.invoker(), fetch: deps.fetch };
         const target: RowSnapshot[] = [];
         for (const spec of specs) target.push(...(await targetRows(spec, rowDeps)));
         effects.rows = mergeSnapshots(target);

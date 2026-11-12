@@ -11,14 +11,16 @@ import {
   type FastifyRequest,
 } from '@opt2/platform/service-kit';
 import { applyBulkTarget, type BulkTargetInputItem } from '../domain/bulk-target.js';
-import { listResponses } from '../domain/responses.js';
+import { listResponsePage } from '../domain/responses.js';
 import { scheduleSurvey } from '../domain/schedule.js';
 import { getSurvey, type DomainDeps } from '../domain/surveys.js';
 import { listSurveyTaskViews } from '../domain/tasks-list.js';
-import type { components } from '../generated/openapi.js';
-import { FixtureApiError, fixtureErrorResponse, fixtureMethod } from '../legacy/fixture-envelope.js';
+import type { components, operations } from '../generated/openapi.js';
+import { FixtureApiError, fixtureErrorResponse, fixtureMethod, fixturePage } from '../legacy/fixture-envelope.js';
 import * as queries from '../repo/queries.js';
 
+type SurveyList = operations['listSurveys']['responses'][200]['content']['application/json'];
+type SurveyResponseList = operations['listSurveyResponses']['responses'][200]['content']['application/json'];
 type Survey = components['schemas']['Survey'];
 type SurveySchedule = components['schemas']['SurveySchedule'];
 type SurveyReminder = components['schemas']['SurveyReminder'];
@@ -186,15 +188,15 @@ function parseBody<T>(schema: z.ZodType<T>, request: FastifyRequest): T {
   return body.data;
 }
 
-/** Handler sending `fn`'s result as `{data}`; a `FixtureApiError` answers in the fixture error envelope of `method`, other errors propagate. */
-function v1Handler<R extends FastifyRequest, T>(
+/** Handler sending `fn`'s result as the body; a `FixtureApiError` answers in the fixture error envelope of `method`, other errors propagate. */
+function v1BodyHandler<R extends FastifyRequest, B>(
   method: string,
-  fn: (request: R, user: UserClaims) => Promise<T>,
+  fn: (request: R, user: UserClaims) => Promise<B>,
 ): (request: R, reply: FastifyReply) => Promise<FastifyReply> {
   return async (request, reply) => {
     try {
-      const data = await fn(request, userOf(request));
-      return reply.code(200).send({ data });
+      const body = await fn(request, userOf(request));
+      return reply.code(200).send(body);
     } catch (error) {
       if (!(error instanceof FixtureApiError)) {
         throw error;
@@ -204,24 +206,32 @@ function v1Handler<R extends FastifyRequest, T>(
   };
 }
 
+/** Handler sending `fn`'s result as `{data}`, answering errors as {@link v1BodyHandler} does. */
+function v1Handler<R extends FastifyRequest, T>(
+  method: string,
+  fn: (request: R, user: UserClaims) => Promise<T>,
+): (request: R, reply: FastifyReply) => Promise<FastifyReply> {
+  return v1BodyHandler(method, async (request: R, user) => ({ data: await fn(request, user) }));
+}
+
 // The contract's /v1 operations only; surveys are created and answered through the fixture routes, which have no /v1 twin.
 /** Registers `listSurveys`, `getSurvey`, `scheduleSurvey`, `listSurveyTargets`, `bulkTargetSurvey`, `listSurveyResponses` and `listSurveyTasks`. */
 export async function registerV1Routes(app: FastifyInstance, deps: V1RouteDeps): Promise<void> {
   app.get(
     SURVEYS_PATH,
     LIST_OPTIONS,
-    v1Handler(SURVEY_METHOD, async (_request: ListRequest, user): Promise<Survey[]> =>
-      // One transaction, so every survey is listed with the schedule and reminders of the same snapshot.
-      deps.db.withTenant(user.tid, async (tx) => {
-        const page = await queries.listSurveys(tx, { siteId: user.site });
-        const surveys: Survey[] = [];
-        for (const row of page.rows) {
-          const schedule = await queries.getSchedule(tx, row.survey_id);
-          surveys.push(toSurvey(row, schedule, await queries.listReminders(tx, row.survey_id)));
-        }
-        return surveys;
-      }),
-    ),
+    v1BodyHandler(SURVEY_METHOD, async (request: ListRequest, user): Promise<SurveyList> => {
+      const { pageIndex, itemsPerPage } = fixturePage(legacyParamsOf(request));
+      return deps.db.withTenant(user.tid, async (tx) => {
+        const page = await queries.listSurveys(tx, { siteId: user.site, pageIndex, itemsPerPage });
+        const schedulings = await queries.listSchedulings(tx, page.rows.map((row) => row.survey_id));
+        const data = page.rows.map((row) => {
+          const { schedule, reminders } = schedulings.get(row.survey_id) ?? { schedule: null, reminders: [] };
+          return toSurvey(row, schedule, reminders);
+        });
+        return { data, total: page.total };
+      });
+    }),
   );
 
   app.get(
@@ -274,9 +284,10 @@ export async function registerV1Routes(app: FastifyInstance, deps: V1RouteDeps):
   app.get(
     `${SURVEY_PATH}/responses`,
     SURVEY_OPTIONS,
-    v1Handler(RESPONSES_METHOD, async (request: SurveyRequest, user): Promise<SurveyResponse[]> => {
-      const page = await listResponses(deps, { tenantId: user.tid, surveyId: request.params.surveyId });
-      return page.rows.map(toResponse);
+    v1BodyHandler(RESPONSES_METHOD, async (request: SurveyRequest, user): Promise<SurveyResponseList> => {
+      const params = legacyParamsOf(request);
+      const page = await listResponsePage(deps, { tenantId: user.tid, surveyId: request.params.surveyId, params });
+      return { data: page.list.map(toResponse), total: page.totalItems };
     }),
   );
 

@@ -14,8 +14,7 @@ import {
 } from '../domain/adoption.js';
 import type { SurveyScheduleDeps } from '../domain/survey-schedule.js';
 
-// Declared here rather than imported from ./index.js, which is generated after this file and imports it; the registry's
-// RouteContext is a structural superset, so it is passed unchanged.
+// Declared here rather than imported from the route registry, which imports this module; the registry's RouteContext stays assignable.
 /** The schedule dependencies the hand-off domain receives. */
 export type AdoptionRouteDeps = { scheduleDeps: SurveyScheduleDeps };
 

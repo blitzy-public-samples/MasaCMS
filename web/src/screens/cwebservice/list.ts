@@ -3,8 +3,9 @@ import { cfEq, cfJavaDateFormat, cfLsTimeFormat } from '@opt2/platform/legacy-co
 import type { components } from '@/generated/clients/identity';
 import { parseLegacyDate } from '@/lib/dates';
 import { okBody } from '@/lib/gateway-client';
-import { encodeUrl, html, raw, type SafeHtml } from '@/lib/html';
+import { encodeHtml, encodeUrl, html, raw, type SafeHtml } from '@/lib/html';
 import { siteBeanOf } from '@/lib/site-paths';
+import { relativeAdminUrl, type BoundAdminParams } from '@/lib/urls';
 import type { ShellView } from '@/shell/document';
 import type { PageScreen, ScreenContext } from '../registry';
 
@@ -55,11 +56,14 @@ export async function loadList(ctx: ScreenContext): Promise<WebServiceListData> 
   return { clients: okBody(response, 'identity', 'listOAuthClients').items };
 }
 
-/** One client row; `siteParam` is `esapiEncode('url', rc.siteid)`. */
-function clientRow(ctx: ScreenContext, client: WebServiceClient, siteParam: SafeHtml): SafeHtml {
+/** One client row; its links carry `rc.siteid` as `siteid`. */
+function clientRow(ctx: ScreenContext, client: WebServiceClient, siteid: string): SafeHtml {
   const { clientid } = client;
   const { dateKeyFormat, locale } = ctx.req.session;
-  const editHref = html`./?muraAction=cwebservice.edit&clientid=${clientid}&siteid=${siteParam}`;
+  // The client id is HTML-encoded into the links, the site id URL-encoded.
+  const params: BoundAdminParams = [['clientid', encodeHtml(clientid), 'raw'], ['siteid', siteid]];
+  const editHref = raw(relativeAdminUrl('cwebservice', 'edit', params));
+  const deleteHref = raw(relativeAdminUrl('cwebservice', 'delete', params));
   return html`
 				<tr>
 					<td class="actions">
@@ -70,7 +74,7 @@ function clientRow(ctx: ScreenContext, client: WebServiceClient, siteParam: Safe
 									<a href="${editHref}"><i class="mi-pencil"></i>Edit</a>
 								</li>
 								<li class="delete">
-									<a href="./?muraAction=cwebservice.delete&clientid=${clientid}&siteid=${siteParam}${ctx.csrf.render(clientid, 'url')}" onClick="return confirmDialog('Delete Web Service?',this.href)"><i class="mi-trash"></i>Delete</a>
+									<a href="${deleteHref}${ctx.csrf.render(clientid, 'url')}" onClick="return confirmDialog('Delete Web Service?',this.href)"><i class="mi-trash"></i>Delete</a>
 								</li>
 							</ul>
 						</div>
@@ -88,7 +92,7 @@ function clientRow(ctx: ScreenContext, client: WebServiceClient, siteParam: Safe
 }
 
 /** The clients table, or the empty-state notice when the site has none. */
-async function clientList(ctx: ScreenContext, clients: readonly WebServiceClient[], siteParam: SafeHtml): Promise<SafeHtml> {
+async function clientList(ctx: ScreenContext, clients: readonly WebServiceClient[], siteid: string): Promise<SafeHtml> {
   if (clients.length === 0) {
     return html`
 			  <div class="help-block-empty">There currently are no web services configured for this site.</div>`;
@@ -104,23 +108,25 @@ async function clientList(ctx: ScreenContext, clients: readonly WebServiceClient
 					<th>Last Update</th>
 				</tr>
 			</thead>
-			<tbody class="nest">${clients.map((client) => clientRow(ctx, client, siteParam))}
+			<tbody class="nest">${clients.map((client) => clientRow(ctx, client, siteid))}
 			</tbody>
 			</table>`;
 }
 
 /** The list view body, with the SSL notice when the session site does not use SSL (`siteConfig('useSSL')`). */
 export async function renderList(ctx: ScreenContext, data: WebServiceListData): Promise<ShellView> {
-  // The URL-encoded site id is written unencoded, as legacy writes it.
-  const siteParam = raw(encodeUrl(ctx.req.rc.siteid ?? ''));
+  const siteid = ctx.req.rc.siteid ?? '';
   const useSSL = ctx.req.site !== undefined && siteBeanOf(ctx.req.site).useSSL;
-  // The add link's stray `&siteid=&` before the site id is legacy's own href, kept as legacy renders it.
+  // Legacy's add link has a stray `&siteid=&`: the URL-encoded site id follows `siteid=` as a bare segment.
+  const addHref = raw(
+    relativeAdminUrl('cwebservice', 'edit', [['clientid', ''], ['siteid', `&${encodeUrl(siteid)}`, 'raw']]),
+  );
   const body = html`
 <div class="mura-header">
 	<h1>Web Services</h1>
 
     <div class="nav-module-specific btn-group">
-        <a class="btn" href="./?muraAction=cwebservice.edit&clientid=&siteid=&${siteParam}"><i class="mi-plus-circle"></i> Add New Web Service</a>
+        <a class="btn" href="${addHref}"><i class="mi-plus-circle"></i> Add New Web Service</a>
     </div>
 </div> <!-- /.mura-header -->
 ${
@@ -133,7 +139,7 @@ ${
 <div class="block block-constrain">
 	<div class="block block-bordered">
 	  <div class="block-content">
-${await clientList(ctx, data.clients, siteParam)}
+${await clientList(ctx, data.clients, siteid)}
 		</div> <!-- /.block-content -->
 	</div> <!-- /.block-bordered -->
 </div> <!-- /.block-constrain -->

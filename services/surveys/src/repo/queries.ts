@@ -17,11 +17,12 @@ import {
   type SurveyTargetRow,
 } from './tables.js';
 
-/** The fixture list's site filter and its validated envelope.cfc page; omitting both paging fields reads every row, as `/v1/surveys` lists them. */
-export type SurveyListFilters = { siteId: string } & (
-  | { pageIndex: number; itemsPerPage: number }
-  | { pageIndex?: undefined; itemsPerPage?: undefined }
-);
+/** The fixture list's site filter and its validated envelope.cfc page. */
+export interface SurveyListFilters {
+  siteId: string;
+  pageIndex: number;
+  itemsPerPage: number;
+}
 
 /** One page of surveys and the count of every survey the filter matches. */
 export interface SurveyPage {
@@ -48,6 +49,12 @@ export type SurveyReminderView = Pick<SurveyReminderRow, (typeof REMINDER_VIEW_C
 /** A target as the fixture detail selects it. */
 export type SurveyTargetView = Pick<SurveyTargetRow, (typeof TARGET_VIEW_COLUMNS)[number]>;
 
+/** A survey's schedule (null when never scheduled) and its reminders in ordinal order. */
+export interface SurveyScheduling {
+  schedule: SurveyScheduleView | null;
+  reminders: SurveyReminderView[];
+}
+
 /** A survey with its schedule (null when never scheduled), reminders in ordinal order and targets by site, group and id. */
 export interface SurveyDetail {
   survey: SurveyRow;
@@ -63,7 +70,11 @@ const TARGET_ORDER = 'ORDER BY lower(siteid) COLLATE "C", lower(group_name) COLL
 // The reminder ordinal exists only as the task_name suffix, so a shorter name has a lower ordinal.
 const REMINDER_ORDER = 'ORDER BY length(task_name), task_name, reminder_id';
 
+// survey_id is char(35), so the ids are bound as bpchar and the (tenant_id, survey_id) indexes stay usable.
+const SURVEY_IDS_MATCH = 'survey_id = ANY($1::bpchar[])';
+
 const DETAIL_UNITS: readonly string[] = [SURVEY.unit, SURVEY_SCHEDULE.unit, SURVEY_REMINDER.unit, SURVEY_TARGET.unit];
+const SCHEDULING_UNITS: readonly string[] = [SURVEY_SCHEDULE.unit, SURVEY_REMINDER.unit];
 
 interface SchemaReads {
   readonly repository: Repository;
@@ -71,7 +82,9 @@ interface SchemaReads {
   readonly surveyPage: string;
   readonly schedule: string;
   readonly scheduleView: string;
+  readonly scheduleViewsOf: string;
   readonly reminderViews: string;
+  readonly reminderViewsOf: string;
   readonly targets: string;
   readonly targetViews: string;
   readonly countResponses: string;
@@ -90,11 +103,12 @@ function prepareReads(schema: string): SchemaReads {
   return Object.freeze({
     repository: createRepository({ owner: OWNER, schema, tables: OWNED_TABLES }),
     countSurveys: `SELECT count(*)::integer AS total FROM ${survey} WHERE ${SITE_MATCH}`,
-    // A NULL limit reads to the end, for the unpaged list.
     surveyPage: `SELECT * FROM ${survey} WHERE ${SITE_MATCH} ORDER BY created, survey_id OFFSET $2 LIMIT $3`,
     schedule: `SELECT * FROM ${schedule} WHERE survey_id = $1`,
     scheduleView: `SELECT ${SCHEDULE_VIEW_COLUMNS.join(', ')} FROM ${schedule} WHERE survey_id = $1`,
+    scheduleViewsOf: `SELECT ${SCHEDULE_VIEW_COLUMNS.join(', ')} FROM ${schedule} WHERE ${SURVEY_IDS_MATCH}`,
     reminderViews: `SELECT ${REMINDER_VIEW_COLUMNS.join(', ')} FROM ${reminder} WHERE survey_id = $1 ${REMINDER_ORDER}`,
+    reminderViewsOf: `SELECT ${REMINDER_VIEW_COLUMNS.join(', ')} FROM ${reminder} WHERE ${SURVEY_IDS_MATCH} ${REMINDER_ORDER}`,
     targets: `SELECT * FROM ${target} WHERE survey_id = $1 ${TARGET_ORDER}`,
     targetViews: `SELECT ${TARGET_VIEW_COLUMNS.join(', ')} FROM ${target} WHERE survey_id = $1 ${TARGET_ORDER}`,
     countResponses: `SELECT count(*)::integer AS total FROM ${response} WHERE survey_id = $1`,
@@ -118,11 +132,11 @@ export function listSurveys(tx: TenantTx, filters: SurveyListFilters): Promise<S
   return reads.repository.read(tx, SURVEY.unit, async () => {
     const counted = await tx.query<{ total: number }>(reads.countSurveys, [filters.siteId]);
     const total = counted.rows[0]?.total ?? 0;
-    const offset = filters.itemsPerPage === undefined ? 0 : (filters.pageIndex - 1) * filters.itemsPerPage;
+    const offset = (filters.pageIndex - 1) * filters.itemsPerPage;
     if (offset >= total) {
       return { rows: [], total };
     }
-    const { rows } = await tx.query<SurveyRow>(reads.surveyPage, [filters.siteId, offset, filters.itemsPerPage ?? null]);
+    const { rows } = await tx.query<SurveyRow>(reads.surveyPage, [filters.siteId, offset, filters.itemsPerPage]);
     return { rows, total };
   });
 }
@@ -168,27 +182,49 @@ export function listReminders(tx: TenantTx, surveyId: string): Promise<SurveyRem
   );
 }
 
+/** Each of `surveyIds` with its schedule (null when never scheduled) and ordinal-ordered reminders, read in two statements; no ids read nothing. */
+export function listSchedulings(tx: TenantTx, surveyIds: readonly string[]): Promise<Map<string, SurveyScheduling>> {
+  const byId = new Map<string, SurveyScheduling>(surveyIds.map((id) => [id, { schedule: null, reminders: [] }]));
+  if (byId.size === 0) {
+    return Promise.resolve(byId);
+  }
+  const reads = readsFor(tx);
+  return reads.repository.read(tx, SCHEDULING_UNITS, async () => {
+    const ids = [[...byId.keys()]];
+    for (const schedule of (await tx.query<SurveyScheduleView>(reads.scheduleViewsOf, ids)).rows) {
+      const scheduling = byId.get(schedule.survey_id);
+      if (scheduling !== undefined) {
+        scheduling.schedule = schedule;
+      }
+    }
+    for (const reminder of (await tx.query<SurveyReminderView>(reads.reminderViewsOf, ids)).rows) {
+      byId.get(reminder.survey_id)?.reminders.push(reminder);
+    }
+    return byId;
+  });
+}
+
 /** The survey's stored target rows by site, group (a whole-site target first) and id. */
 export function listTargets(tx: TenantTx, surveyId: string): Promise<SurveyTargetRow[]> {
   const reads = readsFor(tx);
   return reads.repository.read(tx, SURVEY_TARGET.unit, async () => (await tx.query<SurveyTargetRow>(reads.targets, [surveyId])).rows);
 }
 
-/** One page of the survey's stored responses by creation time and id, `answers` exactly as stored, with their total; omitting `page` reads every row. */
+/** One page of the survey's stored responses by creation time and id, `answers` exactly as stored, with their total. */
 export function listResponses(
   tx: TenantTx,
   surveyId: string,
-  page?: { pageIndex: number; itemsPerPage: number },
+  page: { pageIndex: number; itemsPerPage: number },
 ): Promise<SurveyResponsePage> {
   const reads = readsFor(tx);
   return reads.repository.read(tx, SURVEY_RESPONSE.unit, async () => {
     const counted = await tx.query<{ total: number }>(reads.countResponses, [surveyId]);
     const total = counted.rows[0]?.total ?? 0;
-    const offset = page === undefined ? 0 : (page.pageIndex - 1) * page.itemsPerPage;
+    const offset = (page.pageIndex - 1) * page.itemsPerPage;
     if (offset >= total) {
       return { rows: [], total };
     }
-    const { rows } = await tx.query<SurveyResponseRow>(reads.responsePage, [surveyId, offset, page?.itemsPerPage ?? null]);
+    const { rows } = await tx.query<SurveyResponseRow>(reads.responsePage, [surveyId, offset, page.itemsPerPage]);
     return { rows, total };
   });
 }

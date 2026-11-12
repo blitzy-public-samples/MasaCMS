@@ -42,3 +42,9 @@ export function cfEq(a: unknown, b: unknown): boolean {
   if (x !== undefined && y !== undefined) return x === y;
   return String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
 }
+
+/** ACF's `rc.compactDisplay eq 'true'` (untrimmed for `true`, unlike {@link cfEq}); absent is legacy's default `'false'`. */
+export function isCompactDisplay(value: string | null | undefined): boolean {
+  if (value === null || value === undefined) return false;
+  return numericOperand(value) === 1 || javaTrim(value).toLowerCase() === 'yes' || value.toLowerCase() === 'true';
+}

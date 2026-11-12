@@ -478,6 +478,32 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /v1/user-sites:
+    get:
+      operationId: listUserSites
+      summary: Lists the sites the token's user administers, as settingsManager.getUserSites returns them, with the site contentServer.bindToDomain(isAdmin=true) binds the given host to.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - s2
+        - site-admin
+        - system-user
+      parameters:
+        - $ref: '#/components/parameters/UserSiteHost'
+      responses:
+        '200':
+          description: The administered sites in site-name order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserSiteList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
 
   /internal/v1/migration/apply:
     post:
@@ -1125,6 +1151,15 @@ components:
         type: string
         examples:
           - default
+    UserSiteHost:
+      name: host
+      in: query
+      required: false
+      description: The admin request's host as utility.getRequestHost reads it, any port included; when given, the answer carries `boundSiteId`.
+      schema:
+        type: string
+        examples:
+          - localhost:8080
     SortBy:
       name: sortBy
       in: query
@@ -1643,6 +1678,59 @@ components:
           oneOf:
             - $ref: '#/components/schemas/LocalTimestamp'
             - type: 'null'
+    UserSite:
+      type: object
+      description: One site of settingsManager.getUserSites, with the bean's `showDashboard`.
+      required:
+        - siteid
+        - site
+        - orderno
+        - domain
+        - domainAlias
+        - showDashboard
+      additionalProperties: false
+      properties:
+        siteid:
+          type: string
+        site:
+          type:
+            - string
+            - 'null'
+        orderno:
+          type:
+            - integer
+            - 'null'
+        domain:
+          type:
+            - string
+            - 'null'
+        domainAlias:
+          type:
+            - string
+            - 'null'
+          description: Domain aliases, one per CR/LF-separated line.
+        showDashboard:
+          type: integer
+          enum:
+            - 0
+            - 1
+          description: settingsBean `getValue('showDashboard', 0)`.
+    UserSiteList:
+      type: object
+      required:
+        - sites
+      additionalProperties: false
+      properties:
+        sites:
+          type: array
+          description: Every registered site for an S2 token, else those whose id equals one of identity's session sites exactly; site-name order.
+          items:
+            $ref: '#/components/schemas/UserSite'
+        boundSiteId:
+          type:
+            - string
+            - 'null'
+          description: Present only when `host` is given. The id contentServer.bindToDomain(isAdmin=true) answers over every registered site by bind order; null for `--none--` on the admin domain or when no site is registered.
     HrefDomains:
       type: object
       description: settingsManager `getAccessControlOriginDomainList()` and `getSite(siteid).getDomain()`, as utility.sanitizeHref reads them.

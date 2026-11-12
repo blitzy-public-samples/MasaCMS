@@ -1,13 +1,13 @@
-// home.cfc redirect() against legacy: getUserSites, bindToDomain(isAdmin=true) and the landing redirect it sends.
+// home.cfc redirect() against legacy: the owner's getUserSites and bindToDomain(isAdmin=true), and the landing redirect.
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { businessClock } from '@opt2/platform/testing';
+import type { components } from '@/generated/clients/programs-sites';
 import { createCsrfRenderer } from '@/lib/csrf';
-import { resetLegacySettingsForTests } from '@/lib/env';
 import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-client';
 import type { AdminRequest } from '@/lib/request-context';
 import { buildUrl } from '@/lib/urls';
-import { bindToAdminDomain, homeRedirectScreen, userSites, type HomeSite } from '@/screens/clogin/home-redirect';
+import { homeRedirectScreen } from '@/screens/clogin/home-redirect';
 import type { ScreenContext, SubmitResult } from '@/screens/registry';
 import {
   adminS2Request,
@@ -19,29 +19,24 @@ import {
 import { useTestEnv } from '../../helpers/env';
 import { fakeGatewayClient, routeKey, type FakeGatewayClient, type FakeReply } from '../../helpers/fake-gateway';
 
-const LIST_SITES = routeKey('GET', 'programs-sites', '/v1/sites');
+type UserSite = components['schemas']['UserSite'];
+
+const USER_SITES = routeKey('GET', 'programs-sites', '/v1/user-sites');
 const SITE_MANAGER_TAIL = '&moduleid=00000000000000000000000000000000000&topid=00000000000000000000000000000000001';
 
 /** `./?muraAction=cArch.list` for `siteid`, as FW/1 appends `siteid,moduleid,topid`. */
 const siteManager = (siteid: string): string => `./?muraAction=cArch.list&siteid=${siteid}${SITE_MANAGER_TAIL}`;
 
-/** A site row; `site` defaults to the id. */
-function homeSite(siteid: string, orderno: number | null, domain: string, extra: Partial<HomeSite> = {}): HomeSite {
-  return { siteid, site: siteid, orderno, domain, domainAlias: '', ...extra };
+/** A `listUserSites` row; `site` defaults to the id and the dashboard is hidden. */
+function userSite(siteid: string, orderno: number | null, extra: Partial<UserSite> = {}): UserSite {
+  return { siteid, site: siteid, orderno, domain: 'localhost', domainAlias: null, showDashboard: 0, ...extra };
 }
 
-/** A `listSites` row as programs-sites serves it, with any extra `tsettings` columns. */
-function listedSite(
-  siteid: string,
-  site: string | null,
-  orderno: number | null,
-  domain: string | null,
-  extra: Readonly<Record<string, unknown>> = {},
-): Record<string, unknown> {
-  return { siteid, site, domain, orderno, deploy: 0, lastDeployment: null, ...extra };
-}
-
-const listReply = (...rows: Array<Record<string, unknown>>): FakeReply => ({ status: 200, body: rows });
+/** programs-sites' answer: `sites` in its name order and the site the host binds to. */
+const sitesReply = (sites: readonly UserSite[], boundSiteId: string | null = null): FakeReply => ({
+  status: 200,
+  body: { sites, boundSiteId },
+});
 
 /** The screen context `req` is submitted in, over `gateway`. */
 function contextFor(req: AdminRequest, gateway: FakeGatewayClient): ScreenContext {
@@ -65,89 +60,14 @@ async function locationFor(req: AdminRequest, gateway: FakeGatewayClient = fakeG
 /** Headers of a request the gateway forwarded for `host`. */
 const forwardedFor = (host: string): AdminRequestPartial => ({ headers: new Headers({ 'x-forwarded-host': host }) });
 
-/** Clears every `MURA_` variable, then sets `vars`, so legacy settings resolve from `vars` alone. */
-function useSettings(vars: Record<string, string> = {}): void {
-  for (const key of Object.keys(process.env)) if (key.startsWith('MURA_')) vi.stubEnv(key, undefined);
-  for (const [key, value] of Object.entries(vars)) vi.stubEnv(key, value);
-  resetLegacySettingsForTests();
-}
-
 let restoreEnv: () => void;
 
 beforeEach(() => {
   restoreEnv = useTestEnv();
-  useSettings();
 });
 
 afterEach(() => {
   restoreEnv();
-  vi.unstubAllEnvs();
-  resetLegacySettingsForTests();
-});
-
-describe('userSites', () => {
-  const sites = [
-    homeSite('tenant-b', 1, 'b.test', { site: 'tenant B' }),
-    homeSite('default', 2, 'localhost', { site: 'Default' }),
-    homeSite('tenant-a', 3, 'a.test', { site: 'Tenant A' }),
-  ];
-  const ids = (list: readonly HomeSite[]): string[] => list.map((site) => site.siteid);
-
-  it.each([
-    ['an S2 user sees every site', ['tenant-a'], true, ['default', 'tenant-a', 'tenant-b']],
-    ['a user sees the sites of siteArray', ['tenant-b', 'default'], false, ['default', 'tenant-b']],
-    ['siteArray ids match case-sensitively', ['Tenant-A', 'default'], false, ['default']],
-    ['an empty siteArray gives no site', [], false, []],
-  ])('%s, in site-name order', (_name, siteArray, isS2, expected) => {
-    expect(ids(userSites(sites, siteArray, isS2))).toEqual(expected);
-  });
-});
-
-describe('bindToAdminDomain', () => {
-  it.each([
-    [
-      'a complete match beats an earlier partial match',
-      [homeSite('www', 1, 'www.example.com'), homeSite('apex', 2, 'example.com')],
-      'example.com',
-      'apex',
-    ],
-    [
-      'a complete match ignores case and the port',
-      [homeSite('a', 1, 'other.test'), homeSite('b', 2, 'Example.COM')],
-      'example.com:8080',
-      'b',
-    ],
-    [
-      'an alias on a CRLF- or LF-separated line matches completely',
-      [homeSite('a', 1, 'a.test'), homeSite('b', 2, 'b.test', { domainAlias: 'x.test\r\n\r\nalias.test\ny.test' })],
-      'ALIAS.test',
-      'b',
-    ],
-    [
-      'a partial match finds the host inside a domain or alias',
-      [homeSite('a', 1, 'a.test'), homeSite('b', 2, 'b.test', { domainAlias: 'cms.example.org' })],
-      'example',
-      'b',
-    ],
-    [
-      'a partial match is case-sensitive, so the first site by bind order is the fallback',
-      [homeSite('late', 9, 'www.example.com'), homeSite('null', null, 'n.test'), homeSite('early', 1, 'e.test')],
-      'Example',
-      'null',
-    ],
-  ])('%s', (_name, sites, host, expected) => {
-    expect(bindToAdminDomain(sites, host, '')).toBe(expected);
-  });
-
-  it('answers --none-- on the admin domain, compared without case', () => {
-    expect(bindToAdminDomain([homeSite('a', 1, 'a.test')], 'ADMIN.example.com:443', 'admin.example.com')).toBe(
-      '--none--',
-    );
-  });
-
-  it('answers an empty id when there is no site', () => {
-    expect(bindToAdminDomain([], 'localhost', 'admin.example.com')).toBe('');
-  });
 });
 
 describe('homeRedirectScreen', () => {
@@ -184,103 +104,74 @@ describe('home.redirect target', () => {
     );
   });
 
-  it('opens the Site Manager of the site bound to the request host', async () => {
-    const gateway = fakeGatewayClient({
-      [LIST_SITES]: listReply(
-        listedSite('default', 'Default', 1, 'localhost'),
-        listedSite('tenant-a', 'Tenant A', 2, 'tenant-a.example.com'),
-      ),
-    });
-    expect(await locationFor(adminS2Request(forwardedFor('tenant-a.example.com:8080')), gateway)).toBe(
-      siteManager('tenant-a'),
-    );
-    expect(gateway.calls).toMatchObject([
-      { service: 'programs-sites', path: '/v1/sites', query: { sortBy: 'site', sortDirection: 'asc' } },
+  it.each<[string, AdminRequestPartial, string]>([
+    ['a non-empty X-Forwarded-Host', forwardedFor('tenant-a.example.com:8080'), 'tenant-a.example.com:8080'],
+    [
+      'the Host without X-Forwarded-Host',
+      { headers: new Headers(), httpHost: 'alias.example.com:8443' },
+      'alias.example.com:8443',
+    ],
+    [
+      'the server name without either',
+      { headers: new Headers({ 'x-forwarded-host': '' }), httpHost: '', serverName: 'x.test' },
+      'x.test',
+    ],
+  ])('sends %s for programs-sites to bind, and opens the bound Site Manager', async (_name, partial, host) => {
+    const sites = [userSite('default', 1), userSite('tenant-a', 2)];
+    const gateway = fakeGatewayClient({ [USER_SITES]: sitesReply(sites, 'tenant-a') });
+    expect(await locationFor(adminS2Request(partial), gateway)).toBe(siteManager('tenant-a'));
+    expect(gateway.calls).toEqual([
+      { service: 'programs-sites', method: 'GET', path: '/v1/user-sites', query: { host } },
     ]);
   });
 
-  it('binds by the served alias the site list omits', async () => {
-    const gateway = fakeGatewayClient({
-      [LIST_SITES]: listReply(
-        listedSite('tenant-a', 'Tenant A', 1, 'tenant-a.example.com'),
-        listedSite('default', 'Default', 2, 'localhost'),
-      ),
-    });
-    const req = adminS2Request({
-      ...forwardedFor('alias.example.com'),
-      site: { record: { domainAlias: 'x.example.com\r\nalias.example.com' } },
-    });
-    expect(await locationFor(req, gateway)).toBe(siteManager('default'));
+  it.each([
+    ['binds no site, as on the admin domain', null],
+    ['binds a site the user does not administer', 'tenant-c'],
+    ['binds a site whose id differs only in case', 'TENANT-B'],
+  ])('opens the first administered site by bind order, then name, when the host %s', async (_name, bound) => {
+    const sites = [userSite('default', 5), userSite('tenant-a', 1), userSite('tenant-b', 1)];
+    const gateway = fakeGatewayClient({ [USER_SITES]: sitesReply(sites, bound) });
+    expect(await locationFor(editorRequest(forwardedFor('admin.example.com')), gateway)).toBe(siteManager('tenant-a'));
   });
 
-  it('binds by a listed alias, reading the Host when no X-Forwarded-Host came', async () => {
-    const gateway = fakeGatewayClient({
-      [LIST_SITES]: listReply(
-        listedSite('tenant-a', null, 1, null),
-        listedSite('default', 'Default', 2, 'localhost', { domainAlias: 'alias.example.com' }),
-      ),
-    });
-    const req = adminS2Request({ headers: new Headers(), httpHost: 'alias.example.com:8443', serverName: 'x' });
-    expect(await locationFor(req, gateway)).toBe(siteManager('default'));
+  it('opens a site without a bind order first', async () => {
+    const sites = [userSite('default', 1), userSite('tenant-a', null)];
+    const gateway = fakeGatewayClient({ [USER_SITES]: sitesReply(sites) });
+    expect(await locationFor(adminS2Request(), gateway)).toBe(siteManager('tenant-a'));
   });
 
-  it('on the admin domain, opens the first site by bind order, name order breaking ties', async () => {
-    useSettings({ MURA_ADMINDOMAIN: 'admin.example.com' });
-    const gateway = fakeGatewayClient({
-      [LIST_SITES]: listReply(
-        listedSite('default', 'Default', 5, 'localhost'),
-        listedSite('tenant-a', 'Tenant A', 1, 'a.example.org'),
-        listedSite('tenant-b', 'Tenant B', 1, 'b.example.org'),
-      ),
-    });
-    expect(await locationFor(adminS2Request(forwardedFor('ADMIN.example.com')), gateway)).toBe(
-      siteManager('tenant-a'),
-    );
+  it('opens the dashboard of a private user when the chosen site shows it', async () => {
+    const sites = [userSite('default', 1), userSite('tenant-a', 2, { showDashboard: 1 })];
+    const gateway = fakeGatewayClient({ [USER_SITES]: sitesReply(sites, 'tenant-a') });
+    expect(await locationFor(adminS2Request(), gateway)).toBe('./?muraAction=cDashboard.main&siteid=tenant-a');
   });
 
-  it('opens the first administered site when the bound site is not administered', async () => {
-    const gateway = fakeGatewayClient();
-    const req = editorRequest({ ...forwardedFor('localhost'), session: { siteArray: ['tenant-b', 'tenant-a'] } });
+  it.each<[string, Partial<UserSite>, AdminRequestPartial]>([
+    ['a public-pool user', { showDashboard: 1 }, { session: { mura: { memberships: 'S2' } } }],
+    ['a site that hides it', { showDashboard: 0 }, {}],
+  ])('opens the Site Manager instead of the dashboard for %s', async (_name, site, partial) => {
+    const gateway = fakeGatewayClient({ [USER_SITES]: sitesReply([userSite('default', 1, site)], 'default') });
+    expect(await locationFor(adminS2Request(partial), gateway)).toBe(siteManager('default'));
+  });
+
+  it('decides the dashboard by the chosen site, not the served one', async () => {
+    const sites = [userSite('default', 1, { showDashboard: 1 }), userSite('tenant-a', 2)];
+    const gateway = fakeGatewayClient({ [USER_SITES]: sitesReply(sites, 'tenant-a') });
+    const req = adminS2Request({ site: { record: { showDashboard: 1 } } });
     expect(await locationFor(req, gateway)).toBe(siteManager('tenant-a'));
-    expect(gateway.calls).toEqual([]);
-  });
-
-  it.each([
-    ['the served setting', { site: { record: { showDashboard: 1 } } }, {}],
-    ['a listed true', {}, { showDashboard: 'true' }],
-    ['a listed yes', {}, { showDashboard: 'YES' }],
-  ])('opens the dashboard of a private user when %s shows it', async (_name, partial, listed) => {
-    const gateway = fakeGatewayClient({
-      [LIST_SITES]: listReply(listedSite('default', 'Default', 1, 'localhost', listed)),
-    });
-    expect(await locationFor(adminS2Request(partial as AdminRequestPartial), gateway)).toBe(
-      './?muraAction=cDashboard.main&siteid=default',
-    );
-  });
-
-  it.each([
-    ['a public-pool user', { site: { record: { showDashboard: 1 } }, session: { mura: { memberships: 'S2' } } }],
-    ['a site that hides it', { site: { record: { showDashboard: 0 } } }],
-    ['a non-boolean setting', { site: { record: { showDashboard: null } } }],
-  ])('opens the Site Manager instead of the dashboard for %s', async (_name, partial) => {
-    const gateway = fakeGatewayClient({ [LIST_SITES]: listReply(listedSite('default', 'Default', 1, 'localhost')) });
-    expect(await locationFor(adminS2Request(partial as AdminRequestPartial), gateway)).toBe(siteManager('default'));
   });
 
   it.each([
     ['a private user to the no-access message', true, './?muraAction=cMessage.noAccess'],
     ['a public user to the login form', false, './?muraAction=clogin.main'],
-  ])('sends %s when no site is administered', async (_name, s2IsPrivate, expected) => {
-    expect(await locationFor(noSitesRequest({ s2IsPrivate }))).toBe(expected);
-  });
-
-  it('sends an S2 user to the no-access message when programs-sites lists no site', async () => {
-    const gateway = fakeGatewayClient({ [LIST_SITES]: listReply() });
-    expect(await locationFor(adminS2Request(), gateway)).toBe('./?muraAction=cMessage.noAccess');
+  ])('sends %s when programs-sites lists no administered site', async (_name, s2IsPrivate, expected) => {
+    const gateway = fakeGatewayClient({ [USER_SITES]: sitesReply([], 'default') });
+    expect(await locationFor(noSitesRequest({ s2IsPrivate }), gateway)).toBe(expected);
   });
 
   it('URL-encodes the site id it appends', async () => {
-    const gateway = fakeGatewayClient({ [LIST_SITES]: listReply(listedSite('tenant a&b', 'Odd', 1, 'localhost')) });
+    const gateway = fakeGatewayClient({ [USER_SITES]: sitesReply([userSite('tenant a&b', 1)]) });
     expect(await locationFor(adminS2Request(), gateway)).toBe(siteManager('tenant+a%26b'));
   });
 
@@ -291,7 +182,7 @@ describe('home.redirect target', () => {
   });
 
   it('propagates a refused site list as a denial', async () => {
-    const gateway = fakeGatewayClient({ [LIST_SITES]: { status: 403, body: { error: 'forbidden' } } });
+    const gateway = fakeGatewayClient({ [USER_SITES]: { status: 403, body: { error: 'forbidden' } } });
     await expect(locationFor(adminS2Request(), gateway)).rejects.toBeInstanceOf(GatewayDenialError);
   });
 });

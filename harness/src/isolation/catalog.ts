@@ -180,22 +180,64 @@ SELECT r.rolname::text AS "member",
  WHERE g.rolsuper OR g.rolbypassrls
  ORDER BY 1, 2`;
 
-const SETTING_REFERENCE = compact(`current_setting('${TENANT_SETTING}'`);
-const TENANT_COLUMN = /(?<![a-z0-9_$])tenant_id(?![a-z0-9_$])/;
-const STRING_LITERAL = /'(?:[^']|'')*'/g;
+const SQL_SPACE = /[ \t\n\r\f\v]+/g;
+const TEXT_CAST = /^::text(?![a-z0-9_$])/;
 const NON_TENANT: ReadonlySet<string> = new Set(NON_TENANT_TABLES);
+// The tenant predicate as rlsSql emits it and as PostgreSQL deparses it into pg_policies, normalised.
+const TENANT_PREDICATES: ReadonlySet<string> = new Set(
+  [
+    `tenant_id = NULLIF(current_setting('${TENANT_SETTING}', true), '')::uuid`,
+    `(tenant_id = (NULLIF(current_setting('${TENANT_SETTING}'::text, true), ''::text))::uuid)`,
+  ].map(normalise),
+);
 
-/** `sql` without whitespace, lower-cased, so renderings that differ only in spacing or case compare equal. */
-function compact(sql: string): string {
-  return sql.replace(/\s+/g, '').toLowerCase();
+/** Index just past the string literal opening at `start`; the end of `sql` when it is unterminated. */
+function literalEnd(sql: string, start: number): number {
+  let index = start + 1;
+  while (index < sql.length) {
+    if (sql[index] !== "'") index += 1;
+    else if (sql[index + 1] === "'") index += 2;
+    else return index + 1;
+  }
+  return sql.length;
 }
 
-/** True when `expression` references both the `tenant_id` column and the tenant setting. */
+/** Index of the parenthesis closing the one at `open`, skipping string literals; -1 when it is unclosed. */
+function closingParen(text: string, open: number): number {
+  let depth = 0;
+  for (let index = open; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === "'") {
+      index = literalEnd(text, index) - 1;
+    } else if (char === '(') {
+      depth += 1;
+    } else if (char === ')') {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+/** `sql` lower-cased and without whitespace outside string literals, `::text` casts of literals and enclosing parentheses. */
+function normalise(sql: string): string {
+  let text = '';
+  for (let index = 0; index < sql.length; ) {
+    const quote = sql.indexOf("'", index);
+    const plain = sql.slice(index, quote === -1 ? sql.length : quote).replace(SQL_SPACE, '').toLowerCase();
+    // Plain text holds no quote, so `text` ends in one only when a literal precedes `plain`.
+    text += text.endsWith("'") ? plain.replace(TEXT_CAST, '') : plain;
+    if (quote === -1) break;
+    index = literalEnd(sql, quote);
+    text += sql.slice(quote, index);
+  }
+  while (text.startsWith('(') && closingParen(text, 0) === text.length - 1) text = text.slice(1, -1);
+  return text;
+}
+
+/** True when `expression` is exactly the tenant equality predicate, as rlsSql emits it or PostgreSQL deparses it. */
 function isTenantPredicate(expression: string | null): boolean {
-  if (expression === null) return false;
-  const text = compact(expression);
-  // Literals are blanked first, so the `tenant_id` inside the setting name cannot stand in for the column.
-  return text.includes(SETTING_REFERENCE) && TENANT_COLUMN.test(text.replace(STRING_LITERAL, "''"));
+  return expression !== null && TENANT_PREDICATES.has(normalise(expression));
 }
 
 function compareText(a: string, b: string): number {
@@ -257,7 +299,7 @@ function evaluateTable(
     }
   }
 
-  // Permissive policies are ORed, so any expression without the tenant predicate widens access past the tenant.
+  // Permissive policies are ORed, so any expression other than the tenant predicate widens access past the tenant.
   let widened = false;
   for (const policy of permissive) {
     if (policy.qual !== null && !isTenantPredicate(policy.qual)) {

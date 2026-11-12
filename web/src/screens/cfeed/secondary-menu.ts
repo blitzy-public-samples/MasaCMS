@@ -1,7 +1,8 @@
 // Collections (cFeed) secondary menu of `cfeed/dsp_secondary_menu.cfm`, also the shell's `cfeed` hook (server-only).
-import { encodeUrl, html, raw, type SafeHtml } from '@/lib/html';
+import { html, raw, type SafeHtml } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
 import { rbFor, type RbLookup } from '@/lib/resource-bundles/rb';
+import { relativeAdminUrl } from '@/lib/urls';
 import type { ShellHooks } from '@/shell/document';
 import { MODULE_IDS } from '@/shell/nav';
 import { feedApiEndpoint } from './common';
@@ -30,36 +31,52 @@ export function renderCfeedSecondaryMenu(
   rb: RbLookup,
   { fuseaction, feed, endpoint }: CfeedMenuOptions,
 ): SafeHtml {
-  const siteid = encodeUrl(req.rc.siteid ?? '');
+  const siteid = req.rc.siteid ?? '';
   const label = (key: string): SafeHtml => raw(rb.rbKey(key));
   const content = (icon: string, key: string): SafeHtml => html`<i class="${icon}"></i> ${label(key)}`;
+  // Each item carries the whitespace ACF prints around it; whitespace-only template lines after whitespace print nothing.
   const links: SafeHtml[] = [];
   if (fuseaction.toLowerCase() === 'list') {
     for (const [key, type] of [
       ['collections.addlocalindex', 'Local'],
       ['collections.addremotefeed', 'Remote'],
     ] as const) {
-      const href = raw(`./?muraAction=cFeed.edit&feedID=&siteid=${siteid}&type=${type}`);
-      links.push(html`<a class="btn" title="${label(key)}" href="${href}">${content('mi-plus-circle', key)}</a>`);
+      const href = raw(
+        relativeAdminUrl('cFeed', 'edit', [
+          ['feedID', '', 'raw'],
+          ['siteid', siteid],
+          ['type', type, 'raw'],
+        ]),
+      );
+      links.push(html`\n\t\t\t<a class="btn" title="${label(key)}" href="${href}">${content('mi-plus-circle', key)}</a>`);
     }
+    links.push(raw('\n\t\t\t'));
     if (req.isSiteAdmin || req.isS2) {
       const moduleId = MODULE_IDS.collections;
-      const href = raw(`./?muraAction=cPerm.module&contentid=${moduleId}&siteid=${siteid}&moduleid=${moduleId}`);
+      const href = raw(
+        relativeAdminUrl('cPerm', 'module', [
+          ['contentid', moduleId, 'raw'],
+          ['siteid', siteid],
+          ['moduleid', moduleId, 'raw'],
+        ]),
+      );
       // Legacy's `active` test compares the fuseaction with `module` inside the `list` case, so only the space remains.
-      links.push(html`<a class="btn " href="${href}">${content('mi-group', 'collections.permissions')}</a>`);
+      links.push(html`\n\t\t\t<a class="btn " href="${href}">${content('mi-group', 'collections.permissions')}</a>\n\t\t\t`);
     }
   } else {
-    const backHref = raw(`./?muraAction=cFeed.list&siteid=${siteid}`);
-    links.push(html`<a class="btn" href="${backHref}">${content('mi-arrow-circle-left', 'collections.backtocollections')}</a>`);
+    const backHref = raw(relativeAdminUrl('cFeed', 'list', [['siteid', siteid]]));
+    links.push(
+      html`\n\t\t\t<a class="btn" href="${backHref}">${content('mi-arrow-circle-left', 'collections.backtocollections')}</a>\n\t\t\t`,
+    );
     if (feed !== undefined && !feed.isNew) {
       const local = feed.type.toLowerCase() === 'local';
       const href = raw(local ? `${feedApiEndpoint(req, endpoint)}/?feedID=${feed.feedId}` : feed.channelLink);
       links.push(
-        html`<a class="btn" title="${label('collections.view')}" href="${href}" target="_blank">${content('mi-rss', 'collections.viewfeed')}</a>`,
+        html`\n\t\t\t\t\t<a class="btn" title="${label('collections.view')}" href="${href}" target="_blank">${content('mi-rss', 'collections.viewfeed')}</a>\n\t\t\t\t`,
       );
     }
   }
-  return html`<div class="nav-module-specific btn-group">${links}</div>`;
+  return html`<div class="nav-module-specific btn-group">\n\t${links}\n\t</div>`;
 }
 
 // The hook receives only the request, so it looks labels up in `session.rb` through the admin chain, as legacy's

@@ -253,6 +253,7 @@ There is no `esignature/requests/{id}` read route; it answers 404.
 
 - `seed/seed.config.json` fixes `seed: 20260601` and `businessDate: 2026-06-30`, the default `${asOf}` of golden scenarios. A binding named `asOf` or a step's literal `asOf` overrides it; GS-TS-04, for example, also requests `2026-09-30` and `2026-03-31`.
 - `reserved.rehearsal` reserves 10 `tenant-a` persons with open timesheet days and the usernames `rh-create-01` to `rh-create-10`. Only GS-PE-RH-01/02/03 may use them; `harness/src/golden/coverage.ts` fails on any other use.
+- `scenarioPasswords` names the passwords golden scenarios post for accounts they create. `npm run generate` gives each name a fresh password in the credentials' `generated` section, which `${secret:generated:<name>}` reads. `harness/test/golden/catalogue-seed-refs.test.ts` fails when the list and the catalogue's names differ.
 - Each seeded site has the domain `<siteID>.localhost` and the alias `localhost`. Public requests to `<siteID>.localhost` bind to the site; its admin pages served on `localhost` call the JSON API on their own origin. Host `localhost` still binds to `default`, whose `orderNo` is 1.
 
 | Site (tenant) | Pools | Size |

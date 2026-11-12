@@ -20,7 +20,6 @@ import {
 import { GoldenConfigError, MissingSecretError } from '../../src/golden/errors.js';
 import {
   ADMIN_LOGIN_PATH,
-  GENERATED_SECRETS_FILE,
   SEED_CREDENTIALS_FILE,
   adminLogin,
   basicAuth,
@@ -58,7 +57,6 @@ const GENERATED_NAME = 'pe01-created';
 const GENERATED_VALUE = 'FIXTURE-GENERATED-1';
 const ACCESS_TOKEN = 'FIXTURE-ACCESS-TOKEN-1';
 const LOGIN_TOKEN = 'FIXTURECSRFTOKEN0000000000000001';
-const SEND_LOGIN_TOKEN = 'FIXTURECSRFTOKEN0000000000000002';
 const API_TOKEN = 'FIXTURECSRFTOKEN0000000000000009';
 const EXPIRES = '260630120000000';
 const PAGE_ID = 'FIXTURE-PAGE-A-0001';
@@ -72,6 +70,7 @@ const CREDENTIALS = {
   users: { 'tenant-a': { [SEED_USER]: SEED_PASSWORD } },
   roles: { 'tenant-a': { 'site-admin': SEED_USER } },
   oauthClients: { [OAUTH_CLIENT]: OAUTH_SECRET },
+  generated: { [GENERATED_NAME]: GENERATED_VALUE },
 };
 
 // Shape of `Dataset` as legacy-fixtures/seed/src/writer.ts writes `dataset.json`.
@@ -235,7 +234,6 @@ beforeEach(() => {
     PORT: LEGACY_PORT,
   };
   writeJson(credentialsPath(), CREDENTIALS);
-  writeJson(join(stateDir, 'secrets', GENERATED_SECRETS_FILE), { [GENERATED_NAME]: GENERATED_VALUE });
   writeJson(join(stateDir, 'seed', 'dataset.json'), DATASET);
 });
 
@@ -365,7 +363,7 @@ describe('legacy authentication helpers', () => {
   it('posts the admin login form with its hidden fields and CSRF pair, then keeps the session cookie', async () => {
     const fake = fakeFetch(
       on('GET', ADMIN_LOGIN_PATH, loginPage),
-      on('POST', '/admin/?muraAction=cLogin.login', () => redirect('./', 'CFID=1001; Path=/')),
+      on('POST', '/admin/index.cfm', () => redirect('./', 'CFID=1001; Path=/')),
       on('GET', '/admin/', () => html('<h1>Site Content</h1>')),
     );
     const s = session(context({ id: 'GS-ID-01', sessions: { admin: NO_LOGIN } }, fake), 'admin');
@@ -376,7 +374,7 @@ describe('legacy authentication helpers', () => {
     expect(result.url).toBe(`${BASE}/admin/`);
     expect(fake.calls.map((c) => `${c.method} ${c.url.pathname}${c.url.search}`)).toStrictEqual([
       `GET ${ADMIN_LOGIN_PATH}`,
-      'POST /admin/?muraAction=cLogin.login',
+      'POST /admin/index.cfm',
       'GET /admin/',
     ]);
     const [, post, landing] = fake.calls;
@@ -397,17 +395,17 @@ describe('legacy authentication helpers', () => {
 
   it.each([
     {
-      form: 'form#sendLogin',
-      selector: 'form#sendLogin' as string | undefined,
-      token: SEND_LOGIN_TOKEN,
-      action: '/admin/?muraAction=cLogin.main',
-      fields: { status: 'sendlogin', returnURL: '', isAdminLogin: 'true', compactDisplay: 'true' },
+      form: 'form#loginForm',
+      selector: 'form#loginForm' as string | undefined,
+      token: LOGIN_TOKEN,
+      action: '/admin/index.cfm',
+      fields: { returnUrl: '', muraAction: 'cLogin.login', isAdminLogin: 'true', compactDisplay: 'true' },
     },
     {
       form: 'the default form',
       selector: undefined,
       token: LOGIN_TOKEN,
-      action: '/admin/?muraAction=cLogin.login',
+      action: '/admin/index.cfm',
       fields: { returnUrl: '', muraAction: 'cLogin.login', isAdminLogin: 'true', compactDisplay: 'true' },
     },
   ])('reads the CSRF pair, hidden fields and action of $form', async ({ selector, token, action, fields }) => {
@@ -423,13 +421,20 @@ describe('legacy authentication helpers', () => {
     });
   });
 
-  it('rejects with GoldenConfigError when the page holds no CSRF field', async () => {
-    const path = '/admin/?muraAction=cMessage.noaccess';
-    const noCsrf = '<form id="search"><input type="hidden" name="q" value=""></form>';
-    const fake = fakeFetch(on('GET', path, () => html(noCsrf)));
+  it.each([
+    {
+      when: 'the page holds no CSRF field',
+      path: '/admin/?muraAction=cMessage.noaccess',
+      markup: '<form id="search"><input type="hidden" name="q" value=""></form>',
+      selector: undefined as string | undefined,
+    },
+    // Legacy renders the send-login form without a CSRF pair (admin/core/views/clogin/main.cfm:303-330).
+    { when: 'form#sendLogin holds none', path: ADMIN_LOGIN_PATH, markup: LOGIN_PAGE, selector: 'form#sendLogin' },
+  ])('rejects with GoldenConfigError when $when', async ({ path, markup, selector }) => {
+    const fake = fakeFetch(on('GET', path, () => html(markup)));
     const s = session(context({ id: 'GS-ID-02' }, fake));
 
-    await expect(fetchFormTokens(s, path)).rejects.toBeInstanceOf(GoldenConfigError);
+    await expect(fetchFormTokens(s, path, selector)).rejects.toBeInstanceOf(GoldenConfigError);
   });
 
   it('turns generateCSRFTokens for a context into the JSON API CSRF headers', async () => {

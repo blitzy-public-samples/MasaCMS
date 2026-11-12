@@ -427,10 +427,12 @@ type SessionSitesOperation = IdentityOperation<'/v1/sessions/current/sites', 'ge
 type AdminSessionStateOperation = IdentityOperation<'/v1/sessions/current/admin-state', 'get'>;
 type SaveAdminSessionStateOperation = IdentityOperation<'/v1/sessions/current/admin-state', 'post'>;
 type CsrfTokensOperation = IdentityOperation<'/v1/csrf/tokens', 'post'>;
+type ReversePermLookUpOperation = IdentityOperation<'/v1/permissions/reverse-lookup', 'get'>;
 type ListSitesOperation = ProgramsSitesOperation<'/v1/sites', 'get'>;
 type GetSiteOperation = ProgramsSitesOperation<'/v1/sites/{siteId}', 'get'>;
 type GetShellSiteOperation = ProgramsSitesOperation<'/v1/sites/{siteId}/shell', 'get'>;
 type HrefDomainsOperation = ProgramsSitesOperation<'/v1/href-domains', 'get'>;
+type UserSitesOperation = ProgramsSitesOperation<'/v1/user-sites', 'get'>;
 
 /** Identity calls, plus the session and CSRF operations the shell and lib use. */
 export interface IdentityFacade extends ServiceFacade<IdentityPaths> {
@@ -446,6 +448,8 @@ export interface IdentityFacade extends ServiceFacade<IdentityPaths> {
   ): Promise<OperationResponse<SaveAdminSessionStateOperation>>;
   /** One token pair per legacy CSRF context, in request order (`issueCsrfTokens`). */
   csrfTokens(contexts: JsonBodyOf<CsrfTokensOperation>['contexts']): Promise<OperationResponse<CsrfTokensOperation>>;
+  /** Whether the session user may reach the token site's users (`getReversePermLookUp`). */
+  reversePermLookUp(): Promise<OperationResponse<ReversePermLookUpOperation>>;
 }
 
 /** Programs-sites calls, plus the site reads the shell and lib use. */
@@ -458,6 +462,8 @@ export interface ProgramsSitesFacade extends ServiceFacade<ProgramsSitesPaths> {
   getShellSite(siteId: PathParamsOf<GetShellSiteOperation>['siteId']): Promise<OperationResponse<GetShellSiteOperation>>;
   /** Registered domains and the domain of `siteid`, else `default`, for sanitizeHref (`getHrefDomains`). */
   hrefDomains(siteid: string): Promise<OperationResponse<HrefDomainsOperation>>;
+  /** The user's sites by name, plus the site `host` binds to when given (`listUserSites`). */
+  userSites(host?: string): Promise<OperationResponse<UserSitesOperation>>;
 }
 
 /** Service calls of one web request, all relayed by the gateway. */
@@ -547,6 +553,7 @@ function identityFacade(core: CoreCalls): IdentityFacade {
     adminSessionState: () => facade.call('get', '/v1/sessions/current/admin-state'),
     saveAdminSessionState: (state) => facade.call('post', '/v1/sessions/current/admin-state', { json: state }),
     csrfTokens: (contexts) => facade.call('post', '/v1/csrf/tokens', { json: { contexts } }),
+    reversePermLookUp: () => facade.call('get', '/v1/permissions/reverse-lookup'),
   };
 }
 
@@ -558,6 +565,7 @@ function programsSitesFacade(core: CoreCalls): ProgramsSitesFacade {
     getSite: (siteId) => facade.call('get', '/v1/sites/{siteId}', { params: { siteId } }),
     getShellSite: (siteId) => facade.call('get', '/v1/sites/{siteId}/shell', { params: { siteId } }),
     hrefDomains: (siteid) => facade.call('get', '/v1/href-domains', { query: { siteid } }),
+    userSites: (host) => facade.call('get', '/v1/user-sites', { query: { host } }),
   };
 }
 

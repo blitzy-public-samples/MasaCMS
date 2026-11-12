@@ -248,6 +248,19 @@ describe('clogin.main view branches', () => {
     expect(plain.markup).not.toContain('_missing');
   });
 
+  it.each<[string, boolean]>([
+    ['1', true],
+    ['yes', true],
+    ['true', true],
+    [' true', false],
+    ['false', false],
+    ['0', false],
+  ])('sizes the front-end proxy frame for compactDisplay %j: %s', async (compactDisplay, sized) => {
+    const { markup } = await render({ rc: { compactDisplay } });
+
+    expect(markup.includes("frontEndProxy.post({cmd:'setWidth',width:400});")).toBe(sized);
+  });
+
   it('propagates identity unavailability', async () => {
     const ctx = contextFor(anonymousRequest());
     (ctx.gateway as FakeGatewayClient).failWith();

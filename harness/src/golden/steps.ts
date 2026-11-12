@@ -17,7 +17,7 @@ import {
   DEFAULT_SITE,
   appReloadKey,
   basicAuth,
-  fetchFormTokens,
+  formTokensFrom,
   jsonApiTokens,
   loginSessions,
   resolvePlaceholders,
@@ -81,6 +81,14 @@ export interface StepGap {
   candidatesTried: number;
 }
 
+/** What a polling step saw: each polled value in order, consecutive repeats collapsed, and the lifecycle it proved. */
+export interface PollEvidence {
+  /** Timing-dependent, kept for review. */
+  observed: string[];
+  /** The declared `poll.lifecycle` states, whose timestamps the satisfying body holds in this order. */
+  lifecycle?: string[];
+}
+
 /** One exchange of a step (one per matrix combination), secrets redacted. */
 export interface StepRecord {
   name: string;
@@ -97,6 +105,7 @@ export interface StepRecord {
   decisionListRef?: string;
   exceptionId?: string;
   gap?: StepGap;
+  poll?: PollEvidence;
 }
 
 /** Waits for a declared side effect: `spec` is the step's `settle`, `timeoutMs` its bound. */
@@ -327,6 +336,7 @@ interface Exchange {
   result: HttpResult;
   request: RecordedRequest;
   routeKey: string;
+  poll?: PollEvidence;
 }
 
 interface RecordMeta {
@@ -405,12 +415,28 @@ function withFormTokens(ctx: ScenarioContext, step: Step, body: ResolvedBody, to
   }
 }
 
-/** Page whose form supplies a `fetch-form` step's tokens: the `csrfFrom` step's route, else the step's own. */
-function formSource(ctx: ScenarioContext, scenario: StepScenario, step: Step, route: string): string {
-  if (step.csrfFrom === undefined) return route;
+/** Last response of each step name, per scenario context. */
+const stepResponses = new WeakMap<ScenarioContext, Map<string, HttpResult>>();
+
+function rememberResponse(ctx: ScenarioContext, step: Step, result: HttpResult): void {
+  const responses = stepResponses.get(ctx) ?? new Map<string, HttpResult>();
+  stepResponses.set(ctx, responses.set(step.name, result));
+}
+
+/** Form page of a `fetch-form` step: its `csrfFrom` step's last response (whose ids it binds), else `route` fetched. */
+async function formSource(
+  ctx: ScenarioContext,
+  scenario: StepScenario,
+  step: Step,
+  s: HttpSession,
+  route: string,
+): Promise<HttpResult> {
+  if (step.csrfFrom === undefined) return s.get(route);
   const source = scenario.steps.find((candidate) => candidate.name === step.csrfFrom);
   if (source === undefined) throw stepError(ctx, step, `csrfFrom ${step.csrfFrom} names no step`);
-  return resolvedText(ctx, source, source.route, 'route');
+  const page = stepResponses.get(ctx)?.get(source.name);
+  if (page === undefined) throw stepError(ctx, step, `csrfFrom ${step.csrfFrom} has not run in this scenario`);
+  return page;
 }
 
 function paramNoCase(params: URLSearchParams, name: string): string | undefined {
@@ -517,7 +543,7 @@ function routeKeyOf(ctx: ScenarioContext, request: RecordedRequest, body: Resolv
   return routeKeyForRequest(input, { appReloadKey: appReloadKey(ctx.env), ...opts.routeKeyOptions }).key;
 }
 
-/** Sends `shape` once in the step's session, with the step's auth and freshly fetched CSRF tokens. */
+/** Sends `shape` once in the step's session, with the step's auth and CSRF tokens, and remembers the response. */
 async function exchange(
   ctx: ScenarioContext,
   scenario: StepScenario,
@@ -532,7 +558,7 @@ async function exchange(
   let body = resolveBody(ctx, shape);
   const csrf = resolvedText(ctx, step, step.csrf, 'csrf');
   if (csrf === 'fetch-form') {
-    body = withFormTokens(ctx, step, body, await fetchFormTokens(s, formSource(ctx, scenario, step, route)));
+    body = withFormTokens(ctx, step, body, formTokensFrom(s, await formSource(ctx, scenario, step, s, route)));
   } else if (csrf.startsWith('json-api:')) {
     const tokens = await jsonApiTokens(s, csrfSite(route, body), csrf.slice('json-api:'.length));
     Object.assign(headers, lowerKeys(tokens));
@@ -543,6 +569,7 @@ async function exchange(
 
   const method = shape.method.toUpperCase();
   const result = await s.request({ method, path: route, headers, ...requestBody(body) });
+  rememberResponse(ctx, step, result);
   const first = result.hops[0];
   const sentUrl = new URL(first?.url ?? new URL(route, s.baseUrl).href);
   const sentHeaders = first?.requestHeaders ?? headers;
@@ -592,12 +619,30 @@ function isScalar(value: unknown): value is string | number | boolean {
   return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
 }
 
-function pollSatisfied(result: HttpResult, poll: PollSpec): boolean {
+/** Text of the scalar at `poll.until.path` in `result`'s body, else undefined. */
+function polledValue(result: HttpResult, poll: PollSpec): string | undefined {
   const { found, value } = valueAt(parseJson(result.text), poll.until.path);
-  return found && isScalar(value) && String(value) === String(poll.until.equals);
+  return found && isScalar(value) ? String(value) : undefined;
 }
 
-/** Sends `shape`, repeating every `poll.intervalMs` until its condition holds; throws GoldenConfigError past the bound. */
+/** `poll.lifecycle`'s states once `result`'s body holds each one's timestamp, none earlier than the one before. */
+function provenLifecycle(ctx: ScenarioContext, step: Step, result: HttpResult, poll: PollSpec): string[] | undefined {
+  if (poll.lifecycle === undefined) return undefined;
+  const body = parseJson(result.text);
+  let previous: { state: string; time: number } | undefined;
+  for (const { state, at } of poll.lifecycle) {
+    const { value } = valueAt(body, at);
+    const time = typeof value === 'string' ? Date.parse(value) : Number.NaN;
+    if (Number.isNaN(time)) throw stepError(ctx, step, `poll lifecycle state ${state} has no timestamp at ${at}`);
+    if (previous !== undefined && time < previous.time) {
+      throw stepError(ctx, step, `poll lifecycle state ${state} at ${at} precedes state ${previous.state}`);
+    }
+    previous = { state, time };
+  }
+  return poll.lifecycle.map((entry) => entry.state);
+}
+
+/** Sends `shape` until its poll holds; throws GoldenConfigError past the bound or for an unproven lifecycle. */
 async function send(
   ctx: ScenarioContext,
   scenario: StepScenario,
@@ -608,9 +653,15 @@ async function send(
   const { poll } = step;
   if (poll === undefined) return exchange(ctx, scenario, step, shape, opts);
   const deadline = Date.now() + poll.timeoutMs;
+  const observed: string[] = [];
   for (;;) {
     const sent = await exchange(ctx, scenario, step, shape, opts);
-    if (pollSatisfied(sent.result, poll)) return sent;
+    const value = polledValue(sent.result, poll);
+    if (value !== undefined && value !== observed.at(-1)) observed.push(value);
+    if (value === String(poll.until.equals)) {
+      const lifecycle = provenLifecycle(ctx, step, sent.result, poll);
+      return { ...sent, poll: lifecycle === undefined ? { observed } : { observed, lifecycle } };
+    }
     if (Date.now() + poll.intervalMs > deadline) {
       throw stepError(
         ctx,
@@ -708,6 +759,7 @@ async function finish(
   if (step.decisionListRef !== undefined) record.decisionListRef = step.decisionListRef;
   if (step.exceptionId !== undefined) record.exceptionId = step.exceptionId;
   if (meta.gap !== undefined) record.gap = meta.gap;
+  if (sent.poll !== undefined) record.poll = sent.poll;
   return redact(record, secretValues(ctx));
 }
 

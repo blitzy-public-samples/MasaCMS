@@ -1,17 +1,17 @@
 // Admin shell entry point: layout choice of `admin/common/layouts/default.cfm`, shell data and document output (server-only).
 import {
   cfDateAdd,
-  cfEq,
   cfIsDateText,
   cfListToArray,
   cfParseDateTimeText,
   cfToBoolean,
 } from '@opt2/platform/legacy-compat';
+import { isCompactDisplay } from '@/lib/cfml';
 import type { CsrfRenderer } from '@/lib/csrf';
 import { legacySettings } from '@/lib/env';
 import { okBody, type GatewayClient } from '@/lib/gateway-client';
 import { encodeJs, raw, type SafeHtml } from '@/lib/html';
-import type { AdminRequest, RequestContext } from '@/lib/request-context';
+import { tokenServesSite, type AdminRequest, type RequestContext } from '@/lib/request-context';
 import type { RbLookup } from '@/lib/resource-bundles/rb';
 import { renderCompact } from './compact';
 import { resolveModuleTitle } from './module-title';
@@ -47,9 +47,11 @@ export { OPT2_NAV_MODULES } from './nav';
 /** CSRF context of the nav's Update Core links (`nav.cfm` 331-335, 377-381). */
 const UPDATE_CORE_CONTEXT = 'updatecore';
 
-// strategies-content's contract defines no operation for contentManager.getMyDraftsCount, getMySubmissionsCount,
-// getMyApprovalsCount, getMyExpiresCount or changesetManager.hasPendingApprovals, so no count is fetched and the
-// header renders no prompt.
+/** Module ids of the change-set prompt's `getModulePerm` checks (`header.cfm` 222-223). */
+const SITE_MANAGER_MODULE_ID = '00000000000000000000000000000000000';
+const CHANGESETS_MODULE_ID = '00000000000000000000000000000000014';
+
+/** The counts of a page whose header strategies-content cannot serve: none renders a prompt. */
 const NO_PROMPTS: UserPrompts = Object.freeze({
   drafts: 0,
   submissions: 0,
@@ -58,15 +60,12 @@ const NO_PROMPTS: UserPrompts = Object.freeze({
   pendingChangesets: 0,
 });
 
-/** SQL Server `SQL_Latin1_General_CP1_CI_AS` order of `getList(sortby="site")`: case-insensitive, accent-sensitive. */
-const SITE_ORDER = new Intl.Collator('en-US', { sensitivity: 'accent' });
-
 const listFirst = (list: string, delimiter: string): string => cfListToArray(list, delimiter)[0] ?? '';
 const listLast = (list: string, delimiter: string): string => cfListToArray(list, delimiter).at(-1) ?? '';
 
-/** The legacy layout `default.cfm` includes: `compact` when `rc.compactDisplay eq 'true'`, else `template`. */
+/** The layout legacy `default.cfm` includes: `compact` when {@link isCompactDisplay}, else `template`. */
 export function selectLayout(rc: RequestContext): ShellLayout {
-  return cfEq(rc.compactDisplay ?? 'false', 'true') ? 'compact' : 'template';
+  return isCompactDisplay(rc.compactDisplay) ? 'compact' : 'template';
 }
 
 /** Services and request values {@link loadShellData} reads through. */
@@ -103,33 +102,14 @@ function shellUser(ctx: AdminRequest, now: Date): ShellUser {
   };
 }
 
-/** settingsBean `getValue('showDashboard', 0)` as a CFML condition: the listed value, else the served session site's. */
-function showsDashboard(ctx: AdminRequest, siteId: string, listed: unknown): boolean {
-  const served =
-    ctx.site !== undefined && ctx.site.siteid.toLowerCase() === siteId.toLowerCase()
-      ? ctx.site.record.showDashboard
-      : undefined;
-  return cfToBoolean(listed ?? served ?? 0);
-}
-
 /**
- * settingsManager `getUserSites(session.siteArray, isS2)`: every site for S2 users, otherwise the administered sites,
- * both ordered by site name.
+ * settingsManager `getUserSites(session.siteArray, isS2)` in site-name order, each with its settingsBean
+ * `getValue('showDashboard', 0)`.
  * @throws GatewayDenialError When programs-sites refuses the site list (401 or 403).
  */
-async function loadUserSites(ctx: AdminRequest, gateway: GatewayClient): Promise<ShellSite[]> {
-  if (!ctx.isS2) {
-    // programs-sites lists every site to S2 users only; identity names the sites of `session.siteArray`.
-    return [...ctx.adminSites]
-      .sort((a, b) => SITE_ORDER.compare(a.site, b.site))
-      .map(({ siteID, site }) => ({ siteId: siteID, site, showDashboard: showsDashboard(ctx, siteID, undefined) }));
-  }
-  const response = await gateway.programsSites.listSites({ sortBy: 'site', sortDirection: 'asc' });
-  return okBody(response, 'programs-sites', 'listSites').map((item) => ({
-    siteId: item.siteid,
-    site: item.site ?? '',
-    showDashboard: showsDashboard(ctx, item.siteid, item['showDashboard']),
-  }));
+async function loadUserSites(gateway: GatewayClient): Promise<ShellSite[]> {
+  const { sites } = okBody(await gateway.programsSites.userSites(), 'programs-sites', 'listUserSites');
+  return sites.map((item) => ({ siteId: item.siteid, site: item.site ?? '', showDashboard: item.showDashboard === 1 }));
 }
 
 /** `renderCSRFTokens(context='updatecore', format='url')`, e.g. `&csrf_token=…&csrf_token_expires=…`. */
@@ -139,23 +119,46 @@ async function updateCoreCsrfQuery(csrf: CsrfRenderer): Promise<string> {
 }
 
 /**
- * The data the shell renders beyond `ctx`; site list and Update Core tokens are loaded only when the full layout
- * shows its nav and header. Gateway unavailability propagates.
+ * The session site's prompt counts of `header.cfm` 176-246; the change-set count only when the site has change sets
+ * and the user holds the Change Sets and Site Manager modules.
+ * @throws GatewayDenialError When strategies-content refuses the read (401 or 403).
+ */
+async function loadUserPrompts(ctx: AdminRequest, gateway: GatewayClient): Promise<UserPrompts> {
+  const response = await gateway.strategiesContent.call('get', '/v1/sites/{siteid}/header-prompts', {
+    params: { siteid: ctx.session.siteid },
+  });
+  const { drafts, submissions, approvals, expires, pendingChangesets } = okBody(
+    response,
+    'strategies-content',
+    'getHeaderPrompts',
+  );
+  const changesets =
+    ctx.site?.hasChangesets === true && ctx.modulePerm(CHANGESETS_MODULE_ID) && ctx.modulePerm(SITE_MANAGER_MODULE_ID);
+  return { drafts, submissions, approvals, expires, pendingChangesets: changesets ? pendingChangesets : 0 };
+}
+
+/**
+ * The data the shell renders beyond `ctx`; site list, prompt counts and Update Core tokens are loaded only when the
+ * full layout shows its nav and header, the counts only for a session site the token serves. Gateway unavailability
+ * propagates.
  * @throws GatewayDenialError When a service refuses a read (401 or 403).
  */
 export async function loadShellData(ctx: AdminRequest, deps: ShellDataDeps): Promise<ShellData> {
   const now = deps.now ?? new Date();
   const chrome =
     selectLayout(ctx.rc) === 'template' && ctx.session.siteid !== '' && ctx.isLoggedIn && ctx.isPrivateUser;
-  const [userSites, coreCsrfQuery] = await Promise.all([
-    chrome ? loadUserSites(ctx, deps.gateway) : [],
+  const [userSites, coreCsrfQuery, prompts] = await Promise.all([
+    chrome ? loadUserSites(deps.gateway) : [],
     chrome && ctx.isS2 && legacySettings().allowAutoUpdates ? updateCoreCsrfQuery(deps.csrf) : '',
+    chrome && ctx.user !== undefined && tokenServesSite(ctx.user, ctx.session.siteid)
+      ? loadUserPrompts(ctx, deps.gateway)
+      : NO_PROMPTS,
   ]);
   return {
     rb: deps.rb,
     user: shellUser(ctx, now),
     userSites,
-    prompts: NO_PROMPTS,
+    prompts,
     // Plugins run only on legacy; the target holds no plugin data.
     sitePlugins: [],
     // No target store holds the legacy server's runtime facts.

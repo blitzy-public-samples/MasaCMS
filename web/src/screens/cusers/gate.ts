@@ -174,20 +174,13 @@ export function userPoolIdFor(req: Pick<AdminRequest, 'site'>, rc: Pick<CusersRc
   return rc.isAdmin && !cfToBoolean(rc.ispublic) ? req.site.privateUserPoolID : req.site.publicUserPoolID;
 }
 
-// No contract serves a site-scoped token other sites' grants or pools (programs-sites lists sites to S2 alone, without
-// pools), so the branches over sites that pool their users in `siteid` are not evaluated and fall to the module check.
-/** userManager `getReversePermLookUp(rc.siteid)` as the token reaches it: Users module access on the site. */
-function reversePermLookUp(req: Pick<AdminRequest, 'modulePerm'>): boolean {
-  return req.modulePerm(USERS_MODULE_ID);
-}
-
 /** cUsers `before()` gate: Users and Site Manager module access, or admin; else the controller's `secure()`. */
-export const cusersGate: ScreenGate = (req, { secure }) => {
+export const cusersGate: ScreenGate = async (req, { secure }) => {
   const baseId = rcValue(req.rc, 'baseID');
   const extendedAttributesOfReachableUser =
     baseId !== undefined &&
     cfEq(cfListToArray(req.action, ':').at(-1) ?? '', LOAD_EXTENDED_ATTRIBUTES_ACTION) &&
-    (cfEq(baseId, req.session.mura.userID) || reversePermLookUp(req));
+    (cfEq(baseId, req.session.mura.userID) || (await req.reversePermLookUp()));
   if (extendedAttributesOfReachableUser) return ALLOW;
   if (isCusersAdmin(req) || (req.modulePerm(USERS_MODULE_ID) && req.modulePerm(SITE_MODULE_ID))) return ALLOW;
   return secure();

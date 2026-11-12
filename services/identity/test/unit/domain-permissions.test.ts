@@ -1,8 +1,9 @@
-/** Permission operations of the `cperm` screens: node verdicts, module grant replacement with its permission events, and site and pool group reads against a throwaway `identity` schema. */
+/** Permission operations of the `cperm` screens: node verdicts, module grant replacement with its permission events, site and pool group reads, and the reverse Users-module lookup against throwaway `identity` schemas. */
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { GateClosedError, ensureUnitGates, withGatedTenant, type GateState } from '@opt2/platform/migration-kit';
-import { tenantIdForSite, withMetadata, type TenantTx } from '@opt2/platform/tenancy';
+import type { Clock } from '@opt2/platform/service-kit';
+import { tenantIdForSite, withMetadata, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
   NODE_GRANT_TYPES,
@@ -10,12 +11,15 @@ import {
   groupPermVerdict,
   permissionsForContent,
   permittedGroups,
+  reversePermLookUp,
   updateModulePermissions,
   type PermissionDeps,
+  type ReversePermDeps,
 } from '../../src/domain/permissions.js';
+import { applyLogin, endSession, ensureSession } from '../../src/domain/sessions.js';
 import type { IdentityEvents } from '../../src/events/publish.js';
 import { createIdentityRepository, type GroupInput, type IdentityRepository } from '../../src/repo/repository.js';
-import { IDENTITY_UNITS } from '../../src/repo/tables.js';
+import { IDENTITY_UNITS, type LoginSnapshot } from '../../src/repo/tables.js';
 
 const CLOCK = fixedClock(new Date(2026, 5, 30, 12, 0, 0));
 const SITE = 'tenant-a';
@@ -261,5 +265,132 @@ describe.skipIf(!available)('permission operations against PostgreSQL', () => {
     ['permissionsForContent', permissionsForContent],
   ])('%s reads no rows for an unregistered site', async (_label, read) => {
     expect(await read(deps(), { siteId: 'nowhere', contentId: id(1, 'N') })).toEqual([]);
+  });
+});
+
+/** A login snapshot of a `hub` user with the given role list and login-time group ids. */
+function snapshotOf(userid: string, roleList: string, groupIds: readonly string[]): LoginSnapshot {
+  return {
+    userid, username: userid, siteid: 'hub', subtype: 'Default', password: 'stored-hash', fname: '', lname: '', email: '', remoteid: '',
+    company: '', lastlogin: null, passwordcreated: null, roleList, membershipIds: [...groupIds, userid].join(','),
+  };
+}
+
+type PoolGroup = 'hubAdmin' | 'hubEditors' | 'hubClerks' | 'hubMembers' | 'pubStaff';
+
+// hub pools itself; pub-member pools its public users in hub; priv-member pools its private users in hub, spelling the pool HUB.
+describe.skipIf(!available)('reverse Users-module lookup against PostgreSQL [legacy: core/mura/user/userManager.cfc:1050-1086]', () => {
+  const USERS_MODULE = '00000000000000000000000000000000008';
+  const groupIds: Record<PoolGroup, string> = { hubAdmin: '', hubEditors: '', hubClerks: '', hubMembers: '', pubStaff: '' };
+  let handle: ThrowawaySchema;
+  let repo: IdentityRepository;
+  let sessionSeq = 0;
+
+  function gated<T>(site: string, fn: (tx: TenantTx) => Promise<T>): Promise<T> {
+    return withGatedTenant(handle.app, tenantIdForSite(site), fn);
+  }
+
+  async function registerSite(site: string, privatePool: string, publicPool: string): Promise<void> {
+    await withMetadata(handle.app, (tx) =>
+      tx.query(
+        `INSERT INTO ${handle.schema}.tenant_registry (site_id, tenant_id, private_user_pool_id, public_user_pool_id,` +
+          ' private_user_pool_tenant, public_user_pool_tenant, aggregate_version, updated_at) VALUES ($1, $2, $3, $4, $5, $6, 1, $7)',
+        [site, tenantIdForSite(site), privatePool, publicPool, tenantIdForSite(privatePool), tenantIdForSite(publicPool), CLOCK.now()],
+      ),
+    );
+  }
+
+  function groupInput(groupname: string, siteid: string, ispublic: 0 | 1): GroupInput {
+    return {
+      groupname, fname: '', lname: '', username: '', password: '', email: '', company: '', jobtitle: '', mobilephone: '',
+      website: '', type: 1, subtype: 'Default', contactform: '', s2: 0, perm: 0, inactive: 0, ispublic, siteid,
+      subscribe: 1, notes: '', description: '', interests: '', keepprivate: 0, photofileid: '', imname: '', imservice: '',
+      remoteid: '', tags: '', tablist: '',
+    };
+  }
+
+  function lookupDeps(): ReversePermDeps {
+    return { db: handle.app, repo };
+  }
+
+  function sessionDeps(): { db: TenantDb; repo: IdentityRepository; clock: Clock } {
+    return { db: handle.app, repo, clock: CLOCK };
+  }
+
+  /** Signs a new `hub` user in with the role list and login-time group ids, and returns the session id. */
+  async function login(roleList: string, groups: readonly string[]): Promise<string> {
+    sessionSeq += 1;
+    const sessionId = `S-REVERSE-${String(sessionSeq)}`;
+    const snapshot = snapshotOf(id(sessionSeq, 'U'), roleList, groups);
+    await applyLogin(sessionDeps(), { sessionId, tenantId: tenantIdForSite('hub'), snapshot, mode: 'target-primary', siteId: 'hub' });
+    return sessionId;
+  }
+
+  function claimsFor(sid: string, site: string): { sid: string; tid: string; site: string } {
+    return { sid, tid: tenantIdForSite(site), site };
+  }
+
+  beforeAll(async () => {
+    handle = await createThrowawaySchema({ service: 'identity', migrationsDir: fileURLToPath(new URL('../../db/migrations', import.meta.url)) });
+    repo = createIdentityRepository({ clock: CLOCK, schema: handle.schema });
+    await ensureUnitGates(handle.app, IDENTITY_UNITS);
+    await withMetadata(handle.app, (tx) => tx.query(`UPDATE ${handle.schema}.unit_gate SET state = 'open', holder_id = NULL, phase = 'quiet'`));
+    await registerSite('hub', 'hub', 'hub');
+    await registerSite('pub-member', 'pub-member', 'hub');
+    await registerSite('priv-member', 'HUB', 'priv-member');
+    await registerSite('other', 'other', 'other');
+    await gated('hub', async (tx) => {
+      groupIds.hubAdmin = (await repo.insertGroup(tx, groupInput('Admin', 'hub', 0), null)).userid;
+      groupIds.hubEditors = (await repo.insertGroup(tx, groupInput('Editors', 'hub', 0), null)).userid;
+      groupIds.hubClerks = (await repo.insertGroup(tx, groupInput('Clerks', 'hub', 0), null)).userid;
+      groupIds.hubMembers = (await repo.insertGroup(tx, groupInput('Members', 'hub', 1), null)).userid;
+    });
+    groupIds.pubStaff = (await gated('pub-member', (tx) => repo.insertGroup(tx, groupInput('Staff', 'pub-member', 0), null))).userid;
+    await gated('hub', (tx) => repo.replaceModulePermissions(tx, { moduleId: USERS_MODULE, siteId: 'hub', groupIds: [groupIds.hubEditors] }));
+    await gated('pub-member', (tx) =>
+      repo.replaceModulePermissions(tx, { moduleId: USERS_MODULE, siteId: 'pub-member', groupIds: [groupIds.pubStaff, groupIds.hubMembers] }),
+    );
+    // getReversePermLookUp never reads a private-pool member site's grants, so this grant reaches nobody.
+    await gated('priv-member', (tx) => repo.replaceModulePermissions(tx, { moduleId: USERS_MODULE, siteId: 'priv-member', groupIds: [groupIds.hubClerks] }));
+  });
+
+  afterAll(async () => {
+    await handle.drop();
+  });
+
+  it.each<{ when: string; roleList: string; groups: PoolGroup[]; site: string; expected: boolean }>([
+    { when: 'S2, on the site', roleList: 'S2IsPrivate;hub,S2IsPrivate,S2', groups: [], site: 'hub', expected: true },
+    { when: "the site's private-pool Admin group", roleList: 'Admin;hub;0,S2IsPrivate;hub,S2IsPrivate', groups: ['hubAdmin'], site: 'hub', expected: true },
+    { when: "a Users grant of the site to the user's group", roleList: 'Editors;hub;0,S2IsPrivate;hub,S2IsPrivate', groups: ['hubEditors'], site: 'hub', expected: true },
+    { when: "the private-pool Admin group of a site whose public pool is the site", roleList: 'Admin;pub-member;0', groups: [], site: 'hub', expected: true },
+    { when: "that site's Users grant to its private-pool group", roleList: 'Staff;pub-member;0', groups: ['pubStaff'], site: 'hub', expected: true },
+    { when: "that site's Users grant to a public group of the site", roleList: 'Members;hub;1,S2IsPublic;hub,S2IsPublic', groups: ['hubMembers'], site: 'hub', expected: true },
+    { when: 'the site spelled in another case, through a public-pool member site', roleList: 'Admin;pub-member;0', groups: [], site: 'HUB', expected: true },
+    { when: "the Admin group of a site whose private pool is the site, as that site spells it", roleList: 'Admin;HUB;0', groups: [], site: 'hub', expected: true },
+    { when: 'an Admin group spelled in neither case of the pools', roleList: 'Admin;Hub;0', groups: [], site: 'hub', expected: false },
+    { when: 'a group named admin in the private pool', roleList: 'admin;hub;0', groups: [], site: 'hub', expected: false },
+    { when: "only a private-pool member site's Users grant", roleList: 'Clerks;hub;0,S2IsPrivate;hub,S2IsPrivate', groups: ['hubClerks'], site: 'hub', expected: false },
+    {
+      when: 'only grants and Admin groups of sites that pool no users in the site',
+      roleList: 'Admin;hub;0,Admin;pub-member;0,Staff;pub-member;0', groups: ['hubAdmin', 'pubStaff'], site: 'other', expected: false,
+    },
+    { when: 'S2, on a site outside the registry', roleList: 'S2IsPrivate;hub,S2IsPrivate,S2', groups: [], site: 'nowhere', expected: true },
+    { when: "the Admin group of a site outside the registry, whose pool is its own id", roleList: 'Admin;nowhere;0', groups: [], site: 'nowhere', expected: true },
+    { when: 'only groups of other sites, on a site outside the registry', roleList: 'Admin;hub;0,Editors;hub;0', groups: ['hubAdmin', 'hubEditors'], site: 'nowhere', expected: false },
+  ])('answers $expected for $when', async ({ roleList, groups, site, expected }) => {
+    const sid = await login(roleList, groups.map((key) => groupIds[key]));
+
+    expect(await reversePermLookUp(lookupDeps(), claimsFor(sid, site))).toBe(expected);
+  });
+
+  it('answers false for anonymous, ended and unknown sessions, whatever the ended login held', async () => {
+    await ensureSession(sessionDeps(), { sessionId: 'S-REVERSE-ANON', mode: 'target-primary' });
+    const ended = await login('S2IsPrivate;hub,S2IsPrivate,S2', []);
+    expect(await reversePermLookUp(lookupDeps(), claimsFor(ended, 'hub'))).toBe(true);
+    await endSession(sessionDeps(), ended);
+
+    for (const sid of ['S-REVERSE-ANON', ended, 'S-REVERSE-UNKNOWN']) {
+      expect(await reversePermLookUp(lookupDeps(), claimsFor(sid, 'hub'))).toBe(false);
+    }
   });
 });

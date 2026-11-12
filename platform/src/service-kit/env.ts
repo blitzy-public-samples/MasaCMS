@@ -213,6 +213,18 @@ export class EnvValidationError extends Error {
   }
 }
 
+/** Emulator `host:port` of a process's default publisher, required when local and undefined in the cloud; else throws `EnvValidationError`. */
+export function publisherEmulatorHost(
+  env: Pick<BaseEnv, 'OPT2_SERVICE_NAME' | 'OPT2_ENV' | 'PUBSUB_EMULATOR_HOST'>,
+): string | undefined {
+  const parsed = baseEnvSchema.shape.PUBSUB_EMULATOR_HOST.safeParse(env.PUBSUB_EMULATOR_HOST);
+  const issues = parsed.success ? [] : parsed.error.issues.map((issue) => issue.message);
+  if (parsed.success && env.OPT2_ENV === 'local' && parsed.data === undefined) issues.push('is required when OPT2_ENV=local');
+  if (parsed.success && env.OPT2_ENV === 'cloud' && parsed.data !== undefined) issues.push('must be unset when OPT2_ENV=cloud');
+  if (issues.length > 0) throw new EnvValidationError(issues.map((issue) => `PUBSUB_EMULATOR_HOST: ${issue}`), env.OPT2_SERVICE_NAME);
+  return parsed.data;
+}
+
 const serviceNameOf = (source: NodeJS.ProcessEnv): string | undefined => {
   const name = source.OPT2_SERVICE_NAME;
   return name !== undefined && SERVICE_NAME.test(name) ? name : undefined;

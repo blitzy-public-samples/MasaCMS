@@ -32,7 +32,10 @@ export interface SurveyResponsesQuery {
 }
 
 /** One fixture page of a survey's responses as envelope.cfc `queryPage` returns it, ready for `fixtureList`. */
-export type SurveyResponseListPage = FixtureListResult & { list: SurveyResponseRow[]; totalItems: number };
+export interface SurveyResponseListPage extends FixtureListResult {
+  list: SurveyResponseRow[];
+  totalItems: number;
+}
 
 /** The respondent of one submission. */
 type Respondent = { site: string; userId: string; answers: unknown };
@@ -84,17 +87,6 @@ export async function submitResponse(
     throw new FixtureApiError('notFound');
   }
   return withGatedTenant(db, grantor, async (tx) => writeResponse(repository, tx, await requireSurvey(tx, surveyId), respondent));
-}
-
-/** Every response of the tenant's survey by creation time and id, with their total; responses of granted sites are stored with the survey, so the list is complete. */
-export function listResponses(
-  { db }: Pick<DomainDeps, 'db'>,
-  { tenantId, surveyId }: SurveyResponsesQuery,
-): Promise<queries.SurveyResponsePage> {
-  return withTenant(db, tenantId, async (tx) => {
-    const survey = await requireSurvey(tx, surveyId);
-    return queries.listResponses(tx, survey.survey_id);
-  });
 }
 
 /** One fixture page of the tenant's survey's responses, paged by `params`; throws notFound, then the paging's invalidParameters. */

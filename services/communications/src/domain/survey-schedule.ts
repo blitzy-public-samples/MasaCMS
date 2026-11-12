@@ -17,7 +17,7 @@ import {
 import { OWNER, type NewScheduledTask } from '../repo/repository.js';
 import { SCHEDULED_TASK, type ScheduledTaskOrigin, type ScheduledTaskRow, type ScheduledTaskStatus } from '../repo/tables.js';
 import type { DomainDeps } from './delivery.js';
-import { planSurveyTasks, taskPayload, taskTarget, type PlannedSurveyTask } from './survey-tasks.js';
+import { legacyRunTime, planSurveyTasks, taskPayload, taskTarget, type PlannedSurveyTask } from './survey-tasks.js';
 
 /** Age after which a task row whose queue side effect is still unstamped is repaired by the sweep's recovery hook. */
 export const SCHEDULED_TASK_RECOVERY_AGE_MS = 30_000;
@@ -45,6 +45,11 @@ const DEQUEUE_DUE: ReadonlySet<ScheduledTaskStatus> = new Set<ScheduledTaskStatu
 // The schedule is surveys' request, so its rows are written on surveys' behalf; queue stamps are communications' own bookkeeping.
 const SCHEDULE_CONTEXT: WriteContext = Object.freeze({ origin: 'target', actorService: 'surveys' });
 const PORT_CONTEXT: WriteContext = Object.freeze({ origin: 'target', actorService: OWNER });
+
+/** A row read back from the database, its run time resolved from the stored wall time as the legacy scheduler resolves it. */
+export function withLegacyRunTime(row: ScheduledTaskRow): ScheduledTaskRow {
+  return { ...row, schedule_time: legacyRunTime(row.schedule_time) };
+}
 
 /** The row of one planned task; its route is resolved from the id the repository assigns, which a reminder's route names. */
 function newScheduledTask(task: PlannedSurveyTask, serviceUrls: Record<string, string>): NewScheduledTask {
@@ -175,7 +180,7 @@ async function recoverTenant(deps: SurveyScheduleDeps, tenantId: string, siteId:
   for (;;) {
     const batchRead = after === undefined ? {} : { after };
     const batch = await withTenant(deps.db, tenantId, (tx) => unstampedScheduledTasksOlderThan(tx, cutoff, batchRead));
-    await enqueueScheduledTasks(deps, tenantId, batch.filter((row) => row.status === 'scheduled'), { siteId });
+    await enqueueScheduledTasks(deps, tenantId, batch.filter((row) => row.status === 'scheduled').map(withLegacyRunTime), { siteId });
     await dequeueScheduledTasks(deps, tenantId, batch.filter((row) => DEQUEUE_DUE.has(row.status)));
     const last = batch.at(-1);
     if (batch.length < RECOVERY_BATCH_SIZE || last === undefined) {

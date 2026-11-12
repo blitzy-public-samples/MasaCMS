@@ -7,6 +7,7 @@ import {
   baseEnvSchema,
   createService,
   loadEnv,
+  publisherEmulatorHost,
   type BaseEnv,
   type Clock,
   type FastifyInstance,
@@ -41,6 +42,8 @@ export interface BuildAppOptions {
 /** Builds the surveys Fastify app with every route and hook registered; never listens. */
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
   const env = options.env ?? loadEnv(baseEnvSchema);
+  // Checked before createService acquires anything; an injected publisher needs no emulator.
+  const emulatorHost = options.publisher === undefined ? publisherEmulatorHost(env) : undefined;
   const app = await createService({
     name: OWNER,
     version: VERSION,
@@ -59,7 +62,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     options.publisher ??
     createPublisher({
       projectId: env.GOOGLE_CLOUD_PROJECT ?? LOCAL_PROJECT_ID,
-      emulatorHost: env.PUBSUB_EMULATOR_HOST,
+      emulatorHost,
       payloadValidators,
     });
   const outbox = createOutbox({ service: OWNER, db, publisher, logger, clock, payloadValidators });

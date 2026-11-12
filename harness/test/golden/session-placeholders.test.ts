@@ -7,7 +7,6 @@ import { GoldenConfigError, MissingSecretError } from '../../src/golden/errors.j
 import {
   DEFAULT_SESSION,
   GATEWAY_PORT,
-  GENERATED_SECRETS_FILE,
   SEED_CONFIG_PATH,
   SEED_CREDENTIALS_FILE,
   appReloadKey,
@@ -52,7 +51,8 @@ const RESERVED_KEY_ENCODED = 'fixture+key%26%3D%23%25%2B%2F%3F%C3%BC';
 const MASK = '<secret>';
 const BUSINESS_DATE = '2026-03-02';
 const NO_LOGIN: SessionSpec = { login: 'none', via: 'admin' };
-const GENERATED_VALUE = /^[A-Za-z0-9_-]{24}a1A$/;
+const GENERATED_NAME = 'new-user';
+const GENERATED_PW = 'FIXTURE-PW-NEW-USER';
 
 // Shape of `SeedCredentials` from legacy-fixtures/seed/src/credentials.ts.
 const CREDENTIALS = {
@@ -67,6 +67,7 @@ const CREDENTIALS = {
     'tenant-b': { member: MEMBER },
   },
   oauthClients: { [OAUTH_CLIENT]: OAUTH_SECRET },
+  generated: { [GENERATED_NAME]: GENERATED_PW },
 };
 
 const SITES = [
@@ -149,14 +150,6 @@ function writeSeedConfig(): string {
   const file = path.join(stateDir, 'seed.config.json');
   fs.writeFileSync(file, `${JSON.stringify(SEED_CONFIG, null, 2)}\n`);
   return file;
-}
-
-function readGenerated(): Record<string, string> {
-  return JSON.parse(fs.readFileSync(secretsPath(GENERATED_SECRETS_FILE), 'utf8')) as Record<string, string>;
-}
-
-function modeOf(p: string): number {
-  return fs.statSync(p).mode & 0o777;
 }
 
 /** Error `fn` throws; fails the test when it returns. */
@@ -359,6 +352,7 @@ describe('loadSecretStore', () => {
     [`seed:${MEMBER}`, MEMBER_PW],
     [`seed:${SYSTEM_USER}`, SHARED_PW],
     [`oauth:${OAUTH_CLIENT}`, OAUTH_SECRET],
+    [`generated:${GENERATED_NAME}`, GENERATED_PW],
   ])('returns secret %s from the environment or the seed credentials', (name, expected) => {
     writeSeedCredentials();
     expect(loadSecretStore(env).secret(name)).toBe(expected);
@@ -375,25 +369,44 @@ describe('loadSecretStore', () => {
     }
   });
 
-  it.each([`seed:${SPLIT_USER}`, 'seed:nobody', 'seed:toString', 'oauth:FIXTURE-CLIENT-0002', 'oauth:constructor'])(
-    'throws MissingSecretError naming the credential file when %s has no unique value there',
-    (name) => {
-      const file = writeSeedCredentials();
-      const err = thrown(() => loadSecretStore(env).secret(name));
-      expect(err).toBeInstanceOf(MissingSecretError);
-      expect(err).toMatchObject({ placeholder: `\${secret:${name}}`, source: file });
-      expect((err as Error).message).not.toContain('FIXTURE-PW');
-    },
-  );
+  it.each([
+    `seed:${SPLIT_USER}`,
+    'seed:nobody',
+    'seed:toString',
+    'oauth:FIXTURE-CLIENT-0002',
+    'oauth:constructor',
+    'generated:other-user',
+    'generated:toString',
+  ])('throws MissingSecretError naming the credential file when %s has no unique value there', (name) => {
+    const file = writeSeedCredentials();
+    const err = thrown(() => loadSecretStore(env).secret(name));
+    expect(err).toBeInstanceOf(MissingSecretError);
+    expect(err).toMatchObject({ placeholder: `\${secret:${name}}`, source: file });
+    expect((err as Error).message).not.toContain('FIXTURE-PW');
+    expect(fs.readdirSync(path.join(stateDir, 'secrets'))).toEqual([SEED_CREDENTIALS_FILE]);
+  });
 
-  it.each([`seed:${SITE_ADMIN}`, `oauth:${OAUTH_CLIENT}`])(
-    'throws MissingSecretError for %s when the credential file does not exist',
+  it.each([`seed:${SITE_ADMIN}`, `oauth:${OAUTH_CLIENT}`, `generated:${GENERATED_NAME}`])(
+    'throws MissingSecretError for %s when the credential file does not exist, writing nothing',
     (name) => {
       const err = thrown(() => loadSecretStore(env).secret(name));
       expect(err).toBeInstanceOf(MissingSecretError);
       expect(err).toMatchObject({ source: secretsPath(SEED_CREDENTIALS_FILE) });
+      expect(fs.readdirSync(stateDir)).toEqual([]);
     },
   );
+
+  it.each([
+    ['a credential file without a generated section', { ...CREDENTIALS, generated: undefined }],
+    ['a generated section that is not an object', { ...CREDENTIALS, generated: [GENERATED_PW] }],
+    ['a generated value that is not a string', { ...CREDENTIALS, generated: { [GENERATED_NAME]: 7 } }],
+  ])('throws MissingSecretError naming the credential file for %s', (_label, body) => {
+    const file = writeSeedCredentials(body);
+    const err = thrown(() => loadSecretStore(env).secret(`generated:${GENERATED_NAME}`));
+    expect(err).toBeInstanceOf(MissingSecretError);
+    expect(err).toMatchObject({ placeholder: `\${secret:generated:${GENERATED_NAME}}`, source: file });
+    expect(fs.readdirSync(path.join(stateDir, 'secrets'))).toEqual([SEED_CREDENTIALS_FILE]);
+  });
 
   it.each(['vault:FIXTURE-KEY', 'nobody', 'seed:', 'oauth:', 'generated:', ''])(
     'throws GoldenConfigError listing the accepted forms for secret %j',
@@ -417,37 +430,14 @@ describe('loadSecretStore', () => {
     expect(store.username('tenant-a', 'site-admin')).toBe(SITE_ADMIN);
   });
 
-  it('creates a generated secret owner-only and returns the same value to a later store of the run', () => {
-    const first = loadSecretStore(env).secret('generated:new-user');
-    expect(first).toMatch(GENERATED_VALUE);
-    expect(readGenerated()).toEqual({ 'new-user': first });
-    expect(modeOf(secretsPath(GENERATED_SECRETS_FILE))).toBe(0o600);
-    expect(modeOf(path.join(stateDir, 'secrets'))).toBe(0o700);
-
-    const replay = loadSecretStore(env);
-    expect(replay.secret('generated:new-user')).toBe(first);
-    const other = replay.secret('generated:other-user');
-    expect(other).toMatch(GENERATED_VALUE);
-    expect(other).not.toBe(first);
-    expect(readGenerated()).toEqual({ 'new-user': first, 'other-user': other });
-  });
-
-  it('tightens an existing generated-secrets file and its directory when it adds a value', () => {
-    fs.mkdirSync(path.join(stateDir, 'secrets'), { mode: 0o755 });
-    fs.chmodSync(path.join(stateDir, 'secrets'), 0o755);
-    fs.writeFileSync(secretsPath(GENERATED_SECRETS_FILE), '{"kept":"FIXTURE-KEPT"}\n', { mode: 0o644 });
-    fs.chmodSync(secretsPath(GENERATED_SECRETS_FILE), 0o644);
-
-    const value = loadSecretStore(env).secret('generated:added');
-    expect(readGenerated()).toEqual({ kept: 'FIXTURE-KEPT', added: value });
-    expect(modeOf(secretsPath(GENERATED_SECRETS_FILE))).toBe(0o600);
-    expect(modeOf(path.join(stateDir, 'secrets'))).toBe(0o700);
-  });
-
-  it('prefers a generated value preset in the credential file over the generated-secrets file', () => {
-    writeSeedCredentials({ ...CREDENTIALS, generated: { preset: 'FIXTURE-PRESET' } });
-    expect(loadSecretStore(env).secret('generated:preset')).toBe('FIXTURE-PRESET');
-    expect(fs.existsSync(secretsPath(GENERATED_SECRETS_FILE))).toBe(false);
+  it('returns the same generated secret to every store of the run, leaving the credential file unchanged', () => {
+    const file = writeSeedCredentials();
+    const before = fs.readFileSync(file, 'utf8');
+    const name = `generated:${GENERATED_NAME}`;
+    expect(loadSecretStore(env).secret(name)).toBe(GENERATED_PW);
+    expect(loadSecretStore(env).secret(name)).toBe(GENERATED_PW);
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+    expect(fs.readdirSync(path.join(stateDir, 'secrets'))).toEqual([SEED_CREDENTIALS_FILE]);
   });
 
   it.each([
@@ -477,23 +467,17 @@ describe('loadSecretStore', () => {
     expect(err).toMatchObject({ path: secretsPath(SEED_CREDENTIALS_FILE) });
   });
 
-  it('reports an unparsable credential file without quoting its text', () => {
-    const file = writeSeedCredentials('{"users": FIXTURE-LEAKED-TEXT');
-    const err = thrown(() => loadSecretStore(env).secret(`seed:${MEMBER}`));
-    expect(err).toBeInstanceOf(GoldenConfigError);
-    expect(err).toMatchObject({ message: `seed credentials ${file} is not valid JSON`, path: file });
-    expect((err as Error).cause).toBeUndefined();
-  });
-
-  it('reports an unparsable generated-secrets file without quoting its text', () => {
-    fs.mkdirSync(path.join(stateDir, 'secrets'), { recursive: true });
-    const file = secretsPath(GENERATED_SECRETS_FILE);
-    fs.writeFileSync(file, 'FIXTURE-LEAKED-TEXT');
-    const err = thrown(() => loadSecretStore(env).secret('generated:new-user'));
-    expect(err).toBeInstanceOf(GoldenConfigError);
-    expect(err).toMatchObject({ message: `generated golden secrets ${file} is not valid JSON`, path: file });
-    expect((err as Error).message).not.toContain('FIXTURE-LEAKED-TEXT');
-  });
+  it.each([`seed:${MEMBER}`, `generated:${GENERATED_NAME}`])(
+    'reports an unparsable credential file without quoting its text for %s',
+    (name) => {
+      const file = writeSeedCredentials('{"users": FIXTURE-LEAKED-TEXT');
+      const err = thrown(() => loadSecretStore(env).secret(name));
+      expect(err).toBeInstanceOf(GoldenConfigError);
+      expect(err).toMatchObject({ message: `seed credentials ${file} is not valid JSON`, path: file });
+      expect((err as Error).message).not.toContain('FIXTURE-LEAKED-TEXT');
+      expect((err as Error).cause).toBeUndefined();
+    },
+  );
 
   it.each([['[]'], ['"FIXTURE-TEXT"'], ['null']])('rejects credential file %s as not a JSON object', (text) => {
     const file = writeSeedCredentials(text);
@@ -838,11 +822,12 @@ describe('resolvePlaceholders', () => {
     expect(resolvePlaceholders({ 'p${urlencode:${value.raw}}': 1 }, ctx)).toEqual({ [`p${encoded}`]: 1 });
   });
 
-  it('posts the same generated secret in capture and replay contexts of one run', () => {
-    const form = { password: '${secret:generated:new-user}' };
+  it('posts the same generated secret, from the seed credentials, in capture and replay contexts of one run', () => {
+    writeSeedCredentials();
+    const form = { password: `\${secret:generated:${GENERATED_NAME}}` };
     const capture = resolvePlaceholders(form, contextFor({ id: SCENARIO }));
     const replay = resolvePlaceholders(form, contextFor({ id: SCENARIO }, 'gateway'));
-    expect(capture.password).toMatch(GENERATED_VALUE);
+    expect(capture).toEqual({ password: GENERATED_PW });
     expect(replay).toEqual(capture);
   });
 

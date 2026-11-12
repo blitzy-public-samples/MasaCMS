@@ -71,7 +71,7 @@ Each subpath maps to `dist/<module>/index.js` and its `.d.ts` (AAP 0.5.5).
 | `PG_PASSWORD` | string | `OPT2_DB_AUTH=password`; must be unset with `iam` | — | Password of `PG_USER` |
 | `OPT2_DB_AUTH` | `password` \| `iam` | no | unset: no pool | Pool login: `password` locally, Cloud SQL IAM in the cloud. `createService` with a `schema` throws without it |
 | `CLOUD_SQL_INSTANCE` | `<project>:<region>:<instance>` | `OPT2_DB_AUTH=iam` | — | Cloud SQL connector instance |
-| `PUBSUB_EMULATOR_HOST` | `host:port` or `[ipv6]:port`, port 1–65535 | no; must be unset in the cloud | — | Pub/Sub emulator, read by the Pub/Sub client |
+| `PUBSUB_EMULATOR_HOST` | `host:port` or `[ipv6]:port`, port 1–65535 | by a local process's default publisher (`publisherEmulatorHost`); must be unset in the cloud | — | Pub/Sub emulator, read by the Pub/Sub client |
 | `GOOGLE_CLOUD_PROJECT` | string | `OPT2_ENV=cloud` | — | Project of Pub/Sub, Cloud Tasks, Cloud Storage, cloud log trace ids and the securetoken issuer |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | http(s) URL, trailing `/` trimmed | no | tracing uses `http://localhost:4318` | OTLP/HTTP base; `tracing` exports spans to `<base>/v1/traces` |
 | `OPT2_JWKS_URL` | http(s) URL, trailing `/` trimmed | `OPT2_ENV=local` | cloud: Google's securetoken JWKS | Key set that verifies user tokens; locally identity's |
@@ -97,6 +97,7 @@ Loading:
 
 - Every variable is parsed first; the cross-variable rules run only once all parse. Either stage throws `EnvValidationError` listing all of its issues: `<OPT2_SERVICE_NAME>: invalid environment` (no prefix while the name is missing or invalid), then one indented `<VAR>: <problem>` line each, `is required` for an unset variable. `issues` holds those lines.
 - The result is frozen, with both adapters set.
+- `publisherEmulatorHost(env)` returns the emulator host a process's default publisher uses. It throws `EnvValidationError` with `PUBSUB_EMULATOR_HOST: is required when OPT2_ENV=local` when the host is unset locally, so a local process never reaches Cloud Pub/Sub; services call it only when no publisher is injected.
 - `schema` may be `baseEnvSchema.extend({…})`; `requiredEnvString`, `optionalEnvString`, `envUrl` and `envPort` build further variables with the same blank handling. Per-process additions (AAP 0.6.2) extend it in their own packages: gateway `LEGACY_ORIGIN`, `OPT2_CUTOVER_DIR`, `OPT2_BRIDGE_HMAC_KEY`; migration, among others, `MURA_DBHOST`, `MURA_DBPORT`, `MURA_DATABASE`, `MURA_DBUSERNAME`, `MURA_DBPASSWORD`, `LEGACY_ORIGIN`, `OPT2_BRIDGE_HMAC_KEY`; communications `SMTP_HOST`, `SMTP_PORT`, `MAILPIT_API_URL`.
 
 ## Contracts

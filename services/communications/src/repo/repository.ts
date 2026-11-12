@@ -241,7 +241,7 @@ export function createCommunicationsRepository({ clock, schema = SCHEMA }: Commu
   }
 
   /** Inserts `task` as a new row created at `now`. */
-  function insertScheduledTask(tx: TenantTx, task: NewScheduledTask, now: Date, ctx: WriteContext): Promise<ScheduledTaskRow> {
+  async function insertScheduledTask(tx: TenantTx, task: NewScheduledTask, now: Date, ctx: WriteContext): Promise<ScheduledTaskRow> {
     const scheduledTaskId = cfUuid();
     const row: Omit<ScheduledTaskRow, 'tenant_id'> = {
       scheduled_task_id: scheduledTaskId,
@@ -251,7 +251,9 @@ export function createCommunicationsRepository({ clock, schema = SCHEMA }: Commu
       created_at: now,
       updated_at: now,
     };
-    return base.insert<ScheduledTaskRow>(tx, SCHEDULED_TASK.table, row, ctx);
+    const stored = await base.insert<ScheduledTaskRow>(tx, SCHEDULED_TASK.table, row, ctx);
+    // A timestamp without time zone drops the offset, so a repeated wall time read back would take its earlier occurrence.
+    return { ...stored, schedule_time: task.scheduleTime };
   }
 
   /** Serialises adoptions of the same task names in the tenant; names are locked in sorted order so adopters never deadlock. */
@@ -281,7 +283,8 @@ export function createCommunicationsRepository({ clock, schema = SCHEMA }: Commu
     }
     // Restoration cancelled this adoption; the name keeps one adopted row, so the same row is scheduled again.
     const row = await updateScheduledTask(tx, current.scheduled_task_id, scheduleColumns(task, current.scheduled_task_id), ctx);
-    return { row: row as ScheduledTaskRow, created: true };
+    // The instant written, as insertScheduledTask returns it.
+    return { row: { ...(row as ScheduledTaskRow), schedule_time: task.scheduleTime }, created: true };
   }
 
   async function insertScheduledTasks(

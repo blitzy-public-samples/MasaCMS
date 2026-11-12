@@ -191,9 +191,18 @@ const pollSpec = z
     until: z.strictObject({ path: z.string().min(1), equals: scalar }),
     intervalMs: z.number().int().positive(),
     timeoutMs: z.number().int().positive(),
+    lifecycle: z.array(z.strictObject({ state: z.string().min(1), at: z.string().min(1) })).min(1).optional(),
   })
-  .refine((poll) => poll.intervalMs <= poll.timeoutMs, { message: 'must not exceed timeoutMs', path: ['intervalMs'] });
-/** Repeat a step until a JSON path of its body equals a value. */
+  .refine((poll) => poll.intervalMs <= poll.timeoutMs, { message: 'must not exceed timeoutMs', path: ['intervalMs'] })
+  .refine((poll) => new Set(poll.lifecycle?.map((entry) => entry.state)).size === (poll.lifecycle?.length ?? 0), {
+    message: 'must not repeat a state',
+    path: ['lifecycle'],
+  })
+  .refine((poll) => poll.lifecycle === undefined || poll.lifecycle.at(-1)?.state === String(poll.until.equals), {
+    message: 'must end with the state until.equals names',
+    path: ['lifecycle'],
+  });
+/** Repeat a step until a JSON path of its body equals a value, proving any `lifecycle` states in order. */
 export type PollSpec = z.infer<typeof pollSpec>;
 
 interface BodyFields {

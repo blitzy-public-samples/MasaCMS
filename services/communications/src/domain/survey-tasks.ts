@@ -1,5 +1,6 @@
 // SYNTHETIC: communications - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Pure seam 2 task plan: the launch and reminder tasks of one `surveys.survey.scheduled.v1` schedule version, named as the fixture's ACF tasks. */
+import { strictLocalInstant } from '@opt2/platform/legacy-compat';
 import { QUEUES, assertTaskName, targetUrl } from '@opt2/platform/tasks';
 import type { components as SurveysComponents } from '../generated/clients/surveys.js';
 import type { SurveyScheduledPayload } from '../generated/events/surveys.survey.scheduled.v1.js';
@@ -84,18 +85,33 @@ export function portTaskName(taskName: string, scheduleVersion: number): string 
   return name;
 }
 
-/** Parses `yyyy-MM-ddTHH:mm:ss.SSS` as wall-clock time in the process `TZ`; throws `RangeError` for any other text or a time that does not exist there. */
+/**
+ * Parses `yyyy-MM-ddTHH:mm:ss.SSS` as wall-clock time in the process `TZ`, a repeated time taking its later offset as the legacy
+ * calendar resolves it; throws `RangeError` for any other text or a time that does not exist there.
+ */
 export function parseLocalTimestamp(text: string): Date {
   const match = LOCAL_TIMESTAMP.exec(text);
   if (match === null) throw new RangeError(`Invalid local timestamp ${JSON.stringify(text)}: expected yyyy-MM-ddTHH:mm:ss.SSS`);
   const [year, month, day, hour, minute, second, ms] = match.slice(1).map(Number) as [number, number, number, number, number, number, number];
-  const date = new Date(year, month - 1, day, hour, minute, second, ms);
-  // Date rolls overflowing fields over and maps years 0-99 to 1900-1999; the round trip refuses both, as the fixture's parse does.
-  const fields = [date.getFullYear(), date.getMonth() + 1, date.getDate(), date.getHours(), date.getMinutes(), date.getSeconds()];
-  if (fields.some((value, i) => value !== [year, month, day, hour, minute, second][i])) {
+  const instant = strictLocalInstant({ year, month, day, hour, minute, second, ms });
+  if (instant === undefined) {
     throw new RangeError(`Invalid local timestamp ${JSON.stringify(text)}: no such local time`);
   }
-  return date;
+  return new Date(instant);
+}
+
+/** The instant the legacy scheduler runs a task starting at the local wall time of `at`; a repeated time takes its later offset. */
+export function legacyRunTime(at: Date): Date {
+  const instant = strictLocalInstant({
+    year: at.getFullYear(),
+    month: at.getMonth() + 1,
+    day: at.getDate(),
+    hour: at.getHours(),
+    minute: at.getMinutes(),
+    second: at.getSeconds(),
+    ms: at.getMilliseconds(),
+  });
+  return instant === undefined ? at : new Date(instant);
 }
 
 /** One planned task; a run time before `now` is moved to `now`, so it is scheduled immediately. */
@@ -127,13 +143,13 @@ export function planSurveyTasks(payload: SurveyScheduledPayload, opts: { now: Da
   const launchAt = parseLocalTimestamp(payload.launchAt);
   return [
     plannedTask(payload, 'survey-launch', payload.launchTaskName, launchAt, opts.now),
-    // The fixture's cfschedule start time is dateAdd("n", offsetMinutes, launchAt).
+    // The fixture's cfschedule start is the local wall time of dateAdd("n", offsetMinutes, launchAt).
     ...payload.reminders.map((reminder) =>
       plannedTask(
         payload,
         'survey-reminder',
         reminder.taskName,
-        new Date(launchAt.getTime() + reminder.offsetMinutes * MS_PER_MINUTE),
+        legacyRunTime(new Date(launchAt.getTime() + reminder.offsetMinutes * MS_PER_MINUTE)),
         opts.now,
         reminder.n,
       ),

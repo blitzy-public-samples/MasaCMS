@@ -1,12 +1,16 @@
 /** Site-scoped user tokens: the local signer and JWKS, the Identity Platform adapter, and minting against a throwaway `identity` schema. */
 import { mkdtemp, rm } from 'node:fs/promises';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { cert, deleteApp, initializeApp } from 'firebase-admin/app';
-import { createLocalJWKSet, decodeJwt, decodeProtectedHeader, exportPKCS8 } from 'jose';
+import { cert, deleteApp, initializeApp, type App } from 'firebase-admin/app';
+import { getAuth } from 'firebase-admin/auth';
+import { SignJWT, createLocalJWKSet, decodeJwt, decodeProtectedHeader, exportPKCS8 } from 'jose';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  ANONYMOUS_PRINCIPAL_UID,
   LOCAL_USER_TOKEN,
   cloudUserTokenSettings,
   createUserTokenVerifier,
@@ -15,9 +19,9 @@ import {
   type UserClaims,
 } from '@opt2/platform/auth';
 import { ensureUnitGates, withGatedTenant } from '@opt2/platform/migration-kit';
-import type { Clock } from '@opt2/platform/service-kit';
+import { ServiceUnavailableError, type Clock } from '@opt2/platform/service-kit';
 import { tenantIdForSite, withMetadata, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
-import { createThrowawaySchema, fixedClock, pgAvailable, testSigningKeys, writeTestSecrets, type ThrowawaySchema } from '@opt2/platform/testing';
+import { createThrowawaySchema, fixedClock, pgAvailable, testJwks, testSigningKeys, writeTestSecrets, type ThrowawaySchema } from '@opt2/platform/testing';
 import { applyLogin, endSession, ensureSession } from '../../src/domain/sessions.js';
 import {
   MAX_CUSTOM_CLAIMS_BYTES,
@@ -81,6 +85,32 @@ function recordedFetch(status: number, body: string): { fetchImpl: typeof fetch;
     return Promise.resolve(new Response(body, { status }));
   }) as unknown as typeof fetch;
   return { fetchImpl, calls };
+}
+
+/** A Firebase app of project `proj` signing custom tokens with a test key; its credential's access token is `access-1`. */
+async function testFirebaseApp(name: string): Promise<App> {
+  const keys = await testSigningKeys();
+  const credential = cert({ projectId: 'proj', clientEmail: 'sa@proj.iam.gserviceaccount.com', privateKey: await exportPKCS8(keys.privateKey) });
+  credential.getAccessToken = () => Promise.resolve({ access_token: 'access-1', expires_in: 3600 });
+  return initializeApp({ projectId: 'proj', credential }, name);
+}
+
+/** An HTTP server on 127.0.0.1 answering through `handle`; `close` is idempotent and drops held connections. */
+async function localServer(handle: (req: IncomingMessage, res: ServerResponse) => void): Promise<{ url: string; received: number; close: () => Promise<void> }> {
+  const state = { url: '', received: 0, close: (): Promise<void> => Promise.resolve() };
+  const server = createServer((req, res) => {
+    state.received += 1;
+    handle(req, res);
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  state.url = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/v1/accounts:signInWithCustomToken`;
+  let closed: Promise<void> | undefined;
+  state.close = () =>
+    (closed ??= new Promise<void>((resolve, reject) => {
+      server.closeAllConnections();
+      server.close((err) => (err === undefined ? resolve() : reject(err)));
+    }));
+  return state;
 }
 
 let stateDir: string;
@@ -161,12 +191,10 @@ describe('token service construction', () => {
 describe('Firebase Identity Platform adapter', () => {
   const custom = { sid: 'S1', tid: TENANT_A, site: 'tenant-a', roles: ['member'], s2: false, epoch: 3 };
 
+  const tenantIdForPool = (pool: string): string => `ip-${pool}`;
+
   it('signs a tenant custom token and exchanges it as the app service account', async () => {
-    const keys = await testSigningKeys();
-    const credential = cert({ projectId: 'proj', clientEmail: 'sa@proj.iam.gserviceaccount.com', privateKey: await exportPKCS8(keys.privateKey) });
-    credential.getAccessToken = () => Promise.resolve({ access_token: 'access-1', expires_in: 3600 });
-    const app = initializeApp({ projectId: 'proj', credential }, 'identity-tokens-test');
-    const tenantIdForPool = (pool: string): string => `ip-${pool}`;
+    const app = await testFirebaseApp('identity-tokens-test');
     try {
       const ok = recordedFetch(200, JSON.stringify({ idToken: 'id-token', expiresIn: '3600', refreshToken: 'refresh' }));
       const adapter = createFirebaseIdentityPlatformAdapter({ projectId: 'proj', tenantIdForPool, fetchImpl: ok.fetchImpl, app });
@@ -192,6 +220,37 @@ describe('Firebase Identity Platform adapter', () => {
     }
   });
 
+  it('signs the anonymous principal project-level and exchanges it without a tenant', async () => {
+    const app = await testFirebaseApp('identity-tokens-project-level');
+    const anonymous = { ...custom, roles: [] };
+    let poolLookups = 0;
+    const countingTenantIdForPool = (pool: string): string => {
+      poolLookups += 1;
+      return tenantIdForPool(pool);
+    };
+    try {
+      const ok = recordedFetch(200, JSON.stringify({ idToken: 'anon-id-token', expiresIn: '3600', refreshToken: 'refresh' }));
+      const adapter = createFirebaseIdentityPlatformAdapter({ projectId: 'proj', tenantIdForPool: countingTenantIdForPool, fetchImpl: ok.fetchImpl, app });
+
+      expect(await adapter.mintIdToken(null, ANONYMOUS_PRINCIPAL_UID, anonymous)).toEqual({ idToken: 'anon-id-token', expiresIn: 3600 });
+      expect(poolLookups).toBe(0);
+      expect(ok.calls).toHaveLength(1);
+      expect(ok.calls[0]?.url).toBe(SIGN_IN_WITH_CUSTOM_TOKEN_URL);
+      expect(ok.calls[0]?.init.headers).toMatchObject({ authorization: 'Bearer access-1' });
+      const body = JSON.parse(String(ok.calls[0]?.init.body)) as { token: string; returnSecureToken: boolean };
+      expect(Object.keys(body).sort()).toEqual(['returnSecureToken', 'token']);
+      const customToken = decodeJwt(body.token);
+      expect(customToken).toMatchObject({ uid: ANONYMOUS_PRINCIPAL_UID, claims: anonymous, iss: 'sa@proj.iam.gserviceaccount.com' });
+      expect(customToken).not.toHaveProperty('tenant_id');
+
+      const refused = recordedFetch(400, JSON.stringify({ error: { message: 'INVALID_CUSTOM_TOKEN' } }));
+      const failing = createFirebaseIdentityPlatformAdapter({ projectId: 'proj', tenantIdForPool, fetchImpl: refused.fetchImpl, app });
+      await expect(failing.mintIdToken(null, ANONYMOUS_PRINCIPAL_UID, anonymous)).rejects.toThrow(/for the project: HTTP 400 INVALID_CUSTOM_TOKEN$/);
+    } finally {
+      await deleteApp(app);
+    }
+  });
+
   it('refuses custom claims over 1,000 bytes before calling Google', async () => {
     let called = false;
     const adapter = createFirebaseIdentityPlatformAdapter({
@@ -205,6 +264,93 @@ describe('Firebase Identity Platform adapter', () => {
     await expect(adapter.mintIdToken('tenant-a', userId(1), { roles: ['x'.repeat(MAX_CUSTOM_CLAIMS_BYTES)] })).rejects.toBeInstanceOf(RangeError);
     expect(called).toBe(false);
   });
+
+  it.each([
+    { exchange: 'is never answered', handle: () => undefined, refuse: false, received: 1, cause: 'TimeoutError' },
+    {
+      exchange: 'sends headers, then stalls its body',
+      handle: (_req: IncomingMessage, res: ServerResponse) => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.write('{"idToken":');
+      },
+      refuse: false,
+      received: 1,
+      cause: 'TimeoutError',
+    },
+    {
+      exchange: 'drops the connection mid-body',
+      handle: (_req: IncomingMessage, res: ServerResponse) => {
+        res.writeHead(200, { 'content-type': 'application/json', 'content-length': '100' });
+        res.write('{"idToken":', () => setTimeout(() => res.destroy(), 20));
+      },
+      refuse: false,
+      received: 1,
+      cause: 'TypeError',
+    },
+    { exchange: 'is refused', handle: () => undefined, refuse: true, received: 0, cause: 'TypeError' },
+  ])('answers an exchange that $exchange with ServiceUnavailableError', async ({ exchange, handle, refuse, received, cause }) => {
+    const app = await testFirebaseApp(`identity-tokens-exchange-${exchange.replace(/\W/g, '-')}`);
+    const server = await localServer(handle);
+    try {
+      if (refuse) await server.close();
+      const fetchImpl = ((_url: string, init: RequestInit) => fetch(server.url, init)) as unknown as typeof fetch;
+      const adapter = createFirebaseIdentityPlatformAdapter({ projectId: 'proj', tenantIdForPool, fetchImpl, app, timeoutMs: 200 });
+      const failure: unknown = await adapter.mintIdToken('umbrella', userId(1), custom).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(failure).toBeInstanceOf(ServiceUnavailableError);
+      expect(failure).toMatchObject({ service: 'identity-platform', cause: { name: cause } });
+      expect(server.received).toBe(received);
+    } finally {
+      await server.close();
+      await deleteApp(app);
+    }
+  });
+
+  it.each([
+    {
+      step: 'credential acquisition',
+      stall: (app: App) => {
+        const credential = app.options.credential;
+        if (credential !== undefined) credential.getAccessToken = () => new Promise(() => undefined);
+      },
+    },
+    {
+      step: 'custom-token signing',
+      stall: (app: App) => {
+        getAuth(app).tenantManager().authForTenant('ip-umbrella').createCustomToken = () => new Promise(() => undefined);
+      },
+    },
+  ])('answers stalled $step with ServiceUnavailableError before any exchange', async ({ step, stall }) => {
+    const app = await testFirebaseApp(`identity-tokens-stalled-${step.replace(/\W/g, '-')}`);
+    try {
+      stall(app);
+      const ok = recordedFetch(200, JSON.stringify({ idToken: 'id-token', expiresIn: '3600' }));
+      const adapter = createFirebaseIdentityPlatformAdapter({ projectId: 'proj', tenantIdForPool, fetchImpl: ok.fetchImpl, app, timeoutMs: 100 });
+      const failure = adapter.mintIdToken('umbrella', userId(1), custom);
+      await expect(failure).rejects.toBeInstanceOf(ServiceUnavailableError);
+      await expect(failure).rejects.toMatchObject({ service: 'identity-platform', cause: { name: 'TimeoutError' } });
+      expect(ok.calls).toHaveLength(0);
+    } finally {
+      await deleteApp(app);
+    }
+  });
+
+  it('propagates a credential acquisition failure within the budget unchanged', async () => {
+    const app = await testFirebaseApp('identity-tokens-credential-failure');
+    const denied = new Error('invalid_grant');
+    try {
+      const credential = app.options.credential;
+      if (credential !== undefined) credential.getAccessToken = () => Promise.reject(denied);
+      const ok = recordedFetch(200, JSON.stringify({ idToken: 'id-token', expiresIn: '3600' }));
+      const adapter = createFirebaseIdentityPlatformAdapter({ projectId: 'proj', tenantIdForPool, fetchImpl: ok.fetchImpl, app });
+      await expect(adapter.mintIdToken('umbrella', userId(1), custom)).rejects.toBe(denied);
+      expect(ok.calls).toHaveLength(0);
+    } finally {
+      await deleteApp(app);
+    }
+  });
 });
 
 const available = await pgAvailable();
@@ -216,6 +362,8 @@ describe.skipIf(!available)('token minting against PostgreSQL', () => {
   let editors = '';
   let admins = '';
   let subscribers = '';
+  /** Epochs of the sessions without a signed-in user, set by the local anonymous-minting case. */
+  const anonymousEpochs = new Map<string, number>();
 
   async function registerSite(site: string, privatePool: string, publicPool: string): Promise<void> {
     await withMetadata(handle.app, (tx) =>
@@ -316,14 +464,16 @@ describe.skipIf(!available)('token minting against PostgreSQL', () => {
     const anonymous = await ensureSession(sessionDeps(), { sessionId: 'S-ANON', mode: 'target-primary' });
     await login('S-ENDED', snapshotOf(userId(4), 'tenant-a', `S2IsPrivate;tenant-a,S2IsPrivate,${userId(4)};username;tenant-a`, []));
     const ended = await endSession(sessionDeps(), 'S-ENDED');
+    anonymousEpochs.set('S-ANON', anonymous.epoch).set('S-ENDED', ended.epoch).set('S-UNKNOWN', 0);
 
-    for (const [sessionId, epoch] of [['S-ANON', anonymous.epoch], ['S-ENDED', ended.epoch], ['S-UNKNOWN', 0]] as const) {
+    for (const [sessionId, epoch] of anonymousEpochs) {
       expect((await service.mint({ sessionId, siteId: 'tenant-a' })).claims).toMatchObject({ sub: '', sid: sessionId, roles: [], s2: false, epoch, tid: TENANT_A });
     }
   });
 
-  it('issues cloud tokens from the custom claims and the user-pool site, refusing anonymous sessions', async () => {
-    const calls: Array<[string, string, Record<string, unknown>]> = [];
+  /** A cloud token service whose Identity Platform adapter records its calls and answers `id-token`, valid 3,500 s. */
+  function cloudService(): { cloud: TokenService; calls: Array<[string | null, string, Record<string, unknown>]> } {
+    const calls: Array<[string | null, string, Record<string, unknown>]> = [];
     const identityPlatform: IdentityPlatformAdapter = {
       mintIdToken(poolSiteId, uid, customClaims) {
         calls.push([poolSiteId, uid, customClaims]);
@@ -331,7 +481,11 @@ describe.skipIf(!available)('token minting against PostgreSQL', () => {
       },
     };
     const env = { OPT2_ENV: 'cloud' as const, OPT2_STATE_DIR: stateDir, GOOGLE_CLOUD_PROJECT: 'proj' };
-    const cloud = createTokenService({ env, clock: CLOCK, db: handle.app, repo, identityPlatform });
+    return { cloud: createTokenService({ env, clock: CLOCK, db: handle.app, repo, identityPlatform }), calls };
+  }
+
+  it('issues cloud tokens from the custom claims and the user-pool site', async () => {
+    const { cloud, calls } = cloudService();
     const minted = await cloud.mint({ sessionId: 'S-MEMBER', siteId: 'tenant-a' });
 
     expect(minted).toMatchObject({
@@ -339,6 +493,61 @@ describe.skipIf(!available)('token minting against PostgreSQL', () => {
     });
     expect(calls).toEqual([['umbrella', userId(2), { sid: 'S-MEMBER', tid: TENANT_A, site: 'tenant-a', roles: ['m:007', 'member'], s2: false, epoch: 1 }]]);
     expect(Buffer.byteLength(JSON.stringify(calls[0]?.[2]), 'utf8')).toBeLessThanOrEqual(MAX_CUSTOM_CLAIMS_BYTES);
-    await expect(cloud.mint({ sessionId: 'S-ANON', siteId: 'tenant-a' })).rejects.toThrow(/signed-in user/);
+  });
+
+  it.each(['S-ANON', 'S-ENDED', 'S-UNKNOWN'])('issues a cloud token for session %s as the project-level anonymous principal', async (sessionId) => {
+    const { cloud, calls } = cloudService();
+    const epoch = anonymousEpochs.get(sessionId);
+    const minted = await cloud.mint({ sessionId, siteId: 'tenant-a' });
+
+    expect(calls).toEqual([[null, ANONYMOUS_PRINCIPAL_UID, { sid: sessionId, tid: TENANT_A, site: 'tenant-a', roles: [], s2: false, epoch }]]);
+    expect(minted).toEqual({
+      token: 'id-token',
+      expiresAt: IAT + 3500,
+      epoch,
+      claims: {
+        iss: cloudUserTokenSettings('proj').issuer, aud: 'proj', sub: '', sid: sessionId, tid: TENANT_A, site: 'tenant-a',
+        roles: [], s2: false, epoch, iat: IAT, exp: IAT + 3500,
+      },
+    });
+  });
+
+  it.each([
+    { sessionId: 'S-ANON', uid: ANONYMOUS_PRINCIPAL_UID, sub: '', firebase: { identities: {}, sign_in_provider: 'custom' } },
+    { sessionId: 'S-MEMBER', uid: userId(2), sub: userId(2), firebase: { identities: {}, sign_in_provider: 'custom', tenant: 'ip-umbrella' } },
+  ])('verifies the Identity Platform ID token of session $sessionId to the claims identity answers', async ({ sessionId, uid, sub, firebase }) => {
+    const { privateKey, kid } = await testSigningKeys();
+    const { issuer, audience } = cloudUserTokenSettings('proj');
+    const clock = fixedClock(new Date());
+    const identityPlatform: IdentityPlatformAdapter = {
+      async mintIdToken(poolSiteId, signInUid, customClaims) {
+        const iat = Math.floor(clock.now().getTime() / 1000);
+        const tenant = poolSiteId === null ? {} : { tenant: `ip-${poolSiteId}` };
+        const payload = {
+          ...customClaims, iss: issuer, aud: audience, auth_time: iat, user_id: signInUid, sub: signInUid, iat, exp: iat + 3600,
+          firebase: { identities: {}, sign_in_provider: 'custom', ...tenant },
+        };
+        return { idToken: await new SignJWT(payload).setProtectedHeader({ alg: 'RS256', kid, typ: 'JWT' }).sign(privateKey), expiresIn: 3600 };
+      },
+    };
+    const env = { OPT2_ENV: 'cloud' as const, OPT2_STATE_DIR: stateDir, GOOGLE_CLOUD_PROJECT: 'proj' };
+    const minted = await createTokenService({ env, clock, db: handle.app, repo, identityPlatform }).mint({ sessionId, siteId: 'tenant-a' });
+    const verifier = createUserTokenVerifier({ issuer, audience: 'proj', keySet: createLocalJWKSet(await testJwks()) });
+
+    const idToken = decodeJwt(minted.token);
+    expect(idToken).toMatchObject({ sub: uid, user_id: uid });
+    expect(idToken.firebase).toEqual(firebase);
+    expect(minted.claims).toMatchObject({ iss: issuer, aud: 'proj', sub, sid: sessionId, site: 'tenant-a', exp: minted.expiresAt });
+    expect(await verifier.verify(minted.token)).toEqual(minted.claims);
+  });
+
+  it('refuses a cloud token for a signed-in user without a user-pool site before calling Identity Platform', async () => {
+    const roleList = `S2IsPrivate;tenant-a,S2IsPrivate,${userId(6)};username;tenant-a`;
+    const snapshot = { ...snapshotOf(userId(6), 'tenant-a', roleList, []), siteid: null };
+    await applyLogin(sessionDeps(), { sessionId: 'S-NOPOOL', tenantId: TENANT_A, snapshot, mode: 'target-primary', siteId: 'tenant-a' });
+    const { cloud, calls } = cloudService();
+
+    await expect(cloud.mint({ sessionId: 'S-NOPOOL', siteId: 'tenant-a' })).rejects.toThrow(/no user-pool site/);
+    expect(calls).toEqual([]);
   });
 });

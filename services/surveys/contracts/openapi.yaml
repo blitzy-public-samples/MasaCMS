@@ -711,7 +711,7 @@ paths:
   /v1/surveys:
     get:
       operationId: listSurveys
-      summary: Lists the site's surveys with their schedules for the Surveys screen, ordered by creation time and id.
+      summary: Lists one page of the site's surveys with their schedules for the Surveys screen, ordered by creation time and id.
       tags:
         - v1
       x-opt2-transport: service
@@ -722,21 +722,27 @@ paths:
           invocationCredential: []
       parameters:
         - $ref: '#/components/parameters/SiteIdQuery'
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
       responses:
         '200':
-          description: The site's surveys.
+          description: One page of the site's surveys and the count of every survey of the site.
           content:
             application/json:
               schema:
                 type: object
                 required:
                   - data
+                  - total
                 additionalProperties: false
                 properties:
                   data:
                     type: array
                     items:
                       $ref: '#/components/schemas/Survey'
+                  total:
+                    type: integer
+                    minimum: 0
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -939,7 +945,7 @@ paths:
       - $ref: '#/components/parameters/SurveyId'
     get:
       operationId: listSurveyResponses
-      summary: Lists the survey's responses from every responding site, ordered by creation time and id.
+      summary: Lists one page of the survey's responses from every responding site, ordered by creation time and id.
       tags:
         - v1
       x-opt2-transport: service
@@ -950,21 +956,27 @@ paths:
           invocationCredential: []
       parameters:
         - $ref: '#/components/parameters/SiteIdQuery'
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
       responses:
         '200':
-          description: The survey's responses.
+          description: One page of the survey's responses and the count of all its responses.
           content:
             application/json:
               schema:
                 type: object
                 required:
                   - data
+                  - total
                 additionalProperties: false
                 properties:
                   data:
                     type: array
                     items:
                       $ref: '#/components/schemas/SurveyResponse'
+                  total:
+                    type: integer
+                    minimum: 0
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':

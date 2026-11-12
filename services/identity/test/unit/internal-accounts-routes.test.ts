@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
-import { ensureUnitGates, registerWritePositionHeader } from '@opt2/platform/migration-kit';
+import { ensureUnitGates, registerWritePositionHeader, withGatedTenant } from '@opt2/platform/migration-kit';
 import { createOutbox } from '@opt2/platform/outbox';
 import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { tenantIdForSite, withMetadata, withTenant, type TenantDb } from '@opt2/platform/tenancy';
@@ -16,6 +16,7 @@ import {
   assertResponseMatchesOpenApi,
   createCapturingPublisher,
   createThrowawaySchema,
+  findOperation,
   mintServiceToken,
   mintUserToken,
   pgAvailable,
@@ -24,9 +25,10 @@ import {
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
 import { DEFAULT_ACCOUNT_SETTINGS, type AccountOperationDeps } from '../../src/domain/account-operations.js';
+import { applyLogin } from '../../src/domain/sessions.js';
 import { createIdentityEvents, identityPayloadValidators } from '../../src/events/publish.js';
-import { createIdentityRepository, type IdentityRepository } from '../../src/repo/repository.js';
-import { IDENTITY_UNITS, type UserAccountRow } from '../../src/repo/tables.js';
+import { createIdentityRepository, type GroupInput, type IdentityRepository } from '../../src/repo/repository.js';
+import { IDENTITY_UNITS, type SessionRow, type UserAccountRow } from '../../src/repo/tables.js';
 import { registerAccountRoutes } from '../../src/routes/internal-accounts.js';
 
 type Method = 'GET' | 'POST';
@@ -43,7 +45,12 @@ const SITE = 'tenant-a';
 const UMBRELLA = 'umbrella';
 const ACTOR = 'A0000000-0000-0000-0000000000000999';
 const SOME_USER = 'A0000000-0000-0000-0000000000000001';
+const OTHER_USER = 'A0000000-0000-0000-0000000000000002';
 const SOME_OPERATION = 'C0000000-0000-0000-0000000000000001';
+const SOME_SESSION = 'S-0000000000000001';
+const EDITORS = 'B0000000-0000-0000-0000000000000001';
+const AUTHORS = 'B0000000-0000-0000-0000000000000002';
+const MEMBERS = 'B0000000-0000-0000-0000000000000003';
 const JSON_BODY = { 'content-type': 'application/json' };
 
 // Unit and auth cases run without PostgreSQL; the stub fails any SQL they would reach.
@@ -83,6 +90,16 @@ async function registerSite(schema: string, db: TenantDb, site: string, privateP
   );
 }
 
+/** A Type=1 group of `site` named `groupname`. */
+function groupInput(userid: string, groupname: string, site: string, ispublic: number): GroupInput {
+  return {
+    userid, groupname, fname: '', lname: '', username: '', password: '', email: '', company: '', jobtitle: '', mobilephone: '',
+    website: '', type: 1, subtype: 'Default', contactform: '', s2: 0, perm: 0, inactive: 0, ispublic, siteid: site,
+    subscribe: 1, notes: '', description: '', interests: '', keepprivate: 0, photofileid: '', imname: '', imservice: '',
+    remoteid: '', tags: '', tablist: '',
+  };
+}
+
 beforeAll(async () => {
   stateDir = await mkdtemp(path.join(tmpdir(), 'opt2-identity-internal-accounts-routes-'));
   await writeTestSecrets(stateDir);
@@ -98,6 +115,11 @@ beforeAll(async () => {
     createOutbox({ service: 'identity', db: handle.app, publisher: createCapturingPublisher(), logger, clock, payloadValidators: identityPayloadValidators });
     await registerSite(schema, handle.app, SITE, SITE, UMBRELLA);
     await registerSite(schema, handle.app, UMBRELLA, UMBRELLA, UMBRELLA);
+    await withGatedTenant(handle.app, tenantIdForSite(SITE), async (tx) => {
+      await repo.insertGroup(tx, groupInput(EDITORS, 'Editors', SITE, 0), null);
+      await repo.insertGroup(tx, groupInput(AUTHORS, 'Authors', SITE, 0), null);
+    });
+    await withGatedTenant(handle.app, tenantIdForSite(UMBRELLA), (tx) => repo.insertGroup(tx, groupInput(MEMBERS, 'Members', UMBRELLA, 1), null));
   }
   app = await createService({
     name: 'identity',
@@ -143,8 +165,29 @@ async function headersFor(caller: string | null, withUser = true): Promise<Recor
   return headers;
 }
 
-/** Injects a request and checks every declared answer against the contract. */
+/** Headers of a people call forwarding the user token of `sub` in session `sid`, who holds no S2. */
+async function selfHeaders(sub: string, sid: string): Promise<Record<string, string>> {
+  return {
+    authorization: `Bearer ${await mintUserToken({ sub, sid, site: SITE, roles: [] })}`,
+    [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'people', audience: 'identity' })}`,
+  };
+}
+
+const REQUEST_PROBES = new Map<string, object>();
+
+/** Checks a request body, as it travels, against the `requestBody` the contract declares for the operation. */
+function assertRequestMatchesOpenApi(method: Method, url: string, payload: unknown): void {
+  const { template, operation } = findOperation(OPENAPI, method, url);
+  const key = `${method} ${template}`;
+  // A request body has a response's `content` shape, so the response checker validates it; one probe per operation.
+  const probe = REQUEST_PROBES.get(key) ?? { ...OPENAPI, paths: { [template]: { [method.toLowerCase()]: { responses: { '200': operation['requestBody'] } } } } };
+  REQUEST_PROBES.set(key, probe);
+  assertResponseMatchesOpenApi(probe, { method, path: url, status: 200, contentType: 'application/json', body: JSON.stringify(payload) });
+}
+
+/** Injects a request and checks its body and every declared answer against the contract. */
 async function send(method: Method, url: string, headers: Record<string, string>, payload?: unknown) {
+  if (payload !== undefined) assertRequestMatchesOpenApi(method, url, payload);
   const res = await app.inject({
     method,
     url,
@@ -206,6 +249,19 @@ describe('auth denials', () => {
     expect(res.statusCode).toBe(401);
     expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request' } });
   });
+
+  it.each<[string, () => Promise<Record<string, string>>, number]>([
+    ['without the forwarded user token', () => headersFor('people', false), 401],
+    ["for a user other than the token's", () => selfHeaders(OTHER_USER, SOME_SESSION), 403],
+    ["for a session other than the token's", () => selfHeaders(SOME_USER, 'S-0000000000000002'), 403],
+    ['for an S2 actor saving another user', () => headersFor('people'), 403],
+  ])('refuse a commit carrying session effects %s before any step', async (_label, headers, status) => {
+    const body = { sessionEffects: { reloginSessionId: SOME_SESSION } };
+    const res = await send('POST', opUrl(SOME_USER, SOME_OPERATION, 'commit'), await headers(), body);
+
+    expect(res.statusCode).toBe(status);
+    expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request' } });
+  });
 });
 
 describe('request validation', () => {
@@ -226,6 +282,11 @@ describe('request validation', () => {
     ['an S2 flag other than 0 or 1', opUrl(SOME_USER, SOME_OPERATION, 'prepare'), prepareBody('create', 'x', { S2: 3 })],
     ['a Type other than 2', opUrl(SOME_USER, SOME_OPERATION, 'prepare'), prepareBody('create', 'x', { Type: 1 })],
     ['a group id that is no CF UUID', opUrl(SOME_USER, SOME_OPERATION, 'prepare'), { ...prepareBody('create', 'x'), groupIds: ['g'] }],
+    ['an updateGroups that is no boolean', opUrl(SOME_USER, SOME_OPERATION, 'prepare'), { ...prepareBody('update', 'x'), updateGroups: 'some' }],
+    ['a tablist that is no text', opUrl(SOME_USER, SOME_OPERATION, 'prepare'), prepareBody('create', 'x', { tablist: { tab: 'Basic' } })],
+    ['a commit body that is no object', opUrl(SOME_USER, SOME_OPERATION, 'commit'), 'sessionEffects'],
+    ['session effects without a session id', opUrl(SOME_USER, SOME_OPERATION, 'commit'), { sessionEffects: { reloginSessionId: '' } }],
+    ['session effects with partial person fields', opUrl(SOME_USER, SOME_OPERATION, 'commit'), { sessionEffects: { reloginSessionId: SOME_SESSION, person: { fname: 'Pat' } } }],
   ])('answers %s with the legacy 400', async (_label, url, payload) => {
     const res = await app.inject({
       method: 'POST',
@@ -240,9 +301,55 @@ describe('request validation', () => {
 });
 
 describe.skipIf(!available)('operations against PostgreSQL', () => {
-  function accountOf(userId: string, site = SITE): Promise<UserAccountRow | null> {
+  function db(): TenantDb {
     if (handle === undefined) throw new Error('PostgreSQL is not available');
-    return withTenant(handle.app, tenantIdForSite(site), (tx) => repo.findAccountById(tx, userId, { includePending: true }));
+    return handle.app;
+  }
+
+  function accountOf(userId: string, site = SITE): Promise<UserAccountRow | null> {
+    return withTenant(db(), tenantIdForSite(site), (tx) => repo.findAccountById(tx, userId, { includePending: true }));
+  }
+
+  async function membershipsOf(userId: string): Promise<string[]> {
+    return (await withTenant(db(), tenantIdForSite(SITE), (tx) => repo.membershipGroupIds(tx, userId))).sort();
+  }
+
+  function sessionOf(sessionId: string): Promise<SessionRow | null> {
+    return withTenant(db(), tenantIdForSite(SITE), (tx) => repo.findSession(tx, sessionId));
+  }
+
+  async function pendingChangeOf(operationId: string, site = SITE): Promise<Record<string, unknown>> {
+    const row = await withTenant(db(), tenantIdForSite(site), (tx) => repo.findAccountOperation(tx, operationId));
+    return JSON.parse(row?.pending_change ?? 'null') as Record<string, unknown>;
+  }
+
+  /** Prepares, commits (with `commitBody` when given) and finishes `body` through the routes; answers the operation id. */
+  async function applied(userId: string, body: object, commitBody?: unknown): Promise<string> {
+    const people = await headersFor('people');
+    const op = nextId('C');
+    expect((await send('POST', opUrl(userId, op, 'prepare'), people, body)).statusCode).toBe(200);
+    expect((await send('POST', opUrl(userId, op, 'commit'), people, commitBody)).statusCode).toBe(200);
+    expect((await send('POST', opUrl(userId, op, 'finish'), people)).statusCode).toBe(200);
+    return op;
+  }
+
+  /** A logged-in session of the tenant-a user `userId`. */
+  async function loggedIn(userId: string, username: string): Promise<string> {
+    const sessionId = `S-${nextId('D')}`;
+    await applyLogin(
+      { db: db(), repo, clock: fixedClock(NOW) },
+      {
+        sessionId,
+        tenantId: tenantIdForSite(SITE),
+        snapshot: {
+          userid: userId, username, siteid: SITE, subtype: 'Default', password: null, fname: 'Old', lname: 'Name', email: 'old@example.test',
+          remoteid: '', company: '', lastlogin: null, passwordcreated: null, roleList: `${username};username;${SITE}`, membershipIds: userId,
+        },
+        mode: 'target-primary',
+        siteId: SITE,
+      },
+    );
+    return sessionId;
   }
 
   it('prepares, commits and finishes a create, answering repeats with the recorded outcome and recovery reads without a user token', async () => {
@@ -348,4 +455,117 @@ describe.skipIf(!available)('operations against PostgreSQL', () => {
     expect(await accountOf(publicPool.json().userId, UMBRELLA)).toMatchObject({ s2: 0, ispublic: 1, siteid: UMBRELLA, opt2_state: 'pending' });
     expect(wrongPool.statusCode).toBe(400);
   });
+
+  it('answers the prepare of an update whose pool switch would move the account to another tenant with the legacy 503, recording nothing', async () => {
+    const userId = nextId('A');
+    const people = await headersFor('people');
+    const create = nextId('C');
+    await send('POST', opUrl(userId, create, 'prepare'), people, prepareBody('create', 'routes-seven'));
+    await send('POST', opUrl(userId, create, 'commit'), people);
+    await send('POST', opUrl(userId, create, 'finish'), people);
+    const before = await accountOf(userId);
+    const move = nextId('C');
+
+    const res = await send('POST', opUrl(userId, move, 'prepare'), people, {
+      ...prepareBody('update', 'routes-seven', { isPublic: 1, S2: undefined }),
+      siteId: UMBRELLA,
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'server_error' } });
+    expect((await send('GET', opUrl(userId, move), people)).json()).toEqual({ operationId: move, userId, state: 'unknown' });
+    expect(await accountOf(userId)).toEqual(before);
+    expect(await accountOf(userId, UMBRELLA)).toBeNull();
+  });
+
+  it.each<[string, 'create' | 'update', string | null | undefined, string | null]>([
+    ['stores a created tablist trimmed', 'create', ' Basic ', 'Basic'],
+    ['stores an empty created tablist as NULL', 'create', '', null],
+    ['writes an updated tablist', 'update', 'Extended', 'Extended'],
+    ['stores an emptied tablist as NULL', 'update', '', null],
+    ['clears a tablist sent as null', 'update', null, null],
+    ['keeps the stored tablist when none is sent', 'update', undefined, 'Basic'],
+  ])('%s', async (_label, kind, tablist, stored) => {
+    const userId = nextId('A');
+    const username = `routes-tabs-${seq}`;
+    if (kind === 'update') await applied(userId, prepareBody('create', username, { tablist: 'Basic' }));
+
+    const account = { ...(kind === 'update' ? { Password: undefined } : {}), ...(tablist === undefined ? {} : { tablist }) };
+    await applied(userId, prepareBody(kind, username, account));
+
+    expect((await accountOf(userId))?.tablist).toBe(stored);
+  });
+
+  it.each<[string, Record<string, unknown>, string[]]>([
+    ['replaces every membership by default', {}, [AUTHORS]],
+    ['keeps the memberships as stored with updateGroups false', { updateGroups: false }, [EDITORS, MEMBERS]],
+    ['replaces only the memberships of the originID site', { originID: SITE }, [AUTHORS, MEMBERS]],
+    ['replaces every membership under a blank originID', { originID: '' }, [AUTHORS]],
+  ])('%s', async (_label, controls, expected) => {
+    const userId = nextId('A');
+    const username = `routes-groups-${seq}`;
+    await applied(userId, { ...prepareBody('create', username), groupIds: [EDITORS, MEMBERS] });
+
+    await applied(userId, { ...prepareBody('update', username, { Password: undefined }), groupIds: [AUTHORS], ...controls });
+
+    expect(await membershipsOf(userId)).toEqual([...expected].sort());
+  });
+
+  it.each<[string, Record<string, unknown>, Record<string, unknown>, string, Partial<UserAccountRow>]>([
+    ['switchToPublic picks the public pool over isPublic 0', { isPublic: 0 }, { switchToPublic: true }, UMBRELLA, { s2: 0, ispublic: 1 }],
+    ['switchToPrivate picks the private pool over isPublic 1', { isPublic: 1 }, { switchToPrivate: true }, SITE, { s2: 0, ispublic: 0 }],
+    ['switchToPublic wins over switchToPrivate', { isPublic: 0 }, { switchToPublic: true, switchToPrivate: true }, UMBRELLA, { s2: 0, ispublic: 1 }],
+    ['an S2 save keeps the public pool its visibility chose and is stored private', { isPublic: 1, S2: 1 }, {}, UMBRELLA, { s2: 1, ispublic: 0 }],
+    ['an S2 save switched to public keeps the public pool and is stored private', { isPublic: 0, S2: 1 }, { switchToPublic: true }, UMBRELLA, { s2: 1, ispublic: 0 }],
+  ])('%s', async (_label, account, switches, pool, stored) => {
+    const userId = nextId('A');
+
+    await applied(userId, { ...prepareBody('create', `routes-pool-${seq}`, account), siteId: pool, ...switches });
+
+    expect(await accountOf(userId, pool)).toMatchObject({ ...stored, siteid: pool, opt2_state: 'active' });
+  });
+
+  it('refuses a pool the posted switch does not pick', async () => {
+    const res = await send('POST', opUrl(nextId('A'), nextId('C'), 'prepare'), await headersFor('people'), {
+      ...prepareBody('create', `routes-pool-${seq}`, { isPublic: 1 }),
+      switchToPrivate: true,
+      siteId: UMBRELLA,
+    });
+
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('records no session effects for a commit whose body has none', async () => {
+    const op = await applied(nextId('A'), prepareBody('create', `routes-empty-${seq}`), {});
+
+    expect(await pendingChangeOf(op)).not.toHaveProperty('sessionEffects');
+  });
+
+  it("records a self-save's session effects at commit and logs only that session in again at finish", async () => {
+    const userId = nextId('A');
+    const username = `routes-self-${seq}`;
+    await applied(userId, prepareBody('create', username));
+    const own = await loggedIn(userId, username);
+    const other = await loggedIn(userId, username);
+    const [ownBefore, otherBefore] = [await sessionOf(own), await sessionOf(other)];
+    // The token's sub matches the path user as legacy compares user ids, ignoring case.
+    const self = await selfHeaders(userId.toLowerCase(), own);
+    const op = nextId('C');
+    const person = { fname: 'Sam', lname: 'Self', email: 'sam@example.test', company: 'Acme', subtype: 'Default' };
+    const update = prepareBody('update', username, { Password: undefined, remoteID: 'R-self' });
+    expect((await send('POST', opUrl(userId, op, 'prepare'), self, update)).statusCode).toBe(200);
+
+    const committed = await send('POST', opUrl(userId, op, 'commit'), self, { sessionEffects: { reloginSessionId: own, person } });
+    expect(committed.statusCode).toBe(200);
+    expect(await pendingChangeOf(op)).toMatchObject({ sessionEffects: { reloginSessionId: own, person } });
+    expect(await sessionOf(own)).toEqual(ownBefore);
+
+    const finished = await send('POST', opUrl(userId, op, 'finish'), await headersFor('people', false));
+    expect([finished.statusCode, finished.json().state]).toEqual([200, 'finished']);
+    const after = await sessionOf(own);
+    expect(after).toMatchObject({ user_id: userId, state: 'active', epoch: String(Number(ownBefore?.epoch) + 1) });
+    expect(JSON.parse(after?.login_snapshot ?? '{}')).toMatchObject({ userid: userId, username, remoteid: 'R-self', ...person });
+    expect(await sessionOf(other)).toEqual(otherBefore);
+  });
+
 });

@@ -128,6 +128,12 @@ describe('loadConfig on the committed seed.config.json', () => {
   it('is the output of seedConfigSchema', () => {
     expect(seedConfigSchema.parse(raw)).toEqual(config);
   });
+
+  it('returns the scenario password names, and none when the file omits them', () => {
+    expect(config.scenarioPasswords.length).toBeGreaterThan(0);
+    expect(config.scenarioPasswords).toEqual(raw.scenarioPasswords);
+    expect(parseConfig(mutated((v) => { delete v.scenarioPasswords; })).scenarioPasswords).toEqual([]);
+  });
 });
 
 describe('parseConfig rejections', () => {
@@ -162,6 +168,10 @@ describe('parseConfig rejections', () => {
     ['historyDays 0', (v) => { v.historyDays = 0; }, 'historyDays'],
     ['an upper-case emailDomain', (v) => { v.emailDomain = 'Seed.OPT2.test'; }, 'emailDomain'],
     ['an unknown top-level key', (v) => { v.seeds = 1; }, ''],
+    ['an empty scenario password name', (v) => { v.scenarioPasswords[1] = ''; }, 'scenarioPasswords.1'],
+    ['a scenario password name that is not a string', (v) => { v.scenarioPasswords[0] = 1; }, 'scenarioPasswords.0'],
+    ['a duplicated scenario password name', (v) => { v.scenarioPasswords.push(v.scenarioPasswords[0]); }, 'scenarioPasswords'],
+    ['scenarioPasswords that is not a list', (v) => { v.scenarioPasswords = 'gs-id-05'; }, 'scenarioPasswords'],
   ])('rejects %s, naming the key', (_name, edit, path) => {
     const issues = issuesOf(mutated(edit));
     expect(issues.some((issue) => issue.startsWith(`${path}: `))).toBe(true);

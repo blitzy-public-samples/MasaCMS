@@ -285,6 +285,22 @@ function moduleRolesFor(list: string, grants: readonly ModuleGroupGrant[], priva
   return [...roles].sort();
 }
 
+/** The site's private and public user-pool ids; settingsBean defaults an empty pool id to the site's own id. */
+function userPoolsOf(site: TokenRoleSite): { privatePool: string; publicPool: string } {
+  return { privatePool: site.privateUserPoolId ?? site.siteId, publicPool: site.publicUserPoolId ?? site.siteId };
+}
+
+/** `getModulePerm`'s role-list test on `site`: `S2` or the site's private-pool `Admin` group, matched exactly [legacy: core/mura/permission.cfc:312]. */
+export function modulePermByRole(snapshot: Pick<LoginSnapshot, 'roleList'>, site: TokenRoleSite): boolean {
+  return snapshotIsS2(snapshot) || roleListHas(snapshot.roleList, `Admin;${userPoolsOf(site).privatePool};0`);
+}
+
+/** `getModulePerm`'s grant test: one of the site's grants of core module `moduleId` goes to a group in the role list [legacy: core/mura/permission.cfc:338-344]. */
+export function moduleGrantHeld(snapshot: Pick<LoginSnapshot, 'roleList'>, site: TokenRoleSite, moduleId: string, grants: readonly ModuleGroupGrant[]): boolean {
+  const { privatePool, publicPool } = userPoolsOf(site);
+  return moduleRolesFor(snapshot.roleList, grants, privatePool, publicPool).includes(moduleRole(moduleId));
+}
+
 /**
  * Token roles of a login snapshot on `site`, from its login-time role list and the registry's pools. Each test keeps the case rule
  * of the legacy check it replaces: exact for S2, Admin and module grants [legacy: core/mura/permission.cfc:312,340-342], no-case for
@@ -292,9 +308,7 @@ function moduleRolesFor(list: string, grants: readonly ModuleGroupGrant[], priva
  */
 export function tokenRolesFor(snapshot: Pick<LoginSnapshot, 'roleList'>, site: TokenRoleSite, opts: TokenRoleOptions): TokenRoles {
   const list = snapshot.roleList;
-  // settingsBean defaults an empty pool id to the site's own id.
-  const privatePool = site.privateUserPoolId ?? site.siteId;
-  const publicPool = site.publicUserPoolId ?? site.siteId;
+  const { privatePool, publicPool } = userPoolsOf(site);
   const s2 = snapshotIsS2(snapshot);
   const privateMember = roleListHas(list, `S2IsPrivate;${privatePool}`, { ignoreCase: true });
   const publicMember = roleListHas(list, `S2IsPublic;${publicPool}`, { ignoreCase: true });

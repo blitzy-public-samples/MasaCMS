@@ -4,8 +4,9 @@ import type { components } from '@/generated/clients/programs-sites';
 import type { CsrfRenderer } from '@/lib/csrf';
 import { legacySettings } from '@/lib/env';
 import { okBody } from '@/lib/gateway-client';
-import { encodeJs, encodeUrl, html, join, raw, type SafeHtml } from '@/lib/html';
+import { encodeJs, html, join, raw, type SafeHtml } from '@/lib/html';
 import { isSupportedLocale } from '@/lib/resource-bundles/rb';
+import { relativeAdminUrl } from '@/lib/urls';
 import type { ShellView } from '@/shell/document';
 import { urlScopeNames } from '@/shell/nav';
 import type { PageScreen, ScreenContext } from '../registry';
@@ -293,22 +294,22 @@ export async function loadEditSiteModel(ctx: ScreenContext): Promise<EditSiteMod
 
 /** The module buttons of a named site (lines 88-99). */
 function moduleButtons(m: EditSiteModel): SafeHtml {
-  const siteIdUrl = raw(encodeUrl(m.requestSiteId));
+  const siteId = m.requestSiteId;
   const editSite = cfEq(m.rcAction, 'updateFiles')
-    ? html`\n\t\t\t\t<a class="btn" href="./?muraAction=cSettings.editSite&siteid=${siteIdUrl}"><i class="mi-pencil"></i> Edit Site</a>\n\t\t\t`
+    ? html`\n\t\t\t\t<a class="btn" href="${raw(relativeAdminUrl('cSettings', 'editSite', [['siteid', siteId]]))}"><i class="mi-pencil"></i> Edit Site</a>\n\t\t\t`
     : NOTHING;
   const bundle = m.config.javaEnabled
-    ? html`\n\t\t\t\t<a  class="btn" href="?muraAction=cSettings.selectBundleOptions&siteID=${raw(encodeUrl(m.bean.siteID))}"><i class="mi-gift"></i> Create Site Bundle</a>\n\t\t\t`
+    ? html`\n\t\t\t\t<a  class="btn" href="${raw(relativeAdminUrl('cSettings', 'selectBundleOptions', [['siteID', m.bean.siteID]], { prefix: '?' }))}"><i class="mi-gift"></i> Create Site Bundle</a>\n\t\t\t`
     : NOTHING;
   const location = m.bean.exportLocation;
   const exportHtml =
     location !== '' && m.exportLocationExists
-      ? html`\n\t\t\t\t<a  class="btn" href="#" onclick="confirmDialog('Export static HTML files to ${raw(encodeJs(`'${location}'`))}.',function(){actionModal('./?muraAction=csettings.exportHTML&siteID=${raw(m.bean.siteID)}')});return false;"><i class="mi-share"></i> Export Static HTML (BETA)</a>\n\t\t\t`
+      ? html`\n\t\t\t\t<a  class="btn" href="#" onclick="confirmDialog('Export static HTML files to ${raw(encodeJs(`'${location}'`))}.',function(){actionModal('${raw(relativeAdminUrl('csettings', 'exportHTML', [['siteID', m.bean.siteID, 'raw']]))}')});return false;"><i class="mi-share"></i> Export Static HTML (BETA)</a>\n\t\t\t`
       : NOTHING;
   const trash = m.isS2
-    ? html` <a  class="btn" href="./?muraAction=cTrash.list&siteID=${siteIdUrl}"><i class="mi-trash"></i> Trash Bin</a>`
+    ? html` <a  class="btn" href="${raw(relativeAdminUrl('cTrash', 'list', [['siteID', siteId]]))}"><i class="mi-trash"></i> Trash Bin</a>`
     : NOTHING;
-  return html`\n\t\t\t<div class="nav-module-specific btn-group">\n\t\t\t${editSite}${bundle}${exportHtml}\n\t\t\t<a class="btn" href="./?muraAction=cExtend.listSubTypes&siteid=${siteIdUrl}"><i class="mi-list-alt"></i> Class Extensions</a>  ${trash}\n\t\t</div>\n\t`;
+  return html`\n\t\t\t<div class="nav-module-specific btn-group">\n\t\t\t${editSite}${bundle}${exportHtml}\n\t\t\t<a class="btn" href="${raw(relativeAdminUrl('cExtend', 'listSubTypes', [['siteid', siteId]]))}"><i class="mi-list-alt"></i> Class Extensions</a>  ${trash}\n\t\t</div>\n\t`;
 }
 
 /** `div.mura-header` (lines 85-101). */
@@ -365,10 +366,12 @@ function tabPanes(m: EditSiteModel): SafeHtml {
 
 /** The `actionButtons` save content (lines 110-125): Add for a new site, else Delete (S2, not `default`) and Save. */
 function actionButtons(m: EditSiteModel, csrf: CsrfRenderer): SafeHtml {
-  const siteID = raw(m.bean.siteID);
+  const deleteUrl = raw(
+    relativeAdminUrl('cSettings', 'updateSite', [['action', 'delete'], ['siteid', m.bean.siteID, 'raw']]),
+  );
   const deleteButton =
     !cfEq(m.bean.siteID, 'default') && m.isS2
-      ? html`\n\t\t\t\t\t\t<button type="button" class="btn" onclick="return confirmDialog('${raw(DELETE_WARNING)}',function(){actionModal('./?muraAction=cSettings.updateSite&action=delete&siteid=${siteID}${csrf.render(m.requestSiteId, 'url')}')});"><i class="mi-trash"></i> Delete</button>\n\t\t\t\t\t`
+      ? html`\n\t\t\t\t\t\t<button type="button" class="btn" onclick="return confirmDialog('${raw(DELETE_WARNING)}',function(){actionModal('${deleteUrl}${csrf.render(m.requestSiteId, 'url')}')});"><i class="mi-trash"></i> Delete</button>\n\t\t\t\t\t`
       : NOTHING;
   const buttons =
     m.bean.siteID === ''
@@ -381,7 +384,7 @@ function actionButtons(m: EditSiteModel, csrf: CsrfRenderer): SafeHtml {
 function renderEditSite(m: EditSiteModel, csrf: CsrfRenderer): SafeHtml {
   // Captures show one space before the action buttons whenever rc.siteid is set and none on Add Site.
   const beforeActions = m.requestSiteId === '' ? NOTHING : raw(' ');
-  return html`\n\t\n\t${header(m)}\n\n\t\t<form novalidate method ="post"  enctype="multipart/form-data" action="./?muraAction=cSettings.updateSite" name="form1"  onsubmit="return validate(this);">\n\t\t\n\t\t\n\t\t<div class="block block-constrain">\n\t\t${tabStrip(tabsOf(m))}\n\t\t<div class="block-content tab-content">\n\t\t\n\t\t${tabPanes(m)}\n\n\n\t\t<div class="load-inline tab-preloader"></div>\n\t\t<script>$('.tab-preloader').spin(spinnerArgs2);</script>\n\t\t${beforeActions}${actionButtons(m, csrf)}\n\t\t\t<input type="hidden" name="action" value="update">\n\t\t\t${csrf.render(m.requestSiteId, 'form')} \n\n\t\t</div>\t\n\t</div>\t\n\n</form>\n`;
+  return html`\n\t\n\t${header(m)}\n\n\t\t<form novalidate method ="post"  enctype="multipart/form-data" action="${raw(relativeAdminUrl('cSettings', 'updateSite'))}" name="form1"  onsubmit="return validate(this);">\n\t\t\n\t\t\n\t\t<div class="block block-constrain">\n\t\t${tabStrip(tabsOf(m))}\n\t\t<div class="block-content tab-content">\n\t\t\n\t\t${tabPanes(m)}\n\n\n\t\t<div class="load-inline tab-preloader"></div>\n\t\t<script>$('.tab-preloader').spin(spinnerArgs2);</script>\n\t\t${beforeActions}${actionButtons(m, csrf)}\n\t\t\t<input type="hidden" name="action" value="update">\n\t\t\t${csrf.render(m.requestSiteId, 'form')} \n\n\t\t</div>\t\n\t</div>\t\n\n</form>\n`;
 }
 
 /** The `csettings.editsite` page; `index.ts` adds its circuit, action, mode, owner and gate. */

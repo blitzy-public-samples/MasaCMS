@@ -19,11 +19,6 @@ export const DROPPED_HEADERS: ReadonlySet<string> = new Set([
   'x-request-id',
 ]);
 
-// Internal headers such as X-Opt2-Write-Position never reach clients (the gateway strips them, and its own
-// tests catch a leak), so comparison stays on the client-visible contract.
-/** Name prefixes of internal OPT-2 headers, always dropped. */
-export const DROPPED_HEADER_PREFIXES: readonly string[] = ['x-opt2-'];
-
 /** ETag placeholder: the value is the legacy hash of its own body. */
 export const ETAG_OK = '<etag:ok>';
 /** ETag placeholder: legacy format, but not the hash of its own body. */
@@ -119,9 +114,9 @@ function foldNames(headers: Readonly<RecordedResponse['headers']>): Map<string, 
 }
 
 /**
- * Response headers normalised for comparison: dropped and `x-opt2-*` headers and `Set-Cookie` removed, the ETag
- * checked, `Location` normalised as a body URL, kept-by-value headers exact, token headers masked, other values
- * through `normaliseText`. Names are visited sorted, so id ordinals ignore the recorded header order.
+ * Response headers normalised for comparison: dropped headers and `Set-Cookie` removed, the ETag checked,
+ * `Location` normalised as a body URL, kept-by-value headers exact, token headers masked, other values through
+ * `normaliseText`. Names are visited sorted, so id ordinals ignore the recorded header order.
  * @param rawBody Exact response body text, used only for the ETag check.
  */
 export function normaliseHeaders(
@@ -143,7 +138,6 @@ export function normaliseHeaders(
   // A scenario's dropHeaders override never removes a header the rules declare always compared.
   const isDropped = (name: string): boolean =>
     name === SET_COOKIE ||
-    hasPrefix(name, DROPPED_HEADER_PREFIXES) ||
     ((DROPPED_HEADERS.has(name) || ruleDropped.has(name)) && !alwaysCompared.some((glob) => glob.test(name)));
 
   const valueRule = (name: string): ((value: string) => string) => {

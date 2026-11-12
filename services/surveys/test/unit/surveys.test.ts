@@ -149,9 +149,9 @@ describe.skipIf(!available)('surveys domain against PostgreSQL', () => {
     }
     ids.sort();
 
-    const all = await listSurveys(deps, { tenantId: tenantA, filters: { siteId: siteA } });
+    const all = await listSurveys(deps, { tenantId: tenantA, filters: { siteId: siteA, pageIndex: 1, itemsPerPage: 3 } });
     const second = await listSurveys(deps, { tenantId: tenantA, filters: { siteId: siteA, pageIndex: 2, itemsPerPage: 2 } });
-    const other = await listSurveys(deps, { tenantId: tenantB, filters: { siteId: siteA } });
+    const other = await listSurveys(deps, { tenantId: tenantB, filters: { siteId: siteA, pageIndex: 1, itemsPerPage: 50 } });
 
     expect(all.rows.map((row) => row.survey_id)).toEqual(ids);
     expect(all.total).toBe(3);

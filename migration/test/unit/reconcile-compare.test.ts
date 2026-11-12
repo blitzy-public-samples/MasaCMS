@@ -1,9 +1,21 @@
 // Unit tests for the reconciliation core: row and object comparisons, capped difference lists and value rendering.
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-import { compareEncodings, decodeRow, encodeKey, encodeRow, legacyRowHash, type CanonicalColumn } from '@opt2/platform/migration-kit';
-import { describe, expect, it } from 'vitest';
+import {
+  compareEncodings,
+  decodeRow,
+  encodeKey,
+  encodeRow,
+  legacyRowHash,
+  tableChecksum,
+  type CanonicalColumn,
+  type ChecksumEntry,
+} from '@opt2/platform/migration-kit';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { DiffOrderError, type RowSource } from '../../src/diff/index.js';
 import type { CanonicalRow } from '../../src/extract/index.js';
@@ -262,6 +274,89 @@ describe('compareRows on keyless tables', () => {
 
     expect(error).toBeInstanceOf(DiffOrderError);
     expect(error).toMatchObject({ code: 'diffOrder', side: 'after' });
+  });
+});
+
+describe('compareRows checksums with bounded memory', () => {
+  let spillDir: string;
+
+  beforeEach(async () => {
+    spillDir = await mkdtemp(join(tmpdir(), 'reconcile-compare-test-'));
+  });
+
+  afterEach(async () => {
+    await rm(spillDir, { recursive: true, force: true });
+  });
+
+  /** Yields `rows`, then records the spill directories present once every row has been recorded. */
+  async function* observed(rows: readonly CanonicalRow[], seen: string[][]): AsyncGenerator<CanonicalRow, void, undefined> {
+    yield* streamOf(rows);
+    seen.push(await readdir(spillDir));
+  }
+
+  // Stream order compares key values ('A…' < 'B'); the checksum orders encoded keys ('s1:B' < 's23:A…').
+  const STREAM_ORDER = ['A'.repeat(23), 'B', 'B'.repeat(12), 'C', 'D'.repeat(10), 'E'].map((id) => keyedRow(category(id)));
+  const keyedEntries = (rows: readonly CanonicalRow[]): ChecksumEntry[] => rows.map((row) => ({ key: row.key, row: row.encoding }));
+
+  it.each<{ label: string; sortRunBytes: number | undefined; spills: boolean }>([
+    { label: 'in memory', sortRunBytes: undefined, spills: false },
+    { label: 'with one row per spill run', sortRunBytes: 1, spills: true },
+    { label: 'with several rows per spill run', sortRunBytes: 3 * (STREAM_ORDER[0]?.encoding.length ?? 0), spills: true },
+  ])('hashes keyed rows in encoded-key order $label and leaves no spill files', async ({ sortRunBytes, spills }) => {
+    const seen: string[][] = [];
+    const expected = tableChecksum(keyedEntries(STREAM_ORDER));
+
+    const result = await compareRows({
+      keyed: true,
+      columns: COLUMNS,
+      legacy: observed(STREAM_ORDER, seen),
+      target: STREAM_ORDER.map((row) => ({ ...row })),
+      sortRunBytes,
+      spillDir,
+    });
+
+    expect(expected.sha256).not.toBe(sha(joined(STREAM_ORDER)));
+    expect(result).toEqual({
+      legacyCount: STREAM_ORDER.length,
+      targetCount: STREAM_ORDER.length,
+      legacySha256: expected.sha256,
+      targetSha256: expected.sha256,
+      differences: [],
+      differenceCount: 0,
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.every((name) => name.startsWith('opt2-reconcile-'))).toBe(true);
+    expect((seen[0]?.length ?? 0) > 0).toBe(spills);
+    expect(await readdir(spillDir)).toEqual([]);
+  });
+
+  it('hashes keyless duplicates once per occurrence without spilling', async () => {
+    const seen: string[][] = [];
+    const rows = byEncoding([B, A, B, A, A]);
+
+    const result = await compareRows({ keyed: false, columns: KEYLESS_COLUMNS, legacy: observed(rows, seen), target: rows, sortRunBytes: 1, spillDir });
+
+    const expected = tableChecksum(rows.map((row) => ({ row: row.encoding })));
+    expect(expected).toEqual({ count: 5, sha256: sha(joined(rows)) });
+    expect([result.legacyCount, result.legacySha256, result.targetCount, result.targetSha256]).toEqual([5, expected.sha256, 5, expected.sha256]);
+    expect(seen).toEqual([[]]);
+  });
+
+  it('removes the spill directory when out-of-order input rejects with DiffOrderError', async () => {
+    const seen: string[][] = [];
+    const legacy = (async function* (): AsyncGenerator<CanonicalRow, void, undefined> {
+      yield* observed([C001, C002], seen);
+      yield C001;
+    })();
+
+    const error: unknown = await compareRows({ keyed: true, columns: COLUMNS, legacy, target: ALL, sortRunBytes: 1, spillDir }).catch(
+      (thrown: unknown) => thrown,
+    );
+
+    expect(error).toBeInstanceOf(DiffOrderError);
+    expect(error).toMatchObject({ code: 'diffOrder', side: 'before' });
+    expect(seen[0]?.length).toBeGreaterThan(0);
+    expect(await readdir(spillDir)).toEqual([]);
   });
 });
 

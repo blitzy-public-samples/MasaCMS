@@ -3,10 +3,12 @@ import { describe, expect, it } from 'vitest';
 import {
   CanonicalEncodingError,
   SERIALIZED_DOCUMENT_COLUMNS,
+  TableChecksum,
   assignOccurrences,
   canonicalTypeForPostgres,
   canonicalTypeForSqlServer,
   changedColumns,
+  compareChecksumEntries,
   compareEncodings,
   decodeRow,
   decodeValue,
@@ -607,6 +609,36 @@ describe('tableChecksum', () => {
   it('rejects a mix of keyed and keyless entries', () => {
     expectEncodingError(() => tableChecksum([{ key: 'k', row: 'r' }, { row: 'r' }]), 'tableChecksum entries must all have a key or all lack one');
     expectEncodingError(() => tableChecksum([{ row: 'r' }, { key: 'k', row: 'r' }]), 'must all have a key or all lack one');
+  });
+});
+
+describe('TableChecksum', () => {
+  const addAll = (entries: readonly ChecksumEntry[]): TableChecksum => {
+    const checksum = new TableChecksum();
+    for (const entry of entries) checksum.add(entry);
+    return checksum;
+  };
+
+  it.each<{ label: string; entries: ChecksumEntry[] }>([
+    { label: 'no entries', entries: [] },
+    { label: 'keyed entries', entries: [{ key: 'i1:1', row: 'i1:1s1:a' }, { key: 'i1:2', row: 'i1:2s1:b' }, { key: 'i1:3', row: 'i1:3N' }] },
+    { label: 'keyed entries sharing a key', entries: [{ key: 'k', row: 's1:a' }, { key: 'k', row: 's1:b' }, { key: 'k', row: 's1:b' }, { key: 'k1', row: 's1:a' }] },
+    { label: 'keyless entries with duplicates', entries: [{ row: 's1:a' }, { row: 's1:a' }, { row: 's1:b' }, { row: 's2:ab' }] },
+  ])('equals tableChecksum over $label added in order', ({ entries }) => {
+    expect([...entries].sort(compareChecksumEntries)).toStrictEqual(entries);
+    const checksum = addAll(entries);
+    expect(checksum.result()).toStrictEqual(tableChecksum(entries));
+    expect(checksum.result()).toStrictEqual(tableChecksum([...entries].reverse()));
+  });
+
+  it.each<{ label: string; entries: ChecksumEntry[]; message: string }>([
+    { label: 'a key before its predecessor', entries: [{ key: 'k2', row: 's1:a' }, { key: 'k1', row: 's1:z' }], message: 'must be added in key and row order' },
+    { label: 'a row before its predecessor under one key', entries: [{ key: 'k', row: 's1:b' }, { key: 'k', row: 's1:a' }], message: 'must be added in key and row order' },
+    { label: 'a keyless row before its predecessor', entries: [{ row: 's1:b' }, { row: 's1:a' }], message: 'must be added in key and row order' },
+    { label: 'a keyless entry after a keyed one', entries: [{ key: 'k', row: 'r' }, { row: 'r' }], message: 'tableChecksum entries must all have a key or all lack one' },
+    { label: 'a keyed entry after a keyless one', entries: [{ row: 'r' }, { key: 'k', row: 'r' }], message: 'tableChecksum entries must all have a key or all lack one' },
+  ])('rejects $label', ({ entries, message }) => {
+    expectEncodingError(() => addAll(entries), message);
   });
 });
 

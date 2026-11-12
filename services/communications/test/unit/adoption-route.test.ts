@@ -52,7 +52,11 @@ const SERVICE_URLS = { surveys: 'http://127.0.0.1:20017', communications: 'http:
 const SURVEY_A = 'AAAAAAAA-BBBB-CCCC-DDDD000000000001';
 const SURVEY_B = 'AAAAAAAA-BBBB-CCCC-DDDD000000000002';
 const SURVEY_EVENT = 'AAAAAAAA-BBBB-CCCC-DDDD000000000003';
+const SURVEY_FOLD = 'AAAAAAAA-BBBB-CCCC-DDDD000000000004';
+const SURVEY_RETRY = 'AAAAAAAA-BBBB-CCCC-DDDD000000000005';
+const SURVEY_HELD = 'AAAAAAAA-BBBB-CCCC-DDDD000000000006';
 const EVENT_TASK_ID = 'EEEEEEEE-0000-0000-0000000000000001';
+const HELD_TASK_ID = 'EEEEEEEE-0000-0000-0000000000000002';
 
 const LAUNCH_A = `opt2-survey-${SURVEY_A}-launch`;
 const REMINDER_A1 = `opt2-survey-${SURVEY_A}-reminder-1`;
@@ -60,14 +64,16 @@ const REMINDER_A2 = `opt2-survey-${SURVEY_A}-reminder-2`;
 const LAUNCH_B = `opt2-survey-${SURVEY_B}-launch`;
 const LAUNCH_EVENT = `opt2-survey-${SURVEY_EVENT}-launch`;
 
-/** In-memory task port: creates are idempotent by queue and name, deletes of absent tasks report `deleted: false`. */
+/** In-memory task port: creates are idempotent by queue and name and can be made to fail, deletes of absent tasks report `deleted: false`. */
 class MemoryTaskPort implements TaskPort {
   readonly kind = 'local' as const;
   readonly live = new Map<string, CreateTaskInput>();
   readonly creates: CreateTaskInput[] = [];
   readonly deletes: Array<{ queue: string; name: string }> = [];
+  failCreate = false;
 
   create(input: CreateTaskInput): Promise<CreateTaskResult> {
+    if (this.failCreate) return Promise.reject(new Error('task port unavailable'));
     this.creates.push(input);
     const key = `${input.queue}/${input.name}`;
     const created = !this.live.has(key);
@@ -108,6 +114,18 @@ class MemoryTaskPort implements TaskPort {
 /** One captured ACF task of the adoption body. */
 function task(name: string, siteId: string, scheduleTime: string, scheduleVersion = 1) {
   return { name, siteId, scheduleTime, scheduleVersion };
+}
+
+/** Runs `run` with the process time zone set to `tz`, then restores the previous one. */
+async function inTimeZone<T>(tz: string, run: () => Promise<T>): Promise<T> {
+  const previous = process.env.TZ;
+  process.env.TZ = tz;
+  try {
+    return await run();
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
 }
 
 describe('adoption request schemas', () => {
@@ -334,6 +352,81 @@ describe.skipIf(!(await pgAvailable()))('scheduler hand-off routes', () => {
     expect([...port.live.keys()]).toEqual([`surveys-launch/${portTaskName(LAUNCH_EVENT, 1)}`]);
 
     expect((await post(CANCEL_ADOPTED_PATH, {})).json()).toEqual({ cancelled: 0 });
+  });
+
+  it('adopts a run time repeated by daylight saving at its later offset, so it has not passed after the earlier one', async () => {
+    const deps = ctx.scheduleDeps;
+    const { clock } = deps;
+    // 01:45 EDT, between the two occurrences of 01:30.
+    deps.clock = fixedClock('2026-11-01T05:45:00.000Z');
+    try {
+      const res = await inTimeZone('America/New_York', () =>
+        post(ADOPT_PATH, { tasks: [task(`opt2-survey-${SURVEY_FOLD}-launch`, TENANT_A.siteId, '2026-11-01T01:30:00.000')] }),
+      );
+
+      expect(res.json()).toEqual({ adopted: 1, existing: 0, scheduledImmediately: 0 });
+      expect(port.creates.map((created) => created.scheduleTime.toISOString())).toEqual(['2026-11-01T06:30:00.000Z']);
+    } finally {
+      deps.clock = clock;
+    }
+  });
+
+  it.each<[string, string, (name: string, body: unknown) => Promise<void>]>([
+    [
+      'an adopted row whose queue call failed',
+      SURVEY_RETRY,
+      async (_name, body) => {
+        port.failCreate = true;
+        try {
+          expect((await post(ADOPT_PATH, body)).json()).toEqual({ adopted: 1, existing: 0, scheduledImmediately: 0 });
+        } finally {
+          port.failCreate = false;
+        }
+      },
+    ],
+    [
+      'an event row holding the name without a queue task',
+      SURVEY_HELD,
+      async (name) => {
+        await withTenant(handle.app, TENANT_A.tenantId, (tx) =>
+          tx.query(
+            `INSERT INTO ${handle.schema}.scheduled_task (tenant_id, scheduled_task_id, task_name, queue, queue_task_name, kind, source_type,
+               source_id, reminder_n, schedule_time, status, target_route, schedule_version, origin, enqueued_at, created_at, updated_at)
+             VALUES ($1, $2, $3, 'surveys-launch', $4, 'survey-launch', 'survey', $5, NULL, $6, 'scheduled', $7, 1, 'event', NULL, $8, $8)`,
+            [
+              tx.tenantId,
+              HELD_TASK_ID,
+              name,
+              portTaskName(name, 1),
+              SURVEY_HELD,
+              '2026-11-01T01:30:00.000',
+              `/internal/v1/tasks/surveys/${SURVEY_HELD}/launch`,
+              NOW,
+            ],
+          ),
+        );
+      },
+    ],
+  ])('queues %s again at the later offset of a time repeated by daylight saving', async (_label, surveyId, prepare) => {
+    const deps = ctx.scheduleDeps;
+    const { clock } = deps;
+    const name = `opt2-survey-${surveyId}-launch`;
+    const body = { tasks: [task(name, TENANT_A.siteId, '2026-11-01T01:30:00.000')] };
+    // 01:45 EDT, between the two occurrences of 01:30.
+    deps.clock = fixedClock('2026-11-01T05:45:00.000Z');
+    try {
+      const res = await inTimeZone('America/New_York', async () => {
+        await prepare(name, body);
+        return post(ADOPT_PATH, body);
+      });
+
+      expect(res.json()).toEqual({ adopted: 0, existing: 1, scheduledImmediately: 0 });
+      expect(port.creates.map((created) => [created.name, created.scheduleTime.toISOString()])).toEqual([
+        [portTaskName(name, 1), '2026-11-01T06:30:00.000Z'],
+      ]);
+    } finally {
+      deps.clock = clock;
+    }
   });
 
   it.each([

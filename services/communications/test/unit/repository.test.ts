@@ -69,6 +69,18 @@ function adoptedTask(over: Partial<NewAdoptedScheduledTask> = {}): NewAdoptedSch
   return task;
 }
 
+/** Runs `run` with the process time zone set to `tz`, then restores the previous one. */
+async function inTimeZone<T>(tz: string, run: () => Promise<T>): Promise<T> {
+  const previous = process.env.TZ;
+  process.env.TZ = tz;
+  try {
+    return await run();
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
+}
+
 describe('communications repository identity', () => {
   it('extends the platform repository of the owned tables and exposes it as base', () => {
     const repository = createCommunicationsRepository({ clock: fixedClock(NOW) });
@@ -399,6 +411,30 @@ describe.skipIf(!available)('communications repository writes against PostgreSQL
       'update scheduled_task',
       'update scheduled_task',
     ]);
+  });
+
+  it('returns the written instant of a local time repeated by daylight saving, on insert and on reactivation', async () => {
+    const scheduleTime = new Date('2026-11-01T06:30:00.000Z');
+    const [inserted, reactivated, walls] = await inTimeZone('America/New_York', async () => {
+      const [event] = await inTenant((tx) => repository.insertScheduledTasks(tx, [launchTask({ scheduleTime })]));
+      const [adopted] = await inTenant((tx) => repository.adoptScheduledTasks(tx, [adoptedTask({ queueTaskName: 'opt2-survey-S1-launch-v2' })]));
+      const adoptedId = adopted?.row.scheduled_task_id ?? '';
+      await inTenant((tx) => repository.setScheduledTaskStatus(tx, adoptedId, 'cancelled'));
+      const [again] = await inTenant((tx) =>
+        repository.adoptScheduledTasks(tx, [adoptedTask({ queueTaskName: 'opt2-survey-S1-launch-v3', scheduleTime })]),
+      );
+      const stored = await inTenant(async (tx) => {
+        const { rows } = await tx.query<{ wall: string }>(
+          `SELECT schedule_time::text AS wall FROM ${handle.schema}.scheduled_task ORDER BY queue_task_name`,
+        );
+        return rows.map((row) => row.wall);
+      });
+      return [event, again?.row, stored] as const;
+    });
+
+    expect(inserted?.schedule_time.toISOString()).toBe(scheduleTime.toISOString());
+    expect(reactivated?.schedule_time.toISOString()).toBe(scheduleTime.toISOString());
+    expect(walls).toEqual(['2026-11-01 01:30:00', '2026-11-01 01:30:00']);
   });
 
   it('resolves a function target route with the row id, on insert and on reactivation', async () => {

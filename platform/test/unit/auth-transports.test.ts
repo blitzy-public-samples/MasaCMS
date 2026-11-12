@@ -19,6 +19,7 @@ import {
 } from 'jose';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import {
+  ANONYMOUS_PRINCIPAL_UID,
   AuthDenial,
   GOOGLE_SECURETOKEN_JWKS_URL,
   INVOCATION_HEADER,
@@ -490,6 +491,24 @@ describe('createUserTokenVerifier', () => {
     );
     const verifier = createUserTokenVerifier({ issuer: settings.issuer, audience: settings.audience, keySet });
     await expect(verifier.verify(token)).resolves.toEqual(claims);
+  });
+
+  it('verifies a project-level Identity Platform ID token of the anonymous principal with an empty sub', async () => {
+    const settings = cloudUserTokenSettings(PROJECT);
+    const claims = userClaims({ iss: settings.issuer, aud: settings.audience, sub: '', roles: [], exp: NOW + 3600 });
+    const token = await signToken(
+      {
+        ...claims,
+        sub: ANONYMOUS_PRINCIPAL_UID,
+        auth_time: NOW,
+        user_id: ANONYMOUS_PRINCIPAL_UID,
+        firebase: { identities: {}, sign_in_provider: 'custom' },
+      },
+      issuerKey,
+    );
+    const verifier = createUserTokenVerifier({ issuer: settings.issuer, audience: settings.audience, keySet });
+    await expect(verifier.verify(token)).resolves.toEqual(claims);
+    expect(ANONYMOUS_PRINCIPAL_UID).toHaveLength(36);
   });
 
   it.each([

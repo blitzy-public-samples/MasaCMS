@@ -49,6 +49,25 @@
         "replay": "opt2/reports/parity.json#GS-CO-01"
       },
       "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-ROSTER-POOLMOVE",
+      "scenario": "GS-PE-02",
+      "routeKey": "admin:cusers.update{type=2,action=update}",
+      "appliesTo": [
+        "api:user.save",
+        "rest:user.save",
+        "admin:ceditprofile.update"
+      ],
+      "difference": "Legacy `userBean.set` picks the user pool site from the posted `switchToPublic`, `switchToPrivate` or `isPublic` (core/mura/user/userBean.cfc:227-239; the admin user form posts `isPublic`, admin/core/views/cusers/edituser.cfm:495-527), and `userDAO.update` writes it as `SiteID` (core/mura/user/userDAO.cfc:404-455). A save whose choice resolves to a pool site other than the stored one therefore moves the user's `tusers` row, account and person columns alike, to the other pool. The target keeps those rows under each pool's tenant, and identity answers the legacy-shaped 503 before writing anything, so the save is refused with no change on either side.",
+      "decision": "preserve",
+      "reason": "Moving the user needs one change spanning two tenants in both identity and people under the roster write protocol, but a transaction binds one tenant and the protocol has no move step. The case depends on stored data, so no request-decidable variant can keep it on legacy, and halting these route keys would send every carried roster save there. The target fails closed until identity and people support the move, and the entry then closes.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-PE-02.json",
+        "replay": "opt2/reports/parity.json#GS-PE-02"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
     }
   ]
 }

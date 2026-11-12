@@ -4919,7 +4919,7 @@ scenarios:
         method: GET
         route: /legacy-fixtures/cfml/api.cfm/reporting/exports/${xlsx-job.id}?siteid=tenant-a
         as: exporter
-        poll: {until: {path: data.state, equals: done}, intervalMs: 500, timeoutMs: 60000}
+        poll: {until: {path: data.state, equals: done}, intervalMs: 500, timeoutMs: 60000, lifecycle: [{state: queued, at: data.created}, {state: running, at: data.started_at}, {state: done, at: data.finished_at}]}
       - name: xlsx-download
         method: GET
         route: /legacy-fixtures/cfml/api.cfm/reporting/exports/${xlsx-job.id}/download?siteid=tenant-a
@@ -4939,7 +4939,7 @@ scenarios:
         method: GET
         route: /legacy-fixtures/cfml/api.cfm/reporting/exports/${csv-job.id}?siteid=tenant-a
         as: exporter
-        poll: {until: {path: data.state, equals: done}, intervalMs: 500, timeoutMs: 60000}
+        poll: {until: {path: data.state, equals: done}, intervalMs: 500, timeoutMs: 60000, lifecycle: [{state: queued, at: data.created}, {state: running, at: data.started_at}, {state: done, at: data.finished_at}]}
       - name: csv-download
         method: GET
         route: /legacy-fixtures/cfml/api.cfm/reporting/exports/${csv-job.id}/download?siteid=tenant-a
@@ -4959,7 +4959,7 @@ scenarios:
         method: GET
         route: /legacy-fixtures/cfml/api.cfm/reporting/exports/${pdf-job.id}?siteid=tenant-a
         as: exporter
-        poll: {until: {path: data.state, equals: done}, intervalMs: 500, timeoutMs: 60000}
+        poll: {until: {path: data.state, equals: done}, intervalMs: 500, timeoutMs: 60000, lifecycle: [{state: queued, at: data.created}, {state: running, at: data.started_at}, {state: done, at: data.finished_at}]}
       - name: pdf-download
         method: GET
         route: /legacy-fixtures/cfml/api.cfm/reporting/exports/${pdf-job.id}/download?siteid=tenant-a
@@ -5019,7 +5019,7 @@ scenarios:
         method: GET
         route: /legacy-fixtures/cfml/api.cfm/reporting/exports/${job.id}?siteid=tenant-a
         as: exporter
-        poll: {until: {path: data.state, equals: failed}, intervalMs: 500, timeoutMs: 60000}
+        poll: {until: {path: data.state, equals: failed}, intervalMs: 500, timeoutMs: 60000, lifecycle: [{state: queued, at: data.created}, {state: running, at: data.started_at}, {state: failed, at: data.finished_at}]}
     compare: [status, envelope]
     normalisationOverrides: {}
     covers:

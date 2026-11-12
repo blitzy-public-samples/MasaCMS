@@ -38,6 +38,7 @@ import {
   type FavoriteRow,
   type GroupNameRow,
   type InterestRow,
+  type PeopleTableName,
   type PersonArchiveRow,
   type PersonColumnName,
   type PersonRow,
@@ -62,7 +63,7 @@ const ARCHIVE_UNIQUE_CONSTRAINT = 'person_archive_tenant_id_person_id_effective_
 /** The partial unique index on `roster_operation.user_id` over open states (0004_roster_archive.sql). */
 const OPEN_ROSTER_INDEX = 'roster_operation_open_user_uidx';
 const ADVISORY_LOCK_SQL = 'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))';
-const NEXT_ID_SQL = 'SELECT nextval(pg_get_serial_sequence($1, $2)::regclass)::text AS id';
+const NEXT_IDS_SQL = 'SELECT nextval(pg_get_serial_sequence($1, $2)::regclass)::text AS id FROM generate_series(1, $3::integer)';
 
 /** DAO `cfqueryparam null="#iif(x neq '',…)#"`: an empty string is stored as NULL [legacy: core/mura/user/userDAO.cfc:304-343]. */
 function daoNull(value: string | null | undefined): string | null {
@@ -99,6 +100,54 @@ function nextRowVersion(current: string): string {
   return String(BigInt(current) + 1n);
 }
 
+/** A legacy column limit: a text width in UTF-16 code units, the `tinyint` range, a finite `float` or the `datetime` range. */
+export type LegacyLimit = number | 'tinyint' | 'float' | 'datetime';
+
+/** First and last local times a SQL Server `datetime` holds once rounded to 1/300 s. */
+const DATETIME_RANGE = [new Date(1752, 11, 31, 23, 59, 59, 999).getTime(), new Date(9999, 11, 31, 23, 59, 59, 998).getTime()] as const;
+
+/** Live legacy catalog limits of the caller-supplied columns the write helpers set; `char(35)`, `max` and `int` columns need none. */
+const LEGACY_LIMITS = {
+  person: {
+    groupname: 255, fname: 50, lname: 50, email: 255, company: 50, jobtitle: 50, mobilephone: 50, website: 255, subtype: 50,
+    lastupdateby: 50, lastupdatebyid: 35, siteid: 50, imname: 100, imservice: 50, keepprivate: 'tinyint',
+  },
+  user_address: {
+    siteid: 50, addressname: 50, address1: 50, address2: 50, city: 50, state: 50, zip: 50, country: 50, phone: 50, fax: 50,
+    isprimary: 'tinyint', addressurl: 200, longitude: 'float', latitude: 'float', addressemail: 100,
+  },
+  user_tag: { siteid: 25, tag: 100 },
+  extend_data_user_activity: { siteid: 25, remoteid: 35, datetimevalue: 'datetime', numericvalue: 'float', stringvalue: 255 },
+  trash: { siteid: 25, objectlabel: 255, objectclass: 50, objecttype: 50, objectsubtype: 50, deleteddate: 'datetime', deletedby: 50 },
+  person_archive: { siteid: 50, effective_from: 'datetime', archived_at: 'datetime', archived_by: 50 },
+} as const satisfies Partial<Record<PeopleTableName, Readonly<Record<string, LegacyLimit>>>>;
+
+/** A people table whose legacy column limits `legacyStorable` enforces. */
+export type LegacyLimitedTable = keyof typeof LEGACY_LIMITS;
+
+/**
+ * `row` as legacy SQL Server stores it: text beyond its width by trailing spaces only is cut to the width, as
+ * ANSI_WARNINGS allows; any other value legacy rejects throws LegacyStorageError. NULL and absent values pass.
+ */
+export function legacyStorable<R extends Readonly<Record<string, unknown>>>(table: LegacyLimitedTable, row: R): R {
+  let stored = row;
+  for (const [column, limit] of Object.entries<LegacyLimit>(LEGACY_LIMITS[table])) {
+    const value = row[column];
+    if (value === null || value === undefined) continue;
+    if (typeof limit === 'number') {
+      if (typeof value !== 'string' || value.length <= limit) continue;
+      if (!/^ +$/.test(value.slice(limit))) throw new LegacyStorageError(table, column, 'width', limit);
+      stored = { ...stored, [column]: value.slice(0, limit) };
+    } else if (limit === 'datetime') {
+      const time = value instanceof Date ? value.getTime() : Date.parse(String(value));
+      if (!(time >= DATETIME_RANGE[0] && time <= DATETIME_RANGE[1])) throw new LegacyStorageError(table, column, 'range', limit);
+    } else if (limit === 'tinyint' ? !(Number(value) >= 0 && Number(value) <= 255) : !Number.isFinite(Number(value))) {
+      throw new LegacyStorageError(table, column, 'range', limit);
+    }
+  }
+  return stored;
+}
+
 /** The acting user of a person save, as `session.mura` gives it; `isLoggedIn` is `session.mura.isLoggedIn`. */
 export interface AuditActor {
   userId: string;
@@ -115,12 +164,12 @@ export interface AuditSubject {
 }
 
 /**
- * `LastUpdateBy` and `LastUpdateByID` of a saved person [legacy: core/mura/user/userManager.cfc:834-845]:
+ * `LastUpdateBy` and `LastUpdateByID` of a saved person [legacy: core/mura/user/userManager.cfc:834-845, userBean.cfc:284-288]:
  * a logged-in actor names itself, otherwise the person names itself.
  */
 export function lastUpdateInfo(actor: AuditActor | null | undefined, person: AuditSubject): { lastupdateby: string; lastupdatebyid: string } {
-  // CFML left(..., 50) counts UTF-16 code units, as slice does; two empty names leave the single space.
-  const label = (names: { fname?: string | null; lname?: string | null }): string => `${names.fname ?? ''} ${names.lname ?? ''}`.slice(0, 50);
+  // left(..., 50) counts UTF-16 code units, as slice does; setLastUpdateBy then trims, so blank names give ''.
+  const label = (names: { fname?: string | null; lname?: string | null }): string => cfTrim(`${names.fname ?? ''} ${names.lname ?? ''}`.slice(0, 50));
   if (actor !== null && actor !== undefined && actor.isLoggedIn) {
     return { lastupdateby: label(actor), lastupdatebyid: actor.userId };
   }
@@ -252,6 +301,20 @@ export class RosterOperationOpenError extends LegacyServiceUnavailableError {
 
   constructor(readonly userId: string) {
     super(`user ${userId} has an open roster operation`, 'auto', 'roster-operation-open');
+  }
+}
+
+/** Raised for a value the legacy column cannot store, writing nothing; unhandled, it answers the legacy 500 of the failed legacy query. */
+export class LegacyStorageError extends RepositoryError {
+  override readonly name: string = 'LegacyStorageError';
+
+  constructor(
+    table: string,
+    readonly column: string,
+    readonly violation: 'width' | 'range',
+    readonly limit: LegacyLimit,
+  ) {
+    super(`column ${column} is beyond the legacy ${violation} ${limit}`, table);
   }
 }
 
@@ -464,8 +527,8 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
   const favoritesSql = `SELECT * FROM ${favorite} WHERE tenant_id = $1 AND userid = $2 ORDER BY datecreated, favoriteid`;
   const extendDataSql = `SELECT * FROM ${extendData} WHERE tenant_id = $1 AND baseid = ANY($2::bpchar[]) ORDER BY baseid, attributeid, dataid`;
   const lockExtendByBaseSql = `SELECT dataid FROM ${extendData} WHERE tenant_id = $1 AND baseid = $2 ORDER BY dataid FOR UPDATE`;
-  const lockExtendByAttributeSql =
-    `SELECT dataid FROM ${extendData} WHERE tenant_id = $1 AND baseid = $2 AND attributeid = $3 ORDER BY dataid FOR UPDATE`;
+  const lockExtendByAttributesSql =
+    `SELECT dataid, attributeid FROM ${extendData} WHERE tenant_id = $1 AND baseid = $2 AND attributeid = ANY($3::integer[]) ORDER BY dataid FOR UPDATE`;
   // The schema holds only the people split (baseTable tusers or tusersaddresses), so no baseTable predicate is needed.
   const subtypesSql =
     `SELECT * FROM ${subtype} WHERE tenant_id = $1 AND siteid = $2` +
@@ -505,13 +568,14 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     return deleted;
   }
 
-  /** The next target id of an integer key from the sequence 0002_person.sql owns by the column. */
-  async function nextId(tx: TenantTx, table: { table: string }, column: string): Promise<number> {
-    const id = (await select<{ id: string | null }>(tx, NEXT_ID_SQL, [name(table), column]))[0]?.id ?? null;
-    if (id === null) {
+  /** `count` new target ids of an integer key, ascending, from the sequence 0002_person.sql owns by the column. */
+  async function nextIds(tx: TenantTx, table: { table: string }, column: string, count: number): Promise<number[]> {
+    if (count === 0) return [];
+    const rows = await select<{ id: string | null }>(tx, NEXT_IDS_SQL, [name(table), column, count]);
+    if (rows.some(({ id }) => id === null)) {
       throw new RepositoryError(`column ${column} has no id sequence`, table.table);
     }
-    return Number(id);
+    return rows.map(({ id }) => Number(id)).sort((a, b) => a - b);
   }
 
   function findPerson(tx: TenantTx, userId: string): Promise<PersonRow | null> {
@@ -548,15 +612,12 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     }
     const tombstone = await personTombstoneVersion(tx, input.userid);
     row.row_version = tombstone === null ? 1 : nextRowVersion(tombstone);
-    return base.insert<PersonRow>(tx, PERSON.table, row, ctx);
+    return base.insert<PersonRow>(tx, PERSON.table, legacyStorable(PERSON.table, row), ctx);
   }
 
   async function updatePerson(tx: TenantTx, userId: string, input: PersonUpdate, ctx: WriteContext = {}): Promise<PersonRow | null> {
     // Locked first, so concurrent saves never publish the same row_version.
     const current = (await readUnits<Pick<PersonRow, 'userid' | 'row_version'>>(tx, PERSON.unit, lockPersonSql, [tx.tenantId, userId]))[0];
-    if (current === undefined) {
-      return null;
-    }
     const now = clock.now();
     const values: Readonly<Record<string, unknown>> = input;
     const patch: RepositoryRow = {};
@@ -573,8 +634,13 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
         patch[column] = values[column] ?? null;
       }
     }
-    patch.row_version = nextRowVersion(current.row_version);
-    return base.update<PersonRow>(tx, PERSON.table, { userid: current.userid }, patch, ctx);
+    // SQL Server rejects an unstorable value even when the UPDATE matches no row.
+    const stored = legacyStorable(PERSON.table, patch);
+    if (current === undefined) {
+      return null;
+    }
+    stored.row_version = nextRowVersion(current.row_version);
+    return base.update<PersonRow>(tx, PERSON.table, { userid: current.userid }, stored, ctx);
   }
 
   async function personTombstoneVersion(tx: TenantTx, userId: string): Promise<string | null> {
@@ -629,7 +695,7 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     return base.findByKey<AddressRow>(tx, ADDRESS.table, { addressid: addressId });
   }
 
-  function insertAddress(tx: TenantTx, input: AddressInput, ctx: WriteContext = {}): Promise<AddressRow> {
+  async function insertAddress(tx: TenantTx, input: AddressInput, ctx: WriteContext = {}): Promise<AddressRow> {
     // createAddress inlines AddressID, UserID and the numeric columns; addressBean initialises the numbers to 0.
     const row: Omit<AddressRow, 'tenant_id'> = {
       addressid: input.addressid === undefined || input.addressid === '' ? cfUuid() : input.addressid,
@@ -652,10 +718,10 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
       addressemail: daoNull(input.addressemail),
       hours: daoNull(input.hours),
     };
-    return base.insert<AddressRow>(tx, ADDRESS.table, row, ctx);
+    return base.insert<AddressRow>(tx, ADDRESS.table, legacyStorable(ADDRESS.table, row), ctx);
   }
 
-  function updateAddress(tx: TenantTx, addressId: string, input: AddressUpdate, ctx: WriteContext = {}): Promise<AddressRow | null> {
+  async function updateAddress(tx: TenantTx, addressId: string, input: AddressUpdate, ctx: WriteContext = {}): Promise<AddressRow | null> {
     const patch: Omit<AddressRow, 'tenant_id' | 'addressid' | 'isprimary'> = {
       phone: daoNull(input.phone),
       address1: daoNull(input.address1),
@@ -676,7 +742,7 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
       addressemail: daoNull(input.addressemail),
       hours: daoNull(input.hours),
     };
-    return base.update<AddressRow>(tx, ADDRESS.table, { addressid: addressId }, patch, ctx);
+    return base.update<AddressRow>(tx, ADDRESS.table, { addressid: addressId }, legacyStorable(ADDRESS.table, patch), ctx);
   }
 
   /** Deletes every extended value stored under `baseId`. */
@@ -726,15 +792,19 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
   }
 
   async function replaceTags(tx: TenantTx, input: TagReplacement, ctx: WriteContext = {}): Promise<TagRow[]> {
+    // createTags binds siteID without the DAO NULL rule, so it is written as given.
+    const rows = (input.tags ?? '')
+      .split(',')
+      .map((item) => cfTrim(item))
+      .filter((value) => value !== '')
+      .map((value) => legacyStorable(TAG.table, { userid: input.userId, siteid: input.siteId, tag: value }));
     const stale = await readUnits<{ tagid: number }>(tx, TAG.unit, lockTagsSql, [tx.tenantId, input.userId]);
     await deleteKeys(tx, TAG.table, stale, ctx);
+    const ids = await nextIds(tx, TAG, 'tagid', rows.length);
     const created: TagRow[] = [];
-    for (const item of (input.tags ?? '').split(',')) {
-      const value = cfTrim(item);
-      if (value === '') continue;
-      // createTags binds siteID without the DAO NULL rule, so it is written as given.
-      const row: Omit<TagRow, 'tenant_id'> = { tagid: await nextId(tx, TAG, 'tagid'), userid: input.userId, siteid: input.siteId, tag: value };
-      created.push(await base.insert<TagRow>(tx, TAG.table, row, ctx));
+    for (const [index, row] of rows.entries()) {
+      const stored: Omit<TagRow, 'tenant_id'> = { tagid: ids[index] as number, ...row };
+      created.push(await base.insert<TagRow>(tx, TAG.table, stored, ctx));
     }
     return created;
   }
@@ -754,18 +824,32 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     entries: readonly ExtendDataReplacement[],
     ctx: WriteContext = {},
   ): Promise<ExtendDataRow[]> {
+    if (entries.length === 0) return [];
+    const values = entries.map(({ row }) => (row === null ? null : legacyStorable(EXTEND_DATA.table, row)));
+    const attributeIds = [...new Set(entries.map(({ attributeId }) => attributeId))];
+    // Rows each attribute holds, ascending; an entry replaces them, so a repeated attribute deletes its earlier insert.
+    const held = new Map<number, number[]>(attributeIds.map((attributeId) => [attributeId, []]));
+    const locked = await readUnits<{ dataid: number; attributeid: number }>(tx, EXTEND_DATA.unit, lockExtendByAttributesSql, [
+      tx.tenantId,
+      baseId,
+      attributeIds,
+    ]);
+    for (const { dataid, attributeid } of locked) held.get(attributeid)?.push(dataid);
+    const ids = await nextIds(tx, EXTEND_DATA, 'dataid', values.filter((row) => row !== null).length);
     const inserted: ExtendDataRow[] = [];
-    for (const { attributeId, row } of entries) {
-      const stale = await readUnits<{ dataid: number }>(tx, EXTEND_DATA.unit, lockExtendByAttributeSql, [tx.tenantId, baseId, attributeId]);
-      await deleteKeys(tx, EXTEND_DATA.table, stale, ctx);
+    for (const [index, { attributeId }] of entries.entries()) {
+      await deleteKeys(tx, EXTEND_DATA.table, (held.get(attributeId) ?? []).map((dataid) => ({ dataid })), ctx);
+      held.set(attributeId, []);
+      const row = values[index] ?? null;
       if (row === null) continue;
       const stored: Omit<ExtendDataRow, 'tenant_id'> = {
         ...row,
-        dataid: await nextId(tx, EXTEND_DATA, 'dataid'),
+        dataid: ids[inserted.length] as number,
         baseid: baseId,
         attributeid: attributeId,
       };
       inserted.push(await base.insert<ExtendDataRow>(tx, EXTEND_DATA.table, stored, ctx));
+      held.set(attributeId, [stored.dataid]);
     }
     return inserted;
   }
@@ -798,7 +882,7 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     if ((await base.findByKey(tx, TRASH.table, { objectid: row.objectid })) !== null) {
       return null;
     }
-    return base.insert<TrashRow>(tx, TRASH.table, row, ctx);
+    return base.insert<TrashRow>(tx, TRASH.table, legacyStorable(TRASH.table, row), ctx);
   }
 
   async function findPersonArchive(tx: TenantTx, personId: string, effectiveFrom?: Date): Promise<PersonArchiveRow | null> {
@@ -812,11 +896,11 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     if ((await findPersonArchive(tx, row.person_id)) !== null) {
       throw new DuplicateArchiveError(row.person_id);
     }
-    const stored: Omit<PersonArchiveRow, 'tenant_id'> = {
+    const stored: Omit<PersonArchiveRow, 'tenant_id'> = legacyStorable(PERSON_ARCHIVE.table, {
       ...row,
       archive_id: row.archive_id === undefined || row.archive_id === '' ? cfUuid() : row.archive_id,
       archived_at: row.archived_at ?? clock.now(),
-    };
+    });
     try {
       return await base.insert<PersonArchiveRow>(tx, PERSON_ARCHIVE.table, stored, ctx);
     } catch (err) {

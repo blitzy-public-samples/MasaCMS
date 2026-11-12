@@ -31,6 +31,7 @@ const VALUE_EXPORTS = {
       'loadEnv',
       'envModeIssues',
       'EnvValidationError',
+      'publisherEmulatorHost',
       'optionalEnvString',
       'requiredEnvString',
       'envUrl',

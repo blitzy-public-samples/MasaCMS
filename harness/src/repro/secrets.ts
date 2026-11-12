@@ -41,6 +41,23 @@ const RANDOM_FILES: readonly string[] = [
 export const SECRET_FILES: readonly string[] = Object.freeze([...TOKEN_PAIR, ...RANDOM_FILES].sort());
 
 const USAGE = 'usage: tsx src/repro/secrets.ts [--dir <secrets-dir>]';
+const HELP = `${USAGE}
+
+Writes every missing local secret and leaves existing files unchanged: the token-signing RSA pair
+(${TOKEN_PAIR.join(', ')}), ${LOCAL_SECRET_FILES.pubsubPushKey}, storage-hmac-key, bridge-hmac-key
+and the db-<schema>-app and db-<schema>-migrator passwords of ${DB_SCHEMAS.length} schemas.
+
+Options:
+  --dir <secrets-dir>  directory to write (default: \${OPT2_STATE_DIR}/secrets)
+  --help               print this help and exit 0
+
+Environment: OPT2_STATE_DIR, the state directory (default: $HOME/.opt2/state).
+The directory must resolve outside the checkout; it is set to mode 0700 and each new file to 0600.
+
+Output: one JSON summary line on stdout naming the directory and the files created and kept, never their values.
+Exit: 0 ok, 1 failure, 2 usage error.
+
+Example (from harness/): npm run repro:secrets`;
 
 /** Outcome of {@link ensureLocalSecrets}: the secrets directory and the sorted file names written and left in place. */
 export interface SecretsResult {
@@ -112,7 +129,7 @@ export function readSecret(name: string, opts: { env?: EnvLike } = {}): string {
 
 /** CLI entry: ensures every local secret and summarises the file names created and kept, never their values. */
 export function main(argv: string[], env: EnvLike = process.env): CliOutcome {
-  const { values } = parseFlags(argv, { options: { dir: { type: 'string' } }, usage: USAGE });
+  const { values } = parseFlags(argv, { options: { dir: { type: 'string' } }, usage: USAGE, help: HELP });
   const { dir, created, kept } = ensureLocalSecrets({ env, dir: values.dir });
   return { summary: { dir, created, kept } };
 }

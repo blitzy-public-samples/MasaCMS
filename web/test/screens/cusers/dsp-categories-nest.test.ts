@@ -12,7 +12,8 @@ import {
 import { fragmentModel } from '../../helpers/dom-model';
 
 // Tag output of `cUsers.edituser` (qa_editor, siteid=default) captured from the legacy ACF 2023 server, cut from the
-// tag's first byte to its last; rows below are what `getPrivateInterestGroups` returned per level for that capture.
+// tag's first byte to its last; rows below are that capture's `getPrivateInterestGroups` levels as one forest, ordered
+// by site then name.
 const LEGACY_TREE = readFileSync(new URL('../../fixtures/strategies-content/interest-categories-nest.html', import.meta.url), 'utf8');
 const LEGACY_EMPTY = '\n<div class="help-block-empty">There are currently no interest groups.</div>\n\t';
 
@@ -20,33 +21,40 @@ const id = (n: string): string => `C1000000-0000-0000-00000000000000${n}`;
 const OWN = 'Default';
 const POOL = 'Other <Site>';
 
-function row(site: string | null, n: string, name: string | null, isOpen: number, hasKids: number): InterestCategoryRow {
-  return { site, categoryID: id(n), name, isOpen, hasKids };
+/** A forest row; `parent` is the parent's id suffix, or null at the root. */
+function row(
+  parent: string | null,
+  site: string | null,
+  n: string,
+  name: string | null,
+  isOpen: number,
+  hasKids: number,
+): InterestCategoryRow {
+  return { site, categoryID: id(n), parentID: parent === null ? null : id(parent), name, isOpen, hasKids };
 }
 
-const LEVELS: Readonly<Record<string, readonly InterestCategoryRow[]>> = {
-  '': [
-    row(OWN, '0D', null, 0, 0),
-    row(OWN, '0B', '', 1, 0),
-    row(OWN, '01', 'Alpha', 1, 2),
-    row(OWN, '04', 'beta & "Co"', 0, 1),
-    row(OWN, '0A', 'Trailing ', 1, 0),
-    row(OWN, '0C', 'Zed', 2, 0),
-    row(POOL, '06', 'Gamma', 1, 1),
-  ],
-  [id('01')]: [row(OWN, '02', 'Alpha Child', 1, 1), row(OWN, '08', 'Alpha Second', 1, 0)],
-  [id('02')]: [row(OWN, '03', 'Closed Grandchild', 0, 0)],
-  [id('06')]: [row(POOL, '07', 'Gamma Kid', 1, 0)],
-};
+const FOREST: readonly InterestCategoryRow[] = [
+  row(null, OWN, '0D', null, 0, 0),
+  row(null, OWN, '0B', '', 1, 0),
+  row(null, OWN, '01', 'Alpha', 1, 2),
+  row('01', OWN, '02', 'Alpha Child', 1, 1),
+  row('01', OWN, '08', 'Alpha Second', 1, 0),
+  row(null, OWN, '04', 'beta & "Co"', 0, 1),
+  row('02', OWN, '03', 'Closed Grandchild', 0, 0),
+  row(null, OWN, '0A', 'Trailing ', 1, 0),
+  row(null, OWN, '0C', 'Zed', 2, 0),
+  row(null, POOL, '06', 'Gamma', 1, 1),
+  row('06', POOL, '07', 'Gamma Kid', 1, 0),
+];
 
-/** A loader answering from `levels`, recording each `(siteId, parentId)` call. */
-function fixtureLoader(levels: Readonly<Record<string, readonly InterestCategoryRow[]>>) {
-  const calls: Array<[string, string]> = [];
-  const loadLevel: InterestCategoryLoader = async (siteId, parentId) => {
-    calls.push([siteId, parentId]);
-    return levels[parentId] ?? [];
+/** A loader answering `forest`, recording each call's site id. */
+function fixtureLoader(forest: readonly InterestCategoryRow[]) {
+  const calls: string[] = [];
+  const loadForest: InterestCategoryLoader = async (siteId) => {
+    calls.push(siteId);
+    return forest;
   };
-  return { calls, loadLevel };
+  return { calls, loadForest };
 }
 
 async function render(args: Partial<UserCategoriesNestArgs> = {}): Promise<string> {
@@ -56,7 +64,7 @@ async function render(args: Partial<UserCategoriesNestArgs> = {}): Promise<strin
     categoryId: `${id('07')},${id('0A')}`,
     nestLevel: 0,
     userCategoryIds: [id('02')],
-    loadLevel: fixtureLoader(LEVELS).loadLevel,
+    loadForest: fixtureLoader(FOREST).loadForest,
     rb: rbFor('en'),
     ...args,
   });
@@ -92,11 +100,39 @@ describe('renderUserCategoriesNest', () => {
     ]);
   });
 
-  it('loads the root and every category with kids, including one whose children are not interest groups', async () => {
-    const { calls, loadLevel } = fixtureLoader(LEVELS);
-    await render({ siteId: 'tenant-a', loadLevel });
-    expect(calls.map(([, parentId]) => parentId).sort()).toEqual(['', id('01'), id('02'), id('04'), id('06')].sort());
-    expect(new Set(calls.map(([siteId]) => siteId))).toEqual(new Set(['tenant-a']));
+  it('loads the forest once, with the site id, for a multi-level, multi-branch tree', async () => {
+    const { calls, loadForest } = fixtureLoader(FOREST);
+    expect(await render({ siteId: 'tenant-a', loadForest })).toBe(LEGACY_TREE);
+    expect(calls).toEqual(['tenant-a']);
+  });
+
+  it.each<[string, (parentID: string) => string]>([
+    ['lower case', (parentID) => parentID.toLowerCase()],
+    ['trailing spaces', (parentID) => `${parentID}   `],
+    ['lower case and a trailing space', (parentID) => `${parentID.toLowerCase()} `],
+  ])('matches row parent ids as SQL Server char columns compare them: %s', async (_case, toParentID) => {
+    const forest = FOREST.map((r) => (r.parentID === null ? r : { ...r, parentID: toParentID(r.parentID) }));
+    expect(await render({ loadForest: fixtureLoader(forest).loadForest })).toBe(LEGACY_TREE);
+  });
+
+  it.each<[string, string]>([
+    ['an exact id', id('01')],
+    ['a lower-case id', id('01').toLowerCase()],
+    ['an id with trailing spaces', `${id('01')}  `],
+  ])('renders the subtree below a non-root start given %s', async (_case, parentId) => {
+    const subtree = await render({ parentId, nestLevel: 1 });
+    expect(LEGACY_TREE).toContain(subtree);
+    expect(subtree).toContain('Closed Grandchild');
+    expect(checkboxes(subtree)).toEqual([
+      [id('02'), true],
+      [id('08'), false],
+    ]);
+  });
+
+  it.each(['', '   '])('reaches a row whose parentID is %j from no level', async (parentID) => {
+    const orphan: InterestCategoryRow = { ...row(null, OWN, '0E', 'Orphan', 1, 0), parentID };
+    expect(await render({ loadForest: fixtureLoader([...FOREST, orphan]).loadForest })).toBe(LEGACY_TREE);
+    expect(await render({ loadForest: fixtureLoader([orphan]).loadForest })).toBe(LEGACY_EMPTY);
   });
 
   it.each<[string, string, readonly string[]]>([
@@ -110,7 +146,7 @@ describe('renderUserCategoriesNest', () => {
   });
 
   it('shows the user.nointerestcategories message for an empty root', async () => {
-    expect(await render({ loadLevel: fixtureLoader({}).loadLevel })).toBe(LEGACY_EMPTY);
+    expect(await render({ loadForest: fixtureLoader([]).loadForest })).toBe(LEGACY_EMPTY);
   });
 
   it('renders nothing for an empty lower level', async () => {
@@ -118,23 +154,27 @@ describe('renderUserCategoriesNest', () => {
   });
 
   it('groups consecutive equal sites only, without labels or the checkboxTree class below the root', async () => {
-    const rows = [row('A', '11', 'One', 0, 0), row('a', '12', 'Two', 0, 0), row('a', '13', 'Three', 0, 0), row(null, '14', 'Four', 0, 0), row('', '15', 'Five', 0, 0)];
-    const { loadLevel } = fixtureLoader({ [id('99')]: rows });
-    const nested = await render({ parentId: id('99'), nestLevel: 2, loadLevel });
+    const level = (parent: string | null): InterestCategoryRow[] => [
+      row(parent, 'A', '11', 'One', 0, 0),
+      row(parent, 'a', '12', 'Two', 0, 0),
+      row(parent, 'a', '13', 'Three', 0, 0),
+      row(parent, null, '14', 'Four', 0, 0),
+      row(parent, '', '15', 'Five', 0, 0),
+    ];
+    const nested = await render({ parentId: id('99'), nestLevel: 2, loadForest: fixtureLoader(level('99')).loadForest });
     expect(nested.match(/<ul>/g)).toHaveLength(3);
     expect(nested).not.toContain('<label>');
     expect(nested).not.toContain('checkboxTree');
-    const root = await render({ loadLevel: fixtureLoader({ '': rows }).loadLevel });
+    const root = await render({ loadForest: fixtureLoader(level(null)).loadForest });
     expect(fragmentModel(root).labels).toEqual(['A', 'a', '']);
     expect(root.match(/<ul class="checkboxTree">/g)).toHaveLength(3);
   });
 
   it('propagates a loader failure', async () => {
     const failure = new Error('strategies-content unavailable');
-    const loadLevel: InterestCategoryLoader = async (_siteId, parentId) => {
-      if (parentId === id('01')) throw failure;
-      return LEVELS[parentId] ?? [];
+    const loadForest: InterestCategoryLoader = async () => {
+      throw failure;
     };
-    await expect(render({ loadLevel })).rejects.toBe(failure);
+    await expect(render({ loadForest })).rejects.toBe(failure);
   });
 });

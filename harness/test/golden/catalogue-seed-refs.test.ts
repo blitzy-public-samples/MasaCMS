@@ -5,11 +5,13 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { loadCatalogue, scenarioById, type Catalogue, type SeedRef } from '../../src/golden/catalogue.js';
 import { GoldenConfigError, MissingSecretError } from '../../src/golden/errors.js';
 import {
+  SEED_CONFIG_PATH,
   SEED_CREDENTIALS_FILE,
   checkSeedRefs,
   createScenarioContext,
   loadSecretStore,
   loadSeedStore,
+  placeholderNames,
   type ScenarioInput,
   type SecretStore,
   type SeedRefFinding,
@@ -45,6 +47,7 @@ const ADMIN_EXTRACTIONS = [
   ['GS-CO-09', 'new-chain'],
   ['GS-BR-01', 'user-form'],
 ] as const;
+const GENERATED_SECRET = /^secret:generated:([^${}]+)$/;
 
 interface Files {
   dataset: string;
@@ -201,6 +204,15 @@ describe('the committed catalogue', () => {
       expect(checkSeedRefs(catalogue.scenarios, { seed: loadSeedStore(), secrets: loadSecretStore() })).toEqual([]);
     },
   );
+
+  it('posts exactly the generated secrets seed.config.json scenarioPasswords lists', () => {
+    const posted = new Set(
+      catalogue.scenarios.flatMap((s) => placeholderNames(s).flatMap((name) => GENERATED_SECRET.exec(name)?.[1] ?? [])),
+    );
+    const config = JSON.parse(fs.readFileSync(SEED_CONFIG_PATH, 'utf8')) as { scenarioPasswords?: string[] };
+    expect(posted.size).toBeGreaterThan(0);
+    expect([...posted].sort()).toEqual([...(config.scenarioPasswords ?? [])].sort());
+  });
 
   it('selects the Admin group by text that no group a scenario creates contains', () => {
     const texts = adminTexts();

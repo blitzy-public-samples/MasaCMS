@@ -263,9 +263,30 @@ describe('evaluateCatalog', () => {
     expect(evaluateCatalog(rows).findings).toEqual([]);
   });
 
+  it('accepts the deparsed tenant predicate whatever its spacing, keyword case and enclosing parentheses', () => {
+    const rows = compliantRows();
+    const policy = policyRow(rows, 'people', 'person');
+    policy.qual = "((  TENANT_ID = ( NullIf( CURRENT_SETTING( 'app.tenant_id' :: TEXT , TRUE ) , '' :: TEXT ) ) :: UUID ))";
+    policy.with_check = "(\n  tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid\n)";
+
+    const result = evaluateCatalog(rows);
+
+    expect(result.findings).toEqual([]);
+    expect(result.rlsCatalog.people?.usingAndWithCheck).toBe(2);
+  });
+
   it.each([
     { label: 'quotes tenant_id inside a literal', expression: "(current_setting('app.tenant_id'::text, true) IS NOT NULL)" },
     { label: 'tests tenant_id without the setting', expression: '(tenant_id IS NOT NULL)' },
+    {
+      label: 'names a setting with an embedded quote',
+      expression: "(tenant_id = (NULLIF(current_setting('app.tenant_id'''::text, true), ''::text))::uuid)",
+    },
+    { label: 'leaves a literal unterminated', expression: "(tenant_id = NULLIF(current_setting('app.tenant_id" },
+    {
+      label: 'leaves a parenthesis unclosed',
+      expression: "((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)",
+    },
   ])('treats a policy that $label as lacking the tenant predicate', ({ expression }) => {
     const rows = compliantRows();
     const policy = policyRow(rows, 'people', 'person');
@@ -278,6 +299,48 @@ describe('evaluateCatalog', () => {
       { kind: 'policy-missing-using', object: 'people.person' },
     ]);
   });
+
+  const tenantEquality = "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)";
+  const otherTenant = "'b5d1f0f6-6c55-5a47-9b0e-3f6a2d1c0e9b'";
+  const widenings = [
+    { label: 'ORs it with true', expression: `(${tenantEquality} OR true)` },
+    { label: 'ORs it with another tenant', expression: `(${tenantEquality} OR (tenant_id = ${otherTenant}::uuid))` },
+    { label: 'negates it', expression: `(NOT ${tenantEquality})` },
+    {
+      label: 'compares with <>',
+      expression: "(tenant_id <> (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)",
+    },
+    {
+      label: 'negates IS DISTINCT FROM',
+      expression: "(NOT (tenant_id IS DISTINCT FROM (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid))",
+    },
+    {
+      label: 'falls back to another tenant',
+      expression: `(tenant_id = (COALESCE(NULLIF(current_setting('app.tenant_id'::text, true), ''::text), ${otherTenant}::text))::uuid)`,
+    },
+  ];
+  it.each(
+    (
+      [
+        { field: 'qual', clause: 'USING', kind: 'policy-missing-using', missing: 'no permissive FOR ALL' },
+        { field: 'with_check', clause: 'WITH CHECK', kind: 'policy-missing-check', missing: 'missing WITH CHECK' },
+      ] as const
+    ).flatMap((target) => widenings.map((widening) => ({ ...target, ...widening }))),
+  )(
+    'reports a tenant policy whose $clause $label as missing and widening access',
+    ({ field, clause, expression, kind, missing }) => {
+      const rows = compliantRows();
+      policyRow(rows, 'people', 'person')[field] = expression;
+
+      const result = evaluateCatalog(rows);
+
+      expect(result.findings).toEqual([
+        { kind, object: 'people.person', detail: expect.stringContaining(missing) },
+        { kind, object: 'people.person', detail: expect.stringContaining(`${clause} (${expression}) lacks the tenant predicate`) },
+      ]);
+      expect(result.rlsCatalog.people).toEqual({ tables: 2, enabled: 2, forced: 2, usingAndWithCheck: 1 });
+    },
+  );
 
   it.each([
     {

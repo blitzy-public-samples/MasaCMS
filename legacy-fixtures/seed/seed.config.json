@@ -69,5 +69,9 @@
         "rh-create-06", "rh-create-07", "rh-create-08", "rh-create-09", "rh-create-10"
       ]
     }
-  }
+  },
+  "scenarioPasswords": [
+    "gs-br-01", "gs-id-05", "gs-id-09", "gs-pe-01", "gs-pe-06", "gs-pe-06-json", "gs-pe-06-rest",
+    "gs-pe-rh-01", "gs-pub-01-wrong", "gs-pub-03"
+  ]
 }

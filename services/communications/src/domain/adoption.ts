@@ -7,7 +7,13 @@ import type { components } from '../generated/openapi.js';
 import { RECOVERY_BATCH_SIZE, findScheduledTaskByName, listAdoptedScheduledTasks, taskCursor, type BatchCursor } from '../repo/queries.js';
 import { OWNER, type NewAdoptedScheduledTask } from '../repo/repository.js';
 import type { ScheduledTaskRow } from '../repo/tables.js';
-import { SURVEY_SOURCE_TYPE, dequeueScheduledTasks, enqueueScheduledTasks, type SurveyScheduleDeps } from './survey-schedule.js';
+import {
+  SURVEY_SOURCE_TYPE,
+  dequeueScheduledTasks,
+  enqueueScheduledTasks,
+  withLegacyRunTime,
+  type SurveyScheduleDeps,
+} from './survey-schedule.js';
 import { SURVEY_TASK_QUEUES, kindOfLegacyTaskName, parseLocalTimestamp, portTaskName, taskTarget } from './survey-tasks.js';
 
 /** Body of `adoptScheduledTasks`: the fixture ACF tasks as captured before their deletion. */
@@ -127,7 +133,7 @@ function byTenant(plans: readonly PlannedAdoption[]): Map<string, TenantGroup> {
 function countExisting(result: TenantAdoption, row: ScheduledTaskRow): void {
   result.existing += 1;
   if (row.status === 'scheduled' && row.enqueued_at === null) {
-    result.toEnqueue.set(row.scheduled_task_id, row);
+    result.toEnqueue.set(row.scheduled_task_id, withLegacyRunTime(row));
   }
 }
 

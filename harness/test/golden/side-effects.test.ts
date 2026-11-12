@@ -14,6 +14,7 @@ import {
   type ExportTable,
   type PositionResponse,
 } from '@opt2/platform/migration-kit';
+import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   SERVICES,
@@ -38,15 +39,19 @@ import {
   collectSideEffects,
   collectTasks,
   legacyRows,
+  loadCutoverGroups,
   loadTableOwnership,
   pushSubscriptions,
   resetMailpit,
+  resolveSideEffectConfig,
   scheduledSurveys,
   serviceUrl,
   settleHook,
+  sideEffectEnvSchema,
   targetRows,
   waitForMail,
   writtenFiles,
+  type CutoverGroups,
   type OwnershipSplit,
   type OwnershipTable,
   type OwnershipTarget,
@@ -65,6 +70,7 @@ import {
   type ReadOnlyMssql,
 } from '../../src/lib/mssql.js';
 import type { EnvLike } from '../../src/lib/paths.js';
+import { CutoverRequestFailed, GatewayUnreachable } from '../../src/repro/cutover.js';
 
 // Contract reads pass through; single tests replace one read to reach the contract error paths.
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -670,24 +676,56 @@ async function failure(promise: Promise<unknown>): Promise<Error> {
 
 // --- Tests ----------------------------------------------------------------------------------------------------------
 
-describe('serviceUrl', () => {
-  it('returns the OPT2_SERVICE_URLS entry without its trailing slash', () => {
-    expect(serviceUrl({ OPT2_SERVICE_URLS: '{"people":"http://people.fixture.test//"}' }, 'people')).toBe(
-      'http://people.fixture.test',
-    );
+describe('resolveSideEffectConfig', () => {
+  it.each([
+    {
+      label: 'trims trailing slashes',
+      env: { OPT2_SERVICE_URLS: '{"people":"http://people.fixture.test//"}', MAILPIT_API_URL: `${MAILPIT}/` },
+      config: { serviceUrls: { people: 'http://people.fixture.test' }, mailpitUrl: MAILPIT },
+    },
+    { label: 'defaults unset variables', env: {}, config: { serviceUrls: {}, mailpitUrl: DEFAULT_MAILPIT_URL } },
+    {
+      label: 'reads blank variables as unset',
+      env: { OPT2_SERVICE_URLS: ' ', MAILPIT_API_URL: '' },
+      config: { serviceUrls: {}, mailpitUrl: DEFAULT_MAILPIT_URL },
+    },
+  ])('$label', ({ env, config }) => {
+    expect(resolveSideEffectConfig(env)).toStrictEqual(config);
   });
 
-  const NO_URL = /OPT2_SERVICE_URLS has no URL for people/;
+  it.each([
+    {
+      label: 'a service URL that is not a URL',
+      env: { OPT2_SERVICE_URLS: '{"identity":"not-a-url"}' },
+      path: 'OPT2_SERVICE_URLS.identity',
+    },
+    { label: 'an empty service URL', env: { OPT2_SERVICE_URLS: '{"people":""}' }, path: 'OPT2_SERVICE_URLS.people' },
+    { label: 'a map that is a JSON array', env: { OPT2_SERVICE_URLS: '["people"]' }, path: 'OPT2_SERVICE_URLS' },
+    { label: 'a map that is not JSON', env: { OPT2_SERVICE_URLS: '{people' }, path: 'OPT2_SERVICE_URLS' },
+    { label: 'a Mailpit URL that is not a URL', env: { MAILPIT_API_URL: 'mailpit:8025' }, path: 'MAILPIT_API_URL' },
+    { label: 'a Mailpit URL that is not HTTP', env: { MAILPIT_API_URL: 'ftp://mail.test' }, path: 'MAILPIT_API_URL' },
+  ])('throws GoldenConfigError naming the variable path of $label', ({ env, path: key }) => {
+    expect(() => resolveSideEffectConfig(env)).toThrow(GoldenConfigError);
+    const message = new RegExp(`^invalid side-effect configuration: ${key.replaceAll('.', '\\.')}: \\S`);
+    expect(() => resolveSideEffectConfig(env)).toThrow(message);
+  });
+});
+
+describe('serviceUrl', () => {
+  it('returns the resolved OPT2_SERVICE_URLS entry', () => {
+    const config = resolveSideEffectConfig({ OPT2_SERVICE_URLS: '{"people":"http://people.fixture.test//"}' });
+
+    expect(serviceUrl(config, 'people')).toBe('http://people.fixture.test');
+  });
 
   it.each([
-    { label: 'the map is unset', map: undefined, error: NO_URL },
-    { label: 'the map lacks the service', map: '{"identity":"http://x.test"}', error: NO_URL },
-    { label: 'the entry is empty', map: '{"people":""}', error: NO_URL },
-    { label: 'the map is a JSON array', map: '["people"]', error: NO_URL },
-    { label: 'the map is not JSON', map: '{people', error: /OPT2_SERVICE_URLS is not a JSON object/ },
-  ])('throws GoldenConfigError when $label', ({ map, error }) => {
-    expect(() => serviceUrl({ OPT2_SERVICE_URLS: map }, 'people')).toThrow(GoldenConfigError);
-    expect(() => serviceUrl({ OPT2_SERVICE_URLS: map }, 'people')).toThrow(error);
+    { label: 'the map is unset', map: undefined },
+    { label: 'the map lacks the service', map: '{"identity":"http://x.test"}' },
+  ])('throws GoldenConfigError when $label', ({ map }) => {
+    const config = resolveSideEffectConfig({ OPT2_SERVICE_URLS: map });
+
+    expect(() => serviceUrl(config, 'people')).toThrow(GoldenConfigError);
+    expect(() => serviceUrl(config, 'people')).toThrow(/^OPT2_SERVICE_URLS has no URL for people; /);
   });
 });
 
@@ -2006,68 +2044,219 @@ describe('settleHook', () => {
   });
 
   const CHECKPOINTS = 'opt2_sync.projector_checkpoint';
+  const CHECKPOINT_SQL =
+    'SELECT [owner] AS owner, [tenant_id] AS tenantId, CONVERT(varchar(20), [applied_horizon]) AS horizon ' +
+    'FROM [opt2_sync].[projector_checkpoint]';
+  const LIVE_SITES_SQL = 'SELECT [SiteID] AS siteId FROM [dbo].[tsettings]';
+  const STATUS_PATH = '/internal/v1/cutover/status';
+  // The live sites of legacyDb(): `default` and `tenant-a  `, whose trailing spaces the projector drops.
+  const DEFAULT_TENANT = tenantIdForSite('default');
+  const TENANT_A = tenantIdForSite('tenant-a');
+  const TENANTS = [DEFAULT_TENANT, TENANT_A].sort();
   const TWO_OWNERS = {
     OPT2_SERVICE_URLS: JSON.stringify({ identity: serviceBase('identity'), people: serviceBase('people') }),
   };
+  const GROUPS: CutoverGroups = {
+    groups: [
+      { id: 'grp:identity', units: ['identity.user_account', 'identity.group_account'] },
+      { id: 'grp:people', units: ['people.person'] },
+      { id: 'grp:communications', units: ['communications.email_stat'] },
+    ],
+  };
+  const PROJECTION_OWNERSHIP: TableOwnership = {
+    tables: OWNERSHIP.tables,
+    units: [...OWNERSHIP.units, { unit: 'people.person', owner: 'people' }],
+  };
+  const IDENTITY_AND_PEOPLE = { 'grp:identity': 'target', 'grp:people': 'target', 'grp:communications': 'legacy' };
 
   /** The reverse projector's checkpoint table holding `rows` of `owner`, `tenant_id`, `applied_horizon`. */
   function checkpoints(...rows: [owner: string, tenant: string, horizon: string][]): LegacyTable {
     return { rows: rows.map(([owner, tenant_id, applied_horizon]) => ({ owner, tenant_id, applied_horizon })) };
   }
 
+  /** Scripts the gateway's cut-over status reporting `groupAuthority`. */
+  function cutover(http: FakeHttp, groupAuthority: Record<string, string>): FakeHttp {
+    return http.route('GET', `${GATEWAY}${STATUS_PATH}`, () =>
+      json({ tableVersion: 'v0002', previous: 'v0001', epoch: 2, groupAuthority, instances: [] }),
+    );
+  }
+
+  /** Gateway reporting `authority`, positions people 120 and identity 50, legacy sites and `rows` as checkpoints. */
+  async function projectionWorld(authority: Record<string, string>, rows: LegacyTable, clock = fakeClock()) {
+    const db = legacyDb({ [CHECKPOINTS]: rows });
+    const http = position(cutover(fakeHttp(), authority), 'people', () => ({ position: '120' }));
+    position(http, 'identity', () => ({ position: '50' }));
+    const sql = await fakeSql(db);
+    const ctx = await context(http, 'gateway', scenarioEnv(TWO_OWNERS));
+    const deps = await hookDeps(http, clock, { mssql: sql.mssql, ownership: PROJECTION_OWNERSHIP, groups: GROUPS });
+    return { db, http, sql, clock, hook: settleHook(ctx, undefined, deps) };
+  }
+
   it.each([
-    { spec: 'projection' as const, asked: ['identity', 'people'] },
-    { spec: 'projection:people' as const, asked: ['people'] },
+    { spec: 'projection' as const, asked: ['gateway', 'identity', 'people'] },
+    { spec: 'projection:people' as const, asked: ['gateway', 'people'] },
   ])(
-    "waits for $spec until each checkpointed owner's horizon passes its position in every streamed tenant",
+    "waits for $spec until each target-authoritative owner's checkpoint in every live tenant passes its position",
     async ({ spec, asked }) => {
-      const db: LegacyDb = {
-        [CHECKPOINTS]: checkpoints(['people', 'TENANT-A ', '100'], ['people', 'tenant-b', '130']),
-      };
-      const http = position(fakeHttp(), 'people', () => ({ position: '120' }));
-      position(http, 'identity', () => ({ position: '50' }));
-      const sql = await fakeSql(db);
-      const clock = fakeClock(() => {
-        db[CHECKPOINTS] = checkpoints(['people', 'tenant-a', '121'], ['people', 'tenant-b', '130']);
-      });
-      const ctx = await context(http, 'gateway', scenarioEnv(TWO_OWNERS));
-
-      await settleHook(ctx, undefined, await hookDeps(http, clock, { mssql: sql.mssql }))(spec, 10_000);
-
-      expect(http.calls.map((call) => call.url.hostname.split('.')[0])).toStrictEqual(asked);
-      expect(clock.elapsed()).toBe(SETTLE_POLL_MS);
-      expect(sql.queries.map((q) => q.sql)).toStrictEqual(
-        Array(2).fill(
-          'SELECT [owner] AS owner, [tenant_id] AS tenantId, CONVERT(varchar(20), [applied_horizon]) AS horizon ' +
-            'FROM [opt2_sync].[projector_checkpoint]',
-        ),
+      const world = await projectionWorld(
+        IDENTITY_AND_PEOPLE,
+        checkpoints(['people', `${DEFAULT_TENANT.toUpperCase()} `, '100']),
+        fakeClock(() => {
+          world.db[CHECKPOINTS] = checkpoints(
+            ['people', DEFAULT_TENANT, '121'],
+            ['people', TENANT_A, '130'],
+            ['identity', DEFAULT_TENANT, '60'],
+            ['identity', TENANT_A, '51'],
+          );
+        }),
       );
+
+      await world.hook(spec, 10_000);
+
+      expect(world.http.calls.map((call) => call.url.hostname.split('.')[0])).toStrictEqual(asked);
+      expect(world.http.calls[0]?.headers[INVOCATION_HEADER]).toBe(TOKEN);
+      expect(world.clock.elapsed()).toBe(SETTLE_POLL_MS);
+      expect(world.sql.queries.map((q) => q.sql)).toStrictEqual(Array(2).fill([LIVE_SITES_SQL, CHECKPOINT_SQL]).flat());
     },
   );
 
-  it('rejects a projection with SettleTimeoutError naming each owner and tenant still lagging', async () => {
-    const partial = checkpoints(['people', 'tenant-a', '200'], ['identity', 'tenant-b', '999']);
-    const sql = await fakeSql({ [CHECKPOINTS]: partial });
-    const http = position(fakeHttp(), 'people', () => ({ position: '120' }));
-    position(http, 'identity', () => ({ position: '50' }));
-    const clock = fakeClock();
-    const ctx = await context(http, 'gateway', scenarioEnv(TWO_OWNERS));
-    const hook = settleHook(ctx, undefined, await hookDeps(http, clock, { mssql: sql.mssql }));
+  it.each([
+    {
+      label: 'the checkpoint table is empty',
+      spec: 'projection' as const,
+      rows: checkpoints(),
+      lagging: [...TENANTS.map((t) => `identity/${t}`), ...TENANTS.map((t) => `people/${t}`)],
+    },
+    {
+      label: 'an awaited owner has no checkpoint',
+      spec: 'projection' as const,
+      rows: checkpoints(['identity', DEFAULT_TENANT, '51'], ['identity', TENANT_A, '51']),
+      lagging: TENANTS.map((t) => `people/${t}`),
+    },
+    {
+      label: 'a live tenant has no checkpoint',
+      spec: 'projection:people' as const,
+      rows: checkpoints(['people', DEFAULT_TENANT, '200']),
+      lagging: [`people/${TENANT_A}`],
+    },
+    {
+      label: 'a horizon equals the position',
+      spec: 'projection:people' as const,
+      rows: checkpoints(['people', DEFAULT_TENANT, '120'], ['people', TENANT_A, '121']),
+      lagging: [`people/${DEFAULT_TENANT}`],
+    },
+  ])(
+    'rejects a projection with SettleTimeoutError naming each pair still behind when $label',
+    async ({ spec, rows, lagging }) => {
+      const { hook, clock } = await projectionWorld(IDENTITY_AND_PEOPLE, rows);
 
-    const err = await failure(hook('projection', 2_500));
+      const err = await failure(hook(spec, 2_500));
 
-    expect(err).toBeInstanceOf(SettleTimeoutError);
-    expect(err.message).toBe('settle projection: after 2500 ms the projector lags identity/tenant-a, people/tenant-b');
-    expect(clock.elapsed()).toBe(2_500);
+      expect(err).toBeInstanceOf(SettleTimeoutError);
+      expect(err.message).toBe(`settle projection: after 2500 ms the projector lags ${lagging.join(', ')}`);
+      expect(clock.elapsed()).toBe(2_500);
+    },
+  );
+
+  it.each<{ label: string; spec: 'projection' | 'projection:people'; authority: Record<string, string> }>([
+    { label: 'no version is active', spec: 'projection', authority: {} },
+    {
+      label: 'every group is legacy-authoritative',
+      spec: 'projection',
+      authority: { 'grp:identity': 'legacy', 'grp:people': 'legacy', 'grp:communications': 'legacy' },
+    },
+    {
+      label: 'the named owner is legacy-authoritative',
+      spec: 'projection:people',
+      authority: { 'grp:identity': 'target' },
+    },
+  ])('resolves a projection with neither a position read nor a query when $label', async ({ spec, authority }) => {
+    const { hook, http, sql } = await projectionWorld(authority, checkpoints());
+
+    await hook(spec, 1_000);
+
+    expect(http.to(GATEWAY)).toStrictEqual([`GET ${STATUS_PATH}`]);
+    expect(http.calls).toHaveLength(1);
+    expect(sql.queries).toStrictEqual([]);
   });
 
-  it('rejects a projection when OPT2_SERVICE_URLS lists no service', async () => {
-    const ctx = await context(fakeHttp(), 'gateway', scenarioEnv({ OPT2_SERVICE_URLS: undefined }));
+  interface ProjectionErrorCase {
+    label: string;
+    spec: 'projection' | `projection:${string}`;
+    status?: Handler;
+    groups?: CutoverGroups;
+    env?: EnvLike;
+    type: new (...args: never[]) => Error;
+    error: RegExp;
+  }
 
-    const err = await failure(settleHook(ctx)('projection', 1_000));
+  it.each<ProjectionErrorCase>([
+    {
+      label: 'an owner that owns no unit',
+      spec: 'projection:peeple',
+      type: GoldenConfigError,
+      error: /^settle projection: peeple owns no unit of opt2\/table-ownership\.json$/,
+    },
+    {
+      label: 'a target unit outside the ownership units',
+      spec: 'projection',
+      groups: { groups: [{ id: 'grp:people', units: ['people.person', 'fixture.unknown'] }] },
+      type: GoldenConfigError,
+      error: /^settle projection: unit fixture\.unknown of group grp:people is not in opt2\/table-ownership\.json$/,
+    },
+    {
+      label: 'a cut-over status without groupAuthority',
+      spec: 'projection',
+      status: () => json({ tableVersion: null, epoch: 0, instances: [] }),
+      type: SideEffectError,
+      error: /^gateway cut-over status carries no groupAuthority/,
+    },
+    {
+      label: 'a gateway that refuses the connection',
+      spec: 'projection',
+      status: () => {
+        throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+      },
+      type: GatewayUnreachable,
+      error: /^gateway at http:\/\/gateway\.fixture\.test refused the connection; /,
+    },
+    {
+      label: 'an awaited owner OPT2_SERVICE_URLS does not list',
+      spec: 'projection:people',
+      env: { OPT2_SERVICE_URLS: JSON.stringify({ identity: serviceBase('identity') }) },
+      type: GoldenConfigError,
+      error: /^OPT2_SERVICE_URLS has no URL for people; /,
+    },
+  ])('rejects a projection on $label', async ({ spec, status, groups = GROUPS, env = TWO_OWNERS, type, error }) => {
+    const http = cutover(fakeHttp(), IDENTITY_AND_PEOPLE);
+    if (status !== undefined) http.route('GET', `${GATEWAY}${STATUS_PATH}`, status);
+    const sql = await fakeSql(legacyDb());
+    const ctx = await context(http, 'gateway', scenarioEnv(env));
+    const deps = await hookDeps(http, undefined, { mssql: sql.mssql, ownership: PROJECTION_OWNERSHIP, groups });
 
-    expect(err).toBeInstanceOf(GoldenConfigError);
-    expect(err.message).toBe('settle projection: OPT2_SERVICE_URLS lists no service');
+    const err = await failure(settleHook(ctx, undefined, deps)(spec, 1_000));
+
+    expect(err).toBeInstanceOf(type);
+    expect(err.message).toMatch(error);
+    expect(sql.queries).toStrictEqual([]);
+  });
+
+  it.each([
+    { label: 'answers 403', status: 403, body: { error: 'forbidden-body-text' } },
+    { label: 'answers 200 with a body that is not CutoverStatus', status: 200, body: { error: 'not-status-body-text' } },
+  ])('rejects a projection whose cut-over status $label, naming the status and never the body', async ({ status, body }) => {
+    const http = fakeHttp().route('GET', `${GATEWAY}${STATUS_PATH}`, () => json(body, status));
+    const sql = await fakeSql(legacyDb());
+    const ctx = await context(http, 'gateway', scenarioEnv(TWO_OWNERS));
+    const deps = await hookDeps(http, undefined, { mssql: sql.mssql, ownership: PROJECTION_OWNERSHIP, groups: GROUPS });
+
+    const err = await failure(settleHook(ctx, undefined, deps)('projection', 1_000));
+
+    expect(err).toBeInstanceOf(SideEffectError);
+    expect(err.message).toBe(`gateway cut-over status answered ${status}`);
+    expect(err.message).not.toContain(body.error);
+    expect(err.cause).toBeInstanceOf(CutoverRequestFailed);
+    expect(sql.queries).toStrictEqual([]);
   });
 
   it('rejects a projection whose own invoker finds no local signing keys', async () => {
@@ -2078,8 +2267,11 @@ describe('settleHook', () => {
     expect(err.message).toMatch(/^Local secrets missing: /);
   });
 
-  it('rejects a projection whose own SQL client has no connection settings', async () => {
-    const http = position(fakeHttp(), 'people', () => ({ position: '120' }));
+  it('rejects a projection whose own SQL client has no connection settings, over the committed groups', async () => {
+    const committed = await loadCutoverGroups();
+    const group = committed.groups.find((g) => g.units.includes('people.person'));
+    if (group === undefined) throw new Error('gateway/cutover/groups.json has no group holding people.person');
+    const http = position(cutover(fakeHttp(), { [group.id]: 'target' }), 'people', () => ({ position: '120' }));
     const ctx = await context(http, 'gateway');
 
     const err = await failure(settleHook(ctx, undefined, await hookDeps(http))('projection:people', 1_000));
@@ -2087,6 +2279,38 @@ describe('settleHook', () => {
     expect(err.message).toBe(
       'SQL Server connection settings missing: MURA_DBHOST, MURA_DATABASE, MURA_DBUSERNAME, MURA_DBPASSWORD',
     );
+    expect(http.to(serviceBase('people'))).toStrictEqual([`GET ${MIGRATION_PATH_PREFIX}/position`]);
+  });
+});
+
+describe('loadCutoverGroups', () => {
+  it('reads the committed groups, every unit of which is a unit of opt2/table-ownership.json', async () => {
+    const [{ groups }, ownership] = await Promise.all([loadCutoverGroups(), loadTableOwnership()]);
+    const units = new Set(ownership.units.map((u) => u.unit));
+
+    expect(groups.length).toBeGreaterThan(0);
+    expect(groups.flatMap((g) => g.units).filter((unit) => !units.has(unit))).toStrictEqual([]);
+  });
+
+  it.each([
+    {
+      label: 'cannot be read',
+      read: () => vi.mocked(readFile).mockRejectedValueOnce(new Error('ENOENT: FIXTURE')),
+      error: /cannot be read: ENOENT/,
+    },
+    {
+      label: 'lacks units',
+      read: () => vi.mocked(readFile).mockResolvedValueOnce('{"groups":[{"id":"grp:x"}]}'),
+      error: /has no groups of ids and units/,
+    },
+  ])('throws GoldenConfigError naming a groups file that $label', async ({ read, error }) => {
+    read();
+
+    const err = await failure(loadCutoverGroups('/fixture/groups.json'));
+
+    expect(err).toBeInstanceOf(GoldenConfigError);
+    expect(err.message).toMatch(/^cut-over groups \/fixture\/groups\.json /);
+    expect(err.message).toMatch(error);
   });
 });
 
@@ -2283,5 +2507,70 @@ describe('collectSideEffects', () => {
     const err = await failure(collectSideEffects(ctx, scenario, 'gateway', { mssql: sql.mssql, ownership: OWNERSHIP }));
 
     expect(err.message).toMatch(/^Local secrets missing: /);
+  });
+});
+
+describe('side-effect configuration', () => {
+  const MAIL: MailFixture = {
+    ID: 'FIXTURE-M1',
+    message: { From: { Address: 'admin@example.com' }, To: [{ Address: 'ada@example.test' }], Subject: 'Hi' },
+    headers: {},
+  };
+
+  /** One public entry point run against `ctx`: two mail settles of one hook, or one mail collection. */
+  const ENTRY_POINTS: { entry: string; run: (ctx: ScenarioContext, deps: SideEffectDeps) => Promise<unknown> }[] = [
+    {
+      entry: 'settleHook',
+      run: async (ctx, deps) => {
+        const hook = settleHook(ctx, undefined, deps);
+        await hook('mail', 60_000);
+        await hook('mail', 60_000);
+      },
+    },
+    {
+      entry: 'collectSideEffects',
+      run: (ctx, deps) => collectSideEffects(ctx, { compare: ['mail'], steps: [] }, 'legacy', deps),
+    },
+  ];
+
+  /** Mailpit holding one message, a fake clock and a legacy context over `env`. */
+  async function world(env: EnvLike) {
+    const http = mailpit(fakeHttp(), [MAIL]);
+    const clock = fakeClock();
+    const ctx = await context(http, 'legacy', env);
+    return { http, ctx, deps: { fetch: http.fetch, sleep: clock.sleep, now: clock.now } satisfies SideEffectDeps };
+  }
+
+  it.each(ENTRY_POINTS)('$entry parses the environment once', async ({ run }) => {
+    const { http, ctx, deps } = await world(scenarioEnv());
+    const parse = vi.spyOn(sideEffectEnvSchema, 'safeParse');
+
+    await run(ctx, deps);
+
+    expect(parse).toHaveBeenCalledTimes(1);
+    expect(http.to(MAILPIT).length).toBeGreaterThan(1);
+    parse.mockRestore();
+  });
+
+  it.each(ENTRY_POINTS)('$entry uses an injected configuration as-is', async ({ run }) => {
+    const { http, ctx, deps } = await world(scenarioEnv({ MAILPIT_API_URL: 'not-a-url' }));
+    const parse = vi.spyOn(sideEffectEnvSchema, 'safeParse');
+
+    await run(ctx, { ...deps, config: { serviceUrls: {}, mailpitUrl: MAILPIT } });
+
+    expect(parse).not.toHaveBeenCalled();
+    expect(http.calls.length).toBeGreaterThan(1);
+    expect(http.to(MAILPIT)).toHaveLength(http.calls.length);
+    parse.mockRestore();
+  });
+
+  it.each(ENTRY_POINTS)('$entry rejects an invalid environment before any request', async ({ run }) => {
+    const { http, ctx, deps } = await world(scenarioEnv({ MAILPIT_API_URL: 'not-a-url' }));
+
+    const err = await failure(Promise.resolve().then(() => run(ctx, deps)));
+
+    expect(err).toBeInstanceOf(GoldenConfigError);
+    expect(err.message).toMatch(/^invalid side-effect configuration: MAILPIT_API_URL: /);
+    expect(http.calls).toStrictEqual([]);
   });
 });

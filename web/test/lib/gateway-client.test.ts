@@ -249,6 +249,13 @@ describe('named operations', () => {
       json: { contexts: CSRF_CONTEXTS },
     },
     {
+      operation: 'identity.reversePermLookUp',
+      invoke: (client) => client.identity.reversePermLookUp(),
+      method: 'GET',
+      service: 'identity',
+      path: '/v1/permissions/reverse-lookup',
+    },
+    {
       operation: 'programsSites.listSites with a sort',
       invoke: (client) => client.programsSites.listSites({ sortBy: 'site', sortDirection: 'desc' }),
       method: 'GET',
@@ -276,6 +283,21 @@ describe('named operations', () => {
       method: 'GET',
       service: 'programs-sites',
       path: '/v1/sites/tenant%20a%2Fb/shell',
+    },
+    {
+      operation: 'programsSites.userSites with a host',
+      invoke: (client) => client.programsSites.userSites('admin.example.com:8080'),
+      method: 'GET',
+      service: 'programs-sites',
+      path: '/v1/user-sites',
+      query: { host: 'admin.example.com:8080' },
+    },
+    {
+      operation: 'programsSites.userSites',
+      invoke: (client) => client.programsSites.userSites(),
+      method: 'GET',
+      service: 'programs-sites',
+      path: '/v1/user-sites',
     },
   ])(
     'sends $operation as $method to $service at $path',

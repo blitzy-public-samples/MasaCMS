@@ -5,7 +5,6 @@ import { cfHash } from '@opt2/platform/legacy-compat';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
   DROPPED_HEADERS,
-  DROPPED_HEADER_PREFIXES,
   ETAG_INVALID,
   ETAG_MISMATCH,
   ETAG_OK,
@@ -85,10 +84,6 @@ describe('header rule constants', () => {
     for (const name of DROPPED_HEADERS) expect(name).toBe(name.toLowerCase());
   });
 
-  it('drops internal headers by the x-opt2- prefix', () => {
-    expect(DROPPED_HEADER_PREFIXES).toStrictEqual(['x-opt2-']);
-  });
-
   it('declares every volatile header in the committed drop rule', () => {
     const declared = new Set(rules.headers.drop.map((name) => name.toLowerCase()));
     for (const name of DROPPED_HEADERS) expect(declared.has(name)).toBe(true);
@@ -134,10 +129,10 @@ describe('normaliseHeaders', () => {
     ['lower', (name) => name],
     ['upper', (name) => name.toUpperCase()],
     ['title', titleCase],
-  ])('drops every volatile and x-opt2- header written in %s case', (_label, casing) => {
-    const headers: RawHeaders = { Generator: 'Masa CMS 7.6.1' };
-    for (const name of [...VOLATILE_NAMES, 'x-opt2-write-position', 'x-opt2-kind']) headers[casing(name)] = 'volatile';
-    expect(normalise(headers)).toStrictEqual({ generator: 'Masa CMS 7.6.1' });
+  ])('drops every volatile header written in %s case and keeps an x-opt2- header', (_label, casing) => {
+    const headers: RawHeaders = { Generator: 'Masa CMS 7.6.1', [casing('x-opt2-write-position')]: 'people=1024' };
+    for (const name of VOLATILE_NAMES) headers[casing(name)] = 'volatile';
+    expect(normalise(headers)).toStrictEqual({ generator: 'Masa CMS 7.6.1', 'x-opt2-write-position': 'people=1024' });
   });
 
   it.each<[string, string | string[]]>([
@@ -261,7 +256,14 @@ describe('normaliseHeaders', () => {
     expect(out.etag).toBe(ETAG_MISMATCH);
   });
 
-  it('normalises a legacy golden response and its gateway replay to the same headers', () => {
+  it.each<[string, RawHeaders, NormalisedHeaders]>([
+    ['to the same headers', {}, {}],
+    [
+      'apart from a leaked X-Opt2-Write-Position',
+      { 'X-Opt2-Write-Position': 'people=1024' },
+      { 'x-opt2-write-position': 'people=1024' },
+    ],
+  ])('normalises a legacy golden response and its gateway replay %s', (_label, leaked, replayOnly) => {
     const legacyBody = `{"data":{"contentid":"${ID_A}"}}`;
     const gatewayBody = `{"data":{"contentid":"${ID_B}"}}`;
     const golden: RawHeaders = {
@@ -291,13 +293,13 @@ describe('normaliseHeaders', () => {
       traceparent,
       tracestate: 'opt2=fixture',
       traceresponse: traceparent,
-      'x-opt2-write-position': 'people=1024',
       'x-request-id': 'fixture-request-0002',
+      ...leaked,
     };
 
     const left = normaliseHeaders(golden, legacyBody, createIdOrdinals(), rules);
     const right = normaliseHeaders(replay, gatewayBody, createIdOrdinals(), rules);
-    expect(right).toStrictEqual(left);
+    expect(right).toStrictEqual({ ...left, ...replayOnly });
     expect(left).toStrictEqual({
       'content-type': 'application/json;charset=utf-8',
       etag: ETAG_OK,

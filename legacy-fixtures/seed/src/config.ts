@@ -81,6 +81,8 @@ export interface SeedConfig {
   roleGroups: Readonly<Record<Role, string>>;
   sites: Readonly<Record<SiteKey, SiteConfig>>;
   reserved: { rehearsal: RehearsalReserve };
+  /** Names of the passwords golden scenarios post for accounts they create (`${secret:generated:<name>}`). */
+  scenarioPasswords: readonly string[];
 }
 
 const ZERO_COUNTS: SiteCounts = {
@@ -237,6 +239,7 @@ export const seedConfigSchema = z
       'tenant-b': siteSchema('tenant-b', z.literal(2)),
     }),
     reserved: z.strictObject({ rehearsal: rehearsalSchema }),
+    scenarioPasswords: z.array(z.string().min(1)).refine(isUnique, { error: 'must be unique' }).default([]),
   })
   .transform(
     (raw): SeedConfig => ({
@@ -248,6 +251,7 @@ export const seedConfigSchema = z
       roleGroups: raw.roleGroups,
       sites: raw.sites,
       reserved: raw.reserved,
+      scenarioPasswords: raw.scenarioPasswords,
     }),
   );
 

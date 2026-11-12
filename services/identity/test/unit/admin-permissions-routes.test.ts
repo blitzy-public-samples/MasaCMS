@@ -1,4 +1,4 @@
-/** The `cperm` main, module and updatemodule routes over a throwaway `identity` schema: contract shape, s2 and site-admin access, node verdicts, module grants, and the posted `moduleid` as CSRF context and redirect key. */
+/** The `cperm` main, module and updatemodule routes and the reverse lookup over a throwaway `identity` schema: contract shape, s2 and site-admin access, node verdicts, module grants, the posted `moduleid` as CSRF context and redirect key, and the token-site lookup. */
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -25,9 +25,10 @@ import {
 } from '@opt2/platform/testing';
 import { issueTokens, type CsrfDeps } from '../../src/domain/csrf.js';
 import type { PermissionDeps } from '../../src/domain/permissions.js';
+import { applyLogin } from '../../src/domain/sessions.js';
 import type { BridgeRelay, LegacyUsedToken } from '../../src/legacy/bridge-relay.js';
 import { createIdentityRepository, type GroupInput, type IdentityRepository } from '../../src/repo/repository.js';
-import { IDENTITY_UNITS } from '../../src/repo/tables.js';
+import { IDENTITY_UNITS, type LoginSnapshot } from '../../src/repo/tables.js';
 import { registerAdminPermissionRoutes } from '../../src/routes/admin-permissions.js';
 
 type Method = 'GET' | 'PUT';
@@ -36,7 +37,8 @@ type Payload = URLSearchParams | Record<string, unknown>;
 const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
   paths: Record<string, Record<string, Record<string, unknown>>>;
 };
-const CONTRACT_PATHS = ['/v1/permissions/content/{contentId}', '/v1/permissions/modules/{moduleId}'];
+const CONTRACT_PATHS = ['/v1/permissions/content/{contentId}', '/v1/permissions/modules/{moduleId}', '/v1/permissions/reverse-lookup'];
+const LOOKUP_URL = '/v1/permissions/reverse-lookup';
 const NOW = new Date(2026, 5, 30, 12, 0, 0, 123);
 const CLOCK = fixedClock(NOW);
 const SITE = 'tenant-a';
@@ -187,7 +189,7 @@ beforeAll(async () => {
   registerWritePositionHeader(app);
   const db = handle?.app ?? NO_DB;
   const csrf: CsrfDeps = { db, repo, bridge: relay, clock: CLOCK, sleep: () => Promise.resolve() };
-  await registerAdminPermissionRoutes(app, { permissions: { db, repo, events }, csrf });
+  await registerAdminPermissionRoutes(app, { permissions: { db, repo, events }, reverseLookup: { db, repo }, csrf });
   await app.ready();
 });
 
@@ -202,10 +204,10 @@ beforeEach(() => {
   events.published.length = 0;
 });
 
-/** Headers of a gateway-relayed call for a `SITE` user holding `roles` in session `sid`; null `roles` sends no user token, null `caller` no invocation credential. */
-async function headersFor(roles: readonly string[] | null, sid?: string, caller: string | null = 'gateway'): Promise<Record<string, string>> {
+/** Headers of a gateway-relayed call for a `site` user holding `roles` in session `sid`; null `roles` sends no user token, null `caller` no invocation credential. */
+async function headersFor(roles: readonly string[] | null, sid?: string, caller: string | null = 'gateway', site = SITE): Promise<Record<string, string>> {
   const headers: Record<string, string> = {};
-  if (roles !== null) headers.authorization = `Bearer ${await mintUserToken({ sub: ADMIN_USER, sid, site: SITE, roles })}`;
+  if (roles !== null) headers.authorization = `Bearer ${await mintUserToken({ sub: ADMIN_USER, sid, site, roles })}`;
   if (caller !== null) headers[INVOCATION_HEADER] = `Bearer ${await mintServiceToken({ caller, audience: 'identity' })}`;
   return headers;
 }
@@ -230,7 +232,7 @@ const DECLARED_ROUTES: [Method, string, Payload | undefined][] = [
 ];
 
 describe('route declarations', () => {
-  it('match the three contract operations, with no route for cperm.update', () => {
+  it('match the four contract operations, the reverse lookup public, with no route for cperm.update', () => {
     const declared = collectRouteMatrix(app).routes.filter((route) => route.url.startsWith('/v1/permissions'));
     const expected = CONTRACT_PATHS.flatMap((template) =>
       Object.entries(OPENAPI.paths[template] ?? {})
@@ -239,13 +241,14 @@ describe('route declarations', () => {
           method: method.toUpperCase(),
           url: template.replace('{contentId}', ':contentId').replace('{moduleId}', ':moduleId'),
           transport: operation['x-opt2-transport'],
-          requires: operation['x-opt2-requires'],
+          ...(operation['x-opt2-public'] === true ? { public: true } : { requires: operation['x-opt2-requires'] }),
         })),
     );
     expect(Object.keys(OPENAPI.paths).filter((template) => template.startsWith('/v1/permissions'))).toEqual(CONTRACT_PATHS);
-    expect(expected).toHaveLength(3);
-    expect(declared).toHaveLength(3);
+    expect(expected).toHaveLength(4);
+    expect(declared).toHaveLength(4);
     expect(declared).toEqual(expect.arrayContaining(expected.map((entry): unknown => expect.objectContaining(entry))));
+    expect(declared.find((route) => route.url === LOOKUP_URL)).toMatchObject({ method: 'GET', public: true, siteCheck: true });
   });
 });
 
@@ -267,7 +270,7 @@ describe('auth denials', () => {
     expect(noUser.json()).toMatchObject({ error: { code: 'invalid_request' } });
   });
 
-  it.each(DECLARED_ROUTES)('refuse %s %s for a siteid other than the token site', async (method, url, payload) => {
+  it.each<[Method, string, Payload | undefined]>([...DECLARED_ROUTES, ['GET', LOOKUP_URL, undefined]])('refuse %s %s for a siteid other than the token site', async (method, url, payload) => {
     const res = await send(method, `${url}?siteid=tenant-b`, await headersFor([Roles.s2]), payload);
 
     expect(res.statusCode).toBe(403);
@@ -277,6 +280,17 @@ describe('auth denials', () => {
     const headers = { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'identity', roles: [Roles.s2] })}` };
 
     const res = await send(method, url, headers, payload);
+
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toMatchObject({ error: { code: 'invalid_request' } });
+  });
+
+  it.each<[string, () => Promise<Record<string, string>>]>([
+    ['without a user token', () => headersFor(null)],
+    ['without an invocation credential', () => headersFor([Roles.s2], undefined, null)],
+    ['for a service credential holding s2 without a user token', async () => ({ [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'identity', roles: [Roles.s2] })}` })],
+  ])('answer the public reverse lookup %s with 401 as a missing credential', async (_label, headers) => {
+    const res = await send('GET', LOOKUP_URL, await headers());
 
     expect(res.statusCode).toBe(401);
     expect(res.json()).toMatchObject({ error: { code: 'invalid_request' } });
@@ -488,5 +502,28 @@ describe.skipIf(!available)('cperm screens against PostgreSQL', () => {
     expect(postedContext.json()).toEqual({ written: true, redirect });
     expect((await moduleGrants(pathModule))[0]).toEqual({ authors: true, Editors: false });
     expect((await moduleGrants(SITE_MANAGER_MODULE))[0]).toEqual({ authors: false, Editors: false });
+  });
+
+  // tenant-a pools its public users in umbrella, so umbrella's lookup reaches tenant-a's Admin group; the token carries no roles.
+  it.each<{ when: string; roleList: string | null; site: string; granted: boolean }>([
+    { when: "a member of the site's private-pool Admin group", roleList: 'Admin;tenant-a;0,S2IsPrivate;tenant-a,S2IsPrivate', site: SITE, granted: true },
+    { when: "a member of a public-pool member site's Admin group", roleList: 'Admin;tenant-a;0,S2IsPrivate;tenant-a,S2IsPrivate', site: UMBRELLA, granted: true },
+    { when: 'a private-pool user without Users access', roleList: 'Editors;tenant-a;0,S2IsPrivate;tenant-a,S2IsPrivate', site: UMBRELLA, granted: false },
+    { when: 'a session without a login', roleList: null, site: SITE, granted: false },
+  ])('answer the reverse lookup of the token site for $when with granted $granted', async ({ roleList, site, granted }) => {
+    sessionSeq += 1;
+    const sessionId = `S-reverse-${String(sessionSeq)}`;
+    if (roleList !== null) {
+      const snapshot: LoginSnapshot = {
+        userid: ADMIN_USER, username: 'site_admin', siteid: SITE, subtype: 'Default', password: 'stored-hash', fname: '', lname: '', email: '',
+        remoteid: '', company: '', lastlogin: null, passwordcreated: null, roleList, membershipIds: ADMIN_USER,
+      };
+      await applyLogin({ db: handle?.app ?? NO_DB, repo, clock: CLOCK }, { sessionId, tenantId: tenantIdForSite(SITE), snapshot, mode: 'target-primary', siteId: SITE });
+    }
+
+    const res = await send('GET', LOOKUP_URL, await headersFor([], sessionId, 'web', site));
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ granted });
   });
 });

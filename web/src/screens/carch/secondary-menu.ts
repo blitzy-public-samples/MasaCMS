@@ -1,12 +1,14 @@
 // The carch secondary menu of `carch/dsp_secondary_menu.cfm`, placed by the carch views and the shell's `carch` hook (server-only).
-import { cfEq, cfListToArray, javaTrim } from '@opt2/platform/legacy-compat';
+import { cfEq, cfListToArray, javaTrim, type AdminParam } from '@opt2/platform/legacy-compat';
 import type { CsrfRenderer } from '@/lib/csrf';
 import { encodeHtml, encodeHtmlAttr, encodeJs, encodeUrl, raw, type SafeHtml } from '@/lib/html';
 import type { AdminRequest, RequestContext } from '@/lib/request-context';
 import { rbFor, type RbLookup } from '@/lib/resource-bundles/rb';
+import { relativeAdminUrl, type RelativeAdminPrefix, type RelativeAdminUrlOptions } from '@/lib/urls';
 import type { ShellHooks } from '@/shell/types';
 import {
   COMPONENT_MODULE_ID,
+  CONTENT_MODULE_ID,
   FORM_MODULE_ID,
   NODE_LEVEL_LIST,
   ROOT_CONTENT_ID,
@@ -94,6 +96,9 @@ const MODULE_CASE = Object.freeze([COMPONENT_MODULE_ID, FORM_MODULE_ID, VARIATIO
 /** Content types whose default-case edit menu links the front-end preview. */
 const PREVIEW_TYPES = Object.freeze(['Page', 'Folder', 'Calendar', 'Gallery', 'Link']);
 
+/** The default-case edit menu's Export and Import links: a bare `?muraAction=` and `&amp;` separators. */
+const EXPORT_IMPORT_URL: RelativeAdminUrlOptions = Object.freeze({ html: true, prefix: '?' });
+
 const NO_BREAK_SPACES = new Set(['\u00A0', '\u2007', '\u202F']);
 
 /** Java `Character.isWhitespace` of one UTF-16 unit. */
@@ -165,8 +170,6 @@ interface MenuScope {
   text(name: string): string;
   /** `rc[name]`, undefined when absent. */
   optional(name: string): string | undefined;
-  /** `esapiEncode('url', rc[name])`. */
-  url(name: string): string;
   label(key: string): string;
   /** `rc.$.renderCSRFTokens(context=…, format='url')`. */
   csrf(context: string): string;
@@ -198,47 +201,128 @@ function deleteContentConfirm(m: MenuScope): string {
   return `onclick="return confirmDialog('${encodeJs(message)}',this.href)"`;
 }
 
-/** `&type=…&parentid=…&topid=…&siteid=…&startrow=…&moduleid=…`, the node query most items carry after the content id. */
-const nodeQuery = (m: MenuScope): string =>
-  `&type=${m.url('type')}&parentid=${m.url('parentid')}&topid=${m.url('topid')}&siteid=${m.url('siteid')}&startrow=${m.url('startrow')}&moduleid=${m.url('moduleid')}`;
+/** `[name, rc[name]]` per name in order, URL-encoded by the builder as `esapiEncode('url', rc[name])`. */
+const rcParams = (m: MenuScope, ...names: string[]): AdminParam[] => names.map((name) => [name, m.text(name)]);
+
+/** `type`, `parentid`, `topid`, `siteid`, `startrow` and `moduleid`, the node query most items carry after the content id. */
+const nodeQuery = (m: MenuScope): AdminParam[] =>
+  rcParams(m, 'type', 'parentid', 'topid', 'siteid', 'startrow', 'moduleid');
+
+/** `rc.compactdisplay` as the `compactDisplay` parameter. */
+const compactParam = (m: MenuScope): AdminParam => ['compactDisplay', m.text('compactdisplay')];
+
+/** The module's list, the module being its top, parent and module id. */
+const moduleListUrl = (m: MenuScope): string =>
+  relativeAdminUrl('cArch', 'list', [
+    ...rcParams(m, 'siteid'),
+    ['topid', m.text('moduleid')],
+    ['parentid', m.text('moduleid')],
+    ...rcParams(m, 'moduleid'),
+  ]);
+
+/** Site Manager's list; `prefix` is the text the item writes before `muraAction=`. */
+const siteManagerUrl = (m: MenuScope, prefix: RelativeAdminPrefix = './?'): string =>
+  relativeAdminUrl('cArch', 'list', [...rcParams(m, 'siteid'), ['moduleid', CONTENT_MODULE_ID, 'raw']], { prefix });
+
+/** The node's Version History link; `html` separates its parameters with `&amp;`. */
+const historyUrl = (m: MenuScope, html = false): string =>
+  relativeAdminUrl('cArch', 'hist', [...rcParams(m, 'contentid'), ...nodeQuery(m), compactParam(m)], { html });
+
+/** The Audit Trail link of version `contentHistId`, unencoded as legacy prints it; `html` as in {@link historyUrl}. */
+const auditUrl = (m: MenuScope, contentHistId: string, html = false): string =>
+  relativeAdminUrl(
+    'cArch',
+    'audit',
+    [...rcParams(m, 'contentid'), ['contenthistid', contentHistId, 'raw'], ...nodeQuery(m), compactParam(m)],
+    { html },
+  );
+
+/** The Delete Version link and its CSRF tokens, `rc.return` encoded as `returnEncoding`. */
+const deleteVersionUrl = (m: MenuScope, returnEncoding: 'url' | 'raw'): string =>
+  relativeAdminUrl('cArch', 'update', [
+    ...rcParams(m, 'contenthistid'),
+    ['action', 'delete'],
+    ...rcParams(m, 'contentid'),
+    ...nodeQuery(m),
+    ['return', m.text('return'), returnEncoding],
+  ]) + m.csrf(`${m.text('contenthistid')}delete`);
+
+/** The Delete Content link and its CSRF tokens; `compact` adds `compactDisplay` before the tokens. */
+const deleteAllUrl = (m: MenuScope, compact = false): string =>
+  relativeAdminUrl('cArch', 'update', [
+    ['action', 'deleteall'],
+    ...rcParams(m, 'contentid'),
+    ...nodeQuery(m),
+    ...(compact ? [compactParam(m)] : []),
+  ]) + m.csrf(`${m.text('contentid')}deleteall`);
+
+/** The Clear Version History link and its CSRF tokens. */
+const clearHistoryUrl = (m: MenuScope): string =>
+  relativeAdminUrl('cArch', 'update', [
+    ['action', 'deletehistall'],
+    ...rcParams(m, 'contentid'),
+    ...nodeQuery(m),
+    compactParam(m),
+  ]) + m.csrf(`${m.text('contentid')}deletehistall`);
 
 /** The Permissions item with the bean's type and parent id, unencoded as legacy prints them, indented by `indent`. */
 function beanPermissionsItem(m: MenuScope, indent: string): string {
   const content = m.content();
-  return `\n${indent}<li><a href="./?muraAction=cPerm.main&contentid=${m.url('contentid')}&type=${content.type}&parentid=${content.parentId}&topid=${m.url('topid')}&siteid=${m.url('siteid')}&moduleid=${m.url('moduleid')}&startrow=${m.url('startrow')}"><i class="mi-group"></i> ${m.label('sitemanager.content.permissions')}</a></li>\n${indent.slice(1)}`;
+  const href = relativeAdminUrl('cPerm', 'main', [
+    ...rcParams(m, 'contentid'),
+    ['type', content.type, 'raw'],
+    ['parentid', content.parentId, 'raw'],
+    ...rcParams(m, 'topid', 'siteid', 'moduleid', 'startrow'),
+  ]);
+  return `\n${indent}<li><a href="${href}"><i class="mi-group"></i> ${m.label('sitemanager.content.permissions')}</a></li>\n${indent.slice(1)}`;
 }
 
 /** The S2IsPrivate Manage Data link of a Form, as a button (`edit`) or a list item (`hist`), indented by `indent`. */
 function manageDataLink(m: MenuScope, indent: string, item: boolean): string {
-  const href = `./?muraAction=cArch.datamanager&contentid=${m.url('contentid')}&siteid=${m.url('siteid')}&topid=${m.url('topid')}&moduleid=${m.url('moduleid')}&type=Form&parentid=${m.url('moduleid')}`;
+  const href = relativeAdminUrl('cArch', 'datamanager', [
+    ...rcParams(m, 'contentid', 'siteid', 'topid', 'moduleid'),
+    ['type', 'Form'],
+    ['parentid', m.text('moduleid')],
+  ]);
   const label = `<i class="mi-wrench"></i> ${m.label('sitemanager.content.managedata')}</a></li>`;
   // The button form keeps legacy's stray `</li>`.
   return item ? `\n${indent}<li><a href="${href}">${label}\n${indent}` : `\n${indent}<a class="btn" href="${href}">${label}\n${indent}`;
 }
 
-/** The Export and Import items of a saved Form or Component, legacy-served actions linked as legacy links them. */
-function exportImportItems(m: MenuScope, exportAction: string, importAction: string): string {
+/** The Export and Import items of a saved Form or Component, legacy-served actions of `circuit` linked as legacy links them. */
+function exportImportItems(m: MenuScope, circuit: string, exportAction: string, importAction: string): string {
   const exportNode = encodeHtml(m.label('sitemanager.content.exportnode'));
   const importNode = encodeHtml(m.label('sitemanager.content.importnode'));
-  return `\n\t\t\t\t\t\t\t<li><a href="./?muraAction=${exportAction}&contentid=${m.url('contentid')}"><i class="mi-save"></i>  ${exportNode}</a></li>\n\t\t\t\t\t\t\t<li><a href="./?muraAction=${importAction}"><i class="mi-upload"></i>  ${importNode}</a></li>\n\t\t\t\t\t\t`;
+  return `\n\t\t\t\t\t\t\t<li><a href="${relativeAdminUrl(circuit, exportAction, rcParams(m, 'contentid'))}"><i class="mi-save"></i>  ${exportNode}</a></li>\n\t\t\t\t\t\t\t<li><a href="${relativeAdminUrl(circuit, importAction)}"><i class="mi-upload"></i>  ${importNode}</a></li>\n\t\t\t\t\t\t`;
 }
 
 /** `cfcase value="list"` of the module case. */
 function moduleList(m: MenuScope): string {
   if (cfEq(m.perm(), 'none')) return '';
-  const query = `&topid=${m.url('topid')}&parentid=${m.url('topid')}&siteid=${m.url('siteid')}&moduleid=${m.url('moduleid')}`;
+  const query: AdminParam[] = [
+    ['topid', m.text('topid')],
+    ['parentid', m.text('topid')],
+    ...rcParams(m, 'siteid', 'moduleid'),
+  ];
+  // The new item's empty `contentid` precedes the query.
+  const addUrl = (type: string, ...rest: AdminParam[]): string =>
+    relativeAdminUrl('cArch', 'edit', [['type', type], ['contentid', '', 'raw'], ...query, ...rest]);
   let out = '';
   if (cfEq(m.moduleId, COMPONENT_MODULE_ID)) {
-    out += `\n\t\t\t\t\t\t\t<a class="btn" href="./?muraAction=cArch.edit&type=Component&contentid=${query}"><i class="mi-plus-circle"></i> ${m.label('sitemanager.addcomponent')}</a>\n\t\t\t\t\t\t`;
+    out += `\n\t\t\t\t\t\t\t<a class="btn" href="${addUrl('Component')}"><i class="mi-plus-circle"></i> ${m.label('sitemanager.addcomponent')}</a>\n\t\t\t\t\t\t`;
   } else if (!cfEq(m.moduleId, VARIATION_MODULE_ID)) {
-    out += `\n\t\t\t\t\t\t\t<a class="btn" href="./?muraAction=cArch.edit&type=Form&contentid=${query}&formType=builder"><i class="mi-plus-circle"></i> ${m.label('sitemanager.addformwithbuilder')}</a>\n\t\t\t\t\t\t\t`;
+    out += `\n\t\t\t\t\t\t\t<a class="btn" href="${addUrl('Form', ['formType', 'builder'])}"><i class="mi-plus-circle"></i> ${m.label('sitemanager.addformwithbuilder')}</a>\n\t\t\t\t\t\t\t`;
     if (defined(m.input.allowSimpleHTMLForms, "application.configBean.getValue('allowSimpleHTMLForms')")) {
-      out += `\n\t\t\t\t\t\t\t<a class="btn" href="./?muraAction=cArch.edit&type=Form&contentid=${query}&formType=editor"><i class="mi-plus-circle"></i> ${m.label('sitemanager.addformwitheditor')}</a>\n\t\t\t\t\t\t\t`;
+      out += `\n\t\t\t\t\t\t\t<a class="btn" href="${addUrl('Form', ['formType', 'editor'])}"><i class="mi-plus-circle"></i> ${m.label('sitemanager.addformwitheditor')}</a>\n\t\t\t\t\t\t\t`;
     }
   }
   if (m.siteAdminOrS2) {
+    const permissions = relativeAdminUrl('cPerm', 'main', [
+      ['contentid', m.text('moduleid')],
+      ...rcParams(m, 'topid', 'siteid', 'moduleid', 'startrow'),
+    ]);
     // Legacy's `active` test compares the fuseaction with `main` inside the `list` case, so only the space remains.
-    out += `\n\t\t\t\t\t\t\t<a class="btn " href="./?muraAction=cPerm.main&contentid=${m.url('moduleid')}&topid=${m.url('topid')}&siteid=${m.url('siteid')}&moduleid=${m.url('moduleid')}&startrow=${m.url('startrow')}"><i class="mi-group"></i> Permissions</a>\n\t\t\t\t\t\t`;
+    out += `\n\t\t\t\t\t\t\t<a class="btn " href="${permissions}"><i class="mi-group"></i> Permissions</a>\n\t\t\t\t\t\t`;
   }
   return out;
 }
@@ -246,16 +330,44 @@ function moduleList(m: MenuScope): string {
 /** `cfcase value="datamanager"` of the module case. */
 function moduleDatamanager(m: MenuScope): string {
   const forms = '00000000000000000000000000000000004';
-  let out = `\n\t\t\t\t<a class="btn" href="./?muraAction=cArch.list&siteid=${m.url('siteid')}&topid=${m.url('moduleid')}&parentid=${m.url('moduleid')}&moduleid=${m.url('moduleid')}"><i class="mi-arrow-circle-left"></i>\n\t\t\t\t\t\t${m.label('sitemanager.backtoforms')}\n\t\t\t\t\t</a>\n\t\t\t\t<a class="btn" href="./?muraAction=cArch.hist&contentid=${m.url('contentid')}&type=Form&parentid=${forms}&topid=${forms}&siteid=${m.url('siteid')}&startrow=${m.url('startrow')}&moduleid=${forms}"><i class="mi-history"></i> ${m.label('sitemanager.content.versionhistory')}</a>\n\t\t\t\t`;
+  /** `contentid`, `type=Form`, `action` when given, then the forms module as top, module and parent id. */
+  const formQuery = (...action: AdminParam[]): AdminParam[] => [
+    ...rcParams(m, 'contentid'),
+    ['type', 'Form'],
+    ...action,
+    ['topid', forms, 'raw'],
+    ...rcParams(m, 'siteid'),
+    ['moduleid', forms, 'raw'],
+    ['parentid', forms, 'raw'],
+  ];
+  const back = moduleListUrl(m);
+  const history = relativeAdminUrl('cArch', 'hist', [
+    ...rcParams(m, 'contentid'),
+    ['type', 'Form'],
+    ['parentid', forms, 'raw'],
+    ['topid', forms, 'raw'],
+    ...rcParams(m, 'siteid', 'startrow'),
+    ['moduleid', forms, 'raw'],
+  ]);
+  let out = `\n\t\t\t\t<a class="btn" href="${back}"><i class="mi-arrow-circle-left"></i>\n\t\t\t\t\t\t${m.label('sitemanager.backtoforms')}\n\t\t\t\t\t</a>\n\t\t\t\t<a class="btn" href="${history}"><i class="mi-history"></i> ${m.label('sitemanager.content.versionhistory')}</a>\n\t\t\t\t`;
   if (!cfEq(m.text('action'), '')) {
-    out += `\n\t\t\t\t<a class="btn" title="${m.label('sitemanager.content.managedate')}" href="./?muraAction=cArch.datamanager&contentid=${m.url('contentid')}&type=Form&topid=${forms}&siteid=${m.url('siteid')}&moduleid=${forms}&parentid=${forms}"><i class="mi-wrench"></i> ${m.label('sitemanager.content.managedata')}</a>\n\t\t\t\t`;
+    out += `\n\t\t\t\t<a class="btn" title="${m.label('sitemanager.content.managedate')}" href="${relativeAdminUrl('cArch', 'datamanager', formQuery())}"><i class="mi-wrench"></i> ${m.label('sitemanager.content.managedata')}</a>\n\t\t\t\t`;
   }
   if (cfEq(m.perm(), 'editor') && m.unlocked()) {
     const editDisplay = m.label('sitemanager.content.editdisplay');
-    out += `\n\t\t\t\t<a class="btn" title="${editDisplay}" href="./?muraAction=cArch.datamanager&contentid=${m.url('contentid')}&type=Form&action=display&topid=${forms}&siteid=${m.url('siteid')}&moduleid=${forms}&parentid=${forms}"><i class="mi-pencil"></i> ${editDisplay}</a>\n\t\t\t\t<a class="btn" title="${m.label('sitemanager.content.delete')}" href="./?muraAction=cArch.update&contentid=${m.url('contentid')}&type=Form&action=deleteall&topid=${forms}&siteid=${m.url('siteid')}&moduleid=${forms}&parentid=${forms}${m.csrf(`${m.text('contentid')}deleteall`)}" onClick="return confirmDialog('${encodeJs(m.label('sitemanager.content.deleteformconfirm'))}',this.href)"><i class="mi-trash"></i> ${m.label('sitemanager.content.deleteform')}</a>\n\t\t\t\t`;
+    out += `\n\t\t\t\t<a class="btn" title="${editDisplay}" href="${relativeAdminUrl('cArch', 'datamanager', formQuery(['action', 'display']))}"><i class="mi-pencil"></i> ${editDisplay}</a>\n\t\t\t\t<a class="btn" title="${m.label('sitemanager.content.delete')}" href="${relativeAdminUrl('cArch', 'update', formQuery(['action', 'deleteall']))}${m.csrf(`${m.text('contentid')}deleteall`)}" onClick="return confirmDialog('${encodeJs(m.label('sitemanager.content.deleteformconfirm'))}',this.href)"><i class="mi-trash"></i> ${m.label('sitemanager.content.deleteform')}</a>\n\t\t\t\t`;
   }
   if (m.siteAdminOrS2) {
-    out += `\n\t\t\t\t\t<a class="btn" href="./?muraAction=cPerm.main&contentid=${m.url('contentid')}&type=Form&parentid=${forms}&topid=${forms}&siteid=${m.url('siteid')}&moduleid=${forms}&startrow=${m.url('startrow')}"><i class="mi-group"></i> ${m.label('sitemanager.content.permissions')}</a>\n\t\t\t\t`;
+    const permissions = relativeAdminUrl('cPerm', 'main', [
+      ...rcParams(m, 'contentid'),
+      ['type', 'Form'],
+      ['parentid', forms, 'raw'],
+      ['topid', forms, 'raw'],
+      ...rcParams(m, 'siteid'),
+      ['moduleid', forms, 'raw'],
+      ...rcParams(m, 'startrow'),
+    ]);
+    out += `\n\t\t\t\t\t<a class="btn" href="${permissions}"><i class="mi-group"></i> ${m.label('sitemanager.content.permissions')}</a>\n\t\t\t\t`;
   }
   return out;
 }
@@ -267,7 +379,7 @@ function moduleEdit(m: MenuScope): string {
   let out = '';
   if (m.notCompact) {
     started = true;
-    out += `\n\t\t\t\t\t<a class="btn" href="./?muraAction=cArch.list&siteid=${m.url('siteid')}&topid=${m.url('moduleid')}&parentid=${m.url('moduleid')}&moduleid=${m.url('moduleid')}"><i class="mi-arrow-circle-left"></i>\n\t\t\t\t\t${thenSpace(backToModuleLabel(m))}\n\t\t\t\t\t</a>\n\t\t\t\t\t`;
+    out += `\n\t\t\t\t\t<a class="btn" href="${moduleListUrl(m)}"><i class="mi-arrow-circle-left"></i>\n\t\t\t\t\t${thenSpace(backToModuleLabel(m))}\n\t\t\t\t\t</a>\n\t\t\t\t\t`;
   }
   const content = m.content();
   if (content.isNew) return out;
@@ -280,7 +392,7 @@ function moduleEdit(m: MenuScope): string {
   if (cfEq(m.text('type'), 'Variation')) {
     out += `\n\t\t\t\t\t \t \t<li><a href="${encodeUrl(`${content.remoteUrl}?previewid=${content.contentHistId}`)}"><i class="mi-eye"></i> ${m.label('sitemanager.content.viewversion')}</a></li>\n\t\t\t\t\t \t `;
   }
-  out += `\n\t\t\t\t\t\t <li><a href="./?muraAction=cArch.hist&contentid=${m.url('contentid')}${nodeQuery(m)}&compactDisplay=${m.url('compactdisplay')}"><i class="mi-history"></i> ${m.label('sitemanager.content.versionhistory')}</a></li>\n\t\t\t\t\t\t<li><a href="./?muraAction=cArch.audit&contentid=${m.url('contentid')}&contenthistid=${content.contentHistId}${nodeQuery(m)}&compactDisplay=${m.url('compactdisplay')}"><i class="mi-sitemap"></i> ${m.label('sitemanager.content.audittrail')}</a></li>\n\t\t\t\t\t\t`;
+  out += `\n\t\t\t\t\t\t <li><a href="${historyUrl(m)}"><i class="mi-history"></i> ${m.label('sitemanager.content.versionhistory')}</a></li>\n\t\t\t\t\t\t<li><a href="${auditUrl(m, content.contentHistId)}"><i class="mi-sitemap"></i> ${m.label('sitemanager.content.audittrail')}</a></li>\n\t\t\t\t\t\t`;
   // Legacy's `and` binds tighter than `or`: purge permission, super user or admin user, then the lock.
   if (
     m.notCompact &&
@@ -288,15 +400,15 @@ function moduleEdit(m: MenuScope): string {
     (canPurge(m) || req.isS2 || req.isSiteAdmin) &&
     m.unlocked()
   ) {
-    out += `\n\t\t\t\t\t\t\t<li><a href="./?muraAction=cArch.update&contenthistid=${m.url('contenthistid')}&action=delete&contentid=${m.url('contentid')}${nodeQuery(m)}&return=${m.url('return')}${m.csrf(`${m.text('contenthistid')}delete`)}" onclick="return confirmDialog('${encodeJs(m.label('sitemanager.content.deleteversionconfirm'))}',this.href)"><i class="mi-trash"></i> ${m.label('sitemanager.content.deleteversion')}</a></li>\n\t\t\t\t\t\t`;
+    out += `\n\t\t\t\t\t\t\t<li><a href="${deleteVersionUrl(m, 'url')}" onclick="return confirmDialog('${encodeJs(m.label('sitemanager.content.deleteversionconfirm'))}',this.href)"><i class="mi-trash"></i> ${m.label('sitemanager.content.deleteversion')}</a></li>\n\t\t\t\t\t\t`;
   }
   if (m.siteAdminOrS2) out += beanPermissionsItem(m, '\t\t\t\t\t\t\t');
   if (m.deletable() && m.unlocked()) {
-    out += `\n\t\t\t\t\t\t\t<li><a href="./?muraAction=cArch.update&action=deleteall&contentid=${m.url('contentid')}${nodeQuery(m)}${m.csrf(`${m.text('contentid')}deleteall`)}"\n\t\t\t\t\t\t\t${deleteContentConfirm(m)}><i class="mi-trash"></i>  ${m.label('sitemanager.content.deletecontent')}</a></li>\n\t\t\t\t\t\t`;
+    out += `\n\t\t\t\t\t\t\t<li><a href="${deleteAllUrl(m)}"\n\t\t\t\t\t\t\t${deleteContentConfirm(m)}><i class="mi-trash"></i>  ${m.label('sitemanager.content.deletecontent')}</a></li>\n\t\t\t\t\t\t`;
   }
-  if (cfEq(content.type, 'Form') && !content.isNew) out += exportImportItems(m, 'cForm.export', 'cForm.importform');
+  if (cfEq(content.type, 'Form') && !content.isNew) out += exportImportItems(m, 'cForm', 'export', 'importform');
   if (cfEq(content.type, 'Component') && !content.isNew) {
-    out += exportImportItems(m, 'cArch.exportcomponent', 'cArch.importcomponent');
+    out += exportImportItems(m, 'cArch', 'exportcomponent', 'importcomponent');
   }
   out += '\n\t\t\t\t\t\t</ul>\n\t\t\t\t\t\t';
   if (started) out += '\n\t\t\t\t\t\t</div>\n\t\t\t\t\t\t';
@@ -306,19 +418,19 @@ function moduleEdit(m: MenuScope): string {
 /** `cfcase value="hist,audit"` of the module case. */
 function moduleHistory(m: MenuScope): string {
   const { req } = m.ctx;
-  let out = `\n\t\t\t\t\t<a class="btn" href="./?muraAction=cArch.list&siteid=${m.url('siteid')}&topid=${m.url('moduleid')}&parentid=${m.url('moduleid')}&moduleid=${m.url('moduleid')}"><i class="mi-arrow-circle-left"></i>\n\t\t\t\t\t\t${thenSpace(backToModuleLabel(m))}\n\t\t\t\t\t</a>\n\t\t\t\t\t`;
+  let out = `\n\t\t\t\t\t<a class="btn" href="${moduleListUrl(m)}"><i class="mi-arrow-circle-left"></i>\n\t\t\t\t\t\t${thenSpace(backToModuleLabel(m))}\n\t\t\t\t\t</a>\n\t\t\t\t\t`;
   if (m.content().isNew) return out;
   out += '\n\t\t\t\t\t<div class="btn-group">\n\t\t\t\t\t\t  <a class="btn dropdown-toggle" data-toggle="dropdown" href="#">\n\t\t\t\t\t\t\t<i class="mi-cogs"></i> Actions\n\t\t\t\t\t\t\t<span class="caret"></span>\n\t\t\t\t\t\t  </a>\n\t\t\t\t\t  <ul class="dropdown-menu drop-right">\n\n\n\t\t\t\t\t';
   if (cfEq(m.text('type'), 'Form') && isS2IsPrivate(req)) out += manageDataLink(m, '\t\t\t\t\t\t', true);
   if (cfEq(m.fuseaction, 'hist')) {
     if ((canPurge(m) || m.siteAdminOrS2) && m.unlocked()) {
-      out += `\n\t\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t\t<a href="./?muraAction=cArch.update&action=deletehistall&contentid=${m.url('contentid')}${nodeQuery(m)}&compactDisplay=${m.url('compactdisplay')}${m.csrf(`${m.text('contentid')}deletehistall`)}" onclick="return confirmDialog('${encodeJs(m.label('sitemanager.content.clearversionhistoryconfirm'))}',this.href)">\n\t\t\t\t\t\t\t\t\t<i class="mi-eraser"></i> ${m.label('sitemanager.content.clearversionhistory')}\n\t\t\t\t\t\t\t\t</a>\n\t\t\t\t\t\t\t</li>\n\t\t\t\t\t\t`;
+      out += `\n\t\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t\t<a href="${clearHistoryUrl(m)}" onclick="return confirmDialog('${encodeJs(m.label('sitemanager.content.clearversionhistoryconfirm'))}',this.href)">\n\t\t\t\t\t\t\t\t\t<i class="mi-eraser"></i> ${m.label('sitemanager.content.clearversionhistory')}\n\t\t\t\t\t\t\t\t</a>\n\t\t\t\t\t\t\t</li>\n\t\t\t\t\t\t`;
     }
   } else {
-    out += `\n\t\t\t\t\t\t<li><a href="./?muraAction=cArch.hist&contentid=${m.url('contentid')}${nodeQuery(m)}&compactDisplay=${m.url('compactdisplay')}"><i class="mi-history"></i> ${m.label('sitemanager.content.versionhistory')}</a></li>\n\t\t\t\t\t`;
+    out += `\n\t\t\t\t\t\t<li><a href="${historyUrl(m)}"><i class="mi-history"></i> ${m.label('sitemanager.content.versionhistory')}</a></li>\n\t\t\t\t\t`;
   }
   if (m.deletable() && m.unlocked()) {
-    out += `\n\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t<a href="./?muraAction=cArch.update&action=deleteall&contentid=${m.url('contentid')}${nodeQuery(m)}${m.csrf(`${m.text('contentid')}deleteall`)}"\n\t\t\t\t\t\t\t\t${deleteContentConfirm(m)}>\n\t\t\t\t\t\t\t\t<i class="mi-trash"></i> ${m.label('sitemanager.content.deletecontent')}\n\t\t\t\t\t\t\t</a>\n\t\t\t\t\t\t</li>\n\t\t\t\t\t`;
+    out += `\n\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t<a href="${deleteAllUrl(m)}"\n\t\t\t\t\t\t\t\t${deleteContentConfirm(m)}>\n\t\t\t\t\t\t\t\t<i class="mi-trash"></i> ${m.label('sitemanager.content.deletecontent')}\n\t\t\t\t\t\t\t</a>\n\t\t\t\t\t\t</li>\n\t\t\t\t\t`;
   }
   if (m.siteAdminOrS2) out += beanPermissionsItem(m, '\t\t\t\t\t\t');
   return `${out}\n\t\t\t\t\t</ul>\n\t\t\t\t\t</div>\n\t\t\t\t\t`;
@@ -332,7 +444,14 @@ function scaffoldItems(m: MenuScope, props: readonly CarchScaffoldProp[], indent
       const plural = encodeHtml(prop.pluralName);
       // The singular name is printed unencoded, as legacy prints it.
       const name = withName ? `${thenSpace(plural)}${prop.displayName}` : plural;
-      return `\n${indent}<li><a href="./?muraAction=cArch.list&activeTab=2&entityid=${m.url('contentid')}&entityname=content&siteid=${m.url('siteid')}&relatesto=${encodeUrl(prop.cfc)}"><i class="mi-cube"></i> ${name}</a></li>\n\t\t\t\t\t\t`;
+      const href = relativeAdminUrl('cArch', 'list', [
+        ['activeTab', '2'],
+        ['entityid', m.text('contentid')],
+        ['entityname', 'content'],
+        ...rcParams(m, 'siteid'),
+        ['relatesto', prop.cfc],
+      ]);
+      return `\n${indent}<li><a href="${href}"><i class="mi-cube"></i> ${name}</a></li>\n\t\t\t\t\t\t`;
     })
     .join('');
 }
@@ -354,14 +473,14 @@ function defaultEdit(m: MenuScope): string {
     }
   }
   // These items separate their query parameters with `&amp;`; Export and Import (legacy-served) start at `?muraAction=`.
-  out += `\n\n\t\t\t\t\n\t\t\t\t<li>\n\t\t\t\t\t<a href="./?muraAction=cArch.hist&amp;contentid=${m.url('contentid')}&amp;type=${m.url('type')}&amp;parentid=${m.url('parentid')}&amp;topid=${m.url('topid')}&amp;siteid=${m.url('siteid')}&amp;startrow=${m.url('startrow')}&amp;moduleid=${m.url('moduleid')}&amp;compactDisplay=${m.url('compactdisplay')}">\n\t\t\t\t\t\t<i class="mi-history"></i> ${m.label('sitemanager.content.versionhistory')}\n\t\t\t\t\t</a>\n\t\t\t\t</li>\n\n\t\t\t\t\n\t\t\t\t<li>\n\t\t\t\t\t<a href="./?muraAction=cArch.audit&amp;contentid=${m.url('contentid')}&amp;contenthistid=${content.contentHistId}&amp;type=${m.url('type')}&amp;parentid=${m.url('parentid')}&amp;topid=${m.url('topid')}&amp;siteid=${m.url('siteid')}&amp;startrow=${m.url('startrow')}&amp;moduleid=${m.url('moduleid')}&amp;compactDisplay=${m.url('compactdisplay')}">\n\t\t\t\t\t\t<i class="mi-sitemap"></i> ${m.label('sitemanager.content.audittrail')}\n\t\t\t\t\t</a>\n\t\t\t\t</li>\n\n\t\t\t\t\n\t\t\t\t<li>\n\t\t\t\t\t<a href="?muraAction=cArch.export&amp;siteid=${m.url('siteid')}&amp;contentid=${m.url('contentid')}">\n\t\t\t\t\t\t<i class="mi-sign-out"></i> ${encodeHtml(m.label('sitemanager.content.exportnode'))}\n\t\t\t\t\t</a>\n\t\t\t\t</li>\n\n\t\t\t\t\n\t\t\t\t<li>\n\t\t\t\t\t<a href="?muraAction=cArch.import&amp;contentid=${m.url('contentid')}&amp;moduleid=${m.url('moduleid')}&amp;siteid=${m.url('siteid')}">\n\t\t\t\t\t\t<i class="mi-sign-in"></i> ${encodeHtml(m.label('sitemanager.content.importnode'))}\n\t\t\t\t\t</a>\n\t\t\t\t</li>\n\n\t\t\t\t`;
+  out += `\n\n\t\t\t\t\n\t\t\t\t<li>\n\t\t\t\t\t<a href="${historyUrl(m, true)}">\n\t\t\t\t\t\t<i class="mi-history"></i> ${m.label('sitemanager.content.versionhistory')}\n\t\t\t\t\t</a>\n\t\t\t\t</li>\n\n\t\t\t\t\n\t\t\t\t<li>\n\t\t\t\t\t<a href="${auditUrl(m, content.contentHistId, true)}">\n\t\t\t\t\t\t<i class="mi-sitemap"></i> ${m.label('sitemanager.content.audittrail')}\n\t\t\t\t\t</a>\n\t\t\t\t</li>\n\n\t\t\t\t\n\t\t\t\t<li>\n\t\t\t\t\t<a href="${relativeAdminUrl('cArch', 'export', rcParams(m, 'siteid', 'contentid'), EXPORT_IMPORT_URL)}">\n\t\t\t\t\t\t<i class="mi-sign-out"></i> ${encodeHtml(m.label('sitemanager.content.exportnode'))}\n\t\t\t\t\t</a>\n\t\t\t\t</li>\n\n\t\t\t\t\n\t\t\t\t<li>\n\t\t\t\t\t<a href="${relativeAdminUrl('cArch', 'import', rcParams(m, 'contentid', 'moduleid', 'siteid'), EXPORT_IMPORT_URL)}">\n\t\t\t\t\t\t<i class="mi-sign-in"></i> ${encodeHtml(m.label('sitemanager.content.importnode'))}\n\t\t\t\t\t</a>\n\t\t\t\t</li>\n\n\t\t\t\t`;
   if (m.notCompact && content.active < 1 && !cfEq(m.perm(), 'none') && m.unlocked()) {
     // `rc.return` is printed unencoded here, as legacy prints it (a pre-existing defect reproduced, not fixed).
-    out += `\n\t\t\t\t\t<li><a href="./?muraAction=cArch.update&contenthistid=${m.url('contenthistid')}&action=delete&contentid=${m.url('contentid')}${nodeQuery(m)}&return=${m.text('return')}${m.csrf(`${m.text('contenthistid')}delete`)}" onclick="return confirmDialog('${encodeJs(m.label('sitemanager.content.deleteversionconfirm'))}',this.href)"><i class="mi-trash"></i> ${m.label('sitemanager.content.deleteversion')}</a></li>\n\t\t\t\t`;
+    out += `\n\t\t\t\t\t<li><a href="${deleteVersionUrl(m, 'raw')}" onclick="return confirmDialog('${encodeJs(m.label('sitemanager.content.deleteversionconfirm'))}',this.href)"><i class="mi-trash"></i> ${m.label('sitemanager.content.deleteversion')}</a></li>\n\t\t\t\t`;
   }
   if (m.siteAdminOrS2) out += beanPermissionsItem(m, '\t\t\t\t\t');
   if (m.deletable() && m.unlocked()) {
-    out += `\n\t\t\t\t\t<li><a href="./?muraAction=cArch.update&action=deleteall&contentid=${m.url('contentid')}${nodeQuery(m)}${m.csrf(`${m.text('contentid')}deleteall`)}"\n\t\t\t\t\t${deleteContentConfirm(m)}><i class="mi-trash"></i> ${m.label('sitemanager.content.deletecontent')}</a></li>\n\t\t\t\t`;
+    out += `\n\t\t\t\t\t<li><a href="${deleteAllUrl(m)}"\n\t\t\t\t\t${deleteContentConfirm(m)}><i class="mi-trash"></i> ${m.label('sitemanager.content.deletecontent')}</a></li>\n\t\t\t\t`;
   }
   out += scaffoldItems(m, content.hasManyProps ?? [], '\t\t\t\t\t\t\t\t', false);
   out += scaffoldItems(m, content.hasOneProps ?? [], '\t\t\t\t\t\t\t', true);
@@ -370,22 +489,27 @@ function defaultEdit(m: MenuScope): string {
 
 /** `cfcase value="hist,audit"` of the default case. */
 function defaultHistory(m: MenuScope): string {
-  let out = `\n\n\t\t\t\t<a class="btn" href="./?muraAction=cArch.list&siteid=${m.url('siteid')}&moduleid=00000000000000000000000000000000000"><i class="mi-arrow-circle-left"></i> ${m.label('sitemanager.backtositemanager')}</a>\n\t\t\t\t`;
+  let out = `\n\n\t\t\t\t<a class="btn" href="${siteManagerUrl(m)}"><i class="mi-arrow-circle-left"></i> ${m.label('sitemanager.backtositemanager')}</a>\n\t\t\t\t`;
   if (m.content().isNew) return out;
   out +=
     '\n\t\t\t\t<div class="btn-group">\n\t\t\t\t\t  <a class="btn dropdown-toggle" data-toggle="dropdown" href="#">\n\t\t\t\t\t\t<i class="mi-cogs"></i> Actions\n\t\t\t\t\t\t<span class="caret"></span>\n\t\t\t\t\t  </a>\n\t\t\t\t  <ul class="dropdown-menu drop-right">\n\t\t\t\t';
   if (cfEq(m.fuseaction, 'hist')) {
     if (!cfEq(m.perm(), 'none') && m.unlocked()) {
-      out += `\n\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t<a href="./?muraAction=cArch.update&action=deletehistall&contentid=${m.url('contentid')}${nodeQuery(m)}&compactDisplay=${m.url('compactdisplay')}${m.csrf(`${m.text('contentid')}deletehistall`)}" onclick="return confirmDialog('${encodeJs(m.label('sitemanager.content.clearversionhistoryconfirm'))}',this.href)">\n\t\t\t\t\t\t\t\t<i class="mi-eraser"></i> ${m.label('sitemanager.content.clearversionhistory')}\n\t\t\t\t\t\t\t</a>\n\t\t\t\t\t\t</li>\n\t\t\t\t\t`;
+      out += `\n\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t<a href="${clearHistoryUrl(m)}" onclick="return confirmDialog('${encodeJs(m.label('sitemanager.content.clearversionhistoryconfirm'))}',this.href)">\n\t\t\t\t\t\t\t\t<i class="mi-eraser"></i> ${m.label('sitemanager.content.clearversionhistory')}\n\t\t\t\t\t\t\t</a>\n\t\t\t\t\t\t</li>\n\t\t\t\t\t`;
     }
   } else {
-    out += `\n\t\t\t\t\t<li><a href="./?muraAction=cArch.hist&contentid=${m.url('contentid')}${nodeQuery(m)}&compactDisplay=${m.url('compactdisplay')}"><i class="mi-history"></i> ${m.label('sitemanager.content.versionhistory')}</a></li>\n\t\t\t\t`;
+    out += `\n\t\t\t\t\t<li><a href="${historyUrl(m)}"><i class="mi-history"></i> ${m.label('sitemanager.content.versionhistory')}</a></li>\n\t\t\t\t`;
   }
   if (m.deletable() && m.notCompact && m.unlocked()) {
-    out += `\n\t\t\t\t\t<li><a href="./?muraAction=cArch.update&action=deleteall&contentid=${m.url('contentid')}${nodeQuery(m)}&compactDisplay=${m.url('compactdisplay')}${m.csrf(`${m.text('contentid')}deleteall`)}"\n\t\t\t\t\t\t${deleteContentConfirm(m)} ><i class="mi-trash"></i> ${m.label('sitemanager.content.deletecontent')}</a></li>\n\t\t\t\t`;
+    out += `\n\t\t\t\t\t<li><a href="${deleteAllUrl(m, true)}"\n\t\t\t\t\t\t${deleteContentConfirm(m)} ><i class="mi-trash"></i> ${m.label('sitemanager.content.deletecontent')}</a></li>\n\t\t\t\t`;
   }
   if (m.siteAdminOrS2) {
-    out += `\n\t\t\t\t\t<li><a href="./?muraAction=cPerm.main&contentid=${m.url('contentid')}&type=${m.url('type')}&parentid=${m.url('parentid')}&topid=${m.url('topid')}&siteid=${m.url('siteid')}&moduleid=${m.url('moduleid')}&startrow=${m.url('startrow')}"><i class="mi-group"></i> ${m.label('sitemanager.content.permissions')}</a></li>\n\t\t\t\t`;
+    const permissions = relativeAdminUrl(
+      'cPerm',
+      'main',
+      rcParams(m, 'contentid', 'type', 'parentid', 'topid', 'siteid', 'moduleid', 'startrow'),
+    );
+    out += `\n\t\t\t\t\t<li><a href="${permissions}"><i class="mi-group"></i> ${m.label('sitemanager.content.permissions')}</a></li>\n\t\t\t\t`;
   }
   return `${out}\n\t\t\t\t</ul>\n\t\t\t\t</div>\n\t\t\t\t`;
 }
@@ -402,7 +526,7 @@ function defaultFiles(m: MenuScope): string {
   if (m.notCompact) {
     let out = `\n\t\t\t\t\t\t\n\t\t\t\t\t\t<a class="btn" href="${defined(content.editUrl, 'rc.contentBean.getEditURL()')}">\n\t\t\t\t\t\t\t<i class="mi-arrow-circle-left"></i>\n\t\t\t\t\t\t\t${m.label('sitemanager.backtocontent')}\n\t\t\t\t\t\t</a>\n\t\t\t\t\t\t\n\t\t\t\t\t\t`;
     if (isS2IsPrivate(req, m.text('siteid')) || req.isS2) {
-      out += `\n\t\t\t\t\t\t\t<a class="btn" href="./?&muraAction=cArch.list&siteid=${m.url('siteid')}&moduleid=00000000000000000000000000000000000">\n\t\t\t\t\t\t\t\t<i class="mi-list-alt"></i>\n\t\t\t\t\t\t\t\t${m.label('sitemanager.backtositemanager')}\n\t\t\t\t\t\t\t</a>\n\t\t\t\t\t\t`;
+      out += `\n\t\t\t\t\t\t\t<a class="btn" href="${siteManagerUrl(m, './?&')}">\n\t\t\t\t\t\t\t\t<i class="mi-list-alt"></i>\n\t\t\t\t\t\t\t\t${m.label('sitemanager.backtositemanager')}\n\t\t\t\t\t\t\t</a>\n\t\t\t\t\t\t`;
     }
     return out;
   }
@@ -458,7 +582,6 @@ export function renderCarchSecondaryMenu(ctx: CarchMenuContext, input: CarchSeco
     siteAdminOrS2: isSiteAdminOrS2(req),
     text,
     optional: (name) => rcValue(rc, name),
-    url: (name) => encodeUrl(text(name)),
     label: (key) => rb.rbKey(key),
     csrf: (context) => ctx.csrf.render(context, 'url').value,
     content: () => defined(content, 'rc.contentBean'),

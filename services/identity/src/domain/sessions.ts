@@ -76,6 +76,8 @@ export interface LoginApplication {
   snapshot: LoginSnapshot;
   mode: SessionMode;
   siteId: string | null;
+  /** Runs in the transaction that writes the session row; a throw rolls the login back. */
+  after?: (tx: TenantTx) => Promise<unknown>;
 }
 
 /** The session a login rebuilt. */
@@ -315,7 +317,7 @@ export async function applyLogin(deps: SessionDeps, login: LoginApplication): Pr
     admin_state: withoutMuraValues(prior?.admin_state ?? null),
     epoch: nextEpoch(prior),
   };
-  await rebuildSession(deps, sessionId, located, tenantId, values);
+  await rebuildSession(deps, sessionId, located, tenantId, values, login.after);
   return { sessionId, tenantId, epoch: values.epoch, csrfSecret: values.csrf_secret, mode: values.mode };
 }
 

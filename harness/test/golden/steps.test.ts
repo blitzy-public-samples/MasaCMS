@@ -335,7 +335,7 @@ describe('runStep requests', () => {
       headers: { 'x-fixture': 'one', 'set-cookie': [] },
     });
     expect(record.response.hops).toHaveLength(1);
-    for (const key of ['matrixKey', 'candidateIndex', 'gap', 'expected', 'decisionListRef', 'exceptionId']) {
+    for (const key of ['matrixKey', 'candidateIndex', 'gap', 'expected', 'decisionListRef', 'exceptionId', 'poll']) {
       expect(record).not.toHaveProperty(key);
     }
   });
@@ -584,10 +584,9 @@ describe('runStep CSRF', () => {
     const records = await captureAll(contextFor(s, fake), s, fake);
     expect(fake.calls.map((call) => `${call.method} ${call.target}`)).toStrictEqual([
       `GET ${LOGIN_PAGE}`,
-      `GET ${LOGIN_PAGE}`,
       'POST /admin/?muraAction=cLogin.login',
     ]);
-    expect(formEntries(callAt(fake, 2))).toStrictEqual([
+    expect(formEntries(callAt(fake, 1))).toStrictEqual([
       ['returnUrl', ''],
       ['isAdminLogin', 'true'],
       ['compactDisplay', 'true'],
@@ -600,6 +599,80 @@ describe('runStep CSRF', () => {
     const body = records[1]?.request.body;
     expect(body).toMatchObject({ kind: 'form', value: { password: MASK, csrf_token: LOGIN_TOKEN } });
     expect(JSON.stringify(records)).not.toContain(ADMIN_PASSWORD);
+  });
+
+  const NEW_USER_FORM = '/admin/?muraAction=cUsers.editUser&siteid=default&userid=';
+  const USER_UPDATE = '/admin/?muraAction=cUsers.update';
+  const USER_LIST = '/admin/?muraAction=cUsers.list';
+  const EXPLICIT_TOKEN = 'FIXTURE-EXPLICIT-TOKEN';
+  const tokenFor = (id: string): string => createHash('md5').update(`FIXTURE:${id}`).digest('hex').toUpperCase();
+
+  /** Legacy new-record form: every GET mints an id and a token bound to it; the update creates only on a match. */
+  function mintingOrigin(): { fake: FakeOrigin; created: string[] } {
+    const created: string[] = [];
+    let minted = 0;
+    const fake = fakeOrigin({
+      [`GET ${NEW_USER_FORM}`]: () => {
+        minted += 1;
+        const id = `FIXTURE-USER-${minted}`;
+        return html(
+          `<form name="form1" method="post" action="./?muraAction=cUsers.update&amp;userid=${id}">` +
+            `<input type="hidden" name="userid" value="${id}">` +
+            `<input type="hidden" name="csrf_token" value="${tokenFor(id)}">` +
+            `<input type="hidden" name="csrf_token_expires" value="${LOGIN_EXPIRES}"></form>`,
+        )();
+      },
+      [`POST ${USER_UPDATE}`]: () => {
+        const posted = new URLSearchParams(fake.calls.at(-1)?.body?.toString('utf8') ?? '');
+        const id = posted.get('userid') ?? '';
+        if (posted.get('csrf_token') !== tokenFor(id)) return html('<p>invalid token</p>', [], 500)();
+        created.push(id);
+        return redirect(USER_LIST)();
+      },
+      [`GET ${USER_LIST}`]: html('<p>users</p>'),
+    });
+    return { fake, created };
+  }
+
+  it.each<{ label: string; extra: Record<string, string>; token: string; created: string[]; status: number }>([
+    {
+      label: 'the source form token',
+      extra: {},
+      token: tokenFor('FIXTURE-USER-1'),
+      created: ['FIXTURE-USER-1'],
+      status: 302,
+    },
+    {
+      label: 'an explicit csrf_token',
+      extra: { csrf_token: EXPLICIT_TOKEN },
+      token: EXPLICIT_TOKEN,
+      created: [],
+      status: 500,
+    },
+  ])('submits the bound id of a new-record form with $label', async ({ extra, token, created, status }) => {
+    const { fake, created: rows } = mintingOrigin();
+    const s = scenario([
+      {
+        name: 'create-form',
+        route: NEW_USER_FORM,
+        extract: { userid: { from: 'dom', selector: 'form[name=form1]', attr: 'action', param: 'userid' } },
+      },
+      {
+        name: 'create',
+        method: 'POST',
+        route: USER_UPDATE,
+        csrf: 'fetch-form',
+        csrfFrom: 'create-form',
+        form: { userid: '${create-form.userid}', action: 'Add', ...extra },
+      },
+    ]);
+    const ctx = contextFor(s, fake);
+    const records = await captureAll(ctx, s, fake);
+    expect(fake.calls.filter((call) => call.target === NEW_USER_FORM)).toHaveLength(1);
+    expect(ctx.bindings.get('create-form.userid')).toBe('FIXTURE-USER-1');
+    expect(new URLSearchParams(callAt(fake, 1).body?.toString('utf8')).get('csrf_token')).toBe(token);
+    expect(records[1]?.response.hops[0]?.status).toBe(status);
+    expect(rows).toStrictEqual(created);
   });
 
   const pixel = { field: 'file', fixture: 'image-png-8x8', filename: 'pixel.png', contentType: 'image/png' };
@@ -651,18 +724,23 @@ describe('runStep CSRF', () => {
     expect(fake.calls.map((call) => call.target)).toStrictEqual([LOGIN_PAGE]);
   });
 
-  it('rejects a csrfFrom that names no step of the scenario it runs in', async () => {
-    const fake = fakeOrigin({});
+  it.each([
+    { label: 'names no step of the scenario it runs in', withSource: false, why: 'names no step' },
+    { label: 'names a step that ran only in another context', withSource: true, why: 'has not run in this scenario' },
+  ])('rejects a csrfFrom that $label before sending anything', async ({ withSource, why }) => {
+    const fake = fakeOrigin({ [`GET ${LOGIN_PAGE}`]: html(ADMIN_LOGIN_HTML) });
     const s = scenario([
       { name: 'loginPage', route: LOGIN_PAGE },
       { name: 'login', method: 'POST', route: LOGIN_PAGE, csrf: 'fetch-form', csrfFrom: 'loginPage' },
     ]);
+    const opts: StepRunOptions = { mode: 'capture', fetch: fake.fetch };
+    if (withSource) await runStep(contextFor(s, fake), s, stepAt(s, 0), opts);
+    const sent = fake.calls.length;
     const step = stepAt(s, 1);
-    const err = await configError(
-      runStep(contextFor(s, fake), { id: s.id, steps: [step] }, step, { mode: 'capture', fetch: fake.fetch }),
-    );
-    expect(err.message).toBe(`${SCENARIO} step login: csrfFrom loginPage names no step`);
-    expect(fake.calls).toStrictEqual([]);
+    const runIn = withSource ? s : { id: s.id, steps: [step] };
+    const err = await configError(runStep(contextFor(s, fake), runIn, step, opts));
+    expect(err.message).toBe(`${SCENARIO} step login: csrfFrom loginPage ${why}`);
+    expect(fake.calls).toHaveLength(sent);
   });
 
   it.each<{ label: string; step: Record<string, unknown>; site: string }>([
@@ -884,6 +962,7 @@ describe('runStep poll', () => {
     );
     expect(fake.calls).toHaveLength(3);
     expect(record.response).toMatchObject({ text: '{"data":{"progress":"100"}}' });
+    expect(record.poll).toStrictEqual({ observed: ['40', '100'] });
   });
 
   it('rejects a poll whose condition does not hold within its bound, naming the last status', async () => {
@@ -900,6 +979,65 @@ describe('runStep poll', () => {
     );
     expect(err.message).toBe(`${SCENARIO} step job: poll data.status did not equal done within 4 ms (last status 202)`);
     expect(fake.calls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  const JOB = '/legacy-fixtures/cfml/api.cfm/reporting/exports/FIXTURE-JOB?siteid=tenant-a';
+  const CREATED = '2026-06-30T12:00:00';
+  const LIFECYCLE = [
+    { state: 'queued', at: 'data.created' },
+    { state: 'running', at: 'data.started_at' },
+    { state: 'done', at: 'data.finished_at' },
+  ];
+  const lifecycleStep = (lifecycle: unknown = LIFECYCLE): Record<string, unknown> => ({
+    name: 'poll',
+    route: JOB,
+    poll: { until: { path: 'data.state', equals: 'done' }, intervalMs: 1, timeoutMs: 10_000, lifecycle },
+  });
+  const job = (state: string, started: string, finished: string): Reply =>
+    json({ data: { state, created: CREATED, started_at: started, finished_at: finished } });
+
+  it('records each polled state once, in order, and the lifecycle the satisfying body proves', async () => {
+    const fake = fakeOrigin({
+      [`GET ${JOB}`]: [
+        job('queued', '', ''),
+        job('queued', '', ''),
+        job('running', '2026-06-30T12:00:01', ''),
+        job('running', '2026-06-30T12:00:01', ''),
+        job('done', '2026-06-30T12:00:01', '2026-06-30T12:00:01'),
+      ],
+    });
+    const { record } = await runSingle(lifecycleStep(), fake);
+    expect(fake.calls).toHaveLength(5);
+    expect(record.poll).toStrictEqual({
+      observed: ['queued', 'running', 'done'],
+      lifecycle: ['queued', 'running', 'done'],
+    });
+  });
+
+  const NO_RUNNING = 'poll lifecycle state running has no timestamp at data.started_at';
+
+  it.each([
+    { label: 'running was skipped', started: '', message: NO_RUNNING },
+    { label: 'a timestamp is not a date', started: 'pending', message: NO_RUNNING },
+    {
+      label: 'states are out of order',
+      started: '2026-06-30T12:00:04',
+      message: 'poll lifecycle state done at data.finished_at precedes state running',
+    },
+  ])('rejects a satisfied poll whose body does not prove the lifecycle when $label', async ({ started, message }) => {
+    const fake = fakeOrigin({ [`GET ${JOB}`]: job('done', started, '2026-06-30T12:00:03') });
+    const err = await configError(runSingle(lifecycleStep(), fake));
+    expect(err.message).toBe(`${SCENARIO} step poll: ${message}`);
+    expect(fake.calls).toHaveLength(1);
+  });
+
+  it.each([
+    { label: 'is empty', lifecycle: [], message: 'Too small: expected array to have >=1 items' },
+    { label: 'repeats a state', lifecycle: [LIFECYCLE[0], LIFECYCLE[0], LIFECYCLE[2]], message: 'must not repeat' },
+    { label: 'ends off until.equals', lifecycle: LIFECYCLE.slice(0, 2), message: 'must end with the state' },
+    { label: 'has an unknown key', lifecycle: [{ ...LIFECYCLE[2], extra: 'x' }], message: 'Unrecognized key' },
+  ])('rejects a poll lifecycle that $label', ({ lifecycle, message }) => {
+    expect(() => scenario([lifecycleStep(lifecycle)])).toThrow(message);
   });
 });
 
@@ -970,7 +1108,7 @@ describe('runScenarioSteps', () => {
   it('logs declared sessions in first and redacts the secrets the login resolved from every record', async () => {
     const fake = fakeOrigin({
       [`GET ${LOGIN_PAGE}`]: html(ADMIN_LOGIN_HTML),
-      'POST /admin/?muraAction=cLogin.login': redirect('./', [
+      'POST /admin/index.cfm': redirect('./', [
         'CFID=FIXTURE-cfid; Path=/; HttpOnly',
         'CFTOKEN=FIXTURE-cftoken; Path=/; HttpOnly',
       ]),
@@ -983,7 +1121,7 @@ describe('runScenarioSteps', () => {
     const records = await runScenarioSteps(contextFor(s, fake), s, { mode: 'capture', fetch: fake.fetch });
     expect(fake.calls.map((call) => `${call.method} ${call.target}`)).toStrictEqual([
       `GET ${LOGIN_PAGE}`,
-      'POST /admin/?muraAction=cLogin.login',
+      'POST /admin/index.cfm',
       'GET /admin/',
       'GET /admin/?muraAction=cDashboard.main',
     ]);

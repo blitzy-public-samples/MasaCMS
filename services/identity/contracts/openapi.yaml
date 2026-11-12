@@ -2387,6 +2387,27 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /v1/permissions/reverse-lookup:
+    get:
+      operationId: getReversePermLookUp
+      summary: Reads userManager `getReversePermLookUp` of the token's site for the session user.
+      tags: [permissions]
+      x-opt2-transport: service
+      x-opt2-public: true
+      security: [{userToken: [], invocationCredential: []}]
+      responses:
+        '200':
+          description: Whether the session user may reach the site's users.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReversePermLookUp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /v1/oauth-clients:
     get:
       operationId: listOAuthClients
@@ -2911,6 +2932,12 @@ paths:
         - service:people
       x-opt2-fastify-path: /internal/v1/accounts/:userId/operations/:operationId(.+)::commit
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountCommitRequest'
       responses:
         '200':
           description: The change is committed; repeating the call returns the same commit position.
@@ -2921,10 +2948,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AccountCommitResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: A malformed path or body.
         '401':
           $ref: '#/components/responses/Unauthorized'
+          description: No people invocation credential, or `sessionEffects` without the forwarded user token.
         '403':
           $ref: '#/components/responses/Forbidden'
+          description: A caller other than people, or `sessionEffects` for a user or session other than the user token's.
         '409':
           $ref: '#/components/responses/AccountOperationConflict'
         '503':
@@ -5305,6 +5337,14 @@ components:
           type: boolean
         redirect:
           $ref: '#/components/schemas/AdminRedirect'
+    ReversePermLookUp:
+      type: object
+      required:
+        - granted
+      additionalProperties: false
+      properties:
+        granted:
+          type: boolean
     OAuthGrantType:
       type: string
       enum:
@@ -5867,6 +5907,9 @@ components:
           type: integer
         remoteID:
           type: string
+        tablist:
+          description: Trimmed by identity; empty text or null is stored as NULL. Absent keeps an update's stored value.
+          $ref: '#/components/schemas/NullableString'
         Type:
           type: integer
           const: 2
@@ -5893,6 +5936,59 @@ components:
           description: The user's memberships after the change.
           items:
             $ref: '#/components/schemas/CfUuid'
+        updateGroups:
+          type: boolean
+          description: '`userManager.update`''s `updateGroups`; absent means true. False leaves an update''s memberships as stored.'
+        originID:
+          type: string
+          description: '`userManager.update`''s `OriginID`; when not empty, an update replaces only memberships of groups in that site.'
+        switchToPublic:
+          type: boolean
+          description: The posted `switchToPublic` flag `userBean.set` applies; it picks the public user pool before `isPublic`.
+        switchToPrivate:
+          type: boolean
+          description: The posted `switchToPrivate` flag `userBean.set` applies; it picks the private user pool when `switchToPublic` is not set.
+    AccountCommitRequest:
+      type: object
+      description: Optional body of a commit; recovery sends none.
+      additionalProperties: false
+      properties:
+        sessionEffects:
+          $ref: '#/components/schemas/AccountSessionEffects'
+    AccountSessionEffects:
+      type: object
+      description: Re-login of the saving user's own session at finish, as legacy's JSON API self-save does; needs the user token whose `sub` is the path user and whose `sid` is `reloginSessionId`.
+      required:
+        - reloginSessionId
+      additionalProperties: false
+      properties:
+        reloginSessionId:
+          type: string
+          minLength: 1
+          description: Identity session id, the forwarded user token's `sid`.
+        person:
+          $ref: '#/components/schemas/AccountSessionPerson'
+    AccountSessionPerson:
+      type: object
+      description: The saved person fields the re-login copies into the session snapshot.
+      required:
+        - fname
+        - lname
+        - email
+        - company
+        - subtype
+      additionalProperties: false
+      properties:
+        fname:
+          $ref: '#/components/schemas/NullableString'
+        lname:
+          $ref: '#/components/schemas/NullableString'
+        email:
+          $ref: '#/components/schemas/NullableString'
+        company:
+          $ref: '#/components/schemas/NullableString'
+        subtype:
+          $ref: '#/components/schemas/NullableString'
     AccountOperationState:
       type: string
       enum:

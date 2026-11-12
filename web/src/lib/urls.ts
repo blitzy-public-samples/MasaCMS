@@ -85,7 +85,7 @@ export function adminScriptName(): string {
   return `${context}${adminDir}/index.cfm`;
 }
 
-/** Query parameters of {@link boundAdminUrl}: pairs in emitted order, or a record (JS key order). */
+/** Query parameters of {@link boundAdminUrl} and {@link relativeAdminUrl}: pairs in emitted order, or a record (JS key order). */
 export type BoundAdminParams = ReadonlyArray<AdminParam> | Readonly<Record<string, string | number>>;
 
 /** Options of {@link boundAdminUrl}; `encode` applies to every parameter that names no encoding itself. */
@@ -96,6 +96,12 @@ export interface BoundAdminUrlOptions {
 
 const isParamList = (params: BoundAdminParams): params is ReadonlyArray<AdminParam> => Array.isArray(params);
 
+/** Ordered `[name, value, encoding]` pairs, `encode` filling in each pair that names no encoding. */
+function adminParams(params: BoundAdminParams, encode: 'url' | 'raw'): AdminParam[] {
+  const list: ReadonlyArray<AdminParam> = isParamList(params) ? params : Object.entries(params);
+  return list.map(([name, value, encoding = encode]): AdminParam => [name, value, encoding]);
+}
+
 /** `<context><adminDir>/?muraAction=<circuit>.<action>&…` with the configured context and admin directory. */
 export function boundAdminUrl(
   circuit: string,
@@ -104,15 +110,35 @@ export function boundAdminUrl(
   { html = false, encode = 'url' }: BoundAdminUrlOptions = {},
 ): string {
   const { context, adminDir } = legacySettings();
-  const list: ReadonlyArray<AdminParam> = isParamList(params) ? params : Object.entries(params);
   return adminUrl({
     circuit,
     action,
     context,
     adminDir,
     html,
-    params: list.map(([name, value, encoding = encode]): AdminParam => [name, value, encoding]),
+    params: adminParams(params, encode),
   });
+}
+
+/** Text a legacy view writes before `muraAction=`: `./?` in most views, `?` or `./?&` in a few. */
+export type RelativeAdminPrefix = './?' | '?' | './?&';
+
+/** Options of {@link relativeAdminUrl}. */
+export interface RelativeAdminUrlOptions extends BoundAdminUrlOptions {
+  readonly prefix?: RelativeAdminPrefix;
+}
+
+const RELATIVE_ADMIN_BASE = './?';
+
+/** `<prefix>muraAction=<circuit>.<action>&…`, the source-relative admin link legacy views write literally. */
+export function relativeAdminUrl(
+  circuit: string,
+  action: string,
+  params: BoundAdminParams = [],
+  { html = false, encode = 'url', prefix = './?' }: RelativeAdminUrlOptions = {},
+): string {
+  const url = adminUrl({ circuit, action, context: '', adminDir: '.', html, params: adminParams(params, encode) });
+  return prefix + url.slice(RELATIVE_ADMIN_BASE.length);
 }
 
 /** Request state FW/1 URL building depends on. */

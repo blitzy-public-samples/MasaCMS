@@ -1,4 +1,4 @@
-/** Legacy role list, `session.mura` user struct, login snapshot, role map and site-scoped token roles of `src/domain/roles.ts`. */
+/** Legacy role list, `session.mura` user struct, login snapshot, role map, site-scoped token roles and module checks of `src/domain/roles.ts`. */
 import { describe, expect, it } from 'vitest';
 import { Roles, SYNTHETIC_ROLES, moduleRole } from '@opt2/platform/auth';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, registryPayloads } from '@opt2/platform/testing';
@@ -9,6 +9,8 @@ import {
   buildUserStruct,
   loadRoleMap,
   membershipIdsFor,
+  moduleGrantHeld,
+  modulePermByRole,
   parseRoleMap,
   roleListHas,
   snapshotIsS2,
@@ -461,5 +463,44 @@ describe('tokenRolesFor [legacy: core/mura/permission.cfc:312,338-344,676,689-69
   ])('grants no roles on a site outside the registry to $when', ({ account, groups }) => {
     const moduleGrants = groups.map((memberGroup) => grant(USERS_MODULE, memberGroup));
     expect(tokenRolesFor(snapshotFor(account, groups), UNREGISTERED_SITE, { moduleGrants, roleMap: ROLE_MAP })).toEqual(NO_ACCESS);
+  });
+});
+
+describe('modulePermByRole and moduleGrantHeld [legacy: core/mura/permission.cfc:312,338-344]', () => {
+  it.each([
+    { when: 'an S2 user on a site without its groups', account: S2_ACCOUNT, groups: [], site: SITE_B, expected: true },
+    { when: "a member of the site's private-pool Admin group", account: PRIVATE_A_ACCOUNT, groups: [ADMIN_A], site: SITE_A, expected: true },
+    { when: "an Admin member of another site's private pool", account: PRIVATE_A_ACCOUNT, groups: [ADMIN_A], site: SITE_UMBRELLA, expected: false },
+    {
+      when: 'a member of a group named admin',
+      account: PRIVATE_A_ACCOUNT, groups: [group(ADMIN_GROUP_ID, 'admin', TENANT_A.siteId, 0)], site: SITE_A, expected: false,
+    },
+    {
+      when: 'an Admin member whose group site differs in case from the pool id',
+      account: PRIVATE_A_ACCOUNT, groups: [group(ADMIN_GROUP_ID, 'Admin', 'TENANT-A', 0)], site: SITE_A, expected: false,
+    },
+    {
+      when: 'an Admin member of a site outside the registry, whose pool is its own id',
+      account: PRIVATE_A_ACCOUNT, groups: [group(ADMIN_GROUP_ID, 'Admin', UNREGISTERED_SITE.siteId, 0)], site: UNREGISTERED_SITE, expected: true,
+    },
+    { when: 'a private-pool user in no Admin group', account: PRIVATE_A_ACCOUNT, groups: [EDITORS_A], site: SITE_A, expected: false },
+  ])('modulePermByRole is $expected for $when', ({ account, groups, site, expected }) => {
+    expect(modulePermByRole(snapshotFor(account, groups), site)).toBe(expected);
+  });
+
+  it.each([
+    { when: "a private grant to the user's private-pool group", account: PRIVATE_A_ACCOUNT, groups: [EDITORS_A], moduleGrant: grant(USERS_MODULE, EDITORS_A), expected: true },
+    {
+      when: "a public grant to the user's public-pool group",
+      account: PUBLIC_UMBRELLA_ACCOUNT, groups: [SUBSCRIBERS_UMBRELLA], moduleGrant: grant(USERS_MODULE, SUBSCRIBERS_UMBRELLA), expected: true,
+    },
+    { when: 'a grant of another module', account: PRIVATE_A_ACCOUNT, groups: [EDITORS_A], moduleGrant: grant(CONTENT_MODULE, EDITORS_A), expected: false },
+    {
+      when: 'a grant whose group name differs in case',
+      account: PRIVATE_A_ACCOUNT, groups: [EDITORS_A], moduleGrant: { moduleId: USERS_MODULE, groupName: 'editors', isPublic: 0 }, expected: false,
+    },
+    { when: 'a grant to a group the user is not in', account: PRIVATE_A_ACCOUNT, groups: [STAFF_A], moduleGrant: grant(USERS_MODULE, EDITORS_A), expected: false },
+  ])('moduleGrantHeld of the Users module on tenant-a is $expected for $when', ({ account, groups, moduleGrant, expected }) => {
+    expect(moduleGrantHeld(snapshotFor(account, groups), SITE_A, USERS_MODULE, [moduleGrant])).toBe(expected);
   });
 });

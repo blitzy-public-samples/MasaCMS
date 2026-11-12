@@ -61,6 +61,7 @@ const TAGS: ReadonlySet<string> = new Set<CanonicalType>(['s', 'i', 'f', 'd', 't
 const MAX_SCALE = 16_383; // PostgreSQL's numeric scale limit
 const MAX_DECIMAL_EXPONENT = 1_000_000; // bounds the zeros an exponent string can expand to
 const COMPARE_SCAN_UNITS = 1024;
+const MIXED_ENTRIES = 'tableChecksum entries must all have a key or all lack one';
 const INTEGER_TEXT = /^[+-]?\d+$/;
 const FLOAT_TEXT = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
 const DECIMAL_TEXT = /^([+-]?)(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:[eE]([+-]?\d+))?$/;
@@ -462,19 +463,46 @@ export interface ChecksumEntry {
   readonly row: string;
 }
 
+/** The order a table checksum hashes its entries in: by key then row, or by row when keyless. */
+export function compareChecksumEntries(x: ChecksumEntry, y: ChecksumEntry): number {
+  return compareEncodings(x.key ?? '', y.key ?? '') || compareEncodings(x.row, y.row);
+}
+
+/** `tableChecksum` computed incrementally over entries added in `compareChecksumEntries` order, holding only the last. */
+export class TableChecksum {
+  private readonly hash = createHash('sha256');
+  private previous: ChecksumEntry | undefined;
+  private count = 0;
+
+  /** Hashes `entry`; throws `CanonicalEncodingError` when it sorts before the previous entry or mixes keyed and keyless. */
+  add(entry: ChecksumEntry): void {
+    const previous = this.previous;
+    if (previous !== undefined) {
+      if ((previous.key !== undefined) !== (entry.key !== undefined)) throw new CanonicalEncodingError(MIXED_ENTRIES);
+      if (compareChecksumEntries(previous, entry) > 0) throw new CanonicalEncodingError('tableChecksum entries must be added in key and row order');
+    }
+    this.hash.update(entry.row, 'utf8');
+    this.previous = entry;
+    this.count += 1;
+  }
+
+  /** Row count and SHA-256 of the entries added so far. */
+  result(): { count: number; sha256: string } {
+    return { count: this.count, sha256: this.hash.copy().digest('hex') };
+  }
+}
+
 /** Row count and SHA-256 over the row encodings sorted by key (keyed tables) or by row (keyless tables). */
 export function tableChecksum(entries: Iterable<ChecksumEntry>): { count: number; sha256: string } {
   const list = Array.from(entries);
   const keyed = list.length > 0 && list[0]?.key !== undefined;
   if (list.some((entry) => (entry.key !== undefined) !== keyed)) {
-    throw new CanonicalEncodingError('tableChecksum entries must all have a key or all lack one');
+    throw new CanonicalEncodingError(MIXED_ENTRIES);
   }
-  list.sort(keyed
-    ? (x, y) => compareEncodings(x.key ?? '', y.key ?? '') || compareEncodings(x.row, y.row)
-    : (x, y) => compareEncodings(x.row, y.row));
-  const hash = createHash('sha256');
-  for (const entry of list) hash.update(entry.row, 'utf8');
-  return { count: list.length, sha256: hash.digest('hex') };
+  list.sort(compareChecksumEntries);
+  const checksum = new TableChecksum();
+  for (const entry of list) checksum.add(entry);
+  return checksum.result();
 }
 
 /** A distinct encoding of a multiset with its number of occurrences. */

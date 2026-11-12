@@ -367,7 +367,8 @@ knownIssues:
   - id: header-search-404
     title: "The header search box posts to a route that returns 404"
     scope:
-      selectors: ["form#globalSearch", "form#globalSearch input"]
+      selectors: ["form#globalSearch"]
+      attributes: [action]
       steps:
         knownIssue: header-search-404
         parts: [status, body]

@@ -6,6 +6,7 @@ import { TENANT_A, businessClock } from '@opt2/platform/testing';
 import {
   SURVEY_TASK_QUEUES,
   kindOfLegacyTaskName,
+  legacyRunTime,
   parseLocalTimestamp,
   planSurveyTasks,
   portTaskName,
@@ -120,7 +121,7 @@ describe('parseLocalTimestamp', () => {
     '2026-07-01T24:00:00.000',
     '2026-07-01T09:60:00.000',
     '2026-07-01T09:30:60.000',
-    '0099-07-01T09:30:15.250',
+    '0000-07-01T09:30:15.250',
   ])('rejects the nonexistent time %s', (text) => {
     inTimeZone('UTC', () => {
       expect(() => parseLocalTimestamp(text)).toThrow(RangeError);
@@ -132,6 +133,30 @@ describe('parseLocalTimestamp', () => {
     inTimeZone('America/New_York', () => {
       expect(() => parseLocalTimestamp('2026-03-08T02:30:00.000')).toThrow(/no such local time/);
       expect(parseLocalTimestamp('2026-03-08T03:30:00.000').getHours()).toBe(3);
+    });
+  });
+
+  it.each([
+    ['America/New_York', '2026-11-01T01:30:00.000', '2026-11-01T06:30:00.000Z'],
+    ['Europe/London', '2026-10-25T01:30:00.000', '2026-10-25T01:30:00.000Z'],
+    ['Australia/Sydney', '2026-04-05T02:30:00.000', '2026-04-04T16:30:00.000Z'],
+  ])('resolves a time repeated by daylight saving in %s to its later offset', (tz, text, instant) => {
+    inTimeZone(tz, () => {
+      expect(parseLocalTimestamp(text).toISOString()).toBe(instant);
+    });
+  });
+});
+
+describe('legacyRunTime', () => {
+  it.each([
+    ['the earlier reading of a repeated time', 'America/New_York', '2026-11-01T05:30:00.000Z', '2026-11-01T06:30:00.000Z'],
+    ['the later reading of a repeated time', 'America/New_York', '2026-11-01T06:30:00.000Z', '2026-11-01T06:30:00.000Z'],
+    ['an unambiguous time', 'America/New_York', '2026-07-01T13:30:15.250Z', '2026-07-01T13:30:15.250Z'],
+    ['a time in UTC', 'UTC', '2026-11-01T05:30:00.000Z', '2026-11-01T05:30:00.000Z'],
+    ['a year before 1, which has no legacy wall time', 'UTC', '0000-06-01T00:00:00.000Z', '0000-06-01T00:00:00.000Z'],
+  ])('runs %s in %s at its legacy instant', (_label, tz, at, instant) => {
+    inTimeZone(tz, () => {
+      expect(legacyRunTime(new Date(at)).toISOString()).toBe(instant);
     });
   });
 });
@@ -183,6 +208,16 @@ describe('planSurveyTasks', () => {
     const now = businessClock('12:00:00').now();
     const tasks = planSurveyTasks(scheduled('2026-06-30T09:00:00.000', [60, 180, 240]), { now });
     expect(tasks.map((task) => task.scheduleTime)).toStrictEqual([now, now, now, new Date(2026, 5, 30, 13, 0, 0, 0)]);
+  });
+
+  it.each([
+    ['a launch at a repeated local time', '2026-11-01T01:30:00.000', ['2026-11-01T06:30:00.000Z', '2026-11-01T07:30:00.000Z']],
+    ['a reminder at a repeated local time', '2026-11-01T00:30:00.000', ['2026-11-01T04:30:00.000Z', '2026-11-01T06:30:00.000Z']],
+  ])('runs %s at its later offset in America/New_York', (_label, launchAt, instants) => {
+    inTimeZone('America/New_York', () => {
+      const tasks = planSurveyTasks(scheduled(launchAt, [60]), { now: businessClock().now() });
+      expect(tasks.map((task) => task.scheduleTime.toISOString())).toStrictEqual(instants);
+    });
   });
 
   it('gives version 2 names of its own', () => {

@@ -1,9 +1,10 @@
 // The `clogin.main` admin login page: the controller's private-session redirect, its page state and the view (server-only).
 import { cfEq } from '@opt2/platform/legacy-compat';
+import { isCompactDisplay } from '@/lib/cfml';
 import { legacySettings } from '@/lib/env';
 import { okBody } from '@/lib/gateway-client';
 import { encodeHtml, encodeHtmlAttr, html, raw, type SafeHtml } from '@/lib/html';
-import { assetUrl, fw1RedirectTarget } from '@/lib/urls';
+import { assetUrl, fw1RedirectTarget, relativeAdminUrl } from '@/lib/urls';
 import type { PageScreen, ScreenContext } from '../registry';
 
 type Rc = ScreenContext['req']['rc'];
@@ -237,7 +238,7 @@ function rememberMe(state: LoginViewState, label: Label): SafeHtml | '' {
 function sendLoginForm(state: LoginViewState, label: Label, rbKey: (key: string) => string): SafeHtml {
   const alertClass = state.loginMailSent ? 'alert alert-error' : '';
   const response = state.loginMailSent ? raw(encodeHtml(rbKey('messagesent'))) : label('enteremail');
-  return html`\t\t\t\t\t\t\t<form novalidate="novalidate" id="sendLogin" name="sendLogin" method="post" action="./?muraAction=cLogin.main" onsubmit="return submitForm(this);">
+  return html`\t\t\t\t\t\t\t<form novalidate="novalidate" id="sendLogin" name="sendLogin" method="post" action="${raw(relativeAdminUrl('cLogin', 'main'))}" onsubmit="return submitForm(this);">
 
 \t\t\t\t\t\t\t<div class="mura-control-group">
 \t\t\t\t\t\t\t\t<h2>${label('forgetpassword')}</h2>
@@ -312,7 +313,7 @@ ${state.showAdminLoginHelp ? sendLoginForm(state, label, rbKey) : ''}`;
 
 /** The view's closing script; the compact layout first sizes the front-end proxy frame. */
 function loginScript(state: LoginViewState, rbKey: (key: string) => string): SafeHtml {
-  const compactSizing = cfEq(state.compactDisplay, 'true')
+  const compactSizing = isCompactDisplay(state.compactDisplay)
     ? raw(`\tif (top.location != self.location) {
 \t\tif(jQuery("#ProxyIFrame").length){
 \t\t\tjQuery("#ProxyIFrame").load(

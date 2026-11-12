@@ -14,6 +14,8 @@ type Schemas = components['schemas'];
 
 /** Body of `prepareAccountOperation`: create or update, the pool site, the account columns and the memberships after the change. */
 export type AccountPrepareRequest = Schemas['AccountPrepareRequest'];
+/** Optional body of `commitAccountOperation`: the saving user's own session to log in again at finish. */
+export type AccountCommitRequest = Schemas['AccountCommitRequest'];
 /** Identity's record of one roster operation. */
 export type AccountOperation = Schemas['AccountOperation'];
 /** State of a roster operation at identity. */
@@ -80,8 +82,8 @@ export interface ActingUser {
 export interface IdentityClient {
   /** `prepareAccountOperation`: validates and records the account part and closes the user. */
   prepare(userId: string, operationId: string, change: AccountPrepareRequest): Promise<PrepareOutcome>;
-  /** `commitAccountOperation`: applies the prepared change and records identity's write position. */
-  commit(userId: string, operationId: string): Promise<CommitOutcome>;
+  /** `commitAccountOperation`: applies the prepared change and records identity's write position; `request` is sent only when given. */
+  commit(userId: string, operationId: string, request?: AccountCommitRequest): Promise<CommitOutcome>;
   /** `abortAccountOperation`: discards a prepared change; an operation identity never prepared resolves too. */
   abort(userId: string, operationId: string): Promise<void>;
   /** `finishAccountOperation`: completes a committed operation and reopens the user. */
@@ -246,9 +248,10 @@ export function createIdentityClient(client: ServiceClient): IdentityClient {
       throw unavailable(op, response.status);
     },
 
-    async commit(userId, operationId) {
+    async commit(userId, operationId, request) {
       const op = OPS.commit;
-      const result = okBody(op, await send<CommitOutcome>(op, fillPath(op.path, userId, operationId)));
+      const body = request === undefined ? {} : { json: request };
+      const result = okBody(op, await send<CommitOutcome>(op, fillPath(op.path, userId, operationId), body));
       if (currentRequestContext() !== undefined) recordWritePosition(IDENTITY_SERVICE, result.writePosition);
       return result;
     },

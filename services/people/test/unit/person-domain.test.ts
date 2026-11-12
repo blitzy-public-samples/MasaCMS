@@ -28,6 +28,7 @@ import {
   restrictAdminInput,
   restrictProfileInput,
   splitUserValues,
+  type AccountControls,
   type UserSite,
   type UserValues,
 } from '../../src/domain/person.js';
@@ -194,9 +195,13 @@ describe('resolveUserSite without a posted siteid', () => {
     end: () => Promise.resolve(),
   };
 
-  it('keeps the current site and its tenant without a registry read when the posted siteid is whitespace', async () => {
-    const site = await resolveUserSite(noRegistry, TENANT_B.tenantId, normaliseParams({ siteid: ' \t' }), bean({ siteid: 'tenant-a', ispublic: 0 }));
-    expect(site).toEqual({ siteId: 'tenant-a', poolTenantId: TENANT_A.tenantId, isPublic: 0 });
+  it.each<[string, Record<string, unknown>]>([
+    ['a whitespace siteid', { siteid: ' \t' }],
+    ['a blank siteid with a posted switchToPublic', { siteid: '', switchtopublic: '1' }],
+    ['no siteid with a posted switchToPrivate', { switchtoprivate: '1' }],
+  ])('keeps the current site, its tenant and visibility without a registry read or pool switch for %s', async (_label, params) => {
+    const site = await resolveUserSite(noRegistry, TENANT_B.tenantId, normaliseParams(params), bean({ siteid: 'tenant-a', ispublic: 0 }));
+    expect(site).toEqual({ siteId: 'tenant-a', poolTenantId: TENANT_A.tenantId, isPublic: 0, poolSwitch: null });
   });
 
   it('throws the SITEID-required error when the current siteid is blank too', async () => {
@@ -233,29 +238,33 @@ describe.skipIf(!available)('resolveUserSite against a seeded tenant registry', 
   const A = TENANT_A.tenantId;
   it.each<[string, string, Record<string, unknown>, Partial<UserValues>, UserSite]>([
     ['a public user lands in the public user pool', A, { siteid: 'tenant-a' }, { siteid: 'tenant-a', ispublic: 1 },
-      { siteId: 'umbrella', poolTenantId: TENANT_UMBRELLA.tenantId, isPublic: 1 }],
+      { siteId: 'umbrella', poolTenantId: TENANT_UMBRELLA.tenantId, isPublic: 1, poolSwitch: null }],
     ['a private user lands in the private user pool', A, { siteid: 'tenant-a' }, { siteid: 'tenant-a', ispublic: 0 },
-      { siteId: 'tenant-a', poolTenantId: A, isPublic: 0 }],
+      { siteId: 'tenant-a', poolTenantId: A, isPublic: 0, poolSwitch: null }],
     ['numeric ispublic text 0 reads as private', A, { siteid: 'tenant-a' }, { siteid: 'tenant-a', ispublic: ' 0 ' },
-      { siteId: 'tenant-a', poolTenantId: A, isPublic: 0 }],
+      { siteId: 'tenant-a', poolTenantId: A, isPublic: 0, poolSwitch: null }],
     ['non-numeric ispublic reads as public and stays text', A, { siteid: 'tenant-a' }, { siteid: 'tenant-a', ispublic: 'x' },
-      { siteId: 'umbrella', poolTenantId: TENANT_UMBRELLA.tenantId, isPublic: 'x' }],
+      { siteId: 'umbrella', poolTenantId: TENANT_UMBRELLA.tenantId, isPublic: 'x', poolSwitch: null }],
     ['switchToPublic 1 moves a private user to the public pool', A, { siteid: 'tenant-a', switchtopublic: ' 1 ' }, { siteid: 'tenant-a', ispublic: 0 },
-      { siteId: 'umbrella', poolTenantId: TENANT_UMBRELLA.tenantId, isPublic: 1 }],
+      { siteId: 'umbrella', poolTenantId: TENANT_UMBRELLA.tenantId, isPublic: 1, poolSwitch: 'public' }],
+    ['a switch CFML reads as the number 1', A, { siteid: 'tenant-a', switchtopublic: '1.0' }, { siteid: 'tenant-a', ispublic: 0 },
+      { siteId: 'umbrella', poolTenantId: TENANT_UMBRELLA.tenantId, isPublic: 1, poolSwitch: 'public' }],
     ['switchToPrivate 1 moves a public user to the private pool', A, { siteid: 'tenant-a', switchtoprivate: '1' }, { siteid: 'umbrella', ispublic: 1 },
-      { siteId: 'tenant-a', poolTenantId: A, isPublic: 0 }],
+      { siteId: 'tenant-a', poolTenantId: A, isPublic: 0, poolSwitch: 'private' }],
+    ['switchToPublic wins over switchToPrivate', A, { siteid: 'tenant-a', switchtopublic: '1', switchtoprivate: '1' }, { siteid: 'tenant-a', ispublic: 0 },
+      { siteId: 'umbrella', poolTenantId: TENANT_UMBRELLA.tenantId, isPublic: 1, poolSwitch: 'public' }],
     ['a switch flag other than 1 is ignored', A, { siteid: 'tenant-a', switchtopublic: '0', switchtoprivate: 'yes' }, { siteid: 'tenant-a', ispublic: 0 },
-      { siteId: 'tenant-a', poolTenantId: A, isPublic: 0 }],
+      { siteId: 'tenant-a', poolTenantId: A, isPublic: 0, poolSwitch: null }],
     ['a pool id differing only in case keeps the current site id', A, { siteid: 'tenant-a' }, { siteid: 'UMBRELLA', ispublic: 1 },
-      { siteId: 'UMBRELLA', poolTenantId: TENANT_UMBRELLA.tenantId, isPublic: 1 }],
+      { siteId: 'UMBRELLA', poolTenantId: TENANT_UMBRELLA.tenantId, isPublic: 1, poolSwitch: null }],
     ['a switch takes the pool id as registered', A, { siteid: 'tenant-a', switchtopublic: '1' }, { siteid: 'UMBRELLA', ispublic: 1 },
-      { siteId: 'umbrella', poolTenantId: TENANT_UMBRELLA.tenantId, isPublic: 1 }],
+      { siteId: 'umbrella', poolTenantId: TENANT_UMBRELLA.tenantId, isPublic: 1, poolSwitch: 'public' }],
     ['a site that is its own user pool keeps its site', TENANT_B.tenantId, { siteid: 'tenant-b' }, { siteid: 'tenant-b', ispublic: 1 },
-      { siteId: 'tenant-b', poolTenantId: TENANT_B.tenantId, isPublic: 1 }],
+      { siteId: 'tenant-b', poolTenantId: TENANT_B.tenantId, isPublic: 1, poolSwitch: null }],
     ['a NULL public pool defaults to the site and its tenant', OWN_POOL_TENANT, { siteid: OWN_POOL_SITE }, { siteid: OWN_POOL_SITE, ispublic: 1 },
-      { siteId: OWN_POOL_SITE, poolTenantId: OWN_POOL_TENANT, isPublic: 1 }],
+      { siteId: OWN_POOL_SITE, poolTenantId: OWN_POOL_TENANT, isPublic: 1, poolSwitch: null }],
     ['a NULL private pool defaults to the site and its tenant', OWN_POOL_TENANT, { siteid: OWN_POOL_SITE, switchtoprivate: '1' }, { siteid: OWN_POOL_SITE, ispublic: 1 },
-      { siteId: OWN_POOL_SITE, poolTenantId: OWN_POOL_TENANT, isPublic: 0 }],
+      { siteId: OWN_POOL_SITE, poolTenantId: OWN_POOL_TENANT, isPublic: 0, poolSwitch: 'private' }],
   ])('%s', async (_label, tid, params, current, expected) => {
     await expect(resolveUserSite(registry, tid, normaliseParams(params), bean(current))).resolves.toEqual(expected);
   });
@@ -453,9 +462,45 @@ describe('splitUserValues', () => {
     });
     expect(account).toEqual({
       siteId: 'tenant-a',
-      account: { UserName: 'pat', S2: 0, Perm: 0, InActive: 1, isPublic: 0, Admin: 0, remoteID: 'R1', Type: 2 },
+      account: { UserName: 'pat', S2: 0, Perm: 0, InActive: 1, isPublic: 0, Admin: 0, remoteID: 'R1', tablist: '', Type: 2 },
       groupIds: ['G1', 'G2'],
+      switchToPublic: false,
+      switchToPrivate: false,
     });
+  });
+
+  it.each([
+    ['a posted tablist, trimmed by the setter', applied({ tabList: ' Basic,Extended ' }, saved), 'Basic,Extended'],
+    ['a stored NULL tablist as empty text, which identity stores as NULL', { ...saved, tablist: null as unknown as string }, ''],
+  ])('carries %s', (_label, values, tablist) => {
+    expect(splitUserValues(values).account.account.tablist).toBe(tablist);
+  });
+
+  it.each<[string, AccountControls | undefined, Record<string, unknown>, { switchToPublic: boolean; switchToPrivate: boolean }]>([
+    ["resolveUserSite's public switch", { poolSwitch: 'public' }, {}, { switchToPublic: true, switchToPrivate: false }],
+    ["resolveUserSite's private switch", { poolSwitch: 'private' }, {}, { switchToPublic: false, switchToPrivate: true }],
+    ['no applied switch', { poolSwitch: null }, {}, { switchToPublic: false, switchToPrivate: false }],
+    ['no controls', undefined, {}, { switchToPublic: false, switchToPrivate: false }],
+    ['posted switch keys without an applied switch', {}, { switchtopublic: '1', switchtoprivate: '1' }, { switchToPublic: false, switchToPrivate: false }],
+    ['a posted switch other than the applied one', { poolSwitch: 'private' }, { switchtopublic: '1' }, { switchToPublic: false, switchToPrivate: true }],
+  ])('carries %s as the pool flags, ignoring posted switch keys', (_label, controls, posted, flags) => {
+    expect(splitUserValues({ ...saved, ...posted }, controls).account).toMatchObject(flags);
+  });
+
+  it.each([
+    ['no controls', undefined, {}],
+    ["ceditprofile's updateGroups false", { updateGroups: false }, { updateGroups: false }],
+    ['an originID', { originID: 'tenant-a' }, { originID: 'tenant-a' }],
+    ['both controls', { updateGroups: true, originID: '' }, { updateGroups: true, originID: '' }],
+  ])('carries %s as the membership controls of userManager.update', (_label, controls, expected) => {
+    const { account } = splitUserValues(saved, controls);
+    expect({ updateGroups: account.updateGroups, originID: account.originID }).toEqual({ updateGroups: undefined, originID: undefined, ...expected });
+  });
+
+  it("keeps an S2 save's pool visibility for identity's S2 rule when split before applySuperUserRule", () => {
+    const values = applied({ siteid: 'umbrella', s2: '1', ispublic: '1' }, saved);
+    expect(splitUserValues(values).account).toMatchObject({ siteId: 'umbrella', account: { S2: 1, isPublic: 1 } });
+    expect(splitUserValues(applySuperUserRule(values, true)).account.account.isPublic).toBe(0);
   });
 
   it('carries a posted password and any non-zero s2 as 1', () => {

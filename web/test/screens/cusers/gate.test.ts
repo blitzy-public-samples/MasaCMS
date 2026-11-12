@@ -1,7 +1,8 @@
 // cusers.cfc before() against legacy: the access gate (95-124) and the request-context defaults and scrubbing (91-169).
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Roles, moduleRole } from '@opt2/platform/auth';
 import { secure, type GateDecision } from '@/lib/access-gate';
+import { GatewayUnavailableError } from '@/lib/gateway-client';
 import type { AdminRequest } from '@/lib/request-context';
 import { cusersGate, isCusersAdmin, normaliseCusersRc, userPoolIdFor } from '@/screens/cusers/gate';
 import { siteTenantA } from '../../fixtures/programs-sites/sites';
@@ -67,20 +68,7 @@ describe('cusersGate', () => {
   });
 
   describe('loadExtendedAttributes', () => {
-    const extendedAttributes = (roles: readonly string[], rc: Record<string, string>): AdminRequest =>
-      editorWith(roles, { item: 'loadExtendedAttributes', rc });
-
-    it('bypasses for the own baseID, compared case-insensitively', async () => {
-      const req = extendedAttributes([Roles.systemUser], { baseid: editorRequest().session.mura.userID.toLowerCase() });
-      expect(req.action).toBe('core:cusers.loadextendedattributes');
-      expect(await gate(req)).toEqual(ALLOW);
-    });
-
-    it('bypasses for another baseID with Users module access on the site', async () => {
-      expect(await gate(extendedAttributes([Roles.systemUser, moduleRole(USERS_MODULE)], { baseID: USER_IDS.admin }))).toEqual(
-        ALLOW,
-      );
-    });
+    const OWN_ID = editorRequest().session.mura.userID;
 
     it('bypasses for another baseID of the private-pool Admin', async () => {
       const req = siteAdminRequest('tenant-a', {
@@ -91,34 +79,49 @@ describe('cusersGate', () => {
       expect(await gate(req)).toEqual(ALLOW);
     });
 
-    it('secures another baseID without Users module access', async () => {
-      const req = extendedAttributes([Roles.systemUser], { baseID: USER_IDS.admin });
-      expect(await gate(req)).toEqual(secure(req));
+    it.each<[string, readonly string[], string, Record<string, string>, boolean]>([
+      [
+        'the own baseID, compared case-insensitively',
+        [Roles.systemUser],
+        'loadExtendedAttributes',
+        { baseid: OWN_ID.toLowerCase() },
+        true,
+      ],
+      [
+        'another baseID with Users module access',
+        [Roles.systemUser, moduleRole(USERS_MODULE)],
+        'loadExtendedAttributes',
+        { baseID: USER_IDS.admin },
+        true,
+      ],
+      ['a missing baseID', [Roles.systemUser], 'loadExtendedAttributes', {}, false],
+      ['another action', [Roles.systemUser], 'list', { baseID: OWN_ID }, false],
+    ])('decides %s without the pooled lookup', async (_label, roles, item, rc, allowed) => {
+      const pooledLookup = vi.fn(() => Promise.resolve(true));
+      const req = editorWith(roles, { item, rc, pooledLookup });
+      expect(await gate(req)).toEqual(allowed ? ALLOW : secure(req));
+      expect(pooledLookup).not.toHaveBeenCalled();
     });
 
-    // A site-scoped token reaches no other site's grants, so a Users grant on a pooling site does not bypass.
-    it('secures another baseID in a pool the token site does not grant', async () => {
-      const req = makeAdminRequest(
-        {
-          circuit: 'cusers',
-          item: 'loadExtendedAttributes',
-          rc: { baseID: USER_IDS.admin, siteid: 'umbrella' },
-          session: { siteid: 'umbrella' },
-          user: { site: 'umbrella', roles: [Roles.systemUser] },
-        },
-        'siteAdmin',
-      );
-      expect(await gate(req)).toEqual(secure(req));
+    it.each([true, false])('takes a pooled lookup of %s for another baseID', async (granted) => {
+      const pooledLookup = vi.fn(() => Promise.resolve(granted));
+      const req = editorWith([Roles.systemUser], {
+        item: 'loadExtendedAttributes',
+        rc: { baseID: USER_IDS.admin },
+        pooledLookup,
+      });
+      expect(await gate(req)).toEqual(granted ? ALLOW : secure(req));
+      expect(pooledLookup).toHaveBeenCalledOnce();
     });
 
-    it('needs a baseID', async () => {
-      const req = extendedAttributes([Roles.systemUser, moduleRole(USERS_MODULE)], {});
-      expect(await gate(req)).toEqual(secure(req));
-    });
-
-    it('applies to no other action', async () => {
-      const req = editorWith([Roles.systemUser], { rc: { baseID: editorRequest().session.mura.userID } });
-      expect(await gate(req)).toEqual(secure(req));
+    it('propagates a failed pooled lookup', async () => {
+      const failure = new GatewayUnavailableError('identity', 503);
+      const req = editorWith([Roles.systemUser], {
+        item: 'loadExtendedAttributes',
+        rc: { baseID: USER_IDS.admin },
+        pooledLookup: () => Promise.reject(failure),
+      });
+      await expect(gate(req)).rejects.toBe(failure);
     });
   });
 });

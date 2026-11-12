@@ -12,6 +12,7 @@ import {
 import { SERVICE_CALL_TIMEOUT_MS, ServiceUnavailableError, fixedClock } from '@opt2/platform/service-kit';
 import {
   createBridgeClient,
+  createSiteListClient,
   type BridgeClient,
   type BridgeClientOptions,
   type BridgeResult,
@@ -24,6 +25,7 @@ import {
 import { sendBytes, sendJson, startHttpDouble, type HttpDouble, type RecordedRequest } from '../helpers/http-double.js';
 
 const SESSION_PAGE = '/gateway/legacy-bridge/cfml/session.cfm';
+const SITE_PAGE = '/gateway/legacy-bridge/cfml/site.cfm';
 // The README's documented test key, not a secret.
 const VECTOR_KEY = 'opt2-bridge-test-vector-key-0001';
 const VECTOR_NOW_SECONDS = 1782820800;
@@ -412,5 +414,106 @@ describe('createBridgeClient', () => {
     await expect(client({ hmacKey: '' }).end(COOKIES, CALL)).rejects.toBeInstanceOf(RangeError);
 
     expect(double.requests).toHaveLength(0);
+  });
+});
+
+describe('createSiteListClient', () => {
+  const sites = (overrides: Partial<BridgeClientOptions> = {}) =>
+    createSiteListClient({ legacyOrigin: double.url, hmacKey: VECTOR_KEY, clock: fixedClock(NOW), ...overrides });
+
+  it('sends a signed GET to site.cfm?op=list without cookies, as the bridge bot', async () => {
+    double.setHandler((_req, res) => {
+      sendJson(res, 200, { sites: ['default', 'tenant-a'], serverTime: SERVER_TIME });
+    });
+
+    await expect(sites().listSites()).resolves.toEqual(['default', 'tenant-a']);
+
+    expect(double.requests).toHaveLength(1);
+    const [req] = double.requests;
+    expect(req?.method).toBe('GET');
+    expect(req?.url).toBe(`${SITE_PAGE}?op=list`);
+    expect(req?.headers.cookie).toBeUndefined();
+    expect(req?.headers['user-agent']).toBe('opt2-legacy-bridge-bot');
+    expect(req?.headers.accept).toBe('application/json');
+    expect(req?.body).toHaveLength(0);
+    const assertion = assertionOf(req);
+    const { exp, nonce, ...named } = claimsOf(assertion);
+    expect(named).toEqual({ aud: 'legacy-bridge', op: 'site.list', sid: '', sub: '', siteId: '' });
+    expect(nonce).toMatch(/^[0-9a-f]{32}$/);
+    expect(exp - VECTOR_NOW_SECONDS).toBe(60);
+    expect(verifyBridgeAssertion(assertion, VECTOR_KEY, new MemoryNonceStore(), NOW)).toMatchObject({ ok: true });
+  });
+
+  it.each<[string, unknown[], string[]]>([
+    ['keeps string ids', ['default', 'Tenant-A'], ['default', 'Tenant-A']],
+    ['coerces numeric ids to strings', ['default', 42, 7.5], ['default', '42', '7.5']],
+    ['answers an empty registry', [], []],
+  ])('%s', async (_case, answered, expected) => {
+    double.setHandler((_req, res) => {
+      sendJson(res, 200, { sites: answered, serverTime: SERVER_TIME });
+    });
+
+    await expect(sites().listSites()).resolves.toEqual(expected);
+  });
+
+  it.each<{ status: number; body: string; error?: string }>([
+    { status: 400, body: '{"error":"badRequest","message":"GET required"}', error: 'badRequest' },
+    { status: 403, body: '' },
+    { status: 404, body: '{"error":"notFound","message":"unknown op"}', error: 'notFound' },
+    { status: 500, body: '{"error":"serverError","message":"expression"}', error: 'serverError' },
+  ])('fails closed on HTTP $status', async ({ status, body, error }) => {
+    double.setHandler((_req, res) => {
+      sendBytes(res, status, body);
+    });
+
+    const failure = await failureOf(sites().listSites());
+
+    const detail = error === undefined ? '' : ` ${error}`;
+    expect(failure.cause).toMatchObject({
+      message: `legacy bridge site.list answered HTTP ${String(status)}${detail}`,
+      code: `HTTP_${String(status)}`,
+      status,
+      error,
+    });
+  });
+
+  it.each([
+    ['no sites key', '{"serverTime":"2026-06-30T12:00:00.000"}'],
+    ['a string for sites', '{"sites":"default"}'],
+    ['a JSON array body', '["default"]'],
+    ['a JSON null body', 'null'],
+    ['an object entry', '{"sites":["default",{"siteid":"tenant-a"}]}'],
+    ['a null entry', '{"sites":[null]}'],
+  ])('fails closed on a 2xx with %s', async (_case, body) => {
+    double.setHandler((_req, res) => {
+      sendBytes(res, 200, body, { 'content-type': 'application/json; charset=utf-8' });
+    });
+
+    const failure = await failureOf(sites().listSites());
+
+    expect(failure.cause).toMatchObject({ message: 'legacy bridge site.list answered no list of site ids' });
+  });
+
+  it('fails closed on a 2xx that is not JSON', async () => {
+    double.setHandler((_req, res) => {
+      sendBytes(res, 200, '<html>Masa CMS</html>', { 'content-type': 'text/html' });
+    });
+
+    const failure = await failureOf(sites().listSites());
+
+    expect(failure.cause).toBeInstanceOf(SyntaxError);
+  });
+
+  it('passes fetch manual redirects and the call timeout', async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve(Response.json({ sites: ['default'] })));
+
+    await expect(sites({ fetch: fetchMock }).listSites()).resolves.toEqual(['default']);
+
+    const [target, init] = fetchMock.mock.calls[0] ?? [];
+    expect(target).toBe(`${double.url}${SITE_PAGE}?op=list`);
+    expect(init).toMatchObject({ method: 'GET', redirect: 'manual', body: undefined });
+    expect(Object.keys(init?.headers ?? {}).sort()).toEqual(['Accept', 'User-Agent', BRIDGE_ASSERTION_HEADER].sort());
+    expect(timeout).toHaveBeenCalledWith(SERVICE_CALL_TIMEOUT_MS);
   });
 });

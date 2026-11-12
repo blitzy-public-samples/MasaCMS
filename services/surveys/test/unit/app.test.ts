@@ -133,6 +133,30 @@ function testEnv(stateDir: string, overrides: Record<string, string> = {}): Base
 
 const available = await pgAvailable();
 
+describe('surveys buildApp without a database', () => {
+  let stateDir: string;
+
+  beforeAll(async () => {
+    stateDir = mkdtempSync(join(tmpdir(), 'opt2-surveys-app-'));
+    await writeTestSecrets(stateDir);
+  });
+
+  afterAll(() => {
+    rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it.each([
+    ['no emulator host for its own publisher', undefined, 'surveys: invalid environment\n  PUBSUB_EMULATOR_HOST: is required when OPT2_ENV=local'],
+    ['an injected publisher and no emulator host', createCapturingPublisher(), 'Schema surveys needs OPT2_DB_AUTH and PG_DATABASE'],
+  ])('fails start-up with %s before acquiring anything', async (_case, publisher, message) => {
+    const sigterm = process.listenerCount('SIGTERM');
+    const env = testEnv(stateDir, { PUBSUB_EMULATOR_HOST: '' });
+
+    await expect(buildApp({ env, publisher, clock: fixedClock(NOW), verifierOverride: testVerifier('surveys') })).rejects.toThrow(message);
+    expect(process.listenerCount('SIGTERM')).toBe(sigterm);
+  });
+});
+
 describe.skipIf(!available)('surveys buildApp against PostgreSQL', () => {
   let handle: ThrowawaySchema;
   let stateDir: string | undefined;

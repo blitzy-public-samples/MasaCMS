@@ -14,7 +14,7 @@ import {
   type GateState,
 } from '@opt2/platform/migration-kit';
 import { Roles } from '@opt2/platform/auth';
-import { tenantIdForSite, withMetadata, type TenantTx } from '@opt2/platform/tenancy';
+import { tenantIdForSite, withMetadata, type QueryConfig, type QueryResultRow, type TenantTx } from '@opt2/platform/tenancy';
 import { newRequestContext, runWithRequestContext } from '@opt2/platform/service-kit';
 import { createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
@@ -514,6 +514,37 @@ describe.skipIf(!available)('identity repository against PostgreSQL', () => {
     expect(await inTenant((tx) => repo.setAccountOperationState(tx, op.operation_id, ['committed'], 'finished'))).toBe(true);
     expect(await inTenant((tx) => repo.findOpenAccountOperation(tx, { userId: id(1) }))).toBeNull();
     expect(await inTenant((tx) => repo.setAccountOperationState(tx, id(9), ['prepared'], 'aborted'))).toBe(false);
+  });
+
+  it('finds the account operations among a list of ids in one query of the transaction tenant, matching ids as findAccountOperation does', async () => {
+    const [first, second, foreign] = [id(1, 'C'), id(2, 'C'), id(3, 'C')];
+    await inTenant(async (tx) => {
+      await repo.insertAccountOperation(tx, { operation_id: second, user_id: id(2), kind: 'update', state: 'committed' });
+      await repo.insertAccountOperation(tx, { operation_id: first, user_id: id(1), kind: 'create', state: 'prepared' });
+    });
+    await inTenant((tx) => repo.insertAccountOperation(tx, { operation_id: foreign, user_id: id(3), kind: 'create', state: 'prepared' }), otherTenantId);
+    const probes = [second, `${first} `, first.toLowerCase(), foreign, id(9, 'C'), first];
+    let queries = 0;
+    const counted = (tx: TenantTx): TenantTx => ({
+      ...tx,
+      query: <R extends QueryResultRow>(text: string | QueryConfig, values?: unknown[]) => {
+        queries += 1;
+        return tx.query<R>(text, values);
+      },
+    });
+    const statesIn = async (tenant: string, ids: string[] = probes): Promise<string[][]> =>
+      (await inTenant((tx) => repo.findAccountOperations(counted(tx), ids), tenant)).map((row) => [row.operation_id, row.state]);
+
+    expect(await statesIn(tenantId)).toEqual([[first, 'prepared'], [second, 'committed']]);
+    expect(await statesIn(otherTenantId)).toEqual([[foreign, 'prepared']]);
+    expect(await statesIn(tenantId, [])).toEqual([]);
+    expect(queries).toBe(2);
+    const single = await inTenant(async (tx) => {
+      const found: Array<string | null> = [];
+      for (const probe of probes) found.push((await repo.findAccountOperation(tx, probe))?.operation_id ?? null);
+      return found;
+    });
+    expect(single).toEqual([second, first, null, null, null, first]);
   });
 
   it('finds person contacts by email without case and numbers aggregate versions under concurrency', async () => {

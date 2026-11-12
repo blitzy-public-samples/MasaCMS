@@ -6,6 +6,7 @@
  * SQL Server semantics are reproduced where results depend on them: text equality and LIKE are case-insensitive,
  * text sorts through lower(), and NULLs sort lowest.
  */
+import { cfIsBoolean, cfIsNumeric, cfToBoolean, cfToNumber } from '@opt2/platform/legacy-compat';
 import { awaitReadable, qualified } from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import {
@@ -357,21 +358,12 @@ function addMonths(date: Date, months: number): Date {
   return result;
 }
 
-/** CF `isNumeric` of a string. */
-function cfIsNumeric(text: string): boolean {
-  return /^\s*[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?\s*$/.test(text);
-}
-
 /** CF `isBoolean` read as 1/0, or null where CF reads no boolean. */
 function cfBit(text: string): 0 | 1 | null {
-  const value = text.trim().toLowerCase();
-  if (value === 'true' || value === 'yes') {
-    return 1;
+  if (!cfIsBoolean(text)) {
+    return null;
   }
-  if (value === 'false' || value === 'no') {
-    return 0;
-  }
-  return cfIsNumeric(value) ? (Number(value) === 0 ? 0 : 1) : null;
+  return cfToBoolean(text) ? 1 : 0;
 }
 
 /** `utility.sanitizeFeedIdentifier`. */
@@ -557,7 +549,7 @@ function normalizeCriteria(text: string, condition: string, dataType: string, pa
           return text;
       }
     case 'bit':
-      return cfBit(text) === null ? '' : text;
+      return cfIsBoolean(text) ? text : '';
     case 'date': {
       const date = parseDate(text);
       return date === null ? '' : dayOf(date);
@@ -634,7 +626,7 @@ function bindValue(dataType: string, value: string | Date, parseDate: CriteriaDa
     if (value instanceof Date || !cfIsNumeric(value)) {
       throw invalid();
     }
-    return Number(value);
+    return cfToNumber(value);
   }
   if (DATE_SQL_TYPES.has(dataType)) {
     const date = value instanceof Date ? value : parseDate(value);
@@ -919,7 +911,7 @@ async function categoryParamPredicate(build: FeedBuild, param: QueryParam, table
 function extendedSource(build: FeedBuild, field: string): string {
   const data = qualified(build.tx.schema, EXTEND_DATA.table);
   if (cfIsNumeric(field)) {
-    return `FROM ${data} tclassextenddata WHERE tclassextenddata.attributeid = ${build.p.add(Number(field))}`;
+    return `FROM ${data} tclassextenddata WHERE tclassextenddata.attributeid = ${build.p.add(cfToNumber(field))}`;
   }
   return (
     `FROM ${data} tclassextenddata INNER JOIN ${qualified(build.tx.schema, EXTEND_ATTRIBUTE.table)} tclassextendattributes` +

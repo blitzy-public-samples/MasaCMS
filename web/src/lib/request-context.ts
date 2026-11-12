@@ -32,6 +32,9 @@ export const ORIGINAL_URL_HEADER = 'x-opt2-original-url';
 /** `session.topID` after a site switch: the site's home content id. */
 const HOME_CONTENT_ID = '00000000000000000000000000000000001';
 
+/** Users module, whose access on the token site grants the reverse lookup without asking identity. */
+const USERS_MODULE_ID = '00000000000000000000000000000000008';
+
 /** Which web entry point is building the request. */
 export type AdminMode = 'page' | 'redirect' | 'raw' | 'opt2';
 
@@ -180,6 +183,11 @@ export interface AdminRequest {
   readonly isPrivateUser: boolean;
   /** permission `getModulePerm(moduleId, <token site>)`. */
   modulePerm(moduleId: string): boolean;
+  /**
+   * userManager `getReversePermLookUp(<token site>)`, asked of identity at most once per request.
+   * @throws GatewayDenialError When identity answers 401 or 403.
+   */
+  reversePermLookUp(): Promise<boolean>;
   /** The cookie scope after the set-up's writes; names are case-insensitive, values as sent. */
   readonly cookies: ReadonlyMap<string, string>;
   /** `Set-Cookie` values the response must carry. */
@@ -669,7 +677,7 @@ async function readSite(gateway: GatewayClient, siteId: string, defaultLocale: s
 }
 
 /** Whether services accept `siteId` under a token of `claims`, by the platform's case-insensitive site check. */
-function tokenServesSite(claims: Pick<UserClaims, 'site'>, siteId: string): boolean {
+export function tokenServesSite(claims: Pick<UserClaims, 'site'>, siteId: string): boolean {
   try {
     assertSiteMatches(siteId, claims);
     return true;
@@ -700,6 +708,25 @@ function siteLookups(
       lookups.set(siteId, found);
     }
     return found;
+  };
+}
+
+/** `reversePermLookUp`: false logged out, true with Users module access, else identity's answer, read once. */
+function reverseLookup(
+  gateway: GatewayClient,
+  isLoggedIn: boolean,
+  modulePerm: AdminRequest['modulePerm'],
+): AdminRequest['reversePermLookUp'] {
+  let granted: Promise<boolean> | undefined;
+  const lookUp = async (): Promise<boolean> => {
+    // A logged-out session has no memberships, which fails every legacy branch.
+    if (!isLoggedIn) return false;
+    if (modulePerm(USERS_MODULE_ID)) return true;
+    return okBody(await gateway.identity.reversePermLookUp(), 'identity', 'getReversePermLookUp').granted;
+  };
+  return () => {
+    granted ??= lookUp();
+    return granted;
   };
 }
 
@@ -872,6 +899,8 @@ export async function buildAdminRequest(input: AdminRequestInput): Promise<Admin
   // getSite does. Without a token, an empty session site means rc.siteid was not switched to, so that id is sent.
   const hrefSiteId = user !== undefined ? user.site : session.siteid === '' ? rcSiteId : session.siteid;
   const hrefDomains = isLoggedIn ? undefined : await loadHrefDomains(gateway, hrefSiteId, forwardedHost);
+  const modulePerm = (moduleId: string): boolean =>
+    isS2 || isSiteAdmin || (isCoreModuleId(moduleId) && hasAnyRole(roles, [moduleRole(moduleId)]));
   return {
     mode,
     route: input.params,
@@ -891,8 +920,8 @@ export async function buildAdminRequest(input: AdminRequestInput): Promise<Admin
     isS2,
     isSiteAdmin,
     isPrivateUser: isS2 || roles.includes(Roles.systemUser),
-    modulePerm: (moduleId) =>
-      isS2 || isSiteAdmin || (isCoreModuleId(moduleId) && hasAnyRole(roles, [moduleRole(moduleId)])),
+    modulePerm,
+    reversePermLookUp: reverseLookup(gateway, isLoggedIn, modulePerm),
     cookies,
     pendingSetCookies,
     headers,

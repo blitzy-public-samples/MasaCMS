@@ -527,7 +527,7 @@ class RunHeap {
 }
 
 /** K-way merge of sorted spill runs, each read sequentially. */
-async function* mergeRuns(files: readonly string[]): AsyncGenerator<string, void, undefined> {
+export async function* mergeRuns(files: readonly string[]): AsyncGenerator<string, void, undefined> {
   const readers: RunReader[] = [];
   try {
     for (const file of files) readers.push(new RunReader(file, await open(file, 'r')));

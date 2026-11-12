@@ -16,7 +16,7 @@
 			<img src="/admin/assets/images/masa-logo-black@2x.png" class="mura-logo">
 		</div>
 		<div class="block-content">
-			<form novalidate="novalidate" id="loginForm" name="frmLogin" method="post" action="./?muraAction=cLogin.login" onsubmit="return submitForm(this);">
+			<form novalidate="novalidate" id="loginForm" name="frmLogin" method="post" action="index.cfm" onsubmit="return submitForm(this);">
 				<div class="mura-control-group">
 					<label>Username</label>
 					<input id="username" name="username" type="text" autofocus="autofocus">
@@ -35,7 +35,13 @@
 						<option value="da">Danish</option>
 						<option value="de">Deutsch</option>
 						<option value="nl">Dutch</option>
+						<option value="fil">Filipino</option>
 						<option value="fr">Fran&ccedil;ais</option>
+						<option value="hu">Hungarian</option>
+						<option value="id">Indonesian</option>
+						<option value="it">Italian</option>
+						<option value="pt">Portuguese</option>
+						<option value="ru">Русский</option>
 						<option value="es">Spanish</option>
 					</select>
 				</div>
@@ -74,7 +80,6 @@
 				<input name="returnURL" type="hidden" value="">
 				<input type="hidden" name="isAdminLogin" value="true">
 				<input type="hidden" name="compactDisplay" value="true">
-				<input type="hidden" name="csrf_token" value="FIXTURECSRFTOKEN0000000000000002" /><input type="hidden" name="csrf_token_expires" value="260630120000000" />
 			</form>
 			<div id="login-link">
 				<label><a href="#" onclick="return false;">Return to login</a></label>

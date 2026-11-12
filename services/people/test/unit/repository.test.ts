@@ -14,16 +14,24 @@ import type { TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
   DuplicateArchiveError,
+  LegacyStorageError,
   OWNER,
   RosterOperationOpenError,
   SCHEMA,
   createPeopleRepository,
   lastUpdateInfo,
+  legacyStorable,
+  type AddressInput,
   type AuditActor,
   type ExtendAttributeFilter,
+  type ExtendDataValues,
+  type LegacyLimitedTable,
   type PeopleRepository,
+  type PersonArchiveInput,
   type PersonInput,
   type PersonQuery,
+  type PersonUpdate,
+  type TrashInput,
 } from '../../src/repo/repository.js';
 import { FAVORITE, PEOPLE_UNITS, type PersonRow } from '../../src/repo/tables.js';
 
@@ -39,10 +47,24 @@ describe('lastUpdateInfo', () => {
     ['a logged-in actor names itself', actor, person, { lastupdateby: 'Ada Admin', lastupdatebyid: 'ACTOR' }],
     ['no actor names the person', null, person, { lastupdateby: 'Pat Lee', lastupdatebyid: 'PERSON' }],
     ['a logged-out actor names the person', { ...actor, isLoggedIn: false }, person, { lastupdateby: 'Pat Lee', lastupdatebyid: 'PERSON' }],
-    ['missing names leave the single space', undefined, { userid: 'P' }, { lastupdateby: ' ', lastupdatebyid: 'P' }],
+    ['missing names give the empty label', undefined, { userid: 'P' }, { lastupdateby: '', lastupdatebyid: 'P' }],
+    ['a missing surname leaves no trailing space', null, { userid: 'P', fname: 'Alice', lname: null }, { lastupdateby: 'Alice', lastupdatebyid: 'P' }],
+    ['a missing first name leaves no leading space', null, { userid: 'P', lname: 'Lee' }, { lastupdateby: 'Lee', lastupdatebyid: 'P' }],
+    ['outer whitespace and control characters are trimmed', { ...actor, fname: '\t Ada', lname: 'Admin \n' }, person, {
+      lastupdateby: 'Ada Admin',
+      lastupdatebyid: 'ACTOR',
+    }],
     ['the label is cut at 50 characters', { ...actor, fname: 'x'.repeat(40), lname: 'y'.repeat(20) }, person, {
       lastupdateby: `${'x'.repeat(40)} ${'y'.repeat(9)}`,
       lastupdatebyid: 'ACTOR',
+    }],
+    ['a space at character 50 is trimmed after the cut', null, { userid: 'P', fname: 'x'.repeat(49), lname: 'y' }, {
+      lastupdateby: 'x'.repeat(49),
+      lastupdatebyid: 'P',
+    }],
+    ['leading spaces are trimmed after the cut', null, { userid: 'P', fname: `  ${'x'.repeat(47)}`, lname: 'yz' }, {
+      lastupdateby: 'x'.repeat(47),
+      lastupdatebyid: 'P',
     }],
   ] as const)('%s', (_label, who, subject, expected) => {
     expect(lastUpdateInfo(who, subject)).toEqual(expected);
@@ -50,6 +72,51 @@ describe('lastUpdateInfo', () => {
 
   it('names the service and schema', () => {
     expect([OWNER, SCHEMA]).toEqual(['people', 'people']);
+  });
+});
+
+describe('legacyStorable', () => {
+  const smile = '\u{1F600}';
+
+  it.each<[string, LegacyLimitedTable, RepositoryRow, RepositoryRow]>([
+    ['a value at the width', 'user_tag', { tag: 'x'.repeat(100), siteid: 's'.repeat(25) }, { tag: 'x'.repeat(100), siteid: 's'.repeat(25) }],
+    ['only trailing spaces beyond the width, cut', 'person', { fname: `${'x'.repeat(50)}   `, notes: ' n ' }, { fname: 'x'.repeat(50), notes: ' n ' }],
+    ['NULL, absent and unlimited columns', 'person', { fname: null, tags: 'x'.repeat(300) }, { fname: null, tags: 'x'.repeat(300) }],
+    ['surrogate pairs within the width', 'person', { fname: smile.repeat(25) }, { fname: smile.repeat(25) }],
+    ['the tinyint bounds', 'user_address', { isprimary: 0 }, { isprimary: 0 }],
+    ['the tinyint top', 'person', { keepprivate: 255 }, { keepprivate: 255 }],
+    ['a finite float', 'extend_data_user_activity', { numericvalue: -1.5e300 }, { numericvalue: -1.5e300 }],
+    ['the last 1752 time, which rounds into 1753', 'trash', { deleteddate: new Date(1752, 11, 31, 23, 59, 59, 999) }, { deleteddate: new Date(1752, 11, 31, 23, 59, 59, 999) }],
+    ['the datetime floor', 'extend_data_user_activity', { datetimevalue: new Date(1753, 0, 1, 0, 0, 0, 0) }, { datetimevalue: new Date(1753, 0, 1, 0, 0, 0, 0) }],
+    ['the last datetime', 'extend_data_user_activity', { datetimevalue: new Date(9999, 11, 31, 23, 59, 59, 998) }, { datetimevalue: new Date(9999, 11, 31, 23, 59, 59, 998) }],
+    ['datetime text', 'trash', { deleteddate: '2026-06-30 10:00:00' }, { deleteddate: '2026-06-30 10:00:00' }],
+  ])('stores %s', (_label, table, row, expected) => {
+    expect(legacyStorable(table, row)).toEqual(expected);
+  });
+
+  it.each<[string, LegacyLimitedTable, RepositoryRow, string, 'width' | 'range']>([
+    ['text beyond the width', 'user_tag', { tag: 'x'.repeat(101) }, 'tag', 'width'],
+    ['a space then text beyond the width', 'person', { fname: `${'x'.repeat(50)} y` }, 'fname', 'width'],
+    ['surrogate pairs beyond the width', 'person', { fname: smile.repeat(26) }, 'fname', 'width'],
+    ['a varchar(25) site id of 26', 'trash', { siteid: 's'.repeat(26) }, 'siteid', 'width'],
+    ['a tinyint below 0', 'person', { keepprivate: -1 }, 'keepprivate', 'range'],
+    ['a tinyint above 255', 'user_address', { isprimary: 256 }, 'isprimary', 'range'],
+    ['a NaN float', 'user_address', { longitude: Number.NaN }, 'longitude', 'range'],
+    ['an infinite float', 'extend_data_user_activity', { numericvalue: Number.NEGATIVE_INFINITY }, 'numericvalue', 'range'],
+    ['a datetime that rounds below 1753', 'trash', { deleteddate: new Date(1752, 11, 31, 23, 59, 59, 998) }, 'deleteddate', 'range'],
+    ['a datetime that rounds past 9999', 'extend_data_user_activity', { datetimevalue: new Date(9999, 11, 31, 23, 59, 59, 999) }, 'datetimevalue', 'range'],
+    ['an invalid Date', 'extend_data_user_activity', { datetimevalue: new Date(Number.NaN) }, 'datetimevalue', 'range'],
+    ['datetime text that does not parse', 'trash', { deleteddate: 'not a date' }, 'deleteddate', 'range'],
+  ])('rejects %s', (_label, table, row, column, violation) => {
+    let thrown: unknown;
+    try {
+      legacyStorable(table, row);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(LegacyStorageError);
+    expect(thrown).toBeInstanceOf(RepositoryError);
+    expect(thrown).toMatchObject({ table, column, violation });
   });
 });
 
@@ -125,6 +192,22 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
     return inTenant((tx) => repo.insertPerson(tx, personInput(overrides)), tenant);
   }
 
+  /** `tx` with the text of every statement it runs appended to `statements`. */
+  function recorded(tx: TenantTx, statements: string[]): TenantTx {
+    const query = (...args: Parameters<TenantTx['query']>): ReturnType<TenantTx['query']> => {
+      statements.push(typeof args[0] === 'string' ? args[0] : args[0].text);
+      return tx.query(...args);
+    };
+    return { ...tx, query: query as TenantTx['query'] };
+  }
+
+  /** Runs `write` in a transaction that commits past its error, expecting the LegacyStorageError of `table`.`column`. */
+  async function rejectsStorage(write: (tx: TenantTx) => Promise<unknown>, table: string, column: string, violation: 'width' | 'range'): Promise<void> {
+    const outcome = await inTenant((tx) => write(tx).then(() => undefined, (err: unknown) => err));
+    expect(outcome).toBeInstanceOf(LegacyStorageError);
+    expect(outcome).toMatchObject({ table, column, violation });
+  }
+
   describe('persons', () => {
     it('inserts with the DAO NULL rule, both timestamps now and row_version 1', async () => {
       const stored = await addPerson({ userid: 'short-id', company: 'Acme' });
@@ -155,6 +238,31 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
       expect(log[1]).toMatchObject({ op: 'update', operation_id: 'OP-1' });
       expect(log[1]?.columns).toEqual(expect.arrayContaining(['fname', 'siteid', 'notes', 'lastupdate', 'row_version']));
       expect(await inTenant((tx) => repo.updatePerson(tx, cfUuid(), update))).toBeNull();
+    });
+
+    it.each<[string, Partial<PersonInput>, string, 'width' | 'range']>([
+      ['fname of 51 characters', { fname: 'x'.repeat(51) }, 'fname', 'width'],
+      ['keepprivate -1', { keepprivate: -1 }, 'keepprivate', 'range'],
+      ['keepprivate 256', { keepprivate: 256 }, 'keepprivate', 'range'],
+    ])('rejects %s on insert and update, writing nothing', async (_label, values, column, violation) => {
+      const userid = cfUuid();
+      await rejectsStorage((tx) => repo.insertPerson(tx, personInput({ userid, ...values })), 'person', column, violation);
+      expect(await inTenant((tx) => repo.findPerson(tx, userid))).toBeNull();
+      const stored = await addPerson();
+      const update: PersonUpdate = personInput(values);
+      await rejectsStorage((tx) => repo.updatePerson(tx, stored.userid, update), 'person', column, violation);
+      await rejectsStorage((tx) => repo.updatePerson(tx, cfUuid(), update), 'person', column, violation);
+      expect(await inTenant((tx) => repo.findPerson(tx, stored.userid))).toEqual(stored);
+      expect(await changelog('person', stored.userid)).toHaveLength(1);
+    });
+
+    it.each([0, 255])('stores keepprivate %i', async (keepprivate) => {
+      expect((await addPerson({ keepprivate })).keepprivate).toBe(keepprivate);
+    });
+
+    it('stores a value beyond its width by trailing spaces only cut to the width', async () => {
+      const stored = await addPerson({ company: `${'c'.repeat(50)}   `, email: `${'e'.repeat(255)} ` });
+      expect([stored.company, stored.email]).toEqual(['c'.repeat(50), 'e'.repeat(255)]);
     });
 
     it('finds persons in input order, omitting missing ids and repeats', async () => {
@@ -242,6 +350,12 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
       await setGates('legacy');
       await expect(addPerson()).rejects.toBeInstanceOf(UnitNotAuthoritativeError);
     });
+
+    it('stores the empty lastUpdateInfo label of a nameless person as NULL', async () => {
+      const userid = cfUuid();
+      const stored = await addPerson({ userid, fname: '', lname: '', ...lastUpdateInfo(undefined, { userid, fname: '', lname: '' }) });
+      expect(stored).toMatchObject({ fname: null, lname: null, lastupdateby: null, lastupdatebyid: userid });
+    });
   });
 
   describe('addresses', () => {
@@ -257,6 +371,25 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
       expect((await inTenant((tx) => repo.listAddresses(tx, userid))).map((row) => row.addressid)).toEqual([second.addressid, first.addressid]);
       expect(await inTenant((tx) => repo.findAddress(tx, second.addressid))).toMatchObject({ isprimary: 1 });
       expect(await inTenant((tx) => repo.updateAddress(tx, cfUuid(), {}))).toBeNull();
+    });
+
+    it.each<[string, AddressInput, string, 'width' | 'range']>([
+      ['city of 51 characters', { userid: '', city: 'c'.repeat(51) }, 'city', 'width'],
+      ['isprimary -1', { userid: '', isprimary: -1 }, 'isprimary', 'range'],
+      ['isprimary 256', { userid: '', isprimary: 256 }, 'isprimary', 'range'],
+      ['longitude NaN', { userid: '', longitude: Number.NaN }, 'longitude', 'range'],
+    ])('rejects an address with %s, writing nothing', async (_label, values, column, violation) => {
+      const userid = cfUuid();
+      await rejectsStorage((tx) => repo.insertAddress(tx, { ...values, userid }), 'user_address', column, violation);
+      expect(await inTenant((tx) => repo.listAddresses(tx, userid))).toEqual([]);
+    });
+
+    it('rejects an over-width update, keeping the stored address', async () => {
+      const stored = await inTenant((tx) => repo.insertAddress(tx, { userid: cfUuid(), city: 'Oslo' }));
+      const update = { userid: stored.userid ?? '', city: 'c'.repeat(51) };
+      await rejectsStorage((tx) => repo.updateAddress(tx, stored.addressid, update), 'user_address', 'city', 'width');
+      await rejectsStorage((tx) => repo.updateAddress(tx, cfUuid(), update), 'user_address', 'city', 'width');
+      expect(await inTenant((tx) => repo.findAddress(tx, stored.addressid))).toEqual(stored);
     });
 
     it('sets the only primary address, updating only rows that change', async () => {
@@ -305,6 +438,38 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
       expect(await inTenant((tx) => repo.replaceTags(tx, { userId, siteId: '', tags: null }))).toEqual([]);
     });
 
+    it.each([['one tag', 'a'], ['four tags', 'a,b,c,d']])('allocates the ids of %s in one statement, ascending in list order', async (_label, tags) => {
+      const userId = cfUuid();
+      const statements: string[] = [];
+      const created = await inTenant((tx) => repo.replaceTags(recorded(tx, statements), { userId, siteId: 'tenant-a', tags }));
+      expect(statements.filter((sql) => sql.includes('nextval'))).toHaveLength(1);
+      expect(created.map((row) => row.tag)).toEqual(tags.split(','));
+      const ids = created.map((row) => row.tagid);
+      expect(ids).toEqual([...ids].sort((a, b) => a - b));
+      const cleared: string[] = [];
+      expect(await inTenant((tx) => repo.replaceTags(recorded(tx, cleared), { userId, siteId: 'tenant-a', tags: ' , ' }))).toEqual([]);
+      expect(cleared.filter((sql) => sql.includes('nextval'))).toEqual([]);
+    });
+
+    it('stores tags of exactly 100 characters, trailing spaces trimmed first', async () => {
+      const userId = cfUuid();
+      const tag = 't'.repeat(100);
+      const created = await inTenant((tx) => repo.replaceTags(tx, { userId, siteId: 's'.repeat(25), tags: `${tag},${tag}   ` }));
+      expect(created.map((row) => [row.tag, row.siteid])).toEqual([[tag, 's'.repeat(25)], [tag, 's'.repeat(25)]]);
+    });
+
+    it.each([
+      ['a tag of 101 characters', 'tenant-a', `ok,${'x'.repeat(101)}`, 'tag'],
+      ['a site id of 26 characters', 's'.repeat(26), 'ok', 'siteid'],
+    ])('rejects %s, deleting and inserting nothing', async (_label, siteId, tags, column) => {
+      const userId = cfUuid();
+      await inTenant((tx) => repo.replaceTags(tx, { userId, siteId: 'tenant-a', tags: 'old' }));
+      await rejectsStorage((tx) => repo.replaceTags(tx, { userId, siteId, tags }), 'user_tag', column, 'width');
+      const stored = await rows<{ tag: string }>('SELECT tag FROM <s>.user_tag WHERE userid = $1', [userId]);
+      expect(stored.map((row) => row.tag)).toEqual(['old']);
+      expect((await changelog('user_tag', userId)).map((row) => row.op)).toEqual(['insert']);
+    });
+
     it('lists favorites by creation time', async () => {
       const userid = cfUuid();
       for (const [favoriteid, datecreated] of [['F2', LATER], ['F1', NOW]] as const) {
@@ -323,6 +488,49 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
       expect((await inTenant((tx) => repo.listExtendData(tx, [baseId]))).map((row) => row.stringvalue)).toEqual(['c']);
       expect(await inTenant((tx) => repo.listExtendData(tx, []))).toEqual([]);
       expect(await inTenant((tx) => repo.deleteExtendDataForBase(tx, baseId))).toBe(1);
+    });
+
+    it.each([[[2]], [[3, 1, 4, 2]]])('locks and allocates for attributes %j in one statement each, in entry order', async (attributeIds) => {
+      const baseId = cfUuid();
+      await inTenant(async (tx) => {
+        await repo.replaceExtendData(tx, baseId, [1, 2, 3].map((attributeId) => ({ attributeId, row: extendValues(`old${attributeId}`) })));
+        // A second stored row of attribute 2, as legacy can leave beside an empty value.
+        await repo.insert(tx, 'extend_data_user_activity', { ...extendValues('extra'), dataid: 2_000_000_000, baseid: baseId, attributeid: 2 });
+      });
+      const statements: string[] = [];
+      const entries = attributeIds.map((attributeId) => ({ attributeId, row: extendValues(`new${attributeId}`) }));
+      const inserted = await inTenant((tx) => repo.replaceExtendData(recorded(tx, statements), baseId, entries));
+      expect(statements.filter((sql) => sql.includes('extend_data_user_activity') && sql.includes('FOR UPDATE'))).toHaveLength(1);
+      expect(statements.filter((sql) => sql.includes('nextval'))).toHaveLength(1);
+      expect(inserted.map((row) => [row.attributeid, row.stringvalue])).toEqual(attributeIds.map((id) => [id, `new${id}`]));
+      const ids = inserted.map((row) => row.dataid);
+      expect(ids).toEqual([...ids].sort((a, b) => a - b));
+      const kept = [1, 3].filter((id) => !attributeIds.includes(id)).map((id) => `old${id}`);
+      const stored = await inTenant((tx) => repo.listExtendData(tx, [baseId]));
+      expect(stored.map((row) => row.stringvalue).sort()).toEqual([...kept, ...attributeIds.map((id) => `new${id}`)].sort());
+      const replaced = entries.flatMap(({ attributeId }) => [...(attributeId === 2 ? ['delete', 'delete'] : attributeId === 4 ? [] : ['delete']), 'insert']);
+      expect((await changelog('extend_data_user_activity', baseId)).map((row) => row.op).slice(4)).toEqual(replaced);
+    });
+
+    it('replaces a repeated attribute in entry order, keeping only its last row', async () => {
+      const baseId = cfUuid();
+      await inTenant((tx) => repo.replaceExtendData(tx, baseId, [{ attributeId: 5, row: extendValues('old') }]));
+      const entries = [{ attributeId: 5, row: extendValues('first') }, { attributeId: 6, row: null }, { attributeId: 5, row: extendValues('last') }];
+      const inserted = await inTenant((tx) => repo.replaceExtendData(tx, baseId, entries));
+      expect(inserted.map((row) => row.stringvalue)).toEqual(['first', 'last']);
+      expect((await inTenant((tx) => repo.listExtendData(tx, [baseId]))).map((row) => row.stringvalue)).toEqual(['last']);
+      expect((await changelog('extend_data_user_activity', baseId)).map((row) => row.op)).toEqual(['insert', 'delete', 'insert', 'delete', 'insert']);
+    });
+
+    it.each<[string, ExtendDataValues, string, 'width' | 'range']>([
+      ['a stringvalue of 256 characters', extendValues('x'.repeat(256)), 'stringvalue', 'width'],
+      ['a datetimevalue in 1700', { ...extendValues('d'), datetimevalue: new Date(1700, 0, 1) }, 'datetimevalue', 'range'],
+    ])('rejects %s before deleting any attribute', async (_label, invalid, column, violation) => {
+      const baseId = cfUuid();
+      await inTenant((tx) => repo.replaceExtendData(tx, baseId, [{ attributeId: 1, row: extendValues('a') }]));
+      const entries = [{ attributeId: 1, row: extendValues('b') }, { attributeId: 2, row: invalid }];
+      await rejectsStorage((tx) => repo.replaceExtendData(tx, baseId, entries), 'extend_data_user_activity', column, violation);
+      expect((await inTenant((tx) => repo.listExtendData(tx, [baseId]))).map((row) => row.stringvalue)).toEqual(['a']);
     });
 
     it('lists subtypes, sets and attributes in legacy order with their filters', async () => {
@@ -381,8 +589,8 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
     });
   });
 
-  it('inserts a trash row only when none exists for its object', async () => {
-    const row = {
+  function trashRow(overrides: Partial<TrashInput> = {}): TrashInput {
+    return {
       objectid: cfUuid(),
       parentid: cfUuid(),
       siteid: 'tenant-a',
@@ -395,9 +603,25 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
       deletedby: 'Ada Admin',
       deleteid: cfUuid(),
       orderno: 1,
+      ...overrides,
     };
+  }
+
+  it('inserts a trash row only when none exists for its object', async () => {
+    const row = trashRow();
     expect(await inTenant((tx) => repo.insertTrashIfAbsent(tx, row))).toMatchObject({ objectlabel: 'Pat Lee' });
     expect(await inTenant((tx) => repo.insertTrashIfAbsent(tx, { ...row, objectlabel: 'again' }))).toBeNull();
+    // trashManager inserts only after finding no row, so an existing row is never checked against the limits.
+    expect(await inTenant((tx) => repo.insertTrashIfAbsent(tx, { ...row, objectlabel: 'x'.repeat(256) }))).toBeNull();
+  });
+
+  it.each<[string, Partial<TrashInput>]>([
+    ['objectlabel', { objectlabel: 'x'.repeat(256) }],
+    ['siteid', { siteid: 's'.repeat(26) }],
+  ])('rejects a trash %s beyond its width, writing nothing', async (column, overrides) => {
+    const row = trashRow(overrides);
+    await rejectsStorage((tx) => repo.insertTrashIfAbsent(tx, row), 'trash', column, 'width');
+    expect(await inTenant((tx) => repo.findByKey(tx, 'trash', { objectid: row.objectid }))).toBeNull();
   });
 
   describe('archive', () => {
@@ -415,6 +639,16 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
       expect(await inTenant((tx) => repo.findPersonArchive(tx, personId, LATER))).toBeNull();
       expect(await inTenant((tx) => repo.findPersonArchive(tx, personId, NOW))).toMatchObject({ archive_id: stored.archive_id });
       expect(await inTenant((tx) => repo.findPersonArchive(tx, personId))).toMatchObject({ archive_id: stored.archive_id });
+    });
+
+    it.each<[string, Partial<PersonArchiveInput>, string, 'width' | 'range']>([
+      ['archived_by of 51 characters', { archived_by: 'x'.repeat(51) }, 'archived_by', 'width'],
+      ['siteid of 51 characters', { siteid: 's'.repeat(51) }, 'siteid', 'width'],
+      ['effective_from before 1753', { effective_from: new Date(1700, 0, 1) }, 'effective_from', 'range'],
+    ])('rejects %s, writing nothing', async (_label, values, column, violation) => {
+      const personId = cfUuid();
+      await rejectsStorage((tx) => repo.insertPersonArchive(tx, { ...archiveRow(personId, NOW), ...values }), 'person_archive', column, violation);
+      expect(await inTenant((tx) => repo.findPersonArchive(tx, personId))).toBeNull();
     });
 
     it('turns a concurrent duplicate that reaches the unique key into DuplicateArchiveError', async () => {

@@ -1,9 +1,19 @@
-/** Content-node and module grants of `identity.permission` for the `cperm` screens, ported from Masa `permission.cfc`. */
+/** Content-node and module grants of `identity.permission` for the `cperm` screens and the reverse Users-module lookup, ported from Masa. */
+import type { UserClaims } from '@opt2/platform/auth';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
-import { registryEntryForTenant, tenantForRegisteredSite, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
+import {
+  registryEntryForTenant,
+  tenantForRegisteredSite,
+  userPoolFanoutTenants,
+  type TenantDb,
+  type TenantRegistryEntry,
+  type TenantTx,
+} from '@opt2/platform/tenancy';
 import type { IdentityEvents } from '../events/publish.js';
 import { charKey, type IdentityRepository } from '../repo/repository.js';
 import type { GroupAccountRow, PermissionRow } from '../repo/tables.js';
+import { moduleGrantHeld, modulePermByRole, type TokenRoleSite } from './roles.js';
+import { moduleGrantsFor, signedInSnapshot } from './tokens.js';
 
 // No node-permission save is built here. cperm.update [legacy: core/mura/permission.cfc:518-552] also saves the node's
 // approval-chain assignment, which strategies-content owns, so that branch is withheld on the decision list and runs on
@@ -53,6 +63,20 @@ export interface ModulePermissionsResult {
   rows: PermissionRow[];
   changedGroupIds: string[];
 }
+
+/** Dependencies of {@link reversePermLookUp}. */
+export interface ReversePermDeps {
+  db: TenantDb;
+  repo: Pick<IdentityRepository, 'findSession' | 'moduleGrants' | 'findGroupsByIds'>;
+}
+
+/** The registered sites other than `site` whose public or private user pool is `site`. */
+interface PooledSites {
+  publicPooled: TenantRegistryEntry[];
+  privatePooled: TenantRegistryEntry[];
+}
+
+const USERS_MODULE = '00000000000000000000000000000000008';
 
 function gateBudget(deps: PermissionDeps): { budgetMs: number | undefined } {
   return { budgetMs: deps.gateWaitMs };
@@ -144,4 +168,38 @@ export function permittedGroups(deps: PermissionDeps, node: NodeRef): Promise<Pe
 /** Every stored row of a content node in the site, which `groupPermVerdict` reads for `cperm.main` [legacy: core/mura/permission.cfc:116-133]. */
 export function permissionsForContent(deps: PermissionDeps, node: NodeRef): Promise<PermissionRow[]> {
   return readInSite(deps, node.siteId, (tx) => deps.repo.permissionsFor(tx, { contentId: node.contentId, siteId: node.siteId }));
+}
+
+/** The registered sites pooling their public or private users in the token's site, pool ids compared as SQL Server compares them [legacy: core/mura/user/userManager.cfc:1061-1065,1073-1077]. */
+async function pooledSites(db: TenantDb, claims: Pick<UserClaims, 'tid' | 'site'>): Promise<PooledSites> {
+  const site = charKey(claims.site);
+  return db.withMetadata(async (tx) => {
+    const pooled: PooledSites = { publicPooled: [], privatePooled: [] };
+    for (const tenantId of await userPoolFanoutTenants(tx, claims.tid)) {
+      // The site's own entry would only repeat the site's own check.
+      const entry = tenantId === claims.tid ? null : await registryEntryForTenant(tx, tenantId);
+      if (entry === null) continue;
+      if (charKey(entry.publicUserPoolId ?? entry.siteId) === site) pooled.publicPooled.push(entry);
+      if (charKey(entry.privateUserPoolId ?? entry.siteId) === site) pooled.privatePooled.push(entry);
+    }
+    return pooled;
+  });
+}
+
+/** userManager `getReversePermLookUp` of the token's site for its session's login-time role list; false without a signed-in session [legacy: core/mura/user/userManager.cfc:1050-1086]. */
+export async function reversePermLookUp(deps: ReversePermDeps, claims: Pick<UserClaims, 'sid' | 'tid' | 'site'>): Promise<boolean> {
+  const { db, repo } = deps;
+  const { snapshot } = await signedInSnapshot(db, repo, claims.sid);
+  if (snapshot === undefined) return false;
+  const own = await registryEntryForTenant(db, claims.tid);
+  // An unregistered site has no pool ids and no grants, so its pools default to its own id.
+  const ownSite: TokenRoleSite = own ?? { siteId: claims.site, privateUserPoolId: null, publicUserPoolId: null };
+  if (modulePermByRole(snapshot, ownSite)) return true;
+  const { publicPooled, privatePooled } = await pooledSites(db, claims);
+  // S2 was ruled out above, so for every pooled site the role test is its private-pool Admin group alone.
+  if ([...publicPooled, ...privatePooled].some((entry) => modulePermByRole(snapshot, entry))) return true;
+  for (const entry of own === null ? publicPooled : [own, ...publicPooled]) {
+    if (moduleGrantHeld(snapshot, entry, USERS_MODULE, await moduleGrantsFor(db, repo, snapshot, entry))) return true;
+  }
+  return false;
 }

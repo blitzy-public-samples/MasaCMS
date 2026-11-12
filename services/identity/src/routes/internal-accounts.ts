@@ -11,14 +11,17 @@ import {
   type AccountChange,
   type AccountOperationDeps,
   type AccountOperationView,
+  type SessionEffects,
   type StepInput,
   type StepOutcome,
 } from '../domain/account-operations.js';
 import type { components, operations } from '../generated/openapi.js';
+import { charKey } from '../repo/repository.js';
 
 type Schemas = components['schemas'];
 type OperationParams = operations['getAccountOperation']['parameters']['path'];
 type PrepareBody = Schemas['AccountPrepareRequest'];
+type CommitBody = Schemas['AccountCommitRequest'];
 
 /** The account operations the routes delegate to. */
 export type AccountRouteDeps = { accounts: AccountOperationDeps };
@@ -52,8 +55,10 @@ const CF_UUID = {
 
 const INTEGER = { type: 'integer' } as const;
 const TEXT = { type: 'string' } as const;
+const NULLABLE_TEXT = { type: ['string', 'null'] } as const;
+const BOOLEAN = { type: 'boolean' } as const;
 
-// UserId, OperationId and AccountPrepareRequest as the contract declares them; Fastify validates them once, before the handler.
+// UserId, OperationId, AccountPrepareRequest and AccountCommitRequest as the contract declares them; Fastify validates them once, before the handler.
 const OPERATION_PARAMS = {
   type: 'object',
   required: ['userId', 'operationId'],
@@ -80,10 +85,37 @@ const PREPARE_BODY = {
         isPublic: INTEGER,
         Admin: INTEGER,
         remoteID: TEXT,
+        tablist: NULLABLE_TEXT,
         Type: { type: 'integer', const: 2 },
       },
     },
     groupIds: { type: 'array', items: CF_UUID },
+    updateGroups: BOOLEAN,
+    originID: TEXT,
+    switchToPublic: BOOLEAN,
+    switchToPrivate: BOOLEAN,
+  },
+} as const;
+
+// No body reaches validation as null, so a commit without one (recovery's) passes.
+const COMMIT_BODY = {
+  type: ['object', 'null'],
+  additionalProperties: false,
+  properties: {
+    sessionEffects: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['reloginSessionId'],
+      properties: {
+        reloginSessionId: { type: 'string', minLength: 1 },
+        person: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['fname', 'lname', 'email', 'company', 'subtype'],
+          properties: { fname: NULLABLE_TEXT, lname: NULLABLE_TEXT, email: NULLABLE_TEXT, company: NULLABLE_TEXT, subtype: NULLABLE_TEXT },
+        },
+      },
+    },
   },
 } as const;
 
@@ -94,14 +126,14 @@ function actionUrl(action: string): string {
   return `${OPERATION_URL}(.+)::${action}`;
 }
 
-/** The verified user claims; prepare applies the token site's user pools and the actor's S2 rule, so their absence is a missing credential. */
+/** The verified user claims; prepare's pools and S2 rule and commit's session effects need them, so their absence is a missing credential. */
 function userOf(auth: Opt2AuthContext): UserClaims {
   if (auth.user === undefined) throw AuthDenial.unauthenticated('missing-credential');
   return auth.user;
 }
 
 /** The domain change of a prepare body; `Admin` and `Type` stay out because `userDAO` never writes `Admin` and a roster user is always Type 2. */
-function changeOf({ account, groupIds }: PrepareBody): AccountChange {
+function changeOf({ account, groupIds, updateGroups, originID, switchToPublic, switchToPrivate }: PrepareBody): AccountChange {
   return {
     username: account.UserName,
     // An absent password leaves an update's credential as stored and gives a create a random one.
@@ -111,8 +143,25 @@ function changeOf({ account, groupIds }: PrepareBody): AccountChange {
     inActive: account.InActive,
     isPublic: account.isPublic,
     remoteID: account.remoteID,
+    tablist: account.tablist,
     groupIds,
+    updateGroups,
+    originID,
+    switchToPublic,
+    switchToPrivate,
   };
+}
+
+/**
+ * A commit body's session effects, admitted only for the forwarded user token's own user and session: legacy re-logs in
+ * only the logged-in user saving their own record [legacy: core/mura/client/api/json/v1/jsonApiUtility.cfc:2064-2070].
+ */
+function sessionEffectsOf(auth: Opt2AuthContext, userId: string, body: CommitBody | null | undefined): SessionEffects | undefined {
+  const effects = body?.sessionEffects;
+  if (effects === undefined) return undefined;
+  const user = userOf(auth);
+  if (charKey(user.sub) !== charKey(userId) || user.sid !== effects.reloginSessionId) throw AuthDenial.forbidden();
+  return effects;
 }
 
 /** Answers 409 with the operation whose recorded state refuses the step. */
@@ -153,11 +202,13 @@ export async function registerAccountRoutes(app: FastifyInstance, deps: AccountR
     },
   );
 
-  app.post<{ Params: OperationParams }>(
+  app.post<{ Params: OperationParams; Body: CommitBody | null }>(
     actionUrl('commit'),
-    { schema: { params: OPERATION_PARAMS }, config: { opt2: ROUTE_AUTH } },
+    { schema: { params: OPERATION_PARAMS, body: COMMIT_BODY }, config: { opt2: ROUTE_AUTH } },
     async (request, reply) => {
-      const outcome = await commitAccountOperation(accounts, request.params.operationId, { userId: request.params.userId });
+      const { userId, operationId } = request.params;
+      const sessionEffects = sessionEffectsOf(request.opt2Auth, userId, request.body);
+      const outcome = await commitAccountOperation(accounts, operationId, { userId, sessionEffects });
       return outcome.outcome === 'committed' ? reply.send(outcome.result) : sendConflict(reply, outcome.operation);
     },
   );

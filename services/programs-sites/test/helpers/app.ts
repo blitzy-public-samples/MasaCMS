@@ -12,8 +12,24 @@ import {
   writeTestSecrets,
   type RoleSubject,
 } from '@opt2/platform/testing';
-import { tenantDbFromPool, type Pool, type QueryConfig, type QueryResult, type QueryResultRow, type TenantDb } from '@opt2/platform/tenancy';
-import type { CreateTaskInput, CreateTaskResult, DeleteTaskResult, QueueState, TaskInfo, TaskPort } from '@opt2/platform/tasks';
+import {
+  SYSTEM_TENANT_ID,
+  tenantDbFromPool,
+  type Pool,
+  type QueryConfig,
+  type QueryResult,
+  type QueryResultRow,
+  type TenantDb,
+} from '@opt2/platform/tenancy';
+import {
+  resolvePageSize,
+  type CreateTaskInput,
+  type CreateTaskResult,
+  type DeleteTaskResult,
+  type QueueState,
+  type TaskInfo,
+  type TaskPort,
+} from '@opt2/platform/tasks';
 import {
   CSRF_CONSUME_PATH,
   baseEnvSchema,
@@ -94,8 +110,8 @@ export interface FakeTaskPort extends TaskPort {
   readonly calls: TaskPortCall[];
   /** Makes matching creates throw until cleared with `null`. */
   failCreate(predicate: ((input: CreateTaskInput) => boolean) | null): void;
-  /** Marks the task done, so it leaves `list` and `get`; throws when the port holds no such task. */
-  markDone(name: string, queue?: string): void;
+  /** Marks the first matching task done, so it leaves `list` and `get`; an omitted queue or tenant matches any; throws when none matches. */
+  markDone(name: string, queue?: string, tenantId?: string): void;
   /** Snapshot of every created task, tombstones included, in creation order. */
   tasks(queue?: string): FakeTaskRecord[];
 }
@@ -115,7 +131,7 @@ function passedArgs(...values: unknown[]): unknown[] {
   return values.slice(0, length);
 }
 
-/** Creates a {@link FakeTaskPort}; tasks are keyed by `(queue, name)`, and a repeated key answers `created: false`. */
+/** Creates a {@link FakeTaskPort}; tasks are keyed by `(tenant, queue, name)` as in the local adapter, and a repeated key answers `created: false`. */
 export function createFakeTaskPort(options: FakeTaskPortOptions = {}): FakeTaskPort {
   const records: MutableTask[] = [];
   const awaitingResume = new Set<MutableTask>();
@@ -127,8 +143,11 @@ export function createFakeTaskPort(options: FakeTaskPortOptions = {}): FakeTaskP
   const record = (op: TaskPortOp, args: unknown[]): void => {
     calls.push({ op, args });
   };
-  const find = (queue: string, name: string): MutableTask | undefined =>
-    records.find((task) => task.input.queue === queue && task.input.name === name);
+  // A tenant-less task belongs to the system tenant, as in the local adapter.
+  const tenantOf = (input: CreateTaskInput): string => input.tenantId ?? SYSTEM_TENANT_ID;
+  const matches = (task: MutableTask, queue: string, name: string): boolean => task.input.queue === queue && task.input.name === name;
+  const find = (tenant: string, queue: string, name: string): MutableTask | undefined =>
+    records.find((task) => tenantOf(task.input) === tenant && matches(task, queue, name));
   const isLive = (task: MutableTask): boolean => !task.done && !task.deleted;
   const completesItself = (input: CreateTaskInput): boolean =>
     typeof autoComplete === 'function' ? autoComplete(input) : autoComplete;
@@ -140,7 +159,7 @@ export function createFakeTaskPort(options: FakeTaskPortOptions = {}): FakeTaskP
     queue: task.input.queue,
     name: task.input.name,
     scheduleTime: new Date(task.input.scheduleTime.getTime()),
-    ...(task.input.tenantId === undefined ? {} : { tenantId: task.input.tenantId }),
+    ...(tenantOf(task.input) === SYSTEM_TENANT_ID ? {} : { tenantId: tenantOf(task.input) }),
     status: 'pending',
     attempts: 0,
   });
@@ -152,7 +171,7 @@ export function createFakeTaskPort(options: FakeTaskPortOptions = {}): FakeTaskP
     async create(input: CreateTaskInput): Promise<CreateTaskResult> {
       record('create', [input]);
       if (failing?.(input) === true) throw new Error(`injected task creation failure: ${input.queue}/${input.name}`);
-      if (find(input.queue, input.name) !== undefined) return { name: input.name, created: false };
+      if (find(tenantOf(input), input.queue, input.name) !== undefined) return { name: input.name, created: false };
       const task: MutableTask = { input, done: false, deleted: false };
       records.push(task);
       if (completesItself(input)) {
@@ -164,8 +183,13 @@ export function createFakeTaskPort(options: FakeTaskPortOptions = {}): FakeTaskP
 
     async delete(queue: string, name: string, opts?: { tenantId?: string }): Promise<DeleteTaskResult> {
       record('delete', passedArgs(queue, name, opts));
-      const task = find(queue, name);
-      if (task === undefined || !isLive(task)) return { name, deleted: false };
+      // Without a tenant, the system tenant is searched first and then every other tenant, as in the local adapter.
+      const liveMatch = (task: MutableTask): boolean => isLive(task) && matches(task, queue, name);
+      const task =
+        opts?.tenantId === undefined
+          ? (records.find((candidate) => liveMatch(candidate) && tenantOf(candidate.input) === SYSTEM_TENANT_ID) ?? records.find(liveMatch))
+          : records.find((candidate) => liveMatch(candidate) && tenantOf(candidate.input) === opts.tenantId);
+      if (task === undefined) return { name, deleted: false };
       task.deleted = true;
       awaitingResume.delete(task);
       return { name, deleted: true };
@@ -173,16 +197,17 @@ export function createFakeTaskPort(options: FakeTaskPortOptions = {}): FakeTaskP
 
     async list(queue: string, page?: TaskPageRequest): Promise<TaskPage> {
       record('list', passedArgs(queue, page));
+      const pageSize = resolvePageSize(page?.pageSize);
       const live = records.filter((task) => task.input.queue === queue && isLive(task));
       const start = page?.pageToken === undefined ? 0 : Number(page.pageToken);
-      const end = page?.pageSize === undefined ? live.length : start + page.pageSize;
+      const end = start + pageSize;
       const tasks = live.slice(start, end).map(infoOf);
       return end < live.length ? { tasks, nextPageToken: String(end) } : { tasks };
     },
 
     async get(queue: string, name: string, opts?: { tenantId?: string }): Promise<TaskInfo | undefined> {
       record('get', passedArgs(queue, name, opts));
-      const task = find(queue, name);
+      const task = find(opts?.tenantId ?? SYSTEM_TENANT_ID, queue, name);
       return task !== undefined && isLive(task) ? infoOf(task) : undefined;
     },
 
@@ -212,9 +237,16 @@ export function createFakeTaskPort(options: FakeTaskPortOptions = {}): FakeTaskP
       failing = predicate;
     },
 
-    markDone(name, queue) {
-      const task = records.find((candidate) => candidate.input.name === name && (queue === undefined || candidate.input.queue === queue));
-      if (task === undefined) throw new Error(`fake task port holds no task ${queue === undefined ? '' : `${queue}/`}${name}`);
+    markDone(name, queue, tenantId) {
+      const task = records.find(
+        (candidate) =>
+          candidate.input.name === name &&
+          (queue === undefined || candidate.input.queue === queue) &&
+          (tenantId === undefined || tenantOf(candidate.input) === tenantId),
+      );
+      if (task === undefined) {
+        throw new Error(`fake task port holds no task ${tenantId === undefined ? '' : `${tenantId}:`}${queue === undefined ? '' : `${queue}/`}${name}`);
+      }
       complete(task);
     },
 
@@ -892,7 +924,20 @@ export interface TestApp<D extends TenantDb = RecordingDb, P extends TaskPort = 
   env: Record<string, string>;
 }
 
-/** Builds the programs-sites app over in-memory fakes, installs the client recorder and awaits `ready`; it never listens. */
+/** Closes the app a failed build created, then removes the helper-owned state directory; a cleanup error never replaces the build error. */
+async function discardFailedBuild(app: FastifyInstance | undefined, removeStateDir: () => void): Promise<void> {
+  try {
+    // close() also runs the onClose hooks after a rejected ready(); the removal below covers a build that never added them.
+    await app?.close();
+  } finally {
+    removeStateDir();
+  }
+}
+
+/**
+ * Builds the programs-sites app over in-memory fakes, installs the client recorder and awaits `ready`; it never listens.
+ * On failure it closes the app it built and removes the state directory it created, then rethrows the original error.
+ */
 export function buildTestApp<D extends TenantDb = RecordingDb, P extends TaskPort = FakeTaskPort, E extends EventPublisher = CapturingPublisher>(
   opts?: TestAppOptions<D, P, E>,
 ): Promise<TestApp<D, P, E>>;
@@ -900,38 +945,45 @@ export async function buildTestApp(
   opts: TestAppOptions<TenantDb, TaskPort, EventPublisher> = {},
 ): Promise<TestApp<TenantDb, TaskPort, EventPublisher>> {
   const env = testEnv(opts.envOverrides);
-  const parsed = loadEnv(baseEnvSchema, env);
-  // A state directory testEnv created is the app's own, so it is removed when the app closes.
+  // A state directory testEnv created is the app's own, so it is removed when the app closes or fails to build.
   const ownStateDir = opts.envOverrides === undefined || !('OPT2_STATE_DIR' in opts.envOverrides);
   const removeStateDir = (): void => {
-    if (ownStateDir) rmSync(parsed.OPT2_STATE_DIR, { recursive: true, force: true });
+    const stateDir = env.OPT2_STATE_DIR;
+    if (ownStateDir && stateDir !== undefined) rmSync(stateDir, { recursive: true, force: true });
   };
-  await writeTestSecrets(parsed.OPT2_STATE_DIR);
-  const clock = opts.clock ?? TEST_CLOCK;
-  let recording: RecordingDb | undefined;
-  const db = opts.db ?? (recording = createRecordingDb());
-  const publisher = opts.publisher ?? createCapturingPublisher();
-  const taskPort = opts.taskPort ?? createFakeTaskPort(opts.taskPortOptions);
-  const client = createClientRecorder(opts.clientHandlers, { clock });
-
-  let app: FastifyInstance;
+  let app: FastifyInstance | undefined;
   try {
+    const parsed = loadEnv(baseEnvSchema, env);
+    await writeTestSecrets(parsed.OPT2_STATE_DIR);
+    const clock = opts.clock ?? TEST_CLOCK;
+    let recording: RecordingDb | undefined;
+    const db = opts.db ?? (recording = createRecordingDb());
+    const publisher = opts.publisher ?? createCapturingPublisher();
+    const taskPort = opts.taskPort ?? createFakeTaskPort(opts.taskPortOptions);
+    const client = createClientRecorder(opts.clientHandlers, { clock });
+
     app = await buildApp({ env: parsed, clock, verifierOverride: opts.verifierOverride ?? testVerifier(), db, publisher, taskPort });
+    // A synchronous throw in a callback hook leaves close() pending, so a removal error goes to done.
+    app.addHook('onClose', (_instance, done) => {
+      try {
+        removeStateDir();
+      } catch (err) {
+        done(err as Error);
+        return;
+      }
+      done();
+    });
+    client.install(app);
+    await app.ready();
+    if (recording !== undefined) {
+      recording.startup = recording.statements();
+      recording.clear();
+    }
+    return { app, publisher, taskPort, client, db, clock, env };
   } catch (err) {
-    removeStateDir();
+    await discardFailedBuild(app, removeStateDir).catch(() => undefined);
     throw err;
   }
-  app.addHook('onClose', (_instance, done) => {
-    removeStateDir();
-    done();
-  });
-  client.install(app);
-  await app.ready();
-  if (recording !== undefined) {
-    recording.startup = recording.statements();
-    recording.clear();
-  }
-  return { app, publisher, taskPort, client, db, clock, env };
 }
 
 function roleSubjectNamed(name: string): RoleSubject {

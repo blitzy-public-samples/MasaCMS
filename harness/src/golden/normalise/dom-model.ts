@@ -66,6 +66,13 @@ export interface DomAlert {
   text: string;
 }
 
+/** A text component known-issue mask `mask` lifted out of model text field `path`, which shows its placeholder. */
+export interface DomMaskedText {
+  mask: KnownIssueId;
+  path: string;
+  text: string;
+}
+
 /** The parts of an admin page the parity comparison looks at, each list in document order. */
 export interface DomModel {
   title: string;
@@ -77,9 +84,14 @@ export interface DomModel {
   links: DomLink[];
   tables: DomTable[];
   alerts: DomAlert[];
+  /** Lifted text components, in mask, location and document order. */
+  maskedText: DomMaskedText[];
 }
 
-/** A DOM model plus the model paths (`controls[12].checked`, `forms[0]`, …) its known-issue masks cover. */
+/**
+ * A DOM model plus the model paths (`controls[12].checked`, `forms[0].action`, `maskedText[0]`, …) its known-issue
+ * masks cover.
+ */
 export interface DomModelResult {
   model: DomModel;
   maskedPaths: Record<string, KnownIssueId>;
@@ -96,16 +108,17 @@ export interface DomModelOptions {
 type Selection = ReturnType<ReturnType<CheerioAPI['root']>['find']>;
 type Element = Selection[number];
 type AnyNode = ReturnType<Selection['closest']>[number];
+type TextNode = Extract<AnyNode, { nodeType: 3 }>;
 type DomLocation = Extract<MaskLocation, { kind: 'dom' }>;
 
-/** A model entry an element produced, with the fields a known-issue mask may narrow to. */
+/** A model entry an element produced, with the fields known-issue masks and lifted text address. */
 interface Produced {
   path: string;
   textPath?: string;
   valuePath?: string;
   /** Object entries have fields that mask `attributes` can address. */
   object: boolean;
-  /** Entries holding the text of the element's descendants; masks on such descendants fall back to them. */
+  /** Entries holding the text of the element's descendants; masks and lifted text of those fall back to them. */
   carriesText: boolean;
 }
 
@@ -116,10 +129,34 @@ interface Context {
   produced: Map<AnyNode, Produced[]>;
 }
 
+/** An element a DOM mask location selects, with its `textPattern` hits read before any text is lifted. */
+interface Target {
+  el: Element;
+  textHit: boolean;
+  valueHit: boolean;
+}
+
+/** A DOM mask location of a mask that applies to the DOM model, and its targets. */
+interface Selected {
+  mask: KnownIssueId;
+  location: DomLocation;
+  targets: Target[];
+}
+
+/** A text component lifted out of the page: its mask, raw text and the element whose text node holds its start. */
+interface Lifted {
+  mask: KnownIssueId;
+  parent: AnyNode;
+  raw: string;
+}
+
 const ALWAYS_EXCLUDED = ['script', 'style', 'noscript'];
 // Pseudo-selector of `dom.exclude` for comment nodes, which CSS selectors cannot reach.
 const COMMENT_EXCLUSION = 'comment()';
 const COMMENT_NODE = 8;
+const TEXT_NODE = 3;
+// Placeholders an earlier lift left; split out so later patterns never match inside them.
+const LIFTED_PLACEHOLDER = /(<known-issue:[^<>]*>)/;
 // CFML form and URL scopes read names case-insensitively.
 const CSRF_NAMES: ReadonlySet<string> = new Set([CSRF_FIELD_TOKEN, CSRF_FIELD_EXPIRES].map((name) => name.toLowerCase()));
 const CHECKABLE_TYPES: ReadonlySet<string> = new Set(['checkbox', 'radio']);
@@ -129,6 +166,15 @@ const VERBATIM_URL = /^\s*(?:#|javascript:|$)/i;
 const collapse = (s: string): string => s.replace(/\s+/g, ' ').trim();
 const isCsrfName = (name: string | undefined): boolean => name !== undefined && CSRF_NAMES.has(name.toLowerCase());
 const matches = (pattern: RegExp, s: string): boolean => s.search(pattern) >= 0;
+const isTextNode = (node: AnyNode): node is TextNode => node.nodeType === TEXT_NODE;
+// A text location's matches are lifted out of the text rather than masking the fields that hold them.
+const isTextLocation = (location: DomLocation): boolean =>
+  location.textPattern !== undefined && location.attributes === undefined;
+
+/** Placeholder that known-issue mask `id` leaves in model text where it lifted a text component out. */
+export function maskedTextPlaceholder(id: KnownIssueId): string {
+  return `<known-issue:${id}>`;
+}
 
 function decodeName(raw: string): string {
   try {
@@ -319,9 +365,18 @@ function controlsOf(ctx: Context, index: FormIndex): DomControl[] {
   const tokenInputs = ctx.rules.tokens.htmlInputs.join(',');
   return select(ctx, rule.selector).map((el, i) => {
     const path = `controls[${i}]`;
-    produce(ctx, el, { path, valuePath: `${path}.value`, object: true, carriesText: false });
-    const sel = ctx.$(el);
+    const valuePath = `${path}.value`;
     const tag = el.tagName;
+    // A textarea's value is its text.
+    const textarea = tag === 'textarea';
+    produce(ctx, el, {
+      path,
+      valuePath,
+      ...(textarea ? { textPath: valuePath } : {}),
+      object: true,
+      carriesText: textarea,
+    });
+    const sel = ctx.$(el);
     const type = tag === 'select' || tag === 'textarea' ? tag : (sel.attr('type') || 'text').toLowerCase();
     const rawName = sel.attr('name');
     const control: DomControl = { type, disabled: sel.is('[disabled]') };
@@ -344,9 +399,12 @@ function controlsOf(ctx: Context, index: FormIndex): DomControl[] {
 
 function buttonsOf(ctx: Context): string[] {
   return select(ctx, ctx.rules.dom.extract.buttons.selector).map((el, i) => {
-    produce(ctx, el, { path: `buttons[${i}]`, object: false, carriesText: true });
+    const path = `buttons[${i}]`;
+    const input = el.tagName === 'input';
+    // An input button's text is its value attribute.
+    produce(ctx, el, { path, ...(input ? { valuePath: path } : {}), object: false, carriesText: true });
     const sel = ctx.$(el);
-    return textOf(ctx, el.tagName === 'input' ? (sel.attr('value') ?? '') : sel.text());
+    return textOf(ctx, input ? (sel.attr('value') ?? '') : sel.text());
   });
 }
 
@@ -417,65 +475,173 @@ function alertsOf(ctx: Context): DomAlert[] {
   });
 }
 
-// Nearest ancestor entries that hold the element's text, for elements that produce no entry of their own.
-function textCarriersOf(ctx: Context, el: Element): Produced[] {
-  for (const parent of ctx.$(el).parents().toArray()) {
+// Nearest ancestor entries that hold the node's text, for nodes that produce no entry of their own.
+function textCarriersOf(ctx: Context, node: AnyNode): Produced[] {
+  for (const parent of ctx.$(node).parents().toArray()) {
     const carriers = (ctx.produced.get(parent) ?? []).filter((entry) => entry.carriesText);
     if (carriers.length > 0) return carriers;
   }
   return [];
 }
 
-/**
- * Model paths one masked element covers: its listed `attributes` of object entries; else, with a `textPattern`, the
- * value or text field the pattern matched in the raw element (nothing when it matches neither); else whole entries.
- */
-function locationPaths(ctx: Context, el: Element, location: DomLocation): string[] {
+// A text location hits on the element's own `value` attribute only; others on its text or raw value, as served.
+function targetOf(ctx: Context, el: Element, location: DomLocation): Target {
   const pattern = location.textPattern;
+  if (pattern === undefined) return { el, textHit: false, valueHit: false };
+  if (isTextLocation(location)) {
+    const value = el.attribs['value'];
+    return { el, textHit: false, valueHit: value !== undefined && matches(pattern, value) };
+  }
   const raw = rawValueOf(ctx, el);
-  const textHit = pattern !== undefined && matches(pattern, collapse(ctx.$(el).text()));
-  const valueHit = pattern !== undefined && raw !== undefined && matches(pattern, raw);
-  if (pattern !== undefined && !textHit && !valueHit) return [];
-  const entries = ctx.produced.get(el) ?? textCarriersOf(ctx, el);
+  return {
+    el,
+    textHit: matches(pattern, collapse(ctx.$(el).text())),
+    valueHit: raw !== undefined && matches(pattern, raw),
+  };
+}
+
+// Masks limited to other compare kinds do not apply to the DOM model.
+function selectLocations(ctx: Context, masks: readonly KnownIssueMask[]): Selected[] {
+  return masks
+    .filter((mask) => mask.compareKinds === undefined || mask.compareKinds.includes('dom'))
+    .flatMap((mask) =>
+      mask.locations.flatMap((location): Selected[] => {
+        if (location.kind !== 'dom') return [];
+        const targets = select(ctx, location.selector).map((el) => targetOf(ctx, el, location));
+        return [{ mask: mask.id, location, targets }];
+      }),
+    );
+}
+
+function textNodesOf(node: AnyNode, out: TextNode[] = []): TextNode[] {
+  if (isTextNode(node)) out.push(node);
+  else if ('children' in node) for (const child of node.children) textNodesOf(child, out);
+  return out;
+}
+
+// `[start, end)` offsets of the non-empty matches of `global` in `text`, outside earlier lifts' placeholders.
+function matchSpans(text: string, global: RegExp): [number, number][] {
+  const spans: [number, number][] = [];
+  let offset = 0;
+  text.split(LIFTED_PLACEHOLDER).forEach((part, i) => {
+    if (i % 2 === 0) {
+      for (const { 0: match, index } of part.matchAll(global)) {
+        if (match !== '') spans.push([offset + index, offset + index + match.length]);
+      }
+    }
+    offset += part.length;
+  });
+  return spans;
+}
+
+/**
+ * Replaces each non-empty match of the text locations' patterns in their targets' text with the mask placeholder.
+ * A target's text is its descendant text nodes joined, as `.text()` reads it; a match spanning nodes leaves the
+ * placeholder in the node where it starts and is removed from the others.
+ */
+function liftText(selected: readonly Selected[]): Lifted[] {
+  const lifted: Lifted[] = [];
+  for (const { mask, location, targets } of selected) {
+    const pattern = location.textPattern;
+    if (pattern === undefined || !isTextLocation(location)) continue;
+    const global = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`);
+    const placeholder = maskedTextPlaceholder(mask);
+    for (const { el } of targets) {
+      const nodes = textNodesOf(el);
+      const text = nodes.map((node) => node.data).join('');
+      const spans = matchSpans(text, global);
+      if (spans.length === 0) continue;
+      let nodeStart = 0;
+      for (const node of nodes) {
+        const data = node.data;
+        const nodeEnd = nodeStart + data.length;
+        let kept = '';
+        let at = 0;
+        for (const [start, end] of spans) {
+          if (end <= nodeStart || start >= nodeEnd) continue;
+          kept += data.slice(at, Math.max(start - nodeStart, 0));
+          if (start >= nodeStart) {
+            kept += placeholder;
+            lifted.push({ mask, parent: node.parent ?? el, raw: text.slice(start, end) });
+          }
+          at = Math.min(end, nodeEnd) - nodeStart;
+        }
+        node.data = kept + data.slice(at);
+        nodeStart = nodeEnd;
+      }
+    }
+  }
+  return lifted;
+}
+
+/**
+ * One entry per model text field carrying each lifted component: the parent's own text-carrying entries, else its
+ * nearest carrying ancestors. A component no model text carries is dropped.
+ */
+function maskedTextOf(ctx: Context, lifted: readonly Lifted[]): DomMaskedText[] {
+  return lifted.flatMap(({ mask, parent, raw }) => {
+    const own = (ctx.produced.get(parent) ?? []).filter((entry) => entry.carriesText);
+    const carriers = own.length > 0 ? own : textCarriersOf(ctx, parent);
+    const paths = [...new Set(carriers.map((entry) => entry.textPath ?? entry.path))];
+    if (paths.length === 0) return [];
+    const text = textOf(ctx, raw);
+    return paths.map((path) => ({ mask, path, text }));
+  });
+}
+
+/**
+ * Model paths one target covers. A text location covers the value fields of a target whose own `value` attribute
+ * it matches, its text matches being lifted into `maskedText`. Other locations cover the listed `attributes` of
+ * object entries, else whole entries; with a `textPattern`, only when it matched the target's text or value.
+ */
+function locationPaths(ctx: Context, { el, textHit, valueHit }: Target, location: DomLocation): string[] {
+  const own = ctx.produced.get(el);
+  if (isTextLocation(location)) {
+    return valueHit ? (own ?? []).flatMap((entry) => (entry.valuePath === undefined ? [] : [entry.valuePath])) : [];
+  }
+  if (location.textPattern !== undefined && !textHit && !valueHit) return [];
+  const entries = own ?? textCarriersOf(ctx, el);
   return entries.flatMap((entry) => {
     if (location.attributes !== undefined) {
       return entry.object ? location.attributes.map((attribute) => `${entry.path}.${attribute}`) : [];
     }
-    if (pattern === undefined) return [entry.path];
-    const fields = [valueHit ? entry.valuePath : undefined, textHit ? entry.textPath : undefined].filter(
-      (field): field is string => field !== undefined,
-    );
-    return fields.length > 0 ? fields : [entry.path];
+    return [entry.path];
   });
 }
 
-// Masks limited to other compare kinds do not apply to the DOM model; the first mask to claim a path keeps it.
-function maskedPathsOf(ctx: Context, masks: readonly KnownIssueMask[]): Record<string, KnownIssueId> {
+// Location paths, then `maskedText[k]` under the mask that lifted it; the first mask to claim a path keeps it.
+function maskedPathsOf(
+  ctx: Context,
+  selected: readonly Selected[],
+  maskedText: readonly DomMaskedText[],
+): Record<string, KnownIssueId> {
   const masked: Record<string, KnownIssueId> = {};
-  for (const mask of masks) {
-    if (mask.compareKinds !== undefined && !mask.compareKinds.includes('dom')) continue;
-    for (const location of mask.locations) {
-      if (location.kind !== 'dom') continue;
-      for (const el of select(ctx, location.selector)) {
-        for (const path of locationPaths(ctx, el, location)) {
-          if (!Object.hasOwn(masked, path)) masked[path] = mask.id;
-        }
-      }
+  const claim = (path: string, id: KnownIssueId): void => {
+    if (!Object.hasOwn(masked, path)) masked[path] = id;
+  };
+  for (const { mask, location, targets } of selected) {
+    for (const target of targets) {
+      for (const path of locationPaths(ctx, target, location)) claim(path, mask);
     }
   }
+  maskedText.forEach((entry, k) => claim(`maskedText[${k}]`, entry.mask));
   return masked;
 }
 
 /**
  * DOM model of admin page `html`, after removing `script`, `style`, `noscript` and the `dom.exclude` selectors, with
- * the model paths the step's DOM mask locations resolve to. Texts are whitespace-collapsed and go through
- * {@link normaliseText}; control values through {@link normaliseValue}, CSRF values becoming the token placeholder.
- * Ordinals are assigned in model order (title, headings, labels, forms, controls, buttons, links, tables, alerts).
+ * the model paths the step's DOM mask locations resolve to. Text a DOM mask's `textPattern` matches (without
+ * `attributes`) is lifted into `maskedText`, leaving {@link maskedTextPlaceholder} in the model text. Texts are
+ * whitespace-collapsed and go through {@link normaliseText}; control values through {@link normaliseValue}, CSRF
+ * values becoming the token placeholder. Ordinals are assigned in model order (title, headings, labels, forms,
+ * controls, buttons, links, tables, alerts, maskedText).
  */
 export function domModel(html: string, opts: DomModelOptions): DomModelResult {
   const $ = cheerio.load(html);
   removeExcluded($, opts.rules);
   const ctx: Context = { $, state: opts.state, rules: opts.rules, produced: new Map() };
+  const selected = selectLocations(ctx, opts.masks ?? []);
+  const lifted = liftText(selected);
   const title = titleOf(ctx);
   const headings = headingsOf(ctx);
   const labels = labelsOf(ctx);
@@ -485,8 +651,9 @@ export function domModel(html: string, opts: DomModelOptions): DomModelResult {
   const links = linksOf(ctx);
   const tables = tablesOf(ctx);
   const alerts = alertsOf(ctx);
+  const maskedText = maskedTextOf(ctx, lifted);
   return {
-    model: { title, headings, labels, forms: formIndex.forms, controls, buttons, links, tables, alerts },
-    maskedPaths: maskedPathsOf(ctx, opts.masks ?? []),
+    model: { title, headings, labels, forms: formIndex.forms, controls, buttons, links, tables, alerts, maskedText },
+    maskedPaths: maskedPathsOf(ctx, selected, maskedText),
   };
 }

@@ -305,6 +305,8 @@ export interface UserSite {
   siteId: string;
   poolTenantId: string;
   isPublic: CfNumeric;
+  /** The posted pool switch the rule applied; null without one or without a posted `siteid`. */
+  poolSwitch: 'public' | 'private' | null;
 }
 
 const SITE_ID_REQUIRED = "The attribute 'SITEID' is required when saving a user.";
@@ -332,7 +334,7 @@ export async function resolveUserSite(
   const isPublic = numericValue(current.ispublic, 'ispublic');
   if (javaTrim(simpleText(data.get('siteid'), 'siteid')) === '') {
     if (javaTrim(currentSite) === '') throw new Error(SITE_ID_REQUIRED);
-    return { siteId: currentSite, poolTenantId: tenantIdForSite(javaTrim(currentSite)), isPublic };
+    return { siteId: currentSite, poolTenantId: tenantIdForSite(javaTrim(currentSite)), isPublic, poolSwitch: null };
   }
   // One registry read: the entry carries the pool tenants poolTenantFor would read.
   const entry = await registryEntryForTenant(registry, tid);
@@ -342,16 +344,16 @@ export async function resolveUserSite(
   const flag = (name: string): boolean => cfEq(javaTrim(simpleText(data.get(name), name)), '1');
   if (flag('switchtopublic')) {
     const pool = userPool(entry, true);
-    return { siteId: pool.siteId, poolTenantId: pool.tenantId, isPublic: 1 };
+    return { siteId: pool.siteId, poolTenantId: pool.tenantId, isPublic: 1, poolSwitch: 'public' };
   }
   if (flag('switchtoprivate')) {
     const pool = userPool(entry, false);
-    return { siteId: pool.siteId, poolTenantId: pool.tenantId, isPublic: 0 };
+    return { siteId: pool.siteId, poolTenantId: pool.tenantId, isPublic: 0, poolSwitch: 'private' };
   }
   const pool = userPool(entry, !(typeof isPublic === 'number' && isPublic === 0));
   // setSiteID keeps the current id when the pool id differs only in case [legacy: core/mura/bean/beanExtendable.cfc:131-137].
   const siteId = pool.siteId !== '' && !cfEq(javaTrim(pool.siteId), currentSite) ? javaTrim(pool.siteId) : currentSite;
-  return { siteId, poolTenantId: pool.tenantId, isPublic };
+  return { siteId, poolTenantId: pool.tenantId, isPublic, poolSwitch: null };
 }
 
 /** `userBean.getFullName`: trimmed first and last name for a user, the group name otherwise. */
@@ -446,8 +448,20 @@ function personColumnValue(column: PersonColumn, value: unknown): unknown {
   }
 }
 
-/** The values of a Type=2 user save split into people's person columns and identity's `:prepare` account change. */
-export function splitUserValues(values: UserValues): { person: PersonWrite; account: AccountWrite } {
+/** `userManager.update`'s membership arguments [legacy: core/mura/user/userManager.cfc:404-408]; `ceditprofile.update` passes `updateGroups` false [legacy: admin/core/controllers/ceditprofile.cfc:134]. */
+export interface AccountControls {
+  updateGroups?: boolean;
+  originID?: string;
+  /** `resolveUserSite`'s applied pool switch. */
+  poolSwitch?: UserSite['poolSwitch'];
+}
+
+/**
+ * The values of a Type=2 user save split into people's person columns and identity's `:prepare` account change. `values`
+ * are as `userBean.set` leaves them, before `applySuperUserRule`: identity applies the S2 rule from the verified token,
+ * and `isPublic` must stay the visibility that chose the user pool.
+ */
+export function splitUserValues(values: UserValues, controls: AccountControls = {}): { person: PersonWrite; account: AccountWrite } {
   if (sqlInteger(values.type) !== 2) throw new TypeError('splitUserValues splits Type=2 users only');
   const person: Record<string, unknown> = {};
   for (const column of PERSON_COLUMNS) person[column] = personColumnValue(column, values[column]);
@@ -459,9 +473,11 @@ export function splitUserValues(values: UserValues): { person: PersonWrite; acco
     Perm: sqlInteger(values.perm),
     InActive: sqlInteger(values.inactive),
     isPublic: sqlInteger(values.ispublic),
-    // userBean has no Admin property, so a save carries 0 unless the values hold one; tablist is not part of the contract.
+    // userBean has no Admin property, so a save carries 0 unless the values hold one.
     Admin: values.admin === undefined ? 0 : sqlInteger(values.admin),
     remoteID: simpleText(values.remoteid, 'remoteid'),
+    // userDAO writes TabList on create and update; identity stores '' as NULL [legacy: core/mura/user/userDAO.cfc:307,453].
+    tablist: simpleText(values.tablist, 'tablist'),
     Type: 2,
   };
   // userDAO.update writes Password and passwordCreated only for a posted password [legacy: core/mura/user/userDAO.cfc:417-420].
@@ -471,10 +487,16 @@ export function splitUserValues(values: UserValues): { person: PersonWrite; acco
   const groupIds = simpleText(values.groupid, 'groupid')
     .split(',')
     .filter((id) => id !== '');
-  return {
-    person: person as PersonWrite,
-    account: { siteId: simpleText(values.siteid, 'siteid'), account: fields, groupIds },
+  const account: AccountWrite = {
+    siteId: simpleText(values.siteid, 'siteid'),
+    account: fields,
+    groupIds,
+    switchToPublic: controls.poolSwitch === 'public',
+    switchToPrivate: controls.poolSwitch === 'private',
   };
+  if (controls.updateGroups !== undefined) account.updateGroups = controls.updateGroups;
+  if (controls.originID !== undefined) account.originID = controls.originID;
+  return { person: person as PersonWrite, account };
 }
 
 /** The actor `lastUpdateInfo` stamps: the logged-in session user from verified claims and identity's names; undefined when anonymous. */

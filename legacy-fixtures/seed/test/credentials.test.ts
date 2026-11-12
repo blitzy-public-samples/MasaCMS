@@ -55,7 +55,7 @@ beforeAll(async () => {
 describe('generateCredentials', () => {
   it('binds the credentials to the dataset', () => {
     const creds = generateCredentials(dataset, config, { randomBytes: counterBytes() });
-    expect(Object.keys(creds)).toEqual(['sourceSha', 'digest', 'users', 'roles', 'oauthClients']);
+    expect(Object.keys(creds)).toEqual(['sourceSha', 'digest', 'users', 'roles', 'oauthClients', 'generated']);
     expect([creds.sourceSha, creds.digest]).toEqual([dataset.sourceSha, dataset.digest]);
   });
 
@@ -67,7 +67,28 @@ describe('generateCredentials', () => {
     expect(Object.values(creds.users).flatMap((site) => Object.keys(site))).toEqual(users.map((row) => row.username));
     for (const user of users) expect(passwordOf(creds, user)).toMatch(PASSWORD);
     expect(new Set(Object.values(creds.users).flatMap((site) => Object.values(site))).size).toBe(users.length);
-    expect(sizes).toEqual([...users.map(() => 18), ...dataset.masa.oauthClients.map(() => 32)]);
+    expect(sizes).toEqual([
+      ...users.map(() => 18),
+      ...dataset.masa.oauthClients.map(() => 32),
+      ...config.scenarioPasswords.map(() => 18),
+    ]);
+  });
+
+  it.each<[string, () => readonly string[]]>([
+    ['the committed scenarioPasswords', () => config.scenarioPasswords],
+    ['no scenarioPasswords', () => []],
+    ['names that are Object.prototype keys', () => ['__proto__', 'constructor', 'toString']],
+  ])('gives each of %s its own password in the seeded-user form', (_label, names) => {
+    const scenarioPasswords = names();
+    const creds = generateCredentials(dataset, { ...config, scenarioPasswords }, { randomBytes: counterBytes() });
+    expect(Object.keys(creds.generated)).toEqual(scenarioPasswords);
+    for (const name of scenarioPasswords) {
+      expect(Object.hasOwn(creds.generated, name)).toBe(true);
+      expect(creds.generated[name]).toMatch(PASSWORD);
+    }
+    const userPasswords = new Set(Object.values(creds.users).flatMap((site) => Object.values(site)));
+    expect(new Set(Object.values(creds.generated)).size).toBe(scenarioPasswords.length);
+    expect(Object.values(creds.generated).filter((value) => userPasswords.has(value))).toEqual([]);
   });
 
   it('names each authorisation-matrix subject by a user of the right site', () => {
@@ -126,6 +147,11 @@ describe('generateCredentials', () => {
       expect(passwordOf(second, user)).not.toBe(passwordOf(first, user));
     }
     for (const [clientID, secret] of Object.entries(first.oauthClients)) expect(second.oauthClients[clientID]).not.toBe(secret);
+    expect(Object.keys(first.generated)).toEqual(config.scenarioPasswords);
+    for (const [name, value] of Object.entries(first.generated)) {
+      expect(value).toMatch(PASSWORD);
+      expect(second.generated[name]).not.toBe(value);
+    }
   });
 
   it('rejects a username listed twice in one site', () => {

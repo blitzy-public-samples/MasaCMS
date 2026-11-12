@@ -172,17 +172,17 @@ describe('masksFor', () => {
     ]);
   });
 
-  it('adds the status and body parts of a step flagged with header-search-404 in its declared scenario', () => {
+  it('scopes header-search-404 to the search form action, adding status and body only on its flagged step', () => {
     const step = { name: 'search', knownIssue: 'header-search-404' };
-    const kinds = (mask: KnownIssueMask | undefined): string[] =>
-      (mask?.locations ?? []).map((location) => location.kind);
-    expect(kinds(maskFor('header-search-404', 'GS-CO-06', 'admin:carch.list', rules, step))).toStrictEqual([
-      'dom',
-      'dom',
-      'status',
-      'body',
+    const action: KnownIssueMask['locations'] = [
+      { kind: 'dom', selector: 'form#globalSearch', attributes: ['action'] },
+    ];
+    expect(maskFor('header-search-404', 'GS-CO-06', 'admin:carch.list', rules, step)?.locations).toStrictEqual([
+      ...action,
+      { kind: 'status' },
+      { kind: 'body' },
     ]);
-    expect(kinds(maskFor('header-search-404', 'GS-CO-06', 'admin:carch.list', rules))).toStrictEqual(['dom', 'dom']);
+    expect(maskFor('header-search-404', 'GS-CO-06', 'admin:carch.list', rules)?.locations).toStrictEqual(action);
   });
 
   it.each<[string, string | RouteKeyResult]>([

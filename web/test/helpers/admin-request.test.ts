@@ -166,6 +166,19 @@ describe('session pool markers', () => {
   });
 });
 
+describe('reverse permission lookup', () => {
+  it.each<[WebTestSubjectKey, boolean]>([
+    ['anonymous', false],
+    ['admin', true],
+    ['siteAdmin', true],
+    ['qaEditor', false],
+  ])('answers %s by default as the real builder does', async (user, granted) => {
+    const built = await buildTestAdminRequest({ circuit: 'cusers', action: 'loadExtendedAttributes', user });
+    await expect(built.reversePermLookUp()).resolves.toBe(granted);
+    await expect(makeAdminRequest({}, user).reversePermLookUp()).resolves.toBe(granted);
+  });
+});
+
 describe('stored admin state', () => {
   const moduleTopIds = { m00000000000000000000000000000000000: 'C1' };
   const muraValues = { FNAME: 'Adele', objectInstanceId: 'I1' };

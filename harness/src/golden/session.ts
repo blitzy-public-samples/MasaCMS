@@ -1,6 +1,5 @@
-import { randomBytes } from 'node:crypto';
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { load, type CheerioAPI } from 'cheerio';
 import {
   CSRF_FIELD_EXPIRES,
@@ -30,9 +29,6 @@ export const DEFAULT_SITE = 'default';
 
 /** Credential file written by `legacy-fixtures/seed` under `${OPT2_STATE_DIR}/secrets/`. */
 export const SEED_CREDENTIALS_FILE = 'seed-credentials.json';
-
-/** Generated golden passwords under `${OPT2_STATE_DIR}/secrets/`, shared by capture and replay of one run. */
-export const GENERATED_SECRETS_FILE = 'golden-generated.json';
 
 /** Committed seed configuration holding `reserved.rehearsal`. */
 export const SEED_CONFIG_PATH: string = repoPath('legacy-fixtures', 'seed', 'seed.config.json');
@@ -65,9 +61,6 @@ const APP_RELOAD_KEY_VARIABLE = 'MURA_APPRELOADKEY';
 /** application.appReloadKey when no key is configured (onApplicationStart_include.cfm:80). */
 const DEFAULT_APP_RELOAD_KEY = 'appreload';
 const SECRET_FORMS = 'admin, qa_editor, appreload, seed:<username>, oauth:<clientId> or generated:<name>';
-const GENERATED_BYTES = 18;
-// Guarantees a digit, a lower-case and an upper-case letter, as seeded passwords do.
-const GENERATED_SUFFIX = 'a1A';
 const PUBLIC_LOGIN_FORM = 'form:has(input[name="password"])';
 const FAILED_STATUS = /[?&]status=failed(?:&|$)/i;
 
@@ -99,7 +92,7 @@ export interface ScenarioContextOptions {
   seed?: SeedStore;
 }
 
-/** Secret and seeded-username lookups; values come from the environment and `${OPT2_STATE_DIR}/secrets`. */
+/** Secret and seeded-username lookups; values come from the environment and {@link SEED_CREDENTIALS_FILE}. */
 export interface SecretStore {
   /** Value of `${secret:<name>}`; throws MissingSecretError when its source holds no unique value. */
   secret(name: string): string;
@@ -298,16 +291,6 @@ function readJsonObject(file: string, what: string, secret: boolean): Record<str
   return record;
 }
 
-/** Writes `body` to `file` owner-only (file 0600, directory 0700). */
-function writeSecretFile(file: string, body: Record<string, unknown>): void {
-  const dir = dirname(file);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  chmodSync(dir, 0o700);
-  // `mode` applies only when the file is created, so an existing file is tightened explicitly.
-  writeFileSync(file, `${JSON.stringify(body, null, 2)}\n`, { mode: 0o600 });
-  chmodSync(file, 0o600);
-}
-
 /** Legacy reload parameter: `MURA_APPRELOADKEY` when set and non-empty, else Masa's default `appreload`. */
 export function appReloadKey(env: EnvLike = process.env): string {
   return envValue(env, APP_RELOAD_KEY_VARIABLE) ?? DEFAULT_APP_RELOAD_KEY;
@@ -316,8 +299,7 @@ export function appReloadKey(env: EnvLike = process.env): string {
 /**
  * Secret store over `env` and `seed-credentials.json`, read once on first use. `appreload` is {@link appReloadKey},
  * listed by `values()` only when configured; `seed:<username>` needs one distinct password across sites;
- * `generated:<name>` falls back to {@link GENERATED_SECRETS_FILE}, created on first use so capture and replay of
- * one run post the same value.
+ * `oauth:<clientId>` and `generated:<name>` read the file's `oauthClients` and `generated` sections.
  */
 export function loadSecretStore(env: EnvLike = process.env): SecretStore {
   let credentials: Record<string, unknown> | null | undefined;
@@ -345,21 +327,9 @@ export function loadSecretStore(env: EnvLike = process.env): SecretStore {
     return only;
   };
 
-  const oauthSecret = (clientId: string, placeholder: string): string => {
-    const value = ownString(section('oauthClients'), clientId);
+  const credentialSecret = (name: 'oauthClients' | 'generated', key: string, placeholder: string): string => {
+    const value = ownString(section(name), key);
     if (value === undefined) throw new MissingSecretError(placeholder, credentialsFile());
-    return value;
-  };
-
-  const generated = (name: string): string => {
-    const preset = ownString(section('generated'), name);
-    if (preset !== undefined) return preset;
-    const file = join(secretsDir(env), GENERATED_SECRETS_FILE);
-    const existing = readJsonObject(file, 'generated golden secrets', true) ?? {};
-    const known = ownString(existing, name);
-    if (known !== undefined) return known;
-    const value = `${randomBytes(GENERATED_BYTES).toString('base64url')}${GENERATED_SUFFIX}`;
-    writeSecretFile(file, { ...existing, [name]: value });
     return value;
   };
 
@@ -374,9 +344,9 @@ export function loadSecretStore(env: EnvLike = process.env): SecretStore {
         case 'seed':
           return seedPassword(key, placeholder);
         case 'oauth':
-          return oauthSecret(key, placeholder);
+          return credentialSecret('oauthClients', key, placeholder);
         case 'generated':
-          return generated(key);
+          return credentialSecret('generated', key, placeholder);
         default:
           break;
       }
@@ -837,12 +807,16 @@ export async function adminLogin(s: HttpSession, credentials: LoginCredentials):
   return { result, ok };
 }
 
+/** {@link formTokensFrom} of page `url`, fetched in session `s`. */
+export async function fetchFormTokens(s: HttpSession, url: string, selector = 'form'): Promise<FormTokens> {
+  return formTokensFrom(s, await s.get(url), selector);
+}
+
 /**
- * CSRF pair, other hidden fields, action and method of the first `selector` match on page `url` that holds a
+ * CSRF pair, other hidden fields, action and method of the first `selector` match on `page` that holds a
  * `csrf_token` field. Throws GoldenConfigError when the page has none.
  */
-export async function fetchFormTokens(s: HttpSession, url: string, selector = 'form'): Promise<FormTokens> {
-  const page = await s.get(url);
+export function formTokensFrom(s: HttpSession, page: HttpResult, selector = 'form'): FormTokens {
   const $ = load(page.text);
   const tokenInput = `input[name="${CSRF_FIELD_TOKEN}"]`;
   const form = $(selector)

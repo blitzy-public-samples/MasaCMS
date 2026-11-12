@@ -56,8 +56,16 @@ export type DeepPartial<T> = unknown extends T
     ? T
     : { readonly [K in keyof T]?: DeepPartial<T[K]> };
 
-/** Members `buildAdminRequest` computes from the claims and the action. */
-type ComputedKey = 'action' | 'roles' | 'isLoggedIn' | 'isS2' | 'isSiteAdmin' | 'isPrivateUser' | 'modulePerm';
+/** Members `buildAdminRequest` computes from the claims, the action and identity. */
+type ComputedKey =
+  | 'action'
+  | 'roles'
+  | 'isLoggedIn'
+  | 'isS2'
+  | 'isSiteAdmin'
+  | 'isPrivateUser'
+  | 'modulePerm'
+  | 'reversePermLookUp';
 
 /** Session members `buildAdminRequest` computes from the locale and identity's memberships list. */
 type ComputedSessionKey = 'dateKey' | 'dateKeyFormat' | 'localeHasDayParts' | 's2IsPrivate';
@@ -67,6 +75,8 @@ type ComputedSessionKey = 'dateKey' | 'dateKeyFormat' | 'localeHasDayParts' | 's
 /** Overrides of {@link makeAdminRequest}: `circuit`/`item` name the action, `user` overrides the subject's claims. */
 export type AdminRequestPartial = DeepPartial<Omit<AdminRequest, ComputedKey | 'session'>> & {
   readonly session?: DeepPartial<Omit<AdminSessionState, ComputedSessionKey>>;
+  /** Identity's reverse-lookup answer, asked only when neither short-circuit applies; defaults to false. */
+  readonly pooledLookup?: () => Promise<boolean>;
 };
 
 /** Locale `cf2Java` gives for the settings template's `Server` locale. */
@@ -77,6 +87,9 @@ const TEMPLATE_SESSION_HISTORY = 0;
 
 /** Site Manager's `session.moduleid` default (carch `before()`), which the admin landing page sets. */
 const CONTENT_MODULE_ID = '00000000000000000000000000000000000';
+
+/** Users module, whose access grants the reverse lookup without asking identity. */
+const USERS_MODULE_ID = '00000000000000000000000000000000008';
 
 const EDIT_SITE_ACTION = 'core:csettings.editsite';
 const SERVER_NAME = 'localhost';
@@ -104,6 +117,7 @@ const CURRENT_SESSION_ROUTE = routeKey('GET', 'identity', '/v1/sessions/current'
 const SESSION_SITES_ROUTE = routeKey('GET', 'identity', '/v1/sessions/current/sites');
 const ADMIN_STATE_ROUTE = routeKey('GET', 'identity', '/v1/sessions/current/admin-state');
 const SAVE_ADMIN_STATE_ROUTE = routeKey('POST', 'identity', '/v1/sessions/current/admin-state');
+const REVERSE_LOOKUP_ROUTE = routeKey('GET', 'identity', '/v1/permissions/reverse-lookup');
 const shellSiteRoute = (siteId: string): string => routeKey('GET', 'programs-sites', `/v1/sites/${siteId}/shell`);
 const HREF_DOMAINS_ROUTE = routeKey('GET', 'programs-sites', '/v1/href-domains');
 
@@ -187,7 +201,7 @@ export function subjectClaims(
   );
 }
 
-type ClaimFlags = Pick<AdminRequest, Exclude<ComputedKey, 'action'>>;
+type ClaimFlags = Pick<AdminRequest, Exclude<ComputedKey, 'action' | 'reversePermLookUp'>>;
 
 // buildAdminRequest does not export its derivation; buildTestAdminRequest runs the real one for comparison.
 /** Roles, flags and module permission derived from `user` exactly as `buildAdminRequest` derives them. */
@@ -203,6 +217,19 @@ function claimFlags(user: UserClaims | undefined): ClaimFlags {
     isPrivateUser: isS2 || roles.includes(Roles.systemUser),
     modulePerm: (moduleId) =>
       isS2 || isSiteAdmin || (isCoreModuleId(moduleId) && hasAnyRole(roles, [moduleRole(moduleId)])),
+  };
+}
+
+/** `reversePermLookUp` short-circuited and memoised as `buildAdminRequest` does; `pooled` answers for identity. */
+function reverseLookupOf(flags: ClaimFlags, pooled: () => Promise<boolean>): AdminRequest['reversePermLookUp'] {
+  let granted: Promise<boolean> | undefined;
+  return () => {
+    granted ??= !flags.isLoggedIn
+      ? Promise.resolve(false)
+      : flags.modulePerm(USERS_MODULE_ID)
+        ? Promise.resolve(true)
+        : pooled();
+    return granted;
   };
 }
 
@@ -316,6 +343,7 @@ export function makeAdminRequest(
     rc: rcOverrides,
     circuit: requestedCircuit = 'home',
     item: requestedItem = 'redirect',
+    pooledLookup = () => Promise.resolve(false),
     ...overrides
   } = partial;
   const user = subjectClaims(subject, claimOverrides);
@@ -393,6 +421,7 @@ export function makeAdminRequest(
     adminSites: session.siteArray.map(sessionSiteOf),
     user,
     ...flags,
+    reversePermLookUp: reverseLookupOf(flags, pooledLookup),
     cookies: new CookieScope(SET_UP_COOKIES),
     pendingSetCookies: [],
     headers: requestHeaders(),
@@ -515,6 +544,7 @@ export async function buildTestAdminRequest(input: TestAdminRequestInput): Promi
     },
     [SESSION_SITES_ROUTE]: { status: 200, body: { sites: siteArray.map(sessionSiteOf) } },
     [ADMIN_STATE_ROUTE]: { status: 200, body: input.sessionState?.adminState ?? {} },
+    [REVERSE_LOOKUP_ROUTE]: { status: 200, body: { granted: false } },
     [HREF_DOMAINS_ROUTE]: { status: 200, body: TEST_HREF_DOMAINS },
   };
   for (const id of new Set([siteId, user?.site ?? 'default', 'default'])) {

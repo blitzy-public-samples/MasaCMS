@@ -13,6 +13,7 @@ import {
 import { assertResponseMatchesOpenApi, findOperation } from '@opt2/platform/testing';
 import {
   createIdentityClient,
+  type AccountCommitRequest,
   type AccountPrepareRequest,
   type IdentityClient,
 } from '../../src/legacy/identity-client.js';
@@ -107,7 +108,37 @@ describe('roster protocol calls', () => {
     const { result, store } = await inContext(() => identity.commit(USER_ID, OPERATION_ID));
     expect(result).toEqual(COMMITTED);
     expect(requests[0]).toEqual({ service: 'identity', method: 'POST', path: `${OPERATION_BASE}:commit` });
+    expect(requests[0]).not.toHaveProperty('json');
     expect(Object.fromEntries(store.writePositions)).toEqual({ identity: '9007199254740993', people: '4' });
+  });
+
+  it.each<[string, AccountCommitRequest]>([
+    ['an empty request', {}],
+    ['a self-save re-login', { sessionEffects: { reloginSessionId: 'S-1' } }],
+    [
+      'a self-save re-login with the saved person fields',
+      { sessionEffects: { reloginSessionId: 'S-1', person: { fname: 'Jo', lname: 'Doe', email: null, company: '', subtype: 'Default' } } },
+    ],
+  ])('commits with %s as the contract body', async (_case, request) => {
+    const { identity, requests } = identityWith({ status: 200, body: COMMITTED });
+    await expect(identity.commit(USER_ID, OPERATION_ID, request)).resolves.toEqual(COMMITTED);
+    expect(requests).toEqual([{ service: 'identity', method: 'POST', path: `${OPERATION_BASE}:commit`, json: request }]);
+    assertIdentityRequestBody(requests[0]);
+  });
+
+  it('prepares with the tablist, membership controls and pool switches as the contract body', async () => {
+    const change: AccountPrepareRequest = {
+      ...CHANGE,
+      account: { ...CHANGE.account, tablist: 'Basic' },
+      updateGroups: false,
+      originID: 'tenant-a',
+      switchToPublic: true,
+      switchToPrivate: false,
+    };
+    const { identity, requests } = identityWith({ status: 200, body: PREPARED });
+    await identity.prepare(USER_ID, OPERATION_ID, change);
+    expect(requests[0]?.json).toBe(change);
+    assertIdentityRequestBody(requests[0]);
   });
 
   it('commits outside a request context without recording positions', async () => {

@@ -47,7 +47,14 @@ import {
   type SecretStore,
   type SeedStore,
 } from './session.js';
-import { collectSideEffects, resetMailpit, settleHook, type SideEffectDeps, type SideEffects } from './side-effects.js';
+import {
+  collectSideEffects,
+  resetMailpit,
+  resolveSideEffectConfig,
+  settleHook,
+  type SideEffectDeps,
+  type SideEffects,
+} from './side-effects.js';
 import {
   GAP_REASON,
   redact,
@@ -631,8 +638,9 @@ export async function captureScenario(scenario: Scenario, deps: CaptureDeps): Pr
     return null;
   }
 
-  const sideDeps: SideEffectDeps = { ...deps.sideEffects, fetch: deps.fetch };
-  await resetMailpit(env, { fetch: deps.fetch });
+  const config = deps.sideEffects?.config ?? resolveSideEffectConfig(env);
+  const sideDeps: SideEffectDeps = { ...deps.sideEffects, config, fetch: deps.fetch };
+  await resetMailpit(env, { fetch: deps.fetch, config });
   const ctx = createScenarioContext(scenario, {
     origin: 'legacy',
     env,
@@ -730,7 +738,8 @@ export async function main(argv: string[], env: EnvLike = process.env, deps: Mai
   const fixtures = readFixtureStatus(env);
   const secrets = deps.secrets ?? loadSecretStore(env);
   const seed = deps.seed ?? loadSeedStore(env);
-  await resetMailpit(env, { fetch: deps.fetch });
+  const sideEffects = { ...deps.sideEffects, config: deps.sideEffects?.config ?? resolveSideEffectConfig(env) };
+  await resetMailpit(env, { fetch: deps.fetch, config: sideEffects.config });
 
   const counts = { captured: 0, skipped: 0, browser: 0 };
   const gaps: string[] = [];
@@ -745,6 +754,7 @@ export async function main(argv: string[], env: EnvLike = process.env, deps: Mai
         env,
         secrets,
         seed,
+        sideEffects,
       });
       if (captured === null) {
         counts.browser += 1;

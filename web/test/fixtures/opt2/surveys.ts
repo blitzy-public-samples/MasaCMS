@@ -200,7 +200,10 @@ const SINGLE_SITE_V1 = `${SURVEYS_V1}/${SURVEY_IDS.singleSiteSurvey}`;
 const MULTI_SITE_V1 = `${SURVEYS_V1}/${SURVEY_IDS.multiSiteSurvey}`;
 
 export const surveysAnswers = {
-  [`GET ${SURVEYS_V1}`]: { status: 200, body: { data: surveys } satisfies OkBody<'listSurveys'> },
+  [`GET ${SURVEYS_V1}`]: {
+    status: 200,
+    body: { data: surveys, total: surveys.length } satisfies OkBody<'listSurveys'>,
+  },
   [`GET ${SINGLE_SITE_V1}`]: { status: 200, body: { data: singleSiteSurvey } satisfies OkBody<'getSurvey'> },
   [`GET ${MULTI_SITE_V1}`]: { status: 200, body: { data: multiSiteSurvey } satisfies OkBody<'getSurvey'> },
   [`GET ${SINGLE_SITE_V1}/tasks`]: { status: 200, body: { data: [] } satisfies OkBody<'listSurveyTasks'> },
@@ -215,11 +218,17 @@ export const surveysAnswers = {
   },
   [`GET ${SINGLE_SITE_V1}/responses`]: {
     status: 200,
-    body: { data: surveyResponses.singleSite } satisfies OkBody<'listSurveyResponses'>,
+    body: {
+      data: surveyResponses.singleSite,
+      total: surveyResponses.singleSite.length,
+    } satisfies OkBody<'listSurveyResponses'>,
   },
   [`GET ${MULTI_SITE_V1}/responses`]: {
     status: 200,
-    body: { data: surveyResponses.multiSite } satisfies OkBody<'listSurveyResponses'>,
+    body: {
+      data: surveyResponses.multiSite,
+      total: surveyResponses.multiSite.length,
+    } satisfies OkBody<'listSurveyResponses'>,
   },
   [`POST ${MULTI_SITE_V1}/schedule`]: {
     status: 200,

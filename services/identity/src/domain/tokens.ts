@@ -3,16 +3,18 @@ import { applicationDefault, getApps, initializeApp, type App } from 'firebase-a
 import { getAuth } from 'firebase-admin/auth';
 import { SignJWT, exportJWK, type JWK } from 'jose';
 import {
+  ANONYMOUS_PRINCIPAL_UID,
   LOCAL_USER_TOKEN,
   Roles,
   cloudUserTokenSettings,
   loadLocalSigningKeys,
   signLocalServiceToken,
+  untilAborted,
   userClaimsSchema,
   type LocalSigningKeys,
   type UserClaims,
 } from '@opt2/platform/auth';
-import type { BaseEnv, Clock } from '@opt2/platform/service-kit';
+import { SERVICE_CALL_TIMEOUT_MS, ServiceUnavailableError, type BaseEnv, type Clock } from '@opt2/platform/service-kit';
 import {
   registryEntryForTenant,
   tenantForRegisteredSite,
@@ -43,10 +45,10 @@ export interface LocalTokenSignerOptions {
   stateDir: string;
 }
 
-/** Mints Identity Platform ID tokens for a user of one user-pool site. */
+/** Mints Identity Platform ID tokens in a user-pool site's tenant or, for the anonymous principal, at project level. */
 export interface IdentityPlatformAdapter {
-  /** Custom-token sign-in of `uid` in the Identity Platform tenant of `poolSiteId`; `expiresIn` is in seconds. */
-  mintIdToken(poolSiteId: string, uid: string, customClaims: Record<string, unknown>): Promise<{ idToken: string; expiresIn: number }>;
+  /** Custom-token sign-in of `uid` in the tenant of `poolSiteId`, or without a tenant when it is null; `expiresIn` is in seconds. */
+  mintIdToken(poolSiteId: string | null, uid: string, customClaims: Record<string, unknown>): Promise<{ idToken: string; expiresIn: number }>;
 }
 
 /** Options of {@link createFirebaseIdentityPlatformAdapter}; `app` defaults to the default Firebase app with application-default credentials. */
@@ -56,6 +58,8 @@ export interface FirebaseIdentityPlatformOptions {
   tenantIdForPool: (poolSiteId: string) => string;
   fetchImpl?: typeof fetch;
   app?: App;
+  /** Replaces SERVICE_CALL_TIMEOUT_MS in tests. */
+  timeoutMs?: number;
 }
 
 /** Body of `POST /internal/v1/tokens`, the contract's `TokenRequest`. */
@@ -87,7 +91,7 @@ export interface TokenServiceOptions {
 
 /** User tokens, the JWKS that verifies them, and local service tokens. */
 export interface TokenService {
-  /** The session's user token for one site; a site the user may not use yields a token without roles. */
+  /** The session's user token for one site; a site the user may not use yields a token without roles, a session without a signed-in user an anonymous one. */
   mint(request: TokenRequest): Promise<UserTokenResponse>;
   /** The local signer's key set; empty in the cloud, where tokens verify against Google's securetoken keys. */
   jwks(): Promise<Jwks>;
@@ -103,6 +107,16 @@ export const SIGN_IN_WITH_CUSTOM_TOKEN_URL = 'https://identitytoolkit.googleapis
 
 /** Lifetime of an Identity Platform ID token. */
 const CLOUD_USER_TOKEN_LIFETIME_SECONDS = 3600;
+
+/** Service name of Identity Platform in its unavailable errors. */
+const IDENTITY_PLATFORM_SERVICE = 'identity-platform';
+
+/** Answer of `accounts:signInWithCustomToken`, as far as the adapter reads it. */
+interface SignInWithCustomTokenBody {
+  idToken?: unknown;
+  expiresIn?: unknown;
+  error?: { message?: unknown };
+}
 
 /** Issuance of one mode: the claims' issuer, audience and lifetime, and how a token for them is obtained. */
 interface Issuer {
@@ -149,9 +163,20 @@ function defaultFirebaseApp(projectId: string): App {
   return getApps().find((app) => app.name === '[DEFAULT]') ?? initializeApp({ projectId, credential: applicationDefault() });
 }
 
-/** Identity Platform adapter: a tenant-scoped `createCustomToken`, then `accounts:signInWithCustomToken` as the app's service account. */
+/** The JSON object of an exchange's body; an empty object for a non-JSON answer such as a proxy's error page. */
+function signInBody(text: string): SignInWithCustomTokenBody {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return typeof parsed === 'object' && parsed !== null ? (parsed as SignInWithCustomTokenBody) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Identity Platform adapter: `createCustomToken`, then `accounts:signInWithCustomToken` as the app's service account, within one timeout. */
 export function createFirebaseIdentityPlatformAdapter(opts: FirebaseIdentityPlatformOptions): IdentityPlatformAdapter {
   const fetchImpl = opts.fetchImpl ?? fetch;
+  const timeoutMs = opts.timeoutMs ?? SERVICE_CALL_TIMEOUT_MS;
   let app = opts.app;
   return {
     async mintIdToken(poolSiteId, uid, customClaims) {
@@ -160,21 +185,42 @@ export function createFirebaseIdentityPlatformAdapter(opts: FirebaseIdentityPlat
         throw new RangeError(`Custom claims of ${uid} are ${String(size)} bytes; Identity Platform allows ${String(MAX_CUSTOM_CLAIMS_BYTES)}`);
       }
       app ??= defaultFirebaseApp(opts.projectId);
-      const tenantId = opts.tenantIdForPool(poolSiteId);
-      const customToken = await getAuth(app).tenantManager().authForTenant(tenantId).createCustomToken(uid, customClaims);
+      const tenantId = poolSiteId === null ? undefined : opts.tenantIdForPool(poolSiteId);
+      // Signing (IAM signBlob under ADC), credential acquisition, the exchange and its body share one budget.
+      const deadline = AbortSignal.timeout(timeoutMs);
+      const bounded = async <T>(work: Promise<T>): Promise<T> => {
+        try {
+          return await untilAborted(work, deadline);
+        } catch (err) {
+          if (deadline.aborted) throw new ServiceUnavailableError(IDENTITY_PLATFORM_SERVICE, err);
+          throw err;
+        }
+      };
+      const auth = tenantId === undefined ? getAuth(app) : getAuth(app).tenantManager().authForTenant(tenantId);
+      const customToken = await bounded(auth.createCustomToken(uid, customClaims));
       const credential = app.options.credential;
       if (credential === undefined) throw new Error(`Firebase app ${app.name} has no credential for signInWithCustomToken`);
-      const { access_token: accessToken } = await credential.getAccessToken();
-      const response = await fetchImpl(SIGN_IN_WITH_CUSTOM_TOKEN_URL, {
-        method: 'POST',
-        headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ token: customToken, tenantId, returnSecureToken: true }),
-      });
-      const body = (await response.json().catch(() => ({}))) as { idToken?: unknown; expiresIn?: unknown; error?: { message?: unknown } };
+      const { access_token: accessToken } = await bounded(credential.getAccessToken());
+      let response: Response;
+      let text: string;
+      try {
+        response = await fetchImpl(SIGN_IN_WITH_CUSTOM_TOKEN_URL, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ token: customToken, tenantId, returnSecureToken: true }),
+          signal: deadline,
+        });
+        text = await untilAborted(response.text(), deadline);
+      } catch (err) {
+        // A refused, dropped or outlasted exchange, its body included, is unavailability rather than a refusal.
+        throw new ServiceUnavailableError(IDENTITY_PLATFORM_SERVICE, err);
+      }
+      const body = signInBody(text);
       const expiresIn = Number(body.expiresIn);
       if (!response.ok || typeof body.idToken !== 'string' || !Number.isInteger(expiresIn) || expiresIn <= 0) {
         const reason = typeof body.error?.message === 'string' ? ` ${body.error.message}` : '';
-        throw new Error(`signInWithCustomToken failed for tenant ${tenantId}: HTTP ${String(response.status)}${reason}`);
+        const scope = tenantId === undefined ? 'the project' : `tenant ${tenantId}`;
+        throw new Error(`signInWithCustomToken failed for ${scope}: HTTP ${String(response.status)}${reason}`);
       }
       return { idToken: body.idToken, expiresIn };
     },
@@ -187,7 +233,11 @@ function listItems(list: string): string[] {
 }
 
 /** The session's epoch (0 when unknown) and its user's login-time snapshot, absent for a missing, ended or anonymous session. */
-async function signedInSnapshot(db: TenantDb, repo: IdentityRepository, sessionId: string): Promise<{ snapshot?: LoginSnapshot; epoch: number }> {
+export async function signedInSnapshot(
+  db: TenantDb,
+  repo: Pick<IdentityRepository, 'findSession'>,
+  sessionId: string,
+): Promise<{ snapshot?: LoginSnapshot; epoch: number }> {
   // A missing or ended session mints an anonymous token rather than an error, as legacy serves a request without a live session anonymously.
   const located = await locateSession({ db, repo }, sessionId);
   if (located === undefined) return { epoch: 0 };
@@ -198,9 +248,9 @@ async function signedInSnapshot(db: TenantDb, repo: IdentityRepository, sessionI
 }
 
 /** The site's module grants to the snapshot's login-time groups, each joined to its group's current name and visibility. */
-async function moduleGrantsFor(
+export async function moduleGrantsFor(
   db: TenantDb,
-  repo: IdentityRepository,
+  repo: Pick<IdentityRepository, 'moduleGrants' | 'findGroupsByIds'>,
   snapshot: LoginSnapshot,
   entry: TenantRegistryEntry,
 ): Promise<ModuleGroupGrant[]> {
@@ -236,7 +286,7 @@ function localIssuer(signer: TokenSigner): Issuer {
   };
 }
 
-/** Cloud issuance: an Identity Platform ID token for the user in the tenant of their user-pool site. */
+/** Cloud issuance: an Identity Platform ID token in the tenant of the user's pool site, or project-level for the anonymous principal. */
 function cloudIssuer(project: string, platform: IdentityPlatformAdapter): Issuer {
   const { issuer, audience } = cloudUserTokenSettings(project);
   return {
@@ -244,13 +294,13 @@ function cloudIssuer(project: string, platform: IdentityPlatformAdapter): Issuer
     audience,
     lifetimeSeconds: CLOUD_USER_TOKEN_LIFETIME_SECONDS,
     async issue(claims, snapshot) {
-      const poolSiteId = snapshot?.siteid ?? '';
-      // Identity Platform needs a non-empty uid while an anonymous token's sub is ''; a stand-in uid would read as a signed-in user.
-      if (claims.sub === '' || poolSiteId === '') {
-        throw new Error('Identity Platform ID tokens need a signed-in user of a user-pool site');
-      }
+      // Identity Platform sets `sub` to the non-empty custom-token uid, so an anonymous token carries the reserved uid verifiers read as ''.
+      const anonymous = claims.sub === '';
+      const poolSiteId = anonymous ? null : (snapshot?.siteid ?? '');
+      if (poolSiteId === '') throw new Error(`Signed-in user ${claims.sub} has no user-pool site for an Identity Platform tenant`);
       const { sid, tid, site, roles, s2, epoch } = claims;
-      const minted = await platform.mintIdToken(poolSiteId, claims.sub, { sid, tid, site, roles, s2, epoch });
+      const uid = anonymous ? ANONYMOUS_PRINCIPAL_UID : claims.sub;
+      const minted = await platform.mintIdToken(poolSiteId, uid, { sid, tid, site, roles, s2, epoch });
       return { token: minted.idToken, exp: claims.iat + minted.expiresIn };
     },
   };

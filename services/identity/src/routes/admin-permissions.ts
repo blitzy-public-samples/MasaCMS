@@ -1,4 +1,7 @@
-/** Admin permission routes of the `cperm` screens: `getContentPermissions`, `getModulePermissions` and `updateModulePermissions` [legacy: admin/core/controllers/cperm.cfc:78-160]. */
+/**
+ * Admin permission routes: `getContentPermissions`, `getModulePermissions` and `updateModulePermissions` of the `cperm` screens
+ * [legacy: admin/core/controllers/cperm.cfc:78-160], and `getReversePermLookUp` of the cUsers gate.
+ */
 import { AuthDenial, Roles, type Opt2AuthContext, type Opt2RouteConfig, type UserClaims } from '@opt2/platform/auth';
 import { cfEq } from '@opt2/platform/legacy-compat';
 import { legacyParamsOf, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
@@ -7,8 +10,10 @@ import {
   groupPermVerdict,
   permissionsForContent,
   permittedGroups,
+  reversePermLookUp,
   updateModulePermissions,
   type PermissionDeps,
+  type ReversePermDeps,
   type SiteGroupLists,
 } from '../domain/permissions.js';
 import type { components } from '../generated/openapi.js';
@@ -19,8 +24,8 @@ import { validateCsrfForRoute, type CsrfRouteDeps } from './internal-csrf.js';
 
 type Schemas = components['schemas'];
 
-/** The permission and CSRF operations the routes delegate to. */
-export type AdminPermissionRouteDeps = { permissions: PermissionDeps; csrf: CsrfRouteDeps['csrf'] };
+/** The permission, reverse-lookup and CSRF operations the routes delegate to. */
+export type AdminPermissionRouteDeps = { permissions: PermissionDeps; reverseLookup: ReversePermDeps; csrf: CsrfRouteDeps['csrf'] };
 
 type GroupRow = SiteGroupLists['privateGroups'][number];
 
@@ -34,6 +39,9 @@ interface ModuleParams {
 
 // The cPerm before() gate admits members of the site's private-pool Admin group and S2 users [legacy: admin/core/controllers/cperm.cfc:79-81].
 const ROUTE_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', requires: Object.freeze([Roles.s2, Roles.siteAdmin]) });
+
+// The lookup answers for any signed-in session, so the route is public and its handler requires both credentials.
+const LOOKUP_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', public: true });
 
 const SITE_MANAGER_MODULE = '00000000000000000000000000000000000';
 const HOME_CONTENT = '00000000000000000000000000000000001';
@@ -97,7 +105,7 @@ function groupNameOf(group: GroupRow): string {
   return group.groupname ?? '';
 }
 
-/** Registers the `cperm` main and module reads and the module grant save; the auth hooks answer a `siteid` other than the token's site with 403. */
+/** Registers the `cperm` main and module reads, the module grant save and the reverse lookup; the auth hooks answer a `siteid` other than the token's site with 403. */
 export async function registerAdminPermissionRoutes(app: FastifyInstance, deps: AdminPermissionRouteDeps): Promise<void> {
   const { permissions } = deps;
   const csrfDeps: CsrfRouteDeps = { csrf: deps.csrf };
@@ -153,6 +161,17 @@ export async function registerAdminPermissionRoutes(app: FastifyInstance, deps: 
         await updateModulePermissions(permissions, { siteId: user.site, moduleId, groupIds: rcGroupIds(request) });
       }
       return { written, redirect: moduleRedirect(rcModuleId, rcSiteId(request, user)) };
+    },
+  );
+
+  // [legacy: admin/core/controllers/cusers.cfc:106, core/mura/user/userManager.cfc:1050-1086]
+  app.get<{ Reply: Schemas['ReversePermLookUp'] }>(
+    '/v1/permissions/reverse-lookup',
+    { config: { opt2: LOOKUP_AUTH } },
+    async (request) => {
+      const { user, service } = request.opt2Auth;
+      if (user === undefined || service === undefined) throw AuthDenial.unauthenticated('missing-credential');
+      return { granted: await reversePermLookUp(deps.reverseLookup, user) };
     },
   );
 }

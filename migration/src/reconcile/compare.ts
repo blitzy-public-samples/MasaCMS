@@ -1,12 +1,13 @@
-/** Pure reconciliation core: counts, checksums and capped difference lists of legacy against target rows and objects. */
+/** Reconciliation core: counts, checksums and capped difference lists of legacy against target rows and objects. */
 import { Buffer } from 'node:buffer';
 
-import { compareEncodings, decodeRow, sha256Hex, tableChecksum } from '@opt2/platform/migration-kit';
-import type { CanonicalColumn, CanonicalValue, ChecksumEntry } from '@opt2/platform/migration-kit';
+import { compareEncodings, decodeRow, sha256Hex } from '@opt2/platform/migration-kit';
+import type { CanonicalColumn, CanonicalValue } from '@opt2/platform/migration-kit';
 
 import { diffKeyedStreams, diffMultisetStreams } from '../diff/index.js';
 import type { KeyedChange, MultisetChange, RowSource } from '../diff/index.js';
 import type { CanonicalRow } from '../extract/index.js';
+import { SideChecksum } from './checksum.js';
 
 /** Differences kept in one list; the total is always counted in full. */
 export const DIFFERENCE_LIMIT = 100;
@@ -72,6 +73,10 @@ export interface CompareRowsInput {
   legacy: RowSource<CanonicalRow>;
   target: RowSource<CanonicalRow>;
   limit?: number;
+  /** Bytes of keyed-table rows each side's checksum sorts in memory before spilling the run to disk; defaults to 64 MiB. */
+  sortRunBytes?: number;
+  /** Parent of the checksum spill directories; defaults to the OS temporary directory. */
+  spillDir?: string;
 }
 
 /** Accumulates differences, keeping the first `limit` and counting all. */
@@ -103,11 +108,11 @@ function valueText(value: CanonicalValue | undefined): string | null {
   return Buffer.isBuffer(value) ? value.toString('hex') : value;
 }
 
-/** Passes `source` through while recording each row's checksum entry. */
-async function* tap(source: RowSource<CanonicalRow>, keyed: boolean, entries: ChecksumEntry[]): AsyncGenerator<CanonicalRow, void, undefined> {
+/** Passes `source` through, recording each row in `checksum` once the consumer has accepted it and asks for the next. */
+async function* tap(source: RowSource<CanonicalRow>, keyed: boolean, checksum: SideChecksum): AsyncGenerator<CanonicalRow, void, undefined> {
   for await (const row of source) {
-    entries.push(keyed ? { key: row.key, row: row.encoding } : { row: row.encoding });
     yield row;
+    await checksum.add(keyed ? { key: row.key, row: row.encoding } : { row: row.encoding });
   }
 }
 
@@ -145,28 +150,34 @@ function addMultisetChange(change: MultisetChange, out: Collector): void {
 
 /**
  * Diffs legacy (before) against target (after) and measures both sides; keyed tables by key, keyless tables as
- * multisets. Out-of-order input rejects with `DiffOrderError`.
+ * multisets. Out-of-order input rejects with `DiffOrderError`. Keyed checksums may spill sorted runs under `spillDir`,
+ * removed before the call settles.
  */
 export async function compareRows(input: CompareRowsInput): Promise<RowComparison> {
   const out = new Collector(input.limit ?? DIFFERENCE_LIMIT);
-  const legacyEntries: ChecksumEntry[] = [];
-  const targetEntries: ChecksumEntry[] = [];
-  const legacy = tap(input.legacy, input.keyed, legacyEntries);
-  const target = tap(input.target, input.keyed, targetEntries);
-  if (input.keyed) {
-    for await (const change of diffKeyedStreams(legacy, target, { columns: input.columns })) addKeyedChange(change, input.columns, out);
-  } else {
-    for await (const change of diffMultisetStreams(legacy, target)) addMultisetChange(change, out);
+  const options = { keyed: input.keyed, sortRunBytes: input.sortRunBytes, spillDir: input.spillDir };
+  const legacyChecksum = new SideChecksum(options);
+  const targetChecksum = new SideChecksum(options);
+  try {
+    const legacy = tap(input.legacy, input.keyed, legacyChecksum);
+    const target = tap(input.target, input.keyed, targetChecksum);
+    if (input.keyed) {
+      for await (const change of diffKeyedStreams(legacy, target, { columns: input.columns })) addKeyedChange(change, input.columns, out);
+    } else {
+      for await (const change of diffMultisetStreams(legacy, target)) addMultisetChange(change, out);
+    }
+    const legacySum = await legacyChecksum.result();
+    const targetSum = await targetChecksum.result();
+    return {
+      legacyCount: legacySum.count,
+      targetCount: targetSum.count,
+      legacySha256: legacySum.sha256,
+      targetSha256: targetSum.sha256,
+      ...out.result(),
+    };
+  } finally {
+    await Promise.all([legacyChecksum.dispose(), targetChecksum.dispose()]);
   }
-  const legacySum = tableChecksum(legacyEntries);
-  const targetSum = tableChecksum(targetEntries);
-  return {
-    legacyCount: legacySum.count,
-    targetCount: targetSum.count,
-    legacySha256: legacySum.sha256,
-    targetSha256: targetSum.sha256,
-    ...out.result(),
-  };
 }
 
 function compareObjectEntries(a: ObjectEntry, b: ObjectEntry): number {

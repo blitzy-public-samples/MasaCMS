@@ -110,6 +110,18 @@ function schedule(survey: string, version: number, offsets: readonly number[]): 
   };
 }
 
+/** Runs `run` with the process time zone set to `tz`, then restores the previous one. */
+async function inTimeZone<T>(tz: string, run: () => Promise<T>): Promise<T> {
+  const previous = process.env.TZ;
+  process.env.TZ = tz;
+  try {
+    return await run();
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
+}
+
 function envelope(payload: SurveyScheduledPayload, aggregateVersion = payload.scheduleVersion): EventEnvelope<SurveyScheduledPayload> {
   return testEnvelope({
     topic: TOPIC,
@@ -226,6 +238,30 @@ describe.skipIf(!available)('survey schedule consumer and recovery against Postg
         tenantId: TENANT_A.tenantId,
       })),
     );
+  });
+
+  it.each([
+    ['when consumed', false],
+    ['by recovery after a failed queue call', true],
+  ])('queues a launch at a time repeated by daylight saving, and its reminders, from the later offset %s', async (_label, recover) => {
+    const scheduleTimes = await inTimeZone('America/New_York', async () => {
+      port.failCreate = recover;
+      try {
+        expect(await consume(envelope({ ...schedule(survey, 1, [0, 60]), launchAt: '2026-11-01T01:30:00.000' }))).toBe('applied');
+      } finally {
+        port.failCreate = false;
+      }
+      if (recover) {
+        await scheduledTaskRecovery(deps).run(recoveryContext(SCHEDULED_TASK_RECOVERY_AGE_MS + 1));
+      }
+      return port.creates.map((task) => [task.name, task.scheduleTime.toISOString()]).sort();
+    });
+
+    expect(scheduleTimes).toEqual([
+      [`opt2-survey-${survey}-launch-v1`, '2026-11-01T06:30:00.000Z'],
+      [`opt2-survey-${survey}-reminder-1-v1`, '2026-11-01T06:30:00.000Z'],
+      [`opt2-survey-${survey}-reminder-2-v1`, '2026-11-01T07:30:00.000Z'],
+    ]);
   });
 
   it.each<[string, (first: EventEnvelope<SurveyScheduledPayload>) => EventEnvelope<SurveyScheduledPayload>, DestinationResult]>([

@@ -132,6 +132,16 @@ const objectCol = (name: Column<FileObjectRow>): string => `"${name}"`;
 const contentCol = (name: Column<ContentRow>): string => `"${name}"`;
 const extendCol = (name: Column<ExtendDataRow>): string => `"${name}"`;
 
+/** SQL `column = param` as SQL Server's char equality; leakproof, unlike lower(), so its index applies under forced RLS. */
+const idEquals = (tx: TenantTx, column: string, param: string): string =>
+  `(${column} COLLATE ${qualified(tx.schema, 'legacy_char_ci')}) = ${param}::bpchar`;
+
+/** SQL `expr` as SQL Server's case-insensitive collation compares it: trailing spaces dropped, lower-cased. */
+const ci = (expr: string): string => `lower(rtrim(${expr}))`;
+
+/** `ci` of a JavaScript string. */
+const ciKey = (value: string): string => value.replace(/ +$/, '').toLowerCase();
+
 /** The first row `sql` returns over `params`, or null. */
 async function firstRow<R extends QueryResultRow>(tx: TenantTx, sql: string, params: unknown[]): Promise<R | null> {
   const { rows } = await tx.query<R>(sql, params);
@@ -149,7 +159,7 @@ async function readFileColumns<R extends QueryResultRow>(
   const notNull = present === undefined ? '' : ` AND ${fileCol(present)} IS NOT NULL`;
   return firstRow<R>(
     tx,
-    `SELECT ${selectList(columns)} FROM ${qualified(tx.schema, FILE.table)} WHERE ${fileCol('fileid')} = $1${notNull}`,
+    `SELECT ${selectList(columns)} FROM ${qualified(tx.schema, FILE.table)} WHERE ${idEquals(tx, fileCol('fileid'), '$1')}${notNull}`,
     [fileId],
   );
 }
@@ -183,14 +193,14 @@ export function readFileMedium(tx: TenantTx, fileId: string): Promise<ReadFileMe
 export async function listFileMetadata(tx: TenantTx, filter: FileMetadataFilter): Promise<FileMetadataRow[]> {
   await awaitReadable(tx, [UNIT_OF.file_metadata]);
   const params: unknown[] = [filter.siteId];
-  const predicates = [`${metaCol('siteid')} = $1`];
+  const predicates = [`${ci(metaCol('siteid'))} = ${ci('$1::text')}`];
   if (filter.fileId !== undefined) {
     params.push(filter.fileId);
-    predicates.push(`${metaCol('fileid')} = $${params.length}`);
+    predicates.push(idEquals(tx, metaCol('fileid'), `$${params.length}`));
   }
   if (filter.contentHistId !== undefined) {
     params.push(filter.contentHistId);
-    predicates.push(`${metaCol('contenthistid')} = $${params.length}`);
+    predicates.push(idEquals(tx, metaCol('contenthistid'), `$${params.length}`));
   }
   const { rows } = await tx.query<FileMetadataRow>(
     `SELECT ${allColumns(FILE_METADATA)} FROM ${qualified(tx.schema, FILE_METADATA.table)}` +
@@ -209,7 +219,7 @@ export async function findFileObject(tx: TenantTx, fileId: string, variant: stri
   return firstRow<FileObjectRow>(
     tx,
     `SELECT ${allColumns(FILE_OBJECT)} FROM ${qualified(tx.schema, FILE_OBJECT.table)}` +
-      ` WHERE ${objectCol('file_id')} = $1 AND ${objectCol('variant')} = $2 ORDER BY ${objectCol('object_key')} LIMIT 1`,
+      ` WHERE ${idEquals(tx, objectCol('file_id'), '$1')} AND ${objectCol('variant')} = $2 ORDER BY ${objectCol('object_key')} LIMIT 1`,
     [fileId, variant],
   );
 }
@@ -219,7 +229,7 @@ export async function listFileObjects(tx: TenantTx, fileId: string): Promise<Fil
   await awaitReadable(tx, [UNIT_OF.file]);
   const { rows } = await tx.query<FileObjectRow>(
     `SELECT ${allColumns(FILE_OBJECT)} FROM ${qualified(tx.schema, FILE_OBJECT.table)}` +
-      ` WHERE ${objectCol('file_id')} = $1 ORDER BY ${objectCol('variant')}, ${objectCol('object_key')}`,
+      ` WHERE ${idEquals(tx, objectCol('file_id'), '$1')} ORDER BY ${objectCol('variant')}, ${objectCol('object_key')}`,
     [fileId],
   );
   return rows;
@@ -255,7 +265,7 @@ export async function listDeletedFileIds(tx: TenantTx, siteId?: string): Promise
   const from = `SELECT ${fileCol('fileid')} FROM ${qualified(tx.schema, FILE.table)} WHERE ${fileCol('deleted')} = 1`;
   const order = ` ORDER BY ${fileCol('fileid')}`;
   const { rows } = siteId
-    ? await tx.query<Pick<FileRow, 'fileid'>>(`${from} AND ${fileCol('siteid')} = $1${order}`, [siteId])
+    ? await tx.query<Pick<FileRow, 'fileid'>>(`${from} AND ${ci(fileCol('siteid'))} = ${ci('$1::text')}${order}`, [siteId])
     : await tx.query<Pick<FileRow, 'fileid'>>(`${from}${order}`);
   return rows.map((row) => row.fileid);
 }
@@ -275,14 +285,14 @@ export async function fileIdsReferencedInContent(
   }
   await awaitReadable(tx, [UNIT_OF.content, UNIT_OF.extend_data]);
   // cfqueryparam binds an empty list as one empty string, so legacy's NOT IN never meets an empty list.
-  const excluded = excludeBaseIds.length === 0 ? [''] : [...excludeBaseIds];
+  const excluded = excludeBaseIds.length === 0 ? [''] : excludeBaseIds.map(ciKey);
   const { rows } = await tx.query<{ fileid: string }>(
-    `SELECT ${contentCol('fileid')}::text AS "fileid" FROM ${qualified(tx.schema, CONTENT.table)}` +
-      ` WHERE ${contentCol('fileid')} = ANY($1::text[]) AND ${contentCol('contenthistid')} <> ALL($2::text[])` +
-      ` UNION SELECT ${extendCol('stringvalue')} FROM ${qualified(tx.schema, EXTEND_DATA.table)}` +
-      ` WHERE ${extendCol('stringvalue')} = ANY($1::text[]) AND ${extendCol('baseid')} <> ALL($2::text[])`,
-    [wanted, excluded],
+    `SELECT ${ci(contentCol('fileid'))} AS "fileid" FROM ${qualified(tx.schema, CONTENT.table)}` +
+      ` WHERE ${ci(contentCol('fileid'))} = ANY($1::text[]) AND ${ci(contentCol('contenthistid'))} <> ALL($2::text[])` +
+      ` UNION SELECT ${ci(extendCol('stringvalue'))} FROM ${qualified(tx.schema, EXTEND_DATA.table)}` +
+      ` WHERE ${ci(extendCol('stringvalue'))} = ANY($1::text[]) AND ${ci(extendCol('baseid'))} <> ALL($2::text[])`,
+    [[...new Set(wanted.map(ciKey))], excluded],
   );
   const referenced = new Set(rows.map((row) => row.fileid));
-  return wanted.filter((fileId) => referenced.has(fileId));
+  return wanted.filter((fileId) => referenced.has(ciKey(fileId)));
 }

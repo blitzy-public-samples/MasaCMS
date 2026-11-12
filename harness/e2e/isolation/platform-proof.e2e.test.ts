@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
 import { apiUnavailableResponse } from '@opt2/platform/legacy-compat';
-import { MIGRATION_PATH_PREFIX, type PositionResponse } from '@opt2/platform/migration-kit';
+import { MIGRATION_PATH_PREFIX, type PositionResponse, type PublishedEvent } from '@opt2/platform/migration-kit';
 import { TENANT_A, TENANT_B } from '@opt2/platform/testing';
 import {
   SpanKind,
@@ -75,10 +75,16 @@ const TARGET = Object.freeze({
 
 const SUBSCRIPTION = 'stub.stub.note.created.v1';
 const CONSUME_SPAN = `events.consume ${SUBSCRIPTION}`;
+const CONSUMED_PREFIX = `event consumed on ${SUBSCRIPTION}: `;
 const GENERATED_BY = 'harness/e2e/isolation/platform-proof.e2e.test.ts';
 const NOTES_PATH = '/opt2/stub/notes';
 const STATIC_PATH = '/admin/assets/js/admin.min.js';
 const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
+/** `PositiveDigits` of the stub contract. */
+const POSITIVE_DIGITS = /^[1-9][0-9]*$/;
+/** Canonical text of a non-negative `i` value in a migration export row. */
+const CANONICAL_UNSIGNED = /^(0|[1-9][0-9]*)$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Statuses of a denial: no qualifying identity (401) or no qualifying role or site (403). */
 const DENIALS: readonly number[] = [401, 403];
 const LIST_PAGE_SIZE = '1000';
@@ -120,6 +126,7 @@ interface Envelope {
 interface NoteData {
   noteid: string;
   title: string;
+  rowversion: string;
 }
 
 /** `NoteList` of the stub contract. */
@@ -128,19 +135,36 @@ interface NoteListData {
   next: string | null;
 }
 
-/** The tenant-a note the outbox check creates, which the isolation and trace checks reuse. */
-interface SharedNote {
+/** A tenant-a note one check creates for itself; `createdAt` precedes the create by one second. */
+interface CreatedNote {
   noteId: string;
   title: string;
+  rowVersion: number;
   createdAt: string;
   trace: MintedTraceparent;
 }
 
-/** Projection columns a redelivery must leave unchanged. */
+/** Projection columns a redelivery must leave unchanged, parsed from the export's canonical text. */
 interface ProjectionState {
-  apply_count: unknown;
-  last_event_id: unknown;
-  aggregate_version: unknown;
+  apply_count: number;
+  aggregate_version: number;
+  last_event_id: string;
+}
+
+/** One `event consumed on <subscription>` log record of the stub; `outcome` is the delivery's destination result. */
+interface ConsumeRecord {
+  eventId: string;
+  outcome: string;
+}
+
+/** What the stub's migration position reports for one event. */
+interface StubPosition {
+  /** Published note events of every registered tenant. */
+  published: PublishedEvent[];
+  /** Tenants holding an inbox receipt of the event. */
+  receipts: string[];
+  /** Inbox receipts of the note subscription over every registered tenant. */
+  subscription: number;
 }
 
 /** CLIENT spans of one trace by destination; `unresolved` spans name no port or URL. */
@@ -179,7 +203,6 @@ const checks: CheckRecord[] = [];
 let traceOffset = 0;
 let tenantA: SubjectSession | undefined;
 let tenantB: SubjectSession | undefined;
-let sharedNote: SharedNote | undefined;
 
 /**
  * Runs `fn` for the test named `<id>: <title>`; records its evidence as a pass, or its error as a fail and rethrows.
@@ -204,11 +227,23 @@ function gatewayOf(subject: SubjectSession | undefined): HttpSession {
   return subject.session;
 }
 
-function requireNote(): SharedNote {
-  if (sharedNote === undefined) {
-    throw new Error('no tenant-a note: the outbox-pubsub-idempotent-consumer check did not create one');
-  }
-  return sharedNote;
+/** Creates a tenant-a note for `check` through the gateway in a fresh trace and asserts its save envelope. */
+async function createTenantANote(check: CheckId): Promise<CreatedNote> {
+  const createdAt = new Date(Date.now() - 1000).toISOString();
+  const trace = mintTraceparent();
+  const title = `Platform proof note ${check} ${trace.traceId}`;
+  const created = await gatewayOf(tenantA).post(NOTES_PATH, {
+    query: { siteid: TENANT_A.siteId },
+    json: { title, body: `Platform proof evidence of the ${check} check.` },
+    headers: { traceparent: trace.traceparent },
+  });
+  expect(created.status, created.text).toBe(200);
+  const body = created.json<Envelope>();
+  expect(body).toMatchObject({ apiversion: 'v1', method: 'save', data: { title } });
+  const { noteid: noteId, rowversion } = body.data as NoteData;
+  expect(noteId).toMatch(CF_UUID);
+  expect(rowversion, 'created note rowversion').toMatch(POSITIVE_DIGITS);
+  return { noteId, title, rowVersion: Number(rowversion), createdAt, trace };
 }
 
 function headerOf(result: HttpResult, name: string): string | undefined {
@@ -259,15 +294,19 @@ async function awaitSpans(
 }
 
 /** Polls until `selectors` form one parent-linked chain in trace `traceId`; throws with the last problems otherwise. */
-async function awaitContinuity(traceId: string, selectors: SpanSelector[]): Promise<ContinuityResult> {
+async function awaitContinuity(
+  traceId: string,
+  selectors: SpanSelector[],
+  bounds: Required<PollBounds> = TRACE_POLL,
+): Promise<ContinuityResult> {
   const outcome = await pollUntil(
     async () => checkTraceContinuity(spansOf(traceId), { expectedSpanNames: selectors }),
     (result) => result.ok,
-    { poll: TRACE_POLL },
+    { poll: bounds },
   );
   if (!outcome.value.ok) {
     const problems = outcome.value.problems.join('; ');
-    throw new Error(`trace ${traceId} is no connected chain after ${TRACE_POLL.timeoutMs} ms: ${problems}`);
+    throw new Error(`trace ${traceId} is no connected chain after ${bounds.timeoutMs} ms: ${problems}`);
   }
   return outcome.value;
 }
@@ -352,21 +391,94 @@ async function projectionRows(noteId: string, invoker: Invoker): Promise<Record<
   return rows.filter((row) => typeof row.note_id === 'string' && row.note_id.toUpperCase() === wanted);
 }
 
-function projectionState(row: Record<string, unknown> | undefined): ProjectionState {
-  if (row === undefined) throw new Error('no stub.note_projection row to read');
-  return { apply_count: row.apply_count, last_event_id: row.last_event_id, aggregate_version: row.aggregate_version };
+/** `column` of a `stub.note_projection` export row as a number; throws unless it is canonical integer text. */
+function integerColumn(row: Record<string, unknown>, column: 'apply_count' | 'aggregate_version'): number {
+  const value = row[column];
+  if (typeof value !== 'string' || !CANONICAL_UNSIGNED.test(value)) {
+    throw new Error(`stub.note_projection ${column} is not canonical integer text: ${JSON.stringify(value)}`);
+  }
+  return Number(value);
 }
 
-/** Inbox receipts the stub reports for its note subscription, summed over its registered tenants. */
-async function stubInboxCount(invoker: Invoker): Promise<number> {
+/** Parses the idempotency columns of a `stub.note_projection` export row; throws on a missing or malformed one. */
+function projectionState(row: Record<string, unknown> | undefined): ProjectionState {
+  if (row === undefined) throw new Error('no stub.note_projection row to read');
+  const eventId = row.last_event_id;
+  if (typeof eventId !== 'string' || !UUID.test(eventId)) {
+    throw new Error(`stub.note_projection last_event_id is not a UUID: ${JSON.stringify(eventId)}`);
+  }
+  return {
+    apply_count: integerColumn(row, 'apply_count'),
+    aggregate_version: integerColumn(row, 'aggregate_version'),
+    last_event_id: eventId.toLowerCase(),
+  };
+}
+
+/** The stub's consume log records in trace `traceId`, in log order; event ids lower-cased. */
+function consumeRecords(traceId: string): ConsumeRecord[] {
+  const records: ConsumeRecord[] = [];
+  for (const { line } of readCapturedLogLines({ packages: ['stub'] })) {
+    if (!line.includes(traceId)) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isRecord(parsed) || parsed.traceId !== traceId) continue;
+    const { message, eventId } = parsed;
+    if (typeof message !== 'string' || !message.startsWith(CONSUMED_PREFIX) || typeof eventId !== 'string') continue;
+    const summary = message.trimEnd();
+    records.push({ eventId: eventId.toLowerCase(), outcome: summary.slice(summary.search(/\S+$/)) });
+  }
+  return records;
+}
+
+function describeConsumes(records: readonly ConsumeRecord[]): string {
+  return records.map(({ eventId, outcome }) => `${eventId} ${outcome}`).join(', ') || 'none';
+}
+
+function describeTenants(tenantIds: readonly string[]): string {
+  return tenantIds.join(', ') || 'none';
+}
+
+/** Polls {@link consumeRecords} until trace `traceId` has `count` of them; throws naming those seen otherwise. */
+async function awaitConsumeRecords(traceId: string, count: number): Promise<ConsumeRecord[]> {
+  const outcome = await pollUntil(async () => consumeRecords(traceId), (records) => records.length >= count, {
+    poll: DELIVERY_POLL,
+  });
+  if (outcome.timedOut) {
+    const seen = describeConsumes(outcome.value);
+    const bound = DELIVERY_POLL.timeoutMs;
+    throw new Error(`${count} consume records not logged in trace ${traceId} within ${bound} ms; seen: ${seen}`);
+  }
+  return outcome.value;
+}
+
+/** The stub's migration position for `eventId` and its note topic; ids and tenants lower-cased, receipts sorted. */
+async function stubPosition(invoker: Invoker, eventId: string): Promise<StubPosition> {
   const base = serviceUrl('stub');
   const url = `${base}${MIGRATION_PATH_PREFIX}/position`;
   const headers = await invoker.headersFor({ callee: 'stub', url });
-  const result = await createHttpSession({ baseUrl: base }).get(url, { headers });
+  const query = { eventIds: eventId, publishedTopics: STUB_NOTE_TOPIC };
+  const result = await createHttpSession({ baseUrl: base }).get(url, { query, headers });
   if (result.status !== 200) throw new Error(`stub migration position answered ${result.status}: ${result.text}`);
-  const count = result.json<PositionResponse>().inbox?.bySubscription[SUBSCRIPTION];
-  if (count === undefined) throw new Error(`stub migration position reports no inbox count for ${SUBSCRIPTION}`);
-  return count;
+  const { inbox, published } = result.json<PositionResponse>();
+  const subscription = inbox?.bySubscription[SUBSCRIPTION];
+  const receipts = inbox?.receipts?.[eventId.toLowerCase()];
+  if (subscription === undefined || receipts === undefined || published === undefined) {
+    const lacking = `the ${SUBSCRIPTION} count, receipts of ${eventId} or published ${STUB_NOTE_TOPIC} events`;
+    throw new Error(`stub migration position lacks ${lacking}: ${result.text}`);
+  }
+  return {
+    published: published.map(({ eventId: id, topic, tenantId }) => ({
+      eventId: id.toLowerCase(),
+      topic,
+      tenantId: tenantId.toLowerCase(),
+    })),
+    receipts: receipts.map((tenantId) => tenantId.toLowerCase()).sort(),
+    subscription,
+  };
 }
 
 /** Every note id `session` lists on `siteid`, page by page. */
@@ -419,14 +531,16 @@ describe('platform proof on the stub', () => {
   });
 
   afterAll(async () => {
-    const passed =
-      checks.length === CHECK_IDS.length &&
-      checks.every((check, index) => check.id === CHECK_IDS[index] && check.result === 'pass');
+    const ordered = [...checks].sort((a, b) => CHECK_IDS.indexOf(a.id) - CHECK_IDS.indexOf(b.id));
+    const passed = CHECK_IDS.every((id) => {
+      const own = checks.filter((check) => check.id === id);
+      return own.length === 1 && own[0]?.result === 'pass';
+    });
     await writeJsonReport(join(reportsDir(), 'platform-proof.json'), {
       generatedBy: GENERATED_BY,
       status: 'generated',
       target: TARGET,
-      checks,
+      checks: ordered,
       result: passed ? 'pass' : 'fail',
     });
   });
@@ -520,52 +634,78 @@ describe('platform proof on the stub', () => {
 
   it('outbox-pubsub-idempotent-consumer: outbox -> Pub/Sub -> idempotent consumer (stub.note_projection)', ({ task }) =>
     record('outbox-pubsub-idempotent-consumer', task.name, async () => {
-      const createdAt = new Date(Date.now() - 1000).toISOString();
-      const trace = mintTraceparent();
-      const title = `Platform proof note ${trace.traceId}`;
-      const created = await gatewayOf(tenantA).post(NOTES_PATH, {
-        query: { siteid: TENANT_A.siteId },
-        json: { title, body: 'Outbox, Pub/Sub push and idempotent consumer evidence.' },
-        headers: { traceparent: trace.traceparent },
-      });
-      expect(created.status, created.text).toBe(200);
-      const createdBody = created.json<Envelope>();
-      expect(createdBody).toMatchObject({ apiversion: 'v1', method: 'save', data: { title } });
-      const { noteid: noteId } = createdBody.data as NoteData;
-      expect(noteId).toMatch(CF_UUID);
-      sharedNote = { noteId, title, createdAt, trace };
+      const { noteId, rowVersion, createdAt, trace } = await createTenantANote('outbox-pubsub-idempotent-consumer');
 
       const invoker = await migrationInvoker();
       const projected = await pollUntil(() => projectionRows(noteId, invoker), (rows) => rows.length === 1, {
         poll: DELIVERY_POLL,
       });
       expect(projected.value, `stub.note_projection rows of ${noteId}`).toHaveLength(1);
-      const before = projectionState(projected.value[0]);
-      const inboxBefore = await stubInboxCount(invoker);
+      const delivered = await awaitConsumeRecords(trace.traceId, 1);
+      const applied = delivered.filter(({ outcome }) => outcome === 'applied');
+      const original = applied.length === 1 ? applied[0] : undefined;
+      if (original === undefined || delivered.some(({ eventId }) => eventId !== original.eventId)) {
+        const logged = describeConsumes(delivered);
+        throw new Error(`expected deliveries of one event, one of them applied, before the replay; logged: ${logged}`);
+      }
+      const { eventId: originalEventId } = original;
+      const expected: ProjectionState = {
+        apply_count: 1,
+        aggregate_version: rowVersion,
+        last_event_id: originalEventId,
+      };
+      const first = projectionState(projected.value[0]);
+      expect(first, `projection after the first delivery: ${JSON.stringify(first)}`).toEqual(expected);
+      const tenantAId = TENANT_A.tenantId.toLowerCase();
+      const positionBefore = await stubPosition(invoker, originalEventId);
+      const outboxEntries = positionBefore.published.filter(({ eventId }) => eventId === originalEventId);
+      const entriesSeen = JSON.stringify(outboxEntries);
+      expect(outboxEntries, `published stub outbox entries of ${originalEventId}: ${entriesSeen}`).toEqual([
+        { eventId: originalEventId, topic: STUB_NOTE_TOPIC, tenantId: tenantAId },
+      ]);
+      const receiptsBefore = positionBefore.receipts;
+      const tenantsBefore = describeTenants(receiptsBefore);
+      expect(receiptsBefore, `inbox receipt tenants of ${originalEventId}: ${tenantsBefore}`).toEqual([tenantAId]);
 
       const replay = await replayStubOutbox(createdAt);
       expect(replay.exitCode, replay.stderr).toBe(0);
       const summary = parseReplaySummary(replay.stdout);
       expect(summary?.replayed, `opt2-outbox summary ${replay.stdout.trim()}`).toBeGreaterThanOrEqual(1);
 
+      const deliveries = delivered.length + 1;
       const spans = await awaitSpans(
         trace.traceId,
-        `a second ${CONSUME_SPAN} span`,
-        (seen) => seen.filter(isConsumeSpan).length >= 2,
+        `${deliveries} ${CONSUME_SPAN} spans`,
+        (seen) => seen.filter(isConsumeSpan).length >= deliveries,
         DELIVERY_POLL,
       );
+      const consumes = await awaitConsumeRecords(trace.traceId, deliveries);
+      const consumeOutcomes = consumes.map(({ outcome }) => outcome);
+      const logged = describeConsumes(consumes);
+      expect(consumes.every(({ eventId }) => eventId === originalEventId), `consumed event ids: ${logged}`).toBe(true);
+      expect(consumeOutcomes.filter((outcome) => outcome === 'applied'), `consume outcomes: ${logged}`).toHaveLength(1);
       const after = await projectionRows(noteId, invoker);
       expect(after, `stub.note_projection rows of ${noteId} after the redelivery`).toHaveLength(1);
-      expect(projectionState(after[0]), 'projection after the redelivery').toEqual(before);
-      const inboxAfter = await stubInboxCount(invoker);
-      expect(inboxAfter - inboxBefore, `${SUBSCRIPTION} inbox receipts added by the redelivery`).toBe(0);
+      const redelivered = projectionState(after[0]);
+      expect(redelivered, `projection after the redelivery: ${JSON.stringify(redelivered)}`).toEqual(expected);
+      const positionAfter = await stubPosition(invoker, originalEventId);
+      const receiptsAfter = positionAfter.receipts;
+      const tenantsAfter = describeTenants(receiptsAfter);
+      const afterWhat = `inbox receipt tenants of ${originalEventId} after the redelivery`;
+      expect(receiptsAfter, `${afterWhat}: ${tenantsAfter}`).toEqual([tenantAId]);
       return {
         noteId,
-        eventId: before.last_event_id,
-        projection: before,
+        eventId: originalEventId,
+        projection: expected,
         replay: summary,
-        inbox: { before: inboxBefore, after: inboxAfter },
+        inbox: {
+          subscriptionBefore: positionBefore.subscription,
+          subscriptionAfter: positionAfter.subscription,
+          receiptsBefore,
+          receiptsAfter,
+        },
         consumeSpans: spans.filter(isConsumeSpan).length,
+        consumeOutcomes,
         traceId: trace.traceId,
       };
     }),
@@ -585,7 +725,7 @@ describe('platform proof on the stub', () => {
 
   it('rls-isolation: RLS isolates tenant A from B', ({ task }) =>
     record('rls-isolation', task.name, async () => {
-      const { noteId, title } = requireNote();
+      const { noteId, title } = await createTenantANote('rls-isolation');
       const other = gatewayOf(tenantB);
       const notePath = `${NOTES_PATH}/${encodeURIComponent(noteId)}`;
 
@@ -628,12 +768,12 @@ describe('platform proof on the stub', () => {
 
   it('trace: one traceId across gateway, stub and consumer', ({ task }) =>
     record('trace', task.name, async () => {
-      const { trace } = requireNote();
-      const continuity = await awaitContinuity(trace.traceId, TRACE_CHAIN);
+      const { noteId, trace } = await createTenantANote('trace');
+      const continuity = await awaitContinuity(trace.traceId, TRACE_CHAIN, DELIVERY_POLL);
       expect(continuity.traceId).toBe(trace.traceId);
       expect(continuity.matched).toHaveLength(TRACE_CHAIN.length);
       expect(continuity.matched.slice(1).every((span) => span.parentSpanId !== undefined), 'parent links').toBe(true);
-      return { traceId: continuity.traceId, requiredSpans: continuity.matched.map(spanEvidence) };
+      return { noteId, traceId: continuity.traceId, requiredSpans: continuity.matched.map(spanEvidence) };
     }),
   );
 });

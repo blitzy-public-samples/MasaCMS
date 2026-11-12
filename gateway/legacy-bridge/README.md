@@ -12,7 +12,7 @@ This README is the normative contract. The pages in [`cfml/`](cfml/) implement i
 | `cfml/session.cfm` | Session describe, hydrate, CSRF ledger, end |
 | `cfml/jobs.cfm` | Site-monitor steps, cursor, cache purge |
 | `cfml/scheduler.cfm` | ACF scheduled-task control |
-| `cfml/site.cfm` | In-memory site registry rebuild |
+| `cfml/site.cfm` | In-memory site registry list and rebuild |
 | `cfml/files.cfm` | Legacy file store list, get, put, delete |
 
 Every endpoint is `${LEGACY_ORIGIN}/gateway/legacy-bridge/cfml/<page>.cfm?op=<op>`, or `jobs.cfm?job=<job>`.
@@ -214,6 +214,14 @@ Caller: the migration reverse projector, after a batch touching `tsettings`, poo
 - Runs `settingsManager.setSites()`: a full rebuild of the in-memory registry from `tsettings`, under Masa's own lock (`core/mura/settings/settingsManager.cfc:440-486`).
 - Response: `{refreshed:true, siteExists, serverTime}`. `siteExists` is `false` for a deleted site, with status 200.
 
+### `site.cfm?op=list`
+
+Caller: the gateway, `gateway/src/session/bridge-client.ts` (`createSiteListClient`), which keeps the route key's site registry (`gateway/src/dispatcher/site-registry.ts`). Assertion op `site.list`, `siteId` `""`.
+
+- GET, no parameters, no body.
+- Reads the keys of `settingsManager.getSites()`, the struct `settingsManager.siteExists` checks (`core/mura/settings/settingsManager.cfc:568-577`). Nothing is rebuilt or written.
+- Response: `{sites:[<siteid>], serverTime}`, in no defined order. ColdFusion may serialise a numeric-looking id as a JSON number, so callers read each entry as a string.
+
 ### `files.cfm?op=…`
 
 Caller: the migration service, `migration/src/files/` and the reverse projector (AAP 0.8.1, 0.8.3). Assertion op `files.<op>`, `siteId` equal to `siteid`.
@@ -260,7 +268,7 @@ Set on the ColdFusion start command only, by `harness/repro/lib/legacy-start.sh`
 | `session.cfm` | `gateway/src/session/bridge-client.ts` | Describe and adoption, hydrate, CSRF claims, logout |
 | `jobs.cfm` | The migration service on behalf of `services/programs-sites/src/jobs/dispatch.ts`; the reverse projector (`purgeCache`) | Legacy site-monitor steps, cursor hand-off, cache purge |
 | `scheduler.cfm` | `migration/src/scheduler/` and `opt2-ops` | `up.sh`, transitions, drain and resume, `down.sh` |
-| `site.cfm` | The migration reverse projector | After a `tsettings` batch |
+| `site.cfm` | The migration reverse projector (`refresh`); `gateway/src/session/bridge-client.ts` (`list`) | After a `tsettings` batch; gateway start and every second after |
 | `files.cfm` | `migration/src/files/` and the reverse projector | Snapshot manifest, transfer, reverse projection |
 
 ## Smoke check

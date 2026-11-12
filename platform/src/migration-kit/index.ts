@@ -13,6 +13,8 @@ export {
   legacyRowHash,
   changedColumns,
   compareEncodings,
+  compareChecksumEntries,
+  TableChecksum,
   tableChecksum,
   multiset,
   diffMultiset,

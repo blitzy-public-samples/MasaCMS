@@ -1,7 +1,8 @@
 // Change-set secondary menu of `cchangesets/dsp_secondary_menu.cfm`, also the shell's `cchangesets` hook (server-only).
-import { encodeHtml, encodeJs, encodeUrl, html, join, raw, type SafeHtml } from '@/lib/html';
+import { encodeHtml, encodeJs, html, join, raw, type SafeHtml } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
 import { rbFor, type RbLookup } from '@/lib/resource-bundles/rb';
+import { relativeAdminUrl } from '@/lib/urls';
 import type { ShellHooks } from '@/shell/types';
 
 /** Change sets module id, which the Permissions link passes as both `contentid` and `moduleid`. */
@@ -30,20 +31,27 @@ export function renderChangesetsMenu(
   rb: RbLookup,
   state?: ChangesetMenuState,
 ): { html: SafeHtml; previewLink?: string } {
-  const siteid = encodeUrl(req.rc.siteid ?? '');
+  const siteid = req.rc.siteid ?? '';
   const label = (key: string): SafeHtml => raw(rb.rbKey(`changesets.${key}`));
   const titled = (key: string, icon: string, href: string): SafeHtml =>
     html`<a class="btn" title="${label(key)}" href="${raw(href)}"><i class="${icon}"></i> ${label(key)}</a>`;
   const preview = (link: string | undefined): SafeHtml =>
     html`<a class="btn" href="#" onclick="return preview('${raw(encodeJs(link))}','');"><i class="mi-globe"></i> ${label('previewchangeset')}</a>`;
-  const back = titled('backtochangesets', 'mi-arrow-circle-left', `./?muraAction=cChangesets.list&siteid=${siteid}`);
+  const back = titled(
+    'backtochangesets',
+    'mi-arrow-circle-left',
+    relativeAdminUrl('cChangesets', 'list', [['siteid', siteid]]),
+  );
 
   const parts: SafeHtml[] = [];
   let previewLink: string | undefined;
   switch (req.item.toLowerCase()) {
     case 'assignments': {
       // legacy quirk: the edit link HTML-encodes the rc changeset id instead of URL-encoding it.
-      const editHref = `./?muraAction=cChangesets.edit&siteid=${siteid}&changesetID=${encodeHtml(req.rc.changesetID)}`;
+      const editHref = relativeAdminUrl('cChangesets', 'edit', [
+        ['siteid', siteid],
+        ['changesetID', encodeHtml(req.rc.changesetID), 'raw'],
+      ]);
       parts.push(INDENT_4, back, INDENT_4, titled('vieweditform', 'mi-pencil', editHref), INDENT_4);
       if (state !== undefined && !state.published) {
         previewLink = state.previewLink;
@@ -52,11 +60,18 @@ export function renderChangesetsMenu(
       break;
     }
     case 'list': {
-      const addHref = `./?muraAction=cChangesets.edit&changesetID=&siteid=${siteid}`;
+      const addHref = relativeAdminUrl('cChangesets', 'edit', [
+        ['changesetID', '', 'raw'],
+        ['siteid', siteid],
+      ]);
       parts.push(INDENT_4, titled('addchangeset', 'mi-plus-circle', addHref), INDENT_4);
       if (req.isSiteAdmin || req.isS2) {
         const permHref = raw(
-          `./?muraAction=cPerm.module&contentid=${CHANGESETS_MODULE_ID}&siteid=${siteid}&moduleid=${CHANGESETS_MODULE_ID}`,
+          relativeAdminUrl('cPerm', 'module', [
+            ['contentid', CHANGESETS_MODULE_ID, 'raw'],
+            ['siteid', siteid],
+            ['moduleid', CHANGESETS_MODULE_ID, 'raw'],
+          ]),
         );
         // legacy quirk: the `active` test compares the fuseaction with `module` inside the `list` case, leaving `btn `.
         const permissions = html`<a class="btn " href="${permHref}"><i class="mi-group"></i> ${label('permissions')}</a>`;
@@ -68,7 +83,10 @@ export function renderChangesetsMenu(
       parts.push(INDENT_4, back, INDENT_4);
       if (state !== undefined && !state.isNew) {
         // Legacy interpolates the loaded change set's id here without encoding.
-        const assignmentsHref = `./?muraAction=cChangesets.assignments&siteid=${siteid}&changesetID=${state.changesetId ?? ''}`;
+        const assignmentsHref = relativeAdminUrl('cChangesets', 'assignments', [
+          ['siteid', siteid],
+          ['changesetID', state.changesetId ?? '', 'raw'],
+        ]);
         parts.push(INDENT_5, titled('viewassignments', 'mi-reorder', assignmentsHref), INDENT_5);
         if (!state.published) {
           previewLink = state.previewLink;

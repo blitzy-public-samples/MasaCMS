@@ -1,18 +1,17 @@
 // Legacy-shaped `Response` builders and page headers for the admin routes (server-only).
 import {
   adminUnavailableResponse,
-  cfEq,
-  javaTrim,
   LEGACY_HTML_CONTENT_TYPE,
   LEGACY_JSON_CONTENT_TYPE,
   legacyHeaders,
 } from '@opt2/platform/legacy-compat';
 import { negotiatesIdentityEncoding } from './accept-encoding';
+import { isCompactDisplay } from './cfml';
 import { CORE_VERSION, legacySettings } from './env';
 import { toString as markupOf, type SafeHtml } from './html';
 import { cf2Java } from './resource-bundles/rb';
 
-export { negotiatesIdentityEncoding };
+export { isCompactDisplay, negotiatesIdentityEncoding };
 
 /** Content type ACF sends with `.cfm` output. */
 export const HTML_CONTENT_TYPE: string = LEGACY_HTML_CONTENT_TYPE;
@@ -94,12 +93,6 @@ export interface DownloadSource {
 export interface RedirectOptions {
   setCookies?: readonly string[];
   context?: LegacyResponseContext;
-}
-
-/** CFML `rc.compactDisplay eq 'true'`, which picks the compact layout; absent is legacy's default `'false'`. */
-export function isCompactDisplay(value: string | null | undefined): boolean {
-  if (value === null || value === undefined) return false;
-  return cfEq(value, '1') || javaTrim(value).toLowerCase() === 'yes' || value.toLowerCase() === 'true';
 }
 
 const asciiLower = (text: string): string => text.replace(/[A-Z]+/g, (run) => run.toLowerCase());

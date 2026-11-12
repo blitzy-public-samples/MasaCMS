@@ -30,8 +30,7 @@ import type { MessageTemplateRow } from '../repo/tables.js';
 
 type Schemas = components['schemas'];
 
-// Declared here rather than imported from ./index.js, which is generated after this file; its RouteContext is a
-// structural superset of this type, so the registry passes its context unchanged.
+// Declared here rather than imported from the route registry, which imports this module; the registry's RouteContext stays assignable.
 /** The tenant database, the registry site lookup of `resolveSite` and the prepared domain and mail dependencies. */
 export type FixtureRouteDeps = {
   db: TenantDb;

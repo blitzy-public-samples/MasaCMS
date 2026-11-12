@@ -7,6 +7,7 @@ import { setServiceClientForTests } from '@/lib/gateway-client';
 import { html } from '@/lib/html';
 import { logRequest, type RequestLogFields } from '@/lib/telemetry';
 import type { PageRedirect, ScreenContext, ScreenRequestBody, SubmitResult, UploadPart } from '@/screens/registry';
+import { promptCountsZero } from '../fixtures/strategies-content/prompts';
 import { siteRecordFor } from '../helpers/admin-request';
 import { useTestEnv } from '../helpers/env';
 import { routeKey, startFakeGateway, type FakeGateway, type RecordedRequest } from '../helpers/fake-gateway';
@@ -170,7 +171,7 @@ let fake: FakeGateway;
 let restoreEnv: () => void;
 let restoreClient: () => void;
 
-/** identity and programs-sites answering the S2 admin on `default`, and anonymous requests. */
+/** identity, programs-sites and strategies-content answering the S2 admin on `default`, and anonymous requests. */
 function installRoutes(): void {
   const memberships = 'S2IsPrivate;default,S2IsPrivate,S2';
   fake.setRoute(CURRENT_SESSION, {
@@ -204,13 +205,19 @@ function installRoutes(): void {
     status: 200,
     body: { site: siteRecordFor('default'), isNew: 0 },
   });
-  fake.setRoute(routeKey('GET', 'programs-sites', '/v1/sites'), {
+  fake.setRoute(routeKey('GET', 'programs-sites', '/v1/user-sites'), {
     status: 200,
-    body: [{ siteid: 'default', site: 'Default' }],
+    body: {
+      sites: [{ siteid: 'default', site: 'Default', orderno: 1, domain: 'localhost', domainAlias: null, showDashboard: 0 }],
+    },
   });
   fake.setRoute(routeKey('GET', 'programs-sites', '/v1/href-domains'), {
     status: 200,
     body: { allowedDomains: ['localhost'], siteDomain: 'localhost' },
+  });
+  fake.setRoute(routeKey('GET', 'strategies-content', '/v1/sites/default/header-prompts'), {
+    status: 200,
+    body: promptCountsZero,
   });
 }
 

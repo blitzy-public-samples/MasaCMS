@@ -11,6 +11,7 @@ import {
   getSurvey,
   listReminders,
   listResponses,
+  listSchedulings,
   listSurveys,
   listTargets,
   type SurveyListFilters,
@@ -21,6 +22,7 @@ const T0 = new Date(2026, 5, 30, 9, 0, 0);
 const USER_ID = '11111111-2222-3333-4444555566667777';
 const HASH = 'a'.repeat(64);
 const ANSWERS = ' {"q1": "é", "q2": [1, 2]}\n ';
+const FULL_PAGE = { pageIndex: 1, itemsPerPage: 50 };
 
 /** Local time `minutes` after T0. */
 function at(minutes: number): Date {
@@ -151,7 +153,7 @@ describe.skipIf(!available)('surveys queries against PostgreSQL', () => {
     });
 
     it.each<[string, SurveyListFilters, number[]]>([
-      ['every row unpaged', { siteId: 'tenant-a' }, [4, 2, 3, 1]],
+      ['every row on one page', { siteId: 'tenant-a', ...FULL_PAGE }, [4, 2, 3, 1]],
       ['the first page', { siteId: 'tenant-a', pageIndex: 1, itemsPerPage: 2 }, [4, 2]],
       ['a short last page, matching the site case-insensitively', { siteId: 'Tenant-A', pageIndex: 2, itemsPerPage: 3 }, [1]],
       ['no rows past the total', { siteId: 'tenant-a', pageIndex: 3, itemsPerPage: 2 }, []],
@@ -163,7 +165,7 @@ describe.skipIf(!available)('surveys queries against PostgreSQL', () => {
     });
 
     it('counts nothing for a site without surveys', async () => {
-      expect(await inTenant(tenantA, (tx) => listSurveys(tx, { siteId: 'nobody', pageIndex: 1, itemsPerPage: 50 }))).toEqual({
+      expect(await inTenant(tenantA, (tx) => listSurveys(tx, { siteId: 'nobody', ...FULL_PAGE }))).toEqual({
         rows: [],
         total: 0,
       });
@@ -196,8 +198,8 @@ describe.skipIf(!available)('surveys queries against PostgreSQL', () => {
       });
     });
 
-    it.each<[string, { pageIndex: number; itemsPerPage: number } | undefined, number[]]>([
-      ['every row unpaged', undefined, [64, 61, 63, 62]],
+    it.each<[string, { pageIndex: number; itemsPerPage: number }, number[]]>([
+      ['every row on one page', FULL_PAGE, [64, 61, 63, 62]],
       ['the first page', { pageIndex: 1, itemsPerPage: 2 }, [64, 61]],
       ['the second page', { pageIndex: 2, itemsPerPage: 2 }, [63, 62]],
       ['a short last page', { pageIndex: 2, itemsPerPage: 3 }, [62]],
@@ -215,8 +217,104 @@ describe.skipIf(!available)('surveys queries against PostgreSQL', () => {
     it('counts nothing for a survey without responses and reads no page', async () => {
       const seen: string[] = [];
 
-      expect(await inTenant(tenantA, (tx) => listResponses(recording(tx, seen), cfId(72)))).toEqual({ rows: [], total: 0 });
+      expect(await inTenant(tenantA, (tx) => listResponses(recording(tx, seen), cfId(72), FULL_PAGE))).toEqual({ rows: [], total: 0 });
       expect(seen.filter(isPageRead)).toEqual([]);
+    });
+  });
+
+  describe('listSchedulings', () => {
+    const scheduled = cfId(20);
+    const other = cfId(23);
+    const unscheduled = cfId(25);
+    const unknown = cfId(99);
+
+    beforeEach(async () => {
+      await inTenant(tenantA, async (tx) => {
+        await seedDetail(tx, scheduled);
+        await insertSurvey(tx, other, 'tenant-a', at(1));
+        await insert(tx, 'survey_schedule', {
+          schedule_id: cfId(24),
+          survey_id: other,
+          launch_at: at(90),
+          schedule_version: 1,
+          task_name: `opt2-survey-${other}-launch`,
+          task_token_hash: HASH,
+          created: at(1),
+        });
+        for (const [reminderId, n] of [
+          [36, 3],
+          [34, 1],
+        ] as const) {
+          await insert(tx, 'survey_reminder', {
+            reminder_id: cfId(reminderId),
+            survey_id: other,
+            offset_minutes: n * 30,
+            remind_at: at(90 + n * 30),
+            task_name: `opt2-survey-${other}-reminder-${n}`,
+            task_token_hash: HASH,
+          });
+        }
+        await insertSurvey(tx, unscheduled, 'tenant-a', at(2));
+      });
+    });
+
+    it('groups each schedule and its ordinal-ordered reminders by survey in two statements, an unscheduled id with none', async () => {
+      const seen: string[] = [];
+
+      const [byId, details] = await inTenant(tenantA, async (tx) => [
+        await listSchedulings(recording(tx, seen), [unknown, other, scheduled, unscheduled, other]),
+        [await getSurvey(tx, scheduled), await getSurvey(tx, other)],
+      ] as const);
+
+      expect([...byId.keys()]).toEqual([unknown, other, scheduled, unscheduled]);
+      expect(byId.get(scheduled)?.reminders.map((reminder) => reminder.reminder_id)).toEqual([30, 31, 32].map(cfId));
+      expect(byId.get(other)?.reminders.map((reminder) => reminder.reminder_id)).toEqual([34, 36].map(cfId));
+      for (const detail of details) {
+        expect(byId.get(detail?.survey.survey_id ?? '')).toEqual({ schedule: detail?.schedule, reminders: detail?.reminders });
+      }
+      expect(byId.get(other)?.schedule?.schedule_id).toBe(cfId(24));
+      expect(byId.get(unscheduled)).toEqual({ schedule: null, reminders: [] });
+      expect(byId.get(unknown)).toEqual({ schedule: null, reminders: [] });
+      expect(seen.filter((text) => /\bsurvey_(schedule|reminder)\b/.test(text))).toHaveLength(2);
+    });
+
+    it('runs no statement, not even a gate read, for no ids', async () => {
+      const seen: string[] = [];
+
+      expect(await inTenant(tenantA, (tx) => listSchedulings(recording(tx, seen), []))).toEqual(new Map());
+      expect(seen).toEqual([]);
+    });
+
+    it('plans the batched schedule and reminder reads with the ids as an index condition once the tables have statistics', async () => {
+      await inTenant(tenantA, async (tx) => {
+        const bulkId = (segment: string): string => `lpad(n::text, 8, '0') || '-${segment}-BBBB-CCCCDDDDEEEEFFFF'`;
+        await tx.query(
+          `INSERT INTO ${handle.schema}.survey_schedule (tenant_id, schedule_id, survey_id, launch_at, schedule_version, task_name, task_token_hash, created)
+           SELECT $1, ${bulkId('EEEE')}, ${bulkId('FFFF')}, $2, 1, 'opt2-survey-launch', $3, $2 FROM generate_series(1000, 1499) AS n`,
+          [tx.tenantId, at(0), HASH],
+        );
+        await tx.query(
+          `INSERT INTO ${handle.schema}.survey_reminder (tenant_id, reminder_id, survey_id, offset_minutes, remind_at, task_name, task_token_hash)
+           SELECT $1, ${bulkId('EEEE')}, lpad((1000 + n % 500)::text, 8, '0') || '-FFFF-BBBB-CCCCDDDDEEEEFFFF', 10, $2, 'opt2-survey-reminder-1', $3
+           FROM generate_series(1000, 2499) AS n`,
+          [tx.tenantId, at(10), HASH],
+        );
+      });
+      await handle.adminPool.query(`ANALYZE ${handle.schema}.survey_schedule, ${handle.schema}.survey_reminder`);
+
+      const plans = await inTenant(tenantA, async (tx) => {
+        const seen: string[] = [];
+        await listSchedulings(recording(tx, seen), [scheduled, other]);
+        await tx.query('SET LOCAL enable_seqscan = off');
+        const explain = async (table: string): Promise<string> => {
+          const text = seen.find((statement) => new RegExp(`\\b${table}\\b`).test(statement)) ?? '';
+          return (await tx.query<{ 'QUERY PLAN': string }>(`EXPLAIN ${text}`, [[scheduled, other]])).rows.map((row) => row['QUERY PLAN']).join('\n');
+        };
+        return [await explain('survey_schedule'), await explain('survey_reminder')];
+      });
+
+      expect(plans[0]).toMatch(/survey_schedule_tenant_id_survey_id_key[\s\S]*Index Cond:[^\n]*survey_id = ANY/);
+      expect(plans[1]).toMatch(/survey_reminder_survey_idx[\s\S]*Index Cond:[^\n]*survey_id = ANY/);
     });
   });
 
@@ -306,7 +404,7 @@ describe.skipIf(!available)('surveys queries against PostgreSQL', () => {
       await getSchedule(tx, cfId(99)),
       await listReminders(tx, surveyId),
       await listTargets(tx, surveyId),
-      await listResponses(tx, surveyId),
+      await listResponses(tx, surveyId, FULL_PAGE),
     ]);
 
     expect(schedule).toMatchObject({ schedule_id: cfId(21), task_token_hash: HASH, row_version: '2' });
@@ -323,16 +421,26 @@ describe.skipIf(!available)('surveys queries against PostgreSQL', () => {
     await inTenant(tenantB, (tx) => seedDetail(tx, cfId(20)));
 
     const seen = await inTenant(tenantA, async (tx) => [
-      await listSurveys(tx, { siteId: 'tenant-a' }),
+      await listSurveys(tx, { siteId: 'tenant-a', ...FULL_PAGE }),
       await findSurvey(tx, cfId(20)),
       await getSurvey(tx, cfId(20)),
       await getSchedule(tx, cfId(20)),
       await listReminders(tx, cfId(20)),
+      await listSchedulings(tx, [cfId(20)]),
       await listTargets(tx, cfId(20)),
-      await listResponses(tx, cfId(20)),
+      await listResponses(tx, cfId(20), FULL_PAGE),
     ]);
 
-    expect(seen).toEqual([{ rows: [], total: 0 }, null, null, null, [], [], { rows: [], total: 0 }]);
+    expect(seen).toEqual([
+      { rows: [], total: 0 },
+      null,
+      null,
+      null,
+      [],
+      new Map([[cfId(20), { schedule: null, reminders: [] }]]),
+      [],
+      { rows: [], total: 0 },
+    ]);
     expect(await inTenant(tenantB, (tx) => findSurvey(tx, cfId(20)))).toMatchObject({ tenant_id: tenantB });
   });
 
@@ -342,7 +450,8 @@ describe.skipIf(!available)('surveys queries against PostgreSQL', () => {
       ended = tx;
     });
 
-    await expect(listSurveys(ended as TenantTx, { siteId: 'tenant-a' })).rejects.toBeInstanceOf(OutsideTenantTransactionError);
+    await expect(listSurveys(ended as TenantTx, { siteId: 'tenant-a', ...FULL_PAGE })).rejects.toBeInstanceOf(OutsideTenantTransactionError);
+    await expect(listSchedulings(ended as TenantTx, [cfId(1)])).rejects.toBeInstanceOf(OutsideTenantTransactionError);
     await expect(findSurvey(ended as TenantTx, cfId(1))).rejects.toBeInstanceOf(OutsideTenantTransactionError);
   });
 
@@ -357,6 +466,21 @@ describe.skipIf(!available)('surveys queries against PostgreSQL', () => {
 
     await expect(withGatedTenant(handle.app, tenantA, (tx) => getSurvey(tx, cfId(1)), budget)).rejects.toBeInstanceOf(UnitReadBlockedError);
     await expect(withGatedTenant(handle.app, tenantA, (tx) => listTargets(tx, cfId(1)), budget)).rejects.toBeInstanceOf(UnitReadBlockedError);
-    expect(await withGatedTenant(handle.app, tenantA, (tx) => listSurveys(tx, { siteId: 'tenant-a' }), budget)).toEqual({ rows: [], total: 0 });
+    expect(await withGatedTenant(handle.app, tenantA, (tx) => listSurveys(tx, { siteId: 'tenant-a', ...FULL_PAGE }), budget)).toEqual({
+      rows: [],
+      total: 0,
+    });
+  });
+
+  it.each(['surveys.survey_schedule', 'surveys.survey_reminder'])('blocks a batched scheduling read behind a closed %s gate, but not an empty one', async (unit) => {
+    await withMetadata(handle.app, (tx) =>
+      tx.query(`UPDATE ${handle.schema}.unit_gate SET state = 'closed', holder_id = 'window-1', phase = 'executing' WHERE unit = $1`, [unit]),
+    );
+    const budget = { budgetMs: 300 };
+
+    await expect(withGatedTenant(handle.app, tenantA, (tx) => listSchedulings(tx, [cfId(1)]), budget)).rejects.toBeInstanceOf(
+      UnitReadBlockedError,
+    );
+    expect(await withGatedTenant(handle.app, tenantA, (tx) => listSchedulings(tx, []), budget)).toEqual(new Map());
   });
 });

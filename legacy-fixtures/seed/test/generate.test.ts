@@ -327,11 +327,13 @@ describe('credentials', () => {
     expect([creds.sourceSha, creds.digest]).toEqual([dataset.sourceSha, dataset.digest]);
   });
 
-  it('gives every seeded user a password and every OAuth client a secret', () => {
+  it('gives every seeded user a password, every OAuth client a secret and every scenario password name a password', () => {
     for (const user of dataset.masa.users) expect(creds.users[user.siteID]?.[user.username], user.username).toMatch(PASSWORD);
     expect(Object.values(creds.users).reduce((n, site) => n + Object.keys(site).length, 0)).toBe(dataset.masa.users.length);
     expect(Object.keys(creds.oauthClients)).toEqual(dataset.masa.oauthClients.map((row) => row.clientID));
     for (const secret of Object.values(creds.oauthClients)) expect(secret).toMatch(CLIENT_SECRET);
+    expect(Object.keys(creds.generated)).toEqual(config.scenarioPasswords);
+    for (const value of Object.values(creds.generated)) expect(value).toMatch(PASSWORD);
   });
 
   it('draws secrets from deps.randomBytes', async () => {
@@ -348,10 +350,15 @@ describe('credentials', () => {
     );
     expect(reused).toEqual([]);
     expect(Object.entries(creds.oauthClients).filter(([clientID, secret]) => other.oauthClients[clientID] === secret)).toEqual([]);
+    expect(Object.entries(creds.generated).filter(([name, value]) => other.generated[name] === value)).toEqual([]);
   });
 
   it('keeps every secret out of the dataset files', async () => {
-    const secrets = new Set([...Object.values(creds.users).flatMap((site) => Object.values(site)), ...Object.values(creds.oauthClients)]);
+    const secrets = new Set([
+      ...Object.values(creds.users).flatMap((site) => Object.values(site)),
+      ...Object.values(creds.oauthClients),
+      ...Object.values(creds.generated),
+    ]);
     for (const name of (await listing(first.out)).filter((file) => file !== 'credentials.json')) {
       const text = await readFile(join(first.out, name), 'utf8');
       expect(SECRET_KEY.test(text), name).toBe(false);

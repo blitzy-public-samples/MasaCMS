@@ -503,6 +503,9 @@ function bodyPaths(step: Step, combo: Record<string, string>): BodyPath[] {
   const paths: BodyPath[] = [];
   if (step.poll !== undefined) {
     paths.push({ label: 'poll', path: substitute(step.poll.until.path), equals: step.poll.until.equals });
+    for (const { state, at } of step.poll.lifecycle ?? []) {
+      paths.push({ label: `lifecycle ${state}`, path: substitute(at) });
+    }
   }
   for (const [name, extraction] of Object.entries(step.extract ?? {})) {
     if (extraction.from === 'body') paths.push({ label: `extract ${name}`, path: substitute(extraction.path) });
@@ -679,6 +682,26 @@ describe('golden catalogue response paths', () => {
     for (const request of requests) {
       expect(request.operations.length, describeRequest(request)).toBeGreaterThan(0);
       expect(request.paths.find((p) => p.label === 'poll')?.path).toBe('data.state');
+      expect(request.problems).toEqual([]);
+    }
+  });
+
+  it.each([
+    ['GS-RE-01', 'xlsx-poll', 'done'],
+    ['GS-RE-01', 'csv-poll', 'done'],
+    ['GS-RE-01', 'pdf-poll', 'done'],
+    ['GS-RE-02', 'poll', 'failed'],
+  ])('checks %s %s lifecycle queued, running, %s timestamps against its contract', async (scenario, step, last) => {
+    const { checked } = await result;
+    const requests = checked.filter((r) => r.scenario === scenario && r.step === step);
+    expect(requests.length).toBeGreaterThan(0);
+    for (const request of requests) {
+      const lifecycle = request.paths.filter((p) => p.label.startsWith('lifecycle '));
+      expect(lifecycle.map((p) => `${p.label} ${p.path}`)).toEqual([
+        'lifecycle queued data.created',
+        'lifecycle running data.started_at',
+        `lifecycle ${last} data.finished_at`,
+      ]);
       expect(request.problems).toEqual([]);
     }
   });

@@ -117,7 +117,10 @@ async function releasePending(repo: IdentityRepository, tx: TenantTx, sessionId:
 }
 
 /** The session `sessionId`, searched in `SYSTEM_TENANT_ID`, then in each registered tenant; undefined when absent. Session code imports it from here, so the two modules never import each other. */
-export async function locateSession(deps: Pick<CsrfDeps, 'db' | 'repo'>, sessionId: string): Promise<LocatedSession | undefined> {
+export async function locateSession(
+  deps: { db: TenantDb; repo: Pick<IdentityRepository, 'findSession'> },
+  sessionId: string,
+): Promise<LocatedSession | undefined> {
   const { db, repo } = deps;
   const find = (tenantId: string): Promise<SessionRow | null> => withTenant(db, tenantId, (tx) => repo.findSession(tx, sessionId));
   const anonymous = await find(SYSTEM_TENANT_ID);

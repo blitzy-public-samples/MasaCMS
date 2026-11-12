@@ -432,8 +432,9 @@ function fakeGateway(world: World, ...overrides: Override[]): FakeGateway {
 
   const answer = (call: GatewayCall): Response => {
     const { pathname, searchParams } = call.url;
-    if (pathname === '/admin/') {
-      const action = (searchParams.get('muraAction') ?? '').toLowerCase();
+    // The login form posts to `index.cfm` with `muraAction` in its body (admin/core/views/clogin/main.cfm:175,281).
+    if (pathname === '/admin/' || pathname === '/admin/index.cfm') {
+      const action = (searchParams.get('muraAction') ?? call.fields.muraAction ?? '').toLowerCase();
       if (call.method === 'POST' && action === 'clogin.login') {
         const caller = accepts(call.fields.username ?? '', call.fields.password ?? '');
         if (caller === undefined) return redirect('./?muraAction=cLogin.main&status=failed');

@@ -17,7 +17,7 @@ import {
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
 import { applyBulkTarget } from '../../src/domain/bulk-target.js';
-import { listResponsePage, listResponses, submitResponse, type SubmitResponseInput } from '../../src/domain/responses.js';
+import { listResponsePage, submitResponse, type SubmitResponseInput } from '../../src/domain/responses.js';
 import type { DomainDeps } from '../../src/domain/surveys.js';
 import { FixtureApiError } from '../../src/legacy/fixture-envelope.js';
 import { SURVEY_RESPONSE_GRANT } from '../../src/repo/grants.js';
@@ -127,8 +127,8 @@ describe.skipIf(!available)('survey responses against PostgreSQL', () => {
     const row = await submit(TENANT_B, survey.survey_id, { answers: ANSWERS }, site);
     expect(row).toMatchObject({ tenant_id: TENANT_A.tenantId, siteid: TENANT_A.siteId, respondentsiteid: site });
     expect(await storedCounts(survey.survey_id)).toEqual({ A: 1, B: 0, umbrella: 0 });
-    const listed = await listResponses(deps, { tenantId: TENANT_A.tenantId, surveyId: survey.survey_id });
-    expect(listed.rows.map((r) => r.respondentsiteid)).toEqual([site]);
+    const listed = await listResponsePage(deps, { tenantId: TENANT_A.tenantId, surveyId: survey.survey_id, params: {} });
+    expect(listed.list.map((r) => r.respondentsiteid)).toEqual([site]);
   });
 
   it.each([
@@ -175,8 +175,8 @@ describe.skipIf(!available)('survey responses against PostgreSQL', () => {
     const survey = await newSurvey();
     const row = await submit(TENANT_A, survey.survey_id, { answers });
     expect(row.answers).toBe(answers);
-    const listed = await listResponses(deps, { tenantId: TENANT_A.tenantId, surveyId: survey.survey_id });
-    expect(listed.rows.map((r) => Buffer.from(r.answers, 'utf8'))).toEqual([Buffer.from(answers, 'utf8')]);
+    const listed = await listResponsePage(deps, { tenantId: TENANT_A.tenantId, surveyId: survey.survey_id, params: {} });
+    expect(listed.list.map((r) => Buffer.from(r.answers, 'utf8'))).toEqual([Buffer.from(answers, 'utf8')]);
   });
 
   it('lists every response by creation time and id, and only in the survey tenant', async () => {
@@ -187,17 +187,21 @@ describe.skipIf(!available)('survey responses against PostgreSQL', () => {
       now = new Date(T0.getTime() + offset);
       stored.push(await submit(as, survey.survey_id, { answers: ANSWERS }));
     }
-    const listed = await listResponses(deps, { tenantId: TENANT_A.tenantId, surveyId: survey.survey_id });
-    expect(listed.total).toBe(3);
-    expect(listed.rows.map((r) => r.response_id)).toEqual([stored[1], stored[2], stored[0]].map((r) => r?.response_id));
-    await expectError(listResponses(deps, { tenantId: TENANT_B.tenantId, surveyId: survey.survey_id }), 'notFound', FixtureApiError);
+    const listed = await listResponsePage(deps, { tenantId: TENANT_A.tenantId, surveyId: survey.survey_id, params: {} });
+    expect(listed.totalItems).toBe(3);
+    expect(listed.list.map((r) => r.response_id)).toEqual([stored[1], stored[2], stored[0]].map((r) => r?.response_id));
+    await expectError(
+      listResponsePage(deps, { tenantId: TENANT_B.tenantId, surveyId: survey.survey_id, params: {} }),
+      'notFound',
+      FixtureApiError,
+    );
 
     const page = await listResponsePage(deps, {
       tenantId: TENANT_A.tenantId,
       surveyId: survey.survey_id,
       params: { pageIndex: '2', itemsPerPage: '1' },
     });
-    expect(page).toEqual({ list: [listed.rows[1]], pageIndex: 2, itemsPerPage: 1, totalItems: 3 });
+    expect(page).toEqual({ list: [listed.list[1]], pageIndex: 2, itemsPerPage: 1, totalItems: 3 });
     const past = await listResponsePage(deps, {
       tenantId: TENANT_A.tenantId,
       surveyId: survey.survey_id,
@@ -218,7 +222,7 @@ describe.skipIf(!available)('survey responses against PostgreSQL', () => {
       LegacyApiError,
     );
     await expectError(listResponsePage(deps, { tenantId: TENANT_A.tenantId, surveyId: UNKNOWN_ID, params: bad }), 'notFound', FixtureApiError);
-    await expectError(listResponses(deps, { tenantId: TENANT_A.tenantId, surveyId: UNKNOWN_ID }), 'notFound', FixtureApiError);
+    await expectError(listResponsePage(deps, { tenantId: TENANT_A.tenantId, surveyId: UNKNOWN_ID, params: {} }), 'notFound', FixtureApiError);
   });
 
   it.each([

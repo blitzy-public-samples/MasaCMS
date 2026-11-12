@@ -282,6 +282,10 @@ describe.skipIf(!(await pgAvailable()))('repo/feed-queries', () => {
     ['an unknown column', [{ field: 'tcontent.nosuch', condition: 'Equals', criteria: 'x', datatype: 'varchar' }], ContentQueryError, /Invalid column name/],
     ['NULL with GT', [{ field: 'tcontent.title', condition: 'GT', criteria: 'null', datatype: 'varchar' }], ContentQueryError, /NULL/],
     ['a bad numeric', [{ field: 'tcontent.orderno', condition: 'Equals', criteria: 'abc', datatype: 'numeric' }], ContentQueryError, /CF_SQL_NUMERIC/],
+    ['an overflowing numeric', [{ field: 'tcontent.orderno', condition: 'Equals', criteria: '1e309', datatype: 'numeric' }], ContentQueryError, /CF_SQL_NUMERIC/],
+    ['a numeric padded with U+00A0', [{ field: 'tcontent.orderno', condition: 'Equals', criteria: '\u00a01', datatype: 'numeric' }], ContentQueryError, /CF_SQL_NUMERIC/],
+    ['a bit with leading space', [{ field: 'tcontent.isnav', condition: 'Equals', criteria: ' yes', datatype: 'boolean' }], ContentQueryError, /CF_SQL_BIT/],
+    ['a bit with trailing space', [{ field: 'tcontent.isnav', condition: 'Equals', criteria: 'yes ', datatype: 'boolean' }], ContentQueryError, /CF_SQL_BIT/],
     ['an unknown condition', [{ field: 'tcontent.title', condition: 'between', criteria: 'x', datatype: 'varchar' }], ContentQueryError, /condition/],
   ])('rejects %s', async (_label, rows, type, message) => {
     const result = inA((tx) => feedContent(tx, withParams(rows)));
@@ -292,6 +296,10 @@ describe.skipIf(!(await pgAvailable()))('repo/feed-queries', () => {
 
   it.each<[string, FeedParamInput[], string[]]>([
     ['bit', [{ field: 'tcontent.isnav', condition: 'Equals', criteria: 'yes', datatype: 'boolean' }], ['Alpha', 'beta', 'Events', 'Gamma']],
+    ['bit no binds 0', [{ field: 'tcontent.isfeature', condition: 'NEQ', criteria: 'No', datatype: 'bit' }], ['beta']],
+    ['bit 0 binds 0', [{ field: 'tcontent.isfeature', condition: 'NEQ', criteria: '0', datatype: 'bit' }], ['beta']],
+    ['numeric with Java-trimmed control padding', [{ field: 'tcontent.orderno', condition: 'Equals', criteria: '1\u0001', datatype: 'numeric' }], ['Alpha']],
+    ['numeric with space padding', [{ field: 'tcontent.orderno', condition: 'Equals', criteria: ' 2 ', datatype: 'numeric' }], ['beta']],
     ['date truncates to the day', [{ field: 'tcontent.releasedate', condition: 'GTE', criteria: '2025-01-05T10:00:00', datatype: 'date' }], ['Alpha']],
     ['EndsWith', [{ field: 'tcontent.title', condition: 'EndsWith', criteria: 'TA', datatype: 'varchar' }], ['beta']],
     ['Contains on a number is equality', [{ field: 'tcontent.orderno', condition: 'Contains', criteria: '2', datatype: 'numeric' }], ['beta']],

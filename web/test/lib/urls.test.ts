@@ -9,7 +9,10 @@ import {
   buildUrl,
   FW1_HOME_ACTION,
   fw1RedirectTarget,
+  relativeAdminUrl,
   sanitizeHref,
+  type BoundAdminParams,
+  type RelativeAdminUrlOptions,
 } from '@/lib/urls';
 import { useTestEnv } from '../helpers/env';
 
@@ -62,6 +65,94 @@ describe('boundAdminUrl', () => {
     [{ siteid: 'default', keywords: 'a b&c' }, '/admin/?muraAction=cUsers.list&siteid=default&keywords=a+b%26c'],
   ])('boundAdminUrl(cUsers, list, %j) is %j', (params, expected) => {
     expect(boundAdminUrl('cUsers', 'list', params)).toBe(expected);
+  });
+
+  it('lets a parameter ask for URL encoding under a raw default', () => {
+    expect(boundAdminUrl('cArch', 'list', [['siteid', 'a b'], ['x', 'a&b', 'url']], { encode: 'raw' })).toBe(
+      '/admin/?muraAction=cArch.list&siteid=a b&x=a%26b',
+    );
+  });
+});
+
+describe('relativeAdminUrl', () => {
+  const special = `& < " ' # ? é`;
+
+  // Expected values follow the legacy-compat adminUrl contract with an empty context and admin directory `.`.
+  it.each<[string, string, BoundAdminParams | undefined, RelativeAdminUrlOptions | undefined, string]>([
+    ['cLogin', 'main', undefined, undefined, './?muraAction=cLogin.main'],
+    ['csettings', 'list', [], {}, './?muraAction=csettings.list'],
+    ['cSettings', 'editSite', [['siteid', 'default']], undefined, './?muraAction=cSettings.editSite&siteid=default'],
+    [
+      'cArch',
+      'datamanager',
+      [['contentid', 'a b'], ['siteid', 'a&b', 'raw'], ['topid', 'x/y', 'url']],
+      undefined,
+      './?muraAction=cArch.datamanager&contentid=a+b&siteid=a&b&topid=x%2Fy',
+    ],
+    [
+      'cChangesets',
+      'list',
+      [['siteid', 'a b'], ['x', 'a&b', 'url']],
+      { encode: 'raw' },
+      './?muraAction=cChangesets.list&siteid=a b&x=a%26b',
+    ],
+    [
+      'cArch',
+      'list',
+      { siteid: 'default', moduleid: '00000000000000000000000000000000003', type: 'Form' },
+      undefined,
+      './?muraAction=cArch.list&siteid=default&moduleid=00000000000000000000000000000000003&type=Form',
+    ],
+    ['cFeed', 'edit', { feedID: '', siteid: 'a b' }, { encode: 'raw' }, './?muraAction=cFeed.edit&feedID=&siteid=a b'],
+    ['cwebservice', 'edit', [['clientid', ''], ['siteid', '']], undefined, './?muraAction=cwebservice.edit&clientid=&siteid='],
+    ['cArch', 'search', [['keywords', special]], undefined, './?muraAction=cArch.search&keywords=%26+%3C+%22+%27+%23+%3F+%C3%A9'],
+    ['cArch', 'search', [['keywords', special, 'raw']], undefined, `./?muraAction=cArch.search&keywords=${special}`],
+    ['cArch', 'loadsiteflat', [['startrow', 26], ['page', 1.5, 'raw']], undefined, './?muraAction=cArch.loadsiteflat&startrow=26&page=1.5'],
+    [
+      'cArch',
+      'hist',
+      [['contentid', 'a b'], ['type', 'Page', 'raw'], ['parentid', '00000000000000000000000000000000001']],
+      { html: true },
+      './?muraAction=cArch.hist&amp;contentid=a+b&amp;type=Page&amp;parentid=00000000000000000000000000000000001',
+    ],
+    ['cSettings', 'list', [['siteSortBy', 'site']], { prefix: './?' }, './?muraAction=cSettings.list&siteSortBy=site'],
+    [
+      'cSettings',
+      'deploybundle',
+      [['siteid', 'default']],
+      { prefix: '?' },
+      '?muraAction=cSettings.deploybundle&siteid=default',
+    ],
+    [
+      'cArch',
+      'export',
+      [['siteid', 'a b'], ['contentid', '00000000000000000000000000000000001']],
+      { html: true, prefix: '?' },
+      '?muraAction=cArch.export&amp;siteid=a+b&amp;contentid=00000000000000000000000000000000001',
+    ],
+    [
+      'cArch',
+      'list',
+      [['siteid', 'default'], ['moduleid', '00000000000000000000000000000000000', 'raw']],
+      { prefix: './?&' },
+      './?&muraAction=cArch.list&siteid=default&moduleid=00000000000000000000000000000000000',
+    ],
+    [
+      'cArch',
+      'list',
+      [['siteid', 'default'], ['moduleid', '00000000000000000000000000000000000']],
+      { html: true, prefix: './?&' },
+      './?&muraAction=cArch.list&amp;siteid=default&amp;moduleid=00000000000000000000000000000000000',
+    ],
+  ])('relativeAdminUrl(%j, %j, %j, %j) is %j', (circuit, action, params, options, expected) => {
+    expect(relativeAdminUrl(circuit, action, params, options)).toBe(expected);
+  });
+
+  it('ignores the configured context and admin directory', () => {
+    useSettings({ MURA_CONTEXT: '/cms', MURA_ADMINDIR: '/manage' });
+    expect(relativeAdminUrl('cCategory', 'edit', [['categoryID', ''], ['parentID', ''], ['siteid', 'default']])).toBe(
+      './?muraAction=cCategory.edit&categoryID=&parentID=&siteid=default',
+    );
   });
 });
 

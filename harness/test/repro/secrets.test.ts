@@ -323,4 +323,16 @@ describe('repro:secrets CLI', () => {
     });
     expect(existsSync(state)).toBe(false);
   });
+
+  it('prints the help text naming OPT2_STATE_DIR and --dir, exits 0 and writes nothing', async () => {
+    const { code, stdout, exit } = await runSecretsCli(['--help']);
+
+    expect(code).toBe(0);
+    expect(exit).toHaveBeenCalledWith(0);
+    expect(stdout.startsWith('usage: tsx src/repro/secrets.ts [--dir <secrets-dir>]\n')).toBe(true);
+    expect(stdout).toContain('OPT2_STATE_DIR');
+    expect(stdout).toMatch(/^ +--dir <secrets-dir> /m);
+    expect(stdout).not.toMatch(/^\{/m);
+    expect(existsSync(state)).toBe(false);
+  });
 });

@@ -4,9 +4,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { EventPublisher } from '@opt2/platform/events';
+import { createPublisher, type EventPublisher } from '@opt2/platform/events';
 import { loadEnv, type BaseEnv } from '@opt2/platform/service-kit';
-import { OUTBOX_SWEEP_PATH, type CreateTaskInput, type TaskPort } from '@opt2/platform/tasks';
+import { OUTBOX_SWEEP_PATH, createTaskPort, type CreateTaskInput, type TaskPort } from '@opt2/platform/tasks';
 import type { TenantDb } from '@opt2/platform/tenancy';
 import {
   createCapturingPublisher,
@@ -113,6 +113,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   closed.length = 0;
+  vi.mocked(createPublisher).mockClear();
 });
 
 describe.skipIf(!available)('buildApp against PostgreSQL', () => {
@@ -148,9 +149,51 @@ describe.skipIf(!available)('buildApp against PostgreSQL', () => {
 });
 
 describe('buildApp without a database', () => {
-  it('fails start-up when no pool is injected and the environment names no database', async () => {
-    await expect(buildApp({ env: envFor(), verifierOverride: testVerifier('stub'), clock })).rejects.toThrow(
-      'Schema stub needs OPT2_DB_AUTH and PG_DATABASE',
-    );
+  it.each([
+    ['no emulator host for its own publisher', {}, undefined, 'stub: invalid environment\n  PUBSUB_EMULATOR_HOST: is required when OPT2_ENV=local'],
+    ['an emulator host but no database', { PUBSUB_EMULATOR_HOST: '127.0.0.1:9' }, undefined, 'Schema stub needs OPT2_DB_AUTH and PG_DATABASE'],
+    ['an injected publisher but no database', {}, createCapturingPublisher(), 'Schema stub needs OPT2_DB_AUTH and PG_DATABASE'],
+  ])('fails start-up with %s', async (_case, extra, publisher, message) => {
+    const sigterm = process.listenerCount('SIGTERM');
+    await expect(buildApp({ env: envFor(extra), publisher, verifierOverride: testVerifier('stub'), clock })).rejects.toThrow(message);
+    expect(createPublisher).not.toHaveBeenCalled();
+    expect(process.listenerCount('SIGTERM')).toBe(sigterm);
+  });
+});
+
+describe('buildApp when its task port fails', () => {
+  it.each([
+    ['closes the publisher it created', false, false, ['publisher']],
+    ['closes the publisher it created even when that close fails', false, true, ['publisher']],
+    ['leaves an injected publisher open', true, false, []],
+  ])('%s, keeps the injected pool, removes its SIGTERM listener and rethrows the failure', async (_case, inject, closeFails, expectedClosed) => {
+    const failure = new Error('task port construction failed');
+    vi.mocked(createTaskPort).mockRejectedValueOnce(failure);
+    if (closeFails) {
+      vi.mocked(createPublisher).mockImplementationOnce(() => ({
+        ...createCapturingPublisher(),
+        close: () => (closed.push('publisher'), Promise.reject(new Error('publisher close failed'))),
+      }));
+    }
+    // Offline pool: the failure comes before any query, and `end` shows whether buildApp ended the injected pool.
+    const end = vi.fn(() => Promise.resolve());
+    const pool: TenantDb = { schema: 'stub', withTenant: vi.fn(), withMetadata: vi.fn(), end };
+    const injectable = createCapturingPublisher();
+    const injectableClose = vi.spyOn(injectable, 'close');
+    const sigterm = process.listenerCount('SIGTERM');
+
+    await expect(
+      buildApp({
+        env: envFor({ PUBSUB_EMULATOR_HOST: '127.0.0.1:9' }),
+        db: pool,
+        publisher: inject ? injectable : undefined,
+        verifierOverride: testVerifier('stub'),
+        clock,
+      }),
+    ).rejects.toBe(failure);
+    expect(closed).toEqual(expectedClosed);
+    expect(injectableClose).not.toHaveBeenCalled();
+    expect(end).not.toHaveBeenCalled();
+    expect(process.listenerCount('SIGTERM')).toBe(sigterm);
   });
 });

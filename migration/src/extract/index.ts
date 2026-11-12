@@ -27,6 +27,8 @@ export {
   DEFAULT_HIGH_WATER_MARK,
   ExtractError,
   ExtractOrderError,
+  writeRecords,
+  mergeRuns,
 } from './stream.js';
 export type { CanonicalRow, KeyValue, StreamOptions, StreamShape } from './stream.js';
 

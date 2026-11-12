@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INVOCATION_HEADER, Roles, loadLocalSigningKeys, verifyLocalServiceToken } from '@opt2/platform/auth';
 
@@ -10,10 +11,12 @@ import type { EnvLike } from '../../src/lib/paths.js';
 import {
   CutoverRejected,
   CutoverRequestFailed,
+  CutoverRequestTimeout,
   CutoverVisibilityTimeout,
   DEFAULT_POLL_MS,
   DEFAULT_VISIBILITY_TIMEOUT_MS,
   GatewayUnreachable,
+  MAX_TIMEOUT_MS,
   activateVersion,
   cutoverStatus,
   main,
@@ -37,6 +40,13 @@ const HEARTBEAT_AT = '2026-06-30T08:00:00.000Z';
 const LATENCY_MS = 5;
 /** Header names that would carry a caller-supplied conclusion instead of a credential. */
 const CONCLUSION_HEADER = /role|user|tenant|site/i;
+const STATUS_REQUEST = `GET ${GATEWAY_URL}${STATUS_PATH}`;
+const ACTIVATE_REQUEST = `POST ${GATEWAY_URL}${ACTIVATE_PATH}`;
+/** Real-time bound of the tests whose gateway stalls. */
+const STALL_TIMEOUT_MS = 50;
+const INVALID_TIMEOUTS = [Number.POSITIVE_INFINITY, Number.NaN, 0, -1, 2 ** 31];
+/** A `--timeout-s` value whose number overflows to Infinity. */
+const NINES = '9'.repeat(400);
 
 interface Step {
   method: 'GET' | 'POST';
@@ -45,6 +55,8 @@ interface Step {
   body?: unknown;
   /** Rejects the request with this reason instead of answering it. */
   reject?: unknown;
+  /** Never answers (`response`), or answers 200 with a body stream that never closes (`body`); either ignores the abort signal. */
+  stall?: 'response' | 'body';
   /** Answers every request after the script ends as well. */
   repeat?: boolean;
 }
@@ -55,11 +67,16 @@ interface RecordedCall {
   path: string;
   headers: Record<string, string>;
   body: unknown;
+  signal: AbortSignal | null | undefined;
 }
 
-/** Fetch serving `script` in order with real `Response` objects and recording each request. */
-function fakeGateway(script: readonly Step[], onRequest: () => void = () => undefined): { fetch: FetchLike; calls: RecordedCall[] } {
+/** Fetch serving `script` in order with real `Response` objects, recording each request and each cancelled stalled body. */
+function fakeGateway(
+  script: readonly Step[],
+  onRequest: () => void = () => undefined,
+): { fetch: FetchLike; calls: RecordedCall[]; cancelled: string[] } {
   const calls: RecordedCall[] = [];
+  const cancelled: string[] = [];
   const fetch: FetchLike = async (input, init) => {
     const url = new URL(input);
     const method = init.method ?? 'GET';
@@ -69,6 +86,7 @@ function fakeGateway(script: readonly Step[], onRequest: () => void = () => unde
       path: url.pathname,
       headers: Object.fromEntries(new Headers(init.headers)),
       body: typeof init.body === 'string' ? (JSON.parse(init.body) as unknown) : undefined,
+      signal: init.signal,
     });
     onRequest();
     const last = script.at(-1);
@@ -78,10 +96,20 @@ function fakeGateway(script: readonly Step[], onRequest: () => void = () => unde
       throw new Error(`expected ${step.method} ${step.path}, got ${method} ${url.pathname}`);
     }
     if ('reject' in step) throw step.reject;
+    if (step.stall === 'response') return new Promise<Response>(() => undefined);
+    if (step.stall === 'body') {
+      const stalled = new ReadableStream<Uint8Array>({
+        start: (controller) => controller.enqueue(new TextEncoder().encode('{"tableVersion":')),
+        cancel: () => {
+          cancelled.push(`${method} ${url.pathname}`);
+        },
+      });
+      return new Response(stalled, { status: 200, headers: { 'content-type': 'application/json' } });
+    }
     const text = typeof step.body === 'string' ? step.body : JSON.stringify(step.body);
     return new Response(text, { status: step.status ?? 200, headers: { 'content-type': 'application/json' } });
   };
-  return { fetch, calls };
+  return { fetch, calls, cancelled };
 }
 
 function instance(instanceId: string, seenEpoch: number, live = true): CutoverInstanceView {
@@ -112,6 +140,14 @@ function activateStep(status: number, body: unknown): Step {
   return { method: 'POST', path: ACTIVATE_PATH, status, body };
 }
 
+function stalledStatus(stall: NonNullable<Step['stall']>): Step {
+  return { method: 'GET', path: STATUS_PATH, stall };
+}
+
+function stalledActivation(stall: NonNullable<Step['stall']>): Step {
+  return { method: 'POST', path: ACTIVATE_PATH, stall };
+}
+
 /** Client options over a fake gateway, a fake operator invoker and a fake clock that advances only on requests and sleeps. */
 function clientFor(script: readonly Step[], opts: { latencyMs?: number; options?: Partial<ActivateOptions> } = {}) {
   let clock = 1_000;
@@ -135,7 +171,7 @@ function clientFor(script: readonly Step[], opts: { latencyMs?: number; options?
     now: () => clock,
     ...opts.options,
   };
-  return { options, calls: gateway.calls, sleep, headersFor };
+  return { options, calls: gateway.calls, cancelled: gateway.cancelled, sleep, headersFor };
 }
 
 function routes(calls: readonly RecordedCall[]): string[] {
@@ -311,8 +347,8 @@ describe('activateVersion', () => {
 
     expect(error).toMatchObject({ tableVersion: 'v0002', epoch: 4, activeVersion: active, lagging, timeoutMs: 1_000 });
     expect(error.message).toBe(`v0002 at epoch 4 not visible after 1000 ms: ${tail}`);
-    // Each poll costs one request; the last sleep is cut to what remains of the bound.
-    expect(sleeps(sleep)).toEqual([300, 300, 300, 1_000 - 4 * LATENCY_MS - 900]);
+    // The bound starts before the first request and each request costs one latency; the last sleep is cut to what remains.
+    expect(sleeps(sleep)).toEqual([300, 300, 300, 1_000 - 6 * LATENCY_MS - 900]);
   });
 
   it('bounds the wait by 30 s polled every 250 ms by default', async () => {
@@ -329,6 +365,103 @@ describe('activateVersion', () => {
     const slept = sleeps(sleep);
     expect(slept).toHaveLength(DEFAULT_VISIBILITY_TIMEOUT_MS / DEFAULT_POLL_MS);
     expect(slept.every((ms) => ms === DEFAULT_POLL_MS)).toBe(true);
+  });
+
+  it.each([
+    { label: 'the initial status answer', script: [stalledStatus('response')], request: STATUS_REQUEST, cancelled: [] },
+    {
+      label: 'the initial status body',
+      script: [stalledStatus('body')],
+      request: STATUS_REQUEST,
+      cancelled: [`GET ${STATUS_PATH}`],
+    },
+    { label: 'the activation answer', script: [COMMIT_V0002[0] as Step, stalledActivation('response')], request: ACTIVATE_REQUEST, cancelled: [] },
+    {
+      label: 'the activation body',
+      script: [COMMIT_V0002[0] as Step, stalledActivation('body')],
+      request: ACTIVATE_REQUEST,
+      cancelled: [`POST ${ACTIVATE_PATH}`],
+    },
+    {
+      label: 'the epoch read after a 2xx without one',
+      script: [COMMIT_V0002[0] as Step, activateStep(200, ''), stalledStatus('response')],
+      request: STATUS_REQUEST,
+      cancelled: [],
+    },
+    {
+      label: 'the first status read after the commit',
+      script: [...COMMIT_V0002, stalledStatus('response')],
+      request: STATUS_REQUEST,
+      cancelled: [],
+    },
+  ])('throws CutoverRequestTimeout when the bound cuts $label, aborting its signal', async ({ script, request, cancelled }) => {
+    const { options, calls, sleep, ...gateway } = clientFor(script);
+
+    const error = await rejectionOf(activateVersion('v0002', { ...options, timeoutMs: STALL_TIMEOUT_MS }), CutoverRequestTimeout);
+
+    expect(error).toMatchObject({ name: 'CutoverRequestTimeout', request, timeoutMs: STALL_TIMEOUT_MS });
+    expect(error.message).toBe(`${request} did not complete within ${STALL_TIMEOUT_MS} ms`);
+    expect(calls).toHaveLength(script.length);
+    expect(calls.every((call) => call.signal instanceof AbortSignal && call.signal.aborted)).toBe(true);
+    expect(gateway.cancelled).toEqual(cancelled);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: 'a poll answer after the commit',
+      script: [...COMMIT_V0002, statusStep(statusBody('v0002', 4, [instance('gw-a', 4), instance('gw-b', 3)])), stalledStatus('response')],
+      epoch: 4,
+      lagging: [{ instanceId: 'gw-b', seenEpoch: 3, heartbeatAt: HEARTBEAT_AT }],
+    },
+    {
+      label: 'a poll body after the commit',
+      script: [...COMMIT_V0002, statusStep(statusBody('v0002', 4, [instance('gw-a', 3), instance('gw-b', 4)])), stalledStatus('body')],
+      epoch: 4,
+      lagging: [{ instanceId: 'gw-a', seenEpoch: 3, heartbeatAt: HEARTBEAT_AT }],
+    },
+    {
+      label: 'a poll while the already active version catches up',
+      script: [statusStep(statusBody('v0002', 7, [instance('gw-a', 7), instance('gw-b', 6)])), stalledStatus('response')],
+      epoch: 7,
+      lagging: [{ instanceId: 'gw-b', seenEpoch: 6, heartbeatAt: HEARTBEAT_AT }],
+    },
+    {
+      label: 'a poll interval that outlasts it, sending no further request',
+      script: [...COMMIT_V0002, statusStep(statusBody('v0002', 4, [instance('gw-a', 4), instance('gw-b', 3)]))],
+      epoch: 4,
+      lagging: [{ instanceId: 'gw-b', seenEpoch: 3, heartbeatAt: HEARTBEAT_AT }],
+      sleep: () => delay(2 * STALL_TIMEOUT_MS),
+    },
+  ])('throws CutoverVisibilityTimeout from the last status when the bound cuts $label', async ({ script, epoch, lagging, sleep }) => {
+    const { options, calls } = clientFor(script, { latencyMs: 0, options: sleep === undefined ? {} : { sleep } });
+
+    const error = await rejectionOf(activateVersion('v0002', { ...options, timeoutMs: STALL_TIMEOUT_MS, pollMs: 1 }), CutoverVisibilityTimeout);
+
+    expect(error).toMatchObject({ tableVersion: 'v0002', epoch, activeVersion: 'v0002', lagging, timeoutMs: STALL_TIMEOUT_MS });
+    expect(error.cause).toBeInstanceOf(CutoverRequestTimeout);
+    expect(error.cause).toMatchObject({ request: STATUS_REQUEST, timeoutMs: STALL_TIMEOUT_MS });
+    expect(calls).toHaveLength(script.length);
+  });
+
+  it('clears the bound once the version is visible, leaving every request signal unaborted', async () => {
+    const { options, calls } = clientFor([...COMMIT_V0002, statusStep(statusBody('v0002', 4, [instance('gw-a', 4), instance('gw-b', 4)]))]);
+
+    await activateVersion('v0002', { ...options, timeoutMs: STALL_TIMEOUT_MS });
+    await delay(2 * STALL_TIMEOUT_MS);
+
+    expect(calls).toHaveLength(3);
+    expect(calls.every((call) => call.signal instanceof AbortSignal && !call.signal.aborted)).toBe(true);
+  });
+
+  it.each(INVALID_TIMEOUTS)('throws RangeError for a timeoutMs of %d before any request', async (timeoutMs) => {
+    const { options, calls, headersFor } = clientFor([]);
+
+    const error = await rejectionOf(activateVersion('v0002', { ...options, timeoutMs }), RangeError);
+
+    expect(error.message).toBe(`timeoutMs must be a positive number of at most ${MAX_TIMEOUT_MS}, got ${timeoutMs}`);
+    expect(calls).toEqual([]);
+    expect(headersFor).not.toHaveBeenCalled();
   });
 
   it.each(['v12', '0002', 'v00021', 'V0002', 'v0002 ', ''])(
@@ -415,6 +548,46 @@ describe('cutoverStatus', () => {
 
     await expect(cutoverStatus(options)).rejects.toBe(cause);
   });
+
+  it.each([
+    { label: 'the status answer', script: [stalledStatus('response')], stalledInvoker: false, request: STATUS_REQUEST, cancelled: [] },
+    {
+      label: 'the status body',
+      script: [stalledStatus('body')],
+      stalledInvoker: false,
+      request: STATUS_REQUEST,
+      cancelled: [`GET ${STATUS_PATH}`],
+    },
+    { label: 'the operator credential', script: [], stalledInvoker: true, request: 'operator credential', cancelled: [] },
+  ])('throws CutoverRequestTimeout when $label never completes', async ({ script, stalledInvoker, request, cancelled }) => {
+    const invoker: HarnessInvoker = { headersFor: () => new Promise(() => undefined) };
+    const { options, calls, ...gateway } = clientFor(script, { options: stalledInvoker ? { invoker } : {} });
+
+    const error = await rejectionOf(cutoverStatus({ ...options, timeoutMs: STALL_TIMEOUT_MS }), CutoverRequestTimeout);
+
+    expect(error).toMatchObject({ name: 'CutoverRequestTimeout', request, timeoutMs: STALL_TIMEOUT_MS });
+    expect(calls).toHaveLength(script.length);
+    expect(calls.every((call) => call.signal instanceof AbortSignal && call.signal.aborted)).toBe(true);
+    expect(gateway.cancelled).toEqual(cancelled);
+  });
+
+  it.each(INVALID_TIMEOUTS)('throws RangeError for a timeoutMs of %d before any request', async (timeoutMs) => {
+    const { options, calls, headersFor } = clientFor([]);
+
+    const error = await rejectionOf(cutoverStatus({ ...options, timeoutMs }), RangeError);
+
+    expect(error.message).toBe(`timeoutMs must be a positive number of at most ${MAX_TIMEOUT_MS}, got ${timeoutMs}`);
+    expect(calls).toEqual([]);
+    expect(headersFor).not.toHaveBeenCalled();
+  });
+
+  it('accepts the largest bound a Node timer honours', async () => {
+    const body = statusBody('v0002', 4, [instance('gw-a', 4)]);
+    const { options } = clientFor([statusStep(body)]);
+
+    expect(MAX_TIMEOUT_MS).toBe(2 ** 31 - 1);
+    expect(await cutoverStatus({ ...options, timeoutMs: MAX_TIMEOUT_MS })).toEqual(body);
+  });
 });
 
 describe('gateway URL', () => {
@@ -486,22 +659,25 @@ describe('repro:cutover CLI', () => {
     vi.restoreAllMocks();
   });
 
-  it('activate prints the activation result and exits 0', async () => {
-    const { options } = clientFor([...COMMIT_V0002, statusStep(statusBody('v0002', 4, [instance('gw-a', 4), instance('gw-b', 4)]))]);
+  it.each([{ argv: ['activate', 'v0002'] }, { argv: ['activate', 'v0002', '--timeout-s', '2147483.647'] }])(
+    'activate prints the activation result and exits 0 for $argv',
+    async ({ argv }) => {
+      const { options } = clientFor([...COMMIT_V0002, statusStep(statusBody('v0002', 4, [instance('gw-a', 4), instance('gw-b', 4)]))]);
 
-    const { code, line } = await runCutoverCli(['activate', 'v0002'], options);
+      const { code, line } = await runCutoverCli(argv, options);
 
-    expect(code).toBe(0);
-    expect(line).toEqual({
-      command: COMMAND,
-      ok: true,
-      code: 0,
-      tableVersion: 'v0002',
-      epoch: 4,
-      alreadyActive: false,
-      visibleAfterMs: LATENCY_MS,
-    });
-  });
+      expect(code).toBe(0);
+      expect(line).toEqual({
+        command: COMMAND,
+        ok: true,
+        code: 0,
+        tableVersion: 'v0002',
+        epoch: 4,
+        alreadyActive: false,
+        visibleAfterMs: LATENCY_MS,
+      });
+    },
+  );
 
   it('status prints the cut-over status and exits 0', async () => {
     const body = statusBody('v0002', 4, [instance('gw-a', 4)]);
@@ -532,6 +708,11 @@ describe('repro:cutover CLI', () => {
     { argv: ['activate', 'v0002', '--timeout-s', '0'], message: "--timeout-s must be a positive number of seconds, got '0'" },
     { argv: ['activate', 'v0002', '--timeout-s', 'abc'], message: "--timeout-s must be a positive number of seconds, got 'abc'" },
     { argv: ['activate', 'v0002', '--timeout-s=-1'], message: "--timeout-s must be a positive number of seconds, got '-1'" },
+    {
+      argv: ['activate', 'v0002', '--timeout-s', NINES],
+      message: `--timeout-s must be at most 2147483.647 seconds, got '${NINES}'`,
+    },
+    { argv: ['activate', 'v0002', '--timeout-s', '2147484'], message: "--timeout-s must be at most 2147483.647 seconds, got '2147484'" },
     { argv: ['status', '--gateway-url='], message: '--gateway-url must not be empty' },
     { argv: ['activate', 'v2'], message: "table version must match ^v\\d{4}$, got 'v2'" },
   ])('exits 2 with the usage text for $argv', async ({ argv, message }) => {
@@ -553,6 +734,32 @@ describe('repro:cutover CLI', () => {
     expect(line).toMatchObject({ ok: false, code: 2, error: { type: 'UsageError' }, usage: USAGE });
     expect(calls).toEqual([]);
   });
+
+  it.each([{ argv: ['--help'] }, { argv: ['status', '--help'] }, { argv: ['activate', 'v0002', '--help'] }])(
+    'prints the help text and exits 0 without a request for $argv',
+    async ({ argv }) => {
+      const { options, calls, headersFor } = clientFor([]);
+      const chunks: string[] = [];
+      const exit = vi.fn();
+
+      const code = await runCli((args) => main(args, options), {
+        argv,
+        stdout: { write: (chunk: string) => chunks.push(chunk) },
+        exit,
+        command: COMMAND,
+      });
+
+      const text = chunks.join('');
+      expect(code).toBe(0);
+      expect(exit).toHaveBeenCalledWith(0);
+      expect(text.startsWith(`${USAGE}\n`)).toBe(true);
+      expect(text).toContain('OPT2_GATEWAY_URL');
+      expect(text).toContain('repro:secrets');
+      expect(text).not.toMatch(/^\{/m);
+      expect(calls).toEqual([]);
+      expect(headersFor).not.toHaveBeenCalled();
+    },
+  );
 
   it('activate exits 1 with the findings when the gateway refuses the version', async () => {
     const { options } = clientFor([COMMIT_V0002[0] as Step, activateStep(422, { findings: FINDINGS })]);
@@ -591,6 +798,49 @@ describe('repro:cutover CLI', () => {
       error: { type: 'CutoverVisibilityTimeout' },
     });
     expect(sleeps(sleep)).toEqual([DEFAULT_POLL_MS, DEFAULT_POLL_MS]);
+  });
+
+  it('activate exits 1 naming the stalled request when the gateway does not answer within --timeout-s', async () => {
+    const { options } = clientFor([COMMIT_V0002[0] as Step, stalledActivation('response')]);
+
+    const { code, line } = await runCutoverCli(['activate', 'v0002', '--timeout-s', '0.05'], options);
+
+    expect(code).toBe(1);
+    expect(line).toEqual({
+      command: COMMAND,
+      ok: false,
+      code: 1,
+      tableVersion: 'v0002',
+      request: ACTIVATE_REQUEST,
+      timeoutMs: STALL_TIMEOUT_MS,
+      error: { type: 'CutoverRequestTimeout', message: `${ACTIVATE_REQUEST} did not complete within ${STALL_TIMEOUT_MS} ms` },
+    });
+  });
+
+  it('status exits 1 naming the stalled request once the default 30 s bound passes', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { options } = clientFor([stalledStatus('response')]);
+      let settled = false;
+      const pending = runCutoverCli(['status'], options).finally(() => (settled = true));
+
+      await vi.advanceTimersByTimeAsync(DEFAULT_VISIBILITY_TIMEOUT_MS - 1);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const { code, line } = await pending;
+
+      expect(code).toBe(1);
+      expect(line).toEqual({
+        command: COMMAND,
+        ok: false,
+        code: 1,
+        request: STATUS_REQUEST,
+        timeoutMs: DEFAULT_VISIBILITY_TIMEOUT_MS,
+        error: { type: 'CutoverRequestTimeout', message: `${STATUS_REQUEST} did not complete within ${DEFAULT_VISIBILITY_TIMEOUT_MS} ms` },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('exits 1 naming any other gateway failure', async () => {

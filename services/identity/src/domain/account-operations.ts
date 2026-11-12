@@ -1,7 +1,7 @@
 /** Account side of the roster write protocol: an idempotent prepared → committed → finished (or aborted, reverted) operation that keeps its user closed while open. */
 import { randomInt } from 'node:crypto';
 import { setTimeout as timerSleep } from 'node:timers/promises';
-import { LegacyApiError, cfEq, cfListToArray, javaTrim } from '@opt2/platform/legacy-compat';
+import { LegacyApiError, LegacyServiceUnavailableError, cfEq, cfListToArray, javaTrim } from '@opt2/platform/legacy-compat';
 import {
   OperationBlockedError,
   currentPosition,
@@ -200,6 +200,16 @@ export interface AwaitAccountOpenOptions {
   selfOperationId?: string;
 }
 
+/** A roster update halted instead of diverging: its pool switch would move the account to another user pool's tenant [legacy: core/mura/user/userBean.cfc:227-239]. */
+export class AccountSaveHaltedError extends LegacyServiceUnavailableError {
+  override readonly name: string = 'AccountSaveHaltedError';
+  readonly halt = 'pool-move';
+
+  constructor(readonly userId: string) {
+    super(`Account ${userId} would move to another user pool's tenant, which one transaction cannot write`, 'auto', 'account-pool-move');
+  }
+}
+
 /** The account columns a prepare reserves (create) or a commit writes (update). */
 interface PendingAccount {
   username: string;
@@ -220,6 +230,8 @@ interface PendingChange {
   /** Null leaves the memberships as stored. */
   memberships: { groupIds: string[]; originId: string | null } | null;
   sessionEffects?: SessionEffects;
+  /** True once finish applied `sessionEffects`, or found nothing to apply, in a committed transaction. */
+  sessionEffectsSettled?: boolean;
 }
 
 /** `account_operation.before_values`: the user's identity rows at prepare; timestamps as ISO text. */
@@ -501,6 +513,18 @@ function findRecorded(deps: AccountOperationDeps, tenantId: string, operationId:
   return withTenant(deps.db, tenantId, (tx) => deps.repo.findAccountOperation(tx, operationId));
 }
 
+/** Whether the stored account `userId` is absent from `tenantId` but held in another registered tenant. */
+async function heldInOtherTenant(deps: AccountOperationDeps, userId: string, tenantId: string): Promise<boolean> {
+  const { db, repo } = deps;
+  const holds = async (candidate: string): Promise<boolean> =>
+    (await withTenant(db, candidate, (tx) => repo.findAccountById(tx, userId, { includePending: true }))) !== null;
+  if (await holds(tenantId)) return false;
+  for (const other of await registeredTenantIds(db)) {
+    if (other !== tenantId && (await holds(other))) return true;
+  }
+  return false;
+}
+
 async function currentXid(tx: TenantTx): Promise<string> {
   const { rows } = await tx.query<{ xid: string }>('SELECT pg_current_xact_id()::text AS xid');
   return (rows[0] as { xid: string }).xid;
@@ -606,27 +630,60 @@ async function membershipGroups(
   });
 }
 
-/** Re-logs the session in from the saved rows as `loginByUserID` → `loginByQuery` do, without the plugin announcements [legacy: core/mura/user/userUtility.cfc:261-388]. */
-async function relogin(deps: AccountOperationDeps, tenantId: string, userId: string, sessionId: string, person: PersonFields | undefined): Promise<void> {
+/** Thrown in a re-login's session write when another finish settled the operation's session effect first, so this write rolls back. */
+class SessionEffectSettledError extends Error {
+  override readonly name = 'SessionEffectSettledError';
+}
+
+/** Marks the operation's session effect settled under its row lock; false when it was settled already or the operation left `committed`. */
+async function settleSessionEffect(repo: IdentityRepository, tx: TenantTx, operationId: string): Promise<boolean> {
+  const current = await repo.lockAccountOperation(tx, operationId);
+  if (current?.state !== 'committed') return false;
+  const pending = parsePending(current);
+  if (pending.sessionEffectsSettled === true) return false;
+  const patch = { pending_change: JSON.stringify({ ...pending, sessionEffectsSettled: true }) };
+  return repo.setAccountOperationState(tx, operationId, ['committed'], 'committed', patch, { operationId });
+}
+
+/** Re-logs the session in from the saved rows as `loginByUserID` → `loginByQuery` do, without the plugin announcements, and settles the operation's session effect [legacy: core/mura/user/userUtility.cfc:261-388]. */
+async function relogin(deps: AccountOperationDeps, located: LocatedOperation, sessionId: string, person: PersonFields | undefined): Promise<void> {
   const { db, repo, clock } = deps;
+  const { tenantId } = located;
+  const { operation_id: operationId, user_id: userId } = located.row;
   const session = await locateSession(deps, sessionId);
-  if (session === undefined || session.row.state !== 'active') return;
+  if (session === undefined || session.row.state !== 'active') {
+    await withTenant(db, tenantId, (tx) => settleSessionEffect(repo, tx, operationId));
+    return;
+  }
   const read = await withGatedTenant(db, tenantId, async (tx) => {
     const account = await repo.findAccountById(tx, userId);
-    if (account === null || flag(account.inactive) || !(await publicPoolAdmits(tx, account))) return null;
+    if (account === null || flag(account.inactive) || !(await publicPoolAdmits(tx, account))) {
+      await settleSessionEffect(repo, tx, operationId);
+      return null;
+    }
     const groupIds = await repo.membershipGroupIds(tx, userId);
     const own = await repo.findGroupsByIds(tx, groupIds);
     const credential = await repo.readCredential(tx, userId);
     // The snapshot carries the last login before this one.
     const loginState = await repo.findByKey<LoginStateRow>(tx, LOGIN_STATE.table, { userid: userId });
     const contact = person ?? (await repo.findPersonContact(tx, userId));
-    await repo.touchLastLogin(tx, userId, clock.now());
     return { account, credential, loginState, contact, groupIds, own };
   });
   if (read === null) return;
   const groups = await membershipGroups(deps, tenantId, read.groupIds, read.own);
   const snapshot = buildLoginSnapshot({ account: read.account, credential: read.credential, loginState: read.loginState, contact: read.contact, groups });
-  await applyLogin(deps, { sessionId, tenantId, snapshot, mode: session.row.mode, siteId: session.row.site_id });
+  // The session row, the last-login touch and the settled mark commit together; the touch is held with the operation's other rows.
+  const after = async (tx: TenantTx): Promise<void> => {
+    if (!(await settleSessionEffect(repo, tx, operationId))) {
+      throw new SessionEffectSettledError(`Account operation ${operationId} settled its session effect already`);
+    }
+    await repo.touchLastLogin(tx, userId, clock.now(), { operationId });
+  };
+  try {
+    await applyLogin(deps, { sessionId, tenantId, snapshot, mode: session.row.mode, siteId: session.row.site_id, after });
+  } catch (err) {
+    if (!(err instanceof SessionEffectSettledError)) throw err;
+  }
 }
 
 /** Validates and records the account part of a roster create or update and closes the user; a create reserves a `pending` account [legacy: core/mura/user/userManager.cfc:404-447,563-588]. */
@@ -651,6 +708,8 @@ export async function prepareAccountOperation(deps: AccountOperationDeps, input:
   const password = javaTrim(change.password);
   const errors = await validateAccount(deps, { userId, siteId, username, password });
   if (Object.keys(errors).length > 0) return { outcome: 'invalid', errors };
+  // One transaction binds one tenant, and people's person rows would have to move with the account, so a pool switch halts.
+  if (kind === 'update' && (await heldInOtherTenant(deps, userId, tenantId))) throw new AccountSaveHaltedError(userId);
 
   const credential = await credentialChange(deps, kind, password);
   const memberships = membershipChange(kind, change);
@@ -756,22 +815,20 @@ export async function revertAccountOperation(deps: AccountOperationDeps, operati
   return stepOutcome(settled, 'reverted');
 }
 
-/** Completes a committed operation: releases its held events, reopens the user, then performs a signalled re-login. */
+/** Completes a committed operation: settles a signalled re-login while the user is still closed, then releases its held events and reopens the user. */
 export async function finishAccountOperation(deps: AccountOperationDeps, operationId: string, input: StepInput = {}): Promise<StepOutcome> {
   const judged = judge(await locateOperation(deps, operationId), operationId, input, FINISH);
   if (judged.verdict !== 'proceed') return stepOutcome(judged, 'finished');
+  const { sessionEffects, sessionEffectsSettled } = parsePending(judged.located.row);
+  if (sessionEffects?.reloginSessionId !== undefined && sessionEffectsSettled !== true) {
+    await relogin(deps, judged.located, sessionEffects.reloginSessionId, sessionEffects.person);
+  }
   const settled = await runStep(deps, judged.located, input, FINISH, {
     apply: async (tx, row) => {
       await releaseOperation(tx, row.operation_id);
       await endOperation(tx, row.operation_id);
     },
   });
-  if (settled.verdict === 'performed') {
-    const effects = parsePending(settled.row).sessionEffects;
-    if (effects?.reloginSessionId !== undefined) {
-      await relogin(deps, judged.located.tenantId, settled.row.user_id, effects.reloginSessionId, effects.person);
-    }
-  }
   return stepOutcome(settled, 'finished');
 }
 
@@ -792,14 +849,15 @@ export const operationStatus: NonNullable<MigrationHandlerOptions['operationStat
   const pending = new Set(operationIds);
   for (const tenantId of await registeredTenantIds(db)) {
     if (pending.size === 0) break;
-    await withTenant(db, tenantId, async (tx) => {
-      for (const operationId of [...pending]) {
-        const row = await repo.findAccountOperation(tx, operationId);
-        if (row === null) continue;
-        statuses[operationId] = STATUS_OF_STATE[row.state];
-        pending.delete(operationId);
-      }
-    });
+    const rows = await withTenant(db, tenantId, (tx) => repo.findAccountOperations(tx, [...pending]));
+    // operation_id is char(35), whose equality ignores trailing spaces.
+    const stateOf = new Map(rows.map((row) => [row.operation_id.replace(/ +$/, ''), row.state]));
+    for (const operationId of [...pending]) {
+      const state = stateOf.get(operationId.replace(/ +$/, ''));
+      if (state === undefined) continue;
+      statuses[operationId] = STATUS_OF_STATE[state];
+      pending.delete(operationId);
+    }
   }
   return statuses;
 };

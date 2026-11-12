@@ -6,6 +6,7 @@ import { legacySettings } from '@/lib/env';
 import { okBody } from '@/lib/gateway-client';
 import { encodeHtml, encodeHtmlAttr, encodeJs, html, join, raw, type SafeHtml } from '@/lib/html';
 import { setSessionMuraValue } from '@/lib/request-context';
+import { relativeAdminUrl } from '@/lib/urls';
 import type { PageScreen, Rc, ScreenContext } from '../registry';
 
 type SiteListItem = components['schemas']['SiteListItem'];
@@ -64,10 +65,11 @@ function updateCoreGroup(ctx: ScreenContext): SafeHtml {
         '\\n\\nIf your are using MSSQL you must uncheck Maintain Connections in your CF administrator datasource settings before proceeding. You may turn it back on after the update is complete.',
       )
     : null;
+  const updateCoreUrl = raw(relativeAdminUrl('cSettings', 'list', [['action', 'updateCore']]));
   return html`
 \t\t\t\t<div class="btn-group">
 \t\t\t\t\t
-\t\t\t\t\t\t\t\t<a class="btn" href="#" onclick="confirmDialog('WARNING: Do not update your core files unless you have backed up your current Masa CMS install.${mssqlNote}',function(){actionModal('./?muraAction=cSettings.list&action=updateCore${ctx.csrf.render(UPDATE_CORE_CONTEXT, 'url')}')});return false;"><i class="mi-cloud-download"></i> Update Core Files</a>
+\t\t\t\t\t\t\t\t<a class="btn" href="#" onclick="confirmDialog('WARNING: Do not update your core files unless you have backed up your current Masa CMS install.${mssqlNote}',function(){actionModal('${updateCoreUrl}${ctx.csrf.render(UPDATE_CORE_CONTEXT, 'url')}')});return false;"><i class="mi-cloud-download"></i> Update Core Files</a>
 \t\t\t\t\t
 \t\t\t\t</div>
 \t\t\t`;
@@ -76,6 +78,7 @@ function updateCoreGroup(ctx: ScreenContext): SafeHtml {
 /** The `mura-header` with its toolbar. */
 function header(ctx: ScreenContext, byOrderNo: boolean): SafeHtml {
   const [sortBy, label] = byOrderNo ? ['site', 'Site Name'] : ['orderno', 'Bind Order'];
+  const sortHref = raw(relativeAdminUrl('cSettings', 'list', [['siteSortBy', sortBy]]));
   return html`
 <div class="mura-header">
 \t<h1>Global Settings</h1>
@@ -84,7 +87,7 @@ function header(ctx: ScreenContext, byOrderNo: boolean): SafeHtml {
 \t\t${updateCoreGroup(ctx)}
 \t\t\t<div class="btn-group">
 \t\t\t\t
-\t\t\t\t\t\t\t\t<a class="btn" href="./?muraAction=cSettings.list&siteSortBy=${raw(sortBy)}"><i class="mi-list-alt"></i> List Sites by ${raw(label)}</a>
+\t\t\t\t\t\t\t\t<a class="btn" href="${sortHref}"><i class="mi-list-alt"></i> List Sites by ${raw(label)}</a>
 \t\t\t\t
 \t\t\t</div>
 \t\t</div>
@@ -116,16 +119,22 @@ interface TableView {
 // the staging Deploy action always takes its non-bundle form.
 /** The row's Deploy action of a staging install. */
 function deployAction(item: SiteListItem): SafeHtml {
+  const href = raw(
+    relativeAdminUrl('cSettings', 'list', [['action', 'deploy'], ['siteid', item.siteid, 'raw']], { prefix: '?' }),
+  );
   return html`
-\t\t\t\t\t\t\t\t\t\t\t<li class="deploy"><a href="?muraAction=cSettings.list&action=deploy&siteid=${raw(item.siteid)}" onclick="return confirmDialog('Deploy ${raw(encodeJs(item.site))} to production?',this.href);"><i class="mi-download"></i>Deploy</a></li>
+\t\t\t\t\t\t\t\t\t\t\t<li class="deploy"><a href="${href}" onclick="return confirmDialog('Deploy ${raw(encodeJs(item.site))} to production?',this.href);"><i class="mi-download"></i>Deploy</a></li>
 \t\t\t\t\t\t\t\t\t\t`;
 }
 
 /** The row's Delete action, which legacy serves; every site but `default` has it. */
 function deleteAction(ctx: ScreenContext, item: SiteListItem): SafeHtml {
   const warning = `WARNING: A deleted site and all of its files cannot be recovered. Are you sure that you want to delete the site named '${(item.site ?? '').toUpperCase()}'?`;
+  const deleteUrl = raw(
+    relativeAdminUrl('cSettings', 'updateSite', [['action', 'delete'], ['siteid', item.siteid, 'raw']]),
+  );
   return html`
-\t\t\t\t\t\t\t\t\t\t<li class="delete"><a href="#" onclick="confirmDialog('${raw(encodeJs(warning))}',function(){actionModal('./?muraAction=cSettings.updateSite&action=delete&siteid=${raw(item.siteid)}${ctx.csrf.render(item.siteid, 'url')}')});return false;"><i class="mi-trash"></i>Delete</a></li>
+\t\t\t\t\t\t\t\t\t\t<li class="delete"><a href="#" onclick="confirmDialog('${raw(encodeJs(warning))}',function(){actionModal('${deleteUrl}${ctx.csrf.render(item.siteid, 'url')}')});return false;"><i class="mi-trash"></i>Delete</a></li>
 \t
 \t\t\t\t\t\t\t\t\t`;
 }
@@ -167,7 +176,7 @@ function deployCells(ctx: ScreenContext, item: SiteListItem): SafeHtml {
 
 /** One row of the Current Sites table; the site name is echoed unencoded, as legacy echoes it. */
 function siteRow(ctx: ScreenContext, item: SiteListItem, row: number, count: number, view: TableView): SafeHtml {
-  const siteid = raw(item.siteid);
+  const editHref = raw(relativeAdminUrl('cSettings', 'editSite', [['siteid', item.siteid, 'raw']]));
   const domain = item.domain ?? '';
   const domainCell = domain === '' ? raw('\n\t\t\t\t\t\t\t\t-\n\t\t\t\t\t\t\t') : spaced(raw(encodeHtml(domain)));
   return html`
@@ -176,14 +185,14 @@ function siteRow(ctx: ScreenContext, item: SiteListItem, row: number, count: num
 \t\t\t\t\t\t\t<a class="show-actions" href="javascript:;"  onclick="showTableControls(this);"><i class="mi-ellipsis-v"></i></a>
 \t\t\t\t\t\t\t<div class="actions-menu hide">
 \t\t\t\t\t\t\t\t<ul class="actions-list">
-\t\t\t\t\t\t\t\t\t<li class="edit"><a href="./?muraAction=cSettings.editSite&siteid=${siteid}"><i class="mi-pencil"></i>Edit</a></li>
+\t\t\t\t\t\t\t\t\t<li class="edit"><a href="${editHref}"><i class="mi-pencil"></i>Edit</a></li>
 \t\t\t\t\t\t\t\t\t${view.staging ? deployAction(item) : null}${cfEq(item.siteid, 'default') ? null : deleteAction(ctx, item)}
 \t\t\t\t\t\t\t\t\t
 \t\t\t\t\t\t\t</ul>
 \t\t\t\t\t\t</div>
 \t\t\t\t\t\t</td>
 \t\t\t\t\t\t${view.byOrderNo ? bindOrderCell(item, row, count) : null}
-\t\t\t\t\t\t<td class="var-width"><a title="Edit" href="./?muraAction=cSettings.editSite&siteid=${siteid}">${raw(item.site ?? '')}</a></td>
+\t\t\t\t\t\t<td class="var-width"><a title="Edit" href="${editHref}">${raw(item.site ?? '')}</a></td>
 \t\t\t\t\t\t<td>
 \t\t\t\t\t\t\t${domainCell}
 \t\t\t\t\t\t</td>
@@ -218,8 +227,10 @@ function sitesForm(ctx: ScreenContext, sites: readonly SiteListItem[], siteSortB
 \t\t\t\t\t</div>
 \t\t\t\t`
       : null;
+  // Legacy writes this form's circuit lower-case.
+  const action = raw(relativeAdminUrl('csettings', 'list'));
   return html`
-\t\t\t<form novalidate="novalidate" name="form1" id="form1" action="./?muraAction=csettings.list" method="post">
+\t\t\t<form novalidate="novalidate" name="form1" id="form1" action="${action}" method="post">
 \t\t\t\t<table class="mura-table-grid">
 \t\t\t\t\t<tr>
 \t\t\t\t\t\t<th class="actions"></th>
@@ -241,6 +252,7 @@ function sitesForm(ctx: ScreenContext, sites: readonly SiteListItem[], siteSortB
 /** The Install Plugin forms, which post to legacy-served plugin actions. */
 function installPluginForms(ctx: ScreenContext): SafeHtml {
   const csrf = ctx.csrf.render(NEW_PLUGIN_CONTEXT, 'form');
+  const action = raw(relativeAdminUrl('cSettings', 'deployPlugin'));
   return html`
 \t\t<div class="mura-file-selector">
 \t\t\t<div class="mura-control-group">
@@ -253,7 +265,7 @@ function installPluginForms(ctx: ScreenContext): SafeHtml {
 \t\t\t</div>
 
 \t\t\t<div id="appzip" class="fileTypeOption">
-\t\t\t\t<form novalidate="novalidate" name="frmNewPlugin" action="./?muraAction=cSettings.deployPlugin" enctype="multipart/form-data" method="post" onsubmit="return validateForm(this);">
+\t\t\t\t<form novalidate="novalidate" name="frmNewPlugin" action="${action}" enctype="multipart/form-data" method="post" onsubmit="return validateForm(this);">
 \t\t\t\t\t<div class="mura-control-group">
 \t\t\t\t\t\t  <label>Plugin File</label>
 \t\t\t\t\t\t\t<input name="newPlugin" type="file" data-required="true" message="Please select a plugin file.">
@@ -267,7 +279,7 @@ function installPluginForms(ctx: ScreenContext): SafeHtml {
 \t\t\t\t</form>
 \t\t\t</div>
 \t\t\t<div id="appurl" class="fileTypeOption" style="display:none;">
-\t\t\t\t<form name="frmNewPluginFROMURL" action="./?muraAction=cSettings.deployPlugin" method="post" onsubmit="return validateForm(this);">
+\t\t\t\t<form name="frmNewPluginFROMURL" action="${action}" method="post" onsubmit="return validateForm(this);">
 \t\t\t\t\t<div class="mura-control-group">
 \t\t\t\t\t\t\t<label>Plugin URL</label>
 \t\t\t\t\t\t\t<input type="text" name="newPlugin"  type="url" data-required="true" placeholder="http://www.domain.com/plugin.zip" message="Please enter the url for your plugin file" value="">

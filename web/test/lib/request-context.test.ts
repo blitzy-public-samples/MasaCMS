@@ -1,6 +1,6 @@
 // Tests of the legacy admin request set-up: FW/1 context, admin session, site data, cookies and request flags.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AuthDenial, INVOCATION_HEADER, assertSiteMatches } from '@opt2/platform/auth';
+import { AuthDenial, INVOCATION_HEADER, Roles, assertSiteMatches, moduleRole } from '@opt2/platform/auth';
 import type { MintUserTokenInput } from '@opt2/platform/testing';
 import { secure } from '@/lib/access-gate';
 import { authenticateRequest, type WebAuth } from '@/lib/auth';
@@ -53,6 +53,7 @@ const CURRENT_SESSION = routeKey('GET', 'identity', '/v1/sessions/current');
 const SESSION_SITES = routeKey('GET', 'identity', '/v1/sessions/current/sites');
 const ADMIN_STATE = routeKey('GET', 'identity', '/v1/sessions/current/admin-state');
 const SAVE_ADMIN_STATE = routeKey('POST', 'identity', '/v1/sessions/current/admin-state');
+const REVERSE_LOOKUP = routeKey('GET', 'identity', '/v1/permissions/reverse-lookup');
 const siteRoute = (siteId: string): string => routeKey('GET', 'programs-sites', `/v1/sites/${siteId}/shell`);
 const HREF_DOMAINS = routeKey('GET', 'programs-sites', '/v1/href-domains');
 
@@ -1064,6 +1065,62 @@ describe('buildAdminRequest', () => {
 
       expect(request).toMatchObject(expected);
       expect(request.headers.get(ORIGINAL_URL_HEADER)).toBe('/admin/');
+    });
+  });
+
+  describe('reverse permission lookup', () => {
+    const lookupReply = (granted: boolean): FakeRouteTable => ({
+      [REVERSE_LOOKUP]: { status: 200, body: { granted } },
+    });
+
+    it.each<[string, WebTestSubjectKey, Partial<MintUserTokenInput>, boolean]>([
+      ['anonymous', 'anonymous', {}, false],
+      ['an anonymous-session token', 'member', { sub: '' }, false],
+      ['Users module access', 'qaEditor', { roles: [Roles.systemUser, moduleRole(USERS_MODULE)] }, true],
+      ['S2', 'admin', {}, true],
+      ['the site admin', 'siteAdmin', {}, true],
+    ])('answers %s without asking identity', async (_label, subject, claims, granted) => {
+      const { request, gateway } = await build({ subject, claims, target: '/admin/', routes: lookupReply(!granted) });
+      gateway.reset();
+
+      await expect(request.reversePermLookUp()).resolves.toBe(granted);
+      expect(gateway.calls).toEqual([]);
+    });
+
+    it.each([true, false])('reads identity once per request for any other user, answering %s', async (granted) => {
+      const { request, gateway } = await build({
+        subject: 'qaEditor',
+        target: '/admin/',
+        routes: lookupReply(granted),
+      });
+      expect(callsOf(gateway)).not.toContain('identity /v1/permissions/reverse-lookup');
+      gateway.reset();
+
+      expect(await Promise.all([request.reversePermLookUp(), request.reversePermLookUp()])).toEqual([granted, granted]);
+      await expect(request.reversePermLookUp()).resolves.toBe(granted);
+      expect(gateway.calls).toEqual([
+        { service: 'identity', method: 'GET', path: '/v1/permissions/reverse-lookup', userToken: expect.any(String) },
+      ]);
+    });
+
+    it.each<[string, number, typeof GatewayDenialError | typeof GatewayUnavailableError, Record<string, unknown>]>([
+      [
+        'a refused lookup',
+        401,
+        GatewayDenialError,
+        { operation: 'getReversePermLookUp', message: 'getReversePermLookUp answered HTTP 401' },
+      ],
+      ['an unavailable identity', 503, GatewayUnavailableError, {}],
+    ])('propagates %s', async (_label, status, type, fields) => {
+      const { request } = await build({
+        subject: 'qaEditor',
+        target: '/admin/',
+        routes: { [REVERSE_LOOKUP]: { status } },
+      });
+      const lookedUp = request.reversePermLookUp();
+
+      await expect(lookedUp).rejects.toBeInstanceOf(type);
+      await expect(lookedUp).rejects.toMatchObject({ service: 'identity', status, ...fields });
     });
   });
 });

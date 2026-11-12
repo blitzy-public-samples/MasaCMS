@@ -17,6 +17,8 @@ export interface SeedCredentials {
   roles: Record<string, Record<string, string>>;
   /** Client secret per OAuth `clientID`. */
   oauthClients: Record<string, string>;
+  /** Password per `scenarioPasswords` name, for accounts golden scenarios create. */
+  generated: Record<string, string>;
 }
 
 const PASSWORD_BYTES = 18;
@@ -26,20 +28,21 @@ const PASSWORD_SUFFIX = 'a1A';
 const CLIENT_SECRET_BYTES = 32;
 const ROLE_SUBJECTS: readonly string[] = Object.freeze([...SYNTHETIC_ROLES, Roles.siteAdmin, Roles.systemUser]);
 
-/** Fresh random credentials for every seeded user and OAuth client; role subjects for sites with system users, a member subject for sites that store members. */
+/** Fresh random credentials for every seeded user, OAuth client and scenario password; role subjects for sites with system users, a member subject for sites that store members. */
 export function generateCredentials(
   dataset: Dataset,
   config: SeedConfig,
   deps: { randomBytes?: (n: number) => Buffer } = {},
 ): SeedCredentials {
   const random = deps.randomBytes ?? randomBytes;
+  const password = (): string => `${random(PASSWORD_BYTES).toString('base64url')}${PASSWORD_SUFFIX}`;
   const { masa } = dataset;
 
   const users: Record<string, Record<string, string>> = {};
   for (const row of masa.users) {
     const site = (users[row.siteID] ??= {});
     if (Object.hasOwn(site, row.username)) throw new RangeError(`Duplicate seeded username ${row.username} in site ${row.siteID}`);
-    site[row.username] = `${random(PASSWORD_BYTES).toString('base64url')}${PASSWORD_SUFFIX}`;
+    site[row.username] = password();
   }
 
   const index = indexMasa(masa, config);
@@ -56,7 +59,9 @@ export function generateCredentials(
   const oauthClients: Record<string, string> = {};
   for (const row of masa.oauthClients) oauthClients[row.clientID] = random(CLIENT_SECRET_BYTES).toString('base64url');
 
-  return { sourceSha: dataset.sourceSha, digest: dataset.digest, users, roles, oauthClients };
+  const generated: Record<string, string> = Object.fromEntries(config.scenarioPasswords.map((name) => [name, password()]));
+
+  return { sourceSha: dataset.sourceSha, digest: dataset.digest, users, roles, oauthClients, generated };
 }
 
 /** Writes `creds` to `<outDir>/credentials.json` and `<stateDir>/secrets/seed-credentials.json`, owner-only (files 0600, `secrets/` 0700). */
