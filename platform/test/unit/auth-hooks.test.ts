@@ -18,6 +18,7 @@ import {
   serviceRole,
   stripInboundAuthHeaders,
   validateRouteConfig,
+  type DenialResponse,
   type HeaderMap,
   type Opt2AuthContext,
   type Opt2RouteConfig,
@@ -528,6 +529,44 @@ describe('registerAuth fallbacks and options', () => {
     expect(res.body).toBe('authorization');
     expect(renderDenial).toHaveBeenCalledOnce();
     expect(renderDenial.mock.calls[0]?.[0]).toBeInstanceOf(AuthDenial);
+  });
+
+  it("renders a route's denials, role and site ones included, with the route's own renderDenial", async () => {
+    const instanceRender = vi.fn(() => ({ status: 418, headers: {}, body: 'instance' }));
+    const rendered: string[] = [];
+    const routeRender = async (denial: AuthDenial, request: FastifyRequest): Promise<DenialResponse> => {
+      rendered.push(request.url);
+      return { status: denial.statusCode, headers: { 'x-denial-reason': denial.reason }, body: `route ${denial.type}` };
+    };
+    const custom = trackedApp();
+    registerAuth(custom, { transports, renderDenial: instanceRender });
+    custom.get('/v1/fixture', { config: { opt2: { requires: [Roles.siteAdmin], renderDenial: routeRender } } }, ok);
+
+    const anonymous = await custom.inject({ url: '/v1/fixture' });
+    const member = await custom.inject({ url: '/v1/fixture', headers: await userHeaders([Roles.member]) });
+    const otherSite = await custom.inject({ url: `/v1/fixture?siteid=${SITE_B}`, headers: await userHeaders([Roles.siteAdmin]) });
+
+    expect([anonymous, member, otherSite].map((res) => [res.statusCode, res.headers['x-denial-reason'], res.body])).toStrictEqual([
+      [401, 'missing-credential', 'route authorization'],
+      [403, 'forbidden', 'route authorization'],
+      [403, 'site-mismatch', 'route authorization'],
+    ]);
+    expect(rendered).toStrictEqual(['/v1/fixture', '/v1/fixture', `/v1/fixture?siteid=${SITE_B}`]);
+    expect(instanceRender).not.toHaveBeenCalled();
+    expect(handled).not.toHaveBeenCalled();
+  });
+
+  it('passes a failing route renderDenial to the error handler', async () => {
+    const custom = trackedApp();
+    registerAuth(custom, { transports });
+    const renderDenial = (): Promise<never> => Promise.reject(new Error('renderer failed'));
+    custom.get('/v1/fixture', { config: { opt2: { requires: [Roles.s2], renderDenial } } }, ok);
+
+    const res = await custom.inject({ url: '/v1/fixture' });
+
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toMatchObject({ statusCode: 500, message: 'renderer failed' });
+    expect(handled).not.toHaveBeenCalled();
   });
 
   it('passes an authentication failure that is not a denial to the error handler', async () => {

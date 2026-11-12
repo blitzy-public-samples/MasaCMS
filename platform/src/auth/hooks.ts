@@ -17,6 +17,8 @@ export interface Opt2RouteConfig {
   siteCheck?: boolean;
   /** Gateway client-facing proxy route: public on the `service` transport, its legacy credentials left unparsed. */
   edge?: true;
+  /** Renders this route's denials in place of the instance renderer, e.g. in a legacy fixture's own error envelope. */
+  renderDenial?: DenialRenderer;
 }
 
 declare module 'fastify' {
@@ -31,6 +33,9 @@ declare module 'fastify' {
 /** Status, headers and exact body a denial is answered with. */
 export type DenialResponse = SerializedLegacyResponse;
 
+/** Renders a denial as the response it is answered with; a rejection passes to the route's error handler. */
+export type DenialRenderer = (denial: AuthDenial, request: FastifyRequest) => DenialResponse | Promise<DenialResponse>;
+
 /** One route registration, per method, as validated at start-up. */
 export interface RecordedRoute {
   method: string;
@@ -41,8 +46,8 @@ export interface RecordedRoute {
 /** Options of `registerAuth`. */
 export interface RegisterAuthOptions {
   transports: TransportSet;
-  /** Renders a denial; defaults to `renderAuthDenial`. */
-  renderDenial?: (denial: AuthDenial, request: FastifyRequest) => DenialResponse;
+  /** Renders a denial of a route that declares no `renderDenial`; defaults to `renderAuthDenial`. */
+  renderDenial?: DenialRenderer;
 }
 
 /** A route registered without a valid `config.opt2` declaration; fails start-up. */
@@ -102,9 +107,10 @@ export function validateRouteConfig(
 export function registerAuth(app: FastifyInstance, opts: RegisterAuthOptions): void {
   const render = opts.renderDenial ?? renderAuthDenial;
   const routes: RecordedRoute[] = [];
-  const deny = (err: unknown, request: FastifyRequest, reply: FastifyReply): FastifyReply => {
+  const deny = async (err: unknown, request: FastifyRequest, reply: FastifyReply): Promise<FastifyReply> => {
     if (err instanceof AuthDenial) {
-      return sendDenial(reply, render(err, request));
+      const routeRender = request.routeOptions.config.opt2?.renderDenial;
+      return sendDenial(reply, await (routeRender ?? render)(err, request));
     }
     throw err;
   };

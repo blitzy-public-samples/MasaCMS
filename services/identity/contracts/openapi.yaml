@@ -2293,7 +2293,7 @@ paths:
       - $ref: '#/components/parameters/ContentId'
     get:
       operationId: getContentPermissions
-      summary: Reads each system group's verdict on a content node, as `cperm.main` shows it.
+      summary: Reads each system and member group's verdict on a content node, as `cperm.main` shows it.
       tags: [permissions]
       x-opt2-transport: service
       x-opt2-requires:
@@ -2866,7 +2866,7 @@ paths:
       x-opt2-transport: service
       x-opt2-requires:
         - service:people
-      x-opt2-fastify-path: /internal/v1/accounts/:userId/operations/:operationId::prepare
+      x-opt2-fastify-path: /internal/v1/accounts/:userId/operations/:operationId(.+)::prepare
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       requestBody:
         required: true
@@ -2909,7 +2909,7 @@ paths:
       x-opt2-transport: service
       x-opt2-requires:
         - service:people
-      x-opt2-fastify-path: /internal/v1/accounts/:userId/operations/:operationId::commit
+      x-opt2-fastify-path: /internal/v1/accounts/:userId/operations/:operationId(.+)::commit
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       responses:
         '200':
@@ -2940,7 +2940,7 @@ paths:
       x-opt2-transport: service
       x-opt2-requires:
         - service:people
-      x-opt2-fastify-path: /internal/v1/accounts/:userId/operations/:operationId::abort
+      x-opt2-fastify-path: /internal/v1/accounts/:userId/operations/:operationId(.+)::abort
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       responses:
         '200':
@@ -2964,7 +2964,7 @@ paths:
       x-opt2-transport: service
       x-opt2-requires:
         - service:people
-      x-opt2-fastify-path: /internal/v1/accounts/:userId/operations/:operationId::finish
+      x-opt2-fastify-path: /internal/v1/accounts/:userId/operations/:operationId(.+)::finish
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       responses:
         '200':
@@ -2988,7 +2988,7 @@ paths:
       x-opt2-transport: service
       x-opt2-requires:
         - service:people
-      x-opt2-fastify-path: /internal/v1/accounts/:userId/operations/:operationId::revert
+      x-opt2-fastify-path: /internal/v1/accounts/:userId/operations/:operationId(.+)::revert
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       responses:
         '200':
@@ -5185,13 +5185,28 @@ components:
         - read
         - deny
         - none
+    ContentGroupVerdict:
+      type: object
+      required:
+        - groupId
+        - groupName
+        - perm
+      additionalProperties: false
+      properties:
+        groupId:
+          $ref: '#/components/schemas/CfUuid'
+        groupName:
+          type: string
+        perm:
+          $ref: '#/components/schemas/PermissionVerdict'
     ContentPermissions:
       type: object
-      description: Every system group but `Admin`, by group name.
+      description: The node verdicts of every system group but `Admin`, then of every member group, each by group name.
       required:
         - contentId
         - siteId
         - groups
+        - publicGroups
       additionalProperties: false
       properties:
         contentId:
@@ -5200,20 +5215,14 @@ components:
           type: string
         groups:
           type: array
+          description: System groups but `Admin`.
           items:
-            type: object
-            required:
-              - groupId
-              - groupName
-              - perm
-            additionalProperties: false
-            properties:
-              groupId:
-                $ref: '#/components/schemas/CfUuid'
-              groupName:
-                type: string
-              perm:
-                $ref: '#/components/schemas/PermissionVerdict'
+            $ref: '#/components/schemas/ContentGroupVerdict'
+        publicGroups:
+          type: array
+          description: Member groups.
+          items:
+            $ref: '#/components/schemas/ContentGroupVerdict'
     ModuleGroupGrant:
       type: object
       required:
@@ -5265,6 +5274,9 @@ components:
                 $ref: '#/components/schemas/CfUuid'
         topid:
           type: string
+        moduleid:
+          type: string
+          description: The form's module id, which selects the CSRF context and the redirect; the path id when absent.
         csrf_token:
           type: string
         csrf_token_expires:

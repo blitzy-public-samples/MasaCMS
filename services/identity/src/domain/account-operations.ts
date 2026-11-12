@@ -321,7 +321,7 @@ function messageFormat(pattern: string, arg: string): string {
 }
 
 /** `getRandomPassword(12, 'alphanumeric', 'yes')` [legacy: core/mura/user/userUtility.cfc:696-747]. */
-function randomPassword(): string {
+export function randomPassword(): string {
   let password = '';
   for (let i = 0; i < RANDOM_LENGTH; i += 1) {
     password += RANDOM_CHARSET[randomInt(RANDOM_CHARSET.length)];

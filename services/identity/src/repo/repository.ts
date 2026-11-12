@@ -397,6 +397,8 @@ export interface IdentityRepository extends Repository {
     input: { groupId: string; categoryIds: readonly string[]; onlyCategoryIds?: readonly string[] },
     ctx?: WriteContext,
   ): Promise<void>;
+  /** The group's interest category ids, by category id [legacy: core/mura/user/userDAO.cfc:674-682]. */
+  groupInterestIds(tx: TenantTx, groupId: string): Promise<string[]>;
   /** Deletes the group's tags, then inserts each trimmed, non-empty item of the comma list `tags` [legacy: core/mura/user/userDAO.cfc:895-922]. */
   replaceGroupTags(tx: TenantTx, input: { groupId: string; siteId: string; tags: string | null }, ctx?: WriteContext): Promise<GroupTagRow[]>;
   /** Deletes every tag of the group; returns the number deleted. */
@@ -665,6 +667,8 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     `SELECT categoryid FROM ${interest} WHERE tenant_id = $1 AND userid = $2` +
     ' AND ($3::bpchar[] IS NULL OR categoryid = ANY($3::bpchar[])) ORDER BY categoryid FOR UPDATE';
   const interestIdsSql = `SELECT categoryid FROM ${interest} WHERE tenant_id = $1 AND userid = $2`;
+  // The clustered (userID, categoryID) key orders legacy's unordered read.
+  const orderedInterestIdsSql = `${interestIdsSql} ORDER BY categoryid`;
   const lockTagsSql = `SELECT tagid FROM ${tag} WHERE tenant_id = $1 AND userid = $2 ORDER BY tagid FOR UPDATE`;
   const lockFavoritesSql = `SELECT favoriteid FROM ${favorite} WHERE tenant_id = $1 AND userid = $2 ORDER BY favoriteid FOR UPDATE`;
   const lockExtendByBaseSql = `SELECT dataid FROM ${extendData} WHERE tenant_id = $1 AND baseid = $2 ORDER BY dataid FOR UPDATE`;
@@ -1123,6 +1127,11 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
       await base.insert(tx, GROUP_INTEREST.table, { userid: input.groupId, categoryid: categoryId }, ctx);
       held.add(charKey(categoryId));
     }
+  }
+
+  async function groupInterestIds(tx: TenantTx, groupId: string): Promise<string[]> {
+    const rows = await readUnits<{ categoryid: string }>(tx, GROUP_INTEREST.unit, orderedInterestIdsSql, [tx.tenantId, groupId]);
+    return rows.map((row) => row.categoryid);
   }
 
   /** Deletes every tag stored for `groupId`. */
@@ -1660,6 +1669,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     listGroupAddresses,
     deleteGroupAddresses,
     replaceGroupInterests,
+    groupInterestIds,
     replaceGroupTags,
     deleteGroupTags,
     deleteGroupFavorites,
