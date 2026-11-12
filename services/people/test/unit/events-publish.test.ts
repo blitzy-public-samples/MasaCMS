@@ -1,7 +1,8 @@
-/** People's topics and outbox producer: topic names and validators, payload builders, versions, held rows, archives and the state events of migration applies. */
+/** People's topics and outbox producer: topic names and validators, payload builders, versions and tombstones, held rows, archives and the state events of migration applies. */
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Roles } from '@opt2/platform/auth';
+import { consumeEnvelope, subscriptionName, type ConsumerDefinition, type DestinationResult, type EventEnvelope } from '@opt2/platform/events';
 import { cfUuid } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import {
@@ -14,8 +15,17 @@ import {
 } from '@opt2/platform/migration-kit';
 import { OutboxPayloadError, createOutbox, releaseOperation } from '@opt2/platform/outbox';
 import { newRequestContext, runWithRequestContext } from '@opt2/platform/service-kit';
-import type { TenantTx } from '@opt2/platform/tenancy';
-import { TENANT_A, createCapturingPublisher, createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
+import { tenantRegistryConsumer, type TenantTx } from '@opt2/platform/tenancy';
+import {
+  TENANT_A,
+  createCapturingPublisher,
+  createThrowawaySchema,
+  fixedClock,
+  pgAvailable,
+  registryPayloads,
+  testEnvelope,
+  type ThrowawaySchema,
+} from '@opt2/platform/testing';
 import { createPeopleEvents, personArchivedPayload, personChangedPayload, type PeopleEvents } from '../../src/events/publish.js';
 import {
   GROUP_CHANGED_TOPIC,
@@ -28,6 +38,7 @@ import {
   personArchivedSchema,
   personChangedSchema,
   siteChangedSchema,
+  type PersonChangedPayload,
 } from '../../src/events/topics.js';
 import { createPeopleRepository, type PeopleRepository, type PersonInput } from '../../src/repo/repository.js';
 import { ADDRESS, PEOPLE_UNITS, PERSON, type PersonArchiveRow, type PersonRow } from '../../src/repo/tables.js';
@@ -163,6 +174,7 @@ describe.skipIf(!available)('people events against PostgreSQL', () => {
   let repo: PeopleRepository;
   let events: PeopleEvents;
   const capture = createCapturingPublisher();
+  const logger = createLogger({ service: 'people', version: '1.0.0', env: 'local', destination: { write: () => undefined } });
 
   beforeAll(async () => {
     handle = await createThrowawaySchema({ service: 'people', migrationsDir: fileURLToPath(new URL('../../db/migrations', import.meta.url)) });
@@ -170,9 +182,13 @@ describe.skipIf(!available)('people events against PostgreSQL', () => {
     await closeGates(handle.app, { units: PEOPLE_UNITS, holderId: 'events-publish-test', allowLegacy: true });
     await openGates(handle.app, { units: PEOPLE_UNITS, holderId: 'events-publish-test', state: 'open' });
     repo = createPeopleRepository({ clock: CLOCK, schema: handle.schema });
-    const logger = createLogger({ service: 'people', version: '1.0.0', env: 'local', destination: { write: () => undefined } });
     createOutbox({ service: 'people', db: handle.app, publisher: capture, logger, clock: CLOCK, payloadValidators: peoplePayloadValidators });
     events = createPeopleEvents(repo);
+    // The consumer's tenant re-check needs tenant A in the registry.
+    const site = registryPayloads().find((payload) => payload.siteId === TENANT_A.siteId);
+    if (site === undefined) throw new Error('no registry fixture for tenant A');
+    const registration = testEnvelope({ topic: SITE_CHANGED_TOPIC, tenantId: TENANT_A.tenantId, aggregateId: site.siteId, payload: site });
+    await consumeEnvelope(handle.app, tenantRegistryConsumer, registration, { subscription: subscriptionName('people', SITE_CHANGED_TOPIC), messageId: 'site', logger });
   });
 
   afterAll(async () => {
@@ -241,6 +257,45 @@ describe.skipIf(!available)('people events against PostgreSQL', () => {
       ...overrides,
     };
   }
+
+  /** Creates, updates, deletes and recreates one person through the repository, publishing each state; returns its user id. */
+  async function domainLifecycle(): Promise<string> {
+    const { userid } = await inTenant(async (tx) => {
+      const created = await repo.insertPerson(tx, personInput());
+      await events.publishPersonChanged(tx, created);
+      return created;
+    });
+    await inTenant(async (tx) => {
+      const updated = await repo.updatePerson(tx, userid, personInput({ userid, fname: 'Patricia' }));
+      await events.publishPersonChanged(tx, updated as PersonRow);
+    });
+    await inTenant(async (tx) => {
+      const before = await repo.delete<PersonRow>(tx, PERSON.table, { userid });
+      await events.publishPersonChanged(tx, before as PersonRow, { deleted: true });
+    });
+    await inTenant(async (tx) => events.publishPersonChanged(tx, await repo.insertPerson(tx, personInput({ userid }))));
+    return userid;
+  }
+
+  /** The same lifecycle as legacy-window applies through `emitStateEvents`; returns the user id. */
+  async function migrationLifecycle(): Promise<string> {
+    const write = migrationWrite('legacy-window');
+    const userid = cfUuid();
+    const seed = { userid, lname: 'Rated', siteid: TENANT_A.siteId, subscribe: 0 };
+    for (const [op, fname] of [['insert', 'Mig'], ['update', 'Migrated'], ['delete', 'Migrated'], ['insert', 'Restored']] as const) {
+      await inTenant(async (tx) => {
+        const image =
+          op === 'delete'
+            ? await repo.delete<PersonRow>(tx, PERSON.table, { userid }, write)
+            : await repo.upsert<PersonRow>(tx, PERSON.table, { ...seed, fname }, write);
+        await events.emitStateEvents(tx, change(PERSON.unit, PERSON.table, op, image as PersonRow, 'legacy-window'), write);
+      });
+    }
+    return userid;
+  }
+
+  const lifecycles = { domain: domainLifecycle, migration: migrationLifecycle };
+  const CONTACT_SUBSCRIPTION = subscriptionName('identity', PERSON_CHANGED_TOPIC);
 
   it('writes a person state at its row_version and a delete one past it, publishing each after commit', async () => {
     const person = await inTenant(async (tx) => {
@@ -343,6 +398,57 @@ describe.skipIf(!available)('people events against PostgreSQL', () => {
       [PERSON_CHANGED_TOPIC, 3, 'Migrated', true],
     ]);
     expect(capture.published).toHaveLength(3);
+  });
+
+  it.each([
+    ['domain', 'target'],
+    ['migration', 'legacy-window'],
+  ] as const)('continues a person recreated through the %s path past its tombstone, at versions 1 to 4', async (path, origin) => {
+    const userid = await lifecycles[path]();
+
+    expect((await outboxRows(userid)).map((row) => [row.envelope.aggregateVersion, row.envelope.payload.deleted])).toStrictEqual([
+      [1, false],
+      [2, false],
+      [3, true],
+      [4, false],
+    ]);
+    expect(capture.published).toHaveLength(4);
+    expect(await inTenant((tx) => repo.personTombstoneVersion(tx, userid))).toBe('3');
+    expect((await inTenant((tx) => repo.findPerson(tx, userid)))?.row_version).toBe('4');
+    const log = await inTenant(async (tx) => {
+      const sql = `SELECT op, origin FROM ${handle.schema}.changelog WHERE "table" = 'person_tombstone' AND key LIKE $1 ORDER BY seq`;
+      return (await tx.query<{ op: string; origin: string }>(sql, [`%${userid}%`])).rows;
+    });
+    expect(log).toStrictEqual([{ op: 'insert', origin }]);
+  });
+
+  it.each([
+    ['domain', 'the update late', [1, 3, 4, 2], ['applied', 'applied', 'applied', 'stale']],
+    ['domain', 'the recreate before the delete', [1, 4, 3, 2], ['applied', 'applied', 'stale', 'stale']],
+    ['migration', 'the update late', [1, 3, 4, 2], ['applied', 'applied', 'applied', 'stale']],
+    ['migration', 'the recreate before the delete', [1, 4, 3, 2], ['applied', 'applied', 'stale', 'stale']],
+  ] as const)('leaves a state consumer on the person recreated through the %s path when it receives %s', async (path, _order, versions, results) => {
+    const userid = await lifecycles[path]();
+    const stored = new Map((await outboxRows(userid)).map((row) => [row.envelope.aggregateVersion, row.envelope as unknown as EventEnvelope<PersonChangedPayload>]));
+    const projection = new Map<string, { version: number; deleted: boolean }>();
+    const contacts: ConsumerDefinition<PersonChangedPayload> = {
+      topic: PERSON_CHANGED_TOPIC,
+      kind: 'state',
+      apply: (_tx, envelope) => {
+        projection.set(envelope.aggregateId, { version: envelope.aggregateVersion, deleted: envelope.payload.deleted });
+      },
+    };
+
+    const outcomes: DestinationResult[] = [];
+    for (const version of versions) {
+      const envelope = stored.get(version);
+      if (envelope === undefined) throw new Error(`no outbox row at version ${version}`);
+      const outcome = await consumeEnvelope(handle.app, contacts, envelope, { subscription: CONTACT_SUBSCRIPTION, messageId: envelope.eventId, logger });
+      outcomes.push(...outcome.destinations.map((destination) => destination.result));
+    }
+
+    expect(outcomes).toStrictEqual(results);
+    expect(projection.get(userid)).toStrictEqual({ version: 4, deleted: false });
   });
 
   it('writes no event for an applied change of another people unit', async () => {

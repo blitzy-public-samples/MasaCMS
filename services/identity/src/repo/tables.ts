@@ -103,7 +103,7 @@ const GROUP_ACCOUNT_COLUMNS = [
   { name: 'row_version', type: 'i' },
 ] as const satisfies Columns;
 
-/** `identity.group_account`: Masa `tusers` Type=1 rows, plus the target-only `row_version` of `identity.group.changed.v1`. */
+/** `identity.group_account`: Masa `tusers` Type=1 rows, plus the target-only `row_version` that counts the row's target saves. */
 export const GROUP_ACCOUNT = unitTable('identity.group_account', GROUP_ACCOUNT_COLUMNS, ['userid']);
 
 const USER_ACCOUNT_COLUMNS = [
@@ -404,7 +404,7 @@ const AGGREGATE_VERSION_COLUMNS = [
   { name: 'row_version', type: 'i' },
 ] as const satisfies Columns;
 
-/** `identity.aggregate_version`: per-aggregate event sequences of membership and permission events. */
+/** `identity.aggregate_version`: per-aggregate event sequences of identity's topics, kept across a group's deletion. */
 export const AGGREGATE_VERSION = nonUnitTable('aggregate_version', AGGREGATE_VERSION_COLUMNS, ['aggregate_type', 'aggregate_id']);
 
 /** Table definitions position for position with the unit tuple `T`. */

@@ -323,6 +323,9 @@ export type AccountRecordRow = Omit<UserAccountRow, 'tenant_id'> &
   Pick<CredentialRow, 'passwordcreated'> &
   Pick<LoginStateRow, 'lastlogin'> & { closed: boolean };
 
+/** An account found by its contact's email, with the contact's names. */
+export type EmailAccountRow = UserAccountRow & Pick<PersonContactRow, 'fname' | 'lname'>;
+
 /** One group of a user pool as `getPrivateGroups`/`getPublicGroups` list it. */
 export type PoolGroupRow = Pick<GroupAccountRow, 'userid' | 'groupname' | 'perm'> & { siteid: string; ispublic: 0 | 1 };
 
@@ -565,8 +568,10 @@ export interface IdentityRepository extends Repository {
   upsertPersonContact(tx: TenantTx, row: PersonContactInput, ctx?: WriteContext): Promise<PersonContactRow>;
   /** The contact of `userId`; null when absent. */
   findPersonContact(tx: TenantTx, userId: string): Promise<PersonContactRow | null>;
-  /** Contacts whose email matches case-insensitively, by user id. */
+  /** Contacts whose email equals `email` as SQL Server compares the address, by user id. */
   findContactsByEmail(tx: TenantTx, email: string): Promise<PersonContactRow[]>;
+  /** Active Type=2 accounts whose contact email equals `email` as SQL Server compares it, with the contact's names, by userid; only `userId` when given. */
+  findAccountsByEmail(tx: TenantTx, email: string, userId?: string): Promise<EmailAccountRow[]>;
   /** Adds 1 to the aggregate's event sequence, starting at 1, and returns it. */
   nextAggregateVersion(tx: TenantTx, aggregateType: string, aggregateId: string, ctx?: WriteContext): Promise<number>;
 }
@@ -743,7 +748,12 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     ` AND (($3::text IS NOT NULL AND user_id = $3) OR ($4::text IS NOT NULL AND (username::bpchar COLLATE ${legacyCi}) = $4::bpchar))` +
     ' ORDER BY created_at, operation_id LIMIT 1';
   const lockOperationSql = `SELECT state FROM ${accountOperation} WHERE tenant_id = $1 AND operation_id = $2 FOR UPDATE`;
-  const contactsByEmailSql = `SELECT * FROM ${personContact} WHERE tenant_id = $1 AND lower(email) = lower($2) ORDER BY user_id`;
+  const contactsByEmailSql =
+    `SELECT * FROM ${personContact} WHERE tenant_id = $1 AND (email::bpchar COLLATE ${legacyCi}) = $2::bpchar ORDER BY user_id`;
+  const accountsByEmailSql =
+    `SELECT u.*, c.fname, c.lname FROM ${personContact} c JOIN ${userAccount} u ON u.tenant_id = c.tenant_id AND u.userid = c.user_id` +
+    ` WHERE c.tenant_id = $1 AND (c.email::bpchar COLLATE ${legacyCi}) = $2::bpchar AND u.type = 2 AND u.inactive = 0` +
+    " AND u.opt2_state = 'active' AND ($3::bpchar IS NULL OR u.userid = $3::bpchar) ORDER BY u.userid";
   const lockAggregateSql =
     `SELECT row_version FROM ${aggregateVersion} WHERE tenant_id = $1 AND aggregate_type = $2 AND aggregate_id = $3 FOR UPDATE`;
 
@@ -966,7 +976,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     actor: AuditActor | null,
     ctx: WriteContext = {},
   ): Promise<GroupAccountRow | null> {
-    // Locked first, so concurrent saves never publish the same row_version.
+    // Locked first, so concurrent saves serialise and draw their event versions in commit order.
     const current = (await readUnits<GroupAccountRow>(tx, GROUP_ACCOUNT.unit, lockGroupSql, [tx.tenantId, groupId]))[0];
     if (current === undefined) {
       return null;
@@ -1610,6 +1620,10 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     return select<PersonContactRow>(tx, contactsByEmailSql, [tx.tenantId, email]);
   }
 
+  function findAccountsByEmail(tx: TenantTx, email: string, userId?: string): Promise<EmailAccountRow[]> {
+    return readUnits<EmailAccountRow>(tx, USER_ACCOUNT.unit, accountsByEmailSql, [tx.tenantId, email, userId ?? null]);
+  }
+
   async function nextAggregateVersion(tx: TenantTx, aggregateType: string, aggregateId: string, ctx: WriteContext = {}): Promise<number> {
     const key = { aggregate_type: aggregateType, aggregate_id: aggregateId };
     const bump = async (): Promise<number | null> => {
@@ -1731,6 +1745,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     upsertPersonContact,
     findPersonContact,
     findContactsByEmail,
+    findAccountsByEmail,
     nextAggregateVersion,
   });
 }

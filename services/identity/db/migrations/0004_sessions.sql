@@ -83,9 +83,9 @@ ALTER TABLE identity.person_contact ENABLE ROW LEVEL SECURITY; ALTER TABLE ident
 CREATE POLICY tenant_isolation ON identity.person_contact
   USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
-CREATE INDEX person_contact_tenant_email_idx ON identity.person_contact (tenant_id, lower(email));
+CREATE INDEX person_contact_tenant_email_idx ON identity.person_contact (tenant_id, ((email::bpchar) COLLATE identity.legacy_ci), user_id);
 
--- Per-aggregate event sequence of membership and permission events; group aggregates use group_account.row_version.
+-- Per-aggregate event sequence of identity's topics; it outlives a deleted group, so a recreated group continues it.
 CREATE TABLE identity.aggregate_version (
   tenant_id uuid NOT NULL,
   aggregate_type text NOT NULL,

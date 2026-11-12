@@ -5,14 +5,18 @@ import {
   type ConsumerDefinition,
   type ConsumerRegistration,
 } from '@opt2/platform/events';
+import { registryEntryForTenant, tenantForRegisteredSite } from '@opt2/platform/tenancy';
 import type { PersonChangedPayload } from '../generated/events/people.person.changed.v1.js';
-import type { IdentityRepository } from '../repo/repository.js';
+import { charKey, type IdentityRepository } from '../repo/repository.js';
 import { PERSON_CONTACT } from '../repo/tables.js';
 
 export type { PersonChangedPayload };
 
 /** Topic of people's full-state person event. */
 export const PERSON_CHANGED_TOPIC = 'people.person.changed.v1';
+
+/** Aggregate type of people's person events, whose aggregate id is the person's user id. */
+export const PERSON_AGGREGATE_TYPE = 'person';
 
 /** Push subscription of identity on the person topic. */
 export const PERSON_CONTACT_SUBSCRIPTION = subscriptionName('identity', PERSON_CHANGED_TOPIC);
@@ -22,11 +26,23 @@ export const personChangedSchema = readTopicSchema(
   new URL('../../../people/contracts/events/people.person.changed.v1.json', import.meta.url),
 );
 
-/** Stores or removes the contact of each applied person state in the envelope tenant, through the repository so the changelog row commits with it. */
+/**
+ * Stores or removes the contact of each applied person state in the envelope tenant, through the repository so the changelog row commits with it.
+ * A state whose site the registry does not give that tenant, or whose user is not the envelope's person aggregate, is dead-lettered unapplied.
+ */
 export function personContactConsumer(repository: IdentityRepository): ConsumerDefinition<PersonChangedPayload> {
   return {
     topic: PERSON_CHANGED_TOPIC,
     kind: 'state',
+    async checkTenant(tx, envelope) {
+      const { payload } = envelope;
+      // The site in SQL Server equality form: trailing spaces are insignificant, leading ones are not.
+      if ((await tenantForRegisteredSite(tx, charKey(payload.siteId))) !== tx.tenantId) {
+        // An unregistered destination keeps the platform default's classification.
+        return (await registryEntryForTenant(tx, tx.tenantId)) === null ? 'invalid-tenant' : false;
+      }
+      return envelope.aggregateType === PERSON_AGGREGATE_TYPE && charKey(payload.userId) === charKey(envelope.aggregateId);
+    },
     async apply(tx, envelope) {
       const { payload } = envelope;
       if (payload.deleted) {

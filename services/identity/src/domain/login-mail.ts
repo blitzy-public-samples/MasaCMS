@@ -14,8 +14,8 @@ import {
 } from '@opt2/platform/tenancy';
 import type { IdentityEvents, LoginMailRequestedPayload } from '../events/publish.js';
 import { hashNewPassword, type LegacyPasswordConfig } from '../legacy/hash.js';
-import { charKey, type IdentityRepository } from '../repo/repository.js';
-import { REDIRECT, type PersonContactRow, type RedirectRow, type UserAccountRow } from '../repo/tables.js';
+import { charKey, type EmailAccountRow, type IdentityRepository } from '../repo/repository.js';
+import { REDIRECT, type RedirectRow, type UserAccountRow } from '../repo/tables.js';
 import { DEFAULT_ACCOUNT_SETTINGS, awaitAccountOpen } from './account-operations.js';
 
 /** The forgot-password address check, applied to the trimmed address as a prefix match [legacy: core/mura/user/userUtility.cfc:421]. */
@@ -104,7 +104,7 @@ export function legacyUrlStem(siteId: string, filename: string, opts: UrlStemOpt
 /** Dependencies of the login-mail operations; `password` defaults to the Masa password settings, `sleep` to a timer. */
 export interface LoginMailDeps {
   db: TenantDb;
-  repo: Pick<IdentityRepository, 'findContactsByEmail' | 'findAccountById' | 'writeCredential' | 'removePrevRedirects' | 'insert'>;
+  repo: Pick<IdentityRepository, 'findAccountsByEmail' | 'writeCredential' | 'removePrevRedirects' | 'insert'>;
   events: Pick<IdentityEvents, 'publishLoginMailRequested'>;
   clock: Clock;
   settings: LoginMailSettingsSource;
@@ -206,12 +206,6 @@ interface ResetCredential {
 interface PoolScope {
   tenantId: string;
   admits(account: UserAccountRow): boolean;
-}
-
-/** One account getUserByEmail returns, with the contact it was found by. */
-interface EmailMatch {
-  account: UserAccountRow;
-  contact: PersonContactRow;
 }
 
 /** getRandomPassword(12, 'alphanumeric', 'yes') [legacy: core/mura/user/userUtility.cfc:696-747]. */
@@ -471,21 +465,14 @@ async function poolScopes(db: TenantDb, siteId: string): Promise<PoolScope[]> {
   });
 }
 
-/** The active `type=2`, `inactive=0` accounts of `scope` whose contact has `email`, by user id. */
-async function emailMatches(repo: LoginMailDeps['repo'], tx: TenantTx, scope: PoolScope, email: string): Promise<EmailMatch[]> {
-  const matches: EmailMatch[] = [];
-  for (const contact of await repo.findContactsByEmail(tx, email)) {
-    const account = await repo.findAccountById(tx, contact.user_id);
-    if (account !== null && account.type === 2 && account.inactive === 0 && scope.admits(account)) {
-      matches.push({ account, contact });
-    }
-  }
-  return matches;
+/** The active `type=2`, `inactive=0` accounts of `scope` whose contact has `email`, by user id; only `userId` when given. */
+async function emailMatches(repo: LoginMailDeps['repo'], tx: TenantTx, scope: PoolScope, email: string, userId?: string): Promise<EmailAccountRow[]> {
+  return (await repo.findAccountsByEmail(tx, email, userId)).filter((account) => scope.admits(account));
 }
 
 /** sendLoginByEmail skips a user whose username is empty [legacy: core/mura/user/userUtility.cfc:428]. */
-function hasUsername(match: EmailMatch): boolean {
-  return (match.account.username ?? '') !== '';
+function hasUsername(account: Pick<UserAccountRow, 'username'>): boolean {
+  return (account.username ?? '') !== '';
 }
 
 /**
@@ -499,7 +486,7 @@ export async function sendLoginByEmail(deps: LoginMailDeps, input: SendLoginByEm
   const candidates: Array<{ scope: PoolScope; userId: string }> = [];
   for (const scope of await poolScopes(deps.db, input.siteId)) {
     const matches = await withGatedTenant(deps.db, scope.tenantId, (tx) => emailMatches(deps.repo, tx, scope, email));
-    candidates.push(...matches.filter(hasUsername).map((match) => ({ scope, userId: match.account.userid })));
+    candidates.push(...matches.filter(hasUsername).map((account) => ({ scope, userId: account.userid })));
   }
   if (candidates.length === 0) return [];
   const ctx = await sendContext(deps.settings, input);
@@ -512,14 +499,14 @@ export async function sendLoginByEmail(deps: LoginMailDeps, input: SendLoginByEm
     const credential = await resetCredential(deps, ctx.global);
     const request = await withGatedTenant(deps.db, scope.tenantId, async (tx) => {
       // Re-read after the wait, so an account operation that just finished is mailed with its outcome.
-      const match = (await emailMatches(deps.repo, tx, scope, email)).find((found) => charKey(found.account.userid) === charKey(userId));
-      if (match === undefined || !hasUsername(match)) return null;
+      const [account] = await emailMatches(deps.repo, tx, scope, email, userId);
+      if (account === undefined || !hasUsername(account)) return null;
       const user: MailUser = {
-        userId: match.account.userid,
-        siteId: match.account.siteid ?? '',
-        username: match.account.username ?? '',
-        fname: match.contact.fname ?? '',
-        lname: match.contact.lname ?? '',
+        userId: account.userid,
+        siteId: account.siteid ?? '',
+        username: account.username ?? '',
+        fname: account.fname ?? '',
+        lname: account.lname ?? '',
         // userDAO.read never loads the stored password, so without a reset the placeholder is empty.
         password: credential?.plain ?? '',
       };

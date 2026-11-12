@@ -1,6 +1,6 @@
 /** People's outbox producer of `people.person.changed.v1` and `people.person.archived.v1`; publishing is the platform outbox's flush and sweep. */
 import type { EventEnvelope } from '@opt2/platform/events';
-import type { AppliedChange, MigrationHandlerOptions } from '@opt2/platform/migration-kit';
+import type { AppliedChange, MigrationHandlerOptions, WriteContext } from '@opt2/platform/migration-kit';
 import { localTimestamp, writeOutbox, type OutboxOrigin } from '@opt2/platform/outbox';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import type { PeopleRepository } from '../repo/repository.js';
@@ -10,16 +10,17 @@ import { PERSON_ARCHIVED_TOPIC, PERSON_CHANGED_TOPIC, type PersonArchivedPayload
 /** Aggregate type of both people topics; the aggregate id is the person's user id. */
 const PERSON_AGGREGATE = 'person';
 
-/** Options of a person event; `operationId` holds the row until the operation is released. */
+/** Options of a person event; `operationId` holds the row until the operation is released, `write` is the tombstone's write context. */
 export interface PersonChangedOptions {
   deleted?: boolean;
   operationId?: string;
   origin?: OutboxOrigin;
+  write?: WriteContext;
 }
 
 /** Outbox writes of people's events in the caller's tenant transaction; each returns the stored envelope, or null when the origin suppresses it. */
 export interface PeopleEvents {
-  /** Writes a person's state at its `row_version`, or at `row_version + 1` from the before-image when `deleted`. */
+  /** Writes a person's state at its `row_version`, or when `deleted` at `row_version + 1` from the before-image, stored as its tombstone. */
   publishPersonChanged(tx: TenantTx, person: PersonRow, opts?: PersonChangedOptions): Promise<EventEnvelope<PersonChangedPayload> | null>;
   /** Writes one archive at the person's current `row_version`, or 1 when the tenant holds no person row. */
   publishPersonArchived(tx: TenantTx, archive: PersonArchiveRow): Promise<EventEnvelope<PersonArchivedPayload> | null>;
@@ -88,16 +89,20 @@ function appliedPerson(change: AppliedChange): PersonRow {
   return image as PersonRow;
 }
 
-/** Builds people's event writers over `repository`, which holds the `people.person.row_version` aggregate versions. */
+/** Builds people's event writers over `repository`, which holds the person aggregate versions: `people.person.row_version` and the tombstones of deleted persons. */
 export function createPeopleEvents(repository: PeopleRepository): PeopleEvents {
-  const publishPersonChanged: PeopleEvents['publishPersonChanged'] = (tx, person, opts = {}) => {
+  const publishPersonChanged: PeopleEvents['publishPersonChanged'] = async (tx, person, opts = {}) => {
     const deleted = opts.deleted ?? false;
+    const version = deleted ? String(BigInt(person.row_version) + 1n) : person.row_version;
+    if (deleted) {
+      await repository.recordPersonTombstone(tx, person.userid, version, opts.write);
+    }
     return writeOutbox(tx, {
       topic: PERSON_CHANGED_TOPIC,
       kind: 'state',
       aggregateType: PERSON_AGGREGATE,
       aggregateId: person.userid,
-      aggregateVersion: Number(person.row_version) + (deleted ? 1 : 0),
+      aggregateVersion: Number(version),
       payload: personChangedPayload(person, { deleted }),
       operationId: opts.operationId,
       origin: opts.origin,
@@ -123,16 +128,20 @@ export function createPeopleEvents(repository: PeopleRepository): PeopleEvents {
     }
     const person = appliedPerson(change);
     if (change.op === 'delete') {
-      await publishPersonChanged(tx, person, { deleted: true, origin: change.origin });
+      await publishPersonChanged(tx, person, { deleted: true, origin: change.origin, write });
       return;
     }
     // Applied upserts leave the target-only row_version as stored (0 for a new row, below the envelope minimum), so it is
-    // advanced here; the update also returns the row without the window-phase wait a findPerson read would take.
+    // advanced here, an insert past the person's tombstone too; the update also returns the row without the window-phase
+    // wait a findPerson read would take.
+    const tombstone = change.op === 'insert' ? await repository.personTombstoneVersion(tx, person.userid) : null;
+    const stored = BigInt(person.row_version);
+    const last = tombstone !== null && BigInt(tombstone) > stored ? BigInt(tombstone) : stored;
     const bumped = await repository.update<PersonRow>(
       tx,
       PERSON.table,
       { userid: person.userid },
-      { row_version: String(BigInt(person.row_version) + 1n) },
+      { row_version: String(last + 1n) },
       write,
     );
     if (bumped === null) {

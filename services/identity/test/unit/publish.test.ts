@@ -2,6 +2,7 @@
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Roles } from '@opt2/platform/auth';
+import { consumeEnvelope, subscriptionName, type ConsumerDefinition, type EventEnvelope } from '@opt2/platform/events';
 import {
   ensureUnitGates,
   requestMigrationAuthority,
@@ -24,6 +25,7 @@ import {
   createIdentityEvents,
   groupChangedPayload,
   identityPayloadValidators,
+  type GroupChangedPayload,
   type IdentityEvents,
   type LoginMailRequestedPayload,
 } from '../../src/events/publish.js';
@@ -36,6 +38,9 @@ interface StoredEvent {
   held: boolean;
   envelope: { aggregateVersion: number; aggregateId: string; payload: Record<string, unknown> };
 }
+
+/** One group write of a version-sequence case: a target save or delete, or a migration apply. */
+type GroupStep = 'create' | 'update' | 'delete' | 'apply-insert' | 'apply-delete' | 'window-insert';
 
 const CLOCK = fixedClock(new Date(2026, 5, 30, 12, 0, 0));
 const TENANT = '7b0e2f9e-5d0f-4c0e-9d7a-1a2b3c4d5e6f';
@@ -104,12 +109,12 @@ describe.skipIf(!available)('identity events against PostgreSQL', () => {
   let tenants = 0;
   let tenantId: string;
   let siteId: string;
+  const logger = createLogger({ service: 'identity', version: '1.0.0', env: 'local', destination: { write: () => undefined } });
 
   beforeAll(async () => {
     handle = await createThrowawaySchema({ service: 'identity', migrationsDir: fileURLToPath(new URL('../../db/migrations', import.meta.url)) });
     repo = createIdentityRepository({ clock: CLOCK, schema: handle.schema });
     await ensureUnitGates(handle.app, IDENTITY_UNITS);
-    const logger = createLogger({ service: 'identity', version: '1.0.0', env: 'local', destination: { write: () => undefined } });
     createOutbox({ service: 'identity', db: handle.app, publisher: capture, logger, clock: CLOCK, payloadValidators: identityPayloadValidators });
     events = createIdentityEvents(repo);
   });
@@ -170,7 +175,7 @@ describe.skipIf(!available)('identity events against PostgreSQL', () => {
     return { unit, table, op, ...(op === 'delete' ? { before: image } : { after: image }), origin, tenantId };
   }
 
-  it('writes group saves at row_version and deletes one past it, publishing after commit', async () => {
+  it('writes group saves and deletes at the next group sequence version, publishing after commit', async () => {
     const group = await inTenant(async (tx) => {
       const created = await repo.insertGroup(tx, groupInput(), null);
       const envelope = await events.publishGroupChanged(tx, created, { deleted: false });
@@ -186,6 +191,58 @@ describe.skipIf(!available)('identity events against PostgreSQL', () => {
     });
     expect(removed?.aggregateVersion).toBe(2);
     expect(removed?.payload.deleted).toBe(true);
+  });
+
+  it.each<[string, GroupStep[]]>([
+    ['a target create, delete and recreate', ['create', 'delete', 'create']],
+    ['a backfill insert, delete and re-insert', ['apply-insert', 'apply-delete', 'apply-insert']],
+    ['target saves and delete then a window-imported trash restore', ['create', 'update', 'delete', 'window-insert']],
+  ])('continues the group sequence across %s, so a consumer applies every state', async (_label, steps) => {
+    const groupId = id(70, 'B');
+    const backfill = migrationWrite('backfill', 'recreate-batch');
+    const window = migrationWrite('legacy-window', 'recreate-window');
+    async function applyGroup(op: 'insert' | 'delete', write: WriteContext, origin: AppliedChange['origin'], groupname = ''): Promise<void> {
+      await inTenant(async (tx) => {
+        const image =
+          op === 'delete'
+            ? await repo.delete(tx, GROUP_ACCOUNT.table, { userid: groupId }, write)
+            : await repo.upsert(tx, GROUP_ACCOUNT.table, { userid: groupId, groupname, type: 1, ispublic: 0, siteid: siteId }, write);
+        await events.emitStateEvents(tx, change(GROUP_ACCOUNT.unit, GROUP_ACCOUNT.table, op, image!, origin), write);
+      });
+    }
+    const run: Record<GroupStep, (groupname: string) => Promise<unknown>> = {
+      create: (groupname) =>
+        inTenant(async (tx) => events.publishGroupChanged(tx, await repo.insertGroup(tx, groupInput({ userid: groupId, groupname }), null), { deleted: false })),
+      update: (groupname) =>
+        inTenant(async (tx) => events.publishGroupChanged(tx, (await repo.updateGroup(tx, groupId, groupInput({ groupname }), null))!, { deleted: false })),
+      delete: () => inTenant(async (tx) => events.publishGroupChanged(tx, (await repo.deleteGroupRow(tx, groupId))!, { deleted: true })),
+      'apply-insert': (groupname) => applyGroup('insert', backfill, 'backfill', groupname),
+      'apply-delete': () => applyGroup('delete', backfill, 'backfill'),
+      'window-insert': async (groupname) => {
+        await setGates('closed', 'importing');
+        await applyGroup('insert', window, 'legacy-window', groupname);
+      },
+    };
+    for (const [index, step] of steps.entries()) await run[step](`Staff ${index}`);
+    const envelopes = (await outboxRows()).map((r) => r.envelope as unknown as EventEnvelope<GroupChangedPayload>);
+    expect(envelopes.map((e) => [e.aggregateVersion, e.payload.deleted])).toEqual(steps.map((step, i) => [i + 1, step.endsWith('delete')]));
+
+    await registerSite();
+    const projected: GroupChangedPayload[] = [];
+    const consumer: ConsumerDefinition<GroupChangedPayload> = {
+      topic: GROUP_CHANGED_TOPIC,
+      kind: 'state',
+      apply: (_tx, envelope) => {
+        projected.push(envelope.payload);
+      },
+    };
+    const results: string[] = [];
+    for (const [index, envelope] of envelopes.entries()) {
+      const outcome = await consumeEnvelope(handle.app, consumer, envelope, { subscription: subscriptionName('people', GROUP_CHANGED_TOPIC), messageId: String(index), logger });
+      results.push(...outcome.destinations.map((d) => d.result));
+    }
+    expect(results).toEqual(steps.map(() => 'applied'));
+    expect(projected.at(-1)).toMatchObject({ groupId, groupName: `Staff ${steps.length - 1}`, deleted: false });
   });
 
   it('holds membership rows with an operation id until released, with per-topic sequences', async () => {
@@ -328,12 +385,8 @@ describe.skipIf(!available)('identity events against PostgreSQL', () => {
     expect(rows.at(-1)?.envelope.payload.groupIds).toEqual([]);
   });
 
-  it('throws for an applied group missing from its transaction and for a change without an image', async () => {
+  it('throws for an applied change without an image', async () => {
     const write = migrationWrite('backfill', 'bad-batch');
-    const ghost = { userid: id(50, 'B'), groupname: 'G', siteid: siteId, ispublic: 1, row_version: '0' };
-    await expect(inTenant((tx) => events.emitStateEvents(tx, change(GROUP_ACCOUNT.unit, GROUP_ACCOUNT.table, 'update', ghost), write))).rejects.toThrow(
-      /missing from its apply transaction/,
-    );
     await expect(
       inTenant((tx) => events.emitStateEvents(tx, { unit: GROUP_ACCOUNT.unit, table: GROUP_ACCOUNT.table, op: 'insert', origin: 'backfill', tenantId }, write)),
     ).rejects.toThrow(/carries no row image/);

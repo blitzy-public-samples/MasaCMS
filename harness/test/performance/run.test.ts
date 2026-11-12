@@ -255,6 +255,9 @@ describe('ratioFinding', () => {
   it.each([
     { target: 30, legacy: 20, ratioP95: 1.5, finding: null },
     { target: 31, legacy: 20, ratioP95: 1.55, finding: 'target p95 31 ms is 1.55x legacy p95 20 ms (above 1.5x)' },
+    { target: 150.1, legacy: 100, ratioP95: 1.5, finding: 'target p95 150.1 ms is 1.5x legacy p95 100 ms (above 1.5x)' },
+    { target: 2.1, legacy: 1.4, ratioP95: 1.5, finding: null },
+    { target: 4.2, legacy: 2.8, ratioP95: 1.5, finding: null },
     { target: 20, legacy: 3, ratioP95: 6.67, finding: 'target p95 20 ms is 6.67x legacy p95 3 ms (above 1.5x)' },
     { target: 4, legacy: 8, ratioP95: 0.5, finding: null },
     { target: 12, legacy: 0, ratioP95: null, finding: null },

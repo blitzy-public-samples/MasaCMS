@@ -645,6 +645,45 @@ describe.skipIf(!available)('login mail against PostgreSQL', () => {
       expect(passwords[0]).not.toBe(passwords[1]);
     });
 
+    it('mails a contact whose stored address ends in a space once, from the address typed without it', async () => {
+      const user = await seedUser({ email: `Trailing-${seq + 1}@Example.test ` });
+      const typed = user.email.trimEnd().toLowerCase();
+
+      const requests = await sendLoginByEmail(deps(), { email: typed, siteId: SITE_A, httpHost: HOST });
+
+      expect(requests.map((request) => request.userId)).toEqual([user.userId]);
+      expect((await onlyMail(user)).envelope.payload).toMatchObject({ to: typed, kind: 'forgot-password' });
+    });
+
+    it('looks the address up once per pool and once per recipient, reading no account by id', async () => {
+      const email = `batched-${seq + 1}@example.test`;
+      const users = [await seedUser({ email }), await seedUser({ email }), await seedUser({ email })];
+      const lookups: Array<[string, string | undefined]> = [];
+      let byId = 0;
+      const counted: IdentityRepository = {
+        ...repo,
+        findAccountsByEmail: (tx, address, userId) => {
+          lookups.push([tx.tenantId, userId]);
+          return repo.findAccountsByEmail(tx, address, userId);
+        },
+        findAccountById: (...args) => {
+          byId += 1;
+          return repo.findAccountById(...args);
+        },
+      };
+
+      const requests = await sendLoginByEmail(deps(settingsSource(), { repo: counted }), { email, siteId: SITE_A, httpHost: HOST });
+
+      expect(requests.map((request) => request.userId)).toEqual(users.map((user) => user.userId));
+      for (const user of users) await onlyMail(user);
+      expect(lookups).toEqual([
+        [tenantIdForSite(SITE_A), undefined],
+        [tenantIdForSite(UMBRELLA), undefined],
+        ...users.map((user) => [tenantIdForSite(SITE_A), user.userId]),
+      ]);
+      expect(byId).toBe(0);
+    });
+
     it.each([
       ['an address failing the legacy address check, though a contact has it', 'quiet.example.test', 'quiet.example.test', {}, SITE_A],
       ['an address no contact has', 'quiet@example.test', 'nobody@example.test', {}, SITE_A],

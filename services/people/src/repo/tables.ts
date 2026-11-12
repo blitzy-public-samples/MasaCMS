@@ -22,7 +22,7 @@ export const PEOPLE_UNITS = [
 export type PeopleUnit = (typeof PEOPLE_UNITS)[number];
 
 /** People tables without a unit: never migrated, projected or gated, but still written with changelog rows. */
-export const NON_UNIT_TABLE_NAMES = ['roster_operation', 'group_name'] as const;
+export const NON_UNIT_TABLE_NAMES = ['roster_operation', 'group_name', 'person_tombstone'] as const;
 
 type NonUnitTableName = (typeof NON_UNIT_TABLE_NAMES)[number];
 type TableOfUnit<U extends string> = U extends `people.${infer T}` ? T : never;
@@ -419,6 +419,11 @@ const GROUP_NAME_CATALOG = [
 /** `people.group_name`: the projection of `identity.group.changed.v1`. */
 export const GROUP_NAME = nonUnitTable('group_name', GROUP_NAME_CATALOG, ['group_id']);
 
+const PERSON_TOMBSTONE_CATALOG = [TENANT_ID, { name: 'userid', type: 's' }, { name: 'row_version', type: 'i' }] as const satisfies Columns;
+
+/** `people.person_tombstone`: the last `people.person.changed.v1` version of each deleted person. */
+export const PERSON_TOMBSTONE = nonUnitTable('person_tombstone', PERSON_TOMBSTONE_CATALOG, ['userid']);
+
 /** Table definitions position for position with the unit tuple `T`. */
 type TablesForUnits<T extends readonly PeopleUnit[]> = { readonly [I in keyof T]: PeopleUnitTableDefinition<T[I] & PeopleUnit> };
 
@@ -456,6 +461,7 @@ export const OWNED_TABLES: readonly PeopleTableDefinition[] = [
   PERSON_ARCHIVE,
   ROSTER_OPERATION,
   GROUP_NAME,
+  PERSON_TOMBSTONE,
 ];
 
 /** `roster_operation.state`, as its CHECK constraint lists them. */
@@ -525,3 +531,5 @@ export type GroupNameRow = Override<
   RowOf<typeof GROUP_NAME_CATALOG, 'tenant_id' | 'group_id' | 'deleted' | 'aggregate_version'>,
   { deleted: boolean; aggregate_version: string }
 >;
+/** A `person_tombstone` row; the int8 `row_version` arrives as a decimal string. */
+export type PersonTombstoneRow = Override<RowOf<typeof PERSON_TOMBSTONE_CATALOG, 'tenant_id' | 'userid' | 'row_version'>, { row_version: string }>;

@@ -216,14 +216,15 @@ export function summariseSamples(samples: readonly number[]): LatencySummary {
   return { p50Ms: round(percentile(samples, 50), 1), p95Ms: round(percentile(samples, 95), 1) };
 }
 
-/** Target p95 over legacy p95 (2 decimals, null when legacy p95 is 0) and the finding text above the threshold. */
+/** Target p95 over legacy p95 (2 decimals, null when legacy p95 is 0) and the finding text when the unrounded ratio is above the threshold. */
 export function ratioFinding(
   target: LatencySummary,
   legacy: LatencySummary,
 ): { ratioP95: number | null; finding: string | null } {
   const ratioP95 = legacy.p95Ms === 0 ? null : round(target.p95Ms / legacy.p95Ms, 2);
+  // Whole 0.1 ms units keep the comparison exact, so 2.1 over 1.4 is not above 1.5.
   const finding =
-    ratioP95 !== null && ratioP95 > RATIO_FINDING_THRESHOLD
+    ratioP95 !== null && Math.round(target.p95Ms * 10) > RATIO_FINDING_THRESHOLD * Math.round(legacy.p95Ms * 10)
       ? `target p95 ${target.p95Ms} ms is ${ratioP95}x legacy p95 ${legacy.p95Ms} ms (above ${RATIO_FINDING_THRESHOLD}x)`
       : null;
   return { ratioP95, finding };

@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { createHttpSession, type FetchLike, type HttpSession } from '../../src/lib/http.js';
 import { reportsDir } from '../../src/lib/paths.js';
 import { pinnedSha } from '../../src/lib/pin.js';
 import { readJson } from '../../src/lib/report.js';
@@ -17,6 +18,7 @@ import {
   WINDOW_THRESHOLD_MS,
   checkMinInstanceCounts,
   main,
+  measureLatencySet,
   parseMinInstanceCounts,
   ratioFinding,
   resolveReadPath,
@@ -24,6 +26,7 @@ import {
   terraformPlanReportSchema,
   windowsOverThreshold,
   windowsReportSchema,
+  type Finding,
   type LatencyRow,
   type LatencySummary,
   type PerformanceReport,
@@ -91,6 +94,21 @@ function expectPositiveMs(value: number | null, label: string): void {
   expect(value, label).toBeGreaterThan(0);
 }
 
+/** The `non-ok-response` findings recorded for read set `set` on either side. */
+function nonOkFindings(findings: readonly Finding[], set: string): Finding[] {
+  const subjects = new Set([`${set}/legacy`, `${set}/target`]);
+  return findings.filter((finding) => finding.kind === 'non-ok-response' && subjects.has(finding.subject));
+}
+
+/** Session at `baseUrl` whose every request takes `ms` on `clock` and answers `status`. */
+function answeringSession(baseUrl: string, clock: { t: number }, ms: number, status: number): HttpSession {
+  const fetch: FetchLike = async () => {
+    clock.t += ms;
+    return new Response('{}', { status });
+  };
+  return createHttpSession({ baseUrl, fetch });
+}
+
 describe('performance report', () => {
   let stackBefore: UpState | undefined;
   let fixturesAvailable = false;
@@ -152,6 +170,7 @@ describe('performance report', () => {
       expect(row?.requests, entry.set).toBe(REQUESTS_PER_SET);
       expectSummary(row?.target ?? null, `${entry.set} target`);
       expectSummary(row?.legacy ?? null, `${entry.set} legacy`);
+      expect(nonOkFindings(report.findings, entry.set), `${entry.set} answers 200 on both sides`).toEqual([]);
     }
   });
 
@@ -238,4 +257,36 @@ describe('performance report', () => {
       expect(launchSpec(after.processes[name]), name).toEqual(launchSpec(recorded[name]));
     }
   }, PACKAGE_NAMES.length * HEALTH_TIMEOUT_MS + 60_000);
+});
+
+describe('performance read-set success check', () => {
+  const REQUESTS = 3;
+  const entry = READ_SET.find((candidate) => candidate.set === 'gs-co-05.content.findOne');
+
+  it.each<{ legacy: number; target: number; failing: ('legacy' | 'target')[] }>([
+    { legacy: 400, target: 400, failing: ['legacy', 'target'] },
+    { legacy: 400, target: 200, failing: ['legacy'] },
+    { legacy: 200, target: 400, failing: ['target'] },
+    { legacy: 200, target: 200, failing: [] },
+  ])('reports non-ok reads on $failing for legacy $legacy and target $target', async ({ legacy, target, failing }) => {
+    if (entry === undefined) throw new Error('gs-co-05.content.findOne is not in READ_SET');
+    const clock = { t: 0 };
+    const measured = await measureLatencySet(
+      entry,
+      {
+        legacy: answeringSession('http://legacy.invalid', clock, 1, legacy),
+        target: answeringSession('http://gateway.invalid', clock, 3, target),
+      },
+      { requests: REQUESTS, now: () => clock.t },
+    );
+    // The slower target also raises a latency-ratio finding, which the check leaves out.
+    expect(measured.findings).toContainEqual(expect.objectContaining({ kind: 'latency-ratio', subject: entry.set }));
+    expect(nonOkFindings(measured.findings, entry.set)).toEqual(
+      failing.map((side) => ({
+        kind: 'non-ok-response',
+        subject: `${entry.set}/${side}`,
+        detail: `${REQUESTS} of ${REQUESTS}: 400`,
+      })),
+    );
+  });
 });

@@ -1,11 +1,12 @@
-/** Identity's `people.person.changed.v1` consumer over a fake repository: its declarations, the producer's schema, and the person-contact upsert or delete. */
+/** Identity's `people.person.changed.v1` consumer over a fake repository: its declarations, the producer's schema, its tenant check, and the person-contact upsert or delete. */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi, type Mock } from 'vitest';
 import { compileTopicSchema, subscriptionName, topicMeta, type ConsumeContext, type EventEnvelope } from '@opt2/platform/events';
 import { createLogger } from '@opt2/platform/logging';
-import type { TenantTx } from '@opt2/platform/tenancy';
-import { TENANT_A, testEnvelope } from '@opt2/platform/testing';
+import { tenantIdForSite, type TenantTx } from '@opt2/platform/tenancy';
+import { TENANT_A, TENANT_B, testEnvelope } from '@opt2/platform/testing';
 import {
+  PERSON_AGGREGATE_TYPE,
   PERSON_CHANGED_TOPIC,
   PERSON_CONTACT_SUBSCRIPTION,
   personChangedSchema,
@@ -89,6 +90,42 @@ function consumeContext(): ConsumeContext {
   return { subscription: PERSON_CONTACT_SUBSCRIPTION, messageId: '1', destinationTenantId: TENANT_A.tenantId, isFanout: false, logger: LOGGER };
 }
 
+const REGISTERED_SITES: ReadonlyMap<string, string> = new Map([
+  [TENANT_A.siteId, TENANT_A.tenantId],
+  [TENANT_B.siteId, TENANT_B.tenantId],
+]);
+
+/** An open `tenantId` transaction whose `query` answers only the site and tenant registry reads, from REGISTERED_SITES. */
+function registryTx(tenantId: string): { tx: TenantTx; query: Mock } {
+  const query = vi.fn();
+  query.mockImplementation((sql: string, params: readonly unknown[] = []) => {
+    const [value] = params;
+    const sites = [...REGISTERED_SITES];
+    if (/WHERE lower\(site_id\) = lower\(\$1\)$/.test(sql)) {
+      const found = sites.find(([site]) => site.toLowerCase() === String(value).toLowerCase());
+      return Promise.resolve({ rows: found === undefined ? [] : [{ tenant_id: found[1] }] });
+    }
+    if (/WHERE tenant_id = \$1$/.test(sql)) {
+      const found = sites.find(([, tenant]) => tenant === value);
+      return Promise.resolve({ rows: found === undefined ? [] : [{ site_id: found[0], tenant_id: found[1], aggregate_version: '1' }] });
+    }
+    return Promise.reject(new Error(`unexpected query: ${sql}`));
+  });
+  return { tx: { kind: 'tenant', tenantId, schema: 'identity', query, onCommit: vi.fn() }, query };
+}
+
+type TenantCheckCase = [label: string, payload: Partial<PersonChangedPayload>, aggregateType: string, tenantId: string, verdict: boolean | 'invalid-tenant'];
+
+const TENANT_CHECK_CASES: TenantCheckCase[] = [
+  ['the registered site and person aggregate of the destination', {}, PERSON_AGGREGATE_TYPE, TENANT_A.tenantId, true],
+  ['the site and user id in another letter case', { siteId: 'TENANT-A', userId: USER_ID.toLowerCase() }, PERSON_AGGREGATE_TYPE, TENANT_A.tenantId, true],
+  ['the site of another registered tenant', { siteId: TENANT_B.siteId }, PERSON_AGGREGATE_TYPE, TENANT_A.tenantId, false],
+  ['an unregistered site', { siteId: 'identity-unregistered-site' }, PERSON_AGGREGATE_TYPE, TENANT_A.tenantId, false],
+  ['a user id other than the aggregate id', { userId: 'B1B2C3D4-E5F6-0718-293A4B5C6D7E8F90' }, PERSON_AGGREGATE_TYPE, TENANT_A.tenantId, false],
+  ['an aggregate type other than person', {}, 'group', TENANT_A.tenantId, false],
+  ['an unregistered destination tenant', { siteId: TENANT_A.siteId }, PERSON_AGGREGATE_TYPE, tenantIdForSite('identity-unregistered-site'), 'invalid-tenant'],
+];
+
 describe('person-contact consumer declarations', () => {
   it('subscribes identity to the person topic as identity.people.person.changed.v1', () => {
     expect(PERSON_CHANGED_TOPIC).toBe('people.person.changed.v1');
@@ -101,10 +138,10 @@ describe('person-contact consumer declarations', () => {
     expect(personChangedSchema.$id).toBe('urn:opt2:people:event:people.person.changed.v1');
   });
 
-  it('consumes the topic as a state topic without fan-out, supersedes or a tenant check override, as its schema declares', () => {
+  it('consumes the topic as a state topic without fan-out or supersedes, as its schema declares, under its own tenant check', () => {
     const consumer = personContactConsumer(fakeRepository().repository);
 
-    expect(Object.keys(consumer).sort()).toEqual(['apply', 'kind', 'topic']);
+    expect(Object.keys(consumer).sort()).toEqual(['apply', 'checkTenant', 'kind', 'topic']);
     expect(consumer).toMatchObject({ topic: PERSON_CHANGED_TOPIC, kind: 'state' });
     expect({ kind: consumer.kind, fanout: consumer.fanout, supersedes: consumer.supersedes }).toEqual(topicMeta(personChangedSchema));
   });
@@ -164,6 +201,21 @@ describe('personContactConsumer', () => {
     expect(PERSON_CONTACT.table).toBe('person_contact');
     expect(query).not.toHaveBeenCalled();
   });
+});
+
+describe('personContactConsumer checkTenant', () => {
+  it.each(TENANT_CHECK_CASES.flatMap(([label, ...rest]) => [false, true].map((deleted): [string, boolean, ...typeof rest] => [label, deleted, ...rest])))(
+    'judges %s (deleted: %s) from the registry alone',
+    async (_case, deleted, overrides, aggregateType, tenantId, verdict) => {
+      const { repository, calls } = fakeRepository();
+      const { tx, query } = registryTx(tenantId);
+      const envelope = testEnvelope({ topic: PERSON_CHANGED_TOPIC, tenantId, aggregateId: USER_ID, aggregateType, payload: person({ ...overrides, deleted }) });
+
+      expect(await personContactConsumer(repository).checkTenant?.(tx, envelope)).toBe(verdict);
+      expect(calls).toEqual([]);
+      expect(query).toHaveBeenCalled();
+    },
+  );
 });
 
 describe('personContactRegistration', () => {

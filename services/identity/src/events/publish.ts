@@ -45,9 +45,6 @@ export const identityPayloadValidators: Record<string, TopicValidator> = Object.
 /** Group columns the group event carries; `ispublic` may arrive as the driver's text form. */
 export type GroupPayloadSource = Pick<GroupAccountRow, 'userid' | 'siteid' | 'groupname'> & { ispublic: number | string | null };
 
-/** A group row as read after its write, or its before-image for a delete. */
-export type GroupEventRow = GroupPayloadSource & Pick<GroupAccountRow, 'row_version'>;
-
 /** Options of a group event; `operationId` holds the row until the operation is released. */
 export interface GroupChangedOptions {
   deleted: boolean;
@@ -82,8 +79,8 @@ export interface PermissionChangedOptions {
 
 /** Outbox writes of identity's events in the caller's tenant transaction; each returns the stored envelope, or null when the origin suppresses it. */
 export interface IdentityEvents {
-  /** Writes a group's state at its `row_version`, or at `row_version + 1` from the before-image when `deleted`. */
-  publishGroupChanged(tx: TenantTx, group: GroupEventRow, opts: GroupChangedOptions): Promise<EventEnvelope<GroupChangedPayload> | null>;
+  /** Writes a group's state, or its before-image when `deleted`, at the next group sequence version. */
+  publishGroupChanged(tx: TenantTx, group: GroupPayloadSource, opts: GroupChangedOptions): Promise<EventEnvelope<GroupChangedPayload> | null>;
   /** Writes a user's membership set, de-duplicated and sorted, at the next membership sequence version. */
   publishMembershipChanged(
     tx: TenantTx,
@@ -145,7 +142,7 @@ function appliedImage<R>(change: AppliedChange): R {
   return image as R;
 }
 
-/** Builds identity's event writers over `repository`, the only path to the `identity.aggregate_version` sequences and group versions. */
+/** Builds identity's event writers over `repository`, the only path to the `identity.aggregate_version` sequences. */
 export function createIdentityEvents(repository: IdentityRepository): IdentityEvents {
   // Applies call emitStateEvents per row with no end-of-batch hook, so each row re-announces its aggregate's full state;
   // a row that leaves the state last written in its transaction writes no event.
@@ -165,18 +162,18 @@ export function createIdentityEvents(repository: IdentityRepository): IdentityEv
     return true;
   }
 
-  function writeGroupChanged(
+  async function writeGroupChanged(
     tx: TenantTx,
-    group: GroupEventRow,
     payload: GroupChangedPayload,
     opts: GroupChangedOptions,
+    ctx: WriteContext,
   ): Promise<EventEnvelope<GroupChangedPayload> | null> {
     return writeOutbox(tx, {
       topic: GROUP_CHANGED_TOPIC,
       kind: 'state',
       aggregateType: 'group',
-      aggregateId: group.userid,
-      aggregateVersion: Number(group.row_version) + (opts.deleted ? 1 : 0),
+      aggregateId: payload.groupId,
+      aggregateVersion: await repository.nextAggregateVersion(tx, GROUP_CHANGED_TOPIC, payload.groupId, ctx),
       payload,
       operationId: opts.operationId,
       origin: opts.origin,
@@ -219,7 +216,10 @@ export function createIdentityEvents(repository: IdentityRepository): IdentityEv
   }
 
   const publishGroupChanged: IdentityEvents['publishGroupChanged'] = (tx, group, opts) =>
-    writeGroupChanged(tx, group, groupChangedPayload(group, { deleted: opts.deleted }, tx.tenantId), opts);
+    writeGroupChanged(tx, groupChangedPayload(group, { deleted: opts.deleted }, tx.tenantId), opts, {
+      operationId: opts.operationId,
+      origin: opts.origin,
+    });
 
   const publishMembershipChanged: IdentityEvents['publishMembershipChanged'] = (tx, input, opts = {}) =>
     writeMembershipChanged(tx, membershipPayload(input), opts, { operationId: opts.operationId, origin: opts.origin });
@@ -251,29 +251,12 @@ export function createIdentityEvents(repository: IdentityRepository): IdentityEv
   };
 
   async function emitGroup(tx: TenantTx, change: AppliedChange, write: WriteContext): Promise<void> {
-    const image = appliedImage<GroupEventRow>(change);
+    const image = appliedImage<GroupPayloadSource>(change);
     const deleted = change.op === 'delete';
     const payload = groupChangedPayload(image, { deleted }, tx.tenantId);
-    if (!changesEmittedState(tx, `group:${image.userid}`, payload)) {
-      return;
+    if (changesEmittedState(tx, `group:${image.userid}`, payload)) {
+      await writeGroupChanged(tx, payload, { deleted, origin: change.origin }, write);
     }
-    if (deleted) {
-      await writeGroupChanged(tx, image, payload, { deleted, origin: change.origin });
-      return;
-    }
-    // Applied upserts leave row_version as stored, so it is advanced here; the update also re-reads the row without the
-    // window-phase wait a findGroup read would take during a window import.
-    const bumped = await repository.update<GroupAccountRow>(
-      tx,
-      GROUP_ACCOUNT.table,
-      { userid: image.userid },
-      { row_version: String(BigInt(image.row_version) + 1n) },
-      write,
-    );
-    if (bumped === null) {
-      throw new Error(`Applied group ${image.userid} is missing from its apply transaction`);
-    }
-    await writeGroupChanged(tx, bumped, payload, { deleted, origin: change.origin });
   }
 
   async function emitMembership(tx: TenantTx, change: AppliedChange, write: WriteContext): Promise<void> {

@@ -527,6 +527,54 @@ describe.skipIf(!available)('identity repository against PostgreSQL', () => {
     expect(await inTenant((tx) => repo.nextAggregateVersion(tx, 'membership', id(1)), otherTenantId)).toBe(1);
   });
 
+  it('finds contacts and their active Type=2 accounts by an email stored with a trailing space, as SQL Server nvarchar equality does', async () => {
+    const stored = 'Member@Example.test ';
+    await gated(async (tx) => {
+      await repo.insertAccount(tx, account(id(2), 'second'));
+      await repo.insertAccount(tx, account(id(1), 'first'));
+      await repo.insertAccount(tx, account(id(3), 'gone', { inactive: 1 }));
+      await repo.insertAccount(tx, account(id(4), 'pending', { opt2_state: 'pending' }));
+      await repo.insertAccount(tx, account(id(5), 'type-one', { type: 1 }));
+      for (const n of [1, 2, 3, 4, 5, 6]) {
+        await repo.upsertPersonContact(tx, { user_id: id(n), site_id: 'site-a', email: stored, fname: `F${n}`, lname: 'L', company: null, subtype: null, aggregate_version: 1 });
+      }
+    });
+    const typed = 'member@example.TEST';
+
+    expect((await inTenant((tx) => repo.findContactsByEmail(tx, typed))).map((row) => row.user_id)).toEqual([1, 2, 3, 4, 5, 6].map((n) => id(n)));
+    expect((await inTenant((tx) => repo.findPersonContact(tx, id(1))))?.email).toBe(stored);
+    const found = await inTenant((tx) => repo.findAccountsByEmail(tx, typed));
+    expect(found.map((row) => [row.userid, row.username, row.fname, row.lname])).toEqual([[id(1), 'first', 'F1', 'L'], [id(2), 'second', 'F2', 'L']]);
+    expect(found[0]).toMatchObject({ type: 2, inactive: 0, opt2_state: 'active', siteid: 'site-a' });
+    expect((await inTenant((tx) => repo.findAccountsByEmail(tx, typed, id(2)))).map((row) => row.userid)).toEqual([id(2)]);
+    expect(await inTenant((tx) => repo.findAccountsByEmail(tx, typed, id(3)))).toEqual([]);
+    expect(await inTenant((tx) => repo.findAccountsByEmail(tx, ` ${typed}`))).toEqual([]);
+    expect(await inTenant((tx) => repo.findAccountsByEmail(tx, typed), otherTenantId)).toEqual([]);
+    await setGates('open', 'executing');
+    await expect(gated((tx) => repo.findAccountsByEmail(tx, typed))).rejects.toBeInstanceOf(UnitReadBlockedError);
+  });
+
+  it.each<[string, (tx: TenantTx) => Promise<unknown>]>([
+    ['findContactsByEmail', (tx) => repo.findContactsByEmail(tx, 'member@example.test')],
+    ['findAccountsByEmail', (tx) => repo.findAccountsByEmail(tx, 'member@example.test')],
+  ])('%s reads person_contact through its email index under forced row-level security', async (_label, lookup) => {
+    const plan = await inTenant(async (tx) => {
+      const statements: { text: string; values: unknown[] }[] = [];
+      const recording: TenantTx = {
+        ...tx,
+        query: ((text: string, values: unknown[] = []) => {
+          statements.push({ text, values });
+          return tx.query(text, values);
+        }) as TenantTx['query'],
+      };
+      await tx.query('SET LOCAL enable_seqscan = off');
+      await lookup(recording);
+      const statement = statements.find(({ text }) => text.includes('person_contact')) ?? expect.unreachable('the lookup read no person_contact');
+      return (await tx.query<{ 'QUERY PLAN': string }>(`EXPLAIN (COSTS OFF) ${statement.text}`, statement.values)).rows.map((row) => row['QUERY PLAN']).join('\n');
+    });
+    expect(plan).toContain('person_contact_tenant_email_idx');
+  });
+
   it.each<[string, (tx: TenantTx, groupIds: string[]) => Promise<string[]>]>([
     ['replaceMemberships', async (tx, groupIds) => (await repo.replaceMemberships(tx, { userId: id(1), groupIds })).added],
     [

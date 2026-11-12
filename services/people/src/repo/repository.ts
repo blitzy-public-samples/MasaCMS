@@ -24,6 +24,7 @@ import {
   PERSON,
   PERSON_ARCHIVE,
   PERSON_INSERT_COLUMNS,
+  PERSON_TOMBSTONE,
   PERSON_UPDATE_COLUMNS,
   RECOVERABLE_ROSTER_STATES,
   ROSTER_OPERATION,
@@ -40,6 +41,7 @@ import {
   type PersonArchiveRow,
   type PersonColumnName,
   type PersonRow,
+  type PersonTombstoneRow,
   type RosterOperationRow,
   type RosterState,
   type TagRow,
@@ -262,10 +264,14 @@ export interface PeopleRepository extends Repository {
   findPerson(tx: TenantTx, userId: string): Promise<PersonRow | null>;
   /** The persons of `userIds` in input order; missing ids are omitted. */
   findPersons(tx: TenantTx, userIds: readonly string[]): Promise<PersonRow[]>;
-  /** Inserts a person as `userDAO.create` does, with `row_version` 1 [legacy: core/mura/user/userDAO.cfc:300-347]. */
+  /** Inserts a person as `userDAO.create` does, with `row_version` 1, or one past its tombstone [legacy: core/mura/user/userDAO.cfc:300-347]. */
   insertPerson(tx: TenantTx, input: PersonInput, ctx?: WriteContext): Promise<PersonRow>;
   /** Updates a person as `userDAO.update` does and adds 1 to `row_version` [legacy: core/mura/user/userDAO.cfc:403-458]; null when absent. */
   updatePerson(tx: TenantTx, userId: string, input: PersonUpdate, ctx?: WriteContext): Promise<PersonRow | null>;
+  /** The last aggregate version published for the deleted person `userId`; null when none was deleted. */
+  personTombstoneVersion(tx: TenantTx, userId: string): Promise<string | null>;
+  /** Stores `rowVersion` as the deleted person's last aggregate version. */
+  recordPersonTombstone(tx: TenantTx, userId: string, rowVersion: string, ctx?: WriteContext): Promise<PersonTombstoneRow>;
   /** Persons of user-pool site `siteId`, optionally only `userIds`, by last then first name, NULLs first [legacy: core/mura/user/userGateway.cfc:712-713]. */
   listPersonsForSite(tx: TenantTx, siteId: string, opts?: { userIds?: readonly string[] }): Promise<PersonRow[]>;
   /** The person-column part of `getSearch`: none for an empty term, else a LIKE match on name, company, email or job title, by last name. */
@@ -523,7 +529,7 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     return found;
   }
 
-  function insertPerson(tx: TenantTx, input: PersonInput, ctx: WriteContext = {}): Promise<PersonRow> {
+  async function insertPerson(tx: TenantTx, input: PersonInput, ctx: WriteContext = {}): Promise<PersonRow> {
     const now = clock.now();
     const values: Readonly<Record<string, unknown>> = input;
     const row: RepositoryRow = {};
@@ -538,7 +544,8 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
         row[column] = values[column] ?? null;
       }
     }
-    row.row_version = 1;
+    const tombstone = await personTombstoneVersion(tx, input.userid);
+    row.row_version = tombstone === null ? 1 : nextRowVersion(tombstone);
     return base.insert<PersonRow>(tx, PERSON.table, row, ctx);
   }
 
@@ -566,6 +573,14 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     }
     patch.row_version = nextRowVersion(current.row_version);
     return base.update<PersonRow>(tx, PERSON.table, { userid: current.userid }, patch, ctx);
+  }
+
+  async function personTombstoneVersion(tx: TenantTx, userId: string): Promise<string | null> {
+    return (await base.findByKey<PersonTombstoneRow>(tx, PERSON_TOMBSTONE.table, { userid: userId }))?.row_version ?? null;
+  }
+
+  function recordPersonTombstone(tx: TenantTx, userId: string, rowVersion: string, ctx: WriteContext = {}): Promise<PersonTombstoneRow> {
+    return base.upsert<PersonTombstoneRow>(tx, PERSON_TOMBSTONE.table, { userid: userId, row_version: rowVersion }, ctx);
   }
 
   function listPersonsForSite(tx: TenantTx, siteId: string, opts: { userIds?: readonly string[] } = {}): Promise<PersonRow[]> {
@@ -885,6 +900,8 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     findPersons,
     insertPerson,
     updatePerson,
+    personTombstoneVersion,
+    recordPersonTombstone,
     listPersonsForSite,
     searchPersons,
     queryPersons,

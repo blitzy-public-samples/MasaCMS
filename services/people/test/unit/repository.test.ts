@@ -132,6 +132,17 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
       expect(await changelog('person', 'short-id')).toEqual([expect.objectContaining({ op: 'insert' })]);
     });
 
+    it.each([
+      ['one past its tombstone', '7', '8'],
+      ['at 1 without a tombstone', null, '1'],
+    ] as const)('inserts a person %s', async (_label, tombstone, expected) => {
+      const userid = cfUuid();
+      if (tombstone !== null) await inTenant((tx) => repo.recordPersonTombstone(tx, userid, tombstone));
+      expect(await inTenant((tx) => repo.personTombstoneVersion(tx, userid))).toBe(tombstone);
+      expect(await inTenant((tx) => repo.personTombstoneVersion(tx, userid), TENANT_B.tenantId)).toBeNull();
+      expect((await addPerson({ userid })).row_version).toBe(expected);
+    });
+
     it('updates the DAO columns, keeps created and ext, trims siteid and adds 1 to row_version in one changelog row', async () => {
       const stored = await addPerson();
       repo = createPeopleRepository({ clock: fixedClock(LATER), schema: handle.schema });
