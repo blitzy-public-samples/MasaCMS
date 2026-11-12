@@ -1,8 +1,9 @@
 import fs from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { inspect } from 'node:util';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   EquivalenceImpossible,
   GoldenConfigError,
@@ -13,17 +14,13 @@ import {
   type EquivalenceImpossibleOptions,
   type ExceptionEntry,
 } from '../../src/golden/errors.js';
-import { REPO_ROOT, opt2Path } from '../../src/lib/paths.js';
+import { SEED_CREDENTIALS_FILE, createScenarioContext, resolvePlaceholders } from '../../src/golden/session.js';
+import { pinnedSha } from '../../src/lib/pin.js';
 
-const SCENARIO = 'GS-FI-01';
-const ROUTE_KEY = 'admin:carch.update';
+const SCENARIO = 'GS-CO-07';
+const ROUTE_KEY = 'admin:carch.update{upload=image}';
 const REASON = 'image renditions come from the ColdFusion image engine';
 const PLACEHOLDER = '${secret:seed:FIXTURE-user}';
-
-/** SHA recorded in opt2/source-pin.json. */
-function pinnedSha(): string {
-  return (JSON.parse(fs.readFileSync(opt2Path('source-pin.json'), 'utf8')) as { sha: string }).sha;
-}
 
 function caseOptions(overrides: Partial<EquivalenceImpossibleOptions> = {}): EquivalenceImpossibleOptions {
   return { scenario: SCENARIO, routeKey: ROUTE_KEY, reason: REASON, evidence: haltEvidence(SCENARIO), ...overrides };
@@ -43,7 +40,6 @@ describe('haltEvidence', () => {
     });
     for (const p of [evidence.golden, evidence.replay]) {
       expect(path.isAbsolute(p)).toBe(false);
-      expect(p).not.toContain(REPO_ROOT);
       expect(p).not.toContain(os.homedir());
     }
   });
@@ -77,6 +73,8 @@ describe('isEquivalenceImpossible', () => {
     { label: 'a GoldenConfigError', value: new GoldenConfigError('x'), expected: false },
     { label: 'a MissingSecretError', value: new MissingSecretError(PLACEHOLDER, 'FIXTURE_ENV'), expected: false },
     { label: 'a non-Error object with the name', value: { name: 'EquivalenceImpossible', message: 'x' }, expected: false },
+    { label: 'a plain copy of the case fields', value: { ...new EquivalenceImpossible(caseOptions()) }, expected: false },
+    { label: 'an empty object', value: {}, expected: false },
     { label: 'the name as a string', value: 'EquivalenceImpossible', expected: false },
     { label: 'null', value: null, expected: false },
     { label: 'undefined', value: undefined, expected: false },
@@ -106,9 +104,9 @@ describe('haltedExceptionEntry', () => {
   ])('records a halted preserve entry whose difference is %s', (_label, difference, expected) => {
     const sha = pinnedSha();
     const err = new EquivalenceImpossible(caseOptions({ difference }));
-    const entry = haltedExceptionEntry(err, { id: 'EX-FILE-RENDITION', sourceSha: sha });
+    const entry = haltedExceptionEntry(err, { id: 'EX-TEST-01', sourceSha: sha });
     expect(entry).toStrictEqual<ExceptionEntry>({
-      id: 'EX-FILE-RENDITION',
+      id: 'EX-TEST-01',
       scenario: SCENARIO,
       routeKey: ROUTE_KEY,
       difference: expected,
@@ -186,6 +184,52 @@ describe('MissingSecretError', () => {
       name: 'MissingSecretError',
       placeholder: PLACEHOLDER,
       source: 'FIXTURE_SEED_PASSWORDS',
+    });
+  });
+
+  describe('raised while resolving a scenario value', () => {
+    const adminPassword = 'FIXTURE-ADMIN-PASSWORD';
+    const editorPassword = 'FIXTURE-EDITOR-PASSWORD';
+    let stateDir: string;
+
+    beforeEach(async () => {
+      stateDir = await mkdtemp(path.join(os.tmpdir(), 'opt2-golden-errors-'));
+    });
+
+    afterEach(async () => {
+      await rm(stateDir, { recursive: true, force: true });
+    });
+
+    it('names the missing seed placeholder and leaks no secret already resolved', () => {
+      const env = {
+        MURA_ADMIN_PASSWORD: adminPassword,
+        MASA_TEST_EDITOR_PASSWORD: editorPassword,
+        OPT2_STATE_DIR: stateDir,
+      };
+      const ctx = createScenarioContext({ id: SCENARIO }, { origin: 'gateway', env });
+      const value = {
+        form: { username: 'admin', password: '${secret:admin}', confirm: '${secret:admin}/${secret:seed:nobody}' },
+      };
+
+      let caught: unknown;
+      try {
+        resolvePlaceholders(value, ctx);
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(MissingSecretError);
+      const err = caught as MissingSecretError;
+      expect(err.placeholder).toBe('${secret:seed:nobody}');
+      expect(err.source).toBe(path.join(stateDir, 'secrets', SEED_CREDENTIALS_FILE));
+      expect(err.message).toContain('${secret:seed:nobody}');
+      expect(ctx.secrets.values()).toContain(adminPassword);
+      for (const text of [err.message, err.stack ?? '', String(err), JSON.stringify(err)]) {
+        for (const password of [adminPassword, editorPassword]) {
+          expect(text).not.toContain(password);
+        }
+      }
+      expect(fs.existsSync(path.join(stateDir, 'secrets'))).toBe(false);
     });
   });
 });

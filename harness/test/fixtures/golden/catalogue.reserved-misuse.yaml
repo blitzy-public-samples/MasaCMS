@@ -1,0 +1,114 @@
+# Golden catalogue sample: reserved identity misuse.
+sourceSha: "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+scenarios:
+  - id: GS-PE-02
+    title: People roster edit
+    service: people
+    role: site-admin
+    sessions:
+      siteAdmin:
+        login: none
+        via: admin
+    seedRefs: []
+    steps:
+      - name: main
+        method: GET
+        route: /admin/?muraAction=cLogin.main
+        as: siteAdmin
+        csrf: none
+      - name: login
+        method: POST
+        route: /admin/index.cfm
+        as: siteAdmin
+        csrf: fetch-form
+        csrfFrom: main
+        form:
+          muraAction: cLogin.login
+          username: "${user:tenant-a:site-admin}"
+          password: "${secret:seed:${user:tenant-a:site-admin}}"
+          isAdminLogin: "true"
+          returnUrl: ""
+      - name: form
+        method: GET
+        route: /admin/?muraAction=cUsers.edituser&siteid=tenant-a&userid=99999999-0000-0000-0000000000000002
+        as: siteAdmin
+      - name: edit
+        method: POST
+        route: /admin/?muraAction=cUsers.update&userid=99999999-0000-0000-0000000000000002&routeid=
+        as: siteAdmin
+        csrf: fetch-form
+        csrfFrom: form
+        form:
+          type: "2"
+          action: Update
+          siteid: tenant-a
+          userid: 99999999-0000-0000-0000000000000002
+          fname: Pat
+          lname: Edited
+          email: pe02-edited@example.test
+          isPublic: "0"
+          groupid: ""
+    compare:
+      - status
+      - dom
+    normalisationOverrides: []
+    covers:
+      - "admin:cusers.update{type=2,action=update}"
+  - id: GS-PE-RH-02
+    title: Rehearsal roster edit
+    service: people
+    role: site-admin
+    tableVersion: v0003
+    sessions:
+      siteAdmin:
+        login: none
+        via: admin
+    seedRefs:
+      - as: rehearsalPerson
+        source: reserved
+        path: reserved.rehearsal.persons
+        index: 1
+    steps:
+      - name: main
+        method: GET
+        route: /admin/?muraAction=cLogin.main
+        as: siteAdmin
+        csrf: none
+      - name: login
+        method: POST
+        route: /admin/index.cfm
+        as: siteAdmin
+        csrf: fetch-form
+        csrfFrom: main
+        form:
+          muraAction: cLogin.login
+          username: "${user:tenant-a:site-admin}"
+          password: "${secret:seed:${user:tenant-a:site-admin}}"
+          isAdminLogin: "true"
+          returnUrl: ""
+      - name: form
+        method: GET
+        route: "/admin/?muraAction=cUsers.edituser&siteid=tenant-a&userid=${seed.rehearsalPerson}"
+        as: siteAdmin
+      - name: edit
+        method: POST
+        route: "/admin/?muraAction=cUsers.update&userid=${seed.rehearsalPerson}&routeid="
+        as: siteAdmin
+        csrf: fetch-form
+        csrfFrom: form
+        form:
+          type: "2"
+          action: Update
+          siteid: tenant-a
+          userid: "${seed.rehearsalPerson}"
+          fname: Pat
+          lname: Edited
+          email: rh02-edited@example.test
+          isPublic: "0"
+          groupid: ""
+    compare:
+      - status
+      - dom
+    normalisationOverrides: []
+    covers:
+      - "admin:cusers.update{type=2,action=update}"
