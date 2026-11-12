@@ -8,7 +8,8 @@ import {
   type AuthSetup,
   type Opt2RouteConfig,
 } from '@opt2/platform/auth';
-import { isLegacySessionCookie, parseSetCookie } from '@opt2/platform/legacy-compat';
+import { isLegacySessionCookie, parseCookieHeader, parseSetCookie } from '@opt2/platform/legacy-compat';
+import { serializeError } from '@opt2/platform/logging';
 import {
   requireRequestContext,
   sendLegacyResponse,
@@ -32,7 +33,12 @@ import {
   type JarCookies,
 } from '../session/jar.js';
 import { sessionModeFor, type SessionMode } from '../session/mode.js';
-import type { SessionRequestInput, SessionResolution, SessionResolver } from '../session/resolve.js';
+import {
+  sessionIdFromTargetCookies,
+  type SessionRequestInput,
+  type SessionResolution,
+  type SessionResolver,
+} from '../session/resolve.js';
 import type { SessionStateChecker } from '../session/state-check.js';
 import { DEFAULT_SITE_ID, type TokenCache } from '../session/token-cache.js';
 import type { SessionBarrier } from './barrier.js';
@@ -77,7 +83,7 @@ export interface DispatcherDeps {
   state: Pick<CutoverState, 'active' | 'readEpochForWrite' | 'isFrozen' | 'waitUnfrozen'>;
   inflight: Pick<InflightStore, 'register' | 'remove'>;
   windows: WriteWindowClient;
-  barrier: Pick<SessionBarrier, 'record' | 'awaitForSession'>;
+  barrier: Pick<SessionBarrier, 'declare' | 'record' | 'release' | 'awaitForSession' | 'awaitPositions' | 'awaitOwners'>;
   resolver: SessionResolver;
   tokenCache: Pick<TokenCache, 'get'>;
   stateCheck: Pick<SessionStateChecker, 'check'>;
@@ -115,7 +121,7 @@ async function guarded<T>(request: FastifyRequest, message: string, run: () => P
   try {
     return await run();
   } catch (error) {
-    request.log.error({ error }, message);
+    request.log.error({ error: serializeError(error) }, message);
     return undefined;
   }
 }
@@ -407,6 +413,15 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     }
   };
 
+  /** Ends the legacy session a target-primary browser's ended identity session still holds, as its logout owed. */
+  const endOwedLegacySession = async (request: FastifyRequest, userAgent: string | undefined): Promise<void> => {
+    const named = sessionIdFromTargetCookies(parseCookieHeader(request.headers.cookie));
+    if (named === undefined) return;
+    // The check is memoised, so the resolver's own check of the same session reuses this read.
+    const check = await deps.stateCheck.check(named);
+    if (check.state !== 'active') await deps.invalidation.afterTargetLogout(named, { userAgent });
+  };
+
   /** Forwards to the owning service or web with the session's site-scoped user token and the gateway's own credential. */
   const toTarget = async (ex: Exchange, route: Route, destination: TargetDestination, mode: SessionMode): Promise<FastifyReply> => {
     const { request, reply } = ex;
@@ -418,13 +433,17 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     let jar: JarCookies = {};
     // A static entry is a file, so no session is resolved for it.
     if (entry?.kind !== 'static') {
+      if (mode === 'target-primary') await endOwedLegacySession(request, userAgent);
       resolution = await deps.resolver.resolveSession(sessionInputOf(request, route.outcome), {
         family: result.family,
         mode,
         siteId: result.siteId,
       });
       if (resolution.kind === 'response') return sendLegacyResponse(reply, resolution);
-      if (resolution.kind === 'session') {
+      if (resolution.kind === 'session' && resolution.identityEndPending === true) {
+        // A legacy logout of the session began: once identity confirmed the end, the request goes on anonymously.
+        await deps.invalidation.completePending(resolution.sessionId);
+      } else if (resolution.kind === 'session') {
         const check = await deps.stateCheck.check(resolution.sessionId);
         if (check.state === 'active') {
           sessionId = resolution.sessionId;
@@ -449,6 +468,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       method: destination.method,
       forwardBody: destination.forwardBody,
       sessionId,
+      declaresWrite: writeEntryOf(route.outcome) !== undefined,
       mode,
       isWeb: destination.isWeb,
       failContext: route.outcome.failContext,
@@ -478,6 +498,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     let cookieHeader: string | undefined;
     // A static entry is a file: it reads no session or data, so it needs no barrier, hydration or claim.
     if (!isStatic) {
+      if (mode === 'target-primary') await endOwedLegacySession(request, userAgent);
       resolution = await deps.resolver.resolveLegacyBound(input, {
         mode,
         adopt: mode === 'target-primary',
@@ -486,17 +507,23 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       if (resolution.kind === 'response') return sendLegacyResponse(reply, resolution);
       if (resolution.kind === 'session') {
         sessionId = resolution.sessionId;
+        // A legacy logout of a flagged session began: identity's end completes first, and legacy sees no session.
+        const ended = resolution.identityEndPending === true;
+        if (ended) await deps.invalidation.completePending(sessionId);
         await deps.barrier.awaitForSession(sessionId);
         if (mode === 'target-primary') {
-          const check = await deps.stateCheck.check(sessionId);
+          const check = ended ? undefined : await deps.stateCheck.check(sessionId);
           const row =
-            check.state === 'active' ? await deps.hydrator.ensureHydrated(sessionId, check.epoch, { userAgent }) : undefined;
-          if (check.state !== 'active') await deps.invalidation.afterTargetLogout(sessionId, { userAgent });
+            check?.state === 'active' ? await deps.hydrator.ensureHydrated(sessionId, check.epoch, { userAgent }) : undefined;
+          if (check !== undefined && check.state !== 'active') await deps.invalidation.afterTargetLogout(sessionId, { userAgent });
           // Without a hydrated jar the session is gone, and legacy sees the request anonymously.
           if (row === undefined) sessionId = undefined;
           cookieHeader = legacyCookieHeaderFor(request.headers.cookie, row?.cookies ?? {}, clock.now());
-        } else if (Object.keys(resolution.legacyCookies).length > 0) {
-          cookieHeader = legacyCookieHeaderFor(request.headers.cookie, resolution.legacyCookies, clock.now());
+        } else {
+          if (Object.keys(resolution.legacyCookies).length > 0) {
+            cookieHeader = legacyCookieHeaderFor(request.headers.cookie, resolution.legacyCookies, clock.now());
+          }
+          if (ended) sessionId = undefined;
         }
       }
       ex.csrfHandle = await deps.csrf.beforeLegacy(input, result, mode);
@@ -513,6 +540,24 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       return { userAgent, siteId: result.siteId, cookies };
     };
 
+    const effect = legacySessionEffect(result, mode, deps.facts);
+    /** What beforeSend saw of legacy's response; a login is adopted only once it and legacy's completion both happened. */
+    let afterHeaders: { adopted: string | undefined; legacySetCookies: readonly string[] } | undefined;
+    let completed = false;
+
+    /** Adopts a legacy login into identity, run by whichever of beforeSend and legacy's completion comes second. */
+    const adoptLogin = async (): Promise<void> => {
+      if (effect !== 'login' || afterHeaders === undefined) return;
+      const { adopted, legacySetCookies } = afterHeaders;
+      const loggedIn = adopted ?? session ?? ex.csrfHandle?.sessionId;
+      // With no identity session yet, the next target-bound request adopts the logged-in legacy session.
+      if (loggedIn === undefined) return;
+      await guarded(request, 'edge adoption of legacy login failed', () =>
+        deps.invalidation.afterLegacyLogin(loggedIn, mode, loginFacts(legacySetCookies)),
+      );
+    };
+
+    /** Maps legacy's session cookies at its headers and ends identity's session after a legacy logout. */
     const beforeSend = async (upstream: LegacyUpstream): Promise<LegacyBeforeSendResult | undefined> => {
       const legacySetCookies = upstream.headers['set-cookie'] ?? [];
       let setCookies: string[] | undefined;
@@ -531,27 +576,29 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       } else if (extras.length > 0) {
         setCookies = prepend(extras, legacySetCookies);
       }
-      await guarded(request, 'edge CSRF settlement after legacy failed', () => ex.settleCsrf());
-      const effect = legacySessionEffect(result, mode, deps.facts);
       if (effect === 'logout' && session !== undefined) {
-        await guarded(request, 'edge invalidation after legacy logout failed', () => deps.invalidation.afterLegacyLogout(session));
-      } else if (effect === 'login') {
-        const loggedIn = adopted ?? session ?? ex.csrfHandle?.sessionId;
-        // With no identity session yet, the next target-bound request adopts the logged-in legacy session.
-        if (loggedIn !== undefined) {
-          await guarded(request, 'edge adoption of legacy login failed', () =>
-            deps.invalidation.afterLegacyLogin(loggedIn, mode, loginFacts(legacySetCookies)),
-          );
-        }
+        // Not guarded: a failure answers the 503, so legacy's logout is not acknowledged while identity's session lives.
+        await deps.invalidation.afterLegacyLogout(session);
       }
+      afterHeaders = { adopted, legacySetCookies };
+      // Legacy may have completed already, as it always has in buffer mode; the login is then adopted here.
+      if (completed) await adoptLogin();
       return setCookies === undefined ? undefined : { setCookies };
     };
 
-    /** Legacy can no longer commit: the row goes, and a request it never received releases its window and claims. */
+    /**
+     * Legacy can no longer commit: once it completed, claims settle from its final ledger before its last byte leaves;
+     * a request it never received releases its window and claims. The row goes either way.
+     */
     const onSettled = async (settlement: LegacySettlement): Promise<void> => {
       if (settlement === 'not-sent') {
         await ex.closeWindow({ forwarded: false });
         await guarded(request, 'edge CSRF release after an unsent legacy request failed', () => ex.settleCsrf());
+      } else {
+        await guarded(request, 'edge CSRF settlement after legacy failed', () => ex.settleCsrf());
+        completed = true;
+        // beforeSend may have run already, as it does at legacy's headers in stream mode; the login is then adopted here.
+        if (afterHeaders !== undefined) await adoptLogin();
       }
       await guarded(request, 'edge in-flight row removal failed', () => ex.dropRow());
     };
@@ -565,6 +612,8 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       onSettled,
       failContext: outcome.failContext,
     };
+    // Marked before legacy can log out, so an identity end that later fails stays owed; a failed mark forwards nothing.
+    if (effect === 'logout' && session !== undefined) await deps.invalidation.beforeLegacyLogout(session, mode);
     const windowed = ex.windowId !== undefined;
     ex.forwarded = true;
     if (!windowed) return forwardToLegacy(request, reply, { ...context, mode: 'stream' });
@@ -584,7 +633,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     } catch (error) {
       if (!(error instanceof UnreadableBodyError)) throw error;
       // Without the body's params the route key is unknown, so neither side may serve the request.
-      request.log.warn({ error }, 'edge request body unreadable');
+      request.log.warn({ error: serializeError(error) }, 'edge request body unreadable');
       return failClosed(reply, failContextFor(undefined, request.url));
     }
     const index = state.active();
@@ -601,7 +650,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     } catch (error) {
       await ex.release();
       if (!isTargetUnavailable(error)) throw error;
-      request.log.warn({ error }, 'edge dependency unavailable before forwarding');
+      request.log.warn({ error: serializeError(error) }, 'edge dependency unavailable before forwarding');
       return failClosed(reply, first.failContext);
     } finally {
       await ex.release();

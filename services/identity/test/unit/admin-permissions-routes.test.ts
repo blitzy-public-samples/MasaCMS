@@ -629,7 +629,7 @@ describe.skipIf(!available)('cperm screens against PostgreSQL', () => {
         userid: ADMIN_USER, username: 'site_admin', siteid: SITE, subtype: 'Default', password: 'stored-hash', fname: '', lname: '', email: '',
         remoteid: '', company: '', lastlogin: null, passwordcreated: null, roleList, membershipIds: ADMIN_USER,
       };
-      await applyLogin({ db: handle?.app ?? NO_DB, repo, clock: CLOCK }, { sessionId, tenantId: tenantIdForSite(SITE), snapshot, mode: 'target-primary', siteId: SITE });
+      await applyLogin({ db: handle?.app ?? NO_DB, repo, clock: CLOCK }, { sessionId, snapshot, mode: 'target-primary', siteId: SITE });
     }
 
     const res = await send('GET', LOOKUP_URL, await headersFor([], sessionId, 'web', site));

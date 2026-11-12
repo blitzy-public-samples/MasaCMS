@@ -8,7 +8,7 @@ import { currentRequestContext, z } from '@opt2/platform/service-kit';
 import type { MigrationContext } from '../context.js';
 import { currentAuthority } from '../cutover/index.js';
 import type { components } from '../generated/openapi.js';
-import type { BridgeJobName, BridgeJobParams, BridgeJobResult } from '../legacy/index.js';
+import { BridgeTimeoutError, type BridgeJobName, type BridgeJobParams, type BridgeJobResult } from '../legacy/index.js';
 import type { WindowKind } from '../reports/append-log.js';
 
 type Schemas = components['schemas'];
@@ -33,8 +33,10 @@ export interface WindowLifecycle {
   complete(windowId: string, request: WindowCompleteRequest): Promise<WindowCompleteResponse>;
 }
 
-/** One legacy step: the `legacyStepRun` body without `deadlineAt`, which the caller enforces. */
+/** One legacy step: the `legacyStepRun` body. */
 export interface LegacyStepInput extends Pick<LegacyStepRequest, 'step' | 'theTime' | 'lastMonitored' | 'siteId'> {
+  /** Time by which the step must answer; it bounds the bridge call, which otherwise takes the bridge's own bound. */
+  readonly deadlineAt?: LegacyStepRequest['deadlineAt'];
   /** Write set in the inventory's unit form (`<schema>.<table>`, `legacy:<table>`, `file-store`); the inventory's write set of `step` when absent. */
   readonly units?: readonly string[];
 }
@@ -46,7 +48,7 @@ export interface LegacyStepResult {
 }
 
 /** The context part a legacy step needs. */
-export type LegacyStepContext = Pick<MigrationContext, 'bridge' | 'gateway' | 'config' | 'catalog' | 'logger'>;
+export type LegacyStepContext = Pick<MigrationContext, 'bridge' | 'gateway' | 'config' | 'catalog' | 'logger' | 'clock'>;
 
 /**
  * The bridge step did not complete; renders as `legacyStepRun`'s legacy 503, with the bridge failure as `cause`.
@@ -62,6 +64,21 @@ export class LegacyStepFailedError extends LegacyServiceUnavailableError {
     override readonly cause: unknown,
   ) {
     super(`Legacy site-monitor step ${step}${siteId === undefined ? '' : ` for site ${siteId}`} did not complete`, 'auto', 'legacy-step-failed');
+  }
+}
+
+/**
+ * `deadlineAt` passed, or the bridge's bound expired, before the step answered; renders as `legacyStepRun`'s 504, and as
+ * the 503 wherever only the base class is mapped. After a bridge timeout `windowId`'s window is left executing, since
+ * legacy may still be running the step.
+ */
+export class LegacyStepDeadlineError extends LegacyStepFailedError {
+  override readonly name: string = 'LegacyStepDeadlineError';
+  override readonly reason: string = 'legacy-step-deadline';
+
+  constructor(step: BridgeJobName, siteId: string | undefined, windowId: string | undefined, cause: unknown) {
+    super(step, siteId, windowId, cause);
+    this.message = `Legacy site-monitor step ${step}${siteId === undefined ? '' : ` for site ${siteId}`} did not complete before its deadline`;
   }
 }
 
@@ -151,23 +168,45 @@ function stepResponse(step: BridgeJobName, result: BridgeJobResult, windowId?: s
   };
 }
 
-/** Runs the bridge step; any rejection becomes {@link LegacyStepFailedError}. */
+/** Milliseconds left before the step's `deadlineAt`, read afresh on each call; undefined without one. */
+function timeLeft(ctx: Pick<LegacyStepContext, 'clock'>, input: LegacyStepInput): number | undefined {
+  return input.deadlineAt === undefined ? undefined : Date.parse(input.deadlineAt) - ctx.clock.now().getTime();
+}
+
+/** True once a step's `deadlineAt` has passed. */
+function deadlinePassed(left: number | undefined): boolean {
+  return left !== undefined && left <= 0;
+}
+
+/** Runs the bridge step within `timeoutMs`; a bridge timeout becomes {@link LegacyStepDeadlineError}, any other rejection {@link LegacyStepFailedError}. */
 async function runBridgeStep(
   ctx: LegacyStepContext,
   input: LegacyStepInput,
+  timeoutMs: number | undefined,
   windowId?: string,
 ): Promise<{ ok: true; result: BridgeJobResult } | { ok: false; error: LegacyStepFailedError }> {
   try {
-    return { ok: true, result: await ctx.bridge.jobsRun(input.step, bridgeParams(input)) };
+    const params = bridgeParams(input);
+    const result = await (timeoutMs === undefined
+      ? ctx.bridge.jobsRun(input.step, params)
+      : ctx.bridge.jobsRun(input.step, params, { timeoutMs }));
+    return { ok: true, result };
   } catch (error) {
-    return { ok: false, error: new LegacyStepFailedError(input.step, input.siteId, windowId, error) };
+    const failure =
+      error instanceof BridgeTimeoutError
+        ? new LegacyStepDeadlineError(input.step, input.siteId, windowId, error)
+        : new LegacyStepFailedError(input.step, input.siteId, windowId, error);
+    return { ok: false, error: failure };
   }
 }
 
 /**
- * Runs one site-monitor step on legacy through `jobs.cfm`, inside a `sitemonitor-step` write window when its write set
- * includes a `target`-authoritative unit; the window is completed with `forwarded: true` even when the bridge call fails.
- * @throws the lifecycle's open refusal unchanged, before legacy runs anything; LegacyStepFailedError when the step did not complete.
+ * Runs one site-monitor step on legacy through `jobs.cfm` before its `deadlineAt`, inside a `sitemonitor-step` write
+ * window when its write set includes a `target`-authoritative unit. The window is completed with `forwarded: true` even
+ * when the bridge call fails, with `forwarded: false` when the deadline passed while it opened, and not at all after a
+ * bridge timeout, since legacy may still be running the step.
+ * @throws the lifecycle's open refusal unchanged, before legacy runs anything; LegacyStepDeadlineError when the deadline
+ *   passed or the bridge timed out; LegacyStepFailedError when the step did not complete.
  */
 export async function runLegacyStepWith(
   ctx: LegacyStepContext,
@@ -175,13 +214,16 @@ export async function runLegacyStepWith(
   input: LegacyStepInput,
 ): Promise<LegacyStepResult> {
   const { step, siteId } = input;
+  if (deadlinePassed(timeLeft(ctx, input))) throw new LegacyStepDeadlineError(step, siteId, undefined, undefined);
   // The legacyStepRun body carries no units, so the step's write set comes from the inventory unless a caller passes one.
   const units = input.units === undefined ? legacyStepUnits(ctx, step) : migrationUnits(ctx.catalog, input.units);
   // A step with no migration unit can never need a window, so it reads no authority.
   const authority = units.length === 0 ? undefined : await currentAuthority({ gateway: ctx.gateway, config: ctx.config.paths });
 
   if (authority === undefined || !units.some((unit) => authority.isTargetAuthoritative(unit))) {
-    const run = await runBridgeStep(ctx, input);
+    const left = timeLeft(ctx, input);
+    if (deadlinePassed(left)) throw new LegacyStepDeadlineError(step, siteId, undefined, undefined);
+    const run = await runBridgeStep(ctx, input, left);
     if (!run.ok) throw run.error;
     return { response: stepResponse(step, run.result) };
   }
@@ -196,7 +238,18 @@ export async function runLegacyStepWith(
     },
     { kind: LEGACY_STEP_WINDOW_KIND },
   );
-  const run = await runBridgeStep(ctx, input, windowId);
+  const stepLabel = siteId === undefined ? step : `${step} for site ${siteId}`;
+  const left = timeLeft(ctx, input);
+  if (deadlinePassed(left)) {
+    // Legacy has run nothing, so the window closes without an import.
+    await lifecycle.complete(windowId, { forwarded: false });
+    throw new LegacyStepDeadlineError(step, siteId, windowId, undefined);
+  }
+  const run = await runBridgeStep(ctx, input, left, windowId);
+  if (!run.ok && run.error.cause instanceof BridgeTimeoutError) {
+    ctx.logger.warn({ requestId }, `Legacy step ${stepLabel} did not answer within ${String(run.error.cause.timeoutMs)} ms; window ${windowId} is left executing`);
+    throw run.error;
+  }
   // Legacy may have committed even when the bridge call failed, so the window always imports.
   let completed: WindowCompleteResponse;
   try {
@@ -207,7 +260,6 @@ export async function runLegacyStepWith(
   }
 
   // The window record has no field for the step, so this line links the two.
-  const stepLabel = siteId === undefined ? step : `${step} for site ${siteId}`;
   if (completed.state === 'closed') ctx.logger.info({ requestId }, `Legacy step ${stepLabel} ran in window ${windowId}, closed`);
   else ctx.logger.warn({ requestId }, `Legacy step ${stepLabel} left window ${windowId} ${completed.state}`);
 

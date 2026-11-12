@@ -32,6 +32,8 @@ export interface JarRow {
   mode: SessionMode;
   hydratedEpoch: number | null;
   updatedAt: Date;
+  /** Set before a legacy logout of the session runs; stays until identity confirms the session's end and `drop` removes it. */
+  identityEndPendingAt?: Date;
 }
 
 /** Input of {@link LegacyJar.upsert}: `cookies` merge into the stored ones, every other field replaces its column. */
@@ -57,7 +59,8 @@ export interface JarStatements {
   drop(sessionId: string): Promise<boolean>;
   /**
    * Maps `input.legacySessionId` to `input.sessionId` alone: the jar of `previousSessionId` and any other holder of
-   * that legacy session are removed, their barrier positions move to `input.sessionId`, then `input` is upserted.
+   * that legacy session are removed, their barrier positions and declarations move to `input.sessionId`, then `input` is upserted.
+   * A removed holder whose identity end is pending keeps its mark in a jar without legacy session or cookies.
    */
   rebind(input: JarUpsert, previousSessionId?: string): Promise<JarRow>;
 }
@@ -81,6 +84,8 @@ export interface LegacyJar extends JarStatements {
   withSessionLock<T>(sessionId: string, fn: (locked: LockedJar) => Promise<T>): Promise<T>;
   /** As {@link withSessionLock}, holding only the ColdFusion session's lock; `locked.rebind` takes no previous. */
   withNativeLock<T>(legacySessionId: string, fn: (locked: JarStatements) => Promise<T>): Promise<T>;
+  /** Marks the session's identity end pending in its own transaction; a session without a jar gets an empty one. */
+  markIdentityEndPending(sessionId: string, mode: SessionMode): Promise<void>;
 }
 
 /** Raw `Set-Cookie` values of a legacy response split into jar cookies and the rest. */
@@ -92,7 +97,9 @@ export interface AbsorbedSetCookies {
 
 const TABLE = 'legacy_jar';
 const BARRIER_TABLE = 'session_barrier';
-const COLUMNS = 'session_id, legacy_session_id, cookies, mode, hydrated_epoch, updated_at';
+/** Columns an upsert writes; the pending-end mark is written only by its own statement. */
+const UPSERT_COLUMNS = 'session_id, legacy_session_id, cookies, mode, hydrated_epoch, updated_at';
+const COLUMNS = `${UPSERT_COLUMNS}, identity_end_pending_at`;
 const LOCK_SQL = 'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))';
 
 interface JarRecord {
@@ -103,6 +110,7 @@ interface JarRecord {
   // pg returns bigint columns as strings.
   hydrated_epoch: string | null;
   updated_at: Date;
+  identity_end_pending_at: Date | null;
 }
 
 /** Upper-case name of a legacy session cookie in any case, or undefined for any other cookie. */
@@ -221,13 +229,15 @@ function toRow(record: JarRecord): JarRow {
     mode: record.mode,
     hydratedEpoch: record.hydrated_epoch === null ? null : Number(record.hydrated_epoch),
     updatedAt: record.updated_at,
+    ...(record.identity_end_pending_at === null ? {} : { identityEndPendingAt: record.identity_end_pending_at }),
   };
 }
 
-/** Jar statements of one transaction, plus the session lock they take. */
+/** Jar statements of one transaction, plus the session lock they take and the pending-end mark. */
 interface TxStatements extends LockedJar {
   /** Takes the transaction-scoped advisory lock of an identity session. */
   lockSession: (sessionId: string) => Promise<void>;
+  markIdentityEndPending: LegacyJar['markIdentityEndPending'];
 }
 
 /** The jar statements on one metadata transaction. */
@@ -272,7 +282,7 @@ function statementsOn(tx: MetadataTx): TxStatements {
 
   async function write(input: JarUpsert): Promise<JarRow> {
     const row = await first(
-      `INSERT INTO ${table} AS jar (${COLUMNS}) VALUES ($1, $2, $3::jsonb, $4, $5, now())
+      `INSERT INTO ${table} AS jar (${UPSERT_COLUMNS}) VALUES ($1, $2, $3::jsonb, $4, $5, now())
        ON CONFLICT (session_id) DO UPDATE SET
          legacy_session_id = EXCLUDED.legacy_session_id,
          cookies = jar.cookies || EXCLUDED.cookies,
@@ -313,25 +323,46 @@ function statementsOn(tx: MetadataTx): TxStatements {
       return changed(`DELETE FROM ${table} WHERE session_id = $1`, [sessionId]);
     },
 
+    async markIdentityEndPending(sessionId, mode) {
+      await lockSession(sessionId);
+      await tx.query(
+        `INSERT INTO ${table} AS jar (${COLUMNS}) VALUES ($1, NULL, '{}'::jsonb, $2, NULL, now(), now())
+         ON CONFLICT (session_id) DO UPDATE SET
+           identity_end_pending_at = COALESCE(jar.identity_end_pending_at, EXCLUDED.identity_end_pending_at),
+           updated_at = EXCLUDED.updated_at`,
+        [sessionId, mode],
+      );
+    },
+
     async rebind(input, previousSessionId) {
       // The holders of the legacy session are guarded by its lock, which their hydrations and logouts hold too.
       if (previousSessionId !== undefined) await lockSession(previousSessionId);
       if (input.legacySessionId !== null) await lockNative(input.legacySessionId);
+      // A holder still owed its identity end keeps the mark that blocks its session until that end completes.
       const { rows } = await tx.query<{ session_id: string }>(
-        `DELETE FROM ${table} WHERE session_id <> $1 AND (session_id = $2 OR legacy_session_id = $3)
-         RETURNING session_id`,
+        `WITH kept AS (
+           UPDATE ${table} SET legacy_session_id = NULL, cookies = '{}'::jsonb, hydrated_epoch = NULL, updated_at = now()
+           WHERE session_id <> $1 AND (session_id = $2 OR legacy_session_id = $3) AND identity_end_pending_at IS NOT NULL
+           RETURNING session_id
+         ), removed AS (
+           DELETE FROM ${table}
+           WHERE session_id <> $1 AND (session_id = $2 OR legacy_session_id = $3) AND identity_end_pending_at IS NULL
+           RETURNING session_id
+         )
+         SELECT session_id FROM kept UNION ALL SELECT session_id FROM removed`,
         [input.sessionId, previousSessionId ?? null, input.legacySessionId],
       );
       const replaced = rows.map((row) => row.session_id);
       if (replaced.length > 0) {
-        // The replaced sessions' unapplied write positions still bind the legacy session's next requests; one
-        // statement moves exactly the positions it deletes.
+        // The replaced sessions' unapplied write positions and declared writes still bind the legacy session's next
+        // requests; one statement moves exactly the rows it deletes.
         await tx.query(
-          `WITH moved AS (DELETE FROM ${barrier} WHERE session_id = ANY($2::text[]) RETURNING owner, xid, recorded_at)
-           INSERT INTO ${barrier} AS b (session_id, owner, xid, recorded_at)
-           SELECT $1, owner, max(xid), max(recorded_at) FROM moved GROUP BY owner
+          `WITH moved AS (DELETE FROM ${barrier} WHERE session_id = ANY($2::text[]) RETURNING owner, xid, pending, recorded_at)
+           INSERT INTO ${barrier} AS b (session_id, owner, xid, pending, recorded_at)
+           SELECT $1, owner, max(xid), sum(pending)::integer, max(recorded_at) FROM moved GROUP BY owner
            ON CONFLICT (session_id, owner) DO UPDATE SET
              xid = GREATEST(b.xid, EXCLUDED.xid),
+             pending = b.pending + EXCLUDED.pending,
              recorded_at = GREATEST(b.recorded_at, EXCLUDED.recorded_at)`,
           [input.sessionId, replaced],
         );
@@ -355,6 +386,7 @@ export function createLegacyJar(db: TenantDb): LegacyJar {
     setHydratedEpoch: (sessionId, epoch) => inTransaction((s) => s.setHydratedEpoch(sessionId, epoch)),
     drop: (sessionId) => inTransaction((s) => s.drop(sessionId)),
     rebind: (input, previousSessionId) => inTransaction((s) => s.rebind(input, previousSessionId)),
+    markIdentityEndPending: (sessionId, mode) => inTransaction((s) => s.markIdentityEndPending(sessionId, mode)),
 
     withSessionLock: (sessionId, fn) =>
       inTransaction(async ({ lockSession, ...locked }) => {

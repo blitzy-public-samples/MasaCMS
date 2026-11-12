@@ -71,6 +71,9 @@ const ID_WIDTH = 35;
 const OPEN_OPERATION_STATES: readonly AccountOperationState[] = ['prepared', 'committed'];
 const ADVISORY_LOCK_SQL = 'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))';
 
+/** Default rows per FETCH of a paged read. */
+export const READ_PAGE_SIZE = 500;
+
 /** DAO `cfqueryparam null="#value eq ''#"`: an empty string is stored as NULL [legacy: core/mura/user/userDAO.cfc:304-343]. */
 function daoNull(value: string | null | undefined): string | null {
   return value === undefined || value === null || value === '' ? null : value;
@@ -217,6 +220,33 @@ export interface GroupMemberRow {
   company: string | null;
 }
 
+/** A member with its listing's sort key, the lowered last name (null for a NULL one). */
+export interface KeyedGroupMember {
+  key: string | null;
+  member: GroupMemberRow;
+}
+
+/** One FETCH of a member listing; `closed`, set on the first page only, names the users whose open account operation holds, held or will hold a membership of the group. */
+export interface GroupMemberPage {
+  members: KeyedGroupMember[];
+  closed: string[];
+}
+
+/** Whether a tenant holds a member of a group, and the users closing the group as `GroupMemberPage.closed` names them. */
+export interface GroupMemberProbe {
+  listed: boolean;
+  closed: string[];
+}
+
+/** A listed group with its member count, null when it has none. */
+export type CountedGroupRow = GroupAccountRow & { counter: number | null };
+
+/** A group listing with member counts: every group when `closed` is empty, else only the first page, `closed` naming the users whose open account operation holds, held or will hold a membership of a listed group. */
+export interface CountedGroupList {
+  groups: CountedGroupRow[];
+  closed: string[];
+}
+
 /** One node permission grant. */
 export interface PermissionGrant {
   groupId: string;
@@ -242,6 +272,9 @@ export type SessionPatch = Partial<
 > & {
   epoch?: number | string;
 };
+
+/** Row lock `lockSession` takes: `update` for a session effect, `share` for a CSRF consume or hydration read. */
+export type SessionLockMode = 'update' | 'share';
 
 /** Admin session-scope values by their legacy `session` names, as `session.admin_state` holds them. */
 export type SessionAdminState = Record<string, unknown>;
@@ -376,6 +409,8 @@ export interface IdentityRepository extends Repository {
   findGroupByName(tx: TenantTx, name: string, opts: { siteId: string; isPublic?: boolean }): Promise<GroupAccountRow | null>;
   /** Type=1 groups of `poolSiteId` with that visibility, by name then userid [legacy: core/mura/permission.cfc:600-621]. */
   listGroups(tx: TenantTx, poolSiteId: string, isPublic: boolean | number, opts?: { excludeAdmin?: boolean }): Promise<GroupAccountRow[]>;
+  /** `listGroups` rows with their `membersOf` counts (S2 included) from one cursor snapshot in pages, stopping after the first page when an open account operation closes a listed group [legacy: core/mura/user/userGateway.cfc:93-120]. */
+  listCountedGroups(tx: TenantTx, poolSiteId: string, isPublic: boolean | number): Promise<CountedGroupList>;
   /** Type=1 groups of `poolSiteId` with `ispublic` = `isPublic`, by Perm descending, then name [legacy: core/mura/user/userGateway.cfc:594-622]. */
   listPoolGroups(tx: TenantTx, poolSiteId: string, isPublic: 0 | 1): Promise<PoolGroupRow[]>;
   /** Inserts a group as `userDAO.create` does [legacy: core/mura/user/userDAO.cfc:300-346]. */
@@ -440,6 +475,10 @@ export interface IdentityRepository extends Repository {
   removeMembership(tx: TenantTx, userId: string, groupId: string, ctx?: WriteContext): Promise<boolean>;
   /** Members of `groupId` in this tenant, S2 members only with `includeS2`, by last name then userid [legacy: core/mura/user/userDAO.cfc:646-660]. */
   membersOf(tx: TenantTx, groupId: string, opts?: { includeS2?: boolean }): Promise<GroupMemberRow[]>;
+  /** `membersOf` in pages from one cursor snapshot behind the gate read fence, the first page always yielded; iterate inside `tx`. */
+  memberPages(tx: TenantTx, groupId: string, opts?: { includeS2?: boolean }): AsyncGenerator<GroupMemberPage, void, undefined>;
+  /** Whether `membersOf` would list anyone, with the first page's closure, in one statement behind the gate read fence. */
+  probeMembers(tx: TenantTx, groupId: string, opts?: { includeS2?: boolean }): Promise<GroupMemberProbe>;
 
   /** The permissions of a node, optionally of one type [legacy: core/mura/permission.cfc:203-218,623-630]. */
   permissionsFor(tx: TenantTx, input: { contentId: string; siteId: string; type?: string }): Promise<PermissionRow[]>;
@@ -471,6 +510,8 @@ export interface IdentityRepository extends Repository {
 
   /** The session `sessionId` of this tenant; null when absent. */
   findSession(tx: TenantTx, sessionId: string): Promise<SessionRow | null>;
+  /** The session `sessionId` of this tenant, locked `FOR UPDATE` or `FOR SHARE` until the transaction ends; null when absent. */
+  lockSession(tx: TenantTx, sessionId: string, mode: SessionLockMode): Promise<SessionRow | null>;
   /** Inserts a session. */
   insertSession(tx: TenantTx, row: SessionInsert, ctx?: WriteContext): Promise<SessionRow>;
   /** Sets `patch` and `updated_at`; null when absent. */
@@ -585,8 +626,13 @@ export interface IdentityRepository extends Repository {
 export interface IdentityRepositoryOptions {
   clock?: Clock;
   schema?: string;
+  /** Rows per FETCH of the paged member and counted-group reads; defaults to `READ_PAGE_SIZE`. */
+  pageSize?: number;
 }
 
+
+/** A member listing row; a group without members yields one row whose member columns are all NULL. */
+type MemberCursorRow = Omit<GroupMemberRow, 'userid'> & { userid: string | null; sort_key: string | null; closed_users: string[] | null };
 
 async function select<R extends QueryResultRow>(tx: TenantTx, sql: string, params: readonly unknown[]): Promise<R[]> {
   return (await tx.query<R>(sql, [...params])).rows;
@@ -610,7 +656,8 @@ async function insertIfAbsent<R>(tx: TenantTx, savepoint: string, insert: () => 
 }
 
 /** Builds the identity repository over the platform repository of `OWNED_TABLES`. */
-export function createIdentityRepository({ clock = systemClock, schema = SCHEMA }: IdentityRepositoryOptions = {}): IdentityRepository {
+export function createIdentityRepository({ clock = systemClock, schema = SCHEMA, pageSize = READ_PAGE_SIZE }: IdentityRepositoryOptions = {}): IdentityRepository {
+  if (!Number.isSafeInteger(pageSize) || pageSize < 1) throw new RangeError(`pageSize must be a positive integer, not ${pageSize}`);
   const base = createRepository({ owner: OWNER, schema, tables: OWNED_TABLES, clock });
   const name = (table: { table: string }): string => qualified(schema, table.table);
   const userAccount = name(USER_ACCOUNT);
@@ -636,6 +683,9 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
   const personContact = name(PERSON_CONTACT);
   const aggregateVersion = name(AGGREGATE_VERSION);
   const legacyCi = qualified(schema, 'legacy_ci');
+  const legacyCharCi = qualified(schema, 'legacy_char_ci');
+  // Numbers each cursor, so reads sharing one transaction never reuse a name.
+  let cursorSeq = 0;
 
   // SQL Server's nvarchar equality: bpchar ignores trailing spaces and legacy_ci compares the rest. Unlike lower() and rtrim(),
   // the comparison is leakproof, so its expression index applies under forced RLS.
@@ -697,9 +747,17 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     `SELECT m.groupid FROM ${membership} m WHERE m.tenant_id = $1 AND m.userid = $2 AND m.groupid NOT IN` +
     ` (SELECT g.userid FROM ${groupAccount} g WHERE g.tenant_id = $1 AND g.siteid = $3 AND g.type = 1 AND g.ispublic = 1)` +
     ' ORDER BY m.groupid FOR UPDATE OF m';
-  // Legacy joins members of any Type and orders by their lname, which SQL Server sorts NULLs first.
-  const membersSql = (includeS2: boolean): string =>
-    'SELECT * FROM (' +
+  // One row naming the users of open account operations whose membership of a group `inGroup` accepts is held, recorded before
+  // or pending, NULL for none; the literal states match account_operation_open_user_idx's predicate.
+  const affectingSql = (inGroup: (groupId: string) => string): string =>
+    `SELECT array_agg(o.user_id::text ORDER BY o.user_id) AS closed_users FROM ${accountOperation} o` +
+    ` WHERE o.tenant_id = $1 AND o.state IN (${OPEN_OPERATION_STATES.map((state) => `'${state}'`).join(', ')})` +
+    ` AND (EXISTS (SELECT 1 FROM ${membership} h WHERE h.tenant_id = o.tenant_id AND h.userid = o.user_id AND ${inGroup('h.groupid')})` +
+    ` OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(o.before_values::jsonb -> 'groupIds') b(id) WHERE ${inGroup('b.id::bpchar')})` +
+    ` OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(o.pending_change::jsonb -> 'memberships' -> 'groupIds') p(id) WHERE ${inGroup('p.id::bpchar')}))`;
+  // Legacy joins members of any Type; `affecting` holds the users closing group $2.
+  const memberSourcesSql = (includeS2: boolean): string =>
+    `WITH affecting AS (${affectingSql((groupId) => `${groupId} = ($2::bpchar COLLATE ${legacyCharCi})`)}), members AS (` +
     'SELECT u.userid, u.type, u.username, u.siteid, u.ispublic, u.s2, u.inactive, c.fname, c.lname, c.email, c.company' +
     ` FROM ${membership} m JOIN ${userAccount} u ON u.tenant_id = m.tenant_id AND u.userid = m.userid` +
     ` LEFT JOIN ${personContact} c ON c.tenant_id = u.tenant_id AND c.user_id = u.userid` +
@@ -707,8 +765,27 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     ' UNION ALL ' +
     'SELECT g.userid, g.type, g.username, g.siteid, g.ispublic, g.s2, g.inactive, g.fname, g.lname, g.email, g.company' +
     ` FROM ${membership} m JOIN ${groupAccount} g ON g.tenant_id = m.tenant_id AND g.userid = m.userid` +
-    ` WHERE m.tenant_id = $1 AND m.groupid = $2${includeS2 ? '' : ' AND g.s2 = 0'}` +
-    ') members ORDER BY lower(lname) ASC NULLS FIRST, userid';
+    ` WHERE m.tenant_id = $1 AND m.groupid = $2${includeS2 ? '' : ' AND g.s2 = 0'})`;
+  // Legacy orders by lname, which SQL Server sorts NULLs first. "C" orders the lowered names by code point, as the cross-tenant
+  // merge does; a group with no member still yields one row carrying closed_users.
+  const membersSql = (includeS2: boolean): string =>
+    `${memberSourcesSql(includeS2)} SELECT r.*, lower(r.lname) COLLATE "C" AS sort_key, a.closed_users FROM affecting a` +
+    ' LEFT JOIN members r ON true ORDER BY sort_key ASC NULLS FIRST, r.userid';
+  const memberProbeSql = (includeS2: boolean): string =>
+    `${memberSourcesSql(includeS2)} SELECT EXISTS (SELECT 1 FROM members) AS listed, a.closed_users FROM affecting a`;
+  // listGroupsSql's rows with membersSql(true)'s count per group, NULL for none as legacy's LEFT JOIN, and the users closing any
+  // listed group, all from one snapshot.
+  const countedGroupsSql =
+    `WITH listed AS (${listGroupsSql}), members AS (` +
+    `SELECT m.groupid FROM ${membership} m JOIN ${userAccount} u ON u.tenant_id = m.tenant_id AND u.userid = m.userid` +
+    " WHERE m.tenant_id = $1 AND m.groupid IN (SELECT userid FROM listed) AND u.opt2_state = 'active'" +
+    ' UNION ALL ' +
+    `SELECT m.groupid FROM ${membership} m JOIN ${groupAccount} g ON g.tenant_id = m.tenant_id AND g.userid = m.userid` +
+    ' WHERE m.tenant_id = $1 AND m.groupid IN (SELECT userid FROM listed)' +
+    '), counted AS MATERIALIZED (SELECT groupid, count(*)::integer AS counter FROM members GROUP BY groupid' +
+    `), affecting AS (${affectingSql((groupId) => `${groupId} IN (SELECT userid FROM listed)`)})` +
+    ' SELECT l.*, c.counter, a.closed_users FROM listed l LEFT JOIN counted c ON c.groupid = l.userid CROSS JOIN affecting a' +
+    ' ORDER BY lower(l.groupname) ASC NULLS FIRST, l.userid';
   const permissionsSql =
     `SELECT * FROM ${permission} WHERE tenant_id = $1 AND contentid = $2 AND siteid = $3 AND ($4::text IS NULL OR type = $4)` +
     ' ORDER BY contentid, groupid, siteid, type';
@@ -741,6 +818,10 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     `SELECT token FROM ${oauthToken} WHERE tenant_id = $1 AND clientid = $2 AND granttype = $3 AND expires < $4` +
     ' ORDER BY token FOR UPDATE';
   const lockSessionAdminStateSql = `SELECT admin_state FROM ${session} WHERE tenant_id = $1 AND session_id = $2 FOR UPDATE`;
+  const lockSessionSql: Readonly<Record<SessionLockMode, string>> = {
+    update: `SELECT * FROM ${session} WHERE tenant_id = $1 AND session_id = $2 FOR UPDATE`,
+    share: `SELECT * FROM ${session} WHERE tenant_id = $1 AND session_id = $2 FOR SHARE`,
+  };
   const claimsSql =
     `SELECT * FROM ${csrfClaim} WHERE tenant_id = $1 AND session_id = $2 AND ($3::text IS NULL OR state = $3)` +
     ' AND ($4::timestamp IS NULL OR coalesce(used_at, claimed_at) >= $4) ORDER BY claimed_at, token';
@@ -917,6 +998,16 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
   ): Promise<GroupAccountRow[]> {
     const params = [tx.tenantId, flag(isPublic) ? 1 : 0, poolSiteId, opts.excludeAdmin === true];
     return readUnits<GroupAccountRow>(tx, GROUP_ACCOUNT.unit, listGroupsSql, params);
+  }
+
+  function listCountedGroups(tx: TenantTx, poolSiteId: string, isPublic: boolean | number): Promise<CountedGroupList> {
+    return base.read(tx, [GROUP_ACCOUNT.unit, MEMBERSHIP.unit, USER_ACCOUNT.unit], async () => {
+      const params = [tx.tenantId, flag(isPublic) ? 1 : 0, poolSiteId, false];
+      const rows = await fetchPages<CountedGroupRow & { closed_users: string[] | null }>(tx, countedGroupsSql, params, (page) =>
+        (page[0]?.closed_users ?? null) !== null,
+      );
+      return { groups: rows.map(({ closed_users: _closed, ...group }) => group), closed: rows[0]?.closed_users ?? [] };
+    });
   }
 
   function listPoolGroups(tx: TenantTx, poolSiteId: string, isPublic: 0 | 1): Promise<PoolGroupRow[]> {
@@ -1279,9 +1370,62 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     return (await base.delete(tx, MEMBERSHIP.table, { userid: userId, groupid: groupId }, ctx)) !== null;
   }
 
-  function membersOf(tx: TenantTx, groupId: string, opts: { includeS2?: boolean } = {}): Promise<GroupMemberRow[]> {
-    const units = [MEMBERSHIP.unit, USER_ACCOUNT.unit, GROUP_ACCOUNT.unit];
-    return readUnits<GroupMemberRow>(tx, units, membersSql(opts.includeS2 === true), [tx.tenantId, groupId]);
+  /** Rows of `sql` through a NO SCROLL cursor, so every page comes from its one snapshot; stops after a page `stop` accepts. */
+  async function fetchPages<R extends QueryResultRow>(tx: TenantTx, sql: string, params: readonly unknown[], stop: (page: R[]) => boolean): Promise<R[]> {
+    cursorSeq += 1;
+    const cursor = `opt2_page_${cursorSeq}`;
+    await tx.query(`DECLARE ${cursor} NO SCROLL CURSOR FOR ${sql}`, [...params]);
+    const rows: R[] = [];
+    for (;;) {
+      const page = await select<R>(tx, `FETCH FORWARD ${pageSize} FROM ${cursor}`, []);
+      for (const row of page) rows.push(row);
+      if (page.length < pageSize || stop(page)) break;
+    }
+    await tx.query(`CLOSE ${cursor}`);
+    return rows;
+  }
+
+  async function* memberPages(tx: TenantTx, groupId: string, opts: { includeS2?: boolean } = {}): AsyncGenerator<GroupMemberPage, void, undefined> {
+    // The fence holds the gates until `tx` ends, so every later FETCH reads behind it.
+    await base.read(tx, [MEMBERSHIP.unit, USER_ACCOUNT.unit, GROUP_ACCOUNT.unit], async () => undefined);
+    cursorSeq += 1;
+    const cursor = `opt2_page_${cursorSeq}`;
+    await tx.query(`DECLARE ${cursor} NO SCROLL CURSOR FOR ${membersSql(opts.includeS2 === true)}`, [tx.tenantId, groupId]);
+    let open = true;
+    try {
+      for (let first = true; ; first = false) {
+        const rows = await select<MemberCursorRow>(tx, `FETCH FORWARD ${pageSize} FROM ${cursor}`, []);
+        if (rows.length < pageSize) {
+          open = false;
+          await tx.query(`CLOSE ${cursor}`);
+        }
+        const members = rows.flatMap(({ sort_key: key, closed_users: _closed, userid, ...rest }) => (userid === null ? [] : [{ key, member: { userid, ...rest } }]));
+        if (first || members.length > 0) yield { members, closed: first ? (rows[0]?.closed_users ?? []) : [] };
+        if (!open) return;
+      }
+    } catch (err) {
+      // The failed statement aborted `tx`, where a CLOSE would only replace this error.
+      open = false;
+      throw err;
+    } finally {
+      if (open) await tx.query(`CLOSE ${cursor}`);
+    }
+  }
+
+  async function membersOf(tx: TenantTx, groupId: string, opts: { includeS2?: boolean } = {}): Promise<GroupMemberRow[]> {
+    const members: GroupMemberRow[] = [];
+    for await (const page of memberPages(tx, groupId, opts)) for (const { member } of page.members) members.push(member);
+    return members;
+  }
+
+  async function probeMembers(tx: TenantTx, groupId: string, opts: { includeS2?: boolean } = {}): Promise<GroupMemberProbe> {
+    const [row] = await readUnits<{ listed: boolean; closed_users: string[] | null }>(
+      tx,
+      [MEMBERSHIP.unit, USER_ACCOUNT.unit, GROUP_ACCOUNT.unit],
+      memberProbeSql(opts.includeS2 === true),
+      [tx.tenantId, groupId],
+    );
+    return { listed: row?.listed === true, closed: row?.closed_users ?? [] };
   }
 
   function permissionsFor(tx: TenantTx, input: { contentId: string; siteId: string; type?: string }): Promise<PermissionRow[]> {
@@ -1384,6 +1528,10 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
 
   function findSession(tx: TenantTx, sessionId: string): Promise<SessionRow | null> {
     return base.findByKey<SessionRow>(tx, SESSION.table, { session_id: sessionId });
+  }
+
+  async function lockSession(tx: TenantTx, sessionId: string, mode: SessionLockMode): Promise<SessionRow | null> {
+    return (await select<SessionRow>(tx, lockSessionSql[mode], [tx.tenantId, sessionId]))[0] ?? null;
   }
 
   function insertSession(tx: TenantTx, row: SessionInsert, ctx: WriteContext = {}): Promise<SessionRow> {
@@ -1696,6 +1844,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     findGroupsByIds,
     findGroupByName,
     listGroups,
+    listCountedGroups,
     listPoolGroups,
     insertGroup,
     updateGroup,
@@ -1719,6 +1868,8 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     addMembership,
     removeMembership,
     membersOf,
+    memberPages,
+    probeMembers,
     permissionsFor,
     groupPermissions,
     replaceNodePermissions,
@@ -1729,6 +1880,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     setStrike,
     addStrike,
     findSession,
+    lockSession,
     insertSession,
     updateSession,
     deleteSession,

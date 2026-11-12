@@ -31,6 +31,8 @@ export interface ServiceRequest {
   userToken?: string | null;
   /** Returns the body as the received bytes (a Buffer) whatever its media type, for byte-exact passthrough. */
   rawBody?: boolean;
+  /** Returns a 2xx body unread, as a Node `Readable` of the received bytes, still bounded by the call's timeout; other statuses are decoded as usual. */
+  stream?: boolean;
   /** Bounds this call instead of the client's timeout, for a callee whose own budget exceeds it (write-window open). */
   timeoutMs?: number;
 }
@@ -40,7 +42,7 @@ export interface ServiceResponse<T = unknown> {
   status: number;
   /** Response headers with lower-cased names, for example `x-opt2-write-position`. */
   headers: Record<string, string | string[]>;
-  /** Parsed JSON for JSON media types (undefined when empty), a string for `text/*`, otherwise a Buffer. */
+  /** Parsed JSON for JSON media types (undefined when empty), a string for `text/*`, otherwise a Buffer; a `Readable` for a streamed 2xx. */
   body: T;
 }
 
@@ -195,7 +197,7 @@ export function createServiceClient(options: ServiceClientOptions): ServiceClien
     if (!undiciRequestCreated.hasSubscribers) injectHttpHeaders(headers);
 
     let response: Dispatcher.ResponseData;
-    let raw: Buffer;
+    let raw: Buffer | undefined;
     try {
       response = await request(url, {
         method: req.method,
@@ -206,7 +208,9 @@ export function createServiceClient(options: ServiceClientOptions): ServiceClien
         bodyTimeout: callTimeoutMs,
         signal: deadline,
       });
-      raw = Buffer.from(await response.body.arrayBuffer());
+      // A streamed 2xx body stays unread; the deadline still destroys it once it fires.
+      const streamed = req.stream === true && response.statusCode >= 200 && response.statusCode <= 299;
+      if (!streamed) raw = Buffer.from(await response.body.arrayBuffer());
     } catch (err) {
       if (deadline.aborted || isUnreachable(err)) throw new ServiceUnavailableError(req.service, err);
       throw err;
@@ -216,6 +220,7 @@ export function createServiceClient(options: ServiceClientOptions): ServiceClien
     for (const [name, value] of Object.entries(response.headers)) {
       if (value !== undefined) responseHeaders[name.toLowerCase()] = value;
     }
+    if (raw === undefined) return { status: response.statusCode, headers: responseHeaders, body: response.body as T };
     const callee = `Service ${req.service} (called by ${options.self})`;
     const decoded = req.rawBody === true ? raw : decodeServiceBody(raw, responseHeaders['content-type'], callee);
     return { status: response.statusCode, headers: responseHeaders, body: decoded as T };

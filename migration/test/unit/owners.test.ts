@@ -1,6 +1,7 @@
 // Unit tests for the owners client: each endpoint's owner, route, query and body, write positions, and failures.
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
+import { Readable } from 'node:stream';
 import {
   CURSOR_START,
   WRITE_POSITION_HEADER,
@@ -359,14 +360,20 @@ describe('createOwnersClient', () => {
     ]);
   });
 
-  it('getObject reads one object of strategies-content by key as raw bytes', async () => {
+  it('getObject streams one object of strategies-content by key as its undecoded bytes', async () => {
     const key = `${TENANT}/${FILE_ID}.json`;
     const bytes = Buffer.from('{"stored":"as json"}');
-    const { owners, calls } = routedClient({ 'strategies-content GET /internal/v1/migration/objects': [{ body: bytes }] });
+    const served = Readable.from([bytes.subarray(0, 5), bytes.subarray(5)]);
+    const { owners, calls } = routedClient({ 'strategies-content GET /internal/v1/migration/objects': [{ body: served }] });
 
-    await expect(owners.getObject(key)).resolves.toBe(bytes);
+    const body = await owners.getObject(key);
+
+    expect(body).toBe(served);
+    const chunks: Buffer[] = [];
+    for await (const chunk of body) chunks.push(chunk as Buffer);
+    expect(Buffer.concat(chunks).equals(bytes)).toBe(true);
     expect(calls).toEqual([
-      { service: 'strategies-content', method: 'GET', path: '/internal/v1/migration/objects', query: { key }, rawBody: true, userToken: null },
+      { service: 'strategies-content', method: 'GET', path: '/internal/v1/migration/objects', query: { key }, stream: true, userToken: null },
     ]);
   });
 

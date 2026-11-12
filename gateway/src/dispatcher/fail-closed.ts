@@ -61,6 +61,9 @@ const TRANSPORT_FAILURE_CODES: ReadonlySet<string> = new Set([
   'FST_REPLY_FROM_BAD_GATEWAY',
 ]);
 
+/** Connection-establishment failure codes, after which the callee never received the request. */
+const NOT_SENT_CODES: ReadonlySet<string> = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'UND_ERR_CONNECT_TIMEOUT']);
+
 function isUnder(path: string, prefix: string): boolean {
   return path === prefix || path.startsWith(`${prefix}/`);
 }
@@ -111,6 +114,12 @@ export function isTargetUnavailable(input: unknown): boolean {
     error = cause;
   }
   return false;
+}
+
+/** True when `error` failed to establish the connection, so the callee never received the request. */
+export function neverSent(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  return typeof code === 'string' && NOT_SENT_CODES.has(code);
 }
 
 /** True for any platform unavailable condition (service, bridge, window, barrier or freeze). */

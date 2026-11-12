@@ -2,6 +2,7 @@
 import { Buffer } from 'node:buffer';
 import replyFrom from '@fastify/reply-from';
 import Fastify from 'fastify';
+import { LEGACY_ERROR_PAGE_HTML } from '@opt2/platform/legacy-compat';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   forwardToLegacy,
@@ -13,6 +14,7 @@ import type { SessionMode } from '../../src/session/mode.js';
 import { sendBytes, startHttpDouble, type HttpDouble } from '../helpers/http-double.js';
 
 const LEGACY_STATUS = 201;
+const UNAVAILABLE_STATUS = 503;
 const LEGACY_BODY = Buffer.from([0x3c, 0x70, 0x3e, 0x00, 0xff, 0xfe, 0x0d, 0x0a]);
 const MIXED_SET_COOKIES = ['CFID=1001;path=/;', 'A=1;path=/;', 'cftoken=abc;path=/;HttpOnly;', 'B=2;path=/;HttpOnly;', 'JSESSIONID=j1;path=/;'];
 const NON_SESSION_SET_COOKIES = ['A=1;path=/;', 'B=2;path=/;HttpOnly;'];
@@ -29,6 +31,8 @@ interface Scenario {
   legacySetCookies: string[];
   beforeSend: LegacyBeforeSend;
   expected: string[];
+  /** Status the client gets: legacy's own, or the legacy-shaped 503 once beforeSend rejected. */
+  status: number;
 }
 
 /** One scenario row: session mode, legacy's Set-Cookie list, beforeSend outcome, then the list the client must get. */
@@ -38,16 +42,17 @@ function scenario(
   legacySetCookies: string[],
   beforeSend: LegacyBeforeSend,
   expected: string[],
+  status = LEGACY_STATUS,
 ): Scenario {
-  return { name, sessionMode, legacySetCookies, beforeSend, expected };
+  return { name, sessionMode, legacySetCookies, beforeSend, expected, status };
 }
 
 const SCENARIOS: Scenario[] = [
-  scenario('target-primary, beforeSend rejects', 'target-primary', MIXED_SET_COOKIES, rejects, NON_SESSION_SET_COOKIES),
+  scenario('target-primary, beforeSend rejects', 'target-primary', MIXED_SET_COOKIES, rejects, [], UNAVAILABLE_STATUS),
   scenario('target-primary, beforeSend resolves void', 'target-primary', MIXED_SET_COOKIES, resolvesVoid, NON_SESSION_SET_COOKIES),
   scenario('target-primary, beforeSend maps cookies', 'target-primary', MIXED_SET_COOKIES, mapsCookies, MAPPED_SET_COOKIES),
-  scenario('target-primary, only session cookies, beforeSend rejects', 'target-primary', SESSION_SET_COOKIES, rejects, []),
-  scenario('legacy-primary, beforeSend rejects', 'legacy-primary', MIXED_SET_COOKIES, rejects, MIXED_SET_COOKIES),
+  scenario('target-primary, only session cookies, beforeSend rejects', 'target-primary', SESSION_SET_COOKIES, rejects, [], UNAVAILABLE_STATUS),
+  scenario('legacy-primary, beforeSend rejects', 'legacy-primary', MIXED_SET_COOKIES, rejects, [], UNAVAILABLE_STATUS),
   scenario('legacy-primary, beforeSend resolves void', 'legacy-primary', MIXED_SET_COOKIES, resolvesVoid, MIXED_SET_COOKIES),
   scenario('legacy-primary, beforeSend maps cookies', 'legacy-primary', MIXED_SET_COOKIES, mapsCookies, MAPPED_SET_COOKIES),
 ];
@@ -98,7 +103,7 @@ async function forward(ctx: Pick<LegacyForwardContext, 'mode' | 'sessionMode' | 
 }
 
 describe('forwardToLegacy Set-Cookie mapping', () => {
-  it.each(CASES)('$mode mode, $name', async ({ mode, sessionMode, legacySetCookies, beforeSend, expected }) => {
+  it.each(CASES)('$mode mode, $name', async ({ mode, sessionMode, legacySetCookies, beforeSend, expected, status }) => {
     legacy.setHandler((_req, res) => {
       sendBytes(res, LEGACY_STATUS, LEGACY_BODY, { 'content-type': 'text/html; charset=utf-8', 'set-cookie': legacySetCookies });
     });
@@ -107,8 +112,8 @@ describe('forwardToLegacy Set-Cookie mapping', () => {
 
     const forwarded = await forward({ mode, sessionMode, beforeSend: sendHook, onBuffered });
 
-    expect(forwarded.status).toBe(LEGACY_STATUS);
-    expect(forwarded.body.equals(LEGACY_BODY)).toBe(true);
+    expect(forwarded.status).toBe(status);
+    expect(forwarded.body.equals(status === LEGACY_STATUS ? LEGACY_BODY : Buffer.from(LEGACY_ERROR_PAGE_HTML))).toBe(true);
     expect(forwarded.setCookies).toEqual(expected);
     expect(forwarded.hasSetCookie).toBe(expected.length > 0);
     expect(sendHook).toHaveBeenCalledOnce();

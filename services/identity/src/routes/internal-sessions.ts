@@ -69,7 +69,7 @@ const END_BODY = {
 /** `Set-Cookie` values handing the browser the adopted session: `JSESSIONID` names it, `CFID` and `CFTOKEN` are fresh. */
 function adoptedSessionCookies(sessionId: string, now: Date): string[] {
   // Masa's default cookie settings; the gateway re-emits each value under the attributes legacy gave that cookie.
-  return sessionCookies({ ...newSessionTokens(), jsessionid: sessionId }, {}, now);
+  return sessionCookies(newSessionTokens(sessionId), {}, now);
 }
 
 /** The contract's `SessionSnapshot` of a domain snapshot: `session.mura` and its role items as `op=hydrate` installs them. */

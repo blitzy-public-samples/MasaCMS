@@ -599,7 +599,15 @@ describe('createCsrfContinuity beforeLegacy', () => {
       } as unknown as BridgeClient,
       jar,
       state: {
-        check: () => Promise.resolve({ state: 'ended', epoch: 0, userId: '', siteId: '', epochChanged: false }),
+        // T1, whose target-primary jar the switch back restores, is still active.
+        check: (sessionId) =>
+          Promise.resolve({
+            state: sessionId === 'T1' ? 'active' : 'ended',
+            epoch: sessionId === 'T1' ? 4 : 0,
+            userId: '',
+            siteId: '',
+            epochChanged: false,
+          }),
         forget() {},
       },
     });

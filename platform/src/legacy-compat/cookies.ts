@@ -1,9 +1,23 @@
 // Legacy Set-Cookie writer and cookie parsing (utility.cfc:683-861).
 import { cfDateAdd, formatCookieExpires } from './dates.js';
+import { isCfUuid } from './ids.js';
 import { cfIsNumeric, cfToNumber } from './serializer.js';
 
 /** Session cookie names ACF issues and the gateway jar maps. */
 export const LEGACY_SESSION_COOKIE_NAMES = ['CFID', 'CFTOKEN', 'JSESSIONID'] as const;
+
+const JSESSIONID_HEX = /^[0-9A-Fa-f]{32}$/;
+
+/** The `JSESSIONID` value naming session `sessionId`: a CF-format id loses its dashes (32 hex characters), any other id is unchanged. */
+export function jsessionidForSessionId(sessionId: string): string {
+  return isCfUuid(sessionId) ? sessionId.replaceAll('-', '') : sessionId;
+}
+
+/** The session id a `JSESSIONID` value names: 32 hex characters regain the CF-format 8-4-4-16 dashes, any other value is unchanged. */
+export function sessionIdForJsessionid(value: string): string {
+  if (!JSESSIONID_HEX.test(value)) return value;
+  return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16)}`;
+}
 
 /** configBean cookie settings (utility.cfc:711-733,805-817); unset fields take configBean defaults (configBean.cfc:213-216). */
 export interface LegacyCookieConfig {

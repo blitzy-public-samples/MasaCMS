@@ -6,7 +6,10 @@ export {
   createBridgeClient,
   bridgeClientFromEnv,
   BRIDGE_JOBS,
+  BRIDGE_CALL_TIMEOUT_MS,
+  BRIDGE_BATCH_TIMEOUT_MS,
   BridgeError,
+  BridgeTimeoutError,
   UnsupportedFileStoreError,
   BridgeHashMismatchError,
 } from './bridge.js';
@@ -14,6 +17,7 @@ export type {
   BridgeClient,
   BridgeClientOptions,
   BridgeRequestOptions,
+  FilePutOptions,
   BridgeJobName,
   BridgeJobParams,
   BridgeJobResult,

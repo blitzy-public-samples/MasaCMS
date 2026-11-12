@@ -1,7 +1,7 @@
 /** Identity sessions: cookie values, anonymous creation and reactivation, login, legacy adoption, state and hydration reads and logout against a throwaway `identity` schema. */
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { sessionCookieStrings, type LegacyCookieConfig } from '@opt2/platform/legacy-compat';
+import { sessionCookieStrings, sessionIdForJsessionid, type LegacyCookieConfig } from '@opt2/platform/legacy-compat';
 import type { Clock } from '@opt2/platform/service-kit';
 import { SYSTEM_TENANT_ID, tenantIdForSite, withMetadata, withTenant, type TenantTx } from '@opt2/platform/tenancy';
 import { createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
@@ -11,8 +11,10 @@ import {
   ANONYMOUS_LOGIN_SNAPSHOT,
   adoptLegacySession,
   applyLogin,
+  applyRelogin,
   endSession,
   ensureSession,
+  locateSession,
   newSessionTokens,
   sessionCookies,
   sessionSnapshot,
@@ -35,6 +37,7 @@ const LEGACY_SECRET = 'L0000000-0000-0000-0000000000000001';
 const RELOGIN_SECRET = 'L0000000-0000-0000-0000000000000002';
 const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
 const ANONYMOUS_SNAPSHOT_TEXT = JSON.stringify(ANONYMOUS_LOGIN_SNAPSHOT);
+const EFFECT_FAILURE = new Error('session effect write failed');
 
 const SNAPSHOT: LoginSnapshot = {
   userid: USER,
@@ -54,14 +57,16 @@ const SNAPSHOT: LoginSnapshot = {
 };
 
 describe('session values', () => {
-  it('generates a v4 UUID CFID, CFTOKEN 0 and a 32-character uppercase hex JSESSIONID, fresh each time', () => {
-    const tokens = newSessionTokens();
+  it.each([
+    ['a CF-format session id', '0A1B2C3D-4E5F-6071-8293A4B5C6D7E8F9', '0A1B2C3D4E5F60718293A4B5C6D7E8F9'],
+    ['an adopted legacy session id', 'masacms_1000_00000001', 'masacms_1000_00000001'],
+  ])('gives %s a fresh v4 UUID CFID, CFTOKEN 0 and the JSESSIONID naming it', (_label, sessionId, jsessionid) => {
+    const tokens = newSessionTokens(sessionId);
 
     expect(tokens.cfid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(tokens.cftoken).toBe('0');
-    expect(tokens.jsessionid).toMatch(/^[0-9A-F]{32}$/);
-    const again = newSessionTokens();
-    expect([again.cfid, again.jsessionid]).not.toEqual([tokens.cfid, tokens.jsessionid]);
+    expect(tokens.jsessionid).toBe(jsessionid);
+    expect(newSessionTokens(sessionId).cfid).not.toBe(tokens.cfid);
   });
 
   it('writes CFID, CFTOKEN and JSESSIONID with the legacy cookie attributes', () => {
@@ -120,7 +125,14 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
   }
 
   function login(sessionId: string, overrides: Partial<LoginApplication> = {}): Promise<AppliedSession> {
-    return applyLogin(deps(), { sessionId, tenantId: TENANT_A, snapshot: SNAPSHOT, mode: 'target-primary', siteId: SITE, ...overrides });
+    return applyLogin(deps(), { sessionId, snapshot: SNAPSHOT, mode: 'target-primary', siteId: SITE, ...overrides });
+  }
+
+  /** Inserts a session row directly under `tenantId`, as a site tenant may hold one, at `epoch`. */
+  async function seedSession(tenantId: string, state: 'active' | 'ended', epoch: number): Promise<string> {
+    const sessionId = nextSessionId();
+    await inTenant(tenantId, (tx) => repo.insertSession(tx, { session_id: sessionId, csrf_secret: LEGACY_SECRET, mode: 'legacy-primary', state, epoch }));
+    return sessionId;
   }
 
   function describeLegacy(sessionId: string, user: Record<string, unknown>, extra: Partial<LegacyDescribe['describe']> = {}): LegacyDescribe {
@@ -162,10 +174,15 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
   });
 
   describe('ensureSession', () => {
-    it('creates an anonymous system-tenant session under a generated JSESSIONID and returns its cookie values', async () => {
+    it('creates an anonymous system-tenant session under a new CF-format id and returns the cookie values naming it', async () => {
       const ensured = await ensureSession(deps(), { mode: 'target-primary' });
+      const jsessionid = ensured.tokens?.jsessionid ?? '';
 
-      expect(ensured).toMatchObject({ sessionId: ensured.tokens?.jsessionid, tenantId: SYSTEM_TENANT_ID, epoch: 1, created: true, tokens: { cftoken: '0' } });
+      expect(ensured).toMatchObject({ tenantId: SYSTEM_TENANT_ID, epoch: 1, created: true, tokens: { cftoken: '0' } });
+      expect(ensured.sessionId).toMatch(CF_UUID);
+      expect(jsessionid).toMatch(/^[0-9A-F]{32}$/);
+      expect(jsessionid).not.toBe(ensured.sessionId);
+      expect(sessionIdForJsessionid(jsessionid)).toBe(ensured.sessionId);
       expect(ensured.csrfSecret).toMatch(CF_UUID);
       expect(await stored(ensured.sessionId, SYSTEM_TENANT_ID)).toMatchObject({
         user_id: null,
@@ -188,15 +205,15 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
       expect((await stored(sessionId, SYSTEM_TENANT_ID))?.mode).toBe('legacy-primary');
     });
 
-    it('returns a logged-in session from its user tenant', async () => {
-      const sessionId = nextSessionId();
-      const applied = await login(sessionId);
+    it('returns an active session from the tenant holding it without locking its row', async () => {
+      const sessionId = await seedSession(TENANT_A, 'active', 4);
+      const unlockable: IdentityRepository = { ...repo, lockSession: () => Promise.reject(EFFECT_FAILURE) };
 
-      expect(await ensureSession(deps(), { sessionId, mode: 'legacy-primary' })).toEqual({
+      expect(await ensureSession(deps(unlockable), { sessionId, mode: 'target-primary' })).toEqual({
         sessionId,
         tenantId: TENANT_A,
-        csrfSecret: applied.csrfSecret,
-        epoch: 1,
+        csrfSecret: LEGACY_SECRET,
+        epoch: 4,
         created: false,
       });
     });
@@ -227,18 +244,17 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
       await expect(ensureSession(deps(failing), { sessionId: nextSessionId(), mode: 'target-primary' })).rejects.toBe(error);
     });
 
-    it('reactivates an ended session as anonymous in the system tenant under the same id at the next epoch', async () => {
+    it('reactivates an ended session in place as anonymous under the same id at the next epoch', async () => {
       const sessionId = nextSessionId();
       await login(sessionId);
       const ended = await endSession(deps(), sessionId);
-      const endedSecret = (await stored(sessionId, TENANT_A))?.csrf_secret;
+      const endedSecret = (await stored(sessionId, SYSTEM_TENANT_ID))?.csrf_secret;
 
       const reactivated = await ensureSession(deps(), { sessionId, mode: 'legacy-primary' });
 
       expect(reactivated).toEqual({ sessionId, tenantId: SYSTEM_TENANT_ID, csrfSecret: reactivated.csrfSecret, epoch: ended.epoch + 1, created: false });
       expect(reactivated.csrfSecret).toMatch(CF_UUID);
       expect(reactivated.csrfSecret).not.toBe(endedSecret);
-      expect(await stored(sessionId, TENANT_A)).toBeNull();
       expect(await stored(sessionId, SYSTEM_TENANT_ID)).toMatchObject({
         user_id: null,
         login_snapshot: ANONYMOUS_SNAPSHOT_TEXT,
@@ -249,17 +265,30 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
         epoch: '3',
       });
     });
+
+    it('reactivates an ended session once when concurrent requests find it ended', async () => {
+      const sessionId = nextSessionId();
+      await login(sessionId);
+      const ended = await endSession(deps(), sessionId);
+
+      const results = await Promise.all(Array.from({ length: 3 }, () => ensureSession(deps(), { sessionId, mode: 'target-primary' })));
+
+      expect(results.map((result) => result.epoch)).toEqual(Array.from({ length: 3 }, () => ended.epoch + 1));
+      expect(new Set(results.map((result) => result.csrfSecret)).size).toBe(1);
+      expect((await stored(sessionId, SYSTEM_TENANT_ID))?.epoch).toBe(String(ended.epoch + 1));
+    });
   });
 
   describe('applyLogin', () => {
-    it('logs a snapshot into a new session of the user tenant at epoch 1 with a fresh CSRF secret', async () => {
+    it('logs a snapshot into a new session of the system tenant at epoch 1 with a fresh CSRF secret', async () => {
       const sessionId = nextSessionId();
 
       const applied = await login(sessionId);
 
-      expect(applied).toEqual({ sessionId, tenantId: TENANT_A, epoch: 1, csrfSecret: applied.csrfSecret, mode: 'target-primary' });
+      expect(applied).toEqual({ sessionId, tenantId: SYSTEM_TENANT_ID, epoch: 1, csrfSecret: applied.csrfSecret, mode: 'target-primary' });
       expect(applied.csrfSecret).toMatch(CF_UUID);
-      expect(await stored(sessionId, TENANT_A)).toMatchObject({
+      expect(await stored(sessionId, TENANT_A)).toBeNull();
+      expect(await stored(sessionId, SYSTEM_TENANT_ID)).toMatchObject({
         user_id: USER,
         site_id: SITE,
         login_snapshot: JSON.stringify(SNAPSHOT),
@@ -271,7 +300,7 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
       });
     });
 
-    it('moves an anonymous session into the user tenant, keeping its id, mode, jar and admin state and dropping its CSRF claims', async () => {
+    it('logs an anonymous session in where it is, keeping its id, mode, jar and admin state and dropping its CSRF claims', async () => {
       const sessionId = nextSessionId();
       const anonymous = await ensureSession(deps(), { sessionId, mode: 'legacy-primary' });
       const adminState = JSON.stringify({ rb: 'en' });
@@ -280,41 +309,142 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
 
       const applied = await login(sessionId, { mode: 'target-primary' });
 
-      expect(applied).toMatchObject({ sessionId, tenantId: TENANT_A, epoch: 2, mode: 'legacy-primary' });
+      expect(applied).toMatchObject({ sessionId, tenantId: SYSTEM_TENANT_ID, epoch: 2, mode: 'legacy-primary' });
       expect(applied.csrfSecret).not.toBe(anonymous.csrfSecret);
-      expect(await stored(sessionId, SYSTEM_TENANT_ID)).toBeNull();
+      expect(await stored(sessionId, TENANT_A)).toBeNull();
       expect(await claimKeys(sessionId, SYSTEM_TENANT_ID)).toEqual([]);
-      expect(await stored(sessionId, TENANT_A)).toMatchObject({ user_id: USER, mode: 'legacy-primary', jar_ref: 'jar-1', admin_state: adminState, epoch: '2' });
+      expect(await stored(sessionId, SYSTEM_TENANT_ID)).toMatchObject({
+        user_id: USER,
+        mode: 'legacy-primary',
+        jar_ref: 'jar-1',
+        admin_state: adminState,
+        csrf_secret: applied.csrfSecret,
+        epoch: '2',
+      });
     });
 
     it('logs in again in place, dropping CSRF claims and bumping the epoch', async () => {
       const sessionId = nextSessionId();
       const first = await login(sessionId);
-      await markUsed(sessionId, TENANT_A, [{ token: 'aa', usedAt: NOW }]);
+      await markUsed(sessionId, SYSTEM_TENANT_ID, [{ token: 'aa', usedAt: NOW }]);
 
       const again = await login(sessionId, { siteId: null });
 
-      expect(again).toMatchObject({ tenantId: TENANT_A, epoch: 2 });
+      expect(again).toMatchObject({ tenantId: SYSTEM_TENANT_ID, epoch: 2 });
       expect(again.csrfSecret).not.toBe(first.csrfSecret);
-      expect(await claimKeys(sessionId, TENANT_A)).toEqual([]);
-      expect(await stored(sessionId, TENANT_A)).toMatchObject({ site_id: null, csrf_secret: again.csrfSecret, epoch: '2' });
+      expect(await claimKeys(sessionId, SYSTEM_TENANT_ID)).toEqual([]);
+      expect(await stored(sessionId, SYSTEM_TENANT_ID)).toMatchObject({ site_id: null, csrf_secret: again.csrfSecret, epoch: '2' });
     });
 
-    it('re-creates a session deleted after it was located', async () => {
-      const sessionId = nextSessionId();
-      await login(sessionId);
+    it('re-creates under the system tenant a session deleted between its lookup and its lock', async () => {
+      const sessionId = await seedSession(TENANT_A, 'active', 4);
       const deleting: IdentityRepository = {
         ...repo,
-        async updateSession(tx, id, patch, ctx) {
+        async lockSession(tx, id, mode) {
           await repo.deleteSession(tx, id);
-          return repo.updateSession(tx, id, patch, ctx);
+          return repo.lockSession(tx, id, mode);
         },
       };
 
-      const applied = await applyLogin(deps(deleting), { sessionId, tenantId: TENANT_A, snapshot: SNAPSHOT, mode: 'target-primary', siteId: SITE });
+      const applied = await applyLogin(deps(deleting), { sessionId, snapshot: SNAPSHOT, mode: 'target-primary', siteId: SITE });
 
-      expect(applied.epoch).toBe(2);
-      expect(await stored(sessionId, TENANT_A)).toMatchObject({ user_id: USER, csrf_secret: applied.csrfSecret, state: 'active', epoch: '2' });
+      expect(applied).toMatchObject({ tenantId: SYSTEM_TENANT_ID, epoch: 1 });
+      expect(await stored(sessionId, TENANT_A)).toBeNull();
+      expect(await stored(sessionId, SYSTEM_TENANT_ID)).toMatchObject({ user_id: USER, csrf_secret: applied.csrfSecret, state: 'active', epoch: '1' });
+    });
+
+    it('serializes concurrent logins with ensure and reads of one session: none sees it absent, one row stays and each login takes the next epoch', async () => {
+      const sessionId = nextSessionId();
+      await ensureSession(deps(), { sessionId, mode: 'target-primary' });
+
+      const [first, second, ensured, located, ...states] = await Promise.all([
+        login(sessionId),
+        login(sessionId),
+        ensureSession(deps(), { sessionId, mode: 'target-primary' }),
+        locateSession(deps(), sessionId),
+        sessionState(deps(), sessionId),
+        sessionState(deps(), sessionId),
+      ]);
+
+      expect([first.epoch, second.epoch].sort()).toEqual([2, 3]);
+      expect(first.csrfSecret).not.toBe(second.csrfSecret);
+      expect(ensured).toMatchObject({ sessionId, tenantId: SYSTEM_TENANT_ID, created: false });
+      expect(located).toMatchObject({ tenantId: SYSTEM_TENANT_ID, row: { session_id: sessionId, state: 'active' } });
+      expect(states.map((state) => state.state)).toEqual(['active', 'active']);
+      expect(await stored(sessionId, TENANT_A)).toBeNull();
+      const last = first.epoch > second.epoch ? first : second;
+      expect(await stored(sessionId, SYSTEM_TENANT_ID)).toMatchObject({ user_id: USER, csrf_secret: last.csrfSecret, epoch: '3' });
+    });
+
+    it.each<[string, Partial<IdentityRepository>, (d: SessionDeps, sessionId: string) => Promise<unknown>]>([
+      ['a login whose session write fails', { updateSession: () => Promise.reject(EFFECT_FAILURE) }, (d, id) => applyLogin(d, { sessionId: id, snapshot: SNAPSHOT, mode: 'target-primary', siteId: SITE })],
+      [
+        'an adoption whose used-token import fails',
+        { setCsrfClaimState: () => Promise.reject(EFFECT_FAILURE) },
+        (d, id) => adoptLegacySession(d, describeLegacy(id, { isLoggedIn: true, userID: USER, siteID: SITE }, { csrfSecretKey: RELOGIN_SECRET, usedTokens: ['zz'] }), { mode: 'legacy-primary' }),
+      ],
+      ['a logout whose session write fails', { updateSession: () => Promise.reject(EFFECT_FAILURE) }, (d, id) => endSession(d, id)],
+    ])('leaves the session row, its epoch and its CSRF claims intact after %s', async (_label, failure, effect) => {
+      const sessionId = nextSessionId();
+      await login(sessionId);
+      await markUsed(sessionId, SYSTEM_TENANT_ID, [{ token: 'aa', usedAt: NOW }]);
+      const before = await stored(sessionId, SYSTEM_TENANT_ID);
+
+      await expect(effect(deps({ ...repo, ...failure }), sessionId)).rejects.toBe(EFFECT_FAILURE);
+
+      expect(await stored(sessionId, SYSTEM_TENANT_ID)).toEqual(before);
+      expect(await claimKeys(sessionId, SYSTEM_TENANT_ID)).toEqual(['AA']);
+    });
+  });
+
+  describe('applyRelogin', () => {
+    const RELOGGED: LoginSnapshot = { ...SNAPSHOT, fname: 'Adele', roleList: 'Authors;tenant-a;0' };
+
+    it.each<[string, (sessionId: string) => Promise<unknown>, boolean]>([
+      [
+        'logs an active session in again at its stored site, keeping its mode, jar and admin state and dropping its CSRF claims',
+        async (id) => {
+          await login(id, { mode: 'legacy-primary', siteId: 'tenant-b' });
+          await setColumns(id, SYSTEM_TENANT_ID, { jar_ref: 'jar-1', admin_state: JSON.stringify({ rb: 'en' }) });
+          await markUsed(id, SYSTEM_TENANT_ID, [{ token: 'aa', usedAt: NOW }]);
+        },
+        true,
+      ],
+      [
+        'leaves an ended session unchanged',
+        async (id) => {
+          await login(id);
+          await endSession(deps(), id);
+        },
+        false,
+      ],
+      [
+        'leaves a session another effect moved past the claimed epoch unchanged',
+        async (id) => {
+          await login(id);
+          await login(id);
+        },
+        false,
+      ],
+      ['creates nothing for an unknown session', async () => undefined, false],
+    ])('%s', async (_label, setup, relogs) => {
+      const sessionId = nextSessionId();
+      await setup(sessionId);
+      const before = await stored(sessionId, SYSTEM_TENANT_ID);
+
+      const applied = await applyRelogin(deps(), { sessionId, snapshot: RELOGGED, epoch: 1 });
+
+      const after = await stored(sessionId, SYSTEM_TENANT_ID);
+      expect(after).toEqual(
+        relogs
+          ? { ...before, login_snapshot: JSON.stringify(RELOGGED), csrf_secret: expect.not.stringMatching(before?.csrf_secret ?? ''), epoch: '2' }
+          : before,
+      );
+      expect(applied).toEqual(
+        relogs ? { sessionId, tenantId: SYSTEM_TENANT_ID, epoch: 2, csrfSecret: after?.csrf_secret, mode: 'legacy-primary' } : undefined,
+      );
+      expect(await claimKeys(sessionId, SYSTEM_TENANT_ID)).toEqual([]);
+      expect(await stored(sessionId, TENANT_A)).toBeNull();
     });
   });
 
@@ -334,7 +464,7 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
     };
     const ROLES = ['Editors;tenant-a;0', 'S2IsPrivate;tenant-a'];
 
-    it('adopts a logged-in legacy session into the user site tenant with its secret, struct, role list and used tokens', async () => {
+    it('adopts a logged-in legacy session under the system tenant with its secret, struct, role list and used tokens', async () => {
       const sessionId = nextSessionId();
 
       const adopted = await adoptLegacySession(deps(), describeLegacy(sessionId, LEGACY_USER, { roles: ROLES, usedTokens: ['aa', 'BB', 'AA'] }), {
@@ -342,7 +472,7 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
         jarRef: 'jar-1',
       });
 
-      expect(adopted).toEqual({ sessionId, tenantId: TENANT_A, epoch: 1, mode: 'legacy-primary' });
+      expect(adopted).toEqual({ sessionId, tenantId: SYSTEM_TENANT_ID, epoch: 1, mode: 'legacy-primary' });
       const loginSnapshot: LoginSnapshot = {
         userid: USER,
         username: 'ada',
@@ -371,22 +501,23 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
           { token: 'BB', usedAt: NOW },
         ],
       });
-      expect(await stored(sessionId, TENANT_A)).toMatchObject({ user_id: USER, site_id: SITE, jar_ref: 'jar-1', mode: 'legacy-primary' });
+      expect(await stored(sessionId, TENANT_A)).toBeNull();
+      expect(await stored(sessionId, SYSTEM_TENANT_ID)).toMatchObject({ user_id: USER, site_id: SITE, jar_ref: 'jar-1', mode: 'legacy-primary' });
     });
 
     it('refreshes only mode, jar and used tokens of an unchanged adopted session, keeping the epoch', async () => {
       const sessionId = nextSessionId();
       await adoptLegacySession(deps(), describeLegacy(sessionId, LEGACY_USER, { roles: ROLES, usedTokens: ['aa'] }), { mode: 'legacy-primary', jarRef: 'jar-1' });
-      const before = await stored(sessionId, TENANT_A);
+      const before = await stored(sessionId, SYSTEM_TENANT_ID);
 
       const kept = await adoptLegacySession(deps(), describeLegacy(sessionId, LEGACY_USER, { roles: [], usedTokens: ['cc'] }), { mode: 'target-primary' });
 
-      expect(kept).toEqual({ sessionId, tenantId: TENANT_A, epoch: 1, mode: 'target-primary' });
-      expect(await stored(sessionId, TENANT_A)).toMatchObject({ login_snapshot: before?.login_snapshot, jar_ref: 'jar-1', mode: 'target-primary', epoch: '1' });
-      expect(await claimKeys(sessionId, TENANT_A)).toEqual(['AA', 'CC']);
+      expect(kept).toEqual({ sessionId, tenantId: SYSTEM_TENANT_ID, epoch: 1, mode: 'target-primary' });
+      expect(await stored(sessionId, SYSTEM_TENANT_ID)).toMatchObject({ login_snapshot: before?.login_snapshot, jar_ref: 'jar-1', mode: 'target-primary', epoch: '1' });
+      expect(await claimKeys(sessionId, SYSTEM_TENANT_ID)).toEqual(['AA', 'CC']);
 
       await adoptLegacySession(deps(), describeLegacy(sessionId, LEGACY_USER), { mode: 'target-primary', jarRef: null });
-      expect((await stored(sessionId, TENANT_A))?.jar_ref).toBeNull();
+      expect((await stored(sessionId, SYSTEM_TENANT_ID))?.jar_ref).toBeNull();
     });
 
     it('replaces the snapshot, secret and used tokens at the next epoch when legacy logged in again', async () => {
@@ -399,7 +530,7 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
         { mode: 'legacy-primary' },
       );
 
-      expect(relogged).toEqual({ sessionId, tenantId: TENANT_A, epoch: 2, mode: 'legacy-primary' });
+      expect(relogged).toEqual({ sessionId, tenantId: SYSTEM_TENANT_ID, epoch: 2, mode: 'legacy-primary' });
       expect(await sessionSnapshot(deps(), sessionId)).toMatchObject({
         loginSnapshot: { fname: 'Adele', roleList: 'Authors;tenant-a;0' },
         csrfSecret: RELOGIN_SECRET,
@@ -407,19 +538,18 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
       });
     });
 
-    it('rebuilds the session as anonymous in the system tenant when legacy logged out since adoption, keeping jar and admin state', async () => {
+    it('rebuilds the session as anonymous in place when legacy logged out since adoption, keeping jar and admin state', async () => {
       const sessionId = nextSessionId();
       await adoptLegacySession(deps(), describeLegacy(sessionId, LEGACY_USER, { roles: ROLES, usedTokens: ['aa'] }), { mode: 'legacy-primary', jarRef: 'jar-1' });
       const adminState = JSON.stringify({ rb: 'en' });
-      await setColumns(sessionId, TENANT_A, { admin_state: adminState });
+      await setColumns(sessionId, SYSTEM_TENANT_ID, { admin_state: adminState });
 
       const loggedOut = await adoptLegacySession(deps(), describeLegacy(sessionId, { isLoggedIn: false }, { csrfSecretKey: RELOGIN_SECRET, usedTokens: ['dd'] }), {
         mode: 'legacy-primary',
       });
 
       expect(loggedOut).toEqual({ sessionId, tenantId: SYSTEM_TENANT_ID, epoch: 2, mode: 'legacy-primary' });
-      expect(await stored(sessionId, TENANT_A)).toBeNull();
-      expect(await claimKeys(sessionId, TENANT_A)).toEqual([]);
+      expect(await claimKeys(sessionId, SYSTEM_TENANT_ID)).toEqual(['DD']);
       expect(await stored(sessionId, SYSTEM_TENANT_ID)).toMatchObject({
         user_id: null,
         site_id: SITE,
@@ -437,31 +567,54 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
         'a legacy login seen at adoption',
         (sessionId: string) => adoptLegacySession(deps(), describeLegacy(sessionId, LEGACY_USER, { csrfSecretKey: RELOGIN_SECRET }), { mode: 'legacy-primary' }),
       ],
+      ['a re-login', (sessionId: string) => applyRelogin(deps(), { sessionId, snapshot: SNAPSHOT, epoch: 1 })],
     ])('drops the post-login session.mura values on %s, keeping the other admin state', async (_label, relogin) => {
       const sessionId = nextSessionId();
       await login(sessionId);
-      await setColumns(sessionId, TENANT_A, { admin_state: JSON.stringify({ rb: 'en', mura: { errors: '', objectInstanceId: 'I1' } }) });
+      await setColumns(sessionId, SYSTEM_TENANT_ID, { admin_state: JSON.stringify({ rb: 'en', mura: { errors: '', objectInstanceId: 'I1' } }) });
 
       await relogin(sessionId);
 
-      expect(JSON.parse((await stored(sessionId, TENANT_A))?.admin_state ?? 'null')).toEqual({ rb: 'en' });
+      expect(JSON.parse((await stored(sessionId, SYSTEM_TENANT_ID))?.admin_state ?? 'null')).toEqual({ rb: 'en' });
     });
 
     it.each([
-      ['true', true, TENANT_A],
-      ["'TRUE'", 'TRUE', TENANT_A],
-      ["'yes'", 'yes', TENANT_A],
-      ['1', 1, TENANT_A],
-      ["'2'", '2', TENANT_A],
-      ['false', false, SYSTEM_TENANT_ID],
-      ["'no'", 'no', SYSTEM_TENANT_ID],
-      ['0', 0, SYSTEM_TENANT_ID],
-      ["'maybe'", 'maybe', SYSTEM_TENANT_ID],
-      ['an absent key', undefined, SYSTEM_TENANT_ID],
-    ])('reads isLoggedIn %s as CFML isBoolean and true', async (_label, isLoggedIn, tenantId) => {
+      ['true', true, USER],
+      ["'TRUE'", 'TRUE', USER],
+      ["'yes'", 'yes', USER],
+      ['1', 1, USER],
+      ["'2'", '2', USER],
+      ['false', false, ''],
+      ["'no'", 'no', ''],
+      ['0', 0, ''],
+      ["'maybe'", 'maybe', ''],
+      ['an absent key', undefined, ''],
+    ])('reads isLoggedIn %s as CFML isBoolean and true', async (_label, isLoggedIn, userId) => {
       const user = isLoggedIn === undefined ? { userID: USER, siteID: SITE } : { isLoggedIn, userID: USER, siteID: SITE };
+      const sessionId = nextSessionId();
 
-      expect((await adoptLegacySession(deps(), describeLegacy(nextSessionId(), user), { mode: 'legacy-primary' })).tenantId).toBe(tenantId);
+      expect((await adoptLegacySession(deps(), describeLegacy(sessionId, user), { mode: 'legacy-primary' })).tenantId).toBe(SYSTEM_TENANT_ID);
+      expect((await sessionState(deps(), sessionId)).userId).toBe(userId);
+    });
+  });
+
+  describe('session row tenant', () => {
+    it.each<[string, 'active' | 'ended', (sessionId: string) => Promise<unknown>]>([
+      ['a login', 'active', (id) => login(id)],
+      ['a reactivation', 'ended', (id) => ensureSession(deps(), { sessionId: id, mode: 'target-primary' })],
+      [
+        'an adoption after a legacy login',
+        'active',
+        (id) => adoptLegacySession(deps(), describeLegacy(id, { isLoggedIn: true, userID: USER, siteID: SITE }, { csrfSecretKey: RELOGIN_SECRET }), { mode: 'legacy-primary' }),
+      ],
+      ['a logout', 'active', (id) => endSession(deps(), id)],
+    ])('rewrites a session a site tenant holds in place on %s, at the next epoch', async (_label, state, effect) => {
+      const sessionId = await seedSession(TENANT_A, state, 4);
+
+      await effect(sessionId);
+
+      expect(await stored(sessionId, SYSTEM_TENANT_ID)).toBeNull();
+      expect(await stored(sessionId, TENANT_A)).toMatchObject({ session_id: sessionId, epoch: '5' });
     });
   });
 
@@ -505,7 +658,7 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
     it('hydrates a logged-in session from its login-time snapshot, skipping empty role items and tokens used over 3 h ago', async () => {
       const sessionId = nextSessionId();
       const applied = await login(sessionId);
-      await markUsed(sessionId, TENANT_A, [
+      await markUsed(sessionId, SYSTEM_TENANT_ID, [
         { token: 'old', usedAt: new Date(NOW.getTime() - 3 * HOUR_MS - 1) },
         { token: 'new', usedAt: NOW },
       ]);
@@ -523,16 +676,16 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
   });
 
   describe('endSession', () => {
-    it('ends a session in its tenant as logout clears its scope, keeping id and mode and dropping jar, admin state and CSRF claims', async () => {
+    it('ends a session in place as logout clears its scope, keeping id and mode and dropping jar, admin state and CSRF claims', async () => {
       const sessionId = nextSessionId();
       const applied = await login(sessionId, { mode: 'legacy-primary' });
-      await setColumns(sessionId, TENANT_A, { jar_ref: 'jar-1', admin_state: JSON.stringify({ rb: 'en' }) });
-      await markUsed(sessionId, TENANT_A, [{ token: 'aa', usedAt: NOW }]);
+      await setColumns(sessionId, SYSTEM_TENANT_ID, { jar_ref: 'jar-1', admin_state: JSON.stringify({ rb: 'en' }) });
+      await markUsed(sessionId, SYSTEM_TENANT_ID, [{ token: 'aa', usedAt: NOW }]);
       now = new Date(NOW.getTime() + 60_000);
 
       expect(await endSession(deps(), sessionId)).toEqual({ epoch: 2 });
 
-      const ended = await stored(sessionId, TENANT_A);
+      const ended = await stored(sessionId, SYSTEM_TENANT_ID);
       expect(ended).toMatchObject({
         user_id: null,
         site_id: null,
@@ -546,18 +699,18 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
       });
       expect(ended?.csrf_secret).toMatch(CF_UUID);
       expect(ended?.csrf_secret).not.toBe(applied.csrfSecret);
-      expect(await claimKeys(sessionId, TENANT_A)).toEqual([]);
+      expect(await claimKeys(sessionId, SYSTEM_TENANT_ID)).toEqual([]);
     });
 
     it('leaves an ended session unchanged and answers epoch 0 for an unknown one', async () => {
       const sessionId = nextSessionId();
       await login(sessionId);
       await endSession(deps(), sessionId);
-      const ended = await stored(sessionId, TENANT_A);
+      const ended = await stored(sessionId, SYSTEM_TENANT_ID);
       now = new Date(NOW.getTime() + 60_000);
 
       expect(await endSession(deps(), sessionId)).toEqual({ epoch: 2 });
-      expect(await stored(sessionId, TENANT_A)).toEqual(ended);
+      expect(await stored(sessionId, SYSTEM_TENANT_ID)).toEqual(ended);
       expect(await endSession(deps(), 'S-unknown')).toEqual({ epoch: 0 });
     });
   });

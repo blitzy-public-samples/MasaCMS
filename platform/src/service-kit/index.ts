@@ -37,6 +37,7 @@ export {
   type ServiceRequest,
   type ServiceResponse,
 } from './client.js';
+export { createSignalBoundFetch } from './fetch.js';
 export {
   createService,
   defaultSurfaceOf,

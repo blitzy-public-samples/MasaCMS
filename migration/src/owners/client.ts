@@ -1,5 +1,6 @@
 /** Client of the owners' internal migration, object, site-monitor and scheduled-task endpoints: the package's only route to target data. */
 import { Buffer } from 'node:buffer';
+import type { Readable } from 'node:stream';
 import {
   GATE_WAIT_MS,
   MIGRATION_PATH_PREFIX,
@@ -147,8 +148,8 @@ export interface OwnersClient {
   gate(owner: DataOwner, req: GateRequest): Promise<GateResponse>;
   /** Stores one legacy file-store object in strategies-content's `content-files`. */
   putObject(params: PutObjectParams, bytes: Uint8Array): Promise<PutObjectResult>;
-  /** Reads the bytes of one stored `content-files` object by its key. */
-  getObject(key: string): Promise<Buffer>;
+  /** Streams the bytes of one stored `content-files` object by its key. */
+  getObject(key: string): Promise<Readable>;
   /** Reads programs-sites' site-monitor cursor. */
   siteMonitorState(): Promise<SiteMonitorState>;
   /** Seeds programs-sites' site-monitor cursor. */
@@ -212,7 +213,7 @@ interface CallOptions {
   body?: Buffer;
   headers?: Record<string, string>;
   timeoutMs?: ServiceRequest['timeoutMs'];
-  rawBody?: ServiceRequest['rawBody'];
+  stream?: ServiceRequest['stream'];
 }
 
 /** Bound of a gate call: the owner's gate wait plus the call bound when closing or re-phasing, else the client's default. */
@@ -322,8 +323,8 @@ export function createOwnersClient(options: CreateOwnersClientOptions): OwnersCl
 
     async getObject(key) {
       const query: GetObjectParams = { key };
-      // Raw, so an object stored as JSON or text keeps its exact bytes.
-      return (await call<Buffer>(CONTENT, 'GET', OBJECTS_PATH, { query, rawBody: true })).body;
+      // Streamed undecoded, so an object stored as JSON or text keeps its exact bytes.
+      return (await call<Readable>(CONTENT, 'GET', OBJECTS_PATH, { query, stream: true })).body;
     },
 
     async siteMonitorState() {

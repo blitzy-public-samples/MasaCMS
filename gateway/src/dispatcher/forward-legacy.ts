@@ -1,7 +1,7 @@
 // Forwards a request to the legacy Masa origin; request and response bytes pass unchanged except the session cookie mapping.
 import { channel } from 'node:diagnostics_channel';
 import type { IncomingHttpHeaders, OutgoingHttpHeaders } from 'node:http';
-import { PassThrough, finished, pipeline, type Readable } from 'node:stream';
+import { pipeline, type Readable } from 'node:stream';
 import type { FastifyReplyFromHooks, FastifyReplyFromResponse } from '@fastify/reply-from';
 import type { HeaderMap } from '@opt2/platform/auth';
 import { isLegacySessionCookie, parseSetCookie } from '@opt2/platform/legacy-compat';
@@ -9,8 +9,9 @@ import { serializeError } from '@opt2/platform/logging';
 import type { FastifyReply, FastifyRequest } from '@opt2/platform/service-kit';
 import { injectHttpHeaders } from '@opt2/platform/tracing';
 import type { SessionMode } from '../session/mode.js';
-import { failClosed, type FailContext } from './fail-closed.js';
+import { failClosed, neverSent, type FailContext } from './fail-closed.js';
 import { HOP_BY_HOP_HEADERS, forwardedHeaders } from './headers.js';
+import { settlingRelay } from './settling-relay.js';
 
 /** Legacy's status and headers; a `set-cookie` header is always a list. */
 export interface LegacyUpstream {
@@ -23,8 +24,11 @@ export interface LegacyBeforeSendResult {
   setCookies?: string[];
 }
 
-/** Runs once legacy's status and headers are known, before any byte reaches the client. */
+/** Runs once legacy's status and headers are known, before any byte reaches the client; a rejection answers the 503 instead. */
 export type LegacyBeforeSend = (upstream: LegacyUpstream) => Promise<LegacyBeforeSendResult | void>;
+
+/** What `beforeSend` decided: the `Set-Cookie` replacement it asked for, or that it rejected. */
+type BeforeSendOutcome = { failed: false; setCookies: string[] | undefined } | { failed: true };
 
 /** A complete legacy response held by the gateway. */
 export interface BufferedLegacyResponse extends LegacyUpstream {
@@ -47,7 +51,7 @@ export interface LegacyForwardContext {
   /** `buffer` holds the whole response until `beforeSend` and `onBuffered` have resolved. */
   mode: 'stream' | 'buffer';
   beforeSend?: LegacyBeforeSend;
-  /** Buffer mode only; called only for a complete body, after `onSettled` has run. */
+  /** Buffer mode only; called only for a complete body, after `onSettled` has run, also when `beforeSend` rejected. */
   onBuffered?: (res: BufferedLegacyResponse) => Promise<void>;
   /** Called at most once, only when legacy can no longer commit for this exchange; never after an uncertain end. */
   onSettled?: (outcome: LegacySettlement) => Promise<void>;
@@ -59,9 +63,6 @@ const DROPPED_REQUEST_HEADERS: ReadonlySet<string> = new Set([...HOP_BY_HOP_HEAD
 
 /** Only tells reply-from not to re-encode the body; the forwarded `content-type` is the inbound one or none. */
 const RAW_BODY_CONTENT_TYPE = 'application/octet-stream';
-
-/** Connection-establishment failure codes, after which legacy never received the request. */
-const NOT_SENT_CODES: ReadonlySet<string> = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'UND_ERR_CONNECT_TIMEOUT']);
 
 /** Lower-cased header names a `Connection` value lists. */
 function connectionTokens(value: string | string[] | undefined): Set<string> {
@@ -136,41 +137,6 @@ async function collect(stream: Readable): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-/** True when `error` failed to establish the connection, so legacy never received the request. */
-function neverSent(error: unknown): boolean {
-  const code = (error as { code?: unknown } | null | undefined)?.code;
-  return typeof code === 'string' && NOT_SENT_CODES.has(code);
-}
-
-/** Relay of `origin` that ends after `onEnd` resolved; destroying it leaves `origin` draining, an origin failure calls `onFail`. */
-function settlingRelay(origin: Readable, onEnd: () => Promise<void>, onFail: (error: Error) => void): PassThrough {
-  const relay = new PassThrough();
-  // The last byte so far waits for the next chunk, so a Content-Length response completes only after `onEnd`.
-  let held: Buffer = Buffer.alloc(0);
-  origin.on('data', (chunk: Buffer) => {
-    if (relay.destroyed || chunk.length === 0) return;
-    const ready = held.length === 0 ? chunk.subarray(0, -1) : Buffer.concat([held, chunk.subarray(0, -1)]);
-    held = chunk.subarray(-1);
-    if (ready.length > 0 && !relay.write(ready)) origin.pause();
-  });
-  relay.on('drain', () => origin.resume());
-  relay.on('close', () => origin.resume());
-  finished(origin, (error) => {
-    if (error) {
-      onFail(error);
-      // Without an error, so a relay nobody reads yet emits none; its readers see a premature close.
-      relay.destroy();
-      return;
-    }
-    void onEnd().then(() => {
-      if (relay.destroyed) return;
-      if (held.length > 0) relay.end(held);
-      else relay.end();
-    });
-  });
-  return relay;
-}
-
 /**
  * Writes legacy's status, the reply's headers and `body` to the client as they are.
  * Bypasses Fastify's send, whose onSend hooks add gateway headers and whose Buffer path adds a content type and length.
@@ -203,7 +169,7 @@ async function guarded<T>(request: FastifyRequest, name: string, run: () => Prom
 
 /**
  * Forwards `request` to `ctx.legacyOrigin` with its original path, query and body, without a gateway timeout or retry.
- * A failure before legacy answers sends the legacy-shaped 503 of `ctx.failContext`.
+ * A failure before legacy answers, or a rejected `beforeSend`, sends the legacy-shaped 503 of `ctx.failContext`.
  */
 export async function forwardToLegacy(
   request: FastifyRequest,
@@ -224,6 +190,17 @@ export async function forwardToLegacy(
   /** Settlement of a request that never reached legacy, which its 503 waits for. */
   let notSentSettlement: Promise<void> | undefined;
 
+  /** Runs `beforeSend`; a rejection is logged and reported, so legacy's response does not leave. */
+  async function runBeforeSend(upstream: LegacyUpstream): Promise<BeforeSendOutcome> {
+    try {
+      const extra = await ctx.beforeSend?.(upstream);
+      return { failed: false, setCookies: extra?.setCookies };
+    } catch (error) {
+      request.log.error({ error: serializeError(error) }, 'legacy forward beforeSend failed');
+      return { failed: true };
+    }
+  }
+
   async function respond(res: FastifyReplyFromResponse): Promise<void> {
     // reply-from also calls onResponse after it answered an invalid upstream status through onError.
     if (reply.sent || reply.raw.headersSent) {
@@ -232,15 +209,26 @@ export async function forwardToLegacy(
     }
     const upstream = upstreamOf(res);
     if (ctx.mode === 'stream') {
-      const extra = await guarded(request, 'beforeSend', () => ctx.beforeSend?.(upstream));
-      replaceSetCookies(reply, ctx.sessionMode, upstream, extra?.setCookies);
+      const before = await runBeforeSend(upstream);
+      if (before.failed) {
+        // Drained rather than destroyed, so the exchange still settles once legacy's response has ended.
+        res.stream.resume();
+        failClosed(reply, ctx.failContext);
+        return;
+      }
+      replaceSetCookies(reply, ctx.sessionMode, upstream, before.setCookies);
       sendAsLegacy(request, reply, res.stream);
       return;
     }
     const body = await collect(res.stream);
-    const extra = await guarded(request, 'beforeSend', () => ctx.beforeSend?.(upstream));
+    const before = await runBeforeSend(upstream);
+    // Legacy executed whether or not its response may leave, so the buffered response is reported either way.
     await guarded(request, 'onBuffered', () => ctx.onBuffered?.({ ...upstream, body }));
-    replaceSetCookies(reply, ctx.sessionMode, upstream, extra?.setCookies);
+    if (before.failed) {
+      failClosed(reply, ctx.failContext);
+      return;
+    }
+    replaceSetCookies(reply, ctx.sessionMode, upstream, before.setCookies);
     sendAsLegacy(request, reply, body);
   }
 

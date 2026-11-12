@@ -8,6 +8,7 @@ import {
   tenantForRegisteredSite,
   tenantIdForSite,
   withTenant,
+  type RegistrySource,
   type TenantDb,
   type TenantTx,
 } from '@opt2/platform/tenancy';
@@ -22,7 +23,7 @@ import {
   type LoginStateRow,
   type UserAccountRow,
 } from '../repo/tables.js';
-import { DEFAULT_ACCOUNT_SETTINGS, awaitAccountOpen } from './account-operations.js';
+import { DEFAULT_ACCOUNT_SETTINGS, withOpenAccount } from './account-operations.js';
 import { buildLoginSnapshot, type LoginRows, type MembershipGroup } from './roles.js';
 import { applyLogin, endSession, locateSession, type AppliedSession, type EndedSession, type SessionMode } from './sessions.js';
 import {
@@ -110,6 +111,8 @@ const DEFAULT_SITE_ID = 'default';
 
 type Candidate = NonNullable<LookupResult>;
 
+type LoginByUserIdFailure = Extract<LoginByUserIdResult, { ok: false }>;
+
 /** The rows `loginByQuery` reads, with the member groups the user's own tenant holds. */
 interface LoginRead {
   rows: Omit<LoginRows, 'groups'>;
@@ -117,11 +120,15 @@ interface LoginRead {
   own: GroupAccountRow[];
 }
 
-/** What the strike transaction of `login` decided. */
+/** What the strike transaction of `login` decided; `stale` when the account or credential changed since the password check. */
 type Decision =
   | { outcome: 'ok'; read: LoginRead }
   | { outcome: 'invalid' | 'public-pool' }
-  | { outcome: 'blocked'; until: Date };
+  | { outcome: 'blocked'; until: Date }
+  | { outcome: 'stale' };
+
+/** A password check: whether it matched and the credential then stored, an upgrade's own row included; `stale` when the credential changed before the upgrade. */
+type Verification = { match: boolean; stored: CredentialRow | null } | 'stale';
 
 /** CFML boolean of a numeric flag; NULL reads as false. */
 function flag(value: number | null): boolean {
@@ -138,6 +145,24 @@ function sessionSite(siteId: string): string | null {
   return siteId === '' ? null : siteId;
 }
 
+/** Whether two reads of an account hold the same column values. */
+function sameAccount(a: UserAccountRow, b: UserAccountRow): boolean {
+  const columns = Object.keys(a) as Array<keyof UserAccountRow>;
+  return columns.length === Object.keys(b).length && columns.every((column) => a[column] === b[column]);
+}
+
+/** Whether two reads of a credential hold the same stored password and password date. */
+function sameCredential(a: CredentialRow | null, b: CredentialRow | null): boolean {
+  if (a === null || b === null) return a === b;
+  return a.password === b.password && a.passwordcreated?.getTime() === b.passwordcreated?.getTime();
+}
+
+/** The active account `userId` named `username` in the caller's transaction; undefined once renamed, deactivated or removed. */
+async function accountNamed(repo: IdentityRepository, tx: TenantTx, username: string, userId: string): Promise<UserAccountRow | undefined> {
+  const userKey = charKey(userId);
+  return (await repo.findAccountsByUsername(tx, username)).find((row) => charKey(row.userid) === userKey);
+}
+
 /** The first active Type=2 account named `trim(username)`, by (site id, user id) across registered tenants [legacy: core/mura/user/userUtility.cfc:133-138]. */
 async function firstAccountByUsername(deps: LoginDeps, username: string): Promise<{ tenantId: string; account: UserAccountRow } | undefined> {
   for (const { tenantId } of await registeredTenants(deps.db)) {
@@ -147,17 +172,22 @@ async function firstAccountByUsername(deps: LoginDeps, username: string): Promis
   return undefined;
 }
 
-/** The account named `username` with its stored credential, read once no open account operation keeps the user closed. */
+/** The account named `username` with its stored credential, read under the user's account fence once no open account operation keeps the user closed. */
 async function credentialCandidate(deps: LoginDeps, username: string): Promise<Candidate | undefined> {
   const found = await firstAccountByUsername(deps, username);
   if (found === undefined) return undefined;
   const { tenantId } = found;
-  const userKey = charKey(found.account.userid);
-  await awaitAccountOpen(deps.db, tenantId, found.account.userid, { sleep: deps.sleep });
-  return withTenant(deps.db, tenantId, async (tx) => {
-    const account = (await deps.repo.findAccountsByUsername(tx, username)).find((row) => charKey(row.userid) === userKey);
-    return account === undefined ? undefined : { tenantId, account, credential: await deps.repo.readCredential(tx, account.userid) };
-  });
+  const userId = found.account.userid;
+  return withOpenAccount(
+    deps.db,
+    tenantId,
+    userId,
+    async (tx) => {
+      const account = await accountNamed(deps.repo, tx, username, userId);
+      return account === undefined ? undefined : { tenantId, account, credential: await deps.repo.readCredential(tx, account.userid) };
+    },
+    { sleep: deps.sleep },
+  );
 }
 
 /** Whether the target is write-authoritative for `identity.credential` and no window or transition holds it. */
@@ -166,28 +196,41 @@ async function credentialUnitOpen(db: TenantDb): Promise<boolean> {
   return gate?.state === 'open';
 }
 
-/** Checks `password` against the stored value, rewriting a CFMX_COMPAT hash as bcrypt while the credential unit is open [legacy: core/mura/user/userUtility.cfc:140-173]. */
-async function passwordMatches(deps: LoginDeps, candidate: Candidate, password: string): Promise<boolean> {
+/**
+ * Checks `password` against the candidate's stored value, rewriting a CFMX_COMPAT hash as bcrypt while the credential unit is open
+ * and the stored credential is still the one checked [legacy: core/mura/user/userUtility.cfc:140-173].
+ */
+async function verifyPassword(deps: LoginDeps, candidate: Candidate, password: string): Promise<Verification> {
   const { db, repo, clock, settings } = deps;
-  const check = await verifyLegacyPassword(password, candidate.credential?.password, settings.password);
+  const checked = candidate.credential;
+  const check = await verifyLegacyPassword(password, checked?.password, settings.password);
   // The upgrade belongs to no cut-over group: while legacy holds the credential unit, legacy's own login performs it.
-  if (check.needsUpgrade && (await credentialUnitOpen(db))) {
-    const hashed = await hashNewPassword(password, settings.password);
-    const userId = candidate.account.userid;
-    await withGatedTenant(db, candidate.tenantId, (tx) => repo.writeCredential(tx, userId, { password: hashed, passwordcreated: clock.now() }));
-  }
-  return check.match;
+  if (!check.needsUpgrade || !(await credentialUnitOpen(db))) return { match: check.match, stored: checked };
+  const hashed = await hashNewPassword(password, settings.password);
+  const userId = candidate.account.userid;
+  // The exclusive fence makes the compare and the write one step against every other fenced writer of the user.
+  const upgraded = await withOpenAccount(
+    db,
+    candidate.tenantId,
+    userId,
+    async (tx) =>
+      sameCredential(await repo.readCredential(tx, userId), checked)
+        ? repo.writeCredential(tx, userId, { password: hashed, passwordcreated: clock.now() })
+        : null,
+    { sleep: deps.sleep, exclusive: true },
+  );
+  return upgraded === null ? 'stale' : { match: check.match, stored: upgraded };
 }
 
 /** `getSite(siteId).getPublicUserPoolID()`; an empty or unregistered site id reads the `default` site [legacy: core/mura/settings/settingsManager.cfc:537-566]. */
-async function publicUserPoolOf(db: TenantDb, siteId: string): Promise<string | null> {
+async function publicUserPoolOf(db: RegistrySource, siteId: string): Promise<string | null> {
   const tenantId = (siteId === '' ? null : await tenantForRegisteredSite(db, siteId)) ?? (await tenantForRegisteredSite(db, DEFAULT_SITE_ID));
   const entry = tenantId === null ? null : await registryEntryForTenant(db, tenantId);
   return entry === null ? null : (entry.publicUserPoolId ?? entry.siteId);
 }
 
 /** Whether `account` may log in on `siteId`: a public account only where its own site is that site's public user pool [legacy: core/mura/user/userUtility.cfc:281-283]. */
-async function publicPoolAdmits(db: TenantDb, account: UserAccountRow, siteId: string): Promise<boolean> {
+async function publicPoolAdmits(db: RegistrySource, account: UserAccountRow, siteId: string): Promise<boolean> {
   if (!flag(account.ispublic)) return true;
   const pool = await publicUserPoolOf(db, siteId);
   return pool !== null && cfEq(pool, account.siteid ?? '');
@@ -245,7 +288,7 @@ async function memberGroups(deps: LoginDeps, tenantId: string, read: LoginRead):
 async function completeLogin(deps: LoginDeps, tenantId: string, read: LoginRead, target: LoginTarget): Promise<LoginSuccess> {
   const groups = await memberGroups(deps, tenantId, read);
   const snapshot = buildLoginSnapshot({ ...read.rows, groups });
-  const session = await applyLogin(deps, { sessionId: target.sessionId, tenantId, snapshot, mode: target.mode, siteId: sessionSite(target.siteId) });
+  const session = await applyLogin(deps, { sessionId: target.sessionId, snapshot, mode: target.mode, siteId: sessionSite(target.siteId) });
   return { snapshot, session };
 }
 
@@ -257,7 +300,11 @@ async function recordSessionValues(deps: LoginDeps, tenantId: string, sessionId:
 /** The account matching `username` and `password`, after any legacy-hash upgrade; undefined for no match [legacy: core/mura/user/userUtility.cfc:108-177]. */
 export async function lookupByCredentials(deps: LoginDeps, username: string, password: string): Promise<LookupResult> {
   const candidate = await credentialCandidate(deps, username);
-  return candidate !== undefined && (await passwordMatches(deps, candidate, password)) ? candidate : undefined;
+  if (candidate === undefined) return undefined;
+  const verification = await verifyPassword(deps, candidate, password);
+  // The credential changed after it was read, so the lookup starts again from the stored rows.
+  if (verification === 'stale') return lookupByCredentials(deps, username, password);
+  return verification.match ? candidate : undefined;
 }
 
 /** Logs the session in by username and password under the strike rules, without plugin events or lockdown [legacy: core/mura/user/userUtility.cfc:179-259]. */
@@ -265,27 +312,51 @@ export async function login(deps: LoginDeps, request: LoginRequest): Promise<Log
   const { db, repo, clock, settings } = deps;
   const { username, password, siteId, sessionId } = request;
   const candidate = await credentialCandidate(deps, username);
-  const matched = candidate !== undefined && (await passwordMatches(deps, candidate, password)) ? candidate : undefined;
+  const verification = candidate === undefined ? undefined : await verifyPassword(deps, candidate, password);
+  // The credential changed after it was read, so the login starts again from the stored rows.
+  if (verification === 'stale') return login(deps, request);
+  const matched = verification?.match === true ? candidate : undefined;
   const poolRejects = matched !== undefined && flag(matched.account.ispublic) && (siteId === '' || !(await publicPoolAdmits(db, matched.account, siteId)));
   const tenantId = await strikeTenant(deps, username, candidate);
   const options: StrikeOptions = { settings: settings.strikes, clock };
 
-  const decision = await withGatedTenant(db, tenantId, async (tx): Promise<Decision> => {
+  // `fresh` is the matched account as the deciding transaction read it.
+  const decide = async (tx: TenantTx, fresh: UserAccountRow | undefined): Promise<Decision> => {
     const strikes = await loadStrikes(repo, tx, username, options);
     const blocked = isBlocked(strikes, settings.strikes);
-    if (matched !== undefined && !blocked) {
+    if (matched !== undefined && fresh !== undefined && !blocked) {
       if (poolRejects) {
         await addStrike(repo, tx, strikes, options);
         return { outcome: 'public-pool' };
       }
-      const read = await readAndTouch(deps, tx, matched.account, matched.credential);
+      // The snapshot carries the credential the lookup checked, before any upgrade, as loginByQuery(rsUser) does.
+      const read = await readAndTouch(deps, tx, fresh, matched.credential);
       await clearStrikes(repo, tx, strikes, options);
       return { outcome: 'ok', read };
     }
     if (blocked) return { outcome: 'blocked', until: blockedUntil(strikes, settings.strikes, clock) };
     await addStrike(repo, tx, strikes, options);
     return { outcome: 'invalid' };
-  });
+  };
+  const decision =
+    candidate === undefined || verification === undefined
+      ? await withGatedTenant(db, tenantId, (tx) => decide(tx, undefined))
+      : await withOpenAccount(
+          db,
+          tenantId,
+          candidate.account.userid,
+          async (tx): Promise<Decision> => {
+            const account = await accountNamed(repo, tx, username, candidate.account.userid);
+            const unchanged =
+              account !== undefined &&
+              sameAccount(account, candidate.account) &&
+              sameCredential(await repo.readCredential(tx, account.userid), verification.stored);
+            return unchanged ? decide(tx, account) : { outcome: 'stale' };
+          },
+          { sleep: deps.sleep },
+        );
+  // The account or credential changed after the password check, so the login starts again from the stored rows.
+  if (decision.outcome === 'stale') return login(deps, request);
 
   if (decision.outcome === 'ok') {
     const success = await completeLogin(deps, tenantId, decision.read, request);
@@ -318,17 +389,27 @@ export async function loginByUserID(deps: LoginDeps, request: LoginByUserIdReque
   }
   if (found === undefined) return { ok: false, reason: 'invalid' };
   const { tenantId } = found;
-  await awaitAccountOpen(db, tenantId, found.account.userid, { sleep: deps.sleep });
-  const account = await withTenant(db, tenantId, (tx) => repo.findAccountById(tx, request.userId));
-  if (account === null || !loginable(account)) return { ok: false, reason: 'invalid' };
-  if (!(await publicPoolAdmits(db, account, request.siteId))) return { ok: false, reason: 'public-pool' };
-  const { sessionId, mode, siteId } = request;
-  return { ok: true, ...(await loginByQuery(deps, { sessionId, mode, siteId, tenantId, account })) };
+  const read = await withOpenAccount(
+    db,
+    tenantId,
+    found.account.userid,
+    async (tx): Promise<LoginRead | LoginByUserIdFailure> => {
+      const account = await repo.findAccountById(tx, request.userId);
+      if (account === null || !loginable(account)) return { ok: false, reason: 'invalid' };
+      if (!(await publicPoolAdmits(tx, account, request.siteId))) return { ok: false, reason: 'public-pool' };
+      return readAndTouch(deps, tx, account, undefined);
+    },
+    { sleep: deps.sleep },
+  );
+  if ('ok' in read) return read;
+  return { ok: true, ...(await completeLogin(deps, tenantId, read, request)) };
 }
 
-/** Stamps the last login, builds the login-time snapshot from memberships and person contact, and logs it into the session [legacy: core/mura/user/userUtility.cfc:306-388]. */
+/** Stamps the last login, builds the login-time snapshot from memberships and person contact under the user's account fence, and logs it into the session [legacy: core/mura/user/userUtility.cfc:306-388]. */
 export async function loginByQuery(deps: LoginDeps, input: LoginByQueryInput): Promise<LoginSuccess> {
-  const read = await withGatedTenant(deps.db, input.tenantId, (tx) => readAndTouch(deps, tx, input.account, input.credential));
+  const read = await withOpenAccount(deps.db, input.tenantId, input.account.userid, (tx) => readAndTouch(deps, tx, input.account, input.credential), {
+    sleep: deps.sleep,
+  });
   return completeLogin(deps, input.tenantId, read, input);
 }
 

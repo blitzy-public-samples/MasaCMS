@@ -16,7 +16,7 @@ import type { IdentityEvents, LoginMailRequestedPayload } from '../events/publis
 import { hashNewPassword, type LegacyPasswordConfig } from '../legacy/hash.js';
 import { charKey, type EmailAccountRow, type IdentityRepository } from '../repo/repository.js';
 import { REDIRECT, type RedirectRow, type UserAccountRow } from '../repo/tables.js';
-import { DEFAULT_ACCOUNT_SETTINGS, awaitAccountOpen } from './account-operations.js';
+import { DEFAULT_ACCOUNT_SETTINGS, withOpenAccount } from './account-operations.js';
 
 /** The forgot-password address check, applied to the trimmed address as a prefix match [legacy: core/mura/user/userUtility.cfc:421]. */
 export const EMAIL_PATTERN = /^[^@%*<>' ]+@[^@%*<>' ]{1,255}\.[^@%*<>' ]{2,5}/i;
@@ -495,9 +495,8 @@ export async function sendLoginByEmail(deps: LoginMailDeps, input: SendLoginByEm
   const mail: MailEnvelope = { ctx, to: input.email, from, subject: subjectFor(input.subject, from), bcc: ctx.global.sendLoginBcc, kind: 'forgot-password' };
   const requests: LoginMailRequest[] = [];
   for (const { scope, userId } of candidates) {
-    await awaitAccountOpen(deps.db, scope.tenantId, userId, { sleep: deps.sleep });
     const credential = await resetCredential(deps, ctx.global);
-    const request = await withGatedTenant(deps.db, scope.tenantId, async (tx) => {
+    const request = await withOpenAccount(deps.db, scope.tenantId, userId, async (tx) => {
       // Re-read after the wait, so an account operation that just finished is mailed with its outcome.
       const [account] = await emailMatches(deps.repo, tx, scope, email, userId);
       if (account === undefined || !hasUsername(account)) return null;
@@ -511,7 +510,7 @@ export async function sendLoginByEmail(deps: LoginMailDeps, input: SendLoginByEm
         password: credential?.plain ?? '',
       };
       return writeLoginMail(deps, tx, mail, user, credential?.stored ?? null);
-    });
+    }, { sleep: deps.sleep });
     if (request !== null) requests.push(request);
   }
   return requests;
@@ -525,7 +524,6 @@ export async function sendLoginByUser(deps: LoginMailDeps, input: SendLoginByUse
   const { user } = input;
   const ctx = await sendContext(deps.settings, input);
   const tenantId = tenantIdForSite(user.siteId);
-  await awaitAccountOpen(deps.db, tenantId, user.userId, { sleep: deps.sleep });
   const credential = await resetCredential(deps, ctx.global);
   let bcc = '';
   if (input.isPublicReg === true) {
@@ -542,5 +540,5 @@ export async function sendLoginByUser(deps: LoginMailDeps, input: SendLoginByUse
     lname: user.lname,
     password: credential?.plain ?? user.password ?? '',
   };
-  return withGatedTenant(deps.db, tenantId, (tx) => writeLoginMail(deps, tx, mail, mailUser, credential?.stored ?? null));
+  return withOpenAccount(deps.db, tenantId, user.userId, (tx) => writeLoginMail(deps, tx, mail, mailUser, credential?.stored ?? null), { sleep: deps.sleep });
 }

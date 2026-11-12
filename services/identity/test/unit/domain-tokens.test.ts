@@ -384,8 +384,7 @@ describe.skipIf(!available)('token minting against PostgreSQL', () => {
   }
 
   async function login(sessionId: string, snapshot: LoginSnapshot): Promise<void> {
-    const tenantId = tenantIdForSite(snapshot.siteid ?? '');
-    await applyLogin(sessionDeps(), { sessionId, tenantId, snapshot, mode: 'target-primary', siteId: snapshot.siteid });
+    await applyLogin(sessionDeps(), { sessionId, snapshot, mode: 'target-primary', siteId: snapshot.siteid });
   }
 
   function verifierFor(jwks: Awaited<ReturnType<TokenService['jwks']>>) {
@@ -544,7 +543,7 @@ describe.skipIf(!available)('token minting against PostgreSQL', () => {
   it('refuses a cloud token for a signed-in user without a user-pool site before calling Identity Platform', async () => {
     const roleList = `S2IsPrivate;tenant-a,S2IsPrivate,${userId(6)};username;tenant-a`;
     const snapshot = { ...snapshotOf(userId(6), 'tenant-a', roleList, []), siteid: null };
-    await applyLogin(sessionDeps(), { sessionId: 'S-NOPOOL', tenantId: TENANT_A, snapshot, mode: 'target-primary', siteId: 'tenant-a' });
+    await applyLogin(sessionDeps(), { sessionId: 'S-NOPOOL', snapshot, mode: 'target-primary', siteId: 'tenant-a' });
     const { cloud, calls } = cloudService();
 
     await expect(cloud.mint({ sessionId: 'S-NOPOOL', siteId: 'tenant-a' })).rejects.toThrow(/no user-pool site/);

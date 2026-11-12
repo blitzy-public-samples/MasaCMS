@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 
 import { serializeError } from '@opt2/platform/logging';
 import {
@@ -369,7 +370,7 @@ function fakeOwners({ pages = {}, defaultHorizon = '200', exportRows = {}, failP
       if (owner === failPosition) throw new Error(`${owner} position unavailable`);
       return { owner, position: '150', outbox: null, inbox: null };
     },
-    getObject: async () => Buffer.from('hello'),
+    getObject: async () => Readable.from([Buffer.from('hel'), Buffer.from('lo')]),
     async putWatermark(owner: string, record: { legacyTable: string; direction: string }) {
       watermarks.push({ owner, legacyTable: record.legacyTable, direction: record.direction });
       return record;
@@ -389,8 +390,10 @@ function fakeBridge() {
       calls.push(['purgeCache', siteId]);
       return { ok: true };
     },
-    async filesPut(siteId: string, name: string, bytes: Uint8Array, sha256: string) {
-      calls.push(['filesPut', `${siteId}/${name} ${String(bytes.byteLength)} ${sha256}`]);
+    async filesPut(siteId: string, name: string, body: AsyncIterable<Uint8Array>, sha256: string) {
+      let size = 0;
+      for await (const chunk of body) size += chunk.byteLength;
+      calls.push(['filesPut', `${siteId}/${name} ${String(size)} ${sha256}`]);
       return { written: true };
     },
   };

@@ -180,6 +180,13 @@ function harness(row?: JarRow): Harness {
         record('jar.drop', sessionId);
         return Promise.resolve(h.rows.delete(sessionId));
       },
+      markIdentityEndPending(sessionId, mode) {
+        record('jar.markIdentityEndPending', sessionId, mode);
+        const row = h.rows.get(sessionId);
+        const empty: JarRow = { sessionId, legacySessionId: null, cookies: {}, mode, hydratedEpoch: null, updatedAt: NOW };
+        h.rows.set(sessionId, { identityEndPendingAt: NOW, ...(row ?? empty) });
+        return Promise.resolve();
+      },
     },
     tokenCache: {
       drop(sessionId) {
@@ -362,20 +369,45 @@ describe('afterTargetLogout', () => {
   });
 });
 
-describe('afterLegacyLogout', () => {
-  it.each<SessionMode>(['legacy-primary', 'target-primary'])(
-    'ends the identity session as a legacy logout and drops a %s jar',
-    async (mode) => {
-      const h = harness(jarRow({ mode }));
-      await createInvalidation(h.options).afterLegacyLogout(SESSION_ID);
-      expect(h.calls).toEqual([
-        ...FORGET_SESSION,
-        ['identity.end', SESSION_ID, 'legacy-logout'],
-        ['jar.drop', SESSION_ID],
-      ]);
-      expect(h.rows.size).toBe(0);
-    },
-  );
+describe('beforeLegacyLogout', () => {
+  it.each<[string, JarRow | undefined, SessionMode, Partial<JarRow>]>([
+    ['a target-primary jar', jarRow(), 'target-primary', { legacySessionId: LEGACY_SESSION_ID, cookies: jarRow().cookies }],
+    ['an empty legacy-primary jar for a session without one', undefined, 'legacy-primary', { legacySessionId: null, cookies: {} }],
+  ])('forgets tokens and state and marks the end pending in %s, asking identity nothing', async (_label, row, mode, kept) => {
+    const h = harness(row);
+    await createInvalidation(h.options).beforeLegacyLogout(SESSION_ID, mode);
+    expect(h.calls).toEqual([...FORGET_SESSION, ['jar.markIdentityEndPending', SESSION_ID, mode]]);
+    expect(h.rows.get(SESSION_ID)).toMatchObject({ ...kept, mode, identityEndPendingAt: NOW });
+  });
+
+  it('rejects without a mark when the mark cannot be written', async () => {
+    const h = harness(jarRow());
+    const refusal = new Error('gateway database unavailable');
+    h.options.jar.markIdentityEndPending = () => Promise.reject(refusal);
+    await expect(createInvalidation(h.options).beforeLegacyLogout(SESSION_ID, 'target-primary')).rejects.toBe(refusal);
+    expect(h.calls.map(([op]) => op)).not.toContain('identity.end');
+    expect(h.rows.get(SESSION_ID)).toEqual(jarRow());
+  });
+});
+
+describe.each(['afterLegacyLogout', 'completePending'] as const)('%s', (method) => {
+  const marked = (): JarRow => ({ ...jarRow(), identityEndPendingAt: NOW });
+
+  it('forgets tokens and state, ends the identity session as a legacy logout and drops the marked jar', async () => {
+    const h = harness(marked());
+    await createInvalidation(h.options)[method](SESSION_ID);
+    expect(h.calls).toEqual([...FORGET_SESSION, ['identity.end', SESSION_ID, 'legacy-logout'], ['jar.drop', SESSION_ID]]);
+    expect(h.rows.size).toBe(0);
+  });
+
+  it('rejects and keeps the marked jar untouched when identity cannot end the session', async () => {
+    const h = harness(marked());
+    const refusal = new Error('identity unavailable');
+    h.options.identity.end = () => Promise.reject(refusal);
+    await expect(createInvalidation(h.options)[method](SESSION_ID)).rejects.toBe(refusal);
+    expect(h.calls.map(([op]) => op)).toEqual(['tokenCache.drop', 'state.forget']);
+    expect(h.rows.get(SESSION_ID)).toEqual(marked());
+  });
 });
 
 describe('afterLegacyLogin', () => {

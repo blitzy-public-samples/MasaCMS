@@ -244,6 +244,26 @@ describe('createServiceClient with a MockAgent', () => {
     expect(res.body.toString('utf8')).toBe(data);
   });
 
+  it('returns a streamed 2xx body unread as a Readable of the exact received bytes', async () => {
+    const bytes = Buffer.from([0x7b, 0x00, 0xfe, 0xff, 0x7d]);
+    agent.get(IDENTITY).intercept({ path: '/x' }).reply(200, bytes, { headers: { 'Content-Type': 'application/json' } });
+    const res = await client.request<Readable>({ service: 'identity', method: 'GET', path: '/x', stream: true });
+    expect(res.status).toBe(200);
+    expect(res.body).toBeInstanceOf(Readable);
+    const chunks: Buffer[] = [];
+    for await (const chunk of res.body) chunks.push(Buffer.from(chunk as Uint8Array));
+    expect(Buffer.concat(chunks).equals(bytes)).toBe(true);
+  });
+
+  it.each([404, 503])('decodes a %i answer to a streamed call as usual', async (status) => {
+    agent
+      .get(IDENTITY)
+      .intercept({ path: '/x' })
+      .reply(status, '{"error":"notFound"}', { headers: { 'content-type': 'application/json' } });
+    const res = await client.request({ service: 'identity', method: 'GET', path: '/x', stream: true });
+    expect(res).toMatchObject({ status, body: { error: 'notFound' } });
+  });
+
   it('throws an Error naming the callee for invalid JSON', async () => {
     agent.get(IDENTITY).intercept({ path: '/x' }).reply(200, '{bad', { headers: { 'content-type': 'application/json' } });
     const err = await client.request({ service: 'identity', method: 'GET', path: '/x' }).catch((e: unknown) => e);
@@ -449,6 +469,11 @@ describe('createServiceClient with its own Agent', () => {
         setTimeout(() => res.end('late'), 2_000).unref();
         return;
       }
+      if (req.url === '/stall') {
+        res.writeHead(200, { 'content-type': 'application/octet-stream' });
+        res.write('first');
+        return;
+      }
       if (req.url === '/echo') {
         const chunks: Buffer[] = [];
         req.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -533,6 +558,21 @@ describe('createServiceClient with its own Agent', () => {
     expect((err as Error).message).toBe('Service echo unavailable (TimeoutError)');
     expect(Date.now() - started).toBeLessThan(1_000);
     expect(seen).toHaveLength(1);
+  });
+
+  it('cuts a stalled streamed body at the call timeout', async () => {
+    const client = ownClient({ timeoutMs: 200 });
+    const started = Date.now();
+    const res = await client.request<Readable>({ service: 'echo', method: 'GET', path: '/stall', stream: true });
+    const chunks: Buffer[] = [];
+    const err = await (async () => {
+      for await (const chunk of res.body) chunks.push(Buffer.from(chunk as Uint8Array));
+    })().catch((e: unknown) => e);
+    await client.close();
+    expect(res.status).toBe(200);
+    expect(Buffer.concat(chunks).toString('utf8')).toBe('first');
+    expect(err).toMatchObject({ name: 'TimeoutError' });
+    expect(Date.now() - started).toBeLessThan(1_000);
   });
 
   describe('with the tracing SDK started', () => {

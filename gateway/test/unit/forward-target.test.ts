@@ -1,7 +1,9 @@
 // Tests forwardToTarget against loopback stand-ins for a service and web: request headers, body, responses and fail closed.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { channel } from 'node:diagnostics_channel';
+import { request as httpRequest, type ClientRequest } from 'node:http';
 import { createRequire } from 'node:module';
+import type { AddressInfo } from 'node:net';
 import replyFrom from '@fastify/reply-from';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -12,6 +14,7 @@ import {
   apiUnavailableResponse,
   legacyHeaders,
 } from '@opt2/platform/legacy-compat';
+import { serializeError } from '@opt2/platform/logging';
 import type { WritePositions } from '@opt2/platform/migration-kit';
 import {
   MemorySpanExporter,
@@ -22,9 +25,17 @@ import {
   withExtractedContext,
   type Context,
 } from '@opt2/platform/tracing';
+import { BarrierTimeoutError } from '../../src/dispatcher/barrier.js';
 import type { FailContext } from '../../src/dispatcher/fail-closed.js';
 import { forwardToTarget, type TargetForwardContext, type TargetUpstream } from '../../src/dispatcher/forward-target.js';
-import { sendBytes, sendJson, startHttpDouble, type HttpDouble, type RecordedRequest } from '../helpers/http-double.js';
+import {
+  sendBytes,
+  sendJson,
+  startHttpDouble,
+  type DoubleHandler,
+  type HttpDouble,
+  type RecordedRequest,
+} from '../helpers/http-double.js';
 
 const USER_TOKEN = 'user-token-abc';
 const SESSION_ID = 'sess-1';
@@ -37,25 +48,50 @@ const ACTIVE_TRACE = { traceparent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7
 /** Context fields a test sets; the harness fills the collaborators. */
 type Overrides = Partial<Omit<TargetForwardContext, 'invocation' | 'barrier'>> & { traced?: boolean };
 
+/** One parsed gateway log record. */
+interface LogLine {
+  level: number;
+  msg: string;
+  error?: unknown;
+}
+
+/** A projection await the barrier was asked for: the unrecorded positions, or the owners of an unparsed header. */
+type Confirmation = ['positions', WritePositions] | ['owners', string[]];
+
 interface Harness {
   app: FastifyInstance;
   minted: InvocationTarget[];
-  recorded: Array<[string, WritePositions]>;
-  logs: Array<{ level: number; msg: string }>;
+  /** Recorded positions, with the declared owner whose declaration the record ended when there is one. */
+  recorded: Array<[string, WritePositions] | [string, WritePositions, string]>;
+  /** Declarations as session, owner and the number of requests the service had received when it was made. */
+  declared: Array<[string, string, number]>;
+  released: Array<[string, string]>;
+  confirmations: Confirmation[];
+  logs: LogLine[];
   settled: () => number;
   set(overrides: Overrides): void;
   setMinter(minter: InvocationMinter): void;
   setRecordFailure(error: Error | undefined): void;
+  setDeclareFailure(error: Error | undefined): void;
+  setReleaseFailure(error: Error | undefined): void;
+  /** Answers every projection await; resolves at once by default. */
+  setConfirm(confirm: () => Promise<void>): void;
 }
 
 /** A gateway stand-in whose catch-all forwards to `service` with the current overrides. */
 async function startHarness(service: () => HttpDouble): Promise<Harness> {
   const minted: InvocationTarget[] = [];
-  const recorded: Array<[string, WritePositions]> = [];
-  const logs: Array<{ level: number; msg: string }> = [];
+  const recorded: Harness['recorded'] = [];
+  const declared: Harness['declared'] = [];
+  const released: Harness['released'] = [];
+  const confirmations: Confirmation[] = [];
+  const logs: LogLine[] = [];
   let settledCount = 0;
   let overrides: Overrides = {};
   let recordFailure: Error | undefined;
+  let declareFailure: Error | undefined;
+  let releaseFailure: Error | undefined;
+  let confirm: () => Promise<void> = () => Promise.resolve();
   let minter: InvocationMinter = {
     async headersFor(target) {
       minted.push(target);
@@ -65,7 +101,7 @@ async function startHarness(service: () => HttpDouble): Promise<Harness> {
 
   const app = Fastify({
     genReqId: () => REQUEST_ID,
-    logger: { level: 'warn', stream: { write: (line: string) => logs.push(JSON.parse(line) as { level: number; msg: string }) } },
+    logger: { level: 'warn', stream: { write: (line: string) => logs.push(JSON.parse(line) as LogLine) } },
   });
   app.removeAllContentTypeParsers();
   app.addContentTypeParser('*', { parseAs: 'buffer' }, (_request, body, done) => done(null, body));
@@ -83,9 +119,25 @@ async function startHarness(service: () => HttpDouble): Promise<Harness> {
       failContext: API,
       invocation: minter,
       barrier: {
-        async record(sessionId, positions) {
+        async declare(sessionId, owner) {
+          if (declareFailure !== undefined) throw declareFailure;
+          declared.push([sessionId, owner, service().requests.length]);
+        },
+        async record(sessionId, positions, declaredOwner) {
           if (recordFailure !== undefined) throw recordFailure;
-          recorded.push([sessionId, positions]);
+          recorded.push(declaredOwner === undefined ? [sessionId, positions] : [sessionId, positions, declaredOwner]);
+        },
+        async release(sessionId, owner) {
+          if (releaseFailure !== undefined) throw releaseFailure;
+          released.push([sessionId, owner]);
+        },
+        awaitPositions(positions) {
+          confirmations.push(['positions', positions]);
+          return confirm();
+        },
+        awaitOwners(owners) {
+          confirmations.push(['owners', [...owners]]);
+          return confirm();
         },
       },
       onSettled: async () => {
@@ -102,6 +154,9 @@ async function startHarness(service: () => HttpDouble): Promise<Harness> {
     app,
     minted,
     recorded,
+    declared,
+    released,
+    confirmations,
     logs,
     settled: () => settledCount,
     set(next) {
@@ -109,6 +164,9 @@ async function startHarness(service: () => HttpDouble): Promise<Harness> {
       settledCount = 0;
       minted.length = 0;
       recorded.length = 0;
+      declared.length = 0;
+      released.length = 0;
+      confirmations.length = 0;
       logs.length = 0;
     },
     setMinter(next) {
@@ -116,6 +174,15 @@ async function startHarness(service: () => HttpDouble): Promise<Harness> {
     },
     setRecordFailure(error) {
       recordFailure = error;
+    },
+    setDeclareFailure(error) {
+      declareFailure = error;
+    },
+    setReleaseFailure(error) {
+      releaseFailure = error;
+    },
+    setConfirm(next) {
+      confirm = next;
     },
   };
 }
@@ -148,6 +215,9 @@ afterEach(() => {
   service.setHandler((_req, res) => sendJson(res, 200, { data: 'ok' }));
   harness.set({});
   harness.setRecordFailure(undefined);
+  harness.setDeclareFailure(undefined);
+  harness.setReleaseFailure(undefined);
+  harness.setConfirm(() => Promise.resolve());
   harness.setMinter({
     async headersFor(target) {
       harness.minted.push(target);
@@ -313,17 +383,51 @@ describe('forwardToTarget response', () => {
     expect(harness.recorded).toEqual([]);
   });
 
-  it.each([
-    ['a malformed header', 'people=x', undefined],
-    ['a failed record', 'people=42', new Error('database down')],
-  ])('logs %s at error and still returns the response', async (_label, value, failure) => {
+  const unconfirmed: Array<[string, string, Error | undefined, Confirmation]> = [
+    ['a failed record', 'people=42,identity=41', new Error('database down'), ['positions', new Map([['people', '42'], ['identity', '41']])]],
+    ['a malformed header', ' identity=x, identity=4,,', undefined, ['owners', ['identity', 'people']]],
+  ];
+
+  it.each(unconfirmed)('logs %s at error and releases the response only once legacy confirmed it', async (_label, value, failure, expected) => {
     service.setHandler((_req, res) => sendJson(res, 201, { data: 1 }, { 'x-opt2-write-position': value }));
     harness.set({ sessionId: SESSION_ID });
     harness.setRecordFailure(failure);
-    const res = await harness.app.inject({ method: 'POST', url: '/v1/people' });
+    let confirmed!: () => void;
+    harness.setConfirm(
+      () =>
+        new Promise<void>((resolve) => {
+          confirmed = resolve;
+        }),
+    );
+    let answered = false;
+    const pending = harness.app.inject({ method: 'POST', url: '/v1/people' }).then((res) => {
+      answered = true;
+      return res;
+    });
+    await vi.waitFor(() => expect(harness.confirmations).toEqual([expected]));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(answered).toBe(false);
+    confirmed();
+    const res = await pending;
     expect(res.statusCode).toBe(201);
     expect(res.headers['x-opt2-write-position']).toBeUndefined();
+    expect(harness.recorded).toEqual([]);
     expect(harness.logs.some((line) => line.level === 50 && line.msg === 'target write position not recorded')).toBe(true);
+  });
+
+  it.each(unconfirmed)('answers %s legacy cannot confirm with the legacy 503', async (_label, value, failure, expected) => {
+    service.setHandler((_req, res) => sendJson(res, 201, { data: 1 }, { 'x-opt2-write-position': value, 'x-up': '1' }));
+    harness.set({ sessionId: SESSION_ID });
+    harness.setRecordFailure(failure);
+    harness.setConfirm(() => Promise.reject(new BarrierTimeoutError(value, new Error('migration unavailable'))));
+    const res = await harness.app.inject({ method: 'POST', url: '/v1/people' });
+    expect(res.statusCode).toBe(503);
+    expect(res.body).toBe(apiUnavailableResponse({ method: API.method, params: API.params }).body);
+    expect(res.headers['x-opt2-write-position']).toBeUndefined();
+    expect(res.headers['x-up']).toBeUndefined();
+    expect(harness.confirmations).toEqual([expected]);
+    expect(harness.logs.some((line) => line.level === 50 && line.msg === 'target response failed')).toBe(true);
+    await expectSettledOnce(harness);
   });
 
   it('adds Generator and HSTS when absent and keeps a Generator the service sent', async () => {
@@ -356,22 +460,31 @@ describe('forwardToTarget response', () => {
     expect(seen).toEqual([['CFID=t1; Path=/', 'other=1'], []]);
   });
 
-  it('passes the upstream status and headers to beforeSend and still sends when it rejects', async () => {
+  it('passes the upstream status and headers to beforeSend and answers the legacy 503 without its cookies when it rejects', async () => {
     const upstreams: TargetUpstream[] = [];
-    service.setHandler((_req, res) => sendJson(res, 200, { data: 'out' }, { 'set-cookie': 'a=1', 'x-opt2-write-position': 'people=3' }));
+    const deletion = 'JSESSIONID=;expires=Thu, 01-Jan-1970 00:00:00 GMT;path=/;';
+    service.setHandler((_req, res) =>
+      sendJson(res, 200, { data: 'out' }, { 'set-cookie': [deletion, 'a=1'], 'x-opt2-write-position': 'people=3' }),
+    );
     harness.set({
+      sessionId: SESSION_ID,
+      mapSetCookies: async (cookies) => cookies,
       beforeSend: async (upstream) => {
         upstreams.push(upstream);
         throw new Error('invalidation failed');
       },
     });
-    const res = await harness.app.inject({ method: 'GET', url: '/v1/notes' });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ data: 'out' });
+    const res = await harness.app.inject({ method: 'GET', url: '/admin/?muraAction=cLogin.logout' });
+    expect(res.statusCode).toBe(503);
+    expect(res.body).toBe(apiUnavailableResponse({ method: API.method, params: API.params }).body);
+    expect(res.headers['set-cookie']).toBeUndefined();
+    expect(res.headers['x-opt2-write-position']).toBeUndefined();
     expect(upstreams[0]?.statusCode).toBe(200);
-    expect(upstreams[0]?.headers['set-cookie']).toEqual(['a=1']);
+    expect(upstreams[0]?.headers['set-cookie']).toEqual([deletion, 'a=1']);
     expect(upstreams[0]?.headers['x-opt2-write-position']).toBe('people=3');
-    expect(harness.logs.some((line) => line.msg === 'target forward beforeSend failed')).toBe(true);
+    expect(harness.recorded).toEqual([[SESSION_ID, new Map([['people', '3']])]]);
+    expect(harness.logs.some((line) => line.level === 50 && line.msg === 'target forward beforeSend failed')).toBe(true);
+    await expectSettledOnce(harness);
   });
 
   it('drops hop-by-hop response headers and those Connection lists', async () => {
@@ -415,11 +528,13 @@ describe('forwardToTarget fail closed', () => {
     [504, 'admin'],
   ] as const)('answers a service %i on the %s surface with the legacy 503', async (status, surface) => {
     service.setHandler((_req, res) => sendBytes(res, status, 'upstream', { 'x-opt2-write-position': 'people=9', 'x-up': '1' }));
-    harness.set({ failContext: surface === 'api' ? API : ADMIN, sessionId: SESSION_ID });
+    harness.set({ failContext: surface === 'api' ? API : ADMIN, sessionId: SESSION_ID, declaresWrite: true });
     const res = await harness.app.inject({ method: 'POST', url: '/v1/people' });
     await expectFailClosed(res, surface);
     expect(res.headers['x-up']).toBeUndefined();
     expect(harness.recorded).toEqual([]);
+    expect(harness.declared).toEqual([[SESSION_ID, 'people', 0]]);
+    expect(harness.released).toEqual([]);
   });
 
   it('does not retry a GET answered 503', async () => {
@@ -446,14 +561,40 @@ describe('forwardToTarget fail closed', () => {
     }
   });
 
-  it('answers a service that stalls past the call timeout with the legacy 503', { timeout: 25_000 }, async () => {
-    service.setHandler(() => new Promise<void>((resolve) => setTimeout(resolve, 12_000)));
-    const started = Date.now();
-    const res = await harness.app.inject({ method: 'GET', url: '/v1/notes' });
-    expect(Date.now() - started).toBeLessThan(12_000);
-    await expectFailClosed(res, 'api');
-    expect(service.requests).toHaveLength(1);
-  });
+  it.each([
+    ['stalls past the call timeout', false],
+    ['receives the write, stalls past the call timeout, then commits it', true],
+  ])(
+    'answers a service that %s with the legacy 503 and keeps the in-flight registration',
+    { timeout: 25_000 },
+    async (_label, commits) => {
+      let committed!: () => void;
+      const commit = new Promise<void>((resolve) => {
+        committed = resolve;
+      });
+      service.setHandler(async (_req, res) => {
+        await new Promise((resolve) => setTimeout(resolve, 12_000));
+        committed();
+        if (commits) sendJson(res, 201, { data: 1 }, { 'x-opt2-write-position': 'people=77' });
+      });
+      harness.set({ sessionId: SESSION_ID, declaresWrite: true });
+      const started = Date.now();
+      const res = await harness.app.inject({ method: 'POST', url: '/v1/people', payload: 'name=late' });
+      expect(Date.now() - started).toBeLessThan(12_000);
+      expect(res.statusCode).toBe(503);
+      expect(res.body).toBe(apiUnavailable.body);
+      expect(service.requests).toHaveLength(1);
+      await commit;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(harness.settled()).toBe(0);
+      expect(harness.recorded).toEqual([]);
+      expect(harness.declared).toEqual([[SESSION_ID, 'people', 0]]);
+      expect(harness.released).toEqual([]);
+      const uncertain = harness.logs.filter((line) => line.msg === 'target exchange ended uncertainly; in-flight registration kept');
+      expect(uncertain.map((line) => line.level)).toEqual([40]);
+      expect(Object.keys(uncertain[0]?.error as object).sort()).toEqual(expect.arrayContaining(['message', 'type']));
+    },
+  );
 
   it('answers an invalid upstream status with the legacy 503', async () => {
     service.setHandler((_req, res) => sendBytes(res, 600, 'odd'));
@@ -493,6 +634,291 @@ describe('forwardToTarget fail closed', () => {
     const res = await harness.app.inject({ method: 'GET', url: '/v1/notes' });
     expect(res.statusCode).toBe(200);
     await expectSettledOnce(harness);
+  });
+});
+
+describe('forwardToTarget settles only a target response that completed', () => {
+  const UNCERTAIN = 'target exchange ended uncertainly; in-flight registration kept';
+
+  /** What one client of a listening gateway received. */
+  interface ClientOutcome {
+    status: number | undefined;
+    body: Buffer;
+    /** False when the response was cut before its end. */
+    complete: boolean;
+  }
+
+  /** Sends one POST to `port` on its own connection; `onData` runs on each response chunk. */
+  function send(port: number, onData?: (req: ClientRequest) => void): { req: ClientRequest; outcome: Promise<ClientOutcome> } {
+    const chunks: Buffer[] = [];
+    let status: number | undefined;
+    let finish: (complete: boolean) => void = () => undefined;
+    const outcome = new Promise<ClientOutcome>((resolve) => {
+      let done = false;
+      finish = (complete) => {
+        if (done) return;
+        done = true;
+        resolve({ status, body: Buffer.concat(chunks), complete });
+      };
+    });
+    const req = httpRequest({ host: '127.0.0.1', port, path: '/v1/people', method: 'POST', agent: false }, (res) => {
+      status = res.statusCode;
+      res.on('data', (chunk: Buffer) => {
+        chunks.push(chunk);
+        onData?.(req);
+      });
+      res.once('end', () => finish(true));
+      res.once('error', () => finish(false));
+      res.once('close', () => finish(res.complete));
+    });
+    req.once('error', () => finish(false));
+    req.end('name=held');
+    return { req, outcome };
+  }
+
+  /** A listening harness over `target`, closed by `stop`. */
+  async function listening(target: HttpDouble): Promise<{ h: Harness; port: number }> {
+    const h = await startHarness(() => target);
+    await h.app.listen({ host: '127.0.0.1', port: 0 });
+    return { h, port: (h.app.server.address() as AddressInfo).port };
+  }
+
+  it('keeps the exchange unsettled when the target resets after its headers and part of its body', async () => {
+    const target = await startHttpDouble(async (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain', 'content-length': '1000' });
+      res.write(Buffer.alloc(100, 0x61));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      res.socket?.destroy();
+    });
+    const { h, port } = await listening(target);
+    try {
+      const outcome = await send(port).outcome;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(outcome.status).toBe(200);
+      expect(outcome.complete).toBe(false);
+      expect(outcome.body.length).toBeLessThan(1000);
+      expect(h.settled()).toBe(0);
+      const uncertain = h.logs.filter((line) => line.msg === UNCERTAIN);
+      expect(uncertain.map((line) => line.level)).toEqual([40]);
+      expect(uncertain[0]?.error).toMatchObject({ type: expect.any(String), message: expect.any(String) });
+    } finally {
+      await h.app.close();
+      await target.close();
+    }
+  });
+
+  it.each(['the target received the request', 'the first byte arrived'])(
+    'settles once, only after the target ended, when the client went away once %s',
+    async (moment) => {
+      let received!: () => void;
+      const arrived = new Promise<void>((resolve) => {
+        received = resolve;
+      });
+      let ended = false;
+      const target = await startHttpDouble(async (_req, res) => {
+        received();
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        // Chunked, so the response ends with `res.end()` rather than with its last counted byte.
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        for (let sent = 0; sent < 8; sent += 1) {
+          res.write(Buffer.alloc(1024, 0x61));
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        ended = true;
+        res.end();
+      });
+      const { h, port } = await listening(target);
+      const endedAtSettle: boolean[] = [];
+      h.set({
+        onSettled: async () => {
+          endedAtSettle.push(ended);
+        },
+      });
+      try {
+        const firstByte = moment === 'the first byte arrived';
+        const client = send(port, firstByte ? (req) => req.destroy() : undefined);
+        if (!firstByte) {
+          await arrived;
+          client.req.destroy();
+        }
+        expect((await client.outcome).complete).toBe(false);
+        await vi.waitFor(() => expect(endedAtSettle).toHaveLength(1), { timeout: 3000 });
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(endedAtSettle).toEqual([true]);
+        expect(h.logs.filter((line) => line.msg === UNCERTAIN)).toEqual([]);
+      } finally {
+        await h.app.close();
+        await target.close();
+      }
+    },
+  );
+});
+
+describe('forwardToTarget write declaration', () => {
+  const apiUnavailable = apiUnavailableResponse({ method: API.method, params: API.params });
+  const WITH_POSITION: DoubleHandler = (_req, res) => sendJson(res, 201, { data: 1 }, { 'x-opt2-write-position': 'people=42' });
+
+  it('declares the write before the service receives it and ends the declaration with the recorded positions', async () => {
+    service.setHandler(WITH_POSITION);
+    harness.set({ sessionId: SESSION_ID, declaresWrite: true });
+    const res = await harness.app.inject({ method: 'POST', url: '/v1/people' });
+    expect(res.statusCode).toBe(201);
+    expect(harness.declared).toEqual([[SESSION_ID, 'people', 0]]);
+    expect(harness.recorded).toEqual([[SESSION_ID, new Map([['people', '42']]), 'people']]);
+    expect(harness.released).toEqual([]);
+  });
+
+  const MALFORMED: DoubleHandler = (_req, res) => sendJson(res, 201, {}, { 'x-opt2-write-position': 'people=x' });
+  const unconfirmable = (): Promise<void> => Promise.reject(new BarrierTimeoutError('owners:people', new Error('migration unavailable')));
+
+  it.each<{
+    label: string;
+    handler: DoubleHandler;
+    overrides: Overrides;
+    recordFailure?: Error;
+    confirm?: () => Promise<void>;
+    status: number;
+    releases: boolean;
+  }>([
+    { label: 'a response without a write position', handler: (_req, res) => sendJson(res, 200, {}), overrides: {}, status: 200, releases: true },
+    {
+      label: 'an unrecorded write position legacy confirmed',
+      handler: WITH_POSITION,
+      overrides: {},
+      recordFailure: new Error('database down'),
+      status: 201,
+      releases: true,
+    },
+    { label: 'a malformed write position legacy confirmed', handler: MALFORMED, overrides: {}, status: 201, releases: true },
+    {
+      label: 'an unrecorded write position legacy cannot confirm',
+      handler: WITH_POSITION,
+      overrides: {},
+      recordFailure: new Error('database down'),
+      confirm: unconfirmable,
+      status: 503,
+      releases: false,
+    },
+    { label: 'a malformed write position legacy cannot confirm', handler: MALFORMED, overrides: {}, confirm: unconfirmable, status: 503, releases: false },
+    {
+      label: 'a response the gateway fails closed',
+      handler: (_req, res) => sendJson(res, 200, {}),
+      overrides: { mapSetCookies: () => Promise.reject(new Error('jar unavailable')) },
+      status: 503,
+      releases: false,
+    },
+  ])('$label answers $status and releases the declaration: $releases', async ({ handler, overrides, recordFailure, confirm, status, releases }) => {
+    service.setHandler(handler);
+    harness.set({ sessionId: SESSION_ID, declaresWrite: true, ...overrides });
+    harness.setRecordFailure(recordFailure);
+    if (confirm !== undefined) harness.setConfirm(confirm);
+    const res = await harness.app.inject({ method: 'POST', url: '/v1/people' });
+    expect(res.statusCode).toBe(status);
+    await expectSettledOnce(harness);
+    expect(harness.declared).toEqual([[SESSION_ID, 'people', 0]]);
+    expect(harness.released).toEqual(releases ? [[SESSION_ID, 'people']] : []);
+    expect(harness.recorded).toEqual([]);
+  });
+
+  it.each<[string, Overrides]>([
+    ['web', { service: 'web', isWeb: true, failContext: ADMIN, path: '/admin/cusers/update' }],
+    ['a request without a session', { sessionId: undefined }],
+  ])('declares nothing for %s', async (_label, overrides) => {
+    harness.set({ sessionId: SESSION_ID, declaresWrite: true, ...overrides });
+    await harness.app.inject({ method: 'POST', url: '/v1/people' });
+    expect(service.requests).toHaveLength(1);
+    expect(harness.declared).toEqual([]);
+    expect(harness.released).toEqual([]);
+  });
+
+  it('still answers the response when its declaration cannot be released', async () => {
+    harness.set({ sessionId: SESSION_ID, declaresWrite: true });
+    harness.setReleaseFailure(new Error('database down'));
+    const res = await harness.app.inject({ method: 'POST', url: '/v1/people' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ data: 'ok' });
+    expect(harness.logs.filter((line) => line.msg === 'target write declaration not released').map((line) => line.level)).toEqual([50]);
+  });
+
+  it('answers a failed declaration with the legacy 503 without calling the service', async () => {
+    harness.set({ sessionId: SESSION_ID, declaresWrite: true });
+    harness.setDeclareFailure(new Error('database down'));
+    const res = await harness.app.inject({ method: 'POST', url: '/v1/people' });
+    expect(res.statusCode).toBe(503);
+    expect(res.body).toBe(apiUnavailable.body);
+    expect(service.requests).toHaveLength(0);
+    expect(harness.released).toEqual([]);
+    expect(harness.logs.filter((line) => line.msg === 'target write declaration failed').map((line) => line.level)).toEqual([50]);
+    await expectSettledOnce(harness);
+  });
+
+  it.each(['the connection is refused', 'reply-from rejects the path'])(
+    'releases the declaration of a request the service never received when %s',
+    async (label) => {
+      const closed = await startHttpDouble((_req, res) => sendBytes(res, 200, 'never'));
+      await closed.close();
+      const refused = label === 'the connection is refused';
+      const h = refused ? await startHarness(() => closed) : harness;
+      try {
+        h.set({ sessionId: SESSION_ID, declaresWrite: true, ...(refused ? {} : { path: '/v1/%2e%2e/secret' }) });
+        const res = await h.app.inject({ method: 'POST', url: '/v1/people' });
+        expect(res.statusCode).toBe(503);
+        expect(res.body).toBe(apiUnavailable.body);
+        await vi.waitFor(() => expect(h.released).toEqual([[SESSION_ID, 'people']]));
+        expect(h.declared).toEqual([[SESSION_ID, 'people', 0]]);
+        await expectSettledOnce(h);
+      } finally {
+        if (refused) await h.app.close();
+      }
+    },
+  );
+});
+
+describe('forwardToTarget logs failures through serializeError', () => {
+  const SECRET = 'CFID=s3cr3t-value';
+
+  it.each<[string, (failure: Error) => void]>([
+    [
+      'invocation credential for target forward failed',
+      (failure) =>
+        harness.setMinter({
+          headersFor: () => Promise.reject(failure),
+        }),
+    ],
+    ['target response failed', (failure) => harness.set({ mapSetCookies: () => Promise.reject(failure) })],
+    ['target forward onSettled failed', (failure) => harness.set({ onSettled: () => Promise.reject(failure) })],
+    ['target forward beforeSend failed', (failure) => harness.set({ beforeSend: () => Promise.reject(failure) })],
+    [
+      'target write declaration failed',
+      (failure) => {
+        harness.set({ sessionId: SESSION_ID, declaresWrite: true });
+        harness.setDeclareFailure(failure);
+      },
+    ],
+    [
+      'target write declaration not released',
+      (failure) => {
+        harness.set({ sessionId: SESSION_ID, declaresWrite: true });
+        harness.setReleaseFailure(failure);
+      },
+    ],
+    [
+      'target write position not recorded',
+      (failure) => {
+        service.setHandler((_req, res) => sendJson(res, 201, { data: 1 }, { 'x-opt2-write-position': 'people=42' }));
+        harness.set({ sessionId: SESSION_ID });
+        harness.setRecordFailure(failure);
+      },
+    ],
+  ])('logs %s with the serialized error only', async (message, fail) => {
+    const failure = new Error(SECRET);
+    fail(failure);
+    await harness.app.inject({ method: 'POST', url: '/v1/people' });
+    await vi.waitFor(() => expect(harness.logs.some((line) => line.msg === message)).toBe(true));
+    const line = harness.logs.find((record) => record.msg === message);
+    expect(line?.level).toBe(50);
+    expect(line?.error).toEqual(serializeError(failure));
+    expect(JSON.stringify(harness.logs)).not.toContain('s3cr3t');
   });
 });
 

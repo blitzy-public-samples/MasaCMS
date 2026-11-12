@@ -1,10 +1,11 @@
 // Tests when the legacy forwarder settles an exchange, what its response and shutdown wait for, and how it logs failures.
 import { Buffer } from 'node:buffer';
-import { createServer, request as httpRequest, type ClientRequest } from 'node:http';
+import { createServer, request as httpRequest, type ClientRequest, type IncomingHttpHeaders } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import { inspect } from 'node:util';
 import replyFrom from '@fastify/reply-from';
+import { LEGACY_ERROR_PAGE_HTML } from '@opt2/platform/legacy-compat';
 import { serializeError } from '@opt2/platform/logging';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -58,6 +59,7 @@ interface Gateway {
 
 interface ClientOutcome {
   status: number | undefined;
+  headers: IncomingHttpHeaders;
   body: Buffer;
   /** True when the response arrived whole; false when the request or response was cut. */
   complete: boolean;
@@ -223,6 +225,7 @@ async function startGateway(options: GatewayOptions): Promise<Gateway> {
 function send(gateway: Gateway, path: string, options: ClientOptions = {}): { req: ClientRequest; outcome: Promise<ClientOutcome> } {
   const chunks: Buffer[] = [];
   let status: number | undefined;
+  let responseHeaders: IncomingHttpHeaders = {};
   let finish: (complete: boolean) => void = () => undefined;
   const outcome = new Promise<ClientOutcome>((resolve) => {
     let done = false;
@@ -230,7 +233,7 @@ function send(gateway: Gateway, path: string, options: ClientOptions = {}): { re
       if (done) return;
       done = true;
       options.atEnd?.();
-      resolve({ status, body: Buffer.concat(chunks), complete });
+      resolve({ status, headers: responseHeaders, body: Buffer.concat(chunks), complete });
     };
   });
   const headers = options.body === undefined ? {} : { 'content-type': 'application/x-www-form-urlencoded' };
@@ -238,6 +241,7 @@ function send(gateway: Gateway, path: string, options: ClientOptions = {}): { re
   const target = { host: '127.0.0.1', port: gateway.port, path, method: options.method ?? 'GET', agent: false, headers };
   const req = httpRequest(target, (res) => {
     status = res.statusCode;
+    responseHeaders = res.headers;
     options.atResponse?.();
     res.on('data', (chunk: Buffer) => {
       chunks.push(chunk);
@@ -417,24 +421,29 @@ describe('forwardToLegacy waits for a delayed settlement', () => {
 
 describe('forwardToLegacy logs a failed callback through serializeError', () => {
   it.each([
-    { callback: 'beforeSend', mode: 'stream' },
-    { callback: 'beforeSend', mode: 'buffer' },
-    { callback: 'onSettled', mode: 'stream' },
-    { callback: 'onSettled', mode: 'buffer' },
-  ] as const)('$callback rejecting in $mode mode: logged without its message, response still delivered', async ({ callback, mode }) => {
+    { callback: 'beforeSend', mode: 'stream', status: 503 },
+    { callback: 'beforeSend', mode: 'buffer', status: 503 },
+    { callback: 'onSettled', mode: 'stream', status: 200 },
+    { callback: 'onSettled', mode: 'buffer', status: 200 },
+  ] as const)('$callback rejecting in $mode mode: logged without its message, client gets $status', async ({ callback, mode, status }) => {
     const failure = bridgeParseError();
     expect(failure.message).toContain(SECRET);
-    legacy.setHandler((_req, res) => sendBytes(res, 200, LEGACY_BODY, { 'content-type': 'text/plain' }));
+    legacy.setHandler((_req, res) => sendBytes(res, 200, LEGACY_BODY, { 'content-type': 'text/plain', 'set-cookie': 'CFID=1001;path=/;' }));
     const rejecting = (): Promise<never> => Promise.reject(failure);
     const onSettled = vi.fn<OnSettled>(callback === 'onSettled' ? rejecting : () => Promise.resolve());
     const beforeSend = callback === 'beforeSend' ? vi.fn<LegacyBeforeSend>(rejecting) : undefined;
-    const gateway = await startGateway({ mode, onSettled, beforeSend });
+    const onBuffered = vi.fn<OnBuffered>(() => Promise.resolve());
+    const gateway = await startGateway({ mode, onSettled, beforeSend, onBuffered });
 
     const outcome = await send(gateway, WRITE_PATH).outcome;
+    await vi.waitFor(() => expect(onSettled).toHaveBeenCalled());
 
-    expect(outcome).toMatchObject({ status: 200, complete: true });
-    expect(outcome.body.toString()).toBe(LEGACY_BODY);
+    expect(outcome).toMatchObject({ status, complete: true });
+    expect(outcome.body.toString()).toBe(status === 200 ? LEGACY_BODY : LEGACY_ERROR_PAGE_HTML);
+    expect(outcome.headers['set-cookie']).toEqual(status === 200 ? ['CFID=1001;path=/;'] : undefined);
     expect(onSettled.mock.calls).toEqual([['completed']]);
+    // Legacy executed even when its response is withheld, so a buffered response is still reported.
+    expect(onBuffered.mock.calls.map(([res]) => res.body.toString())).toEqual(mode === 'buffer' ? [LEGACY_BODY] : []);
     expect(gateway.logArguments()).toContain(failure.name);
     expect(gateway.logArguments()).not.toContain(SECRET);
     expect(gateway.logText()).not.toContain(SECRET);

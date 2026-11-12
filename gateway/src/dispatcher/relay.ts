@@ -60,6 +60,9 @@ const RELAY_FAIL_CONTEXT: FailContext = Object.freeze({ surface: 'api' });
 
 const RELAY_SERVICE_SET: ReadonlySet<string> = new Set(RELAY_SERVICES);
 
+/** Methods that never write, so their relayed calls declare nothing in the session barrier. */
+const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
+
 /** Identities a relayed call acts for, as the caller verified them. */
 export interface RelayAuth {
   /** Raw verified bearer user token, forwarded unchanged. */
@@ -133,6 +136,7 @@ export async function relayHandler(
     headers: stripInboundAuthHeaders(request.headers, { afterExchange: true }),
     userToken: target.auth.userToken,
     sessionId: target.auth.user?.sid,
+    declaresWrite: !SAFE_METHODS.has(request.method),
     mode: deps.sessionMode(),
     isWeb: false,
     failContext: RELAY_FAIL_CONTEXT,

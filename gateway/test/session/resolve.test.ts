@@ -36,6 +36,9 @@ const LEGACY_CFID = setCookieLegacy(
 
 type ActiveStates = Record<string, { state: 'active' | 'ended'; epoch: number }>;
 
+/** T1, the identity session of the target-primary jar a switch back restores, still active. */
+const T1_ACTIVE: ActiveStates = { T1: { state: 'active', epoch: 4 } };
+
 interface Fakes {
   states?: ActiveStates;
   describe?: (cookies: LegacyCookies) => BridgeResult<LegacyDescribe>;
@@ -185,6 +188,7 @@ function setup(fakes: Fakes = {}) {
     ...statements('jar'),
     withSessionLock: (sessionId, fn) => serialized(`lock.session:${sessionId}`, fn),
     withNativeLock: (legacySessionId, fn) => serialized(`lock.native:${legacySessionId}`, fn),
+    markIdentityEndPending: () => Promise.reject(new Error('resolution never marks a pending identity end')),
   };
 
   const state: SessionStateChecker = {
@@ -207,9 +211,10 @@ function setup(fakes: Fakes = {}) {
   };
 }
 
-/** Calls of a switch back of T1's jar: its locked re-read, the describe, its legacy session's lock and the rebind. */
+/** Calls of a switch back of T1's jar: its state, its locked re-read, the describe, its legacy session's lock and the rebind. */
 const SWITCH_BACK = [
   'jar.get',
+  'check:T1',
   'lock.session:T1',
   'locked.get',
   'describe',
@@ -241,6 +246,7 @@ describe('sessionIdFromTargetCookies', () => {
     ['jsessionid=abc', 'abc'],
     ['CFID=1; CFTOKEN=2', undefined],
     ['JSESSIONID=', undefined],
+    ['JSESSIONID=0A1B2C3D4E5F60718293A4B5C6D7E8F9; CFID=1', '0A1B2C3D-4E5F-6071-8293A4B5C6D7E8F9'],
   ])('reads the identity session id from %j', (header, expected) => {
     expect(sessionIdFromTargetCookies(parseCookieHeader(header))).toBe(expected);
   });
@@ -440,6 +446,7 @@ describe('legacy-primary target-bound requests', () => {
     };
     const s = setup({
       adopt: () => ({ sessionId: 'T1', epoch: 9, setCookie: [] }),
+      states: T1_ACTIVE,
       rows: [jarRow('T1', { cookies: legacyCookies, hydratedEpoch: 4 })],
     });
     const resolution = asSession(
@@ -460,6 +467,7 @@ describe('legacy-primary target-bound requests', () => {
   it('switching back rebinds the mapping identity superseded from the previous session in one write', async () => {
     const s = setup({
       adopt: () => ({ sessionId: 'S-NEW', epoch: 1, setCookie: [] }),
+      states: T1_ACTIVE,
       rows: [jarRow('T1', { cookies: cookie('JSESSIONID', 'L-J'), hydratedEpoch: 4 })],
     });
     const resolution = asSession(
@@ -556,6 +564,35 @@ describe('resolveLegacyBound', () => {
   });
 });
 
+describe('sessions whose jar is marked pending-end', () => {
+  const MARKED: Partial<JarRow> = { identityEndPendingAt: NOW };
+
+  it.each<[string, (s: ReturnType<typeof setup>) => Promise<SessionResolution>, JarRow, string[]]>([
+    [
+      'a target-primary target-bound request',
+      (s) => s.resolver.resolveSession(request('JSESSIONID=T1'), { family: 'admin', mode: 'target-primary' }),
+      jarRow('T1', MARKED),
+      ['check:T1', 'jar.get'],
+    ],
+    [
+      'a target-primary legacy-bound request',
+      (s) => s.resolver.resolveLegacyBound(request('JSESSIONID=T1'), { mode: 'target-primary', adopt: true }),
+      jarRow('T1', MARKED),
+      ['check:T1', 'jar.get'],
+    ],
+    [
+      'a legacy-primary legacy-bound request',
+      (s) => s.resolver.resolveLegacyBound(request('JSESSIONID=L-J'), { mode: 'legacy-primary', adopt: false }),
+      jarRow('T1', { ...MARKED, mode: 'legacy-primary' }),
+      ['jar.get', 'describe', 'jar.find', 'check:T1'],
+    ],
+  ])('flag %s from the jar row already read', async (_label, resolve, row, calls) => {
+    const s = setup({ states: T1_ACTIVE, rows: [row] });
+    expect(await resolve(s)).toMatchObject({ kind: 'session', sessionId: 'T1', epoch: 4, identityEndPending: true });
+    expect(s.calls).toEqual(calls);
+  });
+});
+
 describe('legacy-bound requests right after a switch back to legacy-primary', () => {
   const JAR_COOKIES: JarCookies = {
     ...cookie('CFID', 'L-CFID', 'domain=example.com;path=/;HttpOnly;'),
@@ -573,6 +610,7 @@ describe('legacy-bound requests right after a switch back to legacy-primary', ()
   function reversed(adoptedId: string) {
     return setup({
       adopt: () => ({ sessionId: adoptedId, epoch: 9, setCookie: [] }),
+      states: T1_ACTIVE,
       rows: [jarRow('T1', { cookies: JAR_COOKIES, hydratedEpoch: 4 })],
     });
   }
@@ -628,6 +666,7 @@ describe('legacy-bound requests right after a switch back to legacy-primary', ()
         if (failures-- > 0) throw new ServiceUnavailableError('legacy-bridge', new Error('refused'));
         return { body: describeBody('LEG-1'), setCookies: [] };
       },
+      states: T1_ACTIVE,
       rows: [jarRow('T1', { cookies: JAR_COOKIES, hydratedEpoch: 4 })],
     });
     const req = request(TARGET_COOKIE_HEADER);
@@ -659,7 +698,7 @@ describe('legacy-bound requests right after a switch back to legacy-primary', ()
         setCookies: JAR_SET_COOKIES,
       });
     }
-    const section = SWITCH_BACK.slice(2);
+    const section = SWITCH_BACK.slice(3);
     expect(s.calls.filter((call) => call.startsWith('lock.session:'))).toEqual(['lock.session:T1', 'lock.session:T1']);
     expect(s.calls.filter((call) => section.includes(call))).toEqual([...section, ...section]);
     expect(s.described.map((call) => call.cookies)).toEqual([JAR_COOKIES, JAR_COOKIES]);
@@ -667,10 +706,45 @@ describe('legacy-bound requests right after a switch back to legacy-primary', ()
     expect([...s.rows.keys()]).toEqual(['S-NEW']);
   });
 
+  it('never hands back the legacy session of an ended target session, whose jar records the legacy end still owed', async () => {
+    const s = setup({ rows: [jarRow('T1', { cookies: JAR_COOKIES, hydratedEpoch: 4 })] });
+    const resolution = await s.resolver.resolveLegacyBound(request(TARGET_COOKIE_HEADER), {
+      mode: 'legacy-primary',
+      adopt: false,
+    });
+    expect(resolution).toEqual({ kind: 'none', setCookies: [] });
+    expect(s.calls.slice(0, 2)).toEqual(['jar.get', 'check:T1']);
+    expect(s.calls).not.toContain('lock.session:T1');
+    expect(s.described.map((call) => call.cookies)).not.toContainEqual(JAR_COOKIES);
+    expect(s.rebinds).toEqual([]);
+    expect(s.rows.get('T1')).toMatchObject({ cookies: JAR_COOKIES, mode: 'target-primary' });
+  });
+
+  it('resolves a target jar marked pending-end to its own flagged session without switching back', async () => {
+    const marked = jarRow('T1', { cookies: JAR_COOKIES, hydratedEpoch: 4, identityEndPendingAt: NOW });
+    const s = setup({ states: T1_ACTIVE, rows: [marked] });
+    const resolution = await s.resolver.resolveLegacyBound(request(TARGET_COOKIE_HEADER), {
+      mode: 'legacy-primary',
+      adopt: true,
+    });
+    expect(resolution).toEqual({
+      kind: 'session',
+      sessionId: 'T1',
+      epoch: 4,
+      mode: 'legacy-primary',
+      legacyCookies: {},
+      setCookies: [],
+      identityEndPending: true,
+    });
+    expect(s.calls).toEqual(['jar.get', 'check:T1']);
+    expect(s.rows.get('T1')).toEqual(marked);
+  });
+
   it('restores nothing when another target-primary jar changed the legacy session its cookies named', async () => {
     const answers = ['LEG-1', 'LEG-2', 'LEG-3'];
     const s = setup({
       describe: () => ({ body: describeBody(answers.shift() ?? 'LEG-9'), setCookies: [] }),
+      states: T1_ACTIVE,
       rows: [
         jarRow('T1', { legacySessionId: null, cookies: JAR_COOKIES, hydratedEpoch: 4 }),
         jarRow('T2', { legacySessionId: 'LEG-1' }),
@@ -682,8 +756,9 @@ describe('legacy-bound requests right after a switch back to legacy-primary', ()
     });
 
     expect(resolution).toEqual({ kind: 'none', setCookies: [] });
-    expect(s.calls.slice(0, 7)).toEqual([
+    expect(s.calls.slice(0, 8)).toEqual([
       'jar.get',
+      'check:T1',
       'lock.session:T1',
       'locked.get',
       'describe',

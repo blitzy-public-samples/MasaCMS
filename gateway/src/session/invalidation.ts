@@ -25,12 +25,16 @@ export interface LegacyLoginFacts extends BrowserFacts {
   siteId?: string;
 }
 
-/** Session follow-up of logouts and legacy logins, run after the response it follows has completed. */
+/** Session follow-up of logouts and legacy logins; a legacy logout's identity end is marked owed before legacy runs. */
 export interface Invalidation {
   /** After identity ended the session: ends its legacy session (no database write), forgets jar, tokens and state. */
   afterTargetLogout(sessionId: string, browser?: BrowserFacts): Promise<void>;
-  /** After legacy logged the session out: ends the identity session and forgets its jar, tokens and state. */
+  /** Before legacy logs the session out: forgets its tokens and state and durably marks its identity end pending. */
+  beforeLegacyLogout(sessionId: string, mode: SessionMode): Promise<void>;
+  /** After legacy logged the session out: ends it in identity and drops its jar and mark; a failure keeps the mark. */
   afterLegacyLogout(sessionId: string): Promise<void>;
+  /** Completes a marked session's pending end: ends it in identity and forgets its jar, mark, tokens and state. */
+  completePending(sessionId: string): Promise<void>;
   /** After a legacy login or re-login: adopts the legacy session into identity; undefined without legacy cookies. */
   afterLegacyLogin(
     sessionId: string,
@@ -43,7 +47,7 @@ export interface Invalidation {
 export interface InvalidationOptions {
   identity: Pick<IdentityClient, 'adopt' | 'end'>;
   bridge: Pick<BridgeClient, 'describe' | 'end'>;
-  jar: Pick<LegacyJar, 'withSessionLock' | 'drop'>;
+  jar: Pick<LegacyJar, 'withSessionLock' | 'drop' | 'markIdentityEndPending'>;
   tokenCache: Pick<TokenCache, 'drop'>;
   state: Pick<SessionStateChecker, 'forget'>;
 }
@@ -131,6 +135,14 @@ export function createInvalidation(opts: InvalidationOptions): Invalidation {
     state.forget(sessionId);
   }
 
+  /** Forgets tokens and state, ends the identity session as a legacy logout, then drops its jar and any mark. */
+  async function endInIdentity(sessionId: string): Promise<void> {
+    forget(sessionId);
+    await identity.end(sessionId, 'legacy-logout');
+    // Dropped in both modes: legacy_session_id is unique, so a kept row would block re-adopting this legacy session.
+    await jar.drop(sessionId);
+  }
+
   return {
     async afterTargetLogout(sessionId, browser = {}) {
       forget(sessionId);
@@ -156,12 +168,15 @@ export function createInvalidation(opts: InvalidationOptions): Invalidation {
       });
     },
 
-    async afterLegacyLogout(sessionId) {
+    async beforeLegacyLogout(sessionId, mode) {
       forget(sessionId);
-      await identity.end(sessionId, 'legacy-logout');
-      // Dropped in both modes: legacy_session_id is unique, so a kept row would block re-adopting this legacy session.
-      await jar.drop(sessionId);
+      // Committed before legacy logs out, so a failed identity end leaves the session blocked until it completes.
+      await jar.markIdentityEndPending(sessionId, mode);
     },
+
+    afterLegacyLogout: endInIdentity,
+
+    completePending: endInIdentity,
 
     async afterLegacyLogin(sessionId, mode, legacy = {}) {
       // Under the jar lock, so no hydration installs an older snapshot over the login or rebinds around it.

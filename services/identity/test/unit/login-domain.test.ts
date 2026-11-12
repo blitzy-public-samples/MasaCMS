@@ -8,7 +8,7 @@ import { ensureUnitGates, withGatedTenant, type GateState } from '@opt2/platform
 import type { Clock } from '@opt2/platform/service-kit';
 import { SYSTEM_TENANT_ID, tenantIdForSite, withMetadata, withTenant, type TenantTx } from '@opt2/platform/tenancy';
 import { createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
-import { OperationBlockedError, USER_CLOSED_WAIT_MS } from '../../src/domain/account-operations.js';
+import { OperationBlockedError, USER_CLOSED_WAIT_MS, withOpenAccount } from '../../src/domain/account-operations.js';
 import {
   DEFAULT_LOGIN_SETTINGS,
   LOGIN_SESSION_KEYS,
@@ -363,6 +363,34 @@ describe.skipIf(!available)('login against PostgreSQL', () => {
       expect((await credentialOf(userId))?.password).toMatch(/^\$2a\$04\$/);
       expect(await lastLoginOf(userId)).toEqual(LAST_LOGIN);
     });
+
+    it.each([
+      ['login', { ok: false, reason: 'invalid' }],
+      ['lookupByCredentials', undefined],
+    ] as const)('%s never rewrites a credential a fenced writer changed after the lookup read it, and checks the password against the change', async (entry, expected) => {
+      const username = uname('md5-changed');
+      const userId = await seedUser(username, { password: cfmxCompat(PASSWORD) });
+      const changed = await bcrypt.hash('Changed12', (await bcrypt.genSalt(4)).replace(/^\$2b\$/, '$2a$'));
+      let reads = 0;
+      // The lookup's first credential read lets a concurrent fenced writer commit a new credential before the password check.
+      const racing: IdentityRepository = {
+        ...repo,
+        async readCredential(tx, id) {
+          const row = await repo.readCredential(tx, id);
+          reads += 1;
+          if (reads === 1) {
+            await withOpenAccount(handle.app, TENANT_A, userId, (other) => repo.writeCredential(other, userId, { password: changed, passwordcreated: LAST_LOGIN }));
+          }
+          return row;
+        },
+      };
+      const { sessionId } = await newSession();
+
+      const outcome = entry === 'login' ? await login(deps({ repo: racing }), request(username, PASSWORD, sessionId)) : await lookupByCredentials(deps({ repo: racing }), username, PASSWORD);
+
+      expect(outcome).toEqual(expected);
+      expect(await credentialOf(userId)).toMatchObject({ password: changed, passwordcreated: LAST_LOGIN });
+    });
   });
 
   describe('login', () => {
@@ -394,18 +422,18 @@ describe.skipIf(!available)('login against PostgreSQL', () => {
         roleList: `Editors;${SITE_A};0,Members;${UMBRELLA};1,S2IsPrivate;${SITE_A},S2IsPrivate,${username};username;${SITE_A}`,
         membershipIds: `${EDITORS},${MEMBERS},${userId}`,
       };
-      const row = await sessionOf(anonymous.sessionId, TENANT_A);
+      const row = await sessionOf(anonymous.sessionId, SYSTEM_TENANT_ID);
       expect(result).toEqual({
         ok: true,
         hasDefaultPassword: false,
         snapshot,
-        session: { sessionId: anonymous.sessionId, tenantId: TENANT_A, epoch: 2, csrfSecret: row?.csrf_secret, mode: 'target-primary' },
+        session: { sessionId: anonymous.sessionId, tenantId: SYSTEM_TENANT_ID, epoch: 2, csrfSecret: row?.csrf_secret, mode: 'target-primary' },
       });
       expect(row?.csrf_secret).not.toBe(anonymous.csrfSecret);
-      expect(await sessionOf(anonymous.sessionId, SYSTEM_TENANT_ID)).toBeNull();
+      expect(await sessionOf(anonymous.sessionId, TENANT_A)).toBeNull();
       expect(row).toMatchObject({ user_id: userId, site_id: SITE_A, state: 'active', epoch: '2' });
       expect(JSON.parse(row?.login_snapshot ?? 'null')).toEqual(snapshot);
-      expect(await adminStateOf(anonymous.sessionId, TENANT_A)).toEqual({ blockLoginUntil: '' });
+      expect(await adminStateOf(anonymous.sessionId, SYSTEM_TENANT_ID)).toEqual({ blockLoginUntil: '' });
       expect(await lastLoginOf(userId)).toEqual(NOW);
       expect(await strikeOf(username)).toMatchObject({ strikes: 0, lastattempt: minutesAfter(NOW, -1) });
     });
@@ -420,8 +448,8 @@ describe.skipIf(!available)('login against PostgreSQL', () => {
 
       const result = await login(deps(), request(username, PASSWORD, sessionId, ''));
 
-      expect(result).toMatchObject({ ok: true, session: { sessionId, tenantId: TENANT_A, epoch, mode } });
-      expect(await sessionOf(sessionId, TENANT_A)).toMatchObject({ user_id: userId, site_id: null, mode, epoch: String(epoch) });
+      expect(result).toMatchObject({ ok: true, session: { sessionId, tenantId: SYSTEM_TENANT_ID, epoch, mode } });
+      expect(await sessionOf(sessionId, SYSTEM_TENANT_ID)).toMatchObject({ user_id: userId, site_id: null, mode, epoch: String(epoch) });
     });
 
     describe('default password', () => {
@@ -441,7 +469,7 @@ describe.skipIf(!available)('login against PostgreSQL', () => {
         const result = await login(deps({ settings: PLAIN_SETTINGS }), request(username, password, sessionId, DEFAULT));
 
         expect(result).toMatchObject({ ok: true, hasDefaultPassword: expected, snapshot: { userid: adminId } });
-        expect(await adminStateOf(sessionId, tenantIdForSite(DEFAULT))).toEqual(
+        expect(await adminStateOf(sessionId, SYSTEM_TENANT_ID)).toEqual(
           expected ? { blockLoginUntil: '', [LOGIN_SESSION_KEYS.hasDefaultPassword]: true } : { blockLoginUntil: '' },
         );
       });
@@ -493,9 +521,9 @@ describe.skipIf(!available)('login against PostgreSQL', () => {
         expect(await strikeOf(username)).toMatchObject({ strikes: strikes.allowedStrikes + 1, lastattempt: lastFailure });
 
         now = new Date(until.getTime() + SECOND_MS);
-        expect(await login(d, request(username, PASSWORD, sessionId))).toMatchObject({ ok: true, session: { sessionId, tenantId: TENANT_A } });
+        expect(await login(d, request(username, PASSWORD, sessionId))).toMatchObject({ ok: true, session: { sessionId, tenantId: SYSTEM_TENANT_ID } });
         expect(await strikeOf(username)).toMatchObject({ strikes: 0, lastattempt: minutesAfter(now, -1) });
-        expect(await adminStateOf(sessionId, TENANT_A)).toEqual({ blockLoginUntil: '' });
+        expect(await adminStateOf(sessionId, SYSTEM_TENANT_ID)).toEqual({ blockLoginUntil: '' });
         expect(await lastLoginOf(userId)).toEqual(now);
       },
     );
@@ -531,7 +559,7 @@ describe.skipIf(!available)('login against PostgreSQL', () => {
       const result = await login(deps(), request(username, PASSWORD, sessionId, siteId));
 
       if (expected === 'ok') {
-        expect(result).toMatchObject({ ok: true, session: { tenantId: tenantIdForSite(pool) } });
+        expect(result).toMatchObject({ ok: true, snapshot: { userid: userId }, session: { tenantId: SYSTEM_TENANT_ID } });
         expect(await strikeOf(username, pool)).toMatchObject({ strikes: 0 });
         expect(await lastLoginOf(userId, pool)).toEqual(NOW);
       } else {
@@ -569,6 +597,32 @@ describe.skipIf(!available)('login against PostgreSQL', () => {
       expect(waits.reduce((total, ms) => total + ms, 0)).toBe(USER_CLOSED_WAIT_MS);
       await abortOperation(operationId);
     });
+
+    it.each([
+      ['changes its remote id: the login uses the changed account', { remoteid: 'r-changed' }, { ok: true, snapshot: { remoteid: 'r-changed' } }],
+      ['deactivates it: the login is refused as invalid', { inactive: 1 }, { ok: false, reason: 'invalid' }],
+    ] as const)('decides on the account the strike transaction reads when a fenced writer, right after the lookup, %s', async (_case, change, expected) => {
+      const username = uname('moved');
+      const userId = await seedUser(username, { account: { remoteid: 'r-before' } });
+      let reads = 0;
+      // The lookup's first account read lets a concurrent fenced writer commit a change before the strike transaction.
+      const racing: IdentityRepository = {
+        ...repo,
+        async findAccountsByUsername(tx, name, poolSiteId) {
+          const rows = await repo.findAccountsByUsername(tx, name, poolSiteId);
+          reads += 1;
+          if (reads === 1) {
+            const account = { username, type: 2, s2: 0, inactive: 0, ispublic: 0, siteid: SITE_A, remoteid: 'r-before', tablist: '', ...change };
+            await withOpenAccount(handle.app, TENANT_A, userId, (other) => repo.updateAccount(other, userId, account));
+          }
+          return rows;
+        },
+      };
+      const { sessionId } = await newSession();
+
+      expect(await login(deps({ repo: racing }), request(username, PASSWORD, sessionId))).toMatchObject(expected);
+      expect(await lastLoginOf(userId)).toEqual(expected.ok ? NOW : LAST_LOGIN);
+    });
   });
 
   describe('loginByUserID', () => {
@@ -583,7 +637,7 @@ describe.skipIf(!available)('login against PostgreSQL', () => {
       expect(result).toMatchObject({
         ok: true,
         snapshot: { userid: userId, password: '', passwordcreated: null, roleList: `S2IsPrivate;${SITE_A},S2IsPrivate,S2,${username};username;${SITE_A}` },
-        session: { sessionId, tenantId: TENANT_A, epoch: 2 },
+        session: { sessionId, tenantId: SYSTEM_TENANT_ID, epoch: 2 },
       });
       expect(await strikeOf(username)).toMatchObject({ strikes: 3, lastattempt: minutesAfter(NOW, -2) });
       expect(await lastLoginOf(userId)).toEqual(NOW);
@@ -613,8 +667,12 @@ describe.skipIf(!available)('login against PostgreSQL', () => {
 
       const result = await loginByUserID(deps(), { userId, sessionId, mode: 'target-primary', siteId });
 
-      if (expected === 'ok') expect(result).toMatchObject({ ok: true, session: { tenantId: tenantIdForSite(pool) } });
-      else expect(result).toEqual({ ok: false, reason: 'public-pool' });
+      if (expected === 'ok') {
+        expect(result).toMatchObject({ ok: true, snapshot: { userid: userId }, session: { tenantId: SYSTEM_TENANT_ID } });
+        expect(await lastLoginOf(userId, pool)).toEqual(NOW);
+      } else {
+        expect(result).toEqual({ ok: false, reason: 'public-pool' });
+      }
     });
 
     it('re-reads the account after the closed-user wait and refuses one deactivated meanwhile', async () => {
@@ -651,7 +709,7 @@ describe.skipIf(!available)('login against PostgreSQL', () => {
       const result = await loginByQuery(deps(), { sessionId, mode: 'target-primary', siteId: SITE_A, tenantId: TENANT_A, account, credential });
 
       expect(result.snapshot).toMatchObject({ password: password === 'stored' ? bcryptStored : password, passwordcreated, lastlogin: wallClock(LAST_LOGIN) });
-      expect(result.session).toMatchObject({ sessionId, tenantId: TENANT_A, epoch: 2 });
+      expect(result.session).toMatchObject({ sessionId, tenantId: SYSTEM_TENANT_ID, epoch: 2 });
       expect(await lastLoginOf(userId)).toEqual(NOW);
     });
 
@@ -682,7 +740,7 @@ describe.skipIf(!available)('login against PostgreSQL', () => {
 
       expect(await logout(deps(), sessionId)).toEqual({ epoch: loggedIn.session.epoch + 1 });
 
-      const row = await sessionOf(sessionId, TENANT_A);
+      const row = await sessionOf(sessionId, SYSTEM_TENANT_ID);
       expect(row).toMatchObject({ state: 'ended', user_id: null, site_id: null, admin_state: null, ended_at: now, epoch: String(loggedIn.session.epoch + 1) });
       expect(JSON.parse(row?.login_snapshot ?? 'null')).toEqual(ANONYMOUS_LOGIN_SNAPSHOT);
       expect(await logout(deps(), sessionId)).toEqual({ epoch: loggedIn.session.epoch + 1 });

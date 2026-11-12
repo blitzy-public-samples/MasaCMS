@@ -10,6 +10,9 @@ import { tenantIdForSite, withMetadata, withTenant, type TenantTx } from '@opt2/
 import { assertEventMatches, createCapturingPublisher, createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
   DEFAULT_ACCOUNT_SETTINGS,
+  OperationBlockedError,
+  USER_CLOSED_WAIT_MS,
+  abortAccountOperation,
   commitAccountOperation,
   finishAccountOperation,
   prepareAccountOperation,
@@ -565,6 +568,40 @@ describe.skipIf(!available)('login mail against PostgreSQL', () => {
       expect((await redirectsOf(user)).map((redirect) => redirect.redirectid)).toEqual([second.returnId]);
       expect(await redirectsOf(other)).toEqual([expect.objectContaining({ redirectid: otherRedirect.redirectid, url: 'http://www.example.test/other' })]);
       expect((await mailRows(user)).map((row) => row.envelope.payload.returnId)).toEqual([first.returnId, second.returnId]);
+    });
+
+    it.each([
+      ['ends during the first wait, then resets and mails', true],
+      ['outlasts the wait, answering the legacy 503 with nothing written', false],
+    ] as const)('holds the mail of a user an open account operation keeps closed: one that %s', async (_case, ends) => {
+      const user = await seedUser();
+      const operationId = id('C');
+      const change: AccountChange = { username: user.username, password: '', s2: 0, perm: 0, inActive: 0, isPublic: 0, remoteID: '', groupIds: null };
+      const prepared = await prepareAccountOperation(operationDeps(), {
+        operationId, kind: 'update', userId: user.userId, requestSiteId: SITE_A, siteId: SITE_A, actorIsSuperUser: false, change,
+      });
+      expect(prepared.outcome).toBe('prepared');
+      const sleeps: number[] = [];
+      const sleep = async (ms: number): Promise<void> => {
+        sleeps.push(ms);
+        if (ends && sleeps.length === 1) expect((await abortAccountOperation(operationDeps(), operationId)).outcome).toBe('stepped');
+      };
+
+      const outcome = await sendLoginByUser(deps(settingsSource({ autoresetpasswords: true }), { sleep }), byUserInput(user)).catch((err: unknown) => err);
+
+      const credential = await gated(SITE_A, (tx) => repo.readCredential(tx, user.userId));
+      if (ends) {
+        expect(outcome).toMatchObject({ userId: user.userId, tenantId: tenantIdForSite(SITE_A) });
+        expect(sleeps).toHaveLength(1);
+        expect(credential?.passwordcreated).toEqual(NOW);
+        expect(await mailRows(user)).toHaveLength(1);
+      } else {
+        expect(outcome).toBeInstanceOf(OperationBlockedError);
+        expect(sleeps.reduce((sum, ms) => sum + ms, 0)).toBe(USER_CLOSED_WAIT_MS);
+        expect(credential).toMatchObject({ password: seededHash, passwordcreated: PASSWORD_CREATED });
+        expect(await mailRows(user)).toEqual([]);
+        expect(await redirectsOf(user)).toEqual([]);
+      }
     });
   });
 

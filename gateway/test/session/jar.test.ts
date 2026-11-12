@@ -250,6 +250,7 @@ interface JarRecord {
   mode: JarRow['mode'];
   hydrated_epoch: string | null;
   updated_at: Date;
+  identity_end_pending_at: Date | null;
 }
 
 interface RecordedQuery {
@@ -326,7 +327,8 @@ function fakeDb(): FakeDb {
 }
 
 describe('createLegacyJar over a TenantDb double', () => {
-  const COLUMNS = 'session_id, legacy_session_id, cookies, mode, hydrated_epoch, updated_at';
+  const UPSERT_COLUMNS = 'session_id, legacy_session_id, cookies, mode, hydrated_epoch, updated_at';
+  const COLUMNS = `${UPSERT_COLUMNS}, identity_end_pending_at`;
   const TABLE = `${DOUBLE_SCHEMA}.legacy_jar`;
   const UPDATED_AT = new Date(Date.UTC(2026, 5, 30, 11, 59));
   const COOKIES = absorbLegacySetCookies(sessionCookieStrings(LEGACY_TOKENS, {}, NOW)).sessionCookies;
@@ -337,6 +339,7 @@ describe('createLegacyJar over a TenantDb double', () => {
     mode: 'target-primary',
     hydrated_epoch: '7',
     updated_at: UPDATED_AT,
+    identity_end_pending_at: null,
   };
   const ROW: JarRow = {
     sessionId: SESSION_ID,
@@ -394,10 +397,19 @@ describe('createLegacyJar over a TenantDb double', () => {
     hydratedEpoch: 7,
   };
 
+  /** The rebind statement removing the other holders, a holder owed its identity end kept as an empty marked jar. */
+  const REMOVAL_TEXT =
+    `WITH kept AS ( UPDATE ${TABLE} SET legacy_session_id = NULL, cookies = '{}'::jsonb, hydrated_epoch = NULL, ` +
+    'updated_at = now() WHERE session_id <> $1 AND (session_id = $2 OR legacy_session_id = $3) ' +
+    'AND identity_end_pending_at IS NOT NULL RETURNING session_id ), removed AS ( ' +
+    `DELETE FROM ${TABLE} WHERE session_id <> $1 AND (session_id = $2 OR legacy_session_id = $3) ` +
+    'AND identity_end_pending_at IS NULL RETURNING session_id ) ' +
+    'SELECT session_id FROM kept UNION ALL SELECT session_id FROM removed';
+
   /** Asserts the merge-upsert statement of `input`. */
   function expectUpsert(statement: RecordedQuery | undefined, input: JarUpsert): void {
     expect(statement?.text).toContain(
-      `INSERT INTO ${TABLE} AS jar (${COLUMNS}) VALUES ($1, $2, $3::jsonb, $4, $5, now())`,
+      `INSERT INTO ${TABLE} AS jar (${UPSERT_COLUMNS}) VALUES ($1, $2, $3::jsonb, $4, $5, now())`,
     );
     expect(statement?.text).toContain('ON CONFLICT (session_id) DO UPDATE SET');
     expect(statement?.text).toContain('cookies = jar.cookies || EXCLUDED.cookies');
@@ -451,29 +463,53 @@ describe('createLegacyJar over a TenantDb double', () => {
     },
   );
 
+  it('marks the identity end pending under the session lock in one transaction, creating an empty jar when none exists', async () => {
+    await jar.markIdentityEndPending(SESSION_ID, 'target-primary');
+    expect(fake.transactions).toEqual([
+      {
+        queries: [
+          lockOf(SESSION_ID),
+          {
+            text:
+              `INSERT INTO ${TABLE} AS jar (${COLUMNS}) VALUES ($1, NULL, '{}'::jsonb, $2, NULL, now(), now()) ` +
+              'ON CONFLICT (session_id) DO UPDATE SET ' +
+              'identity_end_pending_at = COALESCE(jar.identity_end_pending_at, EXCLUDED.identity_end_pending_at), ' +
+              'updated_at = EXCLUDED.updated_at',
+            values: [SESSION_ID, 'target-primary'],
+          },
+        ],
+        outcome: 'commit',
+      },
+    ]);
+  });
+
+  it.each<[string, Date | null, JarRow]>([
+    ['without', null, ROW],
+    ['with', new Date(Date.UTC(2026, 5, 30, 11, 58)), { ...ROW, identityEndPendingAt: new Date(Date.UTC(2026, 5, 30, 11, 58)) }],
+  ])('reads a jar %s a pending identity end, carrying the mark only when set', async (_label, pendingAt, expected) => {
+    fake.answer([{ ...RECORD, identity_end_pending_at: pendingAt }]);
+    await expect(jar.get(SESSION_ID)).resolves.toStrictEqual(expected);
+  });
+
   it('rebinds under the previous session lock, then the legacy session lock, moving barrier rows at once', async () => {
     const previous = 'identity-session-0000';
     fake.answer([RECORD]);
-    fake.answerFor('DELETE FROM t_gateway_jar.legacy_jar', [{ session_id: previous }, { session_id: 'stale-holder' }]);
+    fake.answerFor('WITH kept AS', [{ session_id: previous }, { session_id: 'stale-holder' }]);
     await expect(jar.rebind(INPUT, previous)).resolves.toEqual(ROW);
 
     expect(fake.transactions).toHaveLength(1);
     expect(fake.transactions[0]?.outcome).toBe('commit');
     const [lockPrevious, lockNative, removal, move, upsert] = fake.queries;
     expect([lockPrevious, lockNative]).toEqual([lockOf(previous), nativeLockOf(LEGACY_SESSION_ID)]);
-    expect(removal).toEqual({
-      text:
-        `DELETE FROM ${TABLE} WHERE session_id <> $1 AND (session_id = $2 OR legacy_session_id = $3) ` +
-        'RETURNING session_id',
-      values: [SESSION_ID, previous, LEGACY_SESSION_ID],
-    });
+    expect(removal).toEqual({ text: REMOVAL_TEXT, values: [SESSION_ID, previous, LEGACY_SESSION_ID] });
     expect(move?.text).toBe(
       `WITH moved AS (DELETE FROM ${DOUBLE_SCHEMA}.session_barrier WHERE session_id = ANY($2::text[]) ` +
-        'RETURNING owner, xid, recorded_at) ' +
-        `INSERT INTO ${DOUBLE_SCHEMA}.session_barrier AS b (session_id, owner, xid, recorded_at) ` +
-        'SELECT $1, owner, max(xid), max(recorded_at) FROM moved GROUP BY owner ' +
+        'RETURNING owner, xid, pending, recorded_at) ' +
+        `INSERT INTO ${DOUBLE_SCHEMA}.session_barrier AS b (session_id, owner, xid, pending, recorded_at) ` +
+        'SELECT $1, owner, max(xid), sum(pending)::integer, max(recorded_at) FROM moved GROUP BY owner ' +
         'ON CONFLICT (session_id, owner) DO UPDATE SET ' +
-        'xid = GREATEST(b.xid, EXCLUDED.xid), recorded_at = GREATEST(b.recorded_at, EXCLUDED.recorded_at)',
+        'xid = GREATEST(b.xid, EXCLUDED.xid), pending = b.pending + EXCLUDED.pending, ' +
+        'recorded_at = GREATEST(b.recorded_at, EXCLUDED.recorded_at)',
     );
     expect(move?.values).toEqual([SESSION_ID, [previous, 'stale-holder']]);
     expectUpsert(upsert, INPUT);
@@ -486,7 +522,7 @@ describe('createLegacyJar over a TenantDb double', () => {
     ['neither', undefined, null, []],
   ])('rebinds with %s under exactly those locks, moving no barrier row', async (_, previous, sid, locks) => {
     fake.answer([RECORD]);
-    fake.answerFor('DELETE FROM', []);
+    fake.answerFor('WITH kept AS', []);
     const input = { ...INPUT, legacySessionId: sid };
     await jar.rebind(input, previous);
     expect(fake.queries.slice(0, locks.length)).toEqual(locks);
@@ -521,7 +557,7 @@ describe('createLegacyJar over a TenantDb double', () => {
 
   it('runs a native-locked section on one transaction holding only the legacy session lock', async () => {
     fake.answer([RECORD]);
-    fake.answerFor('DELETE FROM', []);
+    fake.answerFor('WITH kept AS', []);
     const row = await jar.withNativeLock(LEGACY_SESSION_ID, async (locked) => {
       await locked.findByLegacySessionId(LEGACY_SESSION_ID);
       return locked.rebind(INPUT);
@@ -712,6 +748,39 @@ describe.skipIf(!live)('createLegacyJar against PostgreSQL', () => {
     ]);
   });
 
+  it('moves declared writes with their positions on rebind, summing the declarations per owner', async () => {
+    await jar.upsert(INPUT);
+    const barrier = createSessionBarrier({
+      db: handle.app,
+      client: { request: () => Promise.reject(new Error('no projection await here')) } as unknown as ServiceClient,
+    });
+    await barrier.declare(SESSION_ID, 'people');
+    await barrier.declare(SESSION_ID, 'people');
+    await barrier.declare(SESSION_ID, 'identity');
+    await recordBarrier(SESSION_ID, { programs_sites: '7' });
+    await barrier.record(SESSION_ID, new Map([['identity', '100']]));
+    await barrier.declare(REPLACEMENT_ID, 'people');
+    await recordBarrier(REPLACEMENT_ID, { identity: '90' });
+    await expect(
+      withMetadata(handle.app, (tx) =>
+        tx.query(`UPDATE ${handle.schema}.session_barrier SET pending = -1 WHERE session_id = $1`, [SESSION_ID]),
+      ),
+    ).rejects.toMatchObject({ code: '23514' });
+
+    const replacement: JarUpsert = { ...INPUT, sessionId: REPLACEMENT_ID, mode: 'legacy-primary', hydratedEpoch: null };
+    await jar.rebind(replacement, SESSION_ID);
+    const { rows } = await withMetadata(handle.app, (tx) =>
+      tx.query<{ session_id: string; owner: string; xid: string | null; pending: number }>(
+        `SELECT session_id, owner, xid::text AS xid, pending FROM ${handle.schema}.session_barrier ORDER BY session_id, owner`,
+      ),
+    );
+    expect(rows).toEqual([
+      { session_id: REPLACEMENT_ID, owner: 'identity', xid: '100', pending: 1 },
+      { session_id: REPLACEMENT_ID, owner: 'people', xid: null, pending: 3 },
+      { session_id: REPLACEMENT_ID, owner: 'programs_sites', xid: '7', pending: 0 },
+    ]);
+  });
+
   it('rebind displaces an unrelated stale holder of the legacy session and leaves other jars alone', async () => {
     await jar.upsert({ ...INPUT, sessionId: 'stale-holder' });
     await jar.upsert({ ...INPUT, sessionId: 'unrelated', legacySessionId: 'OPT2TEST_3003_33333333' });
@@ -725,6 +794,52 @@ describe.skipIf(!live)('createLegacyJar against PostgreSQL', () => {
     });
     await expect(jar.get('stale-holder')).resolves.toBeUndefined();
     await expect(jar.get('unrelated')).resolves.toMatchObject({ legacySessionId: 'OPT2TEST_3003_33333333' });
+  });
+
+  it('marks a session without a jar in an empty jar, keeps the first mark and drops it with the jar', async () => {
+    await jar.markIdentityEndPending(SESSION_ID, 'legacy-primary');
+    const marked = await jar.get(SESSION_ID);
+    expect(marked).toMatchObject({ sessionId: SESSION_ID, legacySessionId: null, cookies: {}, mode: 'legacy-primary', hydratedEpoch: null });
+    expect(marked?.identityEndPendingAt).toBeInstanceOf(Date);
+    await jar.markIdentityEndPending(SESSION_ID, 'target-primary');
+    await expect(jar.get(SESSION_ID)).resolves.toMatchObject({
+      mode: 'legacy-primary',
+      identityEndPendingAt: marked?.identityEndPendingAt,
+    });
+    await expect(jar.drop(SESSION_ID)).resolves.toBe(true);
+    await expect(jar.get(SESSION_ID)).resolves.toBeUndefined();
+  });
+
+  it('keeps the mark of a jar through upserts, epoch updates and a rebind to the same session', async () => {
+    await jar.upsert(INPUT);
+    await expect(jar.get(SESSION_ID)).resolves.not.toHaveProperty('identityEndPendingAt');
+    await jar.markIdentityEndPending(SESSION_ID, 'legacy-primary');
+    const pendingAt = (await jar.get(SESSION_ID))?.identityEndPendingAt;
+    expect(pendingAt).toBeInstanceOf(Date);
+    await jar.upsert({ ...INPUT, cookies: { CFID } });
+    await jar.setHydratedEpoch(SESSION_ID, 9);
+    const rebound = await jar.rebind({ ...INPUT, hydratedEpoch: 10 }, SESSION_ID);
+    expect(rebound).toMatchObject({ ...INPUT, hydratedEpoch: 10, identityEndPendingAt: pendingAt });
+    await expect(jar.get(SESSION_ID)).resolves.toEqual(rebound);
+  });
+
+  it.each<[string, string | undefined]>([
+    ['the previous session', SESSION_ID],
+    ['another holder of the legacy session', undefined],
+  ])('rebinding away from %s owed its identity end keeps it as an empty marked jar', async (_label, previous) => {
+    await jar.upsert(INPUT);
+    await jar.markIdentityEndPending(SESSION_ID, 'target-primary');
+    await recordBarrier(SESSION_ID, { identity: '100' });
+    const replacement: JarUpsert = { ...INPUT, sessionId: REPLACEMENT_ID, mode: 'legacy-primary', hydratedEpoch: null };
+
+    const stored = await jar.rebind(replacement, previous);
+    expect(stored).toMatchObject(replacement);
+    expect(stored).not.toHaveProperty('identityEndPendingAt');
+    const kept = await jar.get(SESSION_ID);
+    expect(kept).toMatchObject({ legacySessionId: null, cookies: {}, mode: 'target-primary', hydratedEpoch: null });
+    expect(kept?.identityEndPendingAt).toBeInstanceOf(Date);
+    await expect(jar.findByLegacySessionId(LEGACY_SESSION_ID)).resolves.toEqual(stored);
+    expect(await barrierRows()).toEqual([{ session_id: REPLACEMENT_ID, owner: 'identity', xid: '100' }]);
   });
 
   it('lets two concurrent rebinds of one mapping both succeed', async () => {

@@ -37,7 +37,7 @@ export interface CsrfDeps {
   sleep?: (ms: number) => Promise<void>;
 }
 
-/** A session row and the tenant whose transaction holds it. */
+/** A session row and the tenant holding it, which never changes. */
 export interface LocatedSession {
   tenantId: string;
   row: SessionRow;
@@ -143,24 +143,24 @@ export async function consumeToken(deps: CsrfDeps, request: CsrfConsumeRequest):
   const { db, repo, clock } = deps;
   const { sessionId } = request;
   const located = await locateSession(deps, sessionId);
-  if (located === undefined || located.row.state !== 'active') return { valid: false };
+  if (located === undefined) return { valid: false };
+  const { tenantId } = located;
   const now = clock.now();
-  const { valid } = validateCsrfToken({
-    token: request.token,
-    expires: request.expires,
-    context: request.context,
-    secret: located.row.csrf_secret,
-    used: NO_USED_TOKENS,
-    now,
-  });
   const key = claimKey(request.token);
-  let usedAt = now;
-  // Legacy purges the ledger before it looks at the token.
-  let outcome = await withTenant(db, located.tenantId, async (tx): Promise<ClaimAttempt | undefined> => {
+  // Each attempt holds the session row shared, so a login or logout replacing its secret runs wholly before or after it.
+  const first = await withTenant(db, tenantId, async (tx): Promise<{ secret: string; outcome: ClaimAttempt } | undefined> => {
+    const session = await repo.lockSession(tx, sessionId, 'share');
+    if (session?.state !== 'active') return undefined;
+    // Legacy purges the ledger before it looks at the token.
     await repo.purgeCsrfClaims(tx, { sessionId, olderThan: usedCutoff(now) });
-    return valid ? takeClaim(repo, tx, sessionId, key, 'used', now) : undefined;
+    const secret = session.csrf_secret;
+    const { valid } = validateCsrfToken({ token: request.token, expires: request.expires, context: request.context, secret, used: NO_USED_TOKENS, now });
+    return valid ? { secret, outcome: await takeClaim(repo, tx, sessionId, key, 'used', now) } : undefined;
   });
-  if (outcome === undefined) return { valid: false };
+  if (first === undefined) return { valid: false };
+  const { secret } = first;
+  let { outcome } = first;
+  let usedAt = now;
 
   const sleep = deps.sleep ?? timerSleep;
   let waited = 0;
@@ -171,11 +171,16 @@ export async function consumeToken(deps: CsrfDeps, request: CsrfConsumeRequest):
     waited += step;
     const at = clock.now();
     usedAt = at;
-    outcome = await withTenant(db, located.tenantId, async (tx): Promise<ClaimAttempt> => {
+    const next = await withTenant(db, tenantId, async (tx): Promise<ClaimAttempt | undefined> => {
+      const session = await repo.lockSession(tx, sessionId, 'share');
+      // The session logged in or out during the wait, so the token belongs to a secret it no longer holds.
+      if (session?.state !== 'active' || session.csrf_secret !== secret) return undefined;
       const held = await repo.findCsrfClaim(tx, sessionId, key);
       // A released claim leaves the token free again, so this consume claims it.
       return held === null ? takeClaim(repo, tx, sessionId, key, 'used', at) : held.state;
     });
+    if (next === undefined) return { valid: false };
+    outcome = next;
   }
   if (outcome !== 'won') return { valid: false };
   // The claim stays used when the relay fails: the request then fails closed and the token remains consumed.

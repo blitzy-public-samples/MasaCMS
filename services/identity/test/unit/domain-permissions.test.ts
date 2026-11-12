@@ -498,7 +498,7 @@ describe.skipIf(!available)('reverse Users-module lookup against PostgreSQL [leg
     sessionSeq += 1;
     const sessionId = `S-REVERSE-${String(sessionSeq)}`;
     const snapshot = snapshotOf(id(sessionSeq, 'U'), roleList, groups);
-    await applyLogin(sessionDeps(), { sessionId, tenantId: tenantIdForSite('hub'), snapshot, mode: 'target-primary', siteId: 'hub' });
+    await applyLogin(sessionDeps(), { sessionId, snapshot, mode: 'target-primary', siteId: 'hub' });
     return sessionId;
   }
 

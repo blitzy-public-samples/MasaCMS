@@ -25,6 +25,7 @@ import {
   type AccountInput,
   type GroupInput,
   type IdentityRepository,
+  type SessionLockMode,
 } from '../../src/repo/repository.js';
 import { GROUP_ACCOUNT, IDENTITY_UNITS, OWNED_TABLES, USER_ACCOUNT, type GroupAccountRow } from '../../src/repo/tables.js';
 
@@ -70,6 +71,10 @@ describe('identity repository surface', () => {
     ['no actor by the row itself', null, null, { lastupdateby: 'Row Self', lastupdatebyid: 'ROW' }],
   ] as const)('names %s', (_label, actor, contact, expected) => {
     expect(lastUpdateInfo(actor, { userid: 'ROW', fname: 'Row', lname: 'Self' }, contact)).toEqual(expected);
+  });
+
+  it.each([0, -1, 1.5, Number.NaN])('rejects a read page size of %s', (pageSize) => {
+    expect(() => createIdentityRepository({ clock: CLOCK, pageSize })).toThrow(RangeError);
   });
 
   it('keeps a single space for two empty names and cuts the label at 50 UTF-16 units', () => {
@@ -118,6 +123,15 @@ describe.skipIf(!available)('identity repository against PostgreSQL', () => {
 
   function gated<T>(fn: (tx: TenantTx) => Promise<T>, tenant = tenantId): Promise<T> {
     return withGatedTenant(handle.app, tenant, fn, { budgetMs: BUDGET_MS });
+  }
+
+  /** `tx` recording the text of each statement it runs in `statements`. */
+  function recording(tx: TenantTx, statements: string[]): TenantTx {
+    const query = ((text: string, values?: unknown[]) => {
+      statements.push(text);
+      return tx.query(text, values);
+    }) as TenantTx['query'];
+    return { ...tx, query };
   }
 
   async function changelog(tenant = tenantId): Promise<{ table: string; op: string; before: string | null }[]> {
@@ -340,6 +354,110 @@ describe.skipIf(!available)('identity repository against PostgreSQL', () => {
     expect(await inTenant((tx) => repo.membersOf(tx, pub), otherTenantId)).toEqual([]);
   });
 
+  /** An open-or-ended account operation of `id(user)` whose JSON columns name groups as account-operations records them. */
+  type OperationSeed = { user: number; state?: 'prepared' | 'committed' | 'finished'; held?: readonly string[]; pending?: readonly string[] | null };
+  async function seedOperations(seeds: readonly OperationSeed[]): Promise<void> {
+    for (const { user, state = 'committed', held, pending } of seeds) {
+      await inTenant((tx) =>
+        repo.insertAccountOperation(tx, {
+          user_id: id(user),
+          kind: 'update',
+          state,
+          before_values: held === undefined ? null : JSON.stringify({ account: null, credential: null, lastlogin: null, groupIds: held }),
+          pending_change: pending === undefined ? null : JSON.stringify({ account: {}, credential: null, memberships: pending === null ? null : { groupIds: pending, originId: null } }),
+        }),
+      );
+    }
+  }
+
+  const MEMBER_CLOSURES: readonly (readonly [string, 'paged' | 'empty', readonly OperationSeed[], readonly number[]])[] = [
+    ['no open operation', 'paged', [], []],
+    ['a prepared operation of a member', 'paged', [{ user: 4, state: 'prepared' }], [4]],
+    ['a finished operation of a member', 'paged', [{ user: 4, state: 'finished' }], []],
+    ['a non-member whose before-image held the group', 'paged', [{ user: 6, held: [id(1, 'G')] }], [6]],
+    ['a non-member whose pending change adds the group by a lower-case id', 'paged', [{ user: 6, pending: [id(1, 'G').toLowerCase()] }], [6]],
+    ['a non-member whose pending change keeps the stored memberships', 'paged', [{ user: 6, held: [], pending: null }], []],
+    ['non-members changing another group only', 'paged', [{ user: 6, held: [id(2, 'G')] }, { user: 7, pending: [id(2, 'G')] }], []],
+    ['a group without members whose last member a committed change removed', 'empty', [{ user: 6, held: [id(3, 'G')], pending: [] }], [6]],
+    ['a group without members and no open operation', 'empty', [], []],
+  ];
+
+  it.each(MEMBER_CLOSURES)('pages members from one fenced cursor in pages of two, the first page naming the closure for %s', async (_case, which, seeds, closedUsers) => {
+    const paged = createIdentityRepository({ clock: CLOCK, schema: handle.schema, pageSize: 2 });
+    const members = [id(1), id(2), id(3), id(4), id(5)];
+    await gated(async (tx) => {
+      await repo.insertGroup(tx, groupInput({ userid: id(1, 'G'), groupname: 'Paged' }), null);
+      await repo.insertGroup(tx, groupInput({ userid: id(3, 'G'), groupname: 'Empty' }), null);
+      for (const member of [...members, id(6), id(7)]) await repo.insertAccount(tx, account(member, `m${member}`));
+      for (const member of members) await repo.addMembership(tx, member, id(1, 'G'));
+    });
+    await seedOperations(seeds);
+    const groupId = which === 'paged' ? id(1, 'G') : id(3, 'G');
+    const closed = closedUsers.map((user) => id(user));
+    const statements: string[] = [];
+    const pages = await inTenant(async (tx) => {
+      const read: { members: string[]; closed: string[] }[] = [];
+      for await (const page of paged.memberPages(recording(tx, statements), groupId)) read.push({ members: page.members.map(({ member }) => member.userid), closed: page.closed });
+      return read;
+    });
+    const expected = which === 'paged' ? [members.slice(0, 2), members.slice(2, 4), members.slice(4)] : [[]];
+    expect(pages).toEqual(expected.map((ids, n) => ({ members: ids, closed: n === 0 ? closed : [] })));
+    expect(statements.findIndex((text) => text.startsWith('DECLARE'))).toBeGreaterThan(statements.findIndex((text) => text.includes('unit_gate')));
+    expect(statements.filter((text) => text.startsWith('FETCH'))).toHaveLength(expected.length);
+    expect(statements.at(-1)).toMatch(/^CLOSE /);
+    expect(await inTenant((tx) => paged.probeMembers(tx, groupId))).toEqual({ listed: which === 'paged', closed });
+    const counted = await inTenant((tx) => repo.listCountedGroups(tx, 'site-a', 1));
+    expect(counted.closed).toEqual(closed);
+  });
+
+  it('closes the member cursor when its consumer stops early, keeping the transaction usable', async () => {
+    const paged = createIdentityRepository({ clock: CLOCK, schema: handle.schema, pageSize: 1 });
+    const groupId = id(1, 'G');
+    await gated(async (tx) => {
+      await repo.insertGroup(tx, groupInput({ userid: groupId, groupname: 'Stopped' }), null);
+      for (const member of [id(1), id(2)]) {
+        await repo.insertAccount(tx, account(member, `m${member}`));
+        await repo.addMembership(tx, member, groupId);
+      }
+    });
+    const statements: string[] = [];
+    const after = await inTenant(async (tx) => {
+      const recorded = recording(tx, statements);
+      for await (const page of paged.memberPages(recorded, groupId)) {
+        expect(page.members.map(({ key, member }) => [key, member.userid])).toEqual([[null, id(1)]]);
+        break;
+      }
+      return (await tx.query<{ one: number }>('SELECT 1 AS one')).rows;
+    });
+    expect(statements.filter((text) => text.startsWith('FETCH'))).toHaveLength(1);
+    expect(statements.at(-1)).toMatch(/^CLOSE /);
+    expect(after).toEqual([{ one: 1 }]);
+  });
+
+  it.each([
+    ['no open operation', [], [], 5, 3],
+    ['a member of a group listed on the second page', [{ user: 3 }], [3], 2, 1],
+    ['a non-member whose before-image held a listed group', [{ user: 6, held: [id(5, 'G')], pending: [] }], [6], 2, 1],
+    ['a non-member changing an unlisted group only', [{ user: 6, pending: [id(9, 'G')] }], [], 5, 3],
+  ] as const)('lists counted groups through one cursor in pages of two, ending after the first page for %s', async (_case, seeds, closedUsers, read, fetches) => {
+    const paged = createIdentityRepository({ clock: CLOCK, schema: handle.schema, pageSize: 2 });
+    const groups = [id(1, 'G'), id(2, 'G'), id(3, 'G'), id(4, 'G'), id(5, 'G')];
+    await gated(async (tx) => {
+      for (const [n, groupId] of groups.entries()) {
+        await repo.insertGroup(tx, groupInput({ userid: groupId, groupname: `Group ${n}` }), null);
+        await repo.insertAccount(tx, account(id(n + 1), `m${n}`));
+        await repo.addMembership(tx, id(n + 1), groupId);
+      }
+      await repo.insertAccount(tx, account(id(6), 'm6'));
+    });
+    await seedOperations(seeds);
+    const statements: string[] = [];
+    const result = await inTenant((tx) => paged.listCountedGroups(recording(tx, statements), 'site-a', 1));
+    expect(result).toEqual({ groups: groups.slice(0, read).map((userid) => expect.objectContaining({ userid, counter: 1 })), closed: closedUsers.map((user) => id(user)) });
+    expect(result.groups[0]).not.toHaveProperty('closed_users');
+    expect(statements.filter((text) => text.startsWith('FETCH'))).toHaveLength(fetches);
+  });
+
   it('replaces node and module permissions and reads module grants', async () => {
     const node = id(1, 'N');
     const grants = [{ groupId: id(2, 'G'), type: 'Editor' }, { groupId: id(1, 'G'), type: 'Read' }];
@@ -438,6 +556,51 @@ describe.skipIf(!available)('identity repository against PostgreSQL', () => {
     expect(await inTenant((tx) => repo.readSessionAdminState(tx, 'S9'))).toBeNull();
     expect(await inTenant((tx) => repo.mergeSessionAdminState(tx, 'S9', { siteid: 'x' }))).toBeNull();
     expect(await inTenant((tx) => repo.readSessionAdminState(tx, 'S1'), otherTenantId)).toBeNull();
+  });
+
+  it('locks a session of its own tenant only, and none when absent', async () => {
+    await inTenant((tx) => repo.insertSession(tx, { session_id: 'S-LOCKED', csrf_secret: id(1, 'K'), mode: 'target-primary', state: 'active' }));
+
+    expect(await inTenant((tx) => repo.lockSession(tx, 'S-LOCKED', 'update'))).toMatchObject({ session_id: 'S-LOCKED', epoch: '0', state: 'active' });
+    expect(await inTenant((tx) => repo.lockSession(tx, 'S-LOCKED', 'share'), otherTenantId)).toBeNull();
+    expect(await inTenant((tx) => repo.lockSession(tx, 'S-ABSENT', 'update'))).toBeNull();
+  });
+
+  it.each<[SessionLockMode, SessionLockMode, boolean]>([
+    ['update', 'share', true],
+    ['share', 'update', true],
+    ['share', 'share', false],
+  ])('holds a %s session lock against a concurrent %s lock until commit (waits: %s)', async (held, requested, waits) => {
+    const sessionId = `S-LOCK-${held}-${requested}`;
+    await inTenant((tx) => repo.insertSession(tx, { session_id: sessionId, csrf_secret: id(1, 'K'), mode: 'target-primary', state: 'active' }));
+    let release: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let holding: () => void = () => undefined;
+    const locked = new Promise<void>((resolve) => {
+      holding = resolve;
+    });
+    const holder = inTenant(async (tx) => {
+      const row = await repo.lockSession(tx, sessionId, held);
+      holding();
+      await released;
+      return row;
+    });
+    await locked;
+
+    let acquired = false;
+    const waiter = inTenant(async (tx) => {
+      const row = await repo.lockSession(tx, sessionId, requested);
+      acquired = true;
+      return row;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(acquired).toBe(!waits);
+    release();
+
+    expect(await holder).toMatchObject({ session_id: sessionId });
+    expect(await waiter).toMatchObject({ session_id: sessionId });
   });
 
   it('stores OAuth clients and tokens, reuses only user-bound unexpired tokens and purges day-old ones', async () => {

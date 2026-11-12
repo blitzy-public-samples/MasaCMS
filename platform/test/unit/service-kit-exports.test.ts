@@ -9,6 +9,7 @@ import * as context from '../../src/service-kit/context.js';
 import * as createServiceModule from '../../src/service-kit/create-service.js';
 import * as csrfHook from '../../src/service-kit/csrf-hook.js';
 import * as env from '../../src/service-kit/env.js';
+import * as signalBoundFetch from '../../src/service-kit/fetch.js';
 import * as kit from '../../src/service-kit/index.js';
 import {
   baseEnvSchema,
@@ -62,6 +63,7 @@ const VALUE_EXPORTS = {
       'UnknownServiceError',
     ],
   ],
+  './fetch.js': [signalBoundFetch, ['createSignalBoundFetch']],
   './create-service.js': [
     createServiceModule,
     [

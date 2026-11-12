@@ -7,11 +7,12 @@ import { LegacyServiceUnavailableError, routeKeyForRequest } from '@opt2/platfor
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { loadConfig } from '../../src/config.js';
-import { BridgeError, type BridgeClient, type BridgeJobName } from '../../src/legacy/index.js';
+import { BridgeError, BridgeTimeoutError, type BridgeClient, type BridgeJobName } from '../../src/legacy/index.js';
 import { loadUnitCatalog } from '../../src/owners/units.js';
 import {
   LEGACY_STEP_ROUTE_KEY,
   LEGACY_STEP_WINDOW_KIND,
+  LegacyStepDeadlineError,
   LegacyStepFailedError,
   legacyStepUnits,
   runLegacyStepWith,
@@ -26,6 +27,9 @@ const WIRE_TIME = '2026-06-30T12:00:00.123';
 const SERVER_TIME = new Date(WIRE_TIME).toISOString();
 const CURSOR = { theTime: '2026-06-30 12:00:00.000', lastMonitored: '2026-06-30 11:45:00.000' };
 const BOUNCE_UNITS = ['communications.email_return_stat', 'communications.email_stat'];
+const NOW = Date.parse('2026-06-30T12:00:05.000Z');
+/** A `deadlineAt` `ms` after the harness clock's start. */
+const deadlineIn = (ms: number): string => new Date(NOW + ms).toISOString();
 
 // Fixture version: the bounce units and the file store's tfiles unit are target, communications.email is legacy.
 const FIXTURE_VERSION = 'v0099';
@@ -58,14 +62,24 @@ interface HarnessOptions {
   jobsRun?: BridgeClient['jobsRun'];
   open?: WindowLifecycle['open'];
   complete?: WindowLifecycle['complete'];
+  /** Milliseconds the clock advances while a window opens. */
+  openTakesMs?: number;
 }
 
 function harness(opts: HarnessOptions = {}) {
+  let now = NOW;
+  const clock = { now: () => new Date(now) };
   const jobsRun = vi.fn<BridgeClient['jobsRun']>(
     opts.jobsRun ??
       ((job, params) => Promise.resolve({ job, ...(params?.siteId === undefined ? {} : { siteId: params.siteId }), completed: true, serverTime: WIRE_TIME })),
   );
-  const open = vi.fn<WindowLifecycle['open']>(opts.open ?? (() => Promise.resolve({ windowId: WINDOW_ID, state: 'open', phase: 'executing' })));
+  const open = vi.fn<WindowLifecycle['open']>(
+    opts.open ??
+      (() => {
+        now += opts.openTakesMs ?? 0;
+        return Promise.resolve({ windowId: WINDOW_ID, state: 'open', phase: 'executing' });
+      }),
+  );
   const complete = vi.fn<WindowLifecycle['complete']>(opts.complete ?? (() => Promise.resolve({ state: 'closed' })));
   const status = vi.fn(() => Promise.resolve({ tableVersion: opts.tableVersion === undefined ? FIXTURE_VERSION : opts.tableVersion, epoch: 1 }));
   const info = vi.fn();
@@ -79,6 +93,7 @@ function harness(opts: HarnessOptions = {}) {
     config: { ...CONFIG, paths },
     catalog: CATALOG,
     logger: { info, warn } as unknown as LegacyStepContext['logger'],
+    clock,
   } satisfies LegacyStepContext;
   return { ctx, lifecycle: { open, complete } satisfies WindowLifecycle, jobsRun, open, complete, status, info, warn };
 }
@@ -209,6 +224,83 @@ describe('runLegacyStepWith', () => {
     await expect(runLegacyStepWith(h.ctx, h.lifecycle, { step: 'trackBounces', siteId: 'tenant-a', ...CURSOR })).rejects.toBe(refusal);
     expect(h.jobsRun).not.toHaveBeenCalled();
     expect(h.complete).not.toHaveBeenCalled();
+  });
+
+  it.each<[string, string]>([
+    ['at this instant', deadlineIn(0)],
+    ['a second ago', deadlineIn(-1_000)],
+  ])('throws the deadline error without reading authority, opening a window or calling the bridge for a deadlineAt %s', async (_label, deadlineAt) => {
+    const h = harness();
+    const error: unknown = await runLegacyStepWith(h.ctx, h.lifecycle, { step: 'trackBounces', siteId: 'tenant-a', ...CURSOR, deadlineAt }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(LegacyStepDeadlineError);
+    expect(error).toBeInstanceOf(LegacyStepFailedError);
+    expect(error).toBeInstanceOf(LegacyServiceUnavailableError);
+    expect(error).toMatchObject({
+      name: 'LegacyStepDeadlineError',
+      step: 'trackBounces',
+      siteId: 'tenant-a',
+      windowId: undefined,
+      reason: 'legacy-step-deadline',
+      message: 'Legacy site-monitor step trackBounces for site tenant-a did not complete before its deadline',
+    });
+    expect(h.status).not.toHaveBeenCalled();
+    expect(h.open).not.toHaveBeenCalled();
+    expect(h.jobsRun).not.toHaveBeenCalled();
+  });
+
+  it.each<[string, BridgeJobName, string | undefined, number, number]>([
+    ['outside a window', 'sendReminders', undefined, 0, 4_000],
+    ['in a window, after the time its opening took', 'trackBounces', 'tenant-a', 1_500, 2_500],
+  ])('bounds the bridge call %s by the time left before deadlineAt', async (_label, step, siteId, openTakesMs, timeoutMs) => {
+    const h = harness({ openTakesMs });
+    await runLegacyStepWith(h.ctx, h.lifecycle, { step, ...CURSOR, ...(siteId === undefined ? {} : { siteId }), deadlineAt: deadlineIn(4_000) });
+
+    expect(h.jobsRun).toHaveBeenCalledExactlyOnceWith(step, { siteId, ...CURSOR }, { timeoutMs });
+  });
+
+  it('passes the bridge no options without deadlineAt, so the bridge bound applies', async () => {
+    const h = harness();
+    await runLegacyStepWith(h.ctx, h.lifecycle, { step: 'trackBounces', siteId: 'tenant-a', ...CURSOR });
+
+    expect(h.jobsRun.mock.calls[0]).toEqual(['trackBounces', { siteId: 'tenant-a', ...CURSOR }]);
+  });
+
+  it('completes the window unforwarded and throws the deadline error when deadlineAt passes while it opens', async () => {
+    const h = harness({ openTakesMs: 1_000 });
+    const error: unknown = await runLegacyStepWith(h.ctx, h.lifecycle, { step: 'trackBounces', siteId: 'tenant-a', ...CURSOR, deadlineAt: deadlineIn(1_000) }).catch(
+      (e: unknown) => e,
+    );
+
+    expect(error).toBeInstanceOf(LegacyStepDeadlineError);
+    expect(error).toMatchObject({ windowId: WINDOW_ID, cause: undefined });
+    expect(h.jobsRun).not.toHaveBeenCalled();
+    expect(h.complete).toHaveBeenCalledExactlyOnceWith(WINDOW_ID, { forwarded: false });
+  });
+
+  it('leaves the window executing, warns and throws the deadline error when the bridge times out in a window', async () => {
+    const timeout = new BridgeTimeoutError('jobs.trackBounces', 4_000, new DOMException('The operation timed out.', 'TimeoutError'));
+    const h = harness({ jobsRun: () => Promise.reject(timeout) });
+    const error: unknown = await runLegacyStepWith(h.ctx, h.lifecycle, { step: 'trackBounces', siteId: 'tenant-a', ...CURSOR, deadlineAt: deadlineIn(4_000) }).catch(
+      (e: unknown) => e,
+    );
+
+    expect(error).toBeInstanceOf(LegacyStepDeadlineError);
+    expect(error).toMatchObject({ step: 'trackBounces', siteId: 'tenant-a', windowId: WINDOW_ID, cause: timeout });
+    expect(h.complete).not.toHaveBeenCalled();
+    expect(h.warn).toHaveBeenCalledExactlyOnceWith(
+      { requestId: expect.any(String) },
+      `Legacy step trackBounces for site tenant-a did not answer within 4000 ms; window ${WINDOW_ID} is left executing`,
+    );
+  });
+
+  it('throws the deadline error when the bridge times out outside a window', async () => {
+    const timeout = new BridgeTimeoutError('jobs.sendReminders', 600_000, new DOMException('The operation timed out.', 'TimeoutError'));
+    const h = harness({ jobsRun: () => Promise.reject(timeout) });
+    const error: unknown = await runLegacyStepWith(h.ctx, h.lifecycle, { step: 'sendReminders', ...CURSOR }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(LegacyStepDeadlineError);
+    expect(error).toMatchObject({ windowId: undefined, cause: timeout });
   });
 
   it('runs every step without a window under the committed v0002', async () => {

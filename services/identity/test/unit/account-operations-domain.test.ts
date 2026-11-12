@@ -7,7 +7,7 @@ import { createLogger } from '@opt2/platform/logging';
 import { ensureUnitGates, openOperations, registerOperation, withGatedTenant } from '@opt2/platform/migration-kit';
 import { createOutbox } from '@opt2/platform/outbox';
 import type { Clock } from '@opt2/platform/service-kit';
-import { tenantIdForSite, withMetadata, withTenant, type QueryConfig, type QueryResultRow, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
+import { SYSTEM_TENANT_ID, tenantIdForSite, withMetadata, withTenant, type QueryConfig, type QueryResultRow, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { createCapturingPublisher, createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
   ACCOUNT_OPERATION_UNITS,
@@ -24,6 +24,7 @@ import {
   operationStatus,
   prepareAccountOperation,
   revertAccountOperation,
+  withOpenAccount,
   type AccountChange,
   type AccountOperationDeps,
   type AccountSettings,
@@ -31,10 +32,12 @@ import {
   type PrepareInput,
   type PrepareResult,
 } from '../../src/domain/account-operations.js';
+import { lookupByCredentials, type LoginDeps } from '../../src/domain/login.js';
 import { applyLogin, endSession, ensureSession, sessionState } from '../../src/domain/sessions.js';
+import { DEFAULT_STRIKE_SETTINGS } from '../../src/domain/strikes.js';
 import { createIdentityEvents, identityPayloadValidators, MEMBERSHIP_CHANGED_TOPIC } from '../../src/events/publish.js';
-import { verifyLegacyPassword } from '../../src/legacy/hash.js';
-import { createIdentityRepository, type AccountInput, type GroupInput, type IdentityRepository } from '../../src/repo/repository.js';
+import { hashNewPassword, verifyLegacyPassword } from '../../src/legacy/hash.js';
+import { charKey, createIdentityRepository, type AccountInput, type GroupInput, type IdentityRepository } from '../../src/repo/repository.js';
 import {
   IDENTITY_UNITS,
   LOGIN_STATE,
@@ -78,6 +81,21 @@ function legacyProperty(path: string, key: string): string {
     .find((entry) => entry.startsWith(`${key}=`));
   if (line === undefined) throw new Error(`${path} has no ${key}`);
   return line.slice(key.length + 1);
+}
+
+/** Ungranted requests for the advisory lock of key `$1` in this database. */
+const FENCE_WAITERS_SQL =
+  "SELECT count(*)::int AS waiting FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1" +
+  ' AND database = (SELECT oid FROM pg_database WHERE datname = current_database())' +
+  ' AND ((classid::bigint << 32) | objid::bigint) = hashtextextended($1, 0)';
+
+/** A promise and the function that resolves it. */
+function signal(): { promise: Promise<void>; resolve: () => void } {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve: () => resolve() };
 }
 
 const EN_PROPERTIES = 'core/mura/resourceBundle/resources/en.properties';
@@ -226,8 +244,8 @@ describe.skipIf(!available)('account operations against PostgreSQL', () => {
     return gated(site, (tx) => repo.findAccountOperation(tx, operationId));
   }
 
-  function sessionOf(sessionId: string, site = SITE_A): Promise<SessionRow | null> {
-    return withTenant(handle.app, tenantIdForSite(site), (tx) => repo.findSession(tx, sessionId));
+  function sessionOf(sessionId: string): Promise<SessionRow | null> {
+    return withTenant(handle.app, SYSTEM_TENANT_ID, (tx) => repo.findSession(tx, sessionId));
   }
 
   async function registered(operationId: string): Promise<boolean> {
@@ -251,22 +269,69 @@ describe.skipIf(!available)('account operations against PostgreSQL', () => {
     });
   }
 
-  /** The repository with `insertAccountOperation` held until two callers reach it, so both checked the user as open first. */
-  function latchedOperationInserts(): IdentityRepository {
-    let arrived = 0;
-    let release: () => void = () => undefined;
-    const bothArrived = new Promise<void>((resolve) => {
-      release = resolve;
-    });
+  /** The repository with its first `insertAccountOperation` held inside its prepare transaction, which keeps the user's fence, until `release`. */
+  function heldOperationInsert(): { repo: IdentityRepository; reached: Promise<void>; release: () => void } {
+    const reached = signal();
+    const released = signal();
+    let held = false;
     return {
-      ...repo,
-      async insertAccountOperation(tx, row, ctx) {
-        arrived += 1;
-        if (arrived === 2) release();
-        await bothArrived;
-        return repo.insertAccountOperation(tx, row, ctx);
+      repo: {
+        ...repo,
+        async insertAccountOperation(tx, row, ctx) {
+          if (!held) {
+            held = true;
+            reached.resolve();
+            await released.promise;
+          }
+          return repo.insertAccountOperation(tx, row, ctx);
+        },
       },
+      reached: reached.promise,
+      release: released.resolve,
     };
+  }
+
+  /** Resolves once another transaction waits on the account fence of `userId`. */
+  async function fenceWaiter(userId: string): Promise<void> {
+    const key = `${handle.schema}.account_operation:${charKey(userId)}`;
+    for (;;) {
+      const { rows } = await withMetadata(handle.app, (tx) => tx.query<{ waiting: number }>(FENCE_WAITERS_SQL, [key]));
+      if ((rows[0]?.waiting ?? 0) > 0) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
+  /** A `withOpenAccount` transaction holding the user's fence, shared or exclusive, until `release`. */
+  function holdFence(userId: string, exclusive: boolean): { entered: Promise<void>; release: () => void; done: Promise<void> } {
+    const entered = signal();
+    const finish = signal();
+    const done = withOpenAccount(
+      handle.app,
+      TENANT_A,
+      userId,
+      async () => {
+        entered.resolve();
+        await finish.promise;
+      },
+      { exclusive },
+    );
+    return { entered: entered.promise, release: finish.resolve, done };
+  }
+
+  /** The transaction's `lock_timeout`. */
+  async function lockTimeoutIn(tx: TenantTx): Promise<string | undefined> {
+    return (await tx.query<{ value: string }>("SELECT current_setting('lock_timeout') AS value")).rows[0]?.value;
+  }
+
+  /** Runs two prepares together, releasing the first one's held insert only once the other waits on the user's fence. */
+  async function racePrepares(userId: string, left: PrepareInput, right: PrepareInput): Promise<Array<PromiseSettledResult<PrepareResult>>> {
+    const held = heldOperationInsert();
+    const racing = deps({ repo: held.repo });
+    const results = Promise.allSettled([prepareAccountOperation(racing, left), prepareAccountOperation(racing, right)]);
+    await held.reached;
+    await fenceWaiter(userId);
+    held.release();
+    return results;
   }
 
   beforeAll(async () => {
@@ -534,26 +599,24 @@ describe.skipIf(!available)('account operations against PostgreSQL', () => {
 
     it("lets concurrent prepares of one operation both answer with the winner's record", async () => {
       const userId = await seedUser(uname('twin'));
-      const racing = deps({ repo: latchedOperationInserts() });
       const prepare = input('update', userId, { username: uname('twin2') });
 
-      const results = await Promise.all([prepareAccountOperation(racing, prepare), prepareAccountOperation(racing, prepare)]);
+      const results = await racePrepares(userId, prepare, prepare);
 
       const recorded = await accountOperationStatus(deps(), prepare.operationId);
       expect(results).toEqual([
-        { outcome: 'prepared', operation: recorded },
-        { outcome: 'prepared', operation: recorded },
+        { status: 'fulfilled', value: { outcome: 'prepared', operation: recorded } },
+        { status: 'fulfilled', value: { outcome: 'prepared', operation: recorded } },
       ]);
       expect(await registered(prepare.operationId)).toBe(true);
     });
 
     it('closes the user to the loser of two concurrent prepares and drops its registration', async () => {
       const userId = await seedUser(uname('duel'));
-      const racing = deps({ repo: latchedOperationInserts() });
       const left = input('update', userId, { username: uname('left') });
       const right = input('update', userId, { username: uname('right') });
 
-      const results = await Promise.allSettled([prepareAccountOperation(racing, left), prepareAccountOperation(racing, right)]);
+      const results = await racePrepares(userId, left, right);
 
       const winner = results.findIndex((result) => result.status === 'fulfilled');
       const loser = results[1 - winner];
@@ -565,6 +628,33 @@ describe.skipIf(!available)('account operations against PostgreSQL', () => {
       expect(await operationOf(lost.operationId)).toBeNull();
       expect(await registered(won.operationId)).toBe(true);
       expect(await registered(lost.operationId)).toBe(false);
+    });
+
+    it('answers the legacy 503 after USER_CLOSED_WAIT_MS queued behind a fenced reader, recording and registering nothing', async () => {
+      const username = uname('readheld');
+      const userId = await seedUser(username);
+      const reader = holdFence(userId, false);
+      await reader.entered;
+      const prepare = input('update', userId, { username: uname('late') });
+
+      const started = performance.now();
+      const failure = await prepareAccountOperation(deps(), prepare).catch((err: unknown) => err);
+      const elapsed = performance.now() - started;
+      reader.release();
+      await reader.done;
+
+      expect(failure).toBeInstanceOf(OperationBlockedError);
+      expect(failure).toMatchObject({
+        units: [...ACCOUNT_OPERATION_UNITS],
+        message: `Another open account operation holds user ${userId} or username '${prepare.change.username}'`,
+      });
+      expect(elapsed).toBeGreaterThanOrEqual(USER_CLOSED_WAIT_MS);
+      expect(elapsed).toBeLessThan(USER_CLOSED_WAIT_MS + 2_000);
+      expect(await operationOf(prepare.operationId)).toBeNull();
+      expect(await registered(prepare.operationId)).toBe(false);
+      expect(await accountOf(userId)).toMatchObject({ username });
+      expect((await prepareAccountOperation(deps(), prepare)).outcome).toBe('prepared');
+      expect((await abortAccountOperation(deps(), prepare.operationId)).outcome).toBe('stepped');
     });
   });
 
@@ -867,7 +957,6 @@ describe.skipIf(!available)('account operations against PostgreSQL', () => {
         { db: handle.app, repo, clock },
         {
           sessionId,
-          tenantId: tenantIdForSite(site),
           snapshot: { ...SESSION_SNAPSHOT, userid: userId, username, siteid: site, roleList: `${username};username;${site}`, membershipIds: userId },
           mode: 'target-primary',
           siteId: site,
@@ -960,14 +1049,35 @@ describe.skipIf(!available)('account operations against PostgreSQL', () => {
       const userId = await seedUser(uname('skip'), { site });
       const sessionId = session === 'unknown' ? `S-${next('D')}` : await loggedIn(userId, 'skip', site);
       if (session === 'ended') await endSession({ db: handle.app, repo, clock }, sessionId);
-      const before = await sessionOf(sessionId, site);
+      const before = await sessionOf(sessionId);
       const prepare = input('update', userId, changes, { siteId: site });
       await committed(prepare, { sessionEffects: { reloginSessionId: sessionId } });
 
       expect((await finishAccountOperation(deps(), prepare.operationId)).outcome).toBe('stepped');
 
-      expect(await sessionOf(sessionId, site)).toEqual(before);
+      expect(await sessionOf(sessionId)).toEqual(before);
       expect(await loginStateOf(userId, site)).toMatchObject({ lastlogin: LAST_LOGIN });
+    });
+
+    it('leaves a session that a logout ends after the re-login checked it ended at the logout epoch', async () => {
+      const userId = await seedUser(uname('race'));
+      const sessionId = await loggedIn(userId, 'race');
+      const prepare = input('update', userId, {});
+      await committed(prepare, { sessionEffects: { reloginSessionId: sessionId } });
+      let logoutEpoch = 0;
+      // The re-login's account read runs after its session check, so the logout commits between check and effect.
+      const racing: IdentityRepository = {
+        ...repo,
+        async readCredential(tx, id) {
+          logoutEpoch = (await endSession({ db: handle.app, repo, clock }, sessionId)).epoch;
+          return repo.readCredential(tx, id);
+        },
+      };
+
+      expect((await finishAccountOperation(deps({ repo: racing }), prepare.operationId)).outcome).toBe('stepped');
+
+      expect(logoutEpoch).toBe(2);
+      expect(await sessionOf(sessionId)).toMatchObject({ user_id: null, state: 'ended', epoch: String(logoutEpoch) });
     });
 
     it("leaves the session of a public account whose site's public user pool is another site", async () => {
@@ -975,12 +1085,12 @@ describe.skipIf(!available)('account operations against PostgreSQL', () => {
       const prepare = input('create', userId, { isPublic: 1 }, { requestSiteId: SITE_C, siteId: CHAIN });
       await prepared(prepare);
       const sessionId = await loggedIn(userId, 'pub', CHAIN);
-      const before = await sessionOf(sessionId, CHAIN);
+      const before = await sessionOf(sessionId);
       await commitAccountOperation(deps(), prepare.operationId, { sessionEffects: { reloginSessionId: sessionId } });
 
       await finishAccountOperation(deps(), prepare.operationId);
 
-      expect(await sessionOf(sessionId, CHAIN)).toEqual(before);
+      expect(await sessionOf(sessionId)).toEqual(before);
     });
 
     it('logs a public account of its own public user pool in again', async () => {
@@ -992,12 +1102,17 @@ describe.skipIf(!available)('account operations against PostgreSQL', () => {
 
       await finishAccountOperation(deps(), prepare.operationId);
 
-      const snapshot = JSON.parse((await sessionOf(sessionId, UMBRELLA))?.login_snapshot ?? '{}') as LoginSnapshot;
+      const snapshot = JSON.parse((await sessionOf(sessionId))?.login_snapshot ?? '{}') as LoginSnapshot;
       expect(snapshot.roleList).toBe(`Members;${UMBRELLA};1,S2IsPublic;${UMBRELLA},S2IsPublic,${prepare.change.username};username;${UMBRELLA}`);
     });
 
-    /** The repository with the last-login touch inside the re-login's session write failing. */
+    /** The repository with the re-login's session write failing. */
     function failingRelogin(): IdentityRepository {
+      return { ...repo, updateSession: async () => Promise.reject(new Error('connection lost')) };
+    }
+
+    /** The repository with the last-login touch failing after the re-login's session write committed. */
+    function failingTouch(): IdentityRepository {
       return { ...repo, touchLastLogin: async () => Promise.reject(new Error('connection lost')) };
     }
 
@@ -1051,9 +1166,9 @@ describe.skipIf(!available)('account operations against PostgreSQL', () => {
       };
     }
 
-    /** Committed changelog rows of `table` in tenant-a, narrowed to `operationId` and to keys holding `keyPart` when given. */
-    function changes(table: string, match: { operationId?: string; keyPart?: string }): Promise<number> {
-      return withTenant(handle.app, TENANT_A, async (tx) => {
+    /** Committed changelog rows of `table` in `tenantId`, narrowed to `operationId` and to keys holding `keyPart` when given. */
+    function changes(table: string, match: { operationId?: string; keyPart?: string }, tenantId = TENANT_A): Promise<number> {
+      return withTenant(handle.app, tenantId, async (tx) => {
         const { rows } = await tx.query<{ n: number }>(
           `SELECT count(*)::int AS n FROM ${handle.schema}.changelog WHERE "table" = $1` +
             ' AND ($2::text IS NULL OR operation_id = $2) AND ($3::text IS NULL OR position($3 in key) > 0)',
@@ -1065,6 +1180,7 @@ describe.skipIf(!available)('account operations against PostgreSQL', () => {
 
     it.each([
       ['its re-login', failingRelogin, 0],
+      ['its last-login touch after the re-login committed', failingTouch, 1],
       ['its finish step after the re-login committed', failingFinishStep, 1],
     ] as const)('keeps the user closed when a finish fails in %s and logs the session in exactly once across repeated finishes', async (_label, failing, bumped) => {
       const userId = await seedUser(uname('again'));
@@ -1100,7 +1216,7 @@ describe.skipIf(!available)('account operations against PostgreSQL', () => {
       const userId = await seedUser(uname('race'));
       const sessionId = await loggedIn(userId, 'race');
       const epoch = Number((await sessionOf(sessionId))?.epoch);
-      const sessionWrites = await changes(SESSION.table, { keyPart: sessionId });
+      const sessionWrites = await changes(SESSION.table, { keyPart: sessionId }, SYSTEM_TENANT_ID);
       const prepare = input('update', userId, {});
       await committed(prepare, { sessionEffects: { reloginSessionId: sessionId } });
       const racing = deps({ repo: racingFinishes() });
@@ -1110,7 +1226,7 @@ describe.skipIf(!available)('account operations against PostgreSQL', () => {
       const stepped = { outcome: 'stepped', step: { operationId: prepare.operationId, userId, state: 'finished' } };
       expect(outcomes).toEqual([stepped, stepped]);
       expect(await sessionOf(sessionId)).toMatchObject({ user_id: userId, epoch: String(epoch + 1) });
-      expect(await changes(SESSION.table, { keyPart: sessionId })).toBe(sessionWrites + 1);
+      expect(await changes(SESSION.table, { keyPart: sessionId }, SYSTEM_TENANT_ID)).toBe(sessionWrites + 1);
       expect(await changes(LOGIN_STATE.table, { operationId: prepare.operationId })).toBe(1);
       expect(await operationOf(prepare.operationId)).toMatchObject({ state: 'finished' });
       expect(await registered(prepare.operationId)).toBe(false);
@@ -1261,6 +1377,243 @@ describe.skipIf(!available)('account operations against PostgreSQL', () => {
       expect(failure).toMatchObject({ units: [...ACCOUNT_OPERATION_UNITS], message: `Account operation ${prepare.operationId} keeps user ${userId} closed` });
       expect(sleeps.reduce((sum, ms) => sum + ms, 0)).toBe(USER_CLOSED_WAIT_MS);
       expect(sleeps.every((ms) => ms > 0 && ms < USER_CLOSED_WAIT_MS)).toBe(true);
+    });
+  });
+
+  describe('withOpenAccount', () => {
+    it.each([
+      ['no operation holds', false],
+      ["only the caller's own operation holds", true],
+    ] as const)('runs the callback at once in the tenant for a user %s', async (_case, own) => {
+      const userId = await seedUser(uname('open'), { groupIds: [EDITORS] });
+      const prepare = own ? await prepared(input('update', userId, {})) : undefined;
+      const sleeps: number[] = [];
+
+      const groupIds = await withOpenAccount(handle.app, TENANT_A, userId, (tx) => repo.membershipGroupIds(tx, userId), {
+        sleep: async (ms) => void sleeps.push(ms),
+        selfOperationId: prepare?.operationId,
+      });
+
+      expect(groupIds).toEqual([EDITORS]);
+      expect(sleeps).toEqual([]);
+    });
+
+    it('throws OperationBlockedError naming the operation once the waits reach USER_CLOSED_WAIT_MS, never running the callback', async () => {
+      const userId = await seedUser(uname('shut'));
+      const prepare = await prepared(input('update', userId, {}));
+      const sleeps: number[] = [];
+      let ran = false;
+
+      const failure = await withOpenAccount(
+        handle.app,
+        TENANT_A,
+        userId,
+        async () => {
+          ran = true;
+        },
+        { sleep: async (ms) => void sleeps.push(ms) },
+      ).catch((err: unknown) => err);
+
+      expect(failure).toBeInstanceOf(OperationBlockedError);
+      expect(failure).toMatchObject({ units: [...ACCOUNT_OPERATION_UNITS], message: `Account operation ${prepare.operationId} keeps user ${userId} closed` });
+      expect(sleeps.reduce((sum, ms) => sum + ms, 0)).toBe(USER_CLOSED_WAIT_MS);
+      expect(ran).toBe(false);
+    });
+
+    it('makes a prepare wait for a fenced writer of the user, so its before-image and a later revert keep that write', async () => {
+      const userId = await seedUser(uname('fenced'), { groupIds: [EDITORS] });
+      const entered = signal();
+      const finish = signal();
+      const writer = withOpenAccount(handle.app, TENANT_A, userId, async (tx) => {
+        await repo.writeCredential(tx, userId, { password: 'written-meanwhile', passwordcreated: LATER });
+        await repo.addMembership(tx, userId, AUTHORS);
+        entered.resolve();
+        await finish.promise;
+      });
+      await entered.promise;
+      const prepare = input('update', userId, { password: 'Secret12', groupIds: [] });
+      let settled = false;
+      const preparing = prepareAccountOperation(deps(), prepare).finally(() => {
+        settled = true;
+      });
+
+      await fenceWaiter(userId);
+      expect(settled).toBe(false);
+      finish.resolve();
+      await writer;
+
+      expect((await preparing).outcome).toBe('prepared');
+      expect(JSON.parse((await operationOf(prepare.operationId))?.before_values ?? 'null')).toMatchObject({
+        credential: { password: 'written-meanwhile', passwordcreated: LATER.toISOString() },
+        groupIds: [EDITORS, AUTHORS],
+      });
+      expect((await commitAccountOperation(deps(), prepare.operationId)).outcome).toBe('committed');
+      expect(await membershipsOf(userId)).toEqual([]);
+      expect((await revertAccountOperation(deps(), prepare.operationId)).outcome).toBe('stepped');
+      expect(await credentialOf(userId)).toMatchObject({ password: 'written-meanwhile', passwordcreated: LATER });
+      expect(await membershipsOf(userId)).toEqual([EDITORS, AUTHORS]);
+    });
+
+    it('holds a fenced caller behind a prepare in progress, then waits out the operation that prepare recorded', async () => {
+      const userId = await seedUser(uname('behind'), { groupIds: [EDITORS] });
+      const held = heldOperationInsert();
+      const prepare = input('update', userId, { groupIds: [AUTHORS] });
+      const preparing = prepareAccountOperation(deps({ repo: held.repo }), prepare);
+      await held.reached;
+      const steps: string[] = [];
+      const reading = withOpenAccount(
+        handle.app,
+        TENANT_A,
+        userId,
+        async (tx) => {
+          steps.push('read');
+          return repo.membershipGroupIds(tx, userId);
+        },
+        {
+          sleep: async () => {
+            steps.push('sleep');
+            expect((await abortAccountOperation(deps(), prepare.operationId)).outcome).toBe('stepped');
+          },
+        },
+      );
+
+      await fenceWaiter(userId);
+      held.release();
+
+      expect((await preparing).outcome).toBe('prepared');
+      expect(await reading).toEqual([EDITORS]);
+      expect(steps).toEqual(['sleep', 'read']);
+    });
+
+    it('runs an exclusive caller only once the shared holders of the user have ended', async () => {
+      const userId = await seedUser(uname('cas'));
+      const entered = signal();
+      const finish = signal();
+      const steps: string[] = [];
+      const shared = withOpenAccount(handle.app, TENANT_A, userId, async () => {
+        entered.resolve();
+        await finish.promise;
+        steps.push('shared');
+      });
+      await entered.promise;
+      const exclusive = withOpenAccount(handle.app, TENANT_A, userId, async () => void steps.push('exclusive'), { exclusive: true });
+
+      await fenceWaiter(userId);
+      expect(steps).toEqual([]);
+      finish.resolve();
+      await Promise.all([shared, exclusive]);
+
+      expect(steps).toEqual(['shared', 'exclusive']);
+    });
+
+    it('answers the legacy 503 after USER_CLOSED_WAIT_MS to callers queued behind a prepare holding the fence, then serves them once it ends', async () => {
+      const username = uname('queued');
+      const userId = await seedUser(username, { password: await hashNewPassword('Secret12', fastSettings.password), groupIds: [EDITORS] });
+      const sleeps: number[] = [];
+      const sleep = async (ms: number): Promise<void> => void sleeps.push(ms);
+      const login: LoginDeps = { db: handle.app, repo, clock, settings: { password: fastSettings.password, strikes: DEFAULT_STRIKE_SETTINGS }, sleep };
+      const held = heldOperationInsert();
+      const prepare = input('update', userId, { groupIds: [AUTHORS] });
+      const preparing = prepareAccountOperation(deps({ repo: held.repo }), prepare);
+      await held.reached;
+      let ran = false;
+
+      const started = performance.now();
+      const results = await Promise.allSettled([
+        withOpenAccount(
+          handle.app,
+          TENANT_A,
+          userId,
+          async () => {
+            ran = true;
+          },
+          { sleep },
+        ),
+        lookupByCredentials(login, username, 'Secret12'),
+      ]);
+      const elapsed = performance.now() - started;
+      held.release();
+
+      const blocked = { units: [...ACCOUNT_OPERATION_UNITS], message: `A fenced transaction keeps user ${userId} closed` };
+      expect(results).toEqual([
+        { status: 'rejected', reason: expect.objectContaining(blocked) },
+        { status: 'rejected', reason: expect.objectContaining(blocked) },
+      ]);
+      expect(results.every((result) => result.status === 'rejected' && result.reason instanceof OperationBlockedError)).toBe(true);
+      expect(elapsed).toBeGreaterThanOrEqual(USER_CLOSED_WAIT_MS);
+      expect(elapsed).toBeLessThan(USER_CLOSED_WAIT_MS + 2_000);
+      expect(ran).toBe(false);
+      expect(sleeps).toEqual([]);
+      expect((await preparing).outcome).toBe('prepared');
+      expect((await abortAccountOperation(deps(), prepare.operationId)).outcome).toBe('stepped');
+      expect(await withOpenAccount(handle.app, TENANT_A, userId, (tx) => repo.membershipGroupIds(tx, userId), { sleep })).toEqual([EDITORS]);
+      expect((await lookupByCredentials(login, username, 'Secret12'))?.account.userid).toBe(userId);
+    });
+
+    it.each([
+      ['withOpenAccount', (userId: string, sleep: (ms: number) => Promise<void>): Promise<unknown> => withOpenAccount(handle.app, TENANT_A, userId, async () => undefined, { sleep })],
+      ['prepareAccountOperation', (userId: string, sleep: (ms: number) => Promise<void>): Promise<unknown> => prepareAccountOperation(deps({ sleep }), input('update', userId, {}))],
+    ] as const)('%s spends one USER_CLOSED_WAIT_MS budget across its closed-user sleeps and the time queued for the fence', async (_label, call) => {
+      const userId = await seedUser(uname('budget'));
+      const closing = await prepared(input('update', userId, {}));
+      let holder: ReturnType<typeof holdFence> | undefined;
+      let queuedFrom = 0;
+      const sleeps: number[] = [];
+      const sleptMs = 8_000;
+
+      const failure = await call(userId, async (ms) => {
+        sleeps.push(ms);
+        if (sleeps.reduce((sum, step) => sum + step, 0) !== sleptMs) return;
+        await abortAccountOperation(deps(), closing.operationId);
+        holder = holdFence(userId, true);
+        await holder.entered;
+        queuedFrom = performance.now();
+      }).catch((err: unknown) => err);
+      const queued = performance.now() - queuedFrom;
+      holder?.release();
+      await holder?.done;
+
+      expect(failure).toBeInstanceOf(OperationBlockedError);
+      expect(failure).toMatchObject({ units: [...ACCOUNT_OPERATION_UNITS] });
+      expect(sleeps.reduce((sum, ms) => sum + ms, 0)).toBe(sleptMs);
+      expect(queued).toBeGreaterThanOrEqual(USER_CLOSED_WAIT_MS - sleptMs);
+      expect(queued).toBeLessThan(USER_CLOSED_WAIT_MS - sleptMs + 1_500);
+      expect(await gated(SITE_A, (tx) => repo.findOpenAccountOperation(tx, { userId }))).toBeNull();
+    });
+
+    it.each([
+      ['a shared caller queued behind an exclusive holder', true, (userId: string) => withOpenAccount(handle.app, TENANT_A, userId, lockTimeoutIn)],
+      ['an exclusive caller queued behind a shared holder', false, (userId: string) => withOpenAccount(handle.app, TENANT_A, userId, lockTimeoutIn, { exclusive: true })],
+      [
+        'a prepare queued behind a shared holder',
+        false,
+        async (userId: string) => {
+          let seen: string | undefined;
+          const probing: IdentityRepository = {
+            ...repo,
+            async insertAccountOperation(tx, row, ctx) {
+              seen = await lockTimeoutIn(tx);
+              return repo.insertAccountOperation(tx, row, ctx);
+            },
+          };
+          const prepare = await prepared(input('update', userId, {}), deps({ repo: probing }));
+          await abortAccountOperation(deps(), prepare.operationId);
+          return seen;
+        },
+      ],
+    ] as const)('restores lock_timeout once %s takes the fence', async (_label, holderExclusive, caller) => {
+      const userId = await seedUser(uname('timeout'));
+      const before = await withTenant(handle.app, TENANT_A, lockTimeoutIn);
+      const holder = holdFence(userId, holderExclusive);
+      await holder.entered;
+
+      const calling = caller(userId);
+      await fenceWaiter(userId);
+      holder.release();
+      await holder.done;
+
+      expect(before).toBeDefined();
+      expect(await calling).toBe(before);
     });
   });
 });

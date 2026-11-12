@@ -18,6 +18,7 @@ import {
   usedTokensFor,
   type CsrfDeps,
 } from '../../src/domain/csrf.js';
+import { ANONYMOUS_LOGIN_SNAPSHOT, applyLogin, endSession, type SessionDeps } from '../../src/domain/sessions.js';
 import type { BridgeRelay, LegacyUsedToken } from '../../src/legacy/bridge-relay.js';
 import { createIdentityRepository, type IdentityRepository } from '../../src/repo/repository.js';
 import type { CsrfClaimRow } from '../../src/repo/tables.js';
@@ -27,6 +28,16 @@ const HOUR_MS = 3_600_000;
 const SECRET = 'K0000000-0000-0000-0000000000000001';
 const CONTEXT = 'cusers.update';
 const TENANT_A = tenantIdForSite('tenant-a');
+const USER = 'U0000000-0000-0000-0000000000000001';
+
+/** Session effects that replace the session's CSRF secret. */
+const SECRET_CHANGES: [string, (deps: SessionDeps, sessionId: string) => Promise<unknown>][] = [
+  [
+    'a login',
+    (deps, sessionId) => applyLogin(deps, { sessionId, snapshot: { ...ANONYMOUS_LOGIN_SNAPSHOT, userid: USER }, mode: 'target-primary', siteId: 'tenant-a' }),
+  ],
+  ['a logout', (deps, sessionId) => endSession(deps, sessionId)],
+];
 
 describe('csrf token issue', () => {
   it('issues the platform formula token under the session secret', () => {
@@ -77,6 +88,10 @@ describe.skipIf(!available)('csrf arbitration against PostgreSQL', () => {
     const sessionId = `S-${sessionSeq}`;
     await inTenant(tenantId, (tx) => repo.insertSession(tx, { session_id: sessionId, csrf_secret: SECRET, mode: 'target-primary', state }));
     return sessionId;
+  }
+
+  function sessionDeps(): SessionDeps {
+    return { db: handle.app, repo, clock };
   }
 
   function claims(sessionId: string, tenantId = SYSTEM_TENANT_ID): Promise<CsrfClaimRow[]> {
@@ -220,6 +235,48 @@ describe.skipIf(!available)('csrf arbitration against PostgreSQL', () => {
     expect(await consumeToken(depsFor(relay, releaseDuringWait), request)).toEqual({ valid: true });
     expect(relay.calls).toHaveLength(1);
     expect(await claims(sessionId)).toMatchObject([{ state: 'used' }]);
+  });
+
+  it.each(SECRET_CHANGES)('rejects a token of the old secret when %s commits after the consume found the session', async (_label, change) => {
+    const relay = recordingRelay();
+    const sessionId = await newSession();
+    const request = consumeRequest(sessionId);
+    let changed = false;
+    const racing: IdentityRepository = {
+      ...repo,
+      async findSession(tx, id) {
+        const row = await repo.findSession(tx, id);
+        if (!changed && row !== null) {
+          changed = true;
+          await change(sessionDeps(), id);
+        }
+        return row;
+      },
+    };
+
+    expect(await consumeToken({ ...depsFor(relay), repo: racing }, request)).toEqual({ valid: false });
+    expect(changed).toBe(true);
+    expect(await claims(sessionId)).toEqual([]);
+    expect(relay.calls).toEqual([]);
+  });
+
+  it.each(SECRET_CHANGES)('answers invalid when %s commits while the consume waits on a pending legacy claim', async (_label, change) => {
+    const relay = recordingRelay();
+    const sessionId = await newSession();
+    const request = consumeRequest(sessionId);
+    await claimForLegacy(depsFor(), { sessionId, token: request.token });
+
+    const slept: number[] = [];
+    const changeDuringWait = async (ms: number): Promise<void> => {
+      slept.push(ms);
+      // The change also drops the pending claim, which leaves the token unclaimed.
+      if (slept.length === 1) await change(sessionDeps(), sessionId);
+    };
+
+    expect(await consumeToken(depsFor(relay, changeDuringWait), request)).toEqual({ valid: false });
+    expect(slept).toEqual([100]);
+    expect(await claims(sessionId)).toEqual([]);
+    expect(relay.calls).toEqual([]);
   });
 
   it('answers invalid once the pending legacy wait runs out', async () => {

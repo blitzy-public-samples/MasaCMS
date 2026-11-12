@@ -39,7 +39,7 @@ import {
   type UserAccountRow,
 } from '../repo/tables.js';
 import { buildLoginSnapshot, type MembershipGroup } from './roles.js';
-import { applyLogin, locateSession } from './sessions.js';
+import { applyRelogin, locateSession } from './sessions.js';
 
 export { OperationBlockedError };
 
@@ -50,8 +50,14 @@ export const ACCOUNT_OPERATION_UNITS = ['identity.user_account', 'identity.crede
 export const USER_CLOSED_WAIT_MS = 10_000;
 
 const CLOSED_POLL_MS = 100;
+const EXCLUSIVE_FENCE_SQL = 'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))';
+const SHARED_FENCE_SQL = 'SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))';
+const TRY_EXCLUSIVE_FENCE_SQL = "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS acquired, current_setting('lock_timeout') AS saved";
+const TRY_SHARED_FENCE_SQL = "SELECT pg_try_advisory_xact_lock_shared(hashtextextended($1, 0)) AS acquired, current_setting('lock_timeout') AS saved";
+const SET_LOCK_TIMEOUT_SQL = "SELECT set_config('lock_timeout', $1, true)";
 const OPERATION_KIND = 'roster-account';
 const UNIQUE_VIOLATION = '23505';
+const LOCK_NOT_AVAILABLE = '55P03';
 const ROLLED_BACK_STATES: ReadonlySet<AccountOperationState> = new Set<AccountOperationState>(['aborted', 'reverted']);
 // getRandomPassword(12, 'alphanumeric', 'yes') draws from the lower-case, numeric and upper-case lists [legacy: core/mura/user/userUtility.cfc:700-722].
 const ALPHA_LCASE = 'acegikmoqsuwybdfhjlnprtvxz';
@@ -200,6 +206,14 @@ export interface AwaitAccountOpenOptions {
   selfOperationId?: string;
 }
 
+/** Options of `withOpenAccount`; `exclusive` also shuts out the user's other fenced transactions, as a compare-and-set needs. */
+export interface OpenAccountOptions extends AwaitAccountOpenOptions {
+  exclusive?: boolean;
+}
+
+/** One fenced attempt of `withOpenAccount`: the callback's result, or the operation that keeps the user closed and the ms the attempt queued for the fence. */
+type FencedAttempt<T> = { open: true; value: T } | { open: false; operationId: string; queuedMs: number };
+
 /** A roster update halted instead of diverging: its pool switch would move the account to another user pool's tenant [legacy: core/mura/user/userBean.cfc:227-239]. */
 export class AccountSaveHaltedError extends LegacyServiceUnavailableError {
   override readonly name: string = 'AccountSaveHaltedError';
@@ -230,6 +244,8 @@ interface PendingChange {
   /** Null leaves the memberships as stored. */
   memberships: { groupIds: string[]; originId: string | null } | null;
   sessionEffects?: SessionEffects;
+  /** The session epoch a claimed re-login applies at; a repeated finish applies nothing past it. */
+  reloginEpoch?: number;
   /** True once finish applied `sessionEffects`, or found nothing to apply, in a committed transaction. */
   sessionEffectsSettled?: boolean;
 }
@@ -273,7 +289,7 @@ const ABORT: StepSpec = { from: 'prepared', to: 'aborted', done: ['aborted'] };
 const FINISH: StepSpec = { from: 'committed', to: 'finished', done: ['finished'] };
 const REVERT: StepSpec = { from: 'committed', to: 'reverted', done: ['reverted'] };
 
-// operationStatus and awaitAccountOpen receive only a database handle, so they read through one repository per schema.
+// operationStatus, awaitAccountOpen and withOpenAccount receive only a database handle, so they read through one repository per schema.
 const repositories = new Map<string, IdentityRepository>();
 
 function repositoryFor(schema: string): IdentityRepository {
@@ -291,6 +307,10 @@ function userClosed(userId: string, username: string): OperationBlockedError {
 
 function isUniqueViolation(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === UNIQUE_VIOLATION;
+}
+
+function isLockNotAvailable(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === LOCK_NOT_AVAILABLE;
 }
 
 /** CFML boolean of a numeric flag. */
@@ -530,6 +550,23 @@ async function currentXid(tx: TenantTx): Promise<string> {
   return (rows[0] as { xid: string }).xid;
 }
 
+/** Holds the account fence of `userId` until `tx` ends (exclusive for a prepare or compare-and-set, shared otherwise), queuing until the `performance.now()` time `deadline`; true when it queued, throws `blocked()` on timeout. */
+async function fenceUser(tx: TenantTx, userId: string, exclusive: boolean, deadline: number, blocked: () => OperationBlockedError): Promise<boolean> {
+  const key = [`${tx.schema}.account_operation:${charKey(userId)}`];
+  const { rows } = await tx.query<{ acquired: boolean; saved: string }>(exclusive ? TRY_EXCLUSIVE_FENCE_SQL : TRY_SHARED_FENCE_SQL, key);
+  const { acquired, saved } = rows[0] as { acquired: boolean; saved: string };
+  if (acquired) return false;
+  // lock_timeout 0 disables the timeout, so a spent budget still gets the shortest positive one.
+  await tx.query(SET_LOCK_TIMEOUT_SQL, [`${Math.max(1, Math.ceil(deadline - performance.now()))}ms`]);
+  try {
+    await tx.query(exclusive ? EXCLUSIVE_FENCE_SQL : SHARED_FENCE_SQL, key);
+  } catch (err) {
+    throw isLockNotAvailable(err) ? blocked() : err;
+  }
+  await tx.query(SET_LOCK_TIMEOUT_SQL, [saved]);
+  return true;
+}
+
 /** The user's group ids whose group belongs to `originId`, the only memberships `deleteUserMemberships` then removes [legacy: core/mura/user/userDAO.cfc:502-515]. */
 async function originGroupIds(deps: AccountOperationDeps, tenantId: string, userId: string, originId: string): Promise<string[]> {
   const { db, repo } = deps;
@@ -630,11 +667,6 @@ async function membershipGroups(
   });
 }
 
-/** Thrown in a re-login's session write when another finish settled the operation's session effect first, so this write rolls back. */
-class SessionEffectSettledError extends Error {
-  override readonly name = 'SessionEffectSettledError';
-}
-
 /** Marks the operation's session effect settled under its row lock; false when it was settled already or the operation left `committed`. */
 async function settleSessionEffect(repo: IdentityRepository, tx: TenantTx, operationId: string): Promise<boolean> {
   const current = await repo.lockAccountOperation(tx, operationId);
@@ -645,11 +677,27 @@ async function settleSessionEffect(repo: IdentityRepository, tx: TenantTx, opera
   return repo.setAccountOperationState(tx, operationId, ['committed'], 'committed', patch, { operationId });
 }
 
+/** Records once the session epoch the operation's re-login applies at; the recorded epoch, or undefined once the effect is settled or the operation left `committed`. */
+async function claimRelogin(deps: AccountOperationDeps, located: LocatedOperation, epoch: number): Promise<number | undefined> {
+  const { db, repo } = deps;
+  const { operation_id: operationId } = located.row;
+  return withTenant(db, located.tenantId, async (tx) => {
+    const current = await repo.lockAccountOperation(tx, operationId);
+    if (current?.state !== 'committed') return undefined;
+    const pending = parsePending(current);
+    if (pending.sessionEffectsSettled === true) return undefined;
+    if (pending.reloginEpoch !== undefined) return pending.reloginEpoch;
+    const patch = { pending_change: JSON.stringify({ ...pending, reloginEpoch: epoch }) };
+    return (await repo.setAccountOperationState(tx, operationId, ['committed'], 'committed', patch, { operationId })) ? epoch : undefined;
+  });
+}
+
 /** Re-logs the session in from the saved rows as `loginByUserID` → `loginByQuery` do, without the plugin announcements, and settles the operation's session effect [legacy: core/mura/user/userUtility.cfc:261-388]. */
 async function relogin(deps: AccountOperationDeps, located: LocatedOperation, sessionId: string, person: PersonFields | undefined): Promise<void> {
   const { db, repo, clock } = deps;
   const { tenantId } = located;
   const { operation_id: operationId, user_id: userId } = located.row;
+  // A pre-filter only: `applyRelogin` decides on the locked session.
   const session = await locateSession(deps, sessionId);
   if (session === undefined || session.row.state !== 'active') {
     await withTenant(db, tenantId, (tx) => settleSessionEffect(repo, tx, operationId));
@@ -672,18 +720,14 @@ async function relogin(deps: AccountOperationDeps, located: LocatedOperation, se
   if (read === null) return;
   const groups = await membershipGroups(deps, tenantId, read.groupIds, read.own);
   const snapshot = buildLoginSnapshot({ account: read.account, credential: read.credential, loginState: read.loginState, contact: read.contact, groups });
-  // The session row, the last-login touch and the settled mark commit together; the touch is held with the operation's other rows.
-  const after = async (tx: TenantTx): Promise<void> => {
-    if (!(await settleSessionEffect(repo, tx, operationId))) {
-      throw new SessionEffectSettledError(`Account operation ${operationId} settled its session effect already`);
-    }
-    await repo.touchLastLogin(tx, userId, clock.now(), { operationId });
-  };
-  try {
-    await applyLogin(deps, { sessionId, tenantId, snapshot, mode: session.row.mode, siteId: session.row.site_id, after });
-  } catch (err) {
-    if (!(err instanceof SessionEffectSettledError)) throw err;
-  }
+  // The session row and the operation row live in different tenants, so the re-login applies only at the epoch its claim recorded.
+  const epoch = await claimRelogin(deps, located, Number(session.row.epoch));
+  if (epoch === undefined) return;
+  await applyRelogin(deps, { sessionId, snapshot, epoch });
+  // The settled mark and the last-login touch commit together, so a repeated finish touches nothing.
+  await withTenant(db, tenantId, async (tx) => {
+    if (await settleSessionEffect(repo, tx, operationId)) await repo.touchLastLogin(tx, userId, clock.now(), { operationId });
+  });
 }
 
 /** Validates and records the account part of a roster create or update and closes the user; a create reserves a `pending` account [legacy: core/mura/user/userManager.cfc:404-447,563-588]. */
@@ -702,7 +746,7 @@ export async function prepareAccountOperation(deps: AccountOperationDeps, input:
     throw new LegacyApiError('badRequest');
   }
 
-  await awaitAccountOpen(db, tenantId, userId, { sleep: deps.sleep });
+  const waited = await awaitAccountOpen(db, tenantId, userId, { sleep: deps.sleep });
   // bean.setValue trims every posted simple value.
   const username = javaTrim(change.username);
   const password = javaTrim(change.password);
@@ -717,6 +761,7 @@ export async function prepareAccountOperation(deps: AccountOperationDeps, input:
   await registerOperation(db, { operationId, kind: OPERATION_KIND, units });
   try {
     return await withGatedTenant(db, tenantId, async (tx): Promise<PrepareResult> => {
+      await fenceUser(tx, userId, true, performance.now() + USER_CLOSED_WAIT_MS - waited, () => userClosed(userId, username));
       const ctx: WriteContext = { operationId };
       // An operation that committed after the wait above keeps the user closed; its account is not this change's before-image.
       if ((await repo.findOpenAccountOperation(tx, { userId })) !== null) throw userClosed(userId, username);
@@ -862,16 +907,48 @@ export const operationStatus: NonNullable<MigrationHandlerOptions['operationStat
   return statuses;
 };
 
-/** Waits while another open account operation keeps `userId` closed; throws OperationBlockedError (the legacy 503) after `USER_CLOSED_WAIT_MS`. */
-export async function awaitAccountOpen(db: TenantDb, tenantId: string, userId: string, opts: AwaitAccountOpenOptions = {}): Promise<void> {
+/** Waits while another open account operation keeps `userId` closed and returns the ms waited; throws OperationBlockedError (the legacy 503) after `USER_CLOSED_WAIT_MS`. */
+export async function awaitAccountOpen(db: TenantDb, tenantId: string, userId: string, opts: AwaitAccountOpenOptions = {}): Promise<number> {
   const repo = repositoryFor(db.schema);
   const sleep = opts.sleep ?? timerSleep;
   // The wait is the sum of the sleeps, not clock time, so a frozen injected clock cannot stall it.
   for (let waited = 0; ; ) {
     const open = await withTenant(db, tenantId, (tx) => repo.findOpenAccountOperation(tx, { userId }));
-    if (open === null || open.operation_id === opts.selfOperationId) return;
+    if (open === null || open.operation_id === opts.selfOperationId) return waited;
     if (waited >= USER_CLOSED_WAIT_MS) {
       throw new OperationBlockedError([...ACCOUNT_OPERATION_UNITS], `Account operation ${open.operation_id} keeps user ${userId} closed`);
+    }
+    const step = Math.min(CLOSED_POLL_MS, USER_CLOSED_WAIT_MS - waited);
+    await sleep(step);
+    waited += step;
+  }
+}
+
+/** Runs `fn` in a gated transaction of `tenantId` holding the account fence of `userId` once no other open account operation keeps the user closed; throws OperationBlockedError (the legacy 503) after `USER_CLOSED_WAIT_MS`. */
+export async function withOpenAccount<T>(
+  db: TenantDb,
+  tenantId: string,
+  userId: string,
+  fn: (tx: TenantTx) => Promise<T>,
+  opts: OpenAccountOptions = {},
+): Promise<T> {
+  const repo = repositoryFor(db.schema);
+  const sleep = opts.sleep ?? timerSleep;
+  const fenceHeld = (): OperationBlockedError => new OperationBlockedError([...ACCOUNT_OPERATION_UNITS], `A fenced transaction keeps user ${userId} closed`);
+  // The wait is the sum of the sleeps and of the attempts that queued for the fence; each sleep runs outside any transaction.
+  for (let waited = 0; ; ) {
+    const from = performance.now();
+    const deadline = from + USER_CLOSED_WAIT_MS - waited;
+    const attempt = await withGatedTenant(db, tenantId, async (tx): Promise<FencedAttempt<T>> => {
+      const queuedMs = (await fenceUser(tx, userId, opts.exclusive === true, deadline, fenceHeld)) ? performance.now() - from : 0;
+      const open = await repo.findOpenAccountOperation(tx, { userId });
+      if (open !== null && open.operation_id !== opts.selfOperationId) return { open: false, operationId: open.operation_id, queuedMs };
+      return { open: true, value: await fn(tx) };
+    });
+    if (attempt.open) return attempt.value;
+    waited += attempt.queuedMs;
+    if (waited >= USER_CLOSED_WAIT_MS) {
+      throw new OperationBlockedError([...ACCOUNT_OPERATION_UNITS], `Account operation ${attempt.operationId} keeps user ${userId} closed`);
     }
     const step = Math.min(CLOSED_POLL_MS, USER_CLOSED_WAIT_MS - waited);
     await sleep(step);

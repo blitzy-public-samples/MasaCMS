@@ -1,8 +1,16 @@
 /** Identity session state: anonymous sessions, login and re-login, adoption of legacy sessions, hydration reads and logout. */
-import { randomBytes, randomUUID } from 'node:crypto';
-import { cfIsBoolean, cfListToArray, cfToBoolean, cfUuid, sessionCookieStrings, type LegacyCookieConfig } from '@opt2/platform/legacy-compat';
+import { randomUUID } from 'node:crypto';
+import {
+  cfIsBoolean,
+  cfListToArray,
+  cfToBoolean,
+  cfUuid,
+  jsessionidForSessionId,
+  sessionCookieStrings,
+  type LegacyCookieConfig,
+} from '@opt2/platform/legacy-compat';
 import type { Clock } from '@opt2/platform/service-kit';
-import { SYSTEM_TENANT_ID, tenantIdForSite, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
+import { SYSTEM_TENANT_ID, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import type { IdentityRepository, SessionPatch } from '../repo/repository.js';
 import type { LoginSnapshot, SessionMode, SessionRow, SessionState } from '../repo/tables.js';
 import { clearClaims, importUsedTokens, locateSession, usedTokensFor, type LocatedSession } from './csrf.js';
@@ -59,7 +67,7 @@ export interface EnsureSessionRequest {
   mode: SessionMode;
 }
 
-/** An active session; `tokens` is present when `ensureSession` generated the session id. */
+/** An active session and the tenant holding its row; `tokens` is present when `ensureSession` generated the session id. */
 export interface EnsuredSession {
   sessionId: string;
   tenantId: string;
@@ -69,10 +77,9 @@ export interface EnsuredSession {
   tokens?: SessionTokens;
 }
 
-/** A login of `snapshot` into `sessionId`; `tenantId` is the user's tenant and `mode` applies only to a new session. */
+/** A login of `snapshot` into `sessionId`; `mode` applies only to a new session. */
 export interface LoginApplication {
   sessionId: string;
-  tenantId: string;
   snapshot: LoginSnapshot;
   mode: SessionMode;
   siteId: string | null;
@@ -80,7 +87,7 @@ export interface LoginApplication {
   after?: (tx: TenantTx) => Promise<unknown>;
 }
 
-/** The session a login rebuilt. */
+/** The session a login rebuilt and the tenant holding its row. */
 export interface AppliedSession {
   sessionId: string;
   tenantId: string;
@@ -95,7 +102,7 @@ export interface AdoptOptions {
   jarRef?: string | null;
 }
 
-/** The identity session of an adopted legacy session. */
+/** The identity session of an adopted legacy session and the tenant holding its row. */
 export interface AdoptedSession {
   sessionId: string;
   tenantId: string;
@@ -139,7 +146,23 @@ type SessionValues = Required<
 /** The described user fields and role lists `setUserStruct` receives. */
 type DescribedUser = LegacyUserFields & Pick<LegacyUserStruct, 'memberships' | 'membershipids'>;
 
+/** One session effect: `known` may answer from the located row without a lock, `locked` runs on the row locked in the tenant holding it, `absent` when no row exists. */
+interface SessionEffect<T> {
+  known?(located: LocatedSession): T | undefined;
+  locked(tx: TenantTx, prior: SessionRow): Promise<T>;
+  absent(): Promise<T>;
+}
+
+/** A rebuilt session's written values and the tenant holding its row. */
+interface RebuiltSession {
+  tenantId: string;
+  values: SessionValues;
+}
+
 const UNIQUE_VIOLATION = '23505';
+
+/** `lockSession` found no row: the effect runs as for an absent session. */
+const NO_ROW = Symbol('no session row');
 
 /** The stored snapshot of a session without a user: the not-logged-in `session.mura` values [legacy: core/mura/user/userUtility.cfc:784-801]. */
 export const ANONYMOUS_LOGIN_SNAPSHOT: Readonly<LoginSnapshot> = Object.freeze(snapshotOfUserStruct(ANONYMOUS_USER_STRUCT));
@@ -230,86 +253,19 @@ function anonymousValues(mode: SessionMode, epoch: number, jarRef: string | null
   };
 }
 
-/** The ensured view of a stored session. */
-function ensuredFrom(located: LocatedSession): EnsuredSession {
-  const { row, tenantId } = located;
+/** The ensured view of a stored session of `tenantId`. */
+function ensuredFrom(row: SessionRow, tenantId: string): EnsuredSession {
   return { sessionId: row.session_id, tenantId, csrfSecret: row.csrf_secret, epoch: Number(row.epoch), created: false };
 }
 
-/** Writes `values` as the session's whole state in `tenantId`, dropping its CSRF claims and moving a row of another tenant; `after` runs in the write. */
-async function rebuildSession(
-  deps: SessionDeps,
-  sessionId: string,
-  located: LocatedSession | undefined,
-  tenantId: string,
-  values: SessionValues,
-  after?: (tx: TenantTx) => Promise<unknown>,
-): Promise<void> {
-  const { db, repo } = deps;
-  const sameTenant = located?.tenantId === tenantId;
-  if (located !== undefined && !sameTenant) {
-    await withTenant(db, located.tenantId, async (tx) => {
-      await clearClaims(repo, tx, sessionId);
-      await repo.deleteSession(tx, sessionId);
-    });
-  }
-  await withTenant(db, tenantId, async (tx) => {
-    let updated: SessionRow | null = null;
-    if (sameTenant) {
-      await clearClaims(repo, tx, sessionId);
-      updated = await repo.updateSession(tx, sessionId, values);
-    }
-    // Also covers a row deleted since it was located.
-    if (updated === null) await repo.insertSession(tx, { session_id: sessionId, ...values });
-    if (after !== undefined) await after(tx);
-  });
-}
-
-/** Inserts an active anonymous session `sessionId` under `SYSTEM_TENANT_ID`; a concurrent insert of the same id is returned instead. */
-async function insertAnonymous(deps: SessionDeps, sessionId: string, mode: SessionMode): Promise<EnsuredSession> {
-  const values = anonymousValues(mode, nextEpoch(undefined), null);
-  try {
-    await withTenant(deps.db, SYSTEM_TENANT_ID, (tx) => deps.repo.insertSession(tx, { session_id: sessionId, ...values }));
-  } catch (err) {
-    // Parallel first requests of one browser session race to create it; legacy lets them share the session.
-    const located = isUniqueViolation(err) ? await locateSession(deps, sessionId) : undefined;
-    if (located === undefined) throw err;
-    return ensuredFrom(located);
-  }
-  return { sessionId, tenantId: SYSTEM_TENANT_ID, csrfSecret: values.csrf_secret, epoch: values.epoch, created: true };
-}
-
-/** Fresh target-primary cookie values: a v4 UUID `CFID`, `CFTOKEN` 0 and 32 uppercase hex characters of `JSESSIONID`. */
-export function newSessionTokens(): SessionTokens {
-  return { cfid: randomUUID(), cftoken: '0', jsessionid: randomBytes(16).toString('hex').toUpperCase() };
-}
-
-/** The active session `sessionId`, created anonymous when absent and reactivated anonymous when ended; the id never changes. */
-export async function ensureSession(deps: SessionDeps, request: EnsureSessionRequest): Promise<EnsuredSession> {
-  if (request.sessionId === undefined) {
-    const tokens = newSessionTokens();
-    return { ...(await insertAnonymous(deps, tokens.jsessionid, request.mode)), tokens };
-  }
-  const { sessionId, mode } = request;
-  const located = await locateSession(deps, sessionId);
-  if (located === undefined) return insertAnonymous(deps, sessionId, mode);
-  if (located.row.state === 'active') return ensuredFrom(located);
-  const values = anonymousValues(mode, nextEpoch(located.row), located.row.jar_ref);
-  await rebuildSession(deps, sessionId, located, SYSTEM_TENANT_ID, values);
-  return { sessionId, tenantId: SYSTEM_TENANT_ID, csrfSecret: values.csrf_secret, epoch: values.epoch, created: false };
-}
-
-/** Logs `snapshot` into the session as `setUserStruct` does: fresh CSRF secret, no used tokens, next epoch, same id [legacy: core/mura/user/userUtility.cfc:749-783]. */
-export async function applyLogin(deps: SessionDeps, login: LoginApplication): Promise<AppliedSession> {
-  const { sessionId, tenantId, snapshot } = login;
-  const located = await locateSession(deps, sessionId);
-  const prior = located?.row;
-  const values: SessionValues = {
+/** The values of `snapshot` logged into a session at `siteId`: fresh CSRF secret, next epoch, the prior mode (else `mode`), jar and admin state. */
+function loginValues(prior: SessionRow | undefined, snapshot: LoginSnapshot, siteId: string | null, mode: SessionMode): SessionValues {
+  return {
     user_id: snapshot.userid,
-    site_id: login.siteId,
+    site_id: siteId,
     login_snapshot: JSON.stringify(snapshot),
     csrf_secret: cfUuid(),
-    mode: prior?.mode ?? login.mode,
+    mode: prior?.mode ?? mode,
     state: 'active',
     jar_ref: prior?.jar_ref ?? null,
     ended_at: null,
@@ -317,50 +273,169 @@ export async function applyLogin(deps: SessionDeps, login: LoginApplication): Pr
     admin_state: withoutMuraValues(prior?.admin_state ?? null),
     epoch: nextEpoch(prior),
   };
-  await rebuildSession(deps, sessionId, located, tenantId, values, login.after);
+}
+
+/** Runs `effect` as `known` answers the located row, else on its row locked FOR UPDATE in its tenant, else as `absent`, once more after a concurrent create. */
+async function sessionEffect<T>(deps: SessionDeps, sessionId: string, effect: SessionEffect<T>): Promise<T> {
+  const { db, repo } = deps;
+  let retried = false;
+  for (;;) {
+    const located = await locateSession(deps, sessionId);
+    if (located !== undefined) {
+      const known = effect.known?.(located);
+      if (known !== undefined) return known;
+      const outcome = await withTenant(db, located.tenantId, async (tx): Promise<T | typeof NO_ROW> => {
+        const prior = await repo.lockSession(tx, sessionId, 'update');
+        return prior === null ? NO_ROW : effect.locked(tx, prior);
+      });
+      if (outcome !== NO_ROW) return outcome;
+    }
+    try {
+      return await effect.absent();
+    } catch (err) {
+      if (retried || !isUniqueViolation(err)) throw err;
+      retried = true;
+    }
+  }
+}
+
+/** Inserts the session under `SYSTEM_TENANT_ID` with `values`; `after` runs in the same transaction. */
+async function insertSession(deps: SessionDeps, sessionId: string, values: SessionValues, after?: (tx: TenantTx) => Promise<unknown>): Promise<void> {
+  await withTenant(deps.db, SYSTEM_TENANT_ID, async (tx) => {
+    await deps.repo.insertSession(tx, { session_id: sessionId, ...values });
+    if (after !== undefined) await after(tx);
+  });
+}
+
+/** Writes `values` as the locked session's whole state in place, dropping its CSRF claims; `after` runs in the same transaction. */
+async function rewriteSession(
+  repo: IdentityRepository,
+  tx: TenantTx,
+  sessionId: string,
+  values: SessionValues,
+  after?: (tx: TenantTx) => Promise<unknown>,
+): Promise<void> {
+  await clearClaims(repo, tx, sessionId);
+  await repo.updateSession(tx, sessionId, values);
+  if (after !== undefined) await after(tx);
+}
+
+/** Rebuilds the session from `build` of its locked prior row, inserting it under `SYSTEM_TENANT_ID` when absent; `after` runs in the write. */
+function rebuildSession(
+  deps: SessionDeps,
+  sessionId: string,
+  build: (prior: SessionRow | undefined) => SessionValues,
+  after?: (tx: TenantTx) => Promise<unknown>,
+): Promise<RebuiltSession> {
+  return sessionEffect(deps, sessionId, {
+    async locked(tx, prior) {
+      const values = build(prior);
+      await rewriteSession(deps.repo, tx, sessionId, values, after);
+      return { tenantId: tx.tenantId, values };
+    },
+    async absent() {
+      const values = build(undefined);
+      await insertSession(deps, sessionId, values, after);
+      return { tenantId: SYSTEM_TENANT_ID, values };
+    },
+  });
+}
+
+/** Inserts an active anonymous session `sessionId` under `SYSTEM_TENANT_ID`. */
+async function insertAnonymous(deps: SessionDeps, sessionId: string, mode: SessionMode): Promise<EnsuredSession> {
+  const values = anonymousValues(mode, nextEpoch(undefined), null);
+  await insertSession(deps, sessionId, values);
+  return { sessionId, tenantId: SYSTEM_TENANT_ID, csrfSecret: values.csrf_secret, epoch: values.epoch, created: true };
+}
+
+/** Target-primary cookie values of session `sessionId`: a fresh v4 UUID `CFID`, `CFTOKEN` 0 and the `JSESSIONID` naming the session. */
+export function newSessionTokens(sessionId: string): SessionTokens {
+  return { cfid: randomUUID(), cftoken: '0', jsessionid: jsessionidForSessionId(sessionId) };
+}
+
+/** The active session `sessionId`, created anonymous when absent and reactivated anonymous when ended; the id never changes. */
+export async function ensureSession(deps: SessionDeps, request: EnsureSessionRequest): Promise<EnsuredSession> {
+  if (request.sessionId === undefined) {
+    const sessionId = cfUuid();
+    return { ...(await insertAnonymous(deps, sessionId, request.mode)), tokens: newSessionTokens(sessionId) };
+  }
+  const { sessionId, mode } = request;
+  return sessionEffect(deps, sessionId, {
+    known: ({ row, tenantId }) => (row.state === 'active' ? ensuredFrom(row, tenantId) : undefined),
+    async locked(tx, prior) {
+      // A concurrent request may have reactivated the row since it was located ended.
+      if (prior.state === 'active') return ensuredFrom(prior, tx.tenantId);
+      const values = anonymousValues(mode, nextEpoch(prior), prior.jar_ref);
+      await rewriteSession(deps.repo, tx, sessionId, values);
+      return { sessionId, tenantId: tx.tenantId, csrfSecret: values.csrf_secret, epoch: values.epoch, created: false };
+    },
+    absent: () => insertAnonymous(deps, sessionId, mode),
+  });
+}
+
+/** Logs `snapshot` into the session as `setUserStruct` does: fresh CSRF secret, no used tokens, next epoch, same id [legacy: core/mura/user/userUtility.cfc:749-783]. */
+export async function applyLogin(deps: SessionDeps, login: LoginApplication): Promise<AppliedSession> {
+  const { sessionId, snapshot } = login;
+  const { tenantId, values } = await rebuildSession(deps, sessionId, (prior) => loginValues(prior, snapshot, login.siteId, login.mode), login.after);
   return { sessionId, tenantId, epoch: values.epoch, csrfSecret: values.csrf_secret, mode: values.mode };
+}
+
+/** Re-logs `snapshot` into the session at its stored site as `applyLogin` does, only while it is active at `epoch`; undefined leaves an ended, unknown or since-changed session unchanged. */
+export function applyRelogin(deps: SessionDeps, relogin: Pick<LoginApplication, 'sessionId' | 'snapshot'> & { epoch: number }): Promise<AppliedSession | undefined> {
+  const { sessionId, snapshot, epoch } = relogin;
+  return sessionEffect<AppliedSession | undefined>(deps, sessionId, {
+    async locked(tx, prior) {
+      if (prior.state !== 'active' || Number(prior.epoch) !== epoch) return undefined;
+      const values = loginValues(prior, snapshot, prior.site_id, prior.mode);
+      await rewriteSession(deps.repo, tx, sessionId, values);
+      return { sessionId, tenantId: tx.tenantId, epoch: values.epoch, csrfSecret: values.csrf_secret, mode: values.mode };
+    },
+    absent: async () => undefined,
+  });
 }
 
 /** Creates or updates the identity session of a described legacy session; a changed CSRF secret means legacy logged in or out since. */
 export async function adoptLegacySession(deps: SessionDeps, describe: LegacyDescribe, opts: AdoptOptions): Promise<AdoptedSession> {
-  const { db, repo, clock } = deps;
+  const { repo, clock } = deps;
   const { legacySessionId: sessionId, describe: description } = describe;
   const loggedIn = cfFlag(structValue(description.user, 'isLoggedIn'));
   const user = loggedIn ? describedUser(description) : ANONYMOUS_USER_STRUCT;
-  const tenantId = loggedIn ? tenantIdForSite(user.siteID) : SYSTEM_TENANT_ID;
   // The contract carries token keys only; stamping them now keeps each at least as long as legacy's purge would.
   const usedAt = clock.now();
   const usedTokens = description.usedTokens.map((token) => ({ token, usedAt }));
-  const located = await locateSession(deps, sessionId);
-  const jarRef = opts.jarRef === undefined ? (located?.row.jar_ref ?? null) : opts.jarRef;
-
-  if (
-    located !== undefined &&
-    located.tenantId === tenantId &&
-    located.row.state === 'active' &&
-    located.row.csrf_secret === description.csrfSecretKey
-  ) {
-    await withTenant(db, tenantId, async (tx) => {
-      await repo.updateSession(tx, sessionId, { mode: opts.mode, jar_ref: jarRef });
-      await importUsedTokens(repo, tx, sessionId, usedTokens);
-    });
-    return { sessionId, tenantId, epoch: Number(located.row.epoch), mode: opts.mode };
-  }
-
-  const values: SessionValues = {
+  const importTokens = (tx: TenantTx): Promise<number> => importUsedTokens(repo, tx, sessionId, usedTokens);
+  const jarRefOf = (prior: SessionRow | undefined): string | null => (opts.jarRef === undefined ? (prior?.jar_ref ?? null) : opts.jarRef);
+  const valuesOf = (prior: SessionRow | undefined): SessionValues => ({
     user_id: loggedIn ? user.userID : null,
     site_id: describe.siteId,
     login_snapshot: JSON.stringify(snapshotOfUserStruct(user)),
     csrf_secret: description.csrfSecretKey,
     mode: opts.mode,
     state: 'active',
-    jar_ref: jarRef,
+    jar_ref: jarRefOf(prior),
     ended_at: null,
-    admin_state: withoutMuraValues(located?.row.admin_state ?? null),
-    epoch: nextEpoch(located?.row),
-  };
-  await rebuildSession(deps, sessionId, located, tenantId, values, (tx) => importUsedTokens(repo, tx, sessionId, usedTokens));
-  return { sessionId, tenantId, epoch: values.epoch, mode: opts.mode };
+    admin_state: withoutMuraValues(prior?.admin_state ?? null),
+    epoch: nextEpoch(prior),
+  });
+  const adopted = (tenantId: string, epoch: number): AdoptedSession => ({ sessionId, tenantId, epoch, mode: opts.mode });
+
+  return sessionEffect(deps, sessionId, {
+    async locked(tx, prior) {
+      if (prior.state === 'active' && prior.csrf_secret === description.csrfSecretKey) {
+        await repo.updateSession(tx, sessionId, { mode: opts.mode, jar_ref: jarRefOf(prior) });
+        await importTokens(tx);
+        return adopted(tx.tenantId, Number(prior.epoch));
+      }
+      const values = valuesOf(prior);
+      await rewriteSession(repo, tx, sessionId, values, importTokens);
+      return adopted(tx.tenantId, values.epoch);
+    },
+    async absent() {
+      const values = valuesOf(undefined);
+      await insertSession(deps, sessionId, values, importTokens);
+      return adopted(SYSTEM_TENANT_ID, values.epoch);
+    },
+  });
 }
 
 /** The session's state, epoch, mode, user and site; an unknown session reads as ended with epoch 0. */
@@ -375,9 +450,14 @@ export async function sessionState(deps: SessionDeps, sessionId: string): Promis
 export async function sessionSnapshot(deps: SessionDeps, sessionId: string): Promise<SessionSnapshot | undefined> {
   const { db, repo, clock } = deps;
   const located = await locateSession(deps, sessionId);
-  if (located === undefined || located.row.state !== 'active') return undefined;
-  const { row, tenantId } = located;
-  const usedTokens = await withTenant(db, tenantId, (tx) => usedTokensFor(repo, tx, sessionId, clock.now()));
+  if (located === undefined) return undefined;
+  // The shared lock holds off session effects, so the row and its used tokens come from one epoch.
+  const read = await withTenant(db, located.tenantId, async (tx) => {
+    const row = await repo.lockSession(tx, sessionId, 'share');
+    return row === null || row.state !== 'active' ? undefined : { row, usedTokens: await usedTokensFor(repo, tx, sessionId, clock.now()) };
+  });
+  if (read === undefined) return undefined;
+  const { row, usedTokens } = read;
   const loginSnapshot = storedSnapshot(row);
   return {
     sessionId,
@@ -391,15 +471,17 @@ export async function sessionSnapshot(deps: SessionDeps, sessionId: string): Pro
 }
 
 /** Ends the session as logout clears its scope, keeping the id; an ended session is unchanged [legacy: core/mura/login/loginManager.cfc:476-516]. */
-export async function endSession(deps: SessionDeps, sessionId: string): Promise<EndedSession> {
-  const located = await locateSession(deps, sessionId);
-  if (located === undefined) return { epoch: 0 };
-  const { row, tenantId } = located;
-  if (row.state === 'ended') return { epoch: Number(row.epoch) };
-  // The gateway drops the legacy cookie jar after ending, so its reference goes too.
-  const values: SessionValues = { ...anonymousValues(row.mode, nextEpoch(row), null), state: 'ended', ended_at: deps.clock.now() };
-  await rebuildSession(deps, sessionId, located, tenantId, values);
-  return { epoch: values.epoch };
+export function endSession(deps: SessionDeps, sessionId: string): Promise<EndedSession> {
+  return sessionEffect(deps, sessionId, {
+    async locked(tx, prior) {
+      if (prior.state === 'ended') return { epoch: Number(prior.epoch) };
+      // The gateway drops the legacy cookie jar after ending, so its reference goes too.
+      const values: SessionValues = { ...anonymousValues(prior.mode, nextEpoch(prior), null), state: 'ended', ended_at: deps.clock.now() };
+      await rewriteSession(deps.repo, tx, sessionId, values);
+      return { epoch: values.epoch };
+    },
+    absent: async () => ({ epoch: 0 }),
+  });
 }
 
 /** `Set-Cookie` values of the session cookies `CFID`, `CFTOKEN` and `JSESSIONID` with their legacy attributes [legacy: core/mura/utility.cfc:708-735]. */

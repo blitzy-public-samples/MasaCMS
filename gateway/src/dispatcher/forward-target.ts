@@ -1,10 +1,10 @@
 // Forwards a target-bound request to its owning service or to web with gateway-issued credentials; failures fail closed.
 import { channel } from 'node:diagnostics_channel';
 import type { IncomingHttpHeaders } from 'node:http';
-import { finished } from 'node:stream';
 import type { FastifyReplyFromHooks, FastifyReplyFromResponse } from '@fastify/reply-from';
 import type { HeaderMap, InvocationMinter } from '@opt2/platform/auth';
-import { WRITE_POSITION_HEADER_LC, parseWritePosition } from '@opt2/platform/migration-kit';
+import { serializeError } from '@opt2/platform/logging';
+import { WRITE_POSITION_HEADER_LC, parseWritePosition, type WritePositions } from '@opt2/platform/migration-kit';
 import {
   REQUEST_ID_HEADER,
   SERVICE_CALL_TIMEOUT_MS,
@@ -15,7 +15,7 @@ import {
 import { injectHttpHeaders } from '@opt2/platform/tracing';
 import type { SessionMode } from '../session/mode.js';
 import type { SessionBarrier } from './barrier.js';
-import { failClosed, isTargetUnavailable, type FailContext } from './fail-closed.js';
+import { failClosed, isTargetUnavailable, neverSent, type FailContext } from './fail-closed.js';
 import {
   HOP_BY_HOP_HEADERS,
   applyLegacyHeaders,
@@ -23,6 +23,7 @@ import {
   isWebPageRedirect,
   normaliseWebResponseHeaders,
 } from './headers.js';
+import { settlingRelay } from './settling-relay.js';
 
 /** A target's status and headers as received; a `set-cookie` header is always a list. */
 export interface TargetUpstream {
@@ -50,6 +51,8 @@ export interface TargetForwardContext {
   forwardBody?: boolean;
   /** Identity session whose barrier records the response's write positions. */
   sessionId?: string;
+  /** True for a write the session's legacy reads must await; it is declared in the barrier before it is forwarded. */
+  declaresWrite?: boolean;
   /** Session mode of the active version, reported with forwarding failures. */
   mode: SessionMode;
   /** True for web, whose responses are normalised and whose every 5xx fails closed. */
@@ -57,12 +60,13 @@ export interface TargetForwardContext {
   failContext: FailContext;
   /** Mints the gateway's own invocation credential for the callee. */
   invocation: InvocationMinter;
-  barrier: Pick<SessionBarrier, 'record'>;
+  /** Declares a write and records the response's write positions; when recording fails, legacy confirms them before the response leaves. */
+  barrier: Pick<SessionBarrier, 'declare' | 'record' | 'release' | 'awaitPositions' | 'awaitOwners'>;
   /** Returns the `Set-Cookie` values the client receives for the target's (possibly empty) list. */
   mapSetCookies?: (setCookies: string[]) => Promise<string[]>;
-  /** Runs once the client response is ready, before any byte is sent; a rejection is logged, never answered. */
+  /** Runs once the client response is ready, before any byte is sent; a rejection answers the legacy-shaped 503 instead. */
   beforeSend?: (upstream: TargetUpstream) => Promise<void>;
-  /** Called exactly once, after the upstream exchange ended, failed or was never started. */
+  /** Called at most once, only when the target can no longer commit: its response completed or the request never reached it. */
   onSettled?: () => Promise<void>;
 }
 
@@ -98,6 +102,15 @@ function connectionTokens(value: string | string[] | undefined): Set<string> {
 
 function isNextRouterHeader(name: string): boolean {
   return NEXT_ROUTER_HEADERS.has(name) || name.startsWith(NEXT_ROUTER_HEADER_PREFIX);
+}
+
+/** The owner names a write-position header lists, valid or not, plus the callee's, each once. */
+function listedOwners(value: string | string[], service: string): string[] {
+  const owners = (Array.isArray(value) ? value.join(',') : value).split(',').map((entry) => {
+    const equals = entry.indexOf('=');
+    return (equals === -1 ? entry : entry.slice(0, equals)).trim();
+  });
+  return [...new Set([...owners.filter((owner) => owner !== ''), service])];
 }
 
 /**
@@ -180,6 +193,8 @@ export async function forwardToTarget(
 ): Promise<FastifyReply> {
   const logFields = { service: ctx.service, sessionMode: ctx.mode };
   let settled = false;
+  /** Session whose declaration of this write the exchange still holds. */
+  let declared: string | undefined;
   /** Runs `onSettled` once; a later call returns at once and a failure is logged. */
   const settle = async (): Promise<void> => {
     if (settled) return;
@@ -187,14 +202,33 @@ export async function forwardToTarget(
     try {
       await ctx.onSettled?.();
     } catch (error) {
-      request.log.error({ ...logFields, error }, 'target forward onSettled failed');
+      request.log.error({ ...logFields, error: serializeError(error) }, 'target forward onSettled failed');
+    }
+  };
+  /** Ends the held declaration of a write legacy need not await; a failure only adds an owner await to each later legacy read. */
+  const release = async (): Promise<void> => {
+    const sessionId = declared;
+    declared = undefined;
+    if (sessionId === undefined) return;
+    try {
+      await ctx.barrier.release(sessionId, ctx.service);
+    } catch (error) {
+      request.log.error({ ...logFields, error: serializeError(error) }, 'target write declaration not released');
     }
   };
   /** Settles an exchange that never reached the callee, then answers the 503. */
   const failUnsent = async (error: unknown, message: string): Promise<FastifyReply> => {
-    request.log.error({ ...logFields, error }, message);
+    request.log.error({ ...logFields, error: serializeError(error) }, message);
     await settle();
+    await release();
     return failClosed(reply, ctx.failContext);
+  };
+  /** Logs an end after which the target may still commit, which therefore leaves the exchange unsettled. */
+  const unsettled = (error: unknown): void => {
+    request.log.warn(
+      { ...logFields, error: serializeError(error) },
+      'target exchange ended uncertainly; in-flight registration kept',
+    );
   };
 
   let credential: Record<string, string>;
@@ -207,14 +241,40 @@ export async function forwardToTarget(
     return failUnsent(error, 'invocation credential for target forward failed');
   }
 
-  /** Records the response's write positions for the session; the write committed, so a failure is only logged. */
+  // Web's writes reach the services through the relay, which declares them there.
+  const declaring = ctx.declaresWrite === true && !ctx.isWeb ? ctx.sessionId : undefined;
+  if (declaring !== undefined) {
+    try {
+      await ctx.barrier.declare(declaring, ctx.service);
+    } catch (error) {
+      return failUnsent(error, 'target write declaration failed');
+    }
+    declared = declaring;
+  }
+
+  /** Records the response's write positions for the session; when that fails, legacy confirms them before any byte leaves. */
   async function recordPositions(value: string | string[] | undefined): Promise<void> {
     if (value === undefined || ctx.sessionId === undefined) return;
+    // Recording ends the declaration; unrecorded, it ends only once legacy confirms the write, so legacy reads await the owner.
+    const owner = declared === undefined ? undefined : ctx.service;
+    let positions: WritePositions;
     try {
-      await ctx.barrier.record(ctx.sessionId, parseWritePosition(value));
+      positions = parseWritePosition(value);
     } catch (error) {
-      request.log.error({ ...logFields, error }, 'target write position not recorded');
+      request.log.error({ ...logFields, error: serializeError(error) }, 'target write position not recorded');
+      await ctx.barrier.awaitOwners(listedOwners(value, ctx.service));
+      await release();
+      return;
     }
+    try {
+      await ctx.barrier.record(ctx.sessionId, positions, owner);
+    } catch (error) {
+      request.log.error({ ...logFields, error: serializeError(error) }, 'target write position not recorded');
+      await ctx.barrier.awaitPositions(positions);
+      await release();
+      return;
+    }
+    declared = undefined;
   }
 
   async function respond(res: FastifyReplyFromResponse): Promise<void> {
@@ -243,8 +303,13 @@ export async function forwardToTarget(
     try {
       await ctx.beforeSend?.(upstream);
     } catch (error) {
-      request.log.error({ ...logFields, error }, 'target forward beforeSend failed');
+      request.log.error({ ...logFields, error: serializeError(error) }, 'target forward beforeSend failed');
+      res.stream.resume();
+      failClosed(reply, ctx.failContext);
+      return;
     }
+    // Answered without a write position, the write committed nothing the session's legacy reads must await.
+    await release();
     if (pageRedirect) {
       res.stream.resume();
       reply.code(LEGACY_REDIRECT_STATUS).send();
@@ -269,18 +334,20 @@ export async function forwardToTarget(
     timeout: SERVICE_CALL_TIMEOUT_MS,
     retriesCount: 0,
     // Runs once per exchange, before reply-from may destroy the response of an aborted client; null disables retries.
-    retryDelay: ({ res }) => {
-      if (ctx.onSettled === undefined) return null;
+    retryDelay: ({ err, res }) => {
+      if (ctx.onSettled === undefined && declared === undefined) return null;
       // Typed as the reply, but reply-from passes the upstream response here, or nothing when the exchange failed.
       const upstream = res as unknown as FastifyReplyFromResponse | undefined;
-      if (upstream === undefined) void settle();
-      else finished(upstream.stream, () => void settle());
+      // The same object reaches reply-from's abort check and onResponse, so both see only the relay.
+      if (upstream !== undefined) upstream.stream = settlingRelay(upstream.stream, () => settle(), unsettled);
+      else if (neverSent(err)) void Promise.all([settle(), release()]);
+      else unsettled(err);
       return null;
     },
     onResponse: (_request, _reply, res) => {
       // No byte has reached the client before `respond` sends, so a failure here answers the 503.
       respond(res).catch((error: unknown) => {
-        request.log.error({ ...logFields, error }, 'target response failed');
+        request.log.error({ ...logFields, error: serializeError(error) }, 'target response failed');
         res.stream.destroy();
         failClosed(reply, ctx.failContext);
       });

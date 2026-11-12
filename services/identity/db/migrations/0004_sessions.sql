@@ -1,5 +1,5 @@
 -- Identity session, CSRF claim, roster account operation, person-contact projection and producer sequence tables.
--- Tenant is the account's (anonymous: nil system tenant); login_snapshot is the loginByQuery result fixed at login; jar_ref keys the gateway's cookie jar.
+-- A session row stays under the tenant it was created in (new sessions: nil system tenant); login_snapshot is the loginByQuery result fixed at login; jar_ref keys the gateway's cookie jar.
 CREATE TABLE identity.session (
   tenant_id uuid NOT NULL,
   session_id text NOT NULL,

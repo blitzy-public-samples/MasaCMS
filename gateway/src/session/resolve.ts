@@ -1,5 +1,5 @@
 // Session resolution: the identity session a gateway request acts in, legacy-session adoption and the jar mapping.
-import { parseCookieHeader, type RouteFamily } from '@opt2/platform/legacy-compat';
+import { parseCookieHeader, sessionIdForJsessionid, type RouteFamily } from '@opt2/platform/legacy-compat';
 import { IDENTITY_SERVICE, ServiceUnavailableError } from '@opt2/platform/service-kit';
 import type { BridgeClient } from './bridge-client.js';
 import type { AdoptedSession, IdentityClient, LegacyDescribe, RestAuthOutcome } from './identity-client.js';
@@ -23,7 +23,7 @@ import type { SessionStateChecker } from './state-check.js';
 /** Legacy `siteid` fallback when a request names no site (contentServer.cfc:610-622). */
 const DEFAULT_SITE_ID = 'default';
 
-/** Identity's target-primary session id is the `JSESSIONID` value it issues; `CFID` and `CFTOKEN` carry no id. */
+/** Identity's target-primary `JSESSIONID` names the session id; `CFID` and `CFTOKEN` carry no id. */
 const TARGET_SESSION_COOKIE = 'JSESSIONID';
 
 /** The client request facts session resolution reads; header names are lower-cased, as Node delivers them. */
@@ -49,6 +49,8 @@ export type SessionResolution =
        */
       legacyCookies: Record<string, JarCookie>;
       setCookies: string[];
+      /** Set once a legacy logout of the session began and identity has not confirmed its end, which must complete before any use. */
+      identityEndPending?: true;
     }
   | { kind: 'response'; status: number; headers: Record<string, string>; body: string }
   | { kind: 'none'; setCookies: string[] };
@@ -133,10 +135,10 @@ function adoptedJar(
   };
 }
 
-/** The identity session id in identity-issued cookies, or undefined when they carry none. */
+/** The identity session id identity-issued cookies name through `JSESSIONID`, or undefined when they carry none. */
 export function sessionIdFromTargetCookies(cookies: ReadonlyMap<string, string>): string | undefined {
   const value = cookies.get(TARGET_SESSION_COOKIE);
-  return value === undefined || value === '' ? undefined : value;
+  return value === undefined || value === '' ? undefined : sessionIdForJsessionid(value);
 }
 
 /** A request header's value; repeated fields join as one `Cookie` header does. */
@@ -175,6 +177,11 @@ function none(setCookies: string[] = []): SessionResolution {
   return { kind: 'none', setCookies };
 }
 
+/** The pending-end flag of a session whose jar `row` carries the mark; empty otherwise. */
+function pendingEnd(row: JarRow | undefined): { identityEndPending?: true } {
+  return row?.identityEndPendingAt === undefined ? {} : { identityEndPending: true };
+}
+
 /** A session resolution; only target-primary swaps the jar's cookies in for the request's own. */
 function session(
   sessionId: string,
@@ -184,7 +191,7 @@ function session(
   setCookies: string[],
 ): SessionResolution {
   const legacyCookies = mode === 'target-primary' ? (row?.cookies ?? {}) : {};
-  return { kind: 'session', sessionId, epoch, mode, legacyCookies, setCookies };
+  return { kind: 'session', sessionId, epoch, mode, legacyCookies, setCookies, ...pendingEnd(row) };
 }
 
 /** Identity's legacy answer for a `denied` or `answered` outcome; without one, identity counts as unavailable. */
@@ -360,15 +367,26 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
         mode: 'legacy-primary',
         legacyCookies: stored.cookies,
         setCookies,
+        ...pendingEnd(stored),
       };
     });
   }
 
-  /** The switch back of the target-primary jar the request's target cookie names; undefined when it names none. */
+  /**
+   * The switch back of the target-primary jar the request's target cookie names; undefined when it names none or its
+   * session ended. A jar marked pending-end resolves to its own flagged session instead, whose end completes first.
+   */
   async function restoreTargetJar(request: SessionRequestInput, siteId: string | undefined) {
     const candidate = sessionIdFromTargetCookies(parseCookieHeader(headerValue(request.headers, 'cookie')));
     const targetRow = candidate === undefined ? undefined : await jar.get(candidate);
-    return targetRow?.mode === 'target-primary' ? switchBack(request, targetRow, siteId) : undefined;
+    if (targetRow?.mode !== 'target-primary') return undefined;
+    // An ended session's jar holds the legacy session its logout still owes an end, so it is never handed back.
+    const check = await state.check(targetRow.sessionId);
+    if (check.state !== 'active') return undefined;
+    if (targetRow.identityEndPendingAt !== undefined) {
+      return session(targetRow.sessionId, check.epoch, 'legacy-primary', targetRow, []);
+    }
+    return switchBack(request, targetRow, siteId);
   }
 
   /** Switch backs by request object, so each legacy-primary resolution of one request acts in the restored session. */

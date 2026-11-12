@@ -11,7 +11,7 @@ import { createLogger } from '@opt2/platform/logging';
 import { ensureUnitGates, registerWritePositionHeader, withGatedTenant } from '@opt2/platform/migration-kit';
 import { createOutbox } from '@opt2/platform/outbox';
 import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
-import { tenantIdForSite, withMetadata, withTenant, type TenantDb } from '@opt2/platform/tenancy';
+import { SYSTEM_TENANT_ID, tenantIdForSite, withMetadata, withTenant, type TenantDb } from '@opt2/platform/tenancy';
 import {
   assertResponseMatchesOpenApi,
   createCapturingPublisher,
@@ -315,7 +315,7 @@ describe.skipIf(!available)('operations against PostgreSQL', () => {
   }
 
   function sessionOf(sessionId: string): Promise<SessionRow | null> {
-    return withTenant(db(), tenantIdForSite(SITE), (tx) => repo.findSession(tx, sessionId));
+    return withTenant(db(), SYSTEM_TENANT_ID, (tx) => repo.findSession(tx, sessionId));
   }
 
   async function pendingChangeOf(operationId: string, site = SITE): Promise<Record<string, unknown>> {
@@ -340,7 +340,6 @@ describe.skipIf(!available)('operations against PostgreSQL', () => {
       { db: db(), repo, clock: fixedClock(NOW) },
       {
         sessionId,
-        tenantId: tenantIdForSite(SITE),
         snapshot: {
           userid: userId, username, siteid: SITE, subtype: 'Default', password: null, fname: 'Old', lname: 'Name', email: 'old@example.test',
           remoteid: '', company: '', lastlogin: null, passwordcreated: null, roleList: `${username};username;${SITE}`, membershipIds: userId,

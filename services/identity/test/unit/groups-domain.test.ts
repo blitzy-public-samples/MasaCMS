@@ -2,10 +2,10 @@
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createLogger } from '@opt2/platform/logging';
-import { ensureUnitGates, withGatedTenant } from '@opt2/platform/migration-kit';
+import { OperationBlockedError, ensureUnitGates, withGatedTenant } from '@opt2/platform/migration-kit';
 import { createOutbox } from '@opt2/platform/outbox';
 import type { Clock } from '@opt2/platform/service-kit';
-import { tenantIdForSite, withMetadata, withTenant, type TenantTx } from '@opt2/platform/tenancy';
+import { currentTransaction, tenantIdForSite, withMetadata, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { cfHash } from '@opt2/platform/legacy-compat';
 import { createCapturingPublisher, createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
@@ -21,13 +21,22 @@ import {
   newGroupRecord,
   removeFromGroup,
   resolveGroupSite,
+  streamGroupMembers,
   updateGroup,
   type GroupActor,
   type GroupDeps,
 } from '../../src/domain/groups.js';
+import {
+  USER_CLOSED_WAIT_MS,
+  abortAccountOperation,
+  commitAccountOperation,
+  finishAccountOperation,
+  prepareAccountOperation,
+  type AccountOperationDeps,
+} from '../../src/domain/account-operations.js';
 import { createIdentityEvents, identityPayloadValidators } from '../../src/events/publish.js';
 import { verifyLegacyPassword } from '../../src/legacy/hash.js';
-import { createIdentityRepository, type IdentityRepository } from '../../src/repo/repository.js';
+import { READ_PAGE_SIZE, createIdentityRepository, type IdentityRepository } from '../../src/repo/repository.js';
 import { GROUP_TRASH, IDENTITY_UNITS, type GroupAddressRow, type GroupTrashRow } from '../../src/repo/tables.js';
 
 /** The ttrash.objectString ACF 2023 stored for a group deleted through userManager.delete, as test/unit/wddx.test.ts records it. */
@@ -346,6 +355,29 @@ describe.skipIf(!available)('groups domain', () => {
     expect((await outbox(SITE_A)).length).toBe(before);
   });
 
+  it.each([
+    ['ends during the first wait, then lands', true],
+    ['outlasts the wait, answering the legacy 503 with nothing written', false],
+  ] as const)('holds a membership change of a user an open account operation keeps closed: one that %s', async (_case, ends) => {
+    const groupId = next('B');
+    await createGroup(deps(), SUPER, { userId: groupId, siteId: SITE_A, isPublic: '0', groupName: 'Held', perm: '0' });
+    const userId = await seedUser(SITE_A);
+    const operationId = (await gated(SITE_A, (tx) => repo.insertAccountOperation(tx, { user_id: userId, kind: 'update', state: 'prepared' }))).operation_id;
+    const before = (await outbox(SITE_A)).length;
+    const sleeps: number[] = [];
+    const sleep = async (ms: number): Promise<void> => {
+      sleeps.push(ms);
+      if (ends && sleeps.length === 1) await gated(SITE_A, (tx) => repo.setAccountOperationState(tx, operationId, ['prepared'], 'aborted'));
+    };
+
+    const outcome = await addToGroup({ ...deps(), sleep }, { userId, groupId }).catch((err: unknown) => err);
+
+    expect(outcome).toEqual(ends ? true : expect.any(OperationBlockedError));
+    expect(sleeps.reduce((sum, ms) => sum + ms, 0)).toBe(ends ? sleeps[0] : USER_CLOSED_WAIT_MS);
+    expect(await gated(SITE_A, (tx) => repo.membershipGroupIds(tx, userId))).toEqual(ends ? [groupId] : []);
+    expect((await outbox(SITE_A)).length).toBe(ends ? before + 1 : before);
+  });
+
   it('adds idempotently, removes, emits full sets, lists members and groups with counters', async () => {
     const groupId = next('B');
     await createGroup(deps(), SUPER, { userId: groupId, siteId: SITE_A, isPublic: '0', groupName: 'Team', perm: '1' });
@@ -374,5 +406,412 @@ describe.skipIf(!available)('groups domain', () => {
     expect((await outbox(SITE_A)).at(-1)?.payload).toEqual({ userId: amy, siteId: SITE_A, groupIds: [] });
     expect(newGroupRecord(clock, 'X')).toMatchObject({ userid: 'X', ispublic: 1, subtype: 'Default', type: 1, subscribe: 1 });
     expect((await findGroupForSite(deps(), { groupId, siteId: SITE_B }))?.tenantId).toBe(tenantIdForSite(SITE_A));
+  });
+
+  describe('collection reads', () => {
+    const CLOSED_SITE = 'closed-pool';
+    const PAGE_SITE = 'page-pool';
+    const COUNT_SITE = 'count-pool';
+    const REPLAY_SITE = 'replay-pool';
+    type Statement = { tenantId: string; text: string };
+
+    beforeAll(async () => {
+      for (const site of [CLOSED_SITE, PAGE_SITE, COUNT_SITE, REPLAY_SITE]) await registerSite(site, site, site);
+    });
+
+    /** `handle.app` whose tenant transactions record each statement with its tenant. */
+    function recordingDb(statements: Statement[]): TenantDb {
+      return {
+        ...handle.app,
+        withTenant: (tenantId, fn) =>
+          handle.app.withTenant(tenantId, (tx) => {
+            const query = ((text: string, values?: unknown[]) => {
+              statements.push({ tenantId, text });
+              return tx.query(text, values);
+            }) as TenantTx['query'];
+            return fn({ ...tx, query });
+          }),
+      };
+    }
+
+    /** A sleep recording each wait and whether a transaction was open during it, then running `onSleep`. */
+    function sleeper(onSleep: () => Promise<void> = async () => undefined): { sleep: (ms: number) => Promise<void>; slept: number[]; inTransaction: boolean[] } {
+      const slept: number[] = [];
+      const inTransaction: boolean[] = [];
+      const sleep = async (ms: number): Promise<void> => {
+        slept.push(ms);
+        inTransaction.push(currentTransaction() !== undefined);
+        await onSleep();
+      };
+      return { sleep, slept, inTransaction };
+    }
+
+    async function openOperation(site: string, userId: string, state: 'prepared' | 'committed', kind: 'create' | 'update' = 'update'): Promise<string> {
+      return (await gated(site, (tx) => repo.insertAccountOperation(tx, { user_id: userId, kind, state }))).operation_id;
+    }
+
+    async function settleOperation(site: string, operationId: string, from: 'prepared' | 'committed', to: 'aborted' | 'finished'): Promise<void> {
+      expect(await gated(site, (tx) => repo.setAccountOperationState(tx, operationId, [from], to))).toBe(true);
+    }
+
+    async function insertPendingAccount(site: string): Promise<string> {
+      const userId = next('A');
+      await gated(site, (tx) =>
+        repo.insertAccount(tx, { userid: userId, username: `p${seq}`, type: 2, s2: 0, perm: 0, inactive: 0, ispublic: 0, siteid: site, remoteid: '', tablist: '', opt2_state: 'pending' }),
+      );
+      return userId;
+    }
+
+    async function addMembers(site: string, groupId: string, userIds: readonly string[]): Promise<void> {
+      await gated(site, async (tx) => {
+        for (const userId of userIds) await repo.addMembership(tx, userId, groupId);
+      });
+    }
+
+    async function closedGroup(): Promise<{ groupId: string; member: string }> {
+      const groupId = next('B');
+      await createGroup(deps(), SUPER, { userId: groupId, siteId: CLOSED_SITE, isPublic: '0', groupName: `Closed ${seq}` });
+      const member = await seedUser(CLOSED_SITE, { lname: 'Member' });
+      await addMembers(CLOSED_SITE, groupId, [member]);
+      return { groupId, member };
+    }
+
+    const reads = {
+      listGroupMembers: async (d: GroupDeps, groupId: string): Promise<number | null> => (await listGroupMembers(d, groupId, { includeS2: true })).length,
+      listGroups: async (d: GroupDeps, groupId: string): Promise<number | null> =>
+        (await listGroups(d, { siteId: CLOSED_SITE, isPublic: 0 })).find((row) => row.userid === groupId)?.counter ?? null,
+    };
+
+    it.each([
+      ['listGroupMembers', 'prepared', 'aborted'],
+      ['listGroupMembers', 'committed', 'finished'],
+      ['listGroups', 'prepared', 'aborted'],
+      ['listGroups', 'committed', 'finished'],
+    ] as const)('%s waits outside its transaction while a %s account operation keeps a member closed, then reads once it is %s', async (read, state, end) => {
+      const { groupId, member } = await closedGroup();
+      const operationId = await openOperation(CLOSED_SITE, member, state);
+      const { sleep, slept, inTransaction } = sleeper(() => settleOperation(CLOSED_SITE, operationId, state, end));
+      expect(await reads[read]({ ...deps(), sleep }, groupId)).toBe(1);
+      expect(slept).toEqual([100]);
+      expect(inTransaction).toEqual([false]);
+    });
+
+    it.each(['listGroupMembers', 'listGroups'] as const)('%s answers the legacy 503 naming the closed member once its sleeps total USER_CLOSED_WAIT_MS', async (read) => {
+      const { groupId, member } = await closedGroup();
+      const operationId = await openOperation(CLOSED_SITE, member, 'committed');
+      const { sleep, slept, inTransaction } = sleeper();
+      try {
+        const failure = await reads[read]({ ...deps(), sleep }, groupId).then(
+          () => null,
+          (err: unknown) => err,
+        );
+        expect(failure).toBeInstanceOf(OperationBlockedError);
+        expect(failure).toMatchObject({ reason: 'operation-blocked', message: expect.stringContaining(member) });
+        expect(slept.reduce((sum, ms) => sum + ms, 0)).toBe(USER_CLOSED_WAIT_MS);
+        expect(inTransaction.every((open) => !open)).toBe(true);
+      } finally {
+        await settleOperation(CLOSED_SITE, operationId, 'committed', 'finished');
+      }
+    });
+
+    it.each(['listGroupMembers', 'listGroups'] as const)('%s waits while a prepared create holds a membership of its pending account, then neither lists nor counts it', async (read) => {
+      const { groupId } = await closedGroup();
+      const pending = await insertPendingAccount(CLOSED_SITE);
+      await addMembers(CLOSED_SITE, groupId, [pending]);
+      const operationId = await openOperation(CLOSED_SITE, pending, 'prepared', 'create');
+      const { sleep, slept } = sleeper(() => settleOperation(CLOSED_SITE, operationId, 'prepared', 'aborted'));
+      expect(await reads[read]({ ...deps(), sleep }, groupId)).toBe(1);
+      expect(slept).toEqual([100]);
+    });
+
+    it.each([1, 2, 7, READ_PAGE_SIZE])('reads a tenant in pages of %i into the full list: NULL last names first, then case-insensitively, ties by userid', async (pageSize) => {
+      const groupId = next('B');
+      await createGroup(deps(), SUPER, { userId: groupId, siteId: PAGE_SITE, isPublic: '0', groupName: `Paged ${seq}` });
+      const members: string[] = [];
+      for (const lname of [null, 'beta', 'alpha', 'Alpha', null, 'Charlie', 'bravo']) members.push(await seedUser(PAGE_SITE, lname === null ? {} : { lname }));
+      await addMembers(PAGE_SITE, groupId, members);
+      const [nullA, beta, alpha, upperAlpha, nullB, charlie, bravo] = members;
+      const statements: Statement[] = [];
+      const paged = { ...deps(), db: recordingDb(statements), repo: createIdentityRepository({ clock, schema: handle.schema, pageSize }) };
+      const listed = await listGroupMembers(paged, groupId, { includeS2: true });
+      expect(listed.map((row) => row.userid)).toEqual([nullA, nullB, alpha, upperAlpha, beta, bravo, charlie]);
+      expect(listed).toEqual(await listGroupMembers(deps(), groupId, { includeS2: true }));
+      expect(Object.keys(listed[0] ?? {})).toEqual(['userid', 'type', 'username', 'siteid', 'ispublic', 's2', 'inactive', 'fname', 'lname', 'email', 'company']);
+      const fetches = statements.filter((s) => s.tenantId === tenantIdForSite(PAGE_SITE) && s.text.startsWith('FETCH'));
+      expect(fetches).toHaveLength(Math.floor(members.length / pageSize) + 1);
+    });
+
+    it.each([1, READ_PAGE_SIZE])('merges members held in several tenants in last-name order, read in pages of %i', async (pageSize) => {
+      const groupId = next('B');
+      await createGroup(deps(), SUPER, { userId: groupId, siteId: SITE_A, isPublic: '0', groupName: `Merged ${seq}` });
+      const seeds: readonly (readonly [string, string | null])[] = [
+        [SITE_B, null],
+        [SITE_A, null],
+        [SITE_A, 'b'],
+        [UMBRELLA, 'B'],
+        [SITE_B, 'A'],
+        [SITE_B, 'c'],
+        [SITE_A, 'D'],
+        [SITE_B, 'e'],
+      ];
+      const ids: string[] = [];
+      for (const [site, lname] of seeds) {
+        const member = await seedUser(site, lname === null ? {} : { lname });
+        await addMembers(site, groupId, [member]);
+        ids.push(member);
+      }
+      const [nullB, nullA, lowerB, upperB, upperA, lowerC, upperD, lowerE] = ids;
+      const paged = { ...deps(), repo: createIdentityRepository({ clock, schema: handle.schema, pageSize }) };
+      expect((await listGroupMembers(paged, groupId, { includeS2: true })).map((row) => row.userid)).toEqual([nullB, nullA, upperA, lowerB, upperB, lowerC, upperD, lowerE]);
+    });
+
+    it('counts every listed group in the listing statement: NULL for none, S2, group and active members counted, pending ones not', async () => {
+      const statements: Statement[] = [];
+      const counting = { ...deps(), db: recordingDb(statements) };
+      const memberReads = (): number => statements.filter((s) => s.text.includes(`"${handle.schema}"."membership"`)).length;
+      const team = next('B');
+      await createGroup(deps(), SUPER, { userId: team, siteId: COUNT_SITE, isPublic: '0', groupName: 'Team', perm: '1' });
+      expect((await listGroups(counting, { siteId: COUNT_SITE, isPublic: 0 })).map((row) => [row.groupname, row.counter])).toEqual([['Team', null]]);
+      const oneGroup = { statements: statements.length, memberReads: memberReads() };
+      expect(oneGroup.memberReads).toBe(1);
+
+      const solo = next('B');
+      const pendingOnly = next('B');
+      await createGroup(deps(), SUPER, { userId: solo, siteId: COUNT_SITE, isPublic: '0', groupName: 'solo' });
+      await createGroup(deps(), SUPER, { userId: pendingOnly, siteId: COUNT_SITE, isPublic: '0', groupName: 'Pending' });
+      await createGroup(deps(), SUPER, { siteId: COUNT_SITE, isPublic: '0', groupName: 'Empty' });
+      await createGroup(deps(), SUPER, { siteId: COUNT_SITE, isPublic: '0', groupName: 'Child', groupID: team });
+      const active = await seedUser(COUNT_SITE);
+      const superUser = await seedUser(COUNT_SITE, { s2: 1 });
+      await addMembers(COUNT_SITE, team, [active, superUser]);
+      await addMembers(COUNT_SITE, solo, [active]);
+      await addMembers(COUNT_SITE, pendingOnly, [await insertPendingAccount(COUNT_SITE)]);
+      statements.length = 0;
+      const listed = await listGroups(counting, { siteId: COUNT_SITE, isPublic: 0 });
+      expect(listed.map((row) => [row.groupname, row.counter])).toEqual([
+        ['Team', 3],
+        ['Child', null],
+        ['Empty', null],
+        ['Pending', null],
+        ['solo', 1],
+      ]);
+      expect({ statements: statements.length, memberReads: memberReads() }).toEqual(oneGroup);
+      expect(listed[0]).not.toHaveProperty('closed_users');
+    });
+
+    describe('roster operations', () => {
+      const accountDeps = (): AccountOperationDeps => ({
+        db: handle.app,
+        repo,
+        events: createIdentityEvents(repo),
+        clock,
+        settings: { password: { encryptPasswords: true, bcryptPasswords: true, bcryptLogRounds: 4 }, strongPasswords: false, strongPasswordRegex: '' },
+        sleep: async () => undefined,
+      });
+
+      async function seedRosterUser(groupIds: readonly string[]): Promise<{ userId: string; username: string }> {
+        const userId = next('A');
+        const username = `roster${seq}`;
+        await gated(REPLAY_SITE, async (tx) => {
+          await repo.insertAccount(tx, { userid: userId, username, type: 2, s2: 0, perm: 0, inactive: 0, ispublic: 0, siteid: REPLAY_SITE, remoteid: '', tablist: '' });
+          await repo.writeCredential(tx, userId, { password: 'stored', passwordcreated: now });
+          await repo.upsertPersonContact(tx, { user_id: userId, site_id: REPLAY_SITE, email: null, fname: 'F', lname: 'Roster', company: null, subtype: null, aggregate_version: 1 });
+          for (const groupId of groupIds) await repo.addMembership(tx, userId, groupId);
+        });
+        return { userId, username };
+      }
+
+      /** Each change: whether the user starts as the group's member, the S2 it posts and whether it keeps or adds the group. */
+      const CHANGES = {
+        'removes the sole member': { member: true, s2: 0, joins: false },
+        'raises S2 of the sole member': { member: true, s2: 1, joins: true },
+        'adds the first member': { member: false, s2: 0, joins: true },
+      } as const;
+      type Change = keyof typeof CHANGES;
+      type Membership = { member: boolean; s2: number };
+
+      const READS = {
+        'listGroupMembers': {
+          read: async (d: GroupDeps, groupId: string): Promise<unknown> => (await listGroupMembers(d, groupId)).map((row) => row.userid),
+          shows: ({ member, s2 }: Membership, userId: string): unknown => (member && s2 === 0 ? [userId] : []),
+        },
+        'listGroupMembers with includeS2': {
+          read: async (d: GroupDeps, groupId: string): Promise<unknown> => (await listGroupMembers(d, groupId, { includeS2: true })).map((row) => row.userid),
+          shows: ({ member }: Membership, userId: string): unknown => (member ? [userId] : []),
+        },
+        'listGroups': {
+          read: async (d: GroupDeps, groupId: string): Promise<unknown> =>
+            (await listGroups(d, { siteId: REPLAY_SITE, isPublic: 0 })).find((row) => row.userid === groupId)?.counter,
+          shows: ({ member }: Membership): unknown => (member ? 1 : null),
+        },
+      } as const;
+      type Read = keyof typeof READS;
+
+      const cases = (Object.keys(CHANGES) as Change[]).flatMap((change) =>
+        (['prepared', 'committed'] as const).flatMap((state) => (Object.keys(READS) as Read[]).map((read) => [change, state, read] as const)),
+      );
+
+      it.each(cases)('an update that %s keeps it %s: %s answers the legacy 503 after USER_CLOSED_WAIT_MS, then waits for the end and reads its outcome', async (change, state, read) => {
+        const { member, s2, joins } = CHANGES[change];
+        const groupId = next('B');
+        await createGroup(deps(), SUPER, { userId: groupId, siteId: REPLAY_SITE, isPublic: '0', groupName: `Replay ${seq}` });
+        const { userId, username } = await seedRosterUser(member ? [groupId] : []);
+        const operationId = next('C');
+        const prepared = await prepareAccountOperation(accountDeps(), {
+          operationId,
+          kind: 'update',
+          userId,
+          requestSiteId: REPLAY_SITE,
+          siteId: REPLAY_SITE,
+          actorIsSuperUser: true,
+          change: { username, password: '', s2, perm: 0, inActive: 0, isPublic: 0, remoteID: '', groupIds: joins ? [groupId] : [] },
+        });
+        expect(prepared.outcome).toBe('prepared');
+        if (state === 'committed') expect((await commitAccountOperation(accountDeps(), operationId)).outcome).toBe('committed');
+        const { read: runRead, shows } = READS[read];
+
+        const blocked = sleeper();
+        const failure = await runRead({ ...deps(), sleep: blocked.sleep }, groupId).then(
+          () => null,
+          (err: unknown) => err,
+        );
+        expect(failure).toBeInstanceOf(OperationBlockedError);
+        expect(failure).toMatchObject({ message: expect.stringContaining(userId) });
+        expect(blocked.slept.reduce((sum, ms) => sum + ms, 0)).toBe(USER_CLOSED_WAIT_MS);
+        expect(blocked.inTransaction.every((open) => !open)).toBe(true);
+
+        const end = state === 'prepared' ? abortAccountOperation : finishAccountOperation;
+        const waiting = sleeper(async () => {
+          expect((await end(accountDeps(), operationId)).outcome).toBe('stepped');
+        });
+        const outcome: Membership = state === 'prepared' ? { member, s2: 0 } : { member: joins, s2 };
+        expect(await runRead({ ...deps(), sleep: waiting.sleep }, groupId)).toEqual(shows(outcome, userId));
+        expect(waiting.slept).toEqual([100]);
+      });
+    });
+
+    it.each([
+      ['across tenant-a and the umbrella', [SITE_A, SITE_A, UMBRELLA]],
+      ['in tenant-a alone', [SITE_A, SITE_A, SITE_A]],
+    ] as const)('lists astral and BMP last names in code-point order %s', async (_case, sites) => {
+      const groupId = next('B');
+      await createGroup(deps(), SUPER, { userId: groupId, siteId: SITE_A, isPublic: '0', groupName: `Unicode ${seq}` });
+      for (const [n, lname] of ['\uFA0E', '\u{20000}', '\uFA0F'].entries()) {
+        const site = sites[n] ?? SITE_A;
+        await addMembers(site, groupId, [await seedUser(site, { lname })]);
+      }
+      expect((await listGroupMembers(deps(), groupId)).map((row) => row.lname)).toEqual(['\uFA0E', '\uFA0F', '\u{20000}']);
+    });
+
+    describe('streaming', () => {
+      /** `handle.app` counting each tenant's FETCH statements and the tenant transactions still running. */
+      function trackingDb(): { db: TenantDb; fetches: Map<string, number>; running: () => number } {
+        const fetches = new Map<string, number>();
+        let running = 0;
+        const db: TenantDb = {
+          ...handle.app,
+          withTenant: (tenantId, fn) => {
+            running += 1;
+            return handle.app
+              .withTenant(tenantId, (tx) => {
+                const query = ((text: string, values?: unknown[]) => {
+                  if (text.startsWith('FETCH')) fetches.set(tenantId, (fetches.get(tenantId) ?? 0) + 1);
+                  return tx.query(text, values);
+                }) as TenantTx['query'];
+                return fn({ ...tx, query });
+              })
+              .finally(() => {
+                running -= 1;
+              });
+          },
+        };
+        return { db, fetches, running: () => running };
+      }
+
+      /** Backends of the app role idle inside a transaction. */
+      async function idleInTransaction(): Promise<number> {
+        const { rows } = await handle.adminPool.query<{ idle: number }>(
+          "SELECT count(*)::int AS idle FROM pg_stat_activity WHERE usename = $1 AND state LIKE 'idle in transaction%'",
+          [handle.roles.app],
+        );
+        return rows[0]?.idle ?? -1;
+      }
+
+      /** A private tenant-a group with members in tenant-a, the umbrella and tenant-b, and their ids in listing order. */
+      async function spreadGroup(): Promise<{ groupId: string; ordered: string[] }> {
+        const groupId = next('B');
+        await createGroup(deps(), SUPER, { userId: groupId, siteId: SITE_A, isPublic: '0', groupName: `Spread ${seq}` });
+        const seeds: readonly (readonly [string, string | null])[] = [
+          [SITE_A, 'd'],
+          [UMBRELLA, 'A'],
+          [SITE_B, 'c'],
+          [SITE_A, 'b'],
+          [UMBRELLA, 'f'],
+          [SITE_B, null],
+          [SITE_A, 'E'],
+          [UMBRELLA, 'g'],
+        ];
+        const byName = new Map<string | null, string>();
+        for (const [site, lname] of seeds) {
+          const member = await seedUser(site, lname === null ? {} : { lname });
+          await addMembers(site, groupId, [member]);
+          byName.set(lname, member);
+        }
+        const ordered = [null, 'A', 'b', 'c', 'd', 'E', 'f', 'g'].map((lname) => byName.get(lname) ?? '');
+        return { groupId, ordered };
+      }
+
+      it.each([1, 2])('merges three member tenants holding one page each when the first row is yielded, in pages of %i', async (pageSize) => {
+        const { groupId, ordered } = await spreadGroup();
+        const tracking = trackingDb();
+        const paged = { ...deps(), db: tracking.db, repo: createIdentityRepository({ clock, schema: handle.schema, pageSize }) };
+        const streamed: string[] = [];
+        let atFirstRow: { fetches: number[]; idle: number } | undefined;
+        for await (const member of streamGroupMembers(paged, groupId, { includeS2: true })) {
+          atFirstRow ??= { fetches: [...tracking.fetches.values()], idle: await idleInTransaction() };
+          streamed.push(member.userid);
+        }
+        expect(atFirstRow).toEqual({ fetches: [1, 1, 1], idle: 3 });
+        expect(streamed).toEqual(ordered);
+        expect(streamed).toEqual((await listGroupMembers(deps(), groupId, { includeS2: true })).map((row) => row.userid));
+        expect(tracking.running()).toBe(0);
+      });
+
+      it('ends every pager transaction when its consumer stops after the first row', async () => {
+        const { groupId, ordered } = await spreadGroup();
+        const tracking = trackingDb();
+        const paged = { ...deps(), db: tracking.db, repo: createIdentityRepository({ clock, schema: handle.schema, pageSize: 1 }) };
+        const taken: string[] = [];
+        for await (const member of streamGroupMembers(paged, groupId)) {
+          taken.push(member.userid);
+          expect(tracking.running()).toBe(3);
+          break;
+        }
+        expect(taken).toEqual(ordered.slice(0, 1));
+        expect(tracking.running()).toBe(0);
+        expect(await idleInTransaction()).toBe(0);
+      });
+
+      it.each(['its first page', 'a later page'] as const)('propagates the error of one tenant reading %s and ends every pager transaction', async (failing) => {
+        const { groupId } = await spreadGroup();
+        const tracking = trackingDb();
+        const paged = createIdentityRepository({ clock, schema: handle.schema, pageSize: 1 });
+        const boom = new Error('page read failed');
+        const umbrella = tenantIdForSite(UMBRELLA);
+        const broken: IdentityRepository = {
+          ...paged,
+          memberPages: async function* (tx, id, opts) {
+            for await (const page of paged.memberPages(tx, id, opts)) {
+              if (tx.tenantId === umbrella && failing === 'its first page') throw boom;
+              yield page;
+              if (tx.tenantId === umbrella) throw boom;
+            }
+          },
+        };
+        await expect(listGroupMembers({ ...deps(), db: tracking.db, repo: broken }, groupId)).rejects.toBe(boom);
+        expect(tracking.running()).toBe(0);
+        expect(await idleInTransaction()).toBe(0);
+      });
+    });
   });
 });

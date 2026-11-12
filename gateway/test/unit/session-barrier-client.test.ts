@@ -22,15 +22,23 @@ const SESSION = 'identity-session-0001';
 const OTHER_SESSION = 'identity-session-0002';
 const AWAIT_PATH = '/internal/v1/projection/await';
 
-/** The barrier's three statements, whitespace collapsed; the double answers only these. */
+/** The barrier's statements, whitespace collapsed; the double answers only these. */
+const DECLARE_SQL =
+  `INSERT INTO ${SCHEMA}.session_barrier AS b (session_id, owner, pending, recorded_at) VALUES ($1, $2, 1, now()) ` +
+  'ON CONFLICT (session_id, owner) DO UPDATE SET pending = b.pending + 1';
 const UPSERT_SQL =
   `INSERT INTO ${SCHEMA}.session_barrier AS b (session_id, owner, xid, recorded_at) ` +
   'SELECT $1, p.owner, p.xid, now() FROM unnest($2::text[], $3::numeric[]) AS p(owner, xid) ' +
   'ON CONFLICT (session_id, owner) DO UPDATE SET xid = GREATEST(b.xid, EXCLUDED.xid), recorded_at = EXCLUDED.recorded_at';
-const SELECT_SQL = `SELECT owner, xid::text AS xid FROM ${SCHEMA}.session_barrier WHERE session_id = $1`;
+const END_SQL =
+  `WITH gone AS ( DELETE FROM ${SCHEMA}.session_barrier ` +
+  'WHERE session_id = $1 AND owner = $2 AND pending = 1 AND xid IS NULL RETURNING owner ) ' +
+  `UPDATE ${SCHEMA}.session_barrier SET pending = pending - 1 ` +
+  'WHERE session_id = $1 AND owner = $2 AND pending > 0 AND NOT EXISTS (SELECT 1 FROM gone)';
+const SELECT_SQL = `SELECT owner, xid::text AS xid, pending FROM ${SCHEMA}.session_barrier WHERE session_id = $1`;
 const DELETE_SQL =
   `DELETE FROM ${SCHEMA}.session_barrier AS b USING unnest($2::text[], $3::numeric[]) AS p(owner, xid) ` +
-  'WHERE b.session_id = $1 AND b.owner = p.owner AND b.xid <= p.xid';
+  'WHERE b.session_id = $1 AND b.owner = p.owner AND b.pending = 0 AND (b.xid IS NULL OR b.xid <= p.xid)';
 
 /** One statement as a metadata transaction received it. */
 interface Statement {
@@ -38,43 +46,67 @@ interface Statement {
   values: unknown[];
 }
 
-/** TenantDb double holding session_barrier rows with numeric(20,0) xids as bigints. */
+/** One session_barrier row: a numeric(20,0) xid as a bigint, or none, and the declared writes. */
+interface BarrierRow {
+  xid: bigint | null;
+  pending: number;
+}
+
+/** TenantDb double holding session_barrier rows. */
 interface MemoryBarrierTable {
   db: TenantDb;
   statements: Statement[];
   transactions(): number;
-  /** The session's rows as owner -> xid text. */
-  rows(sessionId: string): Record<string, string>;
+  /** The session's rows as owner -> xid text, or null for a row without a position. */
+  rows(sessionId: string): Record<string, string | null>;
+  /** The session's rows as owner -> xid text and declared writes. */
+  full(sessionId: string): Record<string, { xid: string | null; pending: number }>;
 }
 
 function memoryBarrierTable(): MemoryBarrierTable {
-  const sessions = new Map<string, Map<string, bigint>>();
+  const sessions = new Map<string, Map<string, BarrierRow>>();
   const statements: Statement[] = [];
   let transactions = 0;
 
-  /** The `unnest($2::text[], $3::numeric[])` pairs of an upsert or delete. */
-  const pairs = (values: unknown[]): Array<[string, bigint]> => {
-    const [, owners, xids] = values as [string, string[], string[]];
-    return owners.map((owner, i) => [owner, BigInt(String(xids[i]))]);
+  /** The `unnest($2::text[], $3::numeric[])` pairs of an upsert or delete; a null xid stays null. */
+  const pairs = (values: unknown[]): Array<[string, bigint | null]> => {
+    const [, owners, xids] = values as [string, string[], Array<string | null>];
+    return owners.map((owner, i) => [owner, xids[i] === null ? null : BigInt(String(xids[i]))]);
   };
 
   function execute(sql: string, values: unknown[]): QueryResultRow[] {
     const sessionId = values[0] as string;
-    const table = sessions.get(sessionId) ?? new Map<string, bigint>();
+    const table = sessions.get(sessionId) ?? new Map<string, BarrierRow>();
+    sessions.set(sessionId, table);
     switch (sql) {
+      case DECLARE_SQL: {
+        const owner = values[1] as string;
+        const stored = table.get(owner);
+        table.set(owner, { xid: stored?.xid ?? null, pending: (stored?.pending ?? 0) + 1 });
+        return [];
+      }
       case UPSERT_SQL:
         for (const [owner, xid] of pairs(values)) {
           const stored = table.get(owner);
-          table.set(owner, stored === undefined || xid > stored ? xid : stored);
+          const kept = stored?.xid ?? null;
+          table.set(owner, { xid: kept === null || (xid !== null && xid > kept) ? xid : kept, pending: stored?.pending ?? 0 });
         }
-        sessions.set(sessionId, table);
         return [];
+      case END_SQL: {
+        const owner = values[1] as string;
+        const stored = table.get(owner);
+        if (stored === undefined || stored.pending === 0) return [];
+        if (stored.pending === 1 && stored.xid === null) table.delete(owner);
+        else stored.pending -= 1;
+        return [];
+      }
       case SELECT_SQL:
-        return [...table].map(([owner, xid]) => ({ owner, xid: xid.toString() }));
+        return [...table].map(([owner, row]) => ({ owner, xid: row.xid?.toString() ?? null, pending: row.pending }));
       case DELETE_SQL:
         for (const [owner, xid] of pairs(values)) {
           const stored = table.get(owner);
-          if (stored !== undefined && stored <= xid) table.delete(owner);
+          if (stored?.pending !== 0) continue;
+          if (stored.xid === null || (xid !== null && stored.xid <= xid)) table.delete(owner);
         }
         return [];
       default:
@@ -108,7 +140,12 @@ function memoryBarrierTable(): MemoryBarrierTable {
     db,
     statements,
     transactions: () => transactions,
-    rows: (sessionId) => Object.fromEntries([...(sessions.get(sessionId) ?? [])].map(([owner, xid]) => [owner, xid.toString()])),
+    rows: (sessionId) =>
+      Object.fromEntries([...(sessions.get(sessionId) ?? [])].map(([owner, row]) => [owner, row.xid?.toString() ?? null])),
+    full: (sessionId) =>
+      Object.fromEntries(
+        [...(sessions.get(sessionId) ?? [])].map(([owner, row]) => [owner, { xid: row.xid?.toString() ?? null, pending: row.pending }]),
+      ),
   };
 }
 
@@ -185,6 +222,68 @@ describe('SessionBarrier.record', () => {
     expect(table.transactions()).toBe(0);
     expect(table.statements).toEqual([]);
   });
+
+  it('ends one declaration of the declared owner in the transaction that records the positions', async () => {
+    const { table, barrier } = setup();
+    await barrier.declare(SESSION, 'people');
+    await barrier.declare(SESSION, 'people');
+    await barrier.record(SESSION, positions({ people: '42', identity: '7' }), 'people');
+    expect(table.statements.slice(2)).toEqual([
+      { sql: UPSERT_SQL, values: [SESSION, ['people', 'identity'], ['42', '7']] },
+      { sql: END_SQL, values: [SESSION, 'people'] },
+    ]);
+    expect(table.transactions()).toBe(3);
+    expect(table.full(SESSION)).toEqual({ people: { xid: '42', pending: 1 }, identity: { xid: '7', pending: 0 } });
+  });
+
+  it.each<[string, WritePositions, Record<string, { xid: string | null; pending: number }>]>([
+    ['positions of other owners only', positions({ identity: '7' }), { identity: { xid: '7', pending: 0 } }],
+    ['no positions', new Map(), {}],
+  ])('drops the declared row when the record carries %s', async (_label, recorded, expected) => {
+    const { table, barrier } = setup();
+    await barrier.declare(SESSION, 'strategies-content');
+    await barrier.record(SESSION, recorded, 'strategies-content');
+    expect(table.statements.at(-1)).toEqual({ sql: END_SQL, values: [SESSION, 'strategies-content'] });
+    expect(table.full(SESSION)).toEqual(expected);
+  });
+});
+
+describe('SessionBarrier.declare and release', () => {
+  it('declares one pending write per call in its own transaction, with no position', async () => {
+    const { table, barrier } = setup();
+    await barrier.declare(SESSION, 'people');
+    await barrier.declare(SESSION, 'people');
+    expect(table.statements).toEqual([
+      { sql: DECLARE_SQL, values: [SESSION, 'people'] },
+      { sql: DECLARE_SQL, values: [SESSION, 'people'] },
+    ]);
+    expect(table.transactions()).toBe(2);
+    expect(table.full(SESSION)).toEqual({ people: { xid: null, pending: 2 } });
+    expect(table.full(OTHER_SESSION)).toEqual({});
+  });
+
+  it('ends one declaration per release, dropping the row once it holds neither a declaration nor a position', async () => {
+    const { table, barrier } = setup();
+    await barrier.declare(SESSION, 'people');
+    await barrier.declare(SESSION, 'people');
+    await barrier.release(SESSION, 'people');
+    expect(table.statements.at(-1)).toEqual({ sql: END_SQL, values: [SESSION, 'people'] });
+    expect(table.full(SESSION)).toEqual({ people: { xid: null, pending: 1 } });
+    await barrier.release(SESSION, 'people');
+    expect(table.full(SESSION)).toEqual({});
+    await barrier.release(SESSION, 'people');
+    expect(table.full(SESSION)).toEqual({});
+  });
+
+  it('keeps a recorded position when it ends the last declaration and never counts below zero', async () => {
+    const { table, barrier } = setup();
+    await barrier.declare(SESSION, 'people');
+    await barrier.record(SESSION, positions({ people: '42' }));
+    await barrier.release(SESSION, 'people');
+    expect(table.full(SESSION)).toEqual({ people: { xid: '42', pending: 0 } });
+    await barrier.release(SESSION, 'people');
+    expect(table.full(SESSION)).toEqual({ people: { xid: '42', pending: 0 } });
+  });
 });
 
 describe('SessionBarrier.awaitForSession', () => {
@@ -245,6 +344,95 @@ describe('SessionBarrier.awaitForSession', () => {
   });
 });
 
+describe('SessionBarrier.awaitForSession with declared writes', () => {
+  it('awaits the declared owners and the other recorded positions, then removes only the confirmed positions', async () => {
+    const { table, client, barrier } = setup();
+    await barrier.record(SESSION, positions({ people: '42' }));
+    await barrier.declare(SESSION, 'identity');
+    await barrier.declare(SESSION, 'identity');
+    const before = table.statements.length;
+    await barrier.awaitForSession(SESSION);
+    expect(client.calls.map((call) => call.json)).toEqual([
+      { positions: { people: '42' }, timeoutMs: PROJECTION_AWAIT_TIMEOUT_MS },
+      { owners: ['identity'], timeoutMs: PROJECTION_AWAIT_TIMEOUT_MS },
+    ]);
+    expect(table.statements.slice(before)).toEqual([
+      { sql: SELECT_SQL, values: [SESSION] },
+      { sql: DELETE_SQL, values: [SESSION, ['people', 'identity'], ['42', null]] },
+    ]);
+    expect(table.full(SESSION)).toEqual({ identity: { xid: null, pending: 2 } });
+    await barrier.awaitForSession(SESSION);
+    expect(client.calls.slice(2).map((call) => call.json)).toEqual([{ owners: ['identity'], timeoutMs: PROJECTION_AWAIT_TIMEOUT_MS }]);
+    expect(table.full(SESSION)).toEqual({ identity: { xid: null, pending: 2 } });
+  });
+
+  it('awaits a declared owner with a recorded position by its current position alone and keeps its row', async () => {
+    const { table, client, barrier } = setup();
+    await barrier.declare(SESSION, 'people');
+    await barrier.record(SESSION, positions({ people: '42' }));
+    await barrier.awaitForSession(SESSION);
+    expect(client.calls.map((call) => call.json)).toEqual([{ owners: ['people'], timeoutMs: PROJECTION_AWAIT_TIMEOUT_MS }]);
+    expect(table.full(SESSION)).toEqual({ people: { xid: '42', pending: 1 } });
+  });
+
+  it('leaves a declaration made before the read to its own exchange, so a later exchange keeps its own', async () => {
+    const { table, client, barrier } = setup();
+    await barrier.declare(SESSION, 'people');
+    await barrier.awaitForSession(SESSION);
+    expect(table.full(SESSION)).toEqual({ people: { xid: null, pending: 1 } });
+    await barrier.declare(SESSION, 'people');
+    await barrier.record(SESSION, positions({ people: '50' }), 'people');
+    await barrier.awaitForSession(SESSION);
+    expect(table.full(SESSION)).toEqual({ people: { xid: '50', pending: 1 } });
+    await barrier.release(SESSION, 'people');
+    await barrier.awaitForSession(SESSION);
+    expect(client.calls.map((call) => call.json)).toEqual([
+      { owners: ['people'], timeoutMs: PROJECTION_AWAIT_TIMEOUT_MS },
+      { owners: ['people'], timeoutMs: PROJECTION_AWAIT_TIMEOUT_MS },
+      { positions: { people: '50' }, timeoutMs: PROJECTION_AWAIT_TIMEOUT_MS },
+    ]);
+    expect(table.full(SESSION)).toEqual({});
+  });
+
+  it('keeps a declaration and a position added while migration confirmed the owner', async () => {
+    let meanwhile: (() => Promise<void>) | undefined;
+    const { table, client, barrier } = setup(async () => {
+      await meanwhile?.();
+      meanwhile = undefined;
+      return { status: 200, headers: {}, body: {} };
+    });
+    await barrier.declare(SESSION, 'people');
+    await barrier.declare(SESSION, 'identity');
+    meanwhile = async () => {
+      await barrier.record(SESSION, positions({ people: '50' }), 'people');
+      await barrier.declare(SESSION, 'identity');
+    };
+    await barrier.awaitForSession(SESSION);
+    expect(table.full(SESSION)).toEqual({ people: { xid: '50', pending: 0 }, identity: { xid: null, pending: 2 } });
+    await barrier.awaitForSession(SESSION);
+    expect(client.calls.map((call) => call.json)).toEqual([
+      { owners: ['people', 'identity'], timeoutMs: PROJECTION_AWAIT_TIMEOUT_MS },
+      { positions: { people: '50' }, timeoutMs: PROJECTION_AWAIT_TIMEOUT_MS },
+      { owners: ['identity'], timeoutMs: PROJECTION_AWAIT_TIMEOUT_MS },
+    ]);
+    expect(table.full(SESSION)).toEqual({ identity: { xid: null, pending: 2 } });
+  });
+
+  it.each([503, 'unavailable'] as const)('keeps every declaration when migration answers %s', async (answer) => {
+    const { table, barrier } = setup(
+      answer === 503
+        ? answerStatus(503)
+        : () => Promise.reject(new ServiceUnavailableError('migration', Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }))),
+    );
+    await barrier.declare(SESSION, 'people');
+    const error = await rejectionOf(barrier.awaitForSession(SESSION));
+    expect(error).toBeInstanceOf(BarrierTimeoutError);
+    expect(error).toMatchObject({ awaited: 'owners:people', reason: 'barrier-timeout' });
+    expect(table.statements.map((statement) => statement.sql)).not.toContain(DELETE_SQL);
+    expect(table.full(SESSION)).toEqual({ people: { xid: null, pending: 1 } });
+  });
+});
+
 describe('SessionBarrier.awaitOwners', () => {
   it('posts the owners with the 5 s bound to migration without the user token or the session table', async () => {
     const { table, client, barrier } = setup();
@@ -262,10 +450,34 @@ describe('SessionBarrier.awaitOwners', () => {
   });
 });
 
+describe('SessionBarrier.awaitPositions', () => {
+  it('posts the given positions with the 5 s bound to migration without the user token or the session table', async () => {
+    const { table, client, barrier } = setup();
+    await barrier.awaitPositions(positions({ people: '42', identity: '18446744073709551615' }));
+    expect(client.calls).toEqual([
+      {
+        service: 'migration',
+        method: 'POST',
+        path: AWAIT_PATH,
+        json: { positions: { people: '42', identity: '18446744073709551615' }, timeoutMs: PROJECTION_AWAIT_TIMEOUT_MS },
+        userToken: null,
+      },
+    ]);
+    expect(table.transactions()).toBe(0);
+  });
+
+  it('asks migration nothing for an empty position set', async () => {
+    const { client, barrier } = setup();
+    await barrier.awaitPositions(new Map());
+    expect(client.calls).toEqual([]);
+  });
+});
+
 describe('SessionBarrier failed projection awaits', () => {
   type Wait = (barrier: SessionBarrier) => Promise<void>;
   const WAITS: Array<[string, Wait, string]> = [
     ['awaitForSession', (barrier) => barrier.awaitForSession(SESSION), 'identity=7,people=42'],
+    ['awaitPositions', (barrier) => barrier.awaitPositions(positions({ people: '43', identity: '8' })), 'identity=8,people=43'],
     ['awaitOwners', (barrier) => barrier.awaitOwners(['people', 'identity']), 'owners:people,identity'],
   ];
   const RECORDED = { people: '42', identity: '7' };

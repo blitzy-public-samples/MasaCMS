@@ -1,4 +1,5 @@
 /** Group CRUD and memberships: Masa `tusers` Type=1 rows and their child rows, each save or delete one gated identity transaction. */
+import { setTimeout as timerSleep } from 'node:timers/promises';
 import {
   LegacyServiceUnavailableError,
   cfDateTimeFormat,
@@ -37,11 +38,13 @@ import {
   type GroupAddressUpdate,
   type GroupExtendDataReplacement,
   type GroupInput,
+  type GroupMemberPage,
   type GroupMemberRow,
   type IdentityRepository,
+  type KeyedGroupMember,
 } from '../repo/repository.js';
 import { GROUP_TRASH, type GroupAccountRow, type GroupAddressRow, type GroupTrashRow } from '../repo/tables.js';
-import { ACCOUNT_OPERATION_UNITS, DEFAULT_ACCOUNT_SETTINGS, awaitAccountOpen, randomPassword, type LegacyErrors } from './account-operations.js';
+import { ACCOUNT_OPERATION_UNITS, DEFAULT_ACCOUNT_SETTINGS, USER_CLOSED_WAIT_MS, randomPassword, withOpenAccount, type LegacyErrors } from './account-operations.js';
 
 export type { GroupMemberRow };
 
@@ -243,6 +246,7 @@ export class GroupSaveHaltedError extends LegacyServiceUnavailableError {
 const SITE_REQUIRED = "The attribute 'SITEID' is required when saving a user.";
 const SITE_MISSING = "The 'SiteID' variable is missing.";
 const GROUP_TYPE = 1;
+const CLOSED_POLL_MS = 100;
 const EXTEND_DATA_TABLE = 'tclassextenddatauseractivity';
 // Columns of the bean's empty ADDRESSES query [legacy: core/mura/user/userBean.cfc:162].
 const ADDRESS_COLUMNS = [
@@ -712,44 +716,192 @@ export async function findGroupForSite(deps: GroupDeps, input: { groupId: string
   return located === null ? null : { tenantId: located.tenantId, group: recordOf(located.group) };
 }
 
+/** Runs `read` until it reports no closed user, sleeping between attempts outside its transactions; OperationBlockedError (the legacy 503) once the sleeps total `USER_CLOSED_WAIT_MS`. */
+async function readUnclosed<T>(deps: GroupDeps, read: () => Promise<{ value: T; closed: readonly string[] }>): Promise<T> {
+  const sleep = deps.sleep ?? timerSleep;
+  for (let waited = 0; ; ) {
+    const { value, closed } = await read();
+    if (closed.length === 0) return value;
+    if (waited >= USER_CLOSED_WAIT_MS) {
+      throw new OperationBlockedError([...ACCOUNT_OPERATION_UNITS], `An open account operation keeps user ${[...new Set(closed)].join(', ')} closed`);
+    }
+    const step = Math.min(CLOSED_POLL_MS, USER_CLOSED_WAIT_MS - waited);
+    await sleep(step);
+    waited += step;
+  }
+}
+
 /** The groups of a site's private (`isPublic` 0) or public user pool with member counts, by `Perm` descending then name [legacy: core/mura/user/userGateway.cfc:93-120]. */
 export async function listGroups(deps: GroupDeps, input: { siteId: string; isPublic: number }): Promise<GroupListRow[]> {
   const site = await resolveGroupSite(deps.db, { siteId: input.siteId, isPublic: input.isPublic });
   const { poolSiteId, tenantId } = site;
   if (poolSiteId === null || tenantId === null) return [];
-  const rows = await withTenant(deps.db, tenantId, async (tx) => {
-    const listed: GroupListRow[] = [];
-    for (const group of await deps.repo.listGroups(tx, poolSiteId, input.isPublic)) {
-      // The pool's members are the membership rows held in the pool's own tenant.
-      const members = (await deps.repo.membersOf(tx, group.userid, { includeS2: true })).length;
-      listed.push({ ...recordOf(group), counter: members === 0 ? null : members });
-    }
-    return listed;
+  // The pool's members are the membership rows held in the pool's own tenant.
+  const counted = await readUnclosed(deps, async () => {
+    const { groups, closed } = await withTenant(deps.db, tenantId, (tx) => deps.repo.listCountedGroups(tx, poolSiteId, input.isPublic));
+    return { value: groups, closed };
   });
+  const rows: GroupListRow[] = counted.map(({ counter, ...group }) => ({ ...recordOf(group), counter }));
   // A stable sort of the name-ordered list; SQL Server sorts a NULL Perm last under DESC.
   return rows.sort((a, b) => (a.perm === b.perm ? 0 : a.perm === null ? 1 : b.perm === null ? -1 : b.perm - a.perm));
 }
 
-/** Legacy's `order by lname` over members merged from several tenants: NULLs first, then case-insensitively, ties by id. */
-function byLastName(a: GroupMemberRow, b: GroupMemberRow): number {
-  if (a.lname !== b.lname) {
-    if (a.lname === null) return -1;
-    if (b.lname === null) return 1;
-    const left = a.lname.toLowerCase();
-    const right = b.lname.toLowerCase();
-    if (left !== right) return left < right ? -1 : 1;
+/** The listing's `ORDER BY lower(lname) COLLATE "C" NULLS FIRST, userid` across tenants: NULL keys first, keys by code point, ties by id. */
+function memberOrder(a: KeyedGroupMember, b: KeyedGroupMember): number {
+  if (a.key !== b.key) {
+    if (a.key === null) return -1;
+    if (b.key === null) return 1;
+    return Buffer.compare(Buffer.from(a.key), Buffer.from(b.key));
   }
-  return a.userid < b.userid ? -1 : a.userid > b.userid ? 1 : 0;
+  const left = charKey(a.member.userid);
+  const right = charKey(b.member.userid);
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
-/** Members of a group by last name, S2 members only with `includeS2` [legacy: core/mura/user/userDAO.cfc:646-660]; each membership row lives in its member's tenant. */
-export async function listGroupMembers(deps: GroupDeps, groupId: string, opts: { includeS2?: boolean } = {}): Promise<GroupMemberRow[]> {
-  const lists: GroupMemberRow[][] = [];
-  for (const tenantId of await candidateTenants(deps.db)) {
-    const members = await withTenant(deps.db, tenantId, (tx) => deps.repo.membersOf(tx, groupId, opts));
-    if (members.length > 0) lists.push(members);
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
+}
+
+/** A promise with its settle functions; its rejection counts as handled, as no consumer may be waiting for it. */
+function deferred<T>(): Deferred<T> {
+  let resolve: (value: T) => void = () => undefined;
+  let reject: (reason: unknown) => void = () => undefined;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  promise.catch(() => undefined);
+  return { promise, resolve, reject };
+}
+
+/** One tenant's member pages, read in a transaction held open until they run out or `close` ends it. */
+interface MemberPager {
+  /** The next page, null once the pages ran out; rejects with the read's error. */
+  pull(): Promise<GroupMemberPage | null>;
+  /** Ends the transaction once it is idle; rejects with a read or commit error `pull` has not delivered. */
+  close(): Promise<void>;
+}
+
+/** Starts the transaction of `tenantId`'s member pages, which reads one page per `pull`. */
+function openPager(deps: GroupDeps, tenantId: string, groupId: string, opts: { includeS2?: boolean }): MemberPager {
+  let demand = deferred<boolean>();
+  let reply = deferred<GroupMemberPage | null>();
+  let delivered = false;
+  const ended = withTenant(deps.db, tenantId, async (tx) => {
+    const pages = deps.repo.memberPages(tx, groupId, opts);
+    try {
+      while (await demand.promise) {
+        demand = deferred();
+        const next = await pages.next();
+        const answered = reply;
+        reply = deferred();
+        answered.resolve(next.done === true ? null : next.value);
+        if (next.done === true) return;
+      }
+    } finally {
+      await pages.return(undefined);
+    }
+  });
+  const failure = ended.then(
+    () => null,
+    (error: unknown) => {
+      reply.reject(error);
+      return { error };
+    },
+  );
+  return {
+    pull: () => {
+      demand.resolve(true);
+      return reply.promise.catch((error: unknown) => {
+        delivered = true;
+        throw error;
+      });
+    },
+    close: async () => {
+      demand.resolve(false);
+      const failed = await failure;
+      if (failed !== null && !delivered) throw failed.error;
+    },
+  };
+}
+
+/** Closes every pager, then rejects with the first error a close raised. */
+async function closePagers(pagers: Set<MemberPager>): Promise<void> {
+  const closing = [...pagers];
+  pagers.clear();
+  const failed = (await Promise.allSettled(closing.map((pager) => pager.close()))).find((result) => result.status === 'rejected');
+  if (failed !== undefined) throw failed.reason;
+}
+
+/** A tenant's current page in the merge and the position of its next row. */
+interface MemberHead {
+  pager: MemberPager;
+  rows: KeyedGroupMember[];
+  at: number;
+}
+
+/** The next row of `head`; a head in the merge always has one. */
+function headRow(head: MemberHead): KeyedGroupMember {
+  return head.rows[head.at] as KeyedGroupMember;
+}
+
+/** Members of a group by last name, S2 members only with `includeS2` [legacy: core/mura/user/userDAO.cfc:646-660], streamed from one page per member tenant at a time; each membership row lives in its member's tenant. */
+export async function* streamGroupMembers(deps: GroupDeps, groupId: string, opts: { includeS2?: boolean } = {}): AsyncGenerator<GroupMemberRow, void, undefined> {
+  const open = new Set<MemberPager>();
+  try {
+    const heads = await readUnclosed<MemberHead[]>(deps, async () => {
+      // Probed one transaction at a time, so no pager connection is held while another is checked out for an empty tenant.
+      const holding: string[] = [];
+      for (const tenantId of await candidateTenants(deps.db)) {
+        const probe = await withTenant(deps.db, tenantId, (tx) => deps.repo.probeMembers(tx, groupId, opts));
+        if (probe.closed.length > 0) return { value: [], closed: probe.closed };
+        if (probe.listed) holding.push(tenantId);
+      }
+      const opened: MemberHead[] = [];
+      for (const tenantId of holding) {
+        const pager = openPager(deps, tenantId, groupId, opts);
+        open.add(pager);
+        const page = await pager.pull();
+        if (page !== null && page.closed.length > 0) {
+          await closePagers(open);
+          return { value: [], closed: page.closed };
+        }
+        if (page === null || page.members.length === 0) {
+          open.delete(pager);
+          await pager.close();
+        } else {
+          opened.push({ pager, rows: page.members, at: 0 });
+        }
+      }
+      return { value: opened, closed: [] };
+    });
+    while (heads.length > 0) {
+      const head = heads.reduce((best, candidate) => (memberOrder(headRow(candidate), headRow(best)) < 0 ? candidate : best));
+      yield headRow(head).member;
+      head.at += 1;
+      if (head.at < head.rows.length) continue;
+      const page = await head.pager.pull();
+      if (page === null || page.members.length === 0) {
+        heads.splice(heads.indexOf(head), 1);
+        open.delete(head.pager);
+        await head.pager.close();
+      } else {
+        head.rows = page.members;
+        head.at = 0;
+      }
+    }
+  } finally {
+    await closePagers(open);
   }
-  return lists.length <= 1 ? (lists[0] ?? []) : lists.flat().sort(byLastName);
+}
+
+/** Every member `streamGroupMembers` yields, in its order. */
+export async function listGroupMembers(deps: GroupDeps, groupId: string, opts: { includeS2?: boolean } = {}): Promise<GroupMemberRow[]> {
+  const members: GroupMemberRow[] = [];
+  for await (const member of streamGroupMembers(deps, groupId, opts)) members.push(member);
+  return members;
 }
 
 /** Publishes the group's own membership set when the save changed it. */
@@ -898,16 +1050,18 @@ async function changeMembership(deps: GroupDeps, input: MembershipChange, change
   const member = await locateMember(deps, input.userId);
   // Legacy writes the row even for an unknown id, which no screen lists; identity has no tenant to hold it.
   if (member === null) return false;
-  await awaitAccountOpen(deps.db, member.tenantId, input.userId, { sleep: deps.sleep });
-  return withGatedTenant(deps.db, member.tenantId, async (tx) => {
-    if ((await deps.repo.findOpenAccountOperation(tx, { userId: input.userId })) !== null) {
-      throw new OperationBlockedError([...ACCOUNT_OPERATION_UNITS], `An open account operation keeps user ${input.userId} closed`);
-    }
-    if (!(await change(tx))) return false;
-    const groupIds = await deps.repo.membershipGroupIds(tx, input.userId);
-    await deps.events.publishMembershipChanged(tx, { userId: input.userId, siteId: member.siteId, groupIds });
-    return true;
-  });
+  return withOpenAccount(
+    deps.db,
+    member.tenantId,
+    input.userId,
+    async (tx) => {
+      if (!(await change(tx))) return false;
+      const groupIds = await deps.repo.membershipGroupIds(tx, input.userId);
+      await deps.events.publishMembershipChanged(tx, { userId: input.userId, siteId: member.siteId, groupIds });
+      return true;
+    },
+    { sleep: deps.sleep },
+  );
 }
 
 /** Adds a user or group to a group unless it is a member [legacy: core/mura/user/userDAO.cfc:545-559]; true when a row was added. */

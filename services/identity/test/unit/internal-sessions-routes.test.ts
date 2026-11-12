@@ -10,7 +10,7 @@ import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/aut
 import { sessionCookieStrings } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
-import { tenantIdForSite, withMetadata, withTenant, type TenantDb } from '@opt2/platform/tenancy';
+import { SYSTEM_TENANT_ID, tenantIdForSite, withMetadata, withTenant, type TenantDb } from '@opt2/platform/tenancy';
 import {
   assertResponseMatchesOpenApi,
   createThrowawaySchema,
@@ -240,7 +240,7 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
     return (await withTenant(handle.app, tenantId, (tx) => repo.findSession(tx, sid)))?.mode;
   }
 
-  it('adopts a logged-in legacy session into the user site tenant and hands the gateway its session cookies', async () => {
+  it('adopts a logged-in legacy session under the system tenant and hands the gateway its session cookies', async () => {
     const sid = nextSessionId();
 
     const res = await send('POST', ADOPT, await headersFor('gateway'), adoptBody(sid, LEGACY_USER, { roles: ROLES, usedTokens: ['bb', 'AA'] }));
@@ -251,7 +251,8 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
     const cfid = /^CFID=([^;]*);/.exec(body.setCookie[0] ?? '')?.[1] ?? '';
     expect(cfid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(body.setCookie).toEqual(sessionCookieStrings({ CFID: cfid, CFTOKEN: '0', jsessionid: sid }, {}, NOW));
-    expect(await storedMode(sid, TENANT_A)).toBe('legacy-primary');
+    expect(await storedMode(sid, TENANT_A)).toBeUndefined();
+    expect(await storedMode(sid, SYSTEM_TENANT_ID)).toBe('legacy-primary');
     expect((await gateway('state', sid)).json()).toEqual({ state: 'active', epoch: 1, userId: USER, siteId: SITE });
     expect((await gateway('snapshot', sid)).json()).toEqual({
       sessionId: sid,

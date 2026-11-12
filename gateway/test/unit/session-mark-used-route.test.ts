@@ -86,6 +86,7 @@ async function markUsedApp(
     rebind: unexpected('jar.rebind'),
     withSessionLock: unexpected('jar.withSessionLock'),
     withNativeLock: unexpected('jar.withNativeLock'),
+    markIdentityEndPending: unexpected('jar.markIdentityEndPending'),
   };
   const bridge: BridgeClient = {
     describe: unexpected('bridge.describe'),

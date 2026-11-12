@@ -17,6 +17,7 @@ import {
   failContextFor,
   isLegacyUnavailable,
   isTargetUnavailable,
+  neverSent,
   surfaceForFamily,
   type FailContext,
   type FailSurface,
@@ -266,6 +267,25 @@ describe('isTargetUnavailable', () => {
     const outer: { cause?: unknown } = {};
     outer.cause = { cause: coded('ECONNRESET', outer) };
     expect(isTargetUnavailable(outer)).toBe(true);
+  });
+});
+
+describe('neverSent', () => {
+  it.each<[unknown, boolean]>([
+    [Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }), true],
+    [{ code: 'ENOTFOUND' }, true],
+    [{ code: 'EAI_AGAIN' }, true],
+    [{ code: 'UND_ERR_CONNECT_TIMEOUT' }, true],
+    [{ code: 'ECONNRESET' }, false],
+    [{ code: 'UND_ERR_HEADERS_TIMEOUT' }, false],
+    [{ code: 'FST_REPLY_FROM_TIMEOUT' }, false],
+    [{ code: 'UND_ERR_SOCKET' }, false],
+    [new Error('no code'), false],
+    [{ code: 7 }, false],
+    [undefined, false],
+    [null, false],
+  ])('classifies %o as never sent: %s', (error, expected) => {
+    expect(neverSent(error)).toBe(expected);
   });
 });
 
