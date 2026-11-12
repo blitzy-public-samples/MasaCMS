@@ -25,7 +25,7 @@ import {
   type SecretStore,
   type SeedStore,
 } from './session.js';
-import { redact, runStep, type StepRunOptions } from './steps.js';
+import { redact, runStep, type StepRecord, type StepRunOptions } from './steps.js';
 import { isMainModule, parseFlags, runCli, type CliOutcome } from '../lib/cli.js';
 import { stateDir, type EnvLike } from '../lib/paths.js';
 import { readJson, stableStringify, writeJsonReport, type ReportOptions } from '../lib/report.js';
@@ -130,29 +130,61 @@ export interface WorkloadPlanOptions {
   adminUsername?: string;
 }
 
-/** The ordered workload: catalogue-shaped steps sent in one scenario context. */
+/**
+ * Data predicate over a probe's extracted bindings; element fields match case-insensitively (ACF upper-cases keys).
+ * `equals`: the binding is `value`. `some-equals`: an element of the array binding has `field` = `value`.
+ * `keyed-not-equals`: the element of the array binding whose `key` is `id` has `field` other than `value`.
+ */
+export type WriteCheck =
+  | { kind: 'equals'; binding: string; value: string }
+  | { kind: 'some-equals'; binding: string; field: string; value: string }
+  | { kind: 'keyed-not-equals'; binding: string; key: string; id: string; field: string; value: string };
+
+/** A write of the plan: `check` holds of plan item `probe`'s response once it is applied; `skip` then stays unsent. */
+export interface WorkloadWrite {
+  name: string;
+  probe: string;
+  check: WriteCheck;
+  skip: string[];
+}
+
+/** The ordered workload: catalogue-shaped steps sent in one scenario context, and the writes among them. */
 export interface WorkloadPlan {
   seed: number;
   items: Step[];
+  writes: WorkloadWrite[];
 }
 
-/** Outcome of one exchange; `routeKey` and `status` are null when the step threw before a response was recorded. */
+/**
+ * Outcome of one plan item; `routeKey` and `status` are null when it threw before a response was recorded or was not
+ * sent, `skipped` then saying why: its write was already applied, or could not be verified.
+ */
 export interface WorkloadItem {
   name: string;
   routeKey: string | null;
   status: number | null;
+  skipped?: 'already-applied' | 'unverified';
 }
 
-/** An item that answered other than 2xx/3xx or threw. */
+/** An item that answered other than 2xx/3xx or threw, or a write left unsent because its probe could not tell. */
 export interface WorkloadFailure extends WorkloadItem {
   reason: string;
 }
 
+/** Progress `workload.json` records: `running` while items are sent, then `complete`. */
+export type WorkloadStatus = 'running' | 'complete';
+
+/** How a run ended: `already-applied` when every write was found applied, so none was sent; else `complete`. */
+export type WorkloadOutcome = 'complete' | 'already-applied';
+
 /** Result of {@link runWorkload}; `report` is the written `workload.json`. */
 export interface WorkloadRun {
+  outcome: WorkloadOutcome;
   planDigest: string;
   items: WorkloadItem[];
   failures: WorkloadFailure[];
+  /** Writes whose items were sent, and writes found already applied. */
+  writes: { sent: number; alreadyApplied: number };
   report: string;
 }
 
@@ -251,6 +283,21 @@ function step(input: z.input<typeof stepSchema>): Step {
   return stepSchema.parse(input);
 }
 
+/** Plan items of one kind and the writes among them. */
+interface PlanPart {
+  items: Step[];
+  writes: WorkloadWrite[];
+}
+
+/** Write `name`: item `probe`, whose response `check` shows it applied, then the items `sent` unless it is. */
+function writePart(name: string, probe: Step, check: WriteCheck, sent: readonly Step[]): PlanPart {
+  return { items: [probe, ...sent], writes: [{ name, probe: probe.name, check, skip: sent.map((item) => item.name) }] };
+}
+
+function joinParts(parts: readonly PlanPart[]): PlanPart {
+  return { items: parts.flatMap((part) => part.items), writes: parts.flatMap((part) => part.writes) };
+}
+
 /**
  * `count` rows of `rows` sorted by `key`, taken consecutively (wrapping) from an offset fixed by `seed` and `label`.
  * Throws GoldenConfigError when fewer than `count` rows are eligible.
@@ -318,12 +365,22 @@ function contentFields(site: string, title: string, body: string): Record<string
   };
 }
 
-/** Edit of an existing page: read its active version, open it in the editor, save a draft with a new title and body. */
-function contentEditItems(row: WorkloadContent, n: number): Step[] {
+/**
+ * Edit of an existing page unless a version in its history carries the edit's title: read its active version, open
+ * it in the editor, save a draft with a new title and body.
+ */
+function contentEditItems(row: WorkloadContent, n: number): PlanPart {
   const base = `content-edit-${n}`;
   const site = row.siteID;
   const title = clip(`${row.title} (OPT-2 workload ${n})`, TITLE_MAX);
-  return [
+  const probe = step({
+    name: `${base}-probe`,
+    method: 'GET',
+    route: `/_api/json/v1/${site}/content/${row.contentID}/history?itemsPerPage=*`,
+    as: ADMIN_SESSION,
+    extract: { items: { from: 'body', path: 'data.items' } },
+  });
+  return writePart(base, probe, { kind: 'some-equals', binding: 'items', field: 'title', value: title }, [
     step({
       name: `${base}-find`,
       method: 'GET',
@@ -363,18 +420,26 @@ function contentEditItems(row: WorkloadContent, n: number): Step[] {
         isNav: String(row.isNav),
       },
     }),
-  ];
+  ]);
 }
 
 /**
- * New page under the home node of `site`. Each new-page form mints its own contentid and contenthistid, and
- * `cArch.update` checks its CSRF token against that contenthistid, so the save posts the ids of the form the
- * tokens come from (its hidden fields) rather than ids bound from an earlier fetch.
+ * New page under the home node of `site` unless a page of its title exists (drafts included, so `liveOnly=0`). Each
+ * new-page form mints its own contentid and contenthistid, and `cArch.update` checks its CSRF token against that
+ * contenthistid, so the save posts the ids of the form the tokens come from (its hidden fields) rather than ids bound
+ * from an earlier fetch.
  */
-function contentCreateItems(site: string, n: number): Step[] {
+function contentCreateItems(site: string, n: number): PlanPart {
   const base = `content-create-${n}`;
   const title = `OPT-2 Workload Page ${n}`;
-  return [
+  const probe = step({
+    name: `${base}-probe`,
+    method: 'GET',
+    route: `/_api/json/v1/${site}/content/?title=${encodeURIComponent(title)}&liveOnly=0`,
+    as: ADMIN_SESSION,
+    extract: { items: { from: 'body', path: 'data.items' } },
+  });
+  return writePart(base, probe, { kind: 'some-equals', binding: 'items', field: 'title', value: title }, [
     step({
       name: `${base}-form`,
       method: 'GET',
@@ -402,98 +467,118 @@ function contentCreateItems(site: string, n: number): Step[] {
         isNav: '1',
       },
     }),
-  ];
+  ]);
 }
 
-/** Roster edit of a system user without a photo (`cusers.update` type=2 action=Update), then a new address. */
-function userEditItems(user: WorkloadUser, n: number): Step[] {
+/**
+ * Roster edit of a system user without a photo (`cusers.update` type=2 action=Update) unless its form shows the
+ * edit's job title, then a new address unless one of its name exists.
+ */
+function userEditItems(user: WorkloadUser, n: number): PlanPart {
   const base = `user-edit-${n}`;
   const site = user.siteID;
-  return [
-    step({
-      name: `${base}-form`,
-      method: 'GET',
-      route: adminRoute('cUsers.editUser', [
-        ['siteid', site],
-        ['userid', user.userID],
-      ]),
-      as: ADMIN_SESSION,
-    }),
-    step({
-      name: `${base}-save`,
-      method: 'POST',
-      route: adminRoute('cUsers.update', [
-        ['userid', user.userID],
-        ['routeid', ''],
-      ]),
-      as: ADMIN_SESSION,
-      csrf: 'fetch-form',
-      csrfFrom: `${base}-form`,
-      form: {
-        type: '2',
-        action: 'Update',
-        siteid: site,
-        isPublic: '0',
-        fname: user.fname,
-        lname: user.lname,
-        email: user.email,
-        usernameNoCache: user.username,
-        InActive: '0',
-        subscribe: String(user.subscribe),
-        jobtitle: `OPT-2 Workload Analyst ${n}`,
-        company: `OPT-2 Workload Company ${n}`,
-      },
-    }),
-    step({
-      name: `${base}-address-form`,
-      method: 'GET',
-      route: adminRoute('cUsers.editAddress', [
-        ['siteid', site],
-        ['userid', user.userID],
-        ['addressid', ''],
-        ['routeid', ''],
-      ]),
-      as: ADMIN_SESSION,
-    }),
-    step({
-      name: `${base}-address-save`,
-      method: 'POST',
-      route: adminRoute('cUsers.updateAddress', [
-        ['userid', user.userID],
-        ['routeid', ''],
-        ['siteid', site],
-      ]),
-      as: ADMIN_SESSION,
-      csrf: 'fetch-form',
-      csrfFrom: `${base}-address-form`,
-      form: {
-        action: 'Add',
-        siteid: site,
-        isPublic: '0',
-        addressName: `OPT-2 Workload Office ${n}`,
-        address1: `${n} Workload Way`,
-        city: 'Sample City',
-        state: 'NY',
-        zip: `1010${n}`,
-        country: 'USA',
-      },
-    }),
-  ];
+  const jobtitle = `OPT-2 Workload Analyst ${n}`;
+  const addressName = `OPT-2 Workload Office ${n}`;
+  const form = step({
+    name: `${base}-form`,
+    method: 'GET',
+    route: adminRoute('cUsers.editUser', [
+      ['siteid', site],
+      ['userid', user.userID],
+    ]),
+    as: ADMIN_SESSION,
+    extract: { jobtitle: { from: 'dom', selector: 'input[name=jobtitle]', attr: 'value' } },
+  });
+  const addressProbe = step({
+    name: `${base}-address-probe`,
+    method: 'GET',
+    route: `/_api/json/v1/${site}/address/?userid=${user.userID}`,
+    as: ADMIN_SESSION,
+    extract: { items: { from: 'body', path: 'data.items' } },
+  });
+  const addressCheck: WriteCheck = { kind: 'some-equals', binding: 'items', field: 'addressname', value: addressName };
+  return joinParts([
+    writePart(base, form, { kind: 'equals', binding: 'jobtitle', value: jobtitle }, [
+      step({
+        name: `${base}-save`,
+        method: 'POST',
+        route: adminRoute('cUsers.update', [
+          ['userid', user.userID],
+          ['routeid', ''],
+        ]),
+        as: ADMIN_SESSION,
+        csrf: 'fetch-form',
+        csrfFrom: `${base}-form`,
+        form: {
+          type: '2',
+          action: 'Update',
+          siteid: site,
+          isPublic: '0',
+          fname: user.fname,
+          lname: user.lname,
+          email: user.email,
+          usernameNoCache: user.username,
+          InActive: '0',
+          subscribe: String(user.subscribe),
+          jobtitle,
+          company: `OPT-2 Workload Company ${n}`,
+        },
+      }),
+    ]),
+    writePart(`${base}-address`, addressProbe, addressCheck, [
+      step({
+        name: `${base}-address-form`,
+        method: 'GET',
+        route: adminRoute('cUsers.editAddress', [
+          ['siteid', site],
+          ['userid', user.userID],
+          ['addressid', ''],
+          ['routeid', ''],
+        ]),
+        as: ADMIN_SESSION,
+      }),
+      step({
+        name: `${base}-address-save`,
+        method: 'POST',
+        route: adminRoute('cUsers.updateAddress', [
+          ['userid', user.userID],
+          ['routeid', ''],
+          ['siteid', site],
+        ]),
+        as: ADMIN_SESSION,
+        csrf: 'fetch-form',
+        csrfFrom: `${base}-address-form`,
+        form: {
+          action: 'Add',
+          siteid: site,
+          isPublic: '0',
+          addressName,
+          address1: `${n} Workload Way`,
+          city: 'Sample City',
+          state: 'NY',
+          zip: `1010${n}`,
+          country: 'USA',
+        },
+      }),
+    ]),
+  ]);
 }
 
-/** Group edit without a photo (`cusers.update` type=1 action=Update): a new group email. */
-function groupEditItems(group: WorkloadGroup, n: number): Step[] {
+/** Group edit without a photo (`cusers.update` type=1 action=Update) unless its form shows the new group email. */
+function groupEditItems(group: WorkloadGroup, n: number): PlanPart {
   const base = `group-edit-${n}`;
-  return [
-    step({
-      name: `${base}-form`,
-      method: 'GET',
-      route: adminRoute('cUsers.editGroup', [
-        ['siteid', group.siteID],
-        ['userid', group.groupID],
-      ]),
-      as: ADMIN_SESSION,
-    }),
+  const email = `opt2-workload-group-${n}@${EMAIL_DOMAIN}`;
+  const form = step({
+    name: `${base}-form`,
+    method: 'GET',
+    route: adminRoute('cUsers.editGroup', [
+      ['siteid', group.siteID],
+      ['userid', group.groupID],
+    ]),
+    as: ADMIN_SESSION,
+    extract: { email: { from: 'dom', selector: 'input[name=email]', attr: 'value' } },
+  });
+  return writePart(base, form, { kind: 'equals', binding: 'email', value: email }, [
     step({
       name: `${base}-save`,
       method: 'POST',
@@ -507,21 +592,23 @@ function groupEditItems(group: WorkloadGroup, n: number): Step[] {
         siteid: group.siteID,
         isPublic: '0',
         groupname: group.groupname,
-        email: `opt2-workload-group-${n}@${EMAIL_DOMAIN}`,
+        email,
       },
     }),
-  ];
+  ]);
 }
 
 /** Site edit of a non-pool setting (`csettings.updateSite` action=Update): the contact address. */
-function siteEditItems(site: string): Step[] {
-  return [
-    step({
-      name: 'site-edit-form',
-      method: 'GET',
-      route: adminRoute('cSettings.editSite', [['siteid', site]]),
-      as: ADMIN_SESSION,
-    }),
+function siteEditItems(site: string): PlanPart {
+  const contact = `opt2-workload-site@${EMAIL_DOMAIN}`;
+  const form = step({
+    name: 'site-edit-form',
+    method: 'GET',
+    route: adminRoute('cSettings.editSite', [['siteid', site]]),
+    as: ADMIN_SESSION,
+    extract: { contact: { from: 'dom', selector: 'input[name=contact]', attr: 'value' } },
+  });
+  return writePart('site-edit', form, { kind: 'equals', binding: 'contact', value: contact }, [
     step({
       name: 'site-edit-save',
       method: 'POST',
@@ -529,9 +616,9 @@ function siteEditItems(site: string): Step[] {
       as: ADMIN_SESSION,
       csrf: 'fetch-form',
       csrfFrom: 'site-edit-form',
-      form: { siteid: site, action: 'Update', contact: `opt2-workload-site@${EMAIL_DOMAIN}` },
+      form: { siteid: site, action: 'Update', contact },
     }),
-  ];
+  ]);
 }
 
 /** JSON API login of the seeded `role` account of `site` into `session`, as the catalogue's jsonapi sessions log in. */
@@ -547,8 +634,11 @@ function roleLoginItem(name: string, session: string, site: string, role: string
   });
 }
 
-/** Fixture writes in the `Program_<id>` schema of the edit site: DRAFT day submits, then IN-PROGRESS record edits. */
-function fixtureItems(config: WorkloadSeedConfig, dataset: WorkloadDataset, keys: ReadonlySet<string>): Step[] {
+/**
+ * Fixture writes in the `Program_<id>` schema of the edit site: DRAFT day submits unless the day has left DRAFT, then
+ * IN-PROGRESS record edits unless the record holds the edit's title.
+ */
+function fixtureItems(config: WorkloadSeedConfig, dataset: WorkloadDataset, keys: ReadonlySet<string>): PlanPart {
   const site = WORKLOAD_SITES.edits;
   const programId = config.sites[site]?.programId;
   if (programId === undefined || programId === null) {
@@ -572,36 +662,68 @@ function fixtureItems(config: WorkloadSeedConfig, dataset: WorkloadDataset, keys
   );
   const submits = pick(days, (day) => day.day_id, WORKLOAD_COUNTS.timesheetSubmits, config.seed, 'timesheet-submit');
   const edits = pick(records, (row) => row.record_id, WORKLOAD_COUNTS.financeEdits, config.seed, 'finance-edit');
-  return [
-    roleLoginItem('employee-login', EMPLOYEE_SESSION, site, Roles.timesheetsEmployee),
-    ...submits.map((day, i) =>
+  const submitPart = (day: z.infer<typeof dayRowSchema>, n: number): PlanPart => {
+    const name = `timesheet-submit-${n}`;
+    const probe = step({
+      name: `${name}-probe`,
+      method: 'GET',
+      route: `${FIXTURE_API}/timesheets/sheets/${day.timesheet_id}?siteid=${site}`,
+      as: EMPLOYEE_SESSION,
+      extract: { days: { from: 'body', path: 'data.days' } },
+    });
+    const check: WriteCheck = {
+      kind: 'keyed-not-equals',
+      binding: 'days',
+      key: 'day_id',
+      id: day.day_id,
+      field: 'state',
+      value: DRAFT_DAY,
+    };
+    return writePart(name, probe, check, [
       step({
-        name: `timesheet-submit-${i + 1}`,
+        name,
         method: 'POST',
         route: `${FIXTURE_API}/timesheets/days/${day.day_id}/submit?siteid=${site}`,
         as: EMPLOYEE_SESSION,
         csrf: `json-api:${day.day_id}`,
       }),
-    ),
-    roleLoginItem('preparer-login', PREPARER_SESSION, site, Roles.financePreparer),
-    ...edits.map((row, i) =>
+    ]);
+  };
+  const editPart = (row: z.infer<typeof financeRowSchema>, n: number): PlanPart => {
+    const name = `finance-edit-${n}`;
+    const title = `OPT-2 workload edit ${n}`;
+    const probe = step({
+      name: `${name}-probe`,
+      method: 'GET',
+      route: `${FIXTURE_API}/finance/records/${row.record_id}?siteid=${site}`,
+      as: PREPARER_SESSION,
+      extract: { title: { from: 'body', path: 'data.title' } },
+    });
+    return writePart(name, probe, { kind: 'equals', binding: 'title', value: title }, [
       step({
-        name: `finance-edit-${i + 1}`,
+        name,
         method: 'POST',
         route: `${FIXTURE_API}/finance/records/${row.record_id}/edit?siteid=${site}`,
         as: PREPARER_SESSION,
         csrf: `json-api:${row.record_id}`,
-        body: { title: `OPT-2 workload edit ${i + 1}`, amount: row.amount, period: row.period },
+        body: { title, amount: row.amount, period: row.period },
       }),
-    ),
-  ];
+    ]);
+  };
+  return joinParts([
+    { items: [roleLoginItem('employee-login', EMPLOYEE_SESSION, site, Roles.timesheetsEmployee)], writes: [] },
+    ...submits.map((day, i) => submitPart(day, i + 1)),
+    { items: [roleLoginItem('preparer-login', PREPARER_SESSION, site, Roles.financePreparer)], writes: [] },
+    ...edits.map((row, i) => editPart(row, i + 1)),
+  ]);
 }
 
 /**
  * The workload for `config` and `dataset`: admin login, content edits and creates, user, group and site edits, and,
- * with the fixtures available, timesheet submits and finance edits. Pure: equal inputs give an equal plan. Rows are
- * chosen by sorted key from seed-derived offsets, never among reserved rehearsal identities, `excludedKeys`, role
- * groups or users holding memberships. Throws GoldenConfigError when a kind has too few eligible rows.
+ * with the fixtures available, timesheet submits and finance edits, each write preceded by the probe that shows it
+ * applied. Pure: equal inputs give an equal plan. Rows are chosen by sorted key from seed-derived offsets, never among
+ * reserved rehearsal identities, `excludedKeys`, role groups or users holding memberships. Throws GoldenConfigError
+ * when a kind has too few eligible rows.
  */
 export function buildWorkloadPlan(
   config: WorkloadSeedConfig,
@@ -631,24 +753,24 @@ export function buildWorkloadPlan(
       row.siteID === site && !ROLE_GROUPS.has(row.groupname) && !keys.has(row.groupID) && !keys.has(row.groupname),
   );
   const { seed } = config;
-  const items: Step[] = [
-    ...loginItems(opts.adminUsername ?? 'admin'),
-    ...pick(pages, (row) => row.contentID, WORKLOAD_COUNTS.contentEdits, seed, 'content-edit').flatMap((row, i) =>
+  const { items, writes } = joinParts([
+    { items: loginItems(opts.adminUsername ?? 'admin'), writes: [] },
+    ...pick(pages, (row) => row.contentID, WORKLOAD_COUNTS.contentEdits, seed, 'content-edit').map((row, i) =>
       contentEditItems(row, i + 1),
     ),
     ...Array.from({ length: WORKLOAD_COUNTS.contentCreates }, (_, i) =>
       contentCreateItems(WORKLOAD_SITES.creates, i + 1),
-    ).flat(),
-    ...pick(users, (row) => row.userID, WORKLOAD_COUNTS.userEdits, seed, 'user-edit').flatMap((row, i) =>
+    ),
+    ...pick(users, (row) => row.userID, WORKLOAD_COUNTS.userEdits, seed, 'user-edit').map((row, i) =>
       userEditItems(row, i + 1),
     ),
-    ...pick(groups, (row) => row.groupID, WORKLOAD_COUNTS.groupEdits, seed, 'group-edit').flatMap((row, i) =>
+    ...pick(groups, (row) => row.groupID, WORKLOAD_COUNTS.groupEdits, seed, 'group-edit').map((row, i) =>
       groupEditItems(row, i + 1),
     ),
-    ...siteEditItems(WORKLOAD_SITES.settings),
-    ...(opts.fixturesAvailable ? fixtureItems(config, dataset, keys) : []),
-  ];
-  return { seed, items };
+    siteEditItems(WORKLOAD_SITES.settings),
+    ...(opts.fixturesAvailable ? [fixtureItems(config, dataset, keys)] : []),
+  ]);
+  return { seed, items, writes };
 }
 
 /** Lowercase hex SHA-256 of the plan's items as stable JSON. */
@@ -695,12 +817,92 @@ function isSuccess(status: number): boolean {
   return status >= 200 && status < 400;
 }
 
+const UNVERIFIED = 'could not verify whether it is already applied, so it was not sent';
+
+/** Records of one sent item, or the redacted text of the Error it threw. */
+type Sent = StepRecord[] | string;
+
+/** Failures of a sent item: the error it threw, else each record answered other than 2xx/3xx. */
+function failuresOf(item: Step, sent: Sent): WorkloadFailure[] {
+  if (typeof sent === 'string') return [{ name: item.name, routeKey: null, status: null, reason: sent }];
+  return sent
+    .filter((record) => !isSuccess(record.response.status))
+    .map((record) => {
+      const { status } = record.response;
+      return { name: record.name, routeKey: record.routeKey, status, reason: `status ${status}` };
+    });
+}
+
+/** Field `name` of a JSON object, matched exactly, then case-insensitively; undefined for anything else. */
+function fieldOf(row: unknown, name: string): unknown {
+  if (typeof row !== 'object' || row === null || Array.isArray(row)) return undefined;
+  const record = row as Record<string, unknown>;
+  const lower = name.toLowerCase();
+  const key = Object.hasOwn(record, name) ? name : Object.keys(record).find((field) => field.toLowerCase() === lower);
+  return key === undefined ? undefined : record[key];
+}
+
+function scalarText(value: unknown): string | undefined {
+  const scalar = typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
+  return scalar ? String(value) : undefined;
+}
+
+/** Whether `check` holds of a probe's `extracted` bindings; undefined when a binding, element or field is missing. */
+function holds(check: WriteCheck, extracted: Record<string, unknown>): boolean | undefined {
+  const value = Object.hasOwn(extracted, check.binding) ? extracted[check.binding] : undefined;
+  if (check.kind === 'equals') {
+    const text = scalarText(value);
+    return text === undefined ? undefined : text === check.value;
+  }
+  if (!Array.isArray(value)) return undefined;
+  if (check.kind === 'some-equals') {
+    const texts = value.map((row) => scalarText(fieldOf(row, check.field)));
+    if (texts.includes(check.value)) return true;
+    return texts.includes(undefined) ? undefined : false;
+  }
+  const text = scalarText(fieldOf(value.find((row) => scalarText(fieldOf(row, check.key)) === check.id), check.field));
+  return text === undefined ? undefined : text !== check.value;
+}
+
+/** Whether probe `item`'s `sent` shows `write` applied, else why that cannot be told. */
+function verdictOf(write: WorkloadWrite, item: Step, sent: Sent): boolean | string {
+  const [failure] = failuresOf(item, sent);
+  if (failure !== undefined) return failure.reason;
+  const [record] = typeof sent === 'string' ? [] : sent;
+  const applied = record === undefined || sent.length !== 1 ? undefined : holds(write.check, record.extracted);
+  return applied ?? `binding ${write.check.binding} lacks what its ${write.check.kind} check reads`;
+}
+
+/** The one failure of a write its probe could not verify: the write, the probe's response and its cause. */
+function unverifiedFailure(write: WorkloadWrite, sent: Sent, cause: string): WorkloadFailure {
+  const record = typeof sent === 'string' ? undefined : sent[0];
+  return {
+    name: write.name,
+    routeKey: record?.routeKey ?? null,
+    status: record?.response.status ?? null,
+    reason: `${UNVERIFIED} (${write.probe}: ${cause})`,
+  };
+}
+
 /**
- * Sends every plan item in order through the gateway in one scenario context (sessions named by the items' `as`,
- * logged in by the plan's own login items), with the step runner capture and replay use. A response other than
- * 2xx/3xx, or a step that throws, is a failure; the run continues. Writes `<state>/golden/workload.json`.
+ * Sends the plan in order through the gateway in one scenario context (sessions named by the items' `as`, logged in
+ * by the plan's own login items) with the shared step runner, rewriting `<state>/golden/workload.json` after each
+ * item. After a write's probe, the write's items stay unsent when its check holds, and, as one failure naming the
+ * write, when the probe fails or its check cannot be evaluated. Elsewhere a response other than 2xx/3xx, or a step
+ * that throws, is a failure; the run continues. Throws GoldenConfigError, sending nothing, when a write's probe is
+ * missing, shared, among any write's items, or after its own items.
  */
 export async function runWorkload(plan: WorkloadPlan, deps: WorkloadDeps = {}): Promise<WorkloadRun> {
+  const position = new Map(plan.items.map((item, index) => [item.name, index] as const));
+  const skipped = new Set(plan.writes.flatMap((write) => write.skip));
+  const probes = new Map(plan.writes.map((write) => [write.probe, write] as const));
+  for (const write of plan.writes) {
+    const at = position.get(write.probe);
+    const ordered = at !== undefined && write.skip.every((name) => (position.get(name) ?? -1) > at);
+    if (!ordered || skipped.has(write.probe) || probes.get(write.probe) !== write) {
+      throw new GoldenConfigError(`workload write ${write.name} needs its own probe ${write.probe} before its items`);
+    }
+  }
   const env = deps.env ?? process.env;
   const names = [...new Set(plan.items.map((item) => item.as ?? ADMIN_SESSION))];
   const unauthenticated: SessionSpec = { login: 'none', via: 'admin' };
@@ -709,9 +911,15 @@ export async function runWorkload(plan: WorkloadPlan, deps: WorkloadDeps = {}): 
     { origin: 'gateway', env, fetch: deps.fetch, secrets: deps.secrets, seed: deps.seed },
   );
   const scenario = { id: WORKLOAD_ID, steps: plan.items };
+  const digest = planDigest(plan);
+  const file = path.join(stateDir(env), 'golden', 'workload.json');
   const items: WorkloadItem[] = [];
   const failures: WorkloadFailure[] = [];
-  for (const [index, item] of plan.items.entries()) {
+  const writes = { sent: 0, alreadyApplied: 0 };
+  const withheld = new Map<string, NonNullable<WorkloadItem['skipped']>>();
+  const journal = async (status: WorkloadStatus): Promise<string> =>
+    (await writeJsonReport(file, { planDigest: digest, status, items, failures }, deps.report)).path;
+  const send = async (index: number, item: Step): Promise<Sent> => {
     try {
       const records = await runStep(ctx, scenario, item, {
         mode: 'replay',
@@ -720,22 +928,44 @@ export async function runWorkload(plan: WorkloadPlan, deps: WorkloadDeps = {}): 
         routeKeyOptions: deps.routeKeyOptions,
       });
       for (const record of records) {
-        const { status } = record.response;
-        const outcome: WorkloadItem = { name: record.name, routeKey: record.routeKey, status };
-        items.push(outcome);
-        if (!isSuccess(status)) failures.push({ ...outcome, reason: `status ${status}` });
+        items.push({ name: record.name, routeKey: record.routeKey, status: record.response.status });
       }
+      return records;
     } catch (err) {
       if (!(err instanceof Error)) throw err;
-      const outcome: WorkloadItem = { name: item.name, routeKey: null, status: null };
-      items.push(outcome);
-      failures.push({ ...outcome, reason: redact(`${err.name}: ${err.message}`, secretValues(ctx)) });
+      items.push({ name: item.name, routeKey: null, status: null });
+      return redact(`${err.name}: ${err.message}`, secretValues(ctx));
     }
+  };
+  const handle = async (index: number, item: Step): Promise<void> => {
+    const skip = withheld.get(item.name);
+    if (skip !== undefined) {
+      items.push({ name: item.name, routeKey: null, status: null, skipped: skip });
+      return;
+    }
+    const sent = await send(index, item);
+    const write = probes.get(item.name);
+    if (write === undefined) {
+      failures.push(...failuresOf(item, sent));
+      return;
+    }
+    const verdict = verdictOf(write, item, sent);
+    if (verdict === false) {
+      writes.sent += 1;
+      return;
+    }
+    if (verdict === true) writes.alreadyApplied += 1;
+    else failures.push(unverifiedFailure(write, sent, verdict));
+    for (const name of write.skip) withheld.set(name, verdict === true ? 'already-applied' : 'unverified');
+  };
+
+  for (const [index, item] of plan.items.entries()) {
+    await handle(index, item);
+    await journal('running');
   }
-  const digest = planDigest(plan);
-  const file = path.join(stateDir(env), 'golden', 'workload.json');
-  const { path: report } = await writeJsonReport(file, { planDigest: digest, items, failures }, deps.report);
-  return { planDigest: digest, items, failures, report };
+  const report = await journal('complete');
+  const outcome: WorkloadOutcome = writes.alreadyApplied === plan.writes.length ? 'already-applied' : 'complete';
+  return { outcome, planDigest: digest, items, failures, writes, report };
 }
 
 /** Input file locations of {@link loadWorkloadInputs}; each defaults to the committed or generated file. */
@@ -782,7 +1012,8 @@ const HELP = `${USAGE}
 Sends the deterministic legacy write workload of test-all stage 4 through the gateway (OPT2_GATEWAY_URL, default
 http://127.0.0.1:8100) while v0001 is active. Reads legacy-fixtures/seed/seed.config.json,
 \${OPT2_STATE_DIR}/seed/dataset.json, \${OPT2_STATE_DIR}/fixtures.json and harness/golden/catalogue.yaml.
-Writes \${OPT2_STATE_DIR}/golden/workload.json; exits 1 when any step fails.`;
+Writes \${OPT2_STATE_DIR}/golden/workload.json after each step; exits 1 when any step fails.
+Each write is first checked against legacy and skipped when already applied, so reruns add nothing.`;
 
 /** CLI entry: builds and runs the workload; exits 1 when any item failed. */
 export async function main(argv: string[], deps: WorkloadDeps = {}): Promise<CliOutcome> {
@@ -797,8 +1028,11 @@ export async function main(argv: string[], deps: WorkloadDeps = {}): Promise<Cli
   return {
     code: run.failures.length > 0 ? 1 : 0,
     summary: {
+      outcome: run.outcome,
       items: run.items.length,
       failures: run.failures.length,
+      writesSent: run.writes.sent,
+      writesAlreadyApplied: run.writes.alreadyApplied,
       planDigest: run.planDigest,
       fixturesAvailable: inputs.options.fixturesAvailable,
       report: run.report,
@@ -807,4 +1041,3 @@ export async function main(argv: string[], deps: WorkloadDeps = {}): Promise<Cli
 }
 
 if (isMainModule(import.meta.url)) void runCli(main);
-
