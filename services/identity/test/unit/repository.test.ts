@@ -8,10 +8,12 @@ import {
   UnitNotAuthoritativeError,
   UnitReadBlockedError,
   ensureUnitGates,
+  requestMigrationAuthority,
   withGatedTenant,
   type GatePhase,
   type GateState,
 } from '@opt2/platform/migration-kit';
+import { Roles } from '@opt2/platform/auth';
 import { tenantIdForSite, withMetadata, type TenantTx } from '@opt2/platform/tenancy';
 import { newRequestContext, runWithRequestContext } from '@opt2/platform/service-kit';
 import { createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
@@ -353,6 +355,26 @@ describe.skipIf(!available)('identity repository against PostgreSQL', () => {
     await expect(gated((tx) => repo.replaceModulePermissions(tx, { moduleId, siteId: 'site-a', groupIds: [id(1, 'G'), id(1, 'G')] }))).rejects.toMatchObject({
       code: '23505',
     });
+  });
+
+  it('reads the permissions of a group in one site, and reads inside a migration apply without waiting out its window import', async () => {
+    const node = id(2, 'N');
+    const moduleId = '00000000000000000000000000000000008';
+    await gated((tx) => repo.replaceNodePermissions(tx, { contentId: node, siteId: 'site-a', grants: [{ groupId: id(1, 'G'), type: 'Read' }] }));
+    await gated((tx) => repo.replaceModulePermissions(tx, { moduleId, siteId: 'site-a', groupIds: [id(1, 'G'), id(2, 'G')] }));
+    await gated((tx) => repo.replaceModulePermissions(tx, { moduleId, siteId: 'site-b', groupIds: [id(1, 'G')] }));
+    const rows = await inTenant((tx) => repo.groupPermissions(tx, id(1, 'G'), 'site-a'));
+    expect(rows.map((row) => [row.contentid, row.siteid, row.type])).toEqual([[moduleId, 'site-a', 'module'], [node, 'site-a', 'Read']]);
+
+    await gated((tx) => repo.insertAccount(tx, account(id(1), 'apply-user')));
+    await gated((tx) => repo.addMembership(tx, id(1), id(1, 'G')));
+    const migration = { ...newRequestContext(), service: { name: 'migration', roles: [Roles.platformMigration] } };
+    const write = { origin: 'legacy-window' as const, authority: runWithRequestContext(migration, () => requestMigrationAuthority()) };
+    await setGates('closed', 'importing');
+    await expect(gated((tx) => repo.membershipGroupIds(tx, id(1)))).rejects.toBeInstanceOf(UnitReadBlockedError);
+    expect(await inTenant((tx) => repo.membershipGroupIds(tx, id(1), write))).toEqual([id(1, 'G')]);
+    expect(await inTenant((tx) => repo.findAccountById(tx, id(1), {}, write))).toMatchObject({ username: 'apply-user' });
+    expect(await inTenant((tx) => repo.groupPermissions(tx, id(1, 'G'), 'site-a', write))).toHaveLength(2);
   });
 
   it('keeps strike rows as userstrikes.cfc does, matched without case or trailing spaces', async () => {

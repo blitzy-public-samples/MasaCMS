@@ -341,8 +341,8 @@ export interface IdentityRepository extends Repository {
   findAccountsByUsername(tx: TenantTx, username: string, poolSiteId?: string): Promise<UserAccountRow[]>;
   /** The first of `findAccountsByUsername`; null when none. */
   findAccountByUsername(tx: TenantTx, username: string, poolSiteId?: string): Promise<UserAccountRow | null>;
-  /** The account `userId`; a `pending` account only with `includePending`. */
-  findAccountById(tx: TenantTx, userId: string, opts?: { includePending?: boolean }): Promise<UserAccountRow | null>;
+  /** The account `userId`; a `pending` account only with `includePending`. A migration apply's `ctx` reads without the window-phase wait. */
+  findAccountById(tx: TenantTx, userId: string, opts?: { includePending?: boolean }, ctx?: WriteContext): Promise<UserAccountRow | null>;
   /** The Type=2 accounts among `userIds`, pending ones included, with their credential and login-state columns, by userid, in one statement. */
   readAccountRecords(tx: TenantTx, userIds: readonly string[]): Promise<AccountRecordRow[]>;
   /** Whether another Type=2 account, pending ones included, holds `trim(username)` [legacy: core/mura/user/userBean.cfc:411-424]. */
@@ -414,8 +414,8 @@ export interface IdentityRepository extends Repository {
 
   /** The groups of this tenant `userId` belongs to, by group userid. */
   membershipsOf(tx: TenantTx, userId: string): Promise<GroupMembership[]>;
-  /** Every group id `userId` belongs to, groups stored in other tenants included, by group id. */
-  membershipGroupIds(tx: TenantTx, userId: string): Promise<string[]>;
+  /** Every group id `userId` belongs to, groups stored in other tenants included, by group id. A migration apply's `ctx` reads without the window-phase wait. */
+  membershipGroupIds(tx: TenantTx, userId: string, ctx?: WriteContext): Promise<string[]>;
   /** Deletes the user's memberships (only `onlyGroupIds` when given), then inserts each new non-empty id [legacy: core/mura/user/userDAO.cfc:502-515,561-581]. */
   replaceMemberships(
     tx: TenantTx,
@@ -437,6 +437,8 @@ export interface IdentityRepository extends Repository {
 
   /** The permissions of a node, optionally of one type [legacy: core/mura/permission.cfc:203-218,623-630]. */
   permissionsFor(tx: TenantTx, input: { contentId: string; siteId: string; type?: string }): Promise<PermissionRow[]>;
+  /** Every permission row of `groupId` in `siteId`, by content id then type. A migration apply's `ctx` reads without the window-phase wait. */
+  groupPermissions(tx: TenantTx, groupId: string, siteId: string, ctx?: WriteContext): Promise<PermissionRow[]>;
   /** Replaces every permission of a node with `grants`, inserted in order [legacy: core/mura/permission.cfc:518-547]. */
   replaceNodePermissions(
     tx: TenantTx,
@@ -628,6 +630,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
   const activeAccountsSql =
     `SELECT * FROM ${userAccount} WHERE tenant_id = $1 AND type = 2 AND inactive = 0 AND opt2_state = 'active'` +
     ` AND (username::bpchar COLLATE ${legacyCi}) = $2::bpchar AND ($3::text IS NULL OR siteid = $3) ORDER BY userid`;
+  const accountByIdSql = `SELECT * FROM ${userAccount} WHERE "tenant_id" = $1 AND "userid" = $2`;
   const usernameHolderSql =
     `SELECT userid FROM ${userAccount} WHERE tenant_id = $1 AND type = 2` +
     ` AND (username::bpchar COLLATE ${legacyCi}) = $2::bpchar AND userid <> $3 LIMIT 1`;
@@ -698,6 +701,8 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
   const lockPermissionsSql =
     `SELECT contentid, groupid, siteid, type FROM ${permission} WHERE tenant_id = $1 AND contentid = $2 AND siteid = $3` +
     ' ORDER BY groupid, type FOR UPDATE';
+  const groupPermissionsSql =
+    `SELECT * FROM ${permission} WHERE tenant_id = $1 AND groupid = $2::bpchar AND siteid = $3 ORDER BY contentid, type`;
   // A bpchar[] keeps groupid uncast, so the groupid index applies.
   const moduleGrantsSql =
     `SELECT contentid, groupid FROM ${permission} WHERE tenant_id = $1 AND type = 'module' AND siteid = $2` +
@@ -743,6 +748,20 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     return base.read(tx, units, () => select<R>(tx, sql, params));
   }
 
+  /**
+   * Selects rows of unit tables as readUnits does, except inside a migration apply: its writes take no gate, so the window
+   * import it performs would hold the read in the import phase until the apply itself timed out.
+   */
+  function readAsWriter<R extends QueryResultRow>(
+    tx: TenantTx,
+    units: string | readonly string[],
+    sql: string,
+    params: readonly unknown[],
+    ctx: WriteContext | undefined,
+  ): Promise<R[]> {
+    return ctx?.authority === undefined ? readUnits<R>(tx, units, sql, params) : select<R>(tx, sql, params);
+  }
+
   /** Deletes the rows of `table` whose keys `keys` lists, each through the platform write; returns how many existed. */
   async function deleteKeys(tx: TenantTx, table: string, keys: readonly RepositoryRow[], ctx: WriteContext): Promise<number> {
     let deleted = 0;
@@ -769,8 +788,16 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     return (await findAccountsByUsername(tx, username, poolSiteId))[0] ?? null;
   }
 
-  async function findAccountById(tx: TenantTx, userId: string, opts: { includePending?: boolean } = {}): Promise<UserAccountRow | null> {
-    const row = await base.findByKey<UserAccountRow>(tx, USER_ACCOUNT.table, { userid: userId });
+  async function findAccountById(
+    tx: TenantTx,
+    userId: string,
+    opts: { includePending?: boolean } = {},
+    ctx?: WriteContext,
+  ): Promise<UserAccountRow | null> {
+    const row =
+      ctx?.authority === undefined
+        ? await base.findByKey<UserAccountRow>(tx, USER_ACCOUNT.table, { userid: userId })
+        : ((await select<UserAccountRow>(tx, accountByIdSql, [tx.tenantId, userId]))[0] ?? null);
     return row !== null && (row.opt2_state === 'active' || opts.includePending === true) ? row : null;
   }
 
@@ -1171,8 +1198,8 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     return rows.map((row) => ({ userId: row.userid, groupName: row.groupname, siteId: row.siteid, isPublic: row.ispublic }));
   }
 
-  async function membershipGroupIds(tx: TenantTx, userId: string): Promise<string[]> {
-    const rows = await readUnits<{ groupid: string }>(tx, MEMBERSHIP.unit, membershipIdsSql, [tx.tenantId, userId]);
+  async function membershipGroupIds(tx: TenantTx, userId: string, ctx?: WriteContext): Promise<string[]> {
+    const rows = await readAsWriter<{ groupid: string }>(tx, MEMBERSHIP.unit, membershipIdsSql, [tx.tenantId, userId], ctx);
     return rows.map((row) => row.groupid);
   }
 
@@ -1233,6 +1260,10 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
 
   function permissionsFor(tx: TenantTx, input: { contentId: string; siteId: string; type?: string }): Promise<PermissionRow[]> {
     return readUnits<PermissionRow>(tx, PERMISSION.unit, permissionsSql, [tx.tenantId, input.contentId, input.siteId, input.type ?? null]);
+  }
+
+  function groupPermissions(tx: TenantTx, groupId: string, siteId: string, ctx?: WriteContext): Promise<PermissionRow[]> {
+    return readAsWriter<PermissionRow>(tx, PERMISSION.unit, groupPermissionsSql, [tx.tenantId, groupId, siteId], ctx);
   }
 
   /** Locks and deletes every permission of the node or module `contentId` in `siteId`. */
@@ -1642,6 +1673,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA 
     removeMembership,
     membersOf,
     permissionsFor,
+    groupPermissions,
     replaceNodePermissions,
     replaceModulePermissions,
     moduleGrants,

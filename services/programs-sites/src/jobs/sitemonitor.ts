@@ -54,9 +54,10 @@ export interface SiteMonitorDeps {
   pollIntervalMs?: number;
 }
 
-/** A completed run: its `theTime` and one outcome per dispatched step, in dispatch order. */
+/** A completed run: its `theTime`, the cursor it ran from and one outcome per dispatched step, in dispatch order. */
 export interface SiteMonitorResult {
   theTime: Date;
+  lastMonitored: Date;
   steps: StepOutcome[];
 }
 
@@ -289,5 +290,5 @@ async function runPass(
   await run('setCursor');
   await advance(theTime, 'setCursor');
 
-  return { theTime, steps };
+  return { theTime, lastMonitored, steps };
 }

@@ -36,7 +36,7 @@ export function createExportObjects(deps: ExportObjectsDeps): NonNullable<Migrat
     if (unit !== EXPORT_JOB.unit) return [];
     const page = await listJobObjects(tx, { after, limit });
     const objects: ObjectManifestEntry[] = [];
-    // One head at a time, so a page never holds more than one object open.
+    // Heads run one at a time, so a page never fans out into concurrent storage requests.
     for (const job of page.objects) {
       const entry = await manifestEntry(storage, job);
       if (entry !== null) objects.push(entry);
