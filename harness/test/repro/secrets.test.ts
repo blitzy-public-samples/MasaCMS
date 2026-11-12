@@ -39,9 +39,12 @@ function modeOf(file: string): number {
   return statSync(file).mode & 0o777;
 }
 
-/** Lines of a secret long enough that finding one in output means the value leaked. */
-function fragments(value: string): string[] {
-  return value.split('\n').filter((line) => line.length >= 16 && !line.startsWith('-----'));
+/** Every 16-character window of a secret outside its PEM armour; finding one in output means the value leaked. */
+function windows(value: string): string[] {
+  return value
+    .split('\n')
+    .filter((line) => !line.startsWith('-----'))
+    .flatMap((line) => Array.from({ length: Math.max(line.length - 15, 0) }, (_, i) => line.slice(i, i + 16)));
 }
 
 async function runSecretsCli(argv: string[]): Promise<{ code: number; stdout: string; exit: ReturnType<typeof vi.fn> }> {
@@ -85,6 +88,7 @@ describe('secret file catalogue', () => {
     ].sort();
     expect(SECRET_FILES).toEqual(expected);
     expect(SECRET_FILES).toHaveLength(31);
+    expect(new Set(SECRET_FILES).size).toBe(SECRET_FILES.length);
     expect(Object.isFrozen(SECRET_FILES)).toBe(true);
   });
 
@@ -115,12 +119,13 @@ describe('ensureLocalSecrets', () => {
     expect(keys.kid).not.toBe('');
   });
 
-  it('writes a 2048-bit RSA key pair whose private key signs what the public key verifies', () => {
+  it('writes a 2048-bit RSA key pair as PKCS#8 and SPKI PEM whose private key signs what the public key verifies', () => {
     const { dir } = ensureLocalSecrets({ env });
     const privatePem = readFileSync(path.join(dir, PRIVATE_PEM), 'utf8');
     const publicPem = readFileSync(path.join(dir, PUBLIC_PEM), 'utf8');
 
     const privateKey = createPrivateKey(privatePem);
+    expect(privateKey.export({ type: 'pkcs8', format: 'pem' })).toBe(privatePem);
     expect(privateKey.asymmetricKeyType).toBe('rsa');
     expect(privateKey.asymmetricKeyDetails?.modulusLength).toBe(2048);
     expect(createPublicKey(privateKey).export({ type: 'spki', format: 'pem' })).toBe(publicPem);
@@ -150,12 +155,16 @@ describe('ensureLocalSecrets', () => {
     }
   });
 
-  it('keeps every existing file byte for byte on a second run', () => {
+  it('keeps every existing file byte for byte and owner-only on a second run', () => {
     const { dir } = ensureLocalSecrets({ env });
     const before = secretsOf(dir);
 
     expect(ensureLocalSecrets({ env })).toEqual({ dir, created: [], kept: [...SECRET_FILES] });
     expect(secretsOf(dir)).toEqual(before);
+    expect(modeOf(dir)).toBe(0o700);
+    for (const name of SECRET_FILES) {
+      expect(modeOf(path.join(dir, name)), name).toBe(0o600);
+    }
   });
 
   it.each([
@@ -238,10 +247,14 @@ describe('readSecret', () => {
     expect(readSecret('db-stub-app', { env })).toBe('placeholder-value');
   });
 
-  it('names the missing file and the command that generates it', () => {
-    const file = localSecretPath(state, 'storage-hmac-key');
+  it.each([
+    { label: 'a catalogued secret not yet generated', name: 'storage-hmac-key', prepare: () => undefined },
+    { label: 'a name outside the catalogue', name: 'unknown-secret', prepare: () => ensureLocalSecrets({ env }) },
+  ])('names the missing file and the command that generates it for $label', ({ name, prepare }) => {
+    prepare();
+    const file = localSecretPath(state, name);
 
-    expect(() => readSecret('storage-hmac-key', { env })).toThrow(
+    expect(() => readSecret(name, { env })).toThrow(
       `secret file ${file} does not exist; run \`npm run repro:secrets\` in harness/`,
     );
   });
@@ -276,7 +289,7 @@ describe('repro:secrets CLI', () => {
       kept: [],
     });
     const leaked = [...secretsOf(path.join(state, 'secrets')).values()]
-      .flatMap(fragments)
+      .flatMap(windows)
       .filter((fragment) => stdout.includes(fragment));
     expect(leaked).toEqual([]);
   });
