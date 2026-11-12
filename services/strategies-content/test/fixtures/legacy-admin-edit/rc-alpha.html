@@ -1,0 +1,248 @@
+
+	<script>
+		function toggleRelatedType(clicked){
+			$('#mura-rc-quickedit').hide();
+
+			if($(clicked).val()=='internal'){
+				$(".mura-related-internal").show();
+				$(".mura-related-external").hide();
+			} else {
+				$(".mura-related-internal").hide();
+				$(".mura-related-external").show();
+			}
+		}
+
+		function createExternalLink(){
+
+			if($('#mura-related-title').val()=='' || $('#mura-related-url').val()==''){
+
+				alertDialog("The\x20\x27Title\x27\x20and\x20\x27URL\x27\x20fields\x20are\x20both\x20required.");
+
+				return false;
+			}
+
+			var newcontentid=Math.random();
+
+			$("#draggableContainmentExternal .list-table-items").append(
+			 	$('<li/>').attr('data-contentid',newcontentid)
+			 	.attr('data-url',$('#mura-related-url').val())
+			 	.attr('data-title',$('#mura-related-title').val())
+			 	.attr('data-content-type','Link/Default')
+			 	.attr('class','item')
+			 	.append(
+			 		$('<button class="btn mura-rc-quickoption" type="button" value="'+ newcontentid +'"><i class="mi-plus-circle"></i></button><ul class="navZoom"><li class="mi-link "> ' + $('#mura-related-title').val() + '</li></ul>')
+			 	)
+			 );
+
+			if(!$("#draggableContainmentExternal").is(":visible")){
+				$("#draggableContainmentExternal").fadeIn();
+			}
+
+			$("#draggableContainmentExternal .rcDraggable li.item").draggable({
+				connectToSortable: '.rcSortable',
+				helper: 'clone',
+				revert: 'invalid',
+				appendTo: 'body',
+				start: function(event, ui) {
+					// bind mouse events to clone
+					$('#mura-rc-quickedit').hide();
+					siteManager.bindMouse();
+				},
+				zIndex: 100
+			}).disableSelection();
+
+			siteManager.setupRCQuikEdit();
+
+			siteManager.bindMouse();
+
+		}
+
+		Mura(function(){
+
+			function getEntityType(){
+				var entitytype=Mura('input[name="entitytype"]:checked');
+				if(!entitytype.length){
+					entitytype=Mura('input[name="entitytype"]');
+				}
+				return entitytype.val();
+			}
+
+			function handleEntityTypeChange(){
+				var entitytype=getEntityType()
+				Mura('.mura-related-ui').hide();
+				Mura('.mura-related-ui__' + entitytype).show();
+				if(entitytype=='content' && Mura('#contentlocation2').is(':checked')){
+					Mura('.mura-related-internal').hide();
+				}
+			}
+
+			Mura('input[name="entitytype"]').click(handleEntityTypeChange);
+
+			handleEntityTypeChange();
+
+			var relatedcontentsetid='';
+
+			Mura('.mura-related-ui_search').click(function(e){
+					e.preventDefault();
+					var entitytype=getEntityType()
+					var valueSelector = '.mura-related-ui-input__'+ entitytype;
+					Mura('#mura-rc-quickedit').hide();
+					siteManager.loadRelatedContent(contentid,siteid, 0, $(valueSelector).serialize(), false,true,relatedcontentsetid);
+			})
+
+		});
+	</script>
+
+	
+		<input type="hidden" name="entitytype" value="content"/>
+	
+
+
+	<div class="mura-related-ui mura-related-ui__content" style="display:none;">
+		
+			<div class="mura-control-group" >
+				<label>
+					<span data-toggle="popover" title="" data-placement="right"
+	  			data-content="You&#x20;can&#x20;add&#x20;related&#x20;content&#x20;from&#x20;either&#x20;this&#x20;site&#x20;or&#x20;another&#x20;site&#x20;entirely.&#x20;Use&#x20;the&#x20;controls&#x20;below&#x20;to&#x20;specify&#x20;where&#x20;the&#x20;related&#x20;content&#x20;you&#x27;d&#x20;like&#x20;to&#x20;add&#x20;lives."
+	  			data-original-title="Where&#x20;is&#x20;the&#x20;Related&#x20;Content&#x3f;">
+			  	Where is the Related Content? <i class="mi-question-circle"></i></span>
+				</label>
+					<label class="radio inline"><input type="radio" onclick="toggleRelatedType(this)" id="contentlocation1" name="contentlocation" value="internal" checked="true"/>In this site</label>
+					<label class="radio inline"><input type="radio" onclick="toggleRelatedType(this)" id="contentlocation2" name="contentlocation" value="external"/>On another site</label>
+			</div>
+			
+
+			<div class="mura-control-group mura-related-internal">
+				<label>In this site</label>
+				<div id="internalContent" class="mura-control justify">
+						<div class="mura-input-set pull-left">
+						<input type="text" name="keywords" value="alpha" id="rcSearch" placeholder="Search for Content"/>
+						<button type="button" name="btnSearch" id="rcBtnSearch" class="btn"><i class="mi-search"></i></button>
+					</div>
+					<a href="#" class="btn pull-left" id="aAdvancedSearch" data-toggle="button">Advanced Search</a>
+				</div>
+			</div>
+
+			<div class="mura-related-internal">
+				<div id="rcAdvancedSearch" style="display:none;">
+					<div class="mura-control-group">
+						
+
+							<label>Content Type</label>
+							<select name="searchTypeSelector" id="searchTypeSelector">
+								<option value="">All</option>
+								
+									<option value="Page^Default">Page</option>
+									
+											<option value="Page^Rich">Page  / Rich</option>
+										
+									<option value="Folder^Default">Folder</option>
+									
+									<option value="Calendar^Default">Calendar</option>
+									
+									<option value="Gallery^Default">Gallery</option>
+									
+									<option value="File^Default">File</option>
+									
+									<option value="Link^Default">Link</option>
+									
+							</select>
+
+						
+					</div>
+				<div class="mura-control-group">
+					<label>Release Date Range</label>
+					<div class="mura-control-inline">
+						<label>From</label>
+						<input type="text" name="rcStartDate" id="rcStartDate" class="datepicker mura-relatedContent-datepicker" placeholder="Start&#x20;Date" value="" />
+						<label>To</label>
+						 <input type="text" name="rcEndDate" id="rcEndDate" class="datepicker mura-relatedContent-datepicker" placeholder="End Date" value="" />
+					</div>
+				</div>
+				<div class="mura-control-group">
+					<div class="mura-control justify">
+						<label>Available Categories</label>
+						<div id="mura-list-tree">
+							
+<ul class="categories checkboxTree">
+
+<li>
+Archive 
+</li>
+
+<li>
+<input type="checkbox" name="rcCategoryID" class="checkbox"  value="215F1A1E-C4F2-7C20-016C6115B380F65C"/> News &amp; Views 
+<ul class="categories">
+
+<li>
+<input type="checkbox" name="rcCategoryID" class="checkbox"  value="215F1B7F-A5EA-5884-F7A93044DDED9312"/> Local 
+</li>
+
+</ul>
+
+</li>
+
+</ul>
+
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+		<div class="mura-control-inline mura-related-external" style="display:none;">
+				<label>Title</label>
+				<input type="text" id="mura-related-title" value="">
+				<label>URL</label>
+				<input type="text" id="mura-related-url" value="" placeholder="http://www.example.com">
+				<button type="button" name="btnCreateLink" id="rcBtnCreateLink" class="btn" onclick="createExternalLink();"><i class="mi-plus-circle"></i></button>
+		</div>
+
+		<div class="mura-related-external" style="display:none;">
+			<div class="draggableContainmentExternal mura-control-group" style="display:none;">
+				<div class="list-table search-results">
+					<div class="list-table-content-set">Available URLs</label></div>
+					<ul class="rcDraggable list-table-items"></ul>
+				</div>
+			</div>
+		</div>
+	</div>
+
+		<div class="mura-control-group mura-related-internal mura-related-ui mura-related-ui__content">
+			
+				<div class="draggableContainmentInternal list-table search-results">
+					<div class="list-table-content-set">
+						Search Results (1-2 of 2)
+					</div>
+					<ul class="rcDraggable list-table-items">
+						
+							
+								<li class="item" data-content-type="Page&#x2f;Default" data-contentid="215F37C0-E138-DCD8-6EAF3DDABC2233D8">
+									<button class="btn mura-rc-quickoption" type="button" value="215F37C0-E138-DCD8-6EAF3DDABC2233D8"><i class="mi-plus"></i></button>  
+		<ul class="navZoom">
+		
+			<li class="mi-file "> Home</li>
+		
+			<li class="mi-folder-open-o "> Beta Folder</li>
+		
+		<li class="mi-file "> <strong>Gamma alpha child</strong></li>
+		</ul>
+								</li>
+							
+							
+								<li class="item" data-content-type="Page&#x2f;Default" data-contentid="215F25F6-B164-9E83-F9C54A337B16F8EE">
+									<button class="btn mura-rc-quickoption" type="button" value="215F25F6-B164-9E83-F9C54A337B16F8EE"><i class="mi-plus"></i></button>  
+		<ul class="navZoom">
+		
+			<li class="mi-file "> Home</li>
+		
+		<li class="mi-file "> <strong>Alpha Page</strong></li>
+		</ul>
+								</li>
+							
+					</ul>
+			</div>
+
+			
+			
+		</div>
+	
