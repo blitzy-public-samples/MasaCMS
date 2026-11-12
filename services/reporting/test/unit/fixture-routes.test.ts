@@ -1,0 +1,360 @@
+// SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
+/** Reporting fixture routes through `app.inject` against a throwaway `reporting` schema, compared with legacy-fixtures/cfml/modules/reporting.cfc. */
+import { createHash } from 'node:crypto';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
+import { cfHash, cfUuid } from '@opt2/platform/legacy-compat';
+import { closeGates, ensureUnitGates, openGates } from '@opt2/platform/migration-kit';
+import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
+import { createLocalStorageAdapter, type LocalStorageAdapter } from '@opt2/platform/storage';
+import { TENANT_A, TENANT_B, createThrowawaySchema, mintServiceToken, mintUserToken, pgAvailable, seedRegistry, testVerifier, type ThrowawaySchema } from '@opt2/platform/testing';
+import type { EnqueueExportRun, ReportingDeps } from '../../src/domain/deps.js';
+import { FIXTURE_PREFIX, registerFixtureRoutes } from '../../src/legacy/index.js';
+import { createReportingRepository } from '../../src/repo/repository.js';
+import { EXPORT_BUCKET, UNITS, exportObjectKey } from '../../src/repo/tables.js';
+
+const NOW = new Date(2026, 5, 30, 10, 0, 0, 0);
+const P = `${FIXTURE_PREFIX}/exports`;
+const EXPORTER = [Roles.systemUser, Roles.reportingExporter];
+const USER_ID = '11111111-2222-3333-4444555566667777';
+const GOOD_TOKEN = 'VALIDCSRFTOKEN';
+const CSRF = { 'x-csrf_token': GOOD_TOKEN, 'x-csrf_token_expires': '991231235959000' };
+const OUTPUT = Buffer.from('a,b\r\n1,2\r\n');
+
+const errorBody = (method: string, code: string, message: string): string =>
+  `{"apiversion":"v1","method":"${method}","error":{"code":"${code}","message":"${message}"}}`;
+
+const available = await pgAvailable();
+
+describe.skipIf(!available)('reporting fixture routes', () => {
+  let handle: ThrowawaySchema;
+  let storage: LocalStorageAdapter;
+  let stateDir: string;
+  let identity: http.Server;
+  let app: FastifyInstance;
+  const enqueued: Parameters<EnqueueExportRun>[0][] = [];
+  const consumed: Array<{ context: string; token: string }> = [];
+  let failEnqueue = false;
+  const defs: Record<string, string> = {};
+  const errorSpies: { mock: { calls: unknown[][] } }[] = [];
+
+  beforeAll(async () => {
+    handle = await createThrowawaySchema({ service: 'reporting', migrationsDir: fileURLToPath(new URL('../../db/migrations', import.meta.url)) });
+    await ensureUnitGates(handle.app, UNITS);
+    await seedRegistry(handle.app);
+    for (const site of [TENANT_A, TENANT_B]) {
+      const id = cfUuid();
+      defs[site.siteId] = id;
+      await handle.app.withTenant(site.tenantId, (tx) =>
+        tx.query(
+          `INSERT INTO ${handle.schema}.export_definition (tenant_id, definition_id, siteid, name, source, columns) VALUES ($1, $2, $3, 'Sheets', 'timesheets.sheets', '["a"]')`,
+          [site.tenantId, id, site.siteId],
+        ),
+      );
+    }
+    stateDir = await mkdtemp(path.join(tmpdir(), 'opt2-reporting-fixture-'));
+    storage = await createLocalStorageAdapter({ stateDir, hmacKey: 'reporting-fixture-test-hmac-key' });
+    identity = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { context: string; token: string };
+        consumed.push(body);
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ valid: body.token === GOOD_TOKEN }));
+      });
+    });
+    await new Promise<void>((resolve) => identity.listen(0, '127.0.0.1', resolve));
+    app = await createService({
+      name: 'reporting',
+      version: '1.0.0',
+      env: loadEnv(undefined, {
+        PORT: '21216',
+        OPT2_SERVICE_NAME: 'reporting',
+        OPT2_ENV: 'local',
+        OPT2_JWKS_URL: 'http://127.0.0.1:9/jwks',
+        OPT2_TOKEN_ISSUER: 'opt2-local-identity',
+        OPT2_TOKEN_AUDIENCE: 'opt2-local',
+        OPT2_STATE_DIR: stateDir,
+        OPT2_SERVICE_URLS: JSON.stringify({ identity: `http://127.0.0.1:${(identity.address() as AddressInfo).port}` }),
+        TZ: 'UTC',
+      }),
+      verifierOverride: testVerifier('reporting'),
+      pool: handle.app,
+    });
+    app.addHook('onRequest', async (request) => {
+      errorSpies.push(vi.spyOn(request.log, 'error'));
+    });
+    const clock = fixedClock(NOW);
+    const repository = createReportingRepository({ db: handle.app, storage, clock });
+    const deps: ReportingDeps = {
+      db: handle.app,
+      repository,
+      storage,
+      clock,
+      client: app.opt2.client,
+      enqueue: async (input) => {
+        if (failEnqueue) throw new Error('queue down');
+        enqueued.push(input);
+      },
+      runScheduled: () => Promise.resolve(true),
+    };
+    await registerFixtureRoutes(app, deps);
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app?.opt2.shutdown();
+    await new Promise((resolve) => identity?.close(resolve));
+    await handle?.drop();
+    if (stateDir) await rm(stateDir, { recursive: true, force: true });
+  });
+
+  /** Moves every reporting gate to `state` through the holder compare-and-set. */
+  async function setGates(state: 'open' | 'legacy'): Promise<void> {
+    await closeGates(handle.app, { units: UNITS, holderId: 'fixture-routes-test', allowLegacy: true });
+    await openGates(handle.app, { units: UNITS, holderId: 'fixture-routes-test', state });
+  }
+
+  beforeEach(async () => {
+    enqueued.length = 0;
+    consumed.length = 0;
+    failEnqueue = false;
+    await setGates('open');
+  });
+
+  /** A user token for `roles` on `site` plus the gateway's invocation credential. */
+  async function headers(roles: readonly string[] = EXPORTER, site: string = TENANT_A.siteId): Promise<Record<string, string>> {
+    const [token, inv] = await Promise.all([mintUserToken({ sub: USER_ID, site, roles }), mintServiceToken({ caller: 'gateway', audience: 'reporting' })]);
+    return { authorization: `Bearer ${token}`, [INVOCATION_HEADER]: `Bearer ${inv}` };
+  }
+
+  /** A JSON-body create as an exporter of tenant-a, with a valid CSRF token unless `extra` replaces it. */
+  async function create(payload: Record<string, unknown>, extra: Record<string, string> = CSRF) {
+    return app.inject({ method: 'POST', url: P, headers: { ...(await headers()), ...extra }, payload });
+  }
+
+  /** Asserts the envelope's ETag is the legacy hash of its exact body. */
+  function expectEtag(res: { headers: Record<string, unknown>; body: string }): void {
+    expect(res.headers.etag).toBe(cfHash(res.body));
+  }
+
+  /** Stores a done csv job of `site` with its output object; returns the job id. */
+  async function storeDone(site = TENANT_A, fileName?: string): Promise<string> {
+    const jobId = cfUuid();
+    const key = exportObjectKey(site.tenantId, jobId, 'csv');
+    await storage.put(EXPORT_BUCKET, key, OUTPUT, { contentType: 'text/csv' });
+    const sha = createHash('sha256').update(OUTPUT).digest('hex');
+    await handle.app.withTenant(site.tenantId, (tx) =>
+      tx.query(
+        `INSERT INTO ${handle.schema}.export_job (tenant_id, job_id, siteid, definition_id, format, state, requested_by_id, created, started_at, finished_at, file_name, content_type, object_key, output_sha256)
+         VALUES ($1,$2,$3,$4,'csv','done',$5,$6,$6,$6,$7,'text/csv',$8,$9)`,
+        [site.tenantId, jobId, site.siteId, defs[site.siteId], USER_ID, NOW, fileName ?? `export-${jobId}.csv`, key, sha],
+      ),
+    );
+    return jobId;
+  }
+
+  it('declares the four routes with the contract annotations', () => {
+    const routes = collectRouteMatrix(app).routes.filter((r) => r.url.startsWith(FIXTURE_PREFIX));
+    expect(routes.map(({ method, url, requires, transport, siteCheck }) => [method, url.slice(FIXTURE_PREFIX.length), requires, transport, siteCheck])).toEqual(
+      expect.arrayContaining([
+        ['GET', '/exports', [Roles.reportingExporter], 'service', false],
+        ['POST', '/exports', [Roles.reportingExporter], 'service', false],
+        ['GET', '/exports/:id', [Roles.reportingExporter], 'service', false],
+        ['GET', '/exports/:id/download', [Roles.reportingExporter], 'service', false],
+      ]),
+    );
+    expect(routes).toHaveLength(4);
+  });
+
+  it('answers anonymous with the 401 fixture envelope', async () => {
+    const res = await app.inject({ url: P });
+    expect(res.statusCode).toBe(401);
+    expect(res.body).toBe(errorBody('reporting.exports', 'invalid_request', 'Insufficient Account Permissions'));
+    expect(res.headers['content-type']).toMatch(/^application\/json/);
+    expectEtag(res);
+  });
+
+  it('answers a user without reporting.exporter with 403 forbidden', async () => {
+    const res = await app.inject({ url: `${P}/ABC/download`, headers: await headers([Roles.systemUser]) });
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toBe(errorBody('reporting.exports.download', 'invalid_request', 'Insufficient Account Permissions'));
+    expectEtag(res);
+  });
+
+  it('answers an invalid token with the bearer challenge', async () => {
+    const res = await app.inject({ url: P, headers: { authorization: 'Bearer nope', [INVOCATION_HEADER]: (await headers())[INVOCATION_HEADER] as string } });
+    expect(res.statusCode).toBe(401);
+    expect(res.headers['www-authenticate']).toBeDefined();
+  });
+
+  it('creates a queued job', async () => {
+    const res = await create({ definitionId: defs[TENANT_A.siteId], format: 'csv', asOf: '2026-06-30' });
+    expect(res.statusCode).toBe(200);
+    expectEtag(res);
+    const data = res.json().data;
+    expect(data).toMatchObject({ siteid: 'tenant-a', definition_id: defs[TENANT_A.siteId], format: 'csv', state: 'queued', requested_by_id: USER_ID, started_at: '', error: '' });
+    expect(res.json().method).toBe('reporting.exports');
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]?.payload.asOf).toBe('2026-06-30');
+    expect(consumed).toEqual([expect.objectContaining({ context: '', token: GOOD_TOKEN })]);
+  });
+
+  it('treats a JSON null asOf as today', async () => {
+    const res = await create({ definitionId: defs[TENANT_A.siteId], format: 'pdf', asOf: null });
+    expect(res.statusCode).toBe(200);
+    expect(enqueued[0]?.payload.asOf).toBe('2026-06-30');
+  });
+
+  it.each<[string, (def: string) => Record<string, unknown>, number, string]>([
+    ['missing definition', () => ({ format: 'csv' }), 404, 'Not Found'],
+    ['foreign definition', () => ({ definitionId: 'x', format: 'xlsx' }), 404, 'Not Found'],
+    ['bad format', (def) => ({ definitionId: def, format: 'doc' }), 400, 'Invalid parameters'],
+    ['missing format', (def) => ({ definitionId: def }), 400, 'Invalid parameters'],
+    ['bad asOf', (def) => ({ definitionId: def, format: 'csv', asOf: '2026-02-30' }), 400, 'Invalid parameters'],
+    ['empty asOf', (def) => ({ definitionId: def, format: 'csv', asOf: '' }), 400, 'Invalid parameters'],
+  ])('rejects create with %s', async (_name, build, status, message) => {
+    const res = await create(build(defs[TENANT_A.siteId] as string));
+    expect(res.statusCode).toBe(status);
+    expect(res.body).toBe(errorBody('reporting.exports', 'invalid_request', message));
+    expect(enqueued).toHaveLength(0);
+  });
+
+  it('rejects create without a valid CSRF token', async () => {
+    const res = await create({ definitionId: defs[TENANT_A.siteId], format: 'csv' }, { 'x-csrf_token': 'BAD', 'x-csrf_token_expires': '1' });
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toBe(errorBody('reporting.exports', 'invalid_request', 'Invalid CSRF tokens'));
+  });
+
+  it('answers another site or an unknown site as the fixture does', async () => {
+    const other = await app.inject({ url: `${P}?siteid=tenant-b`, headers: await headers() });
+    expect(other.statusCode).toBe(403);
+    expect(other.body).toBe(errorBody('reporting.exports', 'invalid_request', 'Insufficient Account Permissions'));
+    const unknown = await app.inject({ url: `${P}?siteid=nowhere`, headers: await headers() });
+    expect(unknown.statusCode).toBe(400);
+    expect(unknown.body).toBe(errorBody('reporting.exports', 'invalid_request', 'Invalid parameters'));
+  });
+
+  it('lists jobs with paging and rejects bad paging', async () => {
+    await create({ definitionId: defs[TENANT_A.siteId], format: 'csv' });
+    const res = await app.inject({ url: `${P}?itemsPerPage=1&pageIndex=1`, headers: await headers() });
+    expect(res.statusCode).toBe(200);
+    expectEtag(res);
+    const data = res.json().data;
+    expect(data).toMatchObject({ startindex: 1, endindex: 1, itemsperpage: 1, pageindex: 1 });
+    expect(data.items).toHaveLength(1);
+    expect(data.totalitems).toBeGreaterThanOrEqual(1);
+    const defaults = await app.inject({ url: `${P}?pageIndex=&itemsPerPage=`, headers: await headers() });
+    expect(defaults.json().data.itemsperpage).toBe(50);
+    for (const query of ['pageIndex=abc', 'pageIndex=0', 'itemsPerPage=1001', 'pageIndex=1.5', 'pageIndex=%20%201']) {
+      const bad = await app.inject({ url: `${P}?${query}`, headers: await headers() });
+      expect(bad.statusCode, query).toBe(400);
+      expect(bad.body).toBe(errorBody('reporting.exports', 'invalid_request', 'Invalid parameters'));
+    }
+    const far = await app.inject({ url: `${P}?pageIndex=999`, headers: await headers() });
+    expect(far.json().data.items).toEqual([]);
+  });
+
+  it.each([
+    ['\u0663', 400, errorBody('reporting.exports', 'invalid_request', 'Invalid parameters')],
+    ['1\u0663', 500, errorBody('reporting.exports', 'server_error', 'Unhandled Exception')],
+  ])('answers non-ASCII digit paging %j with %i, as ACF compares then fails int()', async (pageIndex, status, body) => {
+    const res = await app.inject({ url: `${P}?pageIndex=${encodeURIComponent(pageIndex)}`, headers: await headers() });
+    expect(res.statusCode).toBe(status);
+    expect(res.body).toBe(body);
+  });
+
+  it('lists only the caller tenant jobs', async () => {
+    const b = await storeDone(TENANT_B);
+    const res = await app.inject({ url: `${P}?itemsPerPage=1000`, headers: await headers() });
+    expect(res.json().data.items.map((j: { job_id: string }) => j.job_id)).not.toContain(b);
+  });
+
+  it('reads a job, ignoring id case and trailing spaces, and hides other tenants', async () => {
+    const id = await storeDone();
+    const res = await app.inject({ url: `${P}/${id.toLowerCase()}%20`, headers: await headers() });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data).toMatchObject({ job_id: id, state: 'done', file_name: `export-${id}.csv`, created: '2026-06-30T10:00:00' });
+    expect(res.json().data).not.toHaveProperty('object_key');
+    const b = await storeDone(TENANT_B);
+    const hidden = await app.inject({ url: `${P}/${b}`, headers: await headers() });
+    expect(hidden.statusCode).toBe(404);
+    expect(hidden.body).toBe(errorBody('reporting.exports', 'invalid_request', 'Not Found'));
+    const dl = await app.inject({ url: `${P}/${b}/download`, headers: await headers() });
+    expect(dl.statusCode).toBe(404);
+    expect(dl.body).toBe(errorBody('reporting.exports.download', 'invalid_request', 'Not Found'));
+  });
+
+  it('answers a download before done with the not-ready conflict', async () => {
+    const created = await create({ definitionId: defs[TENANT_A.siteId], format: 'csv' });
+    const id = created.json().data.job_id as string;
+    const res = await app.inject({ url: `${P}/${id}/download`, headers: await headers() });
+    expect(res.statusCode).toBe(409);
+    expect(res.body).toBe(errorBody('reporting.exports.download', 'invalid_request', 'not-ready'));
+    expectEtag(res);
+  });
+
+  it('downloads a done job output as an attachment', async () => {
+    const id = await storeDone();
+    const res = await app.inject({ url: `${P}/${id}/download`, headers: await headers() });
+    expect(res.statusCode).toBe(200);
+    expect(res.rawPayload.equals(OUTPUT)).toBe(true);
+    expect(res.headers['content-type']).toBe('text/csv');
+    expect(res.headers['content-disposition']).toBe(`attachment; filename="export-${id}.csv"`);
+    expect(res.headers['content-length']).toBe(String(OUTPUT.length));
+    expect(res.headers.etag).toBeUndefined();
+    expect(res.headers.generator).toBe('Masa CMS 7.6.1');
+  });
+
+  it('answers server_error for a control character in the file name and for a missing object', async () => {
+    const bad = await storeDone(TENANT_A, 'a\u0001.csv');
+    const res = await app.inject({ url: `${P}/${bad}/download`, headers: await headers() });
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toBe(errorBody('reporting.exports.download', 'server_error', 'Unhandled Exception'));
+    const gone = await storeDone();
+    const job = (await app.inject({ url: `${P}/${gone}`, headers: await headers() })).json().data;
+    await storage.delete(EXPORT_BUCKET, exportObjectKey(TENANT_A.tenantId, job.job_id, 'csv'));
+    errorSpies.length = 0;
+    const missing = await app.inject({ url: `${P}/${gone}/download`, headers: await headers() });
+    expect(missing.statusCode).toBe(500);
+    expect(errorSpies.some((s) => s.mock.calls.some((c) => c[1] === 'unhandled fixture exception'))).toBe(true);
+  });
+
+  it('dispatches on X-HTTP-Method-Override', async () => {
+    const list = await app.inject({ method: 'POST', url: P, headers: { ...(await headers()), 'x-http-method-override': 'get' }, payload: {} });
+    expect(list.statusCode).toBe(200);
+    expect(list.json().data).toHaveProperty('items');
+    const asCreate = await app.inject({ method: 'GET', url: `${P}?definitionId=${defs[TENANT_A.siteId]}&format=csv`, headers: { ...(await headers()), ...CSRF, 'x-http-method-override': 'POST' } });
+    expect(asCreate.statusCode).toBe(200);
+    expect(asCreate.json().data.state).toBe('queued');
+    const none = await app.inject({ url: `${P}/X`, headers: { ...(await headers()), 'x-http-method-override': 'DELETE' } });
+    expect(none.statusCode).toBe(404);
+    expect(none.body).toBe(errorBody('reporting.exports', 'invalid_request', 'Not Found'));
+  });
+
+  it('answers the legacy 503 when the units are not target-authoritative or the run cannot be scheduled', async () => {
+    await setGates('legacy');
+    const res = await create({ definitionId: defs[TENANT_A.siteId], format: 'csv' });
+    expect(res.statusCode).toBe(503);
+    expect(res.json().error).toEqual({ message: 'Unhandled Exception', code: 'server_error' });
+    await setGates('open');
+    failEnqueue = true;
+    const down = await create({ definitionId: defs[TENANT_A.siteId], format: 'csv' });
+    expect(down.statusCode).toBe(503);
+  });
+
+  it('answers a 503 when identity cannot be reached for CSRF', async () => {
+    const port = (identity.address() as AddressInfo).port;
+    await new Promise((resolve) => identity.close(resolve));
+    const res = await create({ definitionId: defs[TENANT_A.siteId], format: 'csv' });
+    expect(res.statusCode).toBe(503);
+    await new Promise<void>((resolve) => identity.listen(port, '127.0.0.1', resolve));
+  });
+});

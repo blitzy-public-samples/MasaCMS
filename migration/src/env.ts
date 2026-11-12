@@ -22,6 +22,8 @@ export const migrationEnvSchema = baseEnvSchema.extend({
       .transform((value) => value === 'true'),
   ),
   LEGACY_ORIGIN: envUrl(),
+  // Masa takes appreloadkey from MURA_APPRELOADKEY when set (onApplicationStart_include.cfm:136-141), so a reload must too.
+  MURA_APPRELOADKEY: optionalEnvString(),
   OPT2_BRIDGE_HMAC_KEY: requiredEnvString(),
   OPT2_LEGACY_RESTART_CMD: optionalEnvString(),
   OPT2_REPORTS_DIR: optionalEnvString(absolutePath()),

@@ -1918,6 +1918,11 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: The ACF error legacy answers with for an MFA challenge attempt while no MFA login is pending, or a failed login without `isAdminLogin`, whose site `loginURL` identity does not hold.
         '503':
           $ref: '#/components/responses/Unavailable'
   /v1/sessions/logout:
@@ -2002,6 +2007,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
   /v1/groups:
@@ -4876,7 +4883,7 @@ components:
           type: string
     LoginOutcome:
       type: object
-      description: '`location` is the exact redirect legacy answers with; `csrf-invalid` leaves the session unchanged and `blocked` is a failure while the strike block holds.'
+      description: '`location` is the exact redirect legacy answers with; `csrf-invalid` leaves the session unchanged, `blocked` is a failure while the strike block holds, and `unattempted` (a valid token without both credentials) answers no redirect, so `location` is empty and the login view renders.'
       required:
         - outcome
         - location
@@ -4891,6 +4898,7 @@ components:
             - challenge
             - blocked
             - csrf-invalid
+            - unattempted
         location:
           type: string
           examples:

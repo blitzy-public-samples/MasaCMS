@@ -79,15 +79,20 @@ function daoNull(value: string | null | undefined): string | null {
   return value === undefined || value === null || value === '' ? null : value;
 }
 
-/** beanORM `addQueryParam`: a non-key value that is empty or the text `null` (any case) is stored as NULL [legacy: core/mura/bean/beanORM.cfc:338-341]. */
-function ormRow<R extends RepositoryRow>(row: R, table: { key: readonly string[] | null }): R {
+/** beanORM `addQueryParam`: a value of a nullable column that is empty or the text `null` (any case) is stored as NULL; keys and `required` (non-nullable) columns keep theirs [legacy: core/mura/bean/beanORM.cfc:338-341]. */
+function ormRow<R extends RepositoryRow>(row: R, table: { key: readonly string[] | null }, required: readonly string[] = []): R {
   const stored: RepositoryRow = {};
   for (const [column, value] of Object.entries(row)) {
     const empty = typeof value === 'string' && (value === '' || value.toLowerCase() === 'null');
-    stored[column] = empty && !(table.key ?? []).includes(column) ? null : value;
+    stored[column] = empty && !(table.key ?? []).includes(column) && !required.includes(column) ? null : value;
   }
   return stored as R;
 }
+
+/** Columns of the `required=true` oauthClient properties [legacy: core/mura/client/api/oauth/oauthClientBean.cfc:4,7]. */
+const OAUTH_CLIENT_REQUIRED = ['siteid', 'name'] as const;
+/** Columns of the `required=true` oauthToken properties [legacy: core/mura/client/api/oauth/oauthTokenBean.cfc:4-6]. */
+const OAUTH_TOKEN_REQUIRED = ['clientid', 'expires'] as const;
 
 /** CFML `trim`, which is Java `String.trim`: strips every code unit up to U+0020 at both ends. */
 function cfTrim(value: string): string {
@@ -1629,11 +1634,11 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
 
   function insertOAuthClient(tx: TenantTx, row: OAuthClientInput, ctx: WriteContext = {}): Promise<OAuthClientRow> {
     const stored = { ...row, clientid: row.clientid === undefined || row.clientid === '' ? cfUuid() : row.clientid };
-    return base.insert<OAuthClientRow>(tx, OAUTH_CLIENT.table, ormRow(stored, OAUTH_CLIENT), ctx);
+    return base.insert<OAuthClientRow>(tx, OAUTH_CLIENT.table, ormRow(stored, OAUTH_CLIENT, OAUTH_CLIENT_REQUIRED), ctx);
   }
 
   function updateOAuthClient(tx: TenantTx, clientId: string, values: OAuthClientValues, ctx: WriteContext = {}): Promise<OAuthClientRow | null> {
-    return base.update<OAuthClientRow>(tx, OAUTH_CLIENT.table, { clientid: clientId }, ormRow(values, OAUTH_CLIENT), ctx);
+    return base.update<OAuthClientRow>(tx, OAUTH_CLIENT.table, { clientid: clientId }, ormRow(values, OAUTH_CLIENT, OAUTH_CLIENT_REQUIRED), ctx);
   }
 
   async function deleteOAuthClient(tx: TenantTx, clientId: string, ctx: WriteContext = {}): Promise<boolean> {
@@ -1651,7 +1656,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
   }
 
   function insertToken(tx: TenantTx, row: OAuthTokenInput, ctx: WriteContext = {}): Promise<OAuthTokenRow> {
-    return base.insert<OAuthTokenRow>(tx, OAUTH_TOKEN.table, ormRow(row, OAUTH_TOKEN), ctx);
+    return base.insert<OAuthTokenRow>(tx, OAUTH_TOKEN.table, ormRow(row, OAUTH_TOKEN, OAUTH_TOKEN_REQUIRED), ctx);
   }
 
   async function deleteToken(tx: TenantTx, token: string, ctx: WriteContext = {}): Promise<boolean> {

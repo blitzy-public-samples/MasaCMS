@@ -236,7 +236,7 @@ export async function listFileObjects(tx: TenantTx, fileId: string): Promise<Fil
 }
 
 // The migration object transfer and the manifest export run while a write window's import holds content.file in phase
-// `importing`, so these two reads take no gate, as the platform's migration export does; file_object has no unit to wait on.
+// `importing`, so these reads take no gate, as the platform's migration export does; file_object has no unit to wait on.
 
 /** The stored object under `objectKey`, whose `sha256` tells a repeated transfer of the same bytes; null when absent. */
 export function findFileObjectBySha(tx: TenantTx, objectKey: string): Promise<FileObjectRow | null> {
@@ -245,6 +245,16 @@ export function findFileObjectBySha(tx: TenantTx, objectKey: string): Promise<Fi
     `SELECT ${allColumns(FILE_OBJECT)} FROM ${qualified(tx.schema, FILE_OBJECT.table)} WHERE ${objectCol('object_key')} = $1`,
     [objectKey],
   );
+}
+
+/** Whether a `content.file` row has the id `fileId`, compared as SQL Server compares ids; a stored object without one is an orphan. */
+export async function fileRowExists(tx: TenantTx, fileId: string): Promise<boolean> {
+  const row = await firstRow(
+    tx,
+    `SELECT 1 FROM ${qualified(tx.schema, FILE.table)} WHERE ${idEquals(tx, fileCol('fileid'), '$1')} LIMIT 1`,
+    [fileId],
+  );
+  return row !== null;
 }
 
 /** One keyset page of the object manifest, by `object_key` ascending, after `page.afterKey` when given. */
