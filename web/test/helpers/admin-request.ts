@@ -101,6 +101,13 @@ const SESSION_SITES_ROUTE = routeKey('GET', 'identity', '/v1/sessions/current/si
 const ADMIN_STATE_ROUTE = routeKey('GET', 'identity', '/v1/sessions/current/admin-state');
 const SAVE_ADMIN_STATE_ROUTE = routeKey('POST', 'identity', '/v1/sessions/current/admin-state');
 const shellSiteRoute = (siteId: string): string => routeKey('GET', 'programs-sites', `/v1/sites/${siteId}/shell`);
+const HREF_DOMAINS_ROUTE = routeKey('GET', 'programs-sites', '/v1/href-domains');
+
+/** programs-sites' sanitizeHref domains when every site is on `localhost`, as anonymous requests carry them. */
+export const TEST_HREF_DOMAINS: NonNullable<AdminRequest['hrefDomains']> = Object.freeze({
+  allowedDomains: Object.freeze([SERVER_NAME]),
+  siteDomain: SERVER_NAME,
+});
 
 /** Cookie scope with lower-cased names and case-insensitive lookup, as the platform's parsed Cookie header holds it. */
 class CookieScope extends Map<string, string> {
@@ -369,6 +376,7 @@ export function makeAdminRequest(
     https: false,
     serverName: SERVER_NAME,
     httpHost: SERVER_NAME,
+    hrefDomains: flags.isLoggedIn ? undefined : TEST_HREF_DOMAINS,
   };
   return deepMerge<AdminRequest>(base, overrides);
 }
@@ -478,6 +486,7 @@ export async function buildTestAdminRequest(input: TestAdminRequestInput): Promi
     },
     [SESSION_SITES_ROUTE]: { status: 200, body: { sites: siteArray.map(sessionSiteOf) } },
     [ADMIN_STATE_ROUTE]: { status: 200, body: {} },
+    [HREF_DOMAINS_ROUTE]: { status: 200, body: TEST_HREF_DOMAINS },
   };
   for (const id of new Set([siteId, user?.site ?? 'default', 'default'])) {
     const site = { ...siteRecordFor(id), ...(id === siteId ? input.site : {}) };

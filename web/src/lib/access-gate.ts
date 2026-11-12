@@ -15,7 +15,7 @@ export type ScreenGate = (
 
 /** Options of {@link secure} and {@link runGate}. */
 export interface GateOptions {
-  /** Site-registry domains the login return URL is sanitized against; defaults to allowing the browser's host. */
+  /** Site-registry domains the login return URL is sanitized against; defaults to the request's `hrefDomains`. */
   readonly hrefDomains?: HrefDomains;
 }
 
@@ -52,15 +52,13 @@ export function applicationGate(req: AdminRequest): GateDecision {
   return ALLOW;
 }
 
-// An anonymous request cannot read the site registry, so by default the browser's own host counts as an allowed
-// domain; legacy's replacement of an unregistered host applies only when the caller supplies the registry domains.
-function browserHostDomains(req: AdminRequest): HrefDomains {
-  return { allowedDomains: [req.serverName], siteDomain: req.serverName };
-}
-
-/** Controller `secure()`: anonymous users go to the login form with a return URL, logged-in users back to the referrer. */
-export function secure(req: AdminRequest, { hrefDomains = browserHostDomains(req) }: GateOptions = {}): GateDecision {
+/**
+ * Controller `secure()`: anonymous users go to the login form with a return URL, logged-in users back to the referrer.
+ * @throws TypeError For an anonymous request carrying no registry domains, since the browser's Host is never trusted.
+ */
+export function secure(req: AdminRequest, { hrefDomains = req.hrefDomains }: GateOptions = {}): GateDecision {
   if (req.isLoggedIn) return redirectTo(req.headers.get('referer') || './');
+  if (hrefDomains === undefined) throw new TypeError('secure() needs the registry domains of an anonymous request');
   const currentAdminPath = sanitizeHref(
     adminPath({ useProtocol: true, domain: req.serverName, https: req.https, httpHost: req.httpHost }),
     hrefDomains,

@@ -223,6 +223,7 @@ beforeEach(async () => {
     readShellSite: vi.fn<SitesDomain['readShellSite']>(async () => ({ site: { SiteID: SITE.SiteID }, isNew: 0 })),
     updateSite: vi.fn<SitesDomain['updateSite']>(async () => ({ written: true, errors: {}, site: SITE })),
     saveOrderAndDeploy: vi.fn<SitesDomain['saveOrderAndDeploy']>(async () => ({ written: true, sites: [] })),
+    hrefDomains: vi.fn<SitesDomain['hrefDomains']>(async () => ({ allowedDomains: [], siteDomain: '' })),
   };
   app = await startApp(SETTINGS);
 });

@@ -40,6 +40,7 @@ import { assertNoForeignBranches } from '../legacy/update-branches.js';
 import { hasSiteErrors, validateSite, type SiteErrors } from '../legacy/validation.js';
 import type { ExtendDataValues, ProgramsSitesRepository, SiteExtendDefinitions } from '../repo/repository.js';
 import { SITE, type ExtendAttributeRow, type ExtendDataRow, type ImageSizeRow, type SiteRow } from '../repo/tables.js';
+import { createHrefDomainsReader } from './href-domains.js';
 import { siteChangedPayload } from './pools.js';
 
 type Schemas = components['schemas'];
@@ -53,6 +54,7 @@ type SiteExtendAttribute = Schemas['SiteExtendAttribute'];
 type SiteUpdateResult = Schemas['SiteUpdateResult'];
 type SiteOrderResult = Schemas['SiteOrderResult'];
 type ImageSize = Schemas['ImageSize'];
+type HrefDomains = Schemas['HrefDomains'];
 
 /** Sort of the site list as `settingsGateway.getList` takes it; unknown values fall back to `orderno` / `asc`. */
 export interface SiteListOptions {
@@ -102,7 +104,10 @@ export interface ExtendDataWrite {
   values: ExtendDataValues | null;
 }
 
-/** Site operations behind `csettings.list`, `editSite`, `updateSite{action=Update}`, the admin layout and the JSON API `site` entity. */
+/**
+ * Site operations behind `csettings.list`, `editSite`, `updateSite{action=Update}`, the admin layout, the JSON API
+ * `site` entity and `sanitizeHref`.
+ */
 export interface SitesDomain {
   /**
    * The Sites screen rows: every registered site for an S2 token, else the token's own. Always read fresh; legacy's
@@ -123,6 +128,8 @@ export interface SitesDomain {
   ): Promise<SiteUpdateResult>;
   /** Port of `settingsManager.saveOrder` and `saveDeploy` (S2 only), then the site list. */
   saveOrderAndDeploy(db: TenantDb, claims: UserClaims, input: SiteOrderInput): Promise<SiteOrderResult>;
+  /** The registered domains and site domain `utility.sanitizeHref` checks against; `siteId` is the session site. */
+  hrefDomains(db: TenantDb, siteId: string): Promise<HrefDomains>;
   /** Writes `programs-sites.site.changed.v1` for each applied site insert or update of a migration apply. */
   emitStateEvents: NonNullable<MigrationHandlerOptions['emitStateEvents']>;
 }
@@ -635,5 +642,15 @@ export function createSitesDomain({
     await announce(tx, row, change.origin);
   };
 
-  return Object.freeze({ listSites, readSite, readShellSite, updateSite, saveOrderAndDeploy, emitStateEvents });
+  const hrefDomains = createHrefDomainsReader(repo);
+
+  return Object.freeze({
+    listSites,
+    readSite,
+    readShellSite,
+    updateSite,
+    saveOrderAndDeploy,
+    hrefDomains,
+    emitStateEvents,
+  });
 }

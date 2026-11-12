@@ -965,9 +965,14 @@ describe('extendDataRows', () => {
     { value: 'abc', error: { name: 'Error', message: 'abc is an invalid date or time string.' } },
     { value: '1/1/1500', error: { name: 'Error', message: 'The conversion of a datetime2 data type to a datetime data type resulted in an out-of-range value.' } },
     { value: '   ', error: { name: 'Error', message: 'The cf_sql_timestamp value is empty' } },
-    { value: '11/12/2026 10:30:15 AM EST', error: { name: 'LegacyServiceUnavailableError', reason: 'date-text-zone' } },
   ])('refuses date attribute text $value as legacy does', ({ value, error }) => {
     expect(() => extendDataRows(BASE_ID, [launch], { siteid: 'tenant-a', launch: value }, options)).toThrow(expect.objectContaining(error));
+  });
+
+  it('reads date text naming a Java time zone through lsParseDateTime', () => {
+    const [row] = extendDataRows(BASE_ID, [launch], { siteid: 'tenant-a', launch: '11/12/2026 10:30:15 AM EST' }, options);
+
+    expect(row?.values).toMatchObject({ datetimevalue: new Date(Date.UTC(2026, 10, 12, 15, 30, 15)) });
   });
 
   // parseDateTime builds a zone-named instant on a Calendar seeded with the clock, so it keeps the clock's milliseconds.

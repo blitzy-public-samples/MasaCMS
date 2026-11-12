@@ -1,5 +1,5 @@
 import * as cheerio from 'cheerio';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetLegacySettingsForTests } from '@/lib/env';
 import { toString } from '@/lib/html';
 import { renderExtendedAttributesTab } from '@/screens/csettings/editsite/extended-attributes';
@@ -40,6 +40,7 @@ function model(extendSets: readonly ExtendSetView[], over: Partial<EditSiteModel
     bean: { siteID: 'default' },
     extendSets,
     dateKeyFormat: 'MM/DD/YYYY',
+    locale: 'en_US',
     localeHasDayParts: true,
     now: new Date(2026, 10, 11, 9, 0, 0),
     newCacheId: () => `CACHE-${(cacheIds += 1)}`,
@@ -75,6 +76,19 @@ afterEach(() => {
   if (savedContext === undefined) delete process.env.MURA_CONTEXT;
   else process.env.MURA_CONTEXT = savedContext;
   resetLegacySettingsForTests();
+});
+
+// The legacy server ran in UTC with its clock at the model's `now`.
+const systemZone = process.env.TZ;
+beforeAll(() => {
+  process.env.TZ = 'UTC';
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-11-11T09:00:00Z'));
+});
+afterAll(() => {
+  vi.useRealTimers();
+  if (systemZone === undefined) delete process.env.TZ;
+  else process.env.TZ = systemZone;
 });
 
 describe('csettings.editsite extended attributes tab', () => {
@@ -330,6 +344,29 @@ describe('csettings.editsite extended attributes tab', () => {
     expect(() => render([select])).toThrow(RangeError);
   });
 
+  it.each<[string, string, string, Partial<ExtendAttributeView>, string]>([
+    ['a US string', 'en_US', 'MM/DD/YYYY', { value: '06/30/2026' }, '06/181/2026'],
+    ['a day-first string in the session locale', 'en_GB', 'DD/MM/YYYY', { value: '01/06/2026' }, '152/06/2026'],
+    ['a German long date', 'de_DE', 'DD.MM.YYYY', { value: '30. Juni 2026' }, '181.06.2026'],
+    ['a French month name', 'fr_FR', 'DD/MM/YYYY', { value: '30 juin 2026' }, '181/06/2026'],
+    ['a long date-time with a Java zone name', 'en_US', 'MM/DD/YYYY', { value: 'June 30, 2026 at 11:30:00 PM EST' }, '07/182/2026'],
+    ['a number as a date serial', 'en_US', 'MM/DD/YYYY', { value: '2026' }, '07/199/1905'],
+    ['a blank value', 'en_US', 'MM/DD/YYYY', { value: '  ' }, ''],
+    ['the default value', 'de_DE', 'DD.MM.YYYY', { value: 'useMuraDefault', defaultValue: '30.06.2026' }, '181.06.2026'],
+  ])('TextBox date shows %s as LSDateFormat does', (_title, locale, mask, input, shown) => {
+    const tb = attr({ name: 'tbDate', label: 'Date Field', type: 'TextBox', validation: 'date', ...input });
+    expect(group(render([tb], { dateKeyFormat: mask, locale })).control).toBe(
+      textBlock(
+        `<input type="text" name="tbDate" class="text datepicker" id="tbDate" data-label="Date Field" value="${shown}" data-required="false" data-validate="date" />`,
+      ),
+    );
+  });
+
+  it('TextBox date fails as LSDateFormat does on an unreadable value', () => {
+    const tb = attr({ name: 'tbDate', label: 'Date Field', type: 'TextBox', validation: 'date', value: 'garbage' });
+    expect(() => render([tb])).toThrow(new Error('garbage is an invalid date format.'));
+  });
+
   describe('datetime selector', () => {
     const selects = /(<select[^>]*>).*?(<\/select>)/g;
     const skeleton = (date: string, hidden: string, dayParts: boolean): string =>
@@ -345,16 +382,23 @@ describe('csettings.editsite extended attributes tab', () => {
       ].join('');
     const stamp = '&#x7b;ts&#x20;&#x27;2026-11-30&#x20;14&#x3a;05&#x3a;00&#x27;&#x7d;';
 
-    it.each<[string, string, boolean, string, string, string, string, string, string | undefined, number]>([
-      ['afternoon with day parts', "{ts '2026-11-30 14:05:00'}", true, 'MM/DD/YYYY', '11/334/2026', stamp, '2', '5', 'PM', 12],
-      ['midnight hour is 12 AM', "{ts '2026-01-02 00:07:00'}", true, 'MM/DD/YYYY', '01/02/2026', '&#x7b;ts&#x20;&#x27;2026-01-02&#x20;00&#x3a;07&#x3a;00&#x27;&#x7d;', '12', '7', undefined, 12],
-      ['beyond 50 years blanks the date but keeps the time', "{ts '2099-06-01 23:45:00'}", true, 'MM/DD/YYYY', '', '', '11', '45', 'PM', 12],
-      ['empty value', '', true, 'MM/DD/YYYY', '', '', '12', '0', undefined, 12],
-      ['ISO value', '2026-11-30T12:30', true, 'MM/DD/YYYY', '11/334/2026', '2026-11-30T12&#x3a;30', '12', '30', 'PM', 12],
-      ['without day parts', "{ts '2026-11-30 14:05:00'}", false, 'DD.MM.YYYY', '334.11.2026', stamp, '14', '5', undefined, 24],
-    ])('%s', (_title, value, dayParts, mask, date, hidden, hour, minute, dayPart, hourCount) => {
+    it.each<[string, string, boolean, string, string, string, string, string, string, string | undefined, number]>([
+      ['afternoon with day parts', "{ts '2026-11-30 14:05:00'}", true, 'MM/DD/YYYY', 'en_US', '11/334/2026', stamp, '2', '5', 'PM', 12],
+      ['midnight hour is 12 AM', "{ts '2026-01-02 00:07:00'}", true, 'MM/DD/YYYY', 'en_US', '01/02/2026', '&#x7b;ts&#x20;&#x27;2026-01-02&#x20;00&#x3a;07&#x3a;00&#x27;&#x7d;', '12', '7', undefined, 12],
+      ['beyond 50 years blanks the date but keeps the time', "{ts '2099-06-01 23:45:00'}", true, 'MM/DD/YYYY', 'en_US', '', '', '11', '45', 'PM', 12],
+      ['empty value', '', true, 'MM/DD/YYYY', 'en_US', '', '', '12', '0', undefined, 12],
+      ['ISO value', '2026-11-30T12:30', true, 'MM/DD/YYYY', 'en_US', '11/334/2026', '2026-11-30T12&#x3a;30', '12', '30', 'PM', 12],
+      ['without day parts', "{ts '2026-11-30 14:05:00'}", false, 'DD.MM.YYYY', 'de_DE', '334.11.2026', stamp, '14', '5', undefined, 24],
+      ['US string with a time', '06/30/2026 2:05 PM', true, 'MM/DD/YYYY', 'en_US', '06/181/2026', '06&#x2f;30&#x2f;2026&#x20;2&#x3a;05&#x20;PM', '2', '5', 'PM', 12],
+      ['day-first string read in the session locale', '01/06/2026 09:30', false, 'DD/MM/YYYY', 'en_GB', '152/06/2026', '01&#x2f;06&#x2f;2026&#x20;09&#x3a;30', '9', '30', undefined, 24],
+      ['German string with a time', '30.06.2026 14:05', false, 'DD.MM.YYYY', 'de_DE', '181.06.2026', '30.06.2026&#x20;14&#x3a;05', '14', '5', undefined, 24],
+      ['number as a date serial', '2026', true, 'MM/DD/YYYY', 'en_US', '07/199/1905', '2026', '12', '0', undefined, 12],
+      ['legacy string beyond 50 years', '12/31/2099', true, 'MM/DD/YYYY', 'en_US', '', '', '12', '0', undefined, 12],
+      ['legacy string just inside 50 years', '11/10/2077', true, 'MM/DD/YYYY', 'en_US', '11/314/2077', '11&#x2f;10&#x2f;2077', '12', '0', undefined, 12],
+      ['blank value kept in the hidden field', '  ', true, 'MM/DD/YYYY', 'en_US', '', '&#x20;&#x20;', '12', '0', undefined, 12],
+    ])('%s', (_title, value, dayParts, mask, locale, date, hidden, hour, minute, dayPart, hourCount) => {
       const dt = attr({ name: 'dt', label: 'Date Time', type: 'TextBox', required: 'true', validation: 'DateTime', message: 'Bad "date"', value });
-      const control = group(render([dt], { dateKeyFormat: mask, localeHasDayParts: dayParts })).control;
+      const control = group(render([dt], { dateKeyFormat: mask, locale, localeHasDayParts: dayParts })).control;
       expect(control.replace(selects, '$1…$2')).toBe(skeleton(date, hidden, dayParts));
       const $ = cheerio.load(control);
       expect($('#mura-dtHour option').length).toBe(hourCount);
@@ -362,6 +406,15 @@ describe('csettings.editsite extended attributes tab', () => {
       expect($('#mura-dtMinute option[selected]').map((_, el) => $(el).attr('value')).get()).toEqual([minute]);
       expect($('#mura-dtMinute option').first().text()).toBe('00');
       expect($('#mura-dtDayPart option[selected]').attr('value')).toBe(dayPart);
+    });
+
+    it.each([
+      ['an unreadable value', 'en_US', 'MM/DD/YYYY', 'garbage', 'garbage is an invalid date format.'],
+      ['a locale date that hour() cannot read', 'de_DE', 'DD.MM.YYYY', '30. Juni 2026', '30. Juni 2026 is an invalid date or time string.'],
+      ['a locale date hour() rejects outright', 'fr_FR', 'DD/MM/YYYY', 'lundi 1 décembre 2031', 'The value lundi 1 décembre 2031 cannot be converted to a date.'],
+    ])('fails as legacy does on %s', (_title, locale, mask, value, message) => {
+      const dt = attr({ name: 'dt', label: 'Date Time', type: 'TextBox', validation: 'datetime', value });
+      expect(() => render([dt], { dateKeyFormat: mask, locale, localeHasDayParts: false })).toThrow(new Error(message));
     });
 
     it('option markup and encoded names', () => {

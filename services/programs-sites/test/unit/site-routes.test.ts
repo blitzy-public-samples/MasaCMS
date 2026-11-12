@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { parse } from 'yaml';
-import { collectRouteMatrix } from '@opt2/platform/auth';
+import { INVOCATION_HEADER, collectRouteMatrix } from '@opt2/platform/auth';
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
@@ -16,6 +16,8 @@ import {
   ROLE_SET,
   assertResponseMatchesOpenApi,
   authHeadersFor,
+  mintServiceToken,
+  mintUserToken,
   testVerifier,
   writeTestSecrets,
 } from '@opt2/platform/testing';
@@ -34,6 +36,7 @@ const SITE_PATHS = [
   '/v1/sites/{siteId}',
   '/v1/sites/{siteId}/shell',
   '/v1/sites/{siteId}/update',
+  '/v1/href-domains',
 ];
 const SITE_ROW: components['schemas']['SiteListItem'] = {
   siteid: 'tenant-a',
@@ -45,6 +48,7 @@ const SITE_ROW: components['schemas']['SiteListItem'] = {
 };
 const SITE: components['schemas']['Site'] = { SiteID: 'tenant-a', Site: 'Tenant A' };
 const SHELL_SITE: components['schemas']['ShellSite'] = { SiteID: 'tenant-a', Site: 'Tenant A', EmailBroadcaster: 0 };
+const DOMAINS: components['schemas']['HrefDomains'] = { allowedDomains: ['localhost', 'alias.example'], siteDomain: 'localhost' };
 const FORM = { 'content-type': 'application/x-www-form-urlencoded' };
 const JSON_BODY = { 'content-type': 'application/json' };
 const TOKEN_FIELDS = 'csrf_token=T&csrf_token_expires=E';
@@ -110,6 +114,7 @@ beforeEach(async () => {
     readShellSite: vi.fn<SitesDomain['readShellSite']>(async () => ({ site: SHELL_SITE, isNew: 0 })),
     updateSite: vi.fn<SitesDomain['updateSite']>(async () => ({ written: true, errors: {}, site: SITE })),
     saveOrderAndDeploy: vi.fn<SitesDomain['saveOrderAndDeploy']>(async () => ({ written: true, sites: [SITE_ROW] })),
+    hrefDomains: vi.fn<SitesDomain['hrefDomains']>(async () => DOMAINS),
   };
   app = await createService({
     name: 'programs-sites',
@@ -142,12 +147,12 @@ afterEach(async () => {
   await app.opt2.shutdown();
 });
 
-type SubjectName = 's2' | 'site-admin' | 'editor' | 'member' | 'anonymous';
+type SubjectName = 's2' | 'site-admin' | 'editor' | 'member' | 'anonymous' | 'service:gateway' | 'service:people';
 
-async function headersAs(name: SubjectName, site = 'tenant-a'): Promise<Record<string, string>> {
+async function headersAs(name: SubjectName, { site = 'tenant-a', sub }: { site?: string; sub?: string } = {}) {
   const subject = ROLE_SET.find((candidate) => candidate.name === name);
   if (subject === undefined) throw new Error(`No role subject ${name}`);
-  return authHeadersFor(subject, { audience: 'programs-sites', site });
+  return authHeadersFor(subject, { audience: 'programs-sites', site, sub });
 }
 
 /** Injects a request as `as` and checks the answer against the contract. */
@@ -183,11 +188,10 @@ describe('route declarations', () => {
           siteCheck: true,
         })),
     );
-    expect(expected).toHaveLength(5);
-    expect(declared.filter((route) => route.url.startsWith('/v1/sites'))).toEqual(
-      expect.arrayContaining(expected.map((entry) => expect.objectContaining(entry))),
-    );
-    expect(declared.filter((route) => route.url.startsWith('/v1/sites'))).toHaveLength(5);
+    const routes = declared.filter((route) => route.url.startsWith('/v1/'));
+    expect(expected).toHaveLength(6);
+    expect(routes).toEqual(expect.arrayContaining(expected.map((entry) => expect.objectContaining(entry))));
+    expect(routes).toHaveLength(6);
   });
 });
 
@@ -290,7 +294,7 @@ describe('GET /v1/sites/:siteId/shell', () => {
 
   it('refuses an editor token for another site', async () => {
     const url = '/v1/sites/tenant-a/shell';
-    const res = await app.inject({ method: 'GET', url, headers: await headersAs('editor', 'tenant-b') });
+    const res = await app.inject({ method: 'GET', url, headers: await headersAs('editor', { site: 'tenant-b' }) });
     const { statusCode: status, body } = res;
     assertResponseMatchesOpenApi(OPENAPI, { method: 'GET', path: url, status, contentType: res.headers['content-type'], body });
     expect(status).toBe(403);
@@ -369,5 +373,40 @@ describe('POST /v1/sites/:siteId/update', () => {
     expect(res.statusCode).toBe(503);
     const form = sites.updateSite.mock.calls[0]?.[3];
     expect(form).toMatchObject({ siteid: 'tenant-a', newPlaceholderImg: 'placeholder.png' });
+  });
+});
+
+describe('GET /v1/href-domains', () => {
+  it.each([
+    ['a gateway invocation without a user token', 'service:gateway', undefined, '/v1/href-domains?siteid=default', 'default'],
+    ['an anonymous-session token', 'member', '', '/v1/href-domains?SiteID=tenant-a', 'tenant-a'],
+    ['a member token without a siteid', 'member', undefined, '/v1/href-domains', ''],
+    ['an empty siteid', 'member', '', '/v1/href-domains?siteid=', ''],
+  ] as const)('answers the domains for %s', async (_label, as, sub, url, siteId) => {
+    const res = await send('GET', url, as, await headersAs(as, { sub }));
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual(DOMAINS);
+    expect(sites.hrefDomains).toHaveBeenCalledExactlyOnceWith(db, siteId);
+  });
+
+  it.each([
+    ['no credential', async () => ({}), 401],
+    [
+      'a user token without an invocation credential',
+      async () => ({ authorization: `Bearer ${await mintUserToken({ sub: '', site: 'default', roles: [] })}` }),
+      401,
+    ],
+    ['an invalid invocation credential', async () => ({ [INVOCATION_HEADER]: 'Bearer invalid' }), 401],
+    [
+      'a gateway invocation addressed to another service',
+      async () => ({ [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'people' })}` }),
+      401,
+    ],
+    ['the invocation of a service other than the gateway', async () => headersAs('service:people'), 403],
+    ["a siteid other than the token's site", async () => headersAs('member', { sub: '' }), 403],
+  ] as const)('refuses %s', async (_label, headersOf, status) => {
+    const res = await send('GET', '/v1/href-domains?siteid=default', 'anonymous', await headersOf());
+    expect(res.statusCode).toBe(status);
+    expect(sites.hrefDomains).not.toHaveBeenCalled();
   });
 });

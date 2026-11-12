@@ -3,7 +3,10 @@ import {
   cfDateAdd,
   cfDateFormat,
   cfDateTimeFormat,
+  cfHour,
+  cfJavaDateFormat,
   cfLsDateFormat,
+  cfMinute,
   cfLsTimeFormat,
   cfTimeFormat,
   formatCookieExpires,
@@ -136,6 +139,29 @@ describe('cfLsDateFormat', () => {
     { mask: 'MM/DD/YYYY', date: THU, expected: '10/302/2026' },
   ])('renders $mask as $expected for en_US', ({ mask, date, expected }) => {
     expect(cfLsDateFormat(date, mask)).toBe(expected);
+  });
+});
+
+describe('cfJavaDateFormat, cfHour and cfMinute', () => {
+  // ACF 2023 LSDateFormat(v, 'MM/DD/YYYY'), hour(v) and minute(v) under en_US in Etc/UTC.
+  it.each([
+    { instant: -14825844900000, expected: '02/60/1500', hm: '13:45' },
+    { instant: -12219263700000, expected: '10/278/1582', hm: '8:5' },
+    { instant: -12219292860000, expected: '10/277/1582', hm: '23:59' },
+    { instant: -12219238380000, expected: '10/278/1582', hm: '15:7' },
+    { instant: -11644560000000, expected: '12/366/1600', hm: '0:0' },
+    { instant: -59011632000000, expected: '01/01/0100', hm: '0:0' },
+    { instant: 978307200000, expected: '01/01/2001', hm: '0:0' },
+    { instant: 1782862200000, expected: '06/181/2026', hm: '23:30' },
+  ])('renders $instant as $expected at $hm', ({ instant, expected, hm }) => {
+    const d = new Date(instant);
+    expect(withZone('UTC', () => [cfJavaDateFormat(d, 'MM/DD/YYYY'), `${cfHour(d)}:${cfMinute(d)}`])).toEqual([expected, hm]);
+  });
+
+  it('rejects an invalid date', () => {
+    expect(() => cfJavaDateFormat(new Date(Number.NaN), 'yyyy')).toThrow(new RangeError('Invalid date'));
+    expect(() => cfHour(new Date(Number.NaN))).toThrow(RangeError);
+    expect(() => cfMinute(new Date(Number.NaN))).toThrow(RangeError);
   });
 });
 

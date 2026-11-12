@@ -50,6 +50,7 @@ const SESSION_SITES = routeKey('GET', 'identity', '/v1/sessions/current/sites');
 const ADMIN_STATE = routeKey('GET', 'identity', '/v1/sessions/current/admin-state');
 const SAVE_ADMIN_STATE = routeKey('POST', 'identity', '/v1/sessions/current/admin-state');
 const siteRoute = (siteId: string): string => routeKey('GET', 'programs-sites', `/v1/sites/${siteId}/shell`);
+const HREF_DOMAINS = routeKey('GET', 'programs-sites', '/v1/href-domains');
 
 const SITE_NAMES: Readonly<Record<string, string>> = { default: 'Default', 'tenant-a': 'Tenant A' };
 
@@ -113,6 +114,7 @@ function routesFor(subject: WebTestSubject, user: Partial<SessionUser> = {}): Fa
     [ADMIN_STATE]: { status: 200, body: {} },
     [siteRoute('default')]: siteReply(DEFAULT_RECORD),
     [siteRoute('tenant-a')]: siteReply(TENANT_A_RECORD),
+    [HREF_DOMAINS]: { status: 200, body: { allowedDomains: ['localhost'], siteDomain: 'localhost' } },
   };
 }
 
@@ -521,8 +523,14 @@ describe('buildAdminRequest', () => {
     const SESSION_READS = ['identity /v1/sessions/current', 'identity /v1/sessions/current/admin-state'];
 
     it.each<[string, WebTestSubjectKey, Partial<MintUserTokenInput>, string[], boolean]>([
-      ['anonymous', 'anonymous', {}, [], false],
-      ['an anonymous-session token', 'member', { sub: '' }, SESSION_READS, false],
+      ['anonymous', 'anonymous', {}, ['programs-sites /v1/href-domains'], false],
+      [
+        'an anonymous-session token',
+        'member',
+        { sub: '' },
+        [...SESSION_READS, 'programs-sites /v1/href-domains'],
+        false,
+      ],
       ['a member', 'member', {}, SESSION_READS, true],
     ])('loads no site list for %s', async (_label, subject, claims, calls, isLoggedIn) => {
       const { request, gateway } = await build({ subject, claims, target: '/admin/' });
@@ -697,7 +705,7 @@ describe('buildAdminRequest', () => {
     it.each<WebTestSubjectKey>(['member', 'anonymous'])('reads no site data for %s', async (subject) => {
       const { request, gateway } = await build({ subject, target: `/admin/?siteid=${SUBJECTS[subject].site}` });
 
-      expect(callsOf(gateway).filter((call) => call.startsWith('programs-sites'))).toEqual([]);
+      expect(callsOf(gateway).filter((call) => call.startsWith('programs-sites /v1/sites'))).toEqual([]);
       expect(request.site).toBeUndefined();
     });
 

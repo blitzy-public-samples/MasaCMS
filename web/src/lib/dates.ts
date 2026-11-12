@@ -1,5 +1,13 @@
 // The admin session date key (session.dateKey, session.dateKeyFormat) and legacy date field values (server-only).
-import { cfDateAdd, cfEq, cfListToArray, cfLsDateFormat, cfLsTimeFormat } from '@opt2/platform/legacy-compat';
+import {
+  cfDateAdd,
+  cfEq,
+  cfJavaDateFormat,
+  cfListToArray,
+  cfLsDateFormat,
+  cfLsDateOf,
+  cfLsTimeFormat,
+} from '@opt2/platform/legacy-compat';
 import { raw, type SafeHtml } from './html';
 
 /** Date validation key of a session locale, as resourceBundle utils.setJSDateKeys builds it. */
@@ -149,6 +157,11 @@ export function parseLegacyDate(value: Date | string | null | undefined): Date |
   return date;
 }
 
+/** `dateDiff('yyyy', now, date) gt 50`: the cf_datetimeselector rule that blanks far-future values. */
+export function isMoreThanFiftyYearsAfter(date: Date, now: Date): boolean {
+  return cfDateAdd('yyyy', 51, now).getTime() <= date.getTime();
+}
+
 /** The text of a cf_datetimeselector date input: '' when empty, unparsable or more than 50 years after `now`. */
 export function formatDateField(
   value: Date | string | null | undefined,
@@ -156,8 +169,14 @@ export function formatDateField(
   now: Date = new Date(),
 ): string {
   const date = parseLegacyDate(value);
-  if (!date || cfDateAdd('yyyy', 51, now).getTime() <= date.getTime()) return '';
+  if (!date || isMoreThanFiftyYearsAfter(date, now)) return '';
   return cfLsDateFormat(date, dateKeyFormat);
+}
+
+/** `LSDateFormat(value, dateKeyFormat)` of a string under `setLocale(javaLocale)`: '' when blank; throws ACF's error when it cannot read it. */
+export function lsDateFormatString(value: string, dateKeyFormat: string, javaLocale: string): string {
+  const date = cfLsDateOf(value, javaLocale);
+  return date ? cfJavaDateFormat(date, dateKeyFormat) : '';
 }
 
 /** `LSDateFormat(value, dateKeyFormat) LSTimeFormat(value, 'short')` under the session locale; ' ' when empty, RangeError when unparsable. */

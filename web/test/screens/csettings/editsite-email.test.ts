@@ -64,6 +64,7 @@ function render(overrides: Partial<EditSiteBean> = {}): string {
     pluginScriptTabs: [],
     placeholderFile: null,
     dateKeyFormat: 'MM/DD/YYYY',
+    locale: 'en_US',
     localeHasDayParts: true,
     now: new Date('2026-06-30T00:00:00Z'),
     newCacheId: () => '00000000-0000-0000-0000000000000000',

@@ -1,9 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   dateKeyFor,
   formatDateField,
   formatDateTimeShort,
+  isMoreThanFiftyYearsAfter,
   localeHasDayParts,
+  lsDateFormatString,
   parseLegacyDate,
   shortDatePattern,
   type DateKey,
@@ -189,5 +191,65 @@ describe('formatDateTimeShort', () => {
 
   it('throws for an unparsable value', () => {
     expect(() => formatDateTimeShort('garbage', 'MM/DD/YYYY', 'en_US')).toThrow(RangeError);
+  });
+});
+
+// Expected values below are ACF 2023's LSDateFormat under setLocale and dateDiff, on a UTC server with the clock at NOW.
+const NOW = new Date(2026, 10, 11, 9, 0, 0);
+
+describe('lsDateFormatString', () => {
+  const systemZone = process.env.TZ;
+  beforeAll(() => {
+    process.env.TZ = 'UTC';
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-11T09:00:00Z'));
+  });
+  afterAll(() => {
+    vi.useRealTimers();
+    if (systemZone === undefined) delete process.env.TZ;
+    else process.env.TZ = systemZone;
+  });
+
+  it.each([
+    ['06/30/2026', 'en_US', 'MM/DD/YYYY', '06/181/2026'],
+    ['01/06/2026', 'en_US', 'MM/DD/YYYY', '01/06/2026'],
+    ['01/06/2026', 'en_GB', 'DD/MM/YYYY', '152/06/2026'],
+    ['June 30, 2026', 'en_GB', 'DD/MM/YYYY', '181/06/2026'],
+    ['30.06.2026', 'de_DE', 'DD.MM.YYYY', '181.06.2026'],
+    ['30. Juni 2026', 'de_DE', 'DD.MM.YYYY', '181.06.2026'],
+    ['Dienstag, 30. Juni 2026', 'de_DE', 'DD.MM.YYYY', '181.06.2026'],
+    ['30 juin 2026', 'fr_FR', 'DD/MM/YYYY', '181/06/2026'],
+    ['lundi 1 décembre 2031', 'fr_FR', 'DD/MM/YYYY', '335/12/2031'],
+    ['30.06.26', 'en_US', 'MM/DD/YYYY', '06/181/0026'],
+    ['2026', 'en_US', 'MM/DD/YYYY', '07/199/1905'],
+    ["{ts '2026-11-30 00:00:00'}", 'en_US', 'MM/DD/YYYY', '11/334/2026'],
+    ['12/31/2099', 'en_US', 'MM/DD/YYYY', '12/365/2099'],
+    ['June 30, 2026 at 11:30:00 PM EST', 'en_US', 'MM/DD/YYYY', '07/182/2026'],
+    ['02/29/1500', 'en_US', 'MM/DD/YYYY', '02/60/1500'],
+    ["{ts '1582-10-04 23:59:00'}", 'en_US', 'MM/DD/YYYY', '10/277/1582'],
+    ['1/1/100', 'en_US', 'MM/DD/YYYY', '01/01/0100'],
+    ['  ', 'en_US', 'MM/DD/YYYY', ''],
+    ['', 'en_US', 'MM/DD/YYYY', ''],
+  ])('formats %j under %s with %s', (value, javaLocale, mask, expected) => {
+    expect(lsDateFormatString(value, mask, javaLocale)).toBe(expected);
+  });
+
+  it.each([
+    ['garbage', 'en_US'],
+    ['30. Juni 2026', 'en_US'],
+    ['02/30/2026', 'de_DE'],
+    ['June 30, 2026 at 11:30:00 PM EST', 'zh_CN'],
+  ])('fails on %j under %s as LSDateFormat does', (value, javaLocale) => {
+    expect(() => lsDateFormatString(value, 'MM/DD/YYYY', javaLocale)).toThrow(new Error(`${value} is an invalid date format.`));
+  });
+});
+
+describe('isMoreThanFiftyYearsAfter', () => {
+  it.each([
+    [new Date(2077, 10, 10), false],
+    [new Date(2077, 10, 11, 9, 0, 0), true],
+    [new Date(2099, 11, 31), true],
+  ])('%s', (date, expected) => {
+    expect(isMoreThanFiftyYearsAfter(date, NOW)).toBe(expected);
   });
 });

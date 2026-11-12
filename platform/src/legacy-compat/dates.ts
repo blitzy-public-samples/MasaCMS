@@ -1,5 +1,6 @@
 // ColdFusion date arithmetic and masks as ACF 2023 renders them (en_US unless a locale is passed, process TZ = legacy server zone).
 import { ACF_TIME_STYLES } from './acf-time-styles.js';
+import { javaDayOfWeek, javaEpochDay, localCivil } from './java-calendar.js';
 
 type Flavor = 'datetime' | 'date' | 'time';
 
@@ -312,6 +313,40 @@ export function cfLsTimeFormat(d: Date, mask: string, javaLocale: string): strin
   if (style !== 'short' && style !== 'medium') throw new RangeError(`Unsupported LSTimeFormat mask '${mask}'`);
   const [short, medium, am, pm, zeroDigit] = known;
   return renderJava(fieldsOf(d, false), style === 'short' ? short : medium, true, [am, pm], zeroDigit);
+}
+
+/** A date's fields in the legacy server's Java calendar: process zone (raw offset before 1900), Julian before 1582-10-15, year of era. */
+function javaFieldsOf(d: Date): Fields {
+  const t = d.getTime();
+  if (Number.isNaN(t)) throw new RangeError('Invalid date');
+  const c = localCivil(t);
+  const epochDay = javaEpochDay(c.year, c.month, c.day);
+  return {
+    year: c.year > 0 ? c.year : 1 - c.year,
+    month: c.month,
+    day: c.day,
+    weekday: javaDayOfWeek(epochDay) - 1,
+    yearDay: epochDay - javaEpochDay(c.year, 1, 1) + 1,
+    hour: c.hour,
+    minute: c.minute,
+    second: c.second,
+    ms: c.ms,
+  };
+}
+
+/** CFML DateFormat(date, mask), and LSDateFormat with a numeric mask, from the legacy server's Java calendar fields of the date. */
+export function cfJavaDateFormat(d: Date, mask: string): string {
+  return format(javaFieldsOf(d), mask, 'date');
+}
+
+/** CFML hour(date) in the legacy server's Java calendar. */
+export function cfHour(d: Date): number {
+  return javaFieldsOf(d).hour;
+}
+
+/** CFML minute(date) in the legacy server's Java calendar. */
+export function cfMinute(d: Date): number {
+  return javaFieldsOf(d).minute;
 }
 
 /** CSRF token expiry string, 15 digits (sessionUserFacade.cfc:228,246). */

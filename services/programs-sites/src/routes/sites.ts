@@ -1,5 +1,8 @@
-/** Site-settings routes of `csettings.list`, `editSite`, `updateSite{action=Update}` and the admin layout's site read. */
-import { AuthDenial, Roles, assertSiteMatches, type UserClaims } from '@opt2/platform/auth';
+/**
+ * Site-settings routes of `csettings.list`, `editSite`, `updateSite{action=Update}`, the admin layout's site read and
+ * the admin gate's `sanitizeHref`.
+ */
+import { AuthDenial, Roles, assertSiteMatches, serviceRole, type UserClaims } from '@opt2/platform/auth';
 import { cfEq } from '@opt2/platform/legacy-compat';
 import {
   csrfPreHandler,
@@ -28,6 +31,7 @@ export interface SiteRouteDeps {
 const S2_ONLY = [Roles.s2] as const;
 const S2_OR_SITE_ADMIN = [Roles.s2, Roles.siteAdmin] as const;
 const PRIVATE_ADMIN = [Roles.s2, Roles.siteAdmin, Roles.systemUser] as const;
+const GATEWAY_ONLY = [serviceRole('gateway')] as const;
 
 // legacy: csettings.cfc:103 params siteSortBy to `site`; getList's direction defaults to `asc`.
 const DEFAULT_SORT_BY = 'site';
@@ -68,7 +72,7 @@ function markCsrfRejected(request: FastifyRequest): void {
   csrfRejected.add(request);
 }
 
-/** Verified user claims; every route here requires a user role, so their absence is a missing credential. */
+/** Verified user claims; every route calling it requires a user role, so their absence is a missing credential. */
 function userOf(request: FastifyRequest): UserClaims {
   const { user } = request.opt2Auth;
   if (user === undefined) throw AuthDenial.unauthenticated('missing-credential');
@@ -106,8 +110,8 @@ function updateFormOf(request: FastifyRequest): Record<string, unknown> {
 }
 
 /**
- * Registers `GET /v1/sites`, `POST /v1/sites/order`, `GET /v1/sites/:siteId`, `GET /v1/sites/:siteId/shell` and
- * `POST /v1/sites/:siteId/update`.
+ * Registers `GET /v1/sites`, `POST /v1/sites/order`, `GET /v1/sites/:siteId`, `GET /v1/sites/:siteId/shell`,
+ * `POST /v1/sites/:siteId/update` and `GET /v1/href-domains`.
  */
 export async function registerSiteRoutes(app: FastifyInstance, deps: SiteRouteDeps): Promise<void> {
   /** Sites screen rows for an S2 user [csettings.cfc:97-114]. */
@@ -185,5 +189,12 @@ export async function registerSiteRoutes(app: FastifyInstance, deps: SiteRouteDe
       }
       return deps.sites.updateSite(deps.db, claims, siteId, updateFormOf(request));
     },
+  );
+
+  /** Registry domains the admin gate sanitizes the login return URL against (utility.sanitizeHref); the user token is optional. */
+  app.get<{ Reply: Schemas['HrefDomains'] }>(
+    '/v1/href-domains',
+    { config: { opt2: { transport: 'service', requires: GATEWAY_ONLY } } },
+    async (request) => deps.sites.hrefDomains(deps.db, fieldText(legacyParamsOf(request), 'siteid') ?? ''),
   );
 }

@@ -1,9 +1,10 @@
 // java.text.SimpleDateFormat.parse(text, pos) of a non-lenient formatter as Java 17 (CLDR data) runs it for a locale's
 // symbols (acf-date-locales.ts), for the pattern letters ColdFusion's LS date functions use: G y M d E a h H m s S z X.
 import type { AcfDateLocale, DateName } from './acf-date-locales.js';
-import { LegacyServiceUnavailableError } from './errors.js';
-import { type Civil, JAVA_LONG_MAX, javaDateOf, javaDayOfWeek, javaEpochDay, localCivil, localInstant } from './java-calendar.js';
-import { EN_US_ZONE_NAMES } from './java-zone-names.js';
+import {
+  type Civil, type JavaZone, JAVA_LONG_MAX, javaDateOf, javaDayOfWeek, javaEpochDay, localCivil, localInstant, utcInstant,
+} from './java-calendar.js';
+import type { NamedZone, ZoneRow, ZoneTable } from './java-zone-names.js';
 
 type Token = { readonly field: string; readonly count: number } | { readonly literal: string };
 
@@ -20,9 +21,12 @@ const INT_MAX = 2_147_483_647;
 const INT_MIN = -2_147_483_648;
 const LONG_MIN_DIGITS = '9223372036854775808';
 const ND = /^\p{Nd}$/u;
-const LETTER = /^\p{L}$/u;
-/** The non-letter UTF-16 units any uncarried locale's time-zone names start with. */
-const ZONE_NAME_INITIALS = '[\u200b\u200c\u200d\u200e\ud804';
+
+/** The zone a zone name sets, and the DST offset it sets with it; undefined where the zone's rules decide the offset. */
+interface ZoneMatch {
+  readonly zone: NamedZone;
+  readonly dstMs: number | undefined;
+}
 
 /** Fields a parse sets, by Calendar field (`month` 0-based), and the parse order of the hour fields (0 when unset). */
 interface Fields {
@@ -38,6 +42,7 @@ interface Fields {
   second?: number;
   ms?: number;
   zoneOffset?: number;
+  zone?: ZoneMatch;
   ambiguousYear?: boolean;
   hourAt: number;
   hourOfDayAt: number;
@@ -203,7 +208,7 @@ function numericZone(text: string, start: number, sign: number, count: number, c
 }
 
 /** The 'z' field: GMT[±h[h]:mm], ±hhmm, or a zone name (zoneNameEnd). */
-function zoneName(text: string, start: number, at: number, f: Fields, symbols: AcfDateLocale): number {
+function zoneName(text: string, start: number, at: number, f: Fields, zones: ZoneTable): number {
   const ch = text.charAt(at);
   if (ch === '+' || ch === '-') {
     const zone = numericZone(text, at + 1, ch === '+' ? 1 : -1, 0, false);
@@ -222,34 +227,52 @@ function zoneName(text: string, start: number, at: number, f: Fields, symbols: A
     f.zoneOffset = zone.offset;
     return zone.end;
   }
-  return zoneNameEnd(text, at, f, symbols);
+  return zoneNameEnd(text, at, f, zones);
+}
+
+/** Java's default TimeZone ID: the TZ variable it reads, else the zone the process resolves. */
+const defaultZoneId = (): string => process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+/** SimpleDateFormat.matchZoneString: the index (0-3) of a row's first name at `at`, ignoring case, or -1. */
+function matchZoneString(text: string, at: number, row: ZoneRow): number {
+  return row.names.findIndex((name) => regionMatchesIgnoreCase(text, at, name));
 }
 
 /**
- * SimpleDateFormat.subParseZoneString, whose zone follows the formatter's per-thread state: a name every matching zone
- * parses at one offset is read; text that is or may be another zone name throws (only en_US lists every name).
+ * SimpleDateFormat.subParseZoneString of a formatter whose zone is the default: the default zone's row, then every row in
+ * order; the first name found decides. A standard name sets DST 0 and a daylight one the zone's savings, unless the
+ * standard and daylight names are equal or the zone saves none, where the zone's rules decide.
  */
-function zoneNameEnd(text: string, at: number, f: Fields, symbols: AcfDateLocale): number {
-  const fixed = symbols.fixedZones.find(([name]) => regionMatchesIgnoreCase(text, at, name));
-  if (fixed !== undefined) {
-    const [name, offset, longer] = fixed;
-    if (longer.some((other) => regionMatchesIgnoreCase(text, at, other))) throw zoneNameError();
-    f.zoneOffset = offset;
-    return at + name.length;
+function zoneNameEnd(text: string, at: number, f: Fields, zones: ZoneTable): number {
+  let row = zones.byId.get(defaultZoneId());
+  let index = row === undefined ? -1 : matchZoneString(text, at, row);
+  for (let k = 0; index < 0 && k < zones.rows.length; k++) {
+    row = zones.rows[k];
+    index = row === undefined ? -1 : matchZoneString(text, at, row);
   }
-  if (symbols.enZoneNames) {
-    if (!EN_US_ZONE_NAMES.some((name) => regionMatchesIgnoreCase(text, at, name))) return -1;
-    throw zoneNameError();
-  }
-  const ch = text.charAt(at);
-  if (!LETTER.test(ch) && !ZONE_NAME_INITIALS.includes(ch)) return -1;
-  if (symbols.zoneSafeNames.some((name) => regionMatchesIgnoreCase(text, at, name))) return -1;
-  throw zoneNameError();
+  if (row === undefined || index < 0) return -1;
+  const name = row.names[index] ?? '';
+  const daylight = index >= 2;
+  const rules = daylight ? row.zone.dstMs === 0 : javaEqualsIgnoreCase(name, row.names[index + 2] ?? '');
+  f.zone = { zone: row.zone, dstMs: rules ? undefined : daylight ? row.zone.dstMs : 0 };
+  return at + name.length;
 }
 
-/** The fail-closed error for date text whose instant depends on a time-zone name. */
-export function zoneNameError(): LegacyServiceUnavailableError {
-  return new LegacyServiceUnavailableError('Date text names a time zone that only the legacy parser resolves', 'auto', 'date-text-zone');
+/** ZoneInfo.getOffsetsByWall's raw offset: that of the last raw change at or before the wall time, else the current one. */
+function rawOffsetByWall(zone: NamedZone, wall: number): number {
+  let raw = zone.rawMs;
+  for (const [from, ms] of zone.rawFrom) {
+    if (from > wall) break;
+    raw = ms;
+  }
+  return raw;
+}
+
+/** The zone a parse's civil fields resolve in: a parsed offset, a named zone's raw offset plus its DST or its rules, else the process zone. */
+function parsedZone(f: Fields, civil: Civil): JavaZone {
+  if (f.zoneOffset !== undefined || f.zone === undefined) return f.zoneOffset;
+  const { zone, dstMs } = f.zone;
+  return dstMs === undefined ? zone.rules : rawOffsetByWall(zone, utcInstant(civil)) + dstMs;
 }
 
 /** String.equalsIgnoreCase. */
@@ -258,11 +281,12 @@ export function javaEqualsIgnoreCase(a: string, b: string): boolean {
 }
 
 /**
- * SimpleDateFormat.subParse of one field from `start` with the locale's symbols; the end, or -1. `order` is the field's
- * place in the pattern, the stamp Calendar resolves the hour fields by.
+ * SimpleDateFormat.subParse of one field from `start` with the locale's symbols and zone strings; the end, or -1. `order`
+ * is the field's place in the pattern, the stamp Calendar resolves the hour fields by.
  */
 function subParse(
-  text: string, start: number, field: string, count: number, f: Fields, centuryYear: number, symbols: AcfDateLocale, order: number,
+  text: string, start: number, field: string, count: number, f: Fields, centuryYear: number, symbols: AcfDateLocale, zones: ZoneTable,
+  order: number,
 ): number {
   let at = start;
   while (text.charAt(at) === ' ' || text.charAt(at) === '\t') at++;
@@ -285,7 +309,7 @@ function subParse(
     });
   }
   if (field === 'M' && count > 2) return named(symbols.months, (value) => (f.month = value));
-  if (field === 'z') return zoneName(text, start, at, f, symbols);
+  if (field === 'z') return zoneName(text, start, at, f, zones);
   if (field === 'X') {
     const ch = text.charAt(at);
     if (ch === 'Z') {
@@ -375,8 +399,9 @@ function establish(f: Fields, centuryStart: number, yearOffset: number): number 
   };
   const date = javaDateOf(javaEpochDay(civil.year, civil.month, civil.day));
   if (date.year !== civil.year || date.month !== civil.month || date.day !== civil.day) return null;
-  const t = localInstant(civil, f.zoneOffset);
-  if (t > JAVA_LONG_MAX || !keepsSetFields(f, localCivil(t, f.zoneOffset), yearOffset)) return null;
+  const zone = parsedZone(f, civil);
+  const t = localInstant(civil, zone);
+  if (t > JAVA_LONG_MAX || !keepsSetFields(f, localCivil(t, zone), yearOffset)) return null;
   if (f.ambiguousYear === true && t < centuryStart) {
     return establish({ ...f, year: (f.year ?? 0) + 100, ambiguousYear: false }, centuryStart, yearOffset);
   }
@@ -393,9 +418,12 @@ function keepsSetFields(f: Fields, back: Civil, yearOffset: number): boolean {
   return pairs.every(([set, now]) => set === undefined || set === now);
 }
 
-/** SimpleDateFormat.parse(text, pos) of a formatter with `symbols` and defaultCenturyStart `centuryStart`: the instant, or null. */
+/**
+ * SimpleDateFormat.parse(text, pos) of a formatter with `symbols`, zone strings `zones` and defaultCenturyStart
+ * `centuryStart`: the instant, or null.
+ */
 export function parseJavaDate(
-  pattern: JavaPattern, text: string, pos: ParsePosition, centuryStart: number, symbols: AcfDateLocale,
+  pattern: JavaPattern, text: string, pos: ParsePosition, centuryStart: number, symbols: AcfDateLocale, zones: ZoneTable,
 ): number | null {
   const centuryYear = localCivil(centuryStart).year + symbols.yearOffset;
   const f: Fields = { hourAt: 0, hourOfDayAt: 0, amPmAt: 0 };
@@ -406,7 +434,7 @@ export function parseJavaDate(
       at += token.literal.length;
       continue;
     }
-    at = subParse(text, at, token.field, token.count, f, centuryYear, symbols, order + 1);
+    at = subParse(text, at, token.field, token.count, f, centuryYear, symbols, zones, order + 1);
     if (at < 0) return null;
   }
   const t = establish(f, centuryStart, symbols.yearOffset);

@@ -398,6 +398,7 @@ type CsrfTokensOperation = IdentityOperation<'/v1/csrf/tokens', 'post'>;
 type ListSitesOperation = ProgramsSitesOperation<'/v1/sites', 'get'>;
 type GetSiteOperation = ProgramsSitesOperation<'/v1/sites/{siteId}', 'get'>;
 type GetShellSiteOperation = ProgramsSitesOperation<'/v1/sites/{siteId}/shell', 'get'>;
+type HrefDomainsOperation = ProgramsSitesOperation<'/v1/href-domains', 'get'>;
 
 /** Identity calls, plus the session and CSRF operations the shell and lib use. */
 export interface IdentityFacade extends ServiceFacade<IdentityPaths> {
@@ -423,6 +424,8 @@ export interface ProgramsSitesFacade extends ServiceFacade<ProgramsSitesPaths> {
   getSite(siteId: PathParamsOf<GetSiteOperation>['siteId']): Promise<OperationResponse<GetSiteOperation>>;
   /** The site settings the admin layout reads, for any private admin user (`getShellSite`). */
   getShellSite(siteId: PathParamsOf<GetShellSiteOperation>['siteId']): Promise<OperationResponse<GetShellSiteOperation>>;
+  /** Registered domains and the domain of `siteid`, else `default`, for sanitizeHref (`getHrefDomains`). */
+  hrefDomains(siteid: string): Promise<OperationResponse<HrefDomainsOperation>>;
 }
 
 /** Service calls of one web request, all relayed by the gateway. */
@@ -522,6 +525,7 @@ function programsSitesFacade(core: CoreCalls): ProgramsSitesFacade {
     listSites: (query) => facade.call('get', '/v1/sites', { query }),
     getSite: (siteId) => facade.call('get', '/v1/sites/{siteId}', { params: { siteId } }),
     getShellSite: (siteId) => facade.call('get', '/v1/sites/{siteId}/shell', { params: { siteId } }),
+    hrefDomains: (siteid) => facade.call('get', '/v1/href-domains', { query: { siteid } }),
   };
 }
 

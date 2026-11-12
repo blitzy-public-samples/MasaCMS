@@ -1,6 +1,6 @@
 // CFML text dates against ACF 2023 (hotfix 26, Java 17, English (US) unless a row names a locale): every expected value
-// is the legacy engine's result for that process zone, with the clock at ORACLE_NOW; 'zone' and 'skipped' rows are the
-// cases the port fails closed on.
+// is the legacy engine's result for that process zone, with the clock at ORACLE_NOW; 'skipped' rows are the cases the port
+// fails closed on.
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   cfIsDateText,
@@ -34,7 +34,7 @@ function outcome(run: () => Date | boolean): string | boolean {
     const value = run();
     return typeof value === 'boolean' ? value : value.toISOString();
   } catch (error) {
-    if (error instanceof LegacyServiceUnavailableError) return error.reason === 'datetime-skipped-time' ? 'skipped' : 'zone';
+    if (error instanceof LegacyServiceUnavailableError) return error.reason === 'datetime-skipped-time' ? 'skipped' : (error.reason ?? 'error');
     if (error instanceof RangeError) return 'range';
     const { message } = error as Error;
     if (message.endsWith('cannot be converted to a date.')) return 'not-a-date';
@@ -50,7 +50,7 @@ const stored = (column: boolean | string, param: string): string => (typeof colu
 interface OracleRow {
   zone: string;
   text: string;
-  lsIsDate: boolean | 'zone';
+  lsIsDate: boolean;
   ls: string;
   isDate: boolean | 'error';
   parsed: string;
@@ -159,7 +159,7 @@ describe('CFML text dates (LSIsDate, LSParseDateTime, isDate, parseDateTime, cf_
       isDate: true, parsed: '1899-12-30T10:30:15.000Z', param: '1899-12-30T10:30:15.000Z', column: true },
     { zone: 'UTC', text: '11/12/2026 10:30 EST', lsIsDate: false, ls: 'invalid',
       isDate: true, parsed: '2026-11-12T15:30:00.000Z', param: '2026-11-12T15:30:00.000Z' },
-    { zone: 'UTC', text: '11/12/2026 10:30:15 AM EST', lsIsDate: 'zone', ls: 'zone',
+    { zone: 'UTC', text: '11/12/2026 10:30:15 AM EST', lsIsDate: true, ls: '2026-11-12T15:30:15.000Z',
       isDate: true, parsed: '2026-11-12T15:30:15.000Z', param: '2026-11-12T15:30:15.000Z' },
     { zone: 'UTC', text: '11/12/2026 10:30 GMT', lsIsDate: false, ls: 'invalid',
       isDate: true, parsed: '2026-11-12T10:30:00.000Z', param: '2026-11-12T10:30:00.000Z', column: true },
@@ -371,8 +371,7 @@ describe('CFML text dates (LSIsDate, LSParseDateTime, isDate, parseDateTime, cf_
   });
 
   // LSIsDate and LSParseDateTime after setLocale(locale) in UTC: the Edit Site datepicker's text (utils.cfc dateKeyFormat),
-  // the locale's own date and date-time styles, and text of other shapes. 'zone' rows name a zone whose legacy instant
-  // depends on the request thread's formatter, or text a zone name the port does not carry may start.
+  // the locale's own date and date-time styles, and text of other shapes, zone names among them.
   it.each<{ locale: string; text: string; lsIsDate: boolean | string; ls: string }>([
     { locale: 'German (Standard)', text: '12.11.2026', lsIsDate: true, ls: '2026-11-12T00:00:00.000Z' },
     { locale: 'German (Standard)', text: '12.11.26', lsIsDate: true, ls: '2026-11-12T00:00:00.000Z' },
@@ -383,7 +382,7 @@ describe('CFML text dates (LSIsDate, LSParseDateTime, isDate, parseDateTime, cf_
     { locale: 'German (Standard)', text: '12.11.2026, 15:30:45', lsIsDate: false, ls: 'invalid' },
     { locale: 'German (Standard)', text: '12. November 2026 um 15:30:45 UTC',
       lsIsDate: true, ls: '2026-11-12T15:30:45.000Z' },
-    { locale: 'German (Standard)', text: '12. November 2026 um 15:30:45 UT', lsIsDate: 'zone', ls: 'zone' },
+    { locale: 'German (Standard)', text: '12. November 2026 um 15:30:45 UT', lsIsDate: false, ls: 'invalid' },
     { locale: 'German (Standard)', text: '11/12/2026', lsIsDate: true, ls: '2026-12-11T00:00:00.000Z' },
     { locale: 'German (Standard)', text: '2026/11/12', lsIsDate: false, ls: 'invalid' },
     { locale: 'german (standard)', text: '12.11.2026', lsIsDate: true, ls: '2026-11-12T00:00:00.000Z' },
@@ -394,7 +393,7 @@ describe('CFML text dates (LSIsDate, LSParseDateTime, isDate, parseDateTime, cf_
     { locale: 'French (Standard)', text: '12 nov. 2026', lsIsDate: true, ls: '2026-11-12T00:00:00.000Z' },
     { locale: 'French (Standard)', text: 'jeudi 12 novembre 2026', lsIsDate: true, ls: '2026-11-12T00:00:00.000Z' },
     { locale: 'French (Standard)', text: '12 nov. 2026, 15:30:45', lsIsDate: true, ls: '2026-11-12T15:30:45.000Z' },
-    { locale: 'French (Standard)', text: '12 novembre 2026 à 15:30:45 UTC+05:00', lsIsDate: 'zone', ls: 'zone' },
+    { locale: 'French (Standard)', text: '12 novembre 2026 à 15:30:45 UTC+05:00', lsIsDate: false, ls: 'invalid' },
     { locale: 'French (Standard)', text: '12.11.26', lsIsDate: true, ls: '0026-11-10T00:00:00.000Z' },
     { locale: 'English (UK)', text: '12/11/2026', lsIsDate: true, ls: '2026-11-12T00:00:00.000Z' },
     { locale: 'English (UK)', text: '12 Nov 2026', lsIsDate: true, ls: '2026-11-12T00:00:00.000Z' },
@@ -457,7 +456,7 @@ describe('CFML text dates (LSIsDate, LSParseDateTime, isDate, parseDateTime, cf_
     { locale: 'English (US)', text: 'Nov 12, 2026', lsIsDate: true, ls: '2026-11-12T00:00:00.000Z' },
     { locale: 'English (US)', text: 'Thursday, November 12, 2026', lsIsDate: true, ls: '2026-11-12T00:00:00.000Z' },
     { locale: 'English (US)', text: 'Thu, 12 Nov 2026 10:30:00 JST', lsIsDate: true, ls: '2026-11-12T01:30:00.000Z' },
-    { locale: 'English (US)', text: 'November 12, 2026 at 3:30:45 PM CST', lsIsDate: 'zone', ls: 'zone' },
+    { locale: 'English (US)', text: 'November 12, 2026 at 3:30:45 PM CST', lsIsDate: true, ls: '2026-11-12T21:30:45.000Z' },
     { locale: '', text: '2026-11-12', lsIsDate: true, ls: '2026-11-12T00:00:00.000Z' },
     { locale: '', text: '2026 Nov 12', lsIsDate: true, ls: '2026-11-12T00:00:00.000Z' },
     { locale: '', text: '2026 Nov 12 15:30:45 UTC', lsIsDate: true, ls: '2026-11-12T15:30:45.000Z' },

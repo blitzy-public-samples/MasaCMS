@@ -1,6 +1,7 @@
 // Shared view-model types and pure derivations of the carch screens: module ids, type lists, lock and delete state.
-import { cfEq, cfListToArray } from '@opt2/platform/legacy-compat';
+import { cfListToArray } from '@opt2/platform/legacy-compat';
 import type { components } from '@/generated/clients/strategies-content';
+import { cfEq } from '@/lib/cfml';
 import type { AdminRequest, AdminSessionState } from '@/lib/request-context';
 
 /** Site Manager module. */
@@ -146,7 +147,7 @@ export function isDeletable(input: DeletableInput): boolean {
     ((!underRoot && !cfEq(siteLocking, 'all')) || (underRoot && cfEq(siteLocking, 'none'))) &&
     cfEq(perm, 'editor') &&
     !cfEq(contentId, ROOT_CONTENT_ID) &&
-    !cfEq(String(isLocked), '1')
+    !cfEq(isLocked, 1)
   );
 }
 

@@ -8,9 +8,10 @@ import type { WebAuth } from './auth';
 import { dateKeyFor, localeHasDayParts, type DateKey } from './dates';
 import { legacySettings } from './env';
 import type { GatewayClient } from './gateway-client';
+import { loadHrefDomains } from './href-domains';
 // CF2Java's full locale table lives with the resource bundles; it is reused here rather than duplicated.
 import { cf2Java } from './resource-bundles/rb';
-import { FW1_HOME_ACTION } from './urls';
+import { FW1_HOME_ACTION, type HrefDomains } from './urls';
 
 type SessionUser = IdentityComponents['schemas']['SessionUser'];
 type SessionSite = IdentityComponents['schemas']['SessionSites']['sites'][number];
@@ -175,6 +176,8 @@ export interface AdminRequest {
   readonly serverName: string;
   /** `cgi.http_host`. */
   readonly httpHost: string;
+  /** The session site's trusted sanitizeHref domains; loaded only for anonymous requests, whose gate reads them. */
+  readonly hrefDomains?: HrefDomains;
 }
 
 /** CFML struct of simple values: case-insensitive keys that keep their first-seen casing, in insertion order. */
@@ -795,6 +798,10 @@ export async function buildAdminRequest(input: AdminRequestInput): Promise<Admin
 
   const forwardedHost = listFirst(headers.get('x-forwarded-host') ?? '', ',').trim();
   const userAgent = headers.get('user-agent') ?? '';
+  // An empty session site means rc.siteid was not switched to; programs-sites, which knows every site, resolves it as
+  // legacy's set-up and getSite do: the named site when it exists, else `default`.
+  const hrefSiteId = session.siteid === '' ? rcSiteId : session.siteid;
+  const hrefDomains = isLoggedIn ? undefined : await loadHrefDomains(gateway, hrefSiteId, forwardedHost);
   return {
     mode,
     route: input.params,
@@ -824,6 +831,7 @@ export async function buildAdminRequest(input: AdminRequestInput): Promise<Admin
     https: listFirst(headers.get('x-forwarded-proto') ?? '', ',').trim().toLowerCase() === 'https',
     serverName: hostName(forwardedHost),
     httpHost: forwardedHost,
+    hrefDomains,
   };
 }
 

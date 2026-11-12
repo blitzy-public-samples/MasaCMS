@@ -1,6 +1,7 @@
 // Extended Attributes tab of `csettings/editsite.cfm` with the `extendAttribute.renderAttribute` controls it prints.
 // Whitespace between tags is what ACF whitespace management leaves, as captured from the legacy server.
-import { formatDateField, parseLegacyDate } from '@/lib/dates';
+import { cfHour, cfIsDateText, cfLsIsDate, cfMinute, cfTimestampParam } from '@opt2/platform/legacy-compat';
+import { isMoreThanFiftyYearsAfter, lsDateFormatString } from '@/lib/dates';
 import { legacySettings } from '@/lib/env';
 import { encodeHtmlAttr, encodeJs, encodeUrl, html, join, raw, type SafeHtml } from '@/lib/html';
 import { cfEq, cfListFind, type EditSiteModel, type ExtendAttributeView, type ExtendSetView } from './model';
@@ -39,10 +40,9 @@ function caretList(list: string): string[] {
   return list.split('^').filter((item) => item !== '');
 }
 
-/** `LSDateFormat(value, session.dateKeyFormat)`; '' for an empty or unparsable value. */
-function lsDateFormat(value: string, dateKeyFormat: string): string {
-  // Plain LSDateFormat has no datetimeselector 50-year blanking, so the value is its own reference date.
-  return formatDateField(value, dateKeyFormat, parseLegacyDate(value) ?? undefined);
+/** `LSDateFormat(value, session.dateKeyFormat)` under the session locale: '' when blank; throws as ACF fails when unreadable. */
+function lsDateFormat(value: string, m: EditSiteModel): string {
+  return lsDateFormatString(value, m.dateKeyFormat, m.locale);
 }
 
 /** ` data-message="…"` when the attribute has a message. */
@@ -81,10 +81,12 @@ function timeOptions(from: number, to: number, chosen: number, text: (n: number)
 }
 
 /** `cf_timeselector` as `cf_datetimeselector` calls it: empty select names, ids and classes from the field name. */
-function renderTimeSelects(name: string, time: string, localeHasDayParts: boolean): string {
-  const parsed = parseLegacyDate(time);
-  const hour = parsed ? parsed.getHours() : 0;
-  const minute = parsed ? parsed.getMinutes() : 0;
+function renderTimeSelects(name: string, time: string, m: EditSiteModel): string {
+  // hour() and minute() of a value lsIsDate or isDate reads, which throw as ACF's do when its cast fails; else 0 and 0.
+  const parsed = cfLsIsDate(time, m.locale) || cfIsDateText(time) ? cfTimestampParam(time) : null;
+  const hour = parsed ? cfHour(parsed) : 0;
+  const minute = parsed ? cfMinute(parsed) : 0;
+  const { localeHasDayParts } = m;
   const field = encodeHtmlAttr(name);
   const attrs = `class="time mura-datepicker${field}" name=""`;
   const twoDigits = (n: number): string => String(n).padStart(2, '0');
@@ -108,18 +110,17 @@ function renderDatetimeSelector(
   message: string,
   m: EditSiteModel,
 ): SafeHtml {
-  const parsed = parseLegacyDate(datetime);
-  // Under a fixed non-empty mask a parsed date formats to '' only by the 50-year rule, which clears `datetime`.
-  const kept = parsed !== null && formatDateField(parsed, 'yyyy', m.now) === '' ? '' : datetime;
+  // `isDate(datetime) and dateDiff('yyyy', now(), datetime) gt 50` clears the value; the time selects keep the original.
+  const kept = cfIsDateText(datetime) && isMoreThanFiftyYearsAfter(cfTimestampParam(datetime), m.now) ? '' : datetime;
   const field = encodeHtmlAttr(name);
   const script = encodeJs(name);
-  const dateText = formatDateField(kept, m.dateKeyFormat, m.now);
+  const dateText = lsDateFormat(kept, m);
   // The tag's empty `dateclass` leaves one space, not two, in the legacy output.
   return raw(
     [
       `\n<input type="text" autocomplete="off" class="datepicker span3 mura-datepicker${field}" value="${dateText}"`,
       ` maxlength="12" id="mura-datepicker-${field}"/> `,
-      renderTimeSelects(name, datetime, m.localeHasDayParts),
+      renderTimeSelects(name, datetime, m),
       `<input type="hidden" id="mura-${field}" name="${field}" value="${encodeHtmlAttr(kept)}"`,
       ` data-required="${encodeHtmlAttr(required)}" data-required="${encodeHtmlAttr(message)}"/>\n`,
       `<script>\n\t$(function(){\n\t\t$('.mura-datepicker${script}').change(\n\t\t\tfunction(){\n`,
@@ -131,7 +132,7 @@ function renderDatetimeSelector(
 /** TextBox/Text without datetime validation: a color picker, or a text input that is a date field for date validation. */
 function renderTextInput(attr: ExtendAttributeView, value: string, m: EditSiteModel): SafeHtml {
   const isDate = cfEq(attr.validation, 'date');
-  const shown = raw(htmlEditFormat(isDate ? lsDateFormat(value, m.dateKeyFormat) : value));
+  const shown = raw(htmlEditFormat(isDate ? lsDateFormat(value, m) : value));
   const key = raw(attr.name);
   const label = raw(xmlFormat(attr.label));
   const required = raw(attr.required);

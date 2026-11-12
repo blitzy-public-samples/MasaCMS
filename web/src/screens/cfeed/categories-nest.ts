@@ -23,18 +23,23 @@ export interface FeedCategoryRow {
   readonly permitted: boolean;
 }
 
+/** Join key of a category id as SQL Server compares the `char(35)` CI_AS columns: case and trailing spaces ignored. */
+function idKey(id: string): string {
+  return id.replace(/ +$/, '').toLowerCase();
+}
+
 /** Nests `rows` by `parentID`, siblings in the given order; rows unreachable from the top are left out, as in legacy. */
 export function feedCategoryTree(rows: readonly FeedCategoryRow[]): FeedCategoryNode[] {
   const byParent = new Map<string, FeedCategoryRow[]>();
   for (const row of rows) {
-    const parentID = row.parentID ?? '';
+    const parentID = idKey(row.parentID ?? '');
     const siblings = byParent.get(parentID);
     if (siblings === undefined) byParent.set(parentID, [row]);
     else siblings.push(row);
   }
   const nest = (parentID: string): FeedCategoryNode[] =>
     (byParent.get(parentID) ?? []).map((row) => {
-      const children = nest(row.categoryID);
+      const children = nest(idKey(row.categoryID));
       const { categoryID, name, isOpen, permitted } = row;
       return { categoryID, name, isOpen, permitted, hasKids: children.length, children };
     });

@@ -389,6 +389,7 @@ function programsSitesFacade(core: CoreCalls): ProgramsSitesFacade {
     listSites: (query) => facade.call('get', '/v1/sites', { query }),
     getSite: (siteId) => facade.call('get', '/v1/sites/{siteId}', { params: { siteId } }),
     getShellSite: (siteId) => facade.call('get', '/v1/sites/{siteId}/shell', { params: { siteId } }),
+    hrefDomains: (siteid) => facade.call('get', '/v1/href-domains', { query: { siteid } }),
   };
 }
 

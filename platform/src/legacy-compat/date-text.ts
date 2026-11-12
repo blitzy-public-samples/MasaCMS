@@ -1,11 +1,12 @@
-// CFML date text as ACF 2023 reads it: LSIsDate/LSParseDateTime under setLocale, isDate/parseDateTime, and the
-// cfqueryparam cf_sql_timestamp conversion; instants are in the process time zone (the legacy server's).
+// CFML date text as ACF 2023 reads it: LSIsDate/LSParseDateTime under setLocale, isDate/parseDateTime, LSDateFormat's
+// string resolution, and the cfqueryparam cf_sql_timestamp conversion; instants are in the process time zone (the legacy server's).
 import { type AcfDateLocale, acfDateLocale } from './acf-date-locales.js';
 import { cfDateTimeInstant } from './cf-date-parser.js';
 import { LegacyServiceUnavailableError } from './errors.js';
 import { DAY_MS, addLocalDays, isJavaLeapYear, isLocalTime, localCivil, localInstant, toDate, utcInstant, zoneOffset } from './java-calendar.js';
 import { type JavaPattern, compilePattern, isJavaDigit, javaEqualsIgnoreCase, parseJavaDate } from './java-date-format.js';
-import { javaTrim } from './serializer.js';
+import { type ZoneTable, javaZoneTable } from './java-zone-names.js';
+import { cfIsNumeric, javaTrim } from './serializer.js';
 import { roundToSqlServerDatetime } from '../migration-kit/canonical.js';
 
 // CFLocaleBase's formatters, in its order: whole date-times, then dates (0-6) and times (7-15). Numbers index the
@@ -41,39 +42,42 @@ function daylightSaving(t: number): number {
   return zoneOffset(t) - Math.min(offsetOn(1), offsetOn(7));
 }
 
-/** The formatters CFLocaleBase builds for one locale's data. */
+/** The formatters CFLocaleBase builds for one locale's data, and the zone strings they read. */
 interface LsFormatters {
   symbols: AcfDateLocale;
+  zones: ZoneTable;
   dateTimes: JavaPattern[];
   dateAndTimes: JavaPattern[];
 }
 
-const lsFormatterCache = new Map<AcfDateLocale, LsFormatters>();
+const lsFormatterCache = new Map<string, LsFormatters>();
 
 /** The formatters of the locale setLocale(`locale`) selects; throws setLocale's error for a name ACF does not support. */
 function lsFormatters(locale: string): LsFormatters {
-  const symbols = acfDateLocale(locale);
-  if (symbols === undefined) throw new Error(`${locale} must be one of the ColdFusion supported locales.`);
-  let formatters = lsFormatterCache.get(symbols);
+  const key = locale.toLowerCase();
+  let formatters = lsFormatterCache.get(key);
   if (formatters === undefined) {
+    const symbols = acfDateLocale(locale);
+    const zones = javaZoneTable(locale);
+    if (symbols === undefined || zones === undefined) throw new Error(`${locale} must be one of the ColdFusion supported locales.`);
     const compile = (format: number | string): JavaPattern => {
       const pattern = typeof format === 'string' ? format : symbols.patterns[format];
       if (pattern === undefined) throw new RangeError(`Locale ${locale} has no date pattern ${format}`);
       return compilePattern(pattern);
     };
-    formatters = { symbols, dateTimes: DATE_TIME_FORMATS.map(compile), dateAndTimes: DATE_AND_TIME_FORMATS.map(compile) };
-    lsFormatterCache.set(symbols, formatters);
+    formatters = { symbols, zones, dateTimes: DATE_TIME_FORMATS.map(compile), dateAndTimes: DATE_AND_TIME_FORMATS.map(compile) };
+    lsFormatterCache.set(key, formatters);
   }
   return formatters;
 }
 
 /** CFLocaleBase.ParseDateTime with a locale's formatters: the instant, or null where ACF throws InvalidDateTimeException. */
-function lsParse(indate: string, { symbols, dateTimes, dateAndTimes }: LsFormatters): number | null {
+function lsParse(indate: string, { symbols, zones, dateTimes, dateAndTimes }: LsFormatters): number | null {
   const text = javaTrim(indate);
   const now = Date.now();
   const start = centuryStart(now);
   const pos = { index: 0 };
-  const parse = (format: JavaPattern, s: string): number | null => parseJavaDate(format, s, pos, start, symbols);
+  const parse = (format: JavaPattern, s: string): number | null => parseJavaDate(format, s, pos, start, symbols, zones);
   let dt: number | null = null;
   for (const format of dateTimes) {
     dt = parse(format, text);
@@ -116,8 +120,8 @@ function lsParse(indate: string, { symbols, dateTimes, dateAndTimes }: LsFormatt
 }
 
 /**
- * CFML LSIsDate(text) after setLocale(locale): digits-only text is no date. Throws setLocale's error for a locale ACF does
- * not support, LegacyServiceUnavailableError for text a time-zone name may set the instant of.
+ * CFML LSIsDate(text) after setLocale(locale) on a request thread whose formatters have parsed no zone name yet:
+ * digits-only text is no date. Throws setLocale's error for a locale ACF does not support.
  */
 export function cfLsIsDate(text: string, locale = 'English (US)'): boolean {
   const formatters = lsFormatters(locale);
@@ -145,6 +149,26 @@ export function cfParseDateTimeText(text: string): Date {
   const t = cfDateTimeInstant(javaTrim(text));
   if (t === null) throw new Error(`${text} is not a valid date/time format.`);
   return toDate(t);
+}
+
+/**
+ * The date CFML LSDateFormat(text, mask) formats after setLocale(locale): a number as a date serial, else LSParseDateTime,
+ * else the Cast._Date of the text; null for blank text. Throws setLocale's error, ACF's invalid-format error, and
+ * RangeError beyond the JS Date range.
+ */
+export function cfLsDateOf(text: string, locale = 'English (US)'): Date | null {
+  const formatters = lsFormatters(locale);
+  if (!cfIsNumeric(text)) {
+    if (javaTrim(text) === '') return null;
+    const t = lsParse(text, formatters);
+    if (t !== null) return toDate(t);
+  }
+  try {
+    return cfTimestampParam(text);
+  } catch (error) {
+    if (error instanceof RangeError) throw error;
+    throw new Error(`${text} is an invalid date format.`);
+  }
 }
 
 /** Java's (long) narrowing of a double. */

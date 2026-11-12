@@ -206,6 +206,28 @@ describe('isDeletable', () => {
     ['a locked node', { isLocked: 1 }, false],
     ['a locked node as text', { isLocked: '1' }, false],
     ['an unlocked node as text', { isLocked: '0' }, true],
+    // ACF 2023 `neq "true"` and `neq 1`: numbers and trimmed yes/no/true/false words compare as values, the rest as text.
+    ["compactDisplay '1'", { compactDisplay: '1' }, false],
+    ["compactDisplay 'yes'", { compactDisplay: 'yes' }, false],
+    ["compactDisplay ' true'", { compactDisplay: ' true' }, false],
+    ["compactDisplay 'true '", { compactDisplay: 'true ' }, false],
+    ["compactDisplay '1.0'", { compactDisplay: '1.0' }, false],
+    ["compactDisplay '0'", { compactDisplay: '0' }, true],
+    ["compactDisplay 'no'", { compactDisplay: 'no' }, true],
+    ["compactDisplay 'on'", { compactDisplay: 'on' }, true],
+    ["compactDisplay 'y'", { compactDisplay: 'y' }, true],
+    ["compactDisplay 'trueish'", { compactDisplay: 'trueish' }, true],
+    ["compactDisplay ''", { compactDisplay: '' }, true],
+    ["compactDisplay '2'", { compactDisplay: '2' }, true],
+    ["isLocked 'yes'", { isLocked: 'yes' }, false],
+    ["isLocked 'TRUE'", { isLocked: 'TRUE' }, false],
+    ["isLocked ' true'", { isLocked: ' true' }, false],
+    ["isLocked '1.0'", { isLocked: '1.0' }, false],
+    ["isLocked 'no'", { isLocked: 'no' }, true],
+    ["isLocked 'false'", { isLocked: 'false' }, true],
+    ["isLocked 'on'", { isLocked: 'on' }, true],
+    ["isLocked ''", { isLocked: '' }, true],
+    ['isLocked 2', { isLocked: 2 }, true],
   ])('decides %s', (_, overrides, expected) => {
     expect(isDeletable({ ...deletable, ...overrides })).toBe(expected);
   });

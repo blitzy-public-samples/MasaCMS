@@ -446,6 +446,32 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /v1/href-domains:
+    get:
+      operationId: getHrefDomains
+      summary: Reads the registered domains and the site domain that utility.sanitizeHref checks an absolute href against.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:gateway
+      security:
+        - invocationCredential: []
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/HrefSiteId'
+      responses:
+        '200':
+          description: The domains.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HrefDomains'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
 
   /internal/v1/migration/apply:
     post:
@@ -1084,6 +1110,15 @@ components:
         type: string
         minLength: 1
         maxLength: 35
+    HrefSiteId:
+      name: siteid
+      in: query
+      required: false
+      description: Legacy session site id, equal to the token's `site` when a user is present (403 otherwise); empty or naming no site selects `default`.
+      schema:
+        type: string
+        examples:
+          - default
     SortBy:
       name: sortBy
       in: query
@@ -1602,6 +1637,23 @@ components:
           oneOf:
             - $ref: '#/components/schemas/LocalTimestamp'
             - type: 'null'
+    HrefDomains:
+      type: object
+      description: settingsManager `getAccessControlOriginDomainList()` and `getSite(siteid).getDomain()`, as utility.sanitizeHref reads them.
+      required:
+        - allowedDomains
+        - siteDomain
+      additionalProperties: false
+      properties:
+        allowedDomains:
+          type: array
+          description: Every site's domain, the resource domain of a remote site and each domain alias line, comma list items de-duplicated case-sensitively in site-id order; the configured admin-domain term is not included.
+          items:
+            type: string
+            minLength: 1
+        siteDomain:
+          type: string
+          description: Domain of the named site, or of `default` when the id is empty or names no site.
     SiteOrderUpdate:
       type: object
       description: The Sites screen form; list fields are comma lists in row order, as legacy posts them.
