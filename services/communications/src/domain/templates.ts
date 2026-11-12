@@ -39,14 +39,14 @@ const MAX_NAME_LENGTH = 100;
 const MAX_SUBJECT_LENGTH = 255;
 
 /** The param under `name` ignoring case; a later key differing only in case wins, as it overwrites in a CFML struct. */
-function param(params: Readonly<Record<string, unknown>>, name: string): unknown {
+export function param(params: Readonly<Record<string, unknown>>, name: string): unknown {
   const lower = name.toLowerCase();
   const key = Object.keys(params).findLast((k) => k.toLowerCase() === lower);
   return key === undefined ? undefined : params[key];
 }
 
 /** The fixture's textParam(): '' when absent or null, a simple value as text; objects and arrays answer `invalidParameters`. */
-function textParam(params: Readonly<Record<string, unknown>>, name: string): string {
+export function textParam(params: Readonly<Record<string, unknown>>, name: string): string {
   const value = param(params, name) ?? '';
   if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
     throw new LegacyApiError('invalidParameters');
