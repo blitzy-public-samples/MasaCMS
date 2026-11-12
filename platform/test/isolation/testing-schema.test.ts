@@ -248,6 +248,36 @@ describe.skipIf(!available)('createThrowawaySchema lifecycle', () => {
     expect(await residue(stemOf(handle))).toEqual([]);
   });
 
+  it('closes tracked connections, ending pools included, before terminating the untracked backends of its roles', async () => {
+    const handle = await createThrowawaySchema({ service: 'testing-schema' });
+    const extra = handle.connect('app', { max: 2 });
+    const ending = handle.connect('migrator');
+    const tracked = [handle.appPool, handle.migratorPool, extra, ending];
+    const errors: string[] = [];
+    for (const pool of tracked) {
+      pool.on('error', (err) => errors.push(err.message));
+      // A deferred end() keeps the socket open after pool.end() resolves, as a slow Terminate does under load.
+      pool.on('connect', (client) => {
+        const end = client.end.bind(client) as (cb: () => void) => void;
+        Object.assign(client, { end: (cb: () => void) => void setTimeout(() => end(cb), 250) });
+      });
+    }
+    await Promise.all([...tracked.map((pool) => pool.query('SELECT 1')), extra.query('SELECT 1')]);
+    const untracked = new pg.Client({ ...testPgConfig(), user: handle.roles.app, password: handle.appPool.options.password });
+    const untrackedErrors: Error[] = [];
+    untracked.on('error', (err) => untrackedErrors.push(err));
+    const untrackedEnded = new Promise((resolve) => untracked.once('end', resolve));
+    await untracked.connect();
+
+    const ended = ending.end();
+    await handle.drop();
+    await Promise.all([ended, untrackedEnded]);
+
+    expect(errors).toEqual([]);
+    expect(untrackedErrors[0]).toMatchObject({ code: '57P01' });
+    expect(await residue(stemOf(handle))).toEqual([]);
+  });
+
   it('gives concurrent calls distinct names within the identifier limit', async () => {
     const service = `x-${'long'.repeat(20)}`;
     const handles = await Promise.all([createThrowawaySchema({ service }), createThrowawaySchema({ service })]);

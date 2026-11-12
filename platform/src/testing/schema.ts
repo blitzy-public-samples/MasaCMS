@@ -148,13 +148,18 @@ export async function createThrowawaySchema(opts: ThrowawaySchemaOptions): Promi
 
   const adminPool = new pg.Pool({ ...config, max: 2 });
   const pools = new Set<pg.Pool>();
+  const clients = new Set<pg.PoolClient>();
   let dropping: Promise<void> | undefined;
-  const drop = (): Promise<void> => (dropping ??= dropAll(adminPool, pools, schema, roles));
+  const drop = (): Promise<void> => (dropping ??= dropAll(adminPool, pools, clients, schema, roles));
   const connect = (role: ThrowawayRole, { max = 1 }: { max?: number } = {}): pg.Pool => {
     if (dropping !== undefined) {
       throw new Error(`Throwaway schema ${schema} has been dropped`);
     }
     const pool = new pg.Pool({ ...config, user: roles[role], password: passwords[role], max });
+    pool.on('connect', (client) => {
+      clients.add(client);
+      client.once('end', () => clients.delete(client));
+    });
     pools.add(pool);
     return pool;
   };
@@ -238,9 +243,17 @@ async function scripts(opts: ThrowawaySchemaOptions): Promise<{ label: string; s
   return out;
 }
 
-async function dropAll(adminPool: pg.Pool, pools: ReadonlySet<pg.Pool>, schema: string, roles: ThrowawayRoles): Promise<void> {
+async function dropAll(
+  adminPool: pg.Pool,
+  pools: ReadonlySet<pg.Pool>,
+  clients: ReadonlySet<pg.PoolClient>,
+  schema: string,
+  roles: ThrowawayRoles,
+): Promise<void> {
   try {
     await Promise.all([...pools].filter((pool) => !pool.ending).map((pool) => pool.end()));
+    // pool.end() resolves before its clients' sockets close; terminating a closing backend raises 57P01 on a client nothing listens to.
+    await Promise.all([...clients].map((client) => new Promise<void>((resolve) => client.once('end', () => resolve()))));
     await adminPool.query('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename IN ($1, $2)', [
       roles.app,
       roles.migrator,

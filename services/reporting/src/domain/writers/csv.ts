@@ -5,7 +5,7 @@ import type { ExportRendering, ExportWriterInput } from './index.js';
 
 const CONTENT_TYPE = 'text/csv';
 
-// The fixture quotes a field holding `"`, `,`, CR or LF and ends every line, the last included, with CRLF.
+// A set record_delimiter turns off csv-stringify's quoting of bare CR and LF; quoted_match restores it.
 const CSV_OPTIONS: Options = { record_delimiter: '\r\n', quoted_match: /[\r\n]/, eof: true };
 
 /** Renders the header row of column labels, then every row, as CSV. */
