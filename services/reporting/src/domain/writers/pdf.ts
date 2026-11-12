@@ -4,9 +4,11 @@
  * (AWT Serif metrics, zoom to fit, page breaks at row and line boundaries) and iText's Times drawing, whose character
  * spacing stretches each line to its measured width.
  */
+import { Readable } from 'node:stream';
 import PDFDocument from 'pdfkit';
-import type { ExportTable } from '../sources.js';
+import type { ExportTableStream } from '../sources.js';
 import type { ExportRendering, ExportWriterInput } from './index.js';
+import { createSpill, type Spill } from './spill.js';
 
 type Style = 'regular' | 'bold';
 type FontTable = Readonly<Record<Style, readonly number[]>>;
@@ -294,20 +296,32 @@ function textNode(value: string, leadingSpace: boolean, state: TextState): strin
 // The HTML builder also splits a text longer than 8192 characters into separate text nodes, which iText draws as
 // separate strings; that is not reproduced, because every exported value is far shorter (titles at most 255 characters,
 // definition names 100).
-/** The export's HTML as the builder holds it: the title, then rows of cell texts with the header row first. */
+/** The export's HTML text: the title, and the rows of cell texts, header row first, spilled one JSON array a line. */
 interface DocumentText {
   title: string | undefined;
-  rows: (string | undefined)[][];
   columns: number;
+  ranges: ColumnRanges;
+  spill: Spill;
 }
 
-function documentText(table: ExportTable): DocumentText {
+/** Reads every row of `table` once into the spill as text nodes; the spill is ended once the last row is in. */
+async function documentText(table: ExportTableStream, spill: Spill, metrics: Metrics): Promise<DocumentText> {
   const state: TextState = { spaceAdded: false };
   const title = textNode(table.title, true, state);
-  const header = table.columns.map((column) => textNode(column.label, true, state));
-  const body = table.rows.map((row) => row.map((value) => textNode(value, false, state)));
-  const rows = [header, ...body];
-  return { title, rows, columns: rows.reduce((columns, row) => Math.max(columns, row.length), 0) };
+  const ranges = new ColumnRanges(fontSize(DEFAULT_ZOOM), metrics);
+  const add = async (row: (string | undefined)[], header: boolean): Promise<void> => {
+    ranges.add(row, header);
+    await spill.write(`${JSON.stringify(row)}\n`);
+  };
+  await add(table.columns.map((column) => textNode(column.label, true, state)), true);
+  for await (const row of table.rows) await add(row.map((value) => textNode(value, false, state)), false);
+  await spill.end();
+  return { title, columns: ranges.columns, ranges, spill };
+}
+
+/** A spilled row's cell texts. */
+function rowTexts(line: string): (string | undefined)[] {
+  return (JSON.parse(line) as (string | null)[]).map((text) => text ?? undefined);
 }
 
 /** A text box: its text, the offsets just past each break opportunity, their cumulative pixel positions and width. */
@@ -362,6 +376,42 @@ function widthRange(run: TextRun | undefined): [number, number] {
   min = Math.max(min, width - (pixels[pixels.length - 1] ?? 0));
   if (max !== width) min -= 1;
   return [min, Math.max(min, max)];
+}
+
+/** Per-column minimum and maximum content widths of the rows added, at one font size. */
+class ColumnRanges {
+  readonly min: number[] = [];
+  readonly max: number[] = [];
+
+  constructor(
+    readonly size: number,
+    private readonly metrics: Metrics,
+  ) {}
+
+  /** The column count: the longest row's length. */
+  get columns(): number {
+    return this.min.length;
+  }
+
+  /** Widens the ranges to a row's cells, set in bold for the header row. */
+  add(row: readonly (string | undefined)[], header: boolean): void {
+    row.forEach((text, c) => {
+      const [min, max] = widthRange(text === undefined ? undefined : textRun(text, header ? 'bold' : 'regular', this.size, this.metrics));
+      this.min[c] = Math.max(this.min[c] ?? 0, min);
+      this.max[c] = Math.max(this.max[c] ?? 0, max);
+    });
+  }
+}
+
+/** Column width ranges of every spilled row at `size`, read back from the spill. */
+async function spilledRanges(spill: Spill, size: number, metrics: Metrics): Promise<ColumnRanges> {
+  const ranges = new ColumnRanges(size, metrics);
+  let header = true;
+  for await (const line of spill.lines()) {
+    ranges.add(rowTexts(line), header);
+    header = false;
+  }
+  return ranges;
 }
 
 /** One line of a text box: its pixel span within the text and its x offset within the block. */
@@ -431,14 +481,13 @@ function baselineOffset(size: number, lineHeight: number): number {
   return lineAscent - roundHalfUp(f32((lineAscent + lineDescent - lineHeight) / 2));
 }
 
-/** The document's text boxes at one zoom with the widths the table and page are sized from. */
+/** The document's title box at one zoom with the widths the table and page are sized from. */
 interface Measured {
   size: number;
   titleSize: number;
   padding: number;
   marginTop: number;
   title: TextRun | undefined;
-  cells: (TextRun | undefined)[][];
   columnMin: number[];
   columnMax: number[];
   tableMin: number;
@@ -446,23 +495,18 @@ interface Measured {
   width: number;
 }
 
-function measure(doc: DocumentText, zoom: number, metrics: Metrics): Measured {
-  const size = Math.max(MIN_FONT, (MEDIUM_FONT * zoom) >> 8);
+/** The table's font size at `zoom`. */
+function fontSize(zoom: number): number {
+  return Math.max(MIN_FONT, (MEDIUM_FONT * zoom) >> 8);
+}
+
+/** Measures the document at `zoom` from column ranges gathered at that zoom's font size. */
+function measure(doc: DocumentText, zoom: number, ranges: ColumnRanges, metrics: Metrics): Measured {
+  const size = fontSize(zoom);
   const titleSize = Math.max(MIN_FONT, TITLE_SCALE * size);
   const padding = zoomedPixels(BODY_PADDING_PX, zoom);
   const title = doc.title === undefined ? undefined : textRun(doc.title, 'bold', titleSize, metrics);
-  const cells = doc.rows.map((row, r) =>
-    row.map((text) => (text === undefined ? undefined : textRun(text, r === 0 ? 'bold' : 'regular', size, metrics))),
-  );
-  const columnMin = new Array<number>(doc.columns).fill(0);
-  const columnMax = new Array<number>(doc.columns).fill(0);
-  for (const row of cells) {
-    row.forEach((run, c) => {
-      const [min, max] = widthRange(run);
-      columnMin[c] = Math.max(columnMin[c] ?? 0, min);
-      columnMax[c] = Math.max(columnMax[c] ?? 0, max);
-    });
-  }
+  const { min: columnMin, max: columnMax } = ranges;
   const spacing = CELL_SPACING * (doc.columns + 1);
   const tableMin = columnMin.reduce((a, b) => a + b, spacing);
   const tableMax = columnMax.reduce((a, b) => a + b, spacing);
@@ -473,7 +517,6 @@ function measure(doc: DocumentText, zoom: number, metrics: Metrics): Measured {
     padding,
     marginTop: zoomedPixels(BODY_MARGIN_TOP_PX, zoom),
     title,
-    cells,
     columnMin,
     columnMax,
     tableMin,
@@ -484,9 +527,16 @@ function measure(doc: DocumentText, zoom: number, metrics: Metrics): Measured {
 
 /** The zoom cfdocument prints at: the default, shrunk by the share of the page the document's width overflows. */
 function printZoom(doc: DocumentText, metrics: Metrics): number {
-  const width = measure(doc, DEFAULT_ZOOM, metrics).width;
+  const width = measure(doc, DEFAULT_ZOOM, doc.ranges, metrics).width;
   const scale = width > PAGE_WIDTH ? (1 / width) * PAGE_WIDTH : 1;
   return Math.round(ZOOM_UNIT * PRINT_ADJUSTMENT * (scale < MIN_PAGE_SCALE ? 1 : scale));
+}
+
+/** The measurements at `zoom`, re-reading the spill when its font size differs from the default zoom's. */
+async function measureAt(doc: DocumentText, zoom: number, metrics: Metrics): Promise<Measured> {
+  const size = fontSize(zoom);
+  const ranges = size === doc.ranges.size ? doc.ranges : await spilledRanges(doc.spill, size, metrics);
+  return measure(doc, zoom, ranges, metrics);
 }
 
 /** Column widths of the automatic table layout for a table `width` wide. */
@@ -545,16 +595,14 @@ interface WideTable {
   columnBreaks: number[];
 }
 
+/** What a page paints from: the body and table boxes, the title and the laid-out rows still to be painted. */
 interface Layout {
-  height: number;
-  bodyTop: number;
-  bodyHeight: number;
-  title: PlacedBlock;
-  tableTop: number;
-  tableHeight: number;
-  rows: PlacedRow[];
-  breaks: PageBreak[];
-  wide: WideTable | undefined;
+  readonly bodyTop: number;
+  readonly bodyHeight: number;
+  readonly title: PlacedBlock;
+  readonly tableTop: number;
+  readonly tableHeight: number;
+  readonly rows: readonly PlacedRow[];
 }
 
 function placeLines(run: TextRun, lines: Line[], x: number, top: number, lineHeight: number): PlacedLine[] {
@@ -586,81 +634,14 @@ function columnBreaks(x: number, widths: number[]): number[] {
   });
 }
 
-function layoutDocument(doc: DocumentText, zoom: number, metrics: Metrics): Layout {
-  const m = measure(doc, zoom, metrics);
-  const contentWidth = PAGE_WIDTH - 2 * m.padding;
-  const titleLineHeight = Math.trunc((TITLE_LINE_HEIGHT * m.titleSize) / 100);
-  const titleTop = m.marginTop + m.padding;
-  const titleLines = m.title === undefined ? [] : breakLines(m.title, contentWidth, false);
-  const title: PlacedBlock = {
-    x: m.padding,
-    width: contentWidth,
-    top: titleTop,
-    height: titleLines.length * titleLineHeight,
-    lines: m.title === undefined ? [] : placeLines(m.title, titleLines, m.padding, titleTop, titleLineHeight),
-  };
-  const tableOffset = m.padding + title.height + Math.trunc(f32(TITLE_MARGIN_EM * m.titleSize));
-  const tableTop = m.marginTop + tableOffset;
-  const tableWidth = Math.min(Math.max(contentWidth, m.tableMin), m.tableMax);
-  const widths = columnWidths(m, tableWidth);
-  const coordinates: number[] = [];
-  let next = CELL_SPACING;
-  for (const width of widths) {
-    coordinates.push(next);
-    next += width + CELL_SPACING;
-  }
-  const cellLineHeight = Math.trunc((CELL_LINE_HEIGHT * m.size) / 100);
-  const rows: PlacedRow[] = [];
-  let rowTop = tableTop + CELL_SPACING;
-  m.cells.forEach((row, r) => {
-    const laidOut = row.map((run, c) => {
-      const width = widths[c] ?? 0;
-      const lines = run === undefined ? [] : breakLines(run, width, r === 0);
-      return { run, width, lines, height: run === undefined ? EMPTY_CELL_HEIGHT : lines.length * cellLineHeight };
-    });
-    const height = Math.max(0, ...laidOut.map((cell) => cell.height));
-    const cells = laidOut.map(({ run, width, lines, height: own }, c) => {
-      const x = m.padding + (coordinates[c] ?? 0);
-      const top = rowTop + (own < height ? Math.trunc((height - own) / 2) : 0);
-      return { x, width, top: rowTop, height, lines: run === undefined ? [] : placeLines(run, lines, x, top, cellLineHeight) };
-    });
-    rows.push({ top: rowTop, height, cells });
-    rowTop += height + CELL_SPACING;
-  });
-  const groupHeight = rows.length === 0 ? 0 : rowTop - CELL_SPACING - (tableTop + CELL_SPACING);
-  const tableHeight = 2 * CELL_SPACING + groupHeight;
-  const bodyHeight = 2 * m.padding + tableOffset - m.padding + tableHeight;
-  const height = Math.max(PAGE_HEIGHT, m.marginTop + bodyHeight);
+/** Records one natural break, unless one is already recorded at its y. */
+type BreakRecorder = (y: number, table: boolean) => void;
 
-  // ICEbrowser keeps natural breaks in a set ordered by y in which the first break recorded at a y wins.
-  const recorded = new Map<number, boolean>();
-  const record = (y: number, table: boolean): void => {
-    if (!recorded.has(y)) recorded.set(y, table);
-  };
-  const recordBlock = (top: number, lines: number, lineHeight: number, blockHeight: number): void => {
-    record(top, false);
-    for (let i = 1; i <= lines && lineHeight > 0; i++) record(top + i * lineHeight, false);
-    record(top + blockHeight, false);
-  };
-  record(0, false);
-  record(height, false);
-  record(m.marginTop, false);
-  record(m.marginTop + bodyHeight, false);
-  recordBlock(title.top, titleLines.length, titleLineHeight, title.height);
-  rows.forEach((row, r) => {
-    record(row.top, true);
-    record(row.top + row.height, true);
-    (m.cells[r] ?? []).forEach((run, c) => {
-      const lines = run === undefined ? 0 : (row.cells[c]?.lines.length ?? 0);
-      recordBlock(row.top, lines, cellLineHeight, row.height);
-    });
-  });
-  const breaks = [...recorded].map(([y, table]) => ({ y, table })).sort((a, b) => a.y - b.y);
-  const wide =
-    tableWidth > PAGE_WIDTH && widths.length > 0
-      ? { x: m.padding, y: tableOffset, width: tableWidth, height: tableHeight, columnBreaks: columnBreaks(m.padding, widths) }
-      : undefined;
-  return { height, bodyTop: m.marginTop, bodyHeight, title, tableTop, tableHeight, rows, breaks, wide };
+/** Records a block's breaks: its top, the end of each of its lines and its bottom. */
+function recordBlock(record: BreakRecorder, top: number, lines: number, lineHeight: number, blockHeight: number): void {
+  record(top, false);
+  for (let i = 1; i <= lines && lineHeight > 0; i++) record(top + i * lineHeight, false);
+  record(top + blockHeight, false);
 }
 
 /** A printed page: the document area it shows. */
@@ -704,17 +685,6 @@ function pageEnd(breaks: PageBreak[], start: number): number {
   return start + PAGE_HEIGHT;
 }
 
-function verticalPages(layout: Layout): Page[] {
-  const pages: Page[] = [];
-  let start = 0;
-  while (start < layout.height) {
-    const end = pageEnd(layout.breaks, start);
-    pages.push({ x0: 0, x1: PAGE_WIDTH, y0: start, y1: end });
-    start = end;
-  }
-  return pages;
-}
-
 /** Whether the page splitter counts `table` as on `page`, by its overlap test, whose horizontal arm reuses the height. */
 function tableOnPage(table: WideTable, page: Page): boolean {
   const { x, y, width, height } = table;
@@ -737,33 +707,20 @@ function partEnd(boundaries: number[], start: number): number {
   return start + PAGE_WIDTH;
 }
 
-// Parts of a split page are inserted after a running count that skips unsplit pages, as ICEbrowser inserts them.
-function splitWidePages(pages: Page[], table: WideTable | undefined): Page[] {
-  if (table === undefined) return pages;
+/** The horizontal parts, left to right, of every page the wide table is on. */
+function columnParts(table: WideTable): [number, number][] {
   const boundaries = [...table.columnBreaks].sort((a, b) => a - b);
   for (let i = boundaries.length - 1; i > 1; i--) {
     if (boundaries[i - 1] === boundaries[i]) boundaries.splice(i, 1);
   }
-  const all = [...pages];
-  let count = 0;
-  for (const page of pages) {
-    if (!tableOnPage(table, page)) continue;
-    let end = 0;
-    let part = 0;
-    while (end <= table.x + table.width) {
-      const start = end;
-      end = partEnd(boundaries, start);
-      if (part === 0) {
-        page.x1 = end;
-      } else {
-        all.splice(count + 1, 0, { x0: start, x1: end, y0: page.y0, y1: page.y1 });
-        count++;
-      }
-      part++;
-    }
-    count++;
+  const parts: [number, number][] = [];
+  let end = 0;
+  while (end <= table.x + table.width) {
+    const start = end;
+    end = partEnd(boundaries, start);
+    parts.push([start, end]);
   }
-  return all;
+  return parts;
 }
 
 /** A string iText draws: its page position (baseline below the imageable area's top), font and characters. */
@@ -813,6 +770,205 @@ function paintPage(layout: Layout, page: Page): DrawnText[] {
   return drawn;
 }
 
+/** The document laid out from the spill as pages are wanted, holding only the rows and breaks of unpainted pages. */
+class PageLayout implements Layout {
+  readonly bodyTop: number;
+  readonly title: PlacedBlock;
+  readonly tableTop: number;
+  readonly rows: PlacedRow[] = [];
+  private readonly spill: Spill;
+  private readonly lines: AsyncGenerator<string>;
+  private readonly size: number;
+  private readonly padding: number;
+  private readonly tableOffset: number;
+  private readonly widths: number[];
+  private readonly coordinates: number[] = [];
+  private readonly cellLineHeight: number;
+  private readonly breaks: PageBreak[] = [];
+  private lastBreak = -1;
+  private rowTop: number;
+  private header = true;
+  private complete = false;
+  private height = PAGE_HEIGHT;
+  private start = 0;
+  private readonly wide: WideTable | undefined;
+  private readonly parts: [number, number][];
+  // Pages cut but not yet painted, in print order; the first `count + 1 - emitted` of them are final.
+  private readonly queue: Page[] = [];
+  private emitted = 0;
+  private count = 0;
+  private verticalDone = false;
+
+  constructor(
+    doc: DocumentText,
+    m: Measured,
+    private readonly metrics: Metrics,
+  ) {
+    const contentWidth = PAGE_WIDTH - 2 * m.padding;
+    const titleLineHeight = Math.trunc((TITLE_LINE_HEIGHT * m.titleSize) / 100);
+    const titleTop = m.marginTop + m.padding;
+    const titleLines = m.title === undefined ? [] : breakLines(m.title, contentWidth, false);
+    this.title = {
+      x: m.padding,
+      width: contentWidth,
+      top: titleTop,
+      height: titleLines.length * titleLineHeight,
+      lines: m.title === undefined ? [] : placeLines(m.title, titleLines, m.padding, titleTop, titleLineHeight),
+    };
+    this.bodyTop = m.marginTop;
+    this.size = m.size;
+    this.padding = m.padding;
+    this.tableOffset = m.padding + this.title.height + Math.trunc(f32(TITLE_MARGIN_EM * m.titleSize));
+    this.tableTop = m.marginTop + this.tableOffset;
+    const tableWidth = Math.min(Math.max(contentWidth, m.tableMin), m.tableMax);
+    this.widths = columnWidths(m, tableWidth);
+    let next = CELL_SPACING;
+    for (const width of this.widths) {
+      this.coordinates.push(next);
+      next += width + CELL_SPACING;
+    }
+    this.cellLineHeight = Math.trunc((CELL_LINE_HEIGHT * m.size) / 100);
+    this.rowTop = this.tableTop + CELL_SPACING;
+    this.recordBreaks((record) => {
+      record(0, false);
+      record(m.marginTop, false);
+      recordBlock(record, titleTop, titleLines.length, titleLineHeight, this.title.height);
+    });
+    this.wide =
+      tableWidth > PAGE_WIDTH && this.widths.length > 0
+        ? { x: m.padding, y: this.tableOffset, width: tableWidth, height: this.tableHeight, columnBreaks: columnBreaks(m.padding, this.widths) }
+        : undefined;
+    this.parts = this.wide === undefined ? [] : columnParts(this.wide);
+    this.spill = doc.spill;
+    this.lines = doc.spill.lines();
+  }
+
+  // Until the last row both heights are lower bounds that already end below every page cut so far, which the page
+  // splitter's and painter's overlap tests treat as they treat the final heights.
+  get tableHeight(): number {
+    return this.rowTop - this.tableTop;
+  }
+
+  get bodyHeight(): number {
+    return this.padding + this.tableOffset + this.tableHeight;
+  }
+
+  /** The next page in print order; undefined after the last. */
+  async next(): Promise<Page | undefined> {
+    if (this.wide === undefined) return this.nextVertical();
+    while (!this.verticalDone && (this.queue.length === 0 || this.emitted > this.count)) {
+      const page = await this.nextVertical();
+      if (page === undefined) this.verticalDone = true;
+      else this.split(page, this.wide);
+    }
+    const page = this.queue.shift();
+    if (page !== undefined) this.emitted++;
+    return page;
+  }
+
+  /** The strings `page` draws, once the rows above every page still to be painted are dropped. */
+  paint(page: Page): DrawnText[] {
+    const low = Math.min(page.y0, this.start, ...this.queue.map((queued) => queued.y0));
+    const kept = this.rows.findIndex((row) => row.top + row.height > low);
+    this.rows.splice(0, kept === -1 ? this.rows.length : kept);
+    return paintPage(this, page);
+  }
+
+  /** Stops reading the spill and removes it. */
+  async close(): Promise<void> {
+    try {
+      await this.lines.return(undefined);
+    } finally {
+      await this.spill.dispose();
+    }
+  }
+
+  /** The next page down, cut once the breaks pageEnd reads are laid out; undefined past the document's end. */
+  private async nextVertical(): Promise<Page | undefined> {
+    while (!this.complete && this.lastBreak <= this.start + PAGE_HEIGHT) await this.layoutRow();
+    if (this.complete && this.start >= this.height) return undefined;
+    this.breaks.splice(0, this.breaks.findIndex((pageBreak) => pageBreak.y > this.start));
+    const end = pageEnd(this.breaks, this.start);
+    const page = { x0: 0, x1: PAGE_WIDTH, y0: this.start, y1: end };
+    this.start = end;
+    return page;
+  }
+
+  // Parts of a split page are inserted after a running count that skips unsplit pages, as ICEbrowser inserts them.
+  private split(page: Page, table: WideTable): void {
+    this.queue.push(page);
+    if (!tableOnPage(table, page)) return;
+    this.parts.forEach(([x0, x1], part) => {
+      if (part === 0) {
+        page.x1 = x1;
+      } else {
+        this.queue.splice(this.count + 1 - this.emitted, 0, { x0, x1, y0: page.y0, y1: page.y1 });
+        this.count++;
+      }
+    });
+    this.count++;
+  }
+
+  /** Lays out the next spilled row, or completes the layout past the last. */
+  private async layoutRow(): Promise<void> {
+    const next = await this.lines.next();
+    if (next.done === true) {
+      this.finish();
+      return;
+    }
+    const header = this.header;
+    this.header = false;
+    const rowTop = this.rowTop;
+    const laidOut = rowTexts(next.value).map((text, c) => {
+      const run = text === undefined ? undefined : textRun(text, header ? 'bold' : 'regular', this.size, this.metrics);
+      const width = this.widths[c] ?? 0;
+      const lines = run === undefined ? [] : breakLines(run, width, header);
+      return { run, width, lines, height: run === undefined ? EMPTY_CELL_HEIGHT : lines.length * this.cellLineHeight };
+    });
+    const height = Math.max(0, ...laidOut.map((cell) => cell.height));
+    const cells = laidOut.map(({ run, width, lines, height: own }, c) => {
+      const x = this.padding + (this.coordinates[c] ?? 0);
+      const top = rowTop + (own < height ? Math.trunc((height - own) / 2) : 0);
+      return { x, width, top: rowTop, height, lines: run === undefined ? [] : placeLines(run, lines, x, top, this.cellLineHeight) };
+    });
+    this.rows.push({ top: rowTop, height, cells });
+    this.recordBreaks((record) => {
+      record(rowTop, true);
+      record(rowTop + height, true);
+      laidOut.forEach(({ run }, c) => {
+        recordBlock(record, rowTop, run === undefined ? 0 : (cells[c]?.lines.length ?? 0), this.cellLineHeight, height);
+      });
+    });
+    this.rowTop += height + CELL_SPACING;
+    if (this.wide !== undefined) this.wide.height = this.tableHeight;
+  }
+
+  /** Records the document's and body's ends once the last row is laid out. */
+  private finish(): void {
+    this.complete = true;
+    const bodyEnd = this.bodyTop + this.bodyHeight;
+    this.height = Math.max(PAGE_HEIGHT, bodyEnd);
+    this.recordBreaks((record) => {
+      record(this.height, false);
+      record(bodyEnd, false);
+    });
+  }
+
+  // ICEbrowser keeps natural breaks in a set ordered by y in which the first break recorded at a y wins. Each group
+  // recorded here lies below the one before, the document's and body's ends below every row, so appending keeps the set.
+  private recordBreaks(fill: (record: BreakRecorder) => void): void {
+    const recorded = new Map<number, boolean>();
+    fill((y, table) => {
+      if (!recorded.has(y)) recorded.set(y, table);
+    });
+    for (const [y, table] of [...recorded].sort(([a], [b]) => a - b)) {
+      if (y <= this.lastBreak) continue;
+      this.breaks.push({ y, table });
+      this.lastBreak = y;
+    }
+  }
+}
+
 /** Unembedded standard-font dictionaries, created when a style is first drawn and shared by every page. */
 class FontResources {
   private readonly refs = new Map<Style, PDFKit.PDFKitReference>();
@@ -828,7 +984,7 @@ class FontResources {
       this.refs.set(style, ref);
     }
     const name = FONT_RESOURCES[style];
-    this.pdf.page.fonts[name] = ref;
+    (this.pdf.page.fonts as Record<string, PDFKit.PDFKitReference>)[name] = ref;
     return name;
   }
 }
@@ -852,24 +1008,68 @@ function drawPage(pdf: PDFKit.PDFDocument, fonts: FontResources, items: DrawnTex
   pdf.restore();
 }
 
-/** Renders an export table as the PDF the fixture's cfdocument produces. */
-export async function renderPdf({ table, job }: ExportWriterInput): Promise<ExportRendering> {
-  const text = documentText(table);
-  const metrics = new Metrics();
-  const layout = layoutDocument(text, printZoom(text, metrics), metrics);
-  const pages = splitWidePages(verticalPages(layout), layout.wide);
-  const bytes = await new Promise<Buffer>((resolve, reject) => {
-    const pdf = new PDFDocument({ autoFirstPage: false, info: { CreationDate: job.started_at ?? job.created } });
-    const chunks: Buffer[] = [];
-    pdf.on('data', (chunk: Buffer) => chunks.push(chunk));
-    pdf.on('end', () => resolve(Buffer.concat(chunks)));
-    pdf.on('error', reject);
-    const fonts = new FontResources(pdf);
-    for (const page of pages) {
-      pdf.addPage({ size: 'LETTER', margin: 0 });
-      drawPage(pdf, fonts, paintPage(layout, page));
-    }
-    pdf.end();
+/** A body's pages in print order, and their release once the body closes. */
+interface PageSource {
+  next(): Promise<Page | undefined>;
+  close(): Promise<void>;
+}
+
+/**
+ * The document's bytes, painting the next page each time the body wants more; pdfkit writes a page out when the next is
+ * added, and the trailer at its end, so the bytes held at once are about one page's.
+ */
+function pagedBody(pdf: PDFKit.PDFDocument, pages: PageSource, paint: (page: Page) => void): Readable {
+  const body: Readable = new Readable({
+    read() {
+      pump().catch((err: Error) => body.destroy(err));
+    },
+    destroy(err, callback) {
+      pages.close().then(
+        () => callback(err),
+        (closeErr: Error) => callback(err ?? closeErr),
+      );
+    },
   });
-  return { bytes, fileName: `export-${job.job_id}.pdf`, contentType: CONTENT_TYPE };
+  /** Paints pages until pdfkit has bytes for the body, ending the body after the last. */
+  async function pump(): Promise<void> {
+    let chunk: Buffer | null = null;
+    let ended = false;
+    while (chunk === null && !ended) {
+      const page = await pages.next();
+      if (body.destroyed) return;
+      if (page === undefined) {
+        pdf.end();
+        ended = true;
+      } else {
+        paint(page);
+      }
+      chunk = pdf.read() as Buffer | null;
+    }
+    if (chunk !== null) body.push(chunk);
+    if (ended) body.push(null);
+  }
+  return body;
+}
+
+/** Renders an export table as the PDF the fixture's cfdocument produces, painted page by page as the body is consumed. */
+export async function renderPdf({ table, job }: ExportWriterInput): Promise<ExportRendering> {
+  // Column widths and page breaks depend on every cell, as in cfdocument's HTML layout, so every row is read first, into
+  // a spill file that the layout reads back as the body is consumed.
+  const spill = await createSpill();
+  try {
+    const metrics = new Metrics();
+    const text = await documentText(table, spill, metrics);
+    const layout = new PageLayout(text, await measureAt(text, printZoom(text, metrics), metrics), metrics);
+    const pdf = new PDFDocument({ autoFirstPage: false, info: { CreationDate: job.started_at ?? job.created } });
+    const fonts = new FontResources(pdf);
+    const body = pagedBody(pdf, layout, (page) => {
+      pdf.addPage({ size: 'LETTER', margin: 0 });
+      drawPage(pdf, fonts, layout.paint(page));
+    });
+    pdf.on('error', (err: Error) => body.destroy(err));
+    return { body, fileName: `export-${job.job_id}.pdf`, contentType: CONTENT_TYPE };
+  } catch (err) {
+    await spill.dispose();
+    throw err;
+  }
 }

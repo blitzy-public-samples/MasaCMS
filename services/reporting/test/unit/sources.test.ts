@@ -10,7 +10,14 @@ import {
   type ServiceResponse,
 } from '@opt2/platform/service-kit';
 import type { ExportRunPayload } from '../../src/domain/deps.js';
-import { fetchExportTable, parseDefinitionColumns, SourceUnavailableError } from '../../src/domain/sources.js';
+import {
+  openExportTable,
+  parseDefinitionColumns,
+  SourceUnavailableError,
+  type ExportCell,
+  type ExportTableStream,
+  type FetchExportTableInput,
+} from '../../src/domain/sources.js';
 import type { ExportDefinitionRow, ExportJobRow } from '../../src/repo/tables.js';
 
 const SITE = 'tenant-a';
@@ -63,6 +70,19 @@ function fakeClient(...answers: Array<ServiceResponse | Error>): { client: Servi
   return { client, calls };
 }
 
+/** Every row of `table`, read to the end. */
+async function rowsOf(table: ExportTableStream): Promise<(readonly ExportCell[])[]> {
+  const rows: (readonly ExportCell[])[] = [];
+  for await (const row of table.rows) rows.push(row);
+  return rows;
+}
+
+/** Opens the table of `input` with `client` and reads every row of it. */
+async function readTable(client: ServiceClient, input: FetchExportTableInput): Promise<{ table: ExportTableStream; rows: (readonly ExportCell[])[] }> {
+  const table = await openExportTable({ client }, input);
+  return { table, rows: await rowsOf(table) };
+}
+
 function sheet(timesheetId: string, personId: string, periodStart: string, siteId = SITE) {
   return { timesheetId, siteId, personId, periodStart, status: 'DRAFT', overdue: true, dayCount: 5, blackoutCount: 1, approvedCount: 0 };
 }
@@ -100,10 +120,10 @@ describe('parseDefinitionColumns', () => {
   });
 });
 
-describe('fetchExportTable', () => {
+describe('openExportTable', () => {
   it('fails a broken source without calling any producer', async () => {
     const { client, calls } = fakeClient();
-    const error = await fetchExportTable({ client }, { job, definition: definition('broken', '["ledger_id"]'), payload }).catch((e: unknown) => e);
+    const error = await openExportTable({ client }, { job, definition: definition('broken', '["ledger_id"]'), payload }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(SourceUnavailableError);
     expect(error).not.toBeInstanceOf(LegacyServiceUnavailableError);
     expect(error).toMatchObject({ source: 'broken', status: undefined });
@@ -112,7 +132,7 @@ describe('fetchExportTable', () => {
 
   it('rejects an unknown source as a plain error without calling any producer', async () => {
     const { client, calls } = fakeClient();
-    const error = await fetchExportTable({ client }, { job, definition: definition('ledger', '[]'), payload }).catch((e: unknown) => e);
+    const error = await openExportTable({ client }, { job, definition: definition('ledger', '[]'), payload }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(Error);
     expect(error).not.toBeInstanceOf(SourceUnavailableError);
     expect(calls).toHaveLength(0);
@@ -133,10 +153,7 @@ describe('fetchExportTable', () => {
     ];
     const { client, calls } = fakeClient(ok({ items }));
 
-    const table = await fetchExportTable(
-      { client },
-      { job, definition: definition('timesheets.sheets', JSON.stringify(SHEET_COLUMNS)), payload },
-    );
+    const { table, rows } = await readTable(client, { job, definition: definition('timesheets.sheets', JSON.stringify(SHEET_COLUMNS)), payload });
 
     expect(calls).toEqual([
       {
@@ -149,7 +166,7 @@ describe('fetchExportTable', () => {
     ]);
     expect(table.title).toBe('timesheets.sheets export');
     expect(table.columns.map((c) => c.label)).toEqual(SHEET_COLUMNS);
-    expect(table.rows).toEqual([
+    expect(rows).toEqual([
       [B, SITE, P2, '2026-06-01T00:00:00', 'DRAFT', '1', '5', '1', '0'],
       [C, SITE, P1, '2026-06-01T00:00:00', 'APPROVED', '0', '5', '1', '4'],
       [A, SITE, P2, '2026-06-08T00:00:00', 'DRAFT', '1', '5', '1', '0'],
@@ -163,17 +180,14 @@ describe('fetchExportTable', () => {
       ok({ data: [record(ids[2] as string, '2026-06-03T10:00:00', '2026-06-04T11:30:00')], total: 3 }),
     );
 
-    const table = await fetchExportTable(
-      { client },
-      { job, definition: definition('finance.records', JSON.stringify(FINANCE_COLUMNS)), payload },
-    );
+    const { table, rows } = await readTable(client, { job, definition: definition('finance.records', JSON.stringify(FINANCE_COLUMNS)), payload });
 
     expect(calls.map((c) => [c.service, c.method, c.path, c.query, c.userToken])).toEqual([
       ['finance', 'GET', '/v1/finance/records', { page: '1', pageSize: '1000' }, 'requester-token'],
       ['finance', 'GET', '/v1/finance/records', { page: '2', pageSize: '1000' }, 'requester-token'],
     ]);
     expect(table.columns.map((c) => c.label)).toEqual(FINANCE_COLUMNS);
-    expect(table.rows).toEqual([
+    expect(rows).toEqual([
       [ids[0], SITE, 'Travel 2026-06', '1250.5000', '2026-06', 'IN-PROGRESS', '1', '2026-06-02T09:15:00', USER_ID, '', ''],
       [ids[1], SITE, 'Travel 2026-06', '1250.5000', '2026-06', 'IN-PROGRESS', '1', '2026-06-02T09:15:00', USER_ID, '', ''],
       [ids[2], SITE, 'Travel 2026-06', '1250.5000', '2026-06', 'IN-PROGRESS', '1', '2026-06-03T10:00:00', USER_ID, '2026-06-04T11:30:00', USER_ID],
@@ -185,44 +199,99 @@ describe('fetchExportTable', () => {
     ['an empty page before the total', [ok({ data: [record('AAAAAAAA-0000-0000-0000000000000001', '2026-06-02T09:15:00')], total: 5 }), ok({ data: [], total: 5 })], 2],
   ])('stops reading finance pages on %s', async (_case, answers, expectedCalls) => {
     const { client, calls } = fakeClient(...answers);
-    const table = await fetchExportTable({ client }, { job, definition: definition('finance.records', '["record_id"]'), payload });
+    const { rows } = await readTable(client, { job, definition: definition('finance.records', '["record_id"]'), payload });
     expect(calls).toHaveLength(expectedCalls);
-    expect(table.rows).toHaveLength(expectedCalls - 1);
+    expect(rows).toHaveLength(expectedCalls - 1);
   });
 
-  it.each<[string, ServiceResponse | Error, number | undefined]>([
-    ['a 503 answer', { status: 503, headers: {}, body: undefined }, 503],
-    ['a 500 answer', { status: 500, headers: {}, body: undefined }, 500],
-    ['a 403 answer', { status: 403, headers: {}, body: undefined }, 403],
-    ['a thrown ServiceUnavailableError', new ServiceUnavailableError('timesheets', new Error('timed out')), undefined],
-    ['a thrown ECONNREFUSED error', Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8118'), { code: 'ECONNREFUSED' }), undefined],
-    ['a thrown undici socket error', Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }), undefined],
-    ['a thrown timeout', new DOMException('The operation was aborted due to timeout', 'TimeoutError'), undefined],
-  ])('turns %s into a SourceUnavailableError', async (_case, answer, status) => {
-    const { client } = fakeClient(answer);
-    const error = await fetchExportTable({ client }, { job, definition: definition('timesheets.sheets', '["status"]'), payload }).catch(
-      (e: unknown) => e,
+  it('reads each later finance page only once the rows before it are consumed, and none once the consumer stops', async () => {
+    const [A, B, C, D] = ['AAAAAAAA-0000-0000-0000000000000001', 'BBBBBBBB-0000-0000-0000000000000002', 'CCCCCCCC-0000-0000-0000000000000003', 'DDDDDDDD-0000-0000-0000000000000004'];
+    const { client, calls } = fakeClient(
+      ok({ data: [record(A, '2026-06-02T09:15:00'), record(B, '2026-06-02T09:16:00')], total: 6 }),
+      ok({ data: [record(C, '2026-06-02T09:17:00'), record(D, '2026-06-02T09:18:00')], total: 6 }),
     );
+    const table = await openExportTable({ client }, { job, definition: definition('finance.records', '["record_id"]'), payload });
+    const rows = table.rows[Symbol.asyncIterator]();
+    expect(calls).toHaveLength(1);
+
+    expect([(await rows.next()).value, (await rows.next()).value]).toEqual([[A], [B]]);
+    expect(calls).toHaveLength(1);
+    expect((await rows.next()).value).toEqual([C]);
+    expect(calls.map((c) => c.query)).toEqual([{ page: '1', pageSize: '1000' }, { page: '2', pageSize: '1000' }]);
+
+    await rows.return?.();
+    expect(await rows.next()).toEqual({ done: true, value: undefined });
+    expect(calls).toHaveLength(2);
+  });
+
+  it('keeps only the finance records of the job site, compared case-insensitively, on every page', async () => {
+    const [A, B, C] = ['AAAAAAAA-0000-0000-0000000000000001', 'BBBBBBBB-0000-0000-0000000000000002', 'CCCCCCCC-0000-0000-0000000000000003'];
+    const { client } = fakeClient(
+      ok({ data: [{ ...record(A, '2026-06-02T09:15:00'), siteid: 'tenant-b' }, record(B, '2026-06-02T09:16:00')], total: 3 }),
+      ok({ data: [{ ...record(C, '2026-06-02T09:17:00'), siteid: 'TENANT-A' }], total: 3 }),
+    );
+    const { rows } = await readTable(client, { job, definition: definition('finance.records', '["record_id","siteID"]'), payload });
+    expect(rows).toEqual([
+      [B, SITE],
+      [C, 'TENANT-A'],
+    ]);
+  });
+
+  // The first read is made when the table opens; a later finance page is read, and fails, while the rows are read.
+  const FIRST_OF_TWO_PAGES = ok({ data: [record('AAAAAAAA-0000-0000-0000000000000001', '2026-06-02T09:15:00')], total: 2 });
+  const READS = [
+    { read: 'the timesheets read', source: 'timesheets.sheets', columns: '["status"]', before: [] },
+    { read: 'a later finance page', source: 'finance.records', columns: '["record_id"]', before: [FIRST_OF_TWO_PAGES] },
+  ];
+
+  it.each(
+    READS.flatMap((read) =>
+      (
+        [
+          ['a 503 answer', { status: 503, headers: {}, body: undefined }, 503],
+          ['a 500 answer', { status: 500, headers: {}, body: undefined }, 500],
+          ['a 403 answer', { status: 403, headers: {}, body: undefined }, 403],
+          ['a thrown ServiceUnavailableError', new ServiceUnavailableError('timesheets', new Error('timed out')), undefined],
+          ['a thrown ECONNREFUSED error', Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8118'), { code: 'ECONNREFUSED' }), undefined],
+          ['a thrown undici socket error', Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }), undefined],
+          ['a thrown timeout', new DOMException('The operation was aborted due to timeout', 'TimeoutError'), undefined],
+        ] satisfies [string, ServiceResponse | Error, number | undefined][]
+      ).map(([name, answer, status]) => ({ ...read, name, answer, status })),
+    ),
+  )('turns $name on $read into a SourceUnavailableError', async ({ source, columns, before, answer, status }) => {
+    const { client } = fakeClient(...before, answer);
+    const error = await readTable(client, { job, definition: definition(source, columns), payload }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(SourceUnavailableError);
     expect(error).not.toBeInstanceOf(LegacyServiceUnavailableError);
-    expect(error).toMatchObject({ source: 'timesheets.sheets', status });
+    expect(error).toMatchObject({ source, status });
     if (answer instanceof Error) expect((error as Error).cause).toBe(answer);
   });
 
-  it.each([
-    ['an UnknownServiceError', new UnknownServiceError('finance')],
-    ['any other error', new Error('boom')],
-  ])('lets %s propagate unchanged', async (_case, thrown) => {
-    const { client } = fakeClient(thrown);
-    await expect(fetchExportTable({ client }, { job, definition: definition('finance.records', '["record_id"]'), payload })).rejects.toBe(thrown);
+  it.each(
+    [
+      { read: 'the first finance page', before: [] },
+      { read: 'a later finance page', before: [FIRST_OF_TWO_PAGES] },
+    ].flatMap((read) => [
+      { ...read, name: 'an UnknownServiceError', thrown: new UnknownServiceError('finance') },
+      { ...read, name: 'any other error', thrown: new Error('boom') },
+    ]),
+  )('lets $name on $read propagate unchanged', async ({ before, thrown }) => {
+    const { client } = fakeClient(...before, thrown);
+    await expect(readTable(client, { job, definition: definition('finance.records', '["record_id"]'), payload })).rejects.toBe(thrown);
   });
 
   it.each([
-    ['malformed columns', 'not json', SyntaxError],
-    ['a column the source lacks', '["timesheet_id","ledger_id"]', /ledger_id is not a column of source timesheets\.sheets/],
-  ])('fails the read on %s after the source answered', async (_case, columns, expected) => {
-    const { client, calls } = fakeClient(ok({ items: [] }));
-    await expect(fetchExportTable({ client }, { job, definition: definition('timesheets.sheets', columns), payload })).rejects.toThrow(expected);
+    ['malformed columns', 'timesheets.sheets', 'not json', SyntaxError],
+    ['a column the source lacks', 'timesheets.sheets', '["timesheet_id","ledger_id"]', /ledger_id is not a column of source timesheets\.sheets/],
+    ['malformed columns', 'finance.records', 'not json', SyntaxError],
+    ['a column the source lacks', 'finance.records', '["record_id","ledger_id"]', /ledger_id is not a column of source finance\.records/],
+  ])('fails the read on %s of %s after its first read answered', async (_case, source, columns, expected) => {
+    const answer =
+      source === 'finance.records'
+        ? ok({ data: [record('AAAAAAAA-0000-0000-0000000000000001', '2026-06-02T09:15:00')], total: 5000 })
+        : ok({ items: [] });
+    const { client, calls } = fakeClient(answer);
+    await expect(openExportTable({ client }, { job, definition: definition(source, columns), payload })).rejects.toThrow(expected);
     expect(calls).toHaveLength(1);
   });
 });

@@ -372,17 +372,17 @@ paths:
       - name: tenantId
         in: path
         required: true
-        description: First segment of the object key `<tenantId>/<jobId>.<format>` or `<tenantId>/<jobId>.<slot>.<format>`.
+        description: First segment of the object key `<tenantId>/<jobId>.<format>`, `<tenantId>/<jobId>.<slot>.<format>` or `<tenantId>/<jobId>.<attempt>.<format>`.
         schema:
           type: string
           format: uuid
       - name: objectName
         in: path
         required: true
-        description: Second segment of the object key, the job's CF id, for a migrated output its slot `a` or `b`, and the format extension.
+        description: Second segment of the object key, the job's CF id, a migrated output's slot `a` or `b` or a run's attempt row version, and the format extension.
         schema:
           type: string
-          pattern: '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}(\.[ab])?\.(xlsx|csv|pdf)$'
+          pattern: '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}(\.([ab]|[1-9][0-9]*))?\.(xlsx|csv|pdf)$'
     get:
       operationId: downloadExportObject
       summary: Serves an export object of the local storage adapter through its signed URL.
@@ -1860,10 +1860,11 @@ components:
         payload: {}
     ExportTaskPayload:
       type: object
-      description: The export job a `reporting-export-run` task runs and the business date its source is read as of.
+      description: The export job a `reporting-export-run` task runs, the business date its source is read as of and the requester's token the source reads carry.
       required:
         - jobId
         - asOf
+        - userToken
       additionalProperties: false
       properties:
         jobId:

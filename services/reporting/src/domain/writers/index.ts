@@ -1,21 +1,22 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Export writers: the shared writer types and the dispatch from a job's format to its writer. */
-import type { ExportTable } from '../sources.js';
+import type { Readable } from 'node:stream';
+import type { ExportTableStream } from '../sources.js';
 import type { ExportDefinitionRow, ExportFormat, ExportJobRow } from '../../repo/tables.js';
 import { renderCsv } from './csv.js';
 import { renderPdf } from './pdf.js';
 import { renderXlsx } from './xlsx.js';
 
-/** What every writer renders: the job, its definition and the fetched table. */
+/** What every writer renders: the job, its definition and the opened table, whose rows a writer reads once. */
 export interface ExportWriterInput {
   definition: ExportDefinitionRow;
-  table: ExportTable;
+  table: ExportTableStream;
   job: ExportJobRow;
 }
 
-/** A rendered export: its bytes and the file name and content type stored with the job. */
+/** A rendered export: its byte stream, destroyed with a row read's error, and the file name and content type stored with the job. */
 export interface ExportRendering {
-  bytes: Buffer;
+  body: Readable;
   fileName: string;
   contentType: string;
 }

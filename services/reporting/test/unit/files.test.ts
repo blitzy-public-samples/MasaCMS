@@ -13,7 +13,7 @@ import { createLogger } from '@opt2/platform/logging';
 import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { createLocalStorageAdapter, signLocalUrl, type LocalStorageAdapter } from '@opt2/platform/storage';
 import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi, testVerifier } from '@opt2/platform/testing';
-import { EXPORT_BUCKET, exportObjectKey } from '../../src/repo/tables.js';
+import { EXPORT_BUCKET, exportAttemptKey, exportObjectKey } from '../../src/repo/tables.js';
 import { registerExportFileRoute } from '../../src/routes/files.js';
 
 const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
@@ -23,6 +23,12 @@ const JOB_ID = 'ABCDEF01-2345-6789-ABCDEF0123456789';
 const BYTES = Buffer.from('id,name\r\n1,"Ada, \u00e9"\r\n\u0000\u00ff', 'utf8');
 const KEY_A = exportObjectKey(TENANT_A.tenantId, JOB_ID, 'csv');
 const KEY_A_SLOT = exportObjectKey(TENANT_A.tenantId, JOB_ID, 'xlsx', 'b');
+const KEY_A_ATTEMPT = exportAttemptKey(TENANT_A.tenantId, JOB_ID, 'pdf', '12');
+const OBJECT_NAME = new RegExp(
+  (OPENAPI as { paths: Record<string, { parameters: { name: string; schema: { pattern: string } }[] }> }).paths[
+    '/opt2/files/reporting-exports/{tenantId}/{objectName}'
+  ]?.parameters.find((parameter) => parameter.name === 'objectName')?.schema.pattern ?? '^$',
+);
 const FORBIDDEN = {
   apiversion: 'v1',
   method: 'invalid',
@@ -38,6 +44,7 @@ beforeAll(async () => {
   storage = await createLocalStorageAdapter({ stateDir, hmacKey: HMAC_KEY, now: () => NOW });
   await storage.put(EXPORT_BUCKET, KEY_A, BYTES, { contentType: 'text/csv;charset=utf-8' });
   await storage.put(EXPORT_BUCKET, KEY_A_SLOT, BYTES, { contentType: 'text/csv;charset=utf-8' });
+  await storage.put(EXPORT_BUCKET, KEY_A_ATTEMPT, BYTES, { contentType: 'text/csv;charset=utf-8' });
 });
 
 afterEach(async () => {
@@ -100,11 +107,9 @@ describe('reporting export file route', () => {
   it.each([
     ['a runner key', KEY_A],
     ['an output-slot key', KEY_A_SLOT],
+    ['a run attempt key', KEY_A_ATTEMPT],
   ])('streams the stored bytes of %s under the stored content type and length', async (_case, key) => {
-    const objectName = (
-      OPENAPI as { paths: Record<string, { parameters: { name: string; schema: { pattern: string } }[] }> }
-    ).paths['/opt2/files/reporting-exports/{tenantId}/{objectName}']?.parameters.find((parameter) => parameter.name === 'objectName');
-    expect(key.split('/')[1]).toMatch(new RegExp(objectName?.schema.pattern ?? '^$'));
+    expect(key.split('/')[1]).toMatch(OBJECT_NAME);
     const app = await fileRouteApp();
     const url = await storage.signedUrl(EXPORT_BUCKET, key, { expiresS: 900 });
     const res = await app.inject({ method: 'GET', url });
@@ -115,6 +120,10 @@ describe('reporting export file route', () => {
     expect(res.headers['content-disposition']).toBeUndefined();
     expect(res.headers['generator']).toBe('Masa CMS 7.6.1');
     assertContract(url, res);
+  });
+
+  it.each(['0', 'x', '01', 'a.1'])('declares no object name with segment %s between the job id and the extension', (segment) => {
+    expect(`${JOB_ID}.${segment}.csv`).not.toMatch(OBJECT_NAME);
   });
 
   it('streams an empty object with a zero length', async () => {

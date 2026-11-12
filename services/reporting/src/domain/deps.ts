@@ -12,6 +12,9 @@ export type ExportRunPayload = components['schemas']['ExportTaskPayload'];
 /** Schedules the run of export job `jobId` in tenant `tenantId`. */
 export type EnqueueExportRun = (input: { tenantId: string; jobId: string; payload: ExportRunPayload }) => Promise<void>;
 
+/** Whether the run task of export job `jobId` in tenant `tenantId` is still pending or running. */
+export type ExportRunScheduled = (input: { tenantId: string; jobId: string }) => Promise<boolean>;
+
 /** Dependencies of every reporting domain function; `client` is the only route to finance and timesheets data. */
 export interface ReportingDeps {
   db: TenantDb;
@@ -20,4 +23,6 @@ export interface ReportingDeps {
   clock: Clock;
   client: ServiceClient;
   enqueue: EnqueueExportRun;
+  /** The probe `createExportRunProbe` of `../tasks/enqueue.js` builds. */
+  runScheduled: ExportRunScheduled;
 }

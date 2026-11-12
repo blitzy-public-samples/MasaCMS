@@ -1,18 +1,24 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Export writers against the fixture's rules: CSV cells, XLSX cells per sheet and PDF text per page, never bytes. */
+import { once } from 'node:events';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
+import type { PassThrough, Readable } from 'node:stream';
+import { buffer } from 'node:stream/consumers';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 import { parse } from 'csv-parse/sync';
+import { stringify } from 'csv-stringify/sync';
 import ExcelJS from 'exceljs';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { describe, expect, it } from 'vitest';
-import type { ExportTable } from '../../src/domain/sources.js';
+import type { ExportTableStream } from '../../src/domain/sources.js';
 import {
   extensionFor,
   renderCsv,
   renderExport,
   renderPdf,
   renderXlsx,
+  type ExportRendering,
   type ExportWriterInput,
 } from '../../src/domain/writers/index.js';
 import type { ExportDefinitionRow, ExportFormat, ExportJobRow } from '../../src/repo/tables.js';
@@ -48,12 +54,68 @@ const definition: ExportDefinitionRow = {
   columns: '["record_id","title","amount","created"]',
 };
 
-function tableOf(title: string, labels: readonly string[], rows: readonly (readonly string[])[]): ExportTable {
-  return { title, columns: labels.map((label) => ({ field: label, label })), rows };
+/** A table whose rows each iteration yields afresh; `pulled` counts the rows taken, `closed` tells an iteration has ended, and `fail` throws its error in place of row `after`. */
+function tableOf(
+  title: string,
+  labels: readonly string[],
+  rows: readonly (readonly string[])[],
+  fail?: { after: number; error: Error },
+): ExportTableStream & { pulled: () => number; closed: () => boolean } {
+  let pulled = 0;
+  let closed = false;
+  return {
+    title,
+    columns: labels.map((label) => ({ field: label, label })),
+    rows: {
+      async *[Symbol.asyncIterator]() {
+        try {
+          for (const [i, row] of rows.entries()) {
+            if (i === fail?.after) throw fail.error;
+            pulled += 1;
+            // Each row settles on a later microtask, never a later event-loop turn, as the fastest source would.
+            yield await Promise.resolve(row);
+          }
+          if (fail !== undefined) throw fail.error;
+        } finally {
+          closed = true;
+        }
+      },
+    },
+    pulled: () => pulled,
+    closed: () => closed,
+  };
 }
 
-function input(table: ExportTable, jobChanges: Partial<ExportJobRow> = {}): ExportWriterInput {
+function input(table: ExportTableStream, jobChanges: Partial<ExportJobRow> = {}): ExportWriterInput {
   return { definition, table, job: { ...job, ...jobChanges } };
+}
+
+/** The whole body of a rendering. */
+async function bytesOf(rendering: ExportRendering | Promise<ExportRendering>): Promise<Buffer> {
+  return buffer((await rendering).body);
+}
+
+/** The first chunk of a paused `body`, once its buffer has stopped filling. */
+async function firstChunk(body: Readable): Promise<unknown> {
+  const chunk: unknown = await new Promise((resolve) => body.once('readable', () => resolve(body.read())));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  return chunk;
+}
+
+/** `count` event-loop turns. */
+async function turns(count: number): Promise<void> {
+  for (let n = 0; n < count; n += 1) await nextTurn();
+}
+
+/** Turns until the writable side of an unread `body` is full, then a few more for its writer to see that. */
+async function filled(body: PassThrough): Promise<void> {
+  while (!body.writableNeedDrain) await nextTurn();
+  await turns(10);
+}
+
+/** `count` two-column rows `ROW-<n>`, `value <n>`. */
+function numberedRows(count: number): string[][] {
+  return Array.from({ length: count }, (_, i) => [`ROW-${String(i + 1).padStart(3, '0')}`, `value ${String(i + 1)}`]);
 }
 
 const LABELS = ['record_id', 'title', 'amount', 'created'];
@@ -109,10 +171,34 @@ async function xlsxSheets(bytes: Buffer): Promise<{ name: string; rows: [ExcelJS
   });
 }
 
+/** Deterministic pseudo-random integers below `bound`, from a 32-bit LCG seeded with `seed`. */
+function randomInts(seed: number): (bound: number) => number {
+  let state = seed >>> 0;
+  return (bound) => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state % bound;
+  };
+}
+
+const CSV_PIECES = ['', 'a', 'Zz', ' ', ',', '"', '""', '\r', '\n', '\r\n', '\t', ';', 'caf\u00e9', '\u65e5\u672c', '\u{1F600}', '=SUM(A1)', '0012', '1250.5000'];
+
+/** `count` generated tables of up to 6 columns and 12 rows, each cell joined from up to 4 pieces; the first has neither. */
+function generatedTables(count: number): { labels: string[]; rows: string[][] }[] {
+  const next = randomInts(20260630);
+  const cell = (): string => Array.from({ length: next(5) }, () => CSV_PIECES[next(CSV_PIECES.length)] ?? '').join('');
+  return Array.from({ length: count }, (_, t) => {
+    const width = t === 0 ? 0 : next(7);
+    const height = t === 0 ? 0 : next(13);
+    return {
+      labels: Array.from({ length: width }, cell),
+      rows: Array.from({ length: height }, () => Array.from({ length: width }, cell)),
+    };
+  });
+}
+
 describe('renderCsv', () => {
   it('writes the header labels, then every row, quoting only fields with a quote, comma, CR or LF, every line ending CRLF', async () => {
-    const { bytes } = await renderCsv(input(SAMPLE));
-    const text = bytes.toString('utf8');
+    const text = (await bytesOf(renderCsv(input(SAMPLE)))).toString('utf8');
     expect(text).toBe(
       'record_id,title,amount,created\r\n' +
         `${RECORD_ID},"Travel, hotel",1250.5000,2026-06-30 09:00:00.000\r\n` +
@@ -128,13 +214,21 @@ describe('renderCsv', () => {
     { name: 'an empty cell', labels: ['x'], rows: [['']], text: 'x\r\n\r\n' },
     { name: 'no columns', labels: [], rows: [[], []], text: '\r\n\r\n\r\n' },
   ])('writes $name line by line', async ({ labels, rows, text }) => {
-    expect((await renderCsv(input(tableOf('t', labels, rows)))).bytes.toString('utf8')).toBe(text);
+    expect((await bytesOf(renderCsv(input(tableOf('t', labels, rows))))).toString('utf8')).toBe(text);
+  });
+
+  it('streams the same UTF-8 bytes the synchronous serializer writes for generated tables of quotes, commas, CR, LF and empty cells', async () => {
+    const options = { record_delimiter: '\r\n', quoted_match: /[\r\n]/, eof: true };
+    for (const { labels, rows } of generatedTables(300)) {
+      const expected = Buffer.from(stringify([labels, ...rows], options), 'utf8');
+      expect(await bytesOf(renderCsv(input(tableOf('t', labels, rows))))).toEqual(expected);
+    }
   });
 });
 
 describe('renderXlsx', () => {
   it('stores the header and every row in one sheet named export, each cell a string', async () => {
-    const sheets = await xlsxSheets((await renderXlsx(input(SAMPLE))).bytes);
+    const sheets = await xlsxSheets(await bytesOf(renderXlsx(input(SAMPLE))));
     expect(sheets.map((sheet) => sheet.name)).toEqual(['export']);
     expect(sheets[0]?.rows).toEqual([LABELS, ...ROWS].map((row) => row.map((value) => [value, ExcelJS.ValueType.String])));
   });
@@ -144,13 +238,46 @@ describe('renderXlsx', () => {
     { name: 'a literal _xHHHH_ escape', value: 'literal _x0041_ and _x00af_' },
     { name: 'a tab and a line feed', value: 'tab\there\nnext' },
   ])('keeps $name in a cell', async ({ value }) => {
-    const sheets = await xlsxSheets((await renderXlsx(input(tableOf('t', ['v'], [[value]])))).bytes);
+    const sheets = await xlsxSheets(await bytesOf(renderXlsx(input(tableOf('t', ['v'], [[value]])))));
     expect(sheets[0]?.rows[1]).toEqual([[value, ExcelJS.ValueType.String]]);
   });
 
   it('stores only the header row for a table without rows', async () => {
-    const sheets = await xlsxSheets((await renderXlsx(input(tableOf('t', ['a', 'b'], [])))).bytes);
+    const sheets = await xlsxSheets(await bytesOf(renderXlsx(input(tableOf('t', ['a', 'b'], [])))));
     expect(sheets).toEqual([{ name: 'export', rows: [[['a', ExcelJS.ValueType.String], ['b', ExcelJS.ValueType.String]]] }]);
+  });
+
+  it('stores every row of a table larger than its output buffers in order', async () => {
+    const rows = numberedRows(5_000);
+    const sheets = await xlsxSheets(await bytesOf(renderXlsx(input(tableOf('t', ['code', 'label'], rows)))));
+    expect(sheets[0]?.rows.map((row) => row.map(([value]) => value))).toEqual([['code', 'label'], ...rows]);
+  });
+
+  it('stops reading rows while its unread body is full, then reads the rest as the body is read, storing every row in order', async () => {
+    const rows = numberedRows(60_000);
+    const table = tableOf('t', ['code', 'label'], rows);
+    const body = renderXlsx(input(table)).body as PassThrough;
+    await filled(body);
+    const pulled = table.pulled();
+    await turns(1_000);
+    expect([table.pulled(), body.writableNeedDrain]).toEqual([pulled, true]);
+    expect(pulled).toBeLessThan(rows.length);
+    const sheets = await xlsxSheets(await buffer(body));
+    expect([table.pulled(), table.closed()]).toEqual([rows.length, true]);
+    expect(sheets[0]?.rows.map((row) => row.map(([value]) => value))).toEqual([['code', 'label'], ...rows]);
+  });
+
+  it('stops reading rows and ends the table when the consumer destroys its full body', async () => {
+    const table = tableOf('t', ['code', 'label'], numberedRows(60_000));
+    const body = renderXlsx(input(table)).body as PassThrough;
+    await filled(body);
+    const pulled = table.pulled();
+    expect(table.closed()).toBe(false);
+    body.destroy();
+    await once(body, 'close');
+    await turns(10);
+    expect([table.closed(), body.errored]).toEqual([true, null]);
+    expect(table.pulled()).toBeLessThanOrEqual(pulled + 1);
   });
 
   it.each([
@@ -158,14 +285,14 @@ describe('renderXlsx', () => {
     { name: 'creation, before it starts', changes: { started_at: null }, date: '2026-06-30T09:00:00.000Z' },
   ])('dates the workbook at the job $name', async ({ changes, date }) => {
     const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(Uint8Array.from((await renderXlsx(input(SAMPLE, changes))).bytes).buffer);
+    await workbook.xlsx.load(Uint8Array.from(await bytesOf(renderXlsx(input(SAMPLE, changes)))).buffer);
     expect([workbook.created.toISOString(), workbook.modified.toISOString()]).toEqual([date, date]);
   });
 });
 
 const rowsText = (rows: readonly (readonly string[])[]): string => rows.map((row) => row.join(' ')).join(' ');
 const repeated = (word: string, count: number): string => Array.from({ length: count }, () => word).join(' ');
-const LONG_ROWS = Array.from({ length: 120 }, (_, i) => [`ROW-${String(i + 1).padStart(3, '0')}`, `value ${String(i + 1)}`]);
+const LONG_ROWS = numberedRows(120);
 const SPLIT_LABELS = Array.from({ length: 12 }, (_, i) => `c${String(i + 1)}`);
 const SPLIT_TAIL = '09DF-B1D1-6E2AD3839353D5E2';
 
@@ -239,14 +366,26 @@ describe('renderPdf', () => {
     },
     { name: 'an empty title and a table without columns as one blank page', table: tableOf('', [], [[], []]), pages: [''] },
   ])('draws $name', async ({ table, pages }) => {
-    expect(await pdfPages((await renderPdf(input(table))).bytes)).toEqual(pages);
+    expect(await pdfPages(await bytesOf(renderPdf(input(table))))).toEqual(pages);
   });
 
   it.each([
     { name: 'start', changes: {}, date: 'D:20260630090001Z' },
     { name: 'creation, before it starts', changes: { started_at: null }, date: 'D:20260630090000Z' },
   ])('dates the document at the job $name', async ({ changes, date }) => {
-    expect(await pdfCreationDate((await renderPdf(input(SAMPLE, changes))).bytes)).toBe(date);
+    expect(await pdfCreationDate(await bytesOf(renderPdf(input(SAMPLE, changes))))).toBe(date);
+  });
+
+  it('paints pages only as the body is consumed', async () => {
+    const table = tableOf('Long', ['code', 'label'], numberedRows(12_000));
+    const total = (await bytesOf(renderPdf(input(table)))).length;
+    const { body } = await renderPdf(input(table));
+    await firstChunk(body);
+    // The body holds about its high-water mark, plus the page that crossed it.
+    const bound = body.readableHighWaterMark + 16 * 1024;
+    expect(total).toBeGreaterThan(3 * bound);
+    expect(body.readableLength).toBeLessThan(bound);
+    body.destroy();
   });
 });
 
@@ -259,7 +398,25 @@ describe('renderExport', () => {
     const rendering = await renderExport(format, input(SAMPLE, { format }));
     expect(extensionFor(format)).toBe(format);
     expect({ fileName: rendering.fileName, contentType: rendering.contentType }).toEqual({ fileName: `export-${JOB_ID}.${format}`, contentType });
-    expect(rendering.bytes.length).toBeGreaterThan(0);
+    expect((await bytesOf(rendering)).length).toBeGreaterThan(0);
+  });
+
+  it.each<ExportFormat>(['csv', 'xlsx', 'pdf'])('fails %s with the very error a row read raises, after the rows before it', async (format) => {
+    const error = new Error('page 2 unreadable');
+    const table = tableOf('t', LABELS, ROWS, { after: 2, error });
+    await expect(bytesOf(renderExport(format, input(table, { format })))).rejects.toBe(error);
+    expect(table.pulled()).toBe(2);
+  });
+
+  it.each<ExportFormat>(['csv', 'xlsx'])('reads %s rows only as the body is consumed and stops reading when it is destroyed', async (format) => {
+    const table = tableOf('t', ['code', 'label'], numberedRows(200_000));
+    const { body } = await renderExport(format, input(table, { format }));
+    await firstChunk(body);
+    const pulled = table.pulled();
+    expect(pulled).toBeLessThan(200_000);
+    body.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(table.pulled()).toBeLessThanOrEqual(pulled + 1);
   });
 
   it('rejects an unsupported format', async () => {

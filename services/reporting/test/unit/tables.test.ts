@@ -17,6 +17,7 @@ import {
   SCHEMA,
   TSESSIONTRACKING,
   UNITS,
+  exportAttemptKey,
   exportObjectKey,
   type ExportFormat,
   type OutputSlot,
@@ -227,5 +228,26 @@ describe('exportObjectKey', () => {
 
   it.each([undefined, ...OUTPUT_SLOTS])('rejects a job id that is not a CF UUID in slot %s', (slot) => {
     expect(() => exportObjectKey(tenantId, 'JOB', 'csv', slot)).toThrow(InvalidObjectKeyError);
+  });
+});
+
+describe('exportAttemptKey', () => {
+  const tenantId = '0b0e9c1c-6a3b-5d8e-9f10-112233445566';
+  const jobId = cfUuid();
+
+  it.each<[ExportFormat, string]>([
+    ['xlsx', '1'],
+    ['csv', '2'],
+    ['pdf', '9223372036854775807'],
+  ])('keys the %s output of the claim at row version %s as <tenantId>/<jobId>.<claim>.<format>', (format, claim) => {
+    expect(exportAttemptKey(tenantId, jobId, format, claim)).toBe(`${tenantId}/${jobId}.${claim}.${format}`);
+  });
+
+  it.each(['0', '', 'a', '-1', '1.5', '01'])('rejects claim %j, which is not a positive row version', (claim) => {
+    expect(() => exportAttemptKey(tenantId, jobId, 'csv', claim)).toThrow(InvalidObjectKeyError);
+  });
+
+  it.each(['JOB', tenantId])('rejects job id %s, which is not a CF UUID', (id) => {
+    expect(() => exportAttemptKey(tenantId, id, 'csv', '2')).toThrow(InvalidObjectKeyError);
   });
 });

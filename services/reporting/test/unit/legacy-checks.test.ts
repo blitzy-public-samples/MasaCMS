@@ -26,6 +26,7 @@ const REGISTERED = [TENANT_A.siteId, TENANT_B.siteId, 'default'] as const;
 const CTX: FixtureContext = { method: 'reporting.exports', params: {} };
 const REQUESTER = '1B2C3D4E-5F60-7182-93A4B5C6D7E8F90A';
 const JOB_ID = 'ABCDEF01-2345-6789-ABCDEF0123456789';
+const USER_TOKEN = 'requester-token';
 
 /** Rows of a fake pg result. */
 function result<R extends Record<string, unknown>>(rows: R[]): QueryResult<R> {
@@ -302,9 +303,9 @@ describe('runFixtureChecks', () => {
 
 describe.skipIf(!(await pgAvailable()))('fixture create checks against PostgreSQL', () => {
   let handle: ThrowawaySchema;
-  let deps: Pick<ReportingDeps, 'db' | 'repository' | 'clock' | 'enqueue'>;
+  let deps: Pick<ReportingDeps, 'db' | 'repository' | 'storage' | 'clock' | 'enqueue' | 'runScheduled'>;
   const definitionId = cfUuid();
-  const enqueued: string[] = [];
+  const enqueued: Parameters<ReportingDeps['enqueue']>[0][] = [];
 
   beforeAll(async () => {
     handle = await createThrowawaySchema({ service: 'reporting', migrationsDir: fileURLToPath(new URL('../../db/migrations', import.meta.url)) });
@@ -320,14 +321,18 @@ describe.skipIf(!(await pgAvailable()))('fixture create checks against PostgreSQ
       ),
     );
     const clock = fixedClock(new Date(2026, 5, 30, 10, 0, 0, 0));
+    // Every run task is live, so no create fails a job and no storage call is made.
+    const storage = {} as ReportingDeps['storage'];
     deps = {
       db: handle.app,
-      repository: createReportingRepository({ db: handle.app, storage: {} as ReportingDeps['storage'], clock }),
+      repository: createReportingRepository({ db: handle.app, storage, clock }),
+      storage,
       clock,
-      enqueue: ({ jobId }) => {
-        enqueued.push(jobId);
+      enqueue: (run) => {
+        enqueued.push(run);
         return Promise.resolve();
       },
+      runScheduled: () => Promise.resolve(true),
     };
   });
 
@@ -338,7 +343,13 @@ describe.skipIf(!(await pgAvailable()))('fixture create checks against PostgreSQ
   /** The create chain of the fixture route: site, then the domain's definition and field checks. */
   async function create(params: Record<string, unknown>, user: UserClaims = claims(TENANT_A.siteId)): Promise<ExportJobRow> {
     const site = await resolveFixtureSite(params, requestFor(user), deps);
-    return createExportJob(deps, { tenantId: site.tenantId, siteId: site.siteId, requestedById: user.sub, ...createExportFields(params) });
+    return createExportJob(deps, {
+      tenantId: site.tenantId,
+      siteId: site.siteId,
+      requestedById: user.sub,
+      userToken: USER_TOKEN,
+      ...createExportFields(params),
+    });
   }
 
   it('resolves a case-variant siteid against the seeded registry', async () => {
@@ -367,6 +378,8 @@ describe.skipIf(!(await pgAvailable()))('fixture create checks against PostgreSQ
     const job = await create({ DefinitionID: definitionId, FORMAT: 'xlsx', asOf: '2026-06-30' });
 
     expect(job).toMatchObject({ tenant_id: TENANT_A.tenantId, siteid: TENANT_A.siteId, definition_id: definitionId, format: 'xlsx', state: 'queued' });
-    expect(enqueued).toStrictEqual([job.job_id]);
+    expect(enqueued).toStrictEqual([
+      { tenantId: TENANT_A.tenantId, jobId: job.job_id, payload: { jobId: job.job_id, asOf: '2026-06-30', userToken: USER_TOKEN } },
+    ]);
   });
 });

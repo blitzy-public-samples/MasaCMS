@@ -15,14 +15,14 @@ export interface ExportColumn {
 /** One exported value in the fixture runner's string form; NULL is the empty string, so no cell is null or numeric. */
 export type ExportCell = string;
 
-/** A titled export table: one header label per column, then the rows, each aligned with `columns`. */
-export interface ExportTable {
+/** A titled export table: one header label per column, then the rows, each aligned with `columns`, read from the source as they are consumed. */
+export interface ExportTableStream {
   title: string;
   columns: readonly ExportColumn[];
-  rows: readonly (readonly ExportCell[])[];
+  rows: AsyncIterable<readonly ExportCell[]>;
 }
 
-/** Inputs of {@link fetchExportTable}: the running job, its definition and the task payload it runs with. */
+/** Inputs of {@link openExportTable}: the running job, its definition and the task payload it runs with. */
 export interface FetchExportTableInput {
   job: ExportJobRow;
   definition: ExportDefinitionRow;
@@ -139,19 +139,30 @@ async function readSheetStatus(deps: Pick<ReportingDeps, 'client'>, payload: Exp
   return body.items;
 }
 
-/** Every finance record of the tenant, page after page, in the producer's order. */
-async function readFinanceRecords(deps: Pick<ReportingDeps, 'client'>, payload: ExportRunPayload): Promise<FinanceRecord[]> {
-  const records: FinanceRecord[] = [];
+/** Page `page` of the tenant's finance records, in the producer's order. */
+function readFinancePage(deps: Pick<ReportingDeps, 'client'>, payload: ExportRunPayload, page: number): Promise<FinanceRecordPage> {
+  return readSource<FinanceRecordPage>(deps, 'finance.records', {
+    service: 'finance',
+    method: 'GET',
+    path: FINANCE_RECORDS_PATH,
+    query: { page: String(page), pageSize: String(FINANCE_PAGE_SIZE) },
+    userToken: payload.userToken,
+  });
+}
+
+/** Every finance record of the tenant: those of `first`, then each later page, read once the records before it are consumed. */
+async function* financeRecords(
+  deps: Pick<ReportingDeps, 'client'>,
+  payload: ExportRunPayload,
+  first: FinanceRecordPage,
+): AsyncGenerator<FinanceRecord> {
+  let body = first;
+  let read = 0;
   for (let page = 1; ; page += 1) {
-    const body = await readSource<FinanceRecordPage>(deps, 'finance.records', {
-      service: 'finance',
-      method: 'GET',
-      path: FINANCE_RECORDS_PATH,
-      query: { page: String(page), pageSize: String(FINANCE_PAGE_SIZE) },
-      userToken: payload.userToken,
-    });
-    records.push(...body.data);
-    if (body.data.length === 0 || records.length >= body.total) return records;
+    yield* body.data;
+    read += body.data.length;
+    if (body.data.length === 0 || read >= body.total) return;
+    body = await readFinancePage(deps, payload, page + 1);
   }
 }
 
@@ -173,8 +184,25 @@ function isExportSource(source: string): source is ExportSource {
   return (EXPORT_SOURCES as readonly string[]).includes(source);
 }
 
+/** The source rows `keep` accepts, each projected through `readers` as it is consumed. */
+async function* projectRows<R>(
+  rows: AsyncIterable<R> | Iterable<R>,
+  keep: (row: R) => boolean,
+  readers: readonly ((row: R) => ExportCell)[],
+): AsyncGenerator<readonly ExportCell[]> {
+  for await (const row of rows) {
+    if (keep(row)) yield readers.map((read) => read(row));
+  }
+}
+
 /** Projects source rows onto the definition's columns; throws when the columns are malformed or name a column the source lacks. */
-function project<R>(source: ExportSource, rows: readonly R[], cells: SourceCells<R>, definition: ExportDefinitionRow): ExportTable {
+function project<R>(
+  source: ExportSource,
+  rows: AsyncIterable<R> | Iterable<R>,
+  keep: (row: R) => boolean,
+  cells: SourceCells<R>,
+  definition: ExportDefinitionRow,
+): ExportTableStream {
   const columns = parseDefinitionColumns(definition.columns);
   const readers = columns.map(({ field }) => {
     const key = field.toLowerCase();
@@ -182,11 +210,14 @@ function project<R>(source: ExportSource, rows: readonly R[], cells: SourceCells
     if (read === undefined) throw new Error(`Export column ${field} is not a column of source ${source}`);
     return read;
   });
-  return { title: definition.name, columns, rows: rows.map((row) => readers.map((read) => read(row))) };
+  return { title: definition.name, columns, rows: projectRows(rows, keep, readers) };
 }
 
-/** Reads the definition's source for the job's site and returns it in the fixture's columns, row order and value forms. */
-export async function fetchExportTable(deps: Pick<ReportingDeps, 'client'>, input: FetchExportTableInput): Promise<ExportTable> {
+/**
+ * Opens the definition's source for the job's site in the fixture's columns, row order and value forms. The first read is
+ * made here; later finance pages are read as the rows are consumed, and their failures surface through the rows.
+ */
+export async function openExportTable(deps: Pick<ReportingDeps, 'client'>, input: FetchExportTableInput): Promise<ExportTableStream> {
   const { job, definition, payload } = input;
   const source = definition.source;
   if (!isExportSource(source)) throw new Error(`Unknown export source ${source}`);
@@ -194,14 +225,15 @@ export async function fetchExportTable(deps: Pick<ReportingDeps, 'client'>, inpu
     case 'broken':
       throw new SourceUnavailableError(source);
     case 'timesheets.sheets': {
-      const rows = (await readSheetStatus(deps, payload)).filter((row) => ofSite(row.siteId, job.siteid));
-      return project(source, rows.toSorted(bySheetFixtureOrder), SHEET_CELLS, definition);
+      // A stable sort, so sorting before the site filter keeps the order sorting after it gives.
+      const rows = (await readSheetStatus(deps, payload)).sort(bySheetFixtureOrder);
+      return project(source, rows, (row) => ofSite(row.siteId, job.siteid), SHEET_CELLS, definition);
     }
     case 'finance.records': {
       // The producer already orders by created, then record_id; its created is cut to seconds, so re-sorting here would
       // lose the millisecond order the fixture's ORDER BY keeps.
-      const rows = (await readFinanceRecords(deps, payload)).filter((row) => ofSite(row.siteid, job.siteid));
-      return project(source, rows, FINANCE_CELLS, definition);
+      const rows = financeRecords(deps, payload, await readFinancePage(deps, payload, 1));
+      return project(source, rows, (row) => ofSite(row.siteid, job.siteid), FINANCE_CELLS, definition);
     }
     default: {
       const unreachable: never = source;

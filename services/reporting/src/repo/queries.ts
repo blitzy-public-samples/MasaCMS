@@ -49,6 +49,7 @@ interface Statements {
   readonly definition: string;
   readonly countJobs: string;
   readonly jobPage: string;
+  readonly unfinishedJobs: string;
   readonly jobObjects: string;
 }
 
@@ -69,6 +70,8 @@ function statementsFor(schema: string): Statements {
     definition: `SELECT ${columnList(EXPORT_DEFINITION)} FROM ${qualified(schema, EXPORT_DEFINITION.table)} WHERE "definition_id" = $1`,
     countJobs: `SELECT count(*)::integer AS "total" FROM ${jobTable}`,
     jobPage: `${job} ORDER BY "created", "job_id" COLLATE "C" LIMIT $1 OFFSET $2`,
+    // SQL Server compares the fixture's siteID case-insensitively.
+    unfinishedJobs: `${job} WHERE "state" IN ('queued', 'running') AND lower("siteid") = lower($1) ORDER BY "created", "job_id" COLLATE "C"`,
     // job_id is char(35), so the cursor is compared as bpchar to keep the (tenant_id, job_id COLLATE "C") index usable.
     jobObjects:
       `SELECT "job_id", "object_key", "output_sha256", "content_type" FROM ${jobTable}` +
@@ -109,6 +112,14 @@ export async function listJobs(tx: TenantTx, paging: JobPaging): Promise<JobPage
   }
   const { rows } = await tx.query<ExportJobRow>(statements.jobPage, [paging.itemsPerPage, offset]);
   return { ...page, rows };
+}
+
+/** The queued and running jobs of site `siteId` by `created`, then id, as the fixture's `recoverJobs` reads them. */
+export async function listUnfinishedJobs(tx: TenantTx, siteId: string): Promise<ExportJobRow[]> {
+  const statements = statementsFor(tx.schema);
+  await awaitReadable(tx, [EXPORT_JOB.unit]);
+  const { rows } = await tx.query<ExportJobRow>(statements.unfinishedJobs, [siteId]);
+  return rows;
 }
 
 /** One page of the tenant's export output object manifest, by job id after `paging.after`. */

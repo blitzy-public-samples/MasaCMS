@@ -3,11 +3,11 @@
 import { LEGACY_ERROR_MAP, LegacyApiError, LegacyServiceUnavailableError, cfDateFormat, cfUuid } from '@opt2/platform/legacy-compat';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import { SIGNED_URL_TTL_S } from '@opt2/platform/storage';
-import { withTenant } from '@opt2/platform/tenancy';
+import { withTenant, type TenantTx } from '@opt2/platform/tenancy';
 import type { ExportRunPayload, ReportingDeps } from './deps.js';
-import type { JobState } from './job-state.js';
-import { findDefinition, findJob, listJobs, type JobPage, type JobPaging } from '../repo/queries.js';
-import type { NewExportJob } from '../repo/repository.js';
+import { discardOutputs, transitionJob, type JobState } from './job-state.js';
+import { findDefinition, findJob, listJobs, listUnfinishedJobs, type JobPage, type JobPaging } from '../repo/queries.js';
+import type { NewExportJob, ReportingRepository } from '../repo/repository.js';
 import { EXPORT_BUCKET, EXPORT_FORMATS, type ExportDefinitionRow, type ExportFormat, type ExportJobRow } from '../repo/tables.js';
 
 /** Fixture envelope error types the export-job paths raise. */
@@ -42,6 +42,8 @@ export interface CreateExportInput {
   definitionId: string;
   format: string;
   requestedById: string;
+  /** The request's verified bearer token (`request.opt2Auth.userToken`), which the run's source reads carry. */
+  userToken: string;
   params: CreateExportParams;
 }
 
@@ -114,35 +116,68 @@ function queuedJob(tenantId: string, input: CreateExportInput, definition: Expor
   };
 }
 
-/**
- * Inserts a queued job of `input.definitionId` and, once it has committed, schedules its run; returns the stored row.
- * Throws `notFound` for a definition the tenant lacks, then `invalidParameters` for a bad `format` or `asOf`; a failed schedule
- * throws `LegacyServiceUnavailableError`.
- */
-export async function createExportJob(
-  deps: Pick<ReportingDeps, 'db' | 'repository' | 'clock' | 'enqueue'>,
-  input: CreateExportInput,
-): Promise<ExportJobRow> {
-  const { job, asOf } = await withGatedTenant(deps.db, input.tenantId, async (tx) => {
+/** The longest a create may take between committing its job and creating its run task. */
+export const UNSCHEDULED_RECOVERY_AGE_MS = 30_000;
+
+/** Collaborators of a create. */
+type CreateExportDeps = Pick<ReportingDeps, 'db' | 'repository' | 'storage' | 'clock' | 'enqueue' | 'runScheduled'>;
+
+/** A create request's definition, format and `asOf` once checked. */
+interface CheckedCreate {
+  definition: ExportDefinitionRow;
+  format: ExportFormat;
+  asOf: string;
+}
+
+/** Moves job `jobId` to failed with `export-failed` through legal moves only, as the fixture's `failJob` does; the failed row, or null when a finished job is kept. */
+async function failJob(tx: TenantTx, repository: ReportingRepository, jobId: string, now: Date): Promise<ExportJobRow | null> {
+  let failed = await transitionJob(tx, repository, { jobId, to: 'failed', now, error: 'export-failed' });
+  if (failed.outcome === 'illegal-state' && failed.state === 'queued') {
+    await transitionJob(tx, repository, { jobId, to: 'running', now });
+    failed = await transitionJob(tx, repository, { jobId, to: 'failed', now, error: 'export-failed' });
+  }
+  return failed.outcome === 'legal' ? failed.job : null;
+}
+
+/** Fails with `export-failed`, oldest first and each in its own transaction, the site's running jobs whose task is gone and queued ones taskless past `UNSCHEDULED_RECOVERY_AGE_MS`. */
+async function recoverJobs(deps: CreateExportDeps, tenantId: string, siteId: string): Promise<void> {
+  const jobs = await withTenant(deps.db, tenantId, (tx) => listUnfinishedJobs(tx, siteId));
+  const cutoff = deps.clock.now().getTime() - UNSCHEDULED_RECOVERY_AGE_MS;
+  for (const job of jobs) {
+    // A younger queued job may belong to a create that has not yet created its task.
+    if (job.state === 'queued' && job.created.getTime() >= cutoff) continue;
+    if (await deps.runScheduled({ tenantId, jobId: job.job_id })) continue;
+    await withGatedTenant(deps.db, tenantId, async (tx) => {
+      const failed = await failJob(tx, deps.repository, job.job_id, deps.clock.now());
+      if (failed !== null) discardOutputs(tx, deps.storage, failed);
+    });
+  }
+}
+
+/** Fails the site's taskless jobs, commits a queued job of `input.definitionId`, then schedules its run; throws `notFound`, then `invalidParameters`, and on a failed schedule fails the job and throws the legacy 503. */
+export async function createExportJob(deps: CreateExportDeps, input: CreateExportInput): Promise<ExportJobRow> {
+  const { definition, format, asOf } = await withGatedTenant(deps.db, input.tenantId, async (tx): Promise<CheckedCreate> => {
     const definition = await findDefinition(tx, input.definitionId);
     if (definition === null) throw new ReportingDomainError('notFound');
     const format = input.format;
     if (!isExportFormat(format)) throw new ReportingDomainError('invalidParameters');
-    const now = deps.clock.now();
-    const asOf = resolveAsOf(input.params.asOf, now);
+    const asOf = resolveAsOf(input.params.asOf, deps.clock.now());
     if (asOf === null) throw new ReportingDomainError('invalidParameters');
-    // The fixture fails runner-less queued jobs of the site here; a target run is a durable Cloud Task retried until it runs, so none is failed.
-    const job = await deps.repository.insertJob(tx, queuedJob(tx.tenantId, input, definition, format, now), { actorUserId: input.requestedById });
-    return { job, asOf };
+    return { definition, format, asOf };
   });
-  const payload: ExportRunPayload = { jobId: job.job_id, asOf };
+  await recoverJobs(deps, input.tenantId, input.siteId);
+  const job = await withGatedTenant(deps.db, input.tenantId, (tx) =>
+    deps.repository.insertJob(tx, queuedJob(tx.tenantId, input, definition, format, deps.clock.now()), { actorUserId: input.requestedById }),
+  );
+  const payload: ExportRunPayload = { jobId: job.job_id, asOf, userToken: input.userToken };
   try {
     await deps.enqueue({ tenantId: input.tenantId, jobId: job.job_id, payload });
-  } catch (error) {
-    // The committed queued row is kept; the caller answers the legacy 503.
-    if (error instanceof LegacyServiceUnavailableError) throw error;
+  } catch (failure) {
+    // The fixture's failed thread start; should failJob throw, the job stays queued for a later create's recovery.
+    await withGatedTenant(deps.db, input.tenantId, (tx) => failJob(tx, deps.repository, job.job_id, deps.clock.now()));
+    if (failure instanceof LegacyServiceUnavailableError) throw failure;
     const unavailable = new LegacyServiceUnavailableError(`Export job ${job.job_id} run could not be scheduled`, 'auto', 'export-run-unscheduled');
-    throw Object.assign(unavailable, { cause: error });
+    throw Object.assign(unavailable, { cause: failure });
   }
   return job;
 }

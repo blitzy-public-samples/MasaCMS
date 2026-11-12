@@ -1,9 +1,10 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Export-job state moves as `synthetic.usp_export_job_transition` applies them; the only writer of `export_job.state`. */
+import type { StoragePort } from '@opt2/platform/storage';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import { findJob } from '../repo/queries.js';
 import type { ExportJobChanges, ReportingRepository } from '../repo/repository.js';
-import { EXPORT_STATES, type ExportJobRow } from '../repo/tables.js';
+import { EXPORT_BUCKET, EXPORT_STATES, OUTPUT_SLOTS, exportAttemptKey, exportObjectKey, type ExportJobRow } from '../repo/tables.js';
 
 /** Export job states, in lifecycle order. */
 export const JOB_STATES = EXPORT_STATES;
@@ -59,6 +60,27 @@ function changesFor(input: TransitionInput): ExportJobChanges {
     case 'failed':
       return { state: input.to, finished_at: input.now, error: input.error };
   }
+}
+
+/** Renews the run of running job `jobId` by restarting it at `now`; the caller holds the job's row lock, and `state` is left as it is. */
+export function reclaimRun(tx: TenantTx, repository: ReportingRepository, input: { jobId: string; now: Date }): Promise<ExportJobRow> {
+  return repository.updateJob(tx, { job_id: input.jobId }, { started_at: input.now });
+}
+
+/** Deletes, once `tx` commits `job` as finished, both output slots and the attempt key of each row version up to its own, except the key its row names. */
+export function discardOutputs(
+  tx: TenantTx,
+  storage: StoragePort,
+  job: Pick<ExportJobRow, 'job_id' | 'format' | 'row_version' | 'object_key'>,
+): void {
+  const candidates = OUTPUT_SLOTS.map((slot) => exportObjectKey(tx.tenantId, job.job_id, job.format, slot));
+  for (let claim = 1n; claim <= BigInt(job.row_version); claim += 1n) {
+    candidates.push(exportAttemptKey(tx.tenantId, job.job_id, job.format, String(claim)));
+  }
+  const keys = candidates.filter((key) => key !== job.object_key);
+  tx.onCommit(async () => {
+    for (const key of keys) await storage.delete(EXPORT_BUCKET, key);
+  });
 }
 
 /** Applies `input` to its job in the caller's gated tenant transaction, under the job's row lock; gate errors propagate. */

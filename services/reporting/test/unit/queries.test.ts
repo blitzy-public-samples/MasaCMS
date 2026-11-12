@@ -1,5 +1,5 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Reporting read queries against a throwaway `reporting` schema: fixture order and paging, manifest pages, index plans, value forms, isolation, read gates. */
+/** Reporting read queries against a throwaway `reporting` schema: fixture order and paging, unfinished jobs, manifest pages, index plans, value forms, isolation, read gates. */
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -16,7 +16,7 @@ import {
 } from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
-import { findDefinition, findJob, iterateJobObjects, listJobObjects, listJobs } from '../../src/repo/queries.js';
+import { findDefinition, findJob, iterateJobObjects, listJobObjects, listJobs, listUnfinishedJobs } from '../../src/repo/queries.js';
 import { EXPORT_DEFINITION, EXPORT_JOB, UNITS } from '../../src/repo/tables.js';
 
 let handle: ThrowawaySchema;
@@ -316,6 +316,45 @@ describe.skipIf(!(await pgAvailable()))('reporting read queries', () => {
     });
   });
 
+  it("lists a site's queued and running jobs, its id matched ignoring case, by created then id with every catalogue column", async () => {
+    const tenantId = randomUUID();
+    const site = 'unfinished-site';
+    const jobs = [
+      { id: cfId('U', 3), state: 'running', siteId: site, created: '2026-04-01 10:00:00.000' },
+      { id: cfId('U', 2), state: 'queued', siteId: 'Unfinished-Site', created: '2026-04-01 10:00:00.000' },
+      { id: cfId('U', 1), state: 'queued', siteId: site, created: '2026-04-02 10:00:00.000' },
+      { id: cfId('U', 0), state: 'queued', siteId: site, created: '2026-03-01 10:00:00.000' },
+      { id: cfId('U', 4), state: 'done', siteId: site, created: '2026-01-01 10:00:00.000' },
+      { id: cfId('U', 5), state: 'failed', siteId: site, created: '2026-01-01 10:00:00.000' },
+      { id: cfId('U', 6), state: 'queued', siteId: 'other-site', created: '2026-01-01 10:00:00.000' },
+    ];
+    await handle.app.withTenant(tenantId, async (tx) => {
+      await insertDefinition(tx, cfId('D', 4), site);
+      for (const job of jobs) {
+        await tx.query(
+          `INSERT INTO ${handle.schema}.export_job (tenant_id, job_id, siteid, definition_id, format, state, requested_by_id, created)
+           VALUES ($1, $2, $3, $4, 'csv', $5, $6, $7)`,
+          [tx.tenantId, job.id, job.siteId, cfId('D', 4), job.state, REQUESTER, job.created],
+        );
+      }
+    });
+
+    await handle.app.withTenant(tenantId, async (tx) => {
+      const rows = await listUnfinishedJobs(tx, 'UNFINISHED-site');
+      expect(rows.map((row) => [row.job_id, row.state])).toEqual([
+        [cfId('U', 0), 'queued'],
+        [cfId('U', 2), 'queued'],
+        [cfId('U', 3), 'running'],
+        [cfId('U', 1), 'queued'],
+      ]);
+      expect(Object.keys(rows[0] ?? {})).toEqual(EXPORT_JOB.columns.map((column) => column.name));
+      expect(await listUnfinishedJobs(tx, 'nosuch-site')).toEqual([]);
+    });
+    await handle.app.withTenant(TENANT_A.tenantId, async (tx) => {
+      expect(await listUnfinishedJobs(tx, site)).toEqual([]);
+    });
+  });
+
   it('row-locks the job only when asked for update', async () => {
     const seen: Statement[] = [];
     const jobId = cfId('A', 5);
@@ -349,6 +388,7 @@ describe.skipIf(!(await pgAvailable()))('reporting read queries', () => {
           (tx) => findJob(tx, cfId('A', 5)),
           (tx) => findDefinition(tx, A_DEFINITION),
           (tx) => listJobs(tx, { pageIndex: 1, itemsPerPage: 2 }),
+          (tx) => listUnfinishedJobs(tx, TENANT_A.siteId),
         ];
         for (const read of reads) {
           const started = Date.now();

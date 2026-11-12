@@ -4,11 +4,11 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LegacyApiError, LegacyServiceUnavailableError, cfUuid, isCfUuid } from '@opt2/platform/legacy-compat';
-import { closeGates, ensureUnitGates, openGates, withGatedTenant } from '@opt2/platform/migration-kit';
+import { GateClosedError, GateRaceError, closeGates, ensureUnitGates, openGates, withGatedTenant } from '@opt2/platform/migration-kit';
 import { SIGNED_URL_TTL_S, type BucketName, type ObjectHead, type SignedUrlOptions, type StoragePort } from '@opt2/platform/storage';
-import { tenantIdForSite } from '@opt2/platform/tenancy';
+import { tenantIdForSite, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
-import type { EnqueueExportRun, ReportingDeps } from '../../src/domain/deps.js';
+import type { EnqueueExportRun, ExportRunScheduled, ReportingDeps } from '../../src/domain/deps.js';
 import {
   EXPORT_ERRORS,
   JOB_STATES,
@@ -20,6 +20,7 @@ import {
 } from '../../src/domain/job-state.js';
 import {
   ReportingDomainError,
+  UNSCHEDULED_RECOVERY_AGE_MS,
   createExportJob,
   getExportJob,
   listExportJobs,
@@ -31,7 +32,7 @@ import {
 } from '../../src/domain/jobs.js';
 import { exportJobMapping } from '../../src/migration/mappings/export-job.js';
 import { createReportingRepository, type ReportingRepository } from '../../src/repo/repository.js';
-import { EXPORT_BUCKET, EXPORT_JOB, UNITS, exportObjectKey, type ExportJobRow } from '../../src/repo/tables.js';
+import { EXPORT_BUCKET, EXPORT_JOB, OUTPUT_SLOTS, UNITS, exportAttemptKey, exportObjectKey, type ExportJobRow } from '../../src/repo/tables.js';
 
 const NOW = new Date(2026, 5, 30, 10, 0, 0, 0);
 const RUN_AT = new Date(2026, 5, 30, 10, 1, 0, 0);
@@ -43,6 +44,8 @@ const DEFINITION_ID = '2C3D4E5F-6071-8293-A4B5C6D7E8F90A1B';
 const OUTPUT = Buffer.from('Title,Amount\r\nTravel,10.5000\r\n');
 const LEGAL_MOVES = new Set(['queued>running', 'running>done', 'running>failed']);
 const TARGET_STATES = ['running', 'done', 'failed'] as const;
+// Long enough for a create's checks and insert, short enough that failing its job waits the budget out on a closed gate.
+const FAIL_BUDGET_MS = 1000;
 
 function sha256(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
@@ -275,12 +278,22 @@ describe.skipIf(!available)('export jobs against PostgreSQL', () => {
         [tenantId, definitionId, siteId],
       ),
     );
-    return { tenantId, siteId, definitionId, format: 'csv', requestedById: REQUESTER, params: {} };
+    return { tenantId, siteId, definitionId, format: 'csv', requestedById: REQUESTER, userToken: `requester-token-${String(sites)}`, params: {} };
   }
 
-  /** Inserts a csv job of `input`'s definition past the repository, `row` overriding a queued job created at NOW. */
+  /** Inserts a csv job of `input`'s definition past the repository, `row` overriding a queued job of `input`'s site created at NOW. */
   async function storeJob(input: CreateExportInput, row: Partial<ExportJobRow> = {}): Promise<ExportJobRow> {
-    const job = { job_id: cfUuid(), state: 'queued', file_name: null, content_type: null, object_key: null, output_sha256: null, ...row };
+    const job = {
+      job_id: cfUuid(),
+      siteid: input.siteId,
+      state: 'queued',
+      created: NOW,
+      file_name: null,
+      content_type: null,
+      object_key: null,
+      output_sha256: null,
+      ...row,
+    };
     return handle.app.withTenant(input.tenantId, async (tx) => {
       const { rows } = await tx.query<ExportJobRow>(
         `INSERT INTO ${handle.schema}.export_job
@@ -289,11 +302,11 @@ describe.skipIf(!available)('export jobs against PostgreSQL', () => {
         [
           input.tenantId,
           job.job_id,
-          input.siteId,
+          job.siteid,
           input.definitionId,
           job.state,
           REQUESTER,
-          NOW,
+          job.created,
           job.file_name,
           job.content_type,
           job.object_key,
@@ -304,8 +317,25 @@ describe.skipIf(!available)('export jobs against PostgreSQL', () => {
     });
   }
 
-  function depsWith(enqueue: EnqueueExportRun, clock = CLOCK): Pick<ReportingDeps, 'db' | 'repository' | 'clock' | 'enqueue'> {
-    return { db: handle.app, repository, clock, enqueue };
+  /** Create deps over the throwaway schema; the default probe reports every run task live. */
+  function depsWith(
+    enqueue: EnqueueExportRun,
+    clock = CLOCK,
+    runScheduled: ExportRunScheduled = () => Promise.resolve(true),
+  ): Pick<ReportingDeps, 'db' | 'repository' | 'storage' | 'clock' | 'enqueue' | 'runScheduled'> {
+    return { db: handle.app, repository, storage, clock, enqueue, runScheduled };
+  }
+
+  /** A probe reporting the run tasks of `live` jobs live, recording the jobs it is asked about in order. */
+  function probeOf(live: readonly string[]): { runScheduled: ExportRunScheduled; probed: Parameters<ExportRunScheduled>[0][] } {
+    const probed: Parameters<ExportRunScheduled>[0][] = [];
+    return {
+      probed,
+      runScheduled: (input) => {
+        probed.push(input);
+        return Promise.resolve(live.includes(input.jobId));
+      },
+    };
   }
 
   function recordingEnqueue(): { enqueue: EnqueueExportRun; runs: Parameters<EnqueueExportRun>[0][] } {
@@ -328,7 +358,7 @@ describe.skipIf(!available)('export jobs against PostgreSQL', () => {
     withGatedTenant(handle.app, tenantId, (tx) => transitionJob(tx, repository, input));
 
   describe('createExportJob', () => {
-    it('stores a queued job with every run column null, then schedules its run once the row has committed', async () => {
+    it('stores a queued job with every run column null and schedules its run once the row is visible to another connection', async () => {
       const input = await siteWithDefinition();
       const runs: Parameters<EnqueueExportRun>[0][] = [];
       const visible: (ExportJobRow | null)[] = [];
@@ -358,8 +388,11 @@ describe.skipIf(!available)('export jobs against PostgreSQL', () => {
         output_sha256: null,
         row_version: '1',
       });
-      expect(runs).toEqual([{ tenantId: input.tenantId, jobId: job.job_id, payload: { jobId: job.job_id, asOf: '2026-06-30' } }]);
+      expect(runs).toStrictEqual([
+        { tenantId: input.tenantId, jobId: job.job_id, payload: { jobId: job.job_id, asOf: '2026-06-30', userToken: input.userToken } },
+      ]);
       expect(visible).toEqual([job]);
+      expect(await read(input.tenantId, job.job_id)).toEqual(job);
     });
 
     it.each<[string, Partial<CreateExportInput>, string]>([
@@ -377,7 +410,7 @@ describe.skipIf(!available)('export jobs against PostgreSQL', () => {
       const job = await createExportJob(depsWith(enqueue), input);
 
       expect(job).toMatchObject({ state: 'queued', format: input.format });
-      expect(runs.map((run) => run.payload)).toEqual([{ jobId: job.job_id, asOf }]);
+      expect(runs.map((run) => run.payload)).toStrictEqual([{ jobId: job.job_id, asOf, userToken: input.userToken }]);
     });
 
     it.each<[string, Partial<CreateExportInput>]>([
@@ -424,7 +457,16 @@ describe.skipIf(!available)('export jobs against PostgreSQL', () => {
       expect(runs).toEqual([]);
     });
 
-    it('keeps the queued job and raises the legacy 503 caused by the failure when its run cannot be scheduled', async () => {
+    /** The one job of `input`, which a create whose run could not be scheduled commits failed with export-failed through running. */
+    async function expectUnscheduledJob(input: CreateExportInput): Promise<ExportJobRow> {
+      const jobs = await jobsOf(input);
+      expect(jobs).toHaveLength(1);
+      const [job] = jobs as [ExportJobRow];
+      expect(job).toMatchObject({ state: 'failed', error: 'export-failed', started_at: NOW, finished_at: NOW, row_version: '3' });
+      return job;
+    }
+
+    it('commits the job as failed with export-failed and raises the legacy 503 caused by the failure when its run cannot be scheduled', async () => {
       const input = await siteWithDefinition();
       const original = new Error('ECONNREFUSED');
 
@@ -433,24 +475,190 @@ describe.skipIf(!available)('export jobs against PostgreSQL', () => {
         input,
       ).catch((thrown: unknown) => thrown);
 
-      const [job] = await jobsOf(input);
-      expect(job).toMatchObject({ state: 'queued' });
+      const job = await expectUnscheduledJob(input);
       expect(failure).toBeInstanceOf(LegacyServiceUnavailableError);
       expect(failure).toMatchObject({
-        message: `Export job ${job?.job_id ?? ''} run could not be scheduled`,
+        message: `Export job ${job.job_id} run could not be scheduled`,
         surface: 'auto',
         reason: 'export-run-unscheduled',
         cause: original,
       });
     });
 
-    it('keeps the queued job and rethrows a legacy 503 from scheduling unchanged', async () => {
+    it('commits the job as failed with export-failed and rethrows a legacy 503 from scheduling unchanged', async () => {
       const input = await siteWithDefinition();
       const original = new LegacyServiceUnavailableError('Unit gate closed', 'auto', 'tasks-unavailable');
 
       await expect(createExportJob(depsWith(() => Promise.reject(original)), input)).rejects.toBe(original);
 
-      expect((await jobsOf(input)).map((job) => job.state)).toEqual(['queued']);
+      await expectUnscheduledJob(input);
+    });
+
+    it('raises the gate 503 when a closed gate stops failing an unscheduled job, which a later create fails past the recovery age', async () => {
+      const input = await siteWithDefinition();
+      const holderId = `window-${cfUuid()}`;
+      const refuse: EnqueueExportRun = async () => {
+        await closeGates(handle.app, { units: [EXPORT_JOB.unit], holderId });
+        throw new Error('ECONNREFUSED');
+      };
+
+      const failure: unknown = await withGatedTenant(handle.app, input.tenantId, () => createExportJob(depsWith(refuse), input), {
+        budgetMs: FAIL_BUDGET_MS,
+      }).catch((thrown: unknown) => thrown);
+      await openGates(handle.app, { units: [EXPORT_JOB.unit], holderId, state: 'open' });
+
+      expect(failure).toBeInstanceOf(GateClosedError);
+      const jobs = await jobsOf(input);
+      expect(jobs).toHaveLength(1);
+      const [stranded] = jobs as [ExportJobRow];
+      expect(stranded).toMatchObject({ state: 'queued', created: NOW, row_version: '1' });
+
+      const later = new Date(NOW.getTime() + UNSCHEDULED_RECOVERY_AGE_MS + 1);
+      await createExportJob(depsWith(recordingEnqueue().enqueue, fixedClock(later), probeOf([]).runScheduled), input);
+
+      expect(await read(input.tenantId, stranded.job_id)).toMatchObject({ state: 'failed', error: 'export-failed', finished_at: later });
+    });
+
+    it('re-runs an insert transaction a gate race rolled back at its end and schedules only the committed job, once', async () => {
+      const input = await siteWithDefinition();
+      const live = await storeJob(input, { state: 'running' });
+      const { enqueue, runs } = recordingEnqueue();
+      const { runScheduled, probed } = probeOf([live.job_id]);
+      const inserting = new WeakSet<TenantTx>();
+      let attempts = 0;
+      const racing: ReportingRepository = {
+        ...repository,
+        insertJob: async (tx, row, ctx) => {
+          attempts += 1;
+          inserting.add(tx);
+          return repository.insertJob(tx, row, ctx);
+        },
+      };
+      // The first transaction that inserts a job meets a gate race once its callback has finished, as a close at that moment would.
+      const db: TenantDb = {
+        ...handle.app,
+        withTenant: (tenantId, fn) =>
+          handle.app.withTenant(tenantId, async (tx) => {
+            const result = await fn(tx);
+            if (attempts === 1 && inserting.has(tx)) throw new GateRaceError([EXPORT_JOB.unit]);
+            return result;
+          }),
+      };
+
+      const job = await createExportJob({ ...depsWith(enqueue, CLOCK, runScheduled), db, repository: racing }, input);
+
+      expect(attempts).toBe(2);
+      expect(runs).toStrictEqual([
+        { tenantId: input.tenantId, jobId: job.job_id, payload: { jobId: job.job_id, asOf: '2026-06-30', userToken: input.userToken } },
+      ]);
+      expect(probed).toStrictEqual([{ tenantId: input.tenantId, jobId: live.job_id }]);
+      expect((await jobsOf(input)).map((row) => row.job_id).sort()).toEqual([live.job_id, job.job_id].sort());
+      expect(await read(input.tenantId, job.job_id)).toEqual(job);
+    });
+
+    it("fails, in created then id order, only the site's running jobs whose run task is gone and its old queued ones, before queuing the new job", async () => {
+      const input = await siteWithDefinition();
+      const other = await siteWithDefinition();
+      const at = (minute: number): Date => new Date(2026, 5, 29, 9, minute, 0, 0);
+      const [laterId, earlierId] = [cfUuid(), cfUuid()].sort().reverse() as [string, string];
+      const orphanRunning = await storeJob(input, { state: 'running', created: at(1) });
+      const orphanLater = await storeJob(input, { job_id: laterId, created: at(2) });
+      const orphanEarlier = await storeJob(input, { job_id: earlierId, created: at(2), siteid: input.siteId.toUpperCase() });
+      const live = await storeJob(input, { state: 'running', created: at(0) });
+      const done = await storeJob(input, { state: 'done', created: at(3) });
+      const failed = await storeJob(input, { state: 'failed', created: at(3) });
+      const young = await storeJob(input, { created: RUN_AT });
+      const otherOrphan = await storeJob(other, { created: at(0) });
+      const { runScheduled, probed } = probeOf([live.job_id]);
+      const { enqueue } = recordingEnqueue();
+
+      const job = await createExportJob(depsWith(enqueue, fixedClock(RUN_AT), runScheduled), input);
+
+      expect(probed).toStrictEqual(
+        [live, orphanRunning, orphanEarlier, orphanLater].map(({ job_id }) => ({ tenantId: input.tenantId, jobId: job_id })),
+      );
+      expect(await read(input.tenantId, orphanRunning.job_id)).toEqual({
+        ...orphanRunning,
+        state: 'failed',
+        error: 'export-failed',
+        finished_at: RUN_AT,
+        row_version: String(BigInt(orphanRunning.row_version) + 1n),
+      });
+      for (const orphan of [orphanEarlier, orphanLater]) {
+        expect(await read(input.tenantId, orphan.job_id)).toEqual({
+          ...orphan,
+          state: 'failed',
+          error: 'export-failed',
+          started_at: RUN_AT,
+          finished_at: RUN_AT,
+          row_version: String(BigInt(orphan.row_version) + 2n),
+        });
+      }
+      for (const kept of [live, done, failed, young]) expect(await read(input.tenantId, kept.job_id)).toEqual(kept);
+      expect(await read(other.tenantId, otherOrphan.job_id)).toEqual(otherOrphan);
+      expect(job).toMatchObject({ state: 'queued', created: RUN_AT });
+    });
+
+    it.each<[JobState, number, JobState]>([
+      ['running', 0, 'failed'],
+      ['queued', UNSCHEDULED_RECOVERY_AGE_MS + 1, 'failed'],
+      ['queued', UNSCHEDULED_RECOVERY_AGE_MS, 'queued'],
+      ['queued', 0, 'queued'],
+    ])('leaves a %s job created %i ms before a create, with no run task, %s', async (state, ageMs, after) => {
+      const input = await siteWithDefinition();
+      const job = await storeJob(input, { state, created: new Date(RUN_AT.getTime() - ageMs) });
+
+      await createExportJob(depsWith(recordingEnqueue().enqueue, fixedClock(RUN_AT), probeOf([]).runScheduled), input);
+
+      expect(await read(input.tenantId, job.job_id)).toMatchObject({ state: after });
+    });
+
+    it("deletes the output slots and claim output of a running job it fails and keeps a live one's", async () => {
+      const input = await siteWithDefinition();
+      const claimed = async (): Promise<ExportJobRow> => {
+        const running = await transition(input.tenantId, moveTo('running', input.tenantId, (await storeJob(input)).job_id, RUN_AT));
+        if (running.outcome !== 'legal') throw new Error(`claim refused as ${running.outcome}`);
+        return running.job;
+      };
+      const [orphan, live] = [await claimed(), await claimed()];
+      const outputKeys = (job: ExportJobRow): string[] => [
+        ...OUTPUT_SLOTS.map((slot) => exportObjectKey(input.tenantId, job.job_id, 'csv', slot)),
+        exportAttemptKey(input.tenantId, job.job_id, 'csv', job.row_version),
+      ];
+      for (const key of [...outputKeys(orphan), ...outputKeys(live)]) await storage.put(EXPORT_BUCKET, key, OUTPUT, { contentType: 'text/csv' });
+
+      await createExportJob(depsWith(recordingEnqueue().enqueue, CLOCK, probeOf([live.job_id]).runScheduled), input);
+
+      expect(await read(input.tenantId, orphan.job_id)).toMatchObject({ state: 'failed', error: 'export-failed' });
+      expect(outputKeys(orphan).map((key) => storage.objects.has(key))).toEqual([false, false, false]);
+      expect(outputKeys(live).map((key) => storage.objects.has(key))).toEqual([true, true, true]);
+    });
+
+    it.each<[string, ReportingDomainErrorType, (input: CreateExportInput) => CreateExportInput]>([
+      ['an unknown definition', 'notFound', (input) => ({ ...input, definitionId: cfUuid() })],
+      ['a bad format', 'invalidParameters', (input) => ({ ...input, format: 'docx' })],
+      ['a bad asOf', 'invalidParameters', (input) => ({ ...input, params: { asOf: '2026-02-30' } })],
+    ])('recovers nothing on a request refused for %s', async (_case, type, request) => {
+      const input = await siteWithDefinition();
+      const orphan = await storeJob(input, { state: 'running' });
+      const { runScheduled, probed } = probeOf([]);
+
+      await expect(createExportJob(depsWith(recordingEnqueue().enqueue, CLOCK, runScheduled), request(input))).rejects.toMatchObject({ type });
+
+      expect(probed).toStrictEqual([]);
+      expect(await jobsOf(input)).toEqual([orphan]);
+    });
+
+    it('raises the legacy 503 and stores nothing when a run task cannot be looked up', async () => {
+      const input = await siteWithDefinition();
+      const orphan = await storeJob(input, { state: 'running' });
+      const original = new LegacyServiceUnavailableError('Task queue reporting-export-run unavailable', 'auto', 'tasks-unavailable');
+      const { enqueue, runs } = recordingEnqueue();
+
+      await expect(createExportJob(depsWith(enqueue, CLOCK, () => Promise.reject(original)), input)).rejects.toBe(original);
+
+      expect(await jobsOf(input)).toEqual([orphan]);
+      expect(runs).toEqual([]);
     });
   });
 

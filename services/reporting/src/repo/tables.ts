@@ -1,7 +1,7 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Owned tables of schema `reporting`, as the platform repository declares them, with their row shapes and export object keys. */
 import type { CanonicalColumn, TableDefinition } from '@opt2/platform/migration-kit';
-import { objectKey, type BucketName } from '@opt2/platform/storage';
+import { InvalidObjectKeyError, objectKey, type BucketName } from '@opt2/platform/storage';
 
 /** Service name carried by reporting write positions. */
 export const OWNER = 'reporting';
@@ -202,4 +202,12 @@ export type OutputSlot = (typeof OUTPUT_SLOTS)[number];
 /** `reporting-exports` key `<tenantId>/<jobId>.<ext>`, or with `slot` the output-slot key `<tenantId>/<jobId>.<slot>.<ext>`; throws when `jobId` is not a CF UUID. */
 export function exportObjectKey(tenantId: string, jobId: string, ext: ExportFormat, slot?: OutputSlot): string {
   return objectKey({ tenantId, id: jobId, ext: slot === undefined ? ext : `${slot}.${ext}` });
+}
+
+const ROW_VERSION = /^[1-9][0-9]*$/;
+
+/** Key `<tenantId>/<jobId>.<claim>.<ext>` of the run whose claim left the job at row version `claim`; throws unless `claim` is a positive row version and `jobId` a CF UUID. */
+export function exportAttemptKey(tenantId: string, jobId: string, ext: ExportFormat, claim: string): string {
+  if (!ROW_VERSION.test(claim)) throw new InvalidObjectKeyError(claim, 'claim must be a positive decimal row version');
+  return objectKey({ tenantId, id: jobId, ext: `${claim}.${ext}` });
 }
