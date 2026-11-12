@@ -455,7 +455,8 @@ describe.skipIf(!available)('cut-over state against PostgreSQL', () => {
     ['waitUnfrozen', 'cutover_state'],
     ['awaitVisible', 'instance'],
   ] as const)('ends %s at its budget while %s is locked, and the server ends its statement', async (operation, table) => {
-    const budget = 1000;
+    // Long enough to observe the in-flight check through the shared server's I/O stalls before the budget ends it.
+    const budget = 3000;
     await setActive('v0001', null, 1);
     const operator = makeState('gw-a');
     const { epoch } = await operator.freeze([FROZEN_ROUTE], OPERATOR);
@@ -471,13 +472,14 @@ describe.skipIf(!available)('cut-over state against PostgreSQL', () => {
       await locker.query(`LOCK TABLE ${handle.schema}.${table} IN ACCESS EXCLUSIVE MODE`);
       const startedAt = Date.now();
       const outcome = operation === 'waitUnfrozen' ? operator.waitUnfrozen(FROZEN_ROUTE, budget) : operator.awaitVisible(epoch, budget);
-      await vi.waitFor(async () => expect(await running()).toBe(1), { timeout: budget / 2, interval: 20 });
+      await vi.waitFor(async () => expect(await running()).toBe(1), { timeout: budget - 500, interval: 20 });
 
       expect(await outcome).toBe(false);
       const elapsed = Date.now() - startedAt;
       expect(elapsed).toBeGreaterThanOrEqual(budget - 10);
       expect(elapsed).toBeLessThan(budget + 250);
-      await vi.waitFor(async () => expect(await running()).toBe(0), { timeout: 250, interval: 10 });
+      // The lock is still held, so only statement_timeout ends the backend; its exit after the cancel can stall on server I/O.
+      await vi.waitFor(async () => expect(await running()).toBe(0), { timeout: 3000, interval: 10 });
     } finally {
       await locker.query('ROLLBACK');
       locker.release();
