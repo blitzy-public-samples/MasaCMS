@@ -1,10 +1,11 @@
-/** Gateway-facing session routes: `adoptSession`, `getSessionState`, `getSessionSnapshot` and `endSession`. */
+/** Gateway-facing session routes: `adoptSession`, `getSessionState`, `getSessionAdminSite`, `getSessionSnapshot` and `endSession`. */
 import { serviceRole, type Opt2RouteConfig } from '@opt2/platform/auth';
 import type { FastifyInstance } from '@opt2/platform/service-kit';
 import {
   adoptLegacySession,
   endSession,
   newSessionTokens,
+  sessionAdminSite,
   sessionCookies,
   sessionSnapshot,
   sessionState,
@@ -83,7 +84,7 @@ function snapshotBody(snapshot: SessionSnapshot): Schemas['SessionSnapshot'] {
   };
 }
 
-/** Registers the four session routes; only the gateway's invocation credential is accepted. */
+/** Registers the five session routes; only the gateway's invocation credential is accepted. */
 export async function registerSessionRoutes(app: FastifyInstance, deps: SessionRouteDeps): Promise<void> {
   const { sessions } = deps;
 
@@ -107,6 +108,12 @@ export async function registerSessionRoutes(app: FastifyInstance, deps: SessionR
       const { state, epoch, userId, siteId } = await sessionState(sessions, request.params.sid);
       return { state, epoch, userId, siteId };
     },
+  );
+
+  app.get<{ Params: SessionParams; Reply: Schemas['SessionAdminSite'] }>(
+    '/internal/v1/sessions/:sid/admin-site',
+    { schema: { params: SESSION_PARAMS }, config: { opt2: ROUTE_AUTH } },
+    async (request) => ({ siteId: await sessionAdminSite(sessions, request.params.sid) }),
   );
 
   app.get<{ Params: SessionParams }>(

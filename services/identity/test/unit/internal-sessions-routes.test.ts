@@ -1,4 +1,4 @@
-/** The `adoptSession`, `getSessionState`, `getSessionSnapshot` and `endSession` routes over a throwaway `identity` schema: contract shape, gateway-only access, body validation, adoption, hydration reads and ending. */
+/** The `adoptSession`, `getSessionState`, `getSessionAdminSite`, `getSessionSnapshot` and `endSession` routes over a throwaway `identity` schema: contract shape, gateway-only access, body validation, adoption, admin-site and hydration reads and ending. */
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -35,6 +35,7 @@ const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', impor
 const CONTRACT_PATHS = [
   '/internal/v1/sessions:adopt',
   '/internal/v1/sessions/{sid}/state',
+  '/internal/v1/sessions/{sid}/admin-site',
   '/internal/v1/sessions/{sid}/snapshot',
   '/internal/v1/sessions/{sid}:end',
 ];
@@ -152,7 +153,7 @@ async function send(method: Method, url: string, headers: Record<string, string>
 }
 
 /** A gateway call of the session route `op` of `sid`. */
-async function gateway(op: 'state' | 'snapshot' | 'end', sid: string, reason = 'logout') {
+async function gateway(op: 'state' | 'admin-site' | 'snapshot' | 'end', sid: string, reason = 'logout') {
   const headers = await headersFor('gateway');
   return op === 'end'
     ? send('POST', `/internal/v1/sessions/${sid}:end`, headers, { reason })
@@ -182,8 +183,8 @@ describe('route declarations', () => {
           requires: operation['x-opt2-requires'],
         })),
     );
-    expect(expected).toHaveLength(4);
-    expect(declared.filter((route) => route.method !== 'HEAD')).toHaveLength(4);
+    expect(expected).toHaveLength(5);
+    expect(declared.filter((route) => route.method !== 'HEAD')).toHaveLength(5);
     expect(declared).toEqual(expect.arrayContaining(expected.map((entry) => expect.objectContaining(entry))));
   });
 });
@@ -192,6 +193,7 @@ describe('auth denials', () => {
   it.each<[Method, string, unknown]>([
     ['POST', ADOPT, adoptBody('S-denied', { isLoggedIn: false })],
     ['GET', '/internal/v1/sessions/S-denied/state', undefined],
+    ['GET', '/internal/v1/sessions/S-denied/admin-site', undefined],
     ['GET', '/internal/v1/sessions/S-denied/snapshot', undefined],
     ['POST', '/internal/v1/sessions/S-denied:end', { reason: 'logout' }],
   ])('refuse %s %s to callers other than the gateway, with or without a user token', async (method, url, payload) => {
@@ -319,8 +321,38 @@ describe.skipIf(!available)('sessions against PostgreSQL', () => {
     const snapshot = await gateway('snapshot', sid);
 
     expect((await gateway('state', sid)).json()).toEqual({ state: 'ended', epoch: 0, userId: '', siteId: '' });
+    expect((await gateway('admin-site', sid)).json()).toEqual({ siteId: '' });
     expect(snapshot.statusCode).toBe(404);
     expect(snapshot.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request', message: 'Invalid method call' } });
     expect((await gateway('end', sid)).json()).toEqual({ ended: true, epoch: 0 });
+  });
+
+  it.each<[string, Record<string, unknown> | undefined, string]>([
+    ['the stored session.siteid', { siteid: 'tenant-b', topID: 'T1' }, 'tenant-b'],
+    ['an empty site when the admin state stores none', { rb: 'en' }, ''],
+    ['an empty site when the stored siteid is not a string', { siteid: ['tenant-b'] }, ''],
+    ['an empty site when no admin state is stored', undefined, ''],
+  ])('reads an active session admin site as %s', async (_label, adminState, expected) => {
+    if (handle === undefined) throw new Error('PostgreSQL is not available');
+    const sid = nextSessionId();
+    await send('POST', ADOPT, await headersFor('gateway'), adoptBody(sid, LEGACY_USER, { roles: ROLES }));
+    const db = handle.app;
+    if (adminState !== undefined) await withTenant(db, SYSTEM_TENANT_ID, (tx) => repo.mergeSessionAdminState(tx, sid, adminState));
+
+    const res = await gateway('admin-site', sid);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ siteId: expected });
+  });
+
+  it('reads an ended session admin site as empty even when its row still holds one', async () => {
+    if (handle === undefined) throw new Error('PostgreSQL is not available');
+    const sid = nextSessionId();
+    await send('POST', ADOPT, await headersFor('gateway'), adoptBody(sid, LEGACY_USER, { roles: ROLES }));
+    await gateway('end', sid);
+    const db = handle.app;
+    await withTenant(db, SYSTEM_TENANT_ID, (tx) => repo.mergeSessionAdminState(tx, sid, { siteid: 'tenant-b' }));
+
+    expect((await gateway('admin-site', sid)).json()).toEqual({ siteId: '' });
   });
 });

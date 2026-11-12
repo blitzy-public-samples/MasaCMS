@@ -18,6 +18,8 @@ export type LegacySessionDescription = Schemas['LegacySessionDescription'];
 export type AdoptedSession = Schemas['AdoptSessionResponse'];
 /** Whether a session is active, with its epoch, user and site. */
 export type SessionState = Schemas['SessionState'];
+/** The admin site a session selected, `""` when none. */
+export type SessionAdminSite = Schemas['SessionAdminSite'];
 /** Login-time snapshot, CSRF secret and used-token keys of a session. */
 export type SessionSnapshot = Schemas['SessionSnapshot'];
 /** Why a session ends. */
@@ -92,6 +94,7 @@ export const IDENTITY_OPERATIONS = Object.freeze({
   authenticate: { method: 'POST', path: '/internal/v1/authenticate' },
   adopt: { method: 'POST', path: '/internal/v1/sessions:adopt' },
   state: { method: 'GET', path: '/internal/v1/sessions/{sid}/state' },
+  adminSite: { method: 'GET', path: '/internal/v1/sessions/{sid}/admin-site' },
   snapshot: { method: 'GET', path: '/internal/v1/sessions/{sid}/snapshot' },
   end: { method: 'POST', path: '/internal/v1/sessions/{sid}:end' },
   claim: { method: 'POST', path: '/internal/v1/csrf/claims' },
@@ -108,6 +111,8 @@ export interface IdentityClient {
   adopt(input: AdoptInput): Promise<AdoptedSession>;
   /** `getSessionState`: the session's state and epoch; identity reports an unknown session as ended. */
   state(sessionId: string): Promise<SessionState>;
+  /** `getSessionAdminSite`: the admin site the session selected (`session.siteid`); `""` when none is stored or the session is unknown or ended. */
+  adminSite(sessionId: string): Promise<string>;
   /** `getSessionSnapshot`: the hydration snapshot; undefined when the session is missing or ended. */
   snapshot(sessionId: string): Promise<SessionSnapshot | undefined>;
   /** `endSession`: ends the session and bumps its epoch; ending an ended session changes nothing. */
@@ -179,6 +184,8 @@ export function createIdentityClient(client: ServiceClient): IdentityClient {
       } satisfies Schemas['AdoptSessionRequest']),
 
     state: (sessionId) => call<SessionState>(ops.state, sessionPath(ops.state, sessionId)),
+
+    adminSite: async (sessionId) => (await call<SessionAdminSite>(ops.adminSite, sessionPath(ops.adminSite, sessionId))).siteId,
 
     async snapshot(sessionId) {
       const response = await send<SessionSnapshot>(ops.snapshot, sessionPath(ops.snapshot, sessionId));

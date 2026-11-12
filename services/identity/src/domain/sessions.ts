@@ -446,6 +446,14 @@ export async function sessionState(deps: SessionDeps, sessionId: string): Promis
   return { epoch: Number(row.epoch), state: row.state, mode: row.mode, userId: row.user_id ?? '', siteId: row.site_id ?? '' };
 }
 
+/** The admin site the session selected (`session.siteid` in its admin state); empty when none is stored or the session is unknown or ended. */
+export async function sessionAdminSite(deps: SessionDeps, sessionId: string): Promise<string> {
+  const row = (await locateSession(deps, sessionId))?.row;
+  if (row === undefined || row.state !== 'active' || row.admin_state === null) return '';
+  const { siteid } = JSON.parse(row.admin_state) as Record<string, unknown>;
+  return typeof siteid === 'string' ? siteid : '';
+}
+
 /** The login-time snapshot, CSRF secret and used tokens `op=hydrate` installs; undefined when the session is unknown or ended. */
 export async function sessionSnapshot(deps: SessionDeps, sessionId: string): Promise<SessionSnapshot | undefined> {
   const { db, repo, clock } = deps;

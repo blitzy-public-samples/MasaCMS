@@ -38,6 +38,8 @@ interface Script {
   entry?: Partial<CutoverEntry> & { route: string; kind: EntryKind };
   destination: 'legacy' | 'target' | 'unavailable' | 'bare' | 'relay';
   family?: RouteKeyResult['family'];
+  /** The request's `siteid`; `null` when it names none. Default `default`. */
+  siteId?: string | null;
 }
 
 interface Harness {
@@ -122,7 +124,11 @@ async function harness(opts: { active?: RoutingIndex | null; facts?: Record<stri
     }
     const family = s.family ?? (path.startsWith('/admin') ? 'admin' : 'api');
     const key = s.entry?.route ?? `${family}:unlisted`;
-    const result: RouteKeyResult = { key, baseKey: key, family, httpMethod: 'GET', params: { siteid: 'default' }, siteId: 'default' };
+    const siteId = s.siteId === undefined ? 'default' : s.siteId;
+    const result: RouteKeyResult =
+      siteId === null
+        ? { key, baseKey: key, family, httpMethod: 'GET', params: {} }
+        : { key, baseKey: key, family, httpMethod: 'GET', params: { siteid: siteId }, siteId };
     const destinations: Record<Script['destination'], Exclude<Destination, { kind: 'relay' }>> = {
       legacy: { kind: 'legacy' },
       target: { kind: 'target', service: 'people', serviceUrl: svc.url, path: url, isWeb: false },
@@ -201,6 +207,7 @@ async function harness(opts: { active?: RoutingIndex | null; facts?: Record<stri
       adoptAfterLegacy: vi.fn(async (_input, o): Promise<SessionResolution> => ({ kind: 'none', setCookies: [...o.setCookies] })),
     },
     tokenCache: { get: vi.fn(async () => 'user-token-1') },
+    identity: { adminSite: vi.fn(async () => '') },
     stateCheck: {
       check: vi.fn(async () => ({ state: 'active' as const, epoch: 3, userId: 'U', siteId: 'default', epochChanged: false })),
     },
@@ -379,6 +386,49 @@ describe('forwarding', () => {
     expect(received?.headers['x-opt2-thing']).toBeUndefined();
     expect(h.deps.tokenCache.get).toHaveBeenCalledWith(SESSION_ID, 'default', 3);
     expect(h.legacy.requests).toHaveLength(0);
+  });
+
+  it.each<[string, RouteKeyResult['family'], string | null, string, string, boolean]>([
+    ['an admin request naming its site, over the stored one', 'admin', 'tenant-b', 'tenant-a', 'tenant-b', false],
+    ['an admin request without a site, for the stored site', 'admin', null, 'tenant-a', 'tenant-a', true],
+    ['an admin request with an empty siteid, for the stored site', 'admin', '', 'tenant-a', 'tenant-a', true],
+    ['an admin request without a site, for default when none is stored', 'admin', null, '', 'default', true],
+    ['a non-admin request without a site, for default', 'api', null, 'tenant-a', 'default', false],
+    ['a non-admin request with an empty siteid, for default', 'api', '', 'tenant-a', 'default', false],
+  ])('mints the user token of %s', async (_label, family, siteId, stored, expected, readsStored) => {
+    const h = await harness();
+    h.setScript(() => ({ entry: { route: `${family}:screen`, kind: 'read', state: 'target' }, destination: 'target', family, siteId }));
+    vi.mocked(h.deps.resolver.resolveSession).mockResolvedValueOnce(session('legacy-primary'));
+    vi.mocked(h.deps.identity.adminSite).mockResolvedValue(stored);
+    const res = await h.app.inject({ method: 'GET', url: family === 'admin' ? '/admin/?muraAction=screen' : '/_api/json/v1/content' });
+    expect(res.statusCode).toBe(200);
+    expect(h.deps.tokenCache.get).toHaveBeenCalledWith(SESSION_ID, expected, 3);
+    expect(h.deps.identity.adminSite).toHaveBeenCalledTimes(readsStored ? 1 : 0);
+    if (readsStored) expect(h.deps.identity.adminSite).toHaveBeenCalledWith(SESSION_ID);
+    expect(h.svc.requests[0]?.headers.authorization).toBe('Bearer user-token-1');
+  });
+
+  it('reads no stored admin site for an ended session, which is forwarded anonymously', async () => {
+    const h = await harness();
+    h.setScript(() => ({ entry: { route: 'admin:screen', kind: 'read', state: 'target' }, destination: 'target', siteId: null }));
+    vi.mocked(h.deps.resolver.resolveSession).mockResolvedValueOnce(session('legacy-primary'));
+    vi.mocked(h.deps.stateCheck.check).mockResolvedValueOnce({ state: 'ended', epoch: 4, userId: '', siteId: '', epochChanged: true });
+    await h.app.inject({ method: 'GET', url: '/admin/?muraAction=screen' });
+    expect(h.deps.identity.adminSite).not.toHaveBeenCalled();
+    expect(h.deps.tokenCache.get).not.toHaveBeenCalled();
+    expect(h.svc.requests[0]?.headers.authorization).toBeUndefined();
+  });
+
+  it('fails closed with the admin 503, calling no service, when identity cannot report the stored admin site', async () => {
+    const h = await harness();
+    h.setScript(() => ({ entry: { route: 'admin:screen', kind: 'read', state: 'target' }, destination: 'target', siteId: null }));
+    vi.mocked(h.deps.resolver.resolveSession).mockResolvedValueOnce(session('legacy-primary'));
+    vi.mocked(h.deps.identity.adminSite).mockRejectedValueOnce(new ServiceUnavailableError(IDENTITY_SERVICE, new Error('down')));
+    const res = await h.app.inject({ method: 'GET', url: '/admin/?muraAction=screen' });
+    expect(res.statusCode).toBe(503);
+    expect(res.body).toBe(adminUnavailableResponse().body);
+    expect(h.deps.tokenCache.get).not.toHaveBeenCalled();
+    expect(h.svc.requests).toHaveLength(0);
   });
 
   it.each([

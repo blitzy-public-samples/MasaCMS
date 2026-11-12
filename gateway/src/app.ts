@@ -195,6 +195,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     barrier,
     resolver,
     tokenCache,
+    identity,
     stateCheck,
     hydrator,
     csrf,

@@ -2692,6 +2692,30 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /internal/v1/sessions/{sid}/admin-site:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    get:
+      operationId: getSessionAdminSite
+      summary: Reads the admin site a session selected (`session.siteid`); empty when none is stored or the session is unknown or ended.
+      tags: [internal]
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:gateway
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      responses:
+        '200':
+          description: The session's admin site.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionAdminSite'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /internal/v1/sessions/{sid}/snapshot:
     parameters:
       - $ref: '#/components/parameters/SessionId'
@@ -5755,6 +5779,15 @@ components:
           type: string
         siteId:
           type: string
+    SessionAdminSite:
+      type: object
+      required:
+        - siteId
+      additionalProperties: false
+      properties:
+        siteId:
+          type: string
+          description: '`session.siteid`, the admin site the session selected; empty when none is stored or the session is unknown or ended.'
     SessionSnapshot:
       type: object
       required:

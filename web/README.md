@@ -102,7 +102,7 @@ This section is normative for `gateway/` (`src/admin/map.ts`, the dispatcher and
 
    Web takes the URL scope from `X-Opt2-Original-Url` and the form scope from what follows it in the query it receives.
 4. **Inbound headers.**
-   - `Authorization: Bearer <site-scoped user token>`, minted by identity for the session and site; absent when the request has no session, and web then has no `user` or `userToken`. An anonymous session's token has an empty `sub`: web verifies and forwards it like any user token for session-bound calls (identity's current session; CSRF token issuance, which answers 401 without a user token) and treats the request as logged out.
+   - `Authorization: Bearer <site-scoped user token>`, minted by identity for the session and site (the request's `siteid`; for an admin request without one, the session's selected site identity holds, `session.siteid`, else `default`); absent when the request has no session, and web then has no `user` or `userToken`. An anonymous session's token has an empty `sub`: web verifies and forwards it like any user token for session-bound calls (identity's current session; CSRF token issuance, which answers 401 without a user token) and treats the request as logged out.
    - `X-Serverless-Authorization: Bearer <gateway invocation credential>`: in the cloud a Google-signed ID token whose audience is web's origin, locally a service token from identity's local signer with audience `web`. Web answers a bare 403 when it is missing or names another caller, and a bare 401 for an invalid user token.
    - `X-Request-Id`, `traceparent`, `tracestate`.
    - `X-Forwarded-Host` (the browser's `Host`), `X-Forwarded-Proto`, `X-Forwarded-For`. `Host` itself is web's own address, which Cloud Run routes by.

@@ -23,6 +23,7 @@ import type { CutoverState } from '../cutover/state.js';
 import type { CutoverEntry, EntryKind, InventoryFacts, RoutingIndex } from '../cutover/types.js';
 import type { CsrfContinuity, CsrfHandle } from '../session/csrf.js';
 import type { Hydrator } from '../session/hydration.js';
+import type { IdentityClient } from '../session/identity-client.js';
 import { isTargetLogout, legacySessionEffect, type Invalidation, type LegacyLoginFacts } from '../session/invalidation.js';
 import {
   absorbLegacySetCookies,
@@ -86,6 +87,8 @@ export interface DispatcherDeps {
   barrier: Pick<SessionBarrier, 'declare' | 'record' | 'release' | 'awaitForSession' | 'awaitPositions' | 'awaitOwners'>;
   resolver: SessionResolver;
   tokenCache: Pick<TokenCache, 'get'>;
+  /** Identity's record of the admin site a session selected, read for site-less admin requests. */
+  identity: Pick<IdentityClient, 'adminSite'>;
   stateCheck: Pick<SessionStateChecker, 'check'>;
   hydrator: Hydrator;
   csrf: CsrfContinuity;
@@ -422,6 +425,14 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     if (check.state !== 'active') await deps.invalidation.afterTargetLogout(named, { userAgent });
   };
 
+  /** The site a request's user token is for: its `siteid`, else an admin session's selected site, else `default`. */
+  const tokenSiteOf = async (result: RoutedOutcome['result'], sessionId: string): Promise<string> => {
+    if (result.siteId !== undefined && result.siteId !== '') return result.siteId;
+    // An admin request without a site acts in session.siteid, as legacy's set-up fills rc.siteid (admin/Application.cfc:384-412).
+    const selected = result.family === 'admin' ? await deps.identity.adminSite(sessionId) : '';
+    return selected === '' ? DEFAULT_SITE_ID : selected;
+  };
+
   /** Forwards to the owning service or web with the session's site-scoped user token and the gateway's own credential. */
   const toTarget = async (ex: Exchange, route: Route, destination: TargetDestination, mode: SessionMode): Promise<FastifyReply> => {
     const { request, reply } = ex;
@@ -448,7 +459,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
         if (check.state === 'active') {
           sessionId = resolution.sessionId;
           jar = resolution.legacyCookies;
-          userToken = await deps.tokenCache.get(sessionId, result.siteId ?? DEFAULT_SITE_ID, check.epoch);
+          userToken = await deps.tokenCache.get(sessionId, await tokenSiteOf(result, sessionId), check.epoch);
         } else {
           await deps.invalidation.afterTargetLogout(resolution.sessionId, { userAgent });
         }
