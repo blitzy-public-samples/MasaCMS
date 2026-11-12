@@ -24,6 +24,8 @@ import {
   type AdminSessionState,
   type SiteData,
 } from '@/lib/request-context';
+import { SITE_IDS, siteById } from '../fixtures/programs-sites/sites';
+import { sessionPresets } from '../fixtures/session';
 import { useTestEnv } from '../helpers/env';
 import {
   fakeGatewayClient,
@@ -213,8 +215,10 @@ afterEach(() => {
 
 describe('mergeFw1Context', () => {
   it.each<[string[], Record<string, string>]>([
+    [[], {}],
     [['cusers'], { muraAction: 'cusers' }],
     [['cusers', 'list'], { muraAction: 'cusers.list' }],
+    [['cusers', 'list', 'siteid', 'default'], { muraAction: 'cusers.list', siteid: 'default' }],
     [
       ['cusers', 'edituser', 'userid', 'U1', 'flag'],
       { muraAction: 'cusers.edituser', userid: 'U1', flag: '' },
@@ -227,6 +231,26 @@ describe('mergeFw1Context', () => {
     const rc = mergeFw1Context(['carch', 'list', 'siteid', 'a'], { SITEID: 'b', topid: 't' }, { SiteID: 'c' });
 
     expect({ ...rc }).toEqual({ muraAction: 'carch.list', siteid: 'c', topid: 't' });
+  });
+
+  it.each<[string, string[], Record<string, string>, Record<string, string>, Record<string, string>]>([
+    ['a URL value over a path pair', ['carch', 'list', 'siteid', 'a'], { siteid: 'b' }, {}, { siteid: 'b' }],
+    [
+      'a URL muraAction over the path action',
+      ['cusers', 'list'],
+      { muraAction: 'cSettings.list' },
+      {},
+      { muraAction: 'cSettings.list' },
+    ],
+    [
+      'form values over path pairs',
+      ['cusers', 'update', 'type', '1', 'action', 'Update'],
+      {},
+      { type: '2', action: 'Add' },
+      { muraAction: 'cusers.update', type: '2', action: 'Add' },
+    ],
+  ])('takes %s', (_label, pathInfo, url, form, expected) => {
+    expect(mergeFw1Context(pathInfo, url, form)).toMatchObject(expected);
   });
 
   it.each<[string, string[], Record<string, string>, Record<string, string>, string]>([
@@ -273,6 +297,7 @@ describe('resolveAction', () => {
   it.each<[Record<string, string>, string]>([
     [{}, 'core:home.redirect'],
     [{ muraAction: 'cUsers.List' }, 'core:cusers.list'],
+    [{ muraAction: 'core:cusers.list' }, 'core:cusers.list'],
     [{ MURAACTION: 'carch.list' }, 'core:carch.list'],
     [{ muraAction: 'cusers' }, 'core:cusers.default'],
     [{ muraAction: '.list' }, 'core:main.list'],
@@ -418,6 +443,7 @@ describe('buildAdminRequest', () => {
       ['/admin/cusers/list/keywords/%E0%A4%A', 'core:cusers.list', { keywords: '%E0%A4%A' }, true, './'],
       ['/ADMIN/carch/list//', 'core:carch.list', {}, true, './'],
       ['/admin/', 'core:home.redirect', {}, false, './'],
+      ['/admin/?muraAction=cusers.list', 'core:cusers.list', {}, false, './?&muraAction=cusers.list'],
       ['/admin', 'core:home.redirect', {}, false, './'],
       ['/administrator/cusers/list', 'core:home.redirect', {}, false, './'],
     ])('splits path %s', async (target, action, values, ses, currentUrl) => {
@@ -436,6 +462,24 @@ describe('buildAdminRequest', () => {
 
       expect(request.action).toBe('core:carch.list');
       expect(request.currentUrl).toBe('./?&siteid=default');
+    });
+
+    it('keeps the rc values the request supplies over the cfparam defaults', async () => {
+      const supplied = {
+        moduleid: USERS_MODULE,
+        layout: 'compact',
+        activetab: '2',
+        activepanel: '1',
+        compactDisplay: 'true',
+        closeCompactDisplay: 'true',
+        inActive: '1',
+        membersOnly: 'true',
+        visitorStatus: 'Members',
+      };
+
+      const { request } = await build({ target: `/admin/?${new URLSearchParams(supplied).toString()}` });
+
+      expect(request.rc).toMatchObject({ ...supplied, param: '', categoryID: '', groupID: '' });
     });
 
     it('applies a URL fuseaction', async () => {
@@ -578,6 +622,31 @@ describe('buildAdminRequest', () => {
       expect(request.site).toBeUndefined();
     });
 
+    it.each<[keyof typeof sessionPresets, WebTestSubjectKey]>([
+      ['admin', 'admin'],
+      ['qaEditor', 'qaEditor'],
+      ['tenantASiteAdmin', 'siteAdmin'],
+      ['noSites', 'member'],
+    ])('reads the private-pool flags of the %s session', async (preset, subject) => {
+      const { mura, s2IsPrivate } = sessionPresets[preset];
+
+      const { request } = await build({ subject, user: mura, target: '/admin/' });
+
+      expect(request.session.mura).toMatchObject(mura);
+      expect(request.session.s2IsPrivate).toBe(s2IsPrivate);
+      expect(request.isPrivateUser).toBe(s2IsPrivate);
+    });
+
+    it.each<[string, WebTestSubjectKey, Partial<MintUserTokenInput>, boolean]>([
+      ['the m:008 role', 'qaEditor', { roles: [Roles.systemUser, moduleRole(USERS_MODULE)] }, true],
+      ['S2', 'admin', {}, true],
+      ['a system user without it', 'systemUser', {}, false],
+    ])('reads the Users module permission of %s', async (_label, subject, claims, granted) => {
+      const { request } = await build({ subject, claims, target: '/admin/' });
+
+      expect(request.modulePerm(USERS_MODULE)).toBe(granted);
+    });
+
     it('reads alerts as type and text strings', async () => {
       const { request } = await build({
         subject: 'qaEditor',
@@ -693,6 +762,27 @@ describe('buildAdminRequest', () => {
         locale: 'de_DE',
         dateKeyFormat: 'DD.MM.YYYY',
         localeHasDayParts: false,
+      });
+    });
+
+    it('names the served default fixture site', async () => {
+      const record = siteById[SITE_IDS.default];
+
+      const { request } = await build({
+        target: `/admin/?muraAction=cusers.list&siteid=${SITE_IDS.default}`,
+        routes: { [siteRoute(SITE_IDS.default)]: siteReply(record) },
+      });
+
+      expect(request.site).toMatchObject({
+        siteid: SITE_IDS.default,
+        site: record.Site,
+        domain: record.Domain,
+        publicUserPoolID: record.publicUserPoolID,
+        privateUserPoolID: record.privateUserPoolID,
+        hasFeedManager: true,
+        emailBroadcaster: false,
+        extranet: false,
+        record,
       });
     });
 
@@ -1065,6 +1155,21 @@ describe('buildAdminRequest', () => {
 
       expect(request).toMatchObject(expected);
       expect(request.headers.get(ORIGINAL_URL_HEADER)).toBe('/admin/');
+    });
+
+    // Legacy layouts test `cgi.http_user_agent contains 'msie'`, so IE 11's Trident-only agent is not MSIE.
+    it.each<[string, string, boolean]>([
+      ['MSIE 10.0', 'Mozilla/5.0 (compatible; MSIE 10.0; Windows NT 6.1; Trident/6.0)', true],
+      ['Trident/7.0', 'Mozilla/5.0 (Windows NT 10.0; WOW64; Trident/7.0; rv:11.0) like Gecko', false],
+      [
+        'Chrome',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+        false,
+      ],
+    ])('reads isMSIE of a %s user agent', async (_label, userAgent, isMSIE) => {
+      const { request } = await build({ subject: 'qaEditor', target: '/admin/', headers: { 'user-agent': userAgent } });
+
+      expect(request).toMatchObject({ userAgent, isMSIE });
     });
   });
 

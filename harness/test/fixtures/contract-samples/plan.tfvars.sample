@@ -1,0 +1,19 @@
+# Contract sample: cloud_run_services of infra/terraform/envs/plan/plan.tfvars
+project_id = "opt2-plan-only"
+region     = "us-central1"
+
+cloud_run_services = [
+  "gateway",
+  "web",
+  "identity",
+  "people",
+  "programs-sites",
+  "strategies-content",
+  "communications",
+  "reporting",
+  "surveys",
+  "timesheets",
+  "finance",
+  "e-signature",
+  "migration",
+]
