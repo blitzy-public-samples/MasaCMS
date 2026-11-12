@@ -1,0 +1,68 @@
+
+<script>
+
+var currentChangesetSelection="";
+var currentChangesetID="";
+
+
+var publishitemfromchangeset="The\x20edited\x20version\x20was\x20previously\x20assigned\x20to\x20a\x20change\x20set.\x20\x20Are\x20you\x20sure\x20that\x20you\x20want\x20to\x20publish\x20your\x20changes\x20now\x20and\x20bypass\x20the\x20previously\x20assigned\x20change\x20set\x3F"
+function removeChangesetPrompt(changesetID){
+	
+	if(currentChangesetID!="" && changesetID!=currentChangesetID){
+		jQuery("#removeChangesetContainer").show();
+	} else {
+		jQuery("#removeChangesetContainer").hide();
+		document.getElementById("_removePreviousChangeset").checked=false;
+	}
+	
+	currentChangesetSelection=changesetID;
+}
+
+var assigningChangeset=false;
+
+function saveToChangeset(changesetid,siteid,keywords){
+	
+	var url = 'index.cfm';
+	var pars = 'muraAction=cArch.availablechangesets&compactDisplay=true&siteid=' + siteid  + '&keywords=' + keywords + '&changesetid=' + changesetid +'&cacheid=' + Math.random();
+	var d = jQuery('#changesetContainer');
+	d.html('<div class="load-inline"></div>');
+	$('#changesetContainer .load-inline').spin(spinnerArgs2);
+	jQuery.get(url + "?" + pars, 
+			function(data) {
+			$('#changesetContainer .load-inline').spin(false);
+			jQuery('#changesetContainer').html(data);
+			stripe('stripe');
+			});
+
+		jQuery("#changesetContainer").dialog({
+			resizable: false,
+			modal: true,
+			close: function( event, ui ) { siteManager.assigningChangeset=false;},
+			buttons: {
+				Save: 
+					{click: function() {
+							jQuery(this).dialog('close');
+						if(siteManager.configuratorMode == 'backEnd') {
+							siteManager.assigningChangeset=true;
+							if(siteManager.ckContent()){
+								//submitForm(document.contentForm, 'add');
+							}
+						} else {
+							siteManager.saveConfiguratorToChangeset(currentChangesetSelection,document.getElementById("_removePreviousChangeset").checked);
+						}
+							
+							return false;						
+						}
+					, text: 'Save'
+					, class: 'mura-primary'
+					} // /Save
+			}
+		});
+	
+	
+	return false;	
+}
+</script>
+<div style="display:none" title="Assign&#x20;to&#x20;Change&#x20;Set" id="changesetContainer">
+
+</div>
