@@ -78,12 +78,20 @@ export interface RawBody {
   setCookies?: string[];
 }
 
-/** Outcome of a redirect-mode action. */
+/** Outcome of a redirect-mode action; `setCookies` are service `Set-Cookie` values, relayed unchanged and in order. */
 export type SubmitResult =
   /** FW/1 `redirect()`. */
-  | { kind: 'redirect'; action: string; append?: string; preserve?: string; path?: string; queryString?: string }
+  | {
+      kind: 'redirect';
+      action: string;
+      append?: string;
+      preserve?: string;
+      path?: string;
+      queryString?: string;
+      setCookies?: readonly string[];
+    }
   /** `cflocation`, or a service `Location` passed through. */
-  | { kind: 'location'; location: string }
+  | { kind: 'location'; location: string; setCookies?: readonly string[] }
   /** Validation re-render inside the shell. */
   | { kind: 'render'; view: ShellView; status?: number }
   /** An action that writes, then emits a bare body. */
@@ -96,8 +104,8 @@ interface ScreenBase<D> {
   action: string;
   variant?: ScreenVariant;
   owner: ScreenOwner;
-  /** The controller `before()` rule; built with `secure()` from `@/lib/access-gate`. */
-  gate: ScreenGate;
+  /** The controller `before()` rule, built with `secure()` from `@/lib/access-gate`; absent when it gates nothing. */
+  gate?: ScreenGate;
   /** The circuit menu this view embeds. */
   secondaryMenu?: SecondaryMenuCircuit;
   load?(ctx: ScreenContext): Promise<D>;
