@@ -1,0 +1,478 @@
+
+
+<div class="mura-layout-row">
+	
+
+
+<div id="navReportsShowing">
+	<div class="btn-group">
+	
+	<span>Showing:</span>
+	<a id="navReportsToggle" class="dropdown-toggle" data-toggle="dropdown">All Site Content<i class="mi-chevron-down"></i></a>
+		<ul id="navReports" class="dropdown-menu">
+			<li><a href="" data-report="" class="active">All Site Content</a></li>
+			
+			<li><a href="" data-report="mydrafts">My Drafts</a></li>
+			
+			<li><a href="" data-report="mysubmissions">My Submissions</a></li>
+			
+			<li><a href="" data-report="myapprovals">My Approvals</a></li>
+			
+			<li><a href="" data-report="myexpires">My Expiring Content</a></li>
+			<li><a href="" data-report="expires">All Expiring Content</a></li>
+			
+			<li><a href="" data-report="mylockedcontent">
+				Files I'm Editing Offline <span class="badge badge-important">2</span></a></li>
+		</ul>
+	</div>
+
+	
+		<div class="navSort">
+			<span class="hidden-xs hidden-sm">Sort By:</span>
+			<div class="mura-input-set">
+				<a href="" data-sortby="lastupdate" class="btn active">Updated</a>
+				<a href="" data-sortby="created" class="btn">Created</a>
+				<a href="" data-sortby="menutitle" class="btn">Title</a>
+				
+			</div>
+		</div> <!-- ./navSort -->
+	
+
+</div> 
+
+<div id="navFilters">
+	<div id="navFiltersToggle">Advanced Filters<i class="mi-chevron-down"></i></div>
+	<div id="navFilterControls">
+		<div class="mura-layout-row">
+
+			
+			<div class="mura-6 mura-control-group">
+				<label>Keywords</label>
+		    <input class="text" id="contentKeywords" value="Flat&#x20;Page&#x20;1" type="text">
+	  	</div>
+			
+
+			
+			
+				<div class="mura-3 mura-control-group">
+					<label>Type</label>
+					<select name="contentTypeFilter" id="contentTypeFilter">
+						<option value="">All</option>
+						
+								<option value="Calendar^Default">Calendar</option>
+								
+								<option value="Component^Default">Component</option>
+								
+								<option value="File^Default">File</option>
+								
+									<option value="File^Brochure">File / Brochure</option>
+								
+								<option value="Folder^Default">Folder</option>
+								
+									<option value="Folder^Locked">Folder / Locked</option>
+								
+								<option value="Form^Default">Form</option>
+								
+									<option value="Form^Survey">Form / Survey</option>
+								
+								<option value="Link^Default">Link</option>
+								
+								<option value="Page^Default">Page</option>
+								
+									<option value="Page^Special">Page / Special</option>
+								
+					</select>
+				</div>
+			
+			
+
+			
+				<div id="tags" class="mura-3 mura-control-group mura-filter-tags tagSelector">
+					
+			   		<label>Tags</label>
+		   		
+
+					<input type="text" name="tags">
+					
+				</div>
+
+			
+				<div id="mura-list-tree" class="mura-6 mura-control-group category-select">
+					<label>Categories</label>
+					<div id="category-select-control"></div>
+					<div id="category-select-list">
+						
+<ul id="mura-nodes" class="categories checkboxTree">
+
+<li>
+<input type="checkbox" name="categoryID" class="checkbox"  value="2229FB72-FC29-AE58-FA447A006770F27B"/> Cat A 
+<ul class="categories">
+
+<li>
+<input type="checkbox" name="categoryID" class="checkbox"  value="2229FD3F-CCF9-DB0F-BBA4B1FE48B5C874"/> Cat B 
+</li>
+
+</ul>
+
+</li>
+
+<li>
+Closed C 
+</li>
+
+</ul>
+
+					</div>
+				</div>
+			
+			
+
+			
+			<div id="navFilterButtons" class="mura-actions mura-5">
+				<div class="form-actions">
+					
+						<button type="submit" class="btn btn-default" name="filterList" onclick="clearFlatviewFilter()"><i class="mi-times-circle"></i> Remove Filter</button>
+						<button type="submit" class="btn btn-default mura-primary" name="filterList" onclick="siteManager.loadSiteFlatByFilter();"><i class="mi-filter"></i> Filter</button>
+					
+				</div>
+			</div>
+			
+
+		</div> 
+	</div>	
+</div>	
+
+	
+
+		<div class="mura-results-wrapper">
+		<p class="search-showing">Showing 1-4 of 4 Results</p>
+		
+		</div>
+	
+
+	<table class="mura-table-grid">
+		
+
+		<tr data-siteid="default" data-contentid="222A39B4-9F49-F713-9F6915301CC75BE1" data-contenthistid="222A3F0A-9F61-FA43-3EEB13FD5D9B11DA" data-sortby="orderno" data-sortdirection="asc" data-moduleid="00000000000000000000000000000000000" data-type="Page" class="mura-node-data">
+			<td class="add"><a class="add" href="javascript:;"  onclick="siteManager.showMenu('newContentMenu','editor',this,'222A39B4-9F49-F713-9F6915301CC75BE1','222A39B4-9F49-F713-9F6915301CC75BE1','222A39B4-9F49-F713-9F6915301CC75BE1','default','Page','00000000000000000000000000000000000');"><i class="mi-ellipsis-v"></i></a></td>
+			<td class="var-width item">
+
+			<div class="actions">
+				<ul class="siteSummary">
+					
+
+					    <li class="edit"><a title="Edit" onclick="draftprompt.call(this,event);return false;" data-siteid="default" data-contentid="222A39B4-9F49-F713-9F6915301CC75BE1" data-contenthistid="222A3F0A-9F61-FA43-3EEB13FD5D9B11DA" href="" data-href="./?muraAction=cArch.edit&contenthistid=222A3F0A-9F61-FA43-3EEB13FD5D9B11DA&contentid=222A39B4-9F49-F713-9F6915301CC75BE1&type=Page&parentid=222A01B2-C3CB-E417-627BBA806D0308A3&topid=222A01B2-C3CB-E417-627BBA806D0308A3&siteid=default&moduleid=00000000000000000000000000000000000&startrow=1"><i class="mi-pencil"></i></a></li>
+						
+							<li class="preview"><a title="Preview" href="http://localhost:22180/flat-folder/flat-page-12/"><i class="mi-globe"></i></a></li>
+							
+						 <li class="version-history"><a title="Version History" href="./?muraAction=cArch.hist&contentid=222A39B4-9F49-F713-9F6915301CC75BE1&type=Page&parentid=222A01B2-C3CB-E417-627BBA806D0308A3&topid=222A01B2-C3CB-E417-627BBA806D0308A3&siteid=default&moduleid=00000000000000000000000000000000000&startrow=1"><i class="mi-history"></i></a></li>
+
+						
+					        <li class="permissions"><a title="Permissions" href="./?muraAction=cPerm.main&contentid=222A39B4-9F49-F713-9F6915301CC75BE1&type=Page&parentid=222A01B2-C3CB-E417-627BBA806D0308A3&topid=222A01B2-C3CB-E417-627BBA806D0308A3&siteid=default&moduleid=00000000000000000000000000000000000&startrow=1"><i class="mi-group"></i></a></li>
+					    
+					        <li class="delete"><a title="Delete" href="./?muraAction=cArch.update&contentid=222A39B4-9F49-F713-9F6915301CC75BE1&type=Page&action=deleteall&topid=222A01B2-C3CB-E417-627BBA806D0308A3&siteid=default&moduleid=00000000000000000000000000000000000&parentid=222A01B2-C3CB-E417-627BBA806D0308A3&startrow=1&csrf_token=<token>&csrf_token_expires=<token>"onclick="return confirmDialog('Deleting\x20\x27Flat\x20Page\x2012\x27\x20will\x20also\x20delete\x20all\x20content\x20nested\x20beneath\x20it',this.href)">
+							<i class="mi-trash"></i></a></li>
+					    
+
+				</ul>
+			</div>
+			
+
+				<h2>
+					
+						<a class="draftprompt" title="Edit" class="draftprompt"  href="./?muraAction=cArch.edit&contenthistid=222A3F0A-9F61-FA43-3EEB13FD5D9B11DA&contentid=222A39B4-9F49-F713-9F6915301CC75BE1&type=Page&parentid=222A01B2-C3CB-E417-627BBA806D0308A3&topid=222A01B2-C3CB-E417-627BBA806D0308A3&siteid=default&moduleid=00000000000000000000000000000000000&startrow=1">Flat Page 12 
+
+						</a>
+					
+				</h2>
+				
+					<span class="breadcrumb-label">Location: </span><ul class="breadcrumb">
+		
+			<li class="">
+			<a 
+				href="" onclick="return siteManager.loadSiteManagerInTab(function(){siteManager.loadSiteManager('default','00000000000000000000000000000000001','00000000000000000000000000000000000','','','Page',1)});"
+			><i class="mi-file"></i>Home</a></li>
+		
+			<li class="">
+			<a 
+				href="" onclick="return siteManager.loadSiteManagerInTab(function(){siteManager.loadSiteManager('default','222A01B2-C3CB-E417-627BBA806D0308A3','00000000000000000000000000000000000','','','Folder',1)});"
+			><i class="mi-folder-open-o"></i>Flat Folder</a></li>
+		
+		<li class=""><strong>
+		<a 
+			href="" onclick="return siteManager.loadSiteManagerInTab(function(){siteManager.loadSiteManager('default','222A39B4-9F49-F713-9F6915301CC75BE1','00000000000000000000000000000000000','','','Page',1)});"
+		><i class="mi-file"></i>Flat Page 12</a></strong></li>
+		</ul> 
+				<ul class="nodeMeta">
+					
+					<li class="categories">Categories: <strong>
+						Cat A, Cat B 
+						</strong>
+					</dd>
+					<li class="tags">Tags: <strong>alpha,beta</strong></li>
+					<li class="type">Type: <strong>Page (Default)</strong></li>
+					<li class="updated-short" title="Updated on 11/316/2026 at 2:44:15 PM  by  / Created on 11/316/2026 at 2:44:15 PM ">Updated: <strong>11/316/2026</strong></li>
+				</ul>
+			</tr>
+		
+
+		<tr data-siteid="default" data-contentid="222A36E4-E9EF-A5B4-9F3C6359DBFFFDCC" data-contenthistid="222A3723-FA47-29F1-F75DD9E1D060BD9A" data-sortby="orderno" data-sortdirection="asc" data-moduleid="00000000000000000000000000000000000" data-type="Page" class="mura-node-data">
+			<td class="add"><a class="add" href="javascript:;"  onclick="siteManager.showMenu('newContentMenu','editor',this,'222A36E4-E9EF-A5B4-9F3C6359DBFFFDCC','222A36E4-E9EF-A5B4-9F3C6359DBFFFDCC','222A36E4-E9EF-A5B4-9F3C6359DBFFFDCC','default','Page','00000000000000000000000000000000000');"><i class="mi-ellipsis-v"></i></a></td>
+			<td class="var-width item">
+
+			<div class="actions">
+				<ul class="siteSummary">
+					
+
+					    <li class="edit"><a title="Edit" onclick="draftprompt.call(this,event);return false;" data-siteid="default" data-contentid="222A36E4-E9EF-A5B4-9F3C6359DBFFFDCC" data-contenthistid="222A3723-FA47-29F1-F75DD9E1D060BD9A" href="" data-href="./?muraAction=cArch.edit&contenthistid=222A3723-FA47-29F1-F75DD9E1D060BD9A&contentid=222A36E4-E9EF-A5B4-9F3C6359DBFFFDCC&type=Page&parentid=222A01B2-C3CB-E417-627BBA806D0308A3&topid=222A01B2-C3CB-E417-627BBA806D0308A3&siteid=default&moduleid=00000000000000000000000000000000000&startrow=1"><i class="mi-pencil"></i></a></li>
+						
+							<li class="preview"><a title="Preview" href="http://localhost:22180/flat-folder/flat-page-11/"><i class="mi-globe"></i></a></li>
+							
+						 <li class="version-history"><a title="Version History" href="./?muraAction=cArch.hist&contentid=222A36E4-E9EF-A5B4-9F3C6359DBFFFDCC&type=Page&parentid=222A01B2-C3CB-E417-627BBA806D0308A3&topid=222A01B2-C3CB-E417-627BBA806D0308A3&siteid=default&moduleid=00000000000000000000000000000000000&startrow=1"><i class="mi-history"></i></a></li>
+
+						
+					        <li class="permissions"><a title="Permissions" href="./?muraAction=cPerm.main&contentid=222A36E4-E9EF-A5B4-9F3C6359DBFFFDCC&type=Page&parentid=222A01B2-C3CB-E417-627BBA806D0308A3&topid=222A01B2-C3CB-E417-627BBA806D0308A3&siteid=default&moduleid=00000000000000000000000000000000000&startrow=1"><i class="mi-group"></i></a></li>
+					    
+					        <li class="delete"><a title="Delete" href="./?muraAction=cArch.update&contentid=222A36E4-E9EF-A5B4-9F3C6359DBFFFDCC&type=Page&action=deleteall&topid=222A01B2-C3CB-E417-627BBA806D0308A3&siteid=default&moduleid=00000000000000000000000000000000000&parentid=222A01B2-C3CB-E417-627BBA806D0308A3&startrow=1&csrf_token=<token>&csrf_token_expires=<token>"onclick="return confirmDialog('Deleting\x20\x27Flat\x20Page\x2011\x27\x20will\x20also\x20delete\x20all\x20content\x20nested\x20beneath\x20it',this.href)">
+							<i class="mi-trash"></i></a></li>
+					    
+
+				</ul>
+			</div>
+			
+
+				<h2>
+					
+						<a class="draftprompt" title="Edit" class="draftprompt"  href="./?muraAction=cArch.edit&contenthistid=222A3723-FA47-29F1-F75DD9E1D060BD9A&contentid=222A36E4-E9EF-A5B4-9F3C6359DBFFFDCC&type=Page&parentid=222A01B2-C3CB-E417-627BBA806D0308A3&topid=222A01B2-C3CB-E417-627BBA806D0308A3&siteid=default&moduleid=00000000000000000000000000000000000&startrow=1">Flat Page 11 
+
+						</a>
+					
+				</h2>
+				
+					<span class="breadcrumb-label">Location: </span><ul class="breadcrumb">
+		
+			<li class="">
+			<a 
+				href="" onclick="return siteManager.loadSiteManagerInTab(function(){siteManager.loadSiteManager('default','00000000000000000000000000000000001','00000000000000000000000000000000000','','','Page',1)});"
+			><i class="mi-file"></i>Home</a></li>
+		
+			<li class="">
+			<a 
+				href="" onclick="return siteManager.loadSiteManagerInTab(function(){siteManager.loadSiteManager('default','222A01B2-C3CB-E417-627BBA806D0308A3','00000000000000000000000000000000000','','','Folder',1)});"
+			><i class="mi-folder-open-o"></i>Flat Folder</a></li>
+		
+		<li class=""><strong>
+		<a 
+			href="" onclick="return siteManager.loadSiteManagerInTab(function(){siteManager.loadSiteManager('default','222A36E4-E9EF-A5B4-9F3C6359DBFFFDCC','00000000000000000000000000000000000','','','Page',1)});"
+		><i class="mi-file"></i>Flat Page 11</a></strong></li>
+		</ul> 
+				<ul class="nodeMeta">
+					</dd>
+					
+					<li class="type">Type: <strong>Page (Default)</strong></li>
+					<li class="updated-short" title="Updated on 11/316/2026 at 2:44:15 PM  by  / Created on 11/316/2026 at 2:44:15 PM ">Updated: <strong>11/316/2026</strong></li>
+				</ul>
+			</tr>
+		
+
+		<tr data-siteid="default" data-contentid="222A3447-FCE6-422C-841E64C315294EC1" data-contenthistid="222A3486-9D9D-769A-F18FD7455571E975" data-sortby="orderno" data-sortdirection="asc" data-moduleid="00000000000000000000000000000000000" data-type="Page" class="mura-node-data">
+			<td class="add"><a class="add" href="javascript:;"  onclick="siteManager.showMenu('newContentMenu','editor',this,'222A3447-FCE6-422C-841E64C315294EC1','222A3447-FCE6-422C-841E64C315294EC1','222A3447-FCE6-422C-841E64C315294EC1','default','Page','00000000000000000000000000000000000');"><i class="mi-ellipsis-v"></i></a></td>
+			<td class="var-width item">
+
+			<div class="actions">
+				<ul class="siteSummary">
+					
+
+					    <li class="edit"><a title="Edit" onclick="draftprompt.call(this,event);return false;" data-siteid="default" data-contentid="222A3447-FCE6-422C-841E64C315294EC1" data-contenthistid="222A3486-9D9D-769A-F18FD7455571E975" href="" data-href="./?muraAction=cArch.edit&contenthistid=222A3486-9D9D-769A-F18FD7455571E975&contentid=222A3447-FCE6-422C-841E64C315294EC1&type=Page&parentid=222A01B2-C3CB-E417-627BBA806D0308A3&topid=222A01B2-C3CB-E417-627BBA806D0308A3&siteid=default&moduleid=00000000000000000000000000000000000&startrow=1"><i class="mi-pencil"></i></a></li>
+						
+							<li class="preview"><a title="Preview" href="http://localhost:22180/flat-folder/flat-page-10/"><i class="mi-globe"></i></a></li>
+							
+						 <li class="version-history"><a title="Version History" href="./?muraAction=cArch.hist&contentid=222A3447-FCE6-422C-841E64C315294EC1&type=Page&parentid=222A01B2-C3CB-E417-627BBA806D0308A3&topid=222A01B2-C3CB-E417-627BBA806D0308A3&siteid=default&moduleid=00000000000000000000000000000000000&startrow=1"><i class="mi-history"></i></a></li>
+
+						
+					        <li class="permissions"><a title="Permissions" href="./?muraAction=cPerm.main&contentid=222A3447-FCE6-422C-841E64C315294EC1&type=Page&parentid=222A01B2-C3CB-E417-627BBA806D0308A3&topid=222A01B2-C3CB-E417-627BBA806D0308A3&siteid=default&moduleid=00000000000000000000000000000000000&startrow=1"><i class="mi-group"></i></a></li>
+					    
+					        <li class="delete"><a title="Delete" href="./?muraAction=cArch.update&contentid=222A3447-FCE6-422C-841E64C315294EC1&type=Page&action=deleteall&topid=222A01B2-C3CB-E417-627BBA806D0308A3&siteid=default&moduleid=00000000000000000000000000000000000&parentid=222A01B2-C3CB-E417-627BBA806D0308A3&startrow=1&csrf_token=<token>&csrf_token_expires=<token>"onclick="return confirmDialog('Deleting\x20\x27Flat\x20Page\x2010\x27\x20will\x20also\x20delete\x20all\x20content\x20nested\x20beneath\x20it',this.href)">
+							<i class="mi-trash"></i></a></li>
+					    
+
+				</ul>
+			</div>
+			
+
+				<h2>
+					
+						<a class="draftprompt" title="Edit" class="draftprompt"  href="./?muraAction=cArch.edit&contenthistid=222A3486-9D9D-769A-F18FD7455571E975&contentid=222A3447-FCE6-422C-841E64C315294EC1&type=Page&parentid=222A01B2-C3CB-E417-627BBA806D0308A3&topid=222A01B2-C3CB-E417-627BBA806D0308A3&siteid=default&moduleid=00000000000000000000000000000000000&startrow=1">Flat Page 10 
+
+						</a>
+					
+				</h2>
+				
+					<span class="breadcrumb-label">Location: </span><ul class="breadcrumb">
+		
+			<li class="">
+			<a 
+				href="" onclick="return siteManager.loadSiteManagerInTab(function(){siteManager.loadSiteManager('default','00000000000000000000000000000000001','00000000000000000000000000000000000','','','Page',1)});"
+			><i class="mi-file"></i>Home</a></li>
+		
+			<li class="">
+			<a 
+				href="" onclick="return siteManager.loadSiteManagerInTab(function(){siteManager.loadSiteManager('default','222A01B2-C3CB-E417-627BBA806D0308A3','00000000000000000000000000000000000','','','Folder',1)});"
+			><i class="mi-folder-open-o"></i>Flat Folder</a></li>
+		
+		<li class=""><strong>
+		<a 
+			href="" onclick="return siteManager.loadSiteManagerInTab(function(){siteManager.loadSiteManager('default','222A3447-FCE6-422C-841E64C315294EC1','00000000000000000000000000000000000','','','Page',1)});"
+		><i class="mi-file"></i>Flat Page 10</a></strong></li>
+		</ul> 
+				<ul class="nodeMeta">
+					</dd>
+					
+					<li class="type">Type: <strong>Page (Default)</strong></li>
+					<li class="updated-short" title="Updated on 11/316/2026 at 2:44:15 PM  by  / Created on 11/316/2026 at 2:44:15 PM ">Updated: <strong>11/316/2026</strong></li>
+				</ul>
+			</tr>
+		
+
+		<tr data-siteid="default" data-contentid="222A0D0A-0DA6-E5C7-D31C79CA692E4037" data-contenthistid="222A0D81-AF02-1BAF-C301F6EFAAE0A26D" data-sortby="orderno" data-sortdirection="asc" data-moduleid="00000000000000000000000000000000000" data-type="Page" class="mura-node-data">
+			<td class="add"><a class="add" href="javascript:;"  onclick="siteManager.showMenu('newContentMenu','editor',this,'222A0D0A-0DA6-E5C7-D31C79CA692E4037','222A0D0A-0DA6-E5C7-D31C79CA692E4037','222A0D0A-0DA6-E5C7-D31C79CA692E4037','default','Page','00000000000000000000000000000000000');"><i class="mi-ellipsis-v"></i></a></td>
+			<td class="var-width item">
+
+			<div class="actions">
+				<ul class="siteSummary">
+					
+
+					    <li class="edit"><a title="Edit" onclick="draftprompt.call(this,event);return false;" data-siteid="default" data-contentid="222A0D0A-0DA6-E5C7-D31C79CA692E4037" data-contenthistid="222A0D81-AF02-1BAF-C301F6EFAAE0A26D" href="" data-href="./?muraAction=cArch.edit&contenthistid=222A0D81-AF02-1BAF-C301F6EFAAE0A26D&contentid=222A0D0A-0DA6-E5C7-D31C79CA692E4037&type=Page&parentid=222A01B2-C3CB-E417-627BBA806D0308A3&topid=222A01B2-C3CB-E417-627BBA806D0308A3&siteid=default&moduleid=00000000000000000000000000000000000&startrow=1"><i class="mi-pencil"></i></a></li>
+						
+							<li class="preview"><a title="Preview" href="http://localhost:22180/flat-folder/flat-page-1/"><i class="mi-globe"></i></a></li>
+							
+						 <li class="version-history"><a title="Version History" href="./?muraAction=cArch.hist&contentid=222A0D0A-0DA6-E5C7-D31C79CA692E4037&type=Page&parentid=222A01B2-C3CB-E417-627BBA806D0308A3&topid=222A01B2-C3CB-E417-627BBA806D0308A3&siteid=default&moduleid=00000000000000000000000000000000000&startrow=1"><i class="mi-history"></i></a></li>
+
+						
+					        <li class="permissions"><a title="Permissions" href="./?muraAction=cPerm.main&contentid=222A0D0A-0DA6-E5C7-D31C79CA692E4037&type=Page&parentid=222A01B2-C3CB-E417-627BBA806D0308A3&topid=222A01B2-C3CB-E417-627BBA806D0308A3&siteid=default&moduleid=00000000000000000000000000000000000&startrow=1"><i class="mi-group"></i></a></li>
+					    
+					        <li class="delete"><a title="Delete" href="./?muraAction=cArch.update&contentid=222A0D0A-0DA6-E5C7-D31C79CA692E4037&type=Page&action=deleteall&topid=222A01B2-C3CB-E417-627BBA806D0308A3&siteid=default&moduleid=00000000000000000000000000000000000&parentid=222A01B2-C3CB-E417-627BBA806D0308A3&startrow=1&csrf_token=<token>&csrf_token_expires=<token>"onclick="return confirmDialog('Deleting\x20\x27Flat\x20Page\x201\x27\x20will\x20also\x20delete\x20all\x20content\x20nested\x20beneath\x20it',this.href)">
+							<i class="mi-trash"></i></a></li>
+					    
+
+				</ul>
+			</div>
+			
+
+				<h2>
+					
+						<a class="draftprompt" title="Edit" class="draftprompt"  href="./?muraAction=cArch.edit&contenthistid=222A0D81-AF02-1BAF-C301F6EFAAE0A26D&contentid=222A0D0A-0DA6-E5C7-D31C79CA692E4037&type=Page&parentid=222A01B2-C3CB-E417-627BBA806D0308A3&topid=222A01B2-C3CB-E417-627BBA806D0308A3&siteid=default&moduleid=00000000000000000000000000000000000&startrow=1">Flat Page 1 
+
+						</a>
+					
+				</h2>
+				
+					<span class="breadcrumb-label">Location: </span><ul class="breadcrumb">
+		
+			<li class="">
+			<a 
+				href="" onclick="return siteManager.loadSiteManagerInTab(function(){siteManager.loadSiteManager('default','00000000000000000000000000000000001','00000000000000000000000000000000000','','','Page',1)});"
+			><i class="mi-file"></i>Home</a></li>
+		
+			<li class="">
+			<a 
+				href="" onclick="return siteManager.loadSiteManagerInTab(function(){siteManager.loadSiteManager('default','222A01B2-C3CB-E417-627BBA806D0308A3','00000000000000000000000000000000000','','','Folder',1)});"
+			><i class="mi-folder-open-o"></i>Flat Folder</a></li>
+		
+		<li class=""><strong>
+		<a 
+			href="" onclick="return siteManager.loadSiteManagerInTab(function(){siteManager.loadSiteManager('default','222A0D0A-0DA6-E5C7-D31C79CA692E4037','00000000000000000000000000000000000','','','Page',1)});"
+		><i class="mi-file"></i>Flat Page 1</a></strong></li>
+		</ul> 
+				<ul class="nodeMeta">
+					</dd>
+					
+					<li class="type">Type: <strong>Page (Default)</strong></li>
+					<li class="updated-short" title="Updated on 11/316/2026 at 2:44:14 PM  by  / Created on 11/316/2026 at 2:44:14 PM ">Updated: <strong>11/316/2026</strong></li>
+				</ul>
+			</tr>
+		
+	</table>
+
+	
+
+		<div class="mura-results-wrapper">
+		<p class="search-showing">Showing 1-4 of 4 Results</p>
+		
+		</div>
+	
+
+</div>
+</div>
+
+<script>
+	// list view advanced filters
+  jQuery(document).ready(function(){
+
+  	var serializeCatCheckboxes = function(){
+			var catContainer = jQuery('#category-select-control');
+  		jQuery(catContainer).find('.tag').remove();
+			jQuery('#category-select-list input[type=checkbox]:checked').each(function(){
+	  		var thisText = $(this).parent('li').clone().children().remove().end().text();
+	  		var selCat = '<span class="tag">' + thisText + '</span>';
+	  		jQuery(selCat).appendTo(catContainer);
+
+  		});
+  	}
+  	jQuery('#category-select-list input[type=checkbox]').click(function(){
+  			serializeCatCheckboxes();
+  	});
+		serializeCatCheckboxes();
+
+  	jQuery('#category-select-list').hide();
+  	jQuery('#category-select-control').click(function(){
+  		jQuery('#category-select-list').slideToggle('fast');
+  	})
+
+		jQuery('#navFilterControls').hide();
+		var toggleNavFilters = function(el){
+			jQuery('#navFilterControls').slideToggle('fast');
+			jQuery(el).find('i').toggleClass('mi-chevron-down').toggleClass('mi-chevron-up');
+		}
+
+		jQuery('#navFiltersToggle').click(function(){
+			toggleNavFilters(jQuery(this));
+		})
+
+		
+			toggleNavFilters(jQuery('#navFiltersToggle'));
+		
+
+		jQuery('td.item').on('click',function(e){
+			var el = e.target;
+			var elType = el.tagName;
+			var editLink = $(el).find('a.draftprompt');
+			if (elType == 'TD' || elType == 'UL' || elType == 'H2'){
+					$(editLink).trigger('click');
+			}
+		})
+
+  });
+
+	function clearFlatviewFilter(){
+		flatViewArgs=$.extend(
+			initFlatViewArgs(),
+			{
+					report:'',
+					sortby:'lastupdate',
+					sortdirection:'desc',
+					tag:'',
+					type:'',
+					subtype:'',
+					categoryid:'',
+					keywords:''
+					,
+					filtered:false
+					
+
+					});
+
+		siteManager.loadSiteFlat(flatViewArgs);
+	}
+</script>
+

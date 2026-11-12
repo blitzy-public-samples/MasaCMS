@@ -1,0 +1,97 @@
+{
+ "user": "admin",
+ "request": {
+  "siteid": "default",
+  "contentid": "00000000000000000000000000000000003",
+  "parentid": "00000000000000000000000000000000003",
+  "topid": "00000000000000000000000000000000003",
+  "ptype": "Module",
+  "moduleid": "00000000000000000000000000000000003",
+  "contenthistid": "ABC"
+ },
+ "model": {
+  "siteId": "default",
+  "contentId": "00000000000000000000000000000000003",
+  "contentHistId": "ABC",
+  "topId": "00000000000000000000000000000000003",
+  "moduleId": "00000000000000000000000000000000003",
+  "ptype": "Module",
+  "compactDisplay": "false",
+  "frontEndProxyLoc": false,
+  "powerUser": true,
+  "primaryContentTypes": "",
+  "availableSubTypes": "",
+  "subtypes": [
+   {
+    "type": "Component",
+    "subtype": "Widget",
+    "adminonly": 0,
+    "description": "A widget"
+   },
+   {
+    "type": "File",
+    "subtype": "Brochure",
+    "adminonly": 0,
+    "description": "PDF brochure"
+   },
+   {
+    "type": "Folder",
+    "subtype": "Locked",
+    "adminonly": 1,
+    "description": ""
+   },
+   {
+    "type": "Form",
+    "subtype": "Default",
+    "adminonly": 0,
+    "description": "Plain form"
+   },
+   {
+    "type": "Form",
+    "subtype": "Survey",
+    "adminonly": 0,
+    "description": "Survey form"
+   },
+   {
+    "type": "Link",
+    "subtype": "Default",
+    "adminonly": 1,
+    "description": "Link <desc> & \"q\""
+   },
+   {
+    "type": "Page",
+    "subtype": "Special",
+    "adminonly": 0,
+    "description": "A \"special\" page"
+   }
+  ],
+  "allowSimpleHtmlForms": false,
+  "allowMultiUpload": true
+ },
+ "iconRows": [
+  {
+   "siteid": "default",
+   "type": "Link",
+   "subtype": "Default",
+   "iconclass": ""
+  },
+  {
+   "siteid": "default",
+   "type": "Folder",
+   "subtype": "Locked",
+   "iconclass": ""
+  },
+  {
+   "siteid": "default",
+   "type": "Page",
+   "subtype": "Special",
+   "iconclass": "mi-star"
+  },
+  {
+   "siteid": "default",
+   "type": "File",
+   "subtype": "Brochure",
+   "iconclass": ""
+  }
+ ]
+}

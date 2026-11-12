@@ -1,0 +1,58 @@
+
+<div class="form-inline">
+<h2>Search for Content</h2>
+<div class="mura-input-set">
+	<input id="parentSearch" name="parentSearch" value="" type="text" class="text" maxlength="50" onclick="return false;">
+	<input id="parentSearchSubmit" type="button" class="btn" onclick="siteManager.loadSiteParents('default','x','222A01B2-C3CB-E417-627BBA806D0308A3',document.getElementById('parentSearch').value,0);return false;" value="Search">
+</div>
+
+</div>
+
+ <table class="mura-table-grid">
+  
+		<tr>
+		  <th class="actions"></th>
+	    <th class="var-width">Select New Content Parent</th>
+    </tr>
+	
+			<tr class="alt">
+				<td class="actions"><input type="radio" name="parentid" value="222A01B2-C3CB-E417-627BBA806D0308A3" checked="checked"></td>
+				 <td class="var-width">
+		<ul class="navZoom">
+		
+			<li class="mi-file "> Home</li>
+		
+		<li class="mi-folder-open-o "> <strong>Flat Folder</strong></li>
+		</ul></td>
+			</tr> 
+						<tr >
+						  <td class="actions"><input type="radio" name="parentid" value="22EAC6D9-FCF5-1CFE-F020CDBB294D1694"></td>
+			        <td class="var-width">
+		<ul class="navZoom">
+		
+			<li class="mi-file "> Home</li>
+		
+			<li class="mi-folder-open-o "> Flat Folder</li>
+		
+		<li class="ext-pdf  file" data-filetype="ext-"> <strong>Brochure Doc</strong></li>
+		</ul></td>
+						</tr>
+				 	
+  </table>
+</td></tr></table>
+
+
+<script type="text/javascript">
+	$(document).ready(function(){	
+		$('#parentSearch').on('keypress',function(e){
+			if(e.which == 13) {
+				var pval = $(this).val();
+				$('#parentSearchSubmit').trigger('click');
+				setTimeout(function(){						
+				$('#parentSearch').focus();	
+				},'250')	
+				return false;
+		  	}
+		})
+	})
+</script>

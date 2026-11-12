@@ -1,0 +1,184 @@
+{
+ "user": "admin",
+ "model": {
+  "event": {
+   "startrow": "1",
+   "locking": "false",
+   "subtype": "",
+   "moduleid": "00000000000000000000000000000000000",
+   "categoryid": "",
+   "page": "1",
+   "report": "mydrafts",
+   "siteid": "default",
+   "sortby": "lastupdate",
+   "type": "",
+   "keywords": "",
+   "filtered": "false",
+   "tags": "",
+   "sortdirection": "desc"
+  },
+  "powerUser": true,
+  "customTagGroups": "",
+  "subtypes": [
+   {
+    "type": "Component",
+    "subtype": "Widget",
+    "adminonly": 0,
+    "description": "A widget"
+   },
+   {
+    "type": "File",
+    "subtype": "Brochure",
+    "adminonly": 0,
+    "description": "PDF brochure"
+   },
+   {
+    "type": "Folder",
+    "subtype": "Locked",
+    "adminonly": 1,
+    "description": ""
+   },
+   {
+    "type": "Form",
+    "subtype": "Default",
+    "adminonly": 0,
+    "description": "Plain form"
+   },
+   {
+    "type": "Form",
+    "subtype": "Survey",
+    "adminonly": 0,
+    "description": "Survey form"
+   },
+   {
+    "type": "Link",
+    "subtype": "Default",
+    "adminonly": 1,
+    "description": "Link <desc> & \"q\""
+   },
+   {
+    "type": "Page",
+    "subtype": "Special",
+    "adminonly": 0,
+    "description": "A \"special\" page"
+   }
+  ],
+  "totalRecords": 0,
+  "rows": [],
+  "reportCounts": {
+   "myapprovals": 2,
+   "mylockedcontent": 2,
+   "myexpires": 0,
+   "mysubmissions": 1,
+   "mydrafts": 0
+  },
+  "categoryCount": 3,
+  "categories": [
+   {
+    "categoryid": "2229FB72-FC29-AE58-FA447A006770F27B",
+    "name": "Cat A",
+    "isopen": 1,
+    "kids": [
+     {
+      "categoryid": "2229FD3F-CCF9-DB0F-BBA4B1FE48B5C874",
+      "name": "Cat B",
+      "isopen": 1,
+      "kids": []
+     }
+    ]
+   },
+   {
+    "categoryid": "2229FE2F-A2AB-4BC0-335562F1956AC3B9",
+    "name": "Closed C",
+    "isopen": 0,
+    "kids": []
+   }
+  ]
+ },
+ "iconRows": [
+  {
+   "siteid": "default",
+   "type": "Link",
+   "subtype": "Default",
+   "iconclass": ""
+  },
+  {
+   "siteid": "default",
+   "type": "Folder",
+   "subtype": "Locked",
+   "iconclass": ""
+  },
+  {
+   "siteid": "default",
+   "type": "Page",
+   "subtype": "Special",
+   "iconclass": "mi-star"
+  },
+  {
+   "siteid": "default",
+   "type": "File",
+   "subtype": "Brochure",
+   "iconclass": ""
+  }
+ ],
+ "session": {
+  "userId": "AF1841AB-0ED4-34A5-AF2596AB342BA3E6",
+  "siteId": "default",
+  "memberships": "S2IsPrivate;default,S2IsPrivate,S2,admin;username;default",
+  "dateKeyFormat": "MM/DD/YYYY",
+  "rb": "en_US",
+  "nextN": 20,
+  "openSectionList": "",
+  "flatViewArgs": {
+   "default": {
+    "SUBTYPE": "",
+    "MODULEID": "00000000000000000000000000000000000",
+    "CATEGORYID": "",
+    "PAGE": "1",
+    "REPORT": "mysubmissions",
+    "LOCKID": "",
+    "TAB": 1,
+    "SORTBY": "duedate",
+    "TYPE": "",
+    "SORTDIRECTION": "desc",
+    "ASSIGNMENTS": "",
+    "TAGS": "",
+    "KEYWORDS": "",
+    "FILTERED": "No"
+   }
+  },
+  "copyContentId": "",
+  "copySiteId": "",
+  "copyAll": false
+ },
+ "siteSettings": {
+  "locking": "none",
+  "hasComments": false,
+  "hasLockableNodes": false,
+  "privateUserPoolId": "default",
+  "extranet": false
+ },
+ "config": {
+  "sortPermission": "",
+  "adminDir": "/admin",
+  "context": ""
+ },
+ "sessionAfter": {
+  "default": {
+   "SUBTYPE": "",
+   "MODULEID": "00000000000000000000000000000000000",
+   "CATEGORYID": "",
+   "PAGE": "1",
+   "REPORT": "mydrafts",
+   "LOCKID": "",
+   "TAB": 1,
+   "SORTBY": "lastupdate",
+   "TYPE": "",
+   "SORTDIRECTION": "desc",
+   "ASSIGNMENTS": "",
+   "TAGS": "",
+   "KEYWORDS": "",
+   "FILTERED": "No"
+  }
+ }
+}

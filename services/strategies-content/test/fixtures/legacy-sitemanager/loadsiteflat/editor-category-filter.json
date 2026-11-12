@@ -1,0 +1,364 @@
+{
+ "user": "qa_editor",
+ "model": {
+  "event": {
+   "startrow": "1",
+   "locking": "false",
+   "subtype": "",
+   "moduleid": "00000000000000000000000000000000000",
+   "categoryid": "2229FD3F-CCF9-DB0F-BBA4B1FE48B5C874",
+   "page": "1",
+   "report": "",
+   "siteid": "default",
+   "sortby": "lastupdate",
+   "type": "",
+   "filtered": "true",
+   "keywords": "",
+   "sortdirection": "desc",
+   "tags": ""
+  },
+  "powerUser": false,
+  "customTagGroups": "Color^Size,Shape",
+  "subtypes": [
+   {
+    "type": "File",
+    "subtype": "Brochure",
+    "adminonly": 0,
+    "description": "PDF brochure"
+   },
+   {
+    "type": "Folder",
+    "subtype": "Locked",
+    "adminonly": 1,
+    "description": ""
+   },
+   {
+    "type": "Form",
+    "subtype": "Survey",
+    "adminonly": 0,
+    "description": "Survey form"
+   },
+   {
+    "type": "Page",
+    "subtype": "Special",
+    "adminonly": 0,
+    "description": "A \"special\" page"
+   }
+  ],
+  "totalRecords": 3,
+  "rows": [
+   {
+    "siteid": "default",
+    "contentid": "222A39B4-9F49-F713-9F6915301CC75BE1",
+    "contenthistid": "222A3F0A-9F61-FA43-3EEB13FD5D9B11DA",
+    "parentid": "222A01B2-C3CB-E417-627BBA806D0308A3",
+    "moduleid": "00000000000000000000000000000000000",
+    "type": "Page",
+    "subtype": "Default",
+    "menutitle": "Flat Page 12",
+    "filename": "flat-folder/flat-page-12",
+    "fileid": "",
+    "sortby": "orderno",
+    "sortdirection": "asc",
+    "islocked": 0,
+    "majorversion": 0,
+    "minorversion": 0,
+    "lastupdate": "2026-11-12T14:44:15.693",
+    "lastupdateby": "",
+    "created": "2026-11-12T14:44:15.000",
+    "expires": null,
+    "tags": "alpha,beta",
+    "fileext": "",
+    "filesize": null,
+    "lockid": "",
+    "locktype": "",
+    "crumbs": [
+     {
+      "siteid": "default",
+      "contentid": "222A39B4-9F49-F713-9F6915301CC75BE1",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Flat Page 12",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000",
+      "parentarray": [
+       "222A39B4-9F49-F713-9F6915301CC75BE1",
+       "222A01B2-C3CB-E417-627BBA806D0308A3",
+       "00000000000000000000000000000000001"
+      ]
+     },
+     {
+      "siteid": "default",
+      "contentid": "222A01B2-C3CB-E417-627BBA806D0308A3",
+      "type": "Folder",
+      "subtype": "Default",
+      "menutitle": "Flat Folder",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     },
+     {
+      "siteid": "default",
+      "contentid": "00000000000000000000000000000000001",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Home",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     }
+    ],
+    "verdict": "editor",
+    "categories": [
+     "Cat A",
+     "Cat B"
+    ]
+   },
+   {
+    "siteid": "default",
+    "contentid": "222A2BA6-BD0E-2CA0-8DFA6E41B8212D48",
+    "contenthistid": "222A2E8E-0CF1-2A16-7142AEFFE1FDEE01",
+    "parentid": "222A01B2-C3CB-E417-627BBA806D0308A3",
+    "moduleid": "00000000000000000000000000000000000",
+    "type": "Page",
+    "subtype": "Default",
+    "menutitle": "Flat Page 8",
+    "filename": "flat-folder/flat-page-8",
+    "fileid": "",
+    "sortby": "orderno",
+    "sortdirection": "asc",
+    "islocked": 0,
+    "majorversion": 0,
+    "minorversion": 0,
+    "lastupdate": "2026-11-12T14:44:15.267",
+    "lastupdateby": "",
+    "created": "2026-11-12T14:44:15.000",
+    "expires": null,
+    "tags": "",
+    "fileext": "",
+    "filesize": null,
+    "lockid": "",
+    "locktype": "",
+    "crumbs": [
+     {
+      "siteid": "default",
+      "contentid": "222A2BA6-BD0E-2CA0-8DFA6E41B8212D48",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Flat Page 8",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000",
+      "parentarray": [
+       "222A2BA6-BD0E-2CA0-8DFA6E41B8212D48",
+       "222A01B2-C3CB-E417-627BBA806D0308A3",
+       "00000000000000000000000000000000001"
+      ]
+     },
+     {
+      "siteid": "default",
+      "contentid": "222A01B2-C3CB-E417-627BBA806D0308A3",
+      "type": "Folder",
+      "subtype": "Default",
+      "menutitle": "Flat Folder",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     },
+     {
+      "siteid": "default",
+      "contentid": "00000000000000000000000000000000001",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Home",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     }
+    ],
+    "verdict": "editor",
+    "categories": [
+     "Cat A",
+     "Cat B"
+    ]
+   },
+   {
+    "siteid": "default",
+    "contentid": "222A165B-B3CC-CD21-37B7A66207BBAC00",
+    "contenthistid": "222A1984-0058-DF58-3895C32E8A18CB44",
+    "parentid": "222A01B2-C3CB-E417-627BBA806D0308A3",
+    "moduleid": "00000000000000000000000000000000000",
+    "type": "Page",
+    "subtype": "Default",
+    "menutitle": "Flat Page 4",
+    "filename": "flat-folder/flat-page-4",
+    "fileid": "",
+    "sortby": "orderno",
+    "sortdirection": "asc",
+    "islocked": 0,
+    "majorversion": 0,
+    "minorversion": 0,
+    "lastupdate": "2026-11-12T14:44:14.767",
+    "lastupdateby": "",
+    "created": "2026-11-12T14:44:14.000",
+    "expires": null,
+    "tags": "",
+    "fileext": "",
+    "filesize": null,
+    "lockid": "",
+    "locktype": "",
+    "crumbs": [
+     {
+      "siteid": "default",
+      "contentid": "222A165B-B3CC-CD21-37B7A66207BBAC00",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Flat Page 4",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000",
+      "parentarray": [
+       "222A165B-B3CC-CD21-37B7A66207BBAC00",
+       "222A01B2-C3CB-E417-627BBA806D0308A3",
+       "00000000000000000000000000000000001"
+      ]
+     },
+     {
+      "siteid": "default",
+      "contentid": "222A01B2-C3CB-E417-627BBA806D0308A3",
+      "type": "Folder",
+      "subtype": "Default",
+      "menutitle": "Flat Folder",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     },
+     {
+      "siteid": "default",
+      "contentid": "00000000000000000000000000000000001",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Home",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     }
+    ],
+    "verdict": "editor",
+    "categories": [
+     "Cat A",
+     "Cat B"
+    ]
+   }
+  ],
+  "reportCounts": {
+   "myapprovals": 0,
+   "mylockedcontent": 0,
+   "myexpires": 0,
+   "mysubmissions": 0,
+   "mydrafts": 0
+  },
+  "categoryCount": 3,
+  "categories": [
+   {
+    "categoryid": "2229FB72-FC29-AE58-FA447A006770F27B",
+    "name": "Cat A",
+    "isopen": 1,
+    "kids": [
+     {
+      "categoryid": "2229FD3F-CCF9-DB0F-BBA4B1FE48B5C874",
+      "name": "Cat B",
+      "isopen": 1,
+      "kids": []
+     }
+    ]
+   },
+   {
+    "categoryid": "2229FE2F-A2AB-4BC0-335562F1956AC3B9",
+    "name": "Closed C",
+    "isopen": 0,
+    "kids": []
+   }
+  ]
+ },
+ "iconRows": [
+  {
+   "siteid": "default",
+   "type": "Folder",
+   "subtype": "Locked",
+   "iconclass": ""
+  },
+  {
+   "siteid": "default",
+   "type": "Page",
+   "subtype": "Special",
+   "iconclass": "mi-star"
+  },
+  {
+   "siteid": "default",
+   "type": "File",
+   "subtype": "Brochure",
+   "iconclass": ""
+  }
+ ],
+ "session": {
+  "userId": "AF240756-C1CD-6298-60C0CAF70AACAE2B",
+  "siteId": "default",
+  "memberships": "Editor;default;0,S2IsPrivate;default,S2IsPrivate,qa_editor;username;default",
+  "dateKeyFormat": "MM/DD/YYYY",
+  "rb": "en_US",
+  "nextN": 20,
+  "openSectionList": "",
+  "flatViewArgs": {
+   "default": {
+    "SUBTYPE": "",
+    "Colortags": "",
+    "MODULEID": "00000000000000000000000000000000000",
+    "CATEGORYID": "",
+    "Sizetags": "",
+    "Shapetags": "",
+    "PAGE": "1",
+    "REPORT": "mylockedcontent",
+    "LOCKID": "",
+    "TAB": 1,
+    "SORTBY": "lastupdate",
+    "Color^Sizetags": "",
+    "TYPE": "",
+    "SORTDIRECTION": "desc",
+    "ASSIGNMENTS": "",
+    "TAGS": "",
+    "KEYWORDS": "",
+    "FILTERED": "No"
+   }
+  },
+  "copyContentId": "",
+  "copySiteId": "",
+  "copyAll": false
+ },
+ "siteSettings": {
+  "locking": "none",
+  "hasComments": false,
+  "hasLockableNodes": true,
+  "privateUserPoolId": "default",
+  "extranet": false
+ },
+ "config": {
+  "sortPermission": "",
+  "adminDir": "/admin",
+  "context": ""
+ },
+ "sessionAfter": {
+  "default": {
+   "SUBTYPE": "",
+   "Colortags": "",
+   "MODULEID": "00000000000000000000000000000000000",
+   "CATEGORYID": "2229FD3F-CCF9-DB0F-BBA4B1FE48B5C874",
+   "Sizetags": "",
+   "Shapetags": "",
+   "PAGE": "1",
+   "REPORT": "",
+   "LOCKID": "",
+   "TAB": 1,
+   "SORTBY": "lastupdate",
+   "Color^Sizetags": "",
+   "TYPE": "",
+   "SORTDIRECTION": "desc",
+   "ASSIGNMENTS": "",
+   "TAGS": "",
+   "KEYWORDS": "",
+   "FILTERED": "Yes"
+  }
+ }
+}

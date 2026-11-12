@@ -1,0 +1,25 @@
+
+<div class="form-inline">
+<h2>Search for Content</h2>
+<div class="mura-input-set">
+	<input id="parentSearch" name="parentSearch" value="" type="text" class="text" maxlength="50" onclick="return false;">
+	<input id="parentSearchSubmit" type="button" class="btn" onclick="siteManager.loadSiteParents('default','','00000000000000000000000000000000001',document.getElementById('parentSearch').value,0);return false;" value="Search">
+</div>
+
+</div>
+<input type="hidden" id="parentid" name="parentid" value="00000000000000000000000000000000001" /> 
+
+<script type="text/javascript">
+	$(document).ready(function(){	
+		$('#parentSearch').on('keypress',function(e){
+			if(e.which == 13) {
+				var pval = $(this).val();
+				$('#parentSearchSubmit').trigger('click');
+				setTimeout(function(){						
+				$('#parentSearch').focus();	
+				},'250')	
+				return false;
+		  	}
+		})
+	})
+</script>

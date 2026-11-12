@@ -1,0 +1,413 @@
+{
+ "user": "admin",
+ "model": {
+  "event": {
+   "startrow": "1",
+   "locking": "false",
+   "subtype": "",
+   "moduleid": "00000000000000000000000000000000000",
+   "categoryid": "",
+   "page": "1",
+   "report": "",
+   "siteid": "default",
+   "sortby": "lastupdate",
+   "type": "",
+   "sortdirection": "desc",
+   "keywords": "",
+   "tags": "alpha",
+   "filtered": "true"
+  },
+  "powerUser": true,
+  "customTagGroups": "",
+  "subtypes": [
+   {
+    "type": "Component",
+    "subtype": "Widget",
+    "adminonly": 0,
+    "description": "A widget"
+   },
+   {
+    "type": "File",
+    "subtype": "Brochure",
+    "adminonly": 0,
+    "description": "PDF brochure"
+   },
+   {
+    "type": "Folder",
+    "subtype": "Locked",
+    "adminonly": 1,
+    "description": ""
+   },
+   {
+    "type": "Form",
+    "subtype": "Default",
+    "adminonly": 0,
+    "description": "Plain form"
+   },
+   {
+    "type": "Form",
+    "subtype": "Survey",
+    "adminonly": 0,
+    "description": "Survey form"
+   },
+   {
+    "type": "Link",
+    "subtype": "Default",
+    "adminonly": 1,
+    "description": "Link <desc> & \"q\""
+   },
+   {
+    "type": "Page",
+    "subtype": "Special",
+    "adminonly": 0,
+    "description": "A \"special\" page"
+   }
+  ],
+  "totalRecords": 4,
+  "rows": [
+   {
+    "siteid": "default",
+    "contentid": "222A39B4-9F49-F713-9F6915301CC75BE1",
+    "contenthistid": "222A3F0A-9F61-FA43-3EEB13FD5D9B11DA",
+    "parentid": "222A01B2-C3CB-E417-627BBA806D0308A3",
+    "moduleid": "00000000000000000000000000000000000",
+    "type": "Page",
+    "subtype": "Default",
+    "menutitle": "Flat Page 12",
+    "filename": "flat-folder/flat-page-12",
+    "fileid": "",
+    "sortby": "orderno",
+    "sortdirection": "asc",
+    "islocked": 0,
+    "majorversion": 0,
+    "minorversion": 0,
+    "lastupdate": "2026-11-12T14:44:15.693",
+    "lastupdateby": "",
+    "created": "2026-11-12T14:44:15.000",
+    "expires": null,
+    "tags": "alpha,beta",
+    "fileext": "",
+    "filesize": null,
+    "lockid": "",
+    "locktype": "",
+    "crumbs": [
+     {
+      "siteid": "default",
+      "contentid": "222A39B4-9F49-F713-9F6915301CC75BE1",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Flat Page 12",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000",
+      "parentarray": [
+       "222A39B4-9F49-F713-9F6915301CC75BE1",
+       "222A01B2-C3CB-E417-627BBA806D0308A3",
+       "00000000000000000000000000000000001"
+      ]
+     },
+     {
+      "siteid": "default",
+      "contentid": "222A01B2-C3CB-E417-627BBA806D0308A3",
+      "type": "Folder",
+      "subtype": "Default",
+      "menutitle": "Flat Folder",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     },
+     {
+      "siteid": "default",
+      "contentid": "00000000000000000000000000000000001",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Home",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     }
+    ],
+    "verdict": "editor",
+    "categories": []
+   },
+   {
+    "siteid": "default",
+    "contentid": "222A31A9-AE7E-B3F2-0053F2DA0DFC3199",
+    "contenthistid": "222A31E5-E4F0-5D93-5491B96B57EA58B5",
+    "parentid": "222A01B2-C3CB-E417-627BBA806D0308A3",
+    "moduleid": "00000000000000000000000000000000000",
+    "type": "Page",
+    "subtype": "Default",
+    "menutitle": "Flat Page 9",
+    "filename": "flat-folder/flat-page-9",
+    "fileid": "",
+    "sortby": "orderno",
+    "sortdirection": "asc",
+    "islocked": 0,
+    "majorversion": 0,
+    "minorversion": 0,
+    "lastupdate": "2026-11-12T14:44:15.350",
+    "lastupdateby": "",
+    "created": "2026-11-12T14:44:15.000",
+    "expires": null,
+    "tags": "alpha,beta",
+    "fileext": "",
+    "filesize": null,
+    "lockid": "",
+    "locktype": "",
+    "crumbs": [
+     {
+      "siteid": "default",
+      "contentid": "222A31A9-AE7E-B3F2-0053F2DA0DFC3199",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Flat Page 9",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000",
+      "parentarray": [
+       "222A31A9-AE7E-B3F2-0053F2DA0DFC3199",
+       "222A01B2-C3CB-E417-627BBA806D0308A3",
+       "00000000000000000000000000000000001"
+      ]
+     },
+     {
+      "siteid": "default",
+      "contentid": "222A01B2-C3CB-E417-627BBA806D0308A3",
+      "type": "Folder",
+      "subtype": "Default",
+      "menutitle": "Flat Folder",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     },
+     {
+      "siteid": "default",
+      "contentid": "00000000000000000000000000000000001",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Home",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     }
+    ],
+    "verdict": "editor",
+    "categories": []
+   },
+   {
+    "siteid": "default",
+    "contentid": "222A2629-ACE5-1B9F-A9F4E78ADCC27EEC",
+    "contenthistid": "222A266B-BBD5-ACC2-6AAA43338F19FD87",
+    "parentid": "222A01B2-C3CB-E417-627BBA806D0308A3",
+    "moduleid": "00000000000000000000000000000000000",
+    "type": "Page",
+    "subtype": "Default",
+    "menutitle": "Flat Page 6",
+    "filename": "flat-folder/flat-page-6",
+    "fileid": "",
+    "sortby": "orderno",
+    "sortdirection": "asc",
+    "islocked": 0,
+    "majorversion": 0,
+    "minorversion": 0,
+    "lastupdate": "2026-11-12T14:44:15.060",
+    "lastupdateby": "",
+    "created": "2026-11-12T14:44:15.000",
+    "expires": null,
+    "tags": "alpha,beta",
+    "fileext": "",
+    "filesize": null,
+    "lockid": "",
+    "locktype": "",
+    "crumbs": [
+     {
+      "siteid": "default",
+      "contentid": "222A2629-ACE5-1B9F-A9F4E78ADCC27EEC",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Flat Page 6",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000",
+      "parentarray": [
+       "222A2629-ACE5-1B9F-A9F4E78ADCC27EEC",
+       "222A01B2-C3CB-E417-627BBA806D0308A3",
+       "00000000000000000000000000000000001"
+      ]
+     },
+     {
+      "siteid": "default",
+      "contentid": "222A01B2-C3CB-E417-627BBA806D0308A3",
+      "type": "Folder",
+      "subtype": "Default",
+      "menutitle": "Flat Folder",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     },
+     {
+      "siteid": "default",
+      "contentid": "00000000000000000000000000000000001",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Home",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     }
+    ],
+    "verdict": "editor",
+    "categories": []
+   },
+   {
+    "siteid": "default",
+    "contentid": "222A1362-95F5-7182-AF47E22D5AA7D1FC",
+    "contenthistid": "222A13AE-945D-455A-00881CE1105C2A1C",
+    "parentid": "222A01B2-C3CB-E417-627BBA806D0308A3",
+    "moduleid": "00000000000000000000000000000000000",
+    "type": "Page",
+    "subtype": "Default",
+    "menutitle": "Flat Page 3",
+    "filename": "flat-folder/flat-page-3",
+    "fileid": "",
+    "sortby": "orderno",
+    "sortdirection": "asc",
+    "islocked": 0,
+    "majorversion": 0,
+    "minorversion": 0,
+    "lastupdate": "2026-11-12T14:44:14.583",
+    "lastupdateby": "",
+    "created": "2026-11-12T14:44:14.000",
+    "expires": null,
+    "tags": "alpha,beta",
+    "fileext": "",
+    "filesize": null,
+    "lockid": "",
+    "locktype": "",
+    "crumbs": [
+     {
+      "siteid": "default",
+      "contentid": "222A1362-95F5-7182-AF47E22D5AA7D1FC",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Flat Page 3",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000",
+      "parentarray": [
+       "222A1362-95F5-7182-AF47E22D5AA7D1FC",
+       "222A01B2-C3CB-E417-627BBA806D0308A3",
+       "00000000000000000000000000000000001"
+      ]
+     },
+     {
+      "siteid": "default",
+      "contentid": "222A01B2-C3CB-E417-627BBA806D0308A3",
+      "type": "Folder",
+      "subtype": "Default",
+      "menutitle": "Flat Folder",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     },
+     {
+      "siteid": "default",
+      "contentid": "00000000000000000000000000000000001",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Home",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     }
+    ],
+    "verdict": "editor",
+    "categories": []
+   }
+  ],
+  "reportCounts": {
+   "myapprovals": 2,
+   "mylockedcontent": 2,
+   "myexpires": 0,
+   "mysubmissions": 1,
+   "mydrafts": 0
+  },
+  "categoryCount": 1,
+  "categories": []
+ },
+ "iconRows": [
+  {
+   "siteid": "default",
+   "type": "Link",
+   "subtype": "Default",
+   "iconclass": ""
+  },
+  {
+   "siteid": "default",
+   "type": "Folder",
+   "subtype": "Locked",
+   "iconclass": ""
+  },
+  {
+   "siteid": "default",
+   "type": "Page",
+   "subtype": "Special",
+   "iconclass": "mi-star"
+  },
+  {
+   "siteid": "default",
+   "type": "File",
+   "subtype": "Brochure",
+   "iconclass": "ext-pdf"
+  }
+ ],
+ "session": {
+  "userId": "AF1841AB-0ED4-34A5-AF2596AB342BA3E6",
+  "siteId": "default",
+  "memberships": "S2IsPrivate;default,S2IsPrivate,S2,admin;username;default",
+  "dateKeyFormat": "MM/DD/YYYY",
+  "rb": "en_US",
+  "nextN": 20,
+  "openSectionList": "",
+  "flatViewArgs": {
+   "default": {
+    "SUBTYPE": "",
+    "MODULEID": "00000000000000000000000000000000000",
+    "CATEGORYID": "",
+    "PAGE": "1",
+    "REPORT": "",
+    "LOCKID": "",
+    "TAB": 0,
+    "SORTBY": "lastupdate",
+    "TYPE": "",
+    "SORTDIRECTION": "desc",
+    "ASSIGNMENTS": "false",
+    "TAGS": "",
+    "KEYWORDS": "",
+    "FILTERED": false
+   }
+  },
+  "copyContentId": "",
+  "copySiteId": "",
+  "copyAll": false
+ },
+ "siteSettings": {
+  "locking": "none",
+  "hasComments": false,
+  "hasLockableNodes": false,
+  "privateUserPoolId": "default",
+  "extranet": false
+ },
+ "config": {
+  "sortPermission": "",
+  "adminDir": "/admin",
+  "context": ""
+ },
+ "sessionAfter": {
+  "default": {
+   "SUBTYPE": "",
+   "MODULEID": "00000000000000000000000000000000000",
+   "CATEGORYID": "",
+   "PAGE": "1",
+   "REPORT": "",
+   "LOCKID": "",
+   "TAB": 1,
+   "SORTBY": "lastupdate",
+   "TYPE": "",
+   "SORTDIRECTION": "desc",
+   "ASSIGNMENTS": "",
+   "TAGS": "alpha",
+   "KEYWORDS": "",
+   "FILTERED": "Yes"
+  }
+ }
+}

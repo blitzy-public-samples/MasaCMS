@@ -1,0 +1,732 @@
+{
+ "user": "admin",
+ "model": {
+  "event": {
+   "startrow": "1",
+   "locking": "false",
+   "subtype": "",
+   "moduleid": "00000000000000000000000000000000000",
+   "categoryid": "",
+   "page": "1",
+   "report": "",
+   "siteid": "default",
+   "sortby": "lastupdate",
+   "type": "",
+   "tags": "",
+   "filtered": "false",
+   "sortdirection": "desc",
+   "keywords": ""
+  },
+  "powerUser": true,
+  "customTagGroups": "",
+  "subtypes": [
+   {
+    "type": "File",
+    "subtype": "Brochure",
+    "adminonly": 0,
+    "description": "PDF brochure"
+   },
+   {
+    "type": "Folder",
+    "subtype": "Locked",
+    "adminonly": 1,
+    "description": ""
+   },
+   {
+    "type": "Form",
+    "subtype": "Survey",
+    "adminonly": 0,
+    "description": "Survey form"
+   },
+   {
+    "type": "Page",
+    "subtype": "Special",
+    "adminonly": 0,
+    "description": "A \"special\" page"
+   }
+  ],
+  "totalRecords": 23,
+  "rows": [
+   {
+    "siteid": "default",
+    "contentid": "222A64E4-E65B-887D-E508AF9B84979E0F",
+    "contenthistid": "222A6579-D5A7-D6F6-77B131F7BB3E10B3",
+    "parentid": "00000000000000000000000000000000001",
+    "moduleid": "00000000000000000000000000000000000",
+    "type": "Page",
+    "subtype": "Default",
+    "menutitle": "Locked Page",
+    "filename": "locked-page",
+    "fileid": "",
+    "sortby": "orderno",
+    "sortdirection": "asc",
+    "islocked": 0,
+    "majorversion": 0,
+    "minorversion": 0,
+    "lastupdate": "2026-11-12T14:44:16.673",
+    "lastupdateby": "",
+    "created": "2026-11-12T14:44:16.000",
+    "expires": null,
+    "tags": "",
+    "fileext": "",
+    "filesize": null,
+    "lockid": "AF1841AB-0ED4-34A5-AF2596AB342BA3E6",
+    "locktype": "node",
+    "crumbs": [
+     {
+      "siteid": "default",
+      "contentid": "222A64E4-E65B-887D-E508AF9B84979E0F",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Locked Page",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000",
+      "parentarray": [
+       "222A64E4-E65B-887D-E508AF9B84979E0F",
+       "00000000000000000000000000000000001"
+      ]
+     },
+     {
+      "siteid": "default",
+      "contentid": "00000000000000000000000000000000001",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Home",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     }
+    ],
+    "verdict": "editor",
+    "categories": [],
+    "lockedBy": {
+     "lname": "User",
+     "fname": "Admin"
+    }
+   },
+   {
+    "siteid": "default",
+    "contentid": "222A56D5-0413-3807-D3CDEA0B68355AAE",
+    "contenthistid": "222A570D-AD69-EEA1-2A274383E407BC2E",
+    "parentid": "00000000000000000000000000000000001",
+    "moduleid": "00000000000000000000000000000000000",
+    "type": "File",
+    "subtype": "Default",
+    "menutitle": "Logo Image",
+    "filename": "logo-image",
+    "fileid": "222A57C1-C6F9-0F04-4A5C235C085C8117",
+    "sortby": "orderno",
+    "sortdirection": "asc",
+    "islocked": 0,
+    "majorversion": 1,
+    "minorversion": 0,
+    "lastupdate": "2026-11-12T14:44:16.590",
+    "lastupdateby": "",
+    "created": "2026-11-12T14:44:16.000",
+    "expires": null,
+    "tags": "",
+    "fileext": "png",
+    "filesize": 3963,
+    "lockid": "AF1841AB-0ED4-34A5-AF2596AB342BA3E6",
+    "locktype": "",
+    "crumbs": [
+     {
+      "siteid": "default",
+      "contentid": "222A56D5-0413-3807-D3CDEA0B68355AAE",
+      "type": "File",
+      "subtype": "Default",
+      "menutitle": "Logo Image",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000",
+      "parentarray": [
+       "222A56D5-0413-3807-D3CDEA0B68355AAE",
+       "00000000000000000000000000000000001"
+      ]
+     },
+     {
+      "siteid": "default",
+      "contentid": "00000000000000000000000000000000001",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Home",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     }
+    ],
+    "verdict": "editor",
+    "categories": [],
+    "lockedBy": {
+     "lname": "User",
+     "fname": "Admin"
+    }
+   },
+   {
+    "siteid": "default",
+    "contentid": "222A5217-0A33-3B84-1E897CAF4821A35E",
+    "contenthistid": "222A54C9-A2F3-7911-7BE0A4AF960E1588",
+    "parentid": "00000000000000000000000000000000004",
+    "moduleid": "00000000000000000000000000000000004",
+    "type": "Form",
+    "subtype": "Default",
+    "menutitle": "Contact Form",
+    "filename": "/contact-form",
+    "fileid": "",
+    "sortby": "orderno",
+    "sortdirection": "asc",
+    "islocked": 0,
+    "majorversion": 0,
+    "minorversion": 0,
+    "lastupdate": "2026-11-12T14:44:16.247",
+    "lastupdateby": "",
+    "created": "2026-11-12T14:44:16.000",
+    "expires": null,
+    "tags": "",
+    "fileext": "",
+    "filesize": null,
+    "lockid": "",
+    "locktype": "",
+    "crumbs": [
+     {
+      "siteid": "default",
+      "contentid": "222A5217-0A33-3B84-1E897CAF4821A35E",
+      "type": "Form",
+      "subtype": "Default",
+      "menutitle": "Contact Form",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000004",
+      "parentarray": [
+       "222A5217-0A33-3B84-1E897CAF4821A35E",
+       "00000000000000000000000000000000004"
+      ]
+     },
+     {
+      "siteid": "default",
+      "contentid": "00000000000000000000000000000000004",
+      "type": "Module",
+      "subtype": "Default",
+      "menutitle": "Forms",
+      "restricted": null,
+      "moduleid": "00000000000000000000000000000000004"
+     }
+    ],
+    "verdict": "editor",
+    "categories": []
+   },
+   {
+    "siteid": "default",
+    "contentid": "222A4F76-C4CA-0C05-C39D09828A0E844B",
+    "contenthistid": "222A4FAE-D226-E3E1-142C40B7C7BC85CC",
+    "parentid": "00000000000000000000000000000000003",
+    "moduleid": "00000000000000000000000000000000003",
+    "type": "Component",
+    "subtype": "Default",
+    "menutitle": "Comp One",
+    "filename": "/comp-one",
+    "fileid": "",
+    "sortby": "orderno",
+    "sortdirection": "asc",
+    "islocked": 0,
+    "majorversion": 0,
+    "minorversion": 0,
+    "lastupdate": "2026-11-12T14:44:16.123",
+    "lastupdateby": "",
+    "created": "2026-11-12T14:44:16.000",
+    "expires": null,
+    "tags": "",
+    "fileext": "",
+    "filesize": null,
+    "lockid": "",
+    "locktype": "",
+    "crumbs": [
+     {
+      "siteid": "default",
+      "contentid": "222A4F76-C4CA-0C05-C39D09828A0E844B",
+      "type": "Component",
+      "subtype": "Default",
+      "menutitle": "Comp One",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000003",
+      "parentarray": [
+       "222A4F76-C4CA-0C05-C39D09828A0E844B",
+       "00000000000000000000000000000000003"
+      ]
+     },
+     {
+      "siteid": "default",
+      "contentid": "00000000000000000000000000000000003",
+      "type": "Module",
+      "subtype": "Default",
+      "menutitle": "Components",
+      "restricted": null,
+      "moduleid": "00000000000000000000000000000000003"
+     }
+    ],
+    "verdict": "editor",
+    "categories": []
+   },
+   {
+    "siteid": "default",
+    "contentid": "222A4CB5-AA8F-CFA8-E27E048A7AF846CE",
+    "contenthistid": "222A4CF5-D20F-459F-C641F6D21491FD3D",
+    "parentid": "222A49FE-B704-ABFB-BD9A4976583ECFCA",
+    "moduleid": "00000000000000000000000000000000000",
+    "type": "Page",
+    "subtype": "Default",
+    "menutitle": "Under Secret",
+    "filename": "flat-folder/secret-page/under-secret",
+    "fileid": "",
+    "sortby": "orderno",
+    "sortdirection": "asc",
+    "islocked": 0,
+    "majorversion": 0,
+    "minorversion": 0,
+    "lastupdate": "2026-11-12T14:44:16.047",
+    "lastupdateby": "",
+    "created": "2026-11-12T14:44:16.000",
+    "expires": null,
+    "tags": "",
+    "fileext": "",
+    "filesize": null,
+    "lockid": "",
+    "locktype": "",
+    "crumbs": [
+     {
+      "siteid": "default",
+      "contentid": "222A4CB5-AA8F-CFA8-E27E048A7AF846CE",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Under Secret",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000",
+      "parentarray": [
+       "222A4CB5-AA8F-CFA8-E27E048A7AF846CE",
+       "222A49FE-B704-ABFB-BD9A4976583ECFCA",
+       "222A01B2-C3CB-E417-627BBA806D0308A3",
+       "00000000000000000000000000000000001"
+      ]
+     },
+     {
+      "siteid": "default",
+      "contentid": "222A49FE-B704-ABFB-BD9A4976583ECFCA",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Secret Page",
+      "restricted": 1,
+      "moduleid": "00000000000000000000000000000000000"
+     },
+     {
+      "siteid": "default",
+      "contentid": "222A01B2-C3CB-E417-627BBA806D0308A3",
+      "type": "Folder",
+      "subtype": "Default",
+      "menutitle": "Flat Folder",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     },
+     {
+      "siteid": "default",
+      "contentid": "00000000000000000000000000000000001",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Home",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     }
+    ],
+    "verdict": "editor",
+    "categories": []
+   },
+   {
+    "siteid": "default",
+    "contentid": "222A49FE-B704-ABFB-BD9A4976583ECFCA",
+    "contenthistid": "222A4A3D-0E3D-323C-053E0CC26C4007FA",
+    "parentid": "222A01B2-C3CB-E417-627BBA806D0308A3",
+    "moduleid": "00000000000000000000000000000000000",
+    "type": "Page",
+    "subtype": "Default",
+    "menutitle": "Secret Page",
+    "filename": "flat-folder/secret-page",
+    "fileid": "",
+    "sortby": "orderno",
+    "sortdirection": "asc",
+    "islocked": 0,
+    "majorversion": 0,
+    "minorversion": 0,
+    "lastupdate": "2026-11-12T14:44:15.977",
+    "lastupdateby": "",
+    "created": "2026-11-12T14:44:15.000",
+    "expires": null,
+    "tags": "",
+    "fileext": "",
+    "filesize": null,
+    "lockid": "",
+    "locktype": "",
+    "crumbs": [
+     {
+      "siteid": "default",
+      "contentid": "222A49FE-B704-ABFB-BD9A4976583ECFCA",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Secret Page",
+      "restricted": 1,
+      "moduleid": "00000000000000000000000000000000000",
+      "parentarray": [
+       "222A49FE-B704-ABFB-BD9A4976583ECFCA",
+       "222A01B2-C3CB-E417-627BBA806D0308A3",
+       "00000000000000000000000000000000001"
+      ]
+     },
+     {
+      "siteid": "default",
+      "contentid": "222A01B2-C3CB-E417-627BBA806D0308A3",
+      "type": "Folder",
+      "subtype": "Default",
+      "menutitle": "Flat Folder",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     },
+     {
+      "siteid": "default",
+      "contentid": "00000000000000000000000000000000001",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Home",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     }
+    ],
+    "verdict": "editor",
+    "categories": []
+   },
+   {
+    "siteid": "default",
+    "contentid": "222A4725-FB9A-487D-4F65B1A8315072DA",
+    "contenthistid": "222A475B-F565-6316-BA313C08A0722120",
+    "parentid": "00000000000000000000000000000000001",
+    "moduleid": "00000000000000000000000000000000000",
+    "type": "Page",
+    "subtype": "Special",
+    "menutitle": "Special <b>Page</b>",
+    "filename": "special-page",
+    "fileid": "",
+    "sortby": "orderno",
+    "sortdirection": "asc",
+    "islocked": 0,
+    "majorversion": 0,
+    "minorversion": 0,
+    "lastupdate": "2026-11-12T14:44:15.900",
+    "lastupdateby": "",
+    "created": "2026-11-12T14:44:15.000",
+    "expires": "2026-11-22T14:44:15.000",
+    "tags": "",
+    "fileext": "",
+    "filesize": null,
+    "lockid": "",
+    "locktype": "",
+    "crumbs": [
+     {
+      "siteid": "default",
+      "contentid": "222A4725-FB9A-487D-4F65B1A8315072DA",
+      "type": "Page",
+      "subtype": "Special",
+      "menutitle": "Special <b>Page</b>",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000",
+      "parentarray": [
+       "222A4725-FB9A-487D-4F65B1A8315072DA",
+       "00000000000000000000000000000000001"
+      ]
+     },
+     {
+      "siteid": "default",
+      "contentid": "00000000000000000000000000000000001",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Home",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     }
+    ],
+    "verdict": "editor",
+    "categories": []
+   },
+   {
+    "siteid": "default",
+    "contentid": "222A4489-FE79-3262-9D0C000BC7EADE17",
+    "contenthistid": "222A44C2-AF6C-84C8-E7E60C00AE1CA42E",
+    "parentid": "00000000000000000000000000000000001",
+    "moduleid": "00000000000000000000000000000000000",
+    "type": "Calendar",
+    "subtype": "Default",
+    "menutitle": "Events",
+    "filename": "events",
+    "fileid": "",
+    "sortby": "orderno",
+    "sortdirection": "asc",
+    "islocked": 0,
+    "majorversion": 0,
+    "minorversion": 0,
+    "lastupdate": "2026-11-12T14:44:15.833",
+    "lastupdateby": "",
+    "created": "2026-11-12T14:44:15.000",
+    "expires": null,
+    "tags": "",
+    "fileext": "",
+    "filesize": null,
+    "lockid": "",
+    "locktype": "",
+    "crumbs": [
+     {
+      "siteid": "default",
+      "contentid": "222A4489-FE79-3262-9D0C000BC7EADE17",
+      "type": "Calendar",
+      "subtype": "Default",
+      "menutitle": "Events",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000",
+      "parentarray": [
+       "222A4489-FE79-3262-9D0C000BC7EADE17",
+       "00000000000000000000000000000000001"
+      ]
+     },
+     {
+      "siteid": "default",
+      "contentid": "00000000000000000000000000000000001",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Home",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     }
+    ],
+    "verdict": "editor",
+    "categories": []
+   },
+   {
+    "siteid": "default",
+    "contentid": "222A420A-ABC2-7C5C-839095D05D492FB6",
+    "contenthistid": "222A423F-05B7-A216-4E7BF1F17EC660D3",
+    "parentid": "00000000000000000000000000000000001",
+    "moduleid": "00000000000000000000000000000000000",
+    "type": "Link",
+    "subtype": "Default",
+    "menutitle": "A Link, with comma",
+    "filename": "a-link-with-comma",
+    "fileid": "",
+    "sortby": "orderno",
+    "sortdirection": "asc",
+    "islocked": 0,
+    "majorversion": 0,
+    "minorversion": 0,
+    "lastupdate": "2026-11-12T14:44:15.767",
+    "lastupdateby": "",
+    "created": "2026-11-12T14:44:15.000",
+    "expires": null,
+    "tags": "",
+    "fileext": "",
+    "filesize": null,
+    "lockid": "",
+    "locktype": "",
+    "crumbs": [
+     {
+      "siteid": "default",
+      "contentid": "222A420A-ABC2-7C5C-839095D05D492FB6",
+      "type": "Link",
+      "subtype": "Default",
+      "menutitle": "A Link, with comma",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000",
+      "parentarray": [
+       "222A420A-ABC2-7C5C-839095D05D492FB6",
+       "00000000000000000000000000000000001"
+      ]
+     },
+     {
+      "siteid": "default",
+      "contentid": "00000000000000000000000000000000001",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Home",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     }
+    ],
+    "verdict": "editor",
+    "categories": []
+   },
+   {
+    "siteid": "default",
+    "contentid": "222A39B4-9F49-F713-9F6915301CC75BE1",
+    "contenthistid": "222A3F0A-9F61-FA43-3EEB13FD5D9B11DA",
+    "parentid": "222A01B2-C3CB-E417-627BBA806D0308A3",
+    "moduleid": "00000000000000000000000000000000000",
+    "type": "Page",
+    "subtype": "Default",
+    "menutitle": "Flat Page 12",
+    "filename": "flat-folder/flat-page-12",
+    "fileid": "",
+    "sortby": "orderno",
+    "sortdirection": "asc",
+    "islocked": 0,
+    "majorversion": 0,
+    "minorversion": 0,
+    "lastupdate": "2026-11-12T14:44:15.693",
+    "lastupdateby": "",
+    "created": "2026-11-12T14:44:15.000",
+    "expires": null,
+    "tags": "alpha,beta",
+    "fileext": "",
+    "filesize": null,
+    "lockid": "",
+    "locktype": "",
+    "crumbs": [
+     {
+      "siteid": "default",
+      "contentid": "222A39B4-9F49-F713-9F6915301CC75BE1",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Flat Page 12",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000",
+      "parentarray": [
+       "222A39B4-9F49-F713-9F6915301CC75BE1",
+       "222A01B2-C3CB-E417-627BBA806D0308A3",
+       "00000000000000000000000000000000001"
+      ]
+     },
+     {
+      "siteid": "default",
+      "contentid": "222A01B2-C3CB-E417-627BBA806D0308A3",
+      "type": "Folder",
+      "subtype": "Default",
+      "menutitle": "Flat Folder",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     },
+     {
+      "siteid": "default",
+      "contentid": "00000000000000000000000000000000001",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Home",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     }
+    ],
+    "verdict": "editor",
+    "categories": [
+     "Cat A",
+     "Cat B"
+    ]
+   }
+  ],
+  "reportCounts": {
+   "myapprovals": 0,
+   "mylockedcontent": 2,
+   "myexpires": 0,
+   "mysubmissions": 0,
+   "mydrafts": 0
+  },
+  "categoryCount": 3,
+  "categories": [
+   {
+    "categoryid": "2229FB72-FC29-AE58-FA447A006770F27B",
+    "name": "Cat A",
+    "isopen": 1,
+    "kids": [
+     {
+      "categoryid": "2229FD3F-CCF9-DB0F-BBA4B1FE48B5C874",
+      "name": "Cat B",
+      "isopen": 1,
+      "kids": []
+     }
+    ]
+   },
+   {
+    "categoryid": "2229FE2F-A2AB-4BC0-335562F1956AC3B9",
+    "name": "Closed C",
+    "isopen": 0,
+    "kids": []
+   }
+  ]
+ },
+ "iconRows": [
+  {
+   "siteid": "default",
+   "type": "Folder",
+   "subtype": "Locked",
+   "iconclass": ""
+  },
+  {
+   "siteid": "default",
+   "type": "Page",
+   "subtype": "Special",
+   "iconclass": "mi-star"
+  },
+  {
+   "siteid": "default",
+   "type": "File",
+   "subtype": "Brochure",
+   "iconclass": ""
+  }
+ ],
+ "session": {
+  "userId": "AF1841AB-0ED4-34A5-AF2596AB342BA3E6",
+  "siteId": "default",
+  "memberships": "S2IsPrivate;default,S2IsPrivate,S2,admin;username;default",
+  "dateKeyFormat": "MM/DD/YYYY",
+  "rb": "en_US",
+  "nextN": 20,
+  "openSectionList": "",
+  "flatViewArgs": {
+   "default": {
+    "SUBTYPE": "",
+    "MODULEID": "00000000000000000000000000000000000",
+    "CATEGORYID": "",
+    "PAGE": "1",
+    "REPORT": "",
+    "LOCKID": "",
+    "TAB": 0,
+    "SORTBY": "lastupdate",
+    "TYPE": "",
+    "SORTDIRECTION": "desc",
+    "ASSIGNMENTS": "false",
+    "TAGS": "",
+    "KEYWORDS": "",
+    "FILTERED": false
+   }
+  },
+  "copyContentId": "",
+  "copySiteId": "",
+  "copyAll": false
+ },
+ "siteSettings": {
+  "locking": "none",
+  "hasComments": false,
+  "hasLockableNodes": false,
+  "privateUserPoolId": "default",
+  "extranet": false
+ },
+ "config": {
+  "sortPermission": "",
+  "adminDir": "/admin",
+  "context": ""
+ },
+ "sessionAfter": {
+  "default": {
+   "SUBTYPE": "",
+   "MODULEID": "00000000000000000000000000000000000",
+   "CATEGORYID": "",
+   "PAGE": "1",
+   "REPORT": "",
+   "LOCKID": "",
+   "TAB": 1,
+   "SORTBY": "lastupdate",
+   "TYPE": "",
+   "SORTDIRECTION": "desc",
+   "ASSIGNMENTS": "",
+   "TAGS": "",
+   "KEYWORDS": "",
+   "FILTERED": "No"
+  }
+ }
+}
