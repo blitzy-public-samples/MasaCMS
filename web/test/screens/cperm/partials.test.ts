@@ -1,6 +1,8 @@
-// The cperm circuit entry, its before() gate in the page pipeline and its partials over a session's rc and bundle.
+// The cperm entries against the inventory, the before() gate in the page pipeline and the partials over a session.
 // partials-markup.test.ts pins the partials byte for byte, so their markup is asserted here only as screens reach it.
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { normaliseRouteKey } from '@opt2/platform/legacy-compat';
 import { runGate, secure, type GateDecision } from '@/lib/access-gate';
 import { legacySettings } from '@/lib/env';
 import { toString } from '@/lib/html';
@@ -28,6 +30,41 @@ const MAIN = { circuit: 'cperm', item: 'main' } as const;
 const ALLOW: GateDecision = { kind: 'allow' };
 const NODE_ID = 'A1000000-0000-0000-0000000000000001';
 const PARENT_ID = 'A1000000-0000-0000-0000000000000002';
+const INVENTORY_URL = new URL('../../../../opt2/inventory/legacy-inventory.json', import.meta.url);
+const CPERM_KEY_PREFIX = 'admin:cperm.';
+
+/** An admin action or variant record as the inventory stores it. */
+interface InventoryVariant {
+  readonly routeKey: string;
+  readonly disposition: string | null;
+  readonly owningService: string | null;
+  readonly responseMode: string | null;
+}
+
+interface InventoryController {
+  readonly actions?: ReadonlyArray<{ readonly variants?: readonly InventoryVariant[] }>;
+}
+
+/** A cperm action with the owner and response mode that serve it. */
+interface Served {
+  readonly action: string;
+  readonly owner: string | null;
+  readonly mode: string | null;
+}
+
+/** Every inventoried cperm admin record, keyed by its normalised action. */
+function cpermInventory(): Array<InventoryVariant & { readonly action: string }> {
+  const { controllers } = JSON.parse(readFileSync(INVENTORY_URL, 'utf8')) as {
+    controllers: readonly InventoryController[];
+  };
+  return controllers
+    .flatMap((controller) => (controller.actions ?? []).flatMap((action) => action.variants ?? []))
+    .map((variant) => ({ ...variant, routeKey: normaliseRouteKey(variant.routeKey) }))
+    .filter((variant) => variant.routeKey.startsWith(CPERM_KEY_PREFIX))
+    .map((variant) => ({ ...variant, action: variant.routeKey.slice(CPERM_KEY_PREFIX.length) }));
+}
+
+const byServedAction = (rows: readonly Served[]): Served[] => rows.toSorted((a, b) => a.action.localeCompare(b.action));
 
 let restore: () => void;
 
@@ -51,6 +88,8 @@ function zoomLink(contentid: string, text: string): DomLink {
 
 describe('cpermScreens', () => {
   const byAction = new Map(cpermScreens.map((def) => [def.action, def]));
+  const inventory = cpermInventory();
+  const withheld = new Set(inventory.filter((record) => record.disposition !== 'carry').map((record) => record.action));
 
   it.each([
     ['main', 'page'],
@@ -60,8 +99,19 @@ describe('cpermScreens', () => {
     expect(byAction.get(action)).toMatchObject({ circuit: 'cperm', action, mode });
   });
 
-  it('serves cperm.update, if registered, as a redirect', () => {
-    expect(cpermScreens.filter((def) => def.action === 'update' && def.mode !== 'redirect')).toEqual([]);
+  it('serves exactly the carried inventory actions with their owner and mode', () => {
+    const carried = inventory
+      .filter((record) => record.disposition === 'carry')
+      .map((record): Served => ({ action: record.action, owner: record.owningService, mode: record.responseMode }));
+    expect(carried).not.toHaveLength(0);
+    const served = cpermScreens.map((def): Served => ({ action: def.action, owner: def.owner, mode: def.mode }));
+    expect(byServedAction(served)).toEqual(byServedAction(carried));
+  });
+
+  it('registers no withheld action, update included', () => {
+    expect([...withheld]).toContain('update');
+    expect(cpermScreens.filter((def) => withheld.has(def.action))).toEqual([]);
+    expect(byAction.has('update')).toBe(false);
   });
 
   it.each(cpermScreens.map((def) => [def.action, def] as const))('owns cperm.%s in identity behind the gate', (_action, def) => {

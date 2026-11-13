@@ -141,7 +141,6 @@ function imageDetailsData(rc: CarchStruct, requested: string | undefined, loadsC
   };
 }
 
-// Mirrors the shell nav's URL-scope read, which lies outside this screen's imports.
 /** CFML `isDefined('url.<name>')`: the forwarded request target's query, else the pairs of `rc.currentURL`. */
 function inUrlScope(req: AdminRequest, name: string): boolean {
   const target = req.headers.get(ORIGINAL_URL_HEADER);

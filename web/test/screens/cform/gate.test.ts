@@ -1,5 +1,7 @@
 // cform before(): the Site Manager and Forms module gate of admin/core/controllers/cform.cfc, and the registered actions.
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { normaliseRouteKey } from '@opt2/platform/legacy-compat';
 import { runGate, secure, type GateDecision } from '@/lib/access-gate';
 import type { AdminRequest } from '@/lib/request-context';
 import { cformGate, cformScreens } from '@/screens/cform';
@@ -19,7 +21,38 @@ const SENTINEL: GateDecision = Object.freeze({ kind: 'redirect', location: './?m
 const ALLOW: GateDecision = { kind: 'allow' };
 const GETFORM = { circuit: 'cform', item: 'getform' } as const;
 
-const REQUIRED_MODES: Readonly<Record<string, ScreenMode>> = {
+const INVENTORY_URL = new URL('../../../../opt2/inventory/legacy-inventory.json', import.meta.url);
+const CFORM_PREFIX = 'admin:cform.';
+
+/** An admin action or variant record as the inventory stores it. */
+interface InventoryVariant {
+  readonly routeKey: string;
+  readonly disposition: string | null;
+  readonly owningService: string | null;
+  readonly responseMode: string | null;
+}
+
+interface InventoryController {
+  readonly actions?: ReadonlyArray<{ readonly variants?: readonly InventoryVariant[] }>;
+}
+
+/** Every inventoried cform action variant, with its normalised action name. */
+function cformRecords(): Array<InventoryVariant & { readonly action: string }> {
+  const { controllers } = JSON.parse(readFileSync(INVENTORY_URL, 'utf8')) as {
+    controllers: readonly InventoryController[];
+  };
+  return controllers
+    .flatMap((controller) => (controller.actions ?? []).flatMap((action) => action.variants ?? []))
+    .map((variant) => ({ ...variant, routeKey: normaliseRouteKey(variant.routeKey) }))
+    .filter((variant) => variant.routeKey.startsWith(CFORM_PREFIX))
+    .map((variant) => ({ ...variant, action: variant.routeKey.slice(CFORM_PREFIX.length) }));
+}
+
+const INVENTORY = cformRecords();
+const CARRIED = INVENTORY.filter((record) => record.disposition === 'carry');
+
+// Inventoried as page, but each view prints rc.return through html.cfm or json.cfm and aborts before any layout.
+const BARE_MODES: Readonly<Record<string, ScreenMode>> = {
   getdialog: 'fragment',
   getfieldtemplate: 'fragment',
   getform: 'json',
@@ -28,8 +61,7 @@ const REQUIRED_MODES: Readonly<Record<string, ScreenMode>> = {
   getdataset: 'json',
 };
 
-// Registered only where the inventory carries them.
-const OPTIONAL_MODES: Readonly<Record<string, ScreenMode>> = { export: 'download', importform: 'page' };
+const actionOf = (screen: ScreenDefinition): string => normaliseRouteKey(screen.action);
 
 let restore: () => void;
 let secureSpy: Mock<() => GateDecision>;
@@ -127,7 +159,7 @@ describe('cformGate', () => {
 });
 
 describe('cformScreens', () => {
-  const modes = new Map(cformScreens.map((screen) => [screen.action, screen.mode]));
+  const byAction = new Map(cformScreens.map((screen) => [actionOf(screen), screen]));
 
   it.each<[string, ScreenDefinition]>(cformScreens.map((screen) => [screen.action, screen]))(
     'registers %s for strategies-content behind cformGate',
@@ -138,16 +170,31 @@ describe('cformScreens', () => {
     },
   );
 
-  it('registers each action once, and only known actions', () => {
-    expect(modes.size).toBe(cformScreens.length);
-    expect([...modes.keys()].filter((action) => !(action in REQUIRED_MODES || action in OPTIONAL_MODES))).toEqual([]);
+  it('registers exactly the carried inventory actions, each once', () => {
+    const actions = cformScreens.map(actionOf);
+
+    expect(CARRIED).not.toHaveLength(0);
+    expect(byAction.size).toBe(actions.length);
+    expect(actions.toSorted()).toEqual(CARRIED.map((record) => record.action).toSorted());
   });
 
-  it.each(Object.entries(REQUIRED_MODES))('serves %s as %s', (action, mode) => {
-    expect(modes.get(action)).toBe(mode);
+  it('overrides only carried actions with a bare mode', () => {
+    const carried = new Set(CARRIED.map((record) => record.action));
+
+    expect(Object.keys(BARE_MODES).filter((action) => !carried.has(action))).toEqual([]);
   });
 
-  it.each(Object.entries(OPTIONAL_MODES))('serves %s, if registered, as %s', (action, mode) => {
-    if (modes.has(action)) expect(modes.get(action)).toBe(mode);
+  it.each(CARRIED.map((record) => [record.action, record] as const))('serves carried %s', (action, record) => {
+    expect(byAction.has(action)).toBe(true);
+    expect(byAction.get(action)).toMatchObject({
+      mode: BARE_MODES[action] ?? record.responseMode,
+      owner: record.owningService,
+    });
+  });
+
+  it('registers nothing the inventory does not carry', () => {
+    const notCarried = new Set(INVENTORY.filter((r) => r.disposition !== 'carry').map((r) => r.action));
+
+    expect(cformScreens.map(actionOf).filter((action) => notCarried.has(action))).toEqual([]);
   });
 });

@@ -20,7 +20,6 @@ import { renderChangesetsMenu } from './secondary-menu';
 const SERVICE = 'strategies-content';
 const OPERATION = 'listChangesets';
 
-// `@/shell/types` is outside this screen's dependencies, so the view type comes from the registry's page contract.
 /** The shell view a page screen renders. */
 type ShellView = Awaited<ReturnType<PageScreen['render']>>;
 

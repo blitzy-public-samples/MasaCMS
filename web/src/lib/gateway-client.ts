@@ -484,7 +484,7 @@ export interface IdentityFacade extends ServiceFacade<IdentityPaths> {
 export interface ProgramsSitesFacade extends ServiceFacade<ProgramsSitesPaths> {
   /** Every site, sorted as the Sites screen sorts them (`listSites`). */
   listSites(query?: QueryOf<ListSitesOperation>): Promise<OperationResponse<ListSitesOperation>>;
-  /** One site with the data of every Edit Site tab (`getSite`). */
+  /** A site's stored settings, `tsettings` extend sets with values and image sizes, without Razuna settings (`getSite`). */
   getSite(siteId: PathParamsOf<GetSiteOperation>['siteId']): Promise<OperationResponse<GetSiteOperation>>;
   /** The site settings the admin layout reads, for any private admin user (`getShellSite`). */
   getShellSite(siteId: PathParamsOf<GetShellSiteOperation>['siteId']): Promise<OperationResponse<GetShellSiteOperation>>;

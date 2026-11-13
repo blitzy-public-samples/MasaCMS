@@ -270,7 +270,7 @@ paths:
       - $ref: '#/components/parameters/SiteId'
     get:
       operationId: getSite
-      summary: Reads one site with the data of every Edit Site tab; an unknown id yields the defaulted new site.
+      summary: Reads one site's stored settings, `tsettings` extend sets with their values and custom image sizes, without its stored Razuna settings; an unknown id yields the defaulted new site.
       x-opt2-transport: service
       x-opt2-requires:
         - s2
@@ -1809,7 +1809,7 @@ components:
             $ref: '#/components/schemas/SiteListItem'
     SiteDetail:
       type: object
-      description: A site with the view data of the Edit Site tabs, including `tsettings` extended attribute sets.
+      description: A site's stored settings, `tsettings` extend sets with their values and custom image sizes, without its stored Razuna settings; `isNew` is 1 for an unknown id, whose settings are the defaulted new site's.
       required:
         - site
         - isNew

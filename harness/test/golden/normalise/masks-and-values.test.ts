@@ -135,14 +135,10 @@ describe('masksFor', () => {
     });
   });
 
-  it('scopes session-rotation to the session Set-Cookie values and each session cookie presence and rotation', () => {
+  it('scopes session-rotation to the rotation of each session cookie only', () => {
     expect(maskFor('session-rotation', 'GS-ID-01', LOGIN, rules)?.locations).toStrictEqual([
-      { kind: 'header', name: 'Set-Cookie', cookieNames: ['CFID', 'CFTOKEN', 'JSESSIONID'] },
-      { kind: 'cookie', name: 'CFID' },
       { kind: 'cookie', name: 'CFID', field: 'rotation' },
-      { kind: 'cookie', name: 'CFTOKEN' },
       { kind: 'cookie', name: 'CFTOKEN', field: 'rotation' },
-      { kind: 'cookie', name: 'JSESSIONID' },
       { kind: 'cookie', name: 'JSESSIONID', field: 'rotation' },
     ]);
   });
@@ -245,7 +241,7 @@ describe('pathMasks', () => {
     ...(compareKinds === undefined ? {} : { compareKinds }),
   });
 
-  it('maps the session Set-Cookie values, cookie entries and rotations of a login step to session-rotation', () => {
+  it('maps only the session cookie rotations of a login step to session-rotation', () => {
     const step: MaskableStep = {
       status: 302,
       headers: { 'set-cookie': ['CFID=1;path=/', 'other=2', 'CFTOKEN=3; Path=/'], 'content-type': 'text/html' },
@@ -253,25 +249,47 @@ describe('pathMasks', () => {
       domModel: {},
     };
     expect(pathMasks(step, masksFor('GS-ID-01', LOGIN, rules))).toStrictEqual({
-      'headers.set-cookie[0]': 'session-rotation',
-      'headers.set-cookie[2]': 'session-rotation',
-      'auth.cookies[0]': 'session-rotation',
       'auth.cookies[0].rotation': 'session-rotation',
-      'auth.cookies[2]': 'session-rotation',
       'auth.cookies[2].rotation': 'session-rotation',
     });
   });
 
   it.each([
+    ['a session cookie', 'JSESSIONID=abc; Path=/'],
+    ['another cookie', 'foo=abc; Path=/'],
+  ])('leaves a single Set-Cookie value of %s unmasked', (_label, value) => {
+    const step: MaskableStep = { status: 200, headers: { 'Set-Cookie': value } };
+    expect(pathMasks(step, masksFor('GS-ID-01', LOGIN, rules))).toStrictEqual({});
+  });
+
+  const NAMED: KnownIssueMask['locations'] = [
+    { kind: 'header', name: 'Set-Cookie', cookieNames: ['CFID', 'CFTOKEN'] },
+    { kind: 'cookie', name: 'CFID' },
+    { kind: 'cookie', name: 'CFTOKEN' },
+  ];
+  it.each<[string, MaskableStep, Record<string, KnownIssueId>]>([
     [
-      'masks a single session Set-Cookie value whole',
-      'JSESSIONID=abc; Path=/',
+      'the values and entries of the named cookies',
+      {
+        status: 302,
+        headers: { 'set-cookie': ['CFID=1;path=/', 'other=2', 'CFTOKEN=3; Path=/'] },
+        auth: { cookies: [{ name: 'CFID' }, { name: 'other' }, { name: 'CFTOKEN' }] },
+      },
+      {
+        'headers.set-cookie[0]': 'session-rotation',
+        'headers.set-cookie[2]': 'session-rotation',
+        'auth.cookies[0]': 'session-rotation',
+        'auth.cookies[2]': 'session-rotation',
+      },
+    ],
+    [
+      'a single header value of a named cookie whole',
+      { status: 200, headers: { 'Set-Cookie': 'CFID=a' } },
       { 'headers.Set-Cookie': 'session-rotation' },
     ],
-    ['leaves a single Set-Cookie value of another cookie unmasked', 'foo=abc; Path=/', {}],
-  ])('%s', (_label, value, expected) => {
-    const step: MaskableStep = { status: 200, headers: { 'Set-Cookie': value } };
-    expect(pathMasks(step, masksFor('GS-ID-01', LOGIN, rules))).toStrictEqual(expected);
+    ['nothing for a single header value of another cookie', { status: 200, headers: { 'Set-Cookie': 'foo=a' } }, {}],
+  ])('narrows Set-Cookie header and cookie entry locations to their cookie names: %s', (_label, step, expected) => {
+    expect(pathMasks(step, [mask('session-rotation', NAMED)])).toStrictEqual(expected);
   });
 
   it('resolves nothing for a step without headers or auth cookies', () => {

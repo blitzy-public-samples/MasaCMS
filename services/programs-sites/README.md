@@ -11,7 +11,7 @@ Contracts: [`contracts/openapi.yaml`](contracts/openapi.yaml), [`contracts/event
 | Masa feature | Masa source | Here |
 |---|---|---|
 | Sites list, bind order and batch-deploy flags | `csettings.list` [admin/core/controllers/csettings.cfc:97-114]; `settingsManager.saveOrder`, `saveDeploy` [core/mura/settings/settingsManager.cfc:212-242] | `GET /v1/sites`; `POST /v1/sites/order` under CSRF context `updatesites` |
-| Edit Site, all tabs | `csettings.editSite` [admin/core/controllers/csettings.cfc:116-118] | `GET /v1/sites/{siteId}`; an unknown id yields the defaulted new site |
+| Edit Site, all tabs | `csettings.editSite` [admin/core/controllers/csettings.cfc:116-118] | `GET /v1/sites/{siteId}`: the stored settings, the `tsettings` extend sets with their values and the custom image sizes; an unknown id yields the defaulted new site. Stored Razuna settings (`trazunasettings`, decision list) stay on legacy and are not returned ([`web/README.md`](../../web/README.md#known-limitations)) |
 | Edit Site save, `action=Update` | `csettings.updateSite` [admin/core/controllers/csettings.cfc:170-225]; `settingsManager.update` [core/mura/settings/settingsManager.cfc:251-304]; `settingsDAO.update` [core/mura/settings/settingsDAO.cfc:318-420] | `POST /v1/sites/{siteId}/update` under CSRF context = site id; a failed check writes nothing, as in legacy |
 | Custom image sizes | `csettings.loadcustomimage`, `csettings.loadcustomimages` (`admin/core/views/csettings/loadcustomimage.cfm`, `loadcustomimages.cfm`); table `timagesizes` [core/mura/settings/settingsImageSizeBean.cfc:76] | `/v1/sites/{siteId}/image-sizes` and `/v1/sites/{siteId}/image-sizes/{sizeId}`; no CSRF check, as in legacy |
 | Access gate | `csettings.before()`: S2, or an `Admin` of the site's private user pool except on the list, plugin and site-copy actions [admin/core/controllers/csettings.cfc:85-95] | Roles `s2` and `site-admin` ([Routes](#routes)) |
@@ -102,7 +102,7 @@ The service implements these routes in full, so a later version can move them on
 |---|---|---|
 | `GET /v1/sites` | `s2` | Sites screen rows, sorted as legacy sorts them |
 | `POST /v1/sites/order` | `s2` | Saves bind order and batch-deploy flags, then returns the rows |
-| `GET /v1/sites/{siteId}` | `s2`, `site-admin` | One site with the data of every Edit Site tab |
+| `GET /v1/sites/{siteId}` | `s2`, `site-admin` | One site's Edit Site data: stored settings, `tsettings` extend sets with their values, custom image sizes. Stored Razuna settings stay on legacy and are not returned ([`web/README.md`](../../web/README.md#known-limitations)) |
 | `GET /v1/sites/{siteId}/shell` | `s2`, `site-admin`, `system-user` | Site settings the admin layout reads |
 | `POST /v1/sites/{siteId}/update` | `s2`, `site-admin` | Edit Site save |
 | `GET /v1/sites/{siteId}/image-sizes` | `s2`, `site-admin` | The site's custom image sizes |
@@ -126,7 +126,7 @@ Queues this service creates tasks on (`platform/src/tasks/queues.ts`): `programs
 
 ## Not built here
 
-- **Withheld** (decision list, [`opt2/decision-list.md`](../../opt2/decision-list.md); they keep running on legacy): `admin:csettings.updatesite{action=add}`, `admin:csettings.updatesite{action=delete}`, `admin:csettings.sitecopyselect`, `admin:csettings.sitecopy`, `admin:cextend.*` and `admin:ctrash.*`; also `admin:csettings.updatesite{bundle}` and the plugin writes `deleteplugin`, `deployplugin` and `updateplugin`, which write `tplugins*` (decision list). Programs-sites holds the `tsettings` class-extension and trash rows for migration only. `admin:csettings.sitecopyresult` has no screen here and stays on legacy with the site copy it reports.
+- **Withheld** (decision list, [`opt2/decision-list.md`](../../opt2/decision-list.md); they keep running on legacy): `admin:csettings.updatesite{action=add}`, `admin:csettings.updatesite{action=delete}`, `admin:csettings.sitecopyselect`, `admin:csettings.sitecopy`, `admin:cextend.*` and `admin:ctrash.*`; also `admin:csettings.updatesite{bundle}` and the plugin writes `deleteplugin`, `deployplugin` and `updateplugin`, which write `tplugins*` (decision list). Programs-sites builds no class-extension definition or trash management: it writes the `tsettings` subtype, set, attribute and related-content-set rows and the site trash rows only through migration. It does read the site's extend sets and their values for Edit Site, and when `extendSetID` is posted, the Edit Site save and JSON API `site.save` replace the non-file extended-attribute values; a posted File attribute value or delete flag answers the legacy-shaped 503 and writes nothing. `admin:csettings.sitecopyresult` has no screen here and stays on legacy with the site copy it reports.
 - **Legacy-served:** `csettings` createBundle, selectBundleOptions, deployBundle, exportHTML, editPlugin and updatePluginVersion.
 - **Update branches that write outside this service.** Before any write, `src/legacy/update-branches.ts` detects the `settingsManager.update` branches below and answers the legacy-shaped 503, writing nothing:
 

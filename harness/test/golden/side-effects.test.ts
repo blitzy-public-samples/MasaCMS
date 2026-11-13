@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { INVOCATION_HEADER } from '@opt2/platform/auth';
 import {
   MAX_EXPORT_LIMIT,
@@ -77,6 +78,12 @@ import { CutoverRequestFailed, GatewayUnreachable } from '../../src/repro/cutove
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return { ...actual, readFile: vi.fn(actual.readFile) };
+});
+
+// Sleeps pass through; the default-clock waitForMail test drives the default sleep through this spy.
+vi.mock('node:timers/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:timers/promises')>();
+  return { ...actual, setTimeout: vi.fn(actual.setTimeout) };
 });
 
 // Every request goes to a scripted fetch and every query to an in-memory SQL Server: nothing reaches Mailpit,
@@ -926,11 +933,22 @@ describe('waitForMail', () => {
     expect(clock.elapsed()).toBe(5_000);
   });
 
-  it('waits on the real clock when none is injected', async () => {
+  it('sleeps through node:timers/promises and reads Date.now when no clock is injected', async () => {
     const http = mailCounts(fakeHttp(), 0);
-
-    expect(await waitForMail(scenarioEnv(), 5, { fetch: http.fetch })).toBe(0);
-    expect(http.calls.length).toBeGreaterThanOrEqual(2);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.mocked(delay)
+      .mockClear()
+      .mockImplementation(async (ms) => {
+        vi.advanceTimersByTime(ms ?? 0);
+      });
+    try {
+      expect(await waitForMail(scenarioEnv(), 5_000, { fetch: http.fetch })).toBe(0);
+      expect(vi.mocked(delay).mock.calls).toStrictEqual(Array.from({ length: 5 }, () => [SETTLE_POLL_MS]));
+      expect(http.to(MAILPIT)).toStrictEqual(Array.from({ length: 6 }, () => 'GET /api/v1/messages?start=0&limit=1'));
+    } finally {
+      vi.mocked(delay).mockReset();
+      vi.useRealTimers();
+    }
   });
 });
 

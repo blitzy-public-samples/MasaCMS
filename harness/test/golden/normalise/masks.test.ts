@@ -219,11 +219,24 @@ function runDomCase(spec: DomCase, masks: readonly KnownIssueMask[] = editUserMa
   return { golden, replay, differences, ctx, result: applyMasks(differences, ctx) };
 }
 
-/** Cookies of the second login, normalised after the first on one side's tracker. */
-function reloginCookies(): NormalisedCookie[] {
+/** Cookies of a second login setting `lines`, normalised after the first on one side's tracker. */
+function reloginCookies(lines: readonly string[] = relogin): NormalisedCookie[] {
   const tracker = createSessionCookieTracker();
   normaliseSetCookies(login, { hop: 0, tracker }, rules);
-  return normaliseSetCookies(relogin, { hop: 0, tracker }, rules);
+  return normaliseSetCookies(lines, { hop: 0, tracker }, rules);
+}
+
+/** One side's second login: its raw Set-Cookie lines, normalised cookies and the paths `masks` resolve on it. */
+interface LoginSide {
+  lines: readonly string[];
+  cookies: NormalisedCookie[];
+  masked: Record<string, KnownIssueId>;
+}
+
+function loginSide(lines: readonly string[], masks: readonly KnownIssueMask[]): LoginSide {
+  const cookies = reloginCookies(lines);
+  const step: MaskableStep = { status: 302, headers: { 'set-cookie': lines, 'content-type': HTML }, auth: { cookies } };
+  return { lines, cookies, masked: pathMasks(step, masks) };
 }
 
 interface LoginRun {
@@ -234,9 +247,7 @@ interface LoginRun {
 
 /** A replay that rotates every session cookie, drops JSESSIONID's HttpOnly and answers another content type. */
 function runLoginCase(masks: readonly KnownIssueMask[]): LoginRun {
-  const cookies = reloginCookies();
-  const step: MaskableStep = { status: 302, headers: { 'set-cookie': relogin, 'content-type': HTML }, auth: { cookies } };
-  const masked = pathMasks(step, masks);
+  const { cookies, masked } = loginSide(relogin, masks);
   const jsession = cookies.findIndex((cookie) => cookie.name === 'JSESSIONID');
   const differences = [
     ...cookies.flatMap((cookie, i) =>
@@ -249,6 +260,37 @@ function runLoginCase(masks: readonly KnownIssueMask[]): LoginRun {
 }
 
 const loginMasks = (): KnownIssueMask[] => masksFor(scenarioOf('session-rotation'), LOGIN_ROUTE, rules);
+
+/** The Set-Cookie line of cookie `name` in `lines`. */
+function lineOf(lines: readonly string[], name: string): string {
+  const line = lines.find((candidate) => candidate.startsWith(`${name}=`));
+  if (line === undefined) throw new Error(`the fixture lines set no ${name} cookie`);
+  return line;
+}
+
+/** `lines` with cookie `name`'s line replaced by `line`, or dropped without one. */
+function withLine(lines: readonly string[], name: string, line?: string): string[] {
+  const own = lineOf(lines, name);
+  return lines.flatMap((candidate) => (candidate !== own ? [candidate] : line === undefined ? [] : [line]));
+}
+
+function cookieIndex(side: LoginSide, name: string): number {
+  const index = side.cookies.findIndex((cookie) => cookie.name === name);
+  expect(index, `fixture cookie ${name}`).toBeGreaterThanOrEqual(0);
+  return index;
+}
+
+/** The second login with CFTOKEN set to a new value, as a replay that rotates it answers. */
+const rotated = (): string[] =>
+  withLine(relogin, 'CFTOKEN', lineOf(relogin, 'CFTOKEN').replace(/^CFTOKEN=[^;]*/, 'CFTOKEN=20000002'));
+
+/** Lines of a golden and a replayed second login, and the one difference between them besides CFTOKEN's rotation. */
+type LoginBoundary = [
+  string,
+  () => readonly string[],
+  () => readonly string[],
+  (golden: LoginSide, replay: LoginSide) => Difference,
+];
 
 /** Each known issue's fixture differences, classified under the masks in scope for them. */
 const MASKED: Record<KnownIssueId, () => Difference[]> = {
@@ -381,19 +423,62 @@ describe('session-rotation', () => {
     expect(rotations).toStrictEqual(sessionNames.map((name) => [name, 'same']));
   });
 
-  it('masks each session cookie rotation and keeps other cookie fields and headers a difference', () => {
+  it('masks only each session cookie rotation and keeps other cookie fields and headers a difference', () => {
     const { cookies, masked, result } = runLoginCase(loginMasks());
     const sessionNames = knownIssue('session-rotation').scope.cookieNames ?? [];
     const rotationPaths = cookies.flatMap((cookie, i) =>
       sessionNames.includes(cookie.name) ? [`auth.cookies[${i}].rotation`] : [],
     );
-    expect(Object.keys(masked).filter((path) => path.endsWith('.rotation'))).toStrictEqual(rotationPaths);
+    const rotations = Object.fromEntries(rotationPaths.map((path) => [path, 'session-rotation']));
+    expect(masked).toStrictEqual(rotations);
     const jsession = cookies.findIndex((cookie) => cookie.name === 'JSESSIONID');
     expect(verdicts(result)).toStrictEqual({
-      ...Object.fromEntries(rotationPaths.map((path) => [path, 'session-rotation'])),
+      ...rotations,
       [`auth.cookies[${jsession}].httpOnly`]: 'difference',
       'headers.content-type': 'difference',
     });
+  });
+
+  it.each<LoginBoundary>([
+    [
+      'a session cookie missing on replay',
+      () => relogin,
+      () => withLine(rotated(), 'JSESSIONID'),
+      (golden) => {
+        const i = cookieIndex(golden, 'JSESSIONID');
+        return change(LOGIN_STEP, `auth.cookies[${i}]`, golden.cookies[i], undefined, 'missing');
+      },
+    ],
+    [
+      'an extra session cookie on replay',
+      () => withLine(relogin, 'JSESSIONID'),
+      rotated,
+      (_golden, replay) => {
+        const i = cookieIndex(replay, 'JSESSIONID');
+        return change(LOGIN_STEP, `auth.cookies[${i}]`, undefined, replay.cookies[i], 'extra');
+      },
+    ],
+    [
+      'a session Set-Cookie line losing HttpOnly',
+      () => relogin,
+      () => withLine(rotated(), 'JSESSIONID', lineOf(relogin, 'JSESSIONID').replace('; HttpOnly', '')),
+      (golden, replay) => {
+        const i = golden.lines.indexOf(lineOf(golden.lines, 'JSESSIONID'));
+        return change(LOGIN_STEP, `headers.set-cookie[${i}]`, golden.lines[i], replay.lines[i]);
+      },
+    ],
+  ])('keeps %s a difference beside a masked session cookie rotation', (_label, goldenLines, replayLines, boundary) => {
+    const masks = loginMasks();
+    const golden = loginSide(goldenLines(), masks);
+    const replay = loginSide(replayLines(), masks);
+    const rotation = `auth.cookies[${cookieIndex(golden, 'CFTOKEN')}].rotation`;
+    const rotationOf = (side: LoginSide): unknown => side.cookies[cookieIndex(side, 'CFTOKEN')]?.rotation;
+    expect([rotationOf(golden), rotationOf(replay)]).toStrictEqual(['same', 'changed']);
+    const lost = boundary(golden, replay);
+    expect(lost.actual).not.toStrictEqual(lost.expected);
+    const differences = [change(LOGIN_STEP, rotation, 'same', 'changed'), lost];
+    const result = applyMasks(differences, stepContext(LOGIN_STEP, golden.masked, replay.masked));
+    expect(verdicts(result)).toStrictEqual({ [rotation]: 'session-rotation', [lost.path]: 'difference' });
   });
 });
 

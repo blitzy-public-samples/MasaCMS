@@ -229,12 +229,12 @@ describe('session cookies of a login step', () => {
       'extra',
       'JSESSIONID',
     ],
-  ])('masks a session cookie %s as one known-issue difference', async (_label, golden, replay, path, kind, name) => {
+  ])('compares a session cookie %s as one difference', async (_label, golden, replay, path, kind, name) => {
     const cookie = await cookieNamed(kind === 'missing' ? golden : replay, name);
     expect(cookie).toBeDefined();
     const [expected, actual] = kind === 'missing' ? [cookie, undefined] : [undefined, cookie];
     expect(await compare({ login: golden }, { login: replay })).toStrictEqual([
-      loginDifference(path, kind, expected, actual, 'session-rotation'),
+      loginDifference(path, kind, expected, actual),
     ]);
   });
 
@@ -242,7 +242,7 @@ describe('session cookies of a login step', () => {
     ['extra on replay', one('CFID=g1; Path=/'), one('APP_PREF=r9; Path=/', 'CFID=r1; Path=/'), 'extra'],
     ['missing on replay', one('APP_PREF=g9; Path=/', 'CFID=g1; Path=/'), one('CFID=r1; Path=/'), 'missing'],
   ])(
-    'keeps a non-session cookie %s at an index the other side masks as a difference',
+    'keeps a non-session cookie %s ahead of a session cookie as a difference',
     async (_label, golden, replay, kind) => {
       const cookie = await cookieNamed(kind === 'missing' ? golden : replay, 'APP_PREF');
       expect(cookie).toBeDefined();

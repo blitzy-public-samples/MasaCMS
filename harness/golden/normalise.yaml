@@ -356,9 +356,8 @@ knownIssues:
   - id: session-rotation
     title: "The session id is not rotated at login"
     scope:
-      headers: [Set-Cookie]
       cookieNames: [CFID, CFTOKEN, JSESSIONID]
-      observations: [presence, absence, value-equal-across-login]
+      observations: [value-equal-across-login]
     source:
       - "core/mura/user/userUtility.cfc:382-387"
     routeKeys: ["admin:clogin.login", "api:login", "page:login"]
