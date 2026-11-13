@@ -4,10 +4,12 @@ import {
   ContractAssertionError,
   assertEventMatches,
   assertProducerConsumerCompatible,
+  assertRequestMatchesOpenApi,
   assertResponseMatchesOpenApi,
   findOperation,
   type ConsumerExpectation,
   type JsonType,
+  type RequestUnderTest,
   type ResponseUnderTest,
 } from '../../src/testing/contracts.js';
 import { TENANT_A } from '../../src/testing/fixtures.js';
@@ -333,6 +335,203 @@ describe('assertResponseMatchesOpenApi', () => {
     const response = respond({ method: 'POST', status: 201, body: note });
     expect(() => assertResponseMatchesOpenApi(doc, response)).not.toThrow();
     expect(() => assertResponseMatchesOpenApi(other, response)).toThrow(ContractAssertionError);
+  });
+});
+
+const requestDoc = {
+  openapi: '3.1.0',
+  info: { title: 'request contracts self-test', version: '1.0.0' },
+  security: [{ pushKey: [] }],
+  paths: {
+    '/v1/items/{itemId}': {
+      parameters: [
+        { $ref: '#/components/parameters/ItemId' },
+        { name: 'limit', in: 'query', schema: { type: 'string', enum: ['none'] } },
+      ],
+      put: {
+        operationId: 'putItem',
+        security: [{ bearer: [] }],
+        parameters: [
+          { name: 'limit', in: 'query', schema: { type: 'integer', maximum: 10 } },
+          { name: 'mode', in: 'query', schema: { type: 'string', enum: ['full', 'brief'] } },
+          { name: 'tags', in: 'query', schema: { type: 'array', items: { type: 'string', minLength: 2 } } },
+          { name: 'ids', in: 'query', style: 'form', explode: false, schema: { type: 'array', items: { type: 'integer' } } },
+          { name: 'X-Token', in: 'header', required: true, schema: { type: 'string', minLength: 4 } },
+          { name: 'X-Trace', in: 'header' },
+        ],
+        requestBody: { $ref: '#/components/requestBodies/Item' },
+        responses: { '204': { description: 'stored' } },
+      },
+    },
+    '/v1/raw': {
+      get: {
+        operationId: 'raw',
+        parameters: [
+          { name: 'siteid', in: 'query', required: true, schema: { type: 'string', minLength: 1 } },
+          { $ref: '#/components/parameters/RawParams' },
+        ],
+        responses: { '200': { description: 'raw' } },
+      },
+    },
+    '/v1/push': {
+      post: {
+        operationId: 'push',
+        requestBody: { content: { 'text/plain': {} } },
+        responses: { '204': { description: 'pushed' } },
+      },
+    },
+  },
+  components: {
+    securitySchemes: {
+      pushKey: { type: 'apiKey', in: 'query', name: 'key' },
+      bearer: { type: 'http', scheme: 'bearer' },
+    },
+    parameters: {
+      ItemId: { name: 'itemId', in: 'path', required: true, schema: { type: 'string', pattern: '^[A-Z][0-9]+$' } },
+      RawParams: {
+        name: 'params',
+        in: 'query',
+        style: 'form',
+        explode: true,
+        schema: { type: 'object', additionalProperties: { type: 'string' } },
+      },
+    },
+    requestBodies: {
+      Item: {
+        required: true,
+        content: {
+          'application/json': { schema: { $ref: '#/components/schemas/Item' } },
+          'multipart/form-data': { schema: { $ref: '#/components/schemas/ItemForm' } },
+          'application/x-www-form-urlencoded': { schema: { $ref: '#/components/schemas/ItemForm' } },
+        },
+      },
+    },
+    schemas: {
+      Item: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['name'],
+        properties: { name: { type: 'string' }, count: { type: 'integer' } },
+      },
+      ItemForm: {
+        type: 'object',
+        required: ['name'],
+        properties: { name: { type: 'string', minLength: 1 }, count: { type: 'integer', minimum: 0 } },
+      },
+    },
+  },
+};
+
+/** A valid multipart `putItem` request with `overrides`. */
+const putItem = (overrides: Partial<RequestUnderTest> = {}): RequestUnderTest => ({
+  method: 'PUT',
+  path: '/v1/items/A1',
+  headers: { 'x-token': 'abcd' },
+  contentType: 'multipart/form-data; boundary=----opt2',
+  body: { name: 'Widget', count: '3' },
+  ...overrides,
+});
+
+describe('assertRequestMatchesOpenApi', () => {
+  it.each<[string, RequestUnderTest]>([
+    ['multipart fields as wire strings', putItem()],
+    ['URL-encoded fields', putItem({ contentType: 'application/x-www-form-urlencoded;charset=UTF-8' })],
+    ['a parsed JSON body', putItem({ contentType: 'application/json', body: { name: 'Widget', count: 3 } })],
+    ['JSON text', putItem({ contentType: 'application/json', body: '{"name":"Widget"}' })],
+    [
+      'an encoded path parameter and header names in any case',
+      putItem({ path: '/v1/items/A%31', headers: { 'X-TOKEN': 'abcd', 'X-Trace': ['a', 'b'], 'X-Other': undefined } }),
+    ],
+    [
+      'query values of the path and the record, an unexploded list',
+      putItem({ path: '/v1/items/A1?tags=aa', query: { tags: 'bb', ids: '1,2', mode: 'full' } }),
+    ],
+    ['a single value of an array parameter', putItem({ query: { tags: 'cc' } })],
+    ['the operation parameter over the path-item one of its name', putItem({ query: { limit: '10' } })],
+    [
+      'exploded object fields beside a named parameter',
+      { method: 'GET', path: '/v1/raw?siteid=default', query: { foo: 'bar', other: '' } },
+    ],
+    [
+      'a security API key and a body without schema',
+      { method: 'POST', path: '/v1/push?key=K', contentType: 'text/plain', body: 'ping' },
+    ],
+    ['an optional body left out', { method: 'POST', path: '/v1/push' }],
+  ])('passes %s', (_case, request) => {
+    expect(() => assertRequestMatchesOpenApi(requestDoc, request)).not.toThrow();
+  });
+
+  it('returns the JSON-parsed body and validates coerced fields on a copy', () => {
+    const body = { name: 'Widget', count: '3' };
+    expect(assertRequestMatchesOpenApi(requestDoc, putItem({ body }))).toBe(body);
+    expect(body.count).toBe('3');
+    const json = putItem({ contentType: 'application/json', body: '{"name":"W"}' });
+    expect(assertRequestMatchesOpenApi(requestDoc, json)).toEqual({ name: 'W' });
+  });
+
+  it.each<[string, RequestUnderTest, string[]]>([
+    ['a path parameter against its schema', putItem({ path: '/v1/items/a1' }), ['path/itemId pattern']],
+    ['a query value against its schema', putItem({ query: { mode: 'other' } }), ['query/mode enum']],
+    ['a query string in the path', putItem({ path: '/v1/items/A1?mode=other' }), ['query/mode enum']],
+    ['a repeated scalar query parameter', putItem({ query: { limit: ['1', '2'] } }), ['query/limit type']],
+    ['an unexploded list item', putItem({ query: { ids: '1,x' } }), ['query/ids/1 type']],
+    ['the overriding parameter schema', putItem({ query: { limit: '11' } }), ['query/limit maximum']],
+    ['a missing required query parameter', { method: 'GET', path: '/v1/raw' }, ['query/siteid required']],
+    [
+      'undeclared query names',
+      putItem({ path: '/v1/items/A1?extra=1', query: { key: 'K' } }),
+      ['query/extra parameter', 'query/key parameter'],
+    ],
+    [
+      'exploded object fields against its schema',
+      { method: 'GET', path: '/v1/raw', query: { siteid: 's', foo: ['a', 'b'] } },
+      ['query/params/foo type'],
+    ],
+    ['a missing required header', putItem({ headers: {} }), ['header/X-Token required']],
+    ['a header against its schema', putItem({ headers: { 'x-token': 'abc' } }), ['header/X-Token minLength']],
+    ['a missing required body', putItem({ body: undefined }), ['body requestBody']],
+    ['an undeclared media type', putItem({ contentType: 'text/csv' }), ['body content']],
+    ['a body without a content type', putItem({ contentType: undefined }), ['body content']],
+    [
+      'a body the operation does not declare',
+      { method: 'GET', path: '/v1/raw?siteid=s', body: { a: 1 } },
+      ['body requestBody'],
+    ],
+    ['JSON text that does not parse', putItem({ contentType: 'application/json', body: '{name' }), ['body json']],
+    [
+      'a JSON body, which is not coerced',
+      putItem({ contentType: 'application/json', body: { name: 'W', count: '3' } }),
+      ['body/count type'],
+    ],
+    ['form fields against the body schema', putItem({ body: { count: 'x' } }), ['body required', 'body/count type']],
+  ])('reports %s', (_case, request, expected) => {
+    const error = caught(() => assertRequestMatchesOpenApi(requestDoc, request));
+    expect(error.errors.map((e) => `${e.instancePath} ${e.keyword}`).sort()).toEqual([...expected].sort());
+  });
+
+  it('lists every violation under one request context', () => {
+    const request = putItem({ path: '/v1/items/a1?extra=1', headers: {}, body: {} });
+    const error = caught(() => assertRequestMatchesOpenApi(requestDoc, request));
+    expect(error.context).toBe('PUT /v1/items/{itemId} request multipart/form-data');
+    expect(error.errors.map((e) => `${e.instancePath} ${e.keyword}`)).toEqual([
+      'path/itemId pattern',
+      'query/extra parameter',
+      'header/X-Token required',
+      'body required',
+    ]);
+    expect(error.message).toContain('\nquery/extra is not a declared query parameter\n');
+  });
+
+  it('declares no query API key where no security requirement names one', () => {
+    const error = caught(() => assertRequestMatchesOpenApi(doc, { method: 'GET', path: '/v1/notes?key=K' }));
+    expect(error.errors).toEqual([
+      { instancePath: 'query/key', message: 'is not a declared query parameter', keyword: 'parameter' },
+    ]);
+  });
+
+  it('throws for a request no operation serves', () => {
+    const error = caught(() => assertRequestMatchesOpenApi(requestDoc, { method: 'DELETE', path: '/v1/raw' }));
+    expect(error.errors[0]?.keyword).toBe('operation');
   });
 });
 

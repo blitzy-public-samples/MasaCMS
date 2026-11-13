@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import { SpanKind, SpanStatusCode, TraceFlags, type Attributes, type SpanStatus } from '@opentelemetry/api';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { fastify } from 'fastify';
@@ -39,6 +40,23 @@ function systemError(): Error {
 /** Fastify error whose message quotes the rejected input. */
 function fastifyError(): Error {
   return Object.assign(new Error(`body/name must match pattern: ${TEXT}`), { code: 'FST_ERR_VALIDATION' });
+}
+
+/** google-gax error class: named only by its constructor. */
+class GoogleError extends Error {}
+
+/** @google-cloud/pubsub error of a paused ordering key, named only by its constructor. */
+class PublishError extends Error {}
+
+/** google-gax error with gRPC status `code` whose message, like a total-timeout error's, carries TEXT. */
+function googleError(code: unknown): Error {
+  return Object.assign(new GoogleError(`Total timeout of API google.pubsub.v1.Publisher exceeded 60000 milliseconds retrying error ${TEXT}`), { code });
+}
+
+/** grpc-js ServiceError as callErrorFromStatus builds it: a plain Error with `code`, free-form `details`, `metadata` and a caller stack. */
+function serviceError(code: number): Error {
+  const err = new Error(`${String(code)} STATUS: ${TEXT}`);
+  return Object.assign(err, { code, details: TEXT, metadata: { internalRepr: new Map() }, stack: `${err.stack ?? ''}\nfor call at\n${FRAME}` });
 }
 
 /** `cause` wrapped in `depth` Errors whose messages carry TEXT. */
@@ -146,6 +164,31 @@ describe('safeErrorMessage', () => {
     ['a PostgreSQL error past the cause depth bound', wrapped(5, pgError()), REDACTED],
     ['a cause chain without identifiers', wrapped(2, TEXT), REDACTED],
     ['a cyclic cause chain', cyclic(), REDACTED],
+    ['a GoogleError total timeout', googleError(4), 'gRPC status 4 DEADLINE_EXCEEDED'],
+    ['a GoogleError of a missing topic', googleError(5), 'gRPC status 5 NOT_FOUND'],
+    ['a GoogleError with status 0', googleError(0), 'gRPC status 0 OK'],
+    ['a GoogleError with the last status', googleError(16), 'gRPC status 16 UNAUTHENTICATED'],
+    ['a PublishError of a paused key', Object.assign(new PublishError(`Unable to publish for key "${TEXT}"`), { code: 7 }), 'gRPC status 7 PERMISSION_DENIED'],
+    ['a grpc-js ServiceError', serviceError(14), 'gRPC status 14 UNAVAILABLE'],
+    ['an Error wrapping a GoogleError', wrapped(1, googleError(4)), 'gRPC status 4 DEADLINE_EXCEEDED'],
+    ['a GoogleError without a code', googleError(undefined), REDACTED],
+    ['a GoogleError with a code past the last status', googleError(17), REDACTED],
+    ['a GoogleError with a negative code', googleError(-1), REDACTED],
+    ['a GoogleError with a fractional code', googleError(4.5), REDACTED],
+    ['a GoogleError with a code as text', googleError('4'), REDACTED],
+    ['an Error with a status code and details but no metadata', Object.assign(new Error(TEXT), { code: 4, details: TEXT }), REDACTED],
+    ['a plain object shaped as a ServiceError', { code: 4, details: TEXT, metadata: {}, message: TEXT }, REDACTED],
+    [
+      'a DOMException whose code is also a gRPC status, with details and metadata',
+      Object.assign(new DOMException(TEXT, 'NotFoundError'), { details: TEXT, metadata: {} }),
+      REDACTED,
+    ],
+    ['a TimeoutError DOMException with its own message', new DOMException(TEXT, 'TimeoutError'), REDACTED],
+    ['an AbortError DOMException with its own message', new DOMException(TEXT, 'AbortError'), REDACTED],
+    ["a DOMException of another name with Node's abort text", new DOMException('This operation was aborted', 'NotFoundError'), REDACTED],
+    ["a TimeoutError DOMException with Node's text", new DOMException('The operation was aborted due to timeout', 'TimeoutError'), 'The operation was aborted due to timeout'],
+    ['the reason of an aborted signal', AbortSignal.abort().reason, 'This operation was aborted'],
+    ['an Error caused by an aborted signal', new Error(TEXT, { cause: AbortSignal.abort().reason }), 'This operation was aborted'],
   ])('reduces %s to its identifiers', (_, err, expected) => {
     expect(safeErrorMessage(err)).toBe(expected);
     expect(isSafeErrorText(expected)).toBe(true);
@@ -183,6 +226,18 @@ describe('isSafeErrorText', () => {
     ['Service identity unavailable (HTTP_5030)', false],
     ['Service identity unavailable ()', false],
     [`${UNAVAILABLE} for Ada`, false],
+    ['gRPC status 4 DEADLINE_EXCEEDED', true],
+    ['gRPC status 0 OK', true],
+    ['gRPC status 16 UNAUTHENTICATED', true],
+    ['The operation was aborted due to timeout', true],
+    ['This operation was aborted', true],
+    ['gRPC status 4 NOT_FOUND', false],
+    ['gRPC status 17 UNKNOWN', false],
+    ['gRPC status 04 DEADLINE_EXCEEDED', false],
+    ['gRPC status 4 DEADLINE_EXCEEDED: Ada', false],
+    ['gRPC status 4', false],
+    ['The operation was aborted due to timeout for Ada', false],
+    ['this operation was aborted', false],
   ])('judges %j as %s', (text, safe) => {
     expect(isSafeErrorText(text)).toBe(safe);
   });
@@ -258,6 +313,9 @@ describe('serializeError safe-error boundary', () => {
       UNAVAILABLE,
     ],
     ['an Error caused by a PostgreSQL error', wrapped(1, pgError()), 'Error', 'PostgreSQL error 42601'],
+    ['a GoogleError', googleError(4), 'GoogleError', 'gRPC status 4 DEADLINE_EXCEEDED'],
+    ['a grpc-js ServiceError', serviceError(5), 'Error', 'gRPC status 5 NOT_FOUND'],
+    ['the reason of an aborted signal', AbortSignal.abort().reason, 'AbortError', 'This operation was aborted'],
   ])('serializes %s with the safe text of its chain, the outer type and only frames, and keeps it on re-serialization', (_, value, type, message) => {
     const record = serializeError(value);
     const { stack, ...fields } = record;
@@ -350,6 +408,8 @@ describe('createLogger safe-error boundary', () => {
     ['a system error', systemError, 'Error', 'connect ECONNREFUSED'],
     ['a Fastify error', fastifyError, 'Error', 'FST_ERR_VALIDATION'],
     ['a ServiceUnavailableError', () => new ServiceUnavailableError('identity', systemError()), 'ServiceUnavailableError', UNAVAILABLE],
+    ['a GoogleError', () => googleError(7), 'GoogleError', 'gRPC status 7 PERMISSION_DENIED'],
+    ['a grpc-js ServiceError', () => serviceError(4), 'Error', 'gRPC status 4 DEADLINE_EXCEEDED'],
   ])('keeps the identifiers of %s', (_, make, type, identifier) => {
     const { logger, raw } = capture();
 
@@ -358,6 +418,20 @@ describe('createLogger safe-error boundary', () => {
     const line = safeLine(raw);
     expect(line).toMatchObject({ message: identifier, error: { type, message: identifier } });
     expectFramesUnder((line.error as { stack?: string }).stack, `${type}: ${identifier}`);
+  });
+
+  it("keeps Node's text of a timed-out signal's reason in a serialized record the logger writes again", async () => {
+    const signal = AbortSignal.timeout(1);
+    await once(signal, 'abort');
+    const record = serializeError(signal.reason);
+    const { logger, raw } = capture();
+
+    logger.error({ error: record }, 'outbox publish failed');
+
+    expect(record).toMatchObject({ type: 'TimeoutError', message: 'The operation was aborted due to timeout' });
+    expectFramesUnder(record.stack, 'TimeoutError: The operation was aborted due to timeout');
+    expect(serializeError(record)).toStrictEqual(record);
+    expect(safeLine(raw)).toMatchObject({ message: 'outbox publish failed', error: record });
   });
 });
 

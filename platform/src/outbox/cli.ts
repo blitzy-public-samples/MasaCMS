@@ -8,7 +8,7 @@ import { createLogger, serializeError } from '../logging/index.js';
 import { EnvValidationError, baseEnvSchema, requiredEnvString, z } from '../service-kit/index.js';
 import { createPool, isTenantId, withTenant } from '../tenancy/index.js';
 import { localTimestamp, outboxTable, rowFromDb } from './ddl.js';
-import { createOutbox, dropBlockedRows, publishLockedRows, type OutboxRuntime } from './flush.js';
+import { PUBLISH_STALL_MS, createOutbox, dropBlockedRows, publishLockedRows, publishPass, type OutboxRuntime } from './flush.js';
 import { registryTenants, type TenantsOf } from './stats.js';
 
 const USAGE = 'usage: opt2-outbox replay --since <ISO-8601 timestamp> [--tenant <uuid>] [--schema <name>]';
@@ -17,7 +17,8 @@ const HELP = `${USAGE}
 
 Republishes the outbox rows created at or after --since with their original eventId, per tenant in seq order, and
 stamps only the unpublished ones. Held rows are left out, and the later rows of a key with a failed, unpublished or held
-row are skipped. Prints one JSON summary line.
+row are skipped. A publish still unconfirmed after ${String(PUBLISH_STALL_MS / 1000)} s counts as failed and ends the replay.
+Prints one JSON summary line.
   --since <timestamp>   date, time and zone, such as 2026-06-30T00:00:00Z or 2026-06-30T09:00+05:30 (required)
   --tenant <uuid>       replay only this tenant (default: every tenant in the schema's tenant_registry)
   --schema <name>       outbox schema (default: the schema of OPT2_SERVICE_NAME)
@@ -109,13 +110,15 @@ export interface ReplayOptions {
   schema?: string;
 }
 
-/** Options of {@link runReplay}; `tenantsOf` defaults to the service's registry tenants, `batchSize` to 500 rows per page. */
+/** Options of {@link runReplay}; `tenantsOf` defaults to the service's registry tenants, `batchSize` to 500 rows per page, `publishStallMs` to PUBLISH_STALL_MS. */
 export interface RunReplayOptions {
   runtime: OutboxRuntime;
   since: Date;
   tenant?: string;
   tenantsOf?: TenantsOf;
   batchSize?: number;
+  /** Longest wait for one publish; the first publish unconfirmed by then ends the replay. */
+  publishStallMs?: number;
 }
 
 /** Counts of one replay; `skipped` rows are not republished because an earlier row of their tenant and ordering key failed, is unpublished or is held. */
@@ -210,9 +213,10 @@ export function serviceSchema(serviceName: string): string {
 /**
  * Republishes unheld rows created at or after `since` with their stored envelopes, per tenant in `seq` pages up to its last row at the start; stamps only unpublished rows.
  * Waits for rows another transaction holds; after a failed or blocked row, later rows of its ordering key are skipped on every page of its tenant.
+ * The first stalled publish counts as failed and ends the replay with one warning.
  */
 export async function runReplay(opts: RunReplayOptions): Promise<ReplaySummary> {
-  const { runtime, since, batchSize = DEFAULT_BATCH_SIZE } = opts;
+  const { runtime, since, batchSize = DEFAULT_BATCH_SIZE, publishStallMs = PUBLISH_STALL_MS } = opts;
   if (!Number.isInteger(batchSize) || batchSize < 1) {
     throw new RangeError(`batchSize must be a positive integer, got ${String(batchSize)}`);
   }
@@ -227,7 +231,8 @@ export async function runReplay(opts: RunReplayOptions): Promise<ReplaySummary> 
     ' ORDER BY seq LIMIT $4 FOR UPDATE';
   const createdFrom = localTimestamp(since);
   const failedEvents = new Set<string>();
-  const tracked = trackingFailures(runtime, failedEvents);
+  const pass = publishPass(runtime, publishStallMs);
+  const tracked = trackingFailures(pass.runtime, failedEvents);
   const summary: ReplaySummary = { replayed: 0, failed: 0, skipped: 0, tenants: tenantIds.size };
 
   for (const tenantId of tenantIds) {
@@ -246,7 +251,7 @@ export async function runReplay(opts: RunReplayOptions): Promise<ReplaySummary> 
         const locked = rows.map(rowFromDb);
         const unblocked = await dropBlockedRows(tx, db.schema, locked);
         const open = unblocked.rows.filter((row) => !stoppedKeys.has(row.orderingKey));
-        const result = await publishLockedRows(tx, tracked, open);
+        const result = await publishLockedRows(tx, tracked, open, { signal: pass.signal });
         const kept = new Set(unblocked.rows);
         for (const row of locked) {
           if (!kept.has(row) || failedEvents.has(row.eventId)) stoppedKeys.add(row.orderingKey);
@@ -256,8 +261,15 @@ export async function runReplay(opts: RunReplayOptions): Promise<ReplaySummary> 
       summary.replayed += page.result.published;
       summary.failed += page.result.failed;
       summary.skipped += page.result.skipped + page.blocked;
-      if (page.last === undefined || page.size < batchSize || BigInt(page.last) >= BigInt(bound)) break;
+      if (pass.signal.aborted || page.last === undefined || page.size < batchSize || BigInt(page.last) >= BigInt(bound)) break;
       after = page.last;
+    }
+    if (pass.signal.aborted) {
+      runtime.logger.warn(
+        { tenantId, error: serializeError(pass.signal.reason) },
+        `outbox replay ended early after a publish stalled for ${String(publishStallMs)} ms`,
+      );
+      break;
     }
   }
   return summary;

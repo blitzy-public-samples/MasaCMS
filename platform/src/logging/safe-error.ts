@@ -24,9 +24,45 @@ const FAILURE_CODE = String.raw`(?:E[A-Z0-9_]+|UND_ERR_[A-Z0-9_]+|HTTP_[0-9]{3}|
 /** Text that is exactly one FAILURE_CODE. */
 const FAILURE_CODE_TEXT = new RegExp(`^${FAILURE_CODE}$`);
 
+/** gRPC status names, indexed by status code. */
+const GRPC_STATUS = [
+  'OK',
+  'CANCELLED',
+  'UNKNOWN',
+  'INVALID_ARGUMENT',
+  'DEADLINE_EXCEEDED',
+  'NOT_FOUND',
+  'ALREADY_EXISTS',
+  'PERMISSION_DENIED',
+  'RESOURCE_EXHAUSTED',
+  'FAILED_PRECONDITION',
+  'ABORTED',
+  'OUT_OF_RANGE',
+  'UNIMPLEMENTED',
+  'INTERNAL',
+  'UNAVAILABLE',
+  'DATA_LOSS',
+  'UNAUTHENTICATED',
+] as const;
+
+/** Error classes whose `code` is a gRPC status: google-gax's GoogleError and @google-cloud/pubsub's PublishError. */
+const GRPC_ERROR_CLASSES: ReadonlySet<string> = new Set(['GoogleError', 'PublishError']);
+
+/** Node's fixed message of each DOMException an aborted or timed-out signal raises, by name. */
+const ABORT_MESSAGES: ReadonlyMap<string, string> = new Map([
+  ['TimeoutError', 'The operation was aborted due to timeout'],
+  ['AbortError', 'This operation was aborted'],
+]);
+
+/** Alternatives matching exactly each `gRPC status <code> <name>` text. */
+const GRPC_STATUS_TEXT = String.raw`gRPC status (?:${GRPC_STATUS.map((name, code) => `${String(code)} ${name}`).join('|')})`;
+
+/** Alternatives matching exactly each of ABORT_MESSAGES. */
+const ABORT_TEXT = [...ABORT_MESSAGES.values()].join('|');
+
 /** Every text `safeErrorMessage` produces besides REDACTED, plus the sanitized message of @opentelemetry/instrumentation-pg. */
 const SAFE_TEXT = new RegExp(
-  String.raw`^(?:PostgreSQL error [0-9A-Z]{5}|[a-z][A-Za-z0-9_]* E[A-Z0-9_]+|(?:ERR|FST)_[A-Z0-9_]+|PostgreSQL error of type '\w+' occurred \(code: [0-9A-Z]{5}\)|Service [a-z][a-z0-9-]* unavailable \(${FAILURE_CODE}\))$`,
+  String.raw`^(?:PostgreSQL error [0-9A-Z]{5}|[a-z][A-Za-z0-9_]* E[A-Z0-9_]+|(?:ERR|FST)_[A-Z0-9_]+|PostgreSQL error of type '\w+' occurred \(code: [0-9A-Z]{5}\)|Service [a-z][a-z0-9-]* unavailable \(${FAILURE_CODE}\)|${GRPC_STATUS_TEXT}|${ABORT_TEXT})$`,
 );
 
 /** Most causes `safeErrorMessage` follows past an error without identifiers; also ends a cyclic chain. */
@@ -52,10 +88,23 @@ function withFrames(header: string, lines: readonly string[]): string {
   return [header, ...lines.filter((line) => FRAME.test(line)).map(redactText)].join('\n');
 }
 
+/** `gRPC status <code> <name>` of a GoogleError, PublishError or grpc-js ServiceError (`details` and `metadata` beside the code), never its message or details. */
+function grpcStatusText(err: Error): string | undefined {
+  const { code, details, metadata } = err as { code?: unknown; details?: unknown; metadata?: unknown };
+  const name = typeof code === 'number' && Number.isInteger(code) ? GRPC_STATUS[code] : undefined;
+  if (name === undefined) return undefined;
+  const serviceError = typeof details === 'string' && typeof metadata === 'object' && metadata !== null;
+  return serviceError || GRPC_ERROR_CLASSES.has(err.constructor?.name ?? '') ? `gRPC status ${String(code)} ${name}` : undefined;
+}
+
 /** Message from `err`'s own supplied safe text or diagnostic identifiers alone; otherwise REDACTED. */
 function ownSafeMessage(err: unknown): string {
   const supplied = stringProperty(err, SAFE_ERROR_TEXT);
   if (supplied !== undefined && SAFE_TEXT.test(supplied)) return supplied;
+  // Checked before the gRPC rule: DOMException codes 0–16 are not gRPC statuses.
+  if (err instanceof DOMException) return ABORT_MESSAGES.get(err.name) === err.message ? err.message : REDACTED;
+  const status = err instanceof Error ? grpcStatusText(err) : undefined;
+  if (status !== undefined) return status;
   const code = stringProperty(err, 'code');
   if (code === undefined) return REDACTED;
   if (SQLSTATE.test(code) && stringProperty(err, 'severity') !== undefined) return `PostgreSQL error ${code}`;
@@ -64,7 +113,7 @@ function ownSafeMessage(err: unknown): string {
   return NAMED_CODE.test(code) ? code : REDACTED;
 }
 
-/** Message of `err` from its supplied safe text or diagnostic identifiers (SQLSTATE, system call and code, Node or Fastify code), else from its nearest cause's; otherwise REDACTED. */
+/** Message of `err` from its supplied safe text or diagnostic identifiers (SQLSTATE, system call and code, Node or Fastify code, gRPC status, Node's abort text), else from its nearest cause's; otherwise REDACTED. */
 export function safeErrorMessage(err: unknown): string {
   let message = ownSafeMessage(err);
   let link = err;

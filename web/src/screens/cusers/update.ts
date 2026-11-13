@@ -26,16 +26,18 @@ export const USER_BEAN_RC_KEY = 'userBean';
 /** `session.mura` key of the retained bean of a failed person save. */
 export const EDIT_BEAN_SESSION_KEY = 'editBean';
 
-/** The fields the edit forms' action URLs carry, which their multipart bodies do not repeat. */
-const ACTION_URL_FIELDS = ['userid', 'routeid'] as const;
-
 /** One owner write: the service and route that run `userManager.create` or `update` for the posted form. */
 interface OwnerWrite {
   readonly service: 'identity' | 'people';
   readonly method: 'POST' | 'PUT';
   readonly path: ServicePath;
   readonly operation: string;
+  /** The fields the posting form's action URL carries, which its multipart body does not repeat. */
+  readonly actionUrlFields: readonly string[];
 }
+
+/** The Edit Group form's action-URL fields. */
+const GROUP_ACTION_URL_FIELDS: readonly string[] = Object.freeze(['userid']);
 
 /** people's `updateUser`, which creates or updates by the posted `action` under the roster write protocol. */
 const USER_WRITE: OwnerWrite = Object.freeze({
@@ -43,6 +45,7 @@ const USER_WRITE: OwnerWrite = Object.freeze({
   method: 'POST',
   path: '/v1/users:update',
   operation: 'updateUser',
+  actionUrlFields: Object.freeze(['userid', 'routeid']),
 });
 
 /** `rc[name]` by case-insensitive name, as a CFML scope reads it. */
@@ -79,23 +82,35 @@ function actionOf(rc: CusersRc): string {
  */
 function groupWrite(rc: CusersRc): OwnerWrite {
   const action = actionOf(rc);
-  if (cfEq(action, 'Add')) return { service: 'identity', method: 'POST', path: '/v1/groups', operation: 'createGroup' };
+  if (cfEq(action, 'Add')) {
+    return {
+      service: 'identity',
+      method: 'POST',
+      path: '/v1/groups',
+      operation: 'createGroup',
+      actionUrlFields: GROUP_ACTION_URL_FIELDS,
+    };
+  }
   if (cfEq(action, 'Update')) {
     return {
       service: 'identity',
       method: 'PUT',
       path: `/v1/groups/${encodeURIComponent(rc.userid)}`,
       operation: 'updateGroup',
+      actionUrlFields: GROUP_ACTION_URL_FIELDS,
     };
   }
   throw new Error(`cUsers.update: no group write for action '${action}'; legacy fails on the unset user bean`);
 }
 
 /** The posted fields as received: a multipart body with the action URL's fields, else every rc field URL-encoded. */
-function relayedRequest({ req: { rc }, body }: ScreenContext, { method, path }: OwnerWrite): GatewayRequest {
+function relayedRequest(
+  { req: { rc }, body }: ScreenContext,
+  { method, path, actionUrlFields }: OwnerWrite,
+): GatewayRequest {
   if (body?.form instanceof FormData) {
     const relay = multipartRelay(body);
-    const query = Object.fromEntries(ACTION_URL_FIELDS.map((name) => [name, rc[name]]));
+    const query = Object.fromEntries(actionUrlFields.map((name) => [name, rc[name]]));
     return { method, path, query, body: relay.body, headers: relay.headers };
   }
   // A URL-encoded post or a GET: rc holds the URL and form fields, the CSRF pair included.

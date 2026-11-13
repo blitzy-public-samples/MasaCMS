@@ -1,4 +1,4 @@
-/** Outbox runtime registry, the row selection and publishing shared by flush, sweep and replay, and the in-request flush after commit. */
+/** Outbox runtime registry, the row selection, publishing and publish bounds shared by flush, sweep and replay, and the in-request flush after commit. */
 import { untilAborted } from '../auth/deadline.js';
 import type { EventEnvelope, EventPublisher, TopicValidator } from '../events/index.js';
 import { serializeError, type Logger } from '../logging/index.js';
@@ -29,6 +29,9 @@ export interface CreateOutboxOptions {
 
 /** Longest an in-request flush waits on row locks and publishes before it leaves its rows to the sweep. */
 export const FLUSH_DEADLINE_MS = 2_000;
+
+/** Longest a sweep or replay waits for one publish; the first publish still unconfirmed then ends the whole pass. */
+export const PUBLISH_STALL_MS = 5_000;
 
 const SET_LOCK_TIMEOUT_SQL = "SELECT set_config('lock_timeout', $1, true)";
 
@@ -185,6 +188,39 @@ export async function publishLockedRows(
     );
   }
   return { published: published.length, failed, skipped };
+}
+
+/** A publishing pass over several transactions, ended by its first stalled publish or by its deadline. */
+export interface PublishPass {
+  /** The given runtime with every publish bounded by the pass. */
+  runtime: OutboxRuntime;
+  /** Aborts at the first stalled publish or with the deadline; give it to publishLockedRows and stop the pass once it aborts. */
+  signal: AbortSignal;
+  /** Whether a stalled publish, not the deadline, ended the pass. */
+  stalled(): boolean;
+}
+
+/** Starts a pass publishing through `runtime` whose signal aborts once a publish is unconfirmed after `stallMs` or `deadline` aborts. */
+export function publishPass(runtime: OutboxRuntime, stallMs: number, deadline?: AbortSignal): PublishPass {
+  const stall = new AbortController();
+  const signal = deadline === undefined ? stall.signal : AbortSignal.any([stall.signal, deadline]);
+  const { publisher } = runtime;
+  const bounded: EventPublisher = {
+    publish(topic, envelope) {
+      const work = publisher.publish(topic, envelope);
+      const timer = AbortSignal.timeout(stallMs);
+      const onStall = (): void => {
+        stall.abort(timer.reason);
+      };
+      timer.addEventListener('abort', onStall, { once: true });
+      return untilAborted(work, signal).finally(() => {
+        timer.removeEventListener('abort', onStall);
+      });
+    },
+    publishRaw: (topic, message) => publisher.publishRaw(topic, message),
+    close: () => publisher.close(),
+  };
+  return { runtime: { ...runtime, publisher: bounded }, signal, stalled: () => stall.signal.aborted };
 }
 
 /**

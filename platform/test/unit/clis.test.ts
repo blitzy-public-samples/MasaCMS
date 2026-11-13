@@ -87,6 +87,8 @@ const SINCE = new Date(SINCE_ISO);
 const NOW = new Date(2026, 5, 30, 14, 5, 9, 123);
 const CREATED_AT = '2026-06-15 10:00:00.000';
 const TOPIC = 'people.person.archived.v1';
+/** The logged error of a publish a timeout signal ended. */
+const TIMED_OUT = { type: 'TimeoutError', message: 'The operation was aborted due to timeout' };
 
 const ENV: Record<string, string> = {
   PORT: '8112',
@@ -255,12 +257,14 @@ function fakeDb(
   return { db, statements, tenants, end, withMetadata, bounds, pages, updates };
 }
 
-/** A publisher whose publish rejects for the listed event ids; `order` records close calls. */
-function fakePublisher(failing: readonly string[] = [], order: string[] = []) {
+/** A publisher whose publish rejects for the `failing` event ids and never settles for the `pending` ones; `order` records close calls. */
+function fakePublisher(failing: readonly string[] = [], order: string[] = [], pending: readonly string[] = []) {
   const publish = vi.fn((_topic: string, sent: { eventId: string }) =>
     failing.includes(sent.eventId)
       ? Promise.reject(new Error(`publish rejected ${sent.eventId}`))
-      : Promise.resolve(`msg-${sent.eventId}`),
+      : pending.includes(sent.eventId)
+        ? new Promise<string>(() => undefined)
+        : Promise.resolve(`msg-${sent.eventId}`),
   );
   const close = vi.fn(() => {
     order.push('publisher.close');
@@ -270,11 +274,11 @@ function fakePublisher(failing: readonly string[] = [], order: string[] = []) {
   return { publisher, publish, close };
 }
 
-function runtimeWith(db: TenantDb, failing: readonly string[] = []) {
+function runtimeWith(db: TenantDb, failing: readonly string[] = [], pending: readonly string[] = []) {
   const lines: LogLine[] = [];
   const destination: DestinationStream = { write: (chunk: string) => void lines.push(JSON.parse(chunk) as LogLine) };
   const logger = createLogger({ service: 'people', version: '1.0.0', env: 'local', destination });
-  const { publisher, publish } = fakePublisher(failing);
+  const { publisher, publish } = fakePublisher(failing, [], pending);
   const runtime: OutboxRuntime = { service: 'people', db, publisher, logger, clock: fixedClock(NOW) };
   return { runtime, publish, lines };
 }
@@ -496,6 +500,33 @@ describe('opt2-outbox runReplay', () => {
     expect(updates().map((s) => s.values?.[1])).toEqual([[eventId(3)], [eventId(5)]]);
     expect(lines).toEqual([
       expect.objectContaining({ severity: 'ERROR', message: 'outbox publish failed', eventId: eventId(1) }),
+    ]);
+  });
+
+  it('ends at the first publish stalled for publishStallMs, counting it failed and replaying no later page or tenant', async () => {
+    const { db, updates, tenants } = fakeDb([...rows(TENANT_A, [1, 2, 3]), ...rows(TENANT_B, [4])]);
+    const { runtime, publish, lines } = runtimeWith(db, [], [eventId(2)]);
+    const tenantsOf = () => Promise.resolve([TENANT_A, TENANT_B]);
+    const started = performance.now();
+
+    const summary = await runReplay({ runtime, since: SINCE, tenantsOf, batchSize: 2, publishStallMs: 50 });
+
+    const elapsed = performance.now() - started;
+    expect(elapsed).toBeGreaterThanOrEqual(40);
+    expect(elapsed).toBeLessThan(1_050);
+    expect(summary).toEqual({ replayed: 1, failed: 1, skipped: 0, tenants: 2 });
+    expect(publishedIds(publish)).toEqual([eventId(1), eventId(2)]);
+    expect(updates().map((s) => s.values?.[1])).toEqual([[eventId(1)]]);
+    // The bound read, then the one page whose publish stalled.
+    expect(tenants).toEqual([TENANT_A, TENANT_A]);
+    expect(lines).toMatchObject([
+      { severity: 'ERROR', message: 'outbox publish failed', eventId: eventId(2), error: TIMED_OUT },
+      {
+        severity: 'WARNING',
+        message: 'outbox replay ended early after a publish stalled for 50 ms',
+        tenantId: TENANT_A,
+        error: TIMED_OUT,
+      },
     ]);
   });
 

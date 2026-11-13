@@ -2056,6 +2056,7 @@ paths:
         - m:008
       security: [{userToken: [], invocationCredential: []}]
       parameters:
+        - $ref: '#/components/parameters/FormUserIdQuery'
         - $ref: '#/components/parameters/CsrfTokenHeader'
         - $ref: '#/components/parameters/CsrfExpiresHeader'
       requestBody:
@@ -2066,7 +2067,7 @@ paths:
               $ref: '#/components/schemas/GroupCreate'
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/GroupCreate'
+              $ref: '#/components/schemas/GroupInput'
           application/json:
             schema:
               $ref: '#/components/schemas/GroupCreate'
@@ -2125,6 +2126,7 @@ paths:
         - m:008
       security: [{userToken: [], invocationCredential: []}]
       parameters:
+        - $ref: '#/components/parameters/FormUserIdQuery'
         - $ref: '#/components/parameters/CsrfTokenHeader'
         - $ref: '#/components/parameters/CsrfExpiresHeader'
       requestBody:
@@ -4048,6 +4050,13 @@ components:
         examples:
           - '0'
           - '1'
+    FormUserIdQuery:
+      name: userid
+      in: query
+      required: false
+      description: The edit form's action-URL `userid`, which its multipart body does not repeat; query and body fields merge as CFML's url and form scopes, a body field winning, and a path `groupId` governs where present.
+      schema:
+        $ref: '#/components/schemas/CfUuid'
     GroupId:
       name: groupId
       in: path

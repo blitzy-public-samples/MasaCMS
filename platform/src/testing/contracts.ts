@@ -1,5 +1,5 @@
-/** OpenAPI response, event and producer/consumer contract assertions; every failure throws ContractAssertionError. */
-import { Ajv2020, type AnySchemaObject, type ErrorObject, type ValidateFunction } from 'ajv/dist/2020.js';
+/** OpenAPI request, response, event and producer/consumer contract assertions, each throwing ContractAssertionError. */
+import { Ajv2020, type AnySchemaObject, type ErrorObject, type Options, type ValidateFunction } from 'ajv/dist/2020.js';
 import {
   compileTopicSchema,
   envelopeSchema,
@@ -57,6 +57,21 @@ export interface ResponseUnderTest {
   /** The `content-type` header; parameters such as `charset` are ignored. */
   contentType?: string | number | string[] | undefined;
   /** Parsed JSON or raw text; text is parsed when the media type is JSON. */
+  body?: unknown;
+}
+
+/** A request to check; parameters and URL-encoded or multipart fields are wire strings. */
+export interface RequestUnderTest {
+  method: string;
+  /** Request path; a query string in it is read as query parameters too. */
+  path: string;
+  /** Query parameters; a repeated name holds its values in order. */
+  query?: Record<string, string | string[]>;
+  /** Request headers; names match ignoring case, and a repeated header's values join with `, `. */
+  headers?: Record<string, string | string[] | undefined>;
+  /** The `content-type` header; parameters such as `boundary` and `charset` are ignored. */
+  contentType?: string;
+  /** Parsed JSON or JSON text, or the field record of a URL-encoded or multipart body. */
   body?: unknown;
 }
 
@@ -123,7 +138,7 @@ function isDateTime(value: string): boolean {
   return (value[10] === 'T' || value[10] === 't') && isFullDate(value.slice(0, 10)) && isFullTime(value.slice(11));
 }
 
-const ajv = new Ajv2020({
+const AJV_OPTIONS: Options = {
   strict: false,
   allErrors: true,
   validateFormats: true,
@@ -143,13 +158,31 @@ const ajv = new Ajv2020({
     binary: true,
     password: true,
   },
-});
+};
+
+const ajv = new Ajv2020(AJV_OPTIONS);
+
+/** One Ajv instance with the contract documents registered in it and the validators compiled from them. */
+interface SchemaValidators {
+  readonly ajv: Ajv2020;
+  readonly documents: WeakSet<object>;
+  readonly compiled: Map<string, ValidateFunction>;
+}
+
+/** Validators of JSON values, as responses and JSON bodies carry them. */
+const STRICT: SchemaValidators = { ajv, documents: new WeakSet(), compiled: new Map() };
+/** Validators of wire strings (parameters, URL-encoded and multipart fields), coerced as their schema types them. */
+const WIRE: SchemaValidators = {
+  ajv: new Ajv2020({ ...AJV_OPTIONS, coerceTypes: 'array' }),
+  documents: new WeakSet(),
+  compiled: new Map(),
+};
 
 const PATH_PARAMETER = /\{[^}]+\}/g;
 const JSON_MEDIA_TYPE = /(?:^application\/|\+)json$/;
+const FORM_MEDIA_TYPES: ReadonlySet<string> = new Set(['application/x-www-form-urlencoded', 'multipart/form-data']);
 
 const documentIds = new WeakMap<object, string>();
-const responseValidators = new Map<string, ValidateFunction>();
 const envelopeValidators = new WeakMap<object, ValidateFunction>();
 let documentCount = 0;
 
@@ -223,10 +256,11 @@ function follow(root: Json, located: Located): Located {
   return { node, pointer };
 }
 
+// One capturing group per path parameter, in template order.
 function templatePattern(template: string): RegExp {
   const source = template
     .split(/(\{[^}]+\})/)
-    .map((part) => (/^\{[^}]+\}$/.test(part) ? '[^/]+' : part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+    .map((part) => (/^\{[^}]+\}$/.test(part) ? '([^/]+)' : part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
     .join('');
   return new RegExp(`^${source}$`);
 }
@@ -291,21 +325,24 @@ function parsedBody(body: unknown, mediaType: string, context: string): unknown 
   }
 }
 
-// The document is registered once as a schema resource, so `#/components/...` refs resolve inside it.
-function responseValidator(doc: object, pointer: readonly string[]): ValidateFunction {
+// The document is registered once per Ajv instance as a schema resource, so `#/components/...` refs resolve inside it.
+function validatorAt(validators: SchemaValidators, doc: object, pointer: readonly string[]): ValidateFunction {
   let id = documentIds.get(doc);
   if (id === undefined) {
     documentCount += 1;
     id = `urn:opt2:testing:openapi:${documentCount}`;
-    ajv.addSchema(doc as AnySchemaObject, id);
     documentIds.set(doc, id);
+  }
+  if (!validators.documents.has(doc)) {
+    validators.ajv.addSchema(doc, id);
+    validators.documents.add(doc);
   }
   // URI-fragment form of the pointer (RFC 6901 section 6), so braces and spaces in keys survive URI parsing.
   const ref = `${id}#/${pointer.map((segment) => encodeURIComponent(escapeSegment(segment))).join('/')}`;
-  let validate = responseValidators.get(ref);
+  let validate = validators.compiled.get(ref);
   if (validate === undefined) {
-    validate = ajv.compile({ $ref: ref });
-    responseValidators.set(ref, validate);
+    validate = validators.ajv.compile({ $ref: ref });
+    validators.compiled.set(ref, validate);
   }
   return validate;
 }
@@ -342,9 +379,225 @@ export function assertResponseMatchesOpenApi(doc: object, response: ResponseUnde
   if (!isRecord(media) || media.schema === undefined) {
     return body;
   }
-  const errors = ajvViolations(responseValidator(doc, [...declared.pointer, 'content', mediaKey, 'schema']), body);
+  const errors = ajvViolations(validatorAt(STRICT, doc, [...declared.pointer, 'content', mediaKey, 'schema']), body);
   if (errors.length > 0) {
     throw new ContractAssertionError(context, errors);
+  }
+  return body;
+}
+
+/** A parameter an operation declares, with the pointer to its schema. */
+interface DeclaredParameter {
+  name: string;
+  in: string;
+  required: boolean;
+  schema?: string[];
+  /** A form-style exploded object, whose properties are the query names no other parameter declares. */
+  spread: boolean;
+  /** A form-style unexploded array, sent as one comma-separated value. */
+  commaList: boolean;
+}
+
+// Path-item parameters, then the operation's, which replace a path-item parameter of the same name and location.
+function declaredParameters(root: Json, operationPointer: readonly string[]): DeclaredParameter[] {
+  const byKey = new Map<string, DeclaredParameter>();
+  for (const owner of [operationPointer.slice(0, -1), operationPointer]) {
+    const list = at(root, [...owner, 'parameters']);
+    if (!Array.isArray(list)) {
+      continue;
+    }
+    list.forEach((entry: unknown, index) => {
+      const { node, pointer } = follow(root, { node: entry, pointer: [...owner, 'parameters', String(index)] });
+      if (!isRecord(node) || typeof node.name !== 'string' || typeof node.in !== 'string') {
+        return;
+      }
+      const schemaPointer = [...pointer, 'schema'];
+      const schema = follow(root, { node: node.schema, pointer: schemaPointer }).node;
+      const type = isRecord(schema) ? schema.type : undefined;
+      const form = node.in === 'query' && (node.style ?? 'form') === 'form';
+      const exploded = node.explode !== false;
+      byKey.set(`${node.in} ${node.in === 'header' ? node.name.toLowerCase() : node.name}`, {
+        name: node.name,
+        in: node.in,
+        required: node.required === true || node.in === 'path',
+        ...(node.schema === undefined ? {} : { schema: schemaPointer }),
+        spread: form && exploded && type === 'object',
+        commaList: form && !exploded && type === 'array',
+      });
+    });
+  }
+  return [...byKey.values()];
+}
+
+// URI-decoded path parameters of `requestPath` by template name.
+function pathValues(template: string, requestPath: string): Map<string, string> {
+  const names = (template.match(PATH_PARAMETER) ?? []).map((segment) => segment.slice(1, -1));
+  const match = templatePattern(template).exec(requestPath) ?? [];
+  return new Map(names.map((name, index) => [name, decodeURIComponent(match[index + 1] ?? '')]));
+}
+
+// Query values by name in order, the path's query string first.
+function queryValues(request: RequestUnderTest): Map<string, string[]> {
+  const values = new Map<string, string[]>();
+  const add = (name: string, value: string): void => {
+    values.set(name, [...(values.get(name) ?? []), value]);
+  };
+  const queryAt = request.path.indexOf('?');
+  if (queryAt >= 0) {
+    for (const [name, value] of new URLSearchParams(request.path.slice(queryAt + 1))) {
+      add(name, value);
+    }
+  }
+  for (const [name, value] of Object.entries(request.query ?? {})) {
+    for (const item of [value].flat()) {
+      add(name, item);
+    }
+  }
+  return values;
+}
+
+// Header values by lower-cased name.
+function headerValues(headers: RequestUnderTest['headers'] = {}): Map<string, string> {
+  const values = new Map<string, string>();
+  for (const [name, value] of Object.entries(headers)) {
+    if (value !== undefined) {
+      values.set(name.toLowerCase(), [value].flat().join(', '));
+    }
+  }
+  return values;
+}
+
+// Query names of the API keys the operation's security requirements, else the document's, send.
+function securityQueryNames(root: Json, operation: OpenApiOperation): string[] {
+  const requirements: unknown[] = Array.isArray(operation.security)
+    ? operation.security
+    : Array.isArray(root.security)
+      ? root.security
+      : [];
+  const components = isRecord(root.components) ? root.components : {};
+  const schemes = isRecord(components.securitySchemes) ? components.securitySchemes : {};
+  return requirements
+    .flatMap((requirement) => (isRecord(requirement) ? Object.keys(requirement) : []))
+    .map((scheme) => follow(root, { node: schemes[scheme], pointer: [] }).node)
+    .flatMap((scheme) =>
+      isRecord(scheme) && scheme.type === 'apiKey' && scheme.in === 'query' && typeof scheme.name === 'string'
+        ? [scheme.name]
+        : [],
+    );
+}
+
+// One value as sent, repeats as an array, and an unexploded list split at its commas.
+function parameterValue(parameter: DeclaredParameter, values: readonly string[]): unknown {
+  if (parameter.commaList) {
+    return values.flatMap((value) => value.split(','));
+  }
+  return values.length === 1 ? values[0] : [...values];
+}
+
+function parameterViolations(doc: object, parameter: DeclaredParameter, value: unknown): ContractViolation[] {
+  const instancePath = `${parameter.in}/${parameter.name}`;
+  if (value === undefined) {
+    return parameter.required ? [{ instancePath, message: 'is required', keyword: 'required' }] : [];
+  }
+  // Coercion rewrites the value it validates, so the schema sees a copy.
+  return parameter.schema === undefined
+    ? []
+    : ajvViolations(validatorAt(WIRE, doc, parameter.schema), structuredClone(value), instancePath);
+}
+
+function queryViolations(
+  doc: object,
+  operation: OpenApiOperation,
+  parameters: readonly DeclaredParameter[],
+  query: ReadonlyMap<string, string[]>,
+): ContractViolation[] {
+  const named = parameters.filter((parameter) => parameter.in === 'query' && !parameter.spread);
+  const declared = new Set([...named.map(({ name }) => name), ...securityQueryNames(doc as Json, operation)]);
+  const errors = named.flatMap((parameter) => {
+    const values = query.get(parameter.name);
+    return parameterViolations(doc, parameter, values === undefined ? undefined : parameterValue(parameter, values));
+  });
+  const rest = [...query].filter(([name]) => !declared.has(name));
+  const spread = parameters.find((parameter) => parameter.in === 'query' && parameter.spread);
+  if (spread !== undefined) {
+    const fields = rest.map(([name, values]) => [name, parameterValue(spread, values)] as const);
+    return [...errors, ...parameterViolations(doc, spread, fields.length === 0 ? undefined : Object.fromEntries(fields))];
+  }
+  const undeclared = rest.map(([name]) => ({
+    instancePath: `query/${name}`,
+    message: 'is not a declared query parameter',
+    keyword: 'parameter',
+  }));
+  return [...errors, ...undeclared];
+}
+
+interface CheckedBody {
+  body: unknown;
+  errors: ContractViolation[];
+}
+
+// The body against the operation's request body: presence, media type, then its schema, form fields as wire strings.
+function checkedRequestBody(doc: object, operationPointer: readonly string[], request: RequestUnderTest): CheckedBody {
+  const root = doc as Json;
+  const pointer = [...operationPointer, 'requestBody'];
+  const located = follow(root, { node: at(root, pointer), pointer });
+  const declared = isRecord(located.node) ? located.node : undefined;
+  const mediaType = mediaTypeOf(request.contentType);
+  const fail = (message: string, keyword: string): CheckedBody => ({
+    body: request.body,
+    errors: [{ instancePath: 'body', message, keyword }],
+  });
+  if (isEmptyBody(request.body)) {
+    return declared?.required === true ? fail('is required', 'requestBody') : { body: request.body, errors: [] };
+  }
+  const content = declared !== undefined && isRecord(declared.content) ? declared.content : undefined;
+  if (content === undefined) {
+    return fail('is sent but the operation declares no request body', 'requestBody');
+  }
+  const mediaKey = matchMediaType(Object.keys(content), mediaType);
+  if (mediaKey === undefined) {
+    const offered = Object.keys(content).join(', ');
+    return fail(`content type ${mediaType || '(none)'} is not declared; the body declares ${offered}`, 'content');
+  }
+  let body = request.body;
+  if (typeof body === 'string' && JSON_MEDIA_TYPE.test(mediaType)) {
+    try {
+      body = JSON.parse(body) as unknown;
+    } catch (error) {
+      return fail(`is not JSON: ${(error as Error).message}`, 'json');
+    }
+  }
+  const media = content[mediaKey];
+  if (!isRecord(media) || media.schema === undefined) {
+    return { body, errors: [] };
+  }
+  const wire = FORM_MEDIA_TYPES.has(mediaType);
+  const validate = validatorAt(wire ? WIRE : STRICT, doc, [...located.pointer, 'content', mediaKey, 'schema']);
+  return { body, errors: ajvViolations(validate, wire ? structuredClone(body) : body, 'body') };
+}
+
+/**
+ * Validates a request against its operation in `doc` and returns the validated (JSON-parsed) body: path, query and
+ * header parameters, every undeclared query name, and the request body. Cookie parameters are not checked.
+ */
+export function assertRequestMatchesOpenApi(doc: object, request: RequestUnderTest): unknown {
+  const { template, operation, pointer } = locateOperation(doc, request.method, request.path);
+  const parameters = declaredParameters(doc as Json, pointer);
+  const path = pathValues(template, request.path.replace(/\?.*$/s, ''));
+  const headers = headerValues(request.headers);
+  const located = (where: string): DeclaredParameter[] => parameters.filter((parameter) => parameter.in === where);
+  const { body, errors: bodyErrors } = checkedRequestBody(doc, pointer, request);
+  const errors = [
+    ...located('path').flatMap((parameter) => parameterViolations(doc, parameter, path.get(parameter.name))),
+    ...queryViolations(doc, operation, parameters, queryValues(request)),
+    ...located('header').flatMap((parameter) =>
+      parameterViolations(doc, parameter, headers.get(parameter.name.toLowerCase())),
+    ),
+    ...bodyErrors,
+  ];
+  if (errors.length > 0) {
+    const context = [request.method.toUpperCase(), template, 'request', mediaTypeOf(request.contentType)];
+    throw new ContractAssertionError(context.filter(Boolean).join(' '), errors);
   }
   return body;
 }

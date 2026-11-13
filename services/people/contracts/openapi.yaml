@@ -2903,6 +2903,8 @@ paths:
       x-opt2-fastify-path: /v1/users::update
       security: [{userToken: [], invocationCredential: []}]
       parameters:
+        - $ref: '#/components/parameters/FormUserIdQuery'
+        - $ref: '#/components/parameters/RouteIdQuery'
         - $ref: '#/components/parameters/CsrfTokenHeader'
         - $ref: '#/components/parameters/CsrfExpiresHeader'
       requestBody:
@@ -2913,7 +2915,7 @@ paths:
               $ref: '#/components/schemas/UserForm'
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/UserForm'
+              $ref: '#/components/schemas/UserInput'
           application/json:
             schema:
               $ref: '#/components/schemas/UserForm'
@@ -2978,6 +2980,9 @@ paths:
       x-opt2-fastify-path: /v1/users/addresses::update
       security: [{userToken: [], invocationCredential: []}]
       parameters:
+        - $ref: '#/components/parameters/FormUserIdQuery'
+        - $ref: '#/components/parameters/RouteIdQuery'
+        - $ref: '#/components/parameters/SiteIdQuery'
         - $ref: '#/components/parameters/CsrfTokenHeader'
         - $ref: '#/components/parameters/CsrfExpiresHeader'
       requestBody:
@@ -2988,7 +2993,7 @@ paths:
               $ref: '#/components/schemas/AddressForm'
           multipart/form-data:
             schema:
-              $ref: '#/components/schemas/AddressForm'
+              $ref: '#/components/schemas/AddressInput'
           application/json:
             schema:
               $ref: '#/components/schemas/AddressForm'
@@ -4071,6 +4076,13 @@ components:
         type: string
         maxLength: 35
         default: ''
+    FormUserIdQuery:
+      name: userid
+      in: query
+      required: false
+      description: The edit form's action-URL `userid`, which its multipart body does not repeat; query and body fields merge as CFML's url and form scopes, a body field winning.
+      schema:
+        $ref: '#/components/schemas/CfUuid'
     AddressIdQuery:
       name: addressid
       in: query
@@ -6683,11 +6695,10 @@ components:
           type: boolean
           description: True when `user` and `errors` are the session's retained values of a failed save.
 
-    UserForm:
+    UserInput:
       type: object
-      description: The Edit User form of a person; names match ignoring case, and `newFile`, `removePhotoFile` or extended attribute fields select a branch that stays on legacy.
+      description: The Edit User form of a person, whose multipart post carries `userid` and `routeid` in its action URL; names match ignoring case, and `newFile`, `removePhotoFile` or extended attribute fields select a branch that stays on legacy.
       required:
-        - userid
         - action
       additionalProperties:
         $ref: '#/components/schemas/FormValue'
@@ -6784,11 +6795,20 @@ components:
           type: string
         csrf_token_expires:
           type: string
-    AddressForm:
+    UserForm:
+      description: The Edit User form with the person's `userid`, which is also its CSRF context.
+      allOf:
+        - $ref: '#/components/schemas/UserInput'
+        - type: object
+          required:
+            - userid
+          properties:
+            userid:
+              $ref: '#/components/schemas/CfUuid'
+    AddressInput:
       type: object
-      description: The Edit Address form; names match ignoring case, and extended attribute fields select a branch that stays on legacy.
+      description: The Edit Address form, whose multipart post carries `userid`, `routeid` and `siteid` in its action URL; names match ignoring case, and extended attribute fields select a branch that stays on legacy.
       required:
-        - userid
         - action
       additionalProperties:
         $ref: '#/components/schemas/FormValue'
@@ -6843,6 +6863,16 @@ components:
           type: string
         csrf_token_expires:
           type: string
+    AddressForm:
+      description: The Edit Address form with the person's `userid`, whose `updateaddress<userid>` is its CSRF context.
+      allOf:
+        - $ref: '#/components/schemas/AddressInput'
+        - type: object
+          required:
+            - userid
+          properties:
+            userid:
+              $ref: '#/components/schemas/CfUuid'
     ProfileForm:
       type: object
       description: The Edit Profile form; names match ignoring case, `isPublic`, `s2`, `type` and `groupID` are ignored, and `newFile`, `removePhotoFile` or extended attribute fields select a branch that stays on legacy.

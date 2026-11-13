@@ -9,6 +9,7 @@ import { SYSTEM_TENANT_ID } from '@opt2/platform/tenancy';
 import {
   TENANT_A,
   TEST_PUSH_KEY,
+  assertRequestMatchesOpenApi,
   assertResponseMatchesOpenApi,
   mintServiceToken,
   mintTasksInvokerToken,
@@ -90,6 +91,7 @@ const EDITOR_GROUP = EDITOR.groups[0]?.userid ?? '';
 const USERS_MODULE = '00000000000000000000000000000000008';
 const HOME = '00000000000000000000000000000000001';
 const NEW_GROUP = cfId('A', 901);
+const NATIVE_GROUP = cfId('A', 906);
 const NEW_CLIENT = cfId('C', 902);
 const NEW_USER = cfId('E', 903);
 const OPERATION_ID = cfId('F', 904);
@@ -155,6 +157,15 @@ async function withCsrfHeaders(subject: string, context: string, laterMs = 0): P
 function csrfFields(secret: string, context: string): string {
   const { token, expires } = csrfFor({ csrfSecret: secret }, context);
   return `${CSRF_FIELD_TOKEN}=${encodeURIComponent(token)}&${CSRF_FIELD_EXPIRES}=${encodeURIComponent(expires)}`;
+}
+
+/** `fields` as a browser's multipart body, each a text part, with its content type. */
+function multipartPost(fields: Readonly<Record<string, string>>): { contentType: string; payload: string } {
+  const boundary = '----opt2ContractBoundary';
+  const parts = Object.entries(fields).map(
+    ([name, value]) => `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
+  );
+  return { contentType: `multipart/form-data; boundary=${boundary}`, payload: `${parts.join('')}--${boundary}--\r\n` };
 }
 
 function as(subject: string): () => Promise<Headers> {
@@ -286,6 +297,25 @@ const PREPARE_BODY = {
 
 const operationUrl = (userId: string, operationId: string, action?: string): string =>
   `/internal/v1/accounts/${userId}/operations/${operationId}${action === undefined ? '' : `:${action}`}`;
+
+const NATIVE_GROUP_CSRF = csrfFor(session('site-admin'), NATIVE_GROUP);
+/** The new group's Edit Group form as the browser posts it, its `userid` in the action URL only. */
+const NATIVE_GROUP_FIELDS: Readonly<Record<string, string>> = {
+  isPublic: '0',
+  groupname: 'Natives',
+  email: '',
+  tablist: '',
+  action: 'add',
+  type: '1',
+  contact: '0',
+  siteid: SITE_A,
+  returnurl: '',
+  subtype: 'Default',
+  [CSRF_FIELD_TOKEN]: NATIVE_GROUP_CSRF.token,
+  [CSRF_FIELD_EXPIRES]: NATIVE_GROUP_CSRF.expires,
+};
+const NATIVE_GROUP_POST = multipartPost(NATIVE_GROUP_FIELDS);
+const NATIVE_GROUP_URL = `/v1/groups?userid=${NATIVE_GROUP}`;
 
 const CASES: Record<string, Case[]> = {
   ...JSON_API_CASES,
@@ -425,6 +455,20 @@ const CASES: Record<string, Case[]> = {
       payload: `userid=${NEW_GROUP}&groupname=Gates&ispublic=0&siteid=${SITE_A}&${csrfFields(session('site-admin').csrfSecret, NEW_GROUP)}`,
       status: 200,
       verify: (body) => expect(record(body)).toMatchObject({ written: true, group: { UserID: NEW_GROUP, GroupName: 'Gates' } }),
+    },
+    {
+      name: 'creates a group from the native multipart form, its id in the action-URL query',
+      method: 'POST',
+      url: NATIVE_GROUP_URL,
+      as: 'site-admin',
+      headers: () => Promise.resolve({ 'content-type': NATIVE_GROUP_POST.contentType }),
+      payload: NATIVE_GROUP_POST.payload,
+      status: 200,
+      verify: (body) => {
+        const request = { method: 'POST', path: NATIVE_GROUP_URL, contentType: NATIVE_GROUP_POST.contentType, body: NATIVE_GROUP_FIELDS };
+        assertRequestMatchesOpenApi(DOC, request);
+        expect(record(body)).toMatchObject({ written: true, group: { UserID: NATIVE_GROUP, GroupName: 'Natives' } });
+      },
     },
     { name: 'refuses a posted id that is no CF UUID', method: 'POST', url: '/v1/groups', as: 's2', headers: async () => FORM, payload: 'userid=nope&groupname=x', status: 400 },
   ],

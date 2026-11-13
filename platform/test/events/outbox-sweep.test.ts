@@ -191,6 +191,12 @@ function failingPublisher(): EventPublisher {
   return { publish: unavailable, publishRaw: unavailable, close: () => Promise.resolve() };
 }
 
+/** A publisher whose every publish never settles, as against a Pub/Sub endpoint that accepts connections and never answers. */
+function stalledPublisher(): EventPublisher {
+  const never = (): Promise<string> => new Promise<string>(() => undefined);
+  return { publish: never, publishRaw: never, close: () => Promise.resolve() };
+}
+
 /** Registers and returns the fixture schema's outbox runtime publishing through `publisher`. */
 function runtimeOf(fx: Fixture, publisher: EventPublisher, clock: Clock = CLOCK): OutboxRuntime {
   return createOutbox({ service: SERVICE, db: fx.handle.app, publisher, logger: silentLogger, clock });
@@ -587,6 +593,31 @@ describe('outbox sweep, drain counts and replay', () => {
     expect(contexts[0]?.clock).toBe(CLOCK);
     expect(pendingWhenRun).toEqual([[]]);
     expect(Object.values(await publishedAt(fx, TENANT_A.tenantId, seeded))).not.toContain(null);
+  });
+
+  it('ends a sweep at its first stalled publish, releasing its row locks and leaving every later tenant to the next sweep', async () => {
+    const seededA = await seedUnpublished(fx, TENANT_A.tenantId, 2);
+    const seededB = await seedUnpublished(fx, TENANT_B.tenantId, 1);
+    const tenantsOf = () => Promise.resolve([TENANT_A.tenantId, TENANT_B.tenantId]);
+    const started = performance.now();
+
+    const stalled = await sweepOutbox(runtimeOf(fx, stalledPublisher()), { service: SERVICE, clock: CLOCK, tenantsOf, publishStallMs: 200 });
+
+    expect(performance.now() - started).toBeLessThan(2_200);
+    expect(stalled).toMatchObject({ published: 0, failed: 1, tenants: 0 });
+    expect(await unpublished(fx, TENANT_A.tenantId)).toEqual(expect.arrayContaining(seededA));
+    expect(await unpublished(fx, TENANT_B.tenantId)).toEqual(expect.arrayContaining(seededB));
+    // NOWAIT fails with 55P03 if the sweep still held a row lock.
+    await withTenant(fx.handle.app, TENANT_A.tenantId, (tx) =>
+      tx.query(`SELECT seq FROM ${outboxTable(fx.handle.schema)} WHERE event_id = ANY($1::uuid[]) FOR UPDATE NOWAIT`, [seededA]),
+    );
+
+    const capture = createCapturingPublisher();
+    const next = await sweepOutbox(runtimeOf(fx, capture), { service: SERVICE, clock: CLOCK, tenantsOf });
+
+    expect(next).toMatchObject({ failed: 0, tenants: 2 });
+    expect(capture.published.map(({ envelope }) => envelope.eventId)).toEqual(expect.arrayContaining([...seededA, ...seededB]));
+    expect(Object.values(await publishedAt(fx, TENANT_B.tenantId, seededB))).not.toContain(null);
   });
 
   it('counts unpublished and held rows per registry tenant, and a sweep leaves only the held ones', async () => {
