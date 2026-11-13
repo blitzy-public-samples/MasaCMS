@@ -1,0 +1,104 @@
+
+
+<div class="mura-header">
+	<h1>Select Fields</h1>
+</div> <!-- /.mura-header -->
+<div class="block block-constrain">
+	<div class="block block-bordered">
+	  <div class="block-content">
+			<div class="mura-control-group" id="availableFields">
+				<div id="sortableFields" class="mura-control justify">
+					<p class="dragMsg">
+						<span class="dragFrom half">Drag Fields from Here&hellip;</span><span class="half">&hellip;and Drop Them Here.</span>
+					</p>
+
+					
+					
+					<ul id="availableListSort" class="displayListSortOptions">
+						
+								<li class="ui-state-default">Title</li>
+							
+								<li class="ui-state-default">Image</li>
+							
+								<li class="ui-state-default">Body</li>
+							
+								<li class="ui-state-default">ReadMore</li>
+							
+								<li class="ui-state-default">Credits</li>
+							
+								<li class="ui-state-default">Comments</li>
+							
+								<li class="ui-state-default">Tags</li>
+							
+								<li class="ui-state-default">Rating</li>
+							
+					</ul>
+
+					<ul id="displayListSort" class="displayListSortOptions">
+						
+							<li class="ui-state-highlight">Title</li>
+						
+							<li class="ui-state-highlight">date</li>
+						
+							<li class="ui-state-highlight"><b>x"y</li>
+						
+							<li class="ui-state-highlight">Summary</li>
+						
+					</ul>
+					<input type="hidden" id="displayList" class="objectParam" value="Title ,,date,<b>x"y,Summary" name="displayList"  data-displayobjectparam="displayList"/>
+				</div>
+			</div>
+			<div class="mura-actions">
+				<div class="form-actions">
+					<button class="btn mura-primary" id="updateBtn"><i class="mi-check-circle"></i>Update</button>
+				</div>
+			</div>
+		</div> <!-- /.block-content -->
+	</div> <!-- /.block-bordered -->
+</div> <!-- /.block-constrain -->
+
+<script>
+
+$(function(){
+	if($("#ProxyIFrame").length){
+		$("#ProxyIFrame").load(
+			function(){
+				frontEndProxy.post({cmd:'setWidth',width:600});
+			}
+		);
+	} else {
+		frontEndProxy.post({cmd:'setWidth',width:600});
+	}
+
+	$('#updateBtn').click(function(){
+		frontEndProxy.post({
+			cmd:'setObjectParams',
+			reinit:true,
+			instanceid:'',
+			params:{
+				displayList:$('#displayList').val()
+				}
+			});
+	});
+
+	$("#availableListSort, #displayListSort").sortable({
+		connectWith: ".displayListSortOptions",
+		update: function(event) {
+			event.stopPropagation();
+			$("#displayList").val("");
+			$("#displayListSort > li").each(function() {
+				var current = $("#displayList").val();
+
+				if(current != '') {
+					$("#displayList").val(current + "," + $(this).html());
+				} else {
+					$("#displayList").val($(this).html());
+				}
+
+			});
+
+		}
+	}).disableSelection();
+
+});
+</script>

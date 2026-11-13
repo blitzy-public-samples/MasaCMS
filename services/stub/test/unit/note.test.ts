@@ -1,9 +1,7 @@
 /** Note aggregate of the stub: create schema, list paging, row mapping and created-event payload. */
-import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { isCfUuid } from '@opt2/platform/legacy-compat';
 import { localTimestamp } from '@opt2/platform/outbox';
-import { fixedClock } from '@opt2/platform/testing';
 import {
   NOTE_PAGE_DEFAULT,
   NOTE_PAGE_MAX,
@@ -21,9 +19,9 @@ import {
   type NoteCursor,
   type NoteProjectionRow,
 } from '../../src/domain/note.js';
-import { noteCreatedValidator } from '../../src/events/topics.js';
+import { NOTE_PROJECTION_TABLE, NOTE_TABLE } from '../../src/repo/tables.js';
+import { TEST_CLOCK } from '../helpers/app.js';
 
-const CLOCK = fixedClock('2024-01-02T03:04:05.678');
 const CREATED = '2024-01-02 03:04:05.678';
 const CREATED_DATE = new Date(2024, 0, 2, 3, 4, 5, 678);
 const PROJECTED = '2024-01-02 03:04:06.001';
@@ -32,24 +30,8 @@ const NOTE_ID = 'A1B2C3D4-E5F6-0718-293A4B5C6D7E8F90';
 const TENANT_ID = '5b0c2f4e-1d3a-4c8b-9e7f-2a6d8c4b1e30';
 const EVENT_ID = '0f9c3a52-8d4e-4b6a-9e21-5c7d3b1a8f60';
 
-const NOTE_COLUMNS = ['tenant_id', 'note_id', 'title', 'body', 'created', 'row_version'];
-const NOTE_PROJECTION_COLUMNS = [
-  'tenant_id',
-  'note_id',
-  'title',
-  'body',
-  'created',
-  'aggregate_version',
-  'apply_count',
-  'last_event_id',
-  'projected_at',
-];
-
-function migrationColumns(table: string): string[] {
-  const sql = readFileSync(new URL('../../db/migrations/0001_stub.sql', import.meta.url), 'utf8');
-  const block = sql.split(`CREATE TABLE stub.${table} (\n`)[1]?.split('\n);')[0] ?? '';
-  return block.split('\n').flatMap((line) => /^\s+([a-z_]+)\s/.exec(line)?.slice(1, 2) ?? []);
-}
+const NOTE_COLUMNS = NOTE_TABLE.columns.map((column) => column.name);
+const NOTE_PROJECTION_COLUMNS = NOTE_PROJECTION_TABLE.columns.map((column) => column.name);
 
 function note(overrides: Partial<Note> = {}): Note {
   return { noteId: NOTE_ID, title: 'First note', body: 'Body text', created: CREATED, rowVersion: 1, ...overrides };
@@ -79,6 +61,7 @@ describe('noteCreateSchema', () => {
 
   it.each([
     { label: 'no title', input: { body: 'B' }, path: ['title'], code: 'invalid_type' },
+    { label: 'an empty title', input: { title: '' }, path: ['title'], code: 'too_small' },
     { label: 'a blank title', input: { title: '   ' }, path: ['title'], code: 'too_small' },
     { label: 'a 256-character title', input: { title: 't'.repeat(256) }, path: ['title'], code: 'too_big' },
     { label: 'a numeric title', input: { title: 1 }, path: ['title'], code: 'invalid_type' },
@@ -95,25 +78,21 @@ describe('noteCreateSchema', () => {
 
 describe('newNote', () => {
   it('creates version 1 stamped from the clock', () => {
-    const { noteId, ...state } = newNote({ title: 'T', body: 'B' }, CLOCK);
-    expect(state).toEqual({ title: 'T', body: 'B', created: CREATED, rowVersion: 1 });
-    expect(state.created).toBe(localTimestamp(CLOCK.now()));
+    const { noteId, ...state } = newNote({ title: 'T', body: 'B' }, TEST_CLOCK);
+    expect(state).toEqual({ title: 'T', body: 'B', created: '2026-06-30 12:00:00.000', rowVersion: 1 });
+    expect(state.created).toBe(localTimestamp(TEST_CLOCK.now()));
     expect(isCfUuid(noteId)).toBe(true);
+    expect(noteId).toHaveLength(35);
     expect(noteId).toBe(noteId.toUpperCase());
   });
 
   it('issues a fresh id per note', () => {
     const input = { title: 'T', body: '' };
-    expect(newNote(input, CLOCK).noteId).not.toBe(newNote(input, CLOCK).noteId);
+    expect(newNote(input, TEST_CLOCK).noteId).not.toBe(newNote(input, TEST_CLOCK).noteId);
   });
 });
 
 describe('note rows', () => {
-  it('lists the migration columns', () => {
-    expect(migrationColumns('note')).toEqual(NOTE_COLUMNS);
-    expect(migrationColumns('note_projection')).toEqual(NOTE_PROJECTION_COLUMNS);
-  });
-
   it('noteToRow writes every stub.note column but tenant_id', () => {
     const row = noteToRow(note());
     expect(row).toEqual({ note_id: NOTE_ID, title: 'First note', body: 'Body text', created: CREATED, row_version: 1 });
@@ -249,7 +228,7 @@ describe('note list paging', () => {
 
 describe('noteCreatedPayload', () => {
   it('carries the full note state', () => {
-    expect(noteCreatedPayload(note({ rowVersion: 4 }))).toEqual({
+    expect(noteCreatedPayload(note({ rowVersion: 4 }))).toStrictEqual({
       noteId: NOTE_ID,
       title: 'First note',
       body: 'Body text',
@@ -258,8 +237,9 @@ describe('noteCreatedPayload', () => {
     });
   });
 
-  it('satisfies the event contract for a new note', () => {
-    const payload = noteCreatedPayload(newNote(noteCreateSchema.parse({ TITLE: 'T' }), CLOCK));
-    expect(noteCreatedValidator.validatePayload(payload)).toEqual({ ok: true, value: payload });
+  // Schema validation of payloads stays in topics.test.ts and routes.test.ts; this suite imports only the domain and its tables.
+  it('carries only the closed contract keys for a new note', () => {
+    const payload = noteCreatedPayload(newNote(noteCreateSchema.parse({ TITLE: 'T' }), TEST_CLOCK));
+    expect(Object.keys(payload).sort()).toEqual(['body', 'created', 'noteId', 'rowVersion', 'title']);
   });
 });

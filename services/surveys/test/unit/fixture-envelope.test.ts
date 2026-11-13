@@ -1,6 +1,7 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Fixture envelope, error map, paging and handler of the surveys fixture routes (legacy-fixtures/cfml/lib/envelope.cfc). */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { Roles } from '@opt2/platform/auth';
 import {
   cfHash,
   LEGACY_ERROR_MAP,
@@ -12,7 +13,7 @@ import {
 } from '@opt2/platform/legacy-compat';
 import { createLogger, serializeError } from '@opt2/platform/logging';
 import { createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
-import { testVerifier } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, testVerifier, type TenantFixture } from '@opt2/platform/testing';
 import {
   FIXTURE_ERROR_MAP,
   FIXTURE_LEGACY_ERROR_TYPES,
@@ -32,6 +33,7 @@ import {
   type FixturePage,
   type FixtureParams,
 } from '../../src/legacy/fixture-envelope.js';
+import { TEST_CLOCK, buildTestApp, createRecordingDb, headersFor, type TestApp } from '../helpers/app.js';
 
 const SURVEY_ID = '6F9619FF-8B86-D011-B42D00C04FC964FF';
 const ROUTE = '/legacy-fixtures/cfml/api.cfm/surveys/surveys';
@@ -529,3 +531,198 @@ describe('fixture routes', () => {
     });
   });
 });
+
+describe('surveys fixture routes over the recording database', () => {
+  const MANAGER_ID = '11111111-2222-3333-4444555566667777';
+  const LAUNCHED_ID = 'A0000000-0000-0000-0000000000000001';
+  const UNKNOWN_ID = '00000000-0000-0000-0000000000000000';
+  const SITE_A = `?siteid=${TENANT_A.siteId}`;
+  const PAGE_TWO_B = `${ROUTE}?siteid=${TENANT_B.siteId}&pageIndex=2&itemsPerPage=1`;
+  const CSRF = { 'x-csrf_token': 'CSRF-TOKEN', 'x-csrf_token_expires': '260630140509000' };
+  const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
+  const WRITE_STATEMENT = /^(INSERT|UPDATE|DELETE)\b/i;
+  /** Headers onRequestStart_include.cfm adds to every legacy response. */
+  const LEGACY_HEADERS = { generator: 'Masa CMS 7.6.1', 'strict-transport-security': 'max-age=1200' };
+  /** Page 2 of tenant-b's two seeded surveys at one per page, as envelope.cfc listResponse() writes it. */
+  const PAGE_TWO_B_DATA =
+    `{"items":[{"survey_id":"B0000000-0000-0000-0000000000000002","siteid":"tenant-b","title":"Pulse B2","status":"DRAFT",` +
+    `"created":"2026-06-29T10:00:00","createdbyid":"${MANAGER_ID}","lastupdate":"","lastupdatebyid":"","launched_at":""}],` +
+    '"startindex":2,"endindex":2,"itemsperpage":1,"totalitems":2,"totalpages":2,"pageindex":2}';
+
+  type Caller = 'manager' | 'managerB' | 'member' | 'systemUser';
+  /** One injected request; no `as` sends it anonymously, a `body` is sent as JSON. */
+  interface Req {
+    method?: 'GET' | 'POST';
+    url: string;
+    as?: Caller;
+    body?: unknown;
+    headers?: Record<string, string>;
+  }
+
+  const surveyRow = (surveyId: string, site: TenantFixture, title: string, status: string, created: Date, launchedAt: Date | null = null) => ({
+    tenant_id: site.tenantId,
+    survey_id: surveyId,
+    siteid: site.siteId,
+    title,
+    status,
+    created,
+    createdbyid: MANAGER_ID,
+    launched_at: launchedAt,
+  });
+
+  let t: TestApp;
+  let tokens: Record<Caller, Record<string, string>>;
+
+  beforeAll(async () => {
+    const db = createRecordingDb({
+      clock: TEST_CLOCK,
+      rows: {
+        survey: [
+          surveyRow(LAUNCHED_ID, TENANT_A, 'Launched', 'LAUNCHED', new Date(2026, 5, 28, 9, 0, 0), new Date(2026, 5, 29, 9, 0, 0)),
+          surveyRow('B0000000-0000-0000-0000000000000001', TENANT_B, 'Pulse B1', 'DRAFT', new Date(2026, 5, 29, 9, 0, 0)),
+          surveyRow('B0000000-0000-0000-0000000000000002', TENANT_B, 'Pulse B2', 'DRAFT', new Date(2026, 5, 29, 10, 0, 0)),
+        ],
+      },
+    });
+    t = await buildTestApp({ db });
+    tokens = {
+      manager: await headersFor(Roles.surveysManager),
+      managerB: await headersFor(Roles.surveysManager, { site: TENANT_B.siteId }),
+      member: await headersFor(Roles.member),
+      systemUser: await headersFor(Roles.systemUser),
+    };
+  });
+
+  afterAll(async () => {
+    await t.app.close();
+  });
+
+  /** Injects `req` and returns its wire view, its response headers, the row-changing statements it ran and the service calls it made. */
+  async function send({ method = 'GET', url, as, body, headers = {} }: Req) {
+    const mark = t.db.transactions.length;
+    const callMark = t.client.requests.length;
+    const res = await t.app.inject({
+      method,
+      url,
+      headers: { ...(as === undefined ? {} : tokens[as]), ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...headers },
+      ...(body === undefined ? {} : { payload: JSON.stringify(body) }),
+    });
+    const wire: Wire = { status: res.statusCode, contentType: res.headers['content-type'], etag: res.headers['etag'], body: res.body };
+    return {
+      ...wire,
+      headers: res.headers,
+      writes: t.db.transactions
+        .slice(mark)
+        .flatMap((tx) => tx.statements.map((statement) => statement.text))
+        .filter((text) => WRITE_STATEMENT.test(text)),
+      serviceCalls: t.client.requests.slice(callMark),
+    };
+  }
+
+  it('creates a DRAFT survey and reads it back in the success envelope, params suppressed, with its ETag and the legacy headers', async () => {
+    const created = await send({ method: 'POST', url: `${ROUTE}${SITE_A}`, as: 'manager', body: { title: 'Pulse' }, headers: CSRF });
+    const id = (JSON.parse(created.body) as { data: { survey_id: string } }).data.survey_id;
+    const detail =
+      `{"survey_id":"${id}","siteid":"tenant-a","title":"Pulse","status":"DRAFT","created":"2026-06-30T12:00:00",` +
+      '"createdbyid":"test-surveys.manager","lastupdate":"","lastupdatebyid":"","launched_at":"","schedule":{},"reminders":[],"targets":[]}';
+
+    expect(id).toMatch(CF_UUID);
+    expectFixtureResponse(created, 200, successBody('surveys.surveys', detail));
+    expect(created.headers).toMatchObject(LEGACY_HEADERS);
+    expect(t.db.rows('survey')).toContainEqual(expect.objectContaining({ tenant_id: TENANT_A.tenantId, survey_id: id, title: 'Pulse' }));
+
+    const read = await send({ url: `${ROUTE}/${id}${SITE_A}`, as: 'manager' });
+
+    expectFixtureResponse(read, 200, successBody('surveys.surveys', detail));
+    expect(read.headers).toMatchObject(LEGACY_HEADERS);
+    expect(read.writes).toEqual([]);
+  });
+
+  it('lists one page of the site\'s surveys in the paged-list shape, writing nothing', async () => {
+    const listed = await send({ url: PAGE_TWO_B, as: 'managerB' });
+
+    expectFixtureResponse(listed, 200, successBody('surveys.surveys', PAGE_TWO_B_DATA));
+    expect(listed.headers).toMatchObject(LEGACY_HEADERS);
+    expect(listed.writes).toEqual([]);
+  });
+
+  it.each(['GET', 'get'])('dispatches a POST carrying X-HTTP-Method-Override %s as the list, writing nothing and consuming no CSRF token', async (override) => {
+    const res = await send({
+      method: 'POST',
+      url: PAGE_TWO_B,
+      as: 'managerB',
+      body: { title: 'Ignored' },
+      headers: { ...CSRF, 'x-http-method-override': override },
+    });
+
+    expectFixtureResponse(res, 200, successBody('surveys.surveys', PAGE_TWO_B_DATA));
+    expect(res.writes).toEqual([]);
+    expect(res.serviceCalls).toEqual([]);
+  });
+
+  it.each<[string, Req, EnvelopeErrorType, string]>([
+    ['an anonymous caller', { url: `${ROUTE}${SITE_A}` }, 'authorization', 'surveys.surveys'],
+    ['a member without surveys.manager', { url: `${ROUTE}${SITE_A}`, as: 'member' }, 'forbidden', 'surveys.surveys'],
+    ['an unknown survey id', { url: `${ROUTE}/${UNKNOWN_ID}${SITE_A}`, as: 'manager' }, 'notFound', 'surveys.surveys'],
+    ['a create without a title', { method: 'POST', url: `${ROUTE}${SITE_A}`, as: 'manager', body: {}, headers: CSRF }, 'invalidParameters', 'surveys.surveys'],
+    ['a create without CSRF tokens', { method: 'POST', url: `${ROUTE}${SITE_A}`, as: 'manager', body: { title: 'Pulse' } }, 'invalidTokens', 'surveys.surveys'],
+    [
+      'a schedule of a launched survey',
+      { method: 'POST', url: `${ROUTE}/${LAUNCHED_ID}/schedule${SITE_A}`, as: 'manager', body: { launchAt: '2026-07-01T09:00:00' }, headers: CSRF },
+      'conflict',
+      'surveys.surveys.schedule',
+    ],
+    ['in-range non-ASCII paging digits', { url: `${ROUTE}${SITE_A}&pageIndex=${encodeURIComponent('1٣')}`, as: 'manager' }, 'server_error', 'surveys.surveys'],
+  ])('answers %s with the envelope.cfc %s row, writing nothing', async (_case, req, type, method) => {
+    const { status, code, message } = ENVELOPE_CFC_ERROR_MAP[type];
+    const res = await send(req);
+
+    expectFixtureResponse(res, status, errorBody(method, code, message));
+    expect(res.writes).toEqual([]);
+  });
+
+  describe('api.cfm check order, with two checks failing at once', () => {
+    it('answers a path outside the api.cfm grammar with 404 before checking an unknown site', async () => {
+      const res = await send({ url: `${ROUTE}/${UNKNOWN_ID}/a/b/c?siteid=nowhere`, as: 'manager' });
+
+      expect(res.status).toBe(404);
+      // Only status and method: such paths never reach surveys through the gateway, and service-kit's not-found answers them in
+      // the JSON API error shape, not envelope.cfc's.
+      expect(JSON.parse(res.body)).toMatchObject({ apiversion: 'v1', method: 'invalid' });
+      expect(res.writes).toEqual([]);
+    });
+
+    it.each<[string, Req, EnvelopeErrorType, string]>([
+      ['the site check precedes the login check', { method: 'POST', url: `${ROUTE}?siteid=nowhere`, body: {} }, 'invalidParameters', 'surveys.surveys'],
+      ['the site check precedes the role check', { url: `${ROUTE}?siteid=nowhere`, as: 'systemUser' }, 'invalidParameters', 'surveys.surveys'],
+      ['the token-site check refuses another site a role would admit', { url: `${ROUTE}?siteid=${TENANT_B.siteId}`, as: 'manager' }, 'forbidden', 'surveys.surveys'],
+      ['the login check precedes the role check', { method: 'POST', url: `${ROUTE}${SITE_A}`, body: { title: 'Pulse' }, headers: CSRF }, 'authorization', 'surveys.surveys'],
+      ['the role check precedes the existence check', { url: `${ROUTE}/${UNKNOWN_ID}${SITE_A}`, as: 'systemUser' }, 'forbidden', 'surveys.surveys'],
+      [
+        'the CSRF check precedes the existence check',
+        { method: 'POST', url: `${ROUTE}/${UNKNOWN_ID}/schedule${SITE_A}`, as: 'manager', body: { launchAt: '2026-07-01T09:00:00' } },
+        'invalidTokens',
+        'surveys.surveys.schedule',
+      ],
+      [
+        'the existence check precedes validation',
+        { method: 'POST', url: `${ROUTE}/${UNKNOWN_ID}/schedule${SITE_A}`, as: 'manager', body: { launchAt: 'soon' }, headers: CSRF },
+        'notFound',
+        'surveys.surveys.schedule',
+      ],
+      [
+        'validation precedes the state check',
+        { method: 'POST', url: `${ROUTE}/${LAUNCHED_ID}/schedule${SITE_A}`, as: 'manager', body: { launchAt: 'soon' }, headers: CSRF },
+        'invalidParameters',
+        'surveys.surveys.schedule',
+      ],
+    ])('%s', async (_case, req, type, method) => {
+      const { status, code, message } = ENVELOPE_CFC_ERROR_MAP[type];
+      const res = await send(req);
+
+      expectFixtureResponse(res, status, errorBody(method, code, message));
+      expect(res.writes).toEqual([]);
+    });
+  });
+});
+
