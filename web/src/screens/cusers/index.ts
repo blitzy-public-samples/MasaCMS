@@ -19,6 +19,9 @@ import { searchScreen } from './search';
 import { updateActions } from './update';
 import { updateAddressAction } from './updateaddress';
 
+/** The cUsers `inc/js.cfm` script tag, which the cEditProfile edit view also includes. */
+export { renderUsersJs } from './inc/js';
+
 // Each definition applies the cUsers `before()` gate and rc defaults itself. The withheld `update` and
 // `updateaddress` variants are refused by the registry's not-built list before these are matched.
 /** Every carried cUsers action and `update` variant. */
