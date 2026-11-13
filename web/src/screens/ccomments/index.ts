@@ -7,18 +7,17 @@ import {
   ccommentsPurgeDeletedComments,
   ccommentsUnapprove,
 } from './actions';
-import { ccommentsBulkEdit, ccommentsSingleEdit } from './ajax';
+import { ccommentsAjax, ccommentsBulkEdit, ccommentsSingleEdit } from './ajax';
 import { ccommentsDefault } from './default';
 import { ccommentsLoadComments } from './loadcomments';
 import { ccommentsLoadCommentsPage } from './loadcommentspage';
 
-// `ajax` is only the view bulkEdit and singleEdit render; its own route key stays legacy in every cut-over version,
-// so web registers no screen for it.
-/** The carried ccomments actions: the Comments Manager, its list fragments, the edits and the moderation actions. */
+/** The carried ccomments actions: the Comments Manager, its fragments, the edits and the moderation actions. */
 export const ccommentsScreens: readonly ScreenDefinition[] = Object.freeze([
   ccommentsDefault,
   ccommentsLoadComments,
   ccommentsLoadCommentsPage,
+  ccommentsAjax,
   ccommentsBulkEdit,
   ccommentsSingleEdit,
   ccommentsApprove,

@@ -10,7 +10,7 @@ import {
   ccommentsPurgeDeletedComments,
   ccommentsUnapprove,
 } from '@/screens/ccomments/actions';
-import { ccommentsBulkEdit, ccommentsSingleEdit } from '@/screens/ccomments/ajax';
+import { ccommentsAjax, ccommentsBulkEdit, ccommentsSingleEdit } from '@/screens/ccomments/ajax';
 import { ccommentsLoadComments } from '@/screens/ccomments/loadcomments';
 import { CCOMMENTS_OWNER, ccommentsGate } from '@/screens/ccomments/shared';
 import type { PageRedirect, RawBody, RedirectScreen, ScreenContext, SubmitResult } from '@/screens/registry';
@@ -256,6 +256,7 @@ describe('edit actions and list fragment', () => {
     { screen: ccommentsBulkEdit, action: 'bulkedit', mode: 'redirect' },
     { screen: ccommentsSingleEdit, action: 'singleedit', mode: 'redirect' },
     { screen: ccommentsLoadComments, action: 'loadcomments', mode: 'fragment' },
+    { screen: ccommentsAjax, action: 'ajax', mode: 'fragment' },
   ])('declares $action in $mode mode', ({ screen, action, mode }) => {
     expect(screen).toMatchObject({
       circuit: 'ccomments',
@@ -301,6 +302,15 @@ describe('edit actions and list fragment', () => {
       routes: {},
       viewPath: LOAD_PATH,
       calls: [{ method: 'GET', path: LOAD_PATH, query: { siteid: SITE, ...LIST_RC } }],
+    },
+    {
+      answer: (ctx) => ccommentsAjax.render(ctx, undefined),
+      expected: (body) => body,
+      action: 'ajax',
+      rc: { cacheid: '0.5' },
+      routes: {},
+      viewPath: AJAX_PATH,
+      calls: [{ method: 'GET', path: AJAX_PATH, query: { siteid: SITE, cacheid: '0.5' } }],
     },
   ])('relays $action from strategies-content', async ({ answer, expected, action, rc, routes, viewPath, calls }) => {
     const markup = `<div class="mura-table-grid">${action} &lt;b&gt;</div>`;

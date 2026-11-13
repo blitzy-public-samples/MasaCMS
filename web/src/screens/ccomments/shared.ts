@@ -14,9 +14,10 @@ export const CONTENT_MODULE_ID = '00000000000000000000000000000000000';
 export const CCOMMENTS_OWNER = 'strategies-content' as const satisfies ScreenOwner;
 
 /** A ccomments action whose answer is a bare body. */
-export type CommentsRawAction = 'loadcomments' | 'loadcommentspage' | 'bulkedit' | 'singleedit';
+export type CommentsRawAction = 'ajax' | 'loadcomments' | 'loadcommentspage' | 'bulkedit' | 'singleedit';
 
 const RAW_VIEW_PATHS = {
+  ajax: '/v1/raw/ccomments/ajax',
   loadcomments: '/v1/raw/ccomments/loadcomments',
   loadcommentspage: '/v1/raw/ccomments/loadcommentspage',
 } as const;
