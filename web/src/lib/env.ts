@@ -60,6 +60,8 @@ export interface LegacySettings {
   readonly legacyIndexFileLocation: boolean;
   /** `keepMetaKeywords`: the content editor shows the meta keywords field. */
   readonly keepMetaKeywords: boolean;
+  /** `formpolls`: the Form editor shows the poll presentation checkbox. */
+  readonly formPolls: boolean;
   /** configBean `fileAssetPath`: when set, site file asset URLs are `<fileAssetPath>/<filePoolID>`. */
   readonly fileAssetPath: string;
   /** configBean `corepath`: when set, the core URL on an admin domain. */
@@ -205,6 +207,8 @@ const SETTING_RULES: { readonly [K in keyof RuledSettings]: SettingRule<RuledSet
   legacyIndexFileLocation: { key: 'legacyindexfilelocation', fallback: false, apply: cfBoolean },
   // Not a configBean property; the content editor reads it with defaultValue=false.
   keepMetaKeywords: { key: 'keepmetakeywords', fallback: false, apply: cfBoolean },
+  // Not a configBean property; the Form panels read it with defaultValue=false.
+  formPolls: { key: 'formpolls', fallback: false, apply: cfBoolean },
   fileAssetPath: { key: 'fileassetpath', fallback: '', apply: asIs },
   corePath: { key: 'corepath', fallback: '', apply: asIs },
   pluginsPath: { key: 'pluginspath', fallback: '', apply: asIs },
