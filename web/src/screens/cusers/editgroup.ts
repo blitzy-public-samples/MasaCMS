@@ -169,7 +169,7 @@ const on = (value: number | null | undefined): boolean => (value ?? 0) !== 0;
 // Web cannot read the legacy web root, so the theme is taken to be under `<webroot>/themes`, as the shell prints
 // `themepath` (EX-SHELL-THEMEPATH).
 /** `getThemeAssetPath()` of `site`: `getResourcePath(complete=0)` followed by `/themes/<theme>`. */
-function themeAssetPath(site: SiteData, https: boolean): string {
+export function themeAssetPath(site: SiteData, https: boolean): string {
   const { context, serverPort } = legacySettings();
   const { record } = site;
   const remote = on(record.isremote);

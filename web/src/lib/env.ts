@@ -67,6 +67,8 @@ export interface LegacySettings {
   readonly indexFileInAPI: boolean;
   /** Days; 0 means passwords never expire. */
   readonly expirePasswords: number;
+  /** `strongpasswords`, true only for a CFML boolean true, as `isBoolean(v) and v` tests it. */
+  readonly strongPasswords: boolean;
   readonly webroot: string;
   /** `application.appReloadKey`: the URL parameter that reloads the application. */
   readonly appReloadKey: string;
@@ -208,6 +210,7 @@ const SETTING_RULES: { readonly [K in keyof RuledSettings]: SettingRule<RuledSet
     fallback: 0,
     apply: (value) => (isCfNumeric(value) ? Number(value) : undefined),
   },
+  strongPasswords: { key: 'strongpasswords', template: 'false', fallback: false, apply: cfBoolean },
   // Masa sets it to expandPath('/muraWRM'), which only the legacy host knows.
   webroot: { key: 'webroot', fallback: '', apply: cleanFilePath },
   appReloadKey: { key: 'appreloadkey', template: 'appreload', fallback: 'appreload', apply: asIs },
