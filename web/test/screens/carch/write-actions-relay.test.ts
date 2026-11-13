@@ -56,8 +56,7 @@ const FIELDS = { contentid: CONTENT_ID, contenthistid: HIST_ID, ...CSRF_FIELDS }
 const ABORTED: RawBody = { status: 200, contentType: HTML_TYPE, body: '' };
 const SERVICE_ERROR = { apiversion: 'v1', method: 'carch', error: { message: 'Denied', code: 'denied' } };
 
-// Inventoried response mode of each carried action (opt2/inventory/legacy-inventory.json). updateobjectparams is
-// inventoried as page, but its view writes a literal and aborts before any layout.
+// Inventoried response mode of each carried action (opt2/inventory/legacy-inventory.json).
 const MODES: Readonly<Record<string, ScreenMode>> = {
   approvalaction: 'json',
   assocfiles: 'fragment',

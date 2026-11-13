@@ -55,8 +55,6 @@ const INLINE_WRITES: Readonly<Record<string, InlineWrite>> = Object.freeze({
   savecopyinfo: relayed('savecopyinfo'),
   unlockfile: relayed('unlockfile'),
   unlocknode: relayed('unlocknode'),
-  // The inventory records `page`, but the view writes its literal and aborts before any layout, so it is served in
-  // JSON mode like the other inline saves: a page answer would wrap it in the shell the front-end configurator evals.
   updateobjectparams: updateObjectParams,
 });
 

@@ -6,7 +6,7 @@ import { normaliseRouteKey } from '@opt2/platform/legacy-compat';
 import { runGate, secure, type GateDecision } from '@/lib/access-gate';
 import type { AdminRequest } from '@/lib/request-context';
 import { cformGate, cformScreens } from '@/screens/cform';
-import type { ScreenDefinition, ScreenMode } from '@/screens/registry';
+import type { ScreenDefinition } from '@/screens/registry';
 import {
   adminS2Request,
   anonymousRequest,
@@ -53,16 +53,6 @@ function cformRecords(): Array<InventoryVariant & { readonly action: string }> {
 
 const INVENTORY = cformRecords();
 const CARRIED = INVENTORY.filter((record) => record.disposition === 'carry');
-
-// Inventoried as page, but each view prints rc.return through html.cfm or json.cfm and aborts before any layout.
-const BARE_MODES: Readonly<Record<string, ScreenMode>> = {
-  getdialog: 'fragment',
-  getfieldtemplate: 'fragment',
-  getform: 'json',
-  getfield: 'json',
-  getfieldtype: 'json',
-  getdataset: 'json',
-};
 
 const actionOf = (screen: ScreenDefinition): string => normaliseRouteKey(screen.action);
 
@@ -190,18 +180,9 @@ describe('cformScreens', () => {
     expect(actions.toSorted()).toEqual(CARRIED.map((record) => record.action).toSorted());
   });
 
-  it('overrides only carried actions with a bare mode', () => {
-    const carried = new Set(CARRIED.map((record) => record.action));
-
-    expect(Object.keys(BARE_MODES).filter((action) => !carried.has(action))).toEqual([]);
-  });
-
-  it.each(CARRIED.map((record) => [record.action, record] as const))('serves carried %s', (action, record) => {
+  it.each(CARRIED.map((record) => [record.action, record] as const))('serves carried %s in its inventoried mode', (action, record) => {
     expect(byAction.has(action)).toBe(true);
-    expect(byAction.get(action)).toMatchObject({
-      mode: BARE_MODES[action] ?? record.responseMode,
-      owner: record.owningService,
-    });
+    expect(byAction.get(action)).toMatchObject({ mode: record.responseMode, owner: record.owningService });
   });
 
   it('registers nothing the inventory does not carry', () => {

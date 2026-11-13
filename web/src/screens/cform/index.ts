@@ -1,16 +1,7 @@
 // The cform controller `before()` and the carried form-builder actions for the screen registry (server-only).
 import type { GateDecision, ScreenGate } from '@/lib/access-gate';
 import { servesRequestedSite } from '@/lib/request-context';
-import type {
-  DownloadScreen,
-  FragmentScreen,
-  JsonScreen,
-  PageControllerRedirect,
-  PageScreen,
-  ScreenContext,
-  ScreenDefinition,
-  SubmitResult,
-} from '../registry';
+import type { DownloadScreen, FragmentScreen, JsonScreen, RedirectScreen, ScreenDefinition } from '../registry';
 import { exportForm } from './export';
 import { getDataset } from './getdataset';
 import { getDialog } from './getdialog';
@@ -18,9 +9,7 @@ import { getField } from './getfield';
 import { getFieldTemplate } from './getfieldtemplate';
 import { getFieldType } from './getfieldtype';
 import { getForm } from './getform';
-import { renderImportForm, submitImportForm } from './importform';
-
-type ImportView = Extract<SubmitResult, { kind: 'render' }>['view'];
+import { submitImportForm } from './importform';
 
 const ALLOW: GateDecision = Object.freeze({ kind: 'allow' });
 
@@ -36,8 +25,7 @@ export const cformGate: ScreenGate = (req, { secure }) =>
 
 const CFORM = { circuit: 'cform', owner: 'strategies-content', gate: cformGate } as const;
 
-// The inventory records the six get* actions as page mode, but each view only includes html.cfm or json.cfm, which
-// print rc.return and cfabort before any layout runs, so they are registered in the bare modes legacy answers in.
+// The get* views print rc.return through html.cfm (fragment) or json.cfm (json) and abort before any layout.
 const getDialogScreen: FragmentScreen<undefined> = Object.freeze({
   ...CFORM,
   action: 'getdialog',
@@ -77,26 +65,11 @@ const exportScreen: DownloadScreen<undefined> = Object.freeze({
   download: exportForm,
 });
 
-/** The view importform()'s controller step left to render, so the page does not render it a second time. */
-const importViews = new WeakMap<ScreenContext, ImportView>();
-
-// Page-mode requests reach web without their form body, so the step falls through to the view unless a body with a
-// formzip is delivered; submitImportForm owns that decision, as the controller's own form-scope test does.
-/** importform()'s controller step: a completed import answers with its `location()`, anything else shows the view. */
-async function importStep(ctx: ScreenContext): Promise<PageControllerRedirect | undefined> {
-  const outcome = await submitImportForm(ctx);
-  if (outcome.kind === 'location' || outcome.kind === 'redirect') return outcome;
-  if (outcome.kind === 'render') importViews.set(ctx, outcome.view);
-  return undefined;
-}
-
-const importFormScreen: PageScreen<undefined> = Object.freeze({
+const importFormScreen: RedirectScreen = Object.freeze({
   ...CFORM,
   action: 'importform',
-  mode: 'page',
-  redirect: importStep,
-  render: async (ctx: ScreenContext): Promise<ImportView> =>
-    importViews.get(ctx) ?? { body: await renderImportForm(ctx) },
+  mode: 'redirect',
+  submit: submitImportForm,
 });
 
 /** The carried cform actions: the form-builder dialogs, templates and beans, the zip export and Import Form. */

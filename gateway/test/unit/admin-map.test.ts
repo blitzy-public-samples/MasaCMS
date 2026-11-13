@@ -175,6 +175,7 @@ describe('createResponseModes over the committed inventory', () => {
     ['admin:carch.downloaddata', 'download', 'application/msexcel'],
     ['admin:cusers.download', 'download', 'text/csv'],
     ['admin:cusers.update{type=1}', 'redirect', undefined],
+    ['admin:carch.updateobjectparams{approved=1}', 'json', 'text/html'],
   ])('records %s as %s, content type %s', (key, responseMode, contentType) => {
     expect(committed.modeFor(key)).toStrictEqual(contentType === undefined ? { responseMode } : { responseMode, contentType });
   });
@@ -314,6 +315,45 @@ describe('mapAdminToWeb by response mode', () => {
     const headers = { [ORIGINAL_URL_HEADER.toLowerCase()]: '/forged', cookie: 'CFID=1', authorization: 'Bearer x' };
     expect(ORIGINAL_URL_HEADER).toBe('X-Opt2-Original-Url');
     expect(route(committed, url, { headers }).target.headers).toStrictEqual({ [ORIGINAL_URL_HEADER]: url });
+  });
+});
+
+describe('mapAdminToWeb of the committed form-builder, Import Form and object-params actions', () => {
+  const urlencoded = (body: string): Sent => ({ method: 'POST', headers: { 'content-type': URLENCODED }, body: Buffer.from(body) });
+
+  // Requests as the template builder and front-end configurator scripts send them.
+  it.each<[string, Sent, string, AdminResponseMode, string]>([
+    ['/admin/?muraAction=cform.getdialog&i=42', urlencoded('dialog=dialog-confirm'), '/admin-raw/cform/getdialog', 'fragment', 'text/html'],
+    ['/admin/?muraAction=cform.getfieldtemplate&i=42', urlencoded('fieldType=field-textfield&formid=F1'), '/admin-raw/cform/getfieldtemplate', 'fragment', 'text/html'],
+    ['/admin/?muraAction=cForm.getForm&siteid=default&formid=F1', {}, '/admin-raw/cform/getform', 'json', 'application/json'],
+    ['/admin/?muraAction=cform.getfield&i=42', urlencoded('fieldtype=field-textfield&formid=F1'), '/admin-raw/cform/getfield', 'json', 'application/json'],
+    ['/admin/?muraAction=cForm.getFieldType&siteid=default&fieldtype=field-textfield', {}, '/admin-raw/cform/getfieldtype', 'json', 'application/json'],
+    ['/admin/?muraAction=cform.getdataset&i=42', urlencoded('datasetID=&fieldID=D1'), '/admin-raw/cform/getdataset', 'json', 'application/json'],
+    ['/admin/index.cfm?muraAction=cArch.updateObjectParams', urlencoded('contenthistid=H1&approved=0&preview=0'), '/admin-raw/carch/updateobjectparams', 'json', 'text/html'],
+  ])('maps %s to its raw handler with the method, query and body as sent', (url, sent, webPath, mode, contentType) => {
+    const query = url.slice(url.indexOf('?'));
+    const { target } = route(committed, url, sent, variants);
+    expect(target).toStrictEqual(expectedTarget(mode, `${webPath}${query}`, sent.method ?? 'GET', url, contentType));
+  });
+
+  it('forwards the native Import Form multipart POST to its post action with the zip and no fields in the query', () => {
+    const url = '/admin/?muraAction=cForm.importform';
+    const body = multipartBody([
+      { name: 'csrf_token', value: 'A'.repeat(64) },
+      { name: 'csrf_token_expires', value: '261112191044236' },
+      { name: 'title', value: 'Imported Form' },
+      { name: 'formzip', value: 'PK\u0003\u0004zip-bytes', filename: 'export.zip' },
+    ]);
+    const { result, target } = route(committed, url, { method: 'POST', headers: { 'content-type': MULTIPART }, body }, variants);
+    expect(result.key).toBe('admin:cform.importform');
+    expect(target).toStrictEqual(expectedTarget('redirect', '/admin-actions/cform/importform?muraAction=cForm.importform', 'POST', url, undefined));
+  });
+
+  it('sends the Import Form GET to the post action, which renders the form', () => {
+    const url = '/admin/?muraAction=cForm.importform&siteid=default';
+    expect(route(committed, url).target).toStrictEqual(
+      expectedTarget('redirect', '/admin-actions/cform/importform?muraAction=cForm.importform&siteid=default', 'GET', url, undefined),
+    );
   });
 });
 

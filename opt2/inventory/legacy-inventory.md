@@ -129,8 +129,8 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:carch.update{approved=1}` | `admin:carch.update{approved=1}` | spans identity, strategies-content | decision (2) (corrected; expected carry) | validates `rc.contentid & "deleteall" \| rc.contentid & "deletehistall" \| rc.contenthistid & "delete" \| rc.contentBean.getContentHistID() & "add" \| rc.parentid & "multifileupload"` | fragment (text/html) |
 | `ctl:carch.update{notify}` | `admin:carch.update{notify}` | spans identity, strategies-content | decision (2) (corrected; expected carry) | validates `rc.contentid & "deleteall" \| rc.contentid & "deletehistall" \| rc.contenthistid & "delete" \| rc.contentBean.getContentHistID() & "add" \| rc.parentid & "multifileupload"` | fragment (text/html) |
 | `ctl:carch.update` | `admin:carch.update` | strategies-content | carry (5) | validates `rc.contentid & "deleteall" \| rc.contentid & "deletehistall" \| rc.contenthistid & "delete" \| rc.contentBean.getContentHistID() & "add" \| rc.parentid & "multifileupload"` | fragment (text/html) |
-| `ctl:carch.updateobjectparams{approved=1}` | `admin:carch.updateobjectparams{approved=1}` | spans identity, strategies-content | decision (2) (corrected; expected carry) | none | page (text/html) |
-| `ctl:carch.updateobjectparams` | `admin:carch.updateobjectparams` | strategies-content | carry (5) | none | page (text/html) |
+| `ctl:carch.updateobjectparams{approved=1}` | `admin:carch.updateobjectparams{approved=1}` | spans identity, strategies-content | decision (2) (corrected; expected carry) | none | json (text/html) |
+| `ctl:carch.updateobjectparams` | `admin:carch.updateobjectparams` | strategies-content | carry (5) | none | json (text/html) |
 | `ctl:carch.variationtargeting{notify}` | `admin:carch.variationtargeting{notify}` | spans identity, strategies-content | decision (3) (corrected; expected carry) | none | page (text/html) |
 | `ctl:carch.variationtargeting` | `admin:carch.variationtargeting` | strategies-content | carry (5) | none | page (text/html) |
 | `ctl:ccategory.edit` | `admin:ccategory.edit` | strategies-content | carry (5) | none | page (text/html) |
@@ -215,13 +215,13 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:cfeed.update` | `admin:cfeed.update` | strategies-content | carry (5) | validates `rc.feedid` | fragment (text/html) |
 | `ctl:cfilemanager.default` | `admin:cfilemanager.default` | strategies-content | legacy-served (4) | none | page (text/html) |
 | `ctl:cform.export` | `admin:cform.export` | strategies-content | carry (5) | none | download (application/zip) |
-| `ctl:cform.getdataset` | `admin:cform.getdataset` | strategies-content | carry (5) | none | page (text/html) |
-| `ctl:cform.getdialog` | `admin:cform.getdialog` | strategies-content | carry (5) | none | page (text/html) |
-| `ctl:cform.getfield` | `admin:cform.getfield` | strategies-content | carry (5) | none | page (text/html) |
-| `ctl:cform.getfieldtemplate` | `admin:cform.getfieldtemplate` | strategies-content | carry (5) | none | page (text/html) |
-| `ctl:cform.getfieldtype` | `admin:cform.getfieldtype` | strategies-content | carry (5) | none | page (text/html) |
-| `ctl:cform.getform` | `admin:cform.getform` | strategies-content | carry (5) | none | page (text/html) |
-| `ctl:cform.importform` | `admin:cform.importform` | strategies-content | carry (5) | validates `formimport` | page (text/html) |
+| `ctl:cform.getdataset` | `admin:cform.getdataset` | strategies-content | carry (5) | none | json (application/json) |
+| `ctl:cform.getdialog` | `admin:cform.getdialog` | strategies-content | carry (5) | none | fragment (text/html) |
+| `ctl:cform.getfield` | `admin:cform.getfield` | strategies-content | carry (5) | none | json (application/json) |
+| `ctl:cform.getfieldtemplate` | `admin:cform.getfieldtemplate` | strategies-content | carry (5) | none | fragment (text/html) |
+| `ctl:cform.getfieldtype` | `admin:cform.getfieldtype` | strategies-content | carry (5) | none | json (application/json) |
+| `ctl:cform.getform` | `admin:cform.getform` | strategies-content | carry (5) | none | json (application/json) |
+| `ctl:cform.importform` | `admin:cform.importform` | strategies-content | carry (5) | validates `formimport` | redirect |
 | `ctl:clogin.login` | `admin:clogin.login` | identity | carry (5) | validates `login` | page (text/html) |
 | `ctl:clogin.logout` | `admin:clogin.logout` | identity | carry (5) | none | redirect |
 | `ctl:clogin.main` | `admin:clogin.main` | identity | carry (5) | none | page (text/html) |

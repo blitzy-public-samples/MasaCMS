@@ -7,7 +7,7 @@ import { carchGate } from '@/screens/carch/controller';
 import { ccategoryScreens } from '@/screens/ccategory';
 import { ceditprofileScreens } from '@/screens/ceditprofile';
 import { cusersScreens } from '@/screens/cusers';
-import type { ScreenDefinition, ScreenMode } from '@/screens/registry';
+import type { ScreenDefinition } from '@/screens/registry';
 
 const INVENTORY_URL = new URL('../../../opt2/inventory/legacy-inventory.json', import.meta.url);
 const EXCEPTIONS_URL = new URL('../../../opt2/exceptions-list.json', import.meta.url);
@@ -60,21 +60,19 @@ const RECORDS = adminRecords();
 const keyOf = (def: ScreenDefinition): string =>
   normaliseRouteKey(`admin:${def.circuit}.${def.action}${def.variant === undefined ? '' : `{${def.variant.key}}`}`);
 
-/** A circuit barrel and the keys it serves in another mode than the inventory records. */
+/** A circuit barrel and its registered screens. */
 interface BarrelCase {
   readonly circuit: string;
   readonly screens: readonly ScreenDefinition[];
-  readonly modes: Readonly<Record<string, ScreenMode>>;
 }
 
 const CASES: readonly BarrelCase[] = [
-  // `cusers.download` is served by the download handler although its view is inventoried as a page.
-  { circuit: 'cusers', screens: cusersScreens, modes: { 'admin:cusers.download': 'download' } },
-  { circuit: 'ceditprofile', screens: ceditprofileScreens, modes: {} },
-  { circuit: 'ccategory', screens: ccategoryScreens, modes: {} },
+  { circuit: 'cusers', screens: cusersScreens },
+  { circuit: 'ceditprofile', screens: ceditprofileScreens },
+  { circuit: 'ccategory', screens: ccategoryScreens },
 ];
 
-describe.each(CASES)('$circuit barrel', ({ circuit, screens, modes }) => {
+describe.each(CASES)('$circuit barrel', ({ circuit, screens }) => {
   const records = RECORDS.filter((record) => record.routeKey.startsWith(`admin:${circuit}.`));
   const carried = records.filter((record) => record.disposition === 'carry');
 
@@ -88,7 +86,7 @@ describe.each(CASES)('$circuit barrel', ({ circuit, screens, modes }) => {
   it('serves each key in its inventoried mode and owner behind the controller before() gate', () => {
     for (const def of screens) {
       const record = carried.find((candidate) => candidate.routeKey === keyOf(def));
-      expect(def.mode, keyOf(def)).toBe(modes[keyOf(def)] ?? record?.responseMode);
+      expect(def.mode, keyOf(def)).toBe(record?.responseMode);
       expect(def.owner, keyOf(def)).toBe(record?.owningService);
       expect(typeof def.gate, keyOf(def)).toBe('function');
     }
@@ -113,8 +111,6 @@ describe('carch barrel', () => {
     'admin:carch.approvalaction{action=approve}': 'admin:carch.approvalaction',
   };
   const haltedByException = haltedExceptionKeys();
-  // The object-params save writes its literal and aborts before any layout, so the raw handler serves it.
-  const modes: Readonly<Record<string, ScreenMode>> = { 'admin:carch.updateobjectparams': 'json' };
 
   it('registers exactly the carried inventory keys but the halted and base-answered ones, each once', () => {
     const keys = carchScreens.map(keyOf);
@@ -137,7 +133,7 @@ describe('carch barrel', () => {
   it('serves each key in its inventoried mode and owner behind the carch before() gate', () => {
     for (const def of carchScreens) {
       const record = carried.get(keyOf(def));
-      expect(def.mode, keyOf(def)).toBe(modes[keyOf(def)] ?? record?.responseMode);
+      expect(def.mode, keyOf(def)).toBe(record?.responseMode);
       expect(def.owner, keyOf(def)).toBe(record?.owningService);
       expect(def.gate, keyOf(def)).toBe(carchGate);
     }
