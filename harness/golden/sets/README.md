@@ -16,7 +16,7 @@ Outputs captured from legacy Masa that parity replay compares against. This READ
 
 - One file per scenario, `<scenario-id>.json`, where `<scenario-id>` is an `id` from `harness/golden/catalogue.yaml` matching `^GS-[A-Z]+(-RH)?-\d{2}$`. The GS-PE-RH sets are captured in the same pass as the others.
 - Readers open `<scenario-id>.json` for catalogue ids only, so no other file here is read as a set.
-- Browser scenarios (GS-UI-*) have no set here. `harness/e2e/ui/interactions.e2e.ts` records them under `${OPT2_STATE_DIR}/golden/browser/`.
+- Browser scenarios (GS-UI-*) are skipped by `capture.ts`. `harness/e2e/ui/interactions.e2e.ts` captures them (`OPT2_UI_PHASE=capture`) and writes each set here when it matches the set shape, else to `${OPT2_STATE_DIR}/golden/browser/<scenario-id>.legacy.json`. Its replay (`OPT2_UI_PHASE=replay`) writes `${OPT2_STATE_DIR}/golden/browser/<scenario-id>.json`, the record `compare.ts` classifies.
 - The un-normalised exchanges of a capture go to `${OPT2_STATE_DIR}/golden/raw/<scenario-id>.json`, never here.
 
 ## Set shape
