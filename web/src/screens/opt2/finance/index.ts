@@ -2,7 +2,7 @@
 import type { Opt2ActionDefinition, Opt2ScreenDefinition, ScreenContext } from '../../registry';
 import { FINANCE_ACTIONS } from './actions';
 import { loadRecord, renderRecordView, type RecordData } from './record';
-import { loadRecords, renderRecordsView, type RecordsData } from './records';
+import { recordsScreen } from './records';
 import { FINANCE_MODULE, FINANCE_SERVICE, READERS, READER_GATE, requestedId } from './service';
 
 const ACCESS = Object.freeze({
@@ -10,13 +10,6 @@ const ACCESS = Object.freeze({
   roles: READERS,
   service: FINANCE_SERVICE,
   gate: READER_GATE,
-});
-
-const recordsScreen: Opt2ScreenDefinition<RecordsData> = Object.freeze({
-  ...ACCESS,
-  screen: 'records',
-  load: loadRecords,
-  render: renderRecordsView,
 });
 
 const recordScreen: Opt2ScreenDefinition<RecordData> = Object.freeze({

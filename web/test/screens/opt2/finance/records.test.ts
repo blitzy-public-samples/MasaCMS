@@ -1,13 +1,14 @@
 // SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
-// finance/records: the record list inside the shell, over finance's /v1 record list.
+// finance/records: the record list and rollup totals inside the shell, over finance's /v1 record list and rollups.
 import * as cheerio from 'cheerio';
 import { Roles } from '@opt2/platform/auth';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GatewayUnavailableError } from '@/lib/gateway-client';
 import { toString } from '@/lib/html';
-import { RECORDS_PAGE_SIZE } from '@/screens/opt2/finance/records';
-import { financeRecords } from '../../../fixtures/opt2/finance';
+import { RECORDS_PAGE_SIZE, recordsScreen } from '@/screens/opt2/finance/records';
+import { financeRecords, financeRollups } from '../../../fixtures/opt2/finance';
 import { anonymousRequest } from '../../../helpers/admin-request';
+import { routeKey } from '../../../helpers/fake-gateway';
 import { fragmentModel, type DomControl, type DomModel } from '../../../helpers/dom-model';
 import { makeScreenContext, renderScreenPage } from '../../../helpers/screen-context';
 import {
@@ -28,15 +29,39 @@ import {
 vi.mock('@/screens/registry', () => ({ shellHooks: Object.freeze({ secondaryMenus: Object.freeze({}) }) }));
 
 type FinanceRecordRow = (typeof financeRecords)[number];
+type DomTable = DomModel['tables'][number];
 
+const ROLLUPS_ROUTE = routeKey('GET', 'finance', '/v1/finance/rollups');
 const HEADERS = ['Title', 'Period', 'Amount', 'State', 'Version', 'Last Update'];
+const ROLLUP_HEADERS = ['Period', 'State', 'Record Count', 'Total Amount', 'Computed At'];
 const STATES = ['IN-PROGRESS', 'SUBMITTED', 'RE-SUBMITTED', 'APPROVED', 'REJECTED'];
 const recordHref = (id: string): string => `/opt2/admin/finance/record?siteid=${SITE}&id=${id}`;
 const listHref = (query: string): string => `/opt2/admin/finance/records?siteid=${SITE}&${query}`;
 
-/** The state filter's controls with `selected` chosen. */
-function filterControls(selected: string): DomControl[] {
+/** The rollup totals table of the fixture rollups. */
+const ROLLUP_TABLE: DomTable = {
+  headers: ROLLUP_HEADERS,
+  rows: financeRollups.map((rollup) => [
+    rollup.period,
+    rollup.state,
+    String(rollup.record_count),
+    rollup.total_amount,
+    rollup.computed_at,
+  ]),
+};
+
+/** The state filter's controls with `selected` chosen, and the hidden `asOf` when given. */
+function filterControls(selected: string, asOf?: string): DomControl[] {
   const options = [{ value: '', label: 'All' }, ...STATES.map((state) => ({ value: state, label: state }))];
+  const hidden = (name: string, value: string): DomControl => ({
+    tag: 'input',
+    name,
+    type: 'hidden',
+    value,
+    checked: false,
+    selected: [],
+    options: [],
+  });
   return [
     {
       tag: 'select',
@@ -47,15 +72,16 @@ function filterControls(selected: string): DomControl[] {
       selected: [selected],
       options: options.map((option) => ({ ...option, selected: option.value === selected })),
     },
-    { tag: 'input', name: 'siteid', type: 'hidden', value: SITE, checked: false, selected: [], options: [] },
+    hidden('siteid', SITE),
+    ...(asOf === undefined ? [] : [hidden('asOf', asOf)]),
   ];
 }
 
-/** The list body's DOM model for `records`, with `pager` links after the record links. */
+/** The list body's DOM model for `records`, with `pager` links after the record links, then the rollup totals. */
 function listModel(records: readonly FinanceRecordRow[], selected = '', pager: DomModel['links'] = []): DomModel {
   return {
     title: '',
-    headings: ['Finance Records'],
+    headings: ['Finance Records', 'Rollup Totals'],
     labels: ['State'],
     controls: filterControls(selected),
     buttons: [{ text: 'Filter', type: 'submit', hasOnclick: false }],
@@ -72,6 +98,7 @@ function listModel(records: readonly FinanceRecordRow[], selected = '', pager: D
           record.lastupdate,
         ]),
       },
+      ROLLUP_TABLE,
     ],
     alerts: [],
   };
@@ -95,7 +122,13 @@ describe('finance records screen', () => {
     restore();
   });
 
-  it.each([PREPARER, APPROVER])('lists the first page of records with decimal amounts as sent, for %s', async (role) => {
+  it('is the finance records screen of the barrel, gated by the reader roles', () => {
+    expect(financeScreen('records')).toBe(recordsScreen);
+    expect([recordsScreen.module, recordsScreen.screen, recordsScreen.service]).toEqual(['finance', 'records', 'finance']);
+    expect(recordsScreen.roles).toEqual([PREPARER, APPROVER]);
+  });
+
+  it.each([PREPARER, APPROVER])('lists the first page of records and the rollups with decimals as sent, for %s', async (role) => {
     const { view, model, calls } = await renderList({}, financeGateway(), role);
 
     expect(view.opt2Module).toBe('finance');
@@ -107,6 +140,13 @@ describe('finance records screen', () => {
       '315.7500',
       '12000.0000',
     ]);
+    expect(model.tables[1]?.rows.map((row) => row[3])).toEqual([
+      '315.7500',
+      '1250.0000',
+      '4200.0000',
+      '12000.0000',
+      '980.5000',
+    ]);
     expect(calls).toEqual([
       {
         service: 'finance',
@@ -114,7 +154,22 @@ describe('finance records screen', () => {
         path: '/v1/finance/records',
         query: { page: '1', pageSize: String(RECORDS_PAGE_SIZE) },
       },
+      { service: 'finance', method: 'GET', path: '/v1/finance/rollups' },
     ]);
+  });
+
+  it('asks for the rollups as of rc.asOf and keeps it in the filter form and pager', async () => {
+    const gateway = financeGateway({ [LIST_ROUTE]: { status: 200, body: { data: financeRecords, total: 55 } } });
+    const { model, calls } = await renderList({ asOf: '2026-06-30' }, gateway);
+
+    expect(calls[1]).toEqual({
+      service: 'finance',
+      method: 'GET',
+      path: '/v1/finance/rollups',
+      query: { asOf: '2026-06-30' },
+    });
+    expect(model.controls).toEqual(filterControls('', '2026-06-30'));
+    expect(model.links.slice(financeRecords.length)).toEqual([{ href: listHref('asOf=2026-06-30&page=2'), text: 'Next' }]);
   });
 
   it('renders inside the shell with Finance marked in the OPT-2 nav group', async () => {
@@ -126,7 +181,10 @@ describe('finance records screen', () => {
     expect($('#admin-nav-opt2').attr('class')).toBe('open');
     expect($(`#admin-nav-opt2 a[href="/opt2/admin/finance/records?siteid=${SITE}"]`).attr('class')).toBe('active');
     expect($('.mura-header h1').text()).toBe('Finance Records');
-    expect($('table.mura-table-grid tbody tr')).toHaveLength(financeRecords.length);
+    expect($('table.mura-table-grid').map((_, table) => $(table).find('tbody tr').length).get()).toEqual([
+      financeRecords.length,
+      financeRollups.length,
+    ]);
   });
 
   it('filters by a known state and pages through every matching record', async () => {
@@ -159,27 +217,43 @@ describe('finance records screen', () => {
     expect(calls[0]?.query).toEqual({ page: '1', pageSize: '50' });
   });
 
-  it('shows finance 400 envelope message in an alert instead of the list', async () => {
+  it('shows finance 400 envelope message in an alert instead of the list, above the rollup totals', async () => {
     const gateway = financeGateway({ [LIST_ROUTE]: financeError(400, 'finance.records', 'Bad Request') });
     const { model } = await renderList({}, gateway);
 
     expect(model.alerts).toEqual([{ text: 'Bad Request', className: 'alert alert-error' }]);
-    expect(model.tables).toEqual([]);
+    expect(model.tables).toEqual([ROLLUP_TABLE]);
     expect(model.controls).toEqual(filterControls(''));
   });
 
-  it('shows the empty-list message when no record matches', async () => {
-    const gateway = financeGateway({ [LIST_ROUTE]: { status: 200, body: { data: [], total: 0 } } });
-    const { view } = await renderList({ state: 'APPROVED' }, gateway);
+  it('shows the rollups 400 envelope message in an alert instead of the totals, below the list', async () => {
+    const gateway = financeGateway({ [ROLLUPS_ROUTE]: financeError(400, 'finance.rollups', 'Bad Request') });
+    const { model } = await renderList({ asOf: '30/06/2026' }, gateway);
 
-    expect(toString(view.body)).toContain('<div class="help-block-empty">No finance records.</div>');
+    expect(model.alerts).toEqual([{ text: 'Bad Request', className: 'alert alert-error' }]);
+    expect(model.tables.map(({ headers }) => headers)).toEqual([HEADERS]);
+    expect(model.headings).toEqual(['Finance Records', 'Rollup Totals']);
+  });
+
+  it('shows the empty-list messages when no record matches and no rollup exists', async () => {
+    const gateway = financeGateway({
+      [LIST_ROUTE]: { status: 200, body: { data: [], total: 0 } },
+      [ROLLUPS_ROUTE]: { status: 200, body: { data: [] } },
+    });
+    const { view } = await renderList({ state: 'APPROVED' }, gateway);
+    const body = toString(view.body);
+
+    expect(body).toContain('<div class="help-block-empty">There are currently no finance records.</div>');
+    expect(body).toContain('<h2>Rollup Totals</h2><div class="help-block-empty">There are currently no rollup totals.</div>');
   });
 
   it.each([
-    [401, LOGOUT],
-    [403, NOACCESS],
-  ])('answers finance %i with the access gate redirect', async (status, location) => {
-    const gateway = financeGateway({ [LIST_ROUTE]: financeError(status, 'finance.records', 'Insufficient Account Permissions') });
+    [LIST_ROUTE, 401, LOGOUT],
+    [LIST_ROUTE, 403, NOACCESS],
+    [ROLLUPS_ROUTE, 401, LOGOUT],
+    [ROLLUPS_ROUTE, 403, NOACCESS],
+  ])('answers finance %s %i with the access gate redirect', async (route, status, location) => {
+    const gateway = financeGateway({ [route]: financeError(status, 'finance.records', 'Insufficient Account Permissions') });
     const ctx = makeScreenContext({ req: financeRequest(PREPARER), gateway });
 
     await expect(renderScreenPage(financeScreen('records'), ctx)).resolves.toEqual({ kind: 'redirect', location });
