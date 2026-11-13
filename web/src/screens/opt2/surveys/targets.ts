@@ -1,14 +1,17 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
 import type { components } from '@/generated/clients/surveys';
-import { okBody } from '@/lib/gateway-client';
+import { okBody, type GatewayResponse } from '@/lib/gateway-client';
 import { html, type SafeHtml } from '@/lib/html';
 import type { Opt2ActionDefinition, Opt2ScreenDefinition, ScreenContext } from '../../registry';
 import {
+  alertBox,
   block,
   controlGroup,
+  errorMessage,
   gridTable,
   opt2ActionUrl,
   opt2View,
+  pageHeader,
   postForm,
   submitToService,
   textarea,
@@ -18,33 +21,48 @@ import {
   SURVEYS_MODULE,
   SURVEYS_ROLES,
   dateTimeText,
-  loadSurvey,
   siteIdOf,
   surveyHeader,
   surveyIdOf,
+  surveysUrl,
   type Survey,
 } from './common';
 
 type SurveyTarget = components['schemas']['SurveyTarget'];
 type BulkTargetRequest = components['schemas']['BulkTargetRequest'];
 
-/** The survey and the sites and groups it targets. */
-export interface TargetsData {
-  survey: Survey;
-  targets: SurveyTarget[];
+/** The survey, its targets and the requested id (its CSRF context), or the alert saying why no survey was read. */
+export type TargetsData = { surveyId: string; survey: Survey; targets: SurveyTarget[] } | { unread: SafeHtml };
+
+// A survey id the service cannot parse (400) or does not hold for the site (404) is shown, not raised as a 500.
+const UNREAD_STATUSES: ReadonlySet<number> = new Set([400, 404]);
+
+/**
+ * The 2xx body of `operation`, or the envelope error as an alert when surveys answers 400 or 404.
+ * @throws GatewayDenialError For 401 or 403; any other status throws `Error`.
+ */
+function readOf<T>(
+  response: { readonly ok: true; readonly body: T } | (GatewayResponse & { readonly ok: false }),
+  operation: string,
+): { body: T } | { unread: SafeHtml } {
+  if (!response.ok && UNREAD_STATUSES.has(response.status)) return { unread: alertBox(errorMessage(response)) };
+  return { body: okBody(response, 'surveys', operation) };
 }
 
-/** The survey (`getSurvey`), its targets (`listSurveyTargets`) and the CSRF pair of its id context. */
-async function loadTargets(ctx: ScreenContext): Promise<TargetsData> {
-  const surveyId = surveyIdOf(ctx);
-  const [survey, targets] = await Promise.all([
-    loadSurvey(ctx, surveyId),
-    ctx.gateway.surveys
-      .call('get', '/v1/surveys/{surveyId}/targets', { params: { surveyId }, query: { siteid: siteIdOf(ctx) } })
-      .then((res) => okBody(res, 'surveys', 'listSurveyTargets').data),
+/** Survey `surveyId` (`getSurvey`), its targets (`listSurveyTargets`) and the CSRF pair of its id context. */
+async function loadTargets(ctx: ScreenContext, surveyId: string): Promise<TargetsData> {
+  if (surveyId === '') return { unread: alertBox('No survey selected.', 'info') };
+  const request = { params: { surveyId }, query: { siteid: siteIdOf(ctx) } };
+  const [surveyRes, targetsRes] = await Promise.all([
+    ctx.gateway.surveys.call('get', '/v1/surveys/{surveyId}', request),
+    ctx.gateway.surveys.call('get', '/v1/surveys/{surveyId}/targets', request),
     ctx.csrf.prefetch([surveyId]),
   ]);
-  return { survey, targets };
+  const survey = readOf(surveyRes, 'getSurvey');
+  if ('unread' in survey) return survey;
+  const targets = readOf(targetsRes, 'listSurveyTargets');
+  if ('unread' in targets) return targets;
+  return { surveyId, survey: survey.body.data, targets: targets.body.data };
 }
 
 /**
@@ -65,9 +83,14 @@ function bulkTargetRequestOf(text: string): BulkTargetRequest {
   };
 }
 
-/** The bulk targeting form holding `text`, then the current targets; `alert` follows the header. */
+/** The form holding `text`, then the target count and grid, or the bare header and reason; `alert` after the header. */
 function renderTargets(ctx: ScreenContext, data: TargetsData, text: string, alert?: SafeHtml): SafeHtml {
-  const { survey, targets } = data;
+  if ('unread' in data) {
+    const header = pageHeader('Targets', [{ label: 'Surveys', href: surveysUrl(ctx, 'surveys') }]);
+    return html`${header}${alert}${data.unread}`;
+  }
+  const { surveyId, survey, targets } = data;
+  // No role check here: the service answered the targets read only for surveys.manager, the role the post needs.
   const form = postForm(
     opt2ActionUrl(SURVEYS_MODULE, 'bulk-target', { siteid: siteIdOf(ctx), surveyid: survey.surveyId }),
     controlGroup(
@@ -75,14 +98,25 @@ function renderTargets(ctx: ScreenContext, data: TargetsData, text: string, aler
       textarea('targets', text),
     ),
     'Add Targets',
-    { hidden: ctx.csrf.render(surveyIdOf(ctx)) },
+    { hidden: ctx.csrf.render(surveyId) },
   );
   const grid = gridTable(
     ['Site', 'Group', 'Added'],
     targets.map((target) => [target.siteId, target.groupName ?? 'All users', dateTimeText(target.created)]),
     'This survey has no targets.',
   );
-  return html`${surveyHeader(ctx, survey, 'targets')}${alert}${block(html`${form}<h2>Current Targets</h2>${grid}`)}`;
+  return html`${surveyHeader(ctx, survey, 'targets')}${alert}${block(
+    html`${form}<h2>Current Targets</h2><p class="help-block">Total targets: ${targets.length}</p>${grid}`,
+  )}`;
+}
+
+/** Targets screen body of survey `surveyId`, read afresh: `opts.alert` after the header, `opts.values` in the form. */
+export async function targetsBody(
+  ctx: ScreenContext,
+  surveyId: string,
+  opts: { alert?: SafeHtml; values?: { targets?: string } } = {},
+): Promise<SafeHtml> {
+  return renderTargets(ctx, await loadTargets(ctx, surveyId), opts.values?.targets ?? '', opts.alert);
 }
 
 /** `/opt2/admin/surveys/targets?surveyid=…`: the survey's targets and the bulk targeting form. */
@@ -91,7 +125,7 @@ export const targetsScreen: Opt2ScreenDefinition<TargetsData> = {
   screen: 'targets',
   roles: SURVEYS_ROLES,
   service: 'surveys',
-  load: loadTargets,
+  load: (ctx) => loadTargets(ctx, surveyIdOf(ctx)),
   render: (ctx, data) => opt2View(SURVEYS_MODULE, renderTargets(ctx, data, '')),
 };
 
@@ -119,7 +153,7 @@ export const bulkTargetAction: Opt2ActionDefinition = {
       ctx,
       write,
       { module: SURVEYS_MODULE, screen: 'targets', params: { siteid, surveyid: surveyId } },
-      async (alert) => renderTargets(ctx, await loadTargets(ctx), text, alert),
+      (alert) => targetsBody(ctx, surveyId, { alert, values: { targets: text } }),
     );
   },
 };

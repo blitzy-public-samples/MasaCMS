@@ -44,6 +44,8 @@ const SERVED_OPERATIONS = [
   'healthz',
   'getHeaderPrompts',
   'lookupFileExtensions',
+  'commentsProxyGet',
+  'commentsProxyPost',
   'migrationApply',
   'migrationExport',
   'migrationChanges',
@@ -289,6 +291,32 @@ describe('lookupFileExtensions', () => {
     ['a browser user', () => userHeaders({ sub: USER_ID, site: SITE_A, roles: [Roles.s2] }), 403],
   ])('refuses %s with the contract %i', async (_label, headers, status) => {
     const res = await call({ method: 'POST', url, headers: { ...(await headers()), ...JSON_TYPE }, payload: { fileIds: [FILE_A] } });
+    expect(res.statusCode).toBe(status);
+  });
+});
+
+describe('comments proxy', () => {
+  const url = '/core/modules/v1/comments/ajax/commentsProxy.cfc';
+  const FORM_TYPE = { 'content-type': 'application/x-www-form-urlencoded' } as const;
+  const visitor = (site = SITE_A) => userHeaders({ sub: '', site, roles: [] });
+
+  it.each<[string, Request['method'], string, string | undefined]>([
+    ['get', 'GET', `?method=get&commentID=${contentId(1)}&siteid=${SITE_A}`, undefined],
+    ['getContentStats', 'POST', '', `method=getContentStats&contentID=${contentId(1)}&siteid=${SITE_A}`],
+    ['flag', 'POST', `?method=flag&commentID=${contentId(1)}`, undefined],
+  ])('answers %s with the contract 200 text', async (_label, method, query, form) => {
+    const headers = { ...(await visitor()), ...(form === undefined ? {} : FORM_TYPE) };
+    const res = await call({ method, url: `${url}${query}`, headers, ...(form === undefined ? {} : { payload: form }) });
+    expect({ status: res.statusCode, type: res.headers['content-type'] }).toEqual({ status: 200, type: 'text/html;charset=UTF-8' });
+  });
+
+  it.each<[string, Request['method'], string, () => Promise<Record<string, string>>, number]>([
+    ['a siteid of another site', 'GET', `?method=get&commentID=${contentId(1)}&siteid=${SITE_B}`, () => visitor(), 403],
+    ['a call without a user token', 'POST', `?method=flag&commentID=${contentId(1)}`, () => serviceHeaders('gateway'), 401],
+    ['renderCommentsPage, which stays legacy-served', 'GET', `?method=renderCommentsPage&contentID=${contentId(1)}`, () => visitor(), 500],
+    ['an argument the method does not declare', 'POST', `?method=get&commentID=${contentId(1)}&foo=1`, () => visitor(), 500],
+  ])('answers %s with the contract %i', async (_label, method, query, headers, status) => {
+    const res = await call({ method, url: `${url}${query}`, headers: await headers() });
     expect(res.statusCode).toBe(status);
   });
 });

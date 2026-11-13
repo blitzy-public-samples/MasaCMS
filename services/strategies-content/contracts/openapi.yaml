@@ -2116,8 +2116,13 @@ paths:
                 $ref: '#/components/schemas/LegacyText'
         '401':
           $ref: '#/components/responses/Unauthorized'
+          description: No user token accompanies the call, so it has no tenant.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+          description: The `siteid` the call binds differs from the user token's site.
         '500':
           $ref: '#/components/responses/ErrorPage'
+          description: The ColdFusion error page of a call the component cannot run (undefined method, undeclared or missing argument).
         '503':
           $ref: '#/components/responses/Unavailable'
     post:
@@ -2149,8 +2154,13 @@ paths:
                 $ref: '#/components/schemas/LegacyText'
         '401':
           $ref: '#/components/responses/Unauthorized'
+          description: No user token accompanies the call, so it has no tenant.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+          description: The `siteid` the call binds differs from the user token's site.
         '500':
           $ref: '#/components/responses/ErrorPage'
+          description: The ColdFusion error page of a call the component cannot run (undefined method, undeclared or missing argument).
         '503':
           $ref: '#/components/responses/Unavailable'
   /core/modules/v1/rater/ajax/saveRate.cfm:

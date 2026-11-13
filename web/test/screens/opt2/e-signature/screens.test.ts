@@ -350,10 +350,28 @@ describe('e-signature roles', () => {
   it('shows a signed request its typed name and signer', async () => {
     const tables = fragmentModel(await bodyOf('request', contextFor([AUDITOR], { id: SIGNED_ID }))).tables;
     const { signature } = signedRequestDetail;
-    expect(tables[1]).toEqual({
-      headers: ['Typed Name', 'Signed By', 'Signed At'],
-      rows: [[signature?.typed_name, signature?.signer_user_id, signature?.signed_at]],
-    });
+    expect(tables).toEqual([
+      {
+        headers: ['Typed Name', 'Signed By', 'Signed At'],
+        rows: [[signature?.typed_name, signature?.signer_user_id, signature?.signed_at]],
+      },
+    ]);
+  });
+
+  it('shows the request fields as read-only label and value rows', async () => {
+    const $ = cheerio.load(await bodyOf('request', contextFor([AUDITOR], { id: SIGNED_ID })), null, false);
+    const rows = $('div.mura-control-group')
+      .toArray()
+      .map((el) => [$(el).children('label').text(), $(el).children('div').text()]);
+    expect(rows).toEqual([
+      ['Document', signedRequestDetail.document_name],
+      ['State', 'SIGNED'],
+      ['Signer', signedRequestDetail.signer_user_id],
+      ['Created', signedRequestDetail.created],
+      ['Created By', signedRequestDetail.createdbyid],
+      ['Document SHA-256', signedRequestDetail.document_sha256],
+    ]);
+    expect($('div.mura-control-group label[for]')).toHaveLength(0);
   });
 
   it.each<[401 | 403, string]>([

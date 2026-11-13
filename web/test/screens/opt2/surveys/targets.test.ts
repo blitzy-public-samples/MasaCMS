@@ -1,13 +1,19 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
 // The surveys bulk targeting screen and its post action: DOM snapshot, service calls, CSRF forwarding, re-render.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SURVEY_IDS, bulkTargetRequest, scheduleInvalid } from '../../../fixtures/opt2/surveys';
-import type { DomControl, DomModel } from '../../../helpers/dom-model';
+import { GatewayUnavailableError } from '@/lib/gateway-client';
+import { toString } from '@/lib/html';
+import { alertBox } from '@/screens/opt2/shared';
+import { targetsBody } from '@/screens/opt2/surveys/targets';
+import { SURVEY_IDS, bulkTargetRequest, scheduleInvalid, surveyTargets } from '../../../fixtures/opt2/surveys';
+import { fragmentModel, normaliseIds, type DomControl, type DomModel } from '../../../helpers/dom-model';
 import { useTestEnv } from '../../../helpers/env';
 import { routeKey } from '../../../helpers/fake-gateway';
-import { FIXED_CSRF } from '../../../helpers/screen-context';
+import { FIXED_CSRF, renderScreenPage } from '../../../helpers/screen-context';
 import {
+  NOACCESS,
   SITE,
+  bodyHtml,
   bodyModel,
   contextFor,
   csrfContexts,
@@ -16,6 +22,7 @@ import {
   surveysAction,
   surveysCalls,
   surveysGateway,
+  surveysScreen,
 } from './context';
 
 // The registry loads every circuit's screens; the screen context reads only its shell hooks.
@@ -24,6 +31,25 @@ vi.mock('@/screens/registry', () => ({ shellHooks: Object.freeze({ secondaryMenu
 const MULTI = SURVEY_IDS.multiSiteSurvey;
 const BULK_PATH = `/v1/surveys/${MULTI}/targets/bulk` as const;
 const BULK_ROUTE = routeKey('POST', 'surveys', BULK_PATH);
+const SURVEY_ROUTE = routeKey('GET', 'surveys', `/v1/surveys/${MULTI}` as const);
+const TARGETS_ROUTE = routeKey('GET', 'surveys', `/v1/surveys/${MULTI}/targets` as const);
+const SURVEYS_LINK = { href: `/opt2/admin/surveys/surveys?siteid=${SITE}`, text: 'Surveys' };
+const NOT_FOUND = {
+  status: 404,
+  body: { apiversion: 'v1', method: 'surveys.find', error: { message: 'Not found', code: 'not_found' } },
+};
+
+/** The DOM model of a survey that could not be read: the bare header, then `alerts`. */
+const unreadModel = (alerts: DomModel['alerts']): DomModel => ({
+  title: '',
+  headings: ['Targets'],
+  labels: [],
+  controls: [],
+  buttons: [],
+  links: [SURVEYS_LINK],
+  tables: [],
+  alerts,
+});
 const CSRF_POSTED = { csrf_token: FIXED_CSRF.token, csrf_token_expires: FIXED_CSRF.expires };
 const LABEL = 'Targets (one site ID per line; add a comma and a group name to target one group)';
 
@@ -100,14 +126,75 @@ describe('surveys targets screen', () => {
     expect(csrfContexts(gateway)).toEqual([MULTI]);
   });
 
-  it('shows the empty message for a survey without targets', async () => {
-    const gateway = surveysGateway({
-      [routeKey('GET', 'surveys', `/v1/surveys/${MULTI}/targets`)]: { status: 200, body: { data: [] } },
-    });
+  it.each([
+    { name: 'its targets', targets: surveyTargets, empty: false },
+    { name: 'the empty message', targets: [], empty: true },
+  ])('counts the read targets above $name', async ({ targets, empty }) => {
+    const gateway = surveysGateway({ [TARGETS_ROUTE]: { status: 200, body: { data: targets } } });
+
+    const html = await bodyHtml('targets', managerRequest({ surveyid: MULTI }), gateway);
+
+    expect(html).toContain(
+      `<h2>Current Targets</h2><p class="help-block">Total targets: ${targets.length}</p>${
+        empty ? '<div class="help-block-empty">This survey has no targets.</div>' : '<table class="mura-table-grid">'
+      }`,
+    );
+    expect(fragmentModel(html).tables).toHaveLength(empty ? 0 : 1);
+  });
+
+  it('shows the info alert without calling a service when no survey is selected', async () => {
+    const gateway = surveysGateway();
+
+    const model = await bodyModel('targets', managerRequest(), gateway);
+
+    expect(model).toEqual(unreadModel([{ text: 'No survey selected.', className: 'alert alert-info' }]));
+    expect(gateway.calls).toEqual([]);
+  });
+
+  it.each([
+    { read: 'survey', status: 404, overrides: { [SURVEY_ROUTE]: NOT_FOUND }, alert: 'Not found' },
+    { read: 'survey', status: 400, overrides: { [SURVEY_ROUTE]: scheduleInvalid }, alert: 'Invalid parameters' },
+    { read: 'targets', status: 404, overrides: { [TARGETS_ROUTE]: { status: 404 } }, alert: 'Not Found' },
+  ])('shows the error of a $read read answered $status under the bare header', async ({ overrides, alert }) => {
+    const gateway = surveysGateway(overrides);
 
     const model = await bodyModel('targets', managerRequest({ surveyid: MULTI }), gateway);
 
-    expect(model.tables).toEqual([]);
+    expect(model).toEqual(unreadModel([{ text: alert, className: 'alert alert-error' }]));
+  });
+
+  it.each([TARGETS_ROUTE, SURVEY_ROUTE])('answers a 403 on %s with the no-access redirect', async (route) => {
+    const gateway = surveysGateway({ [route]: { status: 403 } });
+    const ctx = contextFor(managerRequest({ surveyid: MULTI }), gateway);
+
+    const page = await renderScreenPage(surveysScreen('targets'), ctx);
+
+    expect(page).toEqual({ kind: 'redirect', location: NOACCESS });
+  });
+
+  it('propagates an unavailable surveys service', async () => {
+    const gateway = surveysGateway();
+    gateway.failWith();
+    const def = surveysScreen('targets');
+
+    await expect(def.load(contextFor(managerRequest({ surveyid: MULTI }), gateway))).rejects.toBeInstanceOf(
+      GatewayUnavailableError,
+    );
+  });
+});
+
+describe('targetsBody', () => {
+  it('renders the read survey with the given alert after the header and the given form text', async () => {
+    const gateway = surveysGateway();
+    const ctx = contextFor(managerRequest(), gateway);
+
+    const body = await targetsBody(ctx, MULTI, { alert: alertBox('Rejected'), values: { targets: 'tenant-a,Ops' } });
+
+    const model = normaliseIds(fragmentModel(toString(body)));
+    expect(model.alerts).toEqual([{ text: 'Rejected', className: 'alert alert-error' }]);
+    expect(model.controls[0]).toEqual(textareaControl('tenant-a,Ops'));
+    expect(model.tables[0]?.rows).toHaveLength(surveyTargets.length);
+    expect(csrfContexts(gateway)).toEqual([MULTI]);
   });
 });
 
@@ -167,6 +254,19 @@ describe('surveys bulk-target action', () => {
       hiddenControl('csrf_token_expires', '<token>'),
     ]);
     expect(model.tables[0]?.rows).toHaveLength(3);
+  });
+
+  it('re-renders the submit alert, then the reason, when the survey can no longer be read', async () => {
+    const gateway = surveysGateway({ [BULK_ROUTE]: NOT_FOUND, [SURVEY_ROUTE]: NOT_FOUND });
+
+    const result = await surveysAction('bulk-target').submit(contextFor(managerRequest(bulkRc('tenant-b')), gateway));
+
+    expect(renderedModel(result)).toEqual(
+      unreadModel([
+        { text: 'Not found', className: 'alert alert-error' },
+        { text: 'Not found', className: 'alert alert-error' },
+      ]),
+    );
   });
 
   it('answers a refused user token with the login redirect error', async () => {

@@ -711,6 +711,12 @@ describe('remote CFC proxies, fixtures and path families', () => {
       method: 'POST',
       url: '/core/mura/remote.cfc?method=other',
       extra: { form: { method: 'doThing' } },
+      key: 'cfc:/core/mura/remote.cfc?method=other',
+    },
+    {
+      method: 'POST',
+      url: '/core/mura/remote.cfc',
+      extra: { form: { method: 'doThing' } },
       key: 'cfc:/core/mura/remote.cfc?method=dothing',
     },
     { method: 'GET', url: '/core/mura/remote.cfc?method=doThing', key: 'cfc:/core/mura/remote.cfc?method=dothing' },
@@ -761,6 +767,22 @@ describe('remote CFC proxies, fixtures and path families', () => {
     if (query !== undefined) extra.query = query;
     const result = resultOf(form === undefined ? 'GET' : 'POST', url, extra);
     expect(result.key).toBe(`opt2:${(url.split('?')[0] ?? '').toLowerCase()}`);
+    expect(result.siteId).toBe(siteId);
+    expect(Object.hasOwn(result, 'siteId')).toBe(siteId !== undefined);
+  });
+
+  it.each<{ name: string; url: string; form?: Record<string, string>; siteId: string | undefined }>([
+    { name: 'a form siteid', url: '/core/modules/v1/comments/ajax/commentsProxy.cfc', form: { method: 'get', SiteID: 'tenant-a' }, siteId: 'tenant-a' },
+    {
+      name: 'a url siteid over the form one',
+      url: '/core/modules/v1/comments/ajax/commentsProxy.cfc?siteid=tenant-a',
+      form: { method: 'get', siteid: 'tenant-b' },
+      siteId: 'tenant-a',
+    },
+    { name: 'no siteid', url: '/core/modules/v1/comments/ajax/commentsProxy.cfc?method=get', siteId: undefined },
+  ])('reads a remote CFC call site from $name, as ColdFusion binds the argument', ({ url, form, siteId }) => {
+    const result = resultOf(form === undefined ? 'GET' : 'POST', url, form === undefined ? {} : { form });
+    expect(result.key).toBe('cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=get');
     expect(result.siteId).toBe(siteId);
     expect(Object.hasOwn(result, 'siteId')).toBe(siteId !== undefined);
   });

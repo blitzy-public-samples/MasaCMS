@@ -26,6 +26,7 @@ import {
   FILE,
   FILE_METADATA,
   FORM_RESPONSE_PACKET,
+  SOURCE_MAP,
   UNIT_OF,
   type CategoryAssignRow,
   type ContentAssignmentRow,
@@ -35,6 +36,7 @@ import {
   type ContentStatsRow,
   type ContentUnit,
   type FileRow,
+  type SourceMapRow,
 } from './tables.js';
 
 /** The changeset preview a session user selected (legacy `ChangesetPreviewData`), supplied only for that preview's site. */
@@ -2126,6 +2128,22 @@ export async function draftPromptData(
     p.values,
   );
   return { active: active ?? null, draftHist: history, pendingChangesets: pending, stats: await stats(tx, args) };
+}
+
+/** A `source_map` row without its tenant. */
+export type SourceMapFields = Omit<SourceMapRow, 'tenant_id'>;
+
+/** contentSourceMap `loadBy(contenthistid, siteid)`: the version's first map in SQL Server's clustered (mapid) order, or null. */
+export async function sourceMap(tx: TenantTx, args: { contentHistId: string; siteId: string }): Promise<SourceMapFields | null> {
+  await readable(tx, 'source_map');
+  const p = new SqlParams();
+  const rows = await run<SourceMapFields>(
+    tx,
+    `SELECT s.siteid, s.created, s.sourceid, s.contenthistid, s.mapid, s.contentid FROM ${qualified(tx.schema, SOURCE_MAP.table)} s` +
+      ` WHERE ${idEq(p, 's.contenthistid', args.contentHistId)} AND s.siteid = ${p.add(args.siteId)} ORDER BY s.mapid LIMIT 1`,
+    p.values,
+  );
+  return rows[0] ?? null;
 }
 
 

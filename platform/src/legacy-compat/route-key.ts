@@ -855,11 +855,17 @@ function fixtureRoute(c: RouteContext): BaseRoute {
   return { family: 'fixture', body: `${body}@${method}`, params, httpMethod };
 }
 
-/** Remote CFC proxy call keyed by its method; form `method` wins over the query. */
+/**
+ * Remote CFC proxy call keyed by its method. ColdFusion's remote invocation takes url values over form values, the
+ * method included; its site is the `siteid` argument it binds, which the user token must be minted for.
+ */
 function cfcRoute(c: RouteContext): BaseRoute {
-  const params = queryThenForm(c.req);
+  const params = append(scopeMap(c.req.query), scopeMap(c.req.form), false);
   const method = str(params, 'method') ?? '';
-  return { family: 'cfc', body: method === '' ? c.path : `${c.path}?method=${method}`, params };
+  const route: BaseRoute = { family: 'cfc', body: method === '' ? c.path : `${c.path}?method=${method}`, params };
+  const siteId = str(params, 'siteid');
+  if (siteId !== undefined) route.siteId = siteId;
+  return route;
 }
 
 /** Front-end page or static file; event params keep URL values over form values (servletEvent.cfc:85-86). */

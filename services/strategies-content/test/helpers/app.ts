@@ -27,11 +27,13 @@ import {
   writeTestSecrets,
   type CapturingPublisher,
 } from '@opt2/platform/testing';
+import { CONTENT_CONFIG_DEFAULTS } from '../../src/domain/context.js';
 import { contentConsumers } from '../../src/events/consumers.js';
 import { mappings, units } from '../../src/migration/mappings/index.js';
 import { exportObjects } from '../../src/migration/objects.js';
 import { OWNER, SCHEMA, createContentRepository } from '../../src/repo/repository.js';
 import { CONTENT_UNITS } from '../../src/repo/tables.js';
+import { registerCommentsProxyRoutes } from '../../src/routes/comments-proxy.js';
 import { registerFileRoutes } from '../../src/routes/files.js';
 import { registerFileLookupRoutes } from '../../src/routes/internal-file-lookup.js';
 import { registerMigrationObjectRoutes } from '../../src/routes/migration-objects.js';
@@ -460,8 +462,8 @@ export function testEnv(stateDir: string): Record<string, string> {
 
 /**
  * Builds strategies-content with every route its source registers: the header prompts, the people file lookup, the migration
- * object transfer, the signed file downloads, the platform migration handlers over the content mappings, the four push consumers
- * and queue control.
+ * object transfer, the signed file downloads, the comments proxy, the platform migration handlers over the content mappings,
+ * the four push consumers and queue control.
  */
 export async function buildContentApp(options: ContentTestAppOptions = {}): Promise<ContentTestApp> {
   const stateDir = await mkdtemp(path.join(tmpdir(), 'opt2-strategies-content-gates-'));
@@ -488,6 +490,7 @@ export async function buildContentApp(options: ContentTestAppOptions = {}): Prom
     await registerFileLookupRoutes(app, { db });
     registerMigrationObjectRoutes(app, { domain: { db, repository }, storage, clock: TEST_CLOCK });
     registerFileRoutes(app, { domain: { db, repository }, storage, clock: TEST_CLOCK });
+    registerCommentsProxyRoutes(app, { domain: { db, repository, clock: TEST_CLOCK, config: CONTENT_CONFIG_DEFAULTS } });
     registerMigrationHandlers(app, { owner: OWNER, repository: repository.platform, mappings, units, db, exportObjects });
     registerConsumers(app, { service: SERVICE, consumers: contentConsumers(repository), publisher, db });
     registerContentQueueControl(app, { port: taskPort, serviceUrls: env.OPT2_SERVICE_URLS, clock: TEST_CLOCK });

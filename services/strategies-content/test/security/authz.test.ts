@@ -58,6 +58,8 @@ const GROUP_ID = 'A1B2C3D4-0001-4A5B-8C7D9E0F1A2B3C4D';
 const USER_ID = 'C1D2E3F4-0001-4A5B-8C7D9E0F1A2B3C4D';
 const OBJECT_BYTES = Buffer.from('strategies-content authz probe');
 const OWN_QUEUE = 'content-scheduled-publish';
+const COMMENTS_PROXY_URL = '/core/modules/v1/comments/ajax/commentsProxy.cfc';
+const CONTENT_ID = 'E1F2A3B4-0001-4A5B-8C7D9E0F1A2B3C4D';
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
 const WRONG_PUSH_KEY = 'opt2-wrong-push-key';
 const DENIED_STATUSES: ReadonlySet<number> = new Set([401, 403]);
@@ -78,6 +80,8 @@ interface ExpectedRoute {
   actsForUser?: true;
   /** The probe supplies `siteid` tenant-a, which the site check compares with the user token's site. */
   probesSite?: true;
+  /** The handler checks the site itself instead of the platform's check of every supplied `siteid`. */
+  siteCheck?: false;
   /** Status of the probe once every check admits it. */
   admitted: number;
 }
@@ -118,6 +122,18 @@ const EXPECTED: readonly ExpectedRoute[] = [
     admitted: 404,
   },
   { method: 'GET', url: '/opt2/files/content-files/:tenantId/:objectName', transport: 'service', public: true, admitted: 200 },
+  ...(['GET', 'POST'] as const).map(
+    (method): ExpectedRoute => ({
+      method,
+      url: COMMENTS_PROXY_URL,
+      transport: 'service',
+      public: true,
+      siteCheck: false,
+      actsForUser: true,
+      probesSite: true,
+      admitted: 200,
+    }),
+  ),
   { method: 'POST', url: '/internal/v1/migration/objects', transport: 'service', requires: MIGRATION_ONLY, admitted: 200 },
   { method: 'GET', url: '/internal/v1/migration/objects', transport: 'service', requires: MIGRATION_ONLY, admitted: 404 },
   { method: 'POST', url: '/internal/v1/migration/apply', transport: 'service', requires: MIGRATION_ONLY, admitted: 400 },
@@ -293,6 +309,16 @@ const PROBES: Readonly<Record<string, () => ProbeRequest>> = {
     url: '/internal/v1/files:lookup',
     headers: JSON_HEADERS,
     payload: { fileIds: [FILE_ID] },
+  }),
+  [`GET ${COMMENTS_PROXY_URL}`]: () => ({
+    method: 'GET',
+    url: `${COMMENTS_PROXY_URL}?method=getContentStats&contentID=${CONTENT_ID}&siteid=${SITE_A}`,
+  }),
+  [`POST ${COMMENTS_PROXY_URL}`]: () => ({
+    method: 'POST',
+    url: COMMENTS_PROXY_URL,
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    payload: Buffer.from(`method=flag&commentID=${CONTENT_ID}&siteid=${SITE_A}`),
   }),
   'POST /internal/v1/migration/objects': () => ({
     method: 'POST',
@@ -674,6 +700,14 @@ describe('tenant boundaries', () => {
     const headers = await serviceHeaders('people', { ...PEOPLE_USER, site: fixture.siteId });
     const read = await tenantsOf(() => inject(probeRequest(LOOKUP), headers));
     expect(read).toEqual({ status: 200, tenants: photoFileTenants(fixture.tenantId) });
+  });
+
+  it.each([TENANT_A, TENANT_B])('a comments proxy call of a $siteId visitor runs only in that tenant', async (fixture) => {
+    const headers = await userHeaders({ sub: '', site: fixture.siteId, roles: [] });
+    const read = await tenantsOf(() =>
+      t.app.inject({ method: 'GET', url: `${COMMENTS_PROXY_URL}?method=getContentStats&contentID=${CONTENT_ID}`, headers }),
+    );
+    expect(read).toEqual({ status: 200, tenants: [fixture.tenantId.toLowerCase()] });
   });
 
   it('dead-letters a site delivery whose envelope tenant is not the site’s, writing nothing', async () => {

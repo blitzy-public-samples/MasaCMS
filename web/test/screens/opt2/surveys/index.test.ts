@@ -23,6 +23,7 @@ const LEGACY_CLASSES = new Set([
   'block-content',
   'mura-table-grid',
   'var-width',
+  'help-block',
   'help-block-empty',
   'mura-control-group',
   'mura-actions',

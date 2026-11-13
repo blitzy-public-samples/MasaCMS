@@ -29,7 +29,14 @@ export interface RequestBodyOptions {
 }
 
 const TITLE = 'Signature Request';
-const SUMMARY_HEADERS: readonly string[] = ['Document', 'State', 'Signer', 'Created', 'Created By', 'Document SHA-256'];
+const SUMMARY_FIELDS = [
+  ['Document', 'document_name'],
+  ['State', 'state'],
+  ['Signer', 'signer_user_id'],
+  ['Created', 'created'],
+  ['Created By', 'createdbyid'],
+  ['Document SHA-256', 'document_sha256'],
+] as const satisfies ReadonlyArray<readonly [string, keyof SignatureRequestDetail]>;
 const SIGNATURE_HEADERS: readonly string[] = ['Typed Name', 'Signed By', 'Signed At'];
 
 /** Whether the request takes the typed-name form: still PENDING and the token holds the signer role. */
@@ -52,6 +59,12 @@ export async function loadRequest(ctx: ScreenContext): Promise<RequestData> {
   return read;
 }
 
+/** Read-only label and value rows, as legacy edit views show stored values; a grid row would overflow on the hash. */
+function summaryRows(detail: SignatureRequestDetail): SafeHtml {
+  return html`${SUMMARY_FIELDS.map(([label, field]) => controlGroup(label, html`<div>${detail[field]}</div>`))}`;
+}
+
+// BLITZY [A11Y]: legacy admin.css leaves the Sign button no focus change and 3.96:1 contrast; kept, legacy CSS only.
 /** The typed-name form, posted to the sign action with the request's CSRF pair. */
 function signForm(ctx: ScreenContext, id: string, typedName: string): SafeHtml {
   const field = controlGroup('Typed Name', textInput('typedName', typedName, { maxlength: 255, required: true }));
@@ -70,14 +83,9 @@ export function requestBody(ctx: ScreenContext, data: RequestData, opts: Request
   if (data.body === undefined) return html`${pageHeader(TITLE, requestLinks(ctx, undefined, REQUEST_SCREEN))}${alert}`;
   const detail = data.body;
   const id = requestIdOf(ctx.req.rc);
-  const summary = gridTable(
-    SUMMARY_HEADERS,
-    [[detail.document_name, detail.state, detail.signer_user_id, detail.created, detail.createdbyid, detail.document_sha256]],
-    '',
-  );
   const form = signable(ctx, detail) ? signForm(ctx, id, opts.typedName ?? '') : null;
   return html`${pageHeader(TITLE, requestLinks(ctx, id, REQUEST_SCREEN))}${alert}${block(
-    html`${summary}${signatureTable(detail.signature)}${form}`,
+    html`${summaryRows(detail)}${signatureTable(detail.signature)}${form}`,
   )}`;
 }
 

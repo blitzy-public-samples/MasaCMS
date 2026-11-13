@@ -1,13 +1,15 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** The reporting app of the contract and security suites: `buildApp` over the memory database, a fake task port, local storage and scripted service calls. */
+/** The reporting app under test: `buildApp` over the memory database or a throwaway PostgreSQL schema, a fake task port, local storage and scripted service calls. */
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { vi } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles } from '@opt2/platform/auth';
 import { cfUuid, legacyErrorResponse, type LegacyApiErrorType } from '@opt2/platform/legacy-compat';
+import { UNIT_GATE_TABLE, qualified, type GatePhase, type GateState } from '@opt2/platform/migration-kit';
 import {
   CSRF_CONSUME_PATH,
   IDENTITY_SERVICE,
@@ -32,35 +34,53 @@ import {
   type TaskPort,
   type TaskWireBody,
 } from '@opt2/platform/tasks';
-import { tenantIdForSite } from '@opt2/platform/tenancy';
+import { tenantIdForSite, withMetadata, withTenant, type TenantDb } from '@opt2/platform/tenancy';
 import {
   BUSINESS_DATE,
+  ROLE_SET,
   TENANT_A,
   authHeadersFor,
   businessClock,
   createCapturingPublisher,
+  createThrowawaySchema,
   mintServiceToken,
   mintUserToken,
   pushTo,
   registryPayloads,
+  runCleanup,
+  seedRegistry,
   subjectSiteFor,
   testEnvelope,
   testVerifier,
   type CapturingPublisher,
   type Clock,
   type RoleSubject,
+  type ThrowawaySchema,
 } from '@opt2/platform/testing';
 import { buildApp } from '../../src/app.js';
 import { SITE_CHANGED_SUBSCRIPTION } from '../../src/events/consumers.js';
-import { EXPORT_BUCKET, UNITS, exportObjectKey, type ExportDefinitionRow, type ExportFormat, type ExportJobRow, type ExportState } from '../../src/repo/tables.js';
+import {
+  EXPORT_BUCKET,
+  OWNED_TABLES,
+  UNITS,
+  exportObjectKey,
+  type ExportDefinitionRow,
+  type ExportFormat,
+  type ExportJobRow,
+  type ExportState,
+  type ReportingUnit,
+} from '../../src/repo/tables.js';
 import { createExportRunEnqueuer, exportRunTaskName } from '../../src/tasks/enqueue.js';
-import { createMemoryDb, type MemoryDb } from './memory-db.js';
+import { createMemoryDb, type MemoryDb, type MemoryTable, type Row } from './memory-db.js';
 
 /** Service under test, the audience of every invocation credential sent to it. */
 export const SERVICE = 'reporting';
 
 /** Clock of every test app: the shared business date at noon in the process zone. */
 export const TEST_CLOCK: Clock = businessClock();
+
+/** Business date every export run, and so every timesheets source read, is taken as of. */
+export const TEST_AS_OF = BUSINESS_DATE;
 
 /** The reporting contract, parsed once. */
 export const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
@@ -363,22 +383,90 @@ export function createScriptedClient(lookup: ScopeLookup): ScriptedClient {
   };
 }
 
+/** Database of a test app: the in-memory stand-in, or a throwaway PostgreSQL schema migrated from `db/migrations`. */
+export type TestDbMode = 'recording' | 'pg';
+
+/** Owned tables {@link TestApp.seed} writes, the `table` names of `OWNED_TABLES`. */
+export type SeedTable = Extract<MemoryTable, 'export_definition' | 'export_job' | 'session_tracking'>;
+
+/** Gate state of each unit in a new test app: the export units take target writes, session tracking stays legacy-authoritative. */
+export const DEFAULT_GATES: Readonly<Record<ReportingUnit, GateState>> = Object.freeze({
+  'reporting.export_definition': 'open',
+  'reporting.export_job': 'open',
+  'reporting.session_tracking': 'legacy',
+});
+
+/** Holder id of gates a test app closes; the gate table requires a holder exactly when a gate is closed. */
+const TEST_GATE_HOLDER = 'reporting-test-app';
+
+const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations/', import.meta.url));
+
 /** The app under test and every recording its routes write to. */
-export interface TestApp {
+export interface TestApp<D extends TenantDb = MemoryDb> {
   app: FastifyInstance;
-  db: MemoryDb;
+  db: D;
+  mode: TestDbMode;
+  /** The throwaway schema of `'pg'` mode, dropped on close; undefined in `'recording'` mode. */
+  throwaway: ThrowawaySchema | undefined;
   publisher: CapturingPublisher;
   tasks: FakeTaskPort;
   storage: LocalStorageAdapter;
   client: ScriptedClient;
-  /** Closes the app and removes its state directory. */
+  clock: Clock;
+  stateDir: string;
+  /** Adds committed rows to `table`, each in its own `tenant_id`'s transaction, bypassing the repository and so writing no changelog. */
+  seed(table: SeedTable, rows: readonly Row[]): Promise<void>;
+  /** Sets the gate of `unit` to `state` in `phase` (default quiet). */
+  setGate(unit: ReportingUnit, state: GateState, phase?: GatePhase): Promise<void>;
+  /** Closes the app, drops the throwaway schema and its roles, and removes the state directory; repeated calls share the first outcome. */
   close(): Promise<void>;
 }
 
 /** Options of {@link buildTestApp}. */
 export interface TestAppOptions {
+  /** `'recording'` by default; `'pg'` needs the `PG_*` variables. */
+  db?: TestDbMode;
+  /** Gate states over {@link DEFAULT_GATES}, set before the app answers its first request. */
+  gates?: Partial<Record<ReportingUnit, GateState>>;
+  /** False leaves `tenant_registry` empty instead of holding the fixture sites. */
+  registry?: boolean;
   /** Adds routes after the service's own and before `ready`, as a later registration would. */
   declare?: (app: FastifyInstance) => unknown;
+}
+
+/** Sets the stored gate row of `unit` directly, as fixture setup rather than the migration service's compare-and-set. */
+async function setGateRow(db: TenantDb, unit: ReportingUnit, state: GateState, phase: GatePhase): Promise<void> {
+  const holder = state === 'closed' ? TEST_GATE_HOLDER : null;
+  const result = await withMetadata(db, (tx) =>
+    tx.query(`UPDATE ${qualified(tx.schema, UNIT_GATE_TABLE)} SET state = $2, holder_id = $3, phase = $4 WHERE unit = $1`, [unit, state, holder, phase]),
+  );
+  if (result.rowCount !== 1) throw new Error(`no ${UNIT_GATE_TABLE} row holds ${unit}`);
+}
+
+/** Inserts `rows` into owned `table` of PostgreSQL `db`, one transaction per tenant, naming the catalogue columns each row sets. */
+async function insertRows(db: TenantDb, table: SeedTable, rows: readonly Row[]): Promise<void> {
+  const definition = OWNED_TABLES.find((candidate) => candidate.table === table);
+  if (definition === undefined) throw new TypeError(`${table} is not an owned reporting table`);
+  const catalogue = definition.columns.map((column) => column.name);
+  const byTenant = new Map<string, Row[]>();
+  for (const row of rows) {
+    const unknown = Object.keys(row).filter((name) => !catalogue.includes(name));
+    if (unknown.length > 0) throw new TypeError(`${table} has no column ${unknown.join(', ')}`);
+    if (typeof row.tenant_id !== 'string') throw new TypeError(`a ${table} seed row needs a tenant_id`);
+    byTenant.set(row.tenant_id, [...(byTenant.get(row.tenant_id) ?? []), row]);
+  }
+  for (const [tenantId, tenantRows] of byTenant) {
+    await withTenant(db, tenantId, async (tx) => {
+      for (const row of tenantRows) {
+        const columns = catalogue.filter((name) => name in row);
+        const placeholders = columns.map((_, i) => `$${String(i + 1)}`).join(', ');
+        await tx.query(
+          `INSERT INTO ${qualified(tx.schema, table)} (${columns.join(', ')}) VALUES (${placeholders})`,
+          columns.map((name) => row[name]),
+        );
+      }
+    });
+  }
 }
 
 /** A contract-valid `programs-sites.site.changed.v1` envelope of the fixture site `siteId`. */
@@ -403,24 +491,42 @@ function scopeLookupOf(app: FastifyInstance): ScopeLookup {
 }
 
 /**
- * Builds reporting through `buildApp` with every route its source registers, opens the export units, fills the tenant registry
- * through site.changed pushes, and installs the scripted service client.
+ * Builds reporting through `buildApp` with every route its source registers, sets the unit gates, fills the tenant registry with the
+ * fixture sites (site.changed pushes in memory, the platform seeder in PostgreSQL), and installs the scripted service client.
  */
-export async function buildTestApp(options: TestAppOptions = {}): Promise<TestApp> {
+export function buildTestApp(options?: TestAppOptions & { db?: 'recording' }): Promise<TestApp>;
+export function buildTestApp(options: TestAppOptions & { db: 'pg' }): Promise<TestApp<TenantDb>>;
+export function buildTestApp(options: TestAppOptions): Promise<TestApp<TenantDb>>;
+export async function buildTestApp(options: TestAppOptions = {}): Promise<TestApp<TenantDb>> {
+  // Recording even when PostgreSQL is reachable: the contract and security suites seed and read the MemoryDb directly.
+  const mode = options.db ?? 'recording';
+  const gates: Record<ReportingUnit, GateState> = { ...DEFAULT_GATES, ...options.gates };
   const stateDir = await mkdtemp(path.join(tmpdir(), 'opt2-reporting-gates-'));
   let app: FastifyInstance | undefined;
+  let throwaway: ThrowawaySchema | undefined;
+  const teardown = (): Promise<void> =>
+    runCleanup('reporting test app', [() => app?.close(), () => throwaway?.drop(), () => rm(stateDir, { recursive: true, force: true })]);
   try {
-    const db = createMemoryDb({ now: () => TEST_CLOCK.now() });
-    db.seed(
-      'unit_gate',
-      UNITS.map((unit) => ({
-        unit,
-        state: unit === 'reporting.session_tracking' ? 'legacy' : 'open',
-        holder_id: null,
-        phase: 'quiet',
-        updated_at: TEST_CLOCK.now(),
-      })),
-    );
+    let db: TenantDb;
+    let memory: MemoryDb | undefined;
+    if (mode === 'pg') {
+      throwaway = await createThrowawaySchema({ service: SERVICE, migrationsDir: MIGRATIONS_DIR });
+      db = throwaway.app;
+      if (options.registry !== false) await seedRegistry(db, db.schema);
+    } else {
+      memory = createMemoryDb({ now: () => TEST_CLOCK.now() });
+      memory.seed(
+        'unit_gate',
+        UNITS.map((unit) => ({
+          unit,
+          state: gates[unit],
+          holder_id: gates[unit] === 'closed' ? TEST_GATE_HOLDER : null,
+          phase: 'quiet',
+          updated_at: TEST_CLOCK.now(),
+        })),
+      );
+      db = memory;
+    }
     const publisher = createCapturingPublisher();
     const tasks = createFakeTaskPort();
     const storage = await createLocalStorageAdapter({ stateDir, hmacKey: STORAGE_HMAC_KEY, now: () => TEST_CLOCK.now().getTime() });
@@ -437,30 +543,43 @@ export async function buildTestApp(options: TestAppOptions = {}): Promise<TestAp
     // ReportingDeps holds this same client object, so the domain's producer reads are scripted too.
     vi.spyOn(app.opt2.client, 'request').mockImplementation((request) => client.request(request));
     options.declare?.(app);
+    // ready() inserts a legacy gate for every unit the PostgreSQL schema does not hold yet.
     await app.ready();
-    for (const payload of registryPayloads()) {
-      const res = await pushTo(app, SITE_CHANGED_SUBSCRIPTION, siteChangedEnvelope(payload.siteId));
-      if (res.statusCode !== 204) throw new Error(`registry push of ${payload.siteId} answered ${res.statusCode} ${res.body}`);
+    if (mode === 'pg') {
+      for (const unit of UNITS) await setGateRow(db, unit, gates[unit], 'quiet');
     }
-    const built = app;
+    if (memory !== undefined && options.registry !== false) {
+      for (const payload of registryPayloads()) {
+        const res = await pushTo(app, SITE_CHANGED_SUBSCRIPTION, siteChangedEnvelope(payload.siteId));
+        if (res.statusCode !== 204) throw new Error(`registry push of ${payload.siteId} answered ${res.statusCode} ${res.body}`);
+      }
+    }
+    const seeded = memory;
+    let closing: Promise<void> | undefined;
     return {
-      app: built,
+      app,
       db,
+      mode,
+      throwaway,
       publisher,
       tasks,
       storage,
       client,
-      async close() {
-        try {
-          await built.close();
-        } finally {
-          await rm(stateDir, { recursive: true, force: true });
-        }
+      clock: TEST_CLOCK,
+      stateDir,
+      async seed(table, rows) {
+        if (seeded === undefined) await insertRows(db, table, rows);
+        else seeded.seed(table, rows);
       },
+      setGate: (unit, state, phase = 'quiet') => setGateRow(db, unit, state, phase),
+      close: () => (closing ??= teardown()),
     };
   } catch (err) {
-    await app?.close().catch(() => undefined);
-    await rm(stateDir, { recursive: true, force: true });
+    try {
+      await teardown();
+    } catch (cleanupError) {
+      throw new AggregateError([err, cleanupError], `reporting test app failed to build: ${err instanceof Error ? err.message : String(err)}`);
+    }
     throw err;
   }
 }
@@ -531,7 +650,7 @@ export function queuedRun(t: Pick<TestApp, 'tasks'>, jobId: string): TaskWireBod
 /** Queues the run of seeded `job` through reporting's own enqueuer, as its create does, and returns its wire body. */
 export async function queueRun(t: Pick<TestApp, 'app' | 'tasks'>, job: Pick<ExportJobRow, 'tenant_id' | 'job_id'>): Promise<TaskWireBody> {
   const enqueue = createExportRunEnqueuer({ tasks: t.tasks, serviceUrls: t.app.opt2.env.OPT2_SERVICE_URLS, clock: TEST_CLOCK });
-  await enqueue({ tenantId: job.tenant_id, jobId: job.job_id, payload: { jobId: job.job_id, asOf: BUSINESS_DATE } });
+  await enqueue({ tenantId: job.tenant_id, jobId: job.job_id, payload: { jobId: job.job_id, asOf: TEST_AS_OF } });
   return queuedRun(t, job.job_id);
 }
 
@@ -541,12 +660,30 @@ export function identityOf(subject: Pick<RoleSubject, 'name'>): { sub: string; s
   return { sub: `${hex}-0000-4000-8000000000000001`, sid: `${hex}-0000-4000-8000000000000002` };
 }
 
-/** Credentials of `subject` for the reporting app: a user's token minted for `site` (tenant-a by default) in its fixed session. */
-export async function headersFor(subject: RoleSubject, site: string = TENANT_A.siteId): Promise<Record<string, string>> {
-  if (subject.kind !== 'user') return authHeadersFor(subject, { audience: SERVICE, site });
-  const { sub, sid } = identityOf(subject);
+/** Options of {@link headersFor}. */
+export interface HeadersOptions {
+  /** Site a user token is minted for; tenant-a by default. */
+  site?: string;
+}
+
+/** The ROLE_SET subject called `name`; throws TypeError for a name ROLE_SET lacks. */
+function roleSubjectNamed(name: string): RoleSubject {
+  const found = ROLE_SET.find((candidate) => candidate.name === name);
+  if (found === undefined) throw new TypeError(`ROLE_SET has no subject named ${name}`);
+  return found;
+}
+
+/**
+ * Credentials of `subject`, a RoleSubject or the name of one in ROLE_SET, for the reporting app: a user's token minted for the site
+ * (`site` itself or `site.site`, tenant-a by default) in its fixed session.
+ */
+export async function headersFor(subject: RoleSubject | string, site: string | HeadersOptions = TENANT_A.siteId): Promise<Record<string, string>> {
+  const resolved = typeof subject === 'string' ? roleSubjectNamed(subject) : subject;
+  const siteId = typeof site === 'string' ? site : (site.site ?? TENANT_A.siteId);
+  if (resolved.kind !== 'user') return authHeadersFor(resolved, { audience: SERVICE, site: siteId });
+  const { sub, sid } = identityOf(resolved);
   const [user, invocation] = await Promise.all([
-    mintUserToken({ sub, sid, site: subjectSiteFor(subject, site), roles: subject.roles, s2: subject.s2 }),
+    mintUserToken({ sub, sid, site: subjectSiteFor(resolved, siteId), roles: resolved.roles, s2: resolved.s2 }),
     mintServiceToken({ caller: 'gateway', audience: SERVICE }),
   ]);
   return { authorization: `Bearer ${user}`, [INVOCATION_HEADER]: `Bearer ${invocation}` };

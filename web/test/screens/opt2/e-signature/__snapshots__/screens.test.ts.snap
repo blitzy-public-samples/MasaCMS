@@ -103,6 +103,12 @@ exports[`e-signature screen markup > request renders a pending request with the 
     "Signature Request",
   ],
   "labels": [
+    "Document",
+    "State",
+    "Signer",
+    "Created",
+    "Created By",
+    "Document SHA-256",
     "Typed Name",
   ],
   "links": [
@@ -119,28 +125,7 @@ exports[`e-signature screen markup > request renders a pending request with the 
       "text": "Verify",
     },
   ],
-  "tables": [
-    {
-      "headers": [
-        "Document",
-        "State",
-        "Signer",
-        "Created",
-        "Created By",
-        "Document SHA-256",
-      ],
-      "rows": [
-        [
-          "tenant-a-data-processing-addendum.pdf",
-          "PENDING",
-          "E51600F0-0000-0000-0000000000000001",
-          "2026-06-29T14:30:00",
-          "5A000000-0000-0000-0000000000000003",
-          "a84c897a7e48db8d14ee4cd0e81b1b16880196905975d48166ea9a63de84f21f",
-        ],
-      ],
-    },
-  ],
+  "tables": [],
   "title": "",
 }
 `;
@@ -153,7 +138,14 @@ exports[`e-signature screen markup > request renders a signed request with its s
   "headings": [
     "Signature Request",
   ],
-  "labels": [],
+  "labels": [
+    "Document",
+    "State",
+    "Signer",
+    "Created",
+    "Created By",
+    "Document SHA-256",
+  ],
   "links": [
     {
       "href": "/opt2/admin/e-signature/requests?siteid=tenant-a",
@@ -169,26 +161,6 @@ exports[`e-signature screen markup > request renders a signed request with its s
     },
   ],
   "tables": [
-    {
-      "headers": [
-        "Document",
-        "State",
-        "Signer",
-        "Created",
-        "Created By",
-        "Document SHA-256",
-      ],
-      "rows": [
-        [
-          "tenant-a-supplier-agreement.pdf",
-          "SIGNED",
-          "E51600F0-0000-0000-0000000000000001",
-          "2026-06-28T10:00:00",
-          "5A000000-0000-0000-0000000000000003",
-          "a049f1c1c0daa458e64b981eb0473ad5fc47c20aa8386aca60b76c6b9f0d1f7f",
-        ],
-      ],
-    },
     {
       "headers": [
         "Typed Name",
