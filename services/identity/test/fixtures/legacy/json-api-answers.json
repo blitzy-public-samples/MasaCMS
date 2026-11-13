@@ -1,0 +1,969 @@
+{
+  "source": "Masa CMS 7.6.1 on Adobe ColdFusion 2023 (site default, debugging output on), GET requests through /index.cfm; body is the exact response text, except that error.stacktrace is removed where stacktraceRemoved is set. deletedCookies keep the cookie name, value and attributes and drop the expiry time. Past 12 struct keys ACF orders a self link differently from request to request (findAllManyParams).",
+  "answers": {
+    "groupProperties": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/group/properties",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"displayname\":\"group\",\"properties\":[{\"fieldtype\":\"id\",\"length\":\"35\",\"required\":false,\"nullable\":true,\"html\":\"false\",\"name\":\"userid\",\"datatype\":\"char\",\"default\":\"\"},{\"fieldtype\":\"\",\"required\":false,\"html\":\"false\",\"nullable\":true,\"name\":\"type\",\"datatype\":\"int\",\"default\":\"2\"},{\"fieldtype\":\"\",\"length\":\"50\",\"required\":false,\"html\":\"false\",\"nullable\":true,\"name\":\"subtype\",\"datatype\":\"varchar\",\"default\":\"Default\"},{\"fieldtype\":\"\",\"required\":false,\"html\":\"false\",\"nullable\":true,\"name\":\"ispublic\",\"datatype\":\"int\",\"default\":\"1\"},{\"fieldtype\":\"\",\"length\":\"50\",\"required\":false,\"html\":\"false\",\"nullable\":true,\"name\":\"groupname\",\"datatype\":\"varchar\",\"default\":\"\"},{\"fieldtype\":\"\",\"length\":\"50\",\"required\":false,\"html\":\"false\",\"nullable\":true,\"name\":\"siteid\",\"datatype\":\"varchar\",\"default\":\"\"},{\"fieldtype\":\"\",\"length\":\"50\",\"required\":false,\"html\":\"false\",\"nullable\":true,\"name\":\"remoteid\",\"datatype\":\"varchar\",\"default\":\"\"}],\"historical\":false,\"links\":{\"swagger_json\":\"http://localhost:8080/index.cfm/_api/json/v1/default/swagger?mode=json&entities=group\",\"endpoint\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"swagger_rest\":\"http://localhost:8080/index.cfm/_api/json/v1/default/swagger?mode=rest&entities=group\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"dynamic\":false,\"primarykey\":\"userid\",\"public\":false,\"bundleable\":false,\"orderby\":\"\",\"entityname\":\"group\",\"scaffold\":false},\"method\":\"findProperties\"}"
+    },
+    "groupPropertiesFlat": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/group/properties?useDataNamespace=false",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"displayname\":\"group\",\"properties\":[{\"fieldtype\":\"id\",\"length\":\"35\",\"required\":false,\"nullable\":true,\"html\":\"false\",\"name\":\"userid\",\"datatype\":\"char\",\"default\":\"\"},{\"fieldtype\":\"\",\"required\":false,\"html\":\"false\",\"nullable\":true,\"name\":\"type\",\"datatype\":\"int\",\"default\":\"2\"},{\"fieldtype\":\"\",\"length\":\"50\",\"required\":false,\"html\":\"false\",\"nullable\":true,\"name\":\"subtype\",\"datatype\":\"varchar\",\"default\":\"Default\"},{\"fieldtype\":\"\",\"required\":false,\"html\":\"false\",\"nullable\":true,\"name\":\"ispublic\",\"datatype\":\"int\",\"default\":\"1\"},{\"fieldtype\":\"\",\"length\":\"50\",\"required\":false,\"html\":\"false\",\"nullable\":true,\"name\":\"groupname\",\"datatype\":\"varchar\",\"default\":\"\"},{\"fieldtype\":\"\",\"length\":\"50\",\"required\":false,\"html\":\"false\",\"nullable\":true,\"name\":\"siteid\",\"datatype\":\"varchar\",\"default\":\"\"},{\"fieldtype\":\"\",\"length\":\"50\",\"required\":false,\"html\":\"false\",\"nullable\":true,\"name\":\"remoteid\",\"datatype\":\"varchar\",\"default\":\"\"}],\"historical\":false,\"links\":{\"swagger_json\":\"http://localhost:8080/index.cfm/_api/json/v1/default/swagger?mode=json&entities=group\",\"endpoint\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"swagger_rest\":\"http://localhost:8080/index.cfm/_api/json/v1/default/swagger?mode=rest&entities=group\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"dynamic\":false,\"primarykey\":\"userid\",\"method\":\"findProperties\",\"public\":false,\"bundleable\":false,\"orderby\":\"\",\"entityname\":\"group\",\"scaffold\":false}"
+    },
+    "groupPropertiesSubset": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/findProperties?entityname=group&properties=groupname,ispublic",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"displayname\":\"group\",\"properties\":[{\"fieldtype\":\"\",\"length\":\"50\",\"required\":false,\"html\":\"false\",\"nullable\":true,\"name\":\"groupname\",\"datatype\":\"varchar\",\"default\":\"\"},{\"fieldtype\":\"\",\"required\":false,\"html\":\"false\",\"nullable\":true,\"name\":\"ispublic\",\"datatype\":\"int\",\"default\":\"1\"}],\"historical\":false,\"links\":{\"swagger_json\":\"http://localhost:8080/index.cfm/_api/json/v1/default/swagger?mode=json&entities=group\",\"endpoint\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"swagger_rest\":\"http://localhost:8080/index.cfm/_api/json/v1/default/swagger?mode=rest&entities=group\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"dynamic\":false,\"primarykey\":\"userid\",\"public\":false,\"bundleable\":false,\"orderby\":\"\",\"entityname\":\"group\",\"scaffold\":false},\"method\":\"findProperties\"}"
+    },
+    "groupPropertiesWithLinks": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/findProperties?entityname=group&properties=groupname,links",
+      "status": 500,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"findProperties\",\"error\":{\"message\":\"Unhandled Exception\",\"code\":\"server_error\"}}",
+      "stacktraceRemoved": true
+    },
+    "groupPermissions": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/group/permissions",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"read\":false,\"delete\":false,\"save\":false},\"method\":\"findPermissions\"}"
+    },
+    "findPermissionsShortId": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/findPermissions?entityname=group&id=x",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"read\":false,\"delete\":false,\"save\":false},\"method\":\"findPermissions\"}"
+    },
+    "findPermissionsNoId": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/findPermissions?entityname=group",
+      "status": 500,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"findPermissions\",\"error\":{\"message\":\"Unhandled Exception\",\"code\":\"server_error\"}}",
+      "stacktraceRemoved": true
+    },
+    "findNewDenied": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/group/new",
+      "status": 401,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"findNew\",\"error\":{\"message\":\"Insufficient Account Permissions\",\"code\":\"invalid_request\"}}"
+    },
+    "findAllDenied": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/group",
+      "status": 401,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"findAll\",\"error\":{\"message\":\"Insufficient Account Permissions\",\"code\":\"invalid_request\"}}"
+    },
+    "findOneDenied": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/group/00000000000000000000000000000000001",
+      "status": 401,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"findOne\",\"error\":{\"message\":\"Insufficient Account Permissions\",\"code\":\"invalid_request\"}}"
+    },
+    "findQueryDenied": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/group?groupname=Admin",
+      "status": 401,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"findQuery\",\"error\":{\"message\":\"Insufficient Account Permissions\",\"code\":\"invalid_request\"}}"
+    },
+    "findManyDenied": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/group?id=3BE10D43-C960-A7E5-0FB807B791D31787,3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D",
+      "status": 401,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"findMany\",\"error\":{\"message\":\"Insufficient Account Permissions\",\"code\":\"invalid_request\"}}"
+    },
+    "validateEmptyData": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/validate?entityname=group&data=%7B%7D",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{},\"method\":\"validate\"}"
+    },
+    "validateNotJson": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/validate?entityname=group&data=notjson",
+      "status": 400,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"validate\",\"error\":{\"message\":\"Invalid parameters\",\"code\":\"invalid_request\"}}"
+    },
+    "validateNoStruct": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/validate?entityname=group&data=%5B1%5D",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"invalid\":\"Invalid validation request\"},\"method\":\"validate\"}"
+    },
+    "validateMalformedEscape": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/validate?entityname=group&data=%25zz",
+      "status": 400,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"validate\",\"error\":{\"message\":\"Invalid parameters\",\"code\":\"invalid_request\"}}"
+    },
+    "groupPropertiesUnlisted": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/findProperties?entityname=group&properties=fname,groupname",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"displayname\":\"group\",\"properties\":[{\"fieldtype\":\"\",\"length\":\"50\",\"required\":false,\"html\":\"false\",\"nullable\":true,\"name\":\"groupname\",\"datatype\":\"varchar\",\"default\":\"\"}],\"historical\":false,\"links\":{\"swagger_json\":\"http://localhost:8080/index.cfm/_api/json/v1/default/swagger?mode=json&entities=group\",\"endpoint\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"swagger_rest\":\"http://localhost:8080/index.cfm/_api/json/v1/default/swagger?mode=rest&entities=group\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"dynamic\":false,\"primarykey\":\"userid\",\"public\":false,\"bundleable\":false,\"orderby\":\"\",\"entityname\":\"group\",\"scaffold\":false},\"method\":\"findProperties\"}"
+    },
+    "loginNoToken": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/login",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"status\":\"Invalid CSFR Tokens\"},\"method\":\"login\"}"
+    },
+    "logoutAnonymous": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/logout",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"status\":\"success\"},\"method\":\"logout\"}",
+      "deletedCookies": [
+        "userHash=;path=/;HttpOnly;",
+        "userid=;path=/;HttpOnly;"
+      ]
+    },
+    "generateTokensNoContext": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/generateCSRFTokens",
+      "status": 500,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"generateCSRFTokens\",\"error\":{\"message\":\"Unhandled Exception\",\"code\":\"server_error\"}}",
+      "stacktraceRemoved": true
+    },
+    "validateEmail": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/validateEmail?email=a@example.test",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": false,
+      "body": "\"{\\\"errors\\\":{\\\"user\\\":\\\"not authorized or over daily test limit for untrusted domains\\\"}}\""
+    },
+    "validateEmailNoEmail": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/validateEmail",
+      "status": 500,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"validateEmail\",\"error\":{\"message\":\"Unhandled Exception\",\"code\":\"server_error\"}}",
+      "stacktraceRemoved": true
+    },
+    "findCurrentUserAnonymous": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/findCurrentUser",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"mobilephone\":\"\",\"lname\":\"\",\"email\":\"\",\"contactform\":\"\",\"lastupdate\":\"2026-11-13T06:33:49\",\"keepprivate\":0,\"userid\":\"441FD0D5-9186-8959-A81DA9E74FFD766D\",\"username\":\"\",\"id\":\"441FD0D5-9186-8959-A81DA9E74FFD766D\",\"lastupdatebyid\":\"\",\"type\":\"user\",\"subtype\":\"Default\",\"categoryid\":\"\",\"fname\":\"\",\"company\":\"\",\"tablist\":\"\",\"newfile\":\"\",\"ispublic\":1,\"imservice\":\"\",\"isnew\":1,\"jobtitle\":\"\",\"website\":\"\",\"lastlogin\":\"\",\"tags\":\"\",\"s2\":0,\"membershipids\":[],\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/user\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/user/441FD0D5-9186-8959-A81DA9E74FFD766D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/user/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/user/441FD0D5-9186-8959-A81DA9E74FFD766D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"notes\":\"\",\"created\":\"2026-11-13T06:33:49\",\"groupname\":\"\",\"perm\":0,\"description\":\"\",\"addressid\":\"\",\"memberships\":[],\"imname\":\"\",\"passwordcreated\":\"2026-11-13T06:33:49\",\"photofileid\":\"\",\"interests\":\"\",\"isloggedin\":false,\"siteid\":\"default\",\"primaryaddressid\":\"\",\"subscribe\":1,\"remoteid\":\"\",\"groupid\":\"\",\"inactive\":0,\"photofileext\":\"\",\"lastupdateby\":\"\",\"entityname\":\"user\"},\"method\":\"findCurrentUser\"}"
+    },
+    "unregisteredPathSite": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/ghost/group",
+      "status": 400,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"invalid\",\"error\":{\"message\":\"Invalid parameters\",\"code\":\"invalid_request\"}}"
+    },
+    "pathParamNamedMethod": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/group/method",
+      "status": 400,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"invalid\",\"error\":{\"message\":\"Invalid method call\",\"code\":\"invalid_request\"}}"
+    },
+    "entityNameNotVariable": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/1group",
+      "status": 400,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"invalid\",\"error\":{\"message\":\"Invalid reference to persisted entity\",\"code\":\"invalid_request\"}}"
+    },
+    "muraPointInTime": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/group?muraPointInTime=x",
+      "status": 500,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"invalid\",\"error\":{\"message\":\"Unhandled Exception\",\"code\":\"server_error\"}}",
+      "stacktraceRemoved": true
+    },
+    "groupIdListPath": {
+      "caller": "anonymous",
+      "request": "GET /_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787,3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D",
+      "status": 400,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"invalid\",\"error\":{\"message\":\"Invalid method call\",\"code\":\"invalid_request\"}}"
+    },
+    "restNoCredentials": {
+      "caller": "anonymous",
+      "request": "GET /_api/rest/v1/default/group/properties",
+      "status": 401,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"invalid\",\"error\":{\"message\":\"Insufficient Account Permissions\",\"code\":\"invalid_request\"}}",
+      "wwwAuthenticate": "Basic"
+    },
+    "restOauth2NoCredentials": {
+      "caller": "anonymous",
+      "request": "GET /_api/rest/v1/default/oauth2",
+      "status": 401,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"invalid\",\"error\":{\"message\":\"Insufficient Account Permissions\",\"code\":\"invalid_request\"}}",
+      "wwwAuthenticate": "Bearer error=\"invalid_client_credentials\""
+    },
+    "restOauthUnknownClient": {
+      "caller": "anonymous",
+      "request": "GET /_api/rest/v1/default/oauth?client_id=D0000000-0000-0000-0000000000000009&grant_type=client_credentials",
+      "status": 401,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"invalid\",\"error\":{\"message\":\"Insufficient Account Permissions\",\"code\":\"invalid_request\"}}",
+      "wwwAuthenticate": "Bearer error=\"invalid_client_credentials\""
+    },
+    "restTokenInfoUnknownToken": {
+      "caller": "anonymous",
+      "request": "GET /_api/rest/v1/default/tokeninfo?access_token=NOPE&client_id=x",
+      "status": 401,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"invalid\",\"error\":{\"message\":\"Invalid Access Token\",\"code\":\"invalid_token\"}}",
+      "wwwAuthenticate": "Bearer"
+    },
+    "findAllEmpty": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":0,\"itemsperpage\":1000,\"totalpages\":0,\"totalitems\":0,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/?&method=findall&siteid=default&type=1&entityname=group&pageIndex=0\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[],\"endindex\":0,\"entityname\":\"group\",\"startindex\":0},\"method\":\"findAll\"}"
+    },
+    "findAllItemsPerPage": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/findAll?entityname=group&itemsPerPage=1",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":0,\"itemsperpage\":1,\"totalpages\":0,\"totalitems\":0,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/?&itemsperpage=1&method=findall&entityname=group&pageIndex=0\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[],\"endindex\":0,\"entityname\":\"group\",\"startindex\":0},\"method\":\"findAll\"}"
+    },
+    "findAllPathPair": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/findAll/itemsperpage/1?entityname=group",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":0,\"itemsperpage\":1000,\"totalpages\":0,\"totalitems\":0,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/?&method=findall&entityname=group&pageIndex=0\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[],\"endindex\":0,\"entityname\":\"group\",\"startindex\":0},\"method\":\"findAll\"}"
+    },
+    "findAllUrlMethod": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/findAll?entityname=group&method=findAll",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":0,\"itemsperpage\":1000,\"totalpages\":0,\"totalitems\":0,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/?&method=findAll&entityname=group&pageIndex=0\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[],\"endindex\":0,\"entityname\":\"group\",\"startindex\":0},\"method\":\"findAll\"}"
+    },
+    "findAllCountOnly": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/findAll?entityname=group&countOnly=true",
+      "status": 500,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"findAll\",\"error\":{\"message\":\"Unhandled Exception\",\"code\":\"server_error\"}}",
+      "stacktraceRemoved": true
+    },
+    "findManyEntityRoute": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?id=3BE10D43-C960-A7E5-0FB807B791D31787,3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":0,\"itemsperpage\":1000,\"totalpages\":0,\"totalitems\":0,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/?&method=findmany&id=3BE10D43-C960-A7E5-0FB807B791D31787,3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D&siteid=default&type=1&entityname=group&pageIndex=0\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[],\"endindex\":0,\"entityname\":\"group\",\"startindex\":0},\"method\":\"findMany\"}"
+    },
+    "findManyDefaultSite": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/findMany?entityname=group&ids=x,y",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":0,\"itemsperpage\":1000,\"totalpages\":0,\"totalitems\":0,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/?&ids=x,y&method=findmany&entityname=group&pageIndex=0\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[],\"endindex\":0,\"entityname\":\"group\",\"startindex\":0},\"method\":\"findMany\"}"
+    },
+    "findQueryPublicEmpty": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?groupname=Admin",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":0,\"itemsperpage\":1000,\"totalpages\":0,\"totalitems\":0,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?groupname=Admin&pageIndex=0\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[],\"endindex\":0,\"entityname\":\"group\",\"startindex\":0},\"method\":\"findQuery\"}"
+    },
+    "findQueryPrivate": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?groupname=Admin&ispublic=0",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":1,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?groupname=Admin&ispublic=0&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":1,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryFields": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&fields=groupname",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":2,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&fields=groupname&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"groupname\":\"Admin\",\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"\",\"isnew\":1,\"type\":\"user\",\"entityname\":\"group\"},{\"groupname\":\"Editor\",\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"\",\"isnew\":1,\"type\":\"user\",\"entityname\":\"group\"}],\"endindex\":2,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryPage": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&itemsPerPage=1&pageIndex=2",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":2,\"itemsperpage\":1,\"totalpages\":2,\"totalitems\":2,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"last\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&itemsPerPage=1&pageIndex=2\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&itemsPerPage=1&pageIndex=2\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\",\"first\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&itemsPerPage=1&pageIndex=1\",\"previous\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&itemsPerPage=1&pageIndex=1\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":2,\"entityname\":\"group\",\"startindex\":2},\"method\":\"findQuery\"}"
+    },
+    "findQuerySort": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&sort=-groupname",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":2,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&sort=-groupname&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"},{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":2,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryWildcard": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&groupname=Ad*",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":1,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&groupname=Ad*&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":1,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryBothPools": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=*",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":2,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=*&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"},{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":2,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryNegativeMaxItems": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?groupname=x*&maxItems=-1",
+      "status": 500,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"findQuery\",\"error\":{\"message\":\"Unhandled Exception\",\"code\":\"server_error\"}}",
+      "stacktraceRemoved": true
+    },
+    "findQueryOffset": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?offset=1",
+      "status": 500,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"findQuery\",\"error\":{\"message\":\"Unhandled Exception\",\"code\":\"server_error\"}}",
+      "stacktraceRemoved": true
+    },
+    "findOneStored": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"edit\":\"http://localhost:8080/admin/?muraAction=cusers.editgroup&siteid=default&userid=3BE10D43-C960-A7E5-0FB807B791D31787\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":0,\"entityname\":\"group\"},\"method\":\"findOne\"}"
+    },
+    "findOneUnknown": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group/D0000000-0000-0000-0000000000000001",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/user\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/user/441FF982-E4A9-E07A-EF112397F025B8A0/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/user/properties\",\"edit\":\"http://localhost:8080/admin/?muraAction=cusers.edituser&siteid=default&userid=441FF982-E4A9-E07A-EF112397F025B8A0\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/user/441FF982-E4A9-E07A-EF112397F025B8A0\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"441FF982-E4A9-E07A-EF112397F025B8A0\",\"ispublic\":1,\"id\":\"441FF982-E4A9-E07A-EF112397F025B8A0\",\"siteid\":\"default\",\"type\":\"user\",\"isnew\":1,\"entityname\":\"group\"},\"method\":\"findOne\"}"
+    },
+    "findNew": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group/new",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/441FFAFE-F2B1-0A3C-B34C09FE76F695BB/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"edit\":\"http://localhost:8080/admin/?muraAction=cusers.editgroup&siteid=default&userid=441FFAFE-F2B1-0A3C-B34C09FE76F695BB\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/441FFAFE-F2B1-0A3C-B34C09FE76F695BB\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"441FFAFE-F2B1-0A3C-B34C09FE76F695BB\",\"ispublic\":1,\"id\":\"441FFAFE-F2B1-0A3C-B34C09FE76F695BB\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"},\"method\":\"findNew\"}"
+    },
+    "findNewFields": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/findNew?entityname=group&fields=groupname",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"groupname\":\"\",\"userid\":\"441FFC3F-C1CE-636F-C095E7FD0A21B02E\",\"id\":\"441FFC3F-C1CE-636F-C095E7FD0A21B02E\",\"siteid\":\"default\",\"isnew\":1,\"type\":\"group\",\"entityname\":\"group\"},\"method\":\"findNew\"}"
+    },
+    "groupPermissionsAdmin": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group/permissions",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"read\":true,\"delete\":true,\"save\":true},\"method\":\"findPermissions\"}"
+    },
+    "groupPropertiesAdmin": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group/properties",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"displayname\":\"group\",\"properties\":[{\"fieldtype\":\"id\",\"length\":\"35\",\"required\":false,\"nullable\":true,\"html\":\"false\",\"name\":\"userid\",\"datatype\":\"char\",\"default\":\"\"},{\"fieldtype\":\"\",\"required\":false,\"html\":\"false\",\"nullable\":true,\"name\":\"type\",\"datatype\":\"int\",\"default\":\"2\"},{\"fieldtype\":\"\",\"length\":\"50\",\"required\":false,\"html\":\"false\",\"nullable\":true,\"name\":\"subtype\",\"datatype\":\"varchar\",\"default\":\"Default\"},{\"fieldtype\":\"\",\"required\":false,\"html\":\"false\",\"nullable\":true,\"name\":\"ispublic\",\"datatype\":\"int\",\"default\":\"1\"},{\"fieldtype\":\"\",\"length\":\"50\",\"required\":false,\"html\":\"false\",\"nullable\":true,\"name\":\"groupname\",\"datatype\":\"varchar\",\"default\":\"\"},{\"fieldtype\":\"\",\"length\":\"50\",\"required\":false,\"html\":\"false\",\"nullable\":true,\"name\":\"siteid\",\"datatype\":\"varchar\",\"default\":\"\"},{\"fieldtype\":\"\",\"length\":\"50\",\"required\":false,\"html\":\"false\",\"nullable\":true,\"name\":\"remoteid\",\"datatype\":\"varchar\",\"default\":\"\"}],\"historical\":false,\"links\":{\"swagger_json\":\"http://localhost:8080/index.cfm/_api/json/v1/default/swagger?mode=json&entities=group\",\"endpoint\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"swagger_rest\":\"http://localhost:8080/index.cfm/_api/json/v1/default/swagger?mode=rest&entities=group\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"dynamic\":false,\"table\":\"tusers\",\"primarykey\":\"userid\",\"public\":false,\"bundleable\":false,\"orderby\":\"\",\"entityname\":\"group\",\"scaffold\":false},\"method\":\"findProperties\"}"
+    },
+    "findOneFields": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787?fields=groupname,perm,inactive,s2,email,lname",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"lname\":\"\",\"email\":\"\",\"siteid\":\"default\",\"groupname\":\"Admin\",\"perm\":1,\"inactive\":0,\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"isnew\":0,\"type\":\"group\",\"entityname\":\"group\",\"s2\":0},\"method\":\"findOne\"}"
+    },
+    "findOnePermissions": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"read\":true,\"delete\":true,\"save\":true},\"method\":\"findPermissions\"}"
+    },
+    "findQueryBegins": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&groupname=begins%5EAd",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":1,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&groupname=begins%5EAd&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":1,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryNeq": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&groupname=neq%5EAdmin",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":1,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&groupname=neq%5EAdmin&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":1,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryIn": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&groupname=in%5EEditor,Admin",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":2,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&groupname=in%5EEditor%2CAdmin&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"},{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":2,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryNotIn": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&groupname=notin%5EAdmin",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":1,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&groupname=notin%5EAdmin&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":1,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryOr": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&groupname=Admin&or&groupname=Editor",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":0,\"itemsperpage\":1000,\"totalpages\":0,\"totalitems\":0,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&groupname=Admin%2CEditor&or&groupname=Admin%2CEditor&pageIndex=0\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[],\"endindex\":0,\"entityname\":\"group\",\"startindex\":0},\"method\":\"findQuery\"}"
+    },
+    "findQuerySortAsc": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&sort=groupname",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":2,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&sort=groupname&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"},{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":2,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryOrderBy": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&orderby=-groupname",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":2,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&orderby=-groupname&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"},{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":2,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryMaxItems": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&maxItems=1",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":1,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&maxItems=1&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":1,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryNextN": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&nextn=1",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1,\"totalpages\":2,\"totalitems\":2,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"last\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&nextn=1&pageIndex=2\",\"next\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&nextn=1&pageIndex=2\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&nextn=1&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":1,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryNullCriteria": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&groupname=gt%5Enull",
+      "status": 500,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"findQuery\",\"error\":{\"message\":\"Unhandled Exception\",\"code\":\"server_error\"}}",
+      "stacktraceRemoved": true
+    },
+    "findQueryInNull": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&groupname=in%5Enull",
+      "status": 500,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"findQuery\",\"error\":{\"message\":\"Unhandled Exception\",\"code\":\"server_error\"}}",
+      "stacktraceRemoved": true
+    },
+    "findQueryUnknownCondition": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&groupname=foo%5Ebar",
+      "status": 500,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"findQuery\",\"error\":{\"message\":\"Unhandled Exception\",\"code\":\"server_error\"}}",
+      "stacktraceRemoved": true
+    },
+    "findQueryQualifiedColumn": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&tusers.groupname=Admin",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":1,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&tusers.groupname=Admin&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":1,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryUnknownQualifiedColumn": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&tusers.nosuch=x",
+      "status": 500,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"findQuery\",\"error\":{\"message\":\"Unhandled Exception\",\"code\":\"server_error\"}}",
+      "stacktraceRemoved": true
+    },
+    "findQueryUnknownSort": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&sort=nosuch",
+      "status": 500,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"findQuery\",\"error\":{\"message\":\"Unhandled Exception\",\"code\":\"server_error\"}}",
+      "stacktraceRemoved": true
+    },
+    "findQueryFractionalMaxItems": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&maxItems=1.5",
+      "status": 500,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"findQuery\",\"error\":{\"message\":\"Unhandled Exception\",\"code\":\"server_error\"}}",
+      "stacktraceRemoved": true
+    },
+    "findQueryInactive": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&inactive=0",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":2,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&inactive=0&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"},{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":2,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryContains": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&groupname=*dit*",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":1,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&groupname=*dit*&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":1,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryPermGreater": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&perm=gt%5E0",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":1,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&perm=gt%5E0&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":1,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryCreatedBefore": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&created=lt%5E1/1/2000",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":0,\"itemsperpage\":1000,\"totalpages\":0,\"totalitems\":0,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&created=lt%5E1%2F1%2F2000&pageIndex=0\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[],\"endindex\":0,\"entityname\":\"group\",\"startindex\":0},\"method\":\"findQuery\"}"
+    },
+    "findQueryNonNumericCriteria": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&perm=abc",
+      "status": 500,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"findQuery\",\"error\":{\"message\":\"Unhandled Exception\",\"code\":\"server_error\"}}",
+      "stacktraceRemoved": true
+    },
+    "findQueryIsNull": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&groupname=eq%5Enull",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":0,\"itemsperpage\":1000,\"totalpages\":0,\"totalitems\":0,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&groupname=eq%5Enull&pageIndex=0\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[],\"endindex\":0,\"entityname\":\"group\",\"startindex\":0},\"method\":\"findQuery\"}"
+    },
+    "findQueryIsNotNull": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&groupname=neq%5Enull",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":2,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&groupname=neq%5Enull&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"},{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":2,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryNotADate": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&created=notadate",
+      "status": 500,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"findQuery\",\"error\":{\"message\":\"Unhandled Exception\",\"code\":\"server_error\"}}",
+      "stacktraceRemoved": true
+    },
+    "findQueryCreatedAfter": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&created=gte%5E2000-01-01",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":2,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&created=gte%5E2000-01-01&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"},{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":2,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryEnds": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&groupname=ends%5Etor",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":1,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&groupname=ends%5Etor&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":1,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryLte": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&perm=lte%5E0",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":1,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&perm=lte%5E0&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":1,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryAnd": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&groupname=neq%5EAdmin&perm=0",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":1,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&groupname=neq%5EAdmin&perm=0&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":1,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryLikeClass": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&groupname=%5BAE%5D*",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":2,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&groupname=%5BAE%5D*&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"},{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":2,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryLikeNegatedClass": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&groupname=%5B%5EA%5D*",
+      "status": 500,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"findQuery\",\"error\":{\"message\":\"Unhandled Exception\",\"code\":\"server_error\"}}",
+      "stacktraceRemoved": true
+    },
+    "findQueryGrouping": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&openGrouping&groupname=Admin&closeGrouping",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":1,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&openGrouping&groupname=Admin&closeGrouping&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":1,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQuerySiteParam": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&siteid=default",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":2,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&siteid=default&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"},{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":2,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryNamelessParam": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&%21=x",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":2,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"},{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":2,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryUnknownType": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&type=xyz",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":2,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&type=xyz&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"},{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":2,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryAllItems": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&maxItems=*&itemsPerPage=*",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":2,\"totalpages\":1,\"totalitems\":2,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&maxItems=*&itemsPerPage=*&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"},{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":2,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryPageBeyond": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&itemsPerPage=1&pageIndex=9",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1,\"totalpages\":2,\"totalitems\":2,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"last\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&itemsPerPage=1&pageIndex=2\",\"next\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&itemsPerPage=1&pageIndex=2\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&itemsPerPage=1&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":1,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQuerySortTypo": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&sortBy=isPubic",
+      "status": 500,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"findQuery\",\"error\":{\"message\":\"Unhandled Exception\",\"code\":\"server_error\"}}",
+      "stacktraceRemoved": true
+    },
+    "findQuerySingleCharSort": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&sort=a",
+      "status": 500,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"findQuery\",\"error\":{\"message\":\"Unhandled Exception\",\"code\":\"server_error\"}}",
+      "stacktraceRemoved": true
+    },
+    "findQueryBadSortName": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&sort=group-name",
+      "status": 500,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"method\":\"findQuery\",\"error\":{\"message\":\"Unhandled Exception\",\"code\":\"server_error\"}}",
+      "stacktraceRemoved": true
+    },
+    "findAllManyParams": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/findAll?entityname=group&alpha=1&bravo=2&charlie=3&delta=4&echo=5&foxtrot=6&golf=7&hotel=8&india=9&juliet=10&kilo=11&lima=12&mike=13",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":0,\"itemsperpage\":1000,\"totalpages\":0,\"totalitems\":0,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/?&bravo=2&kilo=11&golf=7&echo=5&delta=4&alpha=1&charlie=3&hotel=8&juliet=10&foxtrot=6&lima=12&mike=13&method=findall&india=9&entityname=group&pageIndex=0\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[],\"endindex\":0,\"entityname\":\"group\",\"startindex\":0},\"method\":\"findAll\"}"
+    },
+    "findAllTenKeys": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/findAll?entityname=group&alpha=1&bravo=2&charlie=3&delta=4&echo=5&foxtrot=6&golf=7&hotel=8",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":0,\"itemsperpage\":1000,\"totalpages\":0,\"totalitems\":0,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/?&foxtrot=6&bravo=2&golf=7&echo=5&delta=4&alpha=1&method=findall&charlie=3&entityname=group&hotel=8&pageIndex=0\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[],\"endindex\":0,\"entityname\":\"group\",\"startindex\":0},\"method\":\"findAll\"}"
+    },
+    "findOneBeanFields": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787?fields=photofileext,categoryid,nosuchfield",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"photofileext\":\"\",\"nosuchfield\":\"\",\"categoryid\":\"\",\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"isnew\":0,\"type\":\"group\",\"entityname\":\"group\"},\"method\":\"findOne\"}"
+    },
+    "findNewPhotoExt": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/findNew?entityname=group&fields=photofileext",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"photofileext\":\"\",\"userid\":\"44205935-0979-D105-A424C206E1D1CC38\",\"id\":\"44205935-0979-D105-A424C206E1D1CC38\",\"siteid\":\"default\",\"isnew\":1,\"type\":\"group\",\"entityname\":\"group\"},\"method\":\"findNew\"}"
+    },
+    "findOneAllFields": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D?fields=*",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"mobilephone\":\"\",\"lname\":\"\",\"email\":\"\",\"contactform\":\"0\",\"lastupdate\":\"2026-11-13T02:44:16\",\"keepprivate\":0,\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"username\":\"\",\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"lastupdatebyid\":\"3BE10CC9-9421-80A7-719F9D4816FA78E5\",\"type\":\"group\",\"subtype\":\"Default\",\"categoryid\":\"\",\"fname\":\"\",\"company\":\"\",\"tablist\":\"\",\"newfile\":\"\",\"ispublic\":0,\"imservice\":\"\",\"isnew\":0,\"jobtitle\":\"\",\"website\":\"\",\"lastlogin\":\"\",\"tags\":\"\",\"s2\":0,\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"edit\":\"http://localhost:8080/admin/?muraAction=cusers.editgroup&siteid=default&userid=3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"notes\":\"\",\"created\":\"2026-11-13T02:44:16\",\"groupname\":\"Editor\",\"perm\":0,\"description\":\"\",\"addressid\":\"\",\"imname\":\"\",\"passwordcreated\":\"2026-11-13T02:44:16\",\"photofileid\":\"\",\"interests\":\"\",\"siteid\":\"default\",\"primaryaddressid\":\"\",\"subscribe\":1,\"remoteid\":\"\",\"groupid\":\"\",\"inactive\":0,\"photofileext\":\"\",\"lastupdateby\":\"Admin User\",\"entityname\":\"group\"},\"method\":\"findOne\"}"
+    },
+    "findQueryAmpName": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&amp;groupname=Admin",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":2,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"},{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":2,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryCacheBuster": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&_=1731470000000",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":2,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"},{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":2,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryScopedName": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&url.groupname=Admin",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":2,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"},{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":2,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQuerySpacedName": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&a%20b=x",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":2,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"},{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":2,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryNulValue": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&groupname=Ad%00min",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":1,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&groupname=Admin&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":1,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findAllAmpName": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/findAll?entityname=group&amp;itemsperpage=1",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":0,\"itemsperpage\":1,\"totalpages\":0,\"totalitems\":0,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/?&itemsperpage=1&method=findall&entityname=group&pageIndex=0\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[],\"endindex\":0,\"entityname\":\"group\",\"startindex\":0},\"method\":\"findAll\"}"
+    },
+    "findQueryLikeAnyChar": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&groupname=Ad_in*",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":1,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&groupname=Ad_in*&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":1,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryUnclosedBracket": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&groupname=%5BAd*",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":0,\"itemsperpage\":1000,\"totalpages\":0,\"totalitems\":0,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&groupname=%5BAd*&pageIndex=0\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[],\"endindex\":0,\"entityname\":\"group\",\"startindex\":0},\"method\":\"findQuery\"}"
+    },
+    "findAllStartIndexEmpty": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/findAll?entityname=group&startindex=2",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":0,\"itemsperpage\":1000,\"totalpages\":0,\"totalitems\":0,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/?&method=findall&entityname=group&startindex=2&pageIndex=0\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[],\"endindex\":0,\"entityname\":\"group\",\"startindex\":0},\"method\":\"findAll\"}"
+    },
+    "findQueryTypeName": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&type=group",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":2,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&type=group&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"},{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":2,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryLastUpdateBy": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&lastupdateby=x",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":2,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&lastupdateby=x&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"},{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":2,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findQueryEmptyCategory": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?ispublic=0&categoryid=",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":1,\"itemsperpage\":1000,\"totalpages\":1,\"totalitems\":2,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/?ispublic=0&categoryid&pageIndex=1\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Admin\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"ispublic\":0,\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"},{\"subtype\":\"Default\",\"remoteid\":\"\",\"groupname\":\"Editor\",\"links\":{\"all\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group\",\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"userid\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"ispublic\":0,\"id\":\"3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D\",\"siteid\":\"default\",\"type\":\"group\",\"isnew\":1,\"entityname\":\"group\"}],\"endindex\":2,\"entityname\":\"group\",\"startindex\":1},\"method\":\"findQuery\"}"
+    },
+    "findAllDirectPrivate": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/findAll?entityname=group&ispublic=0",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":0,\"itemsperpage\":1000,\"totalpages\":0,\"totalitems\":0,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/?&ispublic=0&method=findall&entityname=group&pageIndex=0\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[],\"endindex\":0,\"entityname\":\"group\",\"startindex\":0},\"method\":\"findAll\"}"
+    },
+    "findManyDirect": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/findMany?entityname=group&ids=3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D,3BE10D43-C960-A7E5-0FB807B791D31787",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":0,\"itemsperpage\":1000,\"totalpages\":0,\"totalitems\":0,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/?&ids=3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D,3BE10D43-C960-A7E5-0FB807B791D31787&method=findmany&entityname=group&pageIndex=0\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[],\"endindex\":0,\"entityname\":\"group\",\"startindex\":0},\"method\":\"findMany\"}"
+    },
+    "findManyDirectSorted": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/findMany?entityname=group&ids=3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D,3BE10D43-C960-A7E5-0FB807B791D31787&sort=groupname",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":0,\"itemsperpage\":1000,\"totalpages\":0,\"totalitems\":0,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/?&sort=groupname&ids=3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D,3BE10D43-C960-A7E5-0FB807B791D31787&method=findmany&entityname=group&pageIndex=0\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[],\"endindex\":0,\"entityname\":\"group\",\"startindex\":0},\"method\":\"findMany\"}"
+    },
+    "findManyEntityReversed": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?id=3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D,3BE10D43-C960-A7E5-0FB807B791D31787",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":0,\"itemsperpage\":1000,\"totalpages\":0,\"totalitems\":0,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/?&method=findmany&id=3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D,3BE10D43-C960-A7E5-0FB807B791D31787&siteid=default&type=1&entityname=group&pageIndex=0\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[],\"endindex\":0,\"entityname\":\"group\",\"startindex\":0},\"method\":\"findMany\"}"
+    },
+    "validateStoredGroup": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/validate?entityname=group&data=%7B%22entityname%22%3A%22group%22%2C%22userid%22%3A%223BE10D43-C960-A7E5-0FB807B791D31787%22%7D",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{},\"method\":\"validate\"}"
+    }
+  }
+}

@@ -4028,7 +4028,7 @@ components:
             $ref: '#/components/schemas/SystemTaskWireBody'
   responses:
     LegacyOk:
-      description: The method result or group entity in the legacy envelope; a login or logout also writes its legacy cookies.
+      description: The method result or group entity in the legacy envelope, or the bare `validateEmail` body; a login or logout also writes its legacy cookies.
       headers:
         Generator:
           $ref: '#/components/headers/Generator'
@@ -4047,7 +4047,9 @@ components:
       content:
         application/json;charset=utf-8:
           schema:
-            $ref: '#/components/schemas/IdentityEnvelope'
+            anyOf:
+              - $ref: '#/components/schemas/IdentityEnvelope'
+              - $ref: '#/components/schemas/ValidateEmailBody'
         application/x-shunter+json;charset=utf-8:
           schema:
             $ref: '#/components/schemas/IdentityEnvelope'
@@ -4071,6 +4073,7 @@ components:
           schema:
             anyOf:
               - $ref: '#/components/schemas/IdentityEnvelope'
+              - $ref: '#/components/schemas/ValidateEmailBody'
               - $ref: '#/components/schemas/OAuthTokenEnvelope'
               - $ref: '#/components/schemas/OAuthTokenResponse'
               - $ref: '#/components/schemas/OAuthTokenInfoResponse'
@@ -4525,6 +4528,9 @@ components:
             status:
               type: string
               const: invalid
+    ValidateEmailBody:
+      type: string
+      description: 'The whole `validateEmail` answer: the BriteVerify `filecontent` serialized as a JSON string, which `processRequest` sends as is, without an envelope or ETag, because it is already JSON.'
     CurrentUserData:
       type: object
       description: Result of `findCurrentUser`, the current user as `findOne` serializes it, plus the session's memberships.
