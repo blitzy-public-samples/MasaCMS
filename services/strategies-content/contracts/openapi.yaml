@@ -2721,6 +2721,35 @@ paths:
           required: false
           schema:
             $ref: '#/components/schemas/DigitString'
+        - name: page
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/DigitString'
+        - name: startdate
+          in: query
+          description: '`rc.startdate` as received; filters `publishdate >=` when CFML `isDate` accepts it.'
+          required: false
+          schema:
+            type: string
+        - name: stopdate
+          in: query
+          description: '`rc.stopdate` as received; the list adds one day before filtering `publishdate <=`.'
+          required: false
+          schema:
+            type: string
+        - name: categoryid
+          in: query
+          description: Comma list of category ids, matched through the change-set category assignments.
+          required: false
+          schema:
+            type: string
+        - name: tags
+          in: query
+          description: Comma list of tags, matched through the change-set tag assignments.
+          required: false
+          schema:
+            type: string
       responses:
         '200':
           $ref: '#/components/responses/AdminView'
@@ -3275,6 +3304,7 @@ paths:
     get:
       operationId: getFeed
       summary: Reads the edit screen model of a collection.
+      description: 'An id that matches no collection reads a new bean, as legacy `feedManager.read` does. `rc` holds `feedBean` (its `getAllValues()`, with `errors` and the `params` rows), `rsRestrictGroups` (`userID`, `groupName`, `isPublic`), `rslist` (the `getcontentItems` rows, each with its `zoom` markup of `dspZoomNoLinks(getCrumbArray())` and optionally `exists`), `rsExtendedAttributes` (every `tcontent` extended attribute of the site: `attributeID`, `type`, `subType`, `attribute`, `isActive` of its subtype, in legacy order), `hasCategories` (`getCategoryCount`), `categories` (the category pool rows: `categoryID`, `parentID`, `name`, `isOpen`, `permitted`), `imageSizes` (custom image size rows with `name`), `contentPool` (one `siteID`, `site` row per item of the site''s `contentPoolID` list), `rsUsage` (`getUsage` rows with `zoom` and `verdict`; required for a saved collection), `parentMenuTitle` (required when the collection has a `parentID`), `rsDisplayObject` (the `readContentObject` rows, with `object` and `params`, when `assignmentID` is given and `feedBean` is not already merged with it) and optionally `endpoint`.'
       tags: [feeds]
       x-opt2-transport: service
       x-opt2-requires: [s2, site-admin, 'm:011']
@@ -3283,6 +3313,37 @@ paths:
       security: [{userToken: [], invocationCredential: []}]
       parameters:
         - name: type
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: assignmentID
+          in: query
+          required: false
+          description: The display object instance being edited; with `regionID` and `orderno` it selects the `rsDisplayObject` row (`contentManager.readContentObject`).
+          schema:
+            type: string
+        - name: regionID
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: orderno
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: instanceid
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: homeID
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: compactDisplay
           in: query
           required: false
           schema:

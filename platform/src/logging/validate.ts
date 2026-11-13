@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Ajv2020, type AnySchemaObject, type ErrorObject, type ValidateFunction } from 'ajv/dist/2020.js';
 
 export interface LogRecordValidation {
@@ -17,9 +19,13 @@ let compiled: Validators | undefined;
 // The contract constrains every value with pattern, enum or range and uses no `format` keyword, so no formats are registered.
 function validators(): Validators {
   if (compiled === undefined) {
-    const schema = JSON.parse(
-      readFileSync(new URL('../../contracts/log-record.v1.json', import.meta.url), 'utf8'),
-    ) as AnySchemaObject;
+    // A module-relative path, not `new URL(…, import.meta.url)`: Next's Turbopack rewrites that to a protocol-less
+    // asset URL when web bundles the linked platform.
+    const contractPath = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '../../contracts/log-record.v1.json',
+    );
+    const schema = JSON.parse(readFileSync(contractPath, 'utf8')) as AnySchemaObject;
     const ajv = new Ajv2020({ allErrors: true, strict: true });
     const properties = Object.entries(schema.properties as Record<string, AnySchemaObject>);
     compiled = {

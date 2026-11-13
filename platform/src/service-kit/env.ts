@@ -10,8 +10,10 @@ const PORT_NUMBER = z.coerce.number<string>().int().min(1).max(65535);
 const CLOUD_SQL_INSTANCE = /^[^:]+:[^:]+:[^:]+$/;
 const MODES = ['local', 'cloud'] as const;
 const ADAPTER_KEYS = ['OPT2_TASKS_ADAPTER', 'OPT2_STORAGE_ADAPTER'] as const;
-// Repository checkout root: the same depth above src/service-kit/env.ts and dist/service-kit/env.js.
-const REPO_ROOT = realpathSync(fileURLToPath(new URL('../../../', import.meta.url)));
+// Repository checkout root: the same depth above src/service-kit/env.ts and dist/service-kit/env.js. Resolved from the
+// module path, not `new URL(…, import.meta.url)`, which Next's Turbopack rewrites to a protocol-less asset URL when
+// web bundles the linked platform.
+const REPO_ROOT = realpathSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'));
 
 type Mode = (typeof MODES)[number];
 type AdapterKey = (typeof ADAPTER_KEYS)[number];
