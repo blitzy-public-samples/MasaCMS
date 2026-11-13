@@ -470,6 +470,20 @@ describe('tenantRegistryConsumer', () => {
     expect(tenantRegistryConsumer).toMatchObject({ topic: SITE_CHANGED_TOPIC, kind: 'state' });
   });
 
+  it.each([
+    { label: 'its own site aggregate', payload: { siteId: 'tenant-a' }, aggregate: { aggregateType: 'site', aggregateId: 'tenant-a' }, expected: true },
+    { label: "another site's aggregate", payload: { siteId: 'tenant-a' }, aggregate: { aggregateType: 'site', aggregateId: 'tenant-b' }, expected: false },
+    { label: 'a user aggregate of the site id', payload: { siteId: 'tenant-a' }, aggregate: { aggregateType: 'user', aggregateId: 'tenant-a' }, expected: false },
+    { label: 'the site id in another casing', payload: { siteId: 'tenant-a' }, aggregate: { aggregateType: 'site', aggregateId: 'Tenant-A' }, expected: false },
+    { label: 'no aggregate id', payload: { siteId: 'tenant-a' }, aggregate: { aggregateType: 'site', aggregateId: undefined }, expected: false },
+    { label: 'a legacy-cased siteID payload key', payload: { siteID: 'Tenant-A' }, aggregate: { aggregateType: 'site', aggregateId: 'Tenant-A' }, expected: true },
+  ])('re-checks an envelope with $label as $expected without querying', ({ payload, aggregate, expected }) => {
+    const client = new FakeClient();
+
+    expect(tenantRegistryConsumer.checkTenant(tenantTx(client), siteChanged(payload, aggregate))).toBe(expected);
+    expect(client.calls).toEqual([]);
+  });
+
   it('upserts the site, its pool ids and their tenants at the event version unless stored newer', async () => {
     const values = await upsertValues(
       siteChanged(

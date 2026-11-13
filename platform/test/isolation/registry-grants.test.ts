@@ -1,5 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { DeadLetterError, consumeEnvelope, eventsSql, subscriptionName } from '../../src/events/index.js';
+import { createLogger } from '../../src/logging/index.js';
 import {
+  SITE_CHANGED_TOPIC,
   contentPoolTenants,
   hasGrant,
   poolTenantFor,
@@ -31,6 +35,7 @@ import {
   pgAvailable,
   registryPayloads,
   seedRegistry,
+  testEnvelope,
   testPgConfig,
   userPoolFanoutExpectation,
   type TenantFixture,
@@ -44,6 +49,8 @@ const UMBRELLA = TENANT_UMBRELLA.tenantId;
 const UNREGISTERED_SITE = 'tenant-z';
 const SITE_C = 'tenant-c';
 const TENANT_C = tenantIdForSite(SITE_C);
+const SITE_D = 'tenant-d';
+const TENANT_D = tenantIdForSite(SITE_D);
 const SURVEY_RESPONSE = 'survey-response';
 const SURVEY_ID = '6E2C9A1B-4D7F-4A3E-8B5C0D1E2F3A4B5C';
 const OTHER_SURVEY_ID = '0F1E2D3C-4B5A-4968-8776A5B4C3D2E1F0';
@@ -244,7 +251,7 @@ describe('tenant registry and grants against PostgreSQL', () => {
     }
 
     beforeAll(async () => {
-      registry = await createThrowawaySchema({ service: SERVICE, extraSql: [tenantRegistrySql(SERVICE)] });
+      registry = await createThrowawaySchema({ service: SERVICE, extraSql: [tenantRegistrySql(SERVICE), eventsSql(SERVICE)] });
       await seedRegistry(registry.app);
     });
 
@@ -280,6 +287,48 @@ describe('tenant registry and grants against PostgreSQL', () => {
       );
       expect(rows).toEqual([{ file_pool_id: TENANT_UMBRELLA.siteId, aggregate_version: '2' }]);
       expect(await siteForTenant(db(), TENANT_C)).toBe(SITE_C);
+    });
+
+    it('dead-letters a delivery whose aggregate is not its payload site, so a later site version still applies', async () => {
+      const subscription = subscriptionName(SERVICE, SITE_CHANGED_TOPIC);
+      const logger = createLogger({ service: SERVICE, version: '1.0.0', env: 'local', destination: { write: () => undefined } });
+      /** A tenant-d site.changed envelope under `aggregate` at `aggregateVersion`, its file pool `filePoolId`. */
+      const envelopeD = (aggregate: { aggregateType: string; aggregateId: string }, aggregateVersion: number, filePoolId: string) =>
+        testEnvelope({ topic: SITE_CHANGED_TOPIC, tenantId: TENANT_D, ...aggregate, aggregateVersion, payload: { siteId: SITE_D, filePoolId } });
+      const consume = (envelope: ReturnType<typeof envelopeD>) =>
+        consumeEnvelope(db(), tenantRegistryConsumer, envelope, { subscription, messageId: randomUUID(), logger });
+      /** Tenant-d's inbox statuses by event id and its aggregate versions, read under its own tenant. */
+      const tracked = () =>
+        withTenant(db(), TENANT_D, async (tx) => {
+          const inbox = await tx.query<{ event_id: string; status: string }>(`SELECT event_id, status FROM ${tx.schema}.inbox`);
+          const versions = await tx.query(
+            `SELECT aggregate_type, aggregate_id, last_version FROM ${tx.schema}.consumer_aggregate_version ORDER BY aggregate_id`,
+          );
+          return { inbox: Object.fromEntries(inbox.rows.map((row) => [row.event_id, row.status])), versions: versions.rows };
+        });
+
+      const site = { aggregateType: 'site', aggregateId: SITE_D };
+      const v4 = envelopeD(site, 4, SITE_D);
+      expect(await consume(v4)).toEqual({ eventId: v4.eventId, destinations: [{ tenantId: TENANT_D, result: 'applied' }] });
+
+      for (const aggregate of [{ aggregateType: 'site', aggregateId: SITE_C }, { aggregateType: 'user', aggregateId: SITE_D }]) {
+        const mismatched = consume(envelopeD(aggregate, 9, TENANT_UMBRELLA.siteId));
+        await expect(mismatched).rejects.toBeInstanceOf(DeadLetterError);
+        await expect(mismatched).rejects.toHaveProperty('reason', 'tenant-mismatch');
+        expect(await registryEntryForTenant(db(), TENANT_D)).toMatchObject({ siteId: SITE_D, filePoolId: SITE_D, aggregateVersion: 4 });
+        expect(await tracked()).toEqual({
+          inbox: { [v4.eventId]: 'applied' },
+          versions: [{ aggregate_type: 'site', aggregate_id: SITE_D, last_version: '4' }],
+        });
+      }
+
+      const v5 = envelopeD(site, 5, TENANT_B.siteId);
+      expect(await consume(v5)).toEqual({ eventId: v5.eventId, destinations: [{ tenantId: TENANT_D, result: 'applied' }] });
+      expect(await registryEntryForTenant(db(), TENANT_D)).toMatchObject({ filePoolId: TENANT_B.siteId, filePoolTenant: B, aggregateVersion: 5 });
+      expect(await tracked()).toEqual({
+        inbox: { [v4.eventId]: 'applied', [v5.eventId]: 'applied' },
+        versions: [{ aggregate_type: 'site', aggregate_id: SITE_D, last_version: '5' }],
+      });
     });
   });
 });

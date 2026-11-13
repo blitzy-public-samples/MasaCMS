@@ -49,6 +49,7 @@ export interface SiteChangedPayload {
 export interface SiteChangedEvent {
   eventId?: string;
   tenantId: string;
+  aggregateType?: string;
   aggregateId?: string;
   aggregateVersion: number;
   payload: SiteChangedPayload;
@@ -295,10 +296,17 @@ function domainList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 }
 
-/** Applies `programs-sites.site.changed.v1` to `tenant_registry`; older or equal aggregate versions are ignored. */
+/** Applies `programs-sites.site.changed.v1` to `tenant_registry` when its aggregate is the payload site; older or equal versions are ignored. */
 export const tenantRegistryConsumer = {
   topic: SITE_CHANGED_TOPIC,
   kind: 'state' as const,
+  /** Whether the envelope's aggregate is exactly the payload's site, the key its version is tracked under; `false` dead-letters it. */
+  checkTenant(_tx: TenantTx, event: SiteChangedEvent): boolean {
+    const payload: Readonly<Record<string, unknown>> =
+      typeof event.payload === 'object' && event.payload !== null ? { ...event.payload } : {};
+    const siteId = readField(payload, 'siteId');
+    return event.aggregateType === 'site' && typeof siteId === 'string' && event.aggregateId === siteId;
+  },
   async apply(tx: TenantTx, event: SiteChangedEvent): Promise<void> {
     const payload: Readonly<Record<string, unknown>> =
       typeof event.payload === 'object' && event.payload !== null ? { ...event.payload } : {};
