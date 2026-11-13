@@ -2965,6 +2965,51 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
         [tx.tenantId, ...p.values],
       );
     },
+
+    /** approvalRequest.loadBy(requestID): one request, or null. */
+    async findRequest(tx: TenantTx, args: { requestId: string }): Promise<ApprovalRequestRow | null> {
+      const p = new SqlParams(1);
+      const rows = await select<ApprovalRequestRow>(
+        tx,
+        [APPROVAL_REQUEST],
+        `SELECT * FROM ${name(APPROVAL_REQUEST)} WHERE tenant_id = $1 AND ${idEq(p, 'requestid', args.requestId)} ORDER BY requestid LIMIT 1`,
+        [tx.tenantId, ...p.values],
+      );
+      return rows[0] ?? null;
+    },
+
+    /** approvalRequest.loadBy(contenthistid, chainID, siteID) (contentBean.getApprovalRequest): the earliest match, or null. */
+    async requestFor(tx: TenantTx, args: { contentHistId: string; chainId: string; siteId: string }): Promise<ApprovalRequestRow | null> {
+      const p = new SqlParams(1);
+      const rows = await select<ApprovalRequestRow>(
+        tx,
+        [APPROVAL_REQUEST],
+        `SELECT * FROM ${name(APPROVAL_REQUEST)} WHERE tenant_id = $1 AND ${idEq(p, 'contenthistid', args.contentHistId)}` +
+          ` AND ${idEq(p, 'chainid', args.chainId)} AND siteid = ${p.add(args.siteId)}` +
+          ` ORDER BY ${orderKey('created', 'asc')}, requestid LIMIT 1`,
+        [tx.tenantId, ...p.values],
+      );
+      return rows[0] ?? null;
+    },
+
+    /** approvalAction.loadBy(requestID, groupID): the earliest action of a request's group, or null. */
+    async actionFor(tx: TenantTx, args: { requestId: string; groupId: string }): Promise<ApprovalActionRow | null> {
+      const p = new SqlParams(1);
+      const rows = await select<ApprovalActionRow>(
+        tx,
+        [APPROVAL_ACTION],
+        `SELECT * FROM ${name(APPROVAL_ACTION)} WHERE tenant_id = $1 AND ${idEq(p, 'requestid', args.requestId)}` +
+          ` AND ${idEq(p, 'groupid', args.groupId)} ORDER BY ${orderKey('created', 'asc')}, actiontid LIMIT 1`,
+        [tx.tenantId, ...p.values],
+      );
+      return rows[0] ?? null;
+    },
+
+    /** approvalActionBean.save of an existing action. */
+    async updateAction(tx: TenantTx, actionId: string, changes: Patch<ApprovalActionRow, 'actiontid'>, ctx?: WriteContext): Promise<ApprovalActionRow | null> {
+      const [updated] = await updateWhere<ApprovalActionRow>(tx, APPROVAL_ACTION, (p) => idEq(p, 'actiontid', actionId), ormStorage(changes), ctx);
+      return updated ?? null;
+    },
   };
 
 

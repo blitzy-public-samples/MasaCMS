@@ -13,7 +13,7 @@ import {
 import { ccommentsBulkEdit, ccommentsSingleEdit } from '@/screens/ccomments/ajax';
 import { ccommentsLoadComments } from '@/screens/ccomments/loadcomments';
 import { CCOMMENTS_OWNER, ccommentsGate } from '@/screens/ccomments/shared';
-import type { FragmentScreen, PageRedirect, RedirectScreen, ScreenContext, SubmitResult } from '@/screens/registry';
+import type { PageRedirect, RawBody, RedirectScreen, ScreenContext, SubmitResult } from '@/screens/registry';
 import { adminS2Request, siteAdminRequest } from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
 import {
@@ -77,9 +77,12 @@ const PURGE: ActionCase = {
 
 const ACTIONS: readonly ActionCase[] = [...COMMENT_ACTIONS, PURGE];
 
-/** One fragment action, the request fields it sends and the service calls it makes for {@link SITE}. */
+/** One bare-body action, the request fields it sends and the service calls it makes for {@link SITE}. */
 interface FragmentCase {
-  readonly screen: Pick<FragmentScreen<undefined>, 'render'>;
+  /** Runs the action: `submit` for an edit, `render` for the list fragment. */
+  readonly answer: (ctx: ScreenContext) => RawBody | SubmitResult | Promise<RawBody | SubmitResult>;
+  /** The action's answer carrying the relayed view `body`. */
+  readonly expected: (body: RawBody) => RawBody | SubmitResult;
   readonly action: string;
   readonly rc: Fields;
   /** The write the action runs before its view, if any. */
@@ -248,16 +251,16 @@ describe('moderation actions', () => {
   });
 });
 
-describe('edit and list fragments', () => {
+describe('edit actions and list fragment', () => {
   it.each([
-    { screen: ccommentsBulkEdit, action: 'bulkedit' },
-    { screen: ccommentsSingleEdit, action: 'singleedit' },
-    { screen: ccommentsLoadComments, action: 'loadcomments' },
-  ])('declares $action', ({ screen, action }) => {
+    { screen: ccommentsBulkEdit, action: 'bulkedit', mode: 'redirect' },
+    { screen: ccommentsSingleEdit, action: 'singleedit', mode: 'redirect' },
+    { screen: ccommentsLoadComments, action: 'loadcomments', mode: 'fragment' },
+  ])('declares $action in $mode mode', ({ screen, action, mode }) => {
     expect(screen).toMatchObject({
       circuit: 'ccomments',
       action,
-      mode: 'fragment',
+      mode,
       owner: CCOMMENTS_OWNER,
       gate: ccommentsGate,
     });
@@ -267,7 +270,8 @@ describe('edit and list fragments', () => {
 
   it.each<FragmentCase>([
     {
-      screen: ccommentsBulkEdit,
+      answer: (ctx) => ccommentsBulkEdit.submit(ctx),
+      expected: (response) => ({ kind: 'raw', response }),
       action: 'bulkEdit',
       rc: BULK_RC,
       routes: { [post(`${COMMENTS_PATH}/bulk`)]: written(true) },
@@ -278,7 +282,8 @@ describe('edit and list fragments', () => {
       ],
     },
     {
-      screen: ccommentsSingleEdit,
+      answer: (ctx) => ccommentsSingleEdit.submit(ctx),
+      expected: (response) => ({ kind: 'raw', response }),
       action: 'singleEdit',
       rc: SINGLE_RC,
       routes: { [post(`${COMMENTS_PATH}/${COMMENT_ID}`)]: written(false) },
@@ -289,25 +294,28 @@ describe('edit and list fragments', () => {
       ],
     },
     {
-      screen: ccommentsLoadComments,
+      answer: (ctx) => ccommentsLoadComments.render(ctx, undefined),
+      expected: (body) => body,
       action: 'loadComments',
       rc: LIST_RC,
       routes: {},
       viewPath: LOAD_PATH,
       calls: [{ method: 'GET', path: LOAD_PATH, query: { siteid: SITE, ...LIST_RC } }],
     },
-  ])('relays $action from strategies-content', async ({ screen, action, rc, routes, viewPath, calls }) => {
+  ])('relays $action from strategies-content', async ({ answer, expected, action, rc, routes, viewPath, calls }) => {
     const markup = `<div class="mura-table-grid">${action} &lt;b&gt;</div>`;
     const ctx = contextFor(requestFor(action, rc), {
       ...routes,
       [routeKey('GET', 'strategies-content', viewPath)]: view(markup),
     });
 
-    expect(await screen.render(ctx, undefined)).toEqual({
-      status: 200,
-      contentType: VIEW_TYPE,
-      body: Buffer.from(markup),
-    });
+    expect(await answer(ctx)).toEqual(
+      expected({
+        status: 200,
+        contentType: VIEW_TYPE,
+        body: Buffer.from(markup),
+      }),
+    );
     expect(ctx.gateway.calls).toMatchObject(calls);
     expect(ctx.gateway.calls.map((call) => [call.service, call.form?.siteid])).toEqual(
       calls.map(() => ['strategies-content', undefined]),
