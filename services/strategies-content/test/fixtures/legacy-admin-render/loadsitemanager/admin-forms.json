@@ -1,0 +1,196 @@
+{
+ "user": "admin",
+ "request": {
+  "topid": "00000000000000000000000000000000004",
+  "moduleid": "00000000000000000000000000000000004",
+  "sortby": "",
+  "sortdirection": "",
+  "ptype": "Form",
+  "startrow": "1",
+  "type": "Page"
+ },
+ "session": {
+  "nextN": "20",
+  "rb": "en_US",
+  "dateKeyFormat": "MM/DD/YYYY",
+  "locale": "English (US)",
+  "userid": "AF1841AB-0ED4-34A5-AF2596AB342BA3E6",
+  "memberships": "S2IsPrivate;default,S2IsPrivate,S2,admin;username;default",
+  "siteid": "default",
+  "openSectionList": "",
+  "flatViewArgs": {
+   "default": {
+    "SUBTYPE": "",
+    "MODULEID": "00000000000000000000000000000000000",
+    "CATEGORYID": "",
+    "PAGE": "1",
+    "REPORT": "",
+    "LOCKID": "",
+    "TAB": 0,
+    "SORTBY": "lastupdate",
+    "TYPE": "",
+    "SORTDIRECTION": "desc",
+    "ASSIGNMENTS": "false",
+    "TAGS": "",
+    "KEYWORDS": "",
+    "FILTERED": false
+   }
+  }
+ },
+ "site": {
+  "hasLockableNodes": 0,
+  "webPathComplete": "http://localhost:23280",
+  "hasComments": "1",
+  "locking": "none",
+  "privateUserPoolId": "default"
+ },
+ "config": {
+  "sortPermission": "editor",
+  "coreVersion": "7.6.1",
+  "adminDir": "/admin",
+  "context": ""
+ },
+ "marketing": false,
+ "tabAssignments": "",
+ "rsExtend": [
+  {
+   "attribute": "formOwner",
+   "attributeid": "2",
+   "basekeyfield": "contentHistID",
+   "basetable": "tcontent",
+   "datatable": "tclassextenddata",
+   "label": "formOwner",
+   "subtype": "Default",
+   "type": "Form"
+  },
+  {
+   "attribute": "heroColor",
+   "attributeid": "1",
+   "basekeyfield": "contentHistID",
+   "basetable": "tcontent",
+   "datatable": "tclassextenddata",
+   "label": "heroColor",
+   "subtype": "Landing",
+   "type": "Page"
+  }
+ ],
+ "icons": [
+  {
+   "iconclass": "mi-star",
+   "siteid": "default",
+   "subtype": "Landing",
+   "type": "Page"
+  },
+  {
+   "iconclass": "",
+   "siteid": "default",
+   "subtype": "Default",
+   "type": "Form"
+  }
+ ],
+ "model": {
+  "rsTop": {
+   "siteid": "default",
+   "contentid": "00000000000000000000000000000000004",
+   "contenthistid": "6300ED59-1320-5CC3-F9706221E0EFF7A2",
+   "parentid": "00000000000000000000000000000000END",
+   "moduleid": "00000000000000000000000000000000004",
+   "type": "Module",
+   "subtype": "Default",
+   "title": "Forms",
+   "menutitle": "Forms",
+   "filename": "",
+   "fileid": "",
+   "fileext": "",
+   "assocfilename": "",
+   "display": "1",
+   "displaystart": "",
+   "displaystop": "",
+   "approved": "1",
+   "isnav": "1",
+   "inheritobjects": "",
+   "template": "",
+   "childtemplate": "",
+   "lastupdate": "",
+   "targetparams": "",
+   "remoteurl": "",
+   "sortby": "",
+   "sortdirection": "",
+   "restricted": "",
+   "islocked": "",
+   "lockid": ""
+  },
+  "crumbs": [
+   {
+    "siteid": "default",
+    "contentid": "00000000000000000000000000000000004",
+    "type": "Module",
+    "subtype": "Default",
+    "menutitle": "Forms",
+    "restricted": "",
+    "moduleid": "00000000000000000000000000000000004"
+   }
+  ],
+  "perm": "editor",
+  "restricted": 0,
+  "hasKids": 1,
+  "nest": [
+   {
+    "siteid": "default",
+    "contentid": "38476EB7-EC50-6815-0118BD9D759627B4",
+    "contenthistid": "38476EE1-D861-1C15-B933B454D580207F",
+    "parentid": "00000000000000000000000000000000004",
+    "moduleid": "00000000000000000000000000000000004",
+    "type": "Form",
+    "subtype": "Default",
+    "title": "Contact Form",
+    "menutitle": "Contact Form",
+    "filename": "/contact-form",
+    "fileid": "",
+    "fileext": "",
+    "assocfilename": "",
+    "display": "1",
+    "displaystart": "",
+    "displaystop": "",
+    "approved": "1",
+    "isnav": "1",
+    "inheritobjects": "Inherit",
+    "template": "",
+    "childtemplate": "",
+    "lastupdate": "2026-11-13T01:02:36.867",
+    "targetparams": "",
+    "remoteurl": "",
+    "sortby": "orderno",
+    "sortdirection": "asc",
+    "restricted": "0",
+    "islocked": "0",
+    "lockid": "",
+    "verdict": "editor",
+    "kidscount": 0
+   }
+  ]
+ },
+ "status": 200,
+ "contentType": "application/json;charset=utf-8",
+ "sessionAfter": {
+  "openSectionList": "",
+  "flatViewArgs": {
+   "default": {
+    "SUBTYPE": "",
+    "MODULEID": "00000000000000000000000000000000000",
+    "CATEGORYID": "",
+    "PAGE": "1",
+    "REPORT": "",
+    "LOCKID": "",
+    "TAB": 0,
+    "SORTBY": "lastupdate",
+    "TYPE": "",
+    "SORTDIRECTION": "desc",
+    "ASSIGNMENTS": "false",
+    "TAGS": "",
+    "KEYWORDS": "",
+    "FILTERED": false
+   }
+  }
+ }
+}

@@ -1,0 +1,8 @@
+
+	<label>Select users</label>
+	<select id="expiresnotify" name="expiresnotify" size="6" multiple class="multiSelect">
+	<option value="">None</option>
+	
+	<option value="AF240756-C1CD-6298-60C0CAF70AACAE2B" selected>Editor, QA (Editor)</option>
+	
+	</select>

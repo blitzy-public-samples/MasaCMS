@@ -1,0 +1,49 @@
+{
+ "user": "admin",
+ "request": {
+  "contenthistid": "36C6C74D-DF2F-6E7E-D6AC3A8EFE04FFBE",
+  "parentid": "00000000000000000000000000000000001"
+ },
+ "session": {
+  "nextN": "20",
+  "rb": "en_US",
+  "dateKeyFormat": "MM/DD/YYYY",
+  "locale": "English (US)",
+  "userid": "AF1841AB-0ED4-34A5-AF2596AB342BA3E6",
+  "memberships": "S2IsPrivate;default,S2IsPrivate,S2,admin;username;default",
+  "siteid": "default",
+  "openSectionList": "384724B1-ABAF-929C-3E6AB1A44B0EEAE5",
+  "flatViewArgs": {
+   "default": {
+    "SUBTYPE": "",
+    "MODULEID": "00000000000000000000000000000000000",
+    "CATEGORYID": "",
+    "PAGE": "1",
+    "REPORT": "",
+    "LOCKID": "",
+    "TAB": "1",
+    "SORTBY": "lastupdate",
+    "TYPE": "",
+    "SORTDIRECTION": "desc",
+    "ASSIGNMENTS": "false",
+    "TAGS": "",
+    "KEYWORDS": "",
+    "FILTERED": false
+   }
+  }
+ },
+ "model": {
+  "rows": [
+   {
+    "email": "qa_editor@example.com",
+    "fname": "QA",
+    "lname": "Editor",
+    "type": "Editor",
+    "userid": "AF240756-C1CD-6298-60C0CAF70AACAE2B"
+   }
+  ],
+  "assigned": "AF240756-C1CD-6298-60C0CAF70AACAE2B"
+ },
+ "status": 200,
+ "contentType": "text/html;charset=UTF-8"
+}

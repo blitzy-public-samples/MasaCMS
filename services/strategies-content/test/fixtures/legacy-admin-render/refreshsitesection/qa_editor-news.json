@@ -1,0 +1,159 @@
+{
+ "user": "qa_editor",
+ "request": {
+  "contentid": "36C83433-0807-C499-89C988C4E96D485F",
+  "moduleid": "00000000000000000000000000000000000",
+  "sortby": "orderno",
+  "sortdirection": "asc",
+  "ptype": "Folder",
+  "startrow": "1"
+ },
+ "session": {
+  "nextN": "20",
+  "rb": "en_US",
+  "dateKeyFormat": "MM/DD/YYYY",
+  "locale": "English (US)",
+  "userid": "AF240756-C1CD-6298-60C0CAF70AACAE2B",
+  "memberships": "Editor;default;0,S2IsPrivate;default,S2IsPrivate,qa_editor;username;default",
+  "siteid": "default",
+  "openSectionList": "36C83433-0807-C499-89C988C4E96D485F",
+  "flatViewArgs": {
+   "default": {
+    "TAB": 0
+   }
+  }
+ },
+ "site": {
+  "hasLockableNodes": 0,
+  "webPathComplete": "http://localhost:23280",
+  "hasComments": "1",
+  "locking": "none",
+  "privateUserPoolId": "default"
+ },
+ "config": {
+  "sortPermission": "editor",
+  "coreVersion": "7.6.1",
+  "adminDir": "/admin",
+  "context": ""
+ },
+ "marketing": false,
+ "tabAssignments": "Basic,SEO,Summary,Image,Publishing,Scheduling,Layout & Objects,Categorization,Tags,Related Content,Extended Attributes,Remote",
+ "rsExtend": [
+  {
+   "attribute": "formOwner",
+   "attributeid": "2",
+   "basekeyfield": "contentHistID",
+   "basetable": "tcontent",
+   "datatable": "tclassextenddata",
+   "label": "formOwner",
+   "subtype": "Default",
+   "type": "Form"
+  },
+  {
+   "attribute": "heroColor",
+   "attributeid": "1",
+   "basekeyfield": "contentHistID",
+   "basetable": "tcontent",
+   "datatable": "tclassextenddata",
+   "label": "heroColor",
+   "subtype": "Landing",
+   "type": "Page"
+  }
+ ],
+ "icons": [
+  {
+   "iconclass": "mi-star",
+   "siteid": "default",
+   "subtype": "Landing",
+   "type": "Page"
+  },
+  {
+   "iconclass": "",
+   "siteid": "default",
+   "subtype": "Default",
+   "type": "Form"
+  }
+ ],
+ "model": {
+  "perm": "editor",
+  "restricted": 0,
+  "nest": [
+   {
+    "siteid": "default",
+    "contentid": "36C8B532-F20E-5434-AB5D25590F5A131F",
+    "contenthistid": "36C8B567-949C-90FC-D7D2AEAF22B0A9FC",
+    "parentid": "36C83433-0807-C499-89C988C4E96D485F",
+    "moduleid": "00000000000000000000000000000000000",
+    "type": "Page",
+    "subtype": "Default",
+    "title": "Story Two",
+    "menutitle": "Story Two",
+    "filename": "news/story-two",
+    "fileid": "",
+    "fileext": "",
+    "assocfilename": "",
+    "display": "1",
+    "displaystart": "",
+    "displaystop": "",
+    "approved": "1",
+    "isnav": "0",
+    "inheritobjects": "Inherit",
+    "template": "",
+    "childtemplate": "",
+    "lastupdate": "2026-11-13T00:20:48.617",
+    "targetparams": "",
+    "remoteurl": "",
+    "sortby": "orderno",
+    "sortdirection": "asc",
+    "restricted": "0",
+    "islocked": "0",
+    "lockid": "",
+    "verdict": "none",
+    "kidscount": 0
+   },
+   {
+    "siteid": "default",
+    "contentid": "36C84694-0DFE-D35F-72D52232D5558894",
+    "contenthistid": "36C846E1-A372-EEEA-221CB81152A1962F",
+    "parentid": "36C83433-0807-C499-89C988C4E96D485F",
+    "moduleid": "00000000000000000000000000000000000",
+    "type": "Page",
+    "subtype": "Default",
+    "title": "Story One",
+    "menutitle": "Story One",
+    "filename": "news/story-one",
+    "fileid": "",
+    "fileext": "",
+    "assocfilename": "",
+    "display": "1",
+    "displaystart": "",
+    "displaystop": "",
+    "approved": "1",
+    "isnav": "1",
+    "inheritobjects": "Inherit",
+    "template": "",
+    "childtemplate": "",
+    "lastupdate": "2026-11-13T00:20:45.793",
+    "targetparams": "",
+    "remoteurl": "",
+    "sortby": "orderno",
+    "sortdirection": "asc",
+    "restricted": "0",
+    "islocked": "0",
+    "lockid": "",
+    "verdict": "none",
+    "kidscount": 1
+   }
+  ]
+ },
+ "status": 200,
+ "contentType": "text/html;charset=UTF-8",
+ "sessionAfter": {
+  "openSectionList": "36C83433-0807-C499-89C988C4E96D485F",
+  "flatViewArgs": {
+   "default": {
+    "TAB": 0
+   }
+  }
+ }
+}
