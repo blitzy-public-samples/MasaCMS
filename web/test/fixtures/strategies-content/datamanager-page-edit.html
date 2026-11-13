@@ -1,0 +1,100 @@
+
+
+	<div class="mura-header">
+		<h1>Form Data</h1>
+		
+<div class="nav-module-specific btn-group">
+	
+				<a class="btn" href="./?muraAction=cArch.list&siteid=default&topid=00000000000000000000000000000000004&parentid=00000000000000000000000000000000004&moduleid=00000000000000000000000000000000004"><i class="mi-arrow-circle-left"></i>
+						Back to Forms
+					</a>
+				<a class="btn" href="./?muraAction=cArch.hist&contentid=00000000000000000000000000000000001&type=Form&parentid=00000000000000000000000000000000004&topid=00000000000000000000000000000000004&siteid=default&startrow=1&moduleid=00000000000000000000000000000000004"><i class="mi-history"></i> Version History</a>
+				
+				<a class="btn" title="sitemanager.content.managedate_missing" href="./?muraAction=cArch.datamanager&contentid=00000000000000000000000000000000001&type=Form&topid=00000000000000000000000000000000004&siteid=default&moduleid=00000000000000000000000000000000004&parentid=00000000000000000000000000000000004"><i class="mi-wrench"></i> Form Data</a>
+				
+				<a class="btn" title="Edit Display" href="./?muraAction=cArch.datamanager&contentid=00000000000000000000000000000000001&type=Form&action=display&topid=00000000000000000000000000000000004&siteid=default&moduleid=00000000000000000000000000000000004&parentid=00000000000000000000000000000000004"><i class="mi-pencil"></i> Edit Display</a>
+				<a class="btn" title="Delete" href="./?muraAction=cArch.update&contentid=00000000000000000000000000000000001&type=Form&action=deleteall&topid=00000000000000000000000000000000004&siteid=default&moduleid=00000000000000000000000000000000004&parentid=00000000000000000000000000000000004&csrf_token=<token>&csrf_token_expires=<token>" onClick="return confirmDialog('Delete\x20Form\x3F',this.href)"><i class="mi-trash"></i> Delete Form</a>
+				
+					<a class="btn" href="./?muraAction=cPerm.main&contentid=00000000000000000000000000000000001&type=Form&parentid=00000000000000000000000000000000004&topid=00000000000000000000000000000000004&siteid=default&moduleid=00000000000000000000000000000000004&startrow=1"><i class="mi-group"></i> Permissions</a>
+				
+</div>
+
+		<div class="mura-item-metadata">
+			<div class="label-group">
+				<span class="label">Title: <strong>Home</strong></span>
+				<span class="label">Total Records Available: <strong>2</strong></span>
+			</div>
+		</div><!-- /.mura-item-metadata -->
+	</div> <!-- /.mura-header -->
+	
+
+	<div class="block block-constrain">
+		<div class="block block-bordered">
+		  <div class="block-content">
+					
+<form novalidate="novalidate" name="form1" action="index.cfm" method="post">
+
+
+
+<div class="mura-control-group">
+  <label>Date/Time Entered</label>
+  <div class="mura-control">
+    06/152/2026 1:05 PM
+  </div>
+</div>
+
+
+		<div class="mura-control-group">
+  			<label>EMAIL</label>
+				
+					<input class="mura-constrain" type="text" name="EMAIL" value="a&#x40;b.com">
+  			
+ 		 </div>
+	
+		<div class="mura-control-group">
+  			<label>MESSAGE</label>
+				
+					<input class="mura-constrain" type="text" name="MESSAGE" value="line&#x20;one">
+  			
+ 		 </div>
+	
+		<div class="mura-control-group">
+  			<label>NAME</label>
+				
+					<input class="mura-constrain" type="text" name="NAME" value="Ann&#x20;&lt;b&gt;">
+  			
+ 		 </div>
+	
+
+<div class="mura-actions">
+	<div class="form-actions">
+	<button class="btn mura-primary" onclick="submitForm(document.forms.form1,'update');"><i class="mi-check-circle"></i>Update</button>
+	<button type="button" class="btn" onclick="submitForm(document.forms.form1,'delete','Delete\x20Response\x3F');"><i class="mi-trash"></i>Delete</button>
+	</div>
+</div>
+
+<input type="hidden" name="formid" value="00000000000000000000000000000000001">
+<input type="hidden" name="contentid" value="00000000000000000000000000000000001">
+<input type="hidden" name="siteid" value="default">
+<input type="hidden" name="muraAction" value="cArch.datamanager">
+<input type="hidden" name="responseID" value="A1B2C3D4-E5F6-1A2B-3C4D5E6F7A8B9C0D">
+<input type="hidden" name="hour1" value="0">
+<input type="hidden" name="hour2" value="23">
+<input type="hidden" name="minute1" value="0">
+<input type="hidden" name="minute2" value="59">
+<input type="hidden" name="date1" value="">
+<input type="hidden" name="date2" value="">
+<input type="hidden" name="fieldlist" value="EMAIL,MESSAGE,NAME">
+<input type="hidden" name="sortBy" value="Entered">
+<input type="hidden" name="sortDirection" value="asc">
+<input type="hidden" name="filterBy" value="">
+<input type="hidden" name="keywords" value="">
+<input type="hidden" name="entered" value="2026-06-01 13:05:00.0">
+<input type="hidden" name="moduleid" value="00000000000000000000000000000000004">
+<input type="hidden" name="action" value="update">
+<input type="hidden" name="csrf_token" value="<token>" /><input type="hidden" name="csrf_token_expires" value="<token>" />
+</form>
+
+			</div> <!-- /.block-content -->
+		</div> <!-- /.block-bordered -->
+	</div> <!-- /.block-constrain -->

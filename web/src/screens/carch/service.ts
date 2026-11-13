@@ -117,6 +117,9 @@ function rcFields(rc: Rc, ...omit: readonly string[]): Record<string, string> {
 
 const siteOf = (rc: Rc): { siteid: string } => ({ siteid: segment(rc, 'siteid') });
 
+/** Query parameters `getSiteManagerTree` declares; every other rc field travels in its `params`. */
+const TREE_QUERY = ['topid', 'moduleid', 'sortBy', 'sortDirection', 'page'] as const;
+
 const contentEditModel: PageEntry = {
   operation: 'getContentEditModel',
   call: (sc, rc) =>
@@ -139,9 +142,10 @@ const PAGE_CALLS = {
   list: {
     operation: 'getSiteManagerTree',
     call: (sc, rc) =>
+      // The service runs the view's sort write and flat-view state over the whole rc, so the rest travels in params.
       sc.call('get', '/v1/sites/{siteid}/content/tree', {
         params: siteOf(rc),
-        query: declared(rc, 'topid', 'moduleid', 'sortBy', 'sortDirection', 'page'),
+        query: { ...declared(rc, ...TREE_QUERY), params: rcFields(rc, ...TREE_QUERY) },
       }),
   },
   search: {
@@ -190,10 +194,11 @@ const PAGE_CALLS = {
   relatedcontent: contentVersionModel,
   datamanager: {
     operation: 'listFormResponses',
+    // The view's branch, edit row and filter read rc fields beyond the declared ones, so every field is sent.
     call: (sc, rc) =>
       sc.call('get', '/v1/sites/{siteid}/forms/{contentid}/responses', {
         params: { ...siteOf(rc), contentid: segment(rc, 'contentid') },
-        query: declared(rc, 'startrow', 'date1', 'date2', 'keywords'),
+        query: { params: rcFields(rc) },
       }),
   },
   imagedetails: {

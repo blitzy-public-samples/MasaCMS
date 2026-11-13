@@ -2184,6 +2184,7 @@ paths:
     get:
       operationId: getSiteManagerTree
       summary: Reads the Site Manager tree level under a node.
+      description: 'Runs carch `list()` and the `list.cfm` view''s own logic over the request `rc` (the declared parameters plus `params`). `params.keywords` is present only when the request URL carries `keywords` (`url.keywords`). For the content modules (`…000`, `…003`, `…004`, `…099`) the view''s in-view sort write runs when `rc.orderperm` allows it (`orderperm`, `sorted`, `orderid`, `saveSort`, `startrow`), and its `session.flatViewArgs` updates are kept by this service. `rc` holds `topid` (after the empty-result fallback), `rsTop` (the `getList` rows) and `siteConfig` (`customTagGroups`, `scaffolding`, `dataCollection`, `hasLockableNodes`). For the content modules it also holds `sortBy` and `sortDirection` (as the view leaves them), `crumbdata` (`getCrumbList(topid)` rows with `siteid`), `copyContentID`, `copySiteID`, `copyAll` and, once copy info was saved, `copyModuleID`, `flatViewArgs` (the session site''s struct), `modulePerms` (`getPerm(<module id>)` verdicts keyed by the components and forms module ids) and `variations` (configBean `variations`). For `LEGACY` it holds `perm` (`getPerm(moduleid)`), `nextN` (`getNextN` struct), a `perm` verdict (`getPerm(contentid)`) on each `rsTop` row, `categoryCount`, `categories` (the category tree: `categoryID`, `name`, `isOpen`, `hasKids`, `children`) and, for compact display, `useLayoutManager`.'
       tags: [content]
       x-opt2-transport: service
       x-opt2-requires: [s2, site-admin, 'm:000']
@@ -2217,6 +2218,7 @@ paths:
           description: One-based page of the level.
           schema:
             $ref: '#/components/schemas/DigitString'
+        - $ref: '#/components/parameters/RawParams'
       responses:
         '200':
           $ref: '#/components/responses/AdminView'
@@ -2318,7 +2320,7 @@ paths:
     get:
       operationId: getSelectMediaModel
       summary: Reads the image picker model of a content node.
-      description: The png, jpg, jpeg and svg files of the node, its children and its grandchildren, with their small-rendition URLs.
+      description: 'The png, jpg, jpeg and svg files of the node, its children and its grandchildren, with their small-rendition URLs: `rc.rsImages`, rows `{fileid, title, contentid, imageURL}`, where `imageURL` is `getURLForImage(fileid, size=''small'')`.'
       tags: [content]
       x-opt2-transport: service
       x-opt2-requires: [s2, site-admin, 'm:000']
@@ -2536,6 +2538,7 @@ paths:
     get:
       operationId: listFormResponses
       summary: Lists the responses of a form in the data manager.
+      description: 'The url fields are every rc field of the view, which applies its `sortBy` and `sortDirection` defaults from the form. `rc` holds `contentBean` (the active form''s `getAllValues()`, with `stats`), `perm`, `hasLockableNodes`, `useLayoutManager`, `rsDataInfo` (the `getDownloadselect` row: `CountEntered`, `firstEntered`, `lastEntered`), `fieldnames` (`getFullFieldList` for `action=display`, else `getCurrentFieldList`), `rsData` (for `action=edit` the `read(responseid)` row, otherwise the `getData` rows when `minute1` is given; each `responseID`, `entered` and `data`, the deserialised packet or null where `wddx2cfml` fails) and the attachment link parts `scheme`, `domain`, `serverPort` and `context`. Dates are written as ColdFusion prints a query timestamp, `yyyy-mm-dd HH:nn:ss.S`.'
       tags: [content]
       x-opt2-transport: service
       x-opt2-requires: [s2, site-admin, 'm:000']
@@ -2562,6 +2565,7 @@ paths:
           required: false
           schema:
             type: string
+        - $ref: '#/components/parameters/RawParams'
       responses:
         '200':
           $ref: '#/components/responses/AdminView'
@@ -2580,6 +2584,7 @@ paths:
     post:
       operationId: deleteFormResponses
       summary: Deletes form responses from the data manager.
+      description: 'Runs the in-view write the fields select, as datamanager.cfm:94-105 and dsp_response.cfm:162-167 do: `action=Update` or `Delete` of `responseid` (only with valid tokens for context `responseid`; invalid tokens skip the write), `setDisplay` of the form''s display fields, or, with `minute1` and a true `delete`, the deletion of every response the filter selects.'
       tags: [content]
       x-opt2-transport: service
       x-opt2-requires: [s2, site-admin, 'm:000']

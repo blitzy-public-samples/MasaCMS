@@ -1,0 +1,660 @@
+// SYNTHETIC: timesheets - no Masa equivalent; legacy oracle in legacy-fixtures/
+/** `/v1/timesheets` routes through `app.inject` against a throwaway `timesheets` schema, each answer checked against contracts/openapi.yaml. */
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
+import { cfUuid } from '@opt2/platform/legacy-compat';
+import { createLogger } from '@opt2/platform/logging';
+import { closeGates, ensureUnitGates, openGates, registerWritePositionHeader } from '@opt2/platform/migration-kit';
+import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
+import {
+  TENANT_A,
+  TENANT_B,
+  TENANT_UMBRELLA,
+  assertResponseMatchesOpenApi,
+  createThrowawaySchema,
+  mintServiceToken,
+  mintUserToken,
+  pgAvailable,
+  seedRegistry,
+  testVerifier,
+  type ThrowawaySchema,
+} from '@opt2/platform/testing';
+import type { TimesheetAction, TimesheetState } from '../../src/domain/lifecycle.transitions.js';
+import type { components } from '../../src/generated/openapi.js';
+import { createTimesheetsRepository, type TimesheetsRepository } from '../../src/repo/repository.js';
+import { TIMESHEETS_UNITS, type ApprovalActionRow, type BlackoutRow, type TimesheetDayRow, type TimesheetRow } from '../../src/repo/tables.js';
+import { allowedActions, timesheetsV1Plugin } from '../../src/routes/v1.js';
+
+// js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
+const requireHere = createRequire(import.meta.url);
+const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
+const OPENAPI = load(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+  paths: Record<string, Record<string, Record<string, unknown>>>;
+};
+
+const NOW = new Date(2026, 5, 30, 10, 0, 0, 0);
+const CLOCK = fixedClock(NOW);
+const SHEETS = '/v1/timesheets/sheets';
+const DAYS = '/v1/timesheets/days';
+const SHEET_STATUS = '/v1/timesheets/sheet-status';
+const EMPLOYEE = [Roles.systemUser, Roles.timesheetsEmployee];
+const PRIMARY = [Roles.systemUser, Roles.timesheetsPrimaryApprover];
+const SECONDARY = [Roles.systemUser, Roles.timesheetsSecondaryApprover];
+const EXPORTER = [Roles.systemUser, Roles.reportingExporter];
+const USER_ID = '11111111-2222-3333-4444555566667777';
+const PERSON = 'AAAAAAAA-BBBB-CCCC-DDDDEEEEFFFF0000';
+const OTHER_PERSON = 'AAAAAAAA-BBBB-CCCC-DDDDEEEEFFFF0001';
+const MISSING_ID = '00000000-0000-0000-0000000000000000';
+const PAGED_SHEETS = 1001;
+
+type New<R> = Omit<R, 'tenant_id'>;
+type Injected = Awaited<ReturnType<FastifyInstance['inject']>>;
+type Schemas = components['schemas'];
+type ErrorBody = Schemas['LegacyErrorEnvelope'];
+
+/** An injected answer, its body already validated against the contract as `T`. */
+interface Answer<T = ErrorBody> {
+  status: number;
+  body: T;
+  headers: Record<string, unknown>;
+}
+
+/** One gateway call: user `roles` on `site` (null sends no user token) and extra roles on the invocation credential. */
+interface Call {
+  roles?: readonly string[] | null;
+  site?: string;
+  payload?: Record<string, unknown>;
+  invocationRoles?: string[];
+}
+
+/** The exact v1 error body the route's own error paths send. */
+const v1Error = (method: string, code: string, message: string): string =>
+  `{"apiversion":"v1","method":"${method}","error":{"code":"${code}","message":"${message}"}}`;
+
+describe('allowedActions', () => {
+  const [employee, primary, secondary] = [Roles.timesheetsEmployee, Roles.timesheetsPrimaryApprover, Roles.timesheetsSecondaryApprover];
+
+  it.each<[TimesheetState, readonly string[], boolean, TimesheetAction[]]>([
+    ['DRAFT', [employee], false, ['submit']],
+    ['DRAFT', [primary, secondary], false, []],
+    ['SUBMITTED', [primary], false, ['primary-approve', 'return']],
+    ['RESUBMITTED', [primary], false, ['primary-approve', 'return']],
+    ['SUBMITTED', [employee, secondary], false, []],
+    ['PRIMARY_APPROVED', [secondary], false, ['secondary-approve', 'return']],
+    ['PRIMARY_APPROVED', [employee, primary], false, []],
+    ['RETURNED', [employee], false, ['resubmit']],
+    ['RETURNED', [primary, secondary], false, []],
+    ['APPROVED', [employee, primary, secondary], false, []],
+    ['SUBMITTED', [employee, primary, secondary], false, ['primary-approve', 'return']],
+    ['DRAFT', [employee], true, []],
+    ['PRIMARY_APPROVED', [secondary], true, []],
+    ['DRAFT', [], false, []],
+    ['DRAFT', [Roles.systemUser, Roles.reportingExporter], false, []],
+  ])('gives a %s day with roles %j and blackout %s the actions %j', (state, roles, blackout, expected) => {
+    expect(allowedActions(state, roles, blackout)).toEqual(expected);
+  });
+});
+
+const available = await pgAvailable();
+
+describe.skipIf(!available)('timesheets /v1 routes', () => {
+  let handle: ThrowawaySchema;
+  let repository: TimesheetsRepository;
+  let app: FastifyInstance;
+
+  /** Seeded tenant-a sheets in period order; `returned` belongs to another site of the same tenant. */
+  const sheets = { approved: cfUuid(), submitted: cfUuid(), first: cfUuid(), partial: cfUuid(), returned: cfUuid(), empty: cfUuid() };
+  const days = {
+    approvedOnly: cfUuid(),
+    approvedBlackout: cfUuid(),
+    submittedOnly: cfUuid(),
+    resubmitted: cfUuid(),
+    draft: cfUuid(),
+    submitted: cfUuid(),
+    blackedOut: cfUuid(),
+    approved: cfUuid(),
+    primaryApproved: cfUuid(),
+    returned: cfUuid(),
+  };
+  /** Umbrella sheets, one more than a sheet-status page holds, in period order. */
+  const paged = Array.from({ length: PAGED_SHEETS }, () => cfUuid());
+
+  beforeAll(async () => {
+    handle = await createThrowawaySchema({ service: 'timesheets', migrationsDir: fileURLToPath(new URL('../../db/migrations', import.meta.url)) });
+    await ensureUnitGates(handle.app, TIMESHEETS_UNITS);
+    await seedRegistry(handle.app);
+    app = await createService({
+      name: 'timesheets',
+      version: '1.0.0',
+      env: loadEnv(undefined, {
+        PORT: '8118',
+        OPT2_SERVICE_NAME: 'timesheets',
+        OPT2_ENV: 'local',
+        OPT2_JWKS_URL: 'http://127.0.0.1:9/jwks',
+        OPT2_TOKEN_ISSUER: 'opt2-local-identity',
+        OPT2_TOKEN_AUDIENCE: 'opt2-local',
+        TZ: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      }),
+      verifierOverride: testVerifier('timesheets'),
+      pool: handle.app,
+      logger: createLogger({ service: 'timesheets', version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
+    });
+    registerWritePositionHeader(app);
+    repository = createTimesheetsRepository({ clock: CLOCK, schema: handle.schema });
+    await app.register(timesheetsV1Plugin, { db: handle.app, repository, clock: CLOCK });
+    await app.ready();
+    await setGates('open');
+
+    await handle.app.withTenant(TENANT_A.tenantId, async (tx) => {
+      await repository.insert(tx, 'timesheet', sheet(sheets.approved, new Date(2026, 4, 18), new Date(2026, 4, 27)));
+      await repository.insert(tx, 'timesheet', sheet(sheets.submitted, new Date(2026, 4, 25), new Date(2026, 5, 3)));
+      await repository.insert(tx, 'timesheet', sheet(sheets.first, new Date(2026, 5, 1), new Date(2026, 5, 10)));
+      await repository.insert(tx, 'timesheet', {
+        ...sheet(sheets.partial, new Date(2026, 5, 8), new Date(2026, 5, 17)),
+        lastupdate: new Date(2026, 5, 9, 17, 45, 30),
+        lastupdatebyid: USER_ID,
+      });
+      await repository.insert(tx, 'timesheet', {
+        ...sheet(sheets.returned, new Date(2026, 5, 15), new Date(2026, 5, 24)),
+        siteid: 'tenant-b',
+        person_id: OTHER_PERSON,
+      });
+      await repository.insert(tx, 'timesheet', sheet(sheets.empty, new Date(2026, 5, 22), new Date(2026, 6, 1)));
+      await repository.insert(tx, 'timesheet_day', day(days.approvedOnly, sheets.approved, new Date(2026, 4, 18), 'APPROVED'));
+      await repository.insert(tx, 'timesheet_day', day(days.approvedBlackout, sheets.approved, new Date(2026, 4, 19), 'DRAFT'));
+      await repository.insert(tx, 'timesheet_day', day(days.submittedOnly, sheets.submitted, new Date(2026, 4, 25), 'SUBMITTED'));
+      await repository.insert(tx, 'timesheet_day', day(days.resubmitted, sheets.submitted, new Date(2026, 4, 26), 'RESUBMITTED'));
+      await repository.insert(tx, 'timesheet_day', day(days.draft, sheets.first, new Date(2026, 5, 1), 'DRAFT'));
+      await repository.insert(tx, 'timesheet_day', {
+        ...day(days.submitted, sheets.first, new Date(2026, 5, 2), 'SUBMITTED'),
+        hours: '8.2500',
+        lastupdate: new Date(2026, 5, 2, 16, 30, 0),
+        lastupdatebyid: USER_ID,
+      });
+      await repository.insert(tx, 'timesheet_day', day(days.blackedOut, sheets.first, new Date(2026, 5, 3), 'DRAFT'));
+      await repository.insert(tx, 'timesheet_day', day(days.approved, sheets.partial, new Date(2026, 5, 8), 'APPROVED'));
+      await repository.insert(tx, 'timesheet_day', day(days.primaryApproved, sheets.partial, new Date(2026, 5, 9), 'PRIMARY_APPROVED'));
+      await repository.insert(tx, 'timesheet_day', day(days.returned, sheets.returned, new Date(2026, 5, 15), 'RETURNED'));
+      await repository.insert(tx, 'blackout', blackout(days.blackedOut));
+      await repository.insert(tx, 'blackout', blackout(days.approvedBlackout));
+    });
+    await handle.app.withTenant(TENANT_UMBRELLA.tenantId, (tx) =>
+      repository.insertAbsent(
+        tx,
+        'timesheet',
+        paged.map((id, index) => ({ ...sheet(id, new Date(2024, 0, 1 + index), new Date(2024, 0, 10 + index), 3), siteid: TENANT_UMBRELLA.siteId })),
+        ['timesheet_id'],
+      ),
+    );
+  });
+
+  afterAll(async () => {
+    await app?.opt2.shutdown();
+    await handle?.drop();
+  });
+
+  beforeEach(async () => {
+    await setGates('open');
+  });
+
+  /** Moves every timesheets gate to `state` through the holder compare-and-set. */
+  async function setGates(state: 'open' | 'legacy'): Promise<void> {
+    await closeGates(handle.app, { units: TIMESHEETS_UNITS, holderId: 'v1-routes-test', allowLegacy: true });
+    await openGates(handle.app, { units: TIMESHEETS_UNITS, holderId: 'v1-routes-test', state });
+  }
+
+  function sheet(id: string, periodStart: Date, dueDate: Date, programId = 1): New<TimesheetRow> {
+    return {
+      timesheet_id: id,
+      person_id: PERSON,
+      siteid: programId === 1 ? 'tenant-a' : 'tenant-b',
+      period_start: periodStart,
+      period_end: new Date(periodStart.getFullYear(), periodStart.getMonth(), periodStart.getDate() + 6),
+      due_date: dueDate,
+      created: new Date(2026, 4, 31, 9, 0, 0),
+      lastupdate: null,
+      lastupdatebyid: null,
+      legacy_program_id: programId,
+    };
+  }
+
+  function day(id: string, timesheetId: string, workDate: Date, state: string, programId = 1): New<TimesheetDayRow> {
+    return { day_id: id, timesheet_id: timesheetId, work_date: workDate, hours: '7.5000', state, lastupdate: null, lastupdatebyid: null, legacy_program_id: programId };
+  }
+
+  function blackout(dayId: string, programId = 1): New<BlackoutRow> {
+    return { blackout_id: cfUuid(), day_id: dayId, person_id: PERSON, archive_id: null, reason: 'person-archived', created: NOW, legacy_program_id: programId };
+  }
+
+  /** A fresh tenant-b sheet holding one day in `state`, blacked out when `blackedOut`; returns the day and sheet ids. */
+  async function seedTenantBDay(state: string, blackedOut = false): Promise<{ dayId: string; sheetId: string }> {
+    const [sheetId, dayId] = [cfUuid(), cfUuid()];
+    await handle.app.withTenant(TENANT_B.tenantId, async (tx) => {
+      await repository.insert(tx, 'timesheet', sheet(sheetId, new Date(2026, 5, 15), new Date(2026, 5, 24), 2));
+      await repository.insert(tx, 'timesheet_day', day(dayId, sheetId, new Date(2026, 5, 15), state, 2));
+      if (blackedOut) await repository.insert(tx, 'blackout', blackout(dayId, 2));
+    });
+    return { dayId, sheetId };
+  }
+
+  /** The tenant-b day's stored row and its approval actions. */
+  function storedDay(dayId: string): Promise<{ day: TimesheetDayRow | undefined; actions: ApprovalActionRow[] }> {
+    return handle.app.withTenant(TENANT_B.tenantId, async (tx) => ({
+      day: (await tx.query<TimesheetDayRow>(`SELECT * FROM ${handle.schema}.timesheet_day WHERE day_id = $1`, [dayId])).rows[0],
+      actions: (await tx.query<ApprovalActionRow>(`SELECT * FROM ${handle.schema}.approval_action WHERE day_id = $1`, [dayId])).rows,
+    }));
+  }
+
+  /** Validates an injected response against the contract operation of `method` and `url`. */
+  function checked<T = ErrorBody>(method: 'GET' | 'POST', url: string, res: Injected): Answer<T> {
+    assertResponseMatchesOpenApi(OPENAPI, { method, path: url, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
+    return { status: res.statusCode, body: res.json() as T, headers: res.headers };
+  }
+
+  /** Injects one gateway call with a user token and the gateway's invocation credential, checked against the contract. */
+  async function call<T = ErrorBody>(method: 'GET' | 'POST', url: string, request: Call = {}): Promise<Answer<T>> {
+    const { roles = PRIMARY, site = TENANT_A.siteId, payload, invocationRoles } = request;
+    const invocation = await mintServiceToken({ caller: 'gateway', audience: 'timesheets', ...(invocationRoles === undefined ? {} : { roles: invocationRoles }) });
+    const headers: Record<string, string> = { [INVOCATION_HEADER]: `Bearer ${invocation}` };
+    if (roles !== null) headers.authorization = `Bearer ${await mintUserToken({ sub: USER_ID, site, roles })}`;
+    return checked<T>(method, url, await app.inject({ method, url, headers, ...(payload === undefined ? {} : { payload }) }));
+  }
+
+  /** A day action as `roles` on tenant-b. */
+  function act<T = ErrorBody>(dayId: string, action: string, roles: readonly string[], payload?: Record<string, unknown>): Promise<Answer<T>> {
+    return call<T>('POST', `${DAYS}/${dayId}/${action}`, { roles, site: TENANT_B.siteId, payload });
+  }
+
+  const timesheet = {
+    approved: {
+      timesheetId: sheets.approved,
+      siteId: 'tenant-a',
+      personId: PERSON,
+      periodStart: '2026-05-18T00:00:00',
+      periodEnd: '2026-05-24T00:00:00',
+      dueDate: '2026-05-27T00:00:00',
+      created: '2026-05-31T09:00:00',
+      lastUpdate: null,
+      lastUpdateById: null,
+      status: 'APPROVED',
+      overdue: false,
+    },
+    submitted: {
+      timesheetId: sheets.submitted,
+      siteId: 'tenant-a',
+      personId: PERSON,
+      periodStart: '2026-05-25T00:00:00',
+      periodEnd: '2026-05-31T00:00:00',
+      dueDate: '2026-06-03T00:00:00',
+      created: '2026-05-31T09:00:00',
+      lastUpdate: null,
+      lastUpdateById: null,
+      status: 'SUBMITTED',
+      overdue: false,
+    },
+    first: {
+      timesheetId: sheets.first,
+      siteId: 'tenant-a',
+      personId: PERSON,
+      periodStart: '2026-06-01T00:00:00',
+      periodEnd: '2026-06-07T00:00:00',
+      dueDate: '2026-06-10T00:00:00',
+      created: '2026-05-31T09:00:00',
+      lastUpdate: null,
+      lastUpdateById: null,
+      status: 'DRAFT',
+      overdue: true,
+    },
+    partial: {
+      timesheetId: sheets.partial,
+      siteId: 'tenant-a',
+      personId: PERSON,
+      periodStart: '2026-06-08T00:00:00',
+      periodEnd: '2026-06-14T00:00:00',
+      dueDate: '2026-06-17T00:00:00',
+      created: '2026-05-31T09:00:00',
+      lastUpdate: '2026-06-09T17:45:30',
+      lastUpdateById: USER_ID,
+      status: 'PARTIALLY_APPROVED',
+      overdue: false,
+    },
+    returned: {
+      timesheetId: sheets.returned,
+      siteId: 'tenant-b',
+      personId: OTHER_PERSON,
+      periodStart: '2026-06-15T00:00:00',
+      periodEnd: '2026-06-21T00:00:00',
+      dueDate: '2026-06-24T00:00:00',
+      created: '2026-05-31T09:00:00',
+      lastUpdate: null,
+      lastUpdateById: null,
+      status: 'RETURNED',
+      overdue: false,
+    },
+    empty: {
+      timesheetId: sheets.empty,
+      siteId: 'tenant-a',
+      personId: PERSON,
+      periodStart: '2026-06-22T00:00:00',
+      periodEnd: '2026-06-28T00:00:00',
+      dueDate: '2026-07-01T00:00:00',
+      created: '2026-05-31T09:00:00',
+      lastUpdate: null,
+      lastUpdateById: null,
+      status: 'DRAFT',
+      overdue: false,
+    },
+  };
+
+  const statusRow = {
+    approved: { timesheetId: sheets.approved, siteId: 'tenant-a', personId: PERSON, periodStart: '2026-05-18T00:00:00', status: 'APPROVED', overdue: false, dayCount: 2, blackoutCount: 1, approvedCount: 1 },
+    submitted: { timesheetId: sheets.submitted, siteId: 'tenant-a', personId: PERSON, periodStart: '2026-05-25T00:00:00', status: 'SUBMITTED', overdue: false, dayCount: 2, blackoutCount: 0, approvedCount: 0 },
+    first: { timesheetId: sheets.first, siteId: 'tenant-a', personId: PERSON, periodStart: '2026-06-01T00:00:00', status: 'DRAFT', overdue: true, dayCount: 3, blackoutCount: 1, approvedCount: 0 },
+    partial: { timesheetId: sheets.partial, siteId: 'tenant-a', personId: PERSON, periodStart: '2026-06-08T00:00:00', status: 'PARTIALLY_APPROVED', overdue: false, dayCount: 2, blackoutCount: 0, approvedCount: 1 },
+    returned: { timesheetId: sheets.returned, siteId: 'tenant-b', personId: OTHER_PERSON, periodStart: '2026-06-15T00:00:00', status: 'RETURNED', overdue: false, dayCount: 1, blackoutCount: 0, approvedCount: 0 },
+    empty: { timesheetId: sheets.empty, siteId: 'tenant-a', personId: PERSON, periodStart: '2026-06-22T00:00:00', status: 'DRAFT', overdue: false, dayCount: 0, blackoutCount: 0, approvedCount: 0 },
+  };
+
+  it('declares exactly the contract /v1 operations with their requires and transport', () => {
+    const routes = collectRouteMatrix(app).routes.filter((route) => route.url.startsWith('/v1/'));
+    expect(routes.map((route) => `${route.method} ${route.url}`)).toEqual([
+      `POST ${DAYS}/:id/:action`,
+      `GET ${SHEET_STATUS}`,
+      `GET ${SHEETS}`,
+      `GET ${SHEETS}/:id`,
+    ]);
+    for (const route of routes) {
+      const operation = OPENAPI.paths[route.url.replace(/:(\w+)/g, '{$1}')]?.[route.method.toLowerCase()];
+      expect([route.transport, route.requires]).toEqual([operation?.['x-opt2-transport'], operation?.['x-opt2-requires']]);
+    }
+  });
+
+  describe('listSheets', () => {
+    it('lists every sheet of the tenant in period order with status and overdue as of today, and the count of all', async () => {
+      const res = await call('GET', SHEETS, { roles: EMPLOYEE });
+      expect([res.status, res.body]).toEqual([
+        200,
+        { items: [timesheet.approved, timesheet.submitted, timesheet.first, timesheet.partial, timesheet.returned, timesheet.empty], total: 6 },
+      ]);
+    });
+
+    it.each<[string, string, boolean]>([
+      ['on its due date', '2026-06-10', false],
+      ['the day after its due date', '2026-06-11', true],
+      ['before its period', '2026-05-01', false],
+    ])('flags the drafted sheet overdue %s only when asOf follows the due date', async (_case, asOf, overdue) => {
+      const res = await call<Schemas['TimesheetList']>('GET', `${SHEETS}?asOf=${asOf}`, { roles: SECONDARY });
+      expect(res.body.items).toEqual([timesheet.approved, timesheet.submitted, { ...timesheet.first, overdue }, timesheet.partial, timesheet.returned, timesheet.empty]);
+    });
+
+    it.each<[string, string, string[], number]>([
+      ['a middle page', '?pageIndex=2&itemsPerPage=2', [sheets.first, sheets.partial], 6],
+      ['a one-item page', '?pageIndex=2&itemsPerPage=1', [sheets.submitted], 6],
+      ['the last page', '?pageIndex=3&itemsPerPage=2', [sheets.returned, sheets.empty], 6],
+      ['a page past the end', '?pageIndex=4&itemsPerPage=2', [], 6],
+      ['the largest page index', `?pageIndex=${Number.MAX_SAFE_INTEGER}`, [], 6],
+    ])('pages: %s', async (_case, query, ids, total) => {
+      const res = await call<Schemas['TimesheetList']>('GET', `${SHEETS}${query}`);
+      expect([res.status, res.body.items.map((item) => item.timesheetId), res.body.total]).toEqual([200, ids, total]);
+    });
+
+    it('pages a tenant holding more sheets than the largest page', async () => {
+      const res = await call<Schemas['TimesheetList']>('GET', `${SHEETS}?pageIndex=2&itemsPerPage=1000`, { site: TENANT_UMBRELLA.siteId });
+      expect([res.status, res.body.items.map((item) => item.timesheetId), res.body.total]).toEqual([200, [paged[1000]], PAGED_SHEETS]);
+    });
+
+    it.each([
+      'asOf=2026-02-30',
+      'asOf=1752-12-31',
+      'asOf=',
+      'asOf=2026-6-30',
+      'asOf=2026-06-30T00:00:00',
+      'asOf=2026-06-01&asOf=2026-06-02',
+      'pageIndex=0',
+      'pageIndex=x',
+      `pageIndex=${Number.MAX_SAFE_INTEGER + 1}`,
+      'itemsPerPage=0',
+      'itemsPerPage=1001',
+      'itemsPerPage=1.5',
+    ])('refuses the query %s as invalidParameters', async (query) => {
+      const res = await call('GET', `${SHEETS}?${query}`);
+      expect([res.status, JSON.stringify(res.body)]).toEqual([400, v1Error('timesheets.sheets', 'invalid_request', 'Invalid parameters')]);
+    });
+  });
+
+  describe('getSheet', () => {
+    it('reads a sheet with its days in work date order, matching the id ignoring case', async () => {
+      const res = await call('GET', `${SHEETS}/${sheets.first.toLowerCase()}`);
+      expect([res.status, res.body]).toEqual([
+        200,
+        {
+          ...timesheet.first,
+          days: [
+            {
+              dayId: days.draft,
+              timesheetId: sheets.first,
+              workDate: '2026-06-01T00:00:00',
+              hours: '7.5000',
+              state: 'DRAFT',
+              blackout: false,
+              lastUpdate: null,
+              lastUpdateById: null,
+              allowedActions: [],
+            },
+            {
+              dayId: days.submitted,
+              timesheetId: sheets.first,
+              workDate: '2026-06-02T00:00:00',
+              hours: '8.2500',
+              state: 'SUBMITTED',
+              blackout: false,
+              lastUpdate: '2026-06-02T16:30:00',
+              lastUpdateById: USER_ID,
+              allowedActions: ['primary-approve', 'return'],
+            },
+            {
+              dayId: days.blackedOut,
+              timesheetId: sheets.first,
+              workDate: '2026-06-03T00:00:00',
+              hours: '7.5000',
+              state: 'DRAFT',
+              blackout: true,
+              lastUpdate: null,
+              lastUpdateById: null,
+              allowedActions: [],
+            },
+          ],
+        },
+      ]);
+    });
+
+    it.each<[string, readonly string[], string, Array<[string, TimesheetAction[]]>]>([
+      ['the employee', EMPLOYEE, sheets.first, [[days.draft, ['submit']], [days.submitted, []], [days.blackedOut, []]]],
+      ['the secondary approver', SECONDARY, sheets.partial, [[days.approved, []], [days.primaryApproved, ['secondary-approve', 'return']]]],
+      ['the primary approver', PRIMARY, sheets.partial, [[days.approved, []], [days.primaryApproved, []]]],
+      ['the employee', EMPLOYEE, sheets.returned, [[days.returned, ['resubmit']]]],
+      ['the primary approver', PRIMARY, sheets.submitted, [[days.submittedOnly, ['primary-approve', 'return']], [days.resubmitted, ['primary-approve', 'return']]]],
+      ['the employee', EMPLOYEE, sheets.approved, [[days.approvedOnly, []], [days.approvedBlackout, []]]],
+    ])('gives %s the allowed actions of each day', async (_case, roles, sheetId, expected) => {
+      const res = await call<Schemas['TimesheetDetail']>('GET', `${SHEETS}/${sheetId}`, { roles });
+      expect(res.body.days.map(({ dayId, allowedActions: actions }) => [dayId, actions])).toEqual(expected);
+    });
+
+    it('derives the status fields as of asOf and reads a sheet without days', async () => {
+      expect((await call<Schemas['TimesheetDetail']>('GET', `${SHEETS}/${sheets.first}?asOf=2026-06-10`)).body).toMatchObject({ status: 'DRAFT', overdue: false });
+      expect((await call<Schemas['TimesheetDetail']>('GET', `${SHEETS}/${sheets.empty}`)).body).toEqual({ ...timesheet.empty, days: [] });
+    });
+
+    it.each<[string, () => Promise<Answer>, number, string]>([
+      ['an unknown sheet', () => call('GET', `${SHEETS}/${MISSING_ID}`), 404, 'Not Found'],
+      ['an id that is not a CF UUID', () => call('GET', `${SHEETS}/not-a-sheet`), 404, 'Not Found'],
+      ['an id longer than a CF UUID', () => call('GET', `${SHEETS}/${sheets.first}0`), 404, 'Not Found'],
+      ['a sheet of another tenant', () => call('GET', `${SHEETS}/${sheets.first}`, { site: TENANT_B.siteId }), 404, 'Not Found'],
+      ['a non-calendar asOf, before the lookup', () => call('GET', `${SHEETS}/${MISSING_ID}?asOf=2026-02-30`), 400, 'Invalid parameters'],
+    ])('fails on %s', async (_case, send, status, message) => {
+      const res = await send();
+      expect([res.status, JSON.stringify(res.body)]).toEqual([status, v1Error('timesheets.sheets', 'invalid_request', message)]);
+    });
+  });
+
+  describe('dayAction', () => {
+    it.each<[TimesheetAction, readonly string[], TimesheetState, TimesheetState, string]>([
+      ['submit', EMPLOYEE, 'DRAFT', 'SUBMITTED', Roles.timesheetsEmployee],
+      ['primary-approve', PRIMARY, 'SUBMITTED', 'PRIMARY_APPROVED', Roles.timesheetsPrimaryApprover],
+      ['primary-approve', PRIMARY, 'RESUBMITTED', 'PRIMARY_APPROVED', Roles.timesheetsPrimaryApprover],
+      ['secondary-approve', SECONDARY, 'PRIMARY_APPROVED', 'APPROVED', Roles.timesheetsSecondaryApprover],
+      ['return', PRIMARY, 'SUBMITTED', 'RETURNED', Roles.timesheetsPrimaryApprover],
+      ['return', PRIMARY, 'RESUBMITTED', 'RETURNED', Roles.timesheetsPrimaryApprover],
+      ['return', SECONDARY, 'PRIMARY_APPROVED', 'RETURNED', Roles.timesheetsSecondaryApprover],
+      ['resubmit', EMPLOYEE, 'RETURNED', 'RESUBMITTED', Roles.timesheetsEmployee],
+    ])('applies %s as %j from %s to %s and records the approval action', async (action, roles, from, to, actingRole) => {
+      const { dayId, sheetId } = await seedTenantBDay(from);
+      const res = await act<Schemas['DayActionResult']>(dayId.toLowerCase(), action, roles, { comment: 'checked' });
+      const stored = await storedDay(dayId);
+      expect([res.status, res.body]).toEqual([
+        200,
+        {
+          dayId,
+          timesheetId: sheetId,
+          action,
+          fromState: from,
+          toState: to,
+          actionId: stored.actions[0]?.action_id,
+          workDate: '2026-06-15T00:00:00',
+          hours: '7.5000',
+          blackout: false,
+        },
+      ]);
+      expect(res.headers['x-opt2-write-position']).toMatch(/^timesheets=\d+$/);
+      expect([stored.day?.state, stored.day?.lastupdate, stored.day?.lastupdatebyid]).toEqual([to, NOW, USER_ID]);
+      expect(stored.actions.map((row) => [row.action, row.role, row.from_state, row.to_state, row.actor_user_id, row.comment, row.created])).toEqual([
+        [action, actingRole, from, to, USER_ID, 'checked', NOW],
+      ]);
+    });
+
+    it.each<[string, Record<string, unknown> | undefined]>([
+      ['no body', undefined],
+      ['a body without a comment', {}],
+      ['an empty comment', { comment: '' }],
+    ])('stores the comment of %s as NULL', async (_case, payload) => {
+      const { dayId } = await seedTenantBDay('DRAFT');
+      expect((await act(dayId, 'submit', EMPLOYEE, payload)).status).toBe(200);
+      expect((await storedDay(dayId)).actions.map(({ comment }) => comment)).toEqual([null]);
+    });
+
+    it.each<[string, TimesheetState, boolean, (dayId: string) => Promise<Answer>, number, string, string]>([
+      ['a role that may not take the action', 'DRAFT', false, (id) => act(id, 'submit', PRIMARY), 403, 'timesheets.days.submit', 'Insufficient Account Permissions'],
+      ['an illegal transition', 'DRAFT', false, (id) => act(id, 'resubmit', EMPLOYEE), 409, 'timesheets.days.resubmit', 'illegalTransition'],
+      ['a terminal day', 'APPROVED', false, (id) => act(id, 'return', SECONDARY), 409, 'timesheets.days.return', 'illegalTransition'],
+      ['a blacked-out day', 'DRAFT', true, (id) => act(id, 'submit', EMPLOYEE), 409, 'timesheets.days.submit', 'blackout'],
+      ['a blacked-out day and a role that may not act', 'DRAFT', true, (id) => act(id, 'submit', PRIMARY), 409, 'timesheets.days.submit', 'blackout'],
+      ['a blacked-out day the role could otherwise act on', 'PRIMARY_APPROVED', true, (id) => act(id, 'return', SECONDARY), 409, 'timesheets.days.return', 'blackout'],
+      ['an action the lifecycle does not name', 'DRAFT', false, (id) => act(id, 'approve', EMPLOYEE), 404, 'timesheets.days.approve', 'Not Found'],
+      ['an action not in lower case', 'DRAFT', false, (id) => act(id, 'Submit', EMPLOYEE), 404, 'timesheets.days.submit', 'Not Found'],
+      ['a comment that is not a string', 'DRAFT', false, (id) => act(id, 'submit', EMPLOYEE, { comment: 5 }), 400, 'timesheets.days.submit', 'Invalid parameters'],
+      ['a null comment', 'DRAFT', false, (id) => act(id, 'submit', EMPLOYEE, { comment: null }), 400, 'timesheets.days.submit', 'Invalid parameters'],
+      ['an unknown day', 'DRAFT', false, () => act(MISSING_ID, 'submit', EMPLOYEE), 404, 'timesheets.days.submit', 'Not Found'],
+      ['an id that is not a CF UUID', 'DRAFT', false, () => act('not-a-day', 'submit', EMPLOYEE), 404, 'timesheets.days.submit', 'Not Found'],
+      ['a day of another tenant', 'DRAFT', false, () => act(days.draft, 'submit', EMPLOYEE), 404, 'timesheets.days.submit', 'Not Found'],
+    ])('fails on %s, leaving the day unchanged and reporting no write position', async (_case, state, blackedOut, send, status, method, message) => {
+      const { dayId } = await seedTenantBDay(state, blackedOut);
+      const res = await send(dayId);
+      expect([res.status, JSON.stringify(res.body)]).toEqual([status, v1Error(method, 'invalid_request', message)]);
+      expect(res.headers['x-opt2-write-position']).toBeUndefined();
+      expect(await storedDay(dayId)).toMatchObject({ day: { state, lastupdate: null }, actions: [] });
+    });
+
+    it('fails a write closed with the legacy 503 while the timesheets units are legacy-authoritative', async () => {
+      const { dayId } = await seedTenantBDay('DRAFT');
+      await setGates('legacy');
+      const res = await act(dayId, 'submit', EMPLOYEE);
+      await setGates('open');
+      expect([res.status, res.body.error]).toEqual([503, { message: 'Unhandled Exception', code: 'server_error' }]);
+      expect(res.headers['x-opt2-write-position']).toBeUndefined();
+      expect(await storedDay(dayId)).toMatchObject({ day: { state: 'DRAFT' }, actions: [] });
+    });
+  });
+
+  describe('listSheetStatus', () => {
+    it.each<[string, readonly string[]]>([
+      ['the exporter', EXPORTER],
+      ['the primary approver', PRIMARY],
+      ['the secondary approver', SECONDARY],
+    ])('lists the status row of every tenant sheet as of today for %s', async (_case, roles) => {
+      const res = await call('GET', SHEET_STATUS, { roles });
+      expect([res.status, res.body]).toEqual([
+        200,
+        { items: [statusRow.approved, statusRow.submitted, statusRow.first, statusRow.partial, statusRow.returned, statusRow.empty] },
+      ]);
+    });
+
+    it.each<[string, boolean]>([
+      ['2026-06-10', false],
+      ['2026-06-11', true],
+    ])('derives overdue as of %s', async (asOf, overdue) => {
+      const res = await call<Schemas['SheetStatusList']>('GET', `${SHEET_STATUS}?asOf=${asOf}`, { roles: EXPORTER });
+      expect(res.body.items).toEqual([statusRow.approved, statusRow.submitted, { ...statusRow.first, overdue }, statusRow.partial, statusRow.returned, statusRow.empty]);
+    });
+
+    it('reads past the largest sheet page', async () => {
+      const res = await call<Schemas['SheetStatusList']>('GET', SHEET_STATUS, { roles: EXPORTER, site: TENANT_UMBRELLA.siteId });
+      expect(res.status).toBe(200);
+      expect(res.body.items.map((row) => row.timesheetId)).toEqual(paged);
+      expect(res.body.items[PAGED_SHEETS - 1]).toEqual({
+        timesheetId: paged[PAGED_SHEETS - 1],
+        siteId: TENANT_UMBRELLA.siteId,
+        personId: PERSON,
+        periodStart: '2026-09-27T00:00:00',
+        status: 'DRAFT',
+        overdue: false,
+        dayCount: 0,
+        blackoutCount: 0,
+        approvedCount: 0,
+      });
+    });
+
+    it('refuses a non-calendar asOf as invalidParameters', async () => {
+      const res = await call('GET', `${SHEET_STATUS}?asOf=2026-02-30`, { roles: EXPORTER });
+      expect([res.status, JSON.stringify(res.body)]).toEqual([400, v1Error('timesheets.sheet-status', 'invalid_request', 'Invalid parameters')]);
+    });
+  });
+
+  describe('authorisation', () => {
+    it.each<[string, () => Promise<Answer>, number, Record<string, string>]>([
+      ['no credential', async () => checked('GET', SHEETS, await app.inject({ url: SHEETS })), 401, { message: 'Insufficient Account Permissions', code: 'invalid_request' }],
+      ['the exporter on the sheet list', () => call('GET', SHEETS, { roles: EXPORTER }), 403, { message: 'Insufficient Account Permissions', code: 'invalid_request' }],
+      ['the exporter on a day action', () => call('POST', `${DAYS}/${MISSING_ID}/submit`, { roles: EXPORTER }), 403, { message: 'Insufficient Account Permissions', code: 'invalid_request' }],
+      ['the employee on sheet status', () => call('GET', SHEET_STATUS, { roles: EMPLOYEE }), 403, { message: 'Insufficient Account Permissions', code: 'invalid_request' }],
+      ['a siteid other than the token site', () => call('GET', `${SHEETS}?siteid=${TENANT_B.siteId}`), 403, { message: 'Insufficient Account Permissions', code: 'invalid_request' }],
+    ])('denies %s before the handler runs', async (_case, send, status, error) => {
+      const res = await send();
+      expect([res.status, res.body.error]).toEqual([status, error]);
+    });
+
+    it('answers a rejected user token with invalid_token and the bearer challenge', async () => {
+      const invocation = await mintServiceToken({ caller: 'gateway', audience: 'timesheets' });
+      const res = checked(
+        'GET',
+        SHEETS,
+        await app.inject({ url: SHEETS, headers: { authorization: 'Bearer not-a-token', [INVOCATION_HEADER]: `Bearer ${invocation}` } }),
+      );
+      expect([res.status, res.body.error, res.headers['www-authenticate']]).toEqual([
+        401,
+        { message: 'Invalid Access Token', code: 'invalid_token' },
+        'Bearer error="invalid_access_token"',
+      ]);
+    });
+
+    it.each<[string, string, 'GET' | 'POST', string, string]>([
+      ['the sheet list', SHEETS, 'GET', Roles.timesheetsEmployee, 'timesheets.sheets'],
+      ['a day action', `${DAYS}/${MISSING_ID}/submit`, 'POST', Roles.timesheetsEmployee, 'timesheets.days.submit'],
+      ['sheet status', SHEET_STATUS, 'GET', Roles.reportingExporter, 'timesheets.sheet-status'],
+    ])('refuses %s to a workload credential holding the role without a user token', async (_case, url, method, role, envelopeMethod) => {
+      const res = await call(method, url, { roles: null, invocationRoles: [role] });
+      expect([res.status, JSON.stringify(res.body)]).toEqual([403, v1Error(envelopeMethod, 'invalid_request', 'Insufficient Account Permissions')]);
+    });
+  });
+});

@@ -535,7 +535,7 @@ describe.skipIf(!available)('admin sessions against PostgreSQL', () => {
   ])('fails %s', async (_label, fields) => {
     const { sid, csrfSecret } = await newSession();
     const form = loginForm(csrfSecret, { username: 'editor', password: PASSWORD, ...fields });
-    if (fields.isAdminLogin === '') form.delete('isAdminLogin');
+    if ('isAdminLogin' in fields && fields.isAdminLogin === '') form.delete('isAdminLogin');
 
     const res = await send('POST', '/v1/sessions/login', await headersFor([], { sid }), form);
 

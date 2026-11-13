@@ -104,7 +104,15 @@ const PAGE_CASES: PageCase[] = [
       startrow: '1',
     },
     sitePath('/content/tree'),
-    { topid: HOME_ID, moduleid: CONTENT_MODULE_ID, sortBy: 'title', sortDirection: 'asc', page: '2' },
+    {
+      topid: HOME_ID,
+      moduleid: CONTENT_MODULE_ID,
+      sortBy: 'title',
+      sortDirection: 'asc',
+      page: '2',
+      siteid: SITE,
+      startrow: '1',
+    },
   ],
   [
     'search',
@@ -192,7 +200,15 @@ const PAGE_CASES: PageCase[] = [
       sortBy: 'entered',
     },
     sitePath(`/forms/${CONTENT_ID}/responses`),
-    { startrow: '1', date1: '01/01/2026', date2: '', keywords: 'quinn' },
+    {
+      siteid: SITE,
+      contentid: CONTENT_ID,
+      startrow: '1',
+      date1: '01/01/2026',
+      date2: '',
+      keywords: 'quinn',
+      sortBy: 'entered',
+    },
   ],
   [
     'imagedetails',

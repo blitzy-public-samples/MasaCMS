@@ -1,7 +1,8 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** The `surveys-launch` task route: the target form of the fixture launch callback `surveys/surveys/{id}/launch`. */
+import { withGatedTenant } from '@opt2/platform/migration-kit';
 import { registerTaskRoute, TaskTenantMismatchError, type TaskContext } from '@opt2/platform/tasks';
-import { withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
+import type { TenantDb, TenantTx } from '@opt2/platform/tenancy';
 import { z, type Clock, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
 import { launchSurvey, type LaunchOutcome } from '../domain/launch.js';
 import { getSchedule } from '../repo/queries.js';
@@ -71,7 +72,8 @@ export function registerLaunchTaskRoute(app: FastifyInstance, deps: LaunchTaskDe
         throw new TaskTenantMismatchError(tenantId, taskName);
       }
       const { surveyId, scheduleVersion } = stored.payload;
-      const { outcome, survey } = await withTenant(deps.db, tenantId, (tx) =>
+      // Gated, so a closed survey gate is waited out for the gate budget before the legacy 503 that makes Cloud Tasks retry.
+      const { outcome, survey } = await withGatedTenant(deps.db, tenantId, (tx) =>
         launchSurvey(tx, { repository: deps.repository, surveyId, scheduleVersion }),
       );
       // A repeat or superseded delivery writes nothing and reports the stored status.

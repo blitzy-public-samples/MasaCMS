@@ -77,7 +77,8 @@ function renderField(name: string, value: string): SafeHtml {
 
 /**
  * The `form1` markup that posts `action=update` or `delete` back to `cArch.datamanager`, with CSRF context
- * `responseId`: the include's output from the line break before `<form` through the blank line after `</form>`.
+ * `responseId`: the include's output from the line break before `<form` through the line break after `</form>`; ACF
+ * drops the include's trailing newline after `</cfoutput>`.
  */
 export async function renderDataEdit(ctx: DataEditCtx, input: DataEditInput): Promise<SafeHtml> {
   const { response } = input;
@@ -130,6 +131,5 @@ ${join(fields)}
 <input type="hidden" name="action" value="update">
 ${csrf}
 </form>
-
 `;
 }

@@ -2824,10 +2824,10 @@ function roleSubjectNamed(name: string): RoleSubject {
 
 /**
  * `app.inject` headers presenting `subject`, or the `ROLE_SET` subject of that name, to surveys; user tokens are minted
- * for `site`, `tenant-a` by default. Throws TypeError for a name `ROLE_SET` lacks.
+ * for `site`, `tenant-a` by default, with `sub` as the Masa UserID when given. Throws TypeError for a name `ROLE_SET` lacks.
  */
-export function headersFor(subject: RoleSubject | string, opts: { site?: string } = {}): Promise<Record<string, string>> {
+export function headersFor(subject: RoleSubject | string, opts: { site?: string; sub?: string } = {}): Promise<Record<string, string>> {
   const resolved = typeof subject === 'string' ? roleSubjectNamed(subject) : subject;
-  return authHeadersFor(resolved, { site: opts.site ?? TENANT_A.siteId, audience: OWNER });
+  return authHeadersFor(resolved, { site: opts.site ?? TENANT_A.siteId, audience: OWNER, sub: opts.sub });
 }
 
