@@ -2429,6 +2429,21 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       );
     },
 
+    /** categoryManager.update's descendant rewrite: `filename = replace(filename, current/, new/)` under `filename like current/%`. */
+    replaceFilenamePrefix(
+      tx: TenantTx,
+      args: { siteId: string; currentFilename: string; newFilename: string },
+      ctx?: WriteContext,
+    ): Promise<CategoryRow[]> {
+      return updateWhere<CategoryRow>(
+        tx,
+        CATEGORY,
+        (p) => `siteid = ${p.add(args.siteId)} AND ${ciLike(p, 'filename', `${args.currentFilename}/%`)}`,
+        (row) => ({ filename: replaceAllNoCase(row.filename ?? '', `${args.currentFilename}/`, `${args.newFilename}/`) }),
+        ctx,
+      );
+    },
+
     /** categoryDAO.read and its readBy variants; more than one row where legacy returns a bean array. */
     readCategory(tx: TenantTx, lookup: CategoryLookup): Promise<CategoryRow[]> {
       const p = new SqlParams(1);
@@ -3604,6 +3619,19 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
         tx,
         [PERMISSION_PROJECTION],
         `SELECT * FROM ${name(PERMISSION_PROJECTION)} WHERE ${filters.join(' AND ')} ORDER BY content_id, group_id, type`,
+        [tx.tenantId, ...p.values],
+      );
+    },
+
+    /** contentUtility.getRestrictGroups over one user pool: the live groups of `siteId` with `isPublic`, `Admin` excepted, by name. */
+    restrictGroups(tx: TenantTx, args: { siteId: string; isPublic: 0 | 1 }): Promise<GroupProjectionRow[]> {
+      const p = new SqlParams(1);
+      return select<GroupProjectionRow>(
+        tx,
+        [GROUP_PROJECTION],
+        `SELECT * FROM ${name(GROUP_PROJECTION)} WHERE tenant_id = $1 AND NOT deleted AND is_public = ${p.add(args.isPublic)}` +
+          ` AND ${ciIdExpr('site_id', 'legacy_ci')} = ${p.add(args.siteId)}::bpchar AND lower(rtrim(group_name)) <> 'admin'` +
+          ` ORDER BY ${orderKey('lower(group_name)', 'asc')}, group_id`,
         [tx.tenantId, ...p.values],
       );
     },
