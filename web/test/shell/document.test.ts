@@ -5,6 +5,7 @@ import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Roles, moduleRole } from '@opt2/platform/auth';
 import { renderCsrfFields } from '@opt2/platform/legacy-compat';
+import { businessClock } from '@opt2/platform/testing';
 import { createCsrfRenderer } from '@/lib/csrf';
 import { resetLegacySettingsForTests } from '@/lib/env';
 import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-client';
@@ -23,6 +24,8 @@ import {
   type ShellHooks,
   type ShellView,
 } from '@/shell/document';
+import { renderDialog } from '@/shell/dialog';
+import { renderHtmlFoot } from '@/shell/html-foot';
 import { OPT2_NAV_MODULES as NAV_MODULES } from '@/shell/nav';
 import { CSRF_UPDATECORE } from '../fixtures/identity/csrf';
 import { PROMPT_TALLY_NONZERO, promptCountsNonZero, promptCountsZero } from '../fixtures/strategies-content/prompts';
@@ -39,7 +42,8 @@ import { fakeGatewayClient, routeKey, type FakeCall, type FakeGatewayClient } fr
 
 const FIXTURES = path.resolve(import.meta.dirname, '../fixtures/shell');
 const Z = '00000000000000000000000000000000';
-const NOW = new Date(2026, 5, 30, 12);
+const NOW = businessClock().now();
+const MSIE_UA = 'Mozilla/4.0 (compatible; MSIE 8.0; Windows NT 6.1; Trident/4.0)';
 const RB = rbFor('en_US');
 const HOOKS: ShellHooks = { secondaryMenus: {} };
 const VIEW_MARK = '<!--VIEW-->';
@@ -480,6 +484,69 @@ describe('renderAdminDocument', () => {
     const ctx: AdminRequest = { ...base, rc: request, action: `core:${action.toLowerCase()}` };
     const $ = $of(await documentFor(ctx));
     expect($('#globalSearch input[name="siteid"]').val()).toBe(expected);
+  });
+});
+
+const ASSET_ROOTS = /^\/(?:admin\/assets|core\/vendor|core\/modules)\//;
+const ADMIN_CSS = '/admin/assets/css/admin.min.css';
+const FILEBROWSER_CSS = '/admin/assets/js/filebrowser/assets/css/filebrowser.css';
+const COLORPICKER_CSS = '/core/vendor/colorpicker/css/bootstrap-colorpicker.min.css?coreversion=7.6.1';
+const IE_CSS = '/admin/assets/css/ie.min.css?coreversion=7.6.1';
+
+/** `src`/`href` of every `<script>` and `<link>` tag, those in IE conditional comments included. */
+const assetRefs = (markup: string): string[] =>
+  [...markup.matchAll(/<(?:script|link)\b[^>]*?\s(?:src|href)="([^"]*)"/g)].map((match) => match[1] ?? '');
+
+/** `href` of every `<link>` tag carrying `rel="stylesheet"`, in document order. */
+const stylesheetRefs = (markup: string): string[] =>
+  [...markup.matchAll(/<link\b[^>]*>/g)]
+    .map((match) => match[0])
+    .filter((tag) => /\srel="stylesheet"/.test(tag))
+    .map((tag) => /\shref="([^"]*)"/.exec(tag)?.[1] ?? '');
+
+const msie = (ctx: AdminRequest): AdminRequest => ({ ...ctx, isMSIE: true, userAgent: MSIE_UA });
+const usersList = (): AdminRequest => adminS2Request({ circuit: 'cUsers', item: 'list' });
+const compactEdit = (): AdminRequest => adminS2Request({ circuit: 'cArch', item: 'edit', rc: { compactDisplay: 'true' } });
+
+describe('shell assets', () => {
+  it('loads the footer scripts in legacy order', () => {
+    const $ = cheerio.load(toString(renderHtmlFoot()), null, false);
+    expect($('script').map((_, script) => $(script).attr('src')).get()).toEqual([
+      '/admin/assets/js/jquery/jquery-tagselector.js?coreversion=7.6.1',
+      '/admin/assets/js/bootstrap-tabdrop.js',
+      '/admin/assets/js/bootstrap-slider/bootstrap-slider.min.js',
+    ]);
+  });
+
+  it('renders the alert dialog alone, without the Razuna assets', () => {
+    expect(toString(renderDialog())).toBe(
+      '<div id="alertDialog" title="Alert" class="hide">\n\t<span id="alertDialogMessage"></span>\n</div>',
+    );
+  });
+
+  it.each([
+    { name: 'the full layout', ctx: usersList, chrome: true, stylesheets: [ADMIN_CSS, FILEBROWSER_CSS, COLORPICKER_CSS] },
+    {
+      name: 'the full layout for MSIE',
+      ctx: () => msie(usersList()),
+      chrome: true,
+      stylesheets: [ADMIN_CSS, FILEBROWSER_CSS, COLORPICKER_CSS, IE_CSS],
+    },
+    { name: 'the compact layout', ctx: compactEdit, chrome: false, stylesheets: [FILEBROWSER_CSS, COLORPICKER_CSS, ADMIN_CSS] },
+    {
+      name: 'the compact layout for MSIE',
+      ctx: () => msie(compactEdit()),
+      chrome: false,
+      stylesheets: [FILEBROWSER_CSS, COLORPICKER_CSS, ADMIN_CSS, IE_CSS],
+    },
+  ])('references only legacy assets in place in $name', async ({ ctx, chrome, stylesheets }) => {
+    const markup = serializeAdminDocument(await documentFor(ctx()));
+    expect(cheerio.load(markup)('#sidebar, #header-navbar').length).toBe(chrome ? 2 : 0);
+    const refs = assetRefs(markup);
+    expect(refs.length).toBeGreaterThan(0);
+    expect(refs.filter((url) => !ASSET_ROOTS.test(url))).toEqual([]);
+    expect(stylesheetRefs(markup)).toEqual(stylesheets);
+    expect(markup).not.toMatch(/<style\b/i);
   });
 });
 

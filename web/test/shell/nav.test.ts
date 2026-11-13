@@ -20,6 +20,7 @@ import {
   siteAdminRequest,
   type AdminRequestPartial,
 } from '../helpers/admin-request';
+import { siteTenantA } from '../fixtures/programs-sites/sites';
 
 const FIXTURES = path.resolve(import.meta.dirname, '../fixtures/shell');
 const Z = '00000000000000000000000000000000';
@@ -439,8 +440,31 @@ describe('visibility', () => {
 });
 
 describe('OPT-2 group', () => {
-  it('is absent without a synthetic-module role', () => {
-    expect(render(shell(adminOn({ circuit: 'cArch', item: 'list' })))).not.toContain('admin-nav-opt2');
+  it.each<[string, () => AdminRequest]>([
+    ['an S2 admin', () => adminOn({ circuit: 'cArch', item: 'list' })],
+    ['a site admin', () => siteAdminRequest('tenant-a', { circuit: 'cArch', item: 'list' })],
+  ])('is absent for %s without a synthetic-module role', (_, request) => {
+    expect(render(shell(request()))).not.toContain('admin-nav-opt2');
+  });
+
+  it('is one group built from legacy nav classes only', () => {
+    const ctx = opt2RoleRequest(Roles.financeApprover, {
+      user: { roles: [Roles.systemUser, ...OPT2_NAV_MODULES.flatMap((entry) => entry.roles)] },
+    });
+    const $ = cheerio.load(render(shell(ctx, {}, { opt2Module: 'surveys' })), null, false);
+    expect($('#admin-nav-opt2').length).toBe(1);
+    expect($('#admin-nav-opt2 > ul > li > a').toArray().map((el) => $(el).attr('href'))).toEqual(
+      OPT2_NAV_MODULES.map((entry) => `/opt2/admin/${entry.module}/${entry.screen}?siteid=tenant-a`),
+    );
+    const classes = $('#admin-nav-opt2, #admin-nav-opt2 [class]')
+      .toArray()
+      .flatMap((el) => ($(el).attr('class') ?? '').split(/\s+/).filter(Boolean));
+    expect([...new Set(classes.filter((name) => !name.startsWith('mi-')))].sort()).toEqual([
+      'active',
+      'nav-submenu',
+      'open',
+      'sidebar-mini-hide',
+    ]);
   });
 
   it.each(OPT2_NAV_MODULES.flatMap((entry) => entry.roles.map((role) => [role, entry] as const)))(
@@ -521,6 +545,17 @@ describe('version box', () => {
     vi.stubEnv('MURA_MODE', 'Staging');
     const ctx = adminOn({ circuit: 'cArch', item: 'list', site: { lastDeployment } });
     expect(versionLinks(shell(ctx))).toContain(expected);
+  });
+
+  it('shows the tenant-a deployment under the en_US day-of-year mask', () => {
+    vi.stubEnv('MURA_MODE', 'Staging');
+    const ctx = siteAdminRequest('tenant-a', {
+      circuit: 'cArch',
+      item: 'list',
+      site: { lastDeployment: siteTenantA.lastDeployment },
+    });
+    expect(ctx.session.locale).toBe('en_US');
+    expect(versionLinks(shell(ctx))).toContain('Last Deployment 10/302/2026 10:15 AM');
   });
 
   it('omits Last Deployment outside staging', () => {

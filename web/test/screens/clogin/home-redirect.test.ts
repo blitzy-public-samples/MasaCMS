@@ -1,14 +1,12 @@
-// home.cfc redirect() against legacy: the owner's getUserSites and bindToDomain(isAdmin=true), and the landing redirect.
+// home.cfc redirect() against legacy, over programs-sites' getUserSites and bindToDomain answer (tested there).
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { businessClock } from '@opt2/platform/testing';
 import type { components } from '@/generated/clients/programs-sites';
-import { createCsrfRenderer } from '@/lib/csrf';
 import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-client';
 import type { AdminRequest } from '@/lib/request-context';
 import { buildUrl } from '@/lib/urls';
 import { homeRedirectScreen } from '@/screens/clogin/home-redirect';
-import type { ScreenContext, SubmitResult } from '@/screens/registry';
+import type { SubmitResult } from '@/screens/registry';
 import {
   adminS2Request,
   anonymousRequest,
@@ -18,6 +16,10 @@ import {
 } from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
 import { fakeGatewayClient, routeKey, type FakeGatewayClient, type FakeReply } from '../../helpers/fake-gateway';
+import { makeScreenContext } from '../../helpers/screen-context';
+
+// The registry loads every circuit's screens; the screen context reads only its shell hooks.
+vi.mock('@/screens/registry', () => ({ shellHooks: { secondaryMenus: {} } }));
 
 type UserSite = components['schemas']['UserSite'];
 
@@ -38,21 +40,9 @@ const sitesReply = (sites: readonly UserSite[], boundSiteId: string | null = nul
   body: { sites, boundSiteId },
 });
 
-/** The screen context `req` is submitted in, over `gateway`. */
-function contextFor(req: AdminRequest, gateway: FakeGatewayClient): ScreenContext {
-  return {
-    req,
-    gateway,
-    csrf: createCsrfRenderer(gateway),
-    rb: { locale: 'en_US', rbKey: (key) => `${key}_missing`, messageFormat: (pattern) => pattern },
-    hooks: { secondaryMenus: {} },
-    now: businessClock().now(),
-  };
-}
-
 /** The `Location` the screen answers `req` with. */
 async function locationFor(req: AdminRequest, gateway: FakeGatewayClient = fakeGatewayClient()): Promise<string> {
-  const result: SubmitResult = await homeRedirectScreen.submit(contextFor(req, gateway));
+  const result: SubmitResult = await homeRedirectScreen.submit(makeScreenContext({ req, gateway }));
   if (result.kind !== 'location') throw new TypeError(`Expected a location result, got ${result.kind}`);
   return result.location;
 }
@@ -135,8 +125,10 @@ describe('home.redirect target', () => {
     expect(await locationFor(editorRequest(forwardedFor('admin.example.com')), gateway)).toBe(siteManager('tenant-a'));
   });
 
-  it('opens a site without a bind order first', async () => {
-    const sites = [userSite('default', 1), userSite('tenant-a', null)];
+  it.each([
+    ['after', [userSite('default', 1), userSite('tenant-a', null)]],
+    ['before', [userSite('tenant-a', null), userSite('default', 1)]],
+  ])('opens a site without a bind order first when listed %s an ordered one', async (_name, sites) => {
     const gateway = fakeGatewayClient({ [USER_SITES]: sitesReply(sites) });
     expect(await locationFor(adminS2Request(), gateway)).toBe(siteManager('tenant-a'));
   });

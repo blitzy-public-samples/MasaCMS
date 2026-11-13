@@ -9,7 +9,6 @@ import {
   CONTENT_MODULE_ID,
   FORM_MODULE_ID,
   ROOT_CONTENT_ID,
-  SESSION_TOP_IDS,
   VARIATION_MODULE_ID,
 } from '@/screens/carch/model';
 import {
@@ -21,12 +20,20 @@ import {
   type AdminRequestPartial,
 } from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
-import type { WebTestSubjectKey } from '../../helpers/tokens';
+
+type Subject = NonNullable<Parameters<typeof makeAdminRequest>[1]>;
 
 // Legacy's whitelist carries this 36-character id, which has no session topid default.
 const LONG_VARIATION_ID = '000000000000000000000000000000000099';
 const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
 const REFERER = 'http://localhost/admin/?muraAction=cArch.list';
+/** `session['m<moduleid>']` defaults of carch.cfc 90-101. */
+const LEGACY_TOPS: Readonly<Record<string, string>> = {
+  m00000000000000000000000000000000000: '00000000000000000000000000000000001',
+  m00000000000000000000000000000000003: '00000000000000000000000000000000003',
+  m00000000000000000000000000000000004: '00000000000000000000000000000000004',
+  m00000000000000000000000000000000099: '00000000000000000000000000000000099',
+};
 
 let restore: () => void;
 beforeEach(() => {
@@ -39,7 +46,7 @@ afterEach(() => {
 const carchRequest = (
   rc: Readonly<Record<string, string>> = {},
   session: AdminRequestPartial['session'] = {},
-  subject: WebTestSubjectKey = 'admin',
+  subject: Subject = 'admin',
 ): AdminRequest => makeAdminRequest({ circuit: 'carch', item: 'list', rc, session }, subject);
 
 const gate = async (req: AdminRequest): Promise<GateDecision> => carchGate(req, { secure: () => secure(req) });
@@ -60,9 +67,14 @@ describe('carchGate', () => {
     expect(decision).toEqual(secure(req));
   });
 
-  it('sends a system user without the module back to the referrer', async () => {
-    const req = makeAdminRequest({ circuit: 'carch', item: 'list', headers: new Headers({ referer: REFERER }) }, 'systemUser');
-    await expect(gate(req)).resolves.toEqual({ kind: 'redirect', location: REFERER });
+  it.each([
+    ['the referrer', new Headers({ referer: REFERER }), REFERER],
+    ['./ without a referrer', new Headers(), './'],
+  ])('sends a system user without the module back to %s', async (_case, headers, location) => {
+    const req = makeAdminRequest({ circuit: 'carch', item: 'list', headers }, 'systemUser');
+    const decision = await gate(req);
+    expect(decision).toEqual({ kind: 'redirect', location });
+    expect(decision).toEqual(secure(req));
   });
 
   it('never reads roles from rc', async () => {
@@ -186,16 +198,23 @@ describe('applyCarchDefaults', () => {
     expect(out.sessionWrites).toEqual({
       muraValues: { objectInstanceId: 'I1' },
       moduleid: COMPONENT_MODULE_ID,
-      moduleTopIds: SESSION_TOP_IDS,
+      moduleTopIds: LEGACY_TOPS,
     });
     expect(out.session).toMatchObject({ muraValues: { objectInstanceId: 'I1' }, mura: { objectInstanceId: 'I1' } });
     expect([out.session.keywords, out.session.openSectionList]).toEqual(['', '']);
   });
 
+  it('keeps stored keywords and openSectionList without writing them', () => {
+    const out = applyCarchDefaults(carchRequest({}, { keywords: 'news', openSectionList: 'A,B' }));
+    expect([out.session.keywords, out.session.openSectionList]).toEqual(['news', 'A,B']);
+    expect(Object.keys(out.sessionWrites)).not.toContain('keywords');
+    expect(Object.keys(out.sessionWrites)).not.toContain('openSectionList');
+  });
+
   it('keeps earlier session writes and is idempotent', () => {
     const base = carchRequest({ moduleid: FORM_MODULE_ID });
     const out = applyCarchDefaults({ ...base, sessionWrites: { rb: 'en_US' } });
-    expect(out.sessionWrites).toEqual({ rb: 'en_US', moduleid: FORM_MODULE_ID, moduleTopIds: SESSION_TOP_IDS });
+    expect(out.sessionWrites).toEqual({ rb: 'en_US', moduleid: FORM_MODULE_ID, moduleTopIds: LEGACY_TOPS });
     const again = applyCarchDefaults(out);
     expect({ ...again.rc }).toEqual({ ...out.rc });
     expect(again.sessionWrites).toEqual(out.sessionWrites);
@@ -207,8 +226,8 @@ describe('session object instance and module tops', () => {
   const LONG_KEY = `m${LONG_VARIATION_ID}`;
 
   it.each([
-    ['without a topid', {}, SESSION_TOP_IDS],
-    ['with a topid', { topid: 'T1' }, { ...SESSION_TOP_IDS, [CONTENT_KEY]: 'T1' }],
+    ['without a topid', {}, LEGACY_TOPS],
+    ['with a topid', { topid: 'T1' }, { ...LEGACY_TOPS, [CONTENT_KEY]: 'T1' }],
   ])('writes every module default and the current top on the first request %s', (_case, rc, tops) => {
     const out = applyCarchDefaults(carchRequest(rc));
     expect(out.sessionWrites.moduleTopIds).toEqual(tops);
@@ -221,7 +240,7 @@ describe('session object instance and module tops', () => {
   ])('reuses the stored topid of the module when rc.topid is %s', (_case, rc) => {
     const out = applyCarchDefaults(carchRequest(rc, { moduleTopIds: { [CONTENT_KEY]: 'T9' } }));
     expect(out.rc['topid']).toBe('T9');
-    expect(out.sessionWrites.moduleTopIds).toEqual({ ...SESSION_TOP_IDS, [CONTENT_KEY]: 'T9' });
+    expect(out.sessionWrites.moduleTopIds).toEqual({ ...LEGACY_TOPS, [CONTENT_KEY]: 'T9' });
   });
 
   it('reuses the topid a request stored for the 36-character id', () => {
@@ -244,7 +263,7 @@ describe('session object instance and module tops', () => {
     ['no instance id', {}, {}],
     ['the stored instance id', { instanceid: 'I1' }, { objectInstanceId: 'I1' }],
   ])('writes nothing when the session already holds the module, its tops and %s', (_case, rc, muraValues) => {
-    const req = carchRequest(rc, { moduleid: CONTENT_MODULE_ID, moduleTopIds: SESSION_TOP_IDS, muraValues });
+    const req = carchRequest(rc, { moduleid: CONTENT_MODULE_ID, moduleTopIds: LEGACY_TOPS, muraValues });
     const out = applyCarchDefaults(req);
     expect(out.sessionWrites).toEqual({});
     expect(out.session).toBe(req.session);
@@ -252,6 +271,16 @@ describe('session object instance and module tops', () => {
 });
 
 describe('module id sync and topid', () => {
+  it('names the legacy module and home ids', () => {
+    expect([CONTENT_MODULE_ID, COMPONENT_MODULE_ID, FORM_MODULE_ID, VARIATION_MODULE_ID, ROOT_CONTENT_ID]).toEqual([
+      '00000000000000000000000000000000000',
+      '00000000000000000000000000000000003',
+      '00000000000000000000000000000000004',
+      '00000000000000000000000000000000099',
+      '00000000000000000000000000000000001',
+    ]);
+  });
+
   it('whitelists the legacy module ids, 36-character entry included', () => {
     expect(CARCH_SESSION_MODULE_IDS).toEqual([
       '00000000000000000000000000000000000',
