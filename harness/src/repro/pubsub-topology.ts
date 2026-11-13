@@ -34,6 +34,15 @@ export type TopologyTarget = 'local' | 'cloud';
 /** Delivery attempts before Pub/Sub forwards a message to the subscription's dead-letter topic. */
 export const MAX_DELIVERY_ATTEMPTS = 5;
 
+/** Redelivery backoff of a push subscription, in whole seconds. */
+export interface PushRetryPolicy {
+  minimumBackoff: { seconds: number };
+  maximumBackoff: { seconds: number };
+}
+
+/** Backoff between push redeliveries, so a consumer outage spends the delivery attempts over minutes rather than seconds. */
+export const PUSH_RETRY_POLICY: PushRetryPolicy = { minimumBackoff: { seconds: 10 }, maximumBackoff: { seconds: 600 } };
+
 /** Repository-relative path of the generated cloud variables file. */
 export const TFVARS_RELATIVE_PATH = 'infra/terraform/envs/plan/topology.auto.tfvars.json';
 
@@ -365,13 +374,14 @@ export interface PushSubscriptionOptions {
   pushConfig: { pushEndpoint: string };
   enableMessageOrdering: boolean;
   deadLetterPolicy: DeadLetterPolicy;
+  retryPolicy: PushRetryPolicy;
 }
 
-/** The subscription methods used to bring an existing push subscription up to date. */
+/** The subscription methods used to bring an existing push or DLQ replay subscription up to date. */
 export interface SubscriptionHandleLike {
   getMetadata(): Promise<[{ topic?: string | null; enableMessageOrdering?: boolean | null }, ...unknown[]]>;
   modifyPushConfig(config: { pushEndpoint: string }): Promise<unknown>;
-  setMetadata(metadata: { deadLetterPolicy: DeadLetterPolicy }): Promise<unknown>;
+  setMetadata(metadata: { deadLetterPolicy: DeadLetterPolicy; retryPolicy: PushRetryPolicy }): Promise<unknown>;
   delete(): Promise<unknown>;
 }
 
@@ -424,7 +434,18 @@ async function reconcileEmulator(client: PubSubLike, topology: Topology, opts: L
     if (port === undefined) throw new TopologyError(`no local port for ${subscription.consumer}, the consumer of ${name}`);
     if (await createIfAbsent(() => client.createTopic(subscription.dead_letter_topic))) result.dlqTopics += 1;
     const replay = () => client.topic(subscription.dead_letter_topic).createSubscription(subscription.dlq_replay_subscription);
-    if (await createIfAbsent(replay)) result.replaySubscriptions += 1;
+    if (await createIfAbsent(replay)) {
+      result.replaySubscriptions += 1;
+    } else {
+      const existingReplay = client.subscription(subscription.dlq_replay_subscription);
+      const [replayMetadata] = await existingReplay.getMetadata();
+      if (replayMetadata.topic !== topicPath(subscription.dead_letter_topic)) {
+        // Deleting a DLQ topic detaches its replay subscription for good; only a new subscription receives its dead letters.
+        await existingReplay.delete();
+        await replay();
+        result.replaySubscriptions += 1;
+      }
+    }
 
     const options: PushSubscriptionOptions = {
       pushConfig: {
@@ -435,6 +456,7 @@ async function reconcileEmulator(client: PubSubLike, topology: Topology, opts: L
         deadLetterTopic: topicPath(subscription.dead_letter_topic),
         maxDeliveryAttempts: subscription.max_delivery_attempts,
       },
+      retryPolicy: PUSH_RETRY_POLICY,
     };
     const create = () => client.topic(subscription.topic).createSubscription(name, options);
     if (await createIfAbsent(create)) {
@@ -450,7 +472,7 @@ async function reconcileEmulator(client: PubSubLike, topology: Topology, opts: L
     } else {
       // Restores push delivery after a drain switched the subscription to pull.
       await existing.modifyPushConfig(options.pushConfig);
-      await existing.setMetadata({ deadLetterPolicy: options.deadLetterPolicy });
+      await existing.setMetadata({ deadLetterPolicy: options.deadLetterPolicy, retryPolicy: options.retryPolicy });
     }
     result.updated += 1;
   }

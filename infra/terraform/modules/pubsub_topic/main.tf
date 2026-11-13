@@ -43,6 +43,11 @@ resource "google_pubsub_subscription" "push" {
     dead_letter_topic     = google_pubsub_topic.dlq[each.key].id
     max_delivery_attempts = each.value.max_delivery_attempts
   }
+
+  retry_policy {
+    minimum_backoff = "10s"
+    maximum_backoff = "600s"
+  }
 }
 
 resource "google_pubsub_subscription" "dlq_replay" {
