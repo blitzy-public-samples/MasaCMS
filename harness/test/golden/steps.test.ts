@@ -2,10 +2,18 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { crc32, inflateSync } from 'node:zlib';
 import { routeKeyForRequest, type RouteKeyRequest } from '@opt2/platform/legacy-compat';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { scenarioSchema, type Extraction, type Scenario, type Step } from '../../src/golden/catalogue.js';
+import {
+  loadCatalogue,
+  scenarioById,
+  scenarioSchema,
+  type Extraction,
+  type Scenario,
+  type Step,
+} from '../../src/golden/catalogue.js';
 import { GoldenConfigError } from '../../src/golden/errors.js';
 import { createScenarioContext, session, type ScenarioContext } from '../../src/golden/session.js';
 import {
@@ -40,6 +48,9 @@ const NO_LOGIN = { default: { login: 'none', via: 'admin' } };
 const TWO_SESSIONS = { admin: { login: 'none', via: 'admin' }, editor: { login: 'none', via: 'admin' } };
 
 const ADMIN_LOGIN_HTML = readFileSync(new URL('../fixtures/html/admin-login.html', import.meta.url), 'utf8');
+const EDIT_USER_HTML = readFileSync(new URL('../fixtures/html/admin-edituser.html', import.meta.url), 'utf8');
+const SUCCESS_ENVELOPE = readFileSync(new URL('../fixtures/http/envelope-success.json', import.meta.url), 'utf8');
+const CATALOGUE_FIXTURE = fileURLToPath(new URL('../fixtures/golden/catalogue.valid.yaml', import.meta.url));
 const TINY_PDF = readFileSync(new URL('../fixtures/exports/tiny.pdf', import.meta.url));
 const SERVER_ERROR_ENVELOPE = readFileSync(
   new URL('../fixtures/http/envelope-error-500-server-error.json', import.meta.url),
@@ -456,6 +467,65 @@ describe('runStep requests', () => {
     expect(record.routeKey).toBe('api:content.save');
   });
 
+  it('resolves envelope bindings inside nested JSON values and into a later route', async () => {
+    const [first, second] = ['6E1D3B2A-C2F4-4B6A-9D8E7F6A5B4C3D2E', '7F2E4C3B-D3A5-4C7B-8E9F0A1B2C3D4E5F'];
+    const parent = '1A2B3C4D-5E6F-4A7B-8C9D0E1F2A3B4C5D';
+    const fake = fakeOrigin({
+      'GET /_api/json/v1/tenant-a/content?type=Page': json(SUCCESS_ENVELOPE),
+      'POST /_api/json/v1/tenant-a/content': json({ data: { id: 'FIXTURE-NEW' } }),
+      [`GET /_api/json/v1/tenant-a/content/${second}`]: json({ data: { contentid: second } }),
+    });
+    const s = scenario([
+      {
+        name: 'find',
+        route: '/_api/json/v1/tenant-a/content?type=Page',
+        extract: { data: { from: 'body', path: 'data' }, first: { from: 'body', path: 'data.items[0].contentid' } },
+      },
+      {
+        name: 'save',
+        method: 'POST',
+        route: '/_api/json/v1/tenant-a/content',
+        body: {
+          siteid: 'tenant-a',
+          parent: { id: '${find.data.items[0].parentid}', path: ['${find.first}', 'FIXTURE-literal'] },
+          total: '${find.data.totalitems}',
+          label: 'n=${find.data.totalitems}',
+        },
+      },
+      { name: 'read', route: '/_api/json/v1/tenant-a/content/${find.data.items[1].contentid}' },
+    ]);
+    const ctx = contextFor(s, fake);
+    const records = await captureAll(ctx, s, fake);
+    const resolved = {
+      siteid: 'tenant-a',
+      parent: { id: parent, path: [first, 'FIXTURE-literal'] },
+      total: 2,
+      label: 'n=2',
+    };
+    expect(ctx.bindings.get('find.first')).toBe(first);
+    expect(JSON.parse(callAt(fake, 1).body?.toString('utf8') ?? '')).toStrictEqual(resolved);
+    expect(records[1]?.request.body).toStrictEqual({ kind: 'json', value: resolved });
+    expect(callAt(fake, 2).target).toBe(`/_api/json/v1/tenant-a/content/${second}`);
+    expect(records.map((record) => record.routeKey)).toStrictEqual([
+      'api:content.findquery',
+      'api:content.save',
+      'api:content.findone',
+    ]);
+  });
+
+  it('sends a csrf none form exactly as declared, fetching no token', async () => {
+    const fake = fakeOrigin({ [`POST ${LOGIN_PAGE}`]: html('<p>ok</p>') });
+    const step = { name: 'send', method: 'POST', route: LOGIN_PAGE, csrf: 'none', form: { email: 'a@example.test' } };
+    const { record } = await runSingle(step, fake);
+    expect(fake.calls.map((call) => `${call.method} ${call.target}`)).toStrictEqual([`POST ${LOGIN_PAGE}`]);
+    expect(formEntries(callAt(fake, 0))).toStrictEqual([['email', 'a@example.test']]);
+    expect(Object.keys(callAt(fake, 0).headers).filter((name) => name.startsWith('x-csrf'))).toStrictEqual([]);
+    expect(record.request).toMatchObject({
+      headers: { 'content-type': FORM_TYPE },
+      body: { kind: 'form', value: { email: 'a@example.test' } },
+    });
+  });
+
   it('sends multipart file fixtures and records each file by digest and size', async () => {
     const fake = fakeOrigin({ 'POST /admin/?muraAction=cArch.multiFileUpload': html('<p>uploaded</p>') });
     const files = [
@@ -599,6 +669,87 @@ describe('runStep CSRF', () => {
     const body = records[1]?.request.body;
     expect(body).toMatchObject({ kind: 'form', value: { password: MASK, csrf_token: LOGIN_TOKEN } });
     expect(JSON.stringify(records)).not.toContain(ADMIN_PASSWORD);
+  });
+
+  it('runs the GS-ID-01 login flow in one jar with the login page CSRF pair', async () => {
+    const catalogue = await loadCatalogue(CATALOGUE_FIXTURE);
+    const s = scenarioById(catalogue, 'GS-ID-01');
+    const fake = fakeOrigin({
+      'GET /admin/?muraAction=cLogin.main': html(ADMIN_LOGIN_HTML, [['set-cookie', 'CFID=FIXTURE-cfid; Path=/']]),
+      'POST /admin/index.cfm': redirect('./', ['CFTOKEN=FIXTURE-cftoken; Path=/; HttpOnly']),
+      'GET /admin/': html('<p>dashboard</p>'),
+      'GET /admin/?muraAction=cLogin.logout': html('<p>signed out</p>'),
+    });
+    const records = await runScenarioSteps(contextFor(s, fake), s, { mode: 'capture', fetch: fake.fetch });
+    expect(fake.calls.map((call) => `${call.method} ${call.target}`)).toStrictEqual([
+      'GET /admin/?muraAction=cLogin.main',
+      'POST /admin/index.cfm',
+      'GET /admin/',
+      'GET /admin/',
+      'GET /admin/?muraAction=cLogin.logout',
+    ]);
+    const post = callAt(fake, 1);
+    expect(post.headers.cookie).toBe('CFID=FIXTURE-cfid');
+    expect(formEntries(post)).toEqual(
+      expect.arrayContaining([
+        ['csrf_token', LOGIN_TOKEN],
+        ['csrf_token_expires', LOGIN_EXPIRES],
+        ['password', ADMIN_PASSWORD],
+      ]),
+    );
+    expect(callAt(fake, 4).headers.cookie).toBe('CFID=FIXTURE-cfid; CFTOKEN=FIXTURE-cftoken');
+    expect(records.map((record) => record.routeKey)).toStrictEqual(s.covers);
+    const login = records[1];
+    expect(login?.routeKey).toBe('admin:clogin.login');
+    expect(login?.request.body).toMatchObject({
+      kind: 'form',
+      value: { password: MASK, csrf_token: LOGIN_TOKEN, csrf_token_expires: LOGIN_EXPIRES },
+    });
+    expect(JSON.stringify(records)).not.toContain(ADMIN_PASSWORD);
+  });
+
+  it('submits an edit form with the ids and CSRF pair bound from its page, in the page session', async () => {
+    const userId = '11111111-1111-1111-1111111111111111';
+    const update = `/admin/index.cfm?muraAction=cUsers.update&userid=${userId}&routeid=`;
+    const fake = fakeOrigin({
+      [`GET /admin/?muraAction=cUsers.edituser&siteid=tenant-a&userid=${userId}`]: html(EDIT_USER_HTML, [
+        ['set-cookie', 'CFID=FIXTURE-edit; Path=/'],
+      ]),
+      [`POST ${update}`]: html('<p>saved</p>'),
+    });
+    const s = scenario([
+      {
+        name: 'edit',
+        route: `/admin/?muraAction=cUsers.edituser&siteid=tenant-a&userid=${userId}`,
+        extract: {
+          userid: { from: 'dom', selector: 'input[type=hidden][name=userid]', attr: 'value' },
+          actionUser: { from: 'dom', selector: 'form[name=form1]', attr: 'action', param: 'userid' },
+        },
+      },
+      {
+        name: 'save',
+        method: 'POST',
+        route: '/admin/index.cfm?muraAction=cUsers.update&userid=${edit.actionUser}&routeid=',
+        csrf: 'fetch-form',
+        csrfFrom: 'edit',
+        form: { userid: '${edit.userid}', fname: 'FIXTURE' },
+      },
+    ]);
+    const ctx = contextFor(s, fake);
+    const records = await captureAll(ctx, s, fake);
+    expect(ctx.bindings.get('edit.userid')).toBe(userId);
+    expect(ctx.bindings.get('edit.actionUser')).toBe(userId);
+    const post = callAt(fake, 1);
+    expect(post.target).toBe(update);
+    expect(post.headers.cookie).toBe('CFID=FIXTURE-edit');
+    const sent = new URLSearchParams(post.body?.toString('utf8'));
+    expect([sent.get('csrf_token'), sent.get('userid'), sent.get('type'), sent.get('fname')]).toStrictEqual([
+      'FIXTURECSRFTOKEN0000000000000003',
+      userId,
+      '2',
+      'FIXTURE',
+    ]);
+    expect(records[1]?.routeKey).toBe('admin:cusers.update{type=2,action=update}');
   });
 
   const NEW_USER_FORM = '/admin/?muraAction=cUsers.editUser&siteid=default&userid=';
@@ -882,6 +1033,22 @@ describe('runStep candidates', () => {
     expect(record.gap).toStrictEqual({ reason: GAP_REASON, candidatesTried: 3 });
     expect(record.candidateIndex).toBe(2);
     expect(record.request.url).toBe(`${api}?method=c`);
+  });
+
+  it('continues the scenario after a step recorded as a gap', async () => {
+    const fake = fakeOrigin({
+      [`GET ${api}?method=a`]: json(BAD_REQUEST_ENVELOPE, 400),
+      [`GET ${api}?method=b`]: json(BAD_REQUEST_ENVELOPE, 400),
+      [`GET ${api}?method=c`]: json(BAD_REQUEST_ENVELOPE, 400),
+      'GET /admin/?muraAction=cUsers.list': html('<p>users</p>'),
+    });
+    const s = scenario([candidateStep, { name: 'after', route: '/admin/?muraAction=cUsers.list' }]);
+    const records = await captureAll(contextFor(s, fake), s, fake);
+    expect(records.map((record) => [record.name, record.index, record.gap?.reason])).toStrictEqual([
+      ['boom', 0, GAP_REASON],
+      ['after', 1, undefined],
+    ]);
+    expect(fake.calls.at(-1)?.target).toBe('/admin/?muraAction=cUsers.list');
   });
 
   it('rejects an empty candidate list on capture', async () => {
