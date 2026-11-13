@@ -12,32 +12,36 @@ import {
   cfToBoolean,
   cfToNumber,
   isCfUuid,
-  legacyQuery,
-  legacyUsersCsv,
+  javaTrim,
+  legacyUsersCsvStream,
 } from '@opt2/platform/legacy-compat';
-import { legacyParamsOf, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
+import { legacyParamsOf, sendLegacyResponse, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
 import { registeredTenants, registryEntryForTenant, tenantForRegisteredSite, withTenant, type TenantRegistryEntry } from '@opt2/platform/tenancy';
 import {
   addToGroup,
   createGroup,
   findGroupForSite,
   groupSaveInputFrom,
-  listGroupMembers,
-  listGroups,
+  listGroupMembersPage,
+  listGroupsPage,
   newGroupRecord,
   removeFromGroup,
+  streamListedGroupMembers,
   updateGroup,
   type GroupActor,
   type GroupDeps,
   type GroupListRow,
-  type GroupMemberRow,
   type GroupRecord,
   type GroupSaveInput,
   type GroupSaveResult,
+  type ListedGroupMember,
 } from '../domain/groups.js';
 import { locateSession, type SessionDeps } from '../domain/sessions.js';
 import type { components } from '../generated/openapi.js';
+import type { ContentClient } from '../legacy/content-client.js';
+import type { ListPage } from '../repo/repository.js';
 import { validateCsrfForRoute, type CsrfRouteDeps } from './internal-csrf.js';
+import { LIST_PAGE_QUERY, continuation } from './list-page.js';
 
 // Group deletes, and saves that set or remove a photo or carry extended attributes, also write strategies-content units, so
 // they stay on legacy (withheld) and have no route here; the FW/1 redirects after each action are web's.
@@ -45,8 +49,8 @@ import { validateCsrfForRoute, type CsrfRouteDeps } from './internal-csrf.js';
 type Schemas = components['schemas'];
 type Rc = Record<string, unknown>;
 
-/** The group, session and CSRF operations the routes delegate to; `groups.db` also reads the site registry. */
-export type AdminGroupRouteDeps = { groups: GroupDeps; sessions: SessionDeps; csrf: CsrfRouteDeps['csrf'] };
+/** The group, session and CSRF operations the routes delegate to; `groups.db` also reads the site registry, and `content` resolves member photos. */
+export type AdminGroupRouteDeps = { groups: GroupDeps; content: ContentClient; sessions: SessionDeps; csrf: CsrfRouteDeps['csrf'] };
 
 interface GroupParams {
   groupId: string;
@@ -127,10 +131,9 @@ const MEMBER_COLUMNS = [
   'Created', 'RemoteID', 'Tags', 'tablist', 'photoFileExt',
 ] as const;
 
-type MemberValue = string | number | null;
-
-/** ACF 2023's `columnList` of that query: upper-cased and sorted, the order the users CSV writes its columns in. */
-const MEMBER_CSV_COLUMNS: readonly string[] = MEMBER_COLUMNS.map((column) => column.toUpperCase()).sort();
+type MemberColumn = (typeof MEMBER_COLUMNS)[number];
+/** A `readGroupMemberships` cell as the query returns it. */
+type MemberValue = string | number | Date | null;
 
 /** The cUsers `before()` access gate: S2, site admin, or both the Users and Site Manager module grants [legacy: admin/core/controllers/cusers.cfc:95,110-123]. */
 function cusersCaller(auth: Opt2AuthContext): CusersCaller {
@@ -171,9 +174,29 @@ function rcSiteId(rc: Rc, user: UserClaims): string {
   return typeof supplied === 'string' && supplied !== '' ? supplied : user.site;
 }
 
-/** `rc.ispublic` after `before()` scrubs it: kept for an admin when CFML reads it as a boolean, else 1 [legacy: admin/core/controllers/cusers.cfc:163]. */
+/** A JSON boolean literal; the scan re-serializes a padded one as `"YES"` or `"NO"`, which is no boolean. */
+const JSON_BOOLEAN = /^(?:true|false)$/;
+
+/**
+ * A request value as admin start-up's Portcullis scan leaves it, when CFML `isBoolean` then accepts it; else undefined
+ * [legacy: admin/Application.cfc:246-265, core/mura/Portcullis.cfc:113-192,373-400]. The scan drops NUL, keeps a
+ * numeric or boolean value, re-serializes other JSON (ACF reads every char <= U+0020 as JSON whitespace) and trims the rest.
+ */
+function scannedBoolean(value: string): string | undefined {
+  const text = value.replace(/\0/g, '');
+  const trimmed = javaTrim(text);
+  if (cfIsBoolean(text) || cfIsNumeric(text)) return trimmed;
+  return !JSON_BOOLEAN.test(trimmed) && cfIsBoolean(trimmed) ? trimmed : undefined;
+}
+
+/**
+ * `rc.ispublic` after the scan and `before()`'s scrub: kept for an admin when CFML reads it as a boolean, else 1
+ * [legacy: admin/core/controllers/cusers.cfc:163]. A non-text value, which no legacy form posts, is kept unscanned.
+ */
 function scrubbedIsPublic(value: unknown, isAdmin: boolean): unknown {
-  return isAdmin && cfIsBoolean(value) ? value : 1;
+  if (!isAdmin) return 1;
+  if (typeof value === 'string') return scannedBoolean(value) ?? 1;
+  return cfIsBoolean(value) ? value : 1;
 }
 
 /** A scrubbed `ispublic` as the numeric argument `getUserGroups` declares. */
@@ -322,31 +345,75 @@ function groupListItem(row: GroupListRow): Schemas['GroupListItem'] {
   };
 }
 
-// Identity holds the account columns and the contact names and email; the person columns people owns, and the photo
-// extension from strategies-content's tfiles, read as NULL.
-/** One `readGroupMemberships` row of a member, every column present in query order. */
-function memberRow(member: GroupMemberRow): Schemas['GroupMember'] {
-  const columns: Record<string, MemberValue> = Object.fromEntries(MEMBER_COLUMNS.map((column) => [column, null]));
+/** One `readGroupMemberships` row of a member as the query returns it, every column in query order. */
+function memberQueryRow(member: ListedGroupMember): Record<MemberColumn, MemberValue> {
   return {
-    ...columns,
     groupID: member.userid,
     userID: member.userid,
+    GroupName: member.groupname,
     Fname: member.fname,
     Lname: member.lname,
     UserName: member.username,
+    PasswordCreated: member.passwordcreated,
     Email: member.email,
     Company: member.company,
+    JobTitle: member.jobtitle,
+    MobilePhone: member.mobilephone,
+    Website: member.website,
     Type: member.type,
+    subType: member.subtype,
+    ContactForm: member.contactform,
     S2: member.s2,
+    LastLogin: member.lastlogin,
+    LastUpdate: member.lastupdate,
+    LastUpdateBy: member.lastupdateby,
+    LastUpdateByID: member.lastupdatebyid,
+    Perm: member.perm,
     InActive: member.inactive,
     IsPublic: member.ispublic,
     SiteID: member.siteid,
+    Subscribe: member.subscribe,
+    Notes: member.notes,
+    description: member.description,
+    Interests: member.interests,
+    keepPrivate: member.keepprivate,
+    PhotoFileID: member.photofileid,
+    IMName: member.imname,
+    IMService: member.imservice,
+    Created: member.created,
+    RemoteID: member.remoteid,
+    Tags: member.tags,
+    tablist: member.tablist,
+    photoFileExt: member.photofileext,
   };
 }
 
-/** A group's members, S2 members only for an S2 caller, as `readGroupMemberships` filters them [legacy: core/mura/user/userDAO.cfc:656]. */
-async function memberRows(deps: AdminGroupRouteDeps, caller: CusersCaller, groupId: string): Promise<Schemas['GroupMember'][]> {
-  return (await listGroupMembers(deps.groups, groupId, { includeS2: caller.isS2 })).map(memberRow);
+/** A query cell as the contract carries it: a timestamp as `LocalTimestamp`. */
+function jsonCell(value: MemberValue): string | number | null {
+  return value instanceof Date ? localTimestamp(value) : value;
+}
+
+/** One member row of the contract. */
+function memberRow(member: ListedGroupMember): Schemas['GroupMember'] {
+  const row = memberQueryRow(member);
+  const cells = Object.fromEntries(MEMBER_COLUMNS.map((column) => [column, jsonCell(row[column])]));
+  return { ...cells, groupID: member.userid, userID: member.userid };
+}
+
+/**
+ * The `page` window of a group's members, S2 members only for an S2 caller, as `readGroupMemberships` filters them
+ * [legacy: core/mura/user/userDAO.cfc:656], with the listing's total and continuation.
+ */
+async function memberRows(deps: AdminGroupRouteDeps, caller: CusersCaller, groupId: string, page: ListPage): Promise<Schemas['GroupMembers']> {
+  const { members, total } = await listGroupMembersPage(deps.groups, deps.content, groupId, { includeS2: caller.isS2, page });
+  return { items: members.map(memberRow), ...continuation(page, members.length, total) };
+}
+
+/** A group's members as raw `readGroupMemberships` rows, S2 members only for an S2 caller, pulled one photo-resolved batch at a time. */
+async function* memberQueryRows(deps: AdminGroupRouteDeps, caller: CusersCaller, groupId: string): AsyncGenerator<Record<MemberColumn, MemberValue>, void, undefined> {
+  for await (const batch of streamListedGroupMembers(deps.groups, deps.content, groupId, { includeS2: caller.isS2 })) {
+    for (const member of batch) yield memberQueryRow(member);
+  }
 }
 
 /** The registry entry of a registered legacy site id; null when unregistered. */
@@ -414,19 +481,42 @@ async function membershipIds(groups: GroupDeps, userId: string): Promise<string[
   return [...found.values()].sort(byGroupName).map((group) => group.userid);
 }
 
+/** `readMembershipIDs` within the token site's user pools: memberships and groups are read only in the pool tenants the registry gives for `claims.tid`. */
+export async function tokenMembershipIds(groups: GroupDeps, claims: UserClaims, userId: string): Promise<string[]> {
+  const entry = await registryEntryForTenant(groups.db, claims.tid);
+  const pools = entry === null ? [] : [userPool(entry, 0), userPool(entry, 1)];
+  const tenants = [...new Set(pools.flatMap((pool) => (pool === null ? [] : [pool.tenantId])))];
+  const held = new Map<string, string>();
+  for (const tenantId of tenants) {
+    for (const groupId of await withTenant(groups.db, tenantId, (tx) => groups.repo.membershipGroupIds(tx, userId))) held.set(idKey(groupId), groupId);
+  }
+  if (held.size === 0) return [];
+  const ids = [...held.values()];
+  const found = new Map<string, { userid: string; groupname: string | null }>();
+  for (const tenantId of tenants) {
+    for (const group of await withTenant(groups.db, tenantId, (tx) => groups.repo.findGroupsByIds(tx, ids))) found.set(idKey(group.userid), group);
+  }
+  return [...found.values()].sort(byGroupName).map((group) => group.userid);
+}
+
 /** Registers the cUsers group reads and writes; the auth hooks answer a `siteid` other than the token's site with 403. */
 export async function registerAdminGroupRoutes(app: FastifyInstance, deps: AdminGroupRouteDeps): Promise<void> {
   const { groups } = deps;
   const csrfDeps: CsrfRouteDeps = { csrf: deps.csrf };
 
   // `cUsers.list` [legacy: admin/core/controllers/cusers.cfc:178-183, core/mura/user/userGateway.cfc:93-120]
-  app.get<{ Reply: Schemas['GroupList'] }>('/v1/groups', { config: { opt2: ROUTE_AUTH } }, async (request) => {
-    const caller = cusersCaller(request.opt2Auth);
-    const rc = legacyParamsOf(request);
-    const isPublic = poolFlag(scrubbedIsPublic(rcValue(rc, 'ispublic'), caller.isAdmin));
-    const rows = await listGroups(groups, { siteId: rcSiteId(rc, caller.user), isPublic });
-    return { items: rows.map(groupListItem) };
-  });
+  app.get<{ Querystring: ListPage; Reply: Schemas['GroupList'] }>(
+    '/v1/groups',
+    { schema: { querystring: LIST_PAGE_QUERY }, config: { opt2: ROUTE_AUTH } },
+    async (request) => {
+      const caller = cusersCaller(request.opt2Auth);
+      const rc = legacyParamsOf(request);
+      const isPublic = poolFlag(scrubbedIsPublic(rcValue(rc, 'ispublic'), caller.isAdmin));
+      const page = { offset: request.query.offset, limit: request.query.limit };
+      const { rows, total } = await listGroupsPage(groups, { siteId: rcSiteId(rc, caller.user), isPublic, page });
+      return { items: rows.map(groupListItem), ...continuation(page, rows.length, total) };
+    },
+  );
 
   // `cUsers.update` with `type=1` and `action=Add` [legacy: admin/core/controllers/cusers.cfc:324-328]
   app.post<{ Reply: Schemas['GroupWriteResult'] }>('/v1/groups', { config: { opt2: ROUTE_AUTH } }, async (request) => {
@@ -457,12 +547,12 @@ export async function registerAdminGroupRoutes(app: FastifyInstance, deps: Admin
   );
 
   // `cUsers.editGroupMembers` [legacy: admin/core/controllers/cusers.cfc:234,263-265]
-  app.get<{ Params: GroupParams; Reply: Schemas['GroupMembers'] }>(
+  app.get<{ Params: GroupParams; Querystring: ListPage; Reply: Schemas['GroupMembers'] }>(
     '/v1/groups/:groupId/members',
-    { schema: { params: GROUP_PARAMS }, config: { opt2: ROUTE_AUTH } },
+    { schema: { params: GROUP_PARAMS, querystring: LIST_PAGE_QUERY }, config: { opt2: ROUTE_AUTH } },
     async (request) => {
       const caller = cusersCaller(request.opt2Auth);
-      return { items: await memberRows(deps, caller, request.params.groupId) };
+      return memberRows(deps, caller, request.params.groupId, { offset: request.query.offset, limit: request.query.limit });
     },
   );
 
@@ -472,8 +562,9 @@ export async function registerAdminGroupRoutes(app: FastifyInstance, deps: Admin
     { schema: { params: GROUP_PARAMS }, config: { opt2: ROUTE_AUTH } },
     async (request, reply) => {
       const caller = cusersCaller(request.opt2Auth);
-      const csv = legacyUsersCsv(legacyQuery([...MEMBER_CSV_COLUMNS], await memberRows(deps, caller, request.params.groupId)));
-      return reply.headers(csv.headers).send(csv.body);
+      // A closed member or a first-batch failure answers the error response; a later batch's failure aborts the body being sent.
+      const { body, headers } = await legacyUsersCsvStream(MEMBER_COLUMNS, memberQueryRows(deps, caller, request.params.groupId));
+      return sendLegacyResponse(reply, { status: 200, headers, body });
     },
   );
 

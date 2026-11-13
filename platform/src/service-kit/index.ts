@@ -41,8 +41,10 @@ export { createSignalBoundFetch } from './fetch.js';
 export {
   createService,
   defaultSurfaceOf,
+  isUnstorableTextError,
   legacyParamsOf,
   multipartFilesOf,
+  recordOutcomeReason,
   sendLegacyResponse,
   LEGACY_POST_LIMIT_BYTES,
   type CreateServiceOptions,

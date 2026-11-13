@@ -5,7 +5,7 @@ import { encodeJs, raw, type SafeHtml } from '@/lib/html';
 // Not one of this view's planned inputs: reused so the selector prints the theme path partials/js.ts prints on the
 // same edit page, rather than deriving `getThemeAssetPath()` a second way.
 import { siteBeanOf, sitePaths } from '@/lib/site-paths';
-import { isSiteAdminOrS2, structOf, structText } from '../model';
+import { isSuperOrAdminUser, structOf, structText } from '../model';
 import { cfListHas, type EditFormInput, type EditFormState, type SubTypeRow } from './custom-tags';
 
 /** What the selector reads of an edit panel's input; an {@link EditFormInput} satisfies it. */
@@ -133,7 +133,7 @@ export function renderTypeSelector(input: TypeSelectorInput): SafeHtml {
     onchange: (siteId) => `${call}${siteId}','${legacySettings().context}','${themeAssetPath(req)}');`,
   };
   if (cfListHas(state.pageLevelList, rcType, { noCase: true })) {
-    return raw(pageLevelSelector(s, state.baseTypeList, isSiteAdminOrS2(req)));
+    return raw(pageLevelSelector(s, state.baseTypeList, isSuperOrAdminUser(req)));
   }
   if (cfEq(rcType, 'File')) return raw(fileSelector(s));
   if (cfEq(rcType, 'Link')) return raw(compactSelector(s, 'Link', true));

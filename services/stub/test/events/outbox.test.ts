@@ -1,6 +1,6 @@
-/** Outbox recovery of the stub over a throwaway PostgreSQL schema: a failed in-request flush, the sweep chain, and a Pub/Sub emulator round trip. */
+/** Outbox recovery of the stub over a throwaway PostgreSQL schema per case: a failed in-request flush, the sweep chain, and a Pub/Sub emulator round trip. */
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createPublisher, decodeEnvelopeData, encodeEnvelope, envelopeAttributes, type EventEnvelope } from '@opt2/platform/events';
 import {
   CLOUD_TASKS_HEADERS,
@@ -32,12 +32,12 @@ import {
 } from '@opt2/platform/testing';
 import { newNote, noteCreatedPayload } from '../../src/domain/note.js';
 import { NOTE_CREATED_SUBSCRIPTION, NOTE_CREATED_TOPIC } from '../../src/events/topics.js';
-import { TEST_CLOCK, buildDbApp, createFakeTaskPort, headersFor, type TestApp } from '../helpers/app.js';
+import { TEST_CLOCK, buildDbApp, createFakeTaskPort, headersFor, type FakeTaskPort, type TestApp } from '../helpers/app.js';
 
 type OutboxRow = { event_id: string; topic: string; ordering_key: string; published_at: Date | null };
 type ProjectionRow = { note_id: string; apply_count: number };
 
-const pg = await pgAvailable();
+const pg = Boolean(process.env.PG_HOST) && (await pgAvailable());
 const emulator = await pubsubEmulatorAvailable();
 
 const SERVICE = 'stub';
@@ -49,13 +49,15 @@ const slot = slotStartS(NOW_S, INTERVAL_S);
 const PROJECT = process.env.GOOGLE_CLOUD_PROJECT ?? 'opt2-local';
 
 describe.skipIf(!pg)('outbox-pubsub-idempotent-consumer', () => {
-  const capturing = createCapturingPublisher();
-  const taskPort = createFakeTaskPort();
+  let capturing: CapturingPublisher;
+  let taskPort: FakeTaskPort;
   let schema: ThrowawaySchema;
   let app: TestApp<TenantDb, CapturingPublisher>['app'];
-  let sweptEventId: string;
 
-  beforeAll(async () => {
+  // Each case gets its own schema, publisher, task port and app, whose start-up creates the `slot` chain task.
+  beforeEach(async () => {
+    capturing = createCapturingPublisher();
+    taskPort = createFakeTaskPort();
     schema = await createThrowawaySchema({
       service: SERVICE,
       migrationsDir: fileURLToPath(new URL('../../db/migrations/', import.meta.url)),
@@ -65,12 +67,8 @@ describe.skipIf(!pg)('outbox-pubsub-idempotent-consumer', () => {
   });
 
   // Shutdown also ends schema.app, the pool the app was given; drop() skips a pool already ending.
-  afterAll(() => runCleanup('stub outbox suite', [() => app?.opt2.shutdown(), () => schema?.drop()]));
-
-  beforeEach(() => {
-    capturing.clear();
-    taskPort.failCreate(false);
-  });
+  // Both are idempotent, so releasing the previous case's handles again after a failed beforeEach is harmless.
+  afterEach(() => runCleanup('stub outbox case', [() => app?.opt2.shutdown(), () => schema?.drop()]));
 
   /** Outbox rows of `tenantId` in insertion order. */
   function outboxRows(tenantId: string): Promise<OutboxRow[]> {
@@ -127,18 +125,24 @@ describe.skipIf(!pg)('outbox-pubsub-idempotent-consumer', () => {
 
     const rows = (await outboxRows(TENANT_A.tenantId)).filter((row) => row.ordering_key === noteId);
     expect(rows).toEqual([expect.objectContaining({ topic: NOTE_CREATED_TOPIC, published_at: null })]);
-    sweptEventId = rows[0]?.event_id ?? '';
     expect(capturing.published).toEqual([]);
   });
 
   it('sweep publishes the row once and schedules its successor', async () => {
+    capturing.failNext();
+    const { statusCode, noteId } = await createNote('swept');
+    expect(statusCode).toBe(200);
+    const seeded = (await outboxRows(TENANT_A.tenantId)).filter((row) => row.ordering_key === noteId);
+    expect(seeded).toEqual([expect.objectContaining({ topic: NOTE_CREATED_TOPIC, published_at: null })]);
+    const eventId = seeded[0]?.event_id;
+
     const res = await sweep(slot);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ published: 1, failed: 0 });
     expect(capturing.published.map(({ topic, envelope }) => ({ topic, eventId: envelope.eventId }))).toEqual([
-      { topic: NOTE_CREATED_TOPIC, eventId: sweptEventId },
+      { topic: NOTE_CREATED_TOPIC, eventId },
     ]);
-    const [row] = (await outboxRows(TENANT_A.tenantId)).filter((candidate) => candidate.event_id === sweptEventId);
+    const [row] = (await outboxRows(TENANT_A.tenantId)).filter((candidate) => candidate.event_id === eventId);
     expect(row?.published_at).toBeInstanceOf(Date);
 
     const successorS = successorSlotS(slot, NOW_S, INTERVAL_S);
@@ -166,13 +170,13 @@ describe.skipIf(!pg)('outbox-pubsub-idempotent-consumer', () => {
     expect(await unpublished()).toHaveLength(1);
 
     taskPort.failCreate();
-    const failed = await sweep(slot + 2 * INTERVAL_S);
+    const failed = await sweep(slot);
     expect(failed.statusCode).toBe(503);
     expect(capturing.published).toEqual([]);
     expect(await unpublished()).toHaveLength(1);
 
     taskPort.failCreate(false);
-    const retried = await sweep(slot + 2 * INTERVAL_S, 1);
+    const retried = await sweep(slot, 1);
     expect(retried.statusCode).toBe(200);
     expect(capturing.published.map(({ envelope }) => envelope.aggregateId)).toEqual([noteId]);
     expect(await unpublished()).toEqual([]);

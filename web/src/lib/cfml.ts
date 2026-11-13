@@ -1,7 +1,10 @@
-// CFML loose comparison as ACF evaluates `eq` and `neq` between simple values.
+// CFML loose comparison as ACF evaluates `eq` and `neq` between simple values; the admin scan of `compactDisplay`.
+import { cfIsBoolean, cfIsNumeric } from '@opt2/platform/legacy-compat';
 
 const DECIMAL = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
 const BOOLEAN_WORD = /^(?:true|false|yes|no)$/i;
+/** A JSON boolean literal; the scan re-serializes a padded one as `"YES"` or `"NO"`, which is no boolean. */
+const JSON_BOOLEAN = /^(?:true|false)$/;
 
 /** Java `String.trim()`, which ACF applies before numeric parsing: strips every char <= U+0020. */
 function javaTrim(s: string): string {
@@ -33,8 +36,8 @@ function booleanOperand(v: unknown): number | undefined {
 }
 
 /**
- * CFML loose `eq`: when each side is numeric or a boolean word, their values as numbers with booleans as 1/0
- * (ACF: `'yes' eq 'true'`, `' no' eq '0'`); otherwise case-insensitive text.
+ * CFML loose `eq` on the operands as given, unscanned: when each side is numeric or a boolean word, their values as
+ * numbers with booleans as 1/0 (ACF: `'yes' eq 'true'`, `' no' eq '0'`); otherwise case-insensitive text.
  */
 export function cfEq(a: unknown, b: unknown): boolean {
   const x = numericOperand(a) ?? booleanOperand(a);
@@ -43,8 +46,22 @@ export function cfEq(a: unknown, b: unknown): boolean {
   return String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
 }
 
-/** ACF's `rc.compactDisplay eq 'true'` (untrimmed for `true`, unlike {@link cfEq}); absent is legacy's default `'false'`. */
+/**
+ * A raw `compactDisplay` request value as admin start-up's Portcullis scan leaves it in rc
+ * (admin/Application.cfc:246-265, core/mura/Portcullis.cfc:113-192,373-400): NUL dropped, a numeric or boolean value
+ * trimmed, a padded JSON boolean (ACF reads every char <= U+0020 as JSON whitespace) re-serialized, the rest trimmed.
+ * Idempotent. Exact for every boolean reading; the tag, word, smart-quote and JSON-container rewrites, which never
+ * yield a boolean, are not modelled.
+ */
+export function scanCompactDisplay(value: string): string {
+  const text = value.replace(/\0/g, '');
+  const trimmed = javaTrim(text);
+  if (cfIsBoolean(text) || cfIsNumeric(text)) return trimmed;
+  if (JSON_BOOLEAN.test(trimmed)) return trimmed === 'true' ? '"YES"' : '"NO"';
+  return trimmed;
+}
+
+/** ACF's `rc.compactDisplay eq 'true'` on a raw or scanned request value; absent is legacy's `'false'`. */
 export function isCompactDisplay(value: string | null | undefined): boolean {
-  if (value === null || value === undefined) return false;
-  return numericOperand(value) === 1 || javaTrim(value).toLowerCase() === 'yes' || value.toLowerCase() === 'true';
+  return value !== null && value !== undefined && cfEq(scanCompactDisplay(value), 'true');
 }

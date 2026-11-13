@@ -102,7 +102,7 @@ function everyoneBut(...excluded: string[]): string[] {
 
 /** One concrete tenant-a request; each subject's credentials are added when it is sent. */
 interface ProbeRequest {
-  method: 'GET' | 'POST' | 'PUT' | 'DELETE';
+  method: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'DELETE' | 'OPTIONS' | 'PATCH';
   url: string;
   payload?: string | Record<string, unknown>;
   headers?: Record<string, string>;
@@ -373,16 +373,76 @@ const PUBLIC_ADMITTED = everyoneBut('service:tasks-invoker');
 /** JSON API `site` reads: public, but a token of another site is refused once the handler resolves the site. */
 const JSON_API_READERS = everyoneBut('other-tenant', 'service:tasks-invoker');
 
-/** A JSON API `site` read through `method`. */
-function jsonApiRead(mode: 'json' | 'ajax' | 'rest', method: 'GET' | 'POST'): Probe {
-  const query = method === 'GET' ? '' : '?method=findOne&entityName=site';
-  return probe(`${method} ${mode} site read`, { method, url: `/_api/${mode}/v1/${SITE_A}/site${query}` }, JSON_API_READERS, {
+type JsonApiMode = 'json' | 'ajax' | 'rest';
+
+const JSON_API_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'] as const;
+
+/** A JSON API `site` read through `method` under `lead`: a three-segment site path is findOne under any verb (jsonApiUtility.cfc:399). */
+function jsonApiRead(mode: JsonApiMode, method: ProbeRequest['method'], lead: string): Probe {
+  const url = `${lead}/_api/${mode}/v1/${SITE_A}/site/${SITE_A}`;
+  return probe(`${method} ${lead}${mode} site read`, { method, url }, JSON_API_READERS, {
     denyCheck: { 'other-tenant': SITE_MISMATCH },
   });
 }
 
+/** The verb's own `site` write on the entity path, where the verb has one. */
+function jsonApiWrites(mode: JsonApiMode, method: ProbeRequest['method'], lead: string): Probe[] {
+  const url = `${lead}/_api/${mode}/v1/${SITE_A}/site`;
+  if (method === 'POST' && mode === 'json') {
+    // jsonApiUtility.cfc:1980: a session-managed save consumes the CSRF token before allowAction runs.
+    const request: ProbeRequest = { method, url, headers: FORM, payload: `${TOKEN_FIELDS}&domain=${SITE_A}.example.test` };
+    return [
+      probe(`${lead}json site.save with a valid CSRF token`, request, ['s2'], {
+        subjects: ['s2', 'site-admin'],
+        denyCheck: { 'site-admin': INSUFFICIENT_PERMISSIONS },
+        deniedCalls: [CSRF_CONSUME_CALL],
+      }),
+    ];
+  }
+  if (method === 'POST' && mode === 'rest') {
+    // jsonApiUtility.cfc:1800-1806, 1998-1999: allowAction('site') is isSuperUser; REST is sessionless, so no CSRF check precedes it.
+    return [
+      probe(`${lead}rest site.save`, { ...REST_SAVE, url }, ['s2'], {
+        denyCheck: {
+          ...denials(everyoneBut('s2', 'other-tenant', 'service:tasks-invoker'), INSUFFICIENT_PERMISSIONS),
+          'other-tenant': SITE_MISMATCH,
+        },
+      }),
+    ];
+  }
+  if (method === 'DELETE') {
+    // jsonApiUtility.cfc:3317-3325: a stored site needs allowAction before any CSRF check; the S2 call then fails, deleting nothing.
+    return [
+      probe(`${lead}${mode} site.delete`, { method, url, headers: FORM, payload: TOKEN_FIELDS }, ['s2'], {
+        denyCheck: {
+          ...denials(everyoneBut('s2', 'other-tenant', 'service:tasks-invoker'), INSUFFICIENT_PERMISSIONS),
+          'other-tenant': SITE_MISMATCH,
+        },
+      }),
+    ];
+  }
+  return [];
+}
+
+/** Every JSON API route of the `site` entity, with and without the front controller, keyed as registered. */
+function jsonApiRoutes(): Record<string, Expected> {
+  const routes: Record<string, Expected> = {};
+  for (const lead of ['', '/index.cfm']) {
+    for (const mode of ['json', 'ajax', 'rest'] as const) {
+      for (const method of JSON_API_METHODS) {
+        // jsonApiUtility.cfc:69-73: `site` is a public entity.
+        routes[`${method} ${lead}/_api/${mode}/v1*`] = {
+          declared: JSON_API_ENTITY,
+          probes: [jsonApiRead(mode, method, lead), ...jsonApiWrites(mode, method, lead)],
+        };
+      }
+    }
+  }
+  return routes;
+}
+
 /** The public site-monitor run at `url`. */
-function siteMonitorRun(method: 'GET' | 'POST', url: string): Expected {
+function siteMonitorRun(method: ProbeRequest['method'], url: string): Expected {
   // contentServer.cfc:669-747: unauthenticated in legacy, a reported pre-existing weakness.
   return {
     declared: { transport: 'service', public: true, siteCheck: false },
@@ -446,44 +506,25 @@ const REST_SAVE: ProbeRequest = {
 
 /** Every registered route, keyed `<METHOD> <fastify url>`, with its declaration and tenant-a probes. */
 const EXPECTED: Readonly<Record<string, Expected>> = {
-  // jsonApiUtility.cfc:69-73: `site` is a public entity.
-  'GET /_api/ajax/v1/:siteid/site': { declared: JSON_API_ENTITY, probes: [jsonApiRead('ajax', 'GET')] },
-  'POST /_api/ajax/v1/:siteid/site': { declared: JSON_API_ENTITY, probes: [jsonApiRead('ajax', 'POST')] },
-  'GET /_api/json/v1/:siteid/site': { declared: JSON_API_ENTITY, probes: [jsonApiRead('json', 'GET')] },
-  'POST /_api/json/v1/:siteid/site': {
-    declared: JSON_API_ENTITY,
-    probes: [
-      jsonApiRead('json', 'POST'),
-      // jsonApiUtility.cfc:1980: a session-managed save consumes the CSRF token before allowAction runs.
-      probe(
-        'json site.save with a valid CSRF token',
-        { method: 'POST', url: `/_api/json/v1/${SITE_A}/site`, headers: FORM, payload: `${TOKEN_FIELDS}&domain=${SITE_A}.example.test` },
-        ['s2'],
-        { subjects: ['s2', 'site-admin'], denyCheck: { 'site-admin': INSUFFICIENT_PERMISSIONS }, deniedCalls: [CSRF_CONSUME_CALL] },
-      ),
-    ],
-  },
-  'GET /_api/rest/v1/:siteid/site': { declared: JSON_API_ENTITY, probes: [jsonApiRead('rest', 'GET')] },
-  'POST /_api/rest/v1/:siteid/site': {
-    declared: JSON_API_ENTITY,
-    probes: [
-      // jsonApiUtility.cfc:1800-1806, 1998-1999: allowAction('site') is isSuperUser; REST is sessionless, so no CSRF check precedes it.
-      probe('rest site.save', REST_SAVE, ['s2'], {
-        denyCheck: {
-          ...denials(everyoneBut('s2', 'other-tenant', 'service:tasks-invoker'), INSUFFICIENT_PERMISSIONS),
-          'other-tenant': SITE_MISMATCH,
-        },
-      }),
-    ],
-  },
+  ...jsonApiRoutes(),
+  'DELETE /_api/sitemonitor*': siteMonitorRun('DELETE', '/_api/sitemonitor/'),
   'GET /_api/sitemonitor*': siteMonitorRun('GET', '/_api/sitemonitor/'),
+  'HEAD /_api/sitemonitor*': siteMonitorRun('HEAD', '/_api/sitemonitor/'),
+  'OPTIONS /_api/sitemonitor*': siteMonitorRun('OPTIONS', '/_api/sitemonitor/'),
+  'PATCH /_api/sitemonitor*': siteMonitorRun('PATCH', '/_api/sitemonitor/'),
   'POST /_api/sitemonitor*': siteMonitorRun('POST', '/_api/sitemonitor/'),
+  'PUT /_api/sitemonitor*': siteMonitorRun('PUT', '/_api/sitemonitor/'),
   'GET /healthz': {
     declared: { transport: 'service', public: true },
     probes: [probe('GET /healthz', { method: 'GET', url: '/healthz' }, PUBLIC_ADMITTED)],
   },
+  'DELETE /index.cfm/_api/sitemonitor*': siteMonitorRun('DELETE', '/index.cfm/_api/sitemonitor/'),
   'GET /index.cfm/_api/sitemonitor*': siteMonitorRun('GET', '/index.cfm/_api/sitemonitor/'),
+  'HEAD /index.cfm/_api/sitemonitor*': siteMonitorRun('HEAD', '/index.cfm/_api/sitemonitor/'),
+  'OPTIONS /index.cfm/_api/sitemonitor*': siteMonitorRun('OPTIONS', '/index.cfm/_api/sitemonitor/'),
+  'PATCH /index.cfm/_api/sitemonitor*': siteMonitorRun('PATCH', '/index.cfm/_api/sitemonitor/'),
   'POST /index.cfm/_api/sitemonitor*': siteMonitorRun('POST', '/index.cfm/_api/sitemonitor/'),
+  'PUT /index.cfm/_api/sitemonitor*': siteMonitorRun('PUT', '/index.cfm/_api/sitemonitor/'),
   'POST /internal/v1/events/programs-sites.programs-sites.site.changed.v1': {
     declared: { transport: 'pubsub-push', requires: [PUBSUB_INVOKER_ROLE] },
     probes: [probe('site.changed push', { method: 'POST', url: PUSH_URL }, ['service:pubsub-invoker'], { send: sendPush })],
@@ -576,6 +617,11 @@ const EXPECTED: Readonly<Record<string, Expected>> = {
     declared: PRIVATE_ADMIN,
     probes: [probe('GET shell site', { method: 'GET', url: `/v1/sites/${SITE_A}/shell` }, TENANT_A_PRIVATE_USERS)],
   },
+  // filetools.cfm:37: the user form reads a pooled user's site for its photo URL, for the same private-pool admin users.
+  'GET /v1/sites/:siteId/user-pool-sites': {
+    declared: PRIVATE_ADMIN,
+    probes: [probe('GET user pool sites', { method: 'GET', url: `/v1/sites/${SITE_A}/user-pool-sites` }, TENANT_A_PRIVATE_USERS)],
+  },
   // csettings.cfc:170-225 behind the same before() gate.
   'POST /v1/sites/:siteId/update': {
     declared: S2_OR_SITE_ADMIN,
@@ -648,7 +694,10 @@ async function mismatchesOf(item: Probe, subject: RoleSubject): Promise<string[]
 
   const problems: string[] = [];
   const body = parsedBody(res);
-  if (!isErrorEnvelope(body)) problems.push(`${at}: denial is not the legacy error envelope: ${res.body.slice(0, 160)}`);
+  // A JSON API HEAD denial carries the error envelope's headers alone; other HEAD routes leave the body to Node, which never sends it.
+  const head = item.request.method === 'HEAD' && /^(?:\/index\.cfm)?\/_api\/(?:json|ajax|rest)\/v1/i.test(item.request.url);
+  if (head && res.body !== '') problems.push(`${at}: a HEAD denial has a body: ${res.body.slice(0, 160)}`);
+  if (!head && !isErrorEnvelope(body)) problems.push(`${at}: denial is not the legacy error envelope: ${res.body.slice(0, 160)}`);
   if (subject.kind === 'anonymous' && res.statusCode !== 401) problems.push(`${at}: no credential must answer 401, got ${res.statusCode}`);
   const handler = item.denyCheck?.[subject.name];
   if (handler !== undefined) {

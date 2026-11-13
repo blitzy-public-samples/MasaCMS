@@ -1,0 +1,75 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`communications delivery-status screen > renders the message and its delivery history in service order 1`] = `
+{
+  "alerts": [],
+  "buttons": [],
+  "controls": [],
+  "headings": [
+    "Delivery Status",
+    "History",
+  ],
+  "labels": [],
+  "links": [
+    {
+      "href": "/opt2/admin/communications/templates?siteid=tenant-a",
+      "text": "Templates",
+    },
+    {
+      "href": "/opt2/admin/communications/sends?siteid=tenant-a",
+      "text": "Sends",
+    },
+  ],
+  "tables": [
+    {
+      "headers": [
+        "To",
+        "From",
+        "Subject",
+        "State",
+        "Created",
+        "Sent",
+      ],
+      "rows": [
+        [
+          "avery.quinn@seed.opt2.test",
+          "tenant_a_admin@example.com",
+          "Welcome to Tenant A, Avery",
+          "Delivered",
+          "2026-06-29T09:00:00",
+          "2026-06-29T09:00:01",
+        ],
+      ],
+    },
+    {
+      "headers": [
+        "Status",
+        "Detail",
+        "Mailpit ID",
+        "Recorded",
+      ],
+      "rows": [
+        [
+          "Queued",
+          "",
+          "",
+          "2026-06-29T09:00:00",
+        ],
+        [
+          "Sent",
+          "",
+          "",
+          "2026-06-29T09:00:01",
+        ],
+        [
+          "Delivered",
+          "",
+          "kP3vN8qR2sT6wX9yZ4bC7d",
+          "2026-06-29T09:00:02",
+        ],
+      ],
+    },
+  ],
+  "title": "",
+}
+`;

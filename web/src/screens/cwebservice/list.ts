@@ -52,7 +52,8 @@ export async function loadList(ctx: ScreenContext): Promise<WebServiceListData> 
   const siteid = ctx.req.session.siteid;
   // A feed filtered on an empty site id matches no row; the contract accepts no empty site id.
   if (siteid === '') return { clients: [] };
-  const response = await ctx.gateway.identity.call('get', '/v1/oauth-clients', { query: { siteid } });
+  // The feed iterator stops at beanFeed's default nextN of 1000, so legacy lists the first 1000 clients only.
+  const response = await ctx.gateway.identity.call('get', '/v1/oauth-clients', { query: { siteid, offset: 0, limit: 1000 } });
   return { clients: okBody(response, 'identity', 'listOAuthClients').items };
 }
 

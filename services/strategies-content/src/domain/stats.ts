@@ -70,8 +70,7 @@ export const STATS_DEFAULTS: Readonly<ContentStats> = Object.freeze({
   lockType: '',
 });
 
-// platform/legacy-compat's cfIsNumeric is not among this module's declared dependencies, so ACF's trim and isNumeric
-// are restated here: Java String.trim, then decimal text whose double value is finite.
+// ACF trim (Java String.trim) and isNumeric (decimal text whose double value is finite).
 const EDGE_SPACE = /^[\u0000-\u0020]+|[\u0000-\u0020]+$/gu;
 const DECIMAL = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/u;
 
@@ -155,7 +154,8 @@ export async function saveStatsInTx(
 
 /**
  * contentManager.setCommentStat [contentManager.cfc:2468-2480]: stores the item's count of approved, non-spam,
- * non-deleted comments (contentDAO.getCommentCount); the row lock of the transaction stands in for the legacy `cflock`.
+ * non-deleted comments (contentDAO.getCommentCount); the item lock, taken before counting and held until commit,
+ * stands in for the legacy `cflock`.
  * @returns the item's stats as now stored.
  */
 export async function setCommentStat(

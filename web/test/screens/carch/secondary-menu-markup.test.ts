@@ -14,6 +14,7 @@ import {
 } from '@/screens/carch/secondary-menu';
 import { makeAdminRequest, type AdminRequestPartial } from '../../helpers/admin-request';
 import { fragmentModel, normaliseAdminUrl, type DomLink } from '../../helpers/dom-model';
+import { REQUESTED_SITE_CASES } from '../../helpers/requested-site';
 import { SUBJECTS, type WebTestSubjectKey } from '../../helpers/tokens';
 
 const SITE_MANAGER = '00000000000000000000000000000000000';
@@ -346,6 +347,22 @@ describe('renderCarchSecondaryMenu', () => {
     );
   });
 
+  // `rc.compactDisplay eq 'true'` reads the value the admin scan leaves, as the oracle's layout choice for each shows.
+  it.each<[string, boolean]>([
+    [' TRUE', true],
+    ['tr\u0000ue', true],
+    ['\u0001yes', true],
+    [' 1.0 ', true],
+    [' true', false],
+    ['2', false],
+  ])('opens with the compact back button for compactDisplay %j: %s', (compactDisplay, shown) => {
+    const input = { ...SAVED, content: { ...HOME, isNew: true, type: 'Form' }, useLayoutManager: false };
+    const menu = (value: string): string => render(carch('edit', { ...newIn(FORMS, 'Form'), compactDisplay: value }), input);
+
+    expect(menu(compactDisplay) === menu('true')).toBe(shown);
+    expect(menu(compactDisplay).includes('onclick="history.go(-1);"')).toBe(shown);
+  });
+
   it('reads input.rc over the request rc by case-insensitive name', () => {
     const rc: RequestContext = {
       ModuleID: SITE_MANAGER,
@@ -538,6 +555,32 @@ describe('the Components, Forms and Variations list', () => {
 
   it('renders nothing for a module the user may not see', () => {
     expect(render(carch('list', listRc(FORMS)), { perm: 'none' })).toBe(EMPTY_MENU);
+  });
+
+  it.each(REQUESTED_SITE_CASES)('links Permissions for $who only when it administers that site', (testCase) => {
+    const req = testCase.request({ circuit: 'cArch', item: 'list', rc: { ...CARCH_RC, ...listRc(COMPONENTS) } });
+    const { siteid } = testCase;
+    const addComponent = link(
+      `./?muraAction=cArch.edit&type=Component&contentid=&topid=${COMPONENTS}&parentid=${COMPONENTS}&siteid=${siteid}` +
+        `&moduleid=${COMPONENTS}`,
+      'Component',
+    );
+    const permissions = link(
+      `./?muraAction=cPerm.main&contentid=${COMPONENTS}&topid=${COMPONENTS}&siteid=${siteid}&moduleid=${COMPONENTS}` +
+        '&startrow=1',
+      'Permissions',
+    );
+
+    expect(linksOf(render(req, { perm: 'editor' }))).toEqual(
+      testCase.administers ? [addComponent, permissions] : [addComponent],
+    );
+  });
+
+  it("checks the site of the view's rc, which its links carry", () => {
+    const req = carch('list', listRc(COMPONENTS), 'siteAdmin', { siteid: 'tenant-a' });
+    const rc: RequestContext = { ...CARCH_RC, ...listRc(COMPONENTS), siteid: 'tenant-b', compactdisplay: 'false' };
+
+    expect(linksOf(render(req, { perm: 'editor', rc })).map(({ text }) => text)).toEqual(['Component']);
   });
 });
 
@@ -791,6 +834,12 @@ describe('the Components, Forms and Variations edit form', () => {
     {
       name: 'a site admin',
       req: () => carch('edit', rc(VARIATIONS, 'Variation'), 'siteAdmin', { siteid: 'tenant-a' }),
+      input: draftVariation,
+      shown: true,
+    },
+    {
+      name: 'a site admin on a site its token does not serve, as isAdminUser() reads its own site',
+      req: () => carch('edit', rc(VARIATIONS, 'Variation'), 'siteAdmin', { siteid: 'tenant-b' }),
       input: draftVariation,
       shown: true,
     },
@@ -1171,6 +1220,12 @@ describe('the image details and multi-file upload', () => {
     ['true', false],
     ['YES ', false],
     ['1', false],
+    // Oracle: cArch.multiFileUpload compares the scanned value, so a padded lowercase word re-serialized as "NO" fails.
+    [' false', false],
+    [' FALSE', true],
+    ['\u0001no', true],
+    ['fa\u0000lse', true],
+    [' 0 ', true],
   ])('shows Back without content for compactDisplay %j: %s', (compactDisplay, shown) => {
     const out = render(carch('multiFileUpload', { ...MULTI_RC, compactDisplay }), { useLayoutManager: true });
 

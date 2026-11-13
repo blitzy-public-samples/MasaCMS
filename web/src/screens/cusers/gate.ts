@@ -1,7 +1,7 @@
 // The cUsers controller `before()`: the access gate and the request-context defaults every cUsers action reads (server-only).
-import { cfEq, cfIsBoolean, cfListToArray, cfToBoolean } from '@opt2/platform/legacy-compat';
+import { cfEq, cfIsBoolean, cfIsNumeric, cfListToArray, cfToBoolean, javaTrim } from '@opt2/platform/legacy-compat';
 import type { GateDecision, ScreenGate } from '@/lib/access-gate';
-import type { AdminRequest } from '@/lib/request-context';
+import { administersRequestedSite, servesRequestedSite, type AdminRequest } from '@/lib/request-context';
 
 /** Users module, which cUsers actions need on the site. */
 const USERS_MODULE_ID = '00000000000000000000000000000000008';
@@ -132,6 +132,21 @@ function cfmlVal(text: string): number {
   return Number.isFinite(value) ? value : 0;
 }
 
+/** A JSON boolean literal; the scan re-serializes a padded one as `"YES"` or `"NO"`, which is no boolean. */
+const JSON_BOOLEAN = /^(?:true|false)$/;
+
+/**
+ * A request value as admin start-up's Portcullis scan leaves it, when CFML `isBoolean` then accepts it; else undefined
+ * (admin/Application.cfc:246-265, core/mura/Portcullis.cfc:113-192,373-400). The scan drops NUL, keeps a numeric or
+ * boolean value, re-serializes other JSON (ACF reads every char <= U+0020 as JSON whitespace) and trims the rest.
+ */
+function scannedBoolean(value: string): string | undefined {
+  const text = value.replace(/\0/g, '');
+  const trimmed = javaTrim(text);
+  if (cfIsBoolean(text) || cfIsNumeric(text)) return trimmed;
+  return !JSON_BOOLEAN.test(trimmed) && cfIsBoolean(trimmed) ? trimmed : undefined;
+}
+
 /** `rc[name]` by case-insensitive name, for a context view or a plain record alike. */
 function rcValue(rc: AdminRequest['rc'], name: string): string | undefined {
   if (Object.hasOwn(rc, name)) return rc[name];
@@ -141,12 +156,14 @@ function rcValue(rc: AdminRequest['rc'], name: string): string | undefined {
 }
 
 /** `rc.isAdmin`: membership `Admin;<privateUserPoolID>;0` of the request's site, or `S2`. */
-export function isCusersAdmin(req: Pick<AdminRequest, 'isS2' | 'isSiteAdmin'>): boolean {
-  return req.isSiteAdmin || req.isS2;
+export function isCusersAdmin(req: Pick<AdminRequest, 'isS2' | 'isSiteAdmin' | 'user' | 'rc'>): boolean {
+  return administersRequestedSite(req);
 }
 
 /** The context `before()` leaves: site fallback, `isAdmin`, `s2` kept for S2 only, defaults and scrubbed paging. */
-export function normaliseCusersRc(req: Pick<AdminRequest, 'rc' | 'session' | 'isS2' | 'isSiteAdmin'>): CusersRc {
+export function normaliseCusersRc(
+  req: Pick<AdminRequest, 'rc' | 'session' | 'isS2' | 'isSiteAdmin' | 'user'>,
+): CusersRc {
   const rc: RcEntries = new Map();
   for (const [name, value] of Object.entries(req.rc)) setEntry(rc, name, value);
   if (entryText(rc, 'siteid') === '') setEntry(rc, 'siteid', req.session.siteid !== '' ? req.session.siteid : 'default');
@@ -155,8 +172,8 @@ export function normaliseCusersRc(req: Pick<AdminRequest, 'rc' | 'session' | 'is
   if (!req.isS2) rc.delete('s2');
   for (const [name, value] of RC_DEFAULTS) if (!rc.has(name.toLowerCase())) setEntry(rc, name, value);
 
-  if (!cfIsBoolean(entryText(rc, 'ispublic')) || !isAdmin) setEntry(rc, 'ispublic', '1');
-  if (!cfIsBoolean(entryText(rc, 'unassigned'))) setEntry(rc, 'unassigned', '0');
+  setEntry(rc, 'ispublic', (isAdmin ? scannedBoolean(entryText(rc, 'ispublic')) : undefined) ?? '1');
+  setEntry(rc, 'unassigned', scannedBoolean(entryText(rc, 'unassigned')) ?? '0');
   setEntry(rc, 'unassignedlink', cfToBoolean(entryText(rc, 'unassigned')) ? 0 : 1);
   const startRow = cfmlVal(entryText(rc, 'startRow'));
   setEntry(rc, 'startRow', startRow < 1 ? 1 : startRow);
@@ -174,14 +191,16 @@ export function userPoolIdFor(req: Pick<AdminRequest, 'site'>, rc: Pick<CusersRc
   return rc.isAdmin && !cfToBoolean(rc.ispublic) ? req.site.privateUserPoolID : req.site.publicUserPoolID;
 }
 
-/** cUsers `before()` gate: Users and Site Manager module access, or admin; else the controller's `secure()`. */
+/** cUsers `before()` gate: Users and Site Manager module access on the request's site, or admin; else `secure()`. */
 export const cusersGate: ScreenGate = async (req, { secure }) => {
   const baseId = rcValue(req.rc, 'baseID');
   const extendedAttributesOfReachableUser =
     baseId !== undefined &&
     cfEq(cfListToArray(req.action, ':').at(-1) ?? '', LOAD_EXTENDED_ATTRIBUTES_ACTION) &&
-    (cfEq(baseId, req.session.mura.userID) || (await req.reversePermLookUp()));
+    // getReversePermLookUp(rc.siteID): the lookup answers for the token site, so it counts only when that is rc.siteid.
+    (cfEq(baseId, req.session.mura.userID) || (servesRequestedSite(req) && (await req.reversePermLookUp())));
   if (extendedAttributesOfReachableUser) return ALLOW;
-  if (isCusersAdmin(req) || (req.modulePerm(USERS_MODULE_ID) && req.modulePerm(SITE_MODULE_ID))) return ALLOW;
+  const siteModules = servesRequestedSite(req) && req.modulePerm(USERS_MODULE_ID) && req.modulePerm(SITE_MODULE_ID);
+  if (isCusersAdmin(req) || siteModules) return ALLOW;
   return secure();
 };

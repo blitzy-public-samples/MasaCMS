@@ -1,15 +1,17 @@
 // The `cArch.hist` page: a node's version history, after `carch/hist.cfm` (server-only).
-import { cfEq, cfLsDateFormat, cfLsTimeFormat, cfToBoolean, javaTrim } from '@opt2/platform/legacy-compat';
+import { cfEq, cfLsDateFormat, cfLsTimeFormat, cfToBoolean } from '@opt2/platform/legacy-compat';
+import { isCompactDisplay } from '@/lib/cfml';
 import { parseLegacyDate } from '@/lib/dates';
 import { legacySettings } from '@/lib/env';
 import { encodeHtml, encodeHtmlAttr, encodeJs, raw, type SafeHtml } from '@/lib/html';
-import type { AdminRequest, RequestContext } from '@/lib/request-context';
+import { sessionSiteModulePerm, type AdminRequest, type RequestContext } from '@/lib/request-context';
 import { relativeAdminUrl } from '@/lib/urls';
 import type { ShellView } from '@/shell/document';
 import type { PageControllerRedirect, PageScreen, ScreenContext } from '../registry';
 import { CARCH_OWNER, applyCarchDefaults, carchGate } from './controller';
 import {
   isSiteAdminOrS2,
+  isSuperOrAdminUser,
   lockState,
   permOf,
   structText,
@@ -222,7 +224,7 @@ export function histDataOf(req: AdminRequest, model: CarchPageModel): HistData {
     deletable: flagAt(rc, 'deletable', 'rc'),
     hasLockableNodes: flagAt(rc, 'hasLockableNodes', 'rc'),
     hasChangesets: hasChangesetsOf(req),
-    hasChangesetAccess: req.modulePerm(CHANGESETS_MODULE_ID),
+    hasChangesetAccess: sessionSiteModulePerm(req, CHANGESETS_MODULE_ID),
     javaEnabled: legacySettings().javaEnabled,
     ...(purgeDrafts === undefined || purgeDrafts === null ? {} : { purgeDrafts: cfToBoolean(purgeDrafts) }),
     ...(lockedBy === undefined ? {} : { lockedBy }),
@@ -261,7 +263,7 @@ interface HistAccess {
 
 /** The node lock flags for the session user and the user's super or admin standing. */
 function accessOf(req: AdminRequest, data: HistData): HistAccess {
-  return { lock: lockState(data.content.stats, data, req.session.mura.userID), poweruser: isSiteAdminOrS2(req) };
+  return { lock: lockState(data.content.stats, data, req.session.mura.userID), poweruser: isSuperOrAdminUser(req) };
 }
 
 /** The Delete item's test: an inactive version, not locked by someone else, for an editor, site admin or S2. */
@@ -273,19 +275,6 @@ const canDelete = (req: AdminRequest, data: HistData, access: HistAccess, versio
 /** Edit links render unless someone else holds the node lock, which super and admin users override. */
 const canEdit = (access: HistAccess): boolean => !access.lock.isLockedBySomeoneElse || access.poweruser;
 
-const DECIMAL = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
-
-// Mirrors `isCompactDisplay` of `@/lib/cfml`, which is outside this view's dependency set; keep the two in step.
-/** ACF `value eq 'true'`: `true` in any case, or `yes` or a numeric 1 after Java trimming. */
-function eqTrue(value: string): boolean {
-  const trimmed = javaTrim(value);
-  return (
-    value.toLowerCase() === 'true' ||
-    trimmed.toLowerCase() === 'yes' ||
-    (DECIMAL.test(trimmed) && !trimmed.endsWith('.') && Number(trimmed) === 1)
-  );
-}
-
 /** `rc[name]` after the carch defaults; throws as CFML does for an undefined element. */
 function rcText(rc: RequestContext, name: string): string {
   const value = rc[name];
@@ -293,7 +282,7 @@ function rcText(rc: RequestContext, name: string): string {
   return value;
 }
 
-const isCompact = (rc: RequestContext): boolean => eqTrue(rcText(rc, 'compactDisplay'));
+const isCompact = (rc: RequestContext): boolean => isCompactDisplay(rcText(rc, 'compactDisplay'));
 
 // ---- Load ----
 

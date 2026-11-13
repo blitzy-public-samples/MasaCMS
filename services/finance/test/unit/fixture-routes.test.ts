@@ -261,6 +261,13 @@ describe.skipIf(!available)('finance fixture routes', () => {
     ['validation: a decimal page index', () => get('/rollups?pageIndex=1.5'), 400, 'finance.rollups', 'Invalid parameters'],
     ['validation: non-ASCII digits outside the bounds', () => get('/records?itemsPerPage=%D9%A1'), 400, 'finance.records', 'Invalid parameters'],
     ['validation: non-ASCII digits inside the bounds', () => get('/records?pageIndex=1%D9%A1'), 500, 'finance.records', 'Unhandled Exception'],
+    [
+      'storage: an edited title PostgreSQL cannot store',
+      (id) => post(`/records/${id}/edit`, PREPARER, { ...VALID, title: 'Q2\u0000travel' }),
+      400,
+      'finance.records.edit',
+      'Invalid parameters',
+    ],
     ['state: an illegal transition', (id) => post(`/records/${id}/resubmit`, PREPARER), 409, 'finance.records.resubmit', 'illegalTransition'],
     ['state: a role that may not take the action', (id) => post(`/records/${id}/submit`, APPROVER), 403, 'finance.records.submit', 'Insufficient Account Permissions'],
   ])('fails on %s alone, leaving the record unchanged', async (_case, send, status, method, message) => {
@@ -285,6 +292,45 @@ describe.skipIf(!available)('finance fixture routes', () => {
     expect(validateLogRecord(line)).toStrictEqual({ valid: true, errors: [] });
     expect(line?.error).toStrictEqual(record);
     for (const value of ['1\u0661', '1%D9%A1', 'finance-log-probe', 'non-ASCII']) expect(lines.join('')).not.toContain(value);
+  });
+
+  it.each<[string, (id: string) => Promise<Injected>, number, string | null]>([
+    ['a NUL title PostgreSQL cannot store', () => post('/records', PREPARER, { ...VALID, title: 'nul-probe\u0000title' }), 400, 'request rejected: 22021'],
+    ['a NUL record id PostgreSQL cannot look up', () => get('/records/nul-probe%00/versions'), 400, 'request rejected: 22021'],
+    ['no credential', () => app.inject({ url: `${P}/records` }), 401, 'request denied: missing-credential'],
+    [
+      'no credential on a NUL title',
+      () => app.inject({ method: 'POST', url: `${P}/records`, payload: { ...VALID, title: 'nul-probe\u0000title' } }),
+      401,
+      'request denied: missing-credential',
+    ],
+    [
+      'a role-less user of an unregistered site',
+      async () => app.inject({ url: `${P}/records`, headers: await headersFor([Roles.member], 'retired-site') }),
+      400,
+      'request rejected: invalidParameters',
+    ],
+    ['a write without a CSRF token', (id) => post(`/records/${id}/submit`, PREPARER, undefined, false), 400, 'request rejected: invalidTokens'],
+    ['an edit missing fields', (id) => post(`/records/${id}/edit`, PREPARER, { title: 'Only a title' }), 400, 'request rejected: invalidParameters'],
+    ['a role that may not take the action', (id) => post(`/records/${id}/submit`, APPROVER), 403, 'request denied: forbidden'],
+    ['an unknown record', () => get(`/records/${MISSING_ID}`), 404, null],
+    ['an unhandled exception', () => get('/records?pageIndex=1%D9%A1'), 500, null],
+  ])('logs %s with its fixed reason, if any, ahead of the completion line, storing nothing', async (_case, send, status, warning) => {
+    const { record_id: id } = await createRecord();
+    const stored = async (): Promise<number> => (await get('/records?itemsPerPage=1000')).json().data.totalitems;
+    const total = await stored();
+    const before = logLines.length;
+    const res = await send(id);
+    const lines = logLines.slice(before).map((text) => JSON.parse(text) as Record<string, unknown>);
+    expect(res.statusCode).toBe(status);
+    expect(lines.filter(({ severity, message }) => severity === 'WARNING' || message === 'request completed').map(({ severity, message }) => [severity, message])).toStrictEqual([
+      ...(warning === null ? [] : [['WARNING', warning]]),
+      ['INFO', 'request completed'],
+    ]);
+    expect(lines.filter(({ severity }) => severity === 'ERROR')).toHaveLength(status === 500 ? 1 : 0);
+    for (const line of lines) expect(validateLogRecord(line).errors).toStrictEqual([]);
+    expect(`${JSON.stringify(lines)}${res.body}`).not.toMatch(/nul-probe|invalid byte sequence|0x00/);
+    expect(await stored()).toBe(total);
   });
 
   it('creates, reads, edits and moves a record through its lifecycle with one version row each, rebuilding the rollup', async () => {

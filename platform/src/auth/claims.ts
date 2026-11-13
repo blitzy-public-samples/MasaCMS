@@ -61,7 +61,7 @@ export interface Opt2AuthContext {
   /** Raw verified bearer token, forwarded on service calls made for the user. */
   userToken?: string;
   service?: ServiceIdentity;
-  /** Union of user and service roles, deduplicated, user roles first. */
+  /** Union of the user's non-workload roles and the service's roles, deduplicated, user roles first. */
   roles: readonly string[];
   transport: Transport;
 }

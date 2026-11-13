@@ -1,8 +1,16 @@
 // Compares each golden set with its replay output through the one normaliser and writes the parity report.
 import { access } from 'node:fs/promises';
 import path from 'node:path';
+import type { Logger } from '@opt2/platform/logging';
 import { z } from '@opt2/platform/service-kit';
-import { EXCEPTIONS_LIST_PATH, goldenRun, goldenSetPath, readGoldenSet, type GoldenSet } from './capture.js';
+import {
+  EXCEPTIONS_LIST_PATH,
+  goldenRun,
+  goldenSetPath,
+  readGoldenSet,
+  type GoldenSet,
+  type GoldenSideEffects,
+} from './capture.js';
 import {
   CATALOGUE_PATH,
   FIXTURES_UNAVAILABLE,
@@ -19,7 +27,7 @@ import {
   type ServiceName,
   type StepExpectation,
 } from './catalogue.js';
-import { GoldenConfigError, haltEvidence, type ExceptionEntry } from './errors.js';
+import { GoldenConfigError, haltEvidence, type DifferenceSelector, type ExceptionEntry } from './errors.js';
 import { KNOWN_ISSUE_IDS, compareNormalised, type Difference } from './normalise/index.js';
 import { RULES_PATH, loadRules, type NormaliseRules } from './normalise/rules.js';
 import {
@@ -29,10 +37,13 @@ import {
   type ReplayHalt,
   type ReplayOutput,
 } from './replay.js';
+import { originBaseUrl } from './session.js';
 import { isMainModule, parseFlags, runCli, UsageError, type CliOutcome } from '../lib/cli.js';
+import { safeDiagnostic } from '../lib/diagnostics.js';
+import { createHarnessLogger } from '../lib/logger.js';
 import { REPO_ROOT, opt2Path, reportsDir, stateDir, type EnvLike } from '../lib/paths.js';
 import { pinnedSha } from '../lib/pin.js';
-import { readJson, writeJsonReport, writeMarkdown } from '../lib/report.js';
+import { readJson, stableStringify, writeJsonReport, writeMarkdown } from '../lib/report.js';
 
 /** `generatedBy` of the parity report. */
 export const GENERATED_BY = 'harness/src/golden/compare.ts';
@@ -235,12 +246,21 @@ export function loadDecisionList(file: string = DECISION_LIST_PATH): Promise<Dec
   return readJson(file, decisionListSchema);
 }
 
+const selectorSchema: z.ZodType<DifferenceSelector> = z.strictObject({
+  step: z.string().min(1),
+  path: z.string().min(1),
+  kind: z.array(z.enum(DIFFERENCE_KINDS)).min(1).optional(),
+  expected: z.unknown().optional(),
+  actual: z.unknown().optional(),
+});
+
 const exceptionEntrySchema: z.ZodType<ExceptionEntry> = z.looseObject({
   id: z.string().min(1),
   scenario: z.string().min(1),
   routeKey: z.string().min(1),
   appliesTo: z.array(z.string()).optional(),
   difference: z.string(),
+  matches: z.array(selectorSchema).min(1).optional(),
   decision: z.enum(['preserve', 'fix']),
   reason: z.string(),
   status: z.enum(['open', 'accepted', 'halted']),
@@ -271,12 +291,44 @@ export function entryRouteKeys(entry: Pick<ExceptionEntry, 'routeKey' | 'applies
   return [entry.routeKey, ...(entry.appliesTo ?? [])];
 }
 
-/**
- * Whether `entry` excuses a difference: an accepted entry, or an open `preserve`. A halted case is served by legacy
- * and must still match its golden set, and an open `fix` is an unaccepted proposal, so neither excuses one.
- */
+/** Whether `entry` may excuse differences: an accepted entry or an open `preserve`, never halted or an open `fix`. */
 export function isExcepting(entry: Pick<ExceptionEntry, 'decision' | 'status'>): boolean {
   return entry.status === 'accepted' || (entry.status === 'open' && entry.decision === 'preserve');
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null) return false;
+  const proto: unknown = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+/** Deep-partial equality: primitives strictly, arrays element-wise at equal length, objects on the pattern's keys. */
+function partialEqual(pattern: unknown, value: unknown): boolean {
+  if (Array.isArray(pattern)) {
+    return (
+      Array.isArray(value) && value.length === pattern.length && pattern.every((p, i) => partialEqual(p, value[i]))
+    );
+  }
+  if (isPlainObject(pattern)) {
+    return (
+      isPlainObject(value) &&
+      Object.entries(pattern).every(([key, p]) => partialEqual(p, Object.hasOwn(value, key) ? value[key] : undefined))
+    );
+  }
+  return pattern === value;
+}
+
+/** Whether `selector` describes `difference`: its step, its path or a parent of it, and the kinds and values given. */
+export function selectorMatches(selector: DifferenceSelector, difference: Difference): boolean {
+  const { path: at } = difference;
+  const atPath = at === selector.path || at.startsWith(`${selector.path}.`) || at.startsWith(`${selector.path}[`);
+  return (
+    selector.step === difference.step &&
+    atPath &&
+    (selector.kind === undefined || selector.kind.includes(difference.kind)) &&
+    (selector.expected === undefined || partialEqual(selector.expected, difference.expected)) &&
+    (selector.actual === undefined || partialEqual(selector.actual, difference.actual))
+  );
 }
 
 const differenceSchema = z
@@ -302,34 +354,137 @@ const differenceSchema = z
     }),
   );
 
-const recordedStepSchema = z.looseObject({
-  name: z.string().min(1),
-  routeKey: z.string().min(1),
-  expected: z.enum(['withheld', 'halted', 'gap']).optional(),
-  decisionListRef: z.string().optional(),
-  exceptionId: z.string().optional(),
-  gap: z.looseObject({ reason: z.string() }).optional(),
-});
+/** Name of the step holding a browser flow's resulting DOM, on both the captured and the replayed side. */
+export const BROWSER_FINAL_STEP = 'final-dom';
 
 /**
- * Record the browser interaction suite writes for a browser scenario: the differences it computed with
- * `compareNormalised` (console differences included), the steps it recorded, its halts and any flow error. A `result`
- * it records is informational; compare classifies the differences itself.
+ * Record the browser interaction suite writes for a browser scenario: its gateway replay output, its
+ * {@link browserDifferences} against the capture, and the target's console, notes and off-origin XHRs. `result` is
+ * informational.
  */
-export const browserRecordSchema = z.looseObject({
-  result: z.string().optional(),
-  differences: z.array(differenceSchema).default(() => []),
-  steps: z.array(recordedStepSchema).default(() => []),
-  halted: z
-    .array(z.looseObject({ step: z.string(), routeKey: z.string(), reason: z.string(), exceptionId: z.string() }))
-    .default(() => []),
-  error: z.looseObject({ message: z.string().min(1), step: z.string().optional() }).optional(),
-});
-export type BrowserRecord = z.output<typeof browserRecordSchema>;
+export interface BrowserRecord extends ReplayOutput {
+  differences: Difference[];
+  console: string[];
+  notes: string[];
+  foreignOrigins: { step: string; origin: string }[];
+  result?: string;
+}
+
+// Typed by key so a field added to ReplayOutput is picked for its schema too.
+const REPLAY_OUTPUT_KEYS = Object.keys({
+  sourceSha: true,
+  scenarioId: true,
+  replayedAt: true,
+  origin: true,
+  tableVersion: true,
+  skipped: true,
+  steps: true,
+  sideEffects: true,
+  halted: true,
+  error: true,
+  generatedBy: true,
+  generatedAt: true,
+} satisfies Record<keyof ReplayOutput, true>);
+
+/** Schema of a {@link BrowserRecord}; its replay output fields are checked by `replayOutputSchema`. */
+export const browserRecordSchema: z.ZodType<BrowserRecord> = z
+  .looseObject({
+    result: z.string().optional(),
+    differences: z.array(differenceSchema),
+    console: z.array(z.string()),
+    notes: z.array(z.string()),
+    foreignOrigins: z.array(z.strictObject({ step: z.string().min(1), origin: z.string().min(1) })),
+  })
+  .transform((record, ctx) => {
+    const fields = REPLAY_OUTPUT_KEYS.filter((key) => key in record).map((key) => [key, record[key]]);
+    const replay = replayOutputSchema.safeParse(Object.fromEntries(fields));
+    if (!replay.success) {
+      for (const { message, path: at } of replay.error.issues) ctx.addIssue({ code: 'custom', message, path: at });
+      return z.NEVER;
+    }
+    const { result, differences, notes, foreignOrigins } = record;
+    return {
+      ...replay.data,
+      differences,
+      console: record.console,
+      notes,
+      foreignOrigins,
+      ...(result === undefined ? {} : { result }),
+    };
+  });
 
 /** Path of browser scenario `id`'s record, `<stateDir>/golden/browser/<id>.json`, outside the checkout. */
 export function browserResultPath(id: string, env: EnvLike = process.env): string {
   return path.join(stateDir(env), 'golden', 'browser', `${id}.json`);
+}
+
+/** Step name of the console differences {@link browserDifferences} reports. */
+export const BROWSER_CONSOLE_STEP = 'console';
+
+const NO_SIDE_EFFECTS: GoldenSideEffects = { mail: [], rows: {}, tasks: [], files: [] };
+const CONSOLE_NOT_STRINGS = `golden set's ${BROWSER_FINAL_STEP} console is not a list of strings`;
+
+/** Console errors the capture's final DOM step records: `[]` when absent, `null` when not a list of strings. */
+function capturedConsole(golden: Pick<GoldenSet, 'steps'>): string[] | null {
+  const final = golden.steps.find((step) => step.name === BROWSER_FINAL_STEP)?.normalised;
+  const value = final !== undefined && 'console' in final ? final.console : undefined;
+  if (value === undefined) return [];
+  return Array.isArray(value) && value.every((item): item is string => typeof item === 'string') ? value : null;
+}
+
+/** An unlisted difference on `step` at `at`. */
+function unlistedDifference(
+  step: string,
+  at: string,
+  kind: Difference['kind'],
+  expected: unknown,
+  actual: unknown,
+): Difference {
+  return { step, path: at, kind, expected, actual, classification: 'difference' };
+}
+
+/** Inputs of {@link browserDifferences} beyond the two compared sides. */
+export interface BrowserDifferenceOptions {
+  scenario: Scenario;
+  rules: NormaliseRules;
+  /** Origin every replayed XHR must address. */
+  gatewayOrigin: string;
+}
+
+/**
+ * Differences of a browser replay against its capture: the normaliser's, paired steps' route keys, console errors the
+ * capture did not raise (a multiset) and XHRs off `gatewayOrigin`. Throws `GoldenConfigError` for a non-string console.
+ */
+export function browserDifferences(
+  golden: Pick<GoldenSet, 'steps'>,
+  record: Pick<BrowserRecord, 'steps' | 'console' | 'foreignOrigins'>,
+  opts: BrowserDifferenceOptions,
+): Difference[] {
+  const legacyConsole = capturedConsole(golden);
+  if (legacyConsole === null) throw new GoldenConfigError(CONSOLE_NOT_STRINGS);
+  const found = compareNormalised(
+    goldenRun({ steps: golden.steps, sideEffects: NO_SIDE_EFFECTS }),
+    goldenRun({ steps: record.steps, sideEffects: NO_SIDE_EFFECTS }),
+    { rules: opts.rules, scenario: opts.scenario },
+  );
+  const legacyKeys = new Map(golden.steps.map((step) => [`${step.index}|${step.name}`, step.routeKey]));
+  for (const step of record.steps) {
+    const expected = legacyKeys.get(`${step.index}|${step.name}`);
+    if (expected !== undefined && expected !== step.routeKey) {
+      found.push(unlistedDifference(step.name, 'routeKey', 'changed', expected, step.routeKey));
+    }
+  }
+  const remaining = new Map<string, number>();
+  for (const message of legacyConsole) remaining.set(message, (remaining.get(message) ?? 0) + 1);
+  record.console.forEach((message, i) => {
+    const left = remaining.get(message) ?? 0;
+    if (left > 0) remaining.set(message, left - 1);
+    else found.push(unlistedDifference(BROWSER_CONSOLE_STEP, `console[${i}]`, 'extra', undefined, message));
+  });
+  for (const { step, origin } of record.foreignOrigins) {
+    found.push(unlistedDifference(step, 'request.origin', 'changed', opts.gatewayOrigin, origin));
+  }
+  return found;
 }
 
 /** The step fields classification reads, common to golden, replay and browser steps. */
@@ -407,6 +562,10 @@ export interface ClassifyOptions {
   fixtures?: Pick<FixtureStatus, 'available' | 'reason'>;
   /** The interaction suite's record of a browser scenario; `null` or absent when it has not run. */
   browser?: BrowserRecord | null;
+  /** SHA the capture and its replay or browser record carry, and the replay's version; default pin and scenario's. */
+  expected?: { sourceSha?: string; tableVersion?: string };
+  /** Origin a browser record's XHRs must address; default the gateway's. */
+  gatewayOrigin?: string;
   /** Why a side could not be read; stated instead of "missing". */
   readErrors?: { golden?: string; replay?: string };
 }
@@ -418,40 +577,105 @@ function failedRun(what: string, error: { message: string; step?: string }): str
   return `${what} failed${error.step === undefined ? '' : ` at ${error.step}`}: ${error.message}`;
 }
 
+function hasFinalDom(steps: readonly RecordedStep[]): boolean {
+  return steps.some((step) => step.name === BROWSER_FINAL_STEP);
+}
+
+/** Why `golden` is not a legacy capture of the scenario at the expected SHA; `null` when it is. */
+function captureGap(golden: GoldenSet, opts: ClassifyOptions, label: string): string | null {
+  const { id } = opts.scenario;
+  const pin = opts.expected?.sourceSha ?? pinnedSha();
+  if (golden.scenarioId !== id) return `golden set holds scenario ${golden.scenarioId}, not ${id}`;
+  if (golden.origin !== 'legacy' || golden.tableVersion !== null) {
+    const found = `origin ${String(golden.origin)}, tableVersion ${String(golden.tableVersion)}`;
+    return `golden set is not a legacy capture (${found})`;
+  }
+  if (golden.sourceSha !== pin) return `${label} was taken at ${golden.sourceSha}, not the pinned ${pin}`;
+  return null;
+}
+
+/** Why `replay` is not a gateway replay of the scenario at the expected SHA and version; `null` when it is. */
+function replayGap(replay: ReplayOutput, opts: ClassifyOptions, label: string): string | null {
+  const { id, tableVersion } = opts.scenario;
+  const pin = opts.expected?.sourceSha ?? pinnedSha();
+  const version = opts.expected?.tableVersion ?? tableVersion;
+  if (replay.scenarioId !== id) return `${label} holds scenario ${replay.scenarioId}, not ${id}`;
+  if (replay.origin !== 'gateway') {
+    return `${label} was not replayed through the gateway (origin ${String(replay.origin)})`;
+  }
+  if (replay.sourceSha !== pin) return `${label} was replayed at ${replay.sourceSha}, not the pinned ${pin}`;
+  if (replay.tableVersion !== version) return `${label} was replayed under ${replay.tableVersion}, not ${version}`;
+  return null;
+}
+
+/** Why the HTTP sides present are not the scenario's capture and replay; `null` when they are. */
+function evidenceGap(golden: GoldenSet | null, replay: ReplayOutput | null, opts: ClassifyOptions): string | null {
+  return (
+    (golden === null ? null : captureGap(golden, opts, 'capture')) ??
+    (replay === null ? null : replayGap(replay, opts, 'replay output'))
+  );
+}
+
+/** Why `golden` and `record` do not evidence one completed flow of the scenario; `null` when they do. */
+function browserEvidenceGap(golden: GoldenSet, record: BrowserRecord, opts: ClassifyOptions): string | null {
+  const captured = captureGap(golden, opts, 'browser capture');
+  if (captured !== null) return captured;
+  if (!hasFinalDom(golden.steps)) return `golden set holds no ${BROWSER_FINAL_STEP} step`;
+  if (capturedConsole(golden) === null) return CONSOLE_NOT_STRINGS;
+  const replayed = replayGap(record, opts, 'browser record');
+  if (replayed !== null) return replayed;
+  if (record.steps.length === 0) return 'browser record holds no steps';
+  if (!hasFinalDom(record.steps)) return `browser record holds no ${BROWSER_FINAL_STEP} step`;
+  return null;
+}
+
+/** Whether `a` and `b` hold the same differences, in any order. */
+function sameDifferences(a: readonly Difference[], b: readonly Difference[]): boolean {
+  const keys = (list: readonly Difference[]): string[] => list.map((d) => stableStringify(d)).sort();
+  const [left, right] = [keys(a), keys(b)];
+  return left.length === right.length && left.every((key, i) => key === right[i]);
+}
+
 function observe(golden: GoldenSet | null, replay: ReplayOutput | null, opts: ClassifyOptions): Observed {
   const { scenario, readErrors } = opts;
+  const evidence = haltEvidence(scenario.id);
   if (scenario.browser !== undefined) {
+    if (golden === null) return { error: readErrors?.golden ?? `no golden set at ${evidence.golden}` };
     const record = opts.browser ?? null;
     if (record === null) return { error: readErrors?.replay ?? 'browser flow not run' };
     if (record.error !== undefined) return { error: failedRun('browser flow', record.error) };
-    return { differences: record.differences, steps: record.steps, halted: record.halted };
+    const gap = browserEvidenceGap(golden, record, opts);
+    if (gap !== null) return { error: gap };
+    const gatewayOrigin = opts.gatewayOrigin ?? new URL(originBaseUrl('gateway')).origin;
+    const differences = browserDifferences(golden, record, { scenario, rules: opts.rules, gatewayOrigin });
+    if (!sameDifferences(record.differences, differences)) {
+      const counts = `${record.differences.length} recorded, ${differences.length} recomputed`;
+      return { error: `browser record differences disagree with its exchanges against the capture (${counts})` };
+    }
+    return { differences, steps: record.steps, halted: record.halted };
   }
-  const evidence = haltEvidence(scenario.id);
   if (golden === null) return { error: readErrors?.golden ?? `no golden set at ${evidence.golden}` };
   if (replay === null) return { error: readErrors?.replay ?? `no replay output at ${evidence.replay}` };
   if (replay.error !== undefined) return { error: failedRun('replay', replay.error) };
+  const gap = evidenceGap(golden, replay, opts);
+  if (gap !== null) return { error: gap };
   const differences = compareNormalised(goldenRun(golden), goldenRun(replay), { rules: opts.rules, scenario });
   return { differences, steps: [...golden.steps, ...replay.steps], halted: replay.halted };
 }
 
-function skipCause(
-  scenario: Scenario,
-  golden: GoldenSet | null,
-  replay: ReplayOutput | null,
-  fixtures: ClassifyOptions['fixtures'],
-): string | null {
+function skipCause(golden: GoldenSet | null, replay: ReplayOutput | null, opts: ClassifyOptions): string | null {
+  const { scenario, fixtures } = opts;
   if (fixtures !== undefined && skipReason(scenario, fixtures) !== null) {
     return fixtures.reason ?? 'the legacy fixtures are unavailable';
   }
+  // A skip marker counts only on the scenario's own evidence; observe fails any other.
+  if (evidenceGap(golden, replay, opts) !== null) return null;
   if (golden?.skipped !== undefined) return 'the golden set was captured without the legacy fixtures';
   if (replay?.skipped !== undefined) return 'the replay ran without the legacy fixtures';
   return null;
 }
 
-/**
- * Marks each difference an excepting entry of the scenario excuses: one whose route keys meet the route keys of the
- * difference's step. A side-effect or console difference names no step, so the scenario's route keys stand in.
- */
+/** Tags each difference with the first excepting, route-eligible entry of the scenario whose selector describes it. */
 function exceptDifferences(
   differences: readonly Difference[],
   steps: readonly RecordedStep[],
@@ -464,8 +688,13 @@ function exceptDifferences(
   const scenarioKeys = new Set(steps.map((step) => step.routeKey));
   return differences.map((difference) => {
     if (difference.classification === 'known-issue') return difference;
+    // A side-effect or console difference names no recorded step, so the scenario's route keys stand in.
     const keys = byStep.get(difference.step) ?? scenarioKeys;
-    const entry = excepting.find((candidate) => entryRouteKeys(candidate).some((key) => keys.has(key)));
+    const entry = excepting.find(
+      (candidate) =>
+        entryRouteKeys(candidate).some((key) => keys.has(key)) &&
+        (candidate.matches ?? []).some((selector) => selectorMatches(selector, difference)),
+    );
     return entry === undefined ? difference : { ...difference, exceptionId: entry.id };
   });
 }
@@ -475,9 +704,10 @@ function plural(n: number, noun: string): string {
 }
 
 /**
- * Classifies one scenario. Precedence: skipped; nothing to compare or a failed run (`fail`); any difference neither
- * masked nor excused (`fail`); a halted case (`halted`); a withheld variant (`withheld`); then `excepted`,
- * `known-issue`, `pass`. `golden` and `replay` are ignored for a browser scenario, which reads `opts.browser`.
+ * Classifies one scenario. Precedence: skipped; nothing to compare, a failed run, or evidence of another scenario,
+ * SHA or version (`fail`); any difference neither masked nor excused (`fail`); a halted case (`halted`); a withheld
+ * variant (`withheld`); then `excepted`, `known-issue`, `pass`. A browser scenario compares `opts.browser`'s
+ * exchanges with `golden` in place of `replay`.
  * Throws `GoldenConfigError` when a withheld route key is not on the decision list.
  */
 export function classifyScenario(
@@ -505,7 +735,7 @@ export function classifyScenario(
     decisionListRef: refs.length > 0 ? refs : null,
   });
 
-  const skipped = skipCause(scenario, golden, replay, opts.fixtures);
+  const skipped = skipCause(golden, replay, opts);
   if (skipped !== null) return verdict(FIXTURES_UNAVAILABLE, skipped);
   const observed = observe(golden, replay, opts);
   if ('error' in observed) return verdict('fail', observed.error);
@@ -678,7 +908,10 @@ function numberWord(n: number): string {
 
 const RESULT_LEGEND: readonly (readonly [ParityResult, string])[] = [
   ['pass', 'Replay matches the golden set after normalisation.'],
-  ['fail', 'An unlisted difference, or no golden set, replay output or browser record to compare.'],
+  [
+    'fail',
+    'An unlisted difference, or no golden set, replay output or browser record of the scenario, pin and version to compare.',
+  ],
   ['excepted', 'The difference matches an exceptions entry.'],
   [
     'halted',
@@ -917,9 +1150,24 @@ interface CompareContext {
   fixtures: Pick<FixtureStatus, 'available' | 'reason'>;
   exceptions: readonly ExceptionEntry[];
   decisionList: DecisionList;
+  gatewayOrigin: string;
   readGolden: (id: string) => Promise<GoldenSet>;
   /** Filled with the scenarios whose golden set was read. */
   captured: Set<string>;
+}
+
+type ReadErrors = NonNullable<ClassifyOptions['readErrors']>;
+
+/** Scenario `id`'s golden set, `null` when absent; any other read failure is stated in `readErrors.golden`. */
+async function readCapture(id: string, ctx: CompareContext, readErrors: ReadErrors): Promise<GoldenSet | null> {
+  try {
+    const golden = await ctx.readGolden(id);
+    ctx.captured.add(id);
+    return golden;
+  } catch (err) {
+    if (!isMissingFile(err)) readErrors.golden = errorMessage(err, ctx.env);
+    return null;
+  }
 }
 
 /** Reads and classifies one scenario; `null` for a rehearsal scenario not yet replayed, which is reported nowhere. */
@@ -931,12 +1179,15 @@ async function compareScenario(scenario: Scenario, ctx: CompareContext): Promise
     rules: ctx.rules,
     decisionList: ctx.decisionList,
     fixtures: ctx.fixtures,
+    gatewayOrigin: ctx.gatewayOrigin,
   };
+  const readErrors: ReadErrors = {};
   if (scenario.browser !== undefined) {
+    const golden = await readCapture(scenario.id, ctx, readErrors);
     const file = browserResultPath(scenario.id, env);
     const record = await readSide(file, () => readJson(file, browserRecordSchema), env);
-    const readErrors = record.error === undefined ? undefined : { replay: record.error };
-    return toScenarioParity(scenario, classifyScenario(null, null, { ...opts, browser: record.value, readErrors }));
+    if (record.error !== undefined) readErrors.replay = record.error;
+    return toScenarioParity(scenario, classifyScenario(golden, null, { ...opts, browser: record.value, readErrors }));
   }
   const replayFile = replayOutputPath(scenario.id, env);
   if (isRehearsalScenario(scenario.id) && !(await exists(replayFile))) return null;
@@ -944,14 +1195,7 @@ async function compareScenario(scenario: Scenario, ctx: CompareContext): Promise
     return toScenarioParity(scenario, classifyScenario(null, null, opts));
   }
 
-  let golden: GoldenSet | null = null;
-  const readErrors: NonNullable<ClassifyOptions['readErrors']> = {};
-  try {
-    golden = await ctx.readGolden(scenario.id);
-    ctx.captured.add(scenario.id);
-  } catch (err) {
-    if (!isMissingFile(err)) readErrors.golden = errorMessage(err, env);
-  }
+  const golden = await readCapture(scenario.id, ctx, readErrors);
   const replay = await readSide(replayFile, () => readJson(replayFile, replayOutputSchema), env);
   if (replay.error !== undefined) readErrors.replay = replay.error;
   return toScenarioParity(scenario, classifyScenario(golden, replay.value, { ...opts, readErrors }));
@@ -974,12 +1218,8 @@ export interface MainDeps {
   /** Default {@link readGoldenSet}. */
   readGolden?: (id: string) => Promise<GoldenSet>;
   clock?: () => Date;
-  /** Progress lines; default stderr. */
-  log?: (line: string) => void;
-}
-
-function stderrLine(line: string): void {
-  process.stderr.write(`${line}\n`);
+  /** Progress log; default {@link createHarnessLogger} on stderr. */
+  logger?: Logger;
 }
 
 function pathFlag(value: string | undefined, flag: string, fallback: string): string {
@@ -1004,7 +1244,7 @@ export async function main(argv: string[], env: EnvLike = process.env, deps: Mai
   const cataloguePath = pathFlag(values.catalogue, 'catalogue', CATALOGUE_PATH);
   const exceptionsPath = pathFlag(values.exceptions, 'exceptions', EXCEPTIONS_LIST_PATH);
   const decisionListPath = pathFlag(values['decision-list'], 'decision-list', DECISION_LIST_PATH);
-  const log = deps.log ?? stderrLine;
+  const logger = deps.logger ?? createHarnessLogger('harness-golden-compare', env);
 
   const catalogue = await loadCatalogue(cataloguePath);
   const list = await loadExceptionsList(exceptionsPath);
@@ -1015,6 +1255,7 @@ export async function main(argv: string[], env: EnvLike = process.env, deps: Mai
     fixtures: readFixtureStatus(env),
     exceptions,
     decisionList: await loadDecisionList(decisionListPath),
+    gatewayOrigin: new URL(originBaseUrl('gateway', env)).origin,
     readGolden: deps.readGolden ?? ((id) => readGoldenSet(id)),
     captured: new Set(),
   };
@@ -1023,11 +1264,13 @@ export async function main(argv: string[], env: EnvLike = process.env, deps: Mai
   for (const scenario of catalogue.scenarios) {
     const parity = await compareScenario(scenario, ctx);
     if (parity === null) {
-      log(`${scenario.id}: not replayed yet; omitted`);
+      logger.info(safeDiagnostic(`${scenario.id}: not replayed yet; omitted`, env));
       continue;
     }
     scenarios.push(parity);
-    log(`${scenario.id}: ${parity.result}${parity.reason === null ? '' : ` (${parity.reason})`}`);
+    const line = safeDiagnostic(`${scenario.id}: ${parity.result}${parity.reason === null ? '' : ` (${parity.reason})`}`, env);
+    if (parity.result === 'fail') logger.warn(line);
+    else logger.info(line);
   }
   const report = buildParityReport({
     catalogue,

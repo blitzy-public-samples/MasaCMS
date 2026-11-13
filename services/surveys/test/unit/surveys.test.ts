@@ -33,7 +33,7 @@ describe('SURVEY_STATUS', () => {
   });
 });
 
-const available = await pgAvailable();
+const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
 
 describe.skipIf(!available)('surveys domain against PostgreSQL', () => {
   let handle: ThrowawaySchema;

@@ -20,7 +20,7 @@ import { createSitesDomain } from './domain/sites.js';
 import { siteChangedValidator, siteRegistryConsumerRegistration } from './events/consumers.js';
 import { mappings, units } from './migration/mappings/index.js';
 import { OWNER, SCHEMA, createProgramsSitesRepository } from './repo/repository.js';
-import { SITEMONITOR_RUN_PREFIXES, registerRoutes, registerSiteMonitorRoutes } from './routes/index.js';
+import { JSON_API_SITE_PREFIXES, SITEMONITOR_RUN_PREFIXES, registerRoutes, registerSiteMonitorRoutes } from './routes/index.js';
 import { createProgramsSitesTaskPort, ensureStartupChains, registerQueueControlRoutes, registerSweep } from './tasks/port.js';
 
 /** Equals `info.version` of `contracts/openapi.yaml`. */
@@ -50,7 +50,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     env,
     clock: options.clock ?? systemClock,
     verifierOverride: options.verifierOverride,
-    noCasePathPrefixes: SITEMONITOR_RUN_PREFIXES,
+    noCasePathPrefixes: [...SITEMONITOR_RUN_PREFIXES, ...JSON_API_SITE_PREFIXES],
     // createService takes an injected pool or the schema whose pool it opens, never both.
     ...(options.db === undefined ? { schema: SCHEMA } : { pool: options.db }),
   });

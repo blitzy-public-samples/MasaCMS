@@ -48,6 +48,8 @@ export interface RegisterAuthOptions {
   transports: TransportSet;
   /** Renders a denial of a route that declares no `renderDenial`; defaults to `renderAuthDenial`. */
   renderDenial?: DenialRenderer;
+  /** Called with each denial the hooks answer, before it is rendered; `request.opt2Auth` holds what was verified by then. */
+  onDenial?: (denial: AuthDenial, request: FastifyRequest) => void;
 }
 
 /** A route registered without a valid `config.opt2` declaration; fails start-up. */
@@ -109,6 +111,7 @@ export function registerAuth(app: FastifyInstance, opts: RegisterAuthOptions): v
   const routes: RecordedRoute[] = [];
   const deny = async (err: unknown, request: FastifyRequest, reply: FastifyReply): Promise<FastifyReply> => {
     if (err instanceof AuthDenial) {
+      opts.onDenial?.(err, request);
       const routeRender = request.routeOptions.config.opt2?.renderDenial;
       return sendDenial(reply, await (routeRender ?? render)(err, request));
     }
@@ -142,7 +145,13 @@ export function registerAuth(app: FastifyInstance, opts: RegisterAuthOptions): v
       const { user, userToken, service } = await opts.transports[transport].authenticate(requestToAuthRequest(request), {
         optional: config.public === true,
       });
-      const roles = [...new Set([...(user?.roles ?? []), ...(service?.roles ?? [])])];
+      // A user token travels only beside the caller's invocation credential, public routes included.
+      if (user !== undefined && service === undefined) {
+        throw AuthDenial.unauthenticated('missing-credential');
+      }
+      // Workload roles come only from the verified workload, never from a user token's roles claim.
+      const userRoles = (user?.roles ?? []).filter((role) => !isServiceRole(role));
+      const roles = [...new Set([...userRoles, ...(service?.roles ?? [])])];
       request.opt2Auth = { user, userToken, service, roles, transport };
       if (config.requires !== undefined && !hasAnyRole(roles, config.requires)) {
         throw user === undefined && config.requires.some((role) => !isServiceRole(role))
@@ -187,6 +196,7 @@ export function requestToAuthRequest(request: FastifyRequest): AuthRequest {
     headers: request.headers,
     query: request.query as Record<string, unknown>,
     path: request.url.split('?')[0] ?? '',
+    rawHeaders: request.raw.rawHeaders,
   };
 }
 

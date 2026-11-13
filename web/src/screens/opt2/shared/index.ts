@@ -18,6 +18,6 @@ export type { AlertKind, FormButton, GridCell, HeaderLink, SelectOption } from '
 export { noAccessUrl, opt2ActionUrl, opt2ScreenUrl } from './paths';
 export type { Opt2Params } from './paths';
 export { canUse, opt2Gate } from './access';
-export { csrfHeadersFrom, submitToService } from './submit';
+export { csrfHeadersFrom, errorMessage, submitToService } from './submit';
 export type { Opt2Back, Opt2Write } from './submit';
 export { opt2View } from './view';

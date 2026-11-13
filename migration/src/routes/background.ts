@@ -30,7 +30,7 @@ const ROUTE_AUTH: Opt2RouteConfig = Object.freeze({
   requires: Object.freeze([Roles.platformOperator]),
 });
 
-// The contract's `BackgroundRecord` admits no top-level key beyond the stored record's.
+// As the contract's `BackgroundRecord`: no undeclared key at the top level or in a paused queue; push configs stay open.
 const suspendBodySchema = backgroundRecordSchema.strict();
 
 /** Registers both operations; they only store the record, while `opt2-ops` itself pauses and restores queues, subscriptions and ColdFusion tasks. */

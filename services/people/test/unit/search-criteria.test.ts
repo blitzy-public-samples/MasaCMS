@@ -31,6 +31,7 @@ import {
 import type { AccountView } from '../../src/legacy/identity-client.js';
 import type { PeopleRepository } from '../../src/repo/repository.js';
 import type { PersonRow } from '../../src/repo/tables.js';
+import { IdentityDouble, charKey, personsInOrder } from '../helpers/search-doubles.js';
 
 const legacyFile = (path: string) => readFileSync(fileURLToPath(new URL(`../../../../${path}`, import.meta.url)), 'utf8');
 const GATEWAY_CFC = legacyFile('core/mura/user/userGateway.cfc');
@@ -163,7 +164,6 @@ const JOIN_ROWS: Readonly<Record<string, readonly QueryResultRow[]>> = {
   ],
 };
 
-const idKey = (id: string): string => id.trim().toUpperCase();
 const MEMBERSHIPS = new Map([
   [ARCHER, ['G1']],
   [BAKER, ['g1 ']],
@@ -206,8 +206,8 @@ interface World {
   photoFileExts?: SearchDeps['photoFileExts'];
 }
 
-/** In-memory collaborators over PERSONS, ACCOUNTS, JOIN_ROWS and MEMBERSHIPS. */
-function searchDeps({ registry = registryRow(), photoFileExts }: World = {}): SearchDeps {
+/** In-memory collaborators over PERSONS, ACCOUNTS, JOIN_ROWS and MEMBERSHIPS, identity answering `viewer`'s token. */
+function searchDeps({ registry = registryRow(), photoFileExts }: World = {}, viewer: ViewerScope = VIEWER): SearchDeps {
   const tenantTx = (tenantId: string): TenantTx => ({
     kind: 'tenant',
     tenantId,
@@ -231,22 +231,30 @@ function searchDeps({ registry = registryRow(), photoFileExts }: World = {}): Se
     withMetadata: (fn) => fn(metadataTx),
     end: () => Promise.resolve(),
   };
-  const repo: Pick<PeopleRepository, 'schema' | 'read' | 'queryPersons' | 'listPersonsForSite' | 'listExtendData' | 'listExtendAttributes'> = {
+  // One keyset page holds every person of the query; site ids compare as the repository's SQL compares them.
+  const onePage = (rows: PersonRow[]) => Promise.resolve({ rows, next: null });
+  const ofTenant = (tx: TenantTx): PersonRow[] => PERSONS.filter((row) => row.tenant_id === tx.tenantId);
+  type ReadRepo = 'schema' | 'read' | 'pageQueryPersons' | 'pagePersonsInOrder' | 'listExtendData' | 'listExtendAttributes';
+  type RosterReads = 'lockRosterUsers' | 'lockRosterTenant' | 'findOpenRosterOperations' | 'countRosterOperations';
+  // No roster operation is ever open in this world.
+  const repo: Pick<PeopleRepository, ReadRepo | RosterReads> = {
     schema: 'people',
     read: (_tx, _units, fn) => fn(),
-    queryPersons: (tx) => Promise.resolve(PERSONS.filter((row) => row.tenant_id === tx.tenantId)),
-    listPersonsForSite: (tx, siteId) => Promise.resolve(PERSONS.filter((row) => row.tenant_id === tx.tenantId && row.siteid === siteId)),
+    pageQueryPersons: (tx, query) => onePage(personsInOrder(ofTenant(tx), { siteIds: query.siteIds }, [])),
+    pagePersonsInOrder: (tx, scope, opts) => onePage(personsInOrder(ofTenant(tx), scope, opts.orderBy)),
     listExtendData: () => Promise.resolve([]),
     listExtendAttributes: () => Promise.resolve([]),
+    lockRosterUsers: () => Promise.resolve(),
+    lockRosterTenant: () => Promise.resolve(),
+    findOpenRosterOperations: () => Promise.resolve([]),
+    countRosterOperations: () => Promise.resolve(0),
   };
+  const accounts = new Map(ACCOUNTS.map((view) => [charKey(view.userId), view]));
+  const memberships = new Map([...MEMBERSHIPS].map(([userId, groupIds]) => [charKey(userId), groupIds]));
   return {
     db,
     repo: repo as PeopleRepository,
-    identity: {
-      readAccounts: (ids) =>
-        Promise.resolve(new Map(ACCOUNTS.filter((a) => ids.some((id) => idKey(id) === idKey(a.userId))).map((a) => [a.userId, a]))),
-      membershipGroupIds: (userId) => Promise.resolve(MEMBERSHIPS.get(userId) ?? []),
-    },
+    identity: new IdentityDouble(accounts, memberships, { db, tid: viewer.tid, s2: viewer.isS2 }),
     ...(photoFileExts === undefined ? {} : { photoFileExts }),
   };
 }
@@ -255,7 +263,7 @@ type Criteria = Partial<AdvancedSearchCriteria> & UserFeedKeys;
 
 /** getAdvancedSearch over the in-memory world, from the session defaults plus `criteria`. */
 function search(criteria: Criteria = {}, options: AdvancedSearchOptions = {}, world: World = {}, viewer: ViewerScope = VIEWER): Promise<LegacyQuery> {
-  return getAdvancedSearch(searchDeps(world), viewer, { ...newAdvancedSearchCriteria(), ...criteria }, options);
+  return getAdvancedSearch(searchDeps(world, viewer), viewer, { ...newAdvancedSearchCriteria(), ...criteria }, options);
 }
 
 /** One stored criteria row in session.paramArray. */
@@ -580,6 +588,8 @@ describe('getAdvancedSearch criteria', () => {
     [LNAME, 'IN', 'Archer,cole', ['Archer', 'Cole']],
     [LNAME, 'NOT IN', 'Archer', ['Baker', 'Cole']],
     ['tusers.lname^nvarchar', 'Equals', 'Archer', []],
+    ['tusers.password^varchar', 'Equals', 'null', ALL],
+    ['tusers.password^varchar', 'NEQ', 'null', []],
   ])('matches %s %s %j as SQL Server text', async (field, condition, criteria, expected) => {
     expect(await lnamesWhere(param(field, condition, criteria))).toEqual(expected);
   });
@@ -668,6 +678,7 @@ describe('getAdvancedSearch criteria', () => {
     ['an extra )', [param(LNAME, 'Begins', 'A'), CLOSE]],
     ['a ) before any criterion', [param(LNAME, 'Begins', 'A', ')')]],
     ['a criterion straight after )', [param(LNAME, 'Begins', 'A', '('), param(LNAME, 'Begins', 'B', ')')]],
+    ['a text type reusing a date criteria', [param('tusers.created^date', 'Equals', '06/05/2026'), param('tusers.lname^nvarchar', 'Equals', 'x', 'or')]],
   ])('answers server_error for %s', async (_label, entries) => {
     await expectServerError(search(where(...entries)));
   });
@@ -697,6 +708,12 @@ describe('getAdvancedSearch criteria', () => {
     ['the private pool for isPublic 0', SPLIT_POOLS, {}, { isPublic: 0 }, ['Price']],
     ['both differing pools without isPublic', SPLIT_POOLS, { ispublic: '' }, {}, [...ALL, 'Price', 'Umber']],
     ['one shared pool without isPublic', registryRow(), { ispublic: '' }, {}, [...ALL, 'Price']],
+    // `getIsPublic() eq 0` and `eq 1` read a boolean word as its 0 or 1; no isPublic filter applies, as it is no number.
+    ['the private pool for the ispublic key no', SPLIT_POOLS, { ispublic: 'no' }, {}, [...ALL, 'Price']],
+    ['the private pool for an ispublic param False', SPLIT_POOLS, where(param('ispublic', 'Equals', 'False')), {}, [...ALL, 'Price']],
+    ['the public pool for the ispublic key YES', SPLIT_POOLS, { ispublic: 'YES' }, {}, ['Umber']],
+    ['the public pool for an ispublic param true', SPLIT_POOLS, where(param('ispublic', 'Equals', 'true')), {}, ['Umber']],
+    ['both differing pools for a non-boolean ispublic key', SPLIT_POOLS, { ispublic: 'abc' }, {}, [...ALL, 'Price', 'Umber']],
   ])('reads %s', async (_label, registry, criteria, options, expected) => {
     expect(lnames(await search(criteria, options, { registry }))).toEqual(expected);
   });

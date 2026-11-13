@@ -664,7 +664,10 @@ function compareProgramIds(a: number | undefined, b: number | undefined): number
 }
 
 /** The order every extracted stream yields: by key values then program id when both rows are keyed, else by encoding. */
-export function compareCanonicalRows(a: CanonicalRow, b: CanonicalRow): number {
+export function compareCanonicalRows(
+  a: Pick<CanonicalRow, 'keyValues' | 'legacyProgramId' | 'encoding'>,
+  b: Pick<CanonicalRow, 'keyValues' | 'legacyProgramId' | 'encoding'>,
+): number {
   if (a.keyValues.length > 0 && b.keyValues.length > 0) {
     return compareKeyValues(a.keyValues, b.keyValues) || compareProgramIds(a.legacyProgramId, b.legacyProgramId);
   }

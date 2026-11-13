@@ -102,7 +102,7 @@ describe.skipIf(PG_MISSING)(`surveys outbox, in-request flush and sweep chain${P
     const scheduled = await app.inject({
       method: 'POST',
       url: `/v1/surveys/${surveyId}/schedule${SITE_QUERY}`,
-      headers: manager,
+      headers: { ...manager, ...CSRF_HEADERS },
       payload: SCHEDULE_BODY,
     });
     expect(scheduled.statusCode).toBe(200);

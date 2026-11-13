@@ -135,6 +135,7 @@ describe('backgroundRecordSchema', () => {
   it.each([
     ['a since without offset', { since: '2026-06-30 12:00:00' }],
     ['a paused queue without service', { pausedQueues: [{ service: '', queue: 'identity-outbox-sweep' }] }],
+    ['a paused queue with an undeclared key', { pausedQueues: [{ service: 'identity', queue: 'identity-outbox-sweep', unexpected: true }] }],
     ['a push config that is not an object', { pushConfigs: { sub: 'http://x' } }],
     ['a missing pausedTasks', { pausedTasks: undefined }],
   ])('rejects %s', (_label, change) => {

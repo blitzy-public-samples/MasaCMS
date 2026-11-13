@@ -154,6 +154,7 @@ export const baseEnvSchema = z.object({
   ),
   OPT2_TASKS_ADAPTER: optionalEnvString(z.enum(MODES)),
   OPT2_STORAGE_ADAPTER: optionalEnvString(z.enum(MODES)),
+  LOG_LEVEL: optionalEnvString(z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])),
   TZ: requiredEnvString(
     z
       .string()

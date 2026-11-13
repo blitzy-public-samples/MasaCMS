@@ -10,11 +10,10 @@ Web has no database and no state of its own: every read and write goes through t
 
 | Path | Holds |
 |---|---|
-| `app/admin/[circuit]/[action]/page.tsx` | `page` mode: full or compact layout, chosen as `admin/common/layouts/default.cfm` chooses (`compactDisplay eq 'true'`) |
+| `app/admin/[circuit]/[action]/route.ts` | `page` mode: full or compact layout, chosen as `admin/common/layouts/default.cfm` chooses (`compactDisplay eq 'true'`) |
 | `app/admin-actions/[circuit]/[action]/route.ts` | `redirect` mode: the write, then the legacy redirect or the re-rendered form |
 | `app/admin-raw/[circuit]/[action]/route.ts` | `fragment`, `json` and `download` modes |
-| `app/opt2/admin/[module]/[screen]/page.tsx`, `app/opt2/admin-actions/[module]/[action]/route.ts` | SYNTHETIC module screens and their posts |
-| `proxy.ts` | Legacy headers on page-mode responses (below) |
+| `app/opt2/admin/[module]/[screen]/route.ts`, `app/opt2/admin-actions/[module]/[action]/route.ts` | SYNTHETIC module screens and their posts |
 | `src/shell/` | `admin/common/layouts/template.cfm`, `compact.cfm` and their includes (`nav.cfm`, `header.cfm`, `dsp_secondary_menu.cfm`, `dialog.cfm`) |
 | `src/screens/<circuit>/`, `src/screens/opt2/<module>/` | Reproduced views |
 | `src/lib/` | Markup primitives (`html.ts`), legacy URLs (`urls.ts`), legacy responses (`responses.ts`), environment and Masa settings (`env.ts`), dates, telemetry, resource bundles, auth, the gateway client |
@@ -25,8 +24,8 @@ Web has no database and no state of its own: every read and write goes through t
 | Screen group | Source views | Owning service |
 |---|---|---|
 | Login, logout, no-access, home redirect | `admin/core/views/clogin/`, `cmessage/` | identity |
-| Users: list, listusers, search, advanced search, edit user (Basic, Address Information, Group Memberships, Interests, Extended Attributes, Advanced, Content), edit address, route, downloads (`download`, `advancedSearchToCSV`) | `admin/core/views/cusers/` | people |
-| Edit profile | `admin/core/views/ceditprofile/` | people |
+| Users: list, listusers, search, advanced search, edit user (Basic, Address Information, Group Memberships, Interests, Extended Attributes, Advanced, Content), edit address, route, downloads (`download`, `advancedSearchToCSV`) | `admin/core/views/cusers/` | people; identity (`editUser`, which writes `tuserstrikes`) |
+| Edit profile | `admin/core/views/ceditprofile/` | identity (`edit`), people (`update`) |
 | Groups: edit group, group members, add and remove member, `downloadGroupMembers` | `admin/core/views/cusers/` | identity |
 | Permissions (main, module) | `admin/core/views/cperm/` | identity |
 | OAuth clients | `admin/core/views/cwebservice/` | identity |
@@ -36,7 +35,8 @@ Web has no database and no state of its own: every read and write goes through t
 
 Not built here; legacy renders them in its own shell, reached through the gateway and its session bridge:
 
-- **Legacy-served:** email broadcaster (`cemail`), mailing lists (`cmailinglist`), dashboard (`cdashboard`), file manager (`cfilemanager`), bundles, export HTML and plugin actions (`csettings`), plugins (`cplugins`), scaffolder (`scaffold`), Razuna (`razuna`), and `carch` export, exportcontent, importcontent, exportcomponent, importcomponent and emailTest.
+- **Legacy-served:** email broadcaster (`cemail`), mailing lists (`cmailinglist`), dashboard (`cdashboard`), file manager (`cfilemanager`), bundles, export HTML and plugin actions (`csettings`), plugins (`cplugins`), scaffolder (`scaffold`), Razuna (`razuna`), and `carch` export, exportcontent, importcontent, exportcomponent, importcomponent, emailTest, displayObjectModal and frontEndConfigurator (display-object CFML), and loadRepoManager (legacy answers the FW/1 viewNotFound error page).
+- **Halted** (`EX-FILE-RENDITION`, `opt2/exceptions-list.md`), because no other encoder reproduces the ColdFusion image engine's bytes: the image upload variants of `carch.update` and `carch.multiFileUpload`, and `carch.cropImage`, `rotateImage` and `flipImage` behind the image details screen.
 - **Withheld** (decision list, `opt2/decision-list.md`): site add, delete and copy (`csettings.updateSite{action=Add|Delete}`, `sitecopyselect`, `sitecopy`), class extensions (`cextend`), trash (`ctrash`), user delete (`cusers.update{type=2,action=Delete}`) and every photo branch of `cusers.update` and `ceditprofile.update`.
 
 ### SYNTHETIC module screens
@@ -73,11 +73,10 @@ Settled gaps of the target, each commented at its source:
 
 ## How it renders
 
-- Shell and screens are server-only TypeScript that produce escaped HTML strings through `src/lib/html.ts` (`html`, `attr`, `join`, `raw`). Page mode embeds that markup in one container of the React root, with no client components, so legacy jQuery, OneUI, CKEditor and nice-select are meant to operate on the DOM as on legacy; the browser flows under [Tests](#tests) demonstrate it. Route handlers return the same strings.
+- Shell and screens are server-only TypeScript that produce escaped HTML strings through `src/lib/html.ts` (`html`, `attr`, `join`, `raw`). Each response mode is a route handler. Page mode answers the serialized legacy document: `<head>`, `<body>` and the `<html>` and `<body>` attributes as the layout writes them, with no React root or client script, so legacy jQuery, OneUI, CKEditor and nice-select are meant to operate on the DOM as on legacy; the browser flows under [Tests](#tests) demonstrate it.
 - Legacy static assets are referenced in place (`/admin/assets/**`, `/core/vendor/**`, `/core/modules/**`) and served by legacy through the gateway. Nothing is copied, and no component library or new stylesheet is added.
 - Labels come from `core/mura/resourceBundle/resources/*.properties`, with core-module bundles from `core/modules/v1/core_assets/resource_bundles/` and global overrides from `resource_bundles/`, compiled into `src/generated/resource-bundles/` at build time.
 - Masa global settings are read from `MURA_<SETTING>` variables, with the defaults of `core/templates/settings.template.cfm`. A value Masa would evaluate as CFML (`${…}`, `{{…}}`) resolves to `''`.
-- Next layouts cannot read the query, so page mode applies the `<html>` and `<body>` attributes with a first-in-body inline script. Route-handler documents carry them literally. Either way the attributes are applied so that the DOM model the golden comparator builds is intended to match legacy's; the golden comparison under [Tests](#tests) demonstrates it.
 - Links, form actions and redirects use the legacy form (`adminUrl` from `@opt2/platform/legacy-compat`, FW/1 `buildURL` as `buildUrl` in `src/lib/urls.ts`).
 
 ## Gateway ↔ web contract
@@ -95,14 +94,14 @@ This section is normative for `gateway/` (`src/admin/map.ts`, the dispatcher and
    | SYNTHETIC | `/opt2/admin/<module>/<screen>`, `/opt2/admin-actions/<module>/<action>` | Path, query, method and body unchanged |
 
    The mode is the inventoried one (`ResponseModes.modeFor(routeKey)`); an action without one is never `target`, so it never reaches web.
-3. **Request facts.** On every request in the `page`, `redirect`, `fragment`, `json` and `download` modes the gateway adds `X-Opt2-Original-Url`: the browser's request target as received, path and query, including FW/1 path-info pairs (for example `/admin/index.cfm/cusers/list/siteid/default?compactDisplay=true`). Web derives the path info and the URL scope from it and performs the FW/1 context merge itself (path pairs, then URL, then form, later overwriting earlier; `fuseaction` overriding `muraAction` per scope). A Next page cannot read a request body, so a `page`-mode request is forwarded without one, as `GET` (a `HEAD` stays `HEAD`). Only a request-line `POST` contributes its form fields, appended to the query: the original query string, then `&` when both are non-empty, then the fields.
+3. **Request facts.** On every request in the `page`, `redirect`, `fragment`, `json` and `download` modes the gateway adds `X-Opt2-Original-Url`: the browser's request target as received, path and query, including FW/1 path-info pairs (for example `/admin/index.cfm/cusers/list/siteid/default?compactDisplay=true`). Web derives the path info and the URL scope from it and performs the FW/1 context merge itself (path pairs, then URL, then form, later overwriting earlier; `fuseaction` overriding `muraAction` per scope). A `page`-mode view only renders, so its request is forwarded without a body, as `GET` (a `HEAD` stays `HEAD`). Only a request-line `POST` contributes its form fields, appended to the query: the original query string, then `&` when both are non-empty, then the fields.
    - `application/x-www-form-urlencoded`: the body bytes unchanged, except controls and space (`0x00`–`0x20`), `0x7F`, non-ASCII bytes (`0x80`–`0xFF`) and `#`, which a request target cannot carry and so become `%XX` (uppercase hex); existing `%XX` escapes pass through.
    - `multipart/form-data`: the text fields as legacy's form scope reads them, each `encodeURIComponent(name)=encodeURIComponent(value)`, joined by `&` in body order; file parts are dropped, because a page-mode view only renders.
    - Any other body contributes no fields, as legacy's form scope is then empty.
 
    Web takes the URL scope from `X-Opt2-Original-Url` and the form scope from what follows it in the query it receives.
 4. **Inbound headers.**
-   - `Authorization: Bearer <site-scoped user token>`, minted by identity for the session and site (the request's `siteid`; for an admin request without one, the session's selected site identity holds, `session.siteid`, else `default`); absent when the request has no session, and web then has no `user` or `userToken`. An anonymous session's token has an empty `sub`: web verifies and forwards it like any user token for session-bound calls (identity's current session; CSRF token issuance, which answers 401 without a user token) and treats the request as logged out.
+   - `Authorization: Bearer <site-scoped user token>`, minted by identity for the session and site (the request's `siteid`; for an admin or OPT-2 screen request without one, the session's selected site identity holds, `session.siteid`, else `default`); absent when the request has no session, and web then has no `user` or `userToken`. An anonymous session's token has an empty `sub`: web verifies and forwards it like any user token for session-bound calls (identity's current session; CSRF token issuance, which answers 401 without a user token) and treats the request as logged out.
    - `X-Serverless-Authorization: Bearer <gateway invocation credential>`: in the cloud a Google-signed ID token whose audience is web's origin, locally a service token from identity's local signer with audience `web`. Web answers a bare 403 when it is missing or names another caller, and a bare 401 for an invalid user token.
    - `X-Request-Id`, `traceparent`, `tracestate`.
    - `X-Forwarded-Host` (the browser's `Host`), `X-Forwarded-Proto`, `X-Forwarded-For`. `Host` itself is web's own address, which Cloud Run routes by.
@@ -118,11 +117,11 @@ This section is normative for `gateway/` (`src/admin/map.ts`, the dispatcher and
 7. **Response normalisation.** Web's responses reach the client as sent, except:
    - every mode: `x-nextjs-*` headers are dropped, and Next's router members (`rsc`, `next-router-state-tree`, `next-router-prefetch`, `next-router-segment-prefetch`) are removed from `Vary`, which is dropped when nothing remains;
    - page mode (`/admin/<circuit>/<action>` and `/opt2/admin/<module>/<screen>`):
-     - `Content-Type` becomes `text/html;charset=UTF-8` (`LEGACY_HTML_CONTENT_TYPE`), replacing Next's `text/html; charset=utf-8`;
-     - `proxy.ts` sends `Cache-Control: no-cache, no-store, must-revalidate` with `Expires` exactly where legacy's full layout does. A page response without `Expires` has its `Cache-Control` removed, since that one is Next's own (`private, no-cache, no-store, max-age=0, must-revalidate`) and the compact layout sends none;
-     - a 307 (Next `redirect()`) becomes legacy's `cflocation` 302: the same `Location`, an empty body, `Cache-Control: no-cache`, `Pragma: no-cache`, no `Expires`, as `fw1Redirect()` in `src/lib/responses.ts` emits it;
-   - everything else as sent, in particular `Generator`, `Strict-Transport-Security`, `Content-Language`, `Content-Encoding`, `Set-Cookie`, `Location`, `Expires` outside the 302 rewrite, and the `Content-Type` of route handlers.
-8. **Fail closed.** Connection failure, timeout, or any 5xx from web is answered with `adminUnavailableResponse()` (503, the legacy admin error page), never with legacy and never retried. A page cannot set its status, so in page mode web reports an unavailable service by failing the render (Next answers 500). Route handlers answer 503 themselves (`legacyUnavailable()` in `src/lib/responses.ts`), which the gateway replaces the same way. A service's 401 or 403 is a denial, not unavailability: web raises `GatewayDenialError` and answers it with the access gate's redirect (`deniedGate()` in `src/lib/access-gate.ts`), to `clogin.logout` for 401 and `cMessage.noaccess` for 403.
+     - `Content-Type` becomes `text/html;charset=UTF-8` (`LEGACY_HTML_CONTENT_TYPE`);
+     - `Cache-Control` is removed only when it is Next's own (`private, no-cache, no-store, max-age=0, must-revalidate`);
+     - a 307 becomes legacy's `cflocation` 302: the same `Location`, an empty body, `Cache-Control: no-cache`, `Pragma: no-cache`, no `Expires`, as `fw1Redirect()` in `src/lib/responses.ts` emits it;
+   - everything else as sent, in particular `Generator`, `Strict-Transport-Security`, `Content-Language`, `Content-Encoding`, `Set-Cookie`, `Location`, `Expires` outside the 302 rewrite, and the `Content-Type` outside page mode.
+8. **Fail closed.** Connection failure, timeout, or any 5xx from web is answered with `adminUnavailableResponse()` (503, the legacy admin error page), never with legacy and never retried. Web answers an unavailable service with that 503 itself, in every mode (`legacyUnavailable()` in `src/lib/responses.ts`), which the gateway replaces the same way. A service's 401 or 403 is a denial, not unavailability: web raises `GatewayDenialError` and answers it with the access gate's redirect (`deniedGate()` in `src/lib/access-gate.ts`), to `clogin.logout` for 401 and `cMessage.noaccess` for 403.
 
 ## Build and run
 
@@ -171,7 +170,8 @@ Web reads no `PG_*`, `OPT2_DB_AUTH` or `CLOUD_SQL_INSTANCE` variable: it has no 
 
 ## Tests
 
-- `web/test/**` holds DOM-model (`test/helpers/dom-model.ts`, cheerio) and snapshot tests of the shell, screens and lib. They need no running stack. Page and layout adapters (`*.tsx`) are excluded from coverage; their behaviour is covered through `src/lib`.
+- `web/test/**` holds DOM-model (`test/helpers/dom-model.ts`, cheerio) and snapshot tests of the shell, screens and lib. They need no running stack.
+- Two vitest projects: `unit` needs no network; `integration` (`test/integration/**`) holds the loopback transport tests. `npm test` runs both with coverage; `npm run test:unit` or `npm run test:integration` runs one.
 - Equivalence is demonstrated only by the proofs below, which run from `harness/` and `web/test/`; this README records no result:
   - **Reproduced screens:** the golden scenarios GS-ID, GS-PE, GS-PS and GS-CO, replayed through the gateway and compared against legacy captures as each scenario declares (`compare` in `harness/golden/catalogue.yaml`): admin screens as DOM models (AAP 0.7.3), plus status, headers, authentication behaviour, envelopes, exports, and stored-row, stored-file and mail side effects; and the browser flows GS-UI-01 to GS-UI-05, which compare DOM, XHR responses and console.
   - **SYNTHETIC modules:** GS-TS, GS-FI, GS-ES, GS-RE, GS-SU and GS-CM prove API parity: the module APIs, called through the gateway, against the legacy-fixture captures (responses and side effects). Their `/opt2/admin/…` and `/opt2/admin-actions/…` steps are `compare: []` coverage visits, not UI comparisons.

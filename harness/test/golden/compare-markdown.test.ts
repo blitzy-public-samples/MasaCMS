@@ -2,7 +2,9 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
+import { createLogger, validateLogRecord } from '@opt2/platform/logging';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GoldenSet, GoldenStep } from '../../src/golden/capture.js';
 import {
@@ -13,10 +15,12 @@ import {
   type Scenario,
 } from '../../src/golden/catalogue.js';
 import {
+  BROWSER_FINAL_STEP,
   DECISION_LIST_PATH,
   GENERATED_BY,
   MIGRATED_SERVICES,
   PARITY_RESULTS,
+  PARITY_TITLE,
   UNMET_WITHOUT_FIXTURES,
   browserRecordSchema,
   browserResultPath,
@@ -41,11 +45,13 @@ import {
   type ScenarioVerdict,
 } from '../../src/golden/compare.js';
 import { GoldenConfigError, type ExceptionEntry } from '../../src/golden/errors.js';
+import type { DomModel } from '../../src/golden/normalise/dom-model.js';
 import { loadRules, type NormaliseRules } from '../../src/golden/normalise/rules.js';
 import type { ReplayOutput } from '../../src/golden/replay.js';
 import { UsageError } from '../../src/lib/cli.js';
-import { REPO_ROOT } from '../../src/lib/paths.js';
+import { REPO_ROOT, opt2Path } from '../../src/lib/paths.js';
 import { pinnedSha } from '../../src/lib/pin.js';
+import { writeMarkdown } from '../../src/lib/report.js';
 
 const CATALOGUE_FIXTURE = fileURLToPath(new URL('../fixtures/golden/catalogue.valid.yaml', import.meta.url));
 const SHA = pinnedSha();
@@ -61,12 +67,14 @@ const DECISION_LINK = '[decision-list.md](../decision-list.md)';
 const EXCEPTIONS_LINK = '[exceptions-list.md](../exceptions-list.md)';
 const NO_FIXTURES = { available: false, reason: 'no CREATE SCHEMA' };
 const FIXTURES = { available: true, reason: null };
+const CAPTURED_DATE = '11/317/2026';
+const REPLAYED_DATE = '11/318/2026';
 const MASKED_DIFFERENCE = {
-  step: 'home',
-  path: 'dom.date',
+  step: BROWSER_FINAL_STEP,
+  path: 'domModel.maskedText[0].text',
   kind: 'changed',
-  expected: 'a',
-  actual: 'b',
+  expected: CAPTURED_DATE,
+  actual: REPLAYED_DATE,
   classification: 'known-issue',
   maskId: 'date-mask',
 } as const;
@@ -191,6 +199,42 @@ function browserScenario(id: string): Scenario {
   return { ...id01, id, steps: [], browser: BROWSER };
 }
 
+/** A capture of browser scenario `id`: a login XHR, then the final DOM. */
+function browserGolden(id: string): GoldenSet {
+  const steps = [exchange('login', 0, 'admin:clogin.login'), exchange(BROWSER_FINAL_STEP, 1, 'admin:home.redirect')];
+  return { ...goldenOf(browserScenario(id)), steps };
+}
+
+/** A complete browser record replaying `golden` with `differences`, edited by `over`. */
+function browserRecordOf(
+  golden: GoldenSet,
+  differences: unknown[] = [],
+  over: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return { ...replayOf(golden), differences, console: [], notes: [], foreignOrigins: [], ...over };
+}
+
+/** `steps` whose final DOM shows `date` under the date mask. */
+function withDate(steps: readonly GoldenStep[], date: string): GoldenStep[] {
+  const empty = { headings: [], labels: [], forms: [], controls: [], buttons: [], links: [], tables: [], alerts: [] };
+  const domModel: DomModel = { title: 'Login', ...empty, maskedText: [{ mask: 'date-mask', path: 'td', text: date }] };
+  const maskedPaths = { 'domModel.maskedText[0]': 'date-mask' } as const;
+  return steps.map((step) =>
+    step.name === BROWSER_FINAL_STEP ? { ...step, normalised: { ...step.normalised, domModel, maskedPaths } } : step,
+  );
+}
+
+/** {@link browserGolden} whose final DOM shows a date under the date mask. */
+function maskedBrowserGolden(id: string): GoldenSet {
+  const golden = browserGolden(id);
+  return { ...golden, steps: withDate(golden.steps, CAPTURED_DATE) };
+}
+
+/** A record of `golden` whose final DOM shows another masked date, reporting it as {@link MASKED_DIFFERENCE}. */
+function maskedBrowserRecord(golden: GoldenSet): Record<string, unknown> {
+  return browserRecordOf(golden, [MASKED_DIFFERENCE], { steps: withDate(golden.steps, REPLAYED_DATE) });
+}
+
 function diff(over: Partial<ParityDifference> = {}): ParityDifference {
   return {
     step: 'findone',
@@ -237,7 +281,8 @@ describe('classifyScenario', () => {
   ])('with %s a status difference is %s', (_title, result, over) => {
     const golden = goldenOf(co05);
     const replay = replayOf(golden, (r) => setStatus(r.steps[0], 500));
-    const verdict = classify(golden, replay, { scenario: co05, exceptions: [entry(over)] });
+    const matches = [{ step: 'findone', path: 'status', kind: ['status' as const], actual: 500 }];
+    const verdict = classify(golden, replay, { scenario: co05, exceptions: [entry({ matches, ...over })] });
     const excused = result === 'excepted' ? 'EX-CO-05' : undefined;
     expect(verdict.result).toBe(result);
     expect(verdict.exceptionId).toBe(excused ?? null);
@@ -304,38 +349,53 @@ describe('classifyScenario', () => {
   });
 
   it('reports a masked browser difference as known-issue', () => {
-    const browser = browserRecordSchema.parse({
-      differences: [MASKED_DIFFERENCE],
-      steps: [{ name: 'home', routeKey: 'admin:home.redirect' }],
-    });
-    const verdict = classify(null, null, { scenario: browserScenario('GS-ID-02'), browser });
+    const golden = maskedBrowserGolden('GS-ID-02');
+    const browser = browserRecordSchema.parse(maskedBrowserRecord(golden));
+    const verdict = classify(golden, null, { scenario: browserScenario('GS-ID-02'), browser });
     expect(verdict.result).toBe('known-issue');
     expect(verdict.differences[0]?.maskId).toBe('date-mask');
   });
 
   it('excuses a browser console difference through the scenario route keys', () => {
     const consoleError = { step: 'console', path: 'console[0]', kind: 'extra', actual: 'TypeError' };
-    const browser = browserRecordSchema.parse({
-      differences: [{ ...consoleError, classification: 'difference' }],
-      steps: [{ name: 'login', routeKey: 'admin:clogin.login' }],
-    });
-    const exceptions = [entry({ id: 'EX-ID-02', scenario: 'GS-ID-02', routeKey: 'admin:clogin.login' })];
-    const verdict = classify(null, null, { scenario: browserScenario('GS-ID-02'), browser, exceptions });
+    const golden = browserGolden('GS-ID-02');
+    const browser = browserRecordSchema.parse(
+      browserRecordOf(golden, [{ ...consoleError, classification: 'difference' }], { console: ['TypeError'] }),
+    );
+    const exceptions = [
+      entry({
+        id: 'EX-ID-02',
+        scenario: 'GS-ID-02',
+        routeKey: 'admin:clogin.login',
+        matches: [{ step: 'console', path: 'console[0]' }],
+      }),
+    ];
+    const verdict = classify(golden, null, { scenario: browserScenario('GS-ID-02'), browser, exceptions });
     expect(verdict).toMatchObject({ result: 'excepted', exceptionId: 'EX-ID-02' });
   });
 
   it.each<[string, () => Sides, string]>([
-    ['a browser flow not run', () => [null, null, { scenario: browserScenario('GS-ID-02') }], 'browser flow not run'],
+    [
+      'a browser flow not run',
+      () => [browserGolden('GS-ID-02'), null, { scenario: browserScenario('GS-ID-02') }],
+      'browser flow not run',
+    ],
     [
       'an unreadable browser record',
-      () => [null, null, { scenario: browserScenario('GS-ID-02'), readErrors: { replay: 'record is not JSON' } }],
+      () => [
+        browserGolden('GS-ID-02'),
+        null,
+        { scenario: browserScenario('GS-ID-02'), readErrors: { replay: 'record is not JSON' } },
+      ],
       'record is not JSON',
     ],
     [
       'a failed browser flow',
       () => {
-        const browser = browserRecordSchema.parse({ error: { message: 'timed out', step: 'login' } });
-        return [null, null, { scenario: browserScenario('GS-ID-02'), browser }];
+        const golden = browserGolden('GS-ID-02');
+        const error = { message: 'timed out', step: 'login' };
+        const browser = browserRecordSchema.parse({ ...browserRecordOf(golden), error });
+        return [golden, null, { scenario: browserScenario('GS-ID-02'), browser }];
       },
       'browser flow failed at login: timed out',
     ],
@@ -574,6 +634,71 @@ describe('renderParityMarkdown', () => {
   });
 });
 
+/** Lines from the heading starting with `heading` through the last row of its table; `[]` without the heading. */
+function tableSection(lines: readonly string[], heading: string): string[] {
+  const start = lines.findIndex((line) => line.startsWith(heading));
+  if (start === -1) return [];
+  const table = lines.findIndex((line, i) => i > start && line.startsWith('|'));
+  const end = lines.findIndex((line, i) => i > table && !line.startsWith('|'));
+  return lines.slice(start, end === -1 ? lines.length : end);
+}
+
+/** The lines between the title, Source SHA and empty line and the next empty line. */
+function headerBlock(lines: readonly string[]): string[] {
+  return lines.slice(3, lines.indexOf('', 3));
+}
+
+/** A rendered parity.md `line` with each value only a run supplies read as `pending-run`. */
+function asPending(line: string): string {
+  return line
+    .replace(/^(Status|Generated at): .*$/, '$1: pending-run')
+    .replace(/^Fixtures: .*? \(from /, 'Fixtures: pending-run (from ')
+    .replace(/^(\| (?:total|`[^`]+`) \| )\d+ \|$/, '$1pending-run |');
+}
+
+describe('committed parity report', () => {
+  let report: ParityReport;
+  let committed: string[];
+
+  beforeAll(async () => {
+    report = buildParityReport({
+      catalogue: await loadCatalogue(),
+      scenarios: [],
+      fixtures: FIXTURES,
+      decisionList: await loadDecisionList(),
+      exceptions: exceptionEntries(await loadExceptionsList()),
+    });
+    committed = (await readFile(opt2Path('reports', 'parity.md'), 'utf8')).split('\n');
+  });
+
+  it('plans what the catalogue, decision list and exceptions list declare', async () => {
+    const json = JSON.parse(await readFile(opt2Path('reports', 'parity.json'), 'utf8')) as { planned: unknown };
+    expect(json.planned).toEqual(report.planned);
+    expect(tableSection(committed, '## Planned ')).toEqual(tableSection(renderParityMarkdown(report), '## Planned '));
+  });
+
+  it('carries the title, Source SHA line, header, headings, legend and table columns the renderer writes', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'compare-committed-'));
+    try {
+      const file = await writeMarkdown(path.join(dir, 'parity.md'), PARITY_TITLE, renderParityMarkdown(report));
+      const rendered = (await readFile(file, 'utf8')).split('\n').map(asPending);
+      const isHeading = (line: string): boolean => line.startsWith('#');
+      expect(committed.slice(0, 3)).toEqual(rendered.slice(0, 3));
+      expect(headerBlock(committed)).toEqual(headerBlock(rendered));
+      expect(committed.filter(isHeading)).toEqual(rendered.filter(isHeading));
+      for (const heading of ['## Result legend', '## Summary']) {
+        expect(tableSection(committed, heading)).toEqual(tableSection(rendered, heading));
+      }
+      const compared = renderParityMarkdown(fullReport());
+      for (const heading of ['## Scenarios', '## Unmet (withheld)']) {
+        expect(tableSection(committed, heading).slice(0, 4)).toEqual(tableSection(compared, heading).slice(0, 4));
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('renderExceptionsMarkdown', () => {
   const parityEvidence = { golden: 'harness/golden/sets/GS-CO-15.json', replay: 'opt2/reports/parity.json#GS-CO-15' };
   const entries = [
@@ -710,7 +835,8 @@ describe('main', () => {
       browserScenario('GS-ID-04'),
     ];
     const flags = await inputs(scenarios, [entry({ decision: 'fix', status: 'open' })]);
-    const goldens = new Map(scenarios.map((s) => [s.id, goldenOf(s)]));
+    const goldens = new Map(scenarios.map((s) => [s.id, s.browser === undefined ? goldenOf(s) : browserGolden(s.id)]));
+    goldens.set('GS-ID-02', maskedBrowserGolden('GS-ID-02'));
     const golden = (id: string): GoldenSet => {
       const set = goldens.get(id);
       if (set === undefined) throw new Error(`no golden ${id}`);
@@ -722,7 +848,7 @@ describe('main', () => {
     const failing = replayOf(golden('GS-CO-05'), (r) => setStatus(r.steps[0], 500));
     await writeJson(stateFile('replay', 'GS-CO-05.json'), failing);
     await writeFile(stateFile('replay', 'GS-CO-09.json'), '{', 'utf8');
-    await writeJson(stateFile('browser', 'GS-ID-02.json'), { differences: [MASKED_DIFFERENCE] });
+    await writeJson(stateFile('browser', 'GS-ID-02.json'), maskedBrowserRecord(golden('GS-ID-02')));
     await writeJson(stateFile('browser', 'GS-ID-04.json'), { differences: 'none' });
 
     const brokenGolden = path.join(REPO_ROOT, 'harness', 'golden', 'sets', 'GS-CO-08.json');
@@ -734,7 +860,14 @@ describe('main', () => {
       return golden(id);
     };
     const logged: string[] = [];
-    const outcome = await main(flags, env, { readGolden, clock: CLOCK, log: (line) => logged.push(line) });
+    const destination = new Writable({
+      write(chunk, _encoding, done) {
+        logged.push(String(chunk));
+        done();
+      },
+    });
+    const logger = createLogger({ service: 'test', version: '1', env: 'local', destination });
+    const outcome = await main(flags, env, { readGolden, clock: CLOCK, logger });
 
     expect(outcome).toEqual({
       code: 1,
@@ -752,8 +885,14 @@ describe('main', () => {
         exceptionsMarkdown: path.join(root, 'exceptions-list.md'),
       },
     });
-    expect(logged).toContain('GS-PE-RH-01: not replayed yet; omitted');
-    expect(logged).toContain('GS-CO-05: fail (1 unlisted difference)');
+    const records = logged.map((line) => JSON.parse(line) as Record<string, unknown>);
+    for (const record of records) expect(validateLogRecord(record)).toEqual({ valid: true, errors: [] });
+    expect(records).toContainEqual(
+      expect.objectContaining({ severity: 'INFO', message: 'GS-PE-RH-01: not replayed yet; omitted' }),
+    );
+    expect(records).toContainEqual(
+      expect.objectContaining({ severity: 'WARNING', message: 'GS-CO-05: fail (1 unlisted difference)' }),
+    );
 
     const report = parityReportSchema.parse(JSON.parse(await readFile(path.join(reports, 'parity.json'), 'utf8')));
     const stateReason = (file: string, message: string): RegExp =>
@@ -787,7 +926,10 @@ describe('main', () => {
     const outcome = await main(flags, env, { readGolden: async () => goldenOf(id01), clock: CLOCK });
     expect(outcome.code).toBe(0);
     expect(outcome.summary).toMatchObject({ total: 1, pass: 1, fail: 0 });
-    expect(stderr).toHaveBeenCalledWith('GS-ID-01: pass\n');
+    const records = stderr.mock.calls.map(([chunk]) => JSON.parse(String(chunk)) as Record<string, unknown>);
+    expect(records).toContainEqual(
+      expect.objectContaining({ severity: 'INFO', message: 'GS-ID-01: pass', service: 'harness-golden-compare' }),
+    );
   });
 
   it.each(['catalogue', 'exceptions', 'decision-list'])('rejects an empty --%s path', async (flag) => {

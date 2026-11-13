@@ -54,7 +54,7 @@ Outputs captured from legacy Masa that parity replay compares against. This READ
 ## No secrets
 
 - A request value that held a resolved credential is stored as `<secret>`; the catalogue keeps the `${secret:…}` placeholders. Credentials are resolved at run time from `MURA_ADMIN_PASSWORD`, `MASA_TEST_EDITOR_PASSWORD`, `MURA_APPRELOADKEY` and `${OPT2_STATE_DIR}/secrets/seed-credentials.json`.
-- `Authorization` credentials, cookies and token values (`csrf_token`, `csrf_token_expires`, `access_token` and the other `tokens` of `normalise.yaml`) appear only as `<token>`, in `request` and `response` as well as in `normalised`. The CSRF fields come from forms such as `admin/core/views/clogin/main.cfm` (`renderCSRFTokens`, context `login`).
+- `Authorization` credentials, cookies and token values (`csrf_token`, `csrf_token_expires`, `access_token` and the other `tokens` of `normalise.yaml`) appear as `<token>`, in `request` and `response` as well as in `normalised`, except an `Authorization` credential that secret redaction already replaced whole, such as `Basic <secret>`, which stays `<secret>`. The CSRF fields come from forms such as `admin/core/views/clogin/main.cfm` (`renderCSRFTokens`, context `login`).
 - Capture refuses to write a set in which a resolved secret remains, so the committed sets give gitleaks nothing to find.
 - No runtime state is stored here. Runtime state lives in `${OPT2_STATE_DIR}`.
 

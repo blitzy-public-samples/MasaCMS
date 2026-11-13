@@ -17,7 +17,9 @@
     "start": "next start",
     "dev": "next dev",
     "pretest": "npm run generate",
-    "test": "vitest run --coverage"
+    "test": "vitest run --coverage",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration"
   },
   "dependencies": {
     "@opt2/platform": "file:../platform",

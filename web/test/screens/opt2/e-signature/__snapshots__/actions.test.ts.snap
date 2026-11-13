@@ -1,0 +1,142 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`sign action > re-renders an already signed request with the service conflict 1`] = `
+{
+  "alerts": [
+    {
+      "className": "alert alert-error",
+      "text": "already-signed",
+    },
+  ],
+  "buttons": [],
+  "controls": [],
+  "headings": [
+    "Signature Request",
+  ],
+  "labels": [],
+  "links": [
+    {
+      "href": "/opt2/admin/e-signature/requests?siteid=tenant-a",
+      "text": "Signature Requests",
+    },
+    {
+      "href": "/opt2/admin/e-signature/audit?siteid=tenant-a&id=E5160001-0000-0000-0000000000000001",
+      "text": "Audit Chain",
+    },
+    {
+      "href": "/opt2/admin/e-signature/verify?siteid=tenant-a&id=E5160001-0000-0000-0000000000000001",
+      "text": "Verify",
+    },
+  ],
+  "tables": [
+    {
+      "headers": [
+        "Document",
+        "State",
+        "Signer",
+        "Created",
+        "Created By",
+        "Document SHA-256",
+      ],
+      "rows": [
+        [
+          "tenant-a-supplier-agreement.pdf",
+          "SIGNED",
+          "E51600F0-0000-0000-0000000000000001",
+          "2026-06-28T10:00:00",
+          "5A000000-0000-0000-0000000000000003",
+          "a049f1c1c0daa458e64b981eb0473ad5fc47c20aa8386aca60b76c6b9f0d1f7f",
+        ],
+      ],
+    },
+    {
+      "headers": [
+        "Typed Name",
+        "Signed By",
+        "Signed At",
+      ],
+      "rows": [
+        [
+          "Jordan Ellis",
+          "E51600F0-0000-0000-0000000000000001",
+          "2026-06-30T09:15:00",
+        ],
+      ],
+    },
+  ],
+  "title": "",
+}
+`;
+
+exports[`verify action > renders the supplied copy verdict beside the stored one and keeps the posted copy 1`] = `
+{
+  "alerts": [
+    {
+      "className": "alert alert-info",
+      "text": "The stored audit chain is intact (2 entries).",
+    },
+    {
+      "className": "alert alert-error",
+      "text": "The supplied copy is broken at entry 2 (2 entries).",
+    },
+  ],
+  "buttons": [
+    {
+      "hasOnclick": false,
+      "text": "Verify Copy",
+      "type": "submit",
+    },
+  ],
+  "controls": [
+    {
+      "checked": false,
+      "name": "entries",
+      "options": [],
+      "selected": [],
+      "tag": "textarea",
+      "type": "textarea",
+      "value": "[{"entry_id":"E5160003-0000-0000-0000000000000001","request_id":"E5160001-0000-0000-0000000000000001","seq":1,"action":"created","actor_user_id":"5A000000-0000-0000-0000000000000003","detail":"a049f1c1c0daa458e64b981eb0473ad5fc47c20aa8386aca60b76c6b9f0d1f7f","at":"2026-06-28T10:00:00.000","prev_hash":"0000000000000000000000000000000000000000000000000000000000000000","entry_hash":"a63b0bd3068273b22c735ec1320165c19472e87887d7dca1b23f305f2798df03"},{"entry_id":"E5160003-0000-0000-0000000000000002","request_id":"E5160001-0000-0000-0000000000000001","seq":2,"action":"signed","actor_user_id":"E51600F0-0000-0000-0000000000000001","detail":"Mallory","at":"2026-06-30T09:15:00.000","prev_hash":"a63b0bd3068273b22c735ec1320165c19472e87887d7dca1b23f305f2798df03","entry_hash":"5a1f5241b50f0957ab069accfeeb9b172584c7370f9a7fdd327a8f4b5cc877fa"}]",
+    },
+    {
+      "checked": false,
+      "name": "csrf_token",
+      "options": [],
+      "selected": [],
+      "tag": "input",
+      "type": "hidden",
+      "value": "TESTCSRFTOKEN0000000000000000000",
+    },
+    {
+      "checked": false,
+      "name": "csrf_token_expires",
+      "options": [],
+      "selected": [],
+      "tag": "input",
+      "type": "hidden",
+      "value": "260630150000000",
+    },
+  ],
+  "headings": [
+    "Verify Audit Chain",
+  ],
+  "labels": [
+    "Audit Chain Copy (JSON)",
+  ],
+  "links": [
+    {
+      "href": "/opt2/admin/e-signature/requests?siteid=tenant-a",
+      "text": "Signature Requests",
+    },
+    {
+      "href": "/opt2/admin/e-signature/request?siteid=tenant-a&id=E5160001-0000-0000-0000000000000001",
+      "text": "Signature Request",
+    },
+    {
+      "href": "/opt2/admin/e-signature/audit?siteid=tenant-a&id=E5160001-0000-0000-0000000000000001",
+      "text": "Audit Chain",
+    },
+  ],
+  "tables": [],
+  "title": "",
+}
+`;

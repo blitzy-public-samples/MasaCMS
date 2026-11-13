@@ -669,11 +669,12 @@ describe('capturing publisher behind the outbox flush', () => {
 
     await expect(flushAfterCommit(runtime, TENANT_A.tenantId, [envelope.eventId])).resolves.toStrictEqual({ published: 0, failed: 1, skipped: 0 });
     expect(publisher.published).toEqual([]);
-    expect(statements.map((statement) => statement.sql.split(' ', 1)[0])).toEqual(['SELECT', 'SELECT']);
+    expect(statements.map((statement) => statement.sql.split(' ', 1)[0])).toEqual(['SELECT', 'SELECT', 'SELECT']);
 
     await expect(flushAfterCommit(runtime, TENANT_A.tenantId, [envelope.eventId])).resolves.toStrictEqual({ published: 1, failed: 0, skipped: 0 });
     expect(publisher.published).toStrictEqual([{ topic: TOPIC, envelope }]);
-    expect(statements.slice(2)).toEqual([
+    expect(statements.slice(3)).toEqual([
+      { sql: "SELECT set_config('lock_timeout', $1, true)", values: ['2000ms'] },
       { sql: expect.stringMatching(/^SELECT o\.\* /), values: [[envelope.eventId]] },
       { sql: expect.stringMatching(/^SELECT ordering_key, /), values: [[envelope.aggregateId], '1', ['1']] },
       stamped([envelope.eventId]),

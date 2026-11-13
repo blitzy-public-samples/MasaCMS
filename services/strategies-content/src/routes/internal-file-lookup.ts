@@ -22,7 +22,10 @@ const FILE_UNIT = 'content.file';
 const FILE_TABLE = 'file';
 const USER_POOLS: readonly PoolKind[] = ['publicUser', 'privateUser'];
 
-const ROUTE_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', requires: Object.freeze([serviceRole('people')]) });
+const ROUTE_AUTH: Opt2RouteConfig = Object.freeze({
+  transport: 'service',
+  requires: Object.freeze([serviceRole('people'), serviceRole('identity')]),
+});
 
 const lookupBodySchema = z.strictObject({
   fileIds: z
@@ -76,7 +79,7 @@ async function lookupFileExtensions(db: TenantDb, tenantId: string, fileIds: rea
   });
 }
 
-/** Registers `lookupFileExtensions`, people's read of user photo file extensions. */
+/** Registers `lookupFileExtensions`, people's and identity's read of user photo file extensions. */
 export async function registerFileLookupRoutes(app: FastifyInstance, deps: FileLookupRouteDeps): Promise<void> {
   const { db } = deps;
 

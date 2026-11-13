@@ -428,25 +428,28 @@ export async function awaitReadable(tx: TenantTx | MetadataTx, units: readonly s
   if (wanted.length === 0) {
     return;
   }
-  // Waiting while holding FOR SHARE on a gate would block the window's phase change behind this transaction.
-  const holding = fenced.size > 0 || (written?.size ?? 0) > 0;
-  await waitFor(
-    deadlineFor(opts),
-    async () => {
-      // An unlocked look first, so a read waiting out a window holds no share lock the window's next phase change must wait for.
-      const gates = await readGates(tx, wanted);
-      const pending = gates.filter((gate) => READ_BLOCKING_PHASES.has(gate.phase)).map((gate) => gate.unit);
-      const blocked = pending.length > 0 ? pending : await fenceReadable(tx, tx.schema, wanted);
-      if (holding && blocked.length > 0) {
-        throw new GateRaceError(
-          blocked,
-          `Legacy write window in progress for ${blocked.join(', ')} while the unit of work held gate locks; it must roll back and re-run`,
-        );
-      }
-      return blocked;
-    },
-    (blocked) => new UnitReadBlockedError(blocked),
-  );
+  const deadline = deadlineFor(opts);
+  // Fence first: an open gate needs no separate look, and a blocked fence has already released its locks.
+  const blocked = await fenceReadable(tx, tx.schema, wanted);
+  if (blocked.length > 0) {
+    // Waiting while holding FOR SHARE on a gate would block the window's phase change behind this transaction.
+    if (fenced.size > 0 || (written?.size ?? 0) > 0) {
+      throw new GateRaceError(
+        blocked,
+        `Legacy write window in progress for ${blocked.join(', ')} while the unit of work held gate locks; it must roll back and re-run`,
+      );
+    }
+    await waitFor(
+      deadline,
+      async () => {
+        // An unlocked look first, so a read waiting out a window holds no share lock the window's next phase change must wait for.
+        const gates = await readGates(tx, wanted);
+        const pending = gates.filter((gate) => READ_BLOCKING_PHASES.has(gate.phase)).map((gate) => gate.unit);
+        return pending.length > 0 ? pending : fenceReadable(tx, tx.schema, wanted);
+      },
+      (stillBlocked) => new UnitReadBlockedError(stillBlocked),
+    );
+  }
   for (const unit of wanted) {
     fenced.add(unit);
   }

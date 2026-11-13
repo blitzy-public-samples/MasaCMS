@@ -60,6 +60,7 @@ function fakeCatalog(tables: Readonly<Record<string, FakeTable>> = TABLES, failu
     unitsOfOwner: unused('unitsOfOwner'),
     legacyTablesOf: unused('legacyTablesOf'),
     unitsForLegacyTable: unused('unitsForLegacyTable'),
+    siteColumnOf: unused('siteColumnOf'),
     foldProgramTable: (table) => {
       const match = PROGRAM_TABLE.exec(table);
       const generic = match?.[2] === undefined ? undefined : `Program_N.${match[2]}`;

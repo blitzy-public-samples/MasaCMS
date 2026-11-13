@@ -190,7 +190,7 @@ const TABLES: TableDefinition[] = [
 ];
 
 const ITEM_SQL = [
-  `CREATE TABLE ${BASE}.item (tenant_id uuid NOT NULL, item_id text NOT NULL, site_id text, name text, qty integer, PRIMARY KEY (tenant_id, item_id));`,
+  `CREATE TABLE ${BASE}.item (tenant_id uuid NOT NULL, item_id text NOT NULL, site_id text, name varchar(50), qty integer, PRIMARY KEY (tenant_id, item_id));`,
   rlsSql(BASE, 'item'),
 ].join('\n');
 
@@ -615,23 +615,6 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
       { legacyTable: 'Program_22.Scores', direction: 'reverse', snapshotSeq: 5, backupLsn: '123', finishedAt: '2026-06-30T11:00:00.000' },
     ]);
     expect((await changelog(site)).map((change) => change.origin)).toEqual(['legacy-window', 'legacy-window']);
-  });
-
-  it('answers a database failure during an apply with the legacy 500 and records no batch', async () => {
-    const site = freshSite();
-    const batch = (qty: number): Record<string, unknown> => ({
-      batchId: `${site}-overflow`,
-      origin: 'backfill',
-      legacyTable: 'tItems',
-      siteId: site,
-      columns: ITEM_LEGACY,
-      rows: rowsOf(ITEM_LEGACY, [['upsert', item('i1', site, 'Big', qty)]]),
-    });
-    const res = await post('/apply', batch(2 ** 40));
-    expect(res.statusCode).toBe(500);
-    expect(res.json()).toMatchObject({ error: { code: 'server_error' } });
-    expect(await batches(site)).toEqual([]);
-    expect(await applied(batch(1))).toMatchObject({ duplicate: false, applied: 1 });
   });
 
   it('inserts identical keyless rows as separate occurrences, deletes one occurrence at a time and exports each occurrence', async () => {
@@ -1258,10 +1241,29 @@ describe.skipIf(!available)('migration endpoints against PostgreSQL', () => {
     expect(await batches(REJECTED_SITE)).toEqual([]);
   });
 
-  it('rejects an apply row the repository cannot write as badRequest', async () => {
-    expectRejected(await post('/apply', { ...applyBase, rows: rowsOf(ITEM_LEGACY, [['upsert', { ItemID: null, SiteID: REJECTED_SITE, Name: 'N', Qty: 1 }]]) }), 'Bad Request');
-    expect(await batches(REJECTED_SITE)).toEqual([]);
-  });
+  it.each([
+    ['without its key value', 'RepositoryError', REDACTED, (site: string): LegacyValues => ({ ...item('i1', site, 'opt2-secret-key', 1), ItemID: null })],
+    ['with a value longer than its column', 'error', 'PostgreSQL error 22001', (site: string): LegacyValues => item('i1', site, `opt2-secret-${'x'.repeat(50)}`, 1)],
+    ['with an integer beyond the range of its column', 'error', 'PostgreSQL error 22003', (site: string): LegacyValues => item('i1', site, 'opt2-secret-qty', 2 ** 40)],
+    ['with a NUL character in a text value', 'error', 'PostgreSQL error 22021', (site: string): LegacyValues => item('i1', site, 'opt2-secret-\u0000', 1)],
+  ] as [string, string, string, (site: string) => LegacyValues][])(
+    'rejects an apply row %s as badRequest, logs only its sanitized error and records no batch',
+    async (_label, type, message, values) => {
+      const site = freshSite();
+      const batch = (row: LegacyValues): Record<string, unknown> => ({ ...applyBase, batchId: `${site}-unwritable`, siteId: site, rows: rowsOf(ITEM_LEGACY, [['upsert', row]]) });
+      logLines.length = 0;
+      const res = await post('/apply', batch(values(site)));
+      expectRejected(res, 'Bad Request');
+      expect(res.body).not.toContain('opt2-secret');
+      expect(logLines).toContainEqual(
+        expect.objectContaining({ severity: 'WARNING', message: 'migration request rejected', error: expect.objectContaining({ type, message }) }),
+      );
+      expect(logLines.filter((line) => line.severity === 'ERROR')).toEqual([]);
+      expect(JSON.stringify(logLines)).not.toContain('opt2-secret');
+      expect(await batches(site)).toEqual([]);
+      expect(await applied(batch(item('i1', site, 'N', 1)))).toMatchObject({ duplicate: false, applied: 1 });
+    },
+  );
 
   it('logs the error type of a rejected request and keeps its rows out of the error body and the log', async () => {
     logLines.length = 0;
@@ -1329,10 +1331,24 @@ describe.skipIf(!available)('migration endpoints of a service without outbox, in
     await handle?.drop();
   });
 
-  it('answers the legacy 500, not a 400, when the database fails during an export', async () => {
-    const res = await app.inject({ method: 'GET', url: `${MIGRATION_PATH_PREFIX}/export`, headers, query: { unit: 'mk.tag_member', siteId: 'tenant-a' } });
+  it.each([
+    ['an export', (): Promise<LightMyRequestResponse> => app.inject({ method: 'GET', url: `${MIGRATION_PATH_PREFIX}/export`, headers, query: { unit: 'mk.tag_member', siteId: 'tenant-a' } })],
+    [
+      'an apply',
+      (): Promise<LightMyRequestResponse> =>
+        app.inject({
+          method: 'POST',
+          url: `${MIGRATION_PATH_PREFIX}/apply`,
+          headers,
+          payload: { batchId: 'bare-tags', origin: 'backfill', legacyTable: 'tTagMembers', siteId: 'tenant-a', columns: TAG_LEGACY, rows: rowsOf(TAG_LEGACY, [['insert', { Label: 'a', Weight: 1 }]]) },
+        }),
+    ],
+  ] as [string, () => Promise<LightMyRequestResponse>][])('answers the legacy 500, not a 400, when the database fails during %s, recording no batch', async (_label, send) => {
+    const res = await send();
     expect(res.statusCode).toBe(500);
     expect(res.json()).toMatchObject({ error: { message: 'Unhandled Exception', code: 'server_error' } });
+    const recorded = await handle.app.withTenant(TENANT_A.tenantId, async (tx) => (await tx.query(`SELECT batch_id FROM ${handle.schema}.migration_batch`)).rows);
+    expect(recorded).toEqual([]);
   });
 
   it('reports null outbox and inbox counts and exports a unit without an object manifest', async () => {

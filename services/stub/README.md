@@ -26,7 +26,7 @@ Schema `stub`, created by `opt2-db bootstrap` (`migration/src/db-bootstrap/`) wi
 | `stub.note_projection` | The note as the stub's own `stub.note.created.v1` consumer applied it, with `aggregate_version`, `apply_count`, `last_event_id` and `projected_at` |
 | Platform tables | `tenant_registry`, `tenant_grant`, `changelog`, `unit_gate`, `open_operation`, `migration_batch`, `migration_watermark`, `inbox`, `consumer_aggregate_version`, `outbox`, `scheduled_task_queue`, `scheduled_task_queue_state` |
 
-Every tenant-owned table has RLS enabled and forced under the `tenant_isolation` policy on `app.tenant_id`. `tenant_registry`, `tenant_grant`, `unit_gate`, `open_operation` and `migration_watermark` carry no `tenant_id`. The migration seeds the gates of the units `stub.note` and `stub.note_projection` as `open`. The stub owns no legacy table, so its migration mappings (`src/migration/mappings/`) are empty.
+Every tenant-owned table has RLS enabled and forced under the `tenant_isolation` policy on `app.tenant_id`. `tenant_registry`, `tenant_grant`, `unit_gate`, `open_operation` and `migration_watermark` are non-tenant tables without RLS or a `tenant_isolation` policy: they hold tenant metadata, never tenant data. `tenant_registry` maps each site to its `tenant_id` and pool tenants; `tenant_grant` stores `grantor_tenant` and `grantee_tenant`. The migration seeds the gates of the units `stub.note` and `stub.note_projection` as `open`. The stub owns no legacy table, so its migration mappings (`src/migration/mappings/`) are empty.
 
 ## Routes
 
@@ -82,15 +82,23 @@ Every route declares its roles or `public`; an undeclared route fails start-up. 
 ```sh
 npm ci            # postinstall builds ../../platform
 npm run build     # generates src/generated/ from the contracts, then tsc -> dist/
-PORT=8199 OPT2_SERVICE_NAME=stub OPT2_ENV=local OPT2_DB_AUTH=password PG_USER=stub_app … npm start
+export OPT2_STATE_DIR="$HOME/.opt2/state"   # outside the checkout; secrets/ from `npm run repro:secrets` in harness
+export PORT=8199 OPT2_SERVICE_NAME=stub OPT2_ENV=local TZ=UTC
+export OPT2_DB_AUTH=password PG_HOST=127.0.0.1 PG_PORT=5432 PG_DATABASE='<database>'   # the database opt2-db bootstrap set up
+export PG_USER=stub_app PG_PASSWORD="$(cat "$OPT2_STATE_DIR/secrets/db-stub-app")"
+export PUBSUB_EMULATOR_HOST=localhost:8085
+export OPT2_TOKEN_ISSUER=opt2-local-identity OPT2_TOKEN_AUDIENCE=opt2-local
+export OPT2_JWKS_URL=http://127.0.0.1:8111/.well-known/jwks.json   # identity's key set
+export OPT2_SERVICE_URLS='{"stub":"http://127.0.0.1:8199"}'        # target of the stub's own outbox sweep
+npm start         # node dist/main.js
 ```
 
 The environment is `baseEnvSchema` of `@opt2/platform/service-kit` (see [Configuration](../../platform/README.md#configuration)); locally it also needs `PUBSUB_EMULATOR_HOST`. `harness/repro/up.sh` sets all of it.
 
 | Command | Runs |
 |---|---|
-| `npm test` | Every suite with coverage (≥ 90 % statements): `test/unit`, `test/contract`, `test/isolation`, `test/events`, `test/security`. Suites that need PostgreSQL or the Pub/Sub emulator skip when the `PG_*` settings or `PUBSUB_EMULATOR_HOST` are absent |
+| `npm test` | Every suite with coverage (≥ 90 % statements): `test/unit`, `test/contract`, `test/isolation`, `test/events`, `test/security` |
 | `npm run test:contract` | Responses and events against the contracts |
 | `npm run test:security` | The route × role matrix through `app.inject` |
 
-`harness/repro/test-all.sh` stage 2 runs `npm test` here.
+`harness/repro/test-all.sh` stage 2 runs `npm test` here. A full run needs PostgreSQL (`PG_HOST`, `PG_USER`, `PG_PASSWORD`, `PG_DATABASE`; `PG_PORT` defaults to 5432) and the Pub/Sub emulator (`PUBSUB_EMULATOR_HOST`), which `test-all.sh` and CI provide. The PostgreSQL cases in `test/unit/app.test.ts`, `test/unit/repository.test.ts`, `test/isolation/rls.test.ts`, `test/events/delivery.test.ts` and `test/events/outbox.test.ts` skip when `PG_HOST` is unset or the server cannot be reached. With `PG_HOST` set, a missing setting, an invalid `PG_PORT` or a refused login fails those files with an error naming the cause. The emulator round trip in `test/events/outbox.test.ts` skips when `PUBSUB_EMULATOR_HOST` is unset or unreachable.

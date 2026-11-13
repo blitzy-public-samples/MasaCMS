@@ -1,5 +1,6 @@
 // The admin access gate: where legacy sends users without site access, anonymous users and unauthorised users (server-only).
 import { ADMIN_LOGIN_REDIRECT_ACTION, ADMIN_NOACCESS_ACTION, cfEq, cfListToArray } from '@opt2/platform/legacy-compat';
+import { scanCompactDisplay } from './cfml';
 import { legacySettings } from './env';
 import type { AdminRequest } from './request-context';
 import { adminPath, fw1RedirectTarget, sanitizeHref, type HrefDomains } from './urls';
@@ -58,7 +59,8 @@ export function deniedGate(status: 401 | 403): GateDecision {
 }
 
 /**
- * Controller `secure()`: anonymous users go to the login form with a return URL, logged-in users back to the referrer.
+ * Controller `secure()`: anonymous users go to the login form with a return URL and the scanned `compactDisplay`,
+ * logged-in users back to the referrer.
  * @throws TypeError For an anonymous request carrying no registry domains, since the browser's Host is never trusted.
  */
 export function secure(req: AdminRequest, { hrefDomains = req.hrefDomains }: GateOptions = {}): GateDecision {
@@ -70,7 +72,7 @@ export function secure(req: AdminRequest, { hrefDomains = req.hrefDomains }: Gat
   );
   const append: Array<readonly [string, string]> = [['returnURL', currentAdminPath + req.currentUrl.replace('.', '')]];
   const compactDisplay = req.rc['compactDisplay'];
-  if (compactDisplay !== undefined) append.push(['compactDisplay', compactDisplay]);
+  if (compactDisplay !== undefined) append.push(['compactDisplay', scanCompactDisplay(compactDisplay)]);
   return redirectTo(fw1RedirectTarget({ action: 'cLogin.main', path: './', append, ses: req.ses }));
 }
 

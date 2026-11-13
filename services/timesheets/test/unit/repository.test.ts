@@ -107,9 +107,12 @@ describe('timesheets repository identity', () => {
     expect(createTimesheetsRepository({ schema: 't_timesheets' }).schema).toBe('t_timesheets');
   });
 
-  it('answers no day ids without a query', async () => {
+  it.each<[string, (repository: TimesheetsRepository, tx: TenantTx) => Promise<unknown[]>]>([
+    ['blackoutsOfDays', (repository, tx) => repository.blackoutsOfDays(tx, [])],
+    ['daysOfSheets', (repository, tx) => repository.daysOfSheets(tx, [])],
+  ])('%s answers no ids without a query', async (_name, read) => {
     const tx = { query: () => Promise.reject(new Error('queried')) } as unknown as TenantTx;
-    await expect(createTimesheetsRepository().blackoutsOfDays(tx, [])).resolves.toEqual([]);
+    await expect(read(createTimesheetsRepository(), tx)).resolves.toEqual([]);
   });
 
   it.each<[string, Pick<SheetFilter, 'pageIndex' | 'itemsPerPage'>]>([
@@ -258,6 +261,9 @@ describe.skipIf(!available)('timesheets repository against PostgreSQL', () => {
     await expect(withGatedTenant(handle.app, tenantId, (tx) => repository.daysOfSheet(tx, s.timesheet_id), SHORT_BUDGET)).rejects.toBeInstanceOf(
       UnitReadBlockedError,
     );
+    await expect(withGatedTenant(handle.app, tenantId, (tx) => repository.daysOfSheets(tx, [s.timesheet_id]), SHORT_BUDGET)).rejects.toBeInstanceOf(
+      UnitReadBlockedError,
+    );
     await expect(withGatedTenant(handle.app, tenantId, (tx) => repository.getSheet(tx, s.timesheet_id), SHORT_BUDGET)).resolves.toMatchObject({
       timesheet_id: s.timesheet_id,
     });
@@ -349,6 +355,19 @@ describe.skipIf(!available)('timesheets repository against PostgreSQL', () => {
       });
     });
 
+    it('reads the days of several sheets in one statement, by sheet id, then each sheet in daysOfSheet order', async () => {
+      await inTenant(async (tx) => {
+        const seen: Statement[] = [];
+        const ids = [s2, s1, s4, s3].map((row) => row.timesheet_id);
+        const days = await repository.daysOfSheets(recording(tx, seen), [...ids, cfUuid()]);
+        expect(days.map((row) => row.day_id)).toEqual([otherPerson, before, submittedBlackedOut, returned, first, blackedOut, open, approved].map((row) => row.day_id));
+        const single: TimesheetDayRow[] = [];
+        for (const id of [s4, s3, s1, s2].map((row) => row.timesheet_id)) single.push(...(await repository.daysOfSheet(tx, id)));
+        expect(days).toEqual(single);
+        expect(seen.filter((statement) => statement.text.includes('."timesheet_day"'))).toHaveLength(1);
+      });
+    });
+
     it('selects the open days usp_apply_blackout blacks out, by day id', async () => {
       const days = await inTenant((tx) => repository.openDaysOfPerson(tx, { personId: P1, effectiveFrom: new Date(2026, 5, 1) }));
       expect(days.map((row) => row.day_id)).toEqual([returned, open, first].map((row) => row.day_id));
@@ -372,6 +391,7 @@ describe.skipIf(!available)('timesheets repository against PostgreSQL', () => {
         expect(await repository.listSheets(tx, FIRST_PAGE)).toEqual({ rows: [], total: 0 });
         expect(await repository.getSheet(tx, s1.timesheet_id)).toBeNull();
         expect(await repository.daysOfSheet(tx, s2.timesheet_id)).toEqual([]);
+        expect(await repository.daysOfSheets(tx, [s1.timesheet_id, s2.timesheet_id])).toEqual([]);
         expect(await repository.dayWithBlackout(tx, blackedOut.day_id)).toBeNull();
         expect(await repository.blackoutsOfDays(tx, [blackedOut.day_id])).toEqual([]);
         expect(await repository.openDaysOfPerson(tx, { personId: P1, effectiveFrom: new Date(2000, 0, 1) })).toEqual([]);

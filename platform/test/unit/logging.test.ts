@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { fastify } from 'fastify';
+import { fastify, LogController } from 'fastify';
 import { pino, type DestinationStream, type Logger } from 'pino';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { BASE_FIELD_KEYS, LOG_FIELD_KEYS, TRACE_FIELD_KEYS } from '../../src/logging/fields.js';
@@ -207,8 +207,27 @@ describe('fastifyLoggerOptions', () => {
   it('passes the logger through with request logging disabled and the requestId label', () => {
     const logger = pino({ enabled: false });
     const options = fastifyLoggerOptions(logger);
-    expect(options).toStrictEqual({ loggerInstance: logger, disableRequestLogging: true, requestIdLogLabel: 'requestId' });
+    expect(Object.keys(options).toSorted()).toStrictEqual(['logController', 'loggerInstance']);
     expect(options.loggerInstance).toBe(logger);
+    expect(options.logController).toBeInstanceOf(LogController);
+    expect(options.logController.disableRequestLogging).toBe(true);
+    expect(options.logController.requestIdLogLabel).toBe('requestId');
+  });
+
+  it('builds a Fastify server without deprecation warnings', async () => {
+    const codes: unknown[] = [];
+    const onWarning = (warning: Error & { code?: unknown }): void => {
+      codes.push(warning.code);
+    };
+    process.on('warning', onWarning);
+    const app = fastify(fastifyLoggerOptions(pino({ enabled: false })));
+    try {
+      await app.ready();
+    } finally {
+      process.off('warning', onWarning);
+      await app.close();
+    }
+    expect(codes.filter((code) => code === 'FSTDEP023' || code === 'FSTDEP024')).toStrictEqual([]);
   });
 
   it('makes Fastify log route lines under requestId and no request lines', async () => {

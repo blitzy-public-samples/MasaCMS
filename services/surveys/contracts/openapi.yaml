@@ -810,6 +810,8 @@ paths:
           invocationCredential: []
       parameters:
         - $ref: '#/components/parameters/SiteIdQuery'
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
       requestBody:
         required: true
         content:
@@ -834,6 +836,7 @@ paths:
                     $ref: '#/components/schemas/SurveySchedule'
         '400':
           $ref: '#/components/responses/BadRequest'
+          description: 'Legacy 400: `invalidTokens` (`Invalid CSRF tokens`) without a valid CSRF token of the survey id context, `invalidParameters` or `badRequest`.'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -906,6 +909,8 @@ paths:
           invocationCredential: []
       parameters:
         - $ref: '#/components/parameters/SiteIdQuery'
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
       requestBody:
         required: true
         content:
@@ -930,6 +935,7 @@ paths:
                     $ref: '#/components/schemas/BulkTargetResult'
         '400':
           $ref: '#/components/responses/BadRequest'
+          description: 'Legacy 400: `invalidTokens` (`Invalid CSRF tokens`) without a valid CSRF token of the survey id context, `invalidParameters` or `badRequest`.'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3204,6 +3210,10 @@ components:
           const: surveys
         paused:
           type: boolean
+        running:
+          type: integer
+          minimum: 0
+          description: Tasks of the queue still running when pause answered.
         ensured:
           $ref: '#/components/schemas/EnsureRecurringResult'
     CanonicalType:

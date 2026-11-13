@@ -14,7 +14,9 @@ import { OpsUsageError, USAGE, main, parseOpsCommand, type OpsCommand, type OpsI
 import {
   BackgroundCallError,
   DrainTimeoutError,
+  InvocationsRunningError,
   MissingSubscriptionError,
+  OrphanedWritesError,
   ResumeReconcileError,
   SeekVerificationError,
   drainAndSuspend,
@@ -49,6 +51,7 @@ const EMPTY_RECORD = { suspended: false, since: null, reason: null, pushConfigs:
 const SUSPEND_RESULT: DrainAndSuspendResult = {
   alreadySuspended: false,
   drained: { owners: [{ owner: 'people', unpublished: 0, held: 0, pendingReceipts: 0 }], polls: 1, elapsedMs: 4 },
+  finalDrained: { owners: [{ owner: 'people', unpublished: 0, held: 0, pendingReceipts: 0 }], polls: 2, elapsedMs: 1003 },
   pausedTasks: ['opt2-survey-41-launch'],
   pausedQueues: [{ service: 'people', queue: 'people-outbox-sweep' }],
   switchedToPull: ['timesheets.people.person.archived.v1'],
@@ -178,6 +181,14 @@ describe('main', () => {
         { counts: { owner: 'people', unpublished: 2, held: 1, pendingReceipts: 0 }, role: { producer: true, consumer: false } },
       ]),
       details: { timeoutMs: 5000, owners: [{ owner: 'people', unpublished: 2, held: 1, pendingReceipts: 0 }] },
+    },
+    {
+      error: new InvocationsRunningError(5000, [{ service: 'reporting', queue: 'reporting-export-run', running: 1 }]),
+      details: { timeoutMs: 5000, queues: [{ service: 'reporting', queue: 'reporting-export-run', running: 1 }] },
+    },
+    {
+      error: new OrphanedWritesError([{ instanceId: 'gateway-dead', route: 'job:/_api/sitemonitor/', side: 'legacy', count: 1, oldestStartedAt: TO }]),
+      details: { rows: [{ instanceId: 'gateway-dead', route: 'job:/_api/sitemonitor/', side: 'legacy', count: 1, oldestStartedAt: TO }] },
     },
     { error: new MissingSubscriptionError(['timesheets.people.person.archived.v1']), details: { subscriptions: ['timesheets.people.person.archived.v1'] } },
     {

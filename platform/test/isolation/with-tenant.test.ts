@@ -213,6 +213,60 @@ describe('withTenant against PostgreSQL', () => {
         client.release();
       }
     });
+
+    it('rejects with the reason of an already aborted signal without checking out a connection', async () => {
+      const connect = vi.spyOn(pool, 'connect');
+      const reason = new Error('client closed');
+      const fn = vi.fn(() => Promise.resolve());
+      try {
+        await expect(withTenant(single, TENANT_A.tenantId, fn, { signal: AbortSignal.abort(reason) })).rejects.toBe(reason);
+        expect(connect).not.toHaveBeenCalled();
+        expect(fn).not.toHaveBeenCalled();
+      } finally {
+        connect.mockRestore();
+      }
+    });
+
+    it('destroys the held connection and drops the uncommitted write when the signal aborts mid-transaction', async () => {
+      const controller = new AbortController();
+      const reason = new Error('client closed');
+      const id = nextNoteId();
+      let reached!: (pid: number) => void;
+      const started = new Promise<number>((resolve) => {
+        reached = resolve;
+      });
+      let resume!: () => void;
+      const held = new Promise<void>((resolve) => {
+        resume = resolve;
+      });
+
+      const run = withTenant(
+        single,
+        TENANT_A.tenantId,
+        async (tx) => {
+          const { rows } = await tx.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+          await insertNote(tx, TENANT_A.tenantId, id);
+          reached(rows[0]?.pid ?? -1);
+          await held;
+        },
+        { signal: controller.signal },
+      );
+      const pid = await started;
+      controller.abort(reason);
+      await expect(run).rejects.toBe(reason);
+      resume();
+
+      const next = await withTenant(single, TENANT_A.tenantId, async (tx) => {
+        const { rows } = await tx.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+        return rows[0]?.pid;
+      });
+      expect(next).not.toBe(pid);
+      await vi.waitFor(async () => {
+        const { rows } = await pool.query<{ n: number }>('SELECT count(*)::int AS n FROM pg_stat_activity WHERE pid = $1', [pid]);
+        expect(rows[0]?.n).toBe(0);
+      });
+      expect(await countNote(db().app, TENANT_A.tenantId, id)).toBe(0);
+    });
   });
 
   it('runs withMetadata with an empty tenant that sees no tenant rows but reads tenant_registry', async () => {

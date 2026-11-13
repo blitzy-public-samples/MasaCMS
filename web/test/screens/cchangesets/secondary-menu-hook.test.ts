@@ -1,5 +1,6 @@
 // The change-set secondary menu and shell hook against cchangesets/dsp_secondary_menu.cfm.
 import { describe, expect, it } from 'vitest';
+import { Roles, moduleRole } from '@opt2/platform/auth';
 import { encodeHtml, encodeJs, isSafeHtml, toString, type SafeHtml } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
 import { rbFor, type RbLookup } from '@/lib/resource-bundles/rb';
@@ -10,6 +11,7 @@ import {
 } from '@/screens/cchangesets/secondary-menu';
 import { editorRequest, makeAdminRequest, siteAdminRequest } from '../../helpers/admin-request';
 import { fragmentModel, type DomLink } from '../../helpers/dom-model';
+import { REQUESTED_SITE_CASES } from '../../helpers/requested-site';
 
 const CHANGESET_ID = '7C1A2B3D-4E5F-4A6B-8C9D0E1F2A3B4C5D';
 const PREVIEW_LINK = `http://localhost:8080/default/?changesetID=${CHANGESET_ID}`;
@@ -133,6 +135,27 @@ describe('renderChangesetsMenu', () => {
         text: 'Permissions',
       },
     ]);
+  });
+
+  it.each(REQUESTED_SITE_CASES)('links Permissions for $who only when it administers that site', (testCase) => {
+    const req = testCase.request({ circuit: 'cChangesets', item: 'list' });
+    const site = testCase.siteid;
+    const add: DomLink = { href: `./?muraAction=cchangesets.edit&changesetID=&siteid=${site}`, text: ADD.text };
+    const permissions: DomLink = {
+      href: `./?muraAction=cperm.module&contentid=${PERM_MODULE_ID}&moduleid=${PERM_MODULE_ID}&siteid=${site}`,
+      text: 'Permissions',
+    };
+
+    expect(fragmentModel(markupOf(renderChangesetsMenu(req, EN_US).html)).links).toEqual(
+      testCase.administers ? [add, permissions] : [add],
+    );
+  });
+
+  it('leaves Permissions out for Change Sets plus Site Manager module access, which legacy does not check', () => {
+    const roles = [Roles.systemUser, moduleRole(PERM_MODULE_ID), moduleRole('00000000000000000000000000000000000')];
+    const req = makeAdminRequest({ circuit: 'cChangesets', item: 'list', user: { roles } }, 'qaEditor');
+
+    expect(fragmentModel(markupOf(renderChangesetsMenu(req, EN_US).html)).links).toEqual([ADD]);
   });
 
   it('encodes each value as legacy does', () => {

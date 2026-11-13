@@ -1,23 +1,24 @@
-/** JSON API `site` entity routes: findOne and save (update) of a site as Masa's jsonApiUtility serves them. */
+/** JSON API `site` entity routes: every generic method of the site entity as Masa's jsonApiUtility serves it. */
 import { assertSiteMatches, type Opt2RouteConfig, type UserClaims } from '@opt2/platform/auth';
 import {
   LegacyApiError,
   LegacyServiceUnavailableError,
   accessControlOriginDomains,
-  buildEnvelope,
   cfEq,
   cfIsBoolean,
+  cfIsNumeric,
+  cfListToArray,
   cfToBoolean,
   corsHeaders,
+  isCfUuid,
   isLegacyFindOneId,
-  paramsWithoutMethod,
   routeKeyForRequest,
   serializeResponse,
-  serializeSaveResult,
   type ApiNameContext,
   type LegacyApiErrorType,
   type RouteKeyRequest,
 } from '@opt2/platform/legacy-compat';
+import { serializeError } from '@opt2/platform/logging';
 import {
   EnvValidationError,
   csrfPreHandler,
@@ -29,23 +30,45 @@ import {
   type FastifyReply,
   type FastifyRequest,
 } from '@opt2/platform/service-kit';
+import { registeredTenants, registryEntries, withTenant, type TenantDb } from '@opt2/platform/tenancy';
+import { SiteColumnTruncationError, type SitesDomain } from '../domain/sites.js';
 import {
-  registeredTenants,
-  registryEntryForTenant,
-  withMetadata,
-  withTenant,
-  type TenantDb,
-  type TenantRegistryEntry,
-} from '@opt2/platform/tenancy';
-import type { SitesDomain } from '../domain/sites.js';
+  addFeedParam,
+  applyFeedProps,
+  applyQueryParams,
+  feedRows,
+  isAggregateQuery,
+  iteratorPage,
+  newSiteFeed,
+  packagePage,
+  queryRow,
+  rowAt,
+  scopeBaseUrl,
+  serverError,
+  topRows,
+  urlValue,
+  type FeedSource,
+  type IteratorPage,
+  type PoolRequest,
+  type SiteFeed,
+  type UrlScope,
+} from '../legacy/json-api-site-feed.js';
 import {
   canWriteSite,
+  isSiteAdmin,
   jsonApiBaseUrl,
+  jsonApiEnvelope,
+  jsonApiGenericValues,
+  jsonApiSaveValues,
+  jsonApiSitePermissions,
+  jsonApiSiteProperties,
   jsonApiSiteValues,
+  jsonApiValidate,
   type JsonApiEndpointInput,
   type JsonApiMode,
+  type JsonApiSiteValues,
 } from '../legacy/json-api-site.js';
-import { applySet, getSiteValue, newSiteBean, readBean, type SiteBean } from '../legacy/site-fields.js';
+import { applySet, getSiteText, getSiteValue, newSiteBean, readBean, type SiteBean, type SiteRow } from '../legacy/site-fields.js';
 import { hasSiteErrors } from '../legacy/validation.js';
 import type { ProgramsSitesRepository } from '../repo/repository.js';
 
@@ -72,22 +95,39 @@ export interface JsonApiSiteRouteDeps {
   legacy?: JsonApiLegacySettings;
 }
 
-/** Path templates of the contract's JSON API `site` operations, each GET and POST; forms it omits stay with legacy. */
-export const JSON_API_SITE_PATHS: readonly string[] = Object.freeze(
-  (['json', 'ajax', 'rest'] as const).map((family) => `/_api/${family}/v1/:siteid/site`),
+/** Leads of the JSON API paths, without and with the front controller; the app matches them ignoring case, as legacy does. */
+export const JSON_API_SITE_PREFIXES: readonly string[] = Object.freeze(
+  (['json', 'ajax', 'rest'] as const).flatMap((family) => [`/_api/${family}/v1`, `/index.cfm/_api/${family}/v1`]),
 );
 
-const JSON_API_SITE_METHODS = ['GET', 'POST'] as const;
+/** Every path under a JSON API lead, which contentServer hands to the API by its first 13 characters; the route key picks the operation. */
+export const JSON_API_SITE_PATHS: readonly string[] = Object.freeze(JSON_API_SITE_PREFIXES.map((prefix) => `${prefix}*`));
+
+/** Methods a `site` key can arrive with: a three-segment path is findOne under any verb (jsonApiUtility.cfc:399). */
+const JSON_API_SITE_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'] as const;
 
 // The entity is public (jsonApiUtility.cfc:69-73); the handler runs the site check itself, after the API site fallback.
 const ROUTE_AUTH: Opt2RouteConfig = { transport: 'service', public: true, siteCheck: false };
 
-type Operation = 'findOne' | 'save';
+type Operation =
+  | 'findOne'
+  | 'findAll'
+  | 'findMany'
+  | 'findQuery'
+  | 'findNew'
+  | 'findProperties'
+  | 'findPermissions'
+  | 'validate'
+  | 'delete'
+  | 'save'
+  | 'none';
 
-/** The route-key bodies this module serves; every other key stays on legacy. */
+/** The `site` route-key bodies served here: each generic method, and the verbs the entity switch calls nothing for (jsonApiUtility.cfc:1242-1304). */
 const OPERATIONS: ReadonlyMap<string, Operation> = new Map([
-  ['site.findone', 'findOne'],
-  ['site.save', 'save'],
+  ...(
+    ['findOne', 'findAll', 'findMany', 'findQuery', 'findNew', 'findProperties', 'findPermissions', 'validate', 'delete', 'save'] as const
+  ).map((operation): [string, Operation] => [`site.${operation.toLowerCase()}`, operation]),
+  ...['head', 'options', 'patch'].map((verb): [string, Operation] => [`site.http-${verb}`, 'none']),
 ]);
 
 /** Route-key error bodies and the legacy exception types processRequest throws for them. */
@@ -249,18 +289,6 @@ function currentAdminDomainOf(request: FastifyRequest, adminDomain: string): str
   return onAdminDomain || port === '' ? name : `${name}:${port}`;
 }
 
-/** Every registry entry, origin domains included, read in one metadata transaction. */
-function registryEntries(db: TenantDb): Promise<TenantRegistryEntry[]> {
-  return withMetadata(db, async (tx) => {
-    const entries: TenantRegistryEntry[] = [];
-    for (const { tenantId } of await registeredTenants(tx)) {
-      const entry = await registryEntryForTenant(tx, tenantId);
-      if (entry !== null) entries.push(entry);
-    }
-    return entries;
-  });
-}
-
 /** The request and configBean parts of getEndPoint's URL (jsonApiUtility.cfc:3337-3364). */
 function endpointOf(
   request: FastifyRequest,
@@ -312,9 +340,59 @@ interface SiteCall {
   reported: string;
   baseUrl: string;
   methodCtx: ApiNameContext;
+  /** The url scope as the request sent it. */
+  url: UrlScope;
+  /** The JSON API instance's site, as registered. */
+  apiSite: RegisteredSite;
+  /** The registered site `siteId` names, ignoring case. */
+  lookup: (siteId: string) => RegisteredSite | undefined;
 }
 
 type StoredSite = Awaited<ReturnType<ProgramsSitesRepository['readSite']>>;
+
+/** The url scope of a request: names as sent, a repeated name's values joined with `,` as CFML joins them. */
+function urlScopeOf(request: FastifyRequest): Record<string, string> {
+  const url: Record<string, string> = {};
+  for (const [name, value] of Object.entries(scopeOf(request.query))) {
+    Object.defineProperty(url, name, { value: Array.isArray(value) ? value.join(',') : value, writable: true, enumerable: true, configurable: true });
+  }
+  return url;
+}
+
+/** The raw query string `cgi.QUERY_STRING` holds. */
+function queryStringOf(request: FastifyRequest): string {
+  const at = request.url.indexOf('?');
+  return at < 0 ? '' : request.url.slice(at + 1);
+}
+
+/** Whether a direct call's resolution set param `key` after `structAppend(form, params)`: no request scope or `X-` header carries it (jsonApiUtility.cfc:845-891). */
+function setAfterFormCopy(call: SiteCall, key: string): boolean {
+  if (!call.direct || requestParam(call.request, key) !== undefined) return false;
+  return headerValue(call.request, `x-${key}`) === undefined && headerValue(call.request, `x-${key.replace(/_/g, '-')}`) === undefined;
+}
+
+/** ColdFusion's `form.fieldnames`: each posted field name once, ignoring case, upper-cased in posting order; none without a form body. */
+function postedFieldNames(request: FastifyRequest): string[] {
+  if (isJsonRequest(request)) return [];
+  const names: string[] = [];
+  for (const name of Object.keys(scopeOf(request.body))) {
+    const upper = name.toUpperCase();
+    if (!names.includes(upper)) names.push(upper);
+  }
+  return names;
+}
+
+/** The form scope packageIteratorArray reads: the resolved params structAppend copied into it, and the posted `fieldnames`. */
+function formScopeOf(call: SiteCall): Record<string, string> {
+  const form = Object.fromEntries(Object.entries(call.params).filter(([key]) => !setAfterFormCopy(call, key)));
+  const names = postedFieldNames(call.request);
+  if (names.length > 0) {
+    // The servlet's own list replaces a posted `fieldnames` field.
+    const key = Object.keys(form).find((name) => name.toLowerCase() === 'fieldnames') ?? 'fieldnames';
+    form[key] = names.join(',');
+  }
+  return form;
+}
 
 /**
  * `$.getBean('site').loadBy(...)`: the scope seeds the bean with the request's site id (cfobject.cfc:138-149), and
@@ -362,20 +440,212 @@ export async function registerJsonApiSiteRoutes(app: FastifyInstance, deps: Json
     return withTenant(deps.db, tenantId, (tx) => deps.repository.readSite(tx, site.siteId));
   }
 
+  /** The tenant a read of `site` runs under: the call's for the addressed site, else the site's own. */
+  function tenantFor(call: SiteCall, site: RegisteredSite): string {
+    return sameSiteId(site.siteId, call.site.siteId) ? call.tenantId : site.tenantId;
+  }
+
+  /** The stored rows and settings a site feed of `call` reads. */
+  function feedSource(call: SiteCall): FeedSource {
+    const storedRow = async (siteId: string): Promise<StoredSite> => {
+      // SQL Server's `siteID in (…)` ignores trailing spaces.
+      const site = call.lookup(siteId.replace(/ +$/, ''));
+      return site === undefined ? null : readSiteRow(tenantFor(call, site), site);
+    };
+    return {
+      async rows(siteIds) {
+        const rows: SiteRow[] = [];
+        for (const siteId of siteIds) {
+          const row = await storedRow(siteId);
+          if (row !== null && !rows.some((seen) => sameSiteId(String(seen.siteid), String(row.siteid)))) rows.push(row);
+        }
+        return rows;
+      },
+      async contentPool(siteId) {
+        const row = await storedRow(siteId);
+        return row === null ? undefined : getSiteText(readBean(row), 'contentPoolID');
+      },
+    };
+  }
+
+  /** serializeResponse of `data` in the envelope legacy builds, sent with `status`. */
+  function respond(call: SiteCall, data: unknown, status = 200): FastifyReply {
+    const envelope = jsonApiEnvelope(call.reported, data, call.params.usedatanamespace);
+    // The envelope already has its final shape and order, so the serializer neither flattens nor reorders it.
+    return sendLegacyResponse(call.reply, serializeResponse(envelope, { statusCode: status, useDataNamespace: 'true' }));
+  }
+
+  /** `$.validateCSRFTokens(context)` of a session-managed write; a refused token is `invalidTokens`. */
+  async function consumeCsrf(call: SiteCall, context: string): Promise<void> {
+    const consumeToken = csrfPreHandler({
+      contextOf: () => context,
+      onReject: () => {
+        throw new LegacyApiError('invalidTokens', { method: call.reported, methodCtx: call.methodCtx });
+      },
+    });
+    await consumeToken.call(call.request.server, call.request, call.reply);
+  }
+
   /** findOne(entityName='site'): the site the merged `siteid` names (jsonApiUtility.cfc:2292-2382). */
   async function findOne(call: SiteCall): Promise<FastifyReply> {
     const bean = loadedBean(await readSiteRow(call.tenantId, call.site), call.scopeSiteId);
-    const envelope = buildEnvelope({
-      method: call.reported,
-      params: paramsWithoutMethod(call.params),
-      data: jsonApiSiteValues(bean, call.baseUrl),
+    assertNoHumanCheck(call);
+    return respond(call, jsonApiSiteValues(bean, call.baseUrl, call.params.entityname ?? 'site'));
+  }
+
+  /** findNew(entityName='site'): a new bean seeded with the scope's site id (jsonApiUtility.cfc:2386-2422). */
+  function findNew(call: SiteCall): FastifyReply {
+    assertNoHumanCheck(call);
+    return respond(call, jsonApiSiteValues(loadedBean(null, call.scopeSiteId), call.baseUrl));
+  }
+
+  /** findProperties(entityname, properties) of the site entity (jsonApiUtility.cfc:1548-1622). */
+  function findProperties(call: SiteCall): FastifyReply {
+    const { user } = call;
+    const showTable = user !== undefined && (canWriteSite(user) || isSiteAdmin(user));
+    const entityName = call.params.entityname ?? 'site';
+    return respond(call, jsonApiSiteProperties({ properties: call.params.properties, entityName, baseUrl: call.baseUrl, showTable }));
+  }
+
+  /** findPermissions(entityName='site', id) (jsonApiUtility.cfc:2240-2266). */
+  function findPermissions(call: SiteCall): FastifyReply {
+    // isValid('UUID', arguments.id) reads an undefined argument.
+    if (call.params.id === undefined) throw serverError();
+    return respond(call, jsonApiSitePermissions(call.user !== undefined && canWriteSite(call.user)));
+  }
+
+  /** validate(data, validations, siteid) (jsonApiUtility.cfc:3703-3808); a JSON body's struct arguments arrive as sent. */
+  function validate(call: SiteCall): FastifyReply {
+    const argument = (name: string): unknown => {
+      const raw = requestParam(call.request, name);
+      return typeof raw === 'object' && raw !== null ? raw : call.params[name];
+    };
+    return respond(call, jsonApiValidate({ data: argument('data'), validations: argument('validations'), siteId: call.scopeSiteId }));
+  }
+
+  /** delete(entityName='site', id): a stored site needs a super user and, in session modes, the id's CSRF token; it then fails (jsonApiUtility.cfc:3259-3335). */
+  async function deleteSite(call: SiteCall): Promise<FastifyReply> {
+    const { params } = call;
+    // `var csrfcontext=arguments.id` reads an undefined argument.
+    if (params.id === undefined) throw serverError();
+    const scopeId = params.siteid ?? '';
+    const id = scopeId !== '' && isCfUuid(scopeId) ? scopeId : params.id;
+    const target = call.lookup(id.replace(/ +$/, ''));
+    const stored = target === undefined ? null : await readSiteRow(tenantFor(call, target), target);
+    if (stored === null) return respond(call, '');
+    if (call.user === undefined || !canWriteSite(call.user)) throw new LegacyApiError('authorization');
+    if (call.sessionManaged) await consumeCsrf(call, params.id);
+    // settingsBean defines no delete(), so the call raises before anything is written.
+    throw serverError();
+  }
+
+  /** `url.ishuman` renders the CFML form-protection include into the result (jsonApiUtility.cfc:2373-2376, 2414-2417). */
+  function assertNoHumanCheck(call: SiteCall): void {
+    if (urlValue(call.url, 'ishuman') !== undefined) throw unavailable('The ishuman field renders a CFML display object', 'cfml-render');
+  }
+
+  /** The API site's own `contentPoolID`, which bounds a listed `contentpoolid` (jsonApiUtility.cfc:2968-2985). */
+  async function poolsOf(call: SiteCall, url: UrlScope, source: FeedSource): Promise<PoolRequest> {
+    const requested = urlValue(url, 'contentpoolid') ?? '';
+    const validPools = requested === '' || requested === '*' ? '' : ((await source.contentPool(call.apiSite.siteId)) ?? '');
+    return { validPools };
+  }
+
+  /** setIteratorProps reads an undefined `feed` for a numeric `offset` (jsonApiUtility.cfc:3177-3179). */
+  function rejectOffset(url: UrlScope): void {
+    const offset = urlValue(url, 'offset');
+    if (offset !== undefined && cfIsNumeric(offset)) throw serverError();
+  }
+
+  /** The items of one iterator page through getFilteredValues; a distinct feed iterates generic beans (beanFeed.cfc:441-462). */
+  function pageItems(call: SiteCall, feed: SiteFeed, rows: readonly SiteRow[], page: IteratorPage): JsonApiSiteValues[] {
+    return page.positions.map((position) => {
+      const row = queryRow(feed, rowAt(rows, position));
+      if (feed.distinct) return jsonApiGenericValues(row, call.baseUrl);
+      // beanIterator.packageRecord: getBean('site').set(row).setIsNew(0).
+      return jsonApiSiteValues({ values: applySet(newSiteBean(), row).values, isNew: 0 }, call.baseUrl);
     });
-    return sendLegacyResponse(call.reply, serializeResponse(envelope, { useDataNamespace: call.params.usedatanamespace }));
+  }
+
+  /** The url scope after a find defaults `entityname` and, once an item serializes, getFilteredValues defaults `expanddepth`. */
+  function resultUrl(call: SiteCall, items: number): Record<string, string> {
+    const url: Record<string, string> = { ...call.url };
+    if (urlValue(url, 'entityname') === undefined) url.entityname = call.params.entityname ?? 'site';
+    if (items > 0) {
+      const key = Object.keys(url).find((name) => name.toLowerCase() === 'expanddepth');
+      if (key === undefined) url.expanddepth = '1';
+      else if (!cfIsNumeric(url[key])) url[key] = '1';
+    }
+    return url;
+  }
+
+  /** One collection answer: the page packaged with the feed's iterator entity and the self link `baseUrl`. */
+  function respondPage(call: SiteCall, feed: SiteFeed, page: IteratorPage, items: unknown[], baseUrl: string): FastifyReply {
+    const aggregate = isAggregateQuery(call.url, queryStringOf(call.request));
+    const iteratorEntity = feed.distinct ? 'bean' : 'site';
+    return respond(call, packagePage(page, items, { aggregate, iteratorEntity, endpoint: call.baseUrl, baseUrl }));
+  }
+
+  /** `countOnly` as a find reads it: a true CFML boolean answers the feed's count alone. */
+  function countOnly(url: UrlScope): boolean {
+    const value = urlValue(url, 'countonly');
+    return value !== undefined && cfIsBoolean(value) && cfToBoolean(value);
+  }
+
+  /** findAll(entityName='site'): the scope site's feed (jsonApiUtility.cfc:2542-2623). */
+  async function findAll(call: SiteCall): Promise<FastifyReply> {
+    const source = feedSource(call);
+    const feed = newSiteFeed(call.scopeSiteId);
+    applyFeedProps(feed, call.url, await poolsOf(call, call.url, source));
+    if (countOnly(call.url)) return respond(call, { count: (await feedRows(feed, source, true)).length });
+    const rows = topRows(feed, await feedRows(feed, source));
+    rejectOffset(call.url);
+    const page = iteratorPage(rows.length, feed.nextN, call.url);
+    const items = pageItems(call, feed, rows, page);
+    return respondPage(call, feed, page, items, scopeBaseUrl(call.baseUrl, resultUrl(call, items.length), formScopeOf(call), 'findall'));
+  }
+
+  /** findMany(entityName='site', ids): the listed ids of the scope site's feed, in list order unless sorted (jsonApiUtility.cfc:2625-2709). */
+  async function findMany(call: SiteCall): Promise<FastifyReply> {
+    const { ids } = call.params;
+    // addParam(criteria=arguments.ids) reads an undefined argument.
+    if (ids === undefined) throw serverError();
+    const source = feedSource(call);
+    const feed = newSiteFeed(call.scopeSiteId);
+    addFeedParam(feed, 'siteid', ids, 'in');
+    applyFeedProps(feed, call.url, await poolsOf(call, call.url, source));
+    const rows = topRows(feed, await feedRows(feed, source));
+    rejectOffset(call.url);
+    const page = iteratorPage(rows.length, feed.nextN, call.url);
+    const items = pageItems(call, feed, rows, page);
+    const sorted = (urlValue(call.url, 'sort') ?? '') !== '';
+    const ordered = sorted
+      ? items
+      : cfListToArray(ids).flatMap((id) => {
+          const match = items.find((item) => cfEq(item.id, id));
+          return match === undefined ? [] : [match];
+        });
+    return respondPage(call, feed, page, ordered, scopeBaseUrl(call.baseUrl, resultUrl(call, items.length), formScopeOf(call), 'findmany'));
+  }
+
+  /** findQuery(entityName='site'): the scope site's feed filtered by the query string's params (jsonApiUtility.cfc:2711-2905). */
+  async function findQuery(call: SiteCall): Promise<FastifyReply> {
+    const source = feedSource(call);
+    const feed = newSiteFeed(call.scopeSiteId);
+    const { url, baseUrl } = applyQueryParams(feed, resultUrl(call, 0), queryStringOf(call.request), call.baseUrl);
+    applyFeedProps(feed, url, await poolsOf(call, url, source));
+    if (countOnly(url)) return respond(call, { count: (await feedRows(feed, source, true)).length });
+    const rows = topRows(feed, await feedRows(feed, source));
+    rejectOffset(url);
+    // iteratorToArray serializes a generic bean's every column, which the entity-typed serializer here does not reproduce.
+    if (feed.distinct) throw unavailable('A distinct site findQuery serializes every tsettings column of generic beans', 'site-feed-distinct-query');
+    const page = iteratorPage(rows.length, feed.nextN, url);
+    return respondPage(call, feed, page, pageItems(call, feed, rows, page), baseUrl);
   }
 
   /** save(entityName='site') of an existing site, an update through the gated domain (jsonApiUtility.cfc:1903-2075). */
   async function save(call: SiteCall): Promise<FastifyReply> {
-    const { request, reply, params, site, user, reported, methodCtx } = call;
+    const { params, site, user } = call;
     const csrfContext = params.id ?? 'new';
     // A uuid site id replaces the id; `new` mints a uuid site id, which creates a site (jsonApiUtility.cfc:1957-1965).
     const id = isLegacyFindOneId(call.scopeSiteId) ? call.scopeSiteId : csrfContext;
@@ -385,30 +655,50 @@ export async function registerJsonApiSiteRoutes(app: FastifyInstance, deps: Json
     const stored = await readSiteRow(call.tenantId, site);
     // settingsManager.save creates a site that has no tsettings row (settingsManager.cfc:807-830).
     if (stored === null) throw unavailable('A JSON API site save of a site without a row creates it', 'site-create');
-    if (call.sessionManaged) {
-      const consumeToken = csrfPreHandler({
-        contextOf: () => csrfContext,
-        onReject: () => {
-          throw new LegacyApiError('invalidTokens', { method: reported, methodCtx });
-        },
-      });
-      await consumeToken.call(request.server, request, reply);
-    }
-    if (user === undefined || !canWriteSite(user)) {
-      throw new LegacyApiError('authorization', { method: reported, methodCtx });
-    }
+    if (call.sessionManaged) await consumeCsrf(call, csrfContext);
+    if (user === undefined || !canWriteSite(user)) throw new LegacyApiError('authorization');
     // The JSON API save sets no request locale, so date text is read in the server locale.
-    const result = await deps.sites.updateSite(deps.db, user, site.siteId, params, { locale: '' });
+    const result = await deps.sites.updateSite(deps.db, user, site.siteId, params, { locale: '' }).catch((error: unknown) => {
+      if (!(error instanceof SiteColumnTruncationError)) throw error;
+      // processRequest's catch (Any) logs the error and reports the request's method (jsonApiUtility.cfc:1390-1399).
+      call.request.log.error({ error: serializeError(error) }, 'unhandled error');
+      throw new LegacyApiError('server_error', { method: call.reported, methodCtx: call.methodCtx });
+    });
     const saveErrors = getSiteValue(applySet(readBean(stored), params), 'saveErrors');
     const reloaded = loadedBean(await readSiteRow(call.tenantId, site), call.scopeSiteId);
     const reapply = !(cfIsBoolean(saveErrors) && cfToBoolean(saveErrors)) && hasSiteErrors(result.errors);
     const bean = reapply ? applySet(reloaded, params) : reloaded;
-    const data = { ...jsonApiSiteValues(bean, call.baseUrl), saveErrors, errors: result.errors };
-    const options = { useDataNamespace: params.usedatanamespace };
-    const response = call.direct
-      ? serializeResponse(buildEnvelope({ method: reported, params: paramsWithoutMethod(params), data }), options)
-      : serializeSaveResult({ method: reported, params, data }, options);
-    return sendLegacyResponse(reply, response);
+    // The entity route answers 403 when the result carries errors; a direct call always answers 200 (jsonApiUtility.cfc:1308-1313).
+    const status = !call.direct && hasSiteErrors(result.errors) ? 403 : 200;
+    return respond(call, jsonApiSaveValues(bean, call.baseUrl, saveErrors, result.errors), status);
+  }
+
+  /** The served operation of a resolved call. */
+  function dispatch(call: SiteCall, operation: Operation): FastifyReply | Promise<FastifyReply> {
+    switch (operation) {
+      case 'findOne':
+        return findOne(call);
+      case 'findAll':
+        return findAll(call);
+      case 'findMany':
+        return findMany(call);
+      case 'findQuery':
+        return findQuery(call);
+      case 'findNew':
+        return findNew(call);
+      case 'findProperties':
+        return findProperties(call);
+      case 'findPermissions':
+        return findPermissions(call);
+      case 'validate':
+        return validate(call);
+      case 'delete':
+        return deleteSite(call);
+      case 'save':
+        return save(call);
+      case 'none':
+        return respond(call, '');
+    }
   }
 
   /** processRequest's resolution through the shared route key, then the served operation. */
@@ -441,21 +731,23 @@ export async function registerJsonApiSiteRoutes(app: FastifyInstance, deps: Json
     const failure = RESOLUTION_ERRORS.get(body);
     if (failure !== undefined) throw new LegacyApiError(failure, { method: params.method, methodCtx });
     const operation = OPERATIONS.get(body);
-    // site.delete spans every owner, and every other method addressing the site stays with legacy.
+    // A key of no entity, or of another entity, has another owner or stays with legacy.
     if (operation === undefined) throw unavailable(`JSON API ${key.key} is not served by programs-sites`, 'not-carried');
     const requested = requestParam(request, 'method');
     // A dotted method (site.<m>) rewrites the path and resolves as the entity route (jsonApiUtility.cfc:953-961).
     const dotted = typeof requested === 'string' && requested.includes('.');
     const method = params.method;
     const direct = !dotted && method !== undefined && method.toLowerCase() === operation.toLowerCase();
-    const apiSite = lookup(apiSiteId)?.siteId ?? apiSiteId;
+    const apiSite = lookup(apiSiteId) ?? { tenantId: '', siteId: apiSiteId };
     // A direct method without a siteid takes the API instance's stored site id (jsonApiUtility.cfc:883).
-    const scopeSiteId = direct && requestParam(request, 'siteid') === undefined ? apiSite : (params.siteid ?? '');
+    const scopeSiteId = direct && requestParam(request, 'siteid') === undefined ? apiSite.siteId : (params.siteid ?? '');
     const site = lookup(scopeSiteId);
     if (site === undefined) throw new LegacyApiError('invalidParameters', { method: params.method, methodCtx });
     if (user !== undefined) assertSiteMatches(site.siteId, user);
 
     const mode: JsonApiMode = restMode ? 'rest' : 'json';
+    // An entity route reports the method it set; a verb it has no case for leaves params.method as resolved.
+    const reported = direct ? method : operation === 'none' ? (method ?? 'undefined') : operation;
     const call: SiteCall = {
       request,
       reply,
@@ -466,11 +758,23 @@ export async function registerJsonApiSiteRoutes(app: FastifyInstance, deps: Json
       tenantId: user?.tid ?? site.tenantId,
       sessionManaged: !restMode,
       direct,
-      reported: direct ? method : operation,
-      baseUrl: jsonApiBaseUrl({ ...endpointOf(request, settings), mode, siteId: apiSite }),
+      reported,
+      baseUrl: jsonApiBaseUrl({ ...endpointOf(request, settings), mode, siteId: apiSite.siteId }),
       methodCtx,
+      url: urlScopeOf(request),
+      apiSite,
+      lookup,
     };
-    return operation === 'findOne' ? findOne(call) : save(call);
+    try {
+      return await dispatch(call, operation);
+    } catch (error) {
+      // processRequest's catch blocks report params.method, which the call has set by now.
+      if (error instanceof LegacyApiError && error.method === undefined) {
+        const { params: errorParams, wwwAuthenticate, data } = error;
+        throw new LegacyApiError(error.type, { method: reported, methodCtx, params: errorParams, wwwAuthenticate, data });
+      }
+      throw error;
+    }
   }
 
   for (const url of JSON_API_SITE_PATHS) {
@@ -478,8 +782,15 @@ export async function registerJsonApiSiteRoutes(app: FastifyInstance, deps: Json
       method: [...JSON_API_SITE_METHODS],
       url,
       config: { opt2: { ...ROUTE_AUTH } },
-      onSend: allowOrigin,
+      onSend: [allowOrigin, headersOnly],
       handler: handle,
     });
   }
+}
+
+/** A HEAD answer keeps the GET answer's status and headers, ETag included, and sends no body or length, as legacy's chunked answer does. */
+async function headersOnly(request: FastifyRequest, reply: FastifyReply, payload: unknown): Promise<unknown> {
+  if (request.method !== 'HEAD') return payload;
+  reply.removeHeader('content-length');
+  return null;
 }

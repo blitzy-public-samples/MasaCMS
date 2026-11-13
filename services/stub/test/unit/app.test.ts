@@ -46,7 +46,7 @@ vi.mock('@opt2/platform/events', async (importOriginal) => {
 
 const SERVICE_URL = 'http://127.0.0.1:8199';
 const clock = fixedClock(new Date(2026, 5, 30, 12, 0, 0));
-const available = await pgAvailable();
+const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
 
 let stateDir: string;
 let handle: ThrowawaySchema | undefined;

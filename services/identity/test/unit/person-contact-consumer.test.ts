@@ -16,6 +16,7 @@ import {
 } from '../../src/events/person-contact.js';
 import type { IdentityRepository, PersonContactInput } from '../../src/repo/repository.js';
 import { PERSON_CONTACT } from '../../src/repo/tables.js';
+import { personContactRow } from '../helpers/rows.js';
 
 const USER_ID = 'A1B2C3D4-E5F6-0718-293A4B5C6D7E8F90';
 const LOGGER = createLogger({ service: 'identity', version: '1.0.0', env: 'local', level: 'silent' });
@@ -27,13 +28,13 @@ type RepositoryCall =
   | { method: 'upsertPersonContact'; tx: TenantTx; row: PersonContactInput }
   | { method: 'delete'; tx: TenantTx; table: string; key: Record<string, unknown> };
 
-/** The two person-contact writes of the identity repository, logging each call in order. */
+/** The two person-contact writes of the identity repository, logging each call in order; an upsert returns the stored row, an absent member column NULL. */
 function fakeRepository(): { repository: IdentityRepository; calls: RepositoryCall[] } {
   const calls: RepositoryCall[] = [];
   const writes: Pick<IdentityRepository, 'upsertPersonContact' | 'delete'> = {
     upsertPersonContact(tx, row) {
       calls.push({ method: 'upsertPersonContact', tx, row });
-      return Promise.resolve({ ...row, tenant_id: tx.tenantId, aggregate_version: String(row.aggregate_version), updated_at: new Date(0) });
+      return Promise.resolve(personContactRow({ ...row, tenant_id: tx.tenantId, aggregate_version: String(row.aggregate_version), updated_at: new Date(0) }));
     },
     delete(tx, table, key) {
       calls.push({ method: 'delete', tx, table, key });
@@ -155,11 +156,27 @@ describe('person-contact consumer declarations', () => {
 });
 
 describe('personContactConsumer', () => {
-  it('upserts the contact columns of a live person with the envelope version, in the delivery transaction', async () => {
+  it('upserts every person column of a live person with the envelope version, in the delivery transaction', async () => {
     const { repository, calls } = fakeRepository();
     const { tx, query } = tenantTx();
+    const payload = person({
+      groupName: 'Unused Group',
+      mobilePhone: '555-0100',
+      website: 'https://ada.example.test',
+      ext: 12,
+      contactForm: 'yes',
+      notes: 'Notes',
+      description: 'Description',
+      interests: 'Engines',
+      keepPrivate: 1,
+      photoFileId: 'F1B2C3D4-E5F6-0718-293A4B5C6D7E8F90',
+      imName: 'ada',
+      imService: 'AIM',
+      tags: 'math,engines',
+      created: '2026-06-30 11:59:00.370',
+    });
 
-    await personContactConsumer(repository).apply(tx, personEnvelope(person(), 7), consumeContext());
+    await personContactConsumer(repository).apply(tx, personEnvelope(payload, 7), consumeContext());
 
     expect(calls).toEqual([
       {
@@ -174,10 +191,42 @@ describe('personContactConsumer', () => {
           company: 'Analytical Engines',
           subtype: 'Default',
           aggregate_version: 7,
+          groupname: 'Unused Group',
+          jobtitle: 'Analyst',
+          mobilephone: '555-0100',
+          website: 'https://ada.example.test',
+          ext: 12,
+          contactform: 'yes',
+          subscribe: 1,
+          notes: 'Notes',
+          description: 'Description',
+          interests: 'Engines',
+          keepprivate: 1,
+          photofileid: 'F1B2C3D4-E5F6-0718-293A4B5C6D7E8F90',
+          imname: 'ada',
+          imservice: 'AIM',
+          tags: 'math,engines',
+          created: new Date(2026, 5, 30, 11, 59, 0, 370),
+          lastupdate: new Date(2026, 5, 30, 12, 0, 0, 0),
+          lastupdateby: 'Admin User',
+          lastupdatebyid: 'A0000000-0000-0000-0000000000000001',
         },
       },
     ]);
     expect(query).not.toHaveBeenCalled();
+  });
+
+  it('stores NULL person timestamps and member columns as NULL, so a later state replaces every earlier value', async () => {
+    const { repository, calls } = fakeRepository();
+    const payload = person({ jobTitle: null, subscribe: null, keepPrivate: null, created: null, lastUpdate: null, lastUpdateBy: null, lastUpdateById: null });
+
+    await personContactConsumer(repository).apply(tenantTx().tx, personEnvelope(payload, 4), consumeContext());
+
+    const row = calls[0]?.method === 'upsertPersonContact' ? calls[0].row : expect.unreachable('no upsert');
+    const stored = PERSON_CONTACT.columns.map(({ name }) => name).filter((name) => name !== 'tenant_id' && name !== 'updated_at');
+    expect(Object.keys(row).sort()).toEqual(stored.sort());
+    expect(Object.values(row)).not.toContain(undefined);
+    expect(row).toMatchObject({ jobtitle: null, subscribe: null, keepprivate: null, created: null, lastupdate: null, lastupdateby: null, lastupdatebyid: null });
   });
 
   it('stores contact values verbatim, padding, case and NULLs included', async () => {

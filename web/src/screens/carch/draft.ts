@@ -4,6 +4,7 @@ import type { RbLookup } from '@/lib/resource-bundles/rb';
 import type { ShellView } from '@/shell/document';
 import type { PageControllerRedirect, PageScreen, Rc, ScreenContext } from '../registry';
 import { CARCH_OWNER, applyCarchDefaults, carchGate } from './controller';
+import { isSiteAdminOrS2 } from './model';
 import { carchJs } from './partials/js';
 import { dspZoom, type ZoomOptions } from './partials/zoom';
 import { carchPageData, type CarchOutcome, type CarchPageModel } from './service';
@@ -220,7 +221,7 @@ function noDraftsRow(rb: RbLookup): SafeHtml {
 /** The drafts the session user may see: all for a site admin or S2, else those with an editor or author verdict. */
 function listedRows(ctx: ScreenContext, rows: readonly DraftRow[]): SafeHtml {
   // The view's listFind of `Admin;<privateUserPoolID>;0` and of `S2` in `session.mura.memberships`.
-  const siteAdminOrS2 = ctx.req.isSiteAdmin || ctx.req.isS2;
+  const siteAdminOrS2 = isSiteAdminOrS2(ctx.req);
   const listed = rows.filter((row) => siteAdminOrS2 || LISTING_VERDICTS.includes(row.verdict.toLowerCase()));
   if (listed.length === 0) return noDraftsRow(ctx.rb);
   const view = rowViewOf(ctx);

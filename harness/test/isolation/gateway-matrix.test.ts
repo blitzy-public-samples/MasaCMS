@@ -890,6 +890,24 @@ describe('runGatewayIsolation', () => {
     expect(disciplineProblems(fake.calls, GATEWAY)).toStrictEqual([]);
   });
 
+  it('sends each /v1/ write with the CSRF pair issued for the id it writes, as the services consume it', async () => {
+    writeFixtureStatus(false, UNAVAILABLE_REASON);
+    const fake = fakeGateway(buildWorld());
+    await runGatewayIsolation({ env, fetch: fake.fetch });
+
+    const header = (call: GatewayCall, name: string): string | undefined =>
+      Object.entries(call.headers).find(([key]) => key.toLowerCase() === name)?.[1];
+    const writes = fake.calls.filter((call) => call.method === 'POST' && call.url.pathname.startsWith('/v1/'));
+    expect(writes.length).toBeGreaterThan(0);
+    expect(
+      writes.filter((call) => header(call, 'x-csrf_token') !== TOKENS.csrf_token || header(call, 'x-csrf_token_expires') !== TOKENS.csrf_token_expires),
+    ).toStrictEqual([]);
+    const contexts = new Set(
+      fake.calls.filter((call) => call.url.pathname.endsWith('/generateCSRFTokens')).map((call) => call.url.searchParams.get('context')),
+    );
+    expect(writes.filter((call) => !contexts.has(call.url.pathname.split('/')[4] ?? null))).toStrictEqual([]);
+  });
+
   it('honours the base URL, reserved identities and probe marker it is given', async () => {
     const world = buildWorld();
     const fake = fakeGateway(world);

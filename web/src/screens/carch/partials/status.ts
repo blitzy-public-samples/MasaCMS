@@ -1,10 +1,11 @@
 // The node lock notice and approval status of `carch/dsp_status.cfm`, included by edit, hist and audit (server-only).
+import { isCompactDisplay } from '@/lib/cfml';
 import type { CsrfRenderer } from '@/lib/csrf';
 import { formatDateField, parseLegacyDate } from '@/lib/dates';
 import { encodeHtml, encodeHtmlAttr, encodeJs, raw, type SafeHtml } from '@/lib/html';
 import type { RbLookup } from '@/lib/resource-bundles/rb';
 import type { ScreenContext } from '../../registry';
-import { isSiteAdminOrS2, lockState, type CarchStats } from '../model';
+import { isSuperOrAdminUser, lockState, type CarchStats } from '../model';
 
 /** One conflicting date of a scheduling conflict (a `getConfictDetailIterator()` item). */
 export interface StatusConflictDetail {
@@ -94,28 +95,6 @@ class CfOutput {
   }
 }
 
-/** Java `String.trim`: strips code units up to U+0020 from both ends. */
-function javaTrim(text: string): string {
-  let start = 0;
-  let end = text.length;
-  while (start < end && text.charCodeAt(start) <= 0x20) start += 1;
-  while (end > start && text.charCodeAt(end - 1) <= 0x20) end -= 1;
-  return text.slice(start, end);
-}
-
-const DECIMAL = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
-
-// Mirrors `isCompactDisplay` of `@/lib/cfml`, which is outside this view's dependency set; keep the two in step.
-/** ACF `value eq 'true'`: `true` in any case, or `yes` or a numeric 1 after Java trimming. */
-function eqTrue(value: string): boolean {
-  const trimmed = javaTrim(value);
-  return (
-    value.toLowerCase() === 'true' ||
-    trimmed.toLowerCase() === 'yes' ||
-    (DECIMAL.test(trimmed) && !trimmed.endsWith('.') && Number(trimmed) === 1)
-  );
-}
-
 /** `LSDateFormat(value, mask)`, which has no date-input 50-year blanking, so the value is its own reference date. */
 function lsDate(value: string | Date, mask: string): string {
   return formatDateField(value, mask, parseLegacyDate(value) ?? undefined);
@@ -135,7 +114,7 @@ function lockedElseNotice(ctx: StatusContext, user: StatusLockUser, out: CfOutpu
   out.text('"><i class="mi-envelope"></i> ');
   out.value(rb.rbKey('sitemanager.requestnoderelease'));
   out.text('</a>\n\t\t\t\t\t');
-  if (isSiteAdminOrS2(ctx.req)) {
+  if (isSuperOrAdminUser(ctx.req)) {
     out.text(' &nbsp; &nbsp;<a class="mura-node-unlock" href="#"><i class="mi-unlock"></i> ');
     out.value(rb.rbKey('sitemanager.content.fields.unlocknode'));
     out.text('</a>\n\t\t\t\t\t');
@@ -250,7 +229,7 @@ function calendarNotices(ctx: StatusContext, content: StatusContent, out: CfOutp
   }
   out.text('\n\n\t');
   if (content.conflicts.length > 0) {
-    const target = eqTrue(req.rc.compactDisplay ?? 'false') ? 'target="_top"' : 'target="_blank"';
+    const target = isCompactDisplay(req.rc.compactDisplay) ? 'target="_top"' : 'target="_blank"';
     out.text('\n\t\t');
     out.text('\n\t\t<div class="alert alert-error">\n\t\t\t<span>\n\t\t\t<h3>');
     out.value(rb.rbKey('sitemanager.content.fields.displayinterval.schedulingconflicts'));

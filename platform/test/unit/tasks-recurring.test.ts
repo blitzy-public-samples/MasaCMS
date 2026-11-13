@@ -1,5 +1,5 @@
 import fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { LegacyServiceUnavailableError, renderUnavailable } from '../../src/legacy-compat/index.js';
 import { fixedClock } from '../../src/service-kit/clock.js';
 import type { FastifyReply, FastifyRequest } from '../../src/service-kit/index.js';
@@ -31,6 +31,19 @@ import {
   type RecurringSpec,
   type RecurringTaskContext,
 } from '../../src/tasks/recurring.js';
+import {
+  flushTracing,
+  MemorySpanExporter,
+  shutdownTracing,
+  SpanKind,
+  SpanStatusCode,
+  startSpan,
+  startTracing,
+  taskHeaders,
+  withExtractedContext,
+  type ReadableSpan,
+  type TraceCarrier,
+} from '../../src/tracing/index.js';
 
 const NOW = '2026-06-30T12:07:30Z';
 const NOW_S = 1_782_821_250;
@@ -653,6 +666,91 @@ describe('recurringHandler', () => {
   });
 });
 
+/** Memory port that records, per create, the trace headers an adapter stores with the task. */
+class TraceRecordingTaskPort extends MemoryTaskPort {
+  readonly headers: Partial<TraceCarrier>[] = [];
+
+  override create(input: CreateTaskInput): Promise<CreateTaskResult> {
+    this.headers.push(taskHeaders());
+    return super.create(input);
+  }
+}
+
+describe('recurringHandler tracing', () => {
+  const clock = fixedClock(NOW);
+  const exporter = new MemorySpanExporter();
+  const SUCCESSOR_SPAN = `tasks.successor ${SWEEP}`;
+
+  beforeAll(async () => {
+    await startTracing({ serviceName: 'tasks-recurring-test', version: '1.0.0', exporter });
+  });
+
+  beforeEach(async () => {
+    await flushTracing();
+    exporter.reset();
+  });
+
+  afterAll(async () => {
+    await shutdownTracing();
+  });
+
+  async function exportedSpan(name: string): Promise<ReadableSpan | undefined> {
+    await flushTracing();
+    return exporter.getFinishedSpans().find((span) => span.name === name);
+  }
+
+  const traceparentOf = (span: ReadableSpan | undefined): string =>
+    `00-${String(span?.spanContext().traceId)}-${String(span?.spanContext().spanId)}-01`;
+
+  it('creates the successor under a new root span linked to the run, so the next run starts its own trace', async () => {
+    const port = new TraceRecordingTaskPort();
+    const handler = recurringHandler({ ...sweepSpec(), port, clock }, () => Promise.resolve());
+
+    const run = await startSpan('POST', SpanKind.SERVER, async (span) => {
+      await handler(taskContext(SWEEP, slotName(SWEEP, SWEEP_SLOT_S)));
+      return span.spanContext();
+    });
+    await withExtractedContext(port.headers[0] ?? {}, () => startSpan('next dispatch', SpanKind.CLIENT, () => undefined));
+    const successor = await exportedSpan(SUCCESSOR_SPAN);
+    const next = await exportedSpan('next dispatch');
+
+    expect(successor).toMatchObject({ kind: SpanKind.PRODUCER, ended: true, status: { code: SpanStatusCode.UNSET } });
+    expect(successor?.parentSpanContext).toBeUndefined();
+    expect(successor?.spanContext().traceId).not.toBe(run.traceId);
+    expect(successor?.links.map((link) => link.context)).toStrictEqual([run]);
+    expect(port.headers).toStrictEqual([{ traceparent: traceparentOf(successor) }]);
+    expect(next?.spanContext().traceId).toBe(successor?.spanContext().traceId);
+    expect(next?.parentSpanContext?.spanId).toBe(successor?.spanContext().spanId);
+  });
+
+  it('creates the successor under an unlinked root span when no span is active', async () => {
+    const port = new TraceRecordingTaskPort();
+    const handler = recurringHandler({ ...sweepSpec(), port, clock }, () => Promise.resolve());
+
+    await handler(taskContext(SWEEP, slotName(SWEEP, SWEEP_SLOT_S)));
+    const successor = await exportedSpan(SUCCESSOR_SPAN);
+
+    expect(successor?.parentSpanContext).toBeUndefined();
+    expect(successor?.links).toStrictEqual([]);
+    expect(port.headers).toStrictEqual([{ traceparent: traceparentOf(successor) }]);
+  });
+
+  it('marks the successor span failed, records the exception and answers a SuccessorCreationError when creation fails', async () => {
+    const port = new TraceRecordingTaskPort();
+    const outage = new Error('14 UNAVAILABLE: connection reset');
+    port.createFailure = outage;
+    const handler = recurringHandler({ ...sweepSpec(), port, clock }, () => Promise.resolve());
+
+    const error = await handler(taskContext(SWEEP, slotName(SWEEP, SWEEP_SLOT_S))).catch((err: unknown) => err);
+    const successor = await exportedSpan(SUCCESSOR_SPAN);
+
+    expect(error).toBeInstanceOf(SuccessorCreationError);
+    expect((error as SuccessorCreationError).cause).toBe(outage);
+    expect(successor).toMatchObject({ ended: true, status: { code: SpanStatusCode.ERROR } });
+    expect(successor?.events.map((event) => event.name)).toStrictEqual(['exception']);
+  });
+});
+
 describe('ensureOwnRecurring', () => {
   const clock = fixedClock(NOW);
 
@@ -699,12 +797,18 @@ describe('ensureOwnRecurring', () => {
     ]);
   });
 
-  it('fails with UnknownTaskTargetError when one of its chains has no target URL', async () => {
+  it.each<{ label: string; serviceUrls: Record<string, string> }>([
+    { label: 'empty', serviceUrls: {} },
+    { label: 'without its own entry', serviceUrls: { gateway: 'http://127.0.0.1:8100' } },
+  ])('fails naming OPT2_SERVICE_URLS when the map is $label', async ({ serviceUrls }) => {
     const port = new MemoryTaskPort();
 
-    await expect(
-      ensureOwnRecurring(port, { service: 'people', serviceUrls: { identity: 'http://127.0.0.1:8111' }, clock }),
-    ).rejects.toBeInstanceOf(UnknownTaskTargetError);
+    const failure = ensureOwnRecurring(port, { service: 'people', serviceUrls, clock });
+    await expect(failure).rejects.toBeInstanceOf(UnknownTaskTargetError);
+    await expect(failure).rejects.toMatchObject({
+      service: 'people',
+      message: 'OPT2_SERVICE_URLS has no URL for task target: people',
+    });
     expect(port.live.size).toBe(0);
   });
 });

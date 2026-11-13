@@ -12,7 +12,7 @@ import {
   type MultipartBody,
   type MultipartRelay,
 } from '@/lib/gateway-client';
-import type { AdminRequest, AdminSessionWrites } from '@/lib/request-context';
+import { setSessionMuraValue, type AdminRequest, type AdminSessionWrites } from '@/lib/request-context';
 import { boundAdminUrl } from '@/lib/urls';
 import type { RawBody, Rc, ScreenContext, SubmitResult } from '../registry';
 
@@ -23,6 +23,9 @@ const CSRF_HEADERS = ['X-csrf_token', 'X-csrf_token_expires'] as const;
 
 /** Service response headers a raw relay keeps; the handler adds the legacy base headers itself. */
 const RELAYED_HEADERS = ['location', 'content-disposition', 'expires'] as const;
+
+/** Service response header naming the session values the relayed controller set; applied, never relayed. */
+const SESSION_EFFECTS_HEADER = 'x-opt2-session-effects';
 
 type Schemas = components['schemas'];
 type Facade = GatewayClient['strategiesContent'];
@@ -313,6 +316,32 @@ function rawBodyOf(res: GatewayResponse<Buffer>): RawBody {
   };
 }
 
+const isStruct = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/**
+ * Applies the session values a relayed controller set, as its `X-Opt2-Session-Effects` header names them:
+ * `openSectionList`, and each `session.mura` value of `mura`, null deleting it.
+ * @throws SyntaxError For a header that is not JSON; TypeError for JSON of another shape.
+ */
+function applyRelayedSessionEffects(req: AdminRequest, header: string | undefined): void {
+  if (header === undefined) return;
+  const effects: unknown = JSON.parse(header);
+  const { openSectionList, mura, ...other } = isStruct(effects) ? effects : {};
+  const named =
+    isStruct(effects) &&
+    Object.keys(other).length === 0 &&
+    (openSectionList === undefined || typeof openSectionList === 'string') &&
+    (mura === undefined || isStruct(mura));
+  if (!named) {
+    throw new TypeError(`${SERVICE} sent ${SESSION_EFFECTS_HEADER} values the contract does not name: ${header}`);
+  }
+  if (typeof openSectionList === 'string') applySessionEffects(req, { openSectionList });
+  if (isStruct(mura)) {
+    for (const [name, value] of Object.entries(mura)) setSessionMuraValue(req, name, value ?? undefined);
+  }
+}
+
 // ---- Calls ----
 
 /**
@@ -362,9 +391,10 @@ export async function toSubmitResult(
 
 /**
  * Relays a carch fragment, JSON or download action: GET sends the rc as url fields; POST sends `siteid` in the query and
- * the rc fields (or the multipart body) as the body. The answer's bytes are returned unchanged; a 401 or 403 becomes
- * the controller `secure()` redirect.
+ * the rc fields (or the multipart body) as the body. The answer's bytes are returned unchanged and the session values
+ * it reports set are applied to `ctx.req`; a 401 or 403 becomes the controller `secure()` redirect.
  * @throws GatewayUnavailableError When strategies-content is unavailable.
+ * @throws TypeError When the answer reports session values the contract does not name.
  */
 export async function relayCarchRaw(
   ctx: CarchCallContext,
@@ -387,6 +417,7 @@ export async function relayCarchRaw(
     const { location } = secureRedirect(ctx.req);
     return { status: 302, contentType: LEGACY_HTML_CONTENT_TYPE, body: '', headers: { location } };
   }
+  applyRelayedSessionEffects(ctx.req, firstValue(res.headers[SESSION_EFFECTS_HEADER]));
   return rawBodyOf(res);
 }
 

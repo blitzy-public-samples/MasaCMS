@@ -65,8 +65,8 @@
       "live": null
     },
     "dispositions": {
-      "carry": 757,
-      "legacy-served": 147,
+      "carry": 754,
+      "legacy-served": 150,
       "decision": 136,
       "retired": 21
     },
@@ -10027,7 +10027,7 @@
               "correction": null,
               "decisionListRef": null,
               "decisionListGap": false,
-              "exceptionRef": null
+              "exceptionRef": "EX-FILE-RENDITION"
             }
           ]
         },
@@ -10605,9 +10605,9 @@
                 ]
               },
               "owningService": "strategies-content",
-              "disposition": "carry",
-              "dispositionStep": 5,
-              "dispositionReason": "carry",
+              "disposition": "legacy-served",
+              "dispositionStep": 4,
+              "dispositionReason": "display-object rendering",
               "ownerBasis": "aap-0.3.2",
               "owners": [],
               "routeKey": "admin:carch.displayobjectmodal",
@@ -10659,7 +10659,18 @@
                 "owningService": "strategies-content",
                 "ref": "AAP 0.3.2"
               },
-              "correction": null,
+              "correction": {
+                "reason": "computed legacy-served at step 4: display-object rendering",
+                "evidence": [
+                  {
+                    "path": "admin/core/views/carch/displayobjectmodal.cfm",
+                    "lines": [
+                      27,
+                      32
+                    ]
+                  }
+                ]
+              },
               "decisionListRef": null,
               "decisionListGap": false,
               "exceptionRef": null
@@ -12154,7 +12165,26 @@
               "predicate": null,
               "precedence": 0,
               "order": 1,
-              "writeSet": [],
+              "writeSet": [
+                {
+                  "unit": "file-store",
+                  "legacyTable": null,
+                  "op": "write",
+                  "via": [
+                    "flipimage.(template)",
+                    "fileManager.flip"
+                  ],
+                  "source": {
+                    "path": "core/mura/content/file/fileManager.cfc",
+                    "lines": [
+                      1240,
+                      1240
+                    ]
+                  },
+                  "condition": null,
+                  "override": null
+                }
+              ],
               "conditionalWrites": [
                 {
                   "kind": "plugin-event",
@@ -12202,7 +12232,7 @@
               "correction": null,
               "decisionListRef": null,
               "decisionListGap": false,
-              "exceptionRef": null
+              "exceptionRef": "EX-FILE-RENDITION"
             }
           ]
         },
@@ -12230,9 +12260,9 @@
                 ]
               },
               "owningService": "strategies-content",
-              "disposition": "carry",
-              "dispositionStep": 5,
-              "dispositionReason": "carry",
+              "disposition": "legacy-served",
+              "dispositionStep": 4,
+              "dispositionReason": "display-object registry and plugin runtime",
               "ownerBasis": "aap-0.3.2",
               "owners": [],
               "routeKey": "admin:carch.frontendconfigurator",
@@ -12359,7 +12389,25 @@
                 "owningService": "strategies-content",
                 "ref": "AAP 0.3.2"
               },
-              "correction": null,
+              "correction": {
+                "reason": "computed legacy-served at step 4: display-object registry and plugin runtime",
+                "evidence": [
+                  {
+                    "path": "admin/core/views/carch/frontendconfigurator.cfm",
+                    "lines": [
+                      19,
+                      19
+                    ]
+                  },
+                  {
+                    "path": "admin/core/views/carch/frontendconfigurator.cfm",
+                    "lines": [
+                      269,
+                      272
+                    ]
+                  }
+                ]
+              },
               "decisionListRef": null,
               "decisionListGap": false,
               "exceptionRef": null
@@ -20514,9 +20562,9 @@
                 ]
               },
               "owningService": "strategies-content",
-              "disposition": "carry",
-              "dispositionStep": 5,
-              "dispositionReason": "carry",
+              "disposition": "legacy-served",
+              "dispositionStep": 4,
+              "dispositionReason": "FW/1 viewNotFound error page; the pin has no view",
               "ownerBasis": "aap-0.3.2",
               "owners": [],
               "routeKey": "admin:carch.loadrepomanager",
@@ -20608,7 +20656,25 @@
                 "owningService": "strategies-content",
                 "ref": "AAP 0.3.2"
               },
-              "correction": null,
+              "correction": {
+                "reason": "computed legacy-served at step 4: FW/1 viewNotFound error page; the pin has no view",
+                "evidence": [
+                  {
+                    "path": "admin/core/controllers/carch.cfc",
+                    "lines": [
+                      246,
+                      248
+                    ]
+                  },
+                  {
+                    "path": "admin/framework.cfc",
+                    "lines": [
+                      1242,
+                      1243
+                    ]
+                  }
+                ]
+              },
               "decisionListRef": null,
               "decisionListGap": false,
               "exceptionRef": null
@@ -22187,7 +22253,26 @@
               "predicate": null,
               "precedence": 0,
               "order": 1,
-              "writeSet": [],
+              "writeSet": [
+                {
+                  "unit": "file-store",
+                  "legacyTable": null,
+                  "op": "write",
+                  "via": [
+                    "rotateimage.(template)",
+                    "fileManager.rotate"
+                  ],
+                  "source": {
+                    "path": "core/mura/content/file/fileManager.cfc",
+                    "lines": [
+                      1213,
+                      1213
+                    ]
+                  },
+                  "condition": null,
+                  "override": null
+                }
+              ],
               "conditionalWrites": [
                 {
                   "kind": "plugin-event",
@@ -22235,7 +22320,7 @@
               "correction": null,
               "decisionListRef": null,
               "decisionListGap": false,
-              "exceptionRef": null
+              "exceptionRef": "EX-FILE-RENDITION"
             }
           ]
         },
@@ -80354,9 +80439,9 @@
               },
               "csrfContext": null,
               "csrfValidation": "none",
-              "responseMode": "page",
-              "layout": "request",
-              "contentType": "text/html",
+              "responseMode": "download",
+              "layout": null,
+              "contentType": "text/csv",
               "sessionEffects": "none",
               "expected": {
                 "disposition": "carry",

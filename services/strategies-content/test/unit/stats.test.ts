@@ -162,6 +162,64 @@ describe.skipIf(!(await pgAvailable()))('domain/stats over a throwaway content s
     expect(fresh).toEqual({ ...STATS_DEFAULTS, contentID: cfId('S', 4), siteID: SITE, comments: 0, isNew: 0 });
   });
 
+  it.each<[string, number, boolean, number[], 'insert' | 'approve' | 'delete', number]>([
+    ['new comments on an item without a stats row', 11, false, [], 'insert', 2],
+    ['new comments on an item with a stats row', 12, true, [1], 'insert', 3],
+    ['approvals on an item without a stats row', 13, false, [0, 0], 'approve', 2],
+    ['approvals on an item with a stats row', 14, true, [0, 0], 'approve', 2],
+    ['deletes on an item without a stats row', 15, false, [1, 1], 'delete', 0],
+    ['deletes on an item with a stats row', 16, true, [1, 1], 'delete', 0],
+  ])('setCommentStat in concurrent transactions with %s stores the committed count', async (_label, n, statsRow, approved, kind, expected) => {
+    const contentId = cfId('W', n);
+    const comment = { contentid: contentId, siteid: SITE, entered: NOW, name: 'n', isapproved: 1, isspam: 0, isdeleted: 0 };
+    const ids = await inA(async (tx) => {
+      const stored: string[] = [];
+      for (const isapproved of approved) {
+        stored.push((await repo.comments.insertComment(tx, { ...comment, isapproved })).commentid);
+      }
+      return stored;
+    });
+    if (statsRow) {
+      await inA((tx) => setCommentStat(tx, repo, contentId, SITE));
+    }
+    expect((await inA((tx) => repo.stats.readStats(tx, { contentId, siteId: SITE }))) !== null).toBe(statsRow);
+    const change = (tx: TenantTx, i: number): Promise<unknown> =>
+      kind === 'insert'
+        ? repo.comments.insertComment(tx, comment)
+        : kind === 'approve'
+          ? repo.comments.setApproved(tx, { commentId: ids[i] as string, isApproved: 1 })
+          : repo.comments.setDeleted(tx, { commentId: ids[i] as string, isDeleted: 1 });
+    let release: () => void = () => undefined;
+    let counted: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const statSet = new Promise<void>((resolve) => (counted = resolve));
+    // The first transaction stays open after its stat until the second is seen waiting on a lock.
+    const first = inA(async (tx) => {
+      await change(tx, 0);
+      await setCommentStat(tx, repo, contentId, SITE);
+      counted();
+      await held;
+    });
+    await Promise.race([statSet, first]);
+    const outcome = inA(async (tx) => {
+      await change(tx, 1);
+      return setCommentStat(tx, repo, contentId, SITE);
+    }).catch((err: unknown) => err);
+    let settled = false;
+    void outcome.then(() => (settled = true));
+    const waiting = async (): Promise<boolean> =>
+      (await handle.adminPool.query('SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE NOT l.granted AND a.usename = $1', [handle.roles.app])).rows.length > 0;
+    while (!settled && !(await waiting())) await new Promise((resolve) => setTimeout(resolve, 20));
+    const blocked = !settled;
+    release();
+    await first;
+    const second = await outcome;
+    expect(blocked).toBe(true);
+    expect(second).not.toBeInstanceOf(Error);
+    expect((second as ContentStats).comments).toBe(expected);
+    expect((await inA((tx) => repo.stats.readStats(tx, { contentId, siteId: SITE })))?.comments).toBe(expected);
+  });
+
   // Rows of the legacy getAvgRating query, recorded on SQL Server 2022 over the same ratings.
   it.each<[string, number, (number | null)[], unknown]>([
     ['no ratings', 1, [], null],

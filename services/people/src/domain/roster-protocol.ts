@@ -21,18 +21,24 @@ import type { PeopleEvents } from '../events/publish.js';
 import type {
   AccountCommitRequest,
   AccountOperationState,
+  AccountPrepareRequest,
   AccountView,
   ActingUser,
   CommitOutcome,
+  IdentityCallOptions,
   IdentityClient,
   PrepareOutcome,
 } from '../legacy/identity-client.js';
 import {
+  ID_WIDTH,
   LegacyStorageError,
+  RosterLockTimeoutError,
   RosterOperationOpenError,
   createPeopleRepository,
   type PeopleRepository,
   type PersonInput,
+  type RosterLockOptions,
+  type RosterOperationOwner,
   type RosterOperationStatePatch,
 } from '../repo/repository.js';
 import {
@@ -72,6 +78,7 @@ import {
   type ExtendConfig,
 } from './extended-data.js';
 import type { FaultHooks } from './faults.js';
+import type { PersonFence, PersonFenceOptions, PersonsOpenOptions } from './person-fence.js';
 import { writeInterests, writeTags } from './interests-tags.js';
 import {
   applySuperUserRule,
@@ -105,6 +112,9 @@ export const USER_CLOSED_WAIT_MS = 10_000;
 
 /** Budget, from the durable intent on, within which a request resolves identity's commit outcome. */
 export const REQUEST_BUDGET_MS = 10_000;
+
+/** Part of the request budget the people commit's fence wait leaves for the identity call after it, `:abort` or `:commit`. */
+export const IDENTITY_CALL_RESERVE_MS = 1_000;
 
 /** People units a roster operation writes; its `open_operation` registration keeps their gates from closing until it ends. */
 export const PEOPLE_OPERATION_UNITS: readonly PeopleUnit[] = Object.freeze([
@@ -219,10 +229,12 @@ function repositoryFor(schema: string): PeopleRepository {
   return repo;
 }
 
-/** A wait budget: elapsed time is the injected clock's or the sum of the sleeps, whichever is larger, so a frozen clock cannot stall it. */
+/** A wait budget: elapsed time is the injected clock's or the sum of the waits, whichever is larger, so a frozen clock cannot stall it. */
 interface Budget {
   remaining(): number;
   pause(ms: number): Promise<void>;
+  /** Counts `ms` waited outside `pause`, as on a roster lock. */
+  charge(ms: number): void;
 }
 
 function startBudget(clock: Clock, budgetMs: number, sleep: Sleep): Budget {
@@ -236,6 +248,26 @@ function startBudget(clock: Clock, budgetMs: number, sleep: Sleep): Budget {
       await sleep(step);
       slept += step;
     },
+    charge(ms) {
+      slept += ms;
+    },
+  };
+}
+
+/** The roster-lock wait `budget` leaves. */
+function lockWait(budget: Budget): RosterLockOptions {
+  return { timeoutMs: budget.remaining() };
+}
+
+/** `budget` as spent while only `reservedMs` of it remain; its waits count against `budget`. */
+function reserving(budget: Budget, reservedMs: number): Budget {
+  const remaining = (): number => budget.remaining() - reservedMs;
+  return {
+    remaining,
+    pause: (ms) => budget.pause(Math.max(0, Math.min(ms, remaining()))),
+    charge: (ms) => {
+      budget.charge(ms);
+    },
   };
 }
 
@@ -243,6 +275,13 @@ function startBudget(clock: Clock, budgetMs: number, sleep: Sleep): Budget {
 function userClosed(userId: string, operationId?: string): OperationBlockedError {
   const holder = operationId === undefined ? 'An open roster operation' : `Roster operation ${operationId}`;
   return new OperationBlockedError([...PEOPLE_OPERATION_UNITS, ...IDENTITY_OPERATION_UNITS], `${holder} keeps user ${userId} closed`);
+}
+
+/** The legacy 503 of a roster lock its holders kept past the user-closed wait. */
+function lockNotGranted(err: RosterLockTimeoutError): OperationBlockedError {
+  const closed = new OperationBlockedError([...PEOPLE_OPERATION_UNITS, ...IDENTITY_OPERATION_UNITS], err.message);
+  closed.cause = err;
+  return closed;
 }
 
 /** An update of a user that is no person of the tenant, or whose account identity does not hold. */
@@ -264,6 +303,18 @@ function asUnavailable(err: unknown, step: string): unknown {
   return unavailable;
 }
 
+/** The legacy 503 of an identity call the request's budget no longer leaves time for. */
+function budgetSpent(step: string): LegacyServiceUnavailableError {
+  return new LegacyServiceUnavailableError(`Roster operation budget spent before ${step}`, 'auto', 'roster-budget');
+}
+
+/** Options bounding the next identity call by the budget's remaining time; throws budgetSpent once none remains. */
+function callOptions(budget: Budget, step: string): IdentityCallOptions {
+  const timeoutMs = budget.remaining();
+  if (timeoutMs <= 0) throw budgetSpent(step);
+  return { timeoutMs };
+}
+
 /** A posted simple value as text; '' when absent or NULL. */
 function paramText(params: ReadonlyMap<string, unknown>, key: string): string {
   const value = params.get(key);
@@ -280,13 +331,175 @@ function assertNoPhoto(params: ReadonlyMap<string, unknown>): void {
 
 /** Waits while another open roster operation keeps `userId` closed; throws OperationBlockedError (the legacy 503) after `USER_CLOSED_WAIT_MS`. */
 export async function awaitPersonOpen(db: TenantDb, tenantId: string, userId: string, opts: PersonOpenOptions): Promise<void> {
+  await awaitOpen(db, tenantId, userId, startBudget(opts.clock, USER_CLOSED_WAIT_MS, opts.sleep ?? timerSleep), opts.selfOperationId);
+}
+
+/** Waits on `budget` while an open roster operation other than `selfOperationId` keeps `userId` closed; throws the legacy 503 once it is spent. */
+async function awaitOpen(db: TenantDb, tenantId: string, userId: string, budget: Budget, selfOperationId?: string): Promise<void> {
   const repo = repositoryFor(db.schema);
-  const budget = startBudget(opts.clock, USER_CLOSED_WAIT_MS, opts.sleep ?? timerSleep);
   for (;;) {
     const open = await withTenant(db, tenantId, (tx) => repo.findOpenRosterOperation(tx, userId));
-    if (open === null || open.operation_id === opts.selfOperationId) return;
+    if (open === null || open.operation_id === selfOperationId) return;
     if (budget.remaining() <= 0) throw userClosed(userId, open.operation_id);
     await budget.pause(CLOSED_POLL_MS);
+  }
+}
+
+/** Raised in a fenced transaction whose user an open roster operation keeps closed; `withPersonsOpen` waits it out, and unhandled it is the legacy 503. */
+export class PersonClosedSignal extends OperationBlockedError {
+  override readonly name: string = 'PersonClosedSignal';
+
+  constructor(
+    readonly userId: string,
+    readonly operationId: string,
+  ) {
+    const closed = userClosed(userId, operationId);
+    super(closed.units, closed.message);
+  }
+}
+
+// The wait budget of each transaction runPersonsOpen runs, which bounds the roster locks its fences take.
+const fenceBudgets = new WeakMap<TenantTx, Budget>();
+
+/** The roster-lock wait of `tx`: what its runPersonsOpen budget leaves, unbounded outside one. */
+function fenceWait(tx: TenantTx): RosterLockOptions {
+  const budget = fenceBudgets.get(tx);
+  return budget === undefined ? {} : lockWait(budget);
+}
+
+/** Share-locks `userIds` until `tx` ends, then throws PersonClosedSignal when another open roster operation keeps one closed; call it before the transaction's first read or write of them. */
+export async function fencePersons(tx: TenantTx, userIds: readonly string[], opts: PersonFenceOptions = {}): Promise<void> {
+  const repo = repositoryFor(tx.schema);
+  await repo.lockRosterUsers(tx, userIds, 'shared', fenceWait(tx));
+  const open = (await repo.findOpenRosterOperations(tx, userIds)).find((row) => row.operation_id !== opts.selfOperationId);
+  if (open !== undefined) throw new PersonClosedSignal(open.user_id.replace(/ +$/, ''), open.operation_id);
+}
+
+/** Runs `fn` in one gated transaction of `tenantId`, its roster locks bounded by `budget`, again after each PersonClosedSignal; throws the legacy 503 once `budget` is spent. */
+async function runPersonsOpen<T>(db: TenantDb, tenantId: string, fn: (tx: TenantTx) => Promise<T>, budget: Budget): Promise<T> {
+  for (;;) {
+    try {
+      return await withGatedTenant(db, tenantId, (tx) => {
+        fenceBudgets.set(tx, budget);
+        return fn(tx);
+      });
+    } catch (err) {
+      if (err instanceof RosterLockTimeoutError) {
+        budget.charge(err.timeoutMs);
+        if (budget.remaining() <= 0) throw lockNotGranted(err);
+        continue;
+      }
+      if (!(err instanceof PersonClosedSignal)) throw err;
+      if (budget.remaining() <= 0) throw userClosed(err.userId, err.operationId);
+    }
+    await budget.pause(CLOSED_POLL_MS);
+  }
+}
+
+/** `runPersonsOpen` on a fresh `USER_CLOSED_WAIT_MS` budget: the legacy 503 once a closed user or a held roster lock outlasts it. */
+export async function withPersonsOpen<T>(db: TenantDb, tenantId: string, fn: (tx: TenantTx) => Promise<T>, opts: PersonsOpenOptions): Promise<T> {
+  return runPersonsOpen(db, tenantId, fn, startBudget(opts.clock, USER_CLOSED_WAIT_MS, opts.sleep ?? timerSleep));
+}
+
+/** The roster fence the address and archive saves take as their `fence` collaborator. */
+export const personFence: PersonFence = Object.freeze({ fencePersons, withPersonsOpen });
+
+/** Collaborators of `observePersons`; `sleep` waits between attempts and defaults to a timer. */
+export interface PersonObserverDeps {
+  db: TenantDb;
+  repo: Pick<PeopleRepository, 'lockRosterUsers' | 'lockRosterTenant' | 'findOpenRosterOperations' | 'countRosterOperations'>;
+  clock: Clock;
+  sleep?: Sleep;
+}
+
+/** The people side of one observation attempt. */
+export interface PersonObserver {
+  /**
+   * Runs `read` in one transaction of `tenantId` under the shared roster lock of `userIds`, or of the tenant when omitted,
+   * and covers the users `covered` names in its result.
+   */
+  read<T>(tenantId: string, read: (tx: TenantTx) => Promise<T>, covered: (result: T) => readonly string[], userIds?: readonly string[]): Promise<T>;
+}
+
+/** Covered users of one observed people read and their operation count at that read. */
+interface ObservedRead {
+  tenantId: string;
+  userIds: readonly string[];
+  count: number;
+}
+
+/** A covered user whose operations changed since its read; `operationId` names one still open. */
+interface ObservedChange {
+  userId: string;
+  operationId?: string;
+}
+
+/** The first covered user whose operations changed since `reads`, checked in one transaction per tenant; undefined when none did. */
+async function changeSince(deps: PersonObserverDeps, reads: readonly ObservedRead[]): Promise<ObservedChange | undefined> {
+  const byTenant = new Map<string, ObservedRead[]>();
+  for (const read of reads) if (read.userIds.length > 0) byTenant.set(read.tenantId, [...(byTenant.get(read.tenantId) ?? []), read]);
+  for (const [tenantId, tenantReads] of byTenant) {
+    const change = await withTenant(deps.db, tenantId, async (tx): Promise<ObservedChange | undefined> => {
+      for (const { userIds, count } of tenantReads) {
+        const open = (await deps.repo.findOpenRosterOperations(tx, userIds))[0];
+        if (open !== undefined) return { userId: open.user_id.replace(/ +$/, ''), operationId: open.operation_id };
+        if ((await deps.repo.countRosterOperations(tx, userIds)) !== count) return { userId: userIds[0] ?? '' };
+      }
+      return undefined;
+    });
+    if (change !== undefined) return change;
+  }
+  return undefined;
+}
+
+/**
+ * Reads people's rows through `people`, then identity's through `identity` outside any transaction, again until no roster
+ * operation on a covered user was open at or started after its read; throws OperationBlockedError (the legacy 503) after `USER_CLOSED_WAIT_MS`.
+ */
+export async function observePersons<P, R>(
+  deps: PersonObserverDeps,
+  people: (observer: PersonObserver) => Promise<P>,
+  identity: (rows: P) => Promise<R>,
+): Promise<R> {
+  const { db, repo } = deps;
+  const budget = startBudget(deps.clock, USER_CLOSED_WAIT_MS, deps.sleep ?? timerSleep);
+  for (;;) {
+    const reads: ObservedRead[] = [];
+    const observer: PersonObserver = {
+      read: (tenantId, read, covered, userIds) =>
+        withTenant(db, tenantId, async (tx) => {
+          if (userIds === undefined) await repo.lockRosterTenant(tx, 'shared', lockWait(budget));
+          else await repo.lockRosterUsers(tx, userIds, 'shared', lockWait(budget));
+          // The shared lock keeps operations from starting, not an open one from finishing during the read.
+          const open = await repo.findOpenRosterOperations(tx, userIds);
+          const result = await read(tx);
+          const users = covered(result);
+          for (const operation of open) {
+            if ((await repo.countRosterOperations(tx, users, [operation.operation_id])) > 0) {
+              throw new PersonClosedSignal(operation.user_id.replace(/ +$/, ''), operation.operation_id);
+            }
+          }
+          reads.push({ tenantId, userIds: users, count: await repo.countRosterOperations(tx, users) });
+          return result;
+        }),
+    };
+    let change: ObservedChange | undefined;
+    try {
+      const result = await identity(await people(observer));
+      change = await changeSince(deps, reads);
+      if (change === undefined) return result;
+    } catch (err) {
+      if (err instanceof RosterLockTimeoutError) {
+        budget.charge(err.timeoutMs);
+        if (budget.remaining() <= 0) throw lockNotGranted(err);
+        continue;
+      }
+      if (!(err instanceof PersonClosedSignal)) throw err;
+      change = { userId: err.userId, operationId: err.operationId };
+    }
+    if (budget.remaining() <= 0) throw userClosed(change.userId, change.operationId);
+    // A covered operation that started and ended in between leaves nothing to wait out.
+    if (change.operationId !== undefined) await budget.pause(CLOSED_POLL_MS);
   }
 }
 
@@ -329,7 +542,7 @@ interface VoidedSave {
  * People's rows of `userId` plus identity's account and, when `withMemberships`, its memberships; null when no person
  * row exists.
  */
-async function loadStoredUser(deps: RosterDeps, tenantId: string, userId: string, withMemberships: boolean): Promise<StoredUser | null> {
+async function loadStoredUser(deps: RosterDeps, tenantId: string, userId: string, withMemberships: boolean, budget: Budget): Promise<StoredUser | null> {
   const { repo } = deps;
   const config = deps.extendConfig ?? EXTEND_CONFIG_DEFAULTS;
   const local = await withTenant(deps.db, tenantId, async (tx) => {
@@ -341,35 +554,46 @@ async function loadStoredUser(deps: RosterDeps, tenantId: string, userId: string
     return { person, categoryIds, extend: await extendSetData(repo, tx, person.userid, scope, config) };
   });
   if (local === null) return null;
-  const account = await deps.identity.readAccount(local.person.userid);
+  const account = await deps.identity.readAccount(local.person.userid, callOptions(budget, 'shape'));
   if (account === undefined) throw personUnknown(userId);
-  const groupIds = withMemberships ? await deps.identity.membershipGroupIds(local.person.userid) : [];
+  const groupIds = withMemberships ? await deps.identity.membershipGroupIds(local.person.userid, callOptions(budget, 'shape')) : [];
   return { ...local, account, groupIds };
 }
 
-/** Step 0: the controller restrictions, the bean values, the pool and S2 rules and people's validation, reading only. */
-async function shapeSave(deps: RosterDeps, input: RosterInput): Promise<ShapedSave | VoidedSave> {
-  assertNoPhoto(input.params);
+/** The user a save writes, from the request alone: the session user, the posted `userid`, or a new id for a create. */
+interface SaveTarget {
+  userId: string;
+  /** Create, or update a stored user; a JSON API save of a user no person row holds turns into a create. */
+  operation: ShapedSave['operation'];
+}
+
+/** The save's target before any read; `restrictAdminInput` leaves `userid` as posted. */
+function saveTarget(input: RosterInput): SaveTarget {
+  if (input.kind === 'profile-update') return { userId: input.claims.sub, operation: 'update' };
+  const posted = javaTrim(paramText(input.params, 'userid'));
+  if (posted === '') return { userId: cfUuid(), operation: 'create' };
+  return { userId: posted, operation: input.kind === 'admin-add' ? 'create' : 'update' };
+}
+
+/** Under the intent: the controller restrictions, the bean values, the pool and S2 rules and people's validation, reading only. */
+async function shapeSave(deps: RosterDeps, input: RosterInput, target: SaveTarget, budget: Budget): Promise<ShapedSave | VoidedSave> {
   const { claims, tenantId } = input;
-  const sleep = deps.sleep ?? timerSleep;
   let params = input.params;
   let voided = false;
   if (input.kind === 'admin-add' || input.kind === 'admin-update') {
     const posted = paramText(params, 'userid');
-    const target = isCfUuid(posted) ? await deps.identity.readAccount(posted) : undefined;
-    const restricted = restrictAdminInput(params, { actorIsSuperUser: claims.s2, targetIsS2: (target?.s2 ?? 0) !== 0 });
+    const targetAccount = isCfUuid(posted) ? await deps.identity.readAccount(posted, callOptions(budget, 'shape')) : undefined;
+    const restricted = restrictAdminInput(params, { actorIsSuperUser: claims.s2, targetIsS2: (targetAccount?.s2 ?? 0) !== 0 });
     params = restricted.input;
     voided = cfEq(restricted.action, 'invalid');
   }
 
-  let userId = input.kind === 'profile-update' ? claims.sub : javaTrim(paramText(params, 'userid'));
-  let operation: ShapedSave['operation'] = input.kind === 'admin-add' || userId === '' ? 'create' : 'update';
+  let { userId, operation } = target;
   let stored: StoredUser | null = null;
   if (operation === 'update') {
-    await awaitPersonOpen(deps.db, tenantId, userId, { clock: deps.clock, sleep });
     // A profile save writes no memberships (updateGroups=false), and identity lists them only to cUsers callers, which
     // a profile's own user need not be.
-    stored = await loadStoredUser(deps, tenantId, userId, input.kind !== 'profile-update');
+    stored = await loadStoredUser(deps, tenantId, userId, input.kind !== 'profile-update', budget);
     if (stored === null) {
       // userManager.save creates a user no tusers row holds; the admin and profile updates read a stored one.
       if (input.kind !== 'json-save') throw personUnknown(userId);
@@ -388,7 +612,6 @@ async function shapeSave(deps: RosterDeps, input: RosterInput): Promise<ShapedSa
   const set = applyUserInput(base, params);
   const site = await resolveUserSite(deps.db, claims.tid, params, set);
   if (site.poolTenantId !== tenantId) throw poolMove(userId);
-  if (operation === 'create') userId = set.userid === '' ? cfUuid() : set.userid;
   const pooled: UserValues = { ...set, userid: userId, siteid: site.siteId, ispublic: site.isPublic };
   const values = applySuperUserRule(pooled, claims.s2);
   // splitUserValues takes the values before the S2 rule: identity applies it from the token, and isPublic must stay the pool's.
@@ -458,18 +681,46 @@ function payloadOf(shaped: ShapedSave): string {
   });
 }
 
-/** Step 1: commits the operation in state `started`, waiting out another open operation on the user once. */
-async function recordIntent(deps: RosterDeps, input: RosterInput, shaped: ShapedSave, write: WriteContext): Promise<RosterOperationRow> {
-  const intent = { kind: input.kind, userId: shaped.userId, payload: payloadOf(shaped) };
+/** Step 1: commits the operation in state `started` with an empty payload, waiting out another open operation or its roster locks' holders once, within `USER_CLOSED_WAIT_MS`. */
+async function recordIntent(deps: RosterDeps, input: RosterInput, userId: string, write: WriteContext): Promise<RosterOperationRow> {
+  const intent = { kind: input.kind, userId, payload: '{}' };
+  const budget = startBudget(deps.clock, USER_CLOSED_WAIT_MS, deps.sleep ?? timerSleep);
   for (let waited = false; ; waited = true) {
     try {
-      return await withTenant(deps.db, input.tenantId, (tx) => deps.repo.insertRosterOperation(tx, intent, write));
+      return await withTenant(deps.db, input.tenantId, (tx) => deps.repo.insertRosterOperation(tx, intent, write, lockWait(budget)));
     } catch (err) {
-      if (!(err instanceof RosterOperationOpenError)) throw err;
-      if (waited) throw userClosed(shaped.userId);
+      if (err instanceof RosterLockTimeoutError) budget.charge(err.timeoutMs);
+      else if (!(err instanceof RosterOperationOpenError)) throw err;
+      if (waited) throw userClosed(userId);
     }
-    await awaitPersonOpen(deps.db, input.tenantId, shaped.userId, { clock: deps.clock, sleep: deps.sleep });
+    await awaitOpen(deps.db, input.tenantId, userId, budget);
   }
+}
+
+/** Shapes the save under its intent and records the payload; a failed or voided save closes the operation `rolled-back`. */
+async function shapeUnderIntent(
+  deps: RosterDeps,
+  input: RosterInput,
+  target: SaveTarget,
+  operationId: string,
+  budget: Budget,
+  write: WriteContext,
+): Promise<ShapedSave | VoidedSave> {
+  const rollBack = (error: string): Promise<void> =>
+    guarded('shape', () => closeOperation(deps, input.tenantId, operationId, { state: 'rolled-back', error }, write));
+  let shaped: ShapedSave | VoidedSave;
+  try {
+    shaped = await shapeSave(deps, input, target, budget);
+    if (!('voided' in shaped)) {
+      const payload = payloadOf(shaped);
+      await guarded('shape', () => withTenant(deps.db, input.tenantId, (tx) => deps.repo.setRosterOperationState(tx, operationId, { state: 'started', payload }, write)));
+    }
+  } catch (err) {
+    await rollBack('shape');
+    throw err;
+  }
+  if ('voided' in shaped) await rollBack('voided');
+  return shaped;
 }
 
 /** Moves the operation to its final state and ends its `open_operation` registration in one transaction. */
@@ -506,12 +757,25 @@ async function captureBeforeImage(repo: PeopleRepository, tx: TenantTx, shaped: 
   };
 }
 
-/** Step 3: people's writes of `userManager.update`/`create` in one gated transaction, the held person event and state `people-committed`. */
+/** Row-locks every address the update writes, then (row locks before roster locks, as address saves take them) exclusively locks the posted address's other owner; throws PersonClosedSignal while an open operation keeps it closed. */
+async function fenceMovedAddress(repo: PeopleRepository, tx: TenantTx, shaped: ShapedSave, operationId: string): Promise<void> {
+  if (shaped.addressId === '') return;
+  const { primaryaddressid } = shaped.values;
+  await repo.lockAddresses(tx, primaryaddressid === '' ? [shaped.addressId] : [shaped.addressId, primaryaddressid], shaped.userId);
+  const owner = ((await repo.findAddress(tx, shaped.addressId))?.userid ?? '').replace(/ +$/, '');
+  if (owner === '' || owner === shaped.userId.replace(/ +$/, '')) return;
+  await repo.lockRosterUsers(tx, [owner], 'exclusive', fenceWait(tx));
+  const open = (await repo.findOpenRosterOperations(tx, [owner])).find((row) => row.operation_id !== operationId);
+  if (open !== undefined) throw new PersonClosedSignal(open.user_id.replace(/ +$/, ''), open.operation_id);
+}
+
+/** Step 3: people's writes of `userManager.update`/`create` in one fenced, gated transaction, the held person event and state `people-committed`; fence waits draw on `budget`. */
 async function commitPeople(
   deps: RosterDeps,
   input: RosterInput,
   shaped: ShapedSave,
   operationId: string,
+  budget: Budget,
   write: WriteContext,
 ): Promise<{ operation: RosterOperationRow; person: PersonRow; audit: { lastupdateby: string; lastupdatebyid: string } }> {
   const { repo } = deps;
@@ -520,7 +784,8 @@ async function commitPeople(
   const columns: PersonInput = { ...shaped.person, ...audit, userid: userId, siteid: values.siteid };
   const data = normaliseParams(values);
   const config = deps.extendConfig ?? EXTEND_CONFIG_DEFAULTS;
-  return withGatedTenant(deps.db, input.tenantId, async (tx) => {
+  const commit = async (tx: TenantTx) => {
+    await fenceMovedAddress(repo, tx, shaped, operationId);
     const before = await captureBeforeImage(repo, tx, shaped);
     if (shaped.saveExtended) {
       await saveExtendedData(repo, tx, userId, data, { siteId: values.siteid, config, write, ...(deps.locale === undefined ? {} : { locale: deps.locale }) });
@@ -548,16 +813,24 @@ async function commitPeople(
     const operation = await repo.setRosterOperationState(tx, operationId, { state: 'people-committed', beforeImage: JSON.stringify(before) }, write);
     if (operation === null) throw new Error(`Roster operation ${operationId} is missing from its tenant`);
     return { operation, person, audit };
-  });
+  };
+  return runPersonsOpen(deps.db, input.tenantId, commit, reserving(budget, IDENTITY_CALL_RESERVE_MS));
 }
 
-/** Identity's state of the operation, asked again while identity is unreachable and the budget lasts. */
-async function identityState(deps: RosterDeps, userId: string, operationId: string, budget: Budget): Promise<AccountOperationState | undefined> {
+/**
+ * Identity's state of the operation, asked again while identity is unreachable and the budget lasts; once it is spent,
+ * throws the last failure, `cause` when no call fit.
+ */
+async function identityState(deps: RosterDeps, userId: string, operationId: string, budget: Budget, cause: unknown): Promise<AccountOperationState | undefined> {
+  let failure = cause;
   for (;;) {
+    const timeoutMs = budget.remaining();
+    if (timeoutMs <= 0) throw failure;
     try {
-      return await deps.identity.operationState(userId, operationId);
+      return await deps.identity.operationState(userId, operationId, { timeoutMs });
     } catch (err) {
-      if (!(err instanceof ServiceUnavailableError) || budget.remaining() <= 0) throw err;
+      if (!(err instanceof ServiceUnavailableError)) throw err;
+      failure = err;
     }
     await budget.pause(CLOSED_POLL_MS);
   }
@@ -571,10 +844,10 @@ function commitRequest(input: RosterInput, person: PersonRow): AccountCommitRequ
 }
 
 /** Step 5 after `done`: identity's `:finish`, then the operation leaves `finish-pending` and its registration ends. */
-async function finishOperation(deps: RosterDeps, tenantId: string, userId: string, operationId: string, write: WriteContext): Promise<void> {
+async function finishOperation(deps: RosterDeps, tenantId: string, userId: string, operationId: string, budget: Budget, write: WriteContext): Promise<void> {
   try {
     await deps.faults.at('after-done');
-    await deps.identity.finish(userId, operationId);
+    await deps.identity.finish(userId, operationId, callOptions(budget, 'finish'));
     await closeOperation(deps, tenantId, operationId, { state: 'done', error: null }, write);
   } catch {
     // The change is complete on both sides, so the save succeeds; recovery repeats the `finish-pending` operation's `:finish`.
@@ -595,15 +868,19 @@ async function guarded<T>(step: string, fn: () => Promise<T>): Promise<T> {
  * legacy 503 for a rejected save, which leaves no change on either side once any open step is recovered.
  */
 export async function runRosterOperation(deps: RosterDeps, input: RosterInput): Promise<RosterResult> {
-  const shaped = await shapeSave(deps, input);
-  if ('voided' in shaped) return { ok: true, userId: shaped.userId, values: shaped.values };
+  assertNoPhoto(input.params);
   const { tenantId, claims } = input;
-  const { userId } = shaped;
-  const budget = startBudget(deps.clock, REQUEST_BUDGET_MS, deps.sleep ?? timerSleep);
+  const target = saveTarget(input);
+  // No stored person has a wider id, so the admin and profile updates refuse it as they refuse an unknown person, before any intent.
+  if (target.operation === 'update' && input.kind !== 'json-save' && target.userId.length > ID_WIDTH) throw personUnknown(target.userId);
   const base: WriteContext = { origin: 'target', actorUserId: claims.sub, requestId: input.requestId };
 
-  const operationId = (await recordIntent(deps, input, shaped, base)).operation_id;
+  const operationId = (await recordIntent(deps, input, target.userId, base)).operation_id;
+  const budget = startBudget(deps.clock, REQUEST_BUDGET_MS, deps.sleep ?? timerSleep);
   const write: WriteContext = { ...base, operationId };
+  const shaped = await shapeUnderIntent(deps, input, target, operationId, budget, write);
+  if ('voided' in shaped) return { ok: true, userId: shaped.userId, values: shaped.values };
+  const { userId } = shaped;
   try {
     // Only people's units: this schema holds no identity gates, and identity registers its own units at prepare.
     await registerOperation(deps.db, { operationId, kind: OPERATION_KIND, units: PEOPLE_OPERATION_UNITS });
@@ -613,12 +890,18 @@ export async function runRosterOperation(deps: RosterDeps, input: RosterInput): 
   }
   // Until identity's answer is known, a failure leaves the operation `started` for recovery's `:abort`.
   await guarded('after-start', () => deps.faults.at('after-start'));
-  const prepared = await guarded('prepare', () => deps.identity.prepare(userId, operationId, { kind: shaped.operation, ...shaped.account }));
+  const prepareTimeoutMs = budget.remaining();
+  if (prepareTimeoutMs <= 0) {
+    await guarded('prepare', () => closeOperation(deps, tenantId, operationId, { state: 'rolled-back', error: 'request-budget' }, write));
+    throw budgetSpent('prepare');
+  }
+  const change: AccountPrepareRequest = { kind: shaped.operation, ...shaped.account };
+  const prepared = await guarded('prepare', () => deps.identity.prepare(userId, operationId, change, { timeoutMs: prepareTimeoutMs }));
 
   const errors = mergeUserErrors({ ...shaped.errors, identity: prepared.ok ? {} : prepared.errors, siteId: shaped.values.siteid }, deps.rb);
   if (hasErrors(errors)) {
     await guarded('validation', async () => {
-      if (prepared.ok) await deps.identity.abort(userId, operationId);
+      if (prepared.ok) await deps.identity.abort(userId, operationId, callOptions(budget, 'abort'));
       await closeOperation(deps, tenantId, operationId, { state: 'rolled-back', error: 'validation' }, write);
     });
     return { ok: false, errors, values: { ...shaped.values, errors } };
@@ -627,41 +910,44 @@ export async function runRosterOperation(deps: RosterDeps, input: RosterInput): 
   let committed: Awaited<ReturnType<typeof commitPeople>>;
   try {
     await deps.faults.at('after-prepare');
-    committed = await commitPeople(deps, input, shaped, operationId, write);
+    committed = await commitPeople(deps, input, shaped, operationId, budget, write);
   } catch (err) {
     await guarded('people-commit', async () => {
-      await deps.identity.abort(userId, operationId);
+      await deps.identity.abort(userId, operationId, callOptions(budget, 'abort'));
       await closeOperation(deps, tenantId, operationId, { state: 'rolled-back', error: 'people-commit' }, write);
     });
     throw asUnavailable(err, 'people-commit');
   }
 
-  let commit: CommitOutcome | undefined;
+  const commitBody = commitRequest(input, committed.person);
+  let commit: CommitOutcome;
   try {
     await deps.faults.at('after-people-commit');
-    commit = await deps.identity.commit(userId, operationId, commitRequest(input, committed.person));
+    commit = await deps.identity.commit(userId, operationId, commitBody, callOptions(budget, 'identity-commit'));
   } catch (err) {
     // Unreachable past the budget, the operation stays `people-committed` and the user closed until recovery.
-    const state = await guarded('identity-commit', () => identityState(deps, userId, operationId, budget));
+    const state = await guarded('identity-commit', () => identityState(deps, userId, operationId, budget, err));
     if (state !== 'committed' && state !== 'finished') {
       await guarded('identity-commit', async () => {
         await restoreBeforeImage(deps, tenantId, committed.operation);
-        if (state === 'prepared') await deps.identity.abort(userId, operationId);
+        if (state === 'prepared') await deps.identity.abort(userId, operationId, callOptions(budget, 'abort'));
         await closeOperation(deps, tenantId, operationId, { state: 'rolled-back', error: 'identity-commit' }, write);
       });
       throw asUnavailable(err, 'identity-commit');
     }
+    // A committed operation's commit answers its recorded position again; unanswered, recovery reverts both sides.
+    commit = await guarded('identity-commit', () => deps.identity.commit(userId, operationId, commitBody, callOptions(budget, 'identity-commit')));
   }
   // A failure past identity's commit leaves `people-committed` with identity committed, which recovery reverts on both sides.
   await guarded('after-identity-commit', () => deps.faults.at('after-identity-commit'));
 
   await guarded('done', () =>
     withTenant(deps.db, tenantId, async (tx) => {
-      await deps.repo.setRosterOperationState(tx, operationId, { state: 'done', error: FINISH_PENDING, identityXid: commit?.writePosition }, write);
+      await deps.repo.setRosterOperationState(tx, operationId, { state: 'done', error: FINISH_PENDING, identityXid: commit.writePosition }, write);
       await releaseOperation(tx, operationId);
     }),
   );
-  await finishOperation(deps, tenantId, userId, operationId, write);
+  await finishOperation(deps, tenantId, userId, operationId, budget, write);
   return { ok: true, userId, values: { ...shaped.values, ...committed.audit, isnew: 0, errors: {} } };
 }
 
@@ -729,30 +1015,39 @@ async function restorePerson(repo: PeopleRepository, tx: TenantTx, userId: strin
 }
 
 /**
- * Restores the rows a `people-committed` operation wrote from its before-image and discards its held outbox rows, in one
- * gated transaction under the operation's id, so the projector skips the whole operation. Safe because the operation
- * kept the user closed to every other writer.
+ * Restores, in `tx`, the rows a `people-committed` operation wrote from its before-image and discards its held outbox rows
+ * under the operation's id; throws RosterOperationClaimedError, restoring nothing, unless the locked operation is still in
+ * `operation.state` and held by `owner` (default its request), which keeps the user closed to every other writer.
  */
-export async function restoreBeforeImage(deps: Pick<RosterDeps, 'db' | 'repo'>, tenantId: string, operation: RosterOperationRow): Promise<void> {
-  const { repo } = deps;
+export async function restoreBeforeImageInTx(repo: PeopleRepository, tx: TenantTx, operation: RosterOperationRow, owner: RosterOperationOwner = {}): Promise<void> {
   const operationId = operation.operation_id;
-  const userId = operation.user_id.replace(/ +$/, '');
-  const before = operation.before_image === null ? null : parseBeforeImage(operation.before_image);
-  await withGatedTenant(deps.db, tenantId, async (tx) => {
-    if (before !== null) {
-      const write: WriteContext = { origin: 'target', operationId };
-      await restoreRows(repo, tx, EXTEND_DATA, await repo.listExtendData(tx, [userId]), before.extendData, write);
-      await restoreRows(repo, tx, ADDRESS, await repo.listAddresses(tx, userId), before.addresses, write);
-      await restoreRows(repo, tx, INTEREST, await repo.listInterests(tx, userId), before.interests, write);
-      await restoreRows(repo, tx, TAG, await repo.listTags(tx, userId), before.tags, write);
-      // The operation only deletes trash rows, so only captured rows that are gone are written back.
-      for (const row of before.trash ?? []) {
-        if ((await repo.findByKey(tx, TRASH.table, { objectid: row.objectid })) === null) await repo.insert(tx, TRASH.table, withoutTenant(row), write);
-      }
-      await restorePerson(repo, tx, userId, before.person, write);
+  const held = await repo.holdRosterOperation(tx, operationId, operation.state, owner);
+  if (held === null) throw new Error(`Roster operation ${operationId} is missing from its tenant`);
+  const userId = held.user_id.replace(/ +$/, '');
+  const before = held.before_image === null ? null : parseBeforeImage(held.before_image);
+  if (before !== null) {
+    const write: WriteContext = { origin: 'target', operationId };
+    await restoreRows(repo, tx, EXTEND_DATA, await repo.listExtendData(tx, [userId]), before.extendData, write);
+    await restoreRows(repo, tx, ADDRESS, await repo.listAddresses(tx, userId), before.addresses, write);
+    await restoreRows(repo, tx, INTEREST, await repo.listInterests(tx, userId), before.interests, write);
+    await restoreRows(repo, tx, TAG, await repo.listTags(tx, userId), before.tags, write);
+    // The operation only deletes trash rows, so only captured rows that are gone are written back.
+    for (const row of before.trash ?? []) {
+      if ((await repo.findByKey(tx, TRASH.table, { objectid: row.objectid })) === null) await repo.insert(tx, TRASH.table, withoutTenant(row), write);
     }
-    await discardOperation(tx, operationId);
-  });
+    await restorePerson(repo, tx, userId, before.person, write);
+  }
+  await discardOperation(tx, operationId);
+}
+
+/** `restoreBeforeImageInTx` in its own gated transaction. */
+export async function restoreBeforeImage(
+  deps: Pick<RosterDeps, 'db' | 'repo'>,
+  tenantId: string,
+  operation: RosterOperationRow,
+  owner: RosterOperationOwner = {},
+): Promise<void> {
+  await withGatedTenant(deps.db, tenantId, (tx) => restoreBeforeImageInTx(deps.repo, tx, operation, owner));
 }
 
 /** Migration-handler statuses of roster operations: open while started, people-committed or halted, done once done, rolled back once rolled back. */

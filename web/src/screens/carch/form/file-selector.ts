@@ -3,7 +3,7 @@ import { cfEq, cfToBoolean, cfToNumber } from '@opt2/platform/legacy-compat';
 import { encodeHtml, encodeHtmlAttr, encodeJs, raw, type SafeHtml } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
 import type { RbLookup } from '@/lib/resource-bundles/rb';
-import { isSiteAdminOrS2, structOf, structText, structValue, type CarchStruct } from '../model';
+import { isSuperOrAdminUser, structOf, structText, structValue, type CarchStruct } from '../model';
 import { fileSelector, fileTools, type EditFormInput, type FileMetaData, type FileSelectorBean } from './custom-tags';
 
 /** The user `stats.getLockID()` loads, as the locked-by-someone-else notice reads it. */
@@ -119,7 +119,7 @@ function lockedElseNotice(rb: RbLookup, req: AdminRequest, owner: FileLockOwner)
     `\n\t\t<p id="msg-file-locked-else" class="help-block">${rb.messageFormat(rb.rbKey('sitemanager.filelockedby'), holder)}.<br>` +
     `\n\t\t<a href="mailto:${encodeHtml(owner.email)}?subject=${encodeHtml(rb.rbKey('sitemanager.fileunlockrequest'))}">` +
     `<i class="mi-envelope"></i> ${rb.rbKey('sitemanager.requestfilerelease')}</a>\n\t\t`;
-  if (isSiteAdminOrS2(req)) {
+  if (isSuperOrAdminUser(req)) {
     out += `\n\t\t &nbsp; &nbsp;<a class="mura-file-unlock" href="#"><i class="mi-unlock"></i> ${rb.rbKey('sitemanager.content.fields.unlockfile')}</a>\n\t\t`;
   }
   return `${out}\n\t\t</p>\n`;

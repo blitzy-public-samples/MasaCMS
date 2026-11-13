@@ -2,9 +2,8 @@
 import { withGatedTenant, type GateBudgetOptions } from '@opt2/platform/migration-kit';
 import {
   poolTenantFor,
+  registeredTenants,
   registryEntryForTenant,
-  siteForTenant,
-  tenantForRegisteredSite,
   withTenant,
   type MetadataTx,
   type TenantDb,
@@ -73,16 +72,27 @@ async function ownEntry(tx: MetadataTx, tid: string): Promise<TenantRegistryEntr
   return entry;
 }
 
-/** The registered sites of `tenants` in the given order; an unregistered tenant is left out, as legacy `siteid IN` matches no row for it. */
-async function registeredSites(tx: MetadataTx, own: TenantRegistryEntry, tenants: readonly string[]): Promise<PoolSite[]> {
-  const sites: PoolSite[] = [];
-  for (const tenantId of tenants) {
-    const siteId = tenantId === own.tenantId ? own.siteId : await siteForTenant(tx, tenantId);
-    if (siteId !== null) {
-      sites.push({ siteId, tenantId });
+/** Stored site ids by tenant for `own` and the registered `tenants`; one registry read, made only when `tenants` names another tenant. */
+async function siteIndex(tx: MetadataTx, own: TenantRegistryEntry, tenants: readonly string[]): Promise<Map<string, string>> {
+  const sites = new Map([[own.tenantId, own.siteId]]);
+  const others = new Set(tenants.filter((tenantId) => tenantId !== own.tenantId));
+  if (others.size > 0) {
+    for (const { tenantId, siteId } of await registeredTenants(tx)) {
+      if (others.has(tenantId)) {
+        sites.set(tenantId, siteId);
+      }
     }
   }
   return sites;
+}
+
+/** The registered sites of `tenants` in the given order; an unregistered tenant is left out, as legacy `siteid IN` matches no row for it. */
+async function registeredSites(tx: MetadataTx, own: TenantRegistryEntry, tenants: readonly string[]): Promise<PoolSite[]> {
+  const sites = await siteIndex(tx, own, tenants);
+  return tenants.flatMap((tenantId) => {
+    const siteId = sites.get(tenantId);
+    return siteId === undefined ? [] : [{ siteId, tenantId }];
+  });
 }
 
 /** The registered sites of `tid`'s content pool (settingsBean `getContentPoolID`), in stored order. */
@@ -106,16 +116,22 @@ export function feedPoolSites(db: TenantDb, tid: string, feedContentPoolId: stri
     // The stored list is caller-supplied, so a listed site outside the own site and its registered content pool is
     // left out like an unregistered one: cross-site reads reach only tenants the registry grants (the admin feed form
     // offers no other site).
-    const granted = new Set([own.tenantId, ...own.contentPoolTenants]);
-    const tenants: string[] = [];
-    for (const item of feedContentPoolId.split(',')) {
-      const siteId = item.trim();
-      const tenant = siteId === '' ? null : await tenantForRegisteredSite(tx, siteId);
-      if (tenant !== null && granted.has(tenant) && !tenants.includes(tenant)) {
-        tenants.push(tenant);
+    const listed = feedContentPoolId
+      .split(',')
+      .map((item) => item.trim())
+      .filter((item) => item !== '');
+    const ownKey = own.siteId.toLowerCase();
+    const granted = await siteIndex(tx, own, listed.some((item) => item.toLowerCase() !== ownKey) ? own.contentPoolTenants : []);
+    // Keyed by the lower-cased site id, the folding tenantIdForSite applies, so any spelling of a registered site matches.
+    const bySite = new Map([...granted].map(([tenantId, siteId]): [string, PoolSite] => [siteId.toLowerCase(), { siteId, tenantId }]));
+    const sites = new Map<string, PoolSite>();
+    for (const item of listed) {
+      const site = bySite.get(item.toLowerCase());
+      if (site !== undefined && !sites.has(site.tenantId)) {
+        sites.set(site.tenantId, site);
       }
     }
-    return registeredSites(tx, own, tenants);
+    return [...sites.values()];
   });
 }
 

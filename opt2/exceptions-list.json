@@ -8,11 +8,14 @@
       "appliesTo": [
         "admin:carch.multifileupload{upload=image}",
         "api:file.save{upload=image}",
-        "rest:file.save{upload=image}"
+        "rest:file.save{upload=image}",
+        "admin:carch.cropimage",
+        "admin:carch.flipimage",
+        "admin:carch.rotateimage"
       ],
-      "difference": "Legacy re-encodes png, gif, jpg and jpeg uploads with ColdFusion's image engine into `_source`, `_small` and `_medium` renditions, and may replace the stored original with a resized copy (core/mura/content/file/processImgCfimage.cfc:266-320,371-417; core/mura/content/file/fileDAO.cfc:159-179, which also stores `_small` and `_medium` JPEGs for flv). Another encoder cannot reproduce those bytes.",
+      "difference": "Legacy re-encodes png, gif, jpg and jpeg uploads with ColdFusion's image engine into `_source`, `_small` and `_medium` renditions, and may replace the stored original with a resized copy (core/mura/content/file/processImgCfimage.cfc:266-320,371-417; core/mura/content/file/fileDAO.cfc:159-179, which also stores `_small` and `_medium` JPEGs for flv). The image tools of the image details screen re-encode a stored image with the same engine: `carch.cropImage` rewrites the requested size from the `_source` rendition (`imageCrop`, `ImageWrite` and `resizeImage`), and `carch.rotateImage` and `carch.flipImage` rewrite the `_source` rendition (`ImageRotate`, `ImageFlip` and `imageWrite`) (core/mura/content/file/fileManager.cfc:1070-1244). Another encoder cannot reproduce those bytes.",
       "decision": "preserve",
-      "reason": "Equivalence is impossible, so the `{upload=image}` variants stay `legacy-write` inside write windows, which import their originals and renditions into Cloud Storage for the target to serve byte for byte through `/_api/render`. Non-image uploads are carried.",
+      "reason": "Equivalence is impossible, so the `{upload=image}` variants stay `legacy-write` inside write windows, which import their originals and renditions into Cloud Storage for the target to serve byte for byte through `/_api/render`. The crop, rotate and flip actions behind the carried image details screen are `legacy-write` entries in every version for the same reason. Non-image uploads are carried.",
       "status": "halted",
       "evidence": {
         "golden": "harness/golden/sets/GS-CO-07.json",
@@ -60,12 +63,175 @@
         "admin:ceditprofile.update"
       ],
       "difference": "Legacy `userBean.set` picks the user pool site from the posted `switchToPublic`, `switchToPrivate` or `isPublic` (core/mura/user/userBean.cfc:227-239; the admin user form posts `isPublic`, admin/core/views/cusers/edituser.cfm:495-527), and `userDAO.update` writes it as `SiteID` (core/mura/user/userDAO.cfc:404-455). A save whose choice resolves to a pool site other than the stored one therefore moves the user's `tusers` row, account and person columns alike, to the other pool. The target keeps those rows under each pool's tenant, and identity answers the legacy-shaped 503 before writing anything, so the save is refused with no change on either side.",
+      "matches": [
+        {
+          "step": "update",
+          "path": "status",
+          "kind": [
+            "status"
+          ],
+          "actual": 503
+        }
+      ],
       "decision": "preserve",
       "reason": "Moving the user needs one change spanning two tenants in both identity and people under the roster write protocol, but a transaction binds one tenant and the protocol has no move step. The case depends on stored data, so no request-decidable variant can keep it on legacy, and halting these route keys would send every carried roster save there. The target fails closed until identity and people support the move, and the entry then closes.",
       "status": "open",
       "evidence": {
         "golden": "harness/golden/sets/GS-PE-02.json",
         "replay": "opt2/reports/parity.json#GS-PE-02"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-ADMIN-DEBUGPAGE",
+      "scenario": "GS-CO-15",
+      "routeKey": "admin:cusers.search",
+      "appliesTo": [
+        "admin:cusers.list",
+        "admin:cchain.save"
+      ],
+      "difference": "Legacy answers a runtime error on an admin action with HTTP 500. With `debuggingEnabled=true`, as this deployment sets it, the body is the `onError` debug page: the exception message, type, detail and Java stack trace; otherwise it is `core/templates/error.html` (core/appcfc/onError_include.cfm:138-408). Known cases: a boolean word such as `yes` as `ispublic` on `cUsers.list` or `cUsers.search`, which the numeric `isPublic` argument of `getUserGroups` or `getSearch` rejects (core/mura/user/userManager.cfc:119-123,809-814), and an approval-chain save with bean errors, which takes no redirect and has no view (admin/core/controllers/cchain.cfc:101-114; admin/framework.cfc:477-481,1242-1243). The target answers the legacy error page at 503 whenever web fails an admin request with a 5xx, and a JSON `server_error` keeps the fixed `Unhandled Exception` message without the debug `stacktrace` (core/mura/client/api/json/v1/jsonApiUtility.cfc:1390-1400).",
+      "decision": "preserve",
+      "reason": "The 503 is the fail-closed answer the plan prescribes for a failed target admin route: the gateway replaces every web 5xx with it (gateway/src/dispatcher/forward-target.ts:287-290), and the target never prints a raw exception or stack. Halting these keys would send every carried request of them to legacy for an error-only case, so the entry stays open as the record. No golden step triggers an admin runtime error, so the entry is filed under GS-CO-15, the error scenario, where it excuses no difference on the success paths GS-ID-02, GS-ID-05 and GS-CO-09 replay for these keys.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-CO-15.json",
+        "replay": "opt2/reports/parity.json#GS-CO-15"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-SITE-FEED-SUBFORMS",
+      "scenario": "GS-PS-08",
+      "routeKey": "api:site.findquery",
+      "appliesTo": [
+        "rest:site.findquery",
+        "api:site.findall",
+        "rest:site.findall",
+        "api:site.findmany",
+        "rest:site.findmany",
+        "api:site.findone",
+        "rest:site.findone",
+        "api:site.findnew",
+        "rest:site.findnew",
+        "api:site.validate",
+        "rest:site.validate"
+      ],
+      "difference": "Legacy answers these JSON API `site` sub-forms through ColdFusion and SQL Server behaviour the target does not reproduce: `findQuery` aggregates (`sum`, `avg`, `count`, `max`, `min`, `groupBy`), which select generic aggregate beans (core/mura/client/api/json/v1/jsonApiUtility.cfc:2861-2862; core/mura/bean/beanFeed.cfc:697), and a `findQuery` with `distinct=true`, which serializes every `tsettings` column of generic beans, `MailServerPassword` included (jsonApiUtility.cfc:2920-2953,3118-3119; SEC-07 in opt2/reports/pre-existing-defects.md); multi-part column identifiers, which SQL Server resolves against other schemas and tables, in `findQuery` params and in the `sort`, `orderby` and `sortby` of `findAll`, `findMany` and `findQuery` (beanFeed.cfc:843-852,1081-1099); criteria naming another entity's column, in `findQuery` params and `findMany` `ids` (beanFeed.cfc:1034-1050); `findQuery` comparisons converting between column types and a timestamp list bound empty (core/mura/queryParam.cfc:244-305); `url.ishuman` on `findOne` and `findNew`, which renders the CFFormProtect include (jsonApiUtility.cfc:2378-2381,2416-2419); `validate` of another entity, with ad hoc property rules or with a `loadby` of another bean (jsonApiUtility.cfc:3740-3806). programs-sites answers each with the legacy-shaped 503, writing nothing. `findAll` and `findMany` with `distinct=true` leak no column on legacy and are reproduced.",
+      "decision": "preserve",
+      "reason": "Each case needs SQL Server name resolution or type conversion, generic-bean serialization or CFML rendering that the target site feed does not reproduce, so the target fails closed instead of diverging. Every `api:site.*` and `rest:site.*` read stays `legacy` in v0001–v0003, `grp:programs_sites.site` being legacy-authoritative, so callers keep the legacy answers this run. The entry closes once the target reproduces each case; for a distinct `findQuery` that means reproducing the SEC-07 leak, whose fix is deferred until after cut-over.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-PS-08.json",
+        "replay": "opt2/reports/parity.json#GS-PS-08"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-GROUP-VALIDATE",
+      "scenario": "GS-ID-10",
+      "routeKey": "api:group.validate",
+      "appliesTo": [
+        "rest:group.validate"
+      ],
+      "difference": "Legacy `validate` (core/mura/client/api/json/v1/jsonApiUtility.cfc:3740-3805) runs the ColdFusion runtime or another owner's state in five cases the request decides: an `entityname` or loadby `bean` other than `group`, `user` or `bean` validates that entity's own bean (jsonApiUtility.cfc:3748-3765,3791-3803); an `isValid` check against ColdFusion's built-in creditcard, email, eurodate, ssn, social_security_number, telephone, url, usdate or zipcode patterns on a non-empty value (core/mura/bean/beanValidator.cfc:291-292); any `regex` rule reached, whose engine matches neither java.util.regex nor ECMAScript on the oracle (beanValidator.cfc:466-477); a failing rule carrying an `rbkey`, whose message comes from the site resource-bundle chain on the legacy web root (beanValidator.cfc:244-245); and a loadby `groupname`, `username` or `remoteid` lookup with an empty `siteid`, which reads the legacy session's site (core/mura/user/userManager.cfc:138-142).",
+      "decision": "preserve",
+      "reason": "Equivalence is impossible for these cases, so `api:group.validate` and `rest:group.validate` stay `legacy` in every cut-over version, and identity answers the cases with the legacy-shaped 503 naming this entry. Identity reproduces every other validate request (ad hoc rules, the group and user beans' own rules, and loadby lookups resolving a group or none) as the oracle answers in services/identity/test/fixtures/legacy/json-api-validate-answers.json record.",
+      "status": "halted",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-ID-10.json",
+        "replay": "opt2/reports/parity.json#GS-ID-10"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-GROUP-VALIDATE-DATA",
+      "scenario": "GS-ID-10",
+      "routeKey": "api:group.validate",
+      "appliesTo": [
+        "rest:group.validate"
+      ],
+      "difference": "Three validate cases depend on stored data or configuration rather than the request. A validation that loads a user account runs that user's rules, which read person columns people owns: a loadby `username` or `remoteid` lookup matching exactly one user account (core/mura/user/userManager.cfc:144-151; core/mura/user/userDAO.cfc:122-300), and an entity validation whose `data.userid`, or a loadby `userid` or `groupid` lookup whose value, names a stored user, since `userManager.read` reads a group id as a user id and `userDAO.read` loads any `tusers` row by id (core/mura/client/api/json/v1/jsonApiUtility.cfc:3750-3762,3792-3803; userManager.cfc:154-170; userDAO.cfc:92-121). A stored group holding extended values (`tclassextenddatauseractivity` rows) takes their `extendSetID` (core/mura/user/userBean.cfc:243-258), so `userBean.validate` runs `validateExtendedData` over the `tclassextendattributes` definitions strategies-content owns (core/mura/user/userBean.cfc:453-455; core/mura/extend/extendManager.cfc:362-438). With `stricthtml` set, every bean property is checked for markup (core/mura/bean/bean.cfc:511-523). Identity answers each with the legacy-shaped 503 naming this entry, so the validation is refused.",
+      "decision": "preserve",
+      "reason": "The cases depend on stored data or configuration, so no request-decidable variant can keep them on legacy, and the target fails closed on them until identity reads person columns and extension definitions through their owners' contracts; the entry then closes. The oracle deployment holds no user or group class extensions and leaves `stricthtml` unset (default false).",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-ID-10.json",
+        "replay": "opt2/reports/parity.json#GS-ID-10"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-GROUP-FEED",
+      "scenario": "GS-ID-10",
+      "routeKey": "api:group.findquery",
+      "appliesTo": [
+        "rest:group.findquery",
+        "api:group.findall",
+        "rest:group.findall",
+        "api:group.findmany",
+        "rest:group.findmany"
+      ],
+      "difference": "Legacy group feeds (`userGateway.getAdvancedSearch`, core/mura/user/userGateway.cfc:164-592, through core/mura/client/api/json/v1/jsonApiUtility.cfc:2542-2920) read another owner's data or the ColdFusion and SQL Server runtime in nine cases the request decides: a `type` of `user` or a number other than 1, which `setFeedProps` sets over the group default (jsonApiUtility.cfc:3112-3116; core/mura/user/userFeedBean.cfc:197-206), selects the `tusers` rows of that type (userGateway.cfc:355), which for type 2 are user accounts whose person columns people owns, iterated as user beans (userFeedBean.cfc:177-179); a param whose name has no table part and is no `tusers` column or feed setter (`changesetid`, `filter[...]`, `entity[name]` and the like) filters by an extended attribute through the `tclassextendattributes` definitions strategies-content owns (userGateway.cfc:424-501); a param on a table that is neither a group table identity holds nor a stock Masa table without `userid` joins that table on `userid` (userGateway.cfc:317-333), which is another owner's (`tapprovalactions`, `tapprovalrequests`, `tcontentassignments`, `tcontentcomments`, `tcontentratings`) or one the live legacy database alone holds (form-builder, plugin and declared entity tables); a param or ORDER BY item on `tfiles`, the photo join of strategies-content's file rows (userGateway.cfc:312); an aggregate over `group.`, `address.` or `favorite.` columns, whose `objectMappings` table exists only once a request has instantiated that entity (core/mura/bean/beanFeed.cfc:739-756; core/appcfc/onApplicationStart_include.cfm:432-456); an aggregate expression with a part that is no identifier, such as `1.5` or `x.1abc`, which SQL Server's parser decides (userGateway.cfc:265-303); a criteria on the joined datetime column `tusersfavorites.datecreated`, which SQL Server's language-dependent date conversion reads; a LIKE criteria on the float columns `tuseraddresses.longitude` and `latitude`, which compares SQL Server's float text (userGateway.cfc:410-421); and a bracketed name deleting findQuery's own `expanded` or `queryString` argument (jsonApiUtility.cfc:2826-2832), after which the oracle drops earlier filters and the base URL as the ColdFusion argument scope decides.",
+      "decision": "preserve",
+      "reason": "Equivalence is impossible for these cases, so the group feed keys stay `legacy` in every cut-over version, and identity answers the cases with the legacy-shaped 503 naming this entry. Identity reproduces every other group feed (distinct, aggregates, membership and interest filters, joins of the group tag, interest, address and favorite tables with SQL Server's conversions, ordinal and joined sorts, bracketed names and feed setters) as the oracle answers in services/identity/test/fixtures/legacy/json-api-feed-answers.json record.",
+      "status": "halted",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-ID-10.json",
+        "replay": "opt2/reports/parity.json#GS-ID-10"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-GROUP-FEED-DATA",
+      "scenario": "GS-ID-10",
+      "routeKey": "api:group.findquery",
+      "appliesTo": [
+        "rest:group.findquery",
+        "api:group.findall",
+        "rest:group.findall",
+        "api:group.findmany",
+        "rest:group.findmany"
+      ],
+      "difference": "Three group feed cases depend on stored rows or configuration rather than the request. Ordering by a joined column on which two selected groups tie returns the tied rows in the order SQL Server's plan reads them (the oracle orders `sort=tuserstags.tag` ties one way ascending and the other way descending; userGateway.cfc:567-582). A numeric or date criteria on a joined text column, such as `tusersfavorites.type=1`, which takes the `tusers.type` datatype (core/mura/bean/beanFeed.cfc:301-345), converts every stored value of that column, so the stored rows decide whether the statement fails. A four-part or `db..table` column reference names the legacy database, which the deployment configures. Identity answers each with the legacy-shaped 503 naming this entry, so the feed is refused.",
+      "decision": "preserve",
+      "reason": "The cases turn on stored rows, SQL Server's plan over them or the deployment's database name, so no request-decidable variant can keep them on legacy, and the target fails closed on them until the parity runs show identity's order and conversions match; the entry then closes.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-ID-10.json",
+        "replay": "opt2/reports/parity.json#GS-ID-10"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-GROUP-USER-RECORD",
+      "scenario": "GS-ID-10",
+      "routeKey": "api:group.findone",
+      "appliesTo": [
+        "api:group.save"
+      ],
+      "difference": "A JSON API group findOne or save reaches a user record in cases the caller's session and the stored rows decide. Both load the group bean by `userid` (core/mura/client/api/json/v1/jsonApiUtility.cfc:2349-2363,2010), and `userManager.read` and `userDAO.read` load any `tusers` row by id (core/mura/user/userManager.cfc:154-170; core/mura/user/userDAO.cfc:92-121), so an id naming a stored user loads that user: findOne answers its person columns `subType` and `GroupName`, and any other column a `fields` list names (jsonApiUtility.cfc:2376), and a save rewrites them. A save also writes a user record when an admin or S2 caller's direct `save` posts a `type` of 2 or `user` (the entity route sets type 1, jsonApiUtility.cfc:1209-1210), or when no posted type survives, as for a caller neither admin nor S2, whose `type` legacy deletes (jsonApiUtility.cfc:1917-1919), so a new bean keeps userBean's default type 2 (core/mura/user/userBean.cfc:91). Identity holds no person columns, so it answers each case with the legacy-shaped 503 naming this entry before writing anything, and the call is refused.",
+      "decision": "preserve",
+      "reason": "Whether a call reaches a user record turns on the caller's session flags and the stored rows, so no request-decidable variant can keep it on legacy, and halting `api:group.findone` and `api:group.save` would send every group read and save there. The target fails closed until identity reads and writes person columns through people's contract, and the entry then closes. `rest:group.findone` and `rest:group.save` need no entry: in REST mode legacy raises its sessionless 500 before loading the bean (jsonApiUtility.cfc:1905,2293), and identity answers the same 500.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-ID-10.json",
+        "replay": "opt2/reports/parity.json#GS-ID-10"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-LOGIN-LOCKDOWN",
+      "scenario": "GS-ID-11",
+      "routeKey": "api:login",
+      "appliesTo": [],
+      "difference": "Legacy `login` with a `lockdowncheck` CFML reads as true (core/mura/client/api/json/v1/jsonApiUtility.cfc:1856-1870) runs `userUtility.login`'s lockdown check instead of logging in. For credentials matching an unblocked account the site's public user pool admits, under configBean `sessionBasedLockdown`, on by default (core/mura/configBean.cfc:238), it sets `session.passedLockdown`, clears the strikes and answers `success` (core/mura/user/userUtility.cfc:193-235). That flag is legacy session state, read only by the site's `development` lockdown through `isPassedLockdown` (core/mura/user/sessionUserFacade.cfc:178-185; core/mura/Handler/standardEventsHandler.cfc:688), and the target cannot set it.",
+      "decision": "preserve",
+      "reason": "Equivalence is impossible for the session-based pass, and whether a check reaches it depends on configuration and the stored credentials, not on the request, so no request-decidable variant isolates it. The whole `api:login` route therefore stays `legacy-write` in every cut-over version, and identity answers the case with the legacy-shaped 503 naming this entry. Identity reproduces every other login and lockdown answer (a login, a failed or blocked check, a cookie-based pass, an unreadable `lockdowncheck` as the conversion's 500, and a check of `false` as a login). `rest:login` needs no halt: in REST mode legacy raises its sessionless 500 before any check (jsonApiUtility.cfc:473,1857), and identity answers the same 500.",
+      "status": "halted",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-ID-11.json",
+        "replay": "opt2/reports/parity.json#GS-ID-11"
       },
       "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
     }

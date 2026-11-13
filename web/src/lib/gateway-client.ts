@@ -459,6 +459,7 @@ type ReversePermLookUpOperation = IdentityOperation<'/v1/permissions/reverse-loo
 type ListSitesOperation = ProgramsSitesOperation<'/v1/sites', 'get'>;
 type GetSiteOperation = ProgramsSitesOperation<'/v1/sites/{siteId}', 'get'>;
 type GetShellSiteOperation = ProgramsSitesOperation<'/v1/sites/{siteId}/shell', 'get'>;
+type GetUserPoolSitesOperation = ProgramsSitesOperation<'/v1/sites/{siteId}/user-pool-sites', 'get'>;
 type HrefDomainsOperation = ProgramsSitesOperation<'/v1/href-domains', 'get'>;
 type UserSitesOperation = ProgramsSitesOperation<'/v1/user-sites', 'get'>;
 
@@ -488,6 +489,10 @@ export interface ProgramsSitesFacade extends ServiceFacade<ProgramsSitesPaths> {
   getSite(siteId: PathParamsOf<GetSiteOperation>['siteId']): Promise<OperationResponse<GetSiteOperation>>;
   /** The site settings the admin layout reads, for any private admin user (`getShellSite`). */
   getShellSite(siteId: PathParamsOf<GetShellSiteOperation>['siteId']): Promise<OperationResponse<GetShellSiteOperation>>;
+  /** The same settings of the site's private, then public, user pool sites (`getUserPoolSites`). */
+  getUserPoolSites(
+    siteId: PathParamsOf<GetUserPoolSitesOperation>['siteId'],
+  ): Promise<OperationResponse<GetUserPoolSitesOperation>>;
   /** Registered domains and the domain of `siteid`, else `default`, for sanitizeHref (`getHrefDomains`). */
   hrefDomains(siteid: string): Promise<OperationResponse<HrefDomainsOperation>>;
   /** The user's sites by name, plus the site `host` binds to when given (`listUserSites`). */
@@ -592,6 +597,7 @@ function programsSitesFacade(core: CoreCalls): ProgramsSitesFacade {
     listSites: (query) => facade.call('get', '/v1/sites', { query }),
     getSite: (siteId) => facade.call('get', '/v1/sites/{siteId}', { params: { siteId } }),
     getShellSite: (siteId) => facade.call('get', '/v1/sites/{siteId}/shell', { params: { siteId } }),
+    getUserPoolSites: (siteId) => facade.call('get', '/v1/sites/{siteId}/user-pool-sites', { params: { siteId } }),
     hrefDomains: (siteid) => facade.call('get', '/v1/href-domains', { query: { siteid } }),
     userSites: (host) => facade.call('get', '/v1/user-sites', { query: { host } }),
   };

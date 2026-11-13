@@ -25,6 +25,7 @@ export {
   getSnapshot,
   requireSnapshot,
   latestSnapshot,
+  latestSnapshotOfKind,
   dropSnapshot,
   runMasterStatement,
   SnapshotError,

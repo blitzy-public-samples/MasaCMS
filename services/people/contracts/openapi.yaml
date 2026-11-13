@@ -23,8 +23,12 @@ tags:
     description: The people fixture route of the legacy oracle, which people serves once cut over.
   - name: users
     description: Data of the people screens of the Users admin circuit; deletes, groups, photos and extended attributes stay on legacy.
+  - name: v2
+    description: User lists and searches of the Users admin circuit that answer only the page `nextn` selects, with `nextn` over every match.
   - name: profile
     description: The Edit Profile screen of the logged-in user.
+  - name: internal
+    description: Reads another service makes on behalf of its caller.
   - name: migration
     description: Owner endpoints the migration service calls.
   - name: events
@@ -2648,13 +2652,17 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: An `ispublic` boolean word such as `yes`, which the numeric `isPublic` argument of legacy `getUserGroups` rejects.
         '503':
           $ref: '#/components/responses/Unavailable'
   /v1/users:
     get:
       operationId: listUsers
       summary: Lists the people of the site's user pool, or of every site for `siteid=all`, with nextN paging, as `cusers.listUsers` shows them.
-      description: A caller holding only `m:008` also needs `m:000` on the site, and is otherwise refused with 403; `ispublic` reads as 1 unless the caller is S2 or site admin.
+      description: Superseded by `listUsersV2` (`GET /v2/users`), which answers only the page `nextn` selects; a caller holding only `m:008` also needs `m:000` on the site, and is otherwise refused with 403; `ispublic` reads as 1 unless the caller is S2 or site admin.
+      deprecated: true
       tags: [users]
       x-opt2-transport: service
       x-opt2-requires:
@@ -2687,7 +2695,8 @@ paths:
     get:
       operationId: searchUsers
       summary: Searches the site's people by last name, first name, company, user name, email or job title, as `cusers.search` does.
-      description: A caller holding only `m:008` also needs `m:000` on the site, and is otherwise refused with 403; S2 people are listed only for an S2 caller.
+      description: Superseded by `searchUsersV2` (`GET /v2/users/search`), which answers only the page `nextn` selects; a caller holding only `m:008` also needs `m:000` on the site, and is otherwise refused with 403; S2 people are listed only for an S2 caller.
+      deprecated: true
       tags: [users]
       x-opt2-transport: service
       x-opt2-requires:
@@ -2714,13 +2723,17 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: An `ispublic` boolean word such as `yes`, which the numeric `isPublic` argument of legacy `getSearch` rejects.
         '503':
           $ref: '#/components/responses/Unavailable'
   /v1/users/advanced-search:
     get:
       operationId: getAdvancedSearch
       summary: Runs the advanced-search criteria stored for the token's session, as `cusers.advancedSearch` does.
-      description: A caller holding only `m:008` also needs `m:000` on the site, and is otherwise refused with 403; `ispublic` reads as 1 unless the caller is S2 or site admin.
+      description: Superseded by `getAdvancedSearchV2` (`GET /v2/users/advanced-search`), which answers only the page `nextn` selects; a caller holding only `m:008` also needs `m:000` on the site, and is otherwise refused with 403; `ispublic` reads as 1 unless the caller is S2 or site admin.
+      deprecated: true
       tags: [users]
       x-opt2-transport: service
       x-opt2-requires:
@@ -2752,7 +2765,8 @@ paths:
     post:
       operationId: setAdvancedSearch
       summary: Stores advanced-search criteria for the token's session as admin request start-up does for a non-empty `param`, then runs them.
-      description: A caller holding only `m:008` also needs `m:000` on the site, and is otherwise refused with 403; an empty `param` keeps the stored criteria.
+      description: Superseded by `setAdvancedSearchV2` (`POST /v2/users/advanced-search`), which answers only the page `nextn` selects; a caller holding only `m:008` also needs `m:000` on the site, and is otherwise refused with 403; an empty `param` keeps the stored criteria.
+      deprecated: true
       tags: [users]
       x-opt2-transport: service
       x-opt2-requires:
@@ -2859,6 +2873,7 @@ paths:
         - $ref: '#/components/parameters/UserIdQuery'
         - $ref: '#/components/parameters/SetIsPublicQuery'
         - $ref: '#/components/parameters/RouteIdQuery'
+        - $ref: '#/components/parameters/RemoveBlockQuery'
       responses:
         '200':
           description: The person and the tab options.
@@ -3088,6 +3103,226 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
           description: A withheld branch, or a roster write-protocol step with identity that did not complete; nothing is written on either side.
+  /v2/users:
+    get:
+      operationId: listUsersV2
+      summary: Lists one page of the people of the site's user pool, or of every site for `siteid=all`, with nextN paging over every match, as `cusers.listUsers` shows them.
+      description: A caller holding only `m:008` also needs `m:000` on the site, and is otherwise refused with 403; `ispublic` reads as 1 unless the caller is S2 or site admin.
+      tags: [v2]
+      x-opt2-transport: service
+      x-opt2-requires:
+        - s2
+        - site-admin
+        - m:008
+      security: [{userToken: [], invocationCredential: []}]
+      parameters:
+        - $ref: '#/components/parameters/ListSiteIdQuery'
+        - $ref: '#/components/parameters/IsPublicQuery'
+        - $ref: '#/components/parameters/UnassignedQuery'
+        - $ref: '#/components/parameters/StartRowQuery'
+        - $ref: '#/components/parameters/RecordsPerPageQuery'
+      responses:
+        '200':
+          description: The page of the people, by last name, then first name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserListPageV2'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v2/users/search:
+    get:
+      operationId: searchUsersV2
+      summary: Searches one page of the site's people by last name, first name, company, user name, email or job title, as `cusers.search` does.
+      description: A caller holding only `m:008` also needs `m:000` on the site, and is otherwise refused with 403; S2 people are listed only for an S2 caller.
+      tags: [v2]
+      x-opt2-transport: service
+      x-opt2-requires:
+        - s2
+        - site-admin
+        - m:008
+      security: [{userToken: [], invocationCredential: []}]
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+        - $ref: '#/components/parameters/IsPublicQuery'
+        - $ref: '#/components/parameters/SearchQuery'
+        - $ref: '#/components/parameters/StartRowQuery'
+        - $ref: '#/components/parameters/RecordsPerPageQuery'
+      responses:
+        '200':
+          description: The page of the matches, by last name; at most 2100 matches are counted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserListPageV2'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: An `ispublic` boolean word such as `yes`, which the numeric `isPublic` argument of legacy `getSearch` rejects.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v2/users/advanced-search:
+    get:
+      operationId: getAdvancedSearchV2
+      summary: Runs the advanced-search criteria stored for the token's session and answers one page of the result, as `cusers.advancedSearch` does.
+      description: A caller holding only `m:008` also needs `m:000` on the site, and is otherwise refused with 403; `ispublic` reads as 1 unless the caller is S2 or site admin.
+      tags: [v2]
+      x-opt2-transport: service
+      x-opt2-requires:
+        - s2
+        - site-admin
+        - m:008
+      security: [{userToken: [], invocationCredential: []}]
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+        - $ref: '#/components/parameters/IsPublicQuery'
+        - $ref: '#/components/parameters/NewSearchQuery'
+        - $ref: '#/components/parameters/StartRowQuery'
+        - $ref: '#/components/parameters/RecordsPerPageQuery'
+      responses:
+        '200':
+          description: The result page, the stored criteria and the group options of the search form.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdvancedSearchPageV2'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: setAdvancedSearchV2
+      summary: Stores advanced-search criteria for the token's session as admin request start-up does for a non-empty `param`, then answers one page of their result.
+      description: A caller holding only `m:008` also needs `m:000` on the site, and is otherwise refused with 403; an empty `param` keeps the stored criteria.
+      tags: [v2]
+      x-opt2-transport: service
+      x-opt2-requires:
+        - s2
+        - site-admin
+        - m:008
+      security: [{userToken: [], invocationCredential: []}]
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+        - $ref: '#/components/parameters/IsPublicQuery'
+        - $ref: '#/components/parameters/StartRowQuery'
+        - $ref: '#/components/parameters/RecordsPerPageQuery'
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AdvancedSearchCriteria'
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdvancedSearchCriteria'
+      responses:
+        '200':
+          description: The result page of the stored criteria, as the GET answers it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdvancedSearchPageV2'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/users/current:
+    get:
+      operationId: readCurrentUser
+      summary: Reads the user token's own user, or a new user bean without one, as the JSON API `findCurrentUser` reads it through `findOne`, which skips `allowAccess` and `allowRead`.
+      description: The user comes only from the token's `sub`; an unknown user reads as a new bean under a fresh id, which takes `siteid` as its site.
+      tags: [internal]
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:identity
+      security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
+      parameters:
+        - name: siteid
+          in: query
+          required: true
+          description: Site the JSON API call addresses, after its `default` fallback; equal to the token's `site` when a user token is present (403 otherwise).
+          schema:
+            type: string
+            minLength: 1
+            examples:
+              - default
+        - name: fields
+          in: query
+          required: false
+          description: The call's `url.fields`.
+          schema:
+            type: string
+        - name: expand
+          in: query
+          required: false
+          description: The call's `expand` list.
+          schema:
+            type: string
+        - name: expanddepth
+          in: query
+          required: false
+          description: The call's `url.expanddepth`; absent or non-numeric reads as 1.
+          schema:
+            type: string
+        - name: endpoint
+          in: query
+          required: true
+          description: The call's `getEndPoint()`, the base of the user's links.
+          schema:
+            type: string
+            minLength: 1
+            examples:
+              - http://localhost:8080/index.cfm/_api/json/v1/default
+        - name: adminpath
+          in: query
+          required: true
+          description: The call's `getAdminPath(complete=1)`, the base of the edit link.
+          schema:
+            type: string
+            minLength: 1
+            examples:
+              - http://localhost:8080/admin
+        - name: groupids
+          in: query
+          required: false
+          description: Identity's current membership group ids of the token's user, comma-separated in `readMembershipIDs` order; the stored user's `groupid`.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The user in the JSON API serialization, before identity adds the session's role lists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentUserRead'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: The user stayed closed by an open roster operation for 10 s, or identity or the database is unavailable.
 
   /internal/v1/migration/apply:
     post:
@@ -3871,6 +4106,14 @@ components:
         examples:
           - '0'
           - '1'
+    RemoveBlockQuery:
+      name: removeBlock
+      in: query
+      required: false
+      allowEmptyValue: true
+      description: Presence clears the person's login strikes before reading the block, as the Edit User removeBlock link does; any value is accepted, including an empty value.
+      schema:
+        type: string
     FavoriteUserId:
       name: userID
       in: query
@@ -4683,6 +4926,10 @@ components:
           const: people
         paused:
           type: boolean
+        running:
+          type: integer
+          minimum: 0
+          description: Tasks of the queue still running when pause answered.
         ensured:
           $ref: '#/components/schemas/EnsureRecurringResult'
     CanonicalType:
@@ -5356,7 +5603,7 @@ components:
         type: string
     SerializedUserKey:
       type: string
-      description: A key the JSON API may emit for a user; serialization removes the credential and internal keys listed here.
+      description: A key the JSON API may emit for a user; serialization removes the credential and internal keys listed here, and `addresses` unless `fields` selects it.
       not:
         enum:
           - password
@@ -5365,7 +5612,6 @@ components:
           - passedprotect
           - extendsetid
           - extenddata
-          - addresses
     SerializedKeys:
       description: Key rule of a serialized entity; a user omits every key SerializedUserKey excludes, an address `password` and `extenddata`.
       propertyNames:
@@ -5498,10 +5744,89 @@ components:
         entityname:
           type: string
           const: user
+        addresses:
+          type: array
+          description: '`getAddresses()`, only when `fields` selects it: the user''s `tuseraddresses` rows, primary first.'
+          items:
+            $ref: '#/components/schemas/UserAddressRow'
         saveErrors:
           type: boolean
         errors:
           $ref: '#/components/schemas/LegacyErrors'
+    UserAddressRow:
+      type: object
+      description: One `select * from tuseraddresses` row as the JSON API serializes a query, keyed by lower-cased column; a NULL cell is ''.
+      required:
+        - address1
+        - address2
+        - addressemail
+        - addressid
+        - addressname
+        - addressnotes
+        - addressurl
+        - city
+        - country
+        - fax
+        - hours
+        - isprimary
+        - latitude
+        - longitude
+        - phone
+        - siteid
+        - state
+        - userid
+        - zip
+      additionalProperties: false
+      properties:
+        address1:
+          type: string
+        address2:
+          type: string
+        addressemail:
+          type: string
+        addressid:
+          type: string
+        addressname:
+          type: string
+        addressnotes:
+          type: string
+        addressurl:
+          type: string
+        city:
+          type: string
+        country:
+          type: string
+        fax:
+          type: string
+        hours:
+          type: string
+        isprimary:
+          $ref: '#/components/schemas/LegacyNumber'
+        latitude:
+          $ref: '#/components/schemas/LegacyNumber'
+        longitude:
+          $ref: '#/components/schemas/LegacyNumber'
+        phone:
+          type: string
+        siteid:
+          type: string
+        state:
+          type: string
+        userid:
+          type: string
+        zip:
+          type: string
+    CurrentUserRead:
+      type: object
+      description: The `findCurrentUser` user read, with lower-cased keys and the JSON API's value types.
+      required:
+        - data
+      additionalProperties: false
+      properties:
+        data:
+          allOf:
+            - $ref: '#/components/schemas/SerializedKeys'
+            - $ref: '#/components/schemas/UserEntity'
     AddressEntity:
       type: object
       description: An address as the JSON API serializes it, with lower-cased keys and its extended attributes; a save adds `saveErrors` and `errors`.
@@ -5890,6 +6215,26 @@ components:
           description: Ids of the listed people without a group membership, which the screen marks.
           items:
             $ref: '#/components/schemas/CfUuid'
+    UserListPageV2:
+      type: object
+      required:
+        - items
+        - nextn
+        - listUnassignedUsers
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          description: The people of the page `nextn` selects, in list order; `nextn` counts every match.
+          items:
+            $ref: '#/components/schemas/UserListRow'
+        nextn:
+          $ref: '#/components/schemas/NextN'
+        listUnassignedUsers:
+          type: array
+          description: Ids of the page's people without a group membership, which the screen marks.
+          items:
+            $ref: '#/components/schemas/CfUuid'
     AdvancedSearchCriteria:
       type: object
       description: The advanced-search form; `param` lists the row numbers whose `paramField<N>`, `paramRelationship<N>`, `paramCriteria<N>` and `paramCondition<N>` fields are read, and names match ignoring case.
@@ -6006,6 +6351,36 @@ components:
         listUnassignedUsers:
           type: array
           description: Ids of the listed people without a group membership, which the screen marks.
+          items:
+            $ref: '#/components/schemas/CfUuid'
+        criteria:
+          $ref: '#/components/schemas/StoredSearchCriteria'
+        groups:
+          type: array
+          description: The site's member groups for `ispublic=1`, otherwise its system groups.
+          items:
+            $ref: '#/components/schemas/GroupOption'
+    AdvancedSearchPageV2:
+      type: object
+      description: The page `nextn` selects of the advanced-search result, with the stored criteria and the group options of the search form.
+      required:
+        - items
+        - nextn
+        - listUnassignedUsers
+        - criteria
+        - groups
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          description: The people of the page `nextn` selects, in result order; `nextn` counts every match.
+          items:
+            $ref: '#/components/schemas/UserListRow'
+        nextn:
+          $ref: '#/components/schemas/NextN'
+        listUnassignedUsers:
+          type: array
+          description: Ids of the page's people without a group membership, which the screen marks; the advanced search marks none.
           items:
             $ref: '#/components/schemas/CfUuid'
         criteria:
@@ -6214,7 +6589,7 @@ components:
           type: boolean
           description: True when a caller who is not a super user edits an S2 person, whose account fields are then read-only.
         blockedUntil:
-          description: End of the person's login block after too many strikes.
+          description: End of the person's login block after too many strikes; null when not blocked, new or without a username, including after removeBlock clears the strikes.
           $ref: '#/components/schemas/NullableTimestamp'
         addresses:
           type: array

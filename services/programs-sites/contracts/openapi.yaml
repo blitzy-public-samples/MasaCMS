@@ -14,17 +14,21 @@ security:
   - userToken: []
     invocationCredential: []
 paths:
-  /_api/json/v1/{siteid}/site:
+  /_api/json/v1:
     parameters:
-      - $ref: '#/components/parameters/LegacySiteId'
+      - $ref: '#/components/parameters/LegacyMethod'
+      - $ref: '#/components/parameters/LegacyEntityName'
+      - $ref: '#/components/parameters/MethodOverrideHeader'
+      - $ref: '#/components/parameters/CsrfTokenHeader'
+      - $ref: '#/components/parameters/CsrfExpiresHeader'
     get:
-      operationId: jsonSiteGet
-      summary: Reads the site entity through the JSON API.
+      operationId: jsonApiRootGet
+      summary: Calls a site entity method through the JSON API at the bare API path for site `default`; the route key picks the method.
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
       security: []
-      parameters:
-        - $ref: '#/components/parameters/LegacyMethod'
       responses:
         '200':
           $ref: '#/components/responses/SiteRead'
@@ -33,23 +37,44 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/responses/SiteSaveRejected'
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
           $ref: '#/components/responses/ServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
-    post:
-      operationId: jsonSitePost
-      summary: Calls a site entity method through the JSON API; `save` requires S2 and the site id as CSRF context.
+    head:
+      operationId: jsonApiRootHead
+      summary: Answers the JSON API GET of the bare API path for site `default` with its status and headers only.
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
       security: []
-      parameters:
-        - $ref: '#/components/parameters/LegacyMethod'
-        - $ref: '#/components/parameters/CsrfTokenHeader'
-        - $ref: '#/components/parameters/CsrfExpiresHeader'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '400':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '401':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '403':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '404':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '500':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '503':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+    post:
+      operationId: jsonApiRootPost
+      summary: Calls a site entity method through the JSON API at the bare API path for site `default`; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
       requestBody:
         $ref: '#/components/requestBodies/LegacySiteCall'
       responses:
@@ -67,42 +92,14 @@ paths:
           $ref: '#/components/responses/ServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
-  /_api/ajax/v1/{siteid}/site:
-    parameters:
-      - $ref: '#/components/parameters/LegacySiteId'
-    get:
-      operationId: ajaxSiteGet
-      summary: Reads the site entity through the AJAX API.
+    put:
+      operationId: jsonApiRootPut
+      summary: Calls a site entity method through the JSON API at the bare API path for site `default`; the route key picks the method.
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
       security: []
-      parameters:
-        - $ref: '#/components/parameters/LegacyMethod'
-      responses:
-        '200':
-          $ref: '#/components/responses/SiteRead'
-        '400':
-          $ref: '#/components/responses/LegacyBadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/LegacyNotFound'
-        '500':
-          $ref: '#/components/responses/ServerError'
-        '503':
-          $ref: '#/components/responses/Unavailable'
-    post:
-      operationId: ajaxSitePost
-      summary: Calls a site entity method through the AJAX API; `save` requires S2 and the site id as CSRF context.
-      x-opt2-transport: service
-      x-opt2-public: true
-      security: []
-      parameters:
-        - $ref: '#/components/parameters/LegacyMethod'
-        - $ref: '#/components/parameters/CsrfTokenHeader'
-        - $ref: '#/components/parameters/CsrfExpiresHeader'
       requestBody:
         $ref: '#/components/requestBodies/LegacySiteCall'
       responses:
@@ -120,17 +117,97 @@ paths:
           $ref: '#/components/responses/ServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
-  /_api/rest/v1/{siteid}/site:
-    parameters:
-      - $ref: '#/components/parameters/LegacySiteId'
-    get:
-      operationId: restSiteGet
-      summary: Reads the site entity through the sessionless REST API, which answers 401 without Basic or Bearer credentials.
+    delete:
+      operationId: jsonApiRootDelete
+      summary: Calls a site entity method through the JSON API at the bare API path for site `default`; the route key picks the method.
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
       security: []
-      parameters:
-        - $ref: '#/components/parameters/LegacyMethod'
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    options:
+      operationId: jsonApiRootOptions
+      summary: Calls a site entity method through the JSON API at the bare API path for site `default`; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    patch:
+      operationId: jsonApiRootPatch
+      summary: Calls a site entity method through the JSON API at the bare API path for site `default`; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /_api/json/v1/{siteid}:
+    parameters:
+      - $ref: '#/components/parameters/LegacySiteId'
+      - $ref: '#/components/parameters/LegacyMethod'
+      - $ref: '#/components/parameters/LegacyEntityName'
+      - $ref: '#/components/parameters/MethodOverrideHeader'
+      - $ref: '#/components/parameters/CsrfTokenHeader'
+      - $ref: '#/components/parameters/CsrfExpiresHeader'
+    get:
+      operationId: jsonApiSiteGet
+      summary: Calls a site entity method through the JSON API at a site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
       responses:
         '200':
           $ref: '#/components/responses/SiteRead'
@@ -139,21 +216,2487 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/responses/SiteSaveRejected'
         '404':
           $ref: '#/components/responses/LegacyNotFound'
         '500':
           $ref: '#/components/responses/ServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
-    post:
-      operationId: restSitePost
-      summary: Calls a site entity method through the sessionless REST API, where `save` requires S2 and checks no CSRF token.
+    head:
+      operationId: jsonApiSiteHead
+      summary: Answers the JSON API GET of a site with its status and headers only.
       x-opt2-transport: service
       x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
       security: []
-      parameters:
-        - $ref: '#/components/parameters/LegacyMethod'
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '400':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '401':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '403':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '404':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '500':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '503':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+    post:
+      operationId: jsonApiSitePost
+      summary: Calls a site entity method through the JSON API at a site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: jsonApiSitePut
+      summary: Calls a site entity method through the JSON API at a site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: jsonApiSiteDelete
+      summary: Calls a site entity method through the JSON API at a site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    options:
+      operationId: jsonApiSiteOptions
+      summary: Calls a site entity method through the JSON API at a site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    patch:
+      operationId: jsonApiSitePatch
+      summary: Calls a site entity method through the JSON API at a site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /_api/json/v1/{siteid}/{segment}:
+    parameters:
+      - $ref: '#/components/parameters/LegacySiteId'
+      - $ref: '#/components/parameters/JsonApiSegment'
+      - $ref: '#/components/parameters/LegacyMethod'
+      - $ref: '#/components/parameters/LegacyEntityName'
+      - $ref: '#/components/parameters/MethodOverrideHeader'
+      - $ref: '#/components/parameters/CsrfTokenHeader'
+      - $ref: '#/components/parameters/CsrfExpiresHeader'
+    get:
+      operationId: jsonApiSegmentGet
+      summary: Calls a site entity method through the JSON API at an entity or method after the site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteRead'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    head:
+      operationId: jsonApiSegmentHead
+      summary: Answers the JSON API GET of an entity or method after the site with its status and headers only.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '400':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '401':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '403':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '404':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '500':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '503':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+    post:
+      operationId: jsonApiSegmentPost
+      summary: Calls a site entity method through the JSON API at an entity or method after the site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: jsonApiSegmentPut
+      summary: Calls a site entity method through the JSON API at an entity or method after the site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: jsonApiSegmentDelete
+      summary: Calls a site entity method through the JSON API at an entity or method after the site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    options:
+      operationId: jsonApiSegmentOptions
+      summary: Calls a site entity method through the JSON API at an entity or method after the site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    patch:
+      operationId: jsonApiSegmentPatch
+      summary: Calls a site entity method through the JSON API at an entity or method after the site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /_api/json/v1/{siteid}/{segment}/{item}:
+    parameters:
+      - $ref: '#/components/parameters/LegacySiteId'
+      - $ref: '#/components/parameters/JsonApiSegment'
+      - $ref: '#/components/parameters/JsonApiItem'
+      - $ref: '#/components/parameters/LegacyMethod'
+      - $ref: '#/components/parameters/LegacyEntityName'
+      - $ref: '#/components/parameters/MethodOverrideHeader'
+      - $ref: '#/components/parameters/CsrfTokenHeader'
+      - $ref: '#/components/parameters/CsrfExpiresHeader'
+    get:
+      operationId: jsonApiItemGet
+      summary: Calls a site entity method through the JSON API at an entity id, which the site entity reads as findOne under any method; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteRead'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    head:
+      operationId: jsonApiItemHead
+      summary: Answers the JSON API GET of an entity id, which the site entity reads as findOne under any method with its status and headers only.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '400':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '401':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '403':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '404':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '500':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '503':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+    post:
+      operationId: jsonApiItemPost
+      summary: Calls a site entity method through the JSON API at an entity id, which the site entity reads as findOne under any method; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: jsonApiItemPut
+      summary: Calls a site entity method through the JSON API at an entity id, which the site entity reads as findOne under any method; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: jsonApiItemDelete
+      summary: Calls a site entity method through the JSON API at an entity id, which the site entity reads as findOne under any method; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    options:
+      operationId: jsonApiItemOptions
+      summary: Calls a site entity method through the JSON API at an entity id, which the site entity reads as findOne under any method; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    patch:
+      operationId: jsonApiItemPatch
+      summary: Calls a site entity method through the JSON API at an entity id, which the site entity reads as findOne under any method; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /_api/json/v1/{siteid}/{segment}/{item}/{suffix}:
+    parameters:
+      - $ref: '#/components/parameters/LegacySiteId'
+      - $ref: '#/components/parameters/JsonApiSegment'
+      - $ref: '#/components/parameters/JsonApiItem'
+      - $ref: '#/components/parameters/JsonApiSuffix'
+      - $ref: '#/components/parameters/LegacyMethod'
+      - $ref: '#/components/parameters/LegacyEntityName'
+      - $ref: '#/components/parameters/MethodOverrideHeader'
+      - $ref: '#/components/parameters/CsrfTokenHeader'
+      - $ref: '#/components/parameters/CsrfExpiresHeader'
+    get:
+      operationId: jsonApiSuffixGet
+      summary: Calls a site entity method through the JSON API at an entity id and more path; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteRead'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    head:
+      operationId: jsonApiSuffixHead
+      summary: Answers the JSON API GET of an entity id and more path with its status and headers only.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '400':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '401':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '403':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '404':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '500':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '503':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+    post:
+      operationId: jsonApiSuffixPost
+      summary: Calls a site entity method through the JSON API at an entity id and more path; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: jsonApiSuffixPut
+      summary: Calls a site entity method through the JSON API at an entity id and more path; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: jsonApiSuffixDelete
+      summary: Calls a site entity method through the JSON API at an entity id and more path; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    options:
+      operationId: jsonApiSuffixOptions
+      summary: Calls a site entity method through the JSON API at an entity id and more path; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    patch:
+      operationId: jsonApiSuffixPatch
+      summary: Calls a site entity method through the JSON API at an entity id and more path; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/json/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /_api/ajax/v1:
+    parameters:
+      - $ref: '#/components/parameters/LegacyMethod'
+      - $ref: '#/components/parameters/LegacyEntityName'
+      - $ref: '#/components/parameters/MethodOverrideHeader'
+      - $ref: '#/components/parameters/CsrfTokenHeader'
+      - $ref: '#/components/parameters/CsrfExpiresHeader'
+    get:
+      operationId: ajaxApiRootGet
+      summary: Calls a site entity method through the AJAX API at the bare API path for site `default`; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteRead'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    head:
+      operationId: ajaxApiRootHead
+      summary: Answers the AJAX API GET of the bare API path for site `default` with its status and headers only.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '400':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '401':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '403':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '404':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '500':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '503':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+    post:
+      operationId: ajaxApiRootPost
+      summary: Calls a site entity method through the AJAX API at the bare API path for site `default`; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: ajaxApiRootPut
+      summary: Calls a site entity method through the AJAX API at the bare API path for site `default`; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: ajaxApiRootDelete
+      summary: Calls a site entity method through the AJAX API at the bare API path for site `default`; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    options:
+      operationId: ajaxApiRootOptions
+      summary: Calls a site entity method through the AJAX API at the bare API path for site `default`; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    patch:
+      operationId: ajaxApiRootPatch
+      summary: Calls a site entity method through the AJAX API at the bare API path for site `default`; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /_api/ajax/v1/{siteid}:
+    parameters:
+      - $ref: '#/components/parameters/LegacySiteId'
+      - $ref: '#/components/parameters/LegacyMethod'
+      - $ref: '#/components/parameters/LegacyEntityName'
+      - $ref: '#/components/parameters/MethodOverrideHeader'
+      - $ref: '#/components/parameters/CsrfTokenHeader'
+      - $ref: '#/components/parameters/CsrfExpiresHeader'
+    get:
+      operationId: ajaxApiSiteGet
+      summary: Calls a site entity method through the AJAX API at a site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteRead'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    head:
+      operationId: ajaxApiSiteHead
+      summary: Answers the AJAX API GET of a site with its status and headers only.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '400':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '401':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '403':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '404':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '500':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '503':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+    post:
+      operationId: ajaxApiSitePost
+      summary: Calls a site entity method through the AJAX API at a site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: ajaxApiSitePut
+      summary: Calls a site entity method through the AJAX API at a site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: ajaxApiSiteDelete
+      summary: Calls a site entity method through the AJAX API at a site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    options:
+      operationId: ajaxApiSiteOptions
+      summary: Calls a site entity method through the AJAX API at a site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    patch:
+      operationId: ajaxApiSitePatch
+      summary: Calls a site entity method through the AJAX API at a site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /_api/ajax/v1/{siteid}/{segment}:
+    parameters:
+      - $ref: '#/components/parameters/LegacySiteId'
+      - $ref: '#/components/parameters/JsonApiSegment'
+      - $ref: '#/components/parameters/LegacyMethod'
+      - $ref: '#/components/parameters/LegacyEntityName'
+      - $ref: '#/components/parameters/MethodOverrideHeader'
+      - $ref: '#/components/parameters/CsrfTokenHeader'
+      - $ref: '#/components/parameters/CsrfExpiresHeader'
+    get:
+      operationId: ajaxApiSegmentGet
+      summary: Calls a site entity method through the AJAX API at an entity or method after the site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteRead'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    head:
+      operationId: ajaxApiSegmentHead
+      summary: Answers the AJAX API GET of an entity or method after the site with its status and headers only.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '400':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '401':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '403':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '404':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '500':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '503':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+    post:
+      operationId: ajaxApiSegmentPost
+      summary: Calls a site entity method through the AJAX API at an entity or method after the site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: ajaxApiSegmentPut
+      summary: Calls a site entity method through the AJAX API at an entity or method after the site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: ajaxApiSegmentDelete
+      summary: Calls a site entity method through the AJAX API at an entity or method after the site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    options:
+      operationId: ajaxApiSegmentOptions
+      summary: Calls a site entity method through the AJAX API at an entity or method after the site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    patch:
+      operationId: ajaxApiSegmentPatch
+      summary: Calls a site entity method through the AJAX API at an entity or method after the site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /_api/ajax/v1/{siteid}/{segment}/{item}:
+    parameters:
+      - $ref: '#/components/parameters/LegacySiteId'
+      - $ref: '#/components/parameters/JsonApiSegment'
+      - $ref: '#/components/parameters/JsonApiItem'
+      - $ref: '#/components/parameters/LegacyMethod'
+      - $ref: '#/components/parameters/LegacyEntityName'
+      - $ref: '#/components/parameters/MethodOverrideHeader'
+      - $ref: '#/components/parameters/CsrfTokenHeader'
+      - $ref: '#/components/parameters/CsrfExpiresHeader'
+    get:
+      operationId: ajaxApiItemGet
+      summary: Calls a site entity method through the AJAX API at an entity id, which the site entity reads as findOne under any method; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteRead'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    head:
+      operationId: ajaxApiItemHead
+      summary: Answers the AJAX API GET of an entity id, which the site entity reads as findOne under any method with its status and headers only.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '400':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '401':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '403':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '404':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '500':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '503':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+    post:
+      operationId: ajaxApiItemPost
+      summary: Calls a site entity method through the AJAX API at an entity id, which the site entity reads as findOne under any method; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: ajaxApiItemPut
+      summary: Calls a site entity method through the AJAX API at an entity id, which the site entity reads as findOne under any method; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: ajaxApiItemDelete
+      summary: Calls a site entity method through the AJAX API at an entity id, which the site entity reads as findOne under any method; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    options:
+      operationId: ajaxApiItemOptions
+      summary: Calls a site entity method through the AJAX API at an entity id, which the site entity reads as findOne under any method; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    patch:
+      operationId: ajaxApiItemPatch
+      summary: Calls a site entity method through the AJAX API at an entity id, which the site entity reads as findOne under any method; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /_api/ajax/v1/{siteid}/{segment}/{item}/{suffix}:
+    parameters:
+      - $ref: '#/components/parameters/LegacySiteId'
+      - $ref: '#/components/parameters/JsonApiSegment'
+      - $ref: '#/components/parameters/JsonApiItem'
+      - $ref: '#/components/parameters/JsonApiSuffix'
+      - $ref: '#/components/parameters/LegacyMethod'
+      - $ref: '#/components/parameters/LegacyEntityName'
+      - $ref: '#/components/parameters/MethodOverrideHeader'
+      - $ref: '#/components/parameters/CsrfTokenHeader'
+      - $ref: '#/components/parameters/CsrfExpiresHeader'
+    get:
+      operationId: ajaxApiSuffixGet
+      summary: Calls a site entity method through the AJAX API at an entity id and more path; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteRead'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    head:
+      operationId: ajaxApiSuffixHead
+      summary: Answers the AJAX API GET of an entity id and more path with its status and headers only.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '400':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '401':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '403':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '404':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '500':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '503':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+    post:
+      operationId: ajaxApiSuffixPost
+      summary: Calls a site entity method through the AJAX API at an entity id and more path; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: ajaxApiSuffixPut
+      summary: Calls a site entity method through the AJAX API at an entity id and more path; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: ajaxApiSuffixDelete
+      summary: Calls a site entity method through the AJAX API at an entity id and more path; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    options:
+      operationId: ajaxApiSuffixOptions
+      summary: Calls a site entity method through the AJAX API at an entity id and more path; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    patch:
+      operationId: ajaxApiSuffixPatch
+      summary: Calls a site entity method through the AJAX API at an entity id and more path; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/ajax/v1*
+      x-opt2-route-keys: ['api:site.findone', 'api:site.findall', 'api:site.findmany', 'api:site.findquery', 'api:site.findnew', 'api:site.findproperties', 'api:site.findpermissions', 'api:site.validate', 'api:site.delete', 'api:site.save', 'api:site.http-head', 'api:site.http-options', 'api:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /_api/rest/v1:
+    parameters:
+      - $ref: '#/components/parameters/LegacyMethod'
+      - $ref: '#/components/parameters/LegacyEntityName'
+      - $ref: '#/components/parameters/MethodOverrideHeader'
+      - $ref: '#/components/parameters/CsrfTokenHeader'
+      - $ref: '#/components/parameters/CsrfExpiresHeader'
+    get:
+      operationId: restApiRootGet
+      summary: Calls a site entity method through the REST API at the bare API path for site `default`; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteRead'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    head:
+      operationId: restApiRootHead
+      summary: Answers the REST API GET of the bare API path for site `default` with its status and headers only.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '400':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '401':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '403':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '404':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '500':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '503':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+    post:
+      operationId: restApiRootPost
+      summary: Calls a site entity method through the REST API at the bare API path for site `default`; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: restApiRootPut
+      summary: Calls a site entity method through the REST API at the bare API path for site `default`; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: restApiRootDelete
+      summary: Calls a site entity method through the REST API at the bare API path for site `default`; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    options:
+      operationId: restApiRootOptions
+      summary: Calls a site entity method through the REST API at the bare API path for site `default`; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    patch:
+      operationId: restApiRootPatch
+      summary: Calls a site entity method through the REST API at the bare API path for site `default`; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /_api/rest/v1/{siteid}:
+    parameters:
+      - $ref: '#/components/parameters/LegacySiteId'
+      - $ref: '#/components/parameters/LegacyMethod'
+      - $ref: '#/components/parameters/LegacyEntityName'
+      - $ref: '#/components/parameters/MethodOverrideHeader'
+      - $ref: '#/components/parameters/CsrfTokenHeader'
+      - $ref: '#/components/parameters/CsrfExpiresHeader'
+    get:
+      operationId: restApiSiteGet
+      summary: Calls a site entity method through the REST API at a site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteRead'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    head:
+      operationId: restApiSiteHead
+      summary: Answers the REST API GET of a site with its status and headers only.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '400':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '401':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '403':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '404':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '500':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '503':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+    post:
+      operationId: restApiSitePost
+      summary: Calls a site entity method through the REST API at a site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: restApiSitePut
+      summary: Calls a site entity method through the REST API at a site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: restApiSiteDelete
+      summary: Calls a site entity method through the REST API at a site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    options:
+      operationId: restApiSiteOptions
+      summary: Calls a site entity method through the REST API at a site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    patch:
+      operationId: restApiSitePatch
+      summary: Calls a site entity method through the REST API at a site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /_api/rest/v1/{siteid}/{segment}:
+    parameters:
+      - $ref: '#/components/parameters/LegacySiteId'
+      - $ref: '#/components/parameters/JsonApiSegment'
+      - $ref: '#/components/parameters/LegacyMethod'
+      - $ref: '#/components/parameters/LegacyEntityName'
+      - $ref: '#/components/parameters/MethodOverrideHeader'
+      - $ref: '#/components/parameters/CsrfTokenHeader'
+      - $ref: '#/components/parameters/CsrfExpiresHeader'
+    get:
+      operationId: restApiSegmentGet
+      summary: Calls a site entity method through the REST API at an entity or method after the site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteRead'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    head:
+      operationId: restApiSegmentHead
+      summary: Answers the REST API GET of an entity or method after the site with its status and headers only.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '400':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '401':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '403':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '404':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '500':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '503':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+    post:
+      operationId: restApiSegmentPost
+      summary: Calls a site entity method through the REST API at an entity or method after the site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: restApiSegmentPut
+      summary: Calls a site entity method through the REST API at an entity or method after the site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: restApiSegmentDelete
+      summary: Calls a site entity method through the REST API at an entity or method after the site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    options:
+      operationId: restApiSegmentOptions
+      summary: Calls a site entity method through the REST API at an entity or method after the site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    patch:
+      operationId: restApiSegmentPatch
+      summary: Calls a site entity method through the REST API at an entity or method after the site; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /_api/rest/v1/{siteid}/{segment}/{item}:
+    parameters:
+      - $ref: '#/components/parameters/LegacySiteId'
+      - $ref: '#/components/parameters/JsonApiSegment'
+      - $ref: '#/components/parameters/JsonApiItem'
+      - $ref: '#/components/parameters/LegacyMethod'
+      - $ref: '#/components/parameters/LegacyEntityName'
+      - $ref: '#/components/parameters/MethodOverrideHeader'
+      - $ref: '#/components/parameters/CsrfTokenHeader'
+      - $ref: '#/components/parameters/CsrfExpiresHeader'
+    get:
+      operationId: restApiItemGet
+      summary: Calls a site entity method through the REST API at an entity id, which the site entity reads as findOne under any method; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteRead'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    head:
+      operationId: restApiItemHead
+      summary: Answers the REST API GET of an entity id, which the site entity reads as findOne under any method with its status and headers only.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '400':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '401':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '403':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '404':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '500':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '503':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+    post:
+      operationId: restApiItemPost
+      summary: Calls a site entity method through the REST API at an entity id, which the site entity reads as findOne under any method; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: restApiItemPut
+      summary: Calls a site entity method through the REST API at an entity id, which the site entity reads as findOne under any method; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: restApiItemDelete
+      summary: Calls a site entity method through the REST API at an entity id, which the site entity reads as findOne under any method; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    options:
+      operationId: restApiItemOptions
+      summary: Calls a site entity method through the REST API at an entity id, which the site entity reads as findOne under any method; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    patch:
+      operationId: restApiItemPatch
+      summary: Calls a site entity method through the REST API at an entity id, which the site entity reads as findOne under any method; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /_api/rest/v1/{siteid}/{segment}/{item}/{suffix}:
+    parameters:
+      - $ref: '#/components/parameters/LegacySiteId'
+      - $ref: '#/components/parameters/JsonApiSegment'
+      - $ref: '#/components/parameters/JsonApiItem'
+      - $ref: '#/components/parameters/JsonApiSuffix'
+      - $ref: '#/components/parameters/LegacyMethod'
+      - $ref: '#/components/parameters/LegacyEntityName'
+      - $ref: '#/components/parameters/MethodOverrideHeader'
+      - $ref: '#/components/parameters/CsrfTokenHeader'
+      - $ref: '#/components/parameters/CsrfExpiresHeader'
+    get:
+      operationId: restApiSuffixGet
+      summary: Calls a site entity method through the REST API at an entity id and more path; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteRead'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    head:
+      operationId: restApiSuffixHead
+      summary: Answers the REST API GET of an entity id and more path with its status and headers only.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '400':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '401':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '403':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '404':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '500':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+        '503':
+          $ref: '#/components/responses/JsonApiHeadersOnly'
+    post:
+      operationId: restApiSuffixPost
+      summary: Calls a site entity method through the REST API at an entity id and more path; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: restApiSuffixPut
+      summary: Calls a site entity method through the REST API at an entity id and more path; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: restApiSuffixDelete
+      summary: Calls a site entity method through the REST API at an entity id and more path; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    options:
+      operationId: restApiSuffixOptions
+      summary: Calls a site entity method through the REST API at an entity id and more path; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
+      requestBody:
+        $ref: '#/components/requestBodies/LegacySiteCall'
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteWrite'
+        '400':
+          $ref: '#/components/responses/LegacyBadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/SiteSaveRejected'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    patch:
+      operationId: restApiSuffixPatch
+      summary: Calls a site entity method through the REST API at an entity id and more path; the route key picks the method.
+      x-opt2-transport: service
+      x-opt2-public: true
+      x-opt2-fastify-path: /_api/rest/v1*
+      x-opt2-route-keys: ['rest:site.findone', 'rest:site.findall', 'rest:site.findmany', 'rest:site.findquery', 'rest:site.findnew', 'rest:site.findproperties', 'rest:site.findpermissions', 'rest:site.validate', 'rest:site.delete', 'rest:site.save', 'rest:site.http-head', 'rest:site.http-options', 'rest:site.http-patch']
+      security: []
       requestBody:
         $ref: '#/components/requestBodies/LegacySiteCall'
       responses:
@@ -190,6 +2733,86 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: sitemonitorRunPost
+      summary: Runs the site-monitor orchestrator; every path starting `/_api/sitemonitor` in any letter case, also behind `/index.cfm`, is the same route.
+      x-opt2-transport: service
+      x-opt2-public: true
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteMonitorRan'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: A step failed, so the cursor stays where it was.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    head:
+      operationId: sitemonitorRunHead
+      summary: Runs the site-monitor orchestrator; every path starting `/_api/sitemonitor` in any letter case, also behind `/index.cfm`, is the same route.
+      x-opt2-transport: service
+      x-opt2-public: true
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteMonitorRan'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: A step failed, so the cursor stays where it was.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: sitemonitorRunPut
+      summary: Runs the site-monitor orchestrator; every path starting `/_api/sitemonitor` in any letter case, also behind `/index.cfm`, is the same route.
+      x-opt2-transport: service
+      x-opt2-public: true
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteMonitorRan'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: A step failed, so the cursor stays where it was.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: sitemonitorRunDelete
+      summary: Runs the site-monitor orchestrator; every path starting `/_api/sitemonitor` in any letter case, also behind `/index.cfm`, is the same route.
+      x-opt2-transport: service
+      x-opt2-public: true
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteMonitorRan'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: A step failed, so the cursor stays where it was.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    patch:
+      operationId: sitemonitorRunPatch
+      summary: Runs the site-monitor orchestrator; every path starting `/_api/sitemonitor` in any letter case, also behind `/index.cfm`, is the same route.
+      x-opt2-transport: service
+      x-opt2-public: true
+      security: []
+      responses:
+        '200':
+          $ref: '#/components/responses/SiteMonitorRan'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: A step failed, so the cursor stays where it was.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    options:
+      operationId: sitemonitorRunOptions
       summary: Runs the site-monitor orchestrator; every path starting `/_api/sitemonitor` in any letter case, also behind `/index.cfm`, is the same route.
       x-opt2-transport: service
       x-opt2-public: true
@@ -316,6 +2939,32 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /v1/sites/{siteId}/user-pool-sites:
+    parameters:
+      - $ref: '#/components/parameters/SiteId'
+    get:
+      operationId: getUserPoolSites
+      summary: Reads the layout settings of the stored sites the site's registered private, then public, user pool names, each once; a pool site without a registry entry or a stored row is left out.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - s2
+        - site-admin
+        - system-user
+      responses:
+        '200':
+          description: The user pool sites, private pool first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserPoolSites'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /v1/sites/{siteId}/update:
     parameters:
       - $ref: '#/components/parameters/SiteId'
@@ -357,6 +3006,9 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: A value longer than its legacy tsettings column; nothing but posted extended data is stored.
         '503':
           $ref: '#/components/responses/Unavailable'
           description: A placeholder-image change, Razuna settings or a bundle deploy, which stay on legacy; nothing is written.
@@ -1110,11 +3762,51 @@ components:
         minLength: 1
         examples:
           - default
+    JsonApiSegment:
+      name: segment
+      in: path
+      required: true
+      description: Entity name or method after the site id, matched ignoring case; `site` and `sites` address the site entity, which every form here reads as findOne.
+      schema:
+        type: string
+        examples:
+          - site
+          - findAll
+    JsonApiItem:
+      name: item
+      in: path
+      required: true
+      description: Entity id, `new`, `properties` or `permissions`; for the site entity the site id always wins, so each answers findOne.
+      schema:
+        type: string
+    JsonApiSuffix:
+      name: suffix
+      in: path
+      required: true
+      description: Path after the entity id, read as name and value pairs.
+      schema:
+        type: string
+    LegacyEntityName:
+      name: entityname
+      in: query
+      required: false
+      description: Entity a method call addresses; `site` in any letter case is served here, and findOne reports it as spelled.
+      schema:
+        type: string
+        examples:
+          - site
+    MethodOverrideHeader:
+      name: X-HTTP-Method-Override
+      in: header
+      required: false
+      description: Verb the entity route resolves the call under instead of the request's.
+      schema:
+        type: string
     LegacyMethod:
       name: method
       in: query
       required: false
-      description: Entity-generic method, also as `site.<method>` and as a form or JSON body field; `findOne` when omitted, and `delete` is not served here.
+      description: Entity-generic method, also as `site.<method>` (which reads as findOne) and as a form or JSON body field; the entity route picks one by verb when omitted.
       schema:
         type: string
         examples:
@@ -1127,6 +3819,7 @@ components:
           - findPermissions
           - validate
           - save
+          - delete
           - site.findOne
     CsrfTokenHeader:
       name: X-csrf_token
@@ -1296,8 +3989,23 @@ components:
           schema:
             $ref: '#/components/schemas/SystemTaskWireBody'
   responses:
+    JsonApiHeadersOnly:
+      description: A HEAD answer, the status and headers of the GET answer, its ETag included, with no body and no Content-Length.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        Access-Control-Allow-Origin:
+          $ref: '#/components/headers/AccessControlAllowOrigin'
+        Access-Control-Allow-Credentials:
+          $ref: '#/components/headers/AccessControlAllowCredentials'
+        WWW-Authenticate:
+          $ref: '#/components/headers/WWWAuthenticate'
     SiteRead:
-      description: The site entity or a site collection in the legacy envelope.
+      description: The site entity method's result in the legacy envelope.
       headers:
         Generator:
           $ref: '#/components/headers/Generator'
@@ -1314,7 +4022,7 @@ components:
           schema:
             $ref: '#/components/schemas/SiteEnvelope'
     SiteWrite:
-      description: The method's result in the legacy envelope; a save returns the saved site.
+      description: The site entity method's result in the legacy envelope; a save returns the saved site.
       headers:
         Generator:
           $ref: '#/components/headers/Generator'
@@ -1593,7 +4301,7 @@ components:
               type: string
               const: server_error
     SiteEnvelope:
-      description: Legacy envelope whose `data` is a site or a site collection.
+      description: Legacy envelope whose `data` is a site, a site collection, the site entity's properties or permissions, a count, validation errors, or `''` for a call that returns nothing.
       allOf:
         - $ref: '#/components/schemas/LegacyEnvelope'
         - type: object
@@ -1602,6 +4310,12 @@ components:
               anyOf:
                 - $ref: '#/components/schemas/JsonApiSiteCollection'
                 - $ref: '#/components/schemas/JsonApiSite'
+                - $ref: '#/components/schemas/JsonApiSiteProperties'
+                - $ref: '#/components/schemas/JsonApiSitePermissions'
+                - $ref: '#/components/schemas/JsonApiSiteCount'
+                - $ref: '#/components/schemas/JsonApiValidationErrors'
+                - type: string
+                  const: ''
     JsonApiSite:
       type: object
       description: A site as the JSON API serializes it, field selection off; `id` is always the site id, and a save adds `saveErrors` and `errors`.
@@ -1615,7 +4329,7 @@ components:
           type: string
         entityname:
           type: string
-          const: site
+          description: '`site`; findOne reports the entity name as the request spells it.'
         isnew:
           type: integer
           enum:
@@ -1623,6 +4337,7 @@ components:
             - 1
         links:
           type: object
+          description: Links of the site; an item of a distinct feed links only `entities`.
           additionalProperties:
             type: string
         saveErrors: {}
@@ -1630,7 +4345,7 @@ components:
           $ref: '#/components/schemas/SiteErrors'
     JsonApiSiteCollection:
       type: object
-      description: A paged site collection as the JSON API serializes it.
+      description: A paged site collection as packageIteratorArray builds it; out-of-range pages read blank sites, and `entityname` is `bean` for a distinct or aggregate query.
       required:
         - items
       additionalProperties: true
@@ -1643,14 +4358,114 @@ components:
           type: object
           additionalProperties:
             type: string
+        entityname:
+          type: string
+          enum:
+            - site
+            - bean
         pageindex:
-          type: integer
+          type: number
         itemsperpage:
-          type: integer
+          type: number
         totalpages:
-          type: integer
+          type: number
         totalitems:
           type: integer
+        startindex:
+          type: number
+        endindex:
+          type: number
+    JsonApiSiteProperties:
+      type: object
+      description: findProperties of the site entity; `table` only for a site admin or super user.
+      required:
+        - entityname
+        - properties
+        - primarykey
+      additionalProperties: false
+      properties:
+        displayname:
+          type: string
+        properties:
+          type: array
+          items:
+            type: object
+            required:
+              - name
+              - datatype
+            additionalProperties: false
+            properties:
+              fieldtype:
+                type: string
+              length:
+                type: string
+              required:
+                type: [boolean, string]
+              html:
+                type: string
+              nullable:
+                type: boolean
+              name:
+                type: string
+              datatype:
+                type: string
+              default:
+                type: string
+        historical:
+          type: boolean
+        links:
+          type: object
+          additionalProperties:
+            type: string
+        dynamic:
+          type: boolean
+        table:
+          type: string
+          const: tsettings
+        primarykey:
+          type: string
+          const: siteid
+        public:
+          type: boolean
+        bundleable:
+          type: boolean
+        orderby:
+          type: string
+        entityname:
+          type: string
+          const: site
+        scaffold:
+          type: boolean
+    JsonApiSitePermissions:
+      type: object
+      description: findPermissions of a site; save and delete for a super user only.
+      required:
+        - read
+        - delete
+        - save
+      additionalProperties: false
+      properties:
+        read:
+          type: boolean
+        delete:
+          type: boolean
+        save:
+          type: boolean
+    JsonApiSiteCount:
+      type: object
+      description: A find with `countOnly`, the count as text.
+      required:
+        - count
+      additionalProperties: false
+      properties:
+        count:
+          type: string
+          pattern: '^[0-9]+$'
+    JsonApiValidationErrors:
+      type: object
+      description: validate's errors by property, `{}` when none; `invalid` for data or validations that are not structs.
+      additionalProperties:
+        type: string
     LegacySiteCallBody:
       type: object
       description: A site entity call; a save carries the site fields to change.
@@ -2436,6 +5251,10 @@ components:
           const: programs-sites
         paused:
           type: boolean
+        running:
+          type: integer
+          minimum: 0
+          description: Tasks of the queue still running when pause answered.
         ensured:
           $ref: '#/components/schemas/EnsureRecurringResult'
     CanonicalType:
@@ -3411,6 +6230,17 @@ components:
           enum:
             - 0
             - 1
+    UserPoolSites:
+      type: object
+      description: The layout settings of a site's user pool sites, as `getSite(<pool id>)` holds them.
+      required:
+        - sites
+      additionalProperties: false
+      properties:
+        sites:
+          type: array
+          items:
+            $ref: '#/components/schemas/ShellSite'
     ShellSite:
       type: object
       description: The `Site` fields the admin layout reads, valued as in `Site`, without credentials, secrets, scripts or contact details.

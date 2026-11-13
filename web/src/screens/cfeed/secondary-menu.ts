@@ -1,6 +1,6 @@
 // Collections (cFeed) secondary menu of `cfeed/dsp_secondary_menu.cfm`, also the shell's `cfeed` hook (server-only).
 import { html, raw, type SafeHtml } from '@/lib/html';
-import type { AdminRequest } from '@/lib/request-context';
+import { administersRequestedSite, type AdminRequest } from '@/lib/request-context';
 import { rbFor, type RbLookup } from '@/lib/resource-bundles/rb';
 import { relativeAdminUrl } from '@/lib/urls';
 import type { ShellHooks } from '@/shell/document';
@@ -51,7 +51,7 @@ export function renderCfeedSecondaryMenu(
       links.push(html`\n\t\t\t<a class="btn" title="${label(key)}" href="${href}">${content('mi-plus-circle', key)}</a>`);
     }
     links.push(raw('\n\t\t\t'));
-    if (req.isSiteAdmin || req.isS2) {
+    if (administersRequestedSite(req)) {
       const moduleId = MODULE_IDS.collections;
       const href = raw(
         relativeAdminUrl('cPerm', 'module', [

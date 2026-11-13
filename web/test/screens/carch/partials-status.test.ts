@@ -141,6 +141,11 @@ describe('status', () => {
     it.each<[string, boolean, () => AdminRequest]>([
       ['the super user', true, () => adminS2Request()],
       ['the site admin', true, () => siteAdminRequest()],
+      [
+        'the site admin on a site its token does not serve, as isAdminUser() reads its own site',
+        true,
+        () => siteAdminRequest('tenant-b'),
+      ],
       ['an editor', false, () => editorRequest()],
     ])('notices the holder to %s, unlock link %s', async (_case, unlockable, request) => {
       const { markup, contexts } = await render(
@@ -282,6 +287,12 @@ describe('status', () => {
       ['TRUE', () => adminS2Request({ rc: { compactDisplay: 'TRUE' } }), 'target="_top"'],
       ['yes', () => adminS2Request({ rc: { compactDisplay: 'yes' } }), 'target="_top"'],
       ['1', () => adminS2Request({ rc: { compactDisplay: '1' } }), 'target="_top"'],
+      ['" TRUE"', () => adminS2Request({ rc: { compactDisplay: ' TRUE' } }), 'target="_top"'],
+      ['" true"', () => adminS2Request({ rc: { compactDisplay: ' true' } }), 'target="_blank"'],
+      ['"tr\\0ue"', () => adminS2Request({ rc: { compactDisplay: 'tr\u0000ue' } }), 'target="_top"'],
+      ['"\\u0001yes"', () => adminS2Request({ rc: { compactDisplay: '\u0001yes' } }), 'target="_top"'],
+      ['" 1.0 "', () => adminS2Request({ rc: { compactDisplay: ' 1.0 ' } }), 'target="_top"'],
+      ['"2"', () => adminS2Request({ rc: { compactDisplay: '2' } }), 'target="_blank"'],
       ['false', () => adminS2Request({ rc: { compactDisplay: 'false' } }), 'target="_blank"'],
       ['the rc default', () => adminS2Request(), 'target="_blank"'],
       ['absent from rc', () => ({ ...adminS2Request(), rc: {} }), 'target="_blank"'],

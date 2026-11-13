@@ -179,6 +179,22 @@ function idIn(p: SqlParams, expr: string, ids: readonly string[]): string {
   return `${expr} = ANY(${p.add(idForms(ids))}::bpchar[])`;
 }
 
+/** For each of `ids`, the first of `rows` whose id `idEq` matches it (its case forms, trailing spaces ignored as bpchar does). */
+export function firstById<R>(rows: readonly R[], ids: readonly string[], idOf: (row: R) => string | null): Map<string, R> {
+  const bpchar = (value: string): string => value.replace(/ +$/, '');
+  const firstAt = new Map<string, number>();
+  rows.forEach((row, at) => {
+    const stored = idOf(row);
+    if (stored !== null && !firstAt.has(bpchar(stored))) firstAt.set(bpchar(stored), at);
+  });
+  const found = new Map<string, R>();
+  for (const id of ids) {
+    const at = Math.min(...idForms([id]).map((form) => firstAt.get(bpchar(form)) ?? Number.POSITIVE_INFINITY));
+    if (at !== Number.POSITIVE_INFINITY) found.set(id, rows[at] as R);
+  }
+  return found;
+}
+
 
 /** A text column as SQL Server sorts it under a case-insensitive collation. */
 function textSort(expr: string): string {
@@ -638,6 +654,20 @@ export async function readActive(tx: TenantTx, args: ActiveVersionArgs & { conte
   }
   const p = new SqlParams();
   return readActiveWhere(tx, p, idEq(p, 'tcontent.contentid', args.contentId), { siteId: args.siteId, preview: args.preview }, VERSION_TYPES);
+}
+
+/** `readActive` of several ids in one site with one query: each non-empty id's first active version, keyed by the id. */
+export async function readActiveIn(
+  tx: TenantTx,
+  args: ActiveVersionArgs & { contentIds: readonly string[] },
+): Promise<Map<string, ContentVersionRow>> {
+  const ids = [...new Set(args.contentIds.filter((id) => id !== ''))];
+  if (ids.length === 0) {
+    return new Map();
+  }
+  const p = new SqlParams();
+  const rows = await readActiveWhere(tx, p, idIn(p, 'tcontent.contentid', ids), { siteId: args.siteId, preview: args.preview }, VERSION_TYPES);
+  return firstById(rows, ids, (row) => row.contentid);
 }
 
 /** contentDAO.readActiveByRemoteID: active versions by `remoteid` (none for an empty id); file columns as for `readVersion`. */

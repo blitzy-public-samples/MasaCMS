@@ -4,7 +4,9 @@ import { AuthDenial, Roles, type Opt2RouteConfig } from '@opt2/platform/auth';
 import { cfDateTimeFormat } from '@opt2/platform/legacy-compat';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import {
+  csrfPreHandler,
   legacyParamsOf,
+  recordOutcomeReason,
   sendLegacyResponse,
   type FastifyInstance,
   type FastifyReply,
@@ -59,6 +61,12 @@ const SENDER_AUTH: Opt2RouteConfig = Object.freeze({
 
 const ROUTE_OPTIONS = { config: { opt2: SENDER_AUTH } };
 
+/** CSRF context of the template and message collections: the empty route id the fixture validates their writes under. */
+const COLLECTION_CSRF_CONTEXT = '';
+
+// Identity consumes the write's token once the sender and site checks pass, before the handler reads the body.
+const WRITE_OPTIONS = { ...ROUTE_OPTIONS, preHandler: csrfPreHandler({ contextOf: () => COLLECTION_CSRF_CONTEXT }) };
+
 const FIXTURE_TIMESTAMP_MASK = "yyyy-mm-dd'T'HH:nn:ss";
 
 /** A stored template as the fixture emits it: datetimes to the second, a NULL `lastupdate` as ''. */
@@ -86,8 +94,8 @@ function identityOf(request: FastifyRequest): VerifiedIdentity {
 }
 
 /**
- * Handler sending `fn`'s body with status 200; a `FixtureApiError` answers in the fixture error envelope of `method`,
- * other errors propagate to service-kit's legacy error handler.
+ * Handler sending `fn`'s body with status 200; a `FixtureApiError` answers in the fixture error envelope of `method`, its type
+ * recorded as the outcome reason; other errors propagate to service-kit's legacy error handler.
  */
 function v1Handler<R extends FastifyRequest, B>(
   method: string,
@@ -104,6 +112,7 @@ function v1Handler<R extends FastifyRequest, B>(
       if (!(error instanceof FixtureApiError)) {
         throw error;
       }
+      recordOutcomeReason(request, error.type);
       return sendLegacyResponse(reply, fixtureErrorResponse(error, { method, params }));
     }
   };
@@ -123,7 +132,7 @@ export async function registerV1Routes(app: FastifyInstance, ctx: V1RouteDeps): 
 
   app.post(
     TEMPLATES_PATH,
-    ROUTE_OPTIONS,
+    WRITE_OPTIONS,
     v1Handler(TEMPLATES_METHOD, async (_request, { tenantId, siteId, userId }, params): Promise<TemplateBody> => {
       const input: TemplateInput = params;
       const row = await withGatedTenant(ctx.db, tenantId, (tx) => createTemplate(tx, ctx.domain, { siteId, userId, input }));
@@ -143,7 +152,7 @@ export async function registerV1Routes(app: FastifyInstance, ctx: V1RouteDeps): 
 
   app.post(
     MESSAGES_PATH,
-    ROUTE_OPTIONS,
+    WRITE_OPTIONS,
     v1Handler(MESSAGES_METHOD, async (_request, { tenantId, siteId, userId }, params): Promise<SendMessageBody> => {
       const input: MessageInput = params;
       return { data: await submitMessage(ctx.mailDeps, { tenantId, siteId, userId, input }) };

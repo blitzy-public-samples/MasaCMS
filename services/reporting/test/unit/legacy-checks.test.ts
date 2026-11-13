@@ -26,7 +26,7 @@ const REGISTERED = [TENANT_A.siteId, TENANT_B.siteId, 'default'] as const;
 const CTX: FixtureContext = { method: 'reporting.exports', params: {} };
 const REQUESTER = '1B2C3D4E-5F60-7182-93A4B5C6D7E8F90A';
 const JOB_ID = 'ABCDEF01-2345-6789-ABCDEF0123456789';
-const USER_TOKEN = 'requester-token';
+const SESSION_ID = 'session-1';
 
 /** Rows of a fake pg result. */
 function result<R extends Record<string, unknown>>(rows: R[]): QueryResult<R> {
@@ -73,7 +73,7 @@ function claims(site: string, tid: string = tenantIdForSite(site === '' ? 'defau
     iss: 'opt2-local-identity',
     aud: 'opt2-local',
     sub: REQUESTER,
-    sid: 'session-1',
+    sid: SESSION_ID,
     tid,
     site,
     roles: ['reporting.exporter'],
@@ -347,7 +347,6 @@ describe.skipIf(!(await pgAvailable()))('fixture create checks against PostgreSQ
       tenantId: site.tenantId,
       siteId: site.siteId,
       requestedById: user.sub,
-      userToken: USER_TOKEN,
       ...createExportFields(params),
     });
   }
@@ -379,7 +378,7 @@ describe.skipIf(!(await pgAvailable()))('fixture create checks against PostgreSQ
 
     expect(job).toMatchObject({ tenant_id: TENANT_A.tenantId, siteid: TENANT_A.siteId, definition_id: definitionId, format: 'xlsx', state: 'queued' });
     expect(enqueued).toStrictEqual([
-      { tenantId: TENANT_A.tenantId, jobId: job.job_id, payload: { jobId: job.job_id, asOf: '2026-06-30', userToken: USER_TOKEN } },
+      { tenantId: TENANT_A.tenantId, jobId: job.job_id, payload: { jobId: job.job_id, asOf: '2026-06-30' } },
     ]);
   });
 });

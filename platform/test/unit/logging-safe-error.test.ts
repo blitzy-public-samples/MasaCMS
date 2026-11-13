@@ -7,8 +7,9 @@ import { fastifyLoggerOptions } from '../../src/logging/fastify.js';
 import type { LogFields } from '../../src/logging/fields.js';
 import { createLogger, serializeError, type Logger } from '../../src/logging/logger.js';
 import { REDACTED } from '../../src/logging/redact.js';
-import { isSafeErrorText, safeErrorMessage, safeErrorStack, safeStackText } from '../../src/logging/safe-error.js';
+import { isSafeErrorText, SAFE_ERROR_TEXT, safeErrorMessage, safeErrorStack, safeStackText } from '../../src/logging/safe-error.js';
 import { validateLogRecord } from '../../src/logging/validate.js';
+import { ServiceUnavailableError, UnknownServiceError } from '../../src/service-kit/client.js';
 import { startSpan } from '../../src/tracing/propagation.js';
 import { RedactingSpanExporter } from '../../src/tracing/redact.js';
 import { flushTracing, MemorySpanExporter, shutdownTracing, startTracing, type ReadableSpan } from '../../src/tracing/sdk.js';
@@ -21,6 +22,7 @@ const LEAKS = [SECRET, 'Ada', 'Lovelace', '202-555'];
 const FRAME = '    at handler (/srv/people/dist/main.js:10:5)';
 const FRAME_LINE = /^\s+at \S/;
 const RECORD = { type: 'ValidationError', message: TEXT, stack: `ValidationError: ${TEXT}\n${FRAME}` };
+const UNAVAILABLE = 'Service identity unavailable (ECONNREFUSED)';
 
 type LogLine = Record<string, unknown>;
 
@@ -37,6 +39,18 @@ function systemError(): Error {
 /** Fastify error whose message quotes the rejected input. */
 function fastifyError(): Error {
   return Object.assign(new Error(`body/name must match pattern: ${TEXT}`), { code: 'FST_ERR_VALIDATION' });
+}
+
+/** `cause` wrapped in `depth` Errors whose messages carry TEXT. */
+function wrapped(depth: number, cause: unknown): unknown {
+  return Array.from({ length: depth }).reduce<unknown>((inner) => new Error(TEXT, { cause: inner }), cause);
+}
+
+/** Two Errors carrying TEXT, each the other's cause. */
+function cyclic(): Error {
+  const outer = new Error(TEXT);
+  outer.cause = new Error(TEXT, { cause: outer });
+  return outer;
 }
 
 /** Asserts that no part of TEXT appears in `text`. */
@@ -120,6 +134,18 @@ describe('safeErrorMessage', () => {
     ['an error record', RECORD, REDACTED],
     ['a thrown string', TEXT, REDACTED],
     ['null', null, REDACTED],
+    ['a ServiceUnavailableError', new ServiceUnavailableError('identity', systemError()), UNAVAILABLE],
+    ['a ServiceUnavailableError for an unsafe service name', new ServiceUnavailableError('Ada Lovelace', fastifyError()), 'FST_ERR_VALIDATION'],
+    ['an UnknownServiceError', new UnknownServiceError('identity'), REDACTED],
+    ['an error supplying a safe text', { [SAFE_ERROR_TEXT]: 'Service migration unavailable (HTTP_503)', message: TEXT }, 'Service migration unavailable (HTTP_503)'],
+    ['an error supplying free text', Object.assign(new Error(TEXT), { [SAFE_ERROR_TEXT]: TEXT }), REDACTED],
+    ['an error whose own identifiers precede its cause', Object.assign(new Error(TEXT, { cause: pgError() }), { code: 'FST_ERR_VALIDATION' }), 'FST_ERR_VALIDATION'],
+    ['a wrapped ServiceUnavailableError', wrapped(1, new ServiceUnavailableError('identity', systemError())), UNAVAILABLE],
+    ['a PostgreSQL error wrapped twice', wrapped(2, pgError()), 'PostgreSQL error 42601'],
+    ['a PostgreSQL error at the cause depth bound', wrapped(4, pgError()), 'PostgreSQL error 42601'],
+    ['a PostgreSQL error past the cause depth bound', wrapped(5, pgError()), REDACTED],
+    ['a cause chain without identifiers', wrapped(2, TEXT), REDACTED],
+    ['a cyclic cause chain', cyclic(), REDACTED],
   ])('reduces %s to its identifiers', (_, err, expected) => {
     expect(safeErrorMessage(err)).toBe(expected);
     expect(isSafeErrorText(expected)).toBe(true);
@@ -142,6 +168,21 @@ describe('isSafeErrorText', () => {
     ["PostgreSQL error of type 'Ada Lovelace' occurred (code: 42601)", false],
     ["PostgreSQL error of type 'error' occurred (code: UNKNOWN)", false],
     [`${REDACTED} Ada`, false],
+    [UNAVAILABLE, true],
+    ['Service programs-sites unavailable (UND_ERR_CONNECT_TIMEOUT)', true],
+    ['Service migration unavailable (HTTP_503)', true],
+    ['Service identity-platform unavailable (TimeoutError)', true],
+    ['Service echo unavailable (AbortError)', true],
+    ['Service echo unavailable (Error)', true],
+    ['Service echo unavailable (unknown)', true],
+    ['Service Identity unavailable (ECONNREFUSED)', false],
+    ['Service ada lovelace unavailable (ECONNREFUSED)', false],
+    ['Service ada@example.com unavailable (ECONNREFUSED)', false],
+    ['Service identity unavailable (connect ECONNREFUSED 10.0.0.7:8111)', false],
+    ['Service identity unavailable (Ada)', false],
+    ['Service identity unavailable (HTTP_5030)', false],
+    ['Service identity unavailable ()', false],
+    [`${UNAVAILABLE} for Ada`, false],
   ])('judges %j as %s', (text, safe) => {
     expect(isSafeErrorText(text)).toBe(safe);
   });
@@ -206,6 +247,25 @@ describe('serializeError safe-error boundary', () => {
     expectNoLeak(JSON.stringify(record));
     expect(serializeError(record)).toStrictEqual(record);
     expect(serializeError(serializeError(record))).toStrictEqual(record);
+  });
+
+  it.each<[string, unknown, string, string]>([
+    ['a ServiceUnavailableError', new ServiceUnavailableError('identity', systemError()), 'ServiceUnavailableError', UNAVAILABLE],
+    [
+      'an unavailability caused by a ServiceUnavailableError',
+      Object.assign(new Error(TEXT, { cause: new ServiceUnavailableError('identity', systemError()) }), { name: 'SiteMonitorUnavailableError' }),
+      'SiteMonitorUnavailableError',
+      UNAVAILABLE,
+    ],
+    ['an Error caused by a PostgreSQL error', wrapped(1, pgError()), 'Error', 'PostgreSQL error 42601'],
+  ])('serializes %s with the safe text of its chain, the outer type and only frames, and keeps it on re-serialization', (_, value, type, message) => {
+    const record = serializeError(value);
+    const { stack, ...fields } = record;
+
+    expect(fields).toStrictEqual({ type, message });
+    expectFramesUnder(stack, `${type}: ${message}`);
+    expectNoLeak(JSON.stringify(record));
+    expect(serializeError(record)).toStrictEqual(record);
   });
 });
 
@@ -289,6 +349,7 @@ describe('createLogger safe-error boundary', () => {
     ['a PostgreSQL error', pgError, 'error', 'PostgreSQL error 42601'],
     ['a system error', systemError, 'Error', 'connect ECONNREFUSED'],
     ['a Fastify error', fastifyError, 'Error', 'FST_ERR_VALIDATION'],
+    ['a ServiceUnavailableError', () => new ServiceUnavailableError('identity', systemError()), 'ServiceUnavailableError', UNAVAILABLE],
   ])('keeps the identifiers of %s', (_, make, type, identifier) => {
     const { logger, raw } = capture();
 
@@ -315,6 +376,7 @@ describe('tracing safe-error boundary', () => {
     ['an Error', () => new Error(TEXT), 'Error', REDACTED],
     ['a PostgreSQL error', pgError, '42601', 'PostgreSQL error 42601'],
     ['a system error', systemError, 'ECONNREFUSED', 'connect ECONNREFUSED'],
+    ['a ServiceUnavailableError', () => new ServiceUnavailableError('identity', systemError()), 'ServiceUnavailableError', UNAVAILABLE],
     ['a thrown string', () => TEXT, undefined, REDACTED],
   ])('exports a startSpan that throws %s without the error text', async (_, make, type, message) => {
     exporter.reset();

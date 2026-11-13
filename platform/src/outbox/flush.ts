@@ -1,4 +1,5 @@
 /** Outbox runtime registry, the row selection and publishing shared by flush, sweep and replay, and the in-request flush after commit. */
+import { untilAborted } from '../auth/deadline.js';
 import type { EventEnvelope, EventPublisher, TopicValidator } from '../events/index.js';
 import { serializeError, type Logger } from '../logging/index.js';
 import { systemClock, type Clock } from '../service-kit/index.js';
@@ -26,7 +27,15 @@ export interface CreateOutboxOptions {
   payloadValidators?: Record<string, TopicValidator> | Map<string, TopicValidator>;
 }
 
-/** Counts of one publishing pass; `skipped` rows stay unpublished behind a failed, held or unpublished earlier row of their ordering key. */
+/** Longest an in-request flush waits on row locks and publishes before it leaves its rows to the sweep. */
+export const FLUSH_DEADLINE_MS = 2_000;
+
+const SET_LOCK_TIMEOUT_SQL = "SELECT set_config('lock_timeout', $1, true)";
+
+/**
+ * Counts of one publishing pass; `skipped` rows stay unpublished behind a failed, held or unpublished earlier row of their ordering key,
+ * or were left unattempted once the pass's deadline passed.
+ */
 export interface PublishSummary {
   published: number;
   failed: number;
@@ -140,24 +149,25 @@ function bySeq(a: OutboxRow, b: OutboxRow): number {
  * Publishes `rows` one at a time in `seq` order with their stored envelopes, then stamps the published ones in `tx`.
  * After a failed publish, later rows with the same ordering key are skipped, so a key's events never leave out of order.
  * `stamp: 'unpublished-only'` (default) sets `published_at` only where it is null; `'none'` stamps nothing.
+ * Once `signal` aborts, a publish still pending counts as failed and every row not yet attempted as skipped.
  */
 export async function publishLockedRows(
   tx: TenantTx,
   runtime: OutboxRuntime,
   rows: readonly OutboxRow[],
-  opts: { stamp?: 'unpublished-only' | 'none' } = {},
+  opts: { stamp?: 'unpublished-only' | 'none'; signal?: AbortSignal } = {},
 ): Promise<PublishSummary> {
   const failedKeys = new Set<string>();
   const published: string[] = [];
   let failed = 0;
   let skipped = 0;
   for (const row of [...rows].sort(bySeq)) {
-    if (failedKeys.has(row.orderingKey)) {
+    if (failedKeys.has(row.orderingKey) || opts.signal?.aborted) {
       skipped += 1;
       continue;
     }
     try {
-      await runtime.publisher.publish(row.topic, row.envelope as unknown as EventEnvelope);
+      await untilAborted(runtime.publisher.publish(row.topic, row.envelope as unknown as EventEnvelope), opts.signal);
       published.push(row.eventId);
     } catch (err) {
       failed += 1;
@@ -179,6 +189,7 @@ export async function publishLockedRows(
 
 /**
  * Commit callback publishing and stamping the rows `eventIds` names after their keys' earlier unpublished rows, in a fresh tenant transaction.
+ * Bounded by FLUSH_DEADLINE_MS: rows whose locks or publishes are not confirmed in time are left to the sweep.
  * Never throws: on error nothing is stamped, every id counts as failed and the rows are left to the sweep, as are rows behind a held row.
  */
 export async function flushAfterCommit(
@@ -190,10 +201,12 @@ export async function flushAfterCommit(
     return { published: 0, failed: 0, skipped: 0 };
   }
   const { schema } = runtime.db;
+  const signal = AbortSignal.timeout(FLUSH_DEADLINE_MS);
   try {
     return await runtime.db.withTenant(tenantId, async (tx) => {
+      await tx.query(SET_LOCK_TIMEOUT_SQL, [`${FLUSH_DEADLINE_MS}ms`]);
       const { rows, blocked } = await dropBlockedRows(tx, schema, await selectPublishable(tx, schema, { eventIds }));
-      const summary = await publishLockedRows(tx, runtime, rows);
+      const summary = await publishLockedRows(tx, runtime, rows, { signal });
       return { ...summary, skipped: summary.skipped + blocked };
     });
   } catch (err) {

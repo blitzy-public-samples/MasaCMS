@@ -387,7 +387,7 @@ const cases = {
   },
   queuePause: request('POST', `${QUEUE_PATH}/pause`, {
     as: asOperator,
-    verify: (body) => expect(body).toEqual({ queue: SWEEP_QUEUE, service: SERVICE, paused: true }),
+    verify: (body) => expect(body).toEqual({ queue: SWEEP_QUEUE, service: SERVICE, paused: true, running: 0 }),
   }),
   queueResume: request('POST', `${QUEUE_PATH}/resume`, {
     as: asOperator,

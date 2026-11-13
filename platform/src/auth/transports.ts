@@ -36,6 +36,8 @@ export interface AuthRequest {
   query?: Record<string, unknown>;
   /** Request path; a query string on it is ignored. */
   path: string;
+  /** Node's raw header list, `[name, value, …]` with names in their sent case. */
+  rawHeaders?: readonly string[];
 }
 
 /** Identities one transport verified for a request. */
@@ -93,7 +95,9 @@ export function managedAudience(selfUrl: string, path: string): string {
 function headerValue(req: AuthRequest, name: string): string | undefined {
   const value = req.headers[name];
   // A repeated credential header is ambiguous, so it is refused rather than one copy picked.
-  if (Array.isArray(value)) {
+  // Raw headers are counted because Node keeps only the first `authorization` in `headers`.
+  const sent = req.rawHeaders?.filter((entry, index) => index % 2 === 0 && entry.toLowerCase() === name).length ?? 0;
+  if (Array.isArray(value) || sent > 1) {
     throw AuthDenial.unauthenticated('invalid-credential');
   }
   return value;

@@ -60,7 +60,7 @@ const TASK_BUILD = {
 };
 
 const GATEWAY_SPAN = 'GET /contract/archive';
-const HTTP_CLIENT_SPAN = { name: 'POST', kind: SpanKind.CLIENT };
+const HTTP_CLIENT_SPAN = { name: 'POST people', kind: SpanKind.CLIENT };
 const CALLEE_SPAN = 'POST /internal/v1/contract';
 const PUBLISH_SPAN = 'outbox.publish';
 const CONSUMER_SPAN = `events.consume ${SUBSCRIPTION}`;

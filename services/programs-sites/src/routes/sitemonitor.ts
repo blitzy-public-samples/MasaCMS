@@ -24,6 +24,8 @@ export interface SiteMonitorRouteDeps {
 /** Public-run prefixes; legacy compares them in any letter case (contentServer.cfc:669, 783), so createService routes them case-insensitively. */
 export const SITEMONITOR_RUN_PREFIXES: readonly string[] = Object.freeze(['/_api/sitemonitor', '/index.cfm/_api/sitemonitor']);
 const RUN_PATHS: readonly string[] = Object.freeze(SITEMONITOR_RUN_PREFIXES.map((prefix) => `${prefix}*`));
+/** Public-run methods: legacy matches the path only, and these are the methods the gateway edge forwards. */
+const RUN_METHODS = Object.freeze(['DELETE', 'GET', 'HEAD', 'OPTIONS', 'PATCH', 'POST', 'PUT'] as const);
 const TASK_PATH = '/internal/v1/jobs/sitemonitor';
 const STATE_PATH = '/internal/v1/sitemonitor/state';
 
@@ -87,7 +89,7 @@ export async function registerSiteMonitorRoutes(app: FastifyInstance, deps: Site
   // legacy: contentServer.cfc:745-747 returns "" once every step ran; a failed pass propagates and leaves the cursor.
   for (const url of RUN_PATHS) {
     app.route({
-      method: ['GET', 'POST'],
+      method: [...RUN_METHODS],
       url,
       config: { opt2: PUBLIC_RUN },
       handler: async (_request, reply) => {

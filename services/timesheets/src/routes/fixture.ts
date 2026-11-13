@@ -10,9 +10,11 @@ import {
   type UserClaims,
 } from '@opt2/platform/auth';
 import { LegacyApiError, cfDateFormat } from '@opt2/platform/legacy-compat';
+import { serializeError } from '@opt2/platform/logging';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import {
   csrfPreHandler,
+  recordOutcomeReason,
   sendLegacyResponse,
   type Clock,
   type FastifyPluginAsync,
@@ -29,6 +31,7 @@ import {
   fixtureContext,
   fixtureDayAction,
   fixtureList,
+  fixtureOutcomeReason,
   fixtureSuccess,
   toFixtureError,
   type FixtureContext,
@@ -51,6 +54,9 @@ const ROUTES = Object.freeze({
   sheetStatus: `${FIXTURE_PREFIX}/sheets/:id/status`,
   dayAction: `${FIXTURE_PREFIX}/days/:id/:action`,
 });
+
+/** Request methods every fixture route accepts; `effectiveMethod` picks the one it answers as. */
+const TRANSPORT_METHODS = Object.freeze(['GET', 'POST'] as const);
 
 /** timesheets.cfc `variables.roles`, which its gate() requires for every route. */
 const FIXTURE_ROLES: readonly string[] = Object.freeze([
@@ -103,6 +109,13 @@ function userClaims(request: FastifyRequest): UserClaims {
   const { user } = request.opt2Auth;
   if (user === undefined) throw AuthDenial.unauthenticated('missing-credential');
   return user;
+}
+
+/** The method api.cfm dispatches on: a non-empty X-HTTP-Method-Override, else the request method, upper-cased. */
+function effectiveMethod(request: FastifyRequest): string {
+  const override = request.headers['x-http-method-override'];
+  const value = Array.isArray(override) ? override[0] : override;
+  return (value === undefined || value === '' ? request.method : value).toUpperCase();
 }
 
 /**
@@ -215,6 +228,21 @@ async function blackedOutIds(tx: TenantTx, repository: TimesheetsRepository, day
   return new Set((await repository.blackoutsOfDays(tx, days.map((day) => day.day_id))).map((row) => row.day_id));
 }
 
+/** Each of `sheets` with its days in work date, then day id order, the days of all of them read in one query. */
+export async function sheetsWithDays(
+  tx: TenantTx,
+  repository: TimesheetsRepository,
+  sheets: readonly TimesheetRow[],
+): Promise<Array<{ sheet: TimesheetRow; rows: TimesheetDayRow[] }>> {
+  const bySheet = new Map<string, TimesheetDayRow[]>();
+  for (const day of await repository.daysOfSheets(tx, sheets.map((sheet) => sheet.timesheet_id))) {
+    const rows = bySheet.get(day.timesheet_id);
+    if (rows === undefined) bySheet.set(day.timesheet_id, [day]);
+    else rows.push(day);
+  }
+  return sheets.map((sheet) => ({ sheet, rows: bySheet.get(sheet.timesheet_id) ?? [] }));
+}
+
 /** Days with their blackout flags, as timesheets.cfc findDays left-joins the blackouts. */
 function withBlackouts(days: readonly TimesheetDayRow[], blackedOut: ReadonlySet<string>): FixtureDaySource[] {
   return days.map((day) => ({ day, blackout: blackedOut.has(day.day_id) }));
@@ -248,11 +276,13 @@ function fixtureDenialRenderer(db: TenantDb): DenialRenderer {
     const claims = (request.opt2Auth as Opt2AuthContext | null)?.user;
     // Identity mints a token without roles for an unknown site, whereas auth.cfc resolveSite rejects that site before requireAny.
     const unknownSite = denial.reason === 'forbidden' && claims !== undefined && (await tenantForRegisteredSite(db, claims.site)) === null;
-    return toFixtureError(unknownSite ? new FixtureApiError('invalidParameters') : denial, contextOf(request));
+    const answered = unknownSite ? new FixtureApiError('invalidParameters') : denial;
+    recordOutcomeReason(request, fixtureOutcomeReason(answered));
+    return toFixtureError(answered, contextOf(request));
   };
 }
 
-/** Registers the four timesheets fixture routes of the contract, answering their errors and auth denials in the fixture envelope. */
+/** Registers the four timesheets fixture routes of the contract for GET and POST, answering their errors and auth denials in the fixture envelope. */
 export const timesheetsFixturePlugin: FastifyPluginAsync<FixtureRouteDeps> = async (app, deps) => {
   const { db, repository, clock } = deps;
   const opt2: Opt2RouteConfig = { requires: FIXTURE_ROLES, transport: 'service', renderDenial: fixtureDenialRenderer(db) };
@@ -261,18 +291,36 @@ export const timesheetsFixturePlugin: FastifyPluginAsync<FixtureRouteDeps> = asy
   app.setErrorHandler((error, request, reply) => {
     // A LegacyServiceUnavailableError is rethrown here and answered by service-kit's handler as the legacy 503.
     const response = toFixtureError(error, contextOf(request));
-    if (response.status === 500 && !(error instanceof LegacyApiError)) request.log.error({ error }, 'unhandled fixture exception');
+    if (response.status === 500 && !(error instanceof LegacyApiError)) request.log.error({ error: serializeError(error) }, 'unhandled fixture exception');
+    else recordOutcomeReason(request, fixtureOutcomeReason(error));
     return sendLegacyResponse(reply, response);
   });
 
-  app.get(ROUTES.sheets, config, async (request, reply) => {
+  /** Registers `url` for every transport method; `handler` runs only when `method` is the effective method. */
+  function register<Params>(
+    url: string,
+    method: (typeof TRANSPORT_METHODS)[number],
+    handler: (request: FastifyRequest<{ Params: Params }>, reply: FastifyReply) => Promise<FastifyReply>,
+  ): void {
+    app.route<{ Params: Params }>({
+      method: [...TRANSPORT_METHODS],
+      url,
+      ...config,
+      handler: async (request, reply) => {
+        // timesheets.cfc handle() answers any other effective method notFound before its gate.
+        if (effectiveMethod(request) !== method) throw new FixtureApiError('notFound');
+        return handler(request, reply);
+      },
+    });
+  }
+
+  register(ROUTES.sheets, 'GET', async (request, reply) => {
     const { ctx, claims, siteId } = fixtureCall(request);
     const asOf = requireAsOf(ctx.params, clock);
     const paging = fixturePaging(ctx.params);
     const { total, items } = await withTenant(db, claims.tid, async (tx) => {
       const page = await repository.listSheets(tx, { siteid: siteId, ...paging });
-      const sheets: Array<{ sheet: TimesheetRow; rows: TimesheetDayRow[] }> = [];
-      for (const sheet of page.rows) sheets.push({ sheet, rows: await repository.daysOfSheet(tx, sheet.timesheet_id) });
+      const sheets = await sheetsWithDays(tx, repository, page.rows);
       const blackedOut = await blackedOutIds(tx, repository, sheets.flatMap(({ rows }) => rows));
       return {
         total: page.total,
@@ -282,19 +330,19 @@ export const timesheetsFixturePlugin: FastifyPluginAsync<FixtureRouteDeps> = asy
     return sendLegacyResponse(reply, fixtureList(ctx, items, { total, ...paging }));
   });
 
-  app.get<{ Params: IdParams }>(ROUTES.sheet, config, async (request, reply) => {
+  register<IdParams>(ROUTES.sheet, 'GET', async (request, reply) => {
     const call = fixtureCall(request);
     const detail = await withTenant(db, call.claims.tid, (tx) => sheetDetail(tx, deps, call, request.params.id));
     return sendLegacyResponse(reply, fixtureSuccess(call.ctx, sheetRow(detail)));
   });
 
-  app.get<{ Params: IdParams }>(ROUTES.sheetStatus, config, async (request, reply) => {
+  register<IdParams>(ROUTES.sheetStatus, 'GET', async (request, reply) => {
     const call = fixtureCall(request);
     const { sheet, status } = await withTenant(db, call.claims.tid, (tx) => sheetDetail(tx, deps, call, request.params.id));
     return sendLegacyResponse(reply, fixtureSuccess(call.ctx, statusRow({ sheet, status })));
   });
 
-  app.post<{ Params: DayActionParams }>(ROUTES.dayAction, config, async (request, reply) => {
+  register<DayActionParams>(ROUTES.dayAction, 'POST', async (request, reply) => {
     const ctx = contextOf(request);
     // api.cfm lower-cases the action segment; timesheets.cfc answers any other action notFound before its gate.
     const action = request.params.action.toLowerCase();

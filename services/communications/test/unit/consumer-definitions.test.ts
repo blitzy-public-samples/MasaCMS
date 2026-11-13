@@ -74,7 +74,7 @@ const BINDINGS: Binding[] = [
     expectedTopic: 'identity.login-mail.requested.v1',
     schema: loginMailSchema,
     meta: { kind: 'process' },
-    keys: ['apply', 'kind', 'topic'],
+    keys: ['apply', 'checkTenant', 'kind', 'topic'],
     define: (deps) => loginMailConsumer(deps as MailDeps),
     domain: vi.mocked(applyLoginMail),
   },
@@ -85,7 +85,7 @@ const BINDINGS: Binding[] = [
     expectedTopic: 'surveys.survey.scheduled.v1',
     schema: surveyScheduledSchema,
     meta: { kind: 'process', supersedes: true },
-    keys: ['apply', 'kind', 'supersedes', 'topic'],
+    keys: ['apply', 'checkTenant', 'kind', 'supersedes', 'topic'],
     define: (deps) => surveyScheduledConsumer(deps as SurveyScheduleDeps),
     domain: vi.mocked(applySurveyScheduled),
   },
@@ -102,14 +102,16 @@ describe.each(BINDINGS)('$label consumer definition', ({ label, producer, topic,
     expect(schema).toHaveProperty('$id', `urn:opt2:${producer}:event:${expectedTopic}`);
   });
 
-  it("declares exactly the schema's x-opt2 kind, supersedes and fan-out, with no tenant re-check override", () => {
+  it("declares exactly the schema's x-opt2 kind, supersedes and fan-out, with its own tenant re-check", () => {
     const definition = define({ label });
-    const declared = Object.fromEntries(Object.entries(definition).filter(([key]) => key !== 'topic' && key !== 'apply'));
+    const declared = Object.fromEntries(
+      Object.entries(definition).filter(([key]) => key !== 'topic' && key !== 'apply' && key !== 'checkTenant'),
+    );
     expect(topicMeta(schema)).toEqual(meta);
     expect(declared).toEqual(topicMeta(schema));
     expect(definition.topic).toBe(expectedTopic);
     expect(Object.keys(definition).sort()).toEqual(keys);
-    expect(definition).not.toHaveProperty('checkTenant');
+    expect(definition.checkTenant).toBeTypeOf('function');
     expect(definition).not.toHaveProperty('fanout');
   });
 

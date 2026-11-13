@@ -1,0 +1,419 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`e-signature screen markup > audit renders the audit chain 1`] = `
+{
+  "alerts": [],
+  "buttons": [],
+  "controls": [],
+  "headings": [
+    "Audit Chain",
+  ],
+  "labels": [],
+  "links": [
+    {
+      "href": "/opt2/admin/e-signature/requests?siteid=tenant-a",
+      "text": "Signature Requests",
+    },
+    {
+      "href": "/opt2/admin/e-signature/request?siteid=tenant-a&id=E5160001-0000-0000-0000000000000001",
+      "text": "Signature Request",
+    },
+    {
+      "href": "/opt2/admin/e-signature/verify?siteid=tenant-a&id=E5160001-0000-0000-0000000000000001",
+      "text": "Verify",
+    },
+  ],
+  "tables": [
+    {
+      "headers": [
+        "Seq",
+        "Action",
+        "Actor",
+        "Detail",
+        "At",
+        "Previous Hash",
+        "Entry Hash",
+      ],
+      "rows": [
+        [
+          "1",
+          "created",
+          "5A000000-0000-0000-0000000000000003",
+          "a049f1c1c0daa458e64b981eb0473ad5fc47c20aa8386aca60b76c6b9f0d1f7f",
+          "2026-06-28T10:00:00.000",
+          "0000000000000000000000000000000000000000000000000000000000000000",
+          "a63b0bd3068273b22c735ec1320165c19472e87887d7dca1b23f305f2798df03",
+        ],
+        [
+          "2",
+          "signed",
+          "E51600F0-0000-0000-0000000000000001",
+          "Jordan Ellis",
+          "2026-06-30T09:15:00.000",
+          "a63b0bd3068273b22c735ec1320165c19472e87887d7dca1b23f305f2798df03",
+          "5a1f5241b50f0957ab069accfeeb9b172584c7370f9a7fdd327a8f4b5cc877fa",
+        ],
+      ],
+    },
+  ],
+  "title": "",
+}
+`;
+
+exports[`e-signature screen markup > request renders a pending request with the typed-name form 1`] = `
+{
+  "alerts": [],
+  "buttons": [
+    {
+      "hasOnclick": false,
+      "text": "Sign",
+      "type": "submit",
+    },
+  ],
+  "controls": [
+    {
+      "checked": false,
+      "name": "typedName",
+      "options": [],
+      "selected": [],
+      "tag": "input",
+      "type": "text",
+      "value": "",
+    },
+    {
+      "checked": false,
+      "name": "csrf_token",
+      "options": [],
+      "selected": [],
+      "tag": "input",
+      "type": "hidden",
+      "value": "TESTCSRFTOKEN0000000000000000000",
+    },
+    {
+      "checked": false,
+      "name": "csrf_token_expires",
+      "options": [],
+      "selected": [],
+      "tag": "input",
+      "type": "hidden",
+      "value": "260630150000000",
+    },
+  ],
+  "headings": [
+    "Signature Request",
+  ],
+  "labels": [
+    "Typed Name",
+  ],
+  "links": [
+    {
+      "href": "/opt2/admin/e-signature/requests?siteid=tenant-a",
+      "text": "Signature Requests",
+    },
+    {
+      "href": "/opt2/admin/e-signature/audit?siteid=tenant-a&id=E5160001-0000-0000-0000000000000002",
+      "text": "Audit Chain",
+    },
+    {
+      "href": "/opt2/admin/e-signature/verify?siteid=tenant-a&id=E5160001-0000-0000-0000000000000002",
+      "text": "Verify",
+    },
+  ],
+  "tables": [
+    {
+      "headers": [
+        "Document",
+        "State",
+        "Signer",
+        "Created",
+        "Created By",
+        "Document SHA-256",
+      ],
+      "rows": [
+        [
+          "tenant-a-data-processing-addendum.pdf",
+          "PENDING",
+          "E51600F0-0000-0000-0000000000000001",
+          "2026-06-29T14:30:00",
+          "5A000000-0000-0000-0000000000000003",
+          "a84c897a7e48db8d14ee4cd0e81b1b16880196905975d48166ea9a63de84f21f",
+        ],
+      ],
+    },
+  ],
+  "title": "",
+}
+`;
+
+exports[`e-signature screen markup > request renders a signed request with its signature 1`] = `
+{
+  "alerts": [],
+  "buttons": [],
+  "controls": [],
+  "headings": [
+    "Signature Request",
+  ],
+  "labels": [],
+  "links": [
+    {
+      "href": "/opt2/admin/e-signature/requests?siteid=tenant-a",
+      "text": "Signature Requests",
+    },
+    {
+      "href": "/opt2/admin/e-signature/audit?siteid=tenant-a&id=E5160001-0000-0000-0000000000000001",
+      "text": "Audit Chain",
+    },
+    {
+      "href": "/opt2/admin/e-signature/verify?siteid=tenant-a&id=E5160001-0000-0000-0000000000000001",
+      "text": "Verify",
+    },
+  ],
+  "tables": [
+    {
+      "headers": [
+        "Document",
+        "State",
+        "Signer",
+        "Created",
+        "Created By",
+        "Document SHA-256",
+      ],
+      "rows": [
+        [
+          "tenant-a-supplier-agreement.pdf",
+          "SIGNED",
+          "E51600F0-0000-0000-0000000000000001",
+          "2026-06-28T10:00:00",
+          "5A000000-0000-0000-0000000000000003",
+          "a049f1c1c0daa458e64b981eb0473ad5fc47c20aa8386aca60b76c6b9f0d1f7f",
+        ],
+      ],
+    },
+    {
+      "headers": [
+        "Typed Name",
+        "Signed By",
+        "Signed At",
+      ],
+      "rows": [
+        [
+          "Jordan Ellis",
+          "E51600F0-0000-0000-0000000000000001",
+          "2026-06-30T09:15:00",
+        ],
+      ],
+    },
+  ],
+  "title": "",
+}
+`;
+
+exports[`e-signature screen markup > requests renders the request list 1`] = `
+{
+  "alerts": [],
+  "buttons": [],
+  "controls": [],
+  "headings": [
+    "Signature Requests",
+  ],
+  "labels": [],
+  "links": [
+    {
+      "href": "/opt2/admin/e-signature/request?siteid=tenant-a&id=E5160001-0000-0000-0000000000000001",
+      "text": "tenant-a-supplier-agreement.pdf",
+    },
+    {
+      "href": "/opt2/admin/e-signature/audit?siteid=tenant-a&id=E5160001-0000-0000-0000000000000001",
+      "text": "Audit Chain",
+    },
+    {
+      "href": "/opt2/admin/e-signature/verify?siteid=tenant-a&id=E5160001-0000-0000-0000000000000001",
+      "text": "Verify",
+    },
+    {
+      "href": "/opt2/admin/e-signature/request?siteid=tenant-a&id=E5160001-0000-0000-0000000000000002",
+      "text": "tenant-a-data-processing-addendum.pdf",
+    },
+    {
+      "href": "/opt2/admin/e-signature/audit?siteid=tenant-a&id=E5160001-0000-0000-0000000000000002",
+      "text": "Audit Chain",
+    },
+    {
+      "href": "/opt2/admin/e-signature/verify?siteid=tenant-a&id=E5160001-0000-0000-0000000000000002",
+      "text": "Verify",
+    },
+  ],
+  "tables": [
+    {
+      "headers": [
+        "Document",
+        "State",
+        "Signer",
+        "Created",
+        "Actions",
+      ],
+      "rows": [
+        [
+          "tenant-a-supplier-agreement.pdf",
+          "SIGNED",
+          "E51600F0-0000-0000-0000000000000001",
+          "2026-06-28T10:00:00",
+          "Audit Chain Verify",
+        ],
+        [
+          "tenant-a-data-processing-addendum.pdf",
+          "PENDING",
+          "E51600F0-0000-0000-0000000000000001",
+          "2026-06-29T14:30:00",
+          "Audit Chain Verify",
+        ],
+      ],
+    },
+  ],
+  "title": "",
+}
+`;
+
+exports[`e-signature screen markup > requests renders the request lookup for an auditor 1`] = `
+{
+  "alerts": [],
+  "buttons": [
+    {
+      "hasOnclick": false,
+      "text": "Signature Request",
+      "type": "submit",
+    },
+    {
+      "hasOnclick": false,
+      "text": "Audit Chain",
+      "type": "submit",
+    },
+    {
+      "hasOnclick": false,
+      "text": "Verify",
+      "type": "submit",
+    },
+  ],
+  "controls": [
+    {
+      "checked": false,
+      "name": "id",
+      "options": [],
+      "selected": [],
+      "tag": "input",
+      "type": "text",
+      "value": "",
+    },
+    {
+      "checked": false,
+      "name": "siteid",
+      "options": [],
+      "selected": [],
+      "tag": "input",
+      "type": "hidden",
+      "value": "tenant-a",
+    },
+  ],
+  "headings": [
+    "Signature Requests",
+  ],
+  "labels": [
+    "Request ID",
+  ],
+  "links": [],
+  "tables": [],
+  "title": "",
+}
+`;
+
+exports[`e-signature screen markup > verify renders the stored verdict and the copy form 1`] = `
+{
+  "alerts": [
+    {
+      "className": "alert alert-info",
+      "text": "The stored audit chain is intact (2 entries).",
+    },
+  ],
+  "buttons": [
+    {
+      "hasOnclick": false,
+      "text": "Verify Copy",
+      "type": "submit",
+    },
+  ],
+  "controls": [
+    {
+      "checked": false,
+      "name": "entries",
+      "options": [],
+      "selected": [],
+      "tag": "textarea",
+      "type": "textarea",
+      "value": "[
+  {
+    "entry_id": "E5160003-0000-0000-0000000000000001",
+    "request_id": "E5160001-0000-0000-0000000000000001",
+    "seq": 1,
+    "action": "created",
+    "actor_user_id": "5A000000-0000-0000-0000000000000003",
+    "detail": "a049f1c1c0daa458e64b981eb0473ad5fc47c20aa8386aca60b76c6b9f0d1f7f",
+    "at": "2026-06-28T10:00:00.000",
+    "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "entry_hash": "a63b0bd3068273b22c735ec1320165c19472e87887d7dca1b23f305f2798df03"
+  },
+  {
+    "entry_id": "E5160003-0000-0000-0000000000000002",
+    "request_id": "E5160001-0000-0000-0000000000000001",
+    "seq": 2,
+    "action": "signed",
+    "actor_user_id": "E51600F0-0000-0000-0000000000000001",
+    "detail": "Jordan Ellis",
+    "at": "2026-06-30T09:15:00.000",
+    "prev_hash": "a63b0bd3068273b22c735ec1320165c19472e87887d7dca1b23f305f2798df03",
+    "entry_hash": "5a1f5241b50f0957ab069accfeeb9b172584c7370f9a7fdd327a8f4b5cc877fa"
+  }
+]",
+    },
+    {
+      "checked": false,
+      "name": "csrf_token",
+      "options": [],
+      "selected": [],
+      "tag": "input",
+      "type": "hidden",
+      "value": "TESTCSRFTOKEN0000000000000000000",
+    },
+    {
+      "checked": false,
+      "name": "csrf_token_expires",
+      "options": [],
+      "selected": [],
+      "tag": "input",
+      "type": "hidden",
+      "value": "260630150000000",
+    },
+  ],
+  "headings": [
+    "Verify Audit Chain",
+  ],
+  "labels": [
+    "Audit Chain Copy (JSON)",
+  ],
+  "links": [
+    {
+      "href": "/opt2/admin/e-signature/requests?siteid=tenant-a",
+      "text": "Signature Requests",
+    },
+    {
+      "href": "/opt2/admin/e-signature/request?siteid=tenant-a&id=E5160001-0000-0000-0000000000000001",
+      "text": "Signature Request",
+    },
+    {
+      "href": "/opt2/admin/e-signature/audit?siteid=tenant-a&id=E5160001-0000-0000-0000000000000001",
+      "text": "Audit Chain",
+    },
+  ],
+  "tables": [],
+  "title": "",
+}
+`;

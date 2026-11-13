@@ -1,5 +1,5 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Survey-response grants kept by the repository's generic `survey_target` writes against a throwaway `surveys` schema. */
+/** Survey-response grants kept by the repository's generic `survey` and `survey_target` writes against a throwaway `surveys` schema. */
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { UnitNotAuthoritativeError, ensureUnitGates } from '@opt2/platform/migration-kit';
@@ -9,7 +9,7 @@ import { TENANT_A, TENANT_B, TENANT_UMBRELLA, createThrowawaySchema, fixedClock,
 import { applyBulkTarget } from '../../src/domain/bulk-target.js';
 import { SURVEY_RESPONSE_GRANT } from '../../src/repo/grants.js';
 import { createSurveysRepository, type SurveysRepository } from '../../src/repo/repository.js';
-import { SURVEY_TARGET, UNITS, type SurveyRow, type SurveyTargetRow } from '../../src/repo/tables.js';
+import { SURVEY_TARGET, UNITS, type SurveyResponseRow, type SurveyRow, type SurveyTargetRow } from '../../src/repo/tables.js';
 
 const NOW = new Date(2026, 5, 30, 14, 5, 9, 123);
 const USER_ID = '11111111-2222-3333-4444555566667777';
@@ -27,9 +27,9 @@ type Seed = ReadonlyArray<[string, string | null]>;
 /** Another survey's expected target count and grantees after two transactions overlap. */
 type Elsewhere = [surveyId: string, count: number, grantees: string[]];
 
-const available = await pgAvailable();
+const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
 
-describe.skipIf(!available)('survey-response grants of generic survey_target writes', () => {
+describe.skipIf(!available)('survey-response grants of generic survey and survey_target writes', () => {
   let handle: ThrowawaySchema;
   let repository: SurveysRepository;
 
@@ -78,6 +78,11 @@ describe.skipIf(!available)('survey-response grants of generic survey_target wri
       ),
     );
     return rows.map((row) => row.grantee_tenant);
+  }
+
+  /** Grantees of a stored tenant A survey: its own tenant's grant plus `others`, sorted. */
+  function withOwner(...others: string[]): string[] {
+    return [TENANT_A.tenantId, ...others].sort();
   }
 
   /** Moves the stored `row` to `patch` through the generic `write`. */
@@ -181,7 +186,7 @@ describe.skipIf(!available)('survey-response grants of generic survey_target wri
     const survey = await newSurvey();
     await inTenant((tx) => repository.insert(tx, TABLE, target(survey.survey_id, siteid)));
 
-    expect(await grantees(survey.survey_id)).toEqual(expected);
+    expect(await grantees(survey.survey_id)).toEqual(withOwner(...expected));
   });
 
   it('grants a tenant once for two targets of its site in another case, trailing spaces and group', async () => {
@@ -191,7 +196,7 @@ describe.skipIf(!available)('survey-response grants of generic survey_target wri
       await repository.upsert(tx, TABLE, target(survey.survey_id, 'TENANT-B ', 'Panel'));
     });
 
-    expect(await grantees(survey.survey_id)).toEqual([TENANT_B.tenantId]);
+    expect(await grantees(survey.survey_id)).toEqual(withOwner(TENANT_B.tenantId));
   });
 
   it.each(
@@ -208,7 +213,7 @@ describe.skipIf(!available)('survey-response grants of generic survey_target wri
     });
     await inTenant((tx) => move(tx, write, moved, { siteid: 'umbrella' }));
 
-    expect(await grantees(survey.survey_id)).toEqual([...expected].sort());
+    expect(await grantees(survey.survey_id)).toEqual(withOwner(...expected));
   });
 
   it.each(['upsert', 'update'] as const)('re-syncs both surveys when a generic %s moves a target to another survey', async (write) => {
@@ -217,8 +222,8 @@ describe.skipIf(!available)('survey-response grants of generic survey_target wri
     await inTenant((tx) => repository.upsert(tx, TABLE, moved));
     await inTenant((tx) => move(tx, write, moved, { survey_id: to.survey_id }));
 
-    expect(await grantees(from.survey_id)).toEqual([]);
-    expect(await grantees(to.survey_id)).toEqual([TENANT_B.tenantId]);
+    expect(await grantees(from.survey_id)).toEqual(withOwner());
+    expect(await grantees(to.survey_id)).toEqual(withOwner(TENANT_B.tenantId));
   });
 
   it('restores the grant of an unmoved target on a repeated upsert and changes nothing for an unknown update', async () => {
@@ -251,8 +256,8 @@ describe.skipIf(!available)('survey-response grants of generic survey_target wri
 
     expect(deleted).toMatchObject({ target_id: removed.target_id });
     expect(again).toBeNull();
-    expect(await grantees(survey.survey_id)).toEqual([...expected, TENANT_UMBRELLA.tenantId].sort());
-    expect(await grantees(other.survey_id)).toEqual([TENANT_B.tenantId]);
+    expect(await grantees(survey.survey_id)).toEqual(withOwner(...expected, TENANT_UMBRELLA.tenantId));
+    expect(await grantees(other.survey_id)).toEqual(withOwner(TENANT_B.tenantId));
     const { rows } = await withMetadata(handle.app, (tx) =>
       tx.query(`SELECT 1 FROM ${handle.schema}.tenant_grant WHERE resource_id = $1 AND kind = 'other-kind'`, [survey.survey_id]),
     );
@@ -270,7 +275,7 @@ describe.skipIf(!available)('survey-response grants of generic survey_target wri
       }),
     ).rejects.toBe(failure);
 
-    expect(await grantees(survey.survey_id)).toEqual([]);
+    expect(await grantees(survey.survey_id)).toEqual(withOwner());
   });
 
   it('refuses a live generic upsert of a unit that is not target-authoritative before writing a grant', async () => {
@@ -280,20 +285,48 @@ describe.skipIf(!available)('survey-response grants of generic survey_target wri
     await expect(inTenant((tx) => repository.upsert(tx, TABLE, target(survey.survey_id, 'tenant-b')))).rejects.toBeInstanceOf(
       UnitNotAuthoritativeError,
     );
-    expect(await grantees(survey.survey_id)).toEqual([]);
+    expect(await grantees(survey.survey_id)).toEqual(withOwner());
   });
+
+  it.each(['insert', 'upsert'] as const)(
+    'grants the survey tenant its own grant on a generic survey %s and drops only that grant with the survey',
+    async (write) => {
+      const surveyId = cfUuid();
+      const row = { survey_id: surveyId, siteid: TENANT_A.siteId, title: 'T', status: 'DRAFT', created: NOW, createdbyid: USER_ID };
+      const stored = await inTenant((tx) => repository[write]<SurveyRow>(tx, 'survey', row));
+      await inTenant((tx) => repository.upsert(tx, TABLE, target(surveyId, 'tenant-b')));
+
+      const key = { survey_id: surveyId };
+      expect(stored.title).toBe('T');
+      expect(await grantees(surveyId)).toEqual(withOwner(TENANT_B.tenantId));
+      expect(await inTenant((tx) => repository.update<SurveyRow>(tx, 'survey', key, { title: 'V' }))).toMatchObject({ title: 'V' });
+      expect(await grantees(surveyId)).toEqual(withOwner(TENANT_B.tenantId));
+      expect(await inTenant((tx) => repository.delete<SurveyRow>(tx, 'survey', key))).toMatchObject({ title: 'V' });
+      expect(await grantees(surveyId)).toEqual([TENANT_B.tenantId]);
+      expect(await inTenant((tx) => repository.delete<SurveyRow>(tx, 'survey', key))).toBeNull();
+    },
+  );
 
   it('delegates generic writes of other tables unchanged and grants nothing for them', async () => {
     const surveyId = cfUuid();
-    const row = { survey_id: surveyId, siteid: 'tenant-b', title: 'T', status: 'DRAFT', created: NOW, createdbyid: USER_ID };
+    const row = {
+      response_id: cfUuid(),
+      survey_id: surveyId,
+      siteid: 'tenant-a',
+      respondentsiteid: 'tenant-b',
+      respondent_user_id: USER_ID,
+      answers: 'T',
+      created: NOW,
+    };
+    const key = { response_id: row.response_id };
     const [inserted, upserted, updated, deleted] = await inTenant(async (tx) => [
-      await repository.insert<SurveyRow>(tx, 'survey', row),
-      await repository.upsert<SurveyRow>(tx, 'survey', { ...row, title: 'U' }),
-      await repository.update<SurveyRow>(tx, 'survey', { survey_id: surveyId }, { title: 'V' }),
-      await repository.delete<SurveyRow>(tx, 'survey', { survey_id: surveyId }),
+      await repository.insert<SurveyResponseRow>(tx, 'survey_response', row),
+      await repository.upsert<SurveyResponseRow>(tx, 'survey_response', { ...row, answers: 'U' }),
+      await repository.update<SurveyResponseRow>(tx, 'survey_response', key, { answers: 'V' }),
+      await repository.delete<SurveyResponseRow>(tx, 'survey_response', key),
     ]);
 
-    expect([inserted.title, upserted.title, updated?.title, deleted?.title]).toEqual(['T', 'U', 'V', 'V']);
+    expect([inserted.answers, upserted.answers, updated?.answers, deleted?.answers]).toEqual(['T', 'U', 'V', 'V']);
     expect(await grantees(surveyId)).toEqual([]);
   });
 
@@ -331,7 +364,7 @@ describe.skipIf(!available)('survey-response grants of generic survey_target wri
 
     expect(await overlap(first, hold, second, survey.survey_id, seeded)).toBe(true);
     expect(await targetCount(survey.survey_id)).toBe(count);
-    expect(await grantees(survey.survey_id)).toEqual(expected);
+    expect(await grantees(survey.survey_id)).toEqual(withOwner(...expected));
     if (elsewhere !== undefined) {
       const [otherId, otherCount, otherGrantees] = elsewhere;
       expect(await targetCount(otherId)).toBe(otherCount);

@@ -12,6 +12,7 @@ import {
   type StoreObjectDeps,
   type StoredObjectResult,
 } from '../migration/objects.js';
+import { recoverAllStagedObjects } from '../migration/staged-objects.js';
 
 type PutObjectQuery = operations['migrationPutObject']['parameters']['query'];
 type GetObjectQuery = operations['migrationGetObject']['parameters']['query'];
@@ -28,16 +29,21 @@ const OBJECTS_PATH = '/internal/v1/migration/objects';
 const ROUTE: { opt2: Opt2RouteConfig } = { opt2: { transport: 'service', requires: [Roles.platformMigration] } };
 const OCTET_STREAM = 'application/octet-stream';
 
-// The contract's parameter patterns: a CF UUID file id, a variant suffix that cannot leave the key's directory, and the object key.
+// The contract's parameter patterns: a CF UUID file id, a variant suffix that cannot leave the key's directory, the extension, and
+// the object key, which reuses the variant and extension fragments so every stored key is readable.
+const TENANT_UUID = '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}';
+const VARIANT_BODY = String.raw`_[^/\\\u0000-\u001F\u007F]+`;
+const EXT = '[A-Za-z0-9]+';
 const CF_ID = /^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}$/;
-const VARIANT = /^(_[^/\\\u0000-\u001F\u007F]+)?$/;
-const OBJECT_KEY = /^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\/[A-Za-z0-9-]{35}(_[^/\\\u0000-\u001F\u007F]+)?\.[A-Za-z0-9]+$/;
+const VARIANT = new RegExp(`^(${VARIANT_BODY})?$`);
+const EXTENSION = new RegExp(`^${EXT}$`);
+const OBJECT_KEY = new RegExp(String.raw`^${TENANT_UUID}/[A-Za-z0-9-]{35}(${VARIANT_BODY})?\.${EXT}$`);
 
 const putQuerySchema = z.strictObject({
   tenantId: z.guid(),
   fileId: z.string().regex(CF_ID),
   variant: z.custom<FileVariant>((value) => typeof value === 'string' && VARIANT.test(value)),
-  ext: z.string().regex(/^[^/\\]+$/),
+  ext: z.string().regex(EXTENSION),
   contentType: z.string().min(1),
   sha256: z.string().regex(/^[0-9a-f]{64}$/),
 }) satisfies z.ZodType<PutObjectQuery>;
@@ -52,6 +58,7 @@ function fileObjectOf(stored: StoredObjectResult): FileObject {
 /** Registers the `platform.migration` object upload and read of `content-files`. */
 export function registerMigrationObjectRoutes(app: FastifyInstance, ctx: MigrationObjectRouteContext): void {
   const deps: StoreObjectDeps = { db: ctx.domain.db, repository: ctx.domain.repository, storage: ctx.storage, clock: ctx.clock };
+  app.addHook('onReady', () => recoverAllStagedObjects(deps));
 
   /** Stores the raw body as the object the query names, once per SHA-256. */
   app.post(OBJECTS_PATH, { config: ROUTE }, async (request): Promise<FileObject> => {

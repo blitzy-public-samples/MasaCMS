@@ -168,6 +168,8 @@ function errorSummary(error: unknown, quiesce: QuiesceModule | undefined): Recor
   const summary = { type: error.name, message: error.message };
   if (quiesce !== undefined) {
     if (error instanceof quiesce.DrainTimeoutError) return { ...summary, timeoutMs: error.timeoutMs, owners: error.owners };
+    if (error instanceof quiesce.InvocationsRunningError) return { ...summary, timeoutMs: error.timeoutMs, queues: error.queues };
+    if (error instanceof quiesce.OrphanedWritesError) return { ...summary, rows: error.rows };
     if (error instanceof quiesce.SeekVerificationError) return { ...summary, nonEmpty: error.nonEmpty };
     if (error instanceof quiesce.MissingSubscriptionError || error instanceof quiesce.UnlistedProducerError) {
       return { ...summary, subscriptions: error.subscriptions };

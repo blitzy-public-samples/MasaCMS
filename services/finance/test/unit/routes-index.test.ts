@@ -1,5 +1,5 @@
 // SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Route registry wiring: the fixture and `/v1`/`/v2` modules always, the attachment file route only over local storage. */
+/** Route registry wiring: the fixture, `/v1`/`/v2`, export read and migration object modules always, the attachment file route only over local storage. */
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -23,8 +23,8 @@ const OPENAPI = load(readFileSync(new URL('../../contracts/openapi.yaml', import
   paths: Record<string, Record<string, unknown>>;
 };
 const HTTP_METHODS = new Set(['get', 'put', 'post', 'delete', 'patch', 'head', 'options']);
-// Contract paths the three route modules serve; `/internal` and `/healthz` belong to platform handlers.
-const MODULE_PATH = /^\/(?:legacy-fixtures|v1|v2|opt2\/files)\//;
+// Contract paths the five route modules serve; the other `/internal` paths and `/healthz` belong to platform handlers.
+const MODULE_PATH = /^\/(?:(?:legacy-fixtures|v1|v2|opt2\/files)\/|internal\/v1\/(?:migration\/objects|finance\/records)$)/;
 const FILE_PATH = /^\/opt2\/files\//;
 const FILE_ROUTE = 'GET /opt2/files/finance-attachments/:tenantId/:objectName';
 
@@ -123,7 +123,7 @@ afterAll(async () => {
 });
 
 describe('registerRoutes', () => {
-  it('adds every fixture, /v1, /v2 and local file operation of the contract over the local adapter', async () => {
+  it('adds every fixture, /v1, /v2, export read, migration object and local file operation of the contract over the local adapter', async () => {
     const expected = contractOperations((template) => MODULE_PATH.test(template));
     expect(expected).toContain(FILE_ROUTE);
     expect((await registeredWith(localAdapter)).added).toEqual(expected);

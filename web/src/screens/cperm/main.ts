@@ -159,10 +159,15 @@ const isAdminGroupName = (name: string | null | undefined): boolean =>
 async function loadAdminGroupId(ctx: ScreenContext, siteid: string): Promise<string> {
   // Legacy resolves the bean's empty site id to `default`'s private pool; identity lists only the token site's pool,
   // which is the same pool on `default`. The id fills a disabled checkbox only.
-  const response = await ctx.gateway.identity.call('get', '/v1/groups', { query: { siteid, ispublic: '0' } });
-  const admin = okBody(response, 'identity', 'listGroups').items.find((group) => isAdminGroupName(group.GroupName));
+  for (let offset: number | null = 0; offset !== null; ) {
+    const response = await ctx.gateway.identity.call('get', '/v1/groups', { query: { siteid, ispublic: '0', offset } });
+    const page: components['schemas']['GroupList'] = okBody(response, 'identity', 'listGroups');
+    const admin = page.items.find((group) => isAdminGroupName(group.GroupName));
+    if (admin !== undefined) return admin.UserID;
+    offset = page.nextOffset;
+  }
   // A group bean that loads no row answers getUserID() with a fresh createUUID().
-  return admin?.UserID ?? cfUuid();
+  return cfUuid();
 }
 
 /**

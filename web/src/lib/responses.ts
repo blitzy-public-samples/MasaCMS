@@ -1,4 +1,4 @@
-// Legacy-shaped `Response` builders and page headers for the admin routes (server-only).
+// Legacy-shaped `Response` builders for the admin routes (server-only).
 import {
   adminUnavailableResponse,
   LEGACY_HTML_CONTENT_TYPE,
@@ -27,7 +27,7 @@ export const NO_CACHE_HEADERS: Readonly<{ 'cache-control': string; expires: stri
 });
 
 // Measured on every legacy `cflocation` 302, alongside the request-start headers.
-const REDIRECT_HEADERS: Readonly<Record<string, string>> = Object.freeze({
+export const REDIRECT_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   'cache-control': 'no-cache',
   pragma: 'no-cache',
   'content-type': HTML_CONTENT_TYPE,
@@ -127,19 +127,6 @@ function mergeInto(target: Headers, init: HeadersInit | undefined): void {
     if (name === 'set-cookie') target.append(name, value);
     else target.set(name, value);
   }
-}
-
-/** A CFML URL-scope value: keys match case-insensitively and repeated keys join with `,`; `undefined` when absent. */
-function urlScopeValue(searchParams: URLSearchParams, name: string): string | undefined {
-  const values = [...searchParams].filter(([key]) => key.toLowerCase() === name).map(([, value]) => value);
-  return values.length === 0 ? undefined : values.join(',');
-}
-
-/** Admin page headers: the base headers plus {@link NO_CACHE_HEADERS} unless `compactDisplay` selects compact. */
-export function legacyPageHeaders(searchParams: URLSearchParams, requestHeaders: Headers): Headers {
-  const headers = baseHeaders({ acceptEncoding: requestHeaders.get('accept-encoding') });
-  if (!isCompactDisplay(urlScopeValue(searchParams, 'compactdisplay'))) mergeInto(headers, NO_CACHE_HEADERS);
-  return headers;
 }
 
 /** HTML view output: the UTF-8 markup with the legacy headers. */

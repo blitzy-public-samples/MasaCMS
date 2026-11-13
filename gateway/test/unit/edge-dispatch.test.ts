@@ -445,20 +445,54 @@ describe('forwarding', () => {
     expect(h.legacy.requests).toHaveLength(0);
   });
 
-  it('answers identity credential responses verbatim without calling the service', async () => {
+  it('answers identity credential responses verbatim, Origin echo included, without calling the service', async () => {
     const h = await harness();
     h.setScript(() => ({ entry: { route: 'rest:content', kind: 'read', state: 'target' }, destination: 'target', family: 'rest' }));
     vi.mocked(h.deps.resolver.resolveSession).mockResolvedValueOnce({
       kind: 'response',
       status: 401,
-      headers: { 'www-authenticate': 'Bearer error="invalid_token"' },
+      headers: {
+        'Access-Control-Allow-Origin': 'http://localhost',
+        'Access-Control-Allow-Credentials': 'true',
+        'www-authenticate': 'Bearer error="invalid_token"',
+      },
       body: '{"error":"invalid_token"}',
     });
-    const res = await h.app.inject({ method: 'GET', url: '/_api/rest/v1/default/content' });
+    const res = await h.app.inject({ method: 'GET', url: '/_api/rest/v1/default/content', headers: { origin: 'http://localhost' } });
     expect(res.statusCode).toBe(401);
+    expect(res.headers['access-control-allow-origin']).toBe('http://localhost');
+    expect(res.headers['access-control-allow-credentials']).toBe('true');
     expect(res.headers['www-authenticate']).toBe('Bearer error="invalid_token"');
     expect(res.body).toBe('{"error":"invalid_token"}');
     expect(h.svc.requests).toHaveLength(0);
+  });
+
+  it.each<[string, SessionResolution, string | undefined]>([
+    [
+      'its session',
+      { kind: 'session', sessionId: SESSION_ID, epoch: 3, mode: 'legacy-primary', legacyCookies: {}, setCookies: [], consumedParams: ['access_token', 'client_id'] },
+      'access_token,client_id',
+    ],
+    ['the anonymous continuation of its ended session', { kind: 'none', setCookies: [], consumedParams: ['access_token', 'client_id'] }, 'access_token,client_id'],
+    ['a session that consumed nothing', session('legacy-primary'), undefined],
+  ])('forwards a REST continuation in %s unchanged, naming only the params identity consumed', async (_label, resolution, consumed) => {
+    const h = await harness();
+    h.setScript(() => ({ entry: { route: 'rest:content', kind: 'read', state: 'target' }, destination: 'target', family: 'rest' }));
+    vi.mocked(h.deps.resolver.resolveSession).mockResolvedValueOnce(resolution);
+    const res = await h.app.inject({
+      method: 'POST',
+      url: '/_api/rest/v1/default/content?access_token=T&x=a%20b',
+      // A client's own consumed-params header is a forgery the gateway drops.
+      headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-opt2-consumed-params': 'method,siteid' },
+      payload: 'client_id=C&y=%C3%A9',
+    });
+    expect(res.statusCode).toBe(200);
+    const received = h.svc.requests[0];
+    expect(received?.url).toBe('/_api/rest/v1/default/content?access_token=T&x=a%20b');
+    expect(received?.body.toString('latin1')).toBe('client_id=C&y=%C3%A9');
+    expect(received?.headers['content-length']).toBe('20');
+    expect(received?.headers['content-type']).toBe('application/x-www-form-urlencoded');
+    expect(received?.headers['x-opt2-consumed-params']).toBe(consumed);
   });
 
   it('forwards an ended target session anonymously after ending its legacy session', async () => {

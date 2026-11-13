@@ -3,6 +3,7 @@
 import { AuthDenial, Roles, type Opt2RouteConfig, type UserClaims } from '@opt2/platform/auth';
 import { LegacyApiError, cfDateTimeFormat } from '@opt2/platform/legacy-compat';
 import {
+  csrfPreHandler,
   legacyParamsOf,
   sendLegacyResponse,
   z,
@@ -73,6 +74,12 @@ const SURVEY_PARAMS_SCHEMA = {
 
 const LIST_OPTIONS = { config: { opt2: MANAGER_AUTH }, schema: { querystring: SITE_QUERY_SCHEMA } };
 const SURVEY_OPTIONS = { config: { opt2: MANAGER_AUTH }, schema: { params: SURVEY_PARAMS_SCHEMA, querystring: SITE_QUERY_SCHEMA } };
+
+// As surveys.cfc requireAny does, identity consumes the write's token for the survey id as sent before the body is read.
+const SURVEY_WRITE_OPTIONS = {
+  ...SURVEY_OPTIONS,
+  preHandler: csrfPreHandler({ contextOf: (request) => (request.params as SurveyParams).surveyId }),
+};
 
 // Shapes only; launch time, offsets, site ids and group names are checked by the domain as the fixture checks them.
 const scheduleBodySchema = z.strictObject({
@@ -243,9 +250,9 @@ export async function registerV1Routes(app: FastifyInstance, deps: V1RouteDeps):
     }),
   );
 
-  app.post(
+  app.post<{ Params: SurveyParams; Querystring: SiteQuery }>(
     `${SURVEY_PATH}/schedule`,
-    SURVEY_OPTIONS,
+    SURVEY_WRITE_OPTIONS,
     v1Handler(SCHEDULE_METHOD, async (request: SurveyRequest, user): Promise<SurveySchedule> => {
       const { launchAt, reminders } = parseBody(scheduleBodySchema, request);
       const detail = await scheduleSurvey(deps, {
@@ -269,9 +276,9 @@ export async function registerV1Routes(app: FastifyInstance, deps: V1RouteDeps):
     }),
   );
 
-  app.post(
+  app.post<{ Params: SurveyParams; Querystring: SiteQuery }>(
     `${SURVEY_PATH}/targets/bulk`,
-    SURVEY_OPTIONS,
+    SURVEY_WRITE_OPTIONS,
     v1Handler(BULK_TARGET_METHOD, async (request: SurveyRequest, user): Promise<BulkTargetResult> => {
       const { targets } = parseBody(bulkTargetBodySchema, request);
       // The domain reads the fixture's `siteID` key exactly, as the fixture's targets array spells it.

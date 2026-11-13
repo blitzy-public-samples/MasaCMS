@@ -6,8 +6,8 @@ import type { Clock, ServiceClient } from '@opt2/platform/service-kit';
 import type { ReportingRepository } from '../repo/repository.js';
 import type { components } from '../generated/openapi.js';
 
-/** Payload of a `reporting-export-run` task, as the reporting contract declares it. */
-export type ExportRunPayload = components['schemas']['ExportTaskPayload'];
+/** Payload of a `reporting-export-run` task as the producer emits it and the runner reads it: the job and its business date only. */
+export type ExportRunPayload = Pick<components['schemas']['ExportTaskPayload'], 'jobId' | 'asOf'>;
 
 /** Schedules the run of export job `jobId` in tenant `tenantId`. */
 export type EnqueueExportRun = (input: { tenantId: string; jobId: string; payload: ExportRunPayload }) => Promise<void>;

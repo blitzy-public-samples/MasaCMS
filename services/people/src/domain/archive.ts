@@ -1,12 +1,13 @@
 // The person archive of the people fixture (legacy-fixtures/cfml/modules/people.cfc): POST stores the archive record with its
 // `people.person.archived.v1` outbox row, GET reads the record; errors carry the fixture envelope's types.
 import { LegacyApiError, cfDateTimeFormat, javaTrim, sqlServerDatetime } from '@opt2/platform/legacy-compat';
-import { withGatedTenant, type WriteContext } from '@opt2/platform/migration-kit';
+import type { WriteContext } from '@opt2/platform/migration-kit';
 import type { Clock } from '@opt2/platform/service-kit';
 import type { TenantDb } from '@opt2/platform/tenancy';
 import type { PeopleEvents } from '../events/publish.js';
 import { DuplicateArchiveError, type AuditActor, type PeopleRepository } from '../repo/repository.js';
 import type { PersonArchiveRow, PersonRow } from '../repo/tables.js';
+import type { PersonFence } from './person-fence.js';
 
 const EFFECTIVE_FROM_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 /** SQL Server `datetime`'s first year, the fixture's `effectiveFrom` floor. */
@@ -33,13 +34,13 @@ export interface ArchiveRecord {
   archivedat: string;
 }
 
-/** Collaborators of the archive; `awaitPersonOpen` is the roster protocol's wait on a user an open operation closes. */
+/** Collaborators of the archive; `fence` is the roster protocol's per-user fence (roster-protocol.ts `personFence`). */
 export interface ArchiveDeps {
   db: TenantDb;
   repo: PeopleRepository;
   events: Pick<PeopleEvents, 'publishPersonArchived'>;
   clock: Clock;
-  awaitPersonOpen: (db: TenantDb, tenantId: string, userId: string, opts: { clock: Clock }) => Promise<void>;
+  fence: PersonFence;
 }
 
 /** Arguments of `archivePerson`; `tenantId` is the tenant of the user pool holding the person, `actor` the session user. */
@@ -99,27 +100,32 @@ export function parseArchiveInput(userId: string, params: ReadonlyMap<string, un
  * @returns the stored record as the fixture's response `data`.
  */
 export async function archivePerson(deps: ArchiveDeps, { tenantId, input, actor }: ArchiveArgs): Promise<ArchiveRecord> {
-  await deps.awaitPersonOpen(deps.db, tenantId, input.userId, { clock: deps.clock });
   const write: WriteContext = { origin: 'target', actorUserId: actor?.userId };
   try {
-    return await withGatedTenant(deps.db, tenantId, async (tx) => {
-      const siteid = requirePersonSite(await deps.repo.findPerson(tx, input.userId));
-      const archive = await deps.repo.insertPersonArchive(
-        tx,
-        {
-          person_id: input.userId,
-          siteid,
-          effective_from: localMidnight(input.effectiveFrom),
-          // The fixture's `now()` lands in a `datetime` column, which keeps 1/300 s.
-          archived_at: sqlServerDatetime(deps.clock.now()),
-          archived_by_id: actor?.userId ?? null,
-          archived_by: actor === undefined ? null : archivedBy(actor),
-        },
-        write,
-      );
-      await deps.events.publishPersonArchived(tx, archive);
-      return archiveRecord(archive);
-    });
+    return await deps.fence.withPersonsOpen(
+      deps.db,
+      tenantId,
+      async (tx) => {
+        await deps.fence.fencePersons(tx, [input.userId]);
+        const siteid = requirePersonSite(await deps.repo.findPerson(tx, input.userId));
+        const archive = await deps.repo.insertPersonArchive(
+          tx,
+          {
+            person_id: input.userId,
+            siteid,
+            effective_from: localMidnight(input.effectiveFrom),
+            // The fixture's `now()` lands in a `datetime` column, which keeps 1/300 s.
+            archived_at: sqlServerDatetime(deps.clock.now()),
+            archived_by_id: actor?.userId ?? null,
+            archived_by: actor === undefined ? null : archivedBy(actor),
+          },
+          write,
+        );
+        await deps.events.publishPersonArchived(tx, archive);
+        return archiveRecord(archive);
+      },
+      { clock: deps.clock },
+    );
   } catch (err) {
     if (err instanceof DuplicateArchiveError) throw new LegacyApiError('badRequest');
     throw err;
@@ -128,11 +134,16 @@ export async function archivePerson(deps: ArchiveDeps, { tenantId, input, actor 
 
 /** The person's archive record, first by effective date as the fixture's GET reads it; throws `notFound` when the tenant holds no such person or the person has no record. */
 export async function getPersonArchive(deps: ArchiveDeps, { tenantId, userId }: { tenantId: string; userId: string }): Promise<ArchiveRecord> {
-  await deps.awaitPersonOpen(deps.db, tenantId, userId, { clock: deps.clock });
-  const archive = await withGatedTenant(deps.db, tenantId, async (tx) => {
-    requirePersonSite(await deps.repo.findPerson(tx, userId));
-    return deps.repo.findPersonArchive(tx, userId);
-  });
+  const archive = await deps.fence.withPersonsOpen(
+    deps.db,
+    tenantId,
+    async (tx) => {
+      await deps.fence.fencePersons(tx, [userId]);
+      requirePersonSite(await deps.repo.findPerson(tx, userId));
+      return deps.repo.findPersonArchive(tx, userId);
+    },
+    { clock: deps.clock },
+  );
   if (archive === null) throw new LegacyApiError('notFound');
   return archiveRecord(archive);
 }

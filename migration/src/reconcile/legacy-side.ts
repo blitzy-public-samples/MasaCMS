@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 
 import {
   LEGACY_PROGRAM_ID_COLUMN,
+  decodeRow,
   encodeKey,
   encodeRow,
   parseProgramTable,
@@ -18,9 +19,9 @@ import { tenantIdForSite } from '@opt2/platform/tenancy';
 
 import { ownerByName, type MigrationConfig } from '../config.js';
 import type { MigrationContext } from '../context.js';
+import type { RowSource } from '../diff/index.js';
 import {
   TableNotFoundError,
-  compareCanonicalRows,
   describeLegacyTable,
   findColumn,
   parseQualifiedName,
@@ -42,7 +43,8 @@ import {
 import { UnsupportedFileStoreError } from '../legacy/index.js';
 import { PROGRAM_SITE_TABLE } from '../order/index.js';
 import type { LegacyTableTarget, UnitCatalog } from '../owners/index.js';
-import type { ObjectEntry } from './compare.js';
+import { DIFFERENCE_LIMIT, type ObjectEntry } from './compare.js';
+import { UnitRowSorter, type UnitRowSorterOptions } from './sorted-rows.js';
 
 /** Context members the legacy side reads: SQL Server through `legacy`, the file store through `bridge`, snapshot rows through `db`. */
 export type ReconcileLegacyDeps = Pick<MigrationContext, 'legacy' | 'catalog' | 'config' | 'db' | 'bridge'>;
@@ -69,11 +71,24 @@ export interface TenantResolver {
   siteTenants(): string[];
 }
 
-/** A unit table's legacy rows per tenant, each list in `compareCanonicalRows` order. */
+/** Rows of one tenant placed there as orphans: the first `DIFFERENCE_LIMIT` keys in extraction order and the total. */
+export interface LegacyOrphans {
+  /** Encoded keys; keyless rows by the SHA-256 of their encoding. */
+  keys: string[];
+  count: number;
+}
+
+/** A unit table's legacy rows grouped by tenant, held in bounded memory until read. */
 export interface LegacyUnitRows {
-  byTenant: Map<string, CanonicalRow[]>;
-  /** Keys of rows placed under the umbrella tenant as orphans, per tenant; keyless rows by the SHA-256 of their encoding. */
-  orphans: Map<string, string[]>;
+  /** Tenants holding rows, sorted. */
+  tenants: string[];
+  /** Rows per tenant. */
+  counts: ReadonlyMap<string, number>;
+  /** Rows of `tenantId` in `compareCanonicalRows` order; tenants are read once each, in ascending order, and one without rows yields none. */
+  rows(tenantId: string): RowSource<CanonicalRow>;
+  orphans: ReadonlyMap<string, LegacyOrphans>;
+  /** Removes any spill files, read or not. */
+  dispose(): Promise<void>;
 }
 
 /** Legacy file-store objects per tenant, or why the file units cannot be compared. */
@@ -92,11 +107,14 @@ export interface LegacyObjectsOptions {
 
 type Values = Readonly<Record<string, CanonicalValue>>;
 
-/** Indexed rows of one legacy table: comparison form of the index columns to the rows carrying them. */
-type RowIndex = ReadonlyMap<string, readonly Values[]>;
+/** One column of a legacy table indexed by others: comparison form of the index columns to the distinct comparison-form values carried. */
+type ValueIndex = ReadonlyMap<string, readonly string[]>;
 
-/** Row indexes built during one run, by table, index columns and carried columns. */
-type IndexMemo = Map<string, Promise<RowIndex>>;
+/** Value indexes built during one run, by table, index columns and carried column. */
+type IndexMemo = Map<string, Promise<ValueIndex>>;
+
+/** Site a parent join value resolves to: its rows' single tenant and that tenant's site, or null when they span tenants. */
+type ParentSite = { tenantId: string; siteId: string } | null;
 
 /** Which rows of a split legacy table belong to one unit; `columns` are the row columns it reads. */
 interface RowSelector {
@@ -271,29 +289,25 @@ function chainHops(table: string, chain: string): Hop[] {
   });
 }
 
-/**
- * Rows of `table` in `database` indexed by `indexColumns`, carrying those and `carried`; streamed once per run.
- * A table the database lacks indexes nothing when `missingOk`.
- */
-function rowIndex(
+/** Distinct comparison-form values of `carried` in `table` of `database`, indexed by `indexColumns`; streamed once per run. */
+function valueIndex(
   deps: Pick<ReconcileLegacyDeps, 'legacy' | 'catalog'>,
   memo: IndexMemo,
-  spec: { database: string; table: string; indexColumns: readonly string[]; carried: readonly string[]; missingOk?: boolean },
-): Promise<RowIndex> {
-  const lower = (names: readonly string[]): string[] => names.map((name) => name.toLowerCase());
-  const key = JSON.stringify([spec.database, tableKey(spec.table), lower(spec.indexColumns), lower(spec.carried)]);
+  spec: { database: string; table: string; indexColumns: readonly string[]; carried: string },
+): Promise<ValueIndex> {
+  const key = JSON.stringify([spec.database, tableKey(spec.table), spec.indexColumns.map((name) => name.toLowerCase()), spec.carried.toLowerCase()]);
   const known = memo.get(key);
   if (known !== undefined) return known;
-  const building = (async (): Promise<RowIndex> => {
-    const index = new Map<string, Values[]>();
-    const columns = [...new Set([...spec.indexColumns, ...spec.carried])];
-    try {
-      for await (const source of streamLegacyTable(deps, { table: spec.table, database: spec.database, columns })) {
-        const at = indexKey(spec.indexColumns.map((name) => valueOf(source.row, name)));
-        if (at !== undefined) push(index, at, source.row);
-      }
-    } catch (error) {
-      if (!(spec.missingOk === true && error instanceof TableNotFoundError)) throw error;
+  const building = (async (): Promise<ValueIndex> => {
+    const index = new Map<string, string[]>();
+    const columns = [...new Set([...spec.indexColumns, spec.carried])];
+    for await (const source of streamLegacyTable(deps, { table: spec.table, database: spec.database, columns })) {
+      const at = indexKey(spec.indexColumns.map((name) => valueOf(source.row, name)));
+      const value = norm(valueOf(source.row, spec.carried));
+      if (at === undefined || value === undefined) continue;
+      const values = index.get(at);
+      if (values === undefined) index.set(at, [value]);
+      else if (!values.includes(value)) values.push(value);
     }
     return index;
   })();
@@ -371,7 +385,7 @@ export async function createTenantResolver(
   const memo: IndexMemo = new Map();
   const sites = await readSnapshotSites(deps, database);
   const programSites = await readProgramSites(deps, database);
-  const parentSites = new Map<string, ReadonlyMap<string, string | null>>();
+  const parentSites = new Map<string, ReadonlyMap<string, ParentSite>>();
   const sources = new Map<string, TenantSource>();
   const parentKey = (table: string, column: string): string => `${tableKey(table)}${INDEX_SEPARATOR}${column.toLowerCase()}`;
 
@@ -392,7 +406,7 @@ export async function createTenantResolver(
       const [column, value] = Object.entries(key)[0] ?? [];
       const sitesByValue = column === undefined ? undefined : parentSites.get(parentKey(parentTable, column));
       if (sitesByValue === undefined) throw new Error(`no parent lookup of ${parentTable} by ${String(column)} was prepared`);
-      return sitesByValue.get(norm(value) ?? '') ?? null;
+      return sitesByValue.get(norm(value) ?? '')?.siteId ?? null;
     },
   };
 
@@ -401,7 +415,7 @@ export async function createTenantResolver(
     return resolveTenant(source, row, lookups, { legacyProgramId: source.kind === 'program' ? programIdOf(table, row) : undefined });
   };
 
-  /** Site of each join value of `table.column`, null where its rows span tenants; parents are prepared before children. */
+  /** Folds parent join values into their resolved site, retaining null for conflicting tenants and no parent rows. */
   const prepareParent = async (table: string, column: string, trail: readonly string[]): Promise<void> => {
     const key = parentKey(table, column);
     if (parentSites.has(key)) return;
@@ -410,15 +424,21 @@ export async function createTenantResolver(
     if (source.kind === 'parent') {
       for (const [, parentColumn] of Object.entries(source.columns)) await prepareParent(source.parentLegacyTable, parentColumn, [...trail, key]);
     }
-    const index = await rowIndex(deps, memo, { database, table, indexColumns: [column], carried: tenantColumnsOf(source), missingOk: true });
-    const sitesByValue = new Map<string, string | null>();
-    for (const [value, rows] of index) {
-      const tenants = new Map<string, string>();
-      for (const row of rows) {
+    const sitesByValue = new Map<string, ParentSite>();
+    const columns = [...new Set([column, ...tenantColumnsOf(source)])];
+    try {
+      for await (const { row } of streamLegacyTable(deps, { table, database, columns })) {
+        const value = indexKey([valueOf(row, column)]);
+        if (value === undefined) continue;
         const resolved = resolveRow(table, row);
-        if (!resolved.orphan) tenants.set(resolved.tenantId, resolved.siteId);
+        if (resolved.orphan) continue;
+        const known = sitesByValue.get(value);
+        if (known === undefined) sitesByValue.set(value, { tenantId: resolved.tenantId, siteId: resolved.siteId });
+        else if (known !== null && known.tenantId === resolved.tenantId) known.siteId = resolved.siteId;
+        else sitesByValue.set(value, null);
       }
-      sitesByValue.set(value, tenants.size === 1 ? ([...tenants.values()][0] ?? null) : null);
+    } catch (error) {
+      if (!(error instanceof TableNotFoundError)) throw error;
     }
     parentSites.set(key, sitesByValue);
   };
@@ -529,18 +549,18 @@ async function chainValues(
   hops: readonly Hop[],
   attr: string,
 ): Promise<(row: Values) => string[]> {
-  const steps: { hop: Hop; carried: string; index: RowIndex }[] = [];
+  const steps: ValueIndex[] = [];
   for (const [position, hop] of hops.entries()) {
     const carried = hops[position + 1]?.fromColumn ?? attr;
-    steps.push({ hop, carried, index: await rowIndex(deps, memo, { database, table: hop.toTable, indexColumns: [hop.toColumn], carried: [carried] }) });
+    steps.push(await valueIndex(deps, memo, { database, table: hop.toTable, indexColumns: [hop.toColumn], carried }));
   }
   const start = hops[0]?.fromColumn;
   if (start === undefined) throw new Error('an ownership join chain needs at least one join');
   return (row) => {
     let values = [norm(valueOf(row, start))].flatMap((value) => value ?? []);
-    for (const { carried, index } of steps) {
+    for (const index of steps) {
       const next = new Set<string>();
-      for (const value of values) for (const found of index.get(value) ?? []) next.add(norm(valueOf(found, carried)) ?? '');
+      for (const value of values) for (const found of index.get(value) ?? []) next.add(found);
       next.delete('');
       values = [...next];
     }
@@ -548,10 +568,10 @@ async function chainValues(
   };
 }
 
-/** The single comparison-form value `rows` carry in `column`, or undefined when they carry none or several. */
-function singleValue(rows: readonly Values[] | undefined, column: string, code: (value: unknown) => string | undefined = norm): string | undefined {
-  const values = new Set((rows ?? []).flatMap((row) => code(valueOf(row, column)) ?? []));
-  return values.size === 1 ? [...values][0] : undefined;
+/** The single value `values` hold once coded, or undefined when they hold none or several. */
+function singleValue(values: readonly string[] | undefined, code: (value: string) => string | undefined = (value) => value): string | undefined {
+  const coded = new Set((values ?? []).flatMap((value) => code(value) ?? []));
+  return coded.size === 1 ? [...coded][0] : undefined;
 }
 
 /** User type code of a stored value: trashManager stores Type 1 as `Group` and 2 as `User` [core/mura/trash/trashManager.cfc:232-242]. */
@@ -575,8 +595,8 @@ async function classMapSelector(
   for (const by of ruleBy) {
     if (by !== STORED_TYPE && by !== OWNING_USER_TYPE && by !== BASE_TABLE) throw new Error(`class map rule "${by}" of ${facts.name} cannot be evaluated`);
   }
-  const index = (table: string, indexColumns: string[], carried: string): Promise<RowIndex> =>
-    rowIndex(deps, memo, { database, table, indexColumns, carried: [carried] });
+  const index = (table: string, indexColumns: string[], carried: string): Promise<ValueIndex> =>
+    valueIndex(deps, memo, { database, table, indexColumns, carried });
   const users = ruleBy.has(OWNING_USER_TYPE) ? await index(USERS.table, [USERS.id], USERS.type) : undefined;
   const trashedUsers = ruleBy.has(OWNING_USER_TYPE) ? await index(TRASH.table, [TRASH.id], TRASH.type) : undefined;
   const subtypes = ruleBy.has(BASE_TABLE) ? await index(SUBTYPES.table, [SUBTYPES.site, SUBTYPES.type, SUBTYPES.subType], SUBTYPES.baseTable) : undefined;
@@ -585,10 +605,10 @@ async function classMapSelector(
     if (rule.ownerBy === STORED_TYPE) return typeCode(valueOf(row, TRASH.type));
     if (rule.ownerBy === OWNING_USER_TYPE) {
       const at = indexKey([valueOf(row, TRASH.parent)]) ?? '';
-      return singleValue(users?.get(at), USERS.type) ?? singleValue(trashedUsers?.get(at), TRASH.type, typeCode);
+      return singleValue(users?.get(at)) ?? singleValue(trashedUsers?.get(at), typeCode);
     }
     const at = indexKey([valueOf(row, TRASH.site), valueOf(row, TRASH.type), valueOf(row, TRASH.subType)]) ?? '';
-    return singleValue(subtypes?.get(at), SUBTYPES.baseTable);
+    return singleValue(subtypes?.get(at));
   };
   const columns = [classColumn, ...(ruleBy.size > 0 ? [TRASH.type, TRASH.subType, TRASH.parent, TRASH.site] : [])];
   return {
@@ -643,14 +663,16 @@ async function rowSelectorFor(
   };
 }
 
-/**
- * The legacy rows of `database` that `shape.unit` owns, projected onto `shape.columns`, encoded canonically and grouped
- * by the tenant `tenants` assigns; each tenant's rows are sorted with `compareCanonicalRows`.
- */
+/** Sorter of `shape`'s unit rows that rebuilds each spilled row with {@link toUnitRow}. */
+export function unitRowSorter(shape: Pick<UnitTableShape, 'legacyTable' | 'keyed' | 'keyColumns' | 'columns'>, options: UnitRowSorterOptions = {}): UnitRowSorter {
+  return new UnitRowSorter(shape, (encoding, legacyProgramId) => toUnitRow(shape, decodeRow(shape.columns, encoding), legacyProgramId), options);
+}
+
+/** Streams the unit's projected legacy rows into a bounded sorter, grouped by resolved tenant. */
 export async function readLegacyUnitRows(
   deps: Pick<ReconcileLegacyDeps, 'legacy' | 'catalog' | 'config'>,
   shape: UnitTableShape,
-  options: { database: string; tenants: TenantResolver },
+  options: { database: string; tenants: TenantResolver } & UnitRowSorterOptions,
 ): Promise<LegacyUnitRows> {
   const { database, tenants } = options;
   const target = unitTarget(deps.catalog, shape.unit, shape.legacyTable);
@@ -659,29 +681,44 @@ export async function readLegacyUnitRows(
   const encoded = shape.columns.flatMap((column) => (shape.folded && column.name === LEGACY_PROGRAM_ID_COLUMN ? [] : [column.name]));
   const columns = [...new Set([...encoded, ...selector.columns, ...tenantColumns])];
 
-  const byTenant = new Map<string, CanonicalRow[]>();
-  const orphans = new Map<string, string[]>();
-  const stream = streamLegacyTable(deps, {
-    table: shape.legacyTable,
-    database,
-    columns,
-    ...(shape.keyed ? { keyColumns: shape.keyColumns } : {}),
-  });
-  for await (const source of stream) {
-    if (!selector.accepts(source.row)) continue;
-    const { tenantId, orphan } = tenants.resolve(shape.legacyTable, source.row);
-    const values: Record<string, CanonicalValue> = {};
-    for (const column of shape.columns) {
-      if (!(column.name in source.row)) throw new Error(`legacy table ${shape.legacyTable} of database ${database} yields no column ${column.name}`);
-      values[column.name] = source.row[column.name] ?? null;
+  const sorter = unitRowSorter(shape, options);
+  const orphans = new Map<string, LegacyOrphans>();
+  try {
+    const stream = streamLegacyTable(deps, {
+      table: shape.legacyTable,
+      database,
+      columns,
+      ...(shape.keyed ? { keyColumns: shape.keyColumns } : {}),
+    });
+    for await (const source of stream) {
+      if (!selector.accepts(source.row)) continue;
+      const { tenantId, orphan } = tenants.resolve(shape.legacyTable, source.row);
+      const values: Record<string, CanonicalValue> = {};
+      for (const column of shape.columns) {
+        if (!(column.name in source.row)) throw new Error(`legacy table ${shape.legacyTable} of database ${database} yields no column ${column.name}`);
+        values[column.name] = source.row[column.name] ?? null;
+      }
+      const row = toUnitRow(shape, values, source.legacyProgramId);
+      await sorter.add(tenantId, row);
+      if (!orphan) continue;
+      const listed = orphans.get(tenantId) ?? { keys: [], count: 0 };
+      orphans.set(tenantId, listed);
+      listed.count += 1;
+      if (listed.keys.length < DIFFERENCE_LIMIT) listed.keys.push(shape.keyed ? row.key : sha256Hex(row.encoding));
     }
-    const row = toUnitRow(shape, values, source.legacyProgramId);
-    push(byTenant, tenantId, row);
-    if (orphan) push(orphans, tenantId, shape.keyed ? row.key : sha256Hex(row.encoding));
+    await sorter.sort();
+  } catch (error) {
+    await sorter.dispose();
+    throw error;
   }
-  // Projection and canonical key values can reorder rows relative to the extractor's SQL order.
-  for (const rows of byTenant.values()) rows.sort(compareCanonicalRows);
-  return { byTenant, orphans };
+  const sortedTenants = sorter.tenants();
+  return {
+    tenants: sortedTenants,
+    counts: new Map(sortedTenants.map((tenantId) => [tenantId, sorter.count(tenantId)])),
+    rows: (tenantId) => sorter.rows(tenantId),
+    orphans,
+    dispose: () => sorter.dispose(),
+  };
 }
 
 /** Units whose reconciliation includes the legacy file-store objects: strategies-content's `file_object`, fed by `content-files`. */

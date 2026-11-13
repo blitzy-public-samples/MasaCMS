@@ -66,34 +66,16 @@ import { UNITS } from '../../src/repo/tables.js';
 
 export { fixedClock };
 
-const STATE_DIR_PREFIX = 'opt2-surveys-test-';
+/** `mkdtemp` prefix of the test state directories under `os.tmpdir()`. */
+export const STATE_DIR_PREFIX = 'opt2-surveys-test-';
 const COMMUNICATIONS = 'communications';
 const SCHEDULED_TASKS_PATH = '/internal/v1/scheduled-tasks';
 const MINUTE_MS = 60_000;
 const DAY_MS = 24 * 60 * MINUTE_MS;
 
-let sharedStateDir: Promise<string> | undefined;
-
-/** The process's state directory for {@link testEnv}, created and filled with the test secrets on first use; removed, best effort, at process exit. */
-function testStateDir(): Promise<string> {
-  sharedStateDir ??= (async () => {
-    const dir = mkdtempSync(join(tmpdir(), STATE_DIR_PREFIX));
-    process.once('exit', () => {
-      try {
-        rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // Best effort: a leftover temporary directory never fails the run.
-      }
-    });
-    await writeTestSecrets(dir);
-    return dir;
-  })();
-  return sharedStateDir;
-}
-
 /**
  * Local-mode environment of surveys, parsed by `loadEnv(baseEnvSchema)`; an override of `undefined` removes the variable.
- * An overridden `OPT2_STATE_DIR` gets no test secrets written to it.
+ * `OPT2_STATE_DIR` comes only from `overrides` (unset, `loadEnv` defaults it); the caller writes the test secrets into it and removes it.
  */
 export async function testEnv(overrides: Readonly<Record<string, string | undefined>> = {}): Promise<BaseEnv> {
   const source: Record<string, string | undefined> = {
@@ -120,7 +102,6 @@ export async function testEnv(overrides: Readonly<Record<string, string | undefi
       surveys: 'http://127.0.0.1:8117',
       migration: 'http://127.0.0.1:8102',
     }),
-    OPT2_STATE_DIR: 'OPT2_STATE_DIR' in overrides ? undefined : await testStateDir(),
     OPT2_TASKS_ADAPTER: 'local',
     OPT2_STORAGE_ADAPTER: 'local',
     TZ: 'UTC',

@@ -13,7 +13,7 @@ import type { QueryResultRow, TenantTx } from '@opt2/platform/tenancy';
 import { systemClock, type Clock } from '@opt2/platform/service-kit';
 import { LEGACY_ADMIN_SENTINEL_ID, cfEq, cfUuid, isCfUuid } from '@opt2/platform/legacy-compat';
 import * as contentQueries from './content-queries.js';
-import { ContentQueryError, SqlParams, type SortDirection } from './content-queries.js';
+import { ContentQueryError, SqlParams, firstById, type SortDirection } from './content-queries.js';
 import * as feedQueries from './feed-queries.js';
 import * as fileQueries from './files.js';
 import {
@@ -864,6 +864,9 @@ function changesetStorage(row: RepositoryRow): RepositoryRow {
 export function createContentRepository({ clock = systemClock, schema = SCHEMA }: ContentRepositoryOptions = {}) {
   const platform: Repository = createRepository({ owner: OWNER, schema, tables: OWNED_TABLES, clock });
   const name = (def: TableDef): string => qualified(schema, def.table);
+  /** An id column as SQL Server's CI_AS `=` compares it; leakproof, unlike lower(), so its expression index applies under forced RLS. */
+  const ciIdExpr = (column: string, collation: 'legacy_ci' | 'legacy_char_ci'): string =>
+    `((${column}::bpchar) COLLATE ${qualified(schema, collation)})`;
 
   /** Rows of a raw SELECT over `defs`, read behind their units' window phase. */
   function select<R extends QueryResultRow>(tx: TenantTx, defs: readonly TableDef[], sql: string, values: readonly unknown[]): Promise<R[]> {
@@ -1493,9 +1496,22 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
 
   // ---- stats ----
 
+  /** Serialises the stats writers of one item, whether or not its row exists, until `tx` ends; the unit's write gate is taken first. */
+  function lockStatsItem(tx: TenantTx, args: StatsKey, ctx: Ctx): Promise<void> {
+    const item = [args.contentId, args.siteId].map((id) => id.toLowerCase().replace(/ +$/u, '')).join(':');
+    const units = unitsOf(CONTENT_STATS);
+    return platform.read(tx, [], async () => {
+      if (ctx?.authority === undefined && units.length > 0) {
+        await acquireWriteGates(tx, units);
+      }
+      await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`${schema}.${CONTENT_STATS.table}:${tx.tenantId}:${item}`]);
+    });
+  }
+
   /** contentStatsBean.load then save: applies `changes` to the item's stats row, or inserts it from the bean defaults. */
   async function upsertStats(tx: TenantTx, args: StatsKey & StatsChanges, ctx?: WriteContext): Promise<ContentStatsRow> {
     const { contentId, siteId, ...changes } = args;
+    await lockStatsItem(tx, { contentId, siteId }, ctx);
     const [current] = await lockRows<ContentStatsRow>(
       tx,
       CONTENT_STATS,
@@ -1529,8 +1545,9 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       return upsertStats(tx, { contentId: args.contentId, siteId: args.siteId, lockid: '', locktype: '' }, ctx);
     },
 
-    /** contentManager.setCommentStat: stores the count of approved comments that are neither spam nor deleted. */
+    /** contentManager.setCommentStat: stores the count of approved comments that are neither spam nor deleted, counted under the item lock held until commit. */
     async setCommentCount(tx: TenantTx, args: StatsKey, ctx?: WriteContext): Promise<ContentStatsRow> {
+      await lockStatsItem(tx, args, ctx);
       const comments = await contentQueries.commentCount(tx, { siteId: args.siteId, contentId: args.contentId });
       return upsertStats(tx, { contentId: args.contentId, siteId: args.siteId, comments }, ctx);
     },
@@ -1913,6 +1930,34 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     return select<CommentListRow>(tx, [COMMENT], `${built.select} ${built.order}`, built.values);
   }
 
+  /** contentCommentManager.getComments' WHERE, ORDER BY and row cap (`maxItems` above 0) bound into `p`; an unknown sort throws here. */
+  function commentFeedQuery(p: SqlParams, args: CommentFeedArgs): { where: string; order: string; cap: number | undefined } {
+    const filters = [`tenant_id = $1`, `siteid = ${p.add(args.siteId ?? 'default')}`];
+    if (args.commentId !== undefined) filters.push(idEq(p, 'commentid', args.commentId));
+    if (args.keywords !== undefined) {
+      filters.push(`(${ciLike(p, 'comments', `%${args.keywords}%`)} OR ${ciLike(p, 'name', `%${args.keywords}%`)})`);
+    }
+    if (args.contentId !== undefined && args.contentId !== '') filters.push(idEq(p, 'contentid', args.contentId));
+    if (args.parentId !== undefined) filters.push(idEq(p, 'parentid', args.parentId));
+    if (args.remoteId !== undefined) filters.push(ciEq(p, 'remoteid', args.remoteId));
+    if (args.ip !== undefined) filters.push(ciEq(p, 'ip', args.ip));
+    if (args.email !== undefined) filters.push(ciEq(p, 'email', args.email));
+    if (args.name !== undefined) filters.push(ciEq(p, 'name', args.name));
+    if (args.isApproved !== undefined) filters.push(`isapproved = ${p.add(args.isApproved ? 1 : 0)}`);
+    if (args.isSpam !== undefined) filters.push(`isspam = ${p.add(args.isSpam ? 1 : 0)}`);
+    if (args.isDeleted !== undefined) filters.push(`isdeleted = ${p.add(args.isDeleted ? 1 : 0)}`);
+    if (args.startDate !== undefined) filters.push(`entered >= ${p.add(atTimeOfDay(args.startDate, 0, 0, 0))}`);
+    if (args.endDate !== undefined) filters.push(`entered <= ${p.add(atTimeOfDay(args.endDate, 23, 59, 59))}`);
+    if (args.categoryIds !== undefined && args.categoryIds.length > 0) {
+      filters.push(
+        `contentid IN (SELECT DISTINCT a.contentid FROM ${name(CATEGORY_ASSIGN)} a WHERE a.tenant_id = $1 AND ${idIn(p, 'a.categoryid', args.categoryIds)})`,
+      );
+    }
+    const sort = orderKey(sortColumn(COMMENT, name(COMMENT), args.sortBy ?? 'entered'), sqlDirection(args.sortDirection ?? 'asc'));
+    const maxItems = args.maxItems ?? 1000;
+    return { where: filters.join(' AND '), order: `ORDER BY ${sort}, commentid`, cap: maxItems > 0 ? Math.trunc(maxItems) : undefined };
+  }
+
   const comments = {
     /** contentCommentBean.save of a new comment, as legacy stores it. */
     insertComment(tx: TenantTx, row: CommentInput, ctx?: WriteContext): Promise<CommentRow> {
@@ -1981,6 +2026,34 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
         [tx.tenantId, ...p.values],
       );
       return rows[0] ?? null;
+    },
+
+    /** `findCommenter` by commenter id for several ids with one query: each id's first commenter, keyed by the id. */
+    async findCommenters(tx: TenantTx, commenterIds: readonly string[]): Promise<Map<string, CommenterRow>> {
+      const ids = [...new Set(commenterIds)];
+      if (ids.length === 0) return new Map();
+      const p = new SqlParams(1);
+      const rows = await select<CommenterRow>(
+        tx,
+        [COMMENTER],
+        `SELECT * FROM ${name(COMMENTER)} WHERE tenant_id = $1 AND ${idIn(p, 'commenterid', ids)} ORDER BY commenterid`,
+        [tx.tenantId, ...p.values],
+      );
+      return firstById(rows, ids, (row) => row.commenterid);
+    },
+
+    /** The name `findComment` reads for several comment ids with one query: each id's first comment, keyed by the id. */
+    async commentNames(tx: TenantTx, commentIds: readonly string[]): Promise<Map<string, Pick<CommentRow, 'commentid' | 'name'>>> {
+      const ids = [...new Set(commentIds)];
+      if (ids.length === 0) return new Map();
+      const p = new SqlParams(1);
+      const rows = await select<Pick<CommentRow, 'commentid' | 'name'>>(
+        tx,
+        [COMMENT],
+        `SELECT c.commentid, c.name FROM ${name(COMMENT)} c WHERE c.tenant_id = $1 AND ${idIn(p, 'c.commentid', ids)} ORDER BY c.commentid`,
+        [tx.tenantId, ...p.values],
+      );
+      return firstById(rows, ids, (row) => row.commentid);
     },
 
     /** contentCommentBean.getQuery: one comment by id or remote id, with legacy's self-referencing `kids` count. */
@@ -2070,34 +2143,39 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
     /** contentCommentManager.getComments: the comment manager's filter, sort and row limit. */
     commentFeed(tx: TenantTx, args: CommentFeedArgs = {}): Promise<CommentRow[]> {
       const p = new SqlParams(1);
-      const filters = [`tenant_id = $1`, `siteid = ${p.add(args.siteId ?? 'default')}`];
-      if (args.commentId !== undefined) filters.push(idEq(p, 'commentid', args.commentId));
-      if (args.keywords !== undefined) {
-        filters.push(`(${ciLike(p, 'comments', `%${args.keywords}%`)} OR ${ciLike(p, 'name', `%${args.keywords}%`)})`);
-      }
-      if (args.contentId !== undefined && args.contentId !== '') filters.push(idEq(p, 'contentid', args.contentId));
-      if (args.parentId !== undefined) filters.push(idEq(p, 'parentid', args.parentId));
-      if (args.remoteId !== undefined) filters.push(ciEq(p, 'remoteid', args.remoteId));
-      if (args.ip !== undefined) filters.push(ciEq(p, 'ip', args.ip));
-      if (args.email !== undefined) filters.push(ciEq(p, 'email', args.email));
-      if (args.name !== undefined) filters.push(ciEq(p, 'name', args.name));
-      if (args.isApproved !== undefined) filters.push(`isapproved = ${p.add(args.isApproved ? 1 : 0)}`);
-      if (args.isSpam !== undefined) filters.push(`isspam = ${p.add(args.isSpam ? 1 : 0)}`);
-      if (args.isDeleted !== undefined) filters.push(`isdeleted = ${p.add(args.isDeleted ? 1 : 0)}`);
-      if (args.startDate !== undefined) filters.push(`entered >= ${p.add(atTimeOfDay(args.startDate, 0, 0, 0))}`);
-      if (args.endDate !== undefined) filters.push(`entered <= ${p.add(atTimeOfDay(args.endDate, 23, 59, 59))}`);
-      if (args.categoryIds !== undefined && args.categoryIds.length > 0) {
-        filters.push(
-          `contentid IN (SELECT DISTINCT a.contentid FROM ${name(CATEGORY_ASSIGN)} a WHERE a.tenant_id = $1 AND ${idIn(p, 'a.categoryid', args.categoryIds)})`,
-        );
-      }
-      const sort = orderKey(sortColumn(COMMENT, name(COMMENT), args.sortBy ?? 'entered'), sqlDirection(args.sortDirection ?? 'asc'));
-      const maxItems = args.maxItems ?? 1000;
+      const feed = commentFeedQuery(p, args);
       return select<CommentRow>(
         tx,
         [COMMENT, CATEGORY_ASSIGN],
-        `SELECT * FROM ${name(COMMENT)} WHERE ${filters.join(' AND ')} ORDER BY ${sort}, commentid` +
-          `${maxItems > 0 ? ` LIMIT ${p.add(Math.trunc(maxItems))}` : ''}`,
+        `SELECT * FROM ${name(COMMENT)} WHERE ${feed.where} ${feed.order}${feed.cap !== undefined ? ` LIMIT ${p.add(feed.cap)}` : ''}`,
+        [tx.tenantId, ...p.values],
+      );
+    },
+
+    /** The number of rows `commentFeed` returns for `args`. */
+    async commentFeedCount(tx: TenantTx, args: CommentFeedArgs = {}): Promise<number> {
+      const p = new SqlParams(1);
+      const feed = commentFeedQuery(p, args);
+      const rows = await select<{ total: number }>(
+        tx,
+        [COMMENT, CATEGORY_ASSIGN],
+        `SELECT count(*)::integer AS total FROM (SELECT 1 FROM ${name(COMMENT)} WHERE ${feed.where}` +
+          `${feed.cap !== undefined ? ` LIMIT ${p.add(feed.cap)}` : ''}) q`,
+        [tx.tenantId, ...p.values],
+      );
+      return rows[0]?.total ?? 0;
+    },
+
+    /** The `commentFeed` rows for `args` at zero-based positions `offset` to `offset + limit - 1`, never past its row cap. */
+    commentFeedPage(tx: TenantTx, args: CommentFeedArgs, page: RowPage): Promise<CommentRow[]> {
+      const p = new SqlParams(1);
+      const feed = commentFeedQuery(p, args);
+      const offset = page.offset ?? 0;
+      const limit = feed.cap === undefined ? page.limit : Math.max(0, Math.min(page.limit, feed.cap - offset));
+      return select<CommentRow>(
+        tx,
+        [COMMENT, CATEGORY_ASSIGN],
+        `SELECT * FROM ${name(COMMENT)} WHERE ${feed.where} ${feed.order} LIMIT ${p.add(limit)} OFFSET ${p.add(offset)}`,
         [tx.tenantId, ...p.values],
       );
     },
@@ -3444,7 +3522,12 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       rows: readonly PermissionProjectionInput[],
       ctx?: WriteContext,
     ): Promise<PermissionProjectionRow[]> {
-      await deleteWhere(tx, PERMISSION_PROJECTION, (p) => `group_id = ${p.add(groupId)} AND site_id = ${p.add(siteId)}`, ctx);
+      await deleteWhere(
+        tx,
+        PERMISSION_PROJECTION,
+        (p) => `${ciIdExpr('group_id', 'legacy_char_ci')} = ${p.add(groupId)}::bpchar AND ${ciIdExpr('site_id', 'legacy_ci')} = ${p.add(siteId)}::bpchar`,
+        ctx,
+      );
       const seen = new Set<string>();
       const stored: PermissionProjectionRow[] = [];
       for (const row of rows) {
@@ -3473,7 +3556,7 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       groupIds: readonly string[],
       ctx?: WriteContext,
     ): Promise<MembershipProjectionRow[]> {
-      await deleteWhere(tx, MEMBERSHIP_PROJECTION, (p) => `user_id = ${p.add(userId)}`, ctx);
+      await deleteWhere(tx, MEMBERSHIP_PROJECTION, (p) => `${ciIdExpr('user_id', 'legacy_char_ci')} = ${p.add(userId)}::bpchar`, ctx);
       return insertEach<MembershipProjectionRow>(
         tx,
         MEMBERSHIP_PROJECTION,
@@ -3487,7 +3570,7 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       return select<GroupProjectionRow>(
         tx,
         [GROUP_PROJECTION],
-        `SELECT * FROM ${name(GROUP_PROJECTION)} WHERE tenant_id = $1 AND group_id = ANY($2::text[]) ORDER BY group_id`,
+        `SELECT * FROM ${name(GROUP_PROJECTION)} WHERE tenant_id = $1 AND ${ciIdExpr('group_id', 'legacy_char_ci')} = ANY($2::bpchar[]) ORDER BY group_id`,
         [tx.tenantId, distinctValues(groupIds)],
       );
     },
@@ -3497,7 +3580,7 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       const rows = await select<{ group_id: string }>(
         tx,
         [MEMBERSHIP_PROJECTION],
-        `SELECT group_id FROM ${name(MEMBERSHIP_PROJECTION)} WHERE tenant_id = $1 AND user_id = $2 ORDER BY group_id`,
+        `SELECT group_id FROM ${name(MEMBERSHIP_PROJECTION)} WHERE tenant_id = $1 AND ${ciIdExpr('user_id', 'legacy_char_ci')} = $2::bpchar ORDER BY group_id`,
         [tx.tenantId, userId],
       );
       return rows.map((row) => row.group_id);
@@ -3509,9 +3592,13 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       args: { siteId: string; contentIds: readonly string[]; groupIds?: readonly string[] },
     ): Promise<PermissionProjectionRow[]> {
       const p = new SqlParams(1);
-      const filters = [`tenant_id = $1`, `site_id = ${p.add(args.siteId)}`, `content_id = ANY(${p.add(distinctValues(args.contentIds))}::text[])`];
+      const filters = [
+        `tenant_id = $1`,
+        `${ciIdExpr('site_id', 'legacy_ci')} = ${p.add(args.siteId)}::bpchar`,
+        `${ciIdExpr('content_id', 'legacy_char_ci')} = ANY(${p.add(distinctValues(args.contentIds))}::bpchar[])`,
+      ];
       if (args.groupIds !== undefined) {
-        filters.push(`group_id = ANY(${p.add(distinctValues(args.groupIds))}::text[])`);
+        filters.push(`${ciIdExpr('group_id', 'legacy_char_ci')} = ANY(${p.add(distinctValues(args.groupIds))}::bpchar[])`);
       }
       return select<PermissionProjectionRow>(
         tx,

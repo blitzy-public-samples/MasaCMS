@@ -2,10 +2,12 @@
 import type { ResolvedPaths } from '../config.js';
 import type { MigrationContext } from '../context.js';
 import { CutoverDataError, currentAuthority, loadGroups, loadVersion } from '../cutover/index.js';
+import { listLegacyTables, migratableTables, type LegacyTableRef } from '../extract/index.js';
 import { SUPPORTED_FILE_STORE } from '../files/index.js';
 import { UnknownUnitError, type UnitCatalog } from '../owners/index.js';
-import { getSnapshot, latestSnapshot, type SnapshotKind, type SnapshotRecord } from '../snapshot/index.js';
+import { getSnapshot, latestSnapshot, latestSnapshotOfKind, type SnapshotKind, type SnapshotRecord } from '../snapshot/index.js';
 import { compareObjects, compareRows, type ObjectEntry, type RowComparison } from './compare.js';
+import { fixtureTables, readFixtureStatus, tableLookupKey, type FixtureStatus } from './fixtures.js';
 import {
   createTenantResolver,
   describeUnitTable,
@@ -27,11 +29,13 @@ import {
   type ReconcileResult,
   type ReconcileSummary,
   type ResolvedPoint,
+  type SkippedUnitReport,
   type UnitReport,
 } from './report.js';
 import { readTargetObjects, readTargetUnitRows, type TargetObjectsSource } from './target-side.js';
 
 export * from './compare.js';
+export * from './fixtures.js';
 export * from './legacy-side.js';
 export * from './target-side.js';
 export * from './report.js';
@@ -61,6 +65,10 @@ export interface ReconcileSources {
   tenantResolver?: typeof createTenantResolver;
   /** Active cut-over version; defaults to the gateway's status through `currentAuthority`. */
   tableVersion?: () => Promise<string | null>;
+  /** Physical tables of the legacy database read; defaults to `listLegacyTables` over its pool. */
+  legacyTables?: (deps: Pick<ReconcileContext, 'legacy'>, options: { database: string }) => Promise<readonly LegacyTableRef[]>;
+  /** Fixture capability; defaults to `${OPT2_STATE_DIR}/fixtures.json`. */
+  fixtureStatus?: () => Promise<FixtureStatus>;
 }
 
 /** Options of {@link runReconcile}: the point name and the `--units` ids, every applicable unit when absent. */
@@ -104,6 +112,8 @@ function readsOf(ctx: ReconcileContext, sources: ReconcileSources): Reads {
     tenantResolver: sources.tenantResolver ?? createTenantResolver,
     tableVersion:
       sources.tableVersion ?? (async () => (await currentAuthority({ gateway: ctx.gateway, config: ctx.config.paths })).tableVersion),
+    legacyTables: sources.legacyTables ?? (async (deps, options) => listLegacyTables(await deps.legacy.database(options.database))),
+    fixtureStatus: sources.fixtureStatus ?? (() => readFixtureStatus(ctx.env.OPT2_STATE_DIR, ctx.clock)),
   };
 }
 
@@ -163,27 +173,35 @@ async function reconcileTable(
   const legacy = await reads.legacyRows(ctx, shape, { database, tenants });
   const includeObjects = objects !== null;
   const entries: UnitReport[] = [];
-  for (const tenantId of sortedUnion(legacy.byTenant.keys(), tenants.siteTenants(), objects?.keys() ?? [])) {
-    const target = await reads.targetRows(ctx, shape, tenantId, { includeObjects });
-    const legacyRows = legacy.byTenant.get(tenantId) ?? [];
-    const legacyObjects = objects?.get(tenantId) ?? [];
-    const targetObjects = target.objects ?? [];
-    if (legacyRows.length + target.rows.length + legacyObjects.length + targetObjects.length === 0) continue;
-    const rows = await compareRows({ keyed: shape.keyed, columns: shape.columns, legacy: legacyRows, target: target.rows });
-    const orphans = legacy.orphans.get(tenantId) ?? [];
-    entries.push(
-      buildUnitReport({
-        unit: shape.unit,
-        owner: shape.owner,
-        legacyTable: shape.legacyTable,
-        tenantId,
-        rows,
-        files: includeObjects ? compareObjects(legacyObjects, targetObjects) : null,
-        excludedColumns: shape.excludedColumns,
-        orphans,
-        orphanCount: orphans.length,
-      }),
-    );
+  try {
+    // Tenants ascend, as the legacy rows are read tenant by tenant.
+    for (const tenantId of sortedUnion(legacy.tenants, tenants.siteTenants(), objects?.keys() ?? [])) {
+      const target = await reads.targetRows(ctx, shape, tenantId, { includeObjects });
+      try {
+        const legacyObjects = objects?.get(tenantId) ?? [];
+        const targetObjects = target.objects ?? [];
+        if ((legacy.counts.get(tenantId) ?? 0) + target.count + legacyObjects.length + targetObjects.length === 0) continue;
+        const rows = await compareRows({ keyed: shape.keyed, columns: shape.columns, legacy: legacy.rows(tenantId), target: target.rows });
+        const orphans = legacy.orphans.get(tenantId);
+        entries.push(
+          buildUnitReport({
+            unit: shape.unit,
+            owner: shape.owner,
+            legacyTable: shape.legacyTable,
+            tenantId,
+            rows,
+            files: includeObjects ? compareObjects(legacyObjects, targetObjects) : null,
+            excludedColumns: shape.excludedColumns,
+            orphans: orphans?.keys ?? [],
+            orphanCount: orphans?.count ?? 0,
+          }),
+        );
+      } finally {
+        await target.dispose();
+      }
+    }
+  } finally {
+    await legacy.dispose();
   }
   return entries;
 }
@@ -217,8 +235,29 @@ async function reconcileObjectsOnly(
 }
 
 /**
+ * Skip reason, by lookup key, of each fixture table among `tables` that `database` lacks while the fixtures are
+ * unavailable; empty when none is selected or the fixtures are loaded, so any other missing table fails its read.
+ */
+async function absentFixtureTables(
+  ctx: ReconcileContext,
+  reads: Reads,
+  tables: readonly string[],
+  database: string,
+): Promise<ReadonlyMap<string, string>> {
+  const fixtures = await fixtureTables(ctx.config.paths.tableOwnership);
+  const selected = new Set(tables.map(tableLookupKey).filter((key) => fixtures.has(key)));
+  if (selected.size === 0) return new Map();
+  const status = await reads.fixtureStatus();
+  if (status.available) return new Map();
+  const present = new Set(migratableTables(ctx.catalog, await reads.legacyTables(ctx, { database })).map((table) => tableLookupKey(table.name)));
+  const reason = status.reason === null ? 'fixtures unavailable' : `fixtures unavailable: ${status.reason}`;
+  return new Map([...selected].filter((key) => !present.has(key)).map((key) => [key, reason]));
+}
+
+/**
  * Reconciles `units` at a point with zero tolerance, unit by unit in sorted order and tenant by tenant, and returns the
- * report body without writing it; the caller has reached the quiesced point. Read failures of either side propagate.
+ * report body without writing it; the caller has reached the quiesced point. Fixture tables the database lacks while the
+ * fixtures are unavailable are listed as skipped; any other read failure of either side propagates.
  */
 export async function reconcileUnits(
   ctx: ReconcileContext,
@@ -235,13 +274,21 @@ export async function reconcileUnits(
   const units = sortedUnion(options.units);
   const fileUnits = fileUnitIds(ctx.config).filter((unit) => units.includes(unit)).sort();
   const { fileStore, objects } = await fileStoreOf(ctx, reads, fileUnits, { legacySource, snapshotSeq, database });
+  const unitTables = new Map(units.map((unit) => [unit, migratableTablesOf(ctx.catalog, unit, fileUnits.includes(unit))]));
+  const absent = await absentFixtureTables(ctx, reads, [...unitTables.values()].flat(), database);
 
   const entries: UnitReport[] = [];
+  const skippedUnits: SkippedUnitReport[] = [];
   for (const unit of units) {
     // A halted store's units never move, so they are not compared.
     if (fileStore.haltedUnits.includes(unit)) continue;
     const fileUnit = fileUnits.includes(unit);
-    const tables = migratableTablesOf(ctx.catalog, unit, fileUnit);
+    const tables: string[] = [];
+    for (const legacyTable of unitTables.get(unit) ?? []) {
+      const reason = absent.get(tableLookupKey(legacyTable));
+      if (reason === undefined) tables.push(legacyTable);
+      else skippedUnits.push({ unit, legacyTable, reason });
+    }
     if (fileUnit && tables.length === 0) {
       entries.push(...(await reconcileObjectsOnly(ctx, reads, { unit, tenants, objects })));
       continue;
@@ -251,7 +298,7 @@ export async function reconcileUnits(
       entries.push(...(await reconcileTable(ctx, reads, { unit, legacyTable, database, tenants, objects: tableObjects })));
     }
   }
-  return buildReport({ point, legacySource, tableVersion, snapshotSeq, legacyDatabase: database, units: entries, fileStore });
+  return buildReport({ point, legacySource, tableVersion, snapshotSeq, legacyDatabase: database, units: entries, skippedUnits, fileStore });
 }
 
 /** `--units` ids, each a catalog unit or a file unit, sorted and without repeats. @throws ReconcileUsageError */
@@ -291,16 +338,6 @@ function defaultUnits(ctx: Pick<ReconcileContext, 'catalog' | 'config'>, point: 
     withTables.map((unit) => unit.id),
     fileUnitIds(ctx.config),
   );
-}
-
-/** The ready snapshot of `kind` with the highest sequence, or `null`. */
-async function latestSnapshotOfKind(ctx: Pick<ReconcileContext, 'db'>, kind: SnapshotKind): Promise<SnapshotRecord | null> {
-  const latest = await latestSnapshot(ctx);
-  for (let seq = latest?.seq ?? -1; seq >= 0; seq -= 1) {
-    const snapshot = seq === latest?.seq ? latest : await getSnapshot(ctx, seq);
-    if (snapshot?.kind === kind && snapshot.state === 'ready') return snapshot;
-  }
-  return null;
 }
 
 /** Snapshot a snapshot point compares against. @throws ReconcileUsageError when it does not exist or is not ready */

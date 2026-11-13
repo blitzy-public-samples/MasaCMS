@@ -20,11 +20,11 @@ import {
   javaTrim,
 } from '@opt2/platform/legacy-compat';
 import { legacySettings } from '@/lib/env';
-import { encodeHtml, encodeHtmlAttr, encodeJs, encodeUrl, raw, type SafeHtml } from '@/lib/html';
-import { setSessionMuraValue, type AdminSessionState } from '@/lib/request-context';
+import { encodeHtml, encodeHtmlAttr, encodeJs, raw, type SafeHtml } from '@/lib/html';
+import { setSessionMuraValue, urlEncodedFormat, type AdminSessionState } from '@/lib/request-context';
 import type { RbLookup } from '@/lib/resource-bundles/rb';
 import type { FragmentScreen, RawBody, ScreenContext } from '../registry';
-import { cusersGate, isCusersAdmin } from './gate';
+import { cusersGate } from './gate';
 
 // ---- Data ----
 
@@ -194,11 +194,6 @@ const JS_STRING_ESCAPES: Readonly<Record<string, string>> = {
 /** CFML `JSStringFormat`. */
 function jsStringFormat(text: string): string {
   return text.replace(/[\\"'\n\r\t\b\f]/g, (ch) => JS_STRING_ESCAPES[ch] ?? ch);
-}
-
-/** CFML `URLEncodedFormat`: `URLEncoder` bytes with a space as `%20`. */
-function urlEncodedFormat(text: string): string {
-  return encodeUrl(text).replaceAll('+', '%20');
 }
 
 /** `contentRenderer.setDynamicContent`; text holding a `[mura]` tag needs the CFML runtime, so it fails closed. */
@@ -662,7 +657,8 @@ export const loadExtendedAttributesScreen: FragmentScreen<LoadExtendedAttributes
     const options = {
       context: extendRenderContext(ctx),
       compactDisplay: ctx.req.rc['compactDisplay'] ?? 'false',
-      privileged: isCusersAdmin(ctx.req),
+      // isSuperUser() and isAdminUser() read the session user's own site, not rc.siteid.
+      privileged: ctx.req.isS2 || ctx.req.isSiteAdmin,
     };
     const markup: Readonly<Record<(typeof RETURNSETS_KEY_ORDER)[number], string>> = {
       extended: renderExtendSets(data.defaultSets, data.subject, { ...options, container: 'Default' }).value,

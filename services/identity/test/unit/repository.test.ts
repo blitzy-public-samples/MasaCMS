@@ -22,12 +22,33 @@ import {
   SCHEMA,
   createIdentityRepository,
   lastUpdateInfo,
+  type AccountFilter,
   type AccountInput,
   type GroupInput,
   type IdentityRepository,
+  type ListedAccountCount,
   type SessionLockMode,
+  type UsernameCandidateRow,
 } from '../../src/repo/repository.js';
-import { GROUP_ACCOUNT, IDENTITY_UNITS, OWNED_TABLES, USER_ACCOUNT, type GroupAccountRow } from '../../src/repo/tables.js';
+import {
+  compileGroupFeed,
+  isSqlExpressible,
+  type FeedComparison,
+  type GroupFeedCondition,
+  type GroupFeedFilter,
+  type GroupFeedQuery,
+} from '../../src/repo/group-feed.js';
+import {
+  GROUP_ACCOUNT,
+  IDENTITY_UNITS,
+  OWNED_TABLES,
+  USER_ACCOUNT,
+  type AccountOperationRow,
+  type GroupAccountRow,
+  type MembershipRow,
+  type UserAccountRow,
+} from '../../src/repo/tables.js';
+import { createMemoryIdentityRepo } from '../helpers/memory-repo.js';
 
 const NOW = new Date(2026, 5, 30, 12, 0, 0);
 const CLOCK = fixedClock(NOW);
@@ -82,6 +103,27 @@ describe('identity repository surface', () => {
     expect(lastUpdateInfo({ userId: 'X', fname: 'x'.repeat(49), lname: 'yz', fromSnapshot: true }, { userid: 'R', fname: '', lname: '' }).lastupdateby).toBe(
       `${'x'.repeat(49)} `,
     );
+  });
+
+  it.each<[string, GroupFeedCondition, boolean]>([
+    ['a LIKE class', { kind: 'like', column: 'groupname', pattern: 'a[bc]%' }, false],
+    ['a LIKE negated class', { kind: 'like', column: 'groupname', pattern: '[^a]' }, false],
+    ['an unterminated [', { kind: 'like', column: 'groupname', pattern: 'x[y' }, true],
+    ['a ] before the [', { kind: 'like', column: 'groupname', pattern: ']x[' }, true],
+    ['a lone surrogate pattern', { kind: 'like', column: 'groupname', pattern: 'a\uD83D%' }, false],
+    ['a pattern holding the surrogate mark', { kind: 'like', column: 'groupname', pattern: '%\u{10FFFF}%' }, false],
+    ['a NUL criteria', { kind: 'compare', column: 'groupname', type: 'varchar', op: '=', value: 'a\u0000' }, false],
+    ['a lone surrogate IN item', { kind: 'in', column: 'groupname', type: 'varchar', negated: false, items: ['a', '\uDE00'] }, false],
+    ['a supplementary character', { kind: 'like', column: 'groupname', pattern: '%\u{1F600}%' }, true],
+    ['a numeric IN of any text', { kind: 'in', column: 'perm', type: 'numeric', negated: false, items: ['\u0000'] }, true],
+  ])('compiles a group feed condition with %s to SQL only when PostgreSQL reproduces it exactly', (_label, condition, expressible) => {
+    expect(isSqlExpressible(condition)).toBe(expressible);
+  });
+
+  it('refuses a group feed column group_account does not hold', () => {
+    const condition: GroupFeedCondition = { kind: 'null', column: 'groupname" OR TRUE --', negated: false };
+    expect(() => compileGroupFeed({ filters: [{ relationship: 'and', condition }], order: [] }, { textCollation: 'c', first: 1 })).toThrow(RangeError);
+    expect(() => compileGroupFeed({ filters: [], order: [{ column: 'tenant_id', type: 'varchar', desc: false }] }, { textCollation: 'c', first: 1 })).toThrow(RangeError);
   });
 });
 
@@ -354,6 +396,45 @@ describe.skipIf(!available)('identity repository against PostgreSQL', () => {
     expect(await inTenant((tx) => repo.membersOf(tx, pub), otherTenantId)).toEqual([]);
   });
 
+  it("reads every readGroupMemberships column: an account's from its account, credential, login-state and contact rows, a group's from its own row", async () => {
+    const groupId = id(20, 'G');
+    const memberGroup = id(21, 'G');
+    const passwordCreated = new Date(2026, 0, 2, 3, 4, 5, 670);
+    const lastLogin = new Date(2026, 5, 29, 8, 0, 0, 3);
+    const created = new Date(2025, 11, 31, 23, 59, 59, 997);
+    const lastUpdate = new Date(2026, 5, 30, 12, 0, 0, 123);
+    await gated(async (tx) => {
+      await repo.insertGroup(tx, groupInput({ userid: groupId, groupname: 'Listed' }), null);
+      await repo.insertGroup(tx, groupInput({ userid: memberGroup, groupname: 'Nested', lname: 'Nest', jobtitle: 'Group Job', perm: 1, tablist: 'Basic', photofileid: id(22, 'F') }), null);
+      await repo.insertAccount(tx, account(id(20), 'full', { perm: 1, remoteid: 'R-20', tablist: 'Basic,Advanced' }));
+      await repo.insertAccount(tx, account(id(21), 'bare'));
+      await repo.writeCredential(tx, id(20), { password: 'hash', passwordcreated: passwordCreated });
+      await repo.touchLastLogin(tx, id(20), lastLogin);
+      await repo.upsertPersonContact(tx, {
+        user_id: id(20), site_id: 'site-a', email: 'f@x', fname: 'Fay', lname: 'Full', company: 'Co', subtype: 'Default', aggregate_version: 1,
+        groupname: null, jobtitle: 'Analyst', mobilephone: '555', website: 'w.example', ext: 4, contactform: 'cf', subscribe: 1, notes: 'n',
+        description: 'd', interests: 'i', keepprivate: 1, photofileid: id(23, 'F'), imname: 'im', imservice: 'AIM', tags: 't', created,
+        lastupdate: lastUpdate, lastupdateby: 'Ada Admin', lastupdatebyid: SNAPSHOT_ACTOR.userId,
+      });
+      for (const member of [id(20), id(21), memberGroup]) await repo.addMembership(tx, member, groupId);
+    });
+
+    const [bare, full, nested] = await inTenant((tx) => repo.membersOf(tx, groupId));
+
+    expect(full).toEqual({
+      userid: id(20), type: 2, username: 'full', siteid: 'site-a', ispublic: 0, s2: 0, inactive: 0, fname: 'Fay', lname: 'Full', email: 'f@x',
+      company: 'Co', groupname: null, passwordcreated: passwordCreated, jobtitle: 'Analyst', mobilephone: '555', website: 'w.example',
+      subtype: 'Default', contactform: 'cf', lastlogin: lastLogin, lastupdate: lastUpdate, lastupdateby: 'Ada Admin',
+      lastupdatebyid: SNAPSHOT_ACTOR.userId, perm: 1, subscribe: 1, notes: 'n', description: 'd', interests: 'i', keepprivate: 1,
+      photofileid: id(23, 'F'), imname: 'im', imservice: 'AIM', created, remoteid: 'R-20', tags: 't', tablist: 'Basic,Advanced',
+    });
+    expect(bare).toMatchObject({ userid: id(21), username: 'bare', fname: null, lname: null, passwordcreated: null, lastlogin: null, jobtitle: null, photofileid: null, perm: 0 });
+    const stored = await inTenant((tx) => repo.findGroup(tx, memberGroup));
+    const { tenant_id: _tenant, password: _password, ext: _ext, admin: _admin, row_version: _version, ...groupColumns } = stored ?? expect.unreachable('no group');
+    expect(nested).toEqual(groupColumns);
+    expect(nested).toMatchObject({ type: 1, lname: 'Nest', jobtitle: 'Group Job', perm: 1, tablist: 'Basic', photofileid: id(22, 'F') });
+  });
+
   /** An open-or-ended account operation of `id(user)` whose JSON columns name groups as account-operations records them. */
   type OperationSeed = { user: number; state?: 'prepared' | 'committed' | 'finished'; held?: readonly string[]; pending?: readonly string[] | null };
   async function seedOperations(seeds: readonly OperationSeed[]): Promise<void> {
@@ -406,6 +487,7 @@ describe.skipIf(!available)('identity repository against PostgreSQL', () => {
     expect(statements.filter((text) => text.startsWith('FETCH'))).toHaveLength(expected.length);
     expect(statements.at(-1)).toMatch(/^CLOSE /);
     expect(await inTenant((tx) => paged.probeMembers(tx, groupId))).toEqual({ listed: which === 'paged', closed });
+    expect(await inTenant((tx) => paged.countMembers(tx, groupId))).toEqual({ total: which === 'paged' ? members.length : 0, closed });
     const counted = await inTenant((tx) => repo.listCountedGroups(tx, 'site-a', 1));
     expect(counted.closed).toEqual(closed);
   });
@@ -457,6 +539,444 @@ describe.skipIf(!available)('identity repository against PostgreSQL', () => {
     expect(result.groups[0]).not.toHaveProperty('closed_users');
     expect(statements.filter((text) => text.startsWith('FETCH'))).toHaveLength(fetches);
   });
+
+  /** Member groups of site-a whose listing order is G4, G2, G5, G1, G6, G3, a system group, and G4's and G5's members. */
+  async function seedWindowedGroups(): Promise<string[]> {
+    const groups = [
+      { userid: id(1, 'G'), groupname: 'beta', perm: 0 },
+      { userid: id(2, 'G'), groupname: 'Zulu', perm: 1 },
+      { userid: id(3, 'G'), groupname: 'Alpha', perm: null },
+      { userid: id(4, 'G'), groupname: 'alpha', perm: 1 },
+      { userid: id(5, 'G'), groupname: '', perm: 0 },
+      { userid: id(6, 'G'), groupname: 'Beta', perm: 0 },
+    ];
+    await gated(async (tx) => {
+      for (const group of groups) await repo.insertGroup(tx, groupInput(group), null);
+      await repo.insertGroup(tx, groupInput({ userid: id(7, 'G'), groupname: 'System', ispublic: 0 }), null);
+      await repo.insertAccount(tx, account(id(1), 'm1'));
+      await repo.insertAccount(tx, account(id(2), 'm2', { s2: 1 }));
+      await repo.insertAccount(tx, account(id(3), 'm3', { opt2_state: 'pending' }));
+      for (const member of [id(1), id(2), id(3), id(5, 'G')]) await repo.addMembership(tx, member, id(4, 'G'));
+      await repo.addMembership(tx, id(1), id(5, 'G'));
+    });
+    return [id(4, 'G'), id(2, 'G'), id(5, 'G'), id(1, 'G'), id(6, 'G'), id(3, 'G')];
+  }
+
+  it.each([
+    [0, 1000],
+    [0, 2],
+    [2, 2],
+    [4, 5],
+    [5, 1],
+    [6, 1],
+    [100, 3],
+  ])('windows the counted groups at offset %i, limit %i in listGroups order with S2, group and active members counted and the listing total', async (offset, limit) => {
+    const ordered = await seedWindowedGroups();
+    const counters = new Map([[id(4, 'G'), 3], [id(5, 'G'), 1]]);
+
+    const page = await inTenant((tx) => repo.pageCountedGroups(tx, 'site-a', 1, { offset, limit }));
+
+    expect(page).toEqual({
+      groups: ordered.slice(offset, offset + limit).map((userid) => expect.objectContaining({ userid, counter: counters.get(userid) ?? null })),
+      total: 6,
+      closed: [],
+    });
+    expect(page.groups[0] ?? {}).not.toHaveProperty('total');
+    expect(page.groups[0] ?? {}).not.toHaveProperty('closed_users');
+  });
+
+  it('answers the whole listing as one window with the rows listCountedGroups lists, in the order listGroups sorts them', async () => {
+    await seedWindowedGroups();
+    const counted = await inTenant((tx) => repo.listCountedGroups(tx, 'site-a', 1));
+    const byPerm = [...counted.groups].sort((a, b) => (a.perm === b.perm ? 0 : a.perm === null ? 1 : b.perm === null ? -1 : b.perm - a.perm));
+
+    expect((await inTenant((tx) => repo.pageCountedGroups(tx, 'site-a', 1, { offset: 0, limit: 1000 }))).groups).toEqual(byPerm);
+    expect(await inTenant((tx) => repo.pageCountedGroups(tx, 'site-a', 1, { offset: 0, limit: 1000 }), otherTenantId)).toEqual({ groups: [], total: 0, closed: [] });
+  });
+
+  it.each([
+    ['a member of a group in the window', [{ user: 2 }], { offset: 0, limit: 1 }, [2]],
+    ['a non-member whose pending change adds a group in the window', [{ user: 6, pending: [id(5, 'G')] }], { offset: 2, limit: 1 }, [6]],
+    ['a member of a group outside the window only', [{ user: 2 }], { offset: 1, limit: 10 }, []],
+    ['a member of a listed group past the window', [{ user: 1 }], { offset: 100, limit: 1 }, []],
+  ] as const)('names the users closing a group of the window only, for %s', async (_case, seeds, window, closedUsers) => {
+    await seedWindowedGroups();
+    await seedOperations(seeds);
+
+    const page = await inTenant((tx) => repo.pageCountedGroups(tx, 'site-a', 1, window));
+
+    expect(page.closed).toEqual(closedUsers.map((user) => id(user)));
+    expect(page.total).toBe(6);
+  });
+
+  it('counts the members a group lists, S2 ones only with includeS2, and bounds a paged member cursor to its first limit members', async () => {
+    const paged = createIdentityRepository({ clock: CLOCK, schema: handle.schema, pageSize: 2 });
+    const groupId = id(1, 'G');
+    const members = [id(1), id(2), id(3), id(4), id(5)];
+    await gated(async (tx) => {
+      await repo.insertGroup(tx, groupInput({ userid: groupId, groupname: 'Bounded' }), null);
+      for (const member of members) await repo.insertAccount(tx, account(member, `m${member}`));
+      await repo.insertAccount(tx, account(id(6), 'super', { s2: 1 }));
+      await repo.insertAccount(tx, account(id(7), 'pending', { opt2_state: 'pending' }));
+      for (const member of [...members, id(6), id(7)]) await repo.addMembership(tx, member, groupId);
+    });
+    const statements: string[] = [];
+    const read = (limit: number, includeS2 = false) =>
+      inTenant(async (tx) => {
+        const pages: string[][] = [];
+        for await (const page of paged.memberPages(recording(tx, statements), groupId, { includeS2, limit })) pages.push(page.members.map(({ member }) => member.userid));
+        return pages;
+      });
+
+    expect(await inTenant((tx) => repo.countMembers(tx, groupId))).toEqual({ total: 5, closed: [] });
+    expect(await inTenant((tx) => repo.countMembers(tx, groupId, { includeS2: true }))).toEqual({ total: 6, closed: [] });
+    expect(await inTenant((tx) => repo.countMembers(tx, id(9, 'G')))).toEqual({ total: 0, closed: [] });
+    expect(await read(3)).toEqual([members.slice(0, 2), members.slice(2, 3)]);
+    expect(statements.filter((text) => text.startsWith('FETCH'))).toHaveLength(2);
+    expect(await read(4)).toEqual([members.slice(0, 2), members.slice(2, 4)]);
+    expect(await read(100, true)).toEqual([members.slice(0, 2), members.slice(2, 4), [id(5), id(6)]]);
+    expect(await read(1)).toEqual([[id(1)]]);
+  });
+
+  it.each([
+    [0, 1000],
+    [0, 2],
+    [3, 2],
+    [4, 1],
+    [5, 1],
+  ])('windows the site OAuth clients at offset %i, limit %i by clientid with their total', async (offset, limit) => {
+    const clientIds = [id(3, 'C'), id(1, 'C'), id(5, 'C'), id(2, 'C'), id(4, 'C')];
+    await gated(async (tx) => {
+      for (const [n, clientid] of [...clientIds, id(6, 'C')].entries()) {
+        await repo.insertOAuthClient(tx, {
+          clientid, clientsecret: 'S', siteid: n === 5 ? 'site-b' : 'site-a', granttype: 'basic', userid: '', name: `Client ${n}`, created: NOW, lastupdate: NOW,
+          description: '', redirecturl: '', lastupdatebidy: '', lastupdateby: '',
+        });
+      }
+    });
+
+    const page = await inTenant((tx) => repo.listOAuthClients(tx, 'site-a', { offset, limit }));
+
+    expect(page.items.map((row) => row.clientid)).toEqual([...clientIds].sort().slice(offset, offset + limit));
+    expect(page.total).toBe(5);
+    expect(page.items[0] ?? {}).not.toHaveProperty('total');
+    expect(await inTenant((tx) => repo.listOAuthClients(tx, 'site-c', { offset, limit }))).toEqual({ items: [], total: 0 });
+  });
+
+  /** Seeds the site-a public pool with G1, G2 (S2), G3 (inactive), G4 (site SITE-A), G6 (NULL S2 and inactive) and G9 (inactive 2); G5, G7, G8 and another tenant's G10 lie outside it. */
+  async function seedFeedPool(): Promise<void> {
+    await gated(async (tx) => {
+      await repo.insertGroup(tx, groupInput({ userid: id(6, 'G'), groupname: 'Six', s2: null, inactive: null }), null);
+      await repo.insertGroup(tx, groupInput({ userid: id(1, 'G'), groupname: 'One' }), null);
+      await repo.insertGroup(tx, groupInput({ userid: id(2, 'G'), groupname: 'Two', s2: 1 }), null);
+      await repo.insertGroup(tx, groupInput({ userid: id(3, 'G'), groupname: 'Three', inactive: 1 }), null);
+      await repo.insertGroup(tx, groupInput({ userid: id(4, 'G'), groupname: 'Four', siteid: 'SITE-A' }), null);
+      await repo.insertGroup(tx, groupInput({ userid: id(5, 'G'), groupname: 'Private', ispublic: 0 }), null);
+      await repo.insertGroup(tx, groupInput({ userid: id(7, 'G'), groupname: 'Person', type: 2 }), null);
+      await repo.insertGroup(tx, groupInput({ userid: id(8, 'G'), groupname: 'Elsewhere', siteid: 'site-b' }), null);
+      await repo.insertGroup(tx, groupInput({ userid: id(9, 'G'), groupname: 'Wider', inactive: 2 }), null);
+    });
+    await gated((tx) => repo.insertGroup(tx, groupInput({ userid: id(10, 'G'), groupname: 'Other tenant' }), null), otherTenantId);
+  }
+
+  it.each([
+    ['every group to an S2 reader', { includeS2: true }, [1, 2, 3, 4, 6, 9]],
+    ['groups whose S2 is 0, never a NULL one', {}, [1, 3, 4, 9]],
+    ['inactive groups', { includeS2: true, inactive: 1 }, [3]],
+    ['active groups without S2', { inactive: 0 }, [1, 4]],
+    ['no group for an inactive value no smallint equals', { includeS2: true, inactive: 0.5 }, []],
+  ] as const)('pages the site-a public groups from one fenced cursor in pages of two by userid: %s', async (_case, opts, expected) => {
+    const paged = createIdentityRepository({ clock: CLOCK, schema: handle.schema, pageSize: 2 });
+    await seedFeedPool();
+    const stored = [
+      ...(await inTenant(async (tx) => (await tx.query<GroupAccountRow>(`SELECT * FROM ${handle.schema}.group_account`)).rows)),
+      ...(await inTenant(async (tx) => (await tx.query<GroupAccountRow>(`SELECT * FROM ${handle.schema}.group_account`)).rows, otherTenantId)),
+    ];
+    const memory = createMemoryIdentityRepo({ groups: stored }, { clock: CLOCK, schema: handle.schema, pageSize: 2 });
+    const statements: string[] = [];
+    const readPages = (source: IdentityRepository, record: boolean): Promise<string[][]> =>
+      inTenant(async (tx) => {
+        const read: string[][] = [];
+        for await (const page of source.groupFeedPages(record ? recording(tx, statements) : tx, 'site-a', 1, opts)) read.push(page.map((row) => row.userid));
+        return read;
+      });
+    const pages = await readPages(paged, true);
+    const ids = expected.map((n) => id(n, 'G'));
+    expect(pages).toEqual(Array.from({ length: Math.ceil(ids.length / 2) }, (_, n) => ids.slice(2 * n, 2 * n + 2)));
+    expect(await readPages(memory, false)).toEqual(pages);
+    expect(statements.findIndex((text) => text.startsWith('DECLARE'))).toBeGreaterThan(statements.findIndex((text) => text.includes('unit_gate')));
+    expect(statements.filter((text) => text.startsWith('FETCH'))).toHaveLength(Math.floor(ids.length / 2) + 1);
+    expect(statements.some((text) => /membership|account_operation|user_account/.test(text))).toBe(false);
+    expect(statements.at(-1)).toMatch(/^CLOSE /);
+  });
+
+  it("closes the group feed cursor when its consumer stops early, and blocks the feed during a window's executing phase", async () => {
+    const paged = createIdentityRepository({ clock: CLOCK, schema: handle.schema, pageSize: 1 });
+    await seedFeedPool();
+    const statements: string[] = [];
+    const after = await inTenant(async (tx) => {
+      for await (const page of paged.groupFeedPages(recording(tx, statements), 'site-a', true)) {
+        expect(page.map((row) => row.groupname)).toEqual(['One']);
+        break;
+      }
+      return (await tx.query<{ one: number }>('SELECT 1 AS one')).rows;
+    });
+    expect(statements.filter((text) => text.startsWith('FETCH'))).toHaveLength(1);
+    expect(statements.at(-1)).toMatch(/^CLOSE /);
+    expect(after).toEqual([{ one: 1 }]);
+    await setGates('open', 'executing');
+    const drain = async (tx: TenantTx): Promise<void> => {
+      for await (const _page of paged.groupFeedPages(tx, 'site-a', 1)) break;
+    };
+    await expect(gated(drain)).rejects.toBeInstanceOf(UnitReadBlockedError);
+  });
+
+  it("answers people's account counts, user-name candidates, foreign members and membership rows from memory as PostgreSQL does", async () => {
+    const [alpha, beta, gamma, delta, other, pending, nameless, umlaut, foreign] = [id(11), id(12), id(13), id(14), id(15), id(16), id(17), id(18), id(19)];
+    const group = id(20, 'G');
+    await gated(async (tx) => {
+      await repo.insertAccount(tx, account(alpha, 'alpha'));
+      await repo.insertAccount(tx, account(beta, 'Beta', { ispublic: 1, s2: 1 }));
+      await repo.insertAccount(tx, account(gamma, 'gamma', { s2: null, inactive: 1 }));
+      await repo.insertAccount(tx, account(delta, 'delta', { siteid: 'SITE-A ', s2: 2 }));
+      await repo.insertAccount(tx, account(other, 'eta', { siteid: 'site-b' }));
+      await repo.insertAccount(tx, account(pending, 'zeta', { opt2_state: 'pending' }));
+      await repo.insertAccount(tx, account(nameless, ''));
+      await repo.insertAccount(tx, account(umlaut, 'ÄLPHA'));
+      await repo.insertGroup(tx, groupInput({ userid: group, ispublic: 0 }), null);
+      for (const member of [alpha, foreign, group]) await repo.addMembership(tx, member, group);
+      await repo.insertAccountOperation(tx, { user_id: pending, kind: 'create', state: 'prepared' });
+      await repo.insertAccountOperation(tx, { user_id: beta, kind: 'update', state: 'aborted' });
+    });
+    const stored = <T extends QueryResultRow>(table: string): Promise<T[]> => inTenant(async (tx) => (await tx.query<T>(`SELECT * FROM ${handle.schema}.${table}`)).rows);
+    const memory = createMemoryIdentityRepo(
+      {
+        accounts: await stored<UserAccountRow>('user_account'),
+        groups: await stored<GroupAccountRow>('group_account'),
+        memberships: await stored<MembershipRow>('membership'),
+        accountOperations: await stored<AccountOperationRow>('account_operation'),
+      },
+      { clock: CLOCK, schema: handle.schema },
+    );
+    const unassigned = { ownMemberships: true, assignedElsewhere: [delta.toLowerCase()] };
+    const filters: Array<AccountFilter | undefined> = [
+      undefined,
+      { isPublic: 0 },
+      { s2: 1 },
+      { excludeS2Users: true },
+      { inActive: 1 },
+      { siteIds: ['SITE-B'] },
+      { unassigned },
+    ];
+    const patterns = [
+      { pattern: 'A%', limit: 10 },
+      { pattern: '%ta', limit: 10 },
+      { pattern: '_eta', limit: 10 },
+      { pattern: 'ä%', limit: 10 },
+      { pattern: '%', limit: 2 },
+    ];
+    // One statement at a time, as a transaction's client runs them.
+    const reads = (source: IdentityRepository) =>
+      inTenant(async (tx) => {
+        const counts: ListedAccountCount[] = [];
+        const records: string[][] = [];
+        for (const filter of filters) {
+          counts.push(await source.countListedAccounts(tx, { siteId: 'site-a', filter }));
+          records.push((await source.readAccountRecords(tx, [alpha, beta, gamma, delta, pending], filter)).map((row) => row.userid));
+        }
+        counts.push(await source.countListedAccounts(tx, { siteId: null }));
+        const candidates: UsernameCandidateRow[][] = [];
+        for (const query of patterns) candidates.push(await source.readUsernameCandidates(tx, { siteId: 'site-a', ...query }));
+        const foreignIds = [await source.foreignMemberIds(tx, null), await source.foreignMemberIds(tx, [foreign.toLowerCase(), alpha])];
+        return { counts, records, candidates, foreign: foreignIds, memberships: await source.readMembershipRecords(tx, [alpha, foreign, pending]) };
+      });
+
+    const sql = await reads(repo);
+    expect(sql.counts.map((counted) => counted.count)).toEqual([6, 5, 1, 4, 1, 0, 4, 7]);
+    expect(sql.counts[0]?.closed).toEqual([pending]);
+    expect(sql.candidates.map((rows) => rows.map((row) => row.username))).toEqual([['alpha'], ['Beta', 'delta'], ['Beta'], [], ['alpha', 'Beta']]);
+    expect(sql.foreign).toEqual([[foreign], [foreign]]);
+    expect(sql.memberships).toEqual({ rows: [{ userid: alpha, groupid: group }, { userid: foreign, groupid: group }], closed: [pending] });
+    expect(await reads(memory)).toEqual(sql);
+  });
+
+  describe('group feed reads', () => {
+    const FEED_TENANT = tenantIdForSite('identity-repository-feed');
+    const ADVERSARIAL = '%a%a%a%a%a%a%a%a%a%b%';
+    /** The site-a public pool corpus, F1 upward in order; perm cycles 0, 1, 2, NULL and every third row has a lastlogin. */
+    const NAMES: ReadonlyArray<string | null> = [
+      'alpha', 'Alpha ', 'ALPHA', 'Álpha', 'beta', 'Bravo', 'straße', 'STRASSE', 'ſtar', 'star', 'ıota', 'Iota', '\u212Aelvin', 'kelvin',
+      'µ-meter', 'Μ-meter', 'emoji\u{1F600}', 'x[y', 'a\\b', 'a_b', 'a%b', '', null, '  lead', 'Zeta', 'zeta', 'ÿ', 'Ÿ', '10', '9', 'ǆ', 'ǅ',
+      'ς', 'Σ', 'ϑ', 'Θ', 'e\u0301', 'é', 'line\nbreak', 'a'.repeat(255), 'á'.repeat(255),
+    ];
+    const PADDED = NAMES.length + 1;
+    let memory: IdentityRepository;
+
+    const named = (...names: Array<string | null>): string[] => names.map((name) => id(NAMES.indexOf(name) + 1, 'F'));
+    const where = (...conditions: GroupFeedCondition[]): GroupFeedFilter[] => conditions.map((condition) => ({ relationship: 'and', condition }));
+    const like = (pattern: string, column = 'groupname'): GroupFeedCondition => ({ kind: 'like', column, pattern });
+    const text = (op: FeedComparison, value: string, column = 'groupname'): GroupFeedCondition => ({ kind: 'compare', column, type: 'varchar', op, value });
+    const query = (overrides: Partial<GroupFeedQuery> = {}): GroupFeedQuery => ({ includeS2: true, filters: [], order: [], top: Infinity, limit: Infinity, ...overrides });
+
+    beforeAll(async () => {
+      await setGates('open');
+      await withGatedTenant(handle.app, FEED_TENANT, async (tx) => {
+        for (const [n, name] of NAMES.entries()) {
+          const userid = id(n + 1, 'F');
+          await repo.insertGroup(tx, groupInput({ userid, groupname: name ?? '' }), null);
+          const perm = [0, 1, 2, null][n % 4] ?? null;
+          const lastlogin = n % 3 === 0 ? new Date(2025 + (n % 2), n % 12, 1 + (n % 27), n % 24, 0, 0, n) : null;
+          await repo.update(tx, GROUP_ACCOUNT.table, { userid }, { groupname: name, perm, lastlogin, email: n % 5 === 0 ? null : `g${n % 7}@example.test` });
+        }
+        // A blank char(35) id, which pg returns as 35 spaces.
+        await repo.insertGroup(tx, groupInput({ userid: id(PADDED, 'F'), groupname: 'Padded' }), null);
+        await repo.update(tx, GROUP_ACCOUNT.table, { userid: id(PADDED, 'F') }, { photofileid: '' });
+        await repo.insertGroup(tx, groupInput({ userid: id(90, 'F'), groupname: 'alpha', s2: 1 }), null);
+        await repo.insertGroup(tx, groupInput({ userid: id(91, 'F'), groupname: 'alpha', inactive: 1 }), null);
+        await repo.insertGroup(tx, groupInput({ userid: id(92, 'F'), groupname: 'alpha', ispublic: 0 }), null);
+        await repo.insertGroup(tx, groupInput({ userid: id(93, 'F'), groupname: 'alpha', siteid: 'site-b' }), null);
+        await repo.insertGroup(tx, groupInput({ userid: id(94, 'F'), groupname: 'alpha', type: 2 }), null);
+      });
+      const stored = await handle.app.withTenant(FEED_TENANT, async (tx) => (await tx.query<GroupAccountRow>(`SELECT * FROM ${handle.schema}.group_account`)).rows);
+      memory = createMemoryIdentityRepo({ groups: stored }, { clock: CLOCK, schema: handle.schema });
+    });
+
+    /** `source`'s feed of the site-a public pool as ids and total, and the statements PostgreSQL ran with the rows each returned. */
+    async function feedOf(source: IdentityRepository, feed: GroupFeedQuery): Promise<{ ids: string[]; total: number; reads: Array<{ text: string; rows: number }> }> {
+      const reads: Array<{ text: string; rows: number }> = [];
+      const page = await handle.app.withTenant(FEED_TENANT, (tx) => {
+        const recorded = (async (sql: string, values?: unknown[]) => {
+          const result = await tx.query(sql, values);
+          reads.push({ text: sql, rows: result.rows.length });
+          return result;
+        }) as TenantTx['query'];
+        return source.readGroupFeed({ ...tx, query: recorded }, 'site-a', 1, feed);
+      });
+      return { ids: page.rows.map((row) => row.userid), total: page.total, reads };
+    }
+
+    it.each<[string, GroupFeedQuery]>([
+      ['every group by userid', query()],
+      ['groups without S2 ones', query({ includeS2: false })],
+      ['inactive groups', query({ inactive: 1 })],
+      ['groupname ascending, NULL first and ties by userid', query({ order: [{ column: 'groupname', type: 'varchar', desc: false }] })],
+      ['groupname descending, NULL last', query({ order: [{ column: 'groupname', type: 'varchar', desc: true }] })],
+      ['perm descending, then groupname', query({ order: [{ column: 'perm', type: 'numeric', desc: true }, { column: 'groupname', type: 'varchar', desc: false }] })],
+      ['lastlogin ascending', query({ order: [{ column: 'lastlogin', type: 'timestamp', desc: false }] })],
+      ['email descending under TOP 7 in a page of 3', query({ order: [{ column: 'email', type: 'varchar', desc: true }], top: 7, limit: 3 })],
+      ['groupname equal to alpha', query({ filters: where(text('=', 'alpha')) })],
+      ['groupname unequal to ALPHA and a space', query({ filters: where(text('!=', 'ALPHA ')) })],
+      ['groupname below b', query({ filters: where(text('<', 'b')) })],
+      ['groupname at or above straße', query({ filters: where(text('>=', 'straße')) })],
+      ['groupname in a list', query({ filters: where({ kind: 'in', column: 'groupname', type: 'varchar', negated: false, items: ['ALPHA', 'beta ', 'σ', 'nope'] }) })],
+      ['groupname not in a list', query({ filters: where({ kind: 'in', column: 'groupname', type: 'varchar', negated: true, items: ['alpha', ''] }) })],
+      ['userid in a list of any case', query({ filters: where({ kind: 'in', column: 'userid', type: 'varchar', negated: false, items: [id(1, 'F').toLowerCase(), id(2, 'F')] }) })],
+      ['groupname NULL', query({ filters: where({ kind: 'null', column: 'groupname', negated: false }) })],
+      ['groupname not NULL', query({ filters: where({ kind: 'null', column: 'groupname', negated: true }) })],
+      ['perm 1', query({ filters: where({ kind: 'compare', column: 'perm', type: 'numeric', op: '=', value: 1 }) })],
+      ['perm above 0', query({ filters: where({ kind: 'compare', column: 'perm', type: 'numeric', op: '>', value: 0 }) })],
+      ['perm NaN', query({ filters: where({ kind: 'compare', column: 'perm', type: 'numeric', op: '=', value: Number.NaN }) })],
+      ['perm below Infinity', query({ filters: where({ kind: 'compare', column: 'perm', type: 'numeric', op: '<', value: Infinity }) })],
+      ['perm in items Number() reads', query({ filters: where({ kind: 'in', column: 'perm', type: 'numeric', negated: false, items: ['1', '', ' 2 ', 'x'] }) })],
+      ['perm not in 0', query({ filters: where({ kind: 'in', column: 'perm', type: 'numeric', negated: true, items: ['0'] }) })],
+      ['lastlogin after a date', query({ filters: where({ kind: 'compare', column: 'lastlogin', type: 'timestamp', op: '>', value: new Date(2026, 0, 1) }) })],
+      ['lastlogin in text items, which no timestamp equals', query({ filters: where({ kind: 'in', column: 'lastlogin', type: 'timestamp', negated: false, items: ['2026-01-01'] }) })],
+      ['lastlogin not in text items', query({ filters: where({ kind: 'in', column: 'lastlogin', type: 'timestamp', negated: true, items: ['2026-01-01'] }) })],
+      ['a blank photofileid', query({ filters: where(text('=', '', 'photofileid')) })],
+      ['a photofileid LIKE the empty pattern', query({ filters: where(like('', 'photofileid')) })],
+      ['a photofileid LIKE a trailing space', query({ filters: where(like('% ', 'photofileid')) })],
+      ...['%A%', 'stra_e', '%ss%', '%ß%', '_tar', 'STAR', 'IOTA', 'k%', 'µ%', 'ǅ', 'emoji__', 'emoji_', '%\u{1F600}', 'a\\b', 'a_b', '', '%', 'x[y', '%é', 'line_break', ADVERSARIAL, `%${'á%'.repeat(9)}b%`].map(
+        (pattern): [string, GroupFeedQuery] => [`groupname LIKE ${JSON.stringify(pattern)}`, query({ filters: where(like(pattern)) })],
+      ),
+      [
+        'AND before OR',
+        query({
+          filters: [
+            { relationship: 'and', condition: like('a%') },
+            { relationship: 'and', condition: { kind: 'compare', column: 'perm', type: 'numeric', op: '=', value: 1 } },
+            { relationship: 'or', condition: text('=', 'ZETA') },
+          ],
+          order: [{ column: 'groupname', type: 'varchar', desc: false }],
+        }),
+      ],
+      [
+        'OR ahead of AND',
+        query({
+          filters: [
+            { relationship: 'and', condition: text('=', 'ZETA') },
+            { relationship: 'or', condition: like('a%') },
+            { relationship: 'and', condition: { kind: 'null', column: 'perm', negated: false } },
+          ],
+        }),
+      ],
+      ['a TOP below the matches in a page of two', query({ order: [{ column: 'groupname', type: 'varchar', desc: false }], top: 5, limit: 2 })],
+      ['only the count', query({ filters: where(like('a%')), limit: 0, top: 4 })],
+    ])('reads %s in PostgreSQL as the feed tests and orders rows in memory', async (_label, feed) => {
+      const pg = await feedOf(repo, feed);
+      const expected = await feedOf(memory, feed);
+
+      expect({ ids: pg.ids, total: pg.total }).toEqual({ ids: expected.ids, total: expected.total });
+      expect(pg.ids.length).toBeLessThanOrEqual(feed.limit);
+    });
+
+    it.each<[string, GroupFeedCondition, string[]]>([
+      ['case and trailing spaces, keeping accents', text('=', 'ALPHA'), [...named('alpha', 'Alpha ', 'ALPHA'), id(90, 'F'), id(91, 'F')]],
+      ['final and capital sigma as sigma', { kind: 'in', column: 'groupname', type: 'varchar', negated: false, items: ['σ'] }, named('ς', 'Σ')],
+      ['ß apart from ss', like('%ß%'), named('straße')],
+      ['ſ apart from s', like('S%'), named('straße', 'STRASSE', 'star')],
+      ['dotless ı apart from i', like('I%'), named('Iota')],
+      ['the Kelvin sign apart from k', like('k%'), named('kelvin')],
+      ['µ as Greek mu', like('µ%'), named('µ-meter', 'Μ-meter')],
+      ['_ as one UTF-16 code unit', like('emoji__'), named('emoji\u{1F600}')],
+      ['a backslash as a literal', like('a\\b'), named('a\\b')],
+      ['_ as any character', like('a_b'), named('a\\b', 'a_b', 'a%b')],
+      ['the blank-padded char(35) value', like('% ', 'photofileid'), [id(PADDED, 'F')]],
+    ])('matches %s', async (_label, condition, ids) => {
+      const pg = await feedOf(repo, query({ filters: where(condition) }));
+
+      expect(pg.ids).toEqual(ids);
+    });
+
+    it.each<[string, GroupFeedQuery, number]>([
+      ['a page of three under TOP 5', query({ order: [{ column: 'groupname', type: 'varchar', desc: false }], top: 5, limit: 3 }), 3],
+      ['a filtered page of two', query({ filters: where(like('%a%')), order: [{ column: 'perm', type: 'numeric', desc: true }], limit: 2 }), 2],
+      ['every match of a LIKE', query({ filters: where(like('a%')) }), 9],
+    ])('reads %s in one fenced statement that filters, orders, counts and cuts in PostgreSQL', async (_label, feed, rows) => {
+      const { ids, reads } = await feedOf(repo, feed);
+      const feeds = reads.filter(({ text: sql }) => sql.includes('"group_account"'));
+
+      expect(ids).toHaveLength(rows);
+      expect(feeds).toEqual([{ text: expect.stringMatching(/^SELECT g\.\*, \(SELECT count\(\*\).* WHERE .* ORDER BY .* LIMIT \$\d+$/s), rows }]);
+      expect(reads.findIndex(({ text: sql }) => sql.includes('unit_gate'))).toBeLessThan(reads.indexOf(feeds[0] as (typeof reads)[number]));
+      expect(reads.some(({ text: sql }) => /DECLARE|FETCH|membership|account_operation|user_account/.test(sql))).toBe(false);
+    });
+
+    it('counts a feed whose page addresses no row without reading a group row', async () => {
+      const { ids, total, reads } = await feedOf(repo, query({ filters: where(like('a%')), limit: 0 }));
+
+      expect({ ids, total }).toEqual({ ids: [], total: 9 });
+      expect(reads.filter(({ text: sql }) => sql.includes('"group_account"'))).toEqual([{ text: expect.stringMatching(/^SELECT \(SELECT count\(\*\)/), rows: 1 }]);
+    });
+
+    it.each([
+      ['ASCII', ADVERSARIAL],
+      ['non-ASCII', `%${'á%'.repeat(9)}b%`],
+    ])('answers the backtracking %s LIKE pattern against a 255-character run quickly with no match', async (_label, pattern) => {
+      const started = performance.now();
+      const { total } = await feedOf(repo, query({ filters: where(like(pattern)), limit: 10 }));
+
+      expect(total).toBe(0);
+      expect(performance.now() - started).toBeLessThan(500);
+    });
+
+    it("blocks a feed read during a window's executing phase", async () => {
+      await setGates('open', 'executing');
+      await expect(withGatedTenant(handle.app, FEED_TENANT, (tx) => repo.readGroupFeed(tx, 'site-a', 1, query()), { budgetMs: BUDGET_MS })).rejects.toBeInstanceOf(
+        UnitReadBlockedError,
+      );
+    });
+  });
+
 
   it('replaces node and module permissions and reads module grants', async () => {
     const node = id(1, 'N');
@@ -616,7 +1136,8 @@ describe.skipIf(!available)('identity repository against PostgreSQL', () => {
       name: 'Renamed',
       description: null,
     });
-    expect((await inTenant((tx) => repo.listOAuthClients(tx, 'site-a'))).map((row) => row.clientid)).toEqual([client.clientid]);
+    const listed = await inTenant((tx) => repo.listOAuthClients(tx, 'site-a', { offset: 0, limit: 1000 }));
+    expect([listed.items.map((row) => row.clientid), listed.total]).toEqual([[client.clientid], 1]);
     expect(await inTenant((tx) => repo.findOAuthClient(tx, client.clientid), otherTenantId)).toBeNull();
     expect((await inTenant((tx) => repo.findOAuthClient(tx, client.clientid)))?.name).toBe('Renamed');
 

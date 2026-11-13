@@ -1,5 +1,5 @@
-// Fakes of web's only outbound path, the gateway relay: a loopback HTTP server, and the production GatewayClient
-// over an in-memory platform client.
+// Fakes of web's only outbound path, the gateway relay: a loopback HTTP server, an in-memory platform client, and the
+// production GatewayClient over it.
 import { readFileSync } from 'node:fs';
 import { createServer, type IncomingHttpHeaders, type IncomingMessage } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -311,32 +311,35 @@ function callerHeaders(req: ServiceRequest): Record<string, string> {
   return headers;
 }
 
-/** The production `GatewayClient` over its own in-memory platform client answering `routes`; nothing is sent. */
-export function fakeGatewayClient(
+/** An in-memory platform `ServiceClient` in the gateway's place, recording each request as the HTTP fake does. */
+export type FakeServiceClient = ServiceClient & {
+  readonly requests: RecordedRequest[];
+  setRoute(key: string, route: FakeRoute): void;
+  hasRoute(key: string): boolean;
+  /** Makes this and every later request throw `error`, by default the platform's error for a refused connection. */
+  failWith(error?: Error): void;
+  /** Clears the recorded requests and any `failWith`; routes are kept. */
+  reset(): void;
+};
+
+/**
+ * A platform client answering `routes` with the bytes web's raw-body requests ask for; nothing is sent.
+ * @param onRequest Called with each request and its record, before any `failWith` error is thrown.
+ */
+export function fakeServiceClient(
   routes: FakeRouteTable = {},
-  options: FakeGatewayClientOptions = {},
-): FakeGatewayClient {
+  onRequest?: (req: ServiceRequest, request: RecordedRequest) => void,
+): FakeServiceClient {
   const table = new Map<string, FakeRoute>(Object.entries(routes));
-  const calls: FakeCall[] = [];
+  const requests: RecordedRequest[] = [];
   let failure: { readonly error?: Error } | undefined;
 
-  const transport: ServiceClient = {
-    /** Records the call, then answers it from `table` with the bytes web's raw-body requests ask for. */
+  return {
+    requests,
     async request<T>(req: ServiceRequest): Promise<ServiceResponse<T>> {
       const request = await receivedRequest(req);
-      const service = relayedService(request.path);
-      const headers = callerHeaders(req);
-      calls.push({
-        service,
-        method: req.method,
-        path: request.path.slice(`${RELAY_PREFIX}${service}`.length),
-        ...(Object.keys(request.query).length > 0 ? { query: request.query } : {}),
-        ...(req.json !== undefined ? { json: req.json } : {}),
-        ...(request.form !== undefined ? { form: request.form } : {}),
-        ...(Object.keys(headers).length > 0 ? { headers } : {}),
-        ...(options.userToken !== undefined ? { userToken: options.userToken } : {}),
-        ...(options.requestId !== undefined ? { requestId: options.requestId } : {}),
-      });
+      requests.push(request);
+      onRequest?.(req, request);
       if (failure !== undefined) {
         const refused = Object.assign(new Error('connect ECONNREFUSED (fake gateway)'), { code: 'ECONNREFUSED' });
         throw failure.error ?? new ServiceUnavailableError('gateway', refused);
@@ -344,19 +347,8 @@ export function fakeGatewayClient(
       const reply = await answer(table, request);
       return { status: reply.status, headers: receivedHeaders(reply.headers), body: reply.bytes as unknown as T };
     },
-    // Nothing to release: the transport holds no connection.
+    // Nothing to release: the client holds no connection.
     close: () => Promise.resolve(),
-  };
-
-  // An absent request id travels as '', which `receivedRequest` drops, so none is recorded.
-  const client = createGatewayClient(
-    { userToken: options.userToken, requestId: options.requestId ?? '', inbound: {} },
-    transport,
-  );
-
-  return {
-    ...client,
-    calls,
     setRoute: (key, route) => {
       table.set(key, route);
     },
@@ -365,8 +357,49 @@ export function fakeGatewayClient(
       failure = { error };
     },
     reset: () => {
-      calls.length = 0;
+      requests.length = 0;
       failure = undefined;
+    },
+  };
+}
+
+/** The production `GatewayClient` over its own {@link fakeServiceClient} answering `routes`; nothing is sent. */
+export function fakeGatewayClient(
+  routes: FakeRouteTable = {},
+  options: FakeGatewayClientOptions = {},
+): FakeGatewayClient {
+  const calls: FakeCall[] = [];
+  const relay = fakeServiceClient(routes, (req, request) => {
+    const service = relayedService(request.path);
+    const headers = callerHeaders(req);
+    calls.push({
+      service,
+      method: req.method,
+      path: request.path.slice(`${RELAY_PREFIX}${service}`.length),
+      ...(Object.keys(request.query).length > 0 ? { query: request.query } : {}),
+      ...(req.json !== undefined ? { json: req.json } : {}),
+      ...(request.form !== undefined ? { form: request.form } : {}),
+      ...(Object.keys(headers).length > 0 ? { headers } : {}),
+      ...(options.userToken !== undefined ? { userToken: options.userToken } : {}),
+      ...(options.requestId !== undefined ? { requestId: options.requestId } : {}),
+    });
+  });
+
+  // An absent request id travels as '', which `receivedRequest` drops, so none is recorded.
+  const client = createGatewayClient(
+    { userToken: options.userToken, requestId: options.requestId ?? '', inbound: {} },
+    relay,
+  );
+
+  return {
+    ...client,
+    calls,
+    setRoute: relay.setRoute,
+    hasRoute: relay.hasRoute,
+    failWith: relay.failWith,
+    reset: () => {
+      calls.length = 0;
+      relay.reset();
     },
   };
 }

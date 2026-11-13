@@ -1,4 +1,5 @@
 // Error types shared by golden capture, replay and comparison.
+import type { DifferenceKind } from './normalise/masks.js';
 
 /** Locations of a case's golden set and replay output, repository- or `${OPT2_STATE_DIR}`-relative, never absolute. */
 export interface HaltEvidence {
@@ -49,6 +50,18 @@ export function isEquivalenceImpossible(value: unknown): value is EquivalenceImp
   return value instanceof EquivalenceImpossible || (value instanceof Error && value.name === 'EquivalenceImpossible');
 }
 
+/** An observed difference an exceptions entry describes; an omitted field matches any value. */
+export interface DifferenceSelector {
+  step: string;
+  /** The difference's path, or a parent of it ending at a `.` or `[` segment boundary. */
+  path: string;
+  kind?: DifferenceKind[];
+  /** Deep-partial match of the golden value. */
+  expected?: unknown;
+  /** Deep-partial match of the replayed value. */
+  actual?: unknown;
+}
+
 /** One entry of `opt2/exceptions-list.json`. */
 export interface ExceptionEntry {
   id: string;
@@ -57,6 +70,8 @@ export interface ExceptionEntry {
   /** Further route keys the entry covers. */
   appliesTo?: string[];
   difference: string;
+  /** Differences the entry excuses; an entry without selectors excuses none. */
+  matches?: DifferenceSelector[];
   decision: 'preserve' | 'fix';
   reason: string;
   status: 'open' | 'accepted' | 'halted';

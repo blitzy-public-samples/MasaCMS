@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createLogger } from '@opt2/platform/logging';
 import { OperationBlockedError, ensureUnitGates, withGatedTenant } from '@opt2/platform/migration-kit';
 import { createOutbox } from '@opt2/platform/outbox';
-import type { Clock } from '@opt2/platform/service-kit';
+import type { Clock, ServiceClient, ServiceRequest, ServiceResponse } from '@opt2/platform/service-kit';
 import { currentTransaction, tenantIdForSite, withMetadata, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { cfHash } from '@opt2/platform/legacy-compat';
 import { createCapturingPublisher, createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
@@ -16,15 +16,26 @@ import {
   deleteGroup,
   findGroupForSite,
   groupSaveInputFrom,
+  MEMBER_BATCH_SIZE,
   listGroupMembers,
+  listGroupMembersPage,
   listGroups,
+  listGroupsPage,
   newGroupRecord,
+  readFeedGroups,
   removeFromGroup,
   resolveGroupSite,
+  resolveMemberPhotos,
+  scanFeedGroups,
   streamGroupMembers,
+  streamListedGroupMembers,
   updateGroup,
   type GroupActor,
   type GroupDeps,
+  type GroupMemberRow,
+  type ListedGroupMember,
+  type GroupRecord,
+  type GroupSaveInput,
 } from '../../src/domain/groups.js';
 import {
   USER_CLOSED_WAIT_MS,
@@ -35,6 +46,7 @@ import {
   type AccountOperationDeps,
 } from '../../src/domain/account-operations.js';
 import { createIdentityEvents, identityPayloadValidators } from '../../src/events/publish.js';
+import { createContentClient, type ContentClient } from '../../src/legacy/content-client.js';
 import { verifyLegacyPassword } from '../../src/legacy/hash.js';
 import { READ_PAGE_SIZE, createIdentityRepository, type IdentityRepository } from '../../src/repo/repository.js';
 import { GROUP_TRASH, IDENTITY_UNITS, type GroupAddressRow, type GroupTrashRow } from '../../src/repo/tables.js';
@@ -122,6 +134,17 @@ const EDITOR: GroupActor = { userId: 'EDD10000-0000-0000-0000000000000001', fnam
 function id(n: number, prefix: string): string {
   return `${prefix}0000000-0000-0000-${String(n).padStart(16, '0')}`;
 }
+
+/** identity's content client over a strategies-content double that stores no file. */
+const NO_PHOTOS: ContentClient = createContentClient({
+  request<T>(): Promise<ServiceResponse<T>> {
+    return Promise.resolve({ status: 200, headers: {}, body: { items: [] } as T });
+  },
+  close: () => Promise.resolve(),
+});
+
+/** The first window of the largest size, which holds every listing these tests seed. */
+const WHOLE = { offset: 0, limit: 1000 };
 
 const available = await pgAvailable();
 
@@ -413,20 +436,21 @@ describe.skipIf(!available)('groups domain', () => {
     const PAGE_SITE = 'page-pool';
     const COUNT_SITE = 'count-pool';
     const REPLAY_SITE = 'replay-pool';
-    type Statement = { tenantId: string; text: string };
+    const WINDOW_SITE = 'window-pool';
+    type Statement = { tenantId: string; text: string; values?: unknown[] };
 
     beforeAll(async () => {
-      for (const site of [CLOSED_SITE, PAGE_SITE, COUNT_SITE, REPLAY_SITE]) await registerSite(site, site, site);
+      for (const site of [CLOSED_SITE, PAGE_SITE, COUNT_SITE, REPLAY_SITE, WINDOW_SITE]) await registerSite(site, site, site);
     });
 
-    /** `handle.app` whose tenant transactions record each statement with its tenant. */
+    /** `handle.app` whose tenant transactions record each statement with its tenant and values. */
     function recordingDb(statements: Statement[]): TenantDb {
       return {
         ...handle.app,
         withTenant: (tenantId, fn) =>
           handle.app.withTenant(tenantId, (tx) => {
             const query = ((text: string, values?: unknown[]) => {
-              statements.push({ tenantId, text });
+              statements.push({ tenantId, text, values });
               return tx.query(text, values);
             }) as TenantTx['query'];
             return fn({ ...tx, query });
@@ -480,14 +504,17 @@ describe.skipIf(!available)('groups domain', () => {
       listGroupMembers: async (d: GroupDeps, groupId: string): Promise<number | null> => (await listGroupMembers(d, groupId, { includeS2: true })).length,
       listGroups: async (d: GroupDeps, groupId: string): Promise<number | null> =>
         (await listGroups(d, { siteId: CLOSED_SITE, isPublic: 0 })).find((row) => row.userid === groupId)?.counter ?? null,
+      listGroupMembersPage: async (d: GroupDeps, groupId: string): Promise<number | null> => {
+        const { members, total } = await listGroupMembersPage(d, NO_PHOTOS, groupId, { includeS2: true, page: WHOLE });
+        expect(total).toBe(members.length);
+        return total;
+      },
+      listGroupsPage: async (d: GroupDeps, groupId: string): Promise<number | null> =>
+        (await listGroupsPage(d, { siteId: CLOSED_SITE, isPublic: 0, page: WHOLE })).rows.find((row) => row.userid === groupId)?.counter ?? null,
     };
+    const READ_NAMES = Object.keys(reads) as (keyof typeof reads)[];
 
-    it.each([
-      ['listGroupMembers', 'prepared', 'aborted'],
-      ['listGroupMembers', 'committed', 'finished'],
-      ['listGroups', 'prepared', 'aborted'],
-      ['listGroups', 'committed', 'finished'],
-    ] as const)('%s waits outside its transaction while a %s account operation keeps a member closed, then reads once it is %s', async (read, state, end) => {
+    it.each(READ_NAMES.flatMap((read) => [[read, 'prepared', 'aborted'], [read, 'committed', 'finished']] as const))('%s waits outside its transaction while a %s account operation keeps a member closed, then reads once it is %s', async (read, state, end) => {
       const { groupId, member } = await closedGroup();
       const operationId = await openOperation(CLOSED_SITE, member, state);
       const { sleep, slept, inTransaction } = sleeper(() => settleOperation(CLOSED_SITE, operationId, state, end));
@@ -496,7 +523,7 @@ describe.skipIf(!available)('groups domain', () => {
       expect(inTransaction).toEqual([false]);
     });
 
-    it.each(['listGroupMembers', 'listGroups'] as const)('%s answers the legacy 503 naming the closed member once its sleeps total USER_CLOSED_WAIT_MS', async (read) => {
+    it.each(READ_NAMES)('%s answers the legacy 503 naming the closed member once its sleeps total USER_CLOSED_WAIT_MS', async (read) => {
       const { groupId, member } = await closedGroup();
       const operationId = await openOperation(CLOSED_SITE, member, 'committed');
       const { sleep, slept, inTransaction } = sleeper();
@@ -514,7 +541,7 @@ describe.skipIf(!available)('groups domain', () => {
       }
     });
 
-    it.each(['listGroupMembers', 'listGroups'] as const)('%s waits while a prepared create holds a membership of its pending account, then neither lists nor counts it', async (read) => {
+    it.each(READ_NAMES)('%s waits while a prepared create holds a membership of its pending account, then neither lists nor counts it', async (read) => {
       const { groupId } = await closedGroup();
       const pending = await insertPendingAccount(CLOSED_SITE);
       await addMembers(CLOSED_SITE, groupId, [pending]);
@@ -536,7 +563,11 @@ describe.skipIf(!available)('groups domain', () => {
       const listed = await listGroupMembers(paged, groupId, { includeS2: true });
       expect(listed.map((row) => row.userid)).toEqual([nullA, nullB, alpha, upperAlpha, beta, bravo, charlie]);
       expect(listed).toEqual(await listGroupMembers(deps(), groupId, { includeS2: true }));
-      expect(Object.keys(listed[0] ?? {})).toEqual(['userid', 'type', 'username', 'siteid', 'ispublic', 's2', 'inactive', 'fname', 'lname', 'email', 'company']);
+      expect(Object.keys(listed[0] ?? {})).toEqual([
+        'userid', 'type', 'username', 'siteid', 'ispublic', 's2', 'inactive', 'fname', 'lname', 'email', 'company', 'groupname', 'passwordcreated',
+        'jobtitle', 'mobilephone', 'website', 'subtype', 'contactform', 'lastlogin', 'lastupdate', 'lastupdateby', 'lastupdatebyid', 'perm',
+        'subscribe', 'notes', 'description', 'interests', 'keepprivate', 'photofileid', 'imname', 'imservice', 'created', 'remoteid', 'tags', 'tablist',
+      ]);
       const fetches = statements.filter((s) => s.tenantId === tenantIdForSite(PAGE_SITE) && s.text.startsWith('FETCH'));
       expect(fetches).toHaveLength(Math.floor(members.length / pageSize) + 1);
     });
@@ -599,6 +630,132 @@ describe.skipIf(!available)('groups domain', () => {
       expect(listed[0]).not.toHaveProperty('closed_users');
     });
 
+    describe('group windows', () => {
+      beforeAll(async () => {
+        const groups: readonly (readonly [string, string])[] = [['beta', '0'], ['Zulu', '1'], ['alpha', '1'], ['Beta', '0'], ['gamma', '0'], ['Alpha', '0']];
+        const ids: string[] = [];
+        for (const [groupName, perm] of groups) {
+          const userId = next('B');
+          await createGroup(deps(), SUPER, { userId, siteId: WINDOW_SITE, isPublic: '0', groupName, perm });
+          ids.push(userId);
+        }
+        const member = await seedUser(WINDOW_SITE, { s2: 1 });
+        await addMembers(WINDOW_SITE, ids[0] ?? '', [member]);
+        await addMembers(WINDOW_SITE, ids[2] ?? '', [member, await seedUser(WINDOW_SITE)]);
+      });
+
+      it.each([
+        [0, 1000],
+        [0, 2],
+        [1, 3],
+        [4, 2],
+        [5, 1],
+        [6, 1],
+        [50, 10],
+      ])("answers the window at offset %i, limit %i of listGroups' rows, order and counts byte for byte, with its total", async (offset, limit) => {
+        const whole = await listGroups(deps(), { siteId: WINDOW_SITE, isPublic: 0 });
+
+        const page = await listGroupsPage(deps(), { siteId: WINDOW_SITE, isPublic: 0, page: { offset, limit } });
+
+        expect(page).toEqual({ rows: whole.slice(offset, offset + limit), total: whole.length });
+        expect(whole.map((row) => [row.groupname, row.perm, row.counter])).toEqual([
+          ['alpha', 1, 2],
+          ['Zulu', 1, null],
+          ['Alpha', 0, null],
+          ['beta', 0, 1],
+          ['Beta', 0, null],
+          ['gamma', 0, null],
+        ]);
+      });
+
+      it('answers a site without a user pool tenant with an empty listing', async () => {
+        expect(await listGroupsPage(deps(), { siteId: 'nowhere', isPublic: 0, page: WHOLE })).toEqual({ rows: [], total: 0 });
+      });
+    });
+
+    describe('feed scans', () => {
+      const FEED_SITE = 'feed-pool';
+      const FEED_PUBLIC = 'feed-public';
+      const groupIds = new Map<string, string>();
+      let closing = '';
+
+      beforeAll(async () => {
+        await registerSite(FEED_SITE, FEED_SITE, FEED_PUBLIC);
+        await registerSite(FEED_PUBLIC, FEED_PUBLIC, FEED_PUBLIC);
+        const seeds: ReadonlyArray<[string, GroupSaveInput]> = [
+          ['Private', { siteId: FEED_SITE, isPublic: '0' }],
+          ['Super', { siteId: FEED_SITE, isPublic: '0', s2: '1' }],
+          ['Dormant', { siteId: FEED_SITE, isPublic: '0', inActive: '1' }],
+          ['Public', { siteId: FEED_SITE, isPublic: '1' }],
+          ['Public dormant', { siteId: FEED_SITE, isPublic: '1', inActive: '1' }],
+          ['Public site private', { siteId: FEED_PUBLIC, isPublic: '0' }],
+        ];
+        for (const [groupName, input] of seeds) {
+          const userId = next('B');
+          groupIds.set(groupName, userId);
+          await createGroup(deps(), SUPER, { ...input, userId, groupName });
+        }
+        // An open operation on a member of Private, which a counted listing would wait out.
+        const member = await seedUser(FEED_SITE, { lname: 'Member' });
+        await addMembers(FEED_SITE, groupIds.get('Private') ?? '', [member]);
+        closing = await openOperation(FEED_SITE, member, 'committed');
+      });
+
+      afterAll(async () => {
+        await settleOperation(FEED_SITE, closing, 'committed', 'finished');
+      });
+
+      it.each<[string, string, 0 | 1, boolean, number | undefined, number, string[]]>([
+        ['the private pool to an S2 reader', FEED_SITE, 0, true, undefined, 1, ['Private', 'Super', 'Dormant']],
+        ['the private pool without S2 groups', FEED_SITE, 0, false, undefined, 2, ['Private', 'Dormant']],
+        ['the inactive groups of the private pool', FEED_SITE, 0, true, 1, 2, ['Dormant']],
+        ['the active groups of the public pool another tenant holds', FEED_SITE, 1, false, 0, 1, ['Public']],
+        ['the public pool in pages of the read size', FEED_SITE, 1, true, undefined, READ_PAGE_SIZE, ['Public', 'Public dormant']],
+        ['no page of an unregistered site', 'no-such-feed-site', 0, true, undefined, 1, []],
+      ])('scanFeedGroups passes %s by userid page by page, reading no member and waiting on no closed one', async (_label, siteId, isPublic, includeS2, inactive, pageSize, names) => {
+        const statements: Statement[] = [];
+        const { sleep, slept } = sleeper();
+        const scanning = { ...deps(), sleep, db: recordingDb(statements), repo: createIdentityRepository({ clock, schema: handle.schema, pageSize }) };
+        const pages: GroupRecord[][] = [];
+
+        await scanFeedGroups(scanning, { siteId, isPublic, includeS2, inactive }, (rows) => pages.push(rows));
+
+        const ids = names.map((name) => groupIds.get(name));
+        expect(pages.map((rows) => rows.map((row) => row.userid))).toEqual(
+          Array.from({ length: Math.ceil(ids.length / pageSize) }, (_, n) => ids.slice(n * pageSize, (n + 1) * pageSize)),
+        );
+        expect(pages.flat().some((row) => 'tenant_id' in row || 'row_version' in row)).toBe(false);
+        expect(statements.filter((s) => s.text.startsWith('DECLARE'))).toHaveLength(siteId === FEED_SITE ? 1 : 0);
+        expect(statements.some((s) => s.text.includes(`"${handle.schema}"."membership"`) || s.text.includes(`"${handle.schema}"."account_operation"`))).toBe(false);
+        expect(slept).toEqual([]);
+      });
+
+      it.each<[string, string, 0 | 1, boolean, number | undefined, number, number, string[], number]>([
+        ['the private pool to an S2 reader by name', FEED_SITE, 0, true, undefined, Infinity, Infinity, ['Dormant', 'Private', 'Super'], 3],
+        ['the first two private groups without S2 ones', FEED_SITE, 0, false, undefined, 2, Infinity, ['Dormant', 'Private'], 2],
+        ['the inactive private groups', FEED_SITE, 0, true, 1, 5, Infinity, ['Dormant'], 1],
+        ['the private pool counted up to a TOP of two', FEED_SITE, 0, true, undefined, 2, 2, ['Dormant', 'Private'], 2],
+        ['no row but the count of the public pool another tenant holds', FEED_SITE, 1, true, undefined, 0, Infinity, [], 2],
+        ['nothing of an unregistered site', 'no-such-feed-site', 0, true, undefined, 5, Infinity, [], 0],
+      ])('readFeedGroups reads %s in one statement, reading no member and waiting on no closed one', async (_label, siteId, isPublic, includeS2, inactive, limit, top, names, total) => {
+        const statements: Statement[] = [];
+        const { sleep, slept } = sleeper();
+        const reading = { ...deps(), sleep, db: recordingDb(statements) };
+        const order = [{ column: 'groupname', type: 'varchar' as const, desc: false }];
+
+        const page = await readFeedGroups(reading, { siteId, isPublic }, { includeS2, inactive, filters: [], order, top, limit });
+
+        expect(page.rows.map((row) => row.userid)).toEqual(names.map((name) => groupIds.get(name)));
+        expect(page.total).toBe(total);
+        expect(page.rows.some((row) => 'tenant_id' in row || 'row_version' in row)).toBe(false);
+        const feeds = statements.filter((s) => s.text.includes(`"${handle.schema}"."group_account"`));
+        expect(feeds).toHaveLength(siteId === FEED_SITE ? 1 : 0);
+        expect(feeds.every((s) => s.text.startsWith('SELECT') && s.text.includes('count(*)'))).toBe(true);
+        expect(statements.some((s) => s.text.includes(`"${handle.schema}"."membership"`) || s.text.includes(`"${handle.schema}"."account_operation"`))).toBe(false);
+        expect(slept).toEqual([]);
+      });
+    });
+
     describe('roster operations', () => {
       const accountDeps = (): AccountOperationDeps => ({
         db: handle.app,
@@ -642,6 +799,16 @@ describe.skipIf(!available)('groups domain', () => {
         'listGroups': {
           read: async (d: GroupDeps, groupId: string): Promise<unknown> =>
             (await listGroups(d, { siteId: REPLAY_SITE, isPublic: 0 })).find((row) => row.userid === groupId)?.counter,
+          shows: ({ member }: Membership): unknown => (member ? 1 : null),
+        },
+        'listGroupMembersPage': {
+          read: async (d: GroupDeps, groupId: string): Promise<unknown> =>
+            (await listGroupMembersPage(d, NO_PHOTOS, groupId, { page: WHOLE })).members.map((row) => row.userid),
+          shows: ({ member, s2 }: Membership, userId: string): unknown => (member && s2 === 0 ? [userId] : []),
+        },
+        'listGroupsPage': {
+          read: async (d: GroupDeps, groupId: string): Promise<unknown> =>
+            (await listGroupsPage(d, { siteId: REPLAY_SITE, isPublic: 0, page: WHOLE })).rows.find((row) => row.userid === groupId)?.counter,
           shows: ({ member }: Membership): unknown => (member ? 1 : null),
         },
       } as const;
@@ -812,6 +979,145 @@ describe.skipIf(!available)('groups domain', () => {
         expect(tracking.running()).toBe(0);
         expect(await idleInTransaction()).toBe(0);
       });
+
+      it.each([
+        [0, 1000],
+        [0, 3],
+        [2, 3],
+        [5, 2],
+        [7, 5],
+        [8, 1],
+        [20, 2],
+      ])('windows the merged listing of three member tenants at offset %i, limit %i, no tenant cursor reaching past the window end', async (offset, limit) => {
+        const { groupId, ordered } = await spreadGroup();
+        const statements: Statement[] = [];
+        const paged = { ...deps(), db: recordingDb(statements), repo: createIdentityRepository({ clock, schema: handle.schema, pageSize: 1 }) };
+
+        const page = await listGroupMembersPage(paged, NO_PHOTOS, groupId, { includeS2: true, page: { offset, limit } });
+
+        expect(page.members.map((member) => member.userid)).toEqual(ordered.slice(offset, offset + limit));
+        expect(page.total).toBe(ordered.length);
+        const bounds = statements.filter((s) => s.text.startsWith('DECLARE')).map((s) => s.values?.[2]);
+        expect(bounds).toEqual(offset >= ordered.length ? [] : [offset + limit, offset + limit, offset + limit]);
+        expect(await idleInTransaction()).toBe(0);
+      });
+
+      it('counts and lists S2 members only with includeS2, and resolves each window member as streamListedGroupMembers does', async () => {
+        const groupId = next('B');
+        await createGroup(deps(), SUPER, { userId: groupId, siteId: SITE_A, isPublic: '0', groupName: `Filtered ${seq}` });
+        const plain = await seedUser(SITE_A, { lname: 'a' });
+        const superUser = await seedUser(SITE_A, { lname: 'b', s2: 1 });
+        const pooled = await seedUser(UMBRELLA, { lname: 'c' });
+        await addMembers(SITE_A, groupId, [plain, superUser]);
+        await addMembers(UMBRELLA, groupId, [pooled]);
+        const window = async (includeS2: boolean, offset: number, limit: number): Promise<[string[], number]> => {
+          const { members, total } = await listGroupMembersPage(deps(), NO_PHOTOS, groupId, { includeS2, page: { offset, limit } });
+          return [members.map((member) => member.userid), total];
+        };
+
+        expect(await window(false, 0, 1000)).toEqual([[plain, pooled], 2]);
+        expect(await window(true, 0, 1000)).toEqual([[plain, superUser, pooled], 3]);
+        expect(await window(false, 1, 1)).toEqual([[pooled], 2]);
+        expect(await window(true, 1, 1)).toEqual([[superUser], 3]);
+        const streamed: ListedGroupMember[] = [];
+        for await (const batch of streamListedGroupMembers(deps(), NO_PHOTOS, groupId, { includeS2: true })) streamed.push(...batch);
+        expect((await listGroupMembersPage(deps(), NO_PHOTOS, groupId, { includeS2: true, page: WHOLE })).members).toEqual(streamed);
+      });
+    });
+  });
+
+  describe('member photos', () => {
+    const PHOTO_SITE = 'photo-pool';
+    const STORED = id(1, 'F');
+    const NULL_EXT = id(2, 'F');
+    const UNSTORED = id(3, 'F');
+
+    beforeAll(async () => {
+      await registerSite(PHOTO_SITE, PHOTO_SITE, PHOTO_SITE);
+    });
+
+    /** identity's content client over a strategies-content double that records each lookup's ids and answers from `stored`. */
+    function photoContent(stored: ReadonlyMap<string, string | null>): { content: ContentClient; lookups: string[][] } {
+      const lookups: string[][] = [];
+      const client: ServiceClient = {
+        request<T>(req: ServiceRequest): Promise<ServiceResponse<T>> {
+          const { fileIds } = req.json as { fileIds: string[] };
+          lookups.push(fileIds);
+          const items = fileIds.flatMap((fileId) => (stored.has(fileId) ? [{ fileId, fileExt: stored.get(fileId) ?? null }] : []));
+          return Promise.resolve({ status: 200, headers: {}, body: { items } as T });
+        },
+        close: () => Promise.resolve(),
+      };
+      return { content: createContentClient(client), lookups };
+    }
+
+    /** A private group of PHOTO_SITE whose members' contacts carry `photos` in last-name order; null seeds no contact. */
+    async function photoGroup(photos: readonly (string | null)[]): Promise<string> {
+      const groupId = next('B');
+      await createGroup(deps(), SUPER, { userId: groupId, siteId: PHOTO_SITE, isPublic: '0', groupName: `Photos ${seq}` });
+      await gated(PHOTO_SITE, async (tx) => {
+        for (const [n, photo] of photos.entries()) {
+          const userId = next('A');
+          await repo.insertAccount(tx, { userid: userId, username: `p${seq}`, type: 2, s2: 0, perm: 0, inactive: 0, ispublic: 0, siteid: PHOTO_SITE, remoteid: '', tablist: '' });
+          if (photo !== null) {
+            const lname = `m${String(n).padStart(4, '0')}`;
+            await repo.upsertPersonContact(tx, { user_id: userId, site_id: PHOTO_SITE, email: null, fname: null, lname, company: null, subtype: null, aggregate_version: 1, photofileid: photo });
+          }
+          await repo.addMembership(tx, userId, groupId);
+        }
+      });
+      return groupId;
+    }
+
+    it('resolves a batch in order with one lookup of its distinct photo ids; null without a photo id, a stored file or its fileEXT', async () => {
+      const groupId = await photoGroup([null, STORED, STORED, NULL_EXT, UNSTORED, '']);
+      const listed = await listGroupMembers(deps(), groupId);
+      const { content, lookups } = photoContent(new Map([[STORED, 'jpg'], [NULL_EXT, null]]));
+
+      const resolved = await resolveMemberPhotos(content, listed);
+
+      expect(resolved).toEqual(listed.map((member, n) => ({ ...member, photofileext: [null, 'jpg', 'jpg', null, null, null][n] })));
+      expect(resolved.map((member) => member.photofileid)).toEqual([null, STORED, STORED, NULL_EXT, UNSTORED, ' '.repeat(35)]);
+      expect(lookups).toEqual([[STORED, NULL_EXT, UNSTORED]]);
+    });
+
+    it('makes no lookup for members without photos, and refuses a batch over MEMBER_BATCH_SIZE before any lookup', async () => {
+      const listed = await listGroupMembers(deps(), await photoGroup([null, '']));
+      const { content, lookups } = photoContent(new Map());
+
+      expect((await resolveMemberPhotos(content, listed)).map((member) => member.photofileext)).toEqual([null, null]);
+      await expect(resolveMemberPhotos(content, Array.from({ length: MEMBER_BATCH_SIZE + 1 }, () => listed[0] as GroupMemberRow))).rejects.toBeInstanceOf(RangeError);
+      expect(lookups).toEqual([]);
+    });
+
+    it('streams a group one MEMBER_BATCH_SIZE batch at a time in listing order, each with one lookup', async () => {
+      const photos = Array.from({ length: MEMBER_BATCH_SIZE + 1 }, (_, n) => id(100 + n, 'F'));
+      const groupId = await photoGroup(photos);
+      const { content, lookups } = photoContent(new Map(photos.map((photo, n) => [photo, n % 2 === 0 ? 'png' : null])));
+
+      const batches: ListedGroupMember[][] = [];
+      for await (const batch of streamListedGroupMembers(deps(), content, groupId)) batches.push(batch);
+
+      expect(batches.map((batch) => batch.length)).toEqual([MEMBER_BATCH_SIZE, 1]);
+      expect(lookups).toEqual([photos.slice(0, MEMBER_BATCH_SIZE), photos.slice(MEMBER_BATCH_SIZE)]);
+      expect(batches.flat().map((member) => member.userid)).toEqual((await listGroupMembers(deps(), groupId)).map((member) => member.userid));
+      expect(batches.flat().map((member) => member.photofileext)).toEqual(photos.map((_, n) => (n % 2 === 0 ? 'png' : null)));
+    });
+
+    it.each([
+      ['a window of 1000 in one MEMBER_BATCH_SIZE lookup and one of the rest', { offset: 0, limit: 1000 }, [[0, MEMBER_BATCH_SIZE], [MEMBER_BATCH_SIZE, MEMBER_BATCH_SIZE + 1]]],
+      ['a window of two in one lookup of its own photos', { offset: 1, limit: 2 }, [[1, 3]]],
+    ] as const)('resolves the photos of %s only', async (_case, page, batches) => {
+      const photos = Array.from({ length: MEMBER_BATCH_SIZE + 1 }, (_, n) => id(2000 + n, 'F'));
+      const groupId = await photoGroup(photos);
+      const { content, lookups } = photoContent(new Map(photos.map((photo, n) => [photo, n % 2 === 0 ? 'png' : null])));
+
+      const listed = await listGroupMembersPage(deps(), content, groupId, { page });
+
+      expect(lookups).toEqual(batches.map(([from, to]) => photos.slice(from, to)));
+      expect(listed.total).toBe(photos.length);
+      expect(listed.members.map((member) => member.photofileid)).toEqual(photos.slice(page.offset, page.offset + page.limit));
+      expect(listed.members.map((member) => member.photofileext)).toEqual(listed.members.map((_, n) => ((page.offset + n) % 2 === 0 ? 'png' : null)));
     });
   });
 });

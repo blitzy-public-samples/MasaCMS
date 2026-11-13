@@ -1,4 +1,4 @@
-// The handlers' request pipeline in every response mode, over a test screen registry and the loopback gateway fake.
+// The handlers' request pipeline in every response mode, over a test screen registry and the in-memory gateway relay.
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,7 +19,7 @@ import type {
 import { promptCountsZero } from '../fixtures/strategies-content/prompts';
 import { siteRecordFor } from '../helpers/admin-request';
 import { useTestEnv } from '../helpers/env';
-import { routeKey, startFakeGateway, type FakeGateway, type RecordedRequest } from '../helpers/fake-gateway';
+import { fakeServiceClient, routeKey, type FakeServiceClient, type RecordedRequest } from '../helpers/fake-gateway';
 import { SUBJECTS, gatewayInvocation, serviceInvocation, userTokenFor } from '../helpers/tokens';
 
 const probe = vi.hoisted(() => ({
@@ -169,7 +169,7 @@ vi.mock('@/screens/registry', async () => {
   };
 });
 
-const { handleAdminAction, handleAdminPage, handleAdminRaw, handleOpt2Action, renderAdminPage, renderOpt2Page } =
+const { handleAdminAction, handleAdminPage, handleAdminRaw, handleOpt2Action, handleOpt2Page } =
   await import('@/lib/handlers');
 
 const admin = SUBJECTS.admin;
@@ -180,7 +180,7 @@ const FORM = 'application/x-www-form-urlencoded';
 const LIST = { circuit: 'cusers', action: 'list' } as const;
 const UPDATE = { circuit: 'cusers', action: 'update' } as const;
 
-let fake: FakeGateway;
+let fake: FakeServiceClient;
 let restoreEnv: () => void;
 let restoreClient: () => void;
 
@@ -234,10 +234,10 @@ function installRoutes(): void {
   });
 }
 
-beforeEach(async () => {
-  fake = await startFakeGateway();
-  restoreEnv = useTestEnv({ OPT2_GATEWAY_URL: fake.url });
-  restoreClient = setServiceClientForTests(undefined);
+beforeEach(() => {
+  fake = fakeServiceClient();
+  restoreEnv = useTestEnv();
+  restoreClient = setServiceClientForTests(fake);
   installRoutes();
   vi.mocked(logRequest).mockClear();
   Object.assign(probe, {
@@ -252,10 +252,9 @@ beforeEach(async () => {
   });
 });
 
-afterEach(async () => {
+afterEach(() => {
   restoreClient();
   restoreEnv();
-  await fake.close();
 });
 
 /** Headers the gateway forwards for the S2 admin, or for an anonymous browser. */
@@ -292,13 +291,13 @@ type SavedFlash = { flash: Record<string, Record<string, string>>; nextPreserveK
 
 describe('page mode', () => {
   it('renders the view in the layout with its CSRF fields and the date key, persisting the session once', async () => {
-    const result = await renderAdminPage(LIST, { muraAction: 'cusers.list' }, await forwarded());
+    const response = await handleAdminPage(await getRequest('/admin/cusers/list?muraAction=cusers.list'), LIST);
 
-    expect(result.kind).toBe('document');
-    const body = result.kind === 'document' ? String(result.document.body) : '';
+    expect(response.status).toBe(200);
+    const body = await response.text();
     expect(body).toMatch(/<div id="view">3 \S+<\/div>/);
     expect(body).toContain('value="TOKEN-listcontext"');
-    expect(result.kind === 'document' && result.setCookies.length).toBeGreaterThan(0);
+    expect(response.headers.getSetCookie().length).toBeGreaterThan(0);
     expect(savedStates()).toHaveLength(1);
     expect(loggedLines()).toEqual([
       expect.objectContaining({
@@ -324,7 +323,6 @@ describe('page mode', () => {
     ['an unknown key', { circuit: 'cnope', action: 'zzz' }],
     ['a screen of another mode', UPDATE],
   ])('answers 404 for %s', async (_case, params) => {
-    expect(await renderAdminPage(params, {}, await forwarded())).toEqual({ kind: 'not-found' });
     expect((await handleAdminPage(await getRequest('/admin/x/y'), params)).status).toBe(404);
   });
 
@@ -336,22 +334,16 @@ describe('page mode', () => {
 
     expect(response.status).toBe(403);
     expect(await response.text()).toBe('');
-    expect(await renderAdminPage(LIST, {}, headers)).toEqual({ kind: 'refused', status: 403 });
     expect(fake.requests).toHaveLength(0);
-    expect(loggedLines().map(({ statusCode, error }) => [statusCode, error !== undefined])).toEqual([
-      [403, true],
-      [403, true],
-    ]);
+    expect(loggedLines().map(({ statusCode, error }) => [statusCode, error !== undefined])).toEqual([[403, true]]);
   });
 
   it('sends an anonymous user on a secured screen to the login form', async () => {
     const anonymous = await getRequest('/admin/cusers/list?muraAction=cusers.list', 'anonymous');
     const response = await handleAdminPage(anonymous, LIST);
-    const result = await renderAdminPage(LIST, { muraAction: 'cusers.list' }, await forwarded('anonymous'));
 
     expect(response.status).toBe(302);
     expect(response.headers.get('location')).toMatch(/^\.\/\?muraAction=cLogin\.main&returnURL=/);
-    expect(result).toMatchObject({ kind: 'redirect', location: response.headers.get('location') });
   });
 
   it('answers the legacy 503 when identity is unavailable, persisting nothing', async () => {
@@ -361,9 +353,8 @@ describe('page mode', () => {
 
     expect(response.status).toBe(503);
     expect(await response.text()).toBe(LEGACY_ERROR_PAGE_HTML);
-    expect(await renderAdminPage(LIST, {}, await forwarded())).toEqual({ kind: 'unavailable' });
     expect(savedStates()).toHaveLength(0);
-    expect(loggedLines().map(({ statusCode }) => statusCode)).toEqual([503, 503]);
+    expect(loggedLines().map(({ statusCode }) => statusCode)).toEqual([503]);
   });
 
   it('answers a service denial with the access gate redirect', async () => {
@@ -378,7 +369,7 @@ describe('page mode', () => {
   it('logs an unexpected error once and rethrows it', async () => {
     probe.renderError = new RangeError('render failed');
 
-    await expect(renderAdminPage(LIST, {}, await forwarded())).rejects.toBe(probe.renderError);
+    await expect(handleAdminPage(await getRequest('/admin/cusers/list'), LIST)).rejects.toBe(probe.renderError);
     expect(loggedLines()).toEqual([expect.objectContaining({ statusCode: 500, error: probe.renderError })]);
   });
 
@@ -386,7 +377,7 @@ describe('page mode', () => {
     const failure = new Error('tracing failed');
     vi.mocked(ensureTracing).mockRejectedValueOnce(failure);
 
-    await expect(renderAdminPage(LIST, {}, await forwarded())).rejects.toBe(failure);
+    await expect(handleAdminPage(await getRequest('/admin/cusers/list'), LIST)).rejects.toBe(failure);
     expect(fake.requests).toHaveLength(0);
     expect(loggedLines()).toEqual([
       expect.objectContaining({ route: 'page:cusers.list', statusCode: 500, requestId: 'req-pipeline', error: failure }),
@@ -395,9 +386,12 @@ describe('page mode', () => {
   });
 
   it('persists the writes of a request a screen derived in place of its own, with the set-up writes it carries', async () => {
-    const result = await renderAdminPage({ circuit: 'carch', action: 'list' }, { muraAction: 'carch.list' }, await forwarded());
+    const response = await handleAdminPage(await getRequest('/admin/carch/list?muraAction=carch.list'), {
+      circuit: 'carch',
+      action: 'list',
+    });
 
-    expect(result.kind === 'document' && String(result.document.body)).toContain('<p id="derived">derived</p>');
+    expect(await response.text()).toContain('<p id="derived">derived</p>');
     expect(savedStates().map(({ json }) => json)).toEqual([
       expect.objectContaining({ moduleid: '00000000000000000000000000000000003', siteid: 'default' }),
     ]);
@@ -425,26 +419,21 @@ describe('page controller redirect', () => {
     probe.redirect = { kind: 'redirect', ...fields };
 
     const response = await handleAdminPage(await sitesRequest(), SITES);
-    const result = await renderAdminPage(SITES, QUERY, await forwarded());
 
     expect(response.status).toBe(302);
     expect(response.headers.get('location')).toBe(location);
     expect(lastCookies(response.headers.getSetCookie(), relayed.length)).toEqual(relayed);
-    expect(result).toMatchObject({ kind: 'redirect', location });
-    expect(result.kind === 'redirect' && lastCookies(result.setCookies, relayed.length)).toEqual(relayed);
-    expect(probe.steps).toEqual(['redirect', 'redirect']);
-    expect(savedStates().map((saved) => (saved.json as Partial<SavedFlash>).flash?.['1'])).toEqual([flash, flash]);
-    expect(loggedLines().map(({ statusCode }) => statusCode)).toEqual([302, 302]);
+    expect(probe.steps).toEqual(['redirect']);
+    expect(savedStates().map((saved) => (saved.json as Partial<SavedFlash>).flash?.['1'])).toEqual([flash]);
+    expect(loggedLines().map(({ statusCode }) => statusCode)).toEqual([302]);
   });
 
   it('renders the view after a controller step that does not redirect', async () => {
     const response = await handleAdminPage(await sitesRequest(), SITES);
-    const result = await renderAdminPage(SITES, QUERY, await forwarded());
 
     expect(response.status).toBe(200);
     expect(await response.text()).toContain('<p id="sites">sites</p>');
-    expect(result.kind === 'document' && String(result.document.body)).toContain('<p id="sites">sites</p>');
-    expect(probe.steps).toEqual(['redirect', 'load', 'render', 'redirect', 'load', 'render']);
+    expect(probe.steps).toEqual(['redirect', 'load', 'render']);
   });
 
   it('answers an asynchronous step\'s location unchanged with its relayed cookies and no flash', async () => {
@@ -453,14 +442,11 @@ describe('page controller redirect', () => {
     probe.deferRedirect = true;
 
     const response = await handleAdminPage(await sitesRequest(), SITES);
-    const result = await renderAdminPage(SITES, QUERY, await forwarded());
 
     expect(response.status).toBe(302);
     expect(response.headers.get('location')).toBe(location);
     expect(lastCookies(response.headers.getSetCookie(), 1)).toEqual(['relayed=1']);
-    expect(result).toMatchObject({ kind: 'redirect', location });
-    expect(result.kind === 'redirect' && lastCookies(result.setCookies, 1)).toEqual(['relayed=1']);
-    expect(probe.steps).toEqual(['redirect', 'redirect']);
+    expect(probe.steps).toEqual(['redirect']);
     expect(savedStates().some(({ json }) => (json as Partial<SavedFlash>).flash !== undefined)).toBe(false);
   });
 
@@ -478,11 +464,9 @@ describe('page controller redirect', () => {
     probe.redirect = { kind: 'redirect', action: 'cSettings.list', path: './' };
 
     const response = await handleAdminPage(await sitesRequest('anonymous'), SITES);
-    const result = await renderAdminPage(SITES, QUERY, await forwarded('anonymous'));
 
     expect(response.status).toBe(302);
     expect(response.headers.get('location')).toMatch(/^\.\/\?muraAction=cLogin\.main&returnURL=/);
-    expect(result).toMatchObject({ kind: 'redirect', location: response.headers.get('location') });
     expect(probe.steps).toEqual([]);
   });
 });
@@ -660,16 +644,29 @@ describe('raw mode', () => {
 });
 
 describe('synthetic modules', () => {
-  it('renders a screen inside the layout and gates an anonymous user', async () => {
-    const result = await renderOpt2Page({ module: 'timesheets', screen: 'sheets' }, {}, await forwarded());
+  const SHEETS = { module: 'timesheets', screen: 'sheets' } as const;
 
-    expect(result.kind === 'document' && String(result.document.body)).toContain('<p id="opt2">sheets</p>');
-    expect(await renderOpt2Page({ module: 'timesheets', screen: 'unknown' }, {}, await forwarded())).toEqual({
-      kind: 'not-found',
-    });
-    const sheets = { module: 'timesheets', screen: 'sheets' };
-    const anonymous = await renderOpt2Page(sheets, {}, await forwarded('anonymous'));
-    expect(anonymous.kind).toBe('redirect');
+  it('renders a screen inside the layout with its cookies and gates an anonymous user', async () => {
+    const response = await handleOpt2Page(await getRequest('/opt2/admin/timesheets/sheets'), SHEETS);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.getSetCookie().length).toBeGreaterThan(0);
+    expect(await response.text()).toMatch(/^<!DOCTYPE[\s\S]*<p id="opt2">sheets<\/p>/);
+    const anonymous = await handleOpt2Page(await getRequest('/opt2/admin/timesheets/sheets', 'anonymous'), SHEETS);
+    expect(anonymous.status).toBe(302);
+    expect(loggedLines().map(({ route, statusCode }) => [route, statusCode])).toEqual([
+      ['opt2:timesheets.sheets', 200],
+      ['opt2:timesheets.sheets', 302],
+    ]);
+  });
+
+  it.each([
+    ['an unknown screen', { module: 'timesheets', screen: 'unknown' }],
+    ['an unknown module', { module: 'nope', screen: 'sheets' }],
+  ])('answers 404 for %s', async (_case, params) => {
+    const response = await handleOpt2Page(await getRequest(`/opt2/admin/${params.module}/${params.screen}`), params);
+
+    expect(response.status).toBe(404);
   });
 
   it('answers a post action like an FW/1 post action', async () => {

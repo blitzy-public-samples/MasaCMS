@@ -10,6 +10,7 @@ import {
 import type { QueryResultRow, TenantTx } from '@opt2/platform/tenancy';
 import { systemClock, type Clock } from '@opt2/platform/service-kit';
 import { cfUuid } from '@opt2/platform/legacy-compat';
+import { compileGroupFeed, type GroupFeedPage, type GroupFeedQuery } from './group-feed.js';
 import {
   ACCOUNT_OPERATION,
   AGGREGATE_VERSION,
@@ -113,6 +114,26 @@ function storableId(value: string): boolean {
   return value !== '' && value.length <= ID_WIDTH;
 }
 
+/** The bound values of the repository's account filter SQL for `filter`, in its parameter order; no filter binds no predicate. */
+function accountFilterParams(filter: AccountFilter = {}): unknown[] {
+  const { unassigned } = filter;
+  return [
+    filter.isPublic ?? null,
+    filter.s2 ?? null,
+    filter.excludeS2Users === true,
+    filter.inActive ?? null,
+    filter.siteIds === undefined ? null : [...filter.siteIds],
+    unassigned !== undefined,
+    unassigned?.ownMemberships === true,
+    [...(unassigned?.assignedElsewhere ?? [])],
+  ];
+}
+
+/** `units` plus the membership unit an `unassigned` filter reads. */
+function filterUnits(units: readonly string[], filter: AccountFilter | undefined): string[] {
+  return filter?.unassigned === undefined ? [...units] : [...units, MEMBERSHIP.unit];
+}
+
 /** CFML boolean of a numeric flag; NULL reads as false. */
 function flag(value: number | boolean | null): boolean {
   return value === true || (typeof value === 'number' && value !== 0);
@@ -210,7 +231,10 @@ export interface GroupMembership {
   isPublic: number | null;
 }
 
-/** A member of a group: a Type=2 account named by its person contact, or a Type=1 group by its own columns. */
+/**
+ * A member of a group with the `tusers` columns `readGroupMemberships` selects: a Type=2 account with its credential, login state
+ * and person contact columns, or a Type=1 group by its own columns.
+ */
 export interface GroupMemberRow {
   userid: string;
   type: number | null;
@@ -223,6 +247,30 @@ export interface GroupMemberRow {
   lname: string | null;
   email: string | null;
   company: string | null;
+  groupname: string | null;
+  passwordcreated: Date | null;
+  jobtitle: string | null;
+  mobilephone: string | null;
+  website: string | null;
+  subtype: string | null;
+  contactform: string | null;
+  lastlogin: Date | null;
+  lastupdate: Date | null;
+  lastupdateby: string | null;
+  lastupdatebyid: string | null;
+  perm: number | null;
+  subscribe: number | null;
+  notes: string | null;
+  description: string | null;
+  interests: string | null;
+  keepprivate: number | null;
+  photofileid: string | null;
+  imname: string | null;
+  imservice: string | null;
+  created: Date | null;
+  remoteid: string | null;
+  tags: string | null;
+  tablist: string | null;
 }
 
 /** A member with its listing's sort key, the lowered last name (null for a NULL one). */
@@ -243,12 +291,40 @@ export interface GroupMemberProbe {
   closed: string[];
 }
 
+/** How many members of a group a tenant holds, and the users closing the group as `GroupMemberPage.closed` names them. */
+export interface GroupMemberCount {
+  total: number;
+  closed: string[];
+}
+
+/** A window of a listing: at most `limit` items after its first `offset`. */
+export interface ListPage {
+  offset: number;
+  limit: number;
+}
+
+/** One window of a listing and the size of the whole listing. */
+export interface ListedPage<T> {
+  items: T[];
+  total: number;
+}
+
 /** A listed group with its member count, null when it has none. */
 export type CountedGroupRow = GroupAccountRow & { counter: number | null };
+
+/** A group child table, by its legacy name, that a group feed joins or filters through [legacy: core/mura/user/userGateway.cfc:227-238,525-553]. */
+export type GroupRelation = 'tuserstags' | 'tusersinterests' | 'tuseraddresses' | 'tusersfavorites' | 'tusersmemb';
 
 /** A group listing with member counts: every group when `closed` is empty, else only the first page, `closed` naming the users whose open account operation holds, held or will hold a membership of a listed group. */
 export interface CountedGroupList {
   groups: CountedGroupRow[];
+  closed: string[];
+}
+
+/** One window of the counted group listing with the listing's total; `closed` names the users whose open account operation holds, held or will hold a membership of a group in the window. */
+export interface CountedGroupPage {
+  groups: CountedGroupRow[];
+  total: number;
   closed: string[];
 }
 
@@ -362,17 +438,52 @@ export type AccountRecordRow = Omit<UserAccountRow, 'tenant_id'> &
   Pick<CredentialRow, 'passwordcreated'> &
   Pick<LoginStateRow, 'lastlogin'> & { closed: boolean };
 
+/** `AccountWhere` as one tenant's statement applies it; `unassigned` says whether this tenant's membership rows count and names the members other tenants' rows hold. */
+export interface AccountFilter {
+  isPublic?: number;
+  s2?: number;
+  excludeS2Users?: boolean;
+  inActive?: number;
+  siteIds?: readonly string[];
+  unassigned?: { ownMemberships: boolean; assignedElsewhere: readonly string[] };
+}
+
+/** One tenant's count of the active accounts a filter matches, and the scoped users an open account operation closes, from one snapshot. */
+export interface ListedAccountCount {
+  count: number;
+  closed: string[];
+}
+
+/** An active account whose UserName matched a candidate pattern; `closed` while an account operation on the user is open. */
+export interface UsernameCandidateRow {
+  userid: string;
+  username: string;
+  closed: boolean;
+}
+
+/** The membership rows of listed users in one tenant, and the listed users an open account operation keeps closed, from one snapshot. */
+export interface MembershipRecords {
+  rows: Array<{ userid: string; groupid: string }>;
+  closed: string[];
+}
+
 /** An account found by its contact's email, with the contact's names. */
 export type EmailAccountRow = UserAccountRow & Pick<PersonContactRow, 'fname' | 'lname'>;
 
 /** One group of a user pool as `getPrivateGroups`/`getPublicGroups` list it. */
 export type PoolGroupRow = Pick<GroupAccountRow, 'userid' | 'groupname' | 'perm'> & { siteid: string; ispublic: 0 | 1 };
 
-/** A person-contact projection row to store; `updated_at` defaults to now. */
-export type PersonContactInput = Omit<PersonContactRow, 'tenant_id' | 'aggregate_version' | 'updated_at'> & {
-  aggregate_version: number | string;
-  updated_at?: Date;
-};
+/** The person columns of the projection that only group member listings read. */
+export type PersonMemberColumn =
+  | 'groupname' | 'jobtitle' | 'mobilephone' | 'website' | 'ext' | 'contactform' | 'subscribe' | 'notes' | 'description' | 'interests'
+  | 'keepprivate' | 'photofileid' | 'imname' | 'imservice' | 'tags' | 'created' | 'lastupdate' | 'lastupdateby' | 'lastupdatebyid';
+
+/** A person-contact projection row to store; `updated_at` defaults to now, and an absent member column is NULL on insert and kept on update. */
+export type PersonContactInput = Omit<PersonContactRow, 'tenant_id' | 'aggregate_version' | 'updated_at' | PersonMemberColumn> &
+  Partial<Pick<PersonContactRow, PersonMemberColumn>> & {
+    aggregate_version: number | string;
+    updated_at?: Date;
+  };
 
 /** The platform repository of schema `identity` plus typed helpers; every helper runs in the caller's open tenant transaction. */
 export interface IdentityRepository extends Repository {
@@ -385,8 +496,14 @@ export interface IdentityRepository extends Repository {
   findAccountByUsername(tx: TenantTx, username: string, poolSiteId?: string): Promise<UserAccountRow | null>;
   /** The account `userId`; a `pending` account only with `includePending`. A migration apply's `ctx` reads without the window-phase wait. */
   findAccountById(tx: TenantTx, userId: string, opts?: { includePending?: boolean }, ctx?: WriteContext): Promise<UserAccountRow | null>;
-  /** The Type=2 accounts among `userIds`, pending ones included, with their credential and login-state columns, by userid, in one statement. */
-  readAccountRecords(tx: TenantTx, userIds: readonly string[]): Promise<AccountRecordRow[]>;
+  /** The Type=2 accounts among `userIds`, pending ones included, with their credential and login-state columns, by userid, in one statement; with `filter`, only the closed ones and those it matches. */
+  readAccountRecords(tx: TenantTx, userIds: readonly string[], filter?: AccountFilter): Promise<AccountRecordRow[]>;
+  /** The active Type=2 accounts of this tenant, of the pool site `siteId` when given, that `filter` matches, with the users of the scope's Type=2 accounts an open operation closes, in one statement. */
+  countListedAccounts(tx: TenantTx, scope: { siteId: string | null; filter?: AccountFilter }): Promise<ListedAccountCount>;
+  /** At most `limit` active Type=2 accounts of the pool site `siteId` that `filter` matches and whose UserName is `ILIKE pattern` with ASCII-only case folding and no escape character, by userid, each with its open-operation flag. */
+  readUsernameCandidates(tx: TenantTx, query: { siteId: string; pattern: string; filter?: AccountFilter; limit: number }): Promise<UsernameCandidateRow[]>;
+  /** The member ids of this tenant's membership rows whose member no account or group of this tenant stores, among `userIds` when given, by id. */
+  foreignMemberIds(tx: TenantTx, userIds: readonly string[] | null): Promise<string[]>;
   /** Whether another Type=2 account, pending ones included, holds `trim(username)` [legacy: core/mura/user/userBean.cfc:411-424]. */
   isUsernameTaken(tx: TenantTx, username: string, exceptUserId: string): Promise<boolean>;
   /** Inserts an account with the DAO NULL rules. */
@@ -412,10 +529,25 @@ export interface IdentityRepository extends Repository {
   findGroupsByIds(tx: TenantTx, groupIds: readonly string[]): Promise<GroupAccountRow[]>;
   /** The first Type=1 group of `siteId` named `name` case-insensitively, optionally of one visibility [legacy: core/mura/user/userDAO.cfc:176-216]. */
   findGroupByName(tx: TenantTx, name: string, opts: { siteId: string; isPublic?: boolean }): Promise<GroupAccountRow | null>;
+  /** Groups of `siteIds` whose `column` equals `value` as SQL Server compares nvarchar, Type=1 only by `groupname`, by userid [legacy: core/mura/user/userDAO.cfc:122-300]. */
+  findGroupsByColumn(tx: TenantTx, column: 'groupname' | 'username' | 'remoteid', value: string, siteIds: readonly string[]): Promise<GroupAccountRow[]>;
+  /** How many accounts of `siteIds`, pending ones included, have `column` equal to `value` as SQL Server compares nvarchar. */
+  countAccountsByColumn(tx: TenantTx, column: 'username' | 'remoteid', value: string, siteIds: readonly string[]): Promise<number>;
   /** Type=1 groups of `poolSiteId` with that visibility, by name then userid [legacy: core/mura/permission.cfc:600-621]. */
   listGroups(tx: TenantTx, poolSiteId: string, isPublic: boolean | number, opts?: { excludeAdmin?: boolean }): Promise<GroupAccountRow[]>;
   /** `listGroups` rows with their `membersOf` counts (S2 included) from one cursor snapshot in pages, stopping after the first page when an open account operation closes a listed group [legacy: core/mura/user/userGateway.cfc:93-120]. */
   listCountedGroups(tx: TenantTx, poolSiteId: string, isPublic: boolean | number): Promise<CountedGroupList>;
+  /** The `page` window of the `listGroups` rows by `Perm` descending (NULL last), then name, with their member counts as `listCountedGroups` counts them and the listing's total, from one statement. */
+  pageCountedGroups(tx: TenantTx, poolSiteId: string, isPublic: boolean | number, page: ListPage): Promise<CountedGroupPage>;
+  /** Type=1 groups of `poolSiteId` with that visibility by userid, S2 ones only with `includeS2`, only `inactive` ones when given, in pages from one cursor snapshot behind the gate read fence; iterate inside `tx`. */
+  groupFeedPages(
+    tx: TenantTx,
+    poolSiteId: string,
+    isPublic: boolean | number,
+    opts?: { includeS2?: boolean; inactive?: number },
+  ): AsyncGenerator<GroupAccountRow[], void, undefined>;
+  /** The groupFeedPages selection that `query`'s filters accept: its first `limit` rows in `query`'s order and its count up to `query.top`, from one statement behind the gate read fence. */
+  readGroupFeed(tx: TenantTx, poolSiteId: string, isPublic: boolean | number, query: GroupFeedQuery): Promise<GroupFeedPage>;
   /** Type=1 groups of `poolSiteId` with `ispublic` = `isPublic`, by Perm descending, then name [legacy: core/mura/user/userGateway.cfc:594-622]. */
   listPoolGroups(tx: TenantTx, poolSiteId: string, isPublic: 0 | 1): Promise<PoolGroupRow[]>;
   /** Inserts a group as `userDAO.create` does [legacy: core/mura/user/userDAO.cfc:300-346]. */
@@ -443,6 +575,10 @@ export interface IdentityRepository extends Repository {
   ): Promise<void>;
   /** The group's interest category ids, by category id [legacy: core/mura/user/userDAO.cfc:674-682]. */
   groupInterestIds(tx: TenantTx, groupId: string): Promise<string[]>;
+  /** Whether the group `groupId` holds any extended value. */
+  hasGroupExtendData(tx: TenantTx, groupId: string): Promise<boolean>;
+  /** The `relation` rows whose `userid` is one of `groupIds`, in the legacy table's clustered key order. */
+  listGroupRelationRows(tx: TenantTx, relation: GroupRelation, groupIds: readonly string[]): Promise<RepositoryRow[]>;
   /** Deletes the group's tags, then inserts each trimmed, non-empty item of the comma list `tags` [legacy: core/mura/user/userDAO.cfc:895-922]. */
   replaceGroupTags(tx: TenantTx, input: { groupId: string; siteId: string; tags: string | null }, ctx?: WriteContext): Promise<GroupTagRow[]>;
   /** Deletes every tag of the group; returns the number deleted. */
@@ -462,6 +598,8 @@ export interface IdentityRepository extends Repository {
   membershipsOf(tx: TenantTx, userId: string): Promise<GroupMembership[]>;
   /** Every group id `userId` belongs to, groups stored in other tenants included, by group id. A migration apply's `ctx` reads without the window-phase wait. */
   membershipGroupIds(tx: TenantTx, userId: string, ctx?: WriteContext): Promise<string[]>;
+  /** The membership rows of `userIds` in this tenant by user then group id, with the listed users an open account operation closes, in one statement. */
+  readMembershipRecords(tx: TenantTx, userIds: readonly string[]): Promise<MembershipRecords>;
   /** Deletes the user's memberships (only `onlyGroupIds` when given), then inserts each new non-empty id [legacy: core/mura/user/userDAO.cfc:502-515,561-581]. */
   replaceMemberships(
     tx: TenantTx,
@@ -480,10 +618,12 @@ export interface IdentityRepository extends Repository {
   removeMembership(tx: TenantTx, userId: string, groupId: string, ctx?: WriteContext): Promise<boolean>;
   /** Members of `groupId` in this tenant, S2 members only with `includeS2`, by last name then userid [legacy: core/mura/user/userDAO.cfc:646-660]. */
   membersOf(tx: TenantTx, groupId: string, opts?: { includeS2?: boolean }): Promise<GroupMemberRow[]>;
-  /** `membersOf` in pages from one cursor snapshot behind the gate read fence, the first page always yielded; iterate inside `tx`. */
-  memberPages(tx: TenantTx, groupId: string, opts?: { includeS2?: boolean }): AsyncGenerator<GroupMemberPage, void, undefined>;
+  /** `membersOf` in pages from one cursor snapshot behind the gate read fence, the first page always yielded, only its first `limit` members when given; iterate inside `tx`. */
+  memberPages(tx: TenantTx, groupId: string, opts?: { includeS2?: boolean; limit?: number }): AsyncGenerator<GroupMemberPage, void, undefined>;
   /** Whether `membersOf` would list anyone, with the first page's closure, in one statement behind the gate read fence. */
   probeMembers(tx: TenantTx, groupId: string, opts?: { includeS2?: boolean }): Promise<GroupMemberProbe>;
+  /** How many members `membersOf` would list, with the first page's closure, in one statement behind the gate read fence. */
+  countMembers(tx: TenantTx, groupId: string, opts?: { includeS2?: boolean }): Promise<GroupMemberCount>;
 
   /** The permissions of a node, optionally of one type [legacy: core/mura/permission.cfc:203-218,623-630]. */
   permissionsFor(tx: TenantTx, input: { contentId: string; siteId: string; type?: string }): Promise<PermissionRow[]>;
@@ -549,8 +689,8 @@ export interface IdentityRepository extends Repository {
   /** Inserts a redirect under a new CF UUID, created now. */
   insertRedirect(tx: TenantTx, row: RedirectInput, ctx?: WriteContext): Promise<RedirectRow>;
 
-  /** The OAuth clients of `siteId`, by clientid. */
-  listOAuthClients(tx: TenantTx, siteId: string): Promise<OAuthClientRow[]>;
+  /** The `page` window of the OAuth clients of `siteId` by clientid, and their total, from one statement. */
+  listOAuthClients(tx: TenantTx, siteId: string, page: ListPage): Promise<ListedPage<OAuthClientRow>>;
   /** The OAuth client `clientId`; null when absent. */
   findOAuthClient(tx: TenantTx, clientId: string): Promise<OAuthClientRow | null>;
   /** Inserts an OAuth client with the ORM NULL rule. */
@@ -631,7 +771,7 @@ export interface IdentityRepository extends Repository {
 export interface IdentityRepositoryOptions {
   clock?: Clock;
   schema?: string;
-  /** Rows per FETCH of the paged member and counted-group reads; defaults to `READ_PAGE_SIZE`. */
+  /** Rows per FETCH of the paged member, counted-group and group-feed reads; defaults to `READ_PAGE_SIZE`. */
   pageSize?: number;
 }
 
@@ -701,18 +841,64 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
   const usernameHolderSql =
     `SELECT userid FROM ${userAccount} WHERE tenant_id = $1 AND type = 2` +
     ` AND (username::bpchar COLLATE ${legacyCi}) = $2::bpchar AND userid <> $3 LIMIT 1`;
+  // AccountFilter over the account u, bound from $first on in accountFilterParams order. A NULL parameter applies no predicate,
+  // and a NULL column fails every given one, as SQL Server's comparisons do.
+  const accountFilterSql = (first: number): string => {
+    const p = (n: number): string => `$${first + n}`;
+    return (
+      `(${p(0)}::numeric IS NULL OR u.ispublic = ${p(0)}::numeric)` +
+      ` AND (${p(1)}::numeric IS NULL OR u.s2 = ${p(1)}::numeric)` +
+      ` AND (NOT ${p(2)}::boolean OR (u.s2 IS NOT NULL AND u.s2 <> 1))` +
+      ` AND (${p(3)}::numeric IS NULL OR u.inactive = ${p(3)}::numeric)` +
+      ` AND (${p(4)}::bpchar[] IS NULL OR (u.siteid::bpchar COLLATE ${legacyCi}) = ANY(${p(4)}::bpchar[]))` +
+      ` AND (NOT ${p(5)}::boolean OR (NOT (${p(6)}::boolean AND EXISTS (SELECT 1 FROM ${membership} m` +
+      ` WHERE m.tenant_id = u.tenant_id AND m.userid = u.userid)) AND u.userid <> ALL(${p(7)}::bpchar[])))`
+    );
+  };
+  const openOperationExists =
+    `EXISTS (SELECT 1 FROM ${accountOperation} o WHERE o.tenant_id = u.tenant_id AND o.user_id = u.userid AND o.state = ANY($3::text[]))`;
   // One statement, so the open-operation flag and the column values come from the same snapshot.
-  const accountRecordsSql =
+  const accountRecordsFromSql =
     'SELECT u.userid, u.username, u.type, u.admin, u.s2, u.perm, u.inactive, u.ispublic, u.siteid, u.remoteid, u.tablist, u.opt2_state,' +
-    ' c.passwordcreated, l.lastlogin,' +
-    ` EXISTS (SELECT 1 FROM ${accountOperation} o WHERE o.tenant_id = u.tenant_id AND o.user_id = u.userid AND o.state = ANY($3::text[])) AS closed` +
+    ` c.passwordcreated, l.lastlogin, ${openOperationExists} AS closed` +
     ` FROM ${userAccount} u LEFT JOIN ${credential} c ON c.tenant_id = u.tenant_id AND c.userid = u.userid` +
     ` LEFT JOIN ${loginState} l ON l.tenant_id = u.tenant_id AND l.userid = u.userid` +
-    ' WHERE u.tenant_id = $1 AND u.type = 2 AND u.userid = ANY($2::bpchar[]) ORDER BY u.userid';
+    ' WHERE u.tenant_id = $1 AND u.type = 2 AND u.userid = ANY($2::bpchar[])';
+  const accountRecordsSql = `${accountRecordsFromSql} ORDER BY u.userid`;
+  // A closed account is read whatever the filter, so the caller still waits for it.
+  const filteredAccountRecordsSql = `${accountRecordsFromSql} AND (${openOperationExists} OR (${accountFilterSql(4)})) ORDER BY u.userid`;
+  // The Type=2 accounts of this tenant, of the pool site $2 when bound, as SQL Server equality compares SiteID.
+  const scopedAccountSql = `u.tenant_id = $1 AND u.type = 2 AND ($2::text IS NULL OR (u.siteid::bpchar COLLATE ${legacyCi}) = $2::bpchar)`;
+  // The literal states match account_operation_open_user_idx's predicate.
+  const openStatesSql = OPEN_OPERATION_STATES.map((state) => `'${state}'`).join(', ');
+  // One statement, so the count and the closure come from one snapshot.
+  const countListedAccountsSql =
+    `SELECT (SELECT count(*)::integer FROM ${userAccount} u WHERE ${scopedAccountSql} AND u.opt2_state = 'active' AND ${accountFilterSql(3)}) AS count,` +
+    ` (SELECT array_agg(o.user_id::text ORDER BY o.user_id) FROM ${accountOperation} o` +
+    ` JOIN ${userAccount} u ON u.tenant_id = o.tenant_id AND u.userid = o.user_id` +
+    ` WHERE o.tenant_id = $1 AND o.state IN (${openStatesSql}) AND ${scopedAccountSql}) AS closed_users`;
+  // "C" folds ASCII letters only, and ESCAPE '' leaves every character but % and _ literal; a NULL UserName matches nothing.
+  const usernameCandidatesSql =
+    'SELECT u.userid, u.username,' +
+    ` EXISTS (SELECT 1 FROM ${accountOperation} o WHERE o.tenant_id = u.tenant_id AND o.user_id = u.userid AND o.state IN (${openStatesSql})) AS closed` +
+    ` FROM ${userAccount} u WHERE ${scopedAccountSql} AND u.opt2_state = 'active'` +
+    ` AND (u.username COLLATE "C") ILIKE $3::text ESCAPE '' AND ${accountFilterSql(5)} ORDER BY u.userid LIMIT $4`;
+  // Rows of members stored in another tenant or nowhere; a member stored here is judged by this tenant's own statement.
+  const foreignMemberIdsSql =
+    `SELECT DISTINCT m.userid FROM ${membership} m WHERE m.tenant_id = $1 AND ($2::bpchar[] IS NULL OR m.userid = ANY($2::bpchar[]))` +
+    ` AND NOT EXISTS (SELECT 1 FROM ${userAccount} u WHERE u.tenant_id = m.tenant_id AND u.userid = m.userid)` +
+    ` AND NOT EXISTS (SELECT 1 FROM ${groupAccount} g WHERE g.tenant_id = m.tenant_id AND g.userid = m.userid) ORDER BY m.userid`;
   const groupsByIdsSql = `SELECT * FROM ${groupAccount} WHERE tenant_id = $1 AND userid = ANY($2::bpchar[]) ORDER BY userid`;
   const groupByNameSql =
     `SELECT * FROM ${groupAccount} WHERE tenant_id = $1 AND type = 1 AND (groupname::bpchar COLLATE ${legacyCi}) = $2::bpchar` +
     ' AND siteid = $3 AND ($4::integer IS NULL OR ispublic = $4) ORDER BY userid LIMIT 1';
+  // The column is one of a fixed set of identifiers; SQL Server's nvarchar `=` as the name lookups use it.
+  const groupsByColumnSql = (column: 'groupname' | 'username' | 'remoteid'): string =>
+    `SELECT * FROM ${groupAccount} WHERE tenant_id = $1 AND (${column}::bpchar COLLATE ${legacyCi}) = $2::bpchar` +
+    ` AND siteid = ANY($3::text[])${column === 'groupname' ? ' AND type = 1' : ''} ORDER BY userid`;
+  const accountsByColumnSql = (column: 'username' | 'remoteid'): string =>
+    `SELECT count(*)::integer AS n FROM ${userAccount} WHERE tenant_id = $1 AND (${column}::bpchar COLLATE ${legacyCi}) = $2::bpchar` +
+    ' AND siteid = ANY($3::text[])';
   // A NULL groupname fails `<> 'Admin'` in SQL Server too, so it is excluded with the Admin groups.
   const listGroupsSql =
     `SELECT * FROM ${groupAccount} WHERE tenant_id = $1 AND type = 1 AND ispublic = $2 AND siteid = $3` +
@@ -732,6 +918,17 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     `SELECT categoryid FROM ${interest} WHERE tenant_id = $1 AND userid = $2` +
     ' AND ($3::bpchar[] IS NULL OR categoryid = ANY($3::bpchar[])) ORDER BY categoryid FOR UPDATE';
   const interestIdsSql = `SELECT categoryid FROM ${interest} WHERE tenant_id = $1 AND userid = $2`;
+  const extendDataExistsSql = `SELECT EXISTS (SELECT 1 FROM ${extendData} WHERE tenant_id = $1 AND baseid = $2) AS held`;
+  const relationSql = (table: string, order: string): string =>
+    `SELECT * FROM ${table} WHERE tenant_id = $1 AND userid = ANY($2::bpchar[]) ORDER BY ${order}`;
+  // Each relation's unit and the clustered key its legacy table is read in.
+  const groupRelations: Readonly<Record<GroupRelation, { unit: string; sql: string }>> = {
+    tuserstags: { unit: GROUP_TAG.unit, sql: relationSql(tag, 'tagid') },
+    tusersinterests: { unit: GROUP_INTEREST.unit, sql: relationSql(interest, 'userid, categoryid') },
+    tuseraddresses: { unit: GROUP_ADDRESS.unit, sql: relationSql(address, 'addressid') },
+    tusersfavorites: { unit: GROUP_FAVORITE.unit, sql: relationSql(favorite, 'favoriteid') },
+    tusersmemb: { unit: MEMBERSHIP.unit, sql: relationSql(membership, 'userid, groupid') },
+  };
   // The clustered (userID, categoryID) key orders legacy's unordered read.
   const orderedInterestIdsSql = `${interestIdsSql} ORDER BY categoryid`;
   const lockTagsSql = `SELECT tagid FROM ${tag} WHERE tenant_id = $1 AND userid = $2 ORDER BY tagid FOR UPDATE`;
@@ -745,6 +942,12 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     ` JOIN ${groupAccount} g ON g.tenant_id = m.tenant_id AND g.userid = m.groupid` +
     ' WHERE m.tenant_id = $1 AND m.userid = $2 ORDER BY g.userid';
   const membershipIdsSql = `SELECT groupid FROM ${membership} WHERE tenant_id = $1 AND userid = $2 ORDER BY groupid`;
+  // One statement, so the rows and the closure come from one snapshot; the aggregate row exists even when no listed user has a membership.
+  const membershipRecordsSql =
+    `WITH closed AS (SELECT array_agg(o.user_id::text ORDER BY o.user_id) AS closed_users FROM ${accountOperation} o` +
+    ' WHERE o.tenant_id = $1 AND o.user_id = ANY($2::bpchar[]) AND o.state = ANY($3::text[]))' +
+    ` SELECT m.userid, m.groupid, c.closed_users FROM closed c LEFT JOIN ${membership} m ON m.tenant_id = $1 AND m.userid = ANY($2::bpchar[])` +
+    ' ORDER BY m.userid, m.groupid';
   const lockMembershipsSql =
     `SELECT groupid FROM ${membership} WHERE tenant_id = $1 AND userid = $2` +
     ' AND ($3::bpchar[] IS NULL OR groupid = ANY($3::bpchar[])) ORDER BY groupid FOR UPDATE';
@@ -760,24 +963,39 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     ` AND (EXISTS (SELECT 1 FROM ${membership} h WHERE h.tenant_id = o.tenant_id AND h.userid = o.user_id AND ${inGroup('h.groupid')})` +
     ` OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(o.before_values::jsonb -> 'groupIds') b(id) WHERE ${inGroup('b.id::bpchar')})` +
     ` OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(o.pending_change::jsonb -> 'memberships' -> 'groupIds') p(id) WHERE ${inGroup('p.id::bpchar')}))`;
+  // GroupMemberRow's columns from an account row and its credential, login-state and person-contact rows, or all from one group row.
+  const memberColumns = (account: string, cred: string, login: string, person: string): string =>
+    `${account}.userid, ${account}.type, ${account}.username, ${account}.siteid, ${account}.ispublic, ${account}.s2, ${account}.inactive,` +
+    ` ${person}.fname, ${person}.lname, ${person}.email, ${person}.company, ${person}.groupname, ${cred}.passwordcreated,` +
+    ` ${person}.jobtitle, ${person}.mobilephone, ${person}.website, ${person}.subtype, ${person}.contactform, ${login}.lastlogin,` +
+    ` ${person}.lastupdate, ${person}.lastupdateby, ${person}.lastupdatebyid, ${account}.perm, ${person}.subscribe, ${person}.notes,` +
+    ` ${person}.description, ${person}.interests, ${person}.keepprivate, ${person}.photofileid, ${person}.imname, ${person}.imservice,` +
+    ` ${person}.created, ${account}.remoteid, ${person}.tags, ${account}.tablist`;
   // Legacy joins members of any Type; `affecting` holds the users closing group $2.
   const memberSourcesSql = (includeS2: boolean): string =>
     `WITH affecting AS (${affectingSql((groupId) => `${groupId} = ($2::bpchar COLLATE ${legacyCharCi})`)}), members AS (` +
-    'SELECT u.userid, u.type, u.username, u.siteid, u.ispublic, u.s2, u.inactive, c.fname, c.lname, c.email, c.company' +
+    `SELECT ${memberColumns('u', 'k', 'l', 'c')}` +
     ` FROM ${membership} m JOIN ${userAccount} u ON u.tenant_id = m.tenant_id AND u.userid = m.userid` +
     ` LEFT JOIN ${personContact} c ON c.tenant_id = u.tenant_id AND c.user_id = u.userid` +
+    ` LEFT JOIN ${credential} k ON k.tenant_id = u.tenant_id AND k.userid = u.userid` +
+    ` LEFT JOIN ${loginState} l ON l.tenant_id = u.tenant_id AND l.userid = u.userid` +
     ` WHERE m.tenant_id = $1 AND m.groupid = $2 AND u.opt2_state = 'active'${includeS2 ? '' : ' AND u.s2 = 0'}` +
     ' UNION ALL ' +
-    'SELECT g.userid, g.type, g.username, g.siteid, g.ispublic, g.s2, g.inactive, g.fname, g.lname, g.email, g.company' +
+    `SELECT ${memberColumns('g', 'g', 'g', 'g')}` +
     ` FROM ${membership} m JOIN ${groupAccount} g ON g.tenant_id = m.tenant_id AND g.userid = m.userid` +
     ` WHERE m.tenant_id = $1 AND m.groupid = $2${includeS2 ? '' : ' AND g.s2 = 0'})`;
+  // Every unit memberSourcesSql reads; person_contact is a projection without a unit.
+  const memberUnits = [MEMBERSHIP.unit, USER_ACCOUNT.unit, CREDENTIAL.unit, LOGIN_STATE.unit, GROUP_ACCOUNT.unit];
   // Legacy orders by lname, which SQL Server sorts NULLs first. "C" orders the lowered names by code point, as the cross-tenant
-  // merge does; a group with no member still yields one row carrying closed_users.
-  const membersSql = (includeS2: boolean): string =>
+  // merge does; a group with no member still yields one row carrying closed_users. A bounded listing keeps its first $3 rows.
+  const membersSql = (includeS2: boolean, bounded: boolean): string =>
     `${memberSourcesSql(includeS2)} SELECT r.*, lower(r.lname) COLLATE "C" AS sort_key, a.closed_users FROM affecting a` +
-    ' LEFT JOIN members r ON true ORDER BY sort_key ASC NULLS FIRST, r.userid';
+    ` LEFT JOIN ${bounded ? '(SELECT * FROM members ORDER BY lower(lname) COLLATE "C" ASC NULLS FIRST, userid LIMIT $3)' : 'members'} r ON true` +
+    ' ORDER BY sort_key ASC NULLS FIRST, r.userid';
   const memberProbeSql = (includeS2: boolean): string =>
     `${memberSourcesSql(includeS2)} SELECT EXISTS (SELECT 1 FROM members) AS listed, a.closed_users FROM affecting a`;
+  const memberCountSql = (includeS2: boolean): string =>
+    `${memberSourcesSql(includeS2)} SELECT (SELECT count(*)::integer FROM members) AS total, a.closed_users FROM affecting a`;
   // listGroupsSql's rows with membersSql(true)'s count per group, NULL for none as legacy's LEFT JOIN, and the users closing any
   // listed group, all from one snapshot.
   const countedGroupsSql =
@@ -791,6 +1009,30 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     `), affecting AS (${affectingSql((groupId) => `${groupId} IN (SELECT userid FROM listed)`)})` +
     ' SELECT l.*, c.counter, a.closed_users FROM listed l LEFT JOIN counted c ON c.groupid = l.userid CROSS JOIN affecting a' +
     ' ORDER BY lower(l.groupname) ASC NULLS FIRST, l.userid';
+  // countedGroupsSql's groups, counts and closure for the $4 rows after the first $5 in listGroups' order (SQL Server sorts a NULL
+  // Perm last under DESC), with the listing's total, from one snapshot; a window without groups still yields one row carrying both.
+  const listedGroupsWhere = 'tenant_id = $1 AND type = 1 AND ispublic = $2 AND siteid = $3';
+  const groupOrder = (alias: string): string => `${alias}.perm DESC NULLS LAST, lower(${alias}.groupname) ASC NULLS FIRST, ${alias}.userid`;
+  const countedGroupPageSql =
+    `WITH paged AS (SELECT * FROM ${groupAccount} g WHERE ${listedGroupsWhere} ORDER BY ${groupOrder('g')} LIMIT $4 OFFSET $5), members AS (` +
+    `SELECT m.groupid FROM ${membership} m JOIN ${userAccount} u ON u.tenant_id = m.tenant_id AND u.userid = m.userid` +
+    " WHERE m.tenant_id = $1 AND m.groupid IN (SELECT userid FROM paged) AND u.opt2_state = 'active'" +
+    ' UNION ALL ' +
+    `SELECT m.groupid FROM ${membership} m JOIN ${groupAccount} g ON g.tenant_id = m.tenant_id AND g.userid = m.userid` +
+    ' WHERE m.tenant_id = $1 AND m.groupid IN (SELECT userid FROM paged)' +
+    '), counted AS MATERIALIZED (SELECT groupid, count(*)::integer AS counter FROM members GROUP BY groupid' +
+    `), affecting AS (${affectingSql((groupId) => `${groupId} IN (SELECT userid FROM paged)`)})` +
+    ` SELECT (SELECT count(*)::integer FROM ${groupAccount} WHERE ${listedGroupsWhere}) AS total, a.closed_users, p.*, c.counter` +
+    ` FROM affecting a LEFT JOIN paged p ON true LEFT JOIN counted c ON c.groupid = p.userid ORDER BY ${groupOrder('p')}`;
+  // A NULL s2 or inactive matches neither filter, as SQL Server compares NULL with nothing.
+  const groupFeedSql =
+    `SELECT * FROM ${groupAccount} WHERE tenant_id = $1 AND type = 1 AND ispublic = $2 AND siteid = $3` +
+    ' AND ($4::boolean OR s2 = 0) AND ($5::numeric IS NULL OR inactive = $5::numeric) ORDER BY userid';
+  // groupFeedSql's selection over alias g, which readGroupFeed narrows by the feed's own filters.
+  const feedScopeSql =
+    `FROM ${groupAccount} g WHERE g.tenant_id = $1 AND g.type = 1 AND g.ispublic = $2 AND g.siteid = $3` +
+    ' AND ($4::boolean OR g.s2 = 0) AND ($5::numeric IS NULL OR g.inactive = $5::numeric)';
+  const feedCollation = qualified(schema, 'legacy_feed_ci');
   const permissionsSql =
     `SELECT * FROM ${permission} WHERE tenant_id = $1 AND contentid = $2 AND siteid = $3 AND ($4::text IS NULL OR type = $4)` +
     ' ORDER BY contentid, groupid, siteid, type';
@@ -810,7 +1052,12 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     `SELECT * FROM ${device} WHERE tenant_id = $1 AND deviceid = $2 AND userid = $3 AND ($4::text IS NULL OR siteid = $4)` +
     ' ORDER BY deviceid LIMIT 1';
   const lockRedirectsSql = `SELECT redirectid FROM ${redirect} WHERE tenant_id = $1 AND userid = $2 ORDER BY redirectid FOR UPDATE`;
-  const clientsSql = `SELECT * FROM ${oauthClient} WHERE tenant_id = $1 AND siteid = $2 ORDER BY clientid`;
+  // The site's client total and the $3 clients after its first $4 by clientid, from one snapshot; one row carries the total
+  // when the window holds no client.
+  const clientsSql =
+    `SELECT n.total, p.* FROM (SELECT count(*)::integer AS total FROM ${oauthClient} WHERE tenant_id = $1 AND siteid = $2) n` +
+    ` LEFT JOIN (SELECT * FROM ${oauthClient} WHERE tenant_id = $1 AND siteid = $2 ORDER BY clientid LIMIT $3 OFFSET $4) p ON true` +
+    ' ORDER BY p.clientid';
   const lockClientTokensSql = `SELECT token FROM ${oauthToken} WHERE tenant_id = $1 AND clientid = $2 ORDER BY token FOR UPDATE`;
   const tokenByAccessCodeSql = `SELECT * FROM ${oauthToken} WHERE tenant_id = $1 AND accesscode = $2 ORDER BY token LIMIT 1`;
   const lockUserTokensSql =
@@ -908,9 +1155,38 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     return row !== null && (row.opt2_state === 'active' || opts.includePending === true) ? row : null;
   }
 
-  function readAccountRecords(tx: TenantTx, userIds: readonly string[]): Promise<AccountRecordRow[]> {
-    const units = [USER_ACCOUNT.unit, CREDENTIAL.unit, LOGIN_STATE.unit];
-    return readUnits<AccountRecordRow>(tx, units, accountRecordsSql, [tx.tenantId, [...userIds], [...OPEN_OPERATION_STATES]]);
+  function readAccountRecords(tx: TenantTx, userIds: readonly string[], filter?: AccountFilter): Promise<AccountRecordRow[]> {
+    const units = filterUnits([USER_ACCOUNT.unit, CREDENTIAL.unit, LOGIN_STATE.unit], filter);
+    const params = [tx.tenantId, [...userIds], [...OPEN_OPERATION_STATES]];
+    return filter === undefined
+      ? readUnits<AccountRecordRow>(tx, units, accountRecordsSql, params)
+      : readUnits<AccountRecordRow>(tx, units, filteredAccountRecordsSql, [...params, ...accountFilterParams(filter)]);
+  }
+
+  async function countListedAccounts(tx: TenantTx, scope: { siteId: string | null; filter?: AccountFilter }): Promise<ListedAccountCount> {
+    const params = [tx.tenantId, scope.siteId, ...accountFilterParams(scope.filter)];
+    const rows = await readUnits<{ count: number; closed_users: string[] | null }>(
+      tx,
+      filterUnits([USER_ACCOUNT.unit], scope.filter),
+      countListedAccountsSql,
+      params,
+    );
+    const row = rows[0] as { count: number; closed_users: string[] | null };
+    return { count: row.count, closed: row.closed_users ?? [] };
+  }
+
+  function readUsernameCandidates(
+    tx: TenantTx,
+    query: { siteId: string; pattern: string; filter?: AccountFilter; limit: number },
+  ): Promise<UsernameCandidateRow[]> {
+    const params = [tx.tenantId, query.siteId, query.pattern, query.limit, ...accountFilterParams(query.filter)];
+    return readUnits<UsernameCandidateRow>(tx, filterUnits([USER_ACCOUNT.unit], query.filter), usernameCandidatesSql, params);
+  }
+
+  async function foreignMemberIds(tx: TenantTx, userIds: readonly string[] | null): Promise<string[]> {
+    const units = [MEMBERSHIP.unit, USER_ACCOUNT.unit, GROUP_ACCOUNT.unit];
+    const rows = await readUnits<{ userid: string }>(tx, units, foreignMemberIdsSql, [tx.tenantId, userIds === null ? null : [...userIds]]);
+    return rows.map((row) => row.userid);
   }
 
   async function isUsernameTaken(tx: TenantTx, username: string, exceptUserId: string): Promise<boolean> {
@@ -995,6 +1271,22 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     return found[0] ?? null;
   }
 
+  async function findGroupsByColumn(
+    tx: TenantTx,
+    column: 'groupname' | 'username' | 'remoteid',
+    value: string,
+    siteIds: readonly string[],
+  ): Promise<GroupAccountRow[]> {
+    if (siteIds.length === 0) return [];
+    return readUnits<GroupAccountRow>(tx, GROUP_ACCOUNT.unit, groupsByColumnSql(column), [tx.tenantId, value, [...siteIds]]);
+  }
+
+  async function countAccountsByColumn(tx: TenantTx, column: 'username' | 'remoteid', value: string, siteIds: readonly string[]): Promise<number> {
+    if (siteIds.length === 0) return 0;
+    const rows = await readUnits<{ n: number }>(tx, USER_ACCOUNT.unit, accountsByColumnSql(column), [tx.tenantId, value, [...siteIds]]);
+    return rows[0]?.n ?? 0;
+  }
+
   function listGroups(
     tx: TenantTx,
     poolSiteId: string,
@@ -1013,6 +1305,14 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
       );
       return { groups: rows.map(({ closed_users: _closed, ...group }) => group), closed: rows[0]?.closed_users ?? [] };
     });
+  }
+
+  async function pageCountedGroups(tx: TenantTx, poolSiteId: string, isPublic: boolean | number, page: ListPage): Promise<CountedGroupPage> {
+    type Row = Omit<CountedGroupRow, 'userid'> & { userid: string | null; total: number; closed_users: string[] | null };
+    const params = [tx.tenantId, flag(isPublic) ? 1 : 0, poolSiteId, page.limit, page.offset];
+    const rows = await readUnits<Row>(tx, [GROUP_ACCOUNT.unit, MEMBERSHIP.unit, USER_ACCOUNT.unit], countedGroupPageSql, params);
+    const groups = rows.flatMap(({ total: _total, closed_users: _closed, userid, ...group }) => (userid === null ? [] : [{ ...group, userid }]));
+    return { groups, total: rows[0]?.total ?? 0, closed: rows[0]?.closed_users ?? [] };
   }
 
   function listPoolGroups(tx: TenantTx, poolSiteId: string, isPublic: 0 | 1): Promise<PoolGroupRow[]> {
@@ -1247,6 +1547,17 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     return rows.map((row) => row.categoryid);
   }
 
+  async function hasGroupExtendData(tx: TenantTx, groupId: string): Promise<boolean> {
+    const rows = await readUnits<{ held: boolean }>(tx, GROUP_EXTEND_DATA.unit, extendDataExistsSql, [tx.tenantId, groupId]);
+    return rows[0]?.held === true;
+  }
+
+  async function listGroupRelationRows(tx: TenantTx, relation: GroupRelation, groupIds: readonly string[]): Promise<RepositoryRow[]> {
+    if (groupIds.length === 0) return [];
+    const { unit, sql } = groupRelations[relation];
+    return readUnits<RepositoryRow>(tx, unit, sql, [tx.tenantId, [...groupIds]]);
+  }
+
   /** Deletes every tag stored for `groupId`. */
   async function deleteTagRows(tx: TenantTx, groupId: string, ctx: WriteContext): Promise<number> {
     const stale = await readUnits<{ tagid: number }>(tx, GROUP_TAG.unit, lockTagsSql, [tx.tenantId, groupId]);
@@ -1325,6 +1636,19 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     return rows.map((row) => row.groupid);
   }
 
+  async function readMembershipRecords(tx: TenantTx, userIds: readonly string[]): Promise<MembershipRecords> {
+    const rows = await readUnits<{ userid: string | null; groupid: string | null; closed_users: string[] | null }>(
+      tx,
+      MEMBERSHIP.unit,
+      membershipRecordsSql,
+      [tx.tenantId, [...userIds], [...OPEN_OPERATION_STATES]],
+    );
+    return {
+      rows: rows.flatMap(({ userid, groupid }) => (userid === null || groupid === null ? [] : [{ userid, groupid }])),
+      closed: rows[0]?.closed_users ?? [],
+    };
+  }
+
   /** Inserts each storable id of `groupIds` the user does not already hold; returns the inserted ids. */
   async function insertMemberships(tx: TenantTx, userId: string, groupIds: readonly string[], ctx: WriteContext): Promise<string[]> {
     const held = new Set((await membershipGroupIds(tx, userId)).map(charKey));
@@ -1390,12 +1714,18 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     return rows;
   }
 
-  async function* memberPages(tx: TenantTx, groupId: string, opts: { includeS2?: boolean } = {}): AsyncGenerator<GroupMemberPage, void, undefined> {
+  async function* memberPages(
+    tx: TenantTx,
+    groupId: string,
+    opts: { includeS2?: boolean; limit?: number } = {},
+  ): AsyncGenerator<GroupMemberPage, void, undefined> {
     // The fence holds the gates until `tx` ends, so every later FETCH reads behind it.
-    await base.read(tx, [MEMBERSHIP.unit, USER_ACCOUNT.unit, GROUP_ACCOUNT.unit], async () => undefined);
+    await base.read(tx, memberUnits, async () => undefined);
     cursorSeq += 1;
     const cursor = `opt2_page_${cursorSeq}`;
-    await tx.query(`DECLARE ${cursor} NO SCROLL CURSOR FOR ${membersSql(opts.includeS2 === true)}`, [tx.tenantId, groupId]);
+    const { limit } = opts;
+    const params = limit === undefined ? [tx.tenantId, groupId] : [tx.tenantId, groupId, limit];
+    await tx.query(`DECLARE ${cursor} NO SCROLL CURSOR FOR ${membersSql(opts.includeS2 === true, limit !== undefined)}`, params);
     let open = true;
     try {
       for (let first = true; ; first = false) {
@@ -1423,14 +1753,75 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     return members;
   }
 
+  async function* groupFeedPages(
+    tx: TenantTx,
+    poolSiteId: string,
+    isPublic: boolean | number,
+    opts: { includeS2?: boolean; inactive?: number } = {},
+  ): AsyncGenerator<GroupAccountRow[], void, undefined> {
+    // The fence holds the gate until `tx` ends, so every later FETCH reads behind it.
+    await base.read(tx, GROUP_ACCOUNT.unit, async () => undefined);
+    cursorSeq += 1;
+    const cursor = `opt2_page_${cursorSeq}`;
+    const params = [tx.tenantId, flag(isPublic) ? 1 : 0, poolSiteId, opts.includeS2 === true, opts.inactive ?? null];
+    await tx.query(`DECLARE ${cursor} NO SCROLL CURSOR FOR ${groupFeedSql}`, params);
+    let open = true;
+    try {
+      for (;;) {
+        const rows = await select<GroupAccountRow>(tx, `FETCH FORWARD ${pageSize} FROM ${cursor}`, []);
+        if (rows.length < pageSize) {
+          open = false;
+          await tx.query(`CLOSE ${cursor}`);
+        }
+        if (rows.length > 0) yield rows;
+        if (!open) return;
+      }
+    } catch (err) {
+      // The failed statement aborted `tx`, where a CLOSE would only replace this error.
+      open = false;
+      throw err;
+    } finally {
+      if (open) await tx.query(`CLOSE ${cursor}`);
+    }
+  }
+
+  async function readGroupFeed(tx: TenantTx, poolSiteId: string, isPublic: boolean | number, query: GroupFeedQuery): Promise<GroupFeedPage> {
+    // LIMIT NULL is no limit, and no table holds more rows than a safe integer counts.
+    const bound = (n: number): number | null => (Number.isSafeInteger(n) ? n : null);
+    const scope = [tx.tenantId, flag(isPublic) ? 1 : 0, poolSiteId, query.includeS2 === true, query.inactive ?? null, bound(query.top)];
+    const { where, orderBy, params } = compileGroupFeed(query, { textCollation: feedCollation, first: scope.length + 1 });
+    const selected = `${feedScopeSql} AND (${where})`;
+    // One statement, so the rows and the count share its snapshot.
+    const total = `(SELECT count(*)::integer FROM (SELECT 1 ${selected} LIMIT $${scope.length}) c) AS feed_total`;
+    if (query.limit === 0) {
+      const [counted] = await readUnits<{ feed_total: number }>(tx, GROUP_ACCOUNT.unit, `SELECT ${total}`, [...scope, ...params]);
+      return { rows: [], total: counted?.feed_total ?? 0 };
+    }
+    const values = [...scope, ...params, bound(query.limit)];
+    const sql = `SELECT g.*, ${total} ${selected} ORDER BY ${orderBy} LIMIT $${values.length}`;
+    const rows = await readUnits<GroupAccountRow & { feed_total: number }>(tx, GROUP_ACCOUNT.unit, sql, values);
+    // No row returned under a positive limit means none selected.
+    return { rows: rows.map(({ feed_total: _total, ...row }) => row), total: rows[0]?.feed_total ?? 0 };
+  }
+
   async function probeMembers(tx: TenantTx, groupId: string, opts: { includeS2?: boolean } = {}): Promise<GroupMemberProbe> {
     const [row] = await readUnits<{ listed: boolean; closed_users: string[] | null }>(
       tx,
-      [MEMBERSHIP.unit, USER_ACCOUNT.unit, GROUP_ACCOUNT.unit],
+      memberUnits,
       memberProbeSql(opts.includeS2 === true),
       [tx.tenantId, groupId],
     );
     return { listed: row?.listed === true, closed: row?.closed_users ?? [] };
+  }
+
+  async function countMembers(tx: TenantTx, groupId: string, opts: { includeS2?: boolean } = {}): Promise<GroupMemberCount> {
+    const [row] = await readUnits<{ total: number; closed_users: string[] | null }>(
+      tx,
+      memberUnits,
+      memberCountSql(opts.includeS2 === true),
+      [tx.tenantId, groupId],
+    );
+    return { total: row?.total ?? 0, closed: row?.closed_users ?? [] };
   }
 
   function permissionsFor(tx: TenantTx, input: { contentId: string; siteId: string; type?: string }): Promise<PermissionRow[]> {
@@ -1624,8 +2015,11 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
   }
 
 
-  function listOAuthClients(tx: TenantTx, siteId: string): Promise<OAuthClientRow[]> {
-    return readUnits<OAuthClientRow>(tx, OAUTH_CLIENT.unit, clientsSql, [tx.tenantId, siteId]);
+  async function listOAuthClients(tx: TenantTx, siteId: string, page: ListPage): Promise<ListedPage<OAuthClientRow>> {
+    type Row = Omit<OAuthClientRow, 'clientid'> & { clientid: string | null; total: number };
+    const rows = await readUnits<Row>(tx, OAUTH_CLIENT.unit, clientsSql, [tx.tenantId, siteId, page.limit, page.offset]);
+    const items = rows.flatMap(({ total: _total, clientid, ...client }) => (clientid === null ? [] : [{ ...client, clientid }]));
+    return { items, total: rows[0]?.total ?? 0 };
   }
 
   function findOAuthClient(tx: TenantTx, clientId: string): Promise<OAuthClientRow | null> {
@@ -1836,6 +2230,9 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     findAccountByUsername,
     findAccountById,
     readAccountRecords,
+    countListedAccounts,
+    readUsernameCandidates,
+    foreignMemberIds,
     isUsernameTaken,
     insertAccount,
     updateAccount,
@@ -1848,8 +2245,13 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     findGroup,
     findGroupsByIds,
     findGroupByName,
+    findGroupsByColumn,
+    countAccountsByColumn,
     listGroups,
     listCountedGroups,
+    pageCountedGroups,
+    groupFeedPages,
+    readGroupFeed,
     listPoolGroups,
     insertGroup,
     updateGroup,
@@ -1861,6 +2263,8 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     deleteGroupAddresses,
     replaceGroupInterests,
     groupInterestIds,
+    hasGroupExtendData,
+    listGroupRelationRows,
     replaceGroupTags,
     deleteGroupTags,
     deleteGroupFavorites,
@@ -1868,6 +2272,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     deleteGroupExtendData,
     membershipsOf,
     membershipGroupIds,
+    readMembershipRecords,
     replaceMemberships,
     clearBadMemberships,
     addMembership,
@@ -1875,6 +2280,7 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     membersOf,
     memberPages,
     probeMembers,
+    countMembers,
     permissionsFor,
     groupPermissions,
     replaceNodePermissions,

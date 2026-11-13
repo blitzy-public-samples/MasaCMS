@@ -3,7 +3,12 @@ import { cfEq, cfListToArray } from '@opt2/platform/legacy-compat';
 import { formatDateTimeShort } from '@/lib/dates';
 import { legacySettings } from '@/lib/env';
 import { encodeJs, encodeUrl, html, raw, type SafeHtml } from '@/lib/html';
-import { ORIGINAL_URL_HEADER, type AdminRequest } from '@/lib/request-context';
+import {
+  ORIGINAL_URL_HEADER,
+  administersSessionSite,
+  sessionSiteModulePerm,
+  type AdminRequest,
+} from '@/lib/request-context';
 import { adminAssetUrl } from '@/lib/urls';
 import type { ShellContext } from './types';
 
@@ -219,7 +224,7 @@ interface ModuleEntry {
 /** Change Sets through Mailing Lists, each gated by its site flag and module permission (`nav.cfm` 132-182). */
 function moduleEntries(n: NavState): SafeHtml[] {
   const site = n.ctx.site;
-  const perm = (id: string): boolean => n.ctx.modulePerm(id);
+  const perm = (id: string): boolean => sessionSiteModulePerm(n.ctx, id);
   const inPerm = (id: string): boolean => is(n.oc, 'cPerm') && is(n.mid, id);
   // Without site data (programs-sites serves it to private admin users only) the flag-gated entries stay hidden.
   const emailBroadcaster = site?.emailBroadcaster === true;
@@ -285,7 +290,8 @@ function moduleEntries(n: NavState): SafeHtml[] {
 /** Users menu for site admins, S2 users and extranet user managers (`nav.cfm` 184-207). */
 function users(n: NavState): SafeHtml | null {
   const site = n.ctx.site;
-  if (!(n.ctx.isSiteAdmin || n.ctx.isS2 || (site?.extranet === true && n.ctx.modulePerm(MODULE_IDS.users)))) return null;
+  // Site data loads only for a site the token serves, so the extranet branch reads module roles granted for that site.
+  if (!(administersSessionSite(n.ctx) || (site?.extranet === true && n.ctx.modulePerm(MODULE_IDS.users)))) return null;
   const inPermUsers = is(n.oc, 'cPerm') && is(n.mid, MODULE_IDS.users);
   const open = is(n.oc, 'cusers') || (is(n.oc, 'cperm') && is(n.mid, MODULE_IDS.users));
   const submenuActive =
@@ -409,7 +415,7 @@ function s2SiteEntries(n: NavState): SafeHtml {
 
 /** Site Settings menu for site admins and S2 users (`nav.cfm` 238-306). */
 function siteSettings(n: NavState): SafeHtml | null {
-  if (!(n.ctx.isSiteAdmin || n.ctx.isS2)) return null;
+  if (!administersSessionSite(n.ctx)) return null;
   const isSiteConfig =
     (is(n.oc, 'cPerm') && is(n.of, 'module') && is(n.mid, MODULE_IDS.content)) ||
     (listFindNoCase('csettings,cextend,ctrash,cchain,cwebservice', n.oc) &&

@@ -14,6 +14,7 @@ import {
   effectiveEmailBroadcaster,
   effectiveLoginURL,
   effectiveUseSSL,
+  fitColumnValues,
   getSiteText,
   getSiteValue,
   legacyNameFor,
@@ -449,6 +450,30 @@ describe('updateColumnValues', () => {
 
   it('throws when an update column holds a complex value', () => {
     expect(() => updateColumnValues(set({ googleAPIKey: { key: 1 } }))).toThrow(TypeError);
+  });
+});
+
+describe('fitColumnValues', () => {
+  it.each<{ name: string; column: string; value: string | null; stored: string | null; overflowing: string[] }>([
+    { name: 'a value of exactly the column length', column: 'site', value: 'S'.repeat(50), stored: 'S'.repeat(50), overflowing: [] },
+    { name: 'a value one unit over', column: 'site', value: 'S'.repeat(51), stored: 'S'.repeat(51), overflowing: ['Site'] },
+    { name: 'an excess of spaces alone', column: 'site', value: `Name${' '.repeat(60)}`, stored: `Name${' '.repeat(46)}`, overflowing: [] },
+    { name: 'an excess holding a tab', column: 'tagline', value: `${'t'.repeat(255)} \t`, stored: `${'t'.repeat(255)} \t`, overflowing: ['tagline'] },
+    { name: 'a surrogate pair at the length', column: 'placeholderimgext', value: `${'a'.repeat(8)}😀`, stored: `${'a'.repeat(8)}😀`, overflowing: [] },
+    { name: 'a surrogate pair past the length', column: 'placeholderimgext', value: `${'a'.repeat(9)}😀`, stored: `${'a'.repeat(9)}😀`, overflowing: ['placeholderImgExt'] },
+    { name: 'an nvarchar(max) column', column: 'domainalias', value: 'd'.repeat(100_000), stored: 'd'.repeat(100_000), overflowing: [] },
+    { name: 'NULL', column: 'site', value: null, stored: null, overflowing: [] },
+  ])('stores $name as SQL Server does', ({ column, value, stored, overflowing }) => {
+    expect(fitColumnValues({ siteid: 'tenant-a', [column]: value })).toEqual({ values: { siteid: 'tenant-a', [column]: stored }, overflowing });
+  });
+
+  it('names every overflowing column by its legacy name in SET order', () => {
+    const values = updateColumnValues(beanWith({ tagline: 'x'.repeat(256), site: 'y'.repeat(51), mailserversmtpport: '123456' }));
+
+    const fitted = fitColumnValues(values);
+
+    expect(fitted.overflowing).toEqual(['Site', 'mailserverSMTPPort', 'tagline']);
+    expect(fitted.values).toEqual(values);
   });
 });
 

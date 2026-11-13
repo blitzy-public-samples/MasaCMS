@@ -8,6 +8,7 @@ info:
 servers:
   - url: http://127.0.0.1:8119
     description: local
+x-opt2-calls: [identity, reporting]
 tags:
   - name: fixture
     description: Fixture routes, answered byte-shaped like `legacy-fixtures/cfml/modules/finance.cfc`.
@@ -16,7 +17,7 @@ tags:
   - name: v2
     description: Paged reads of the OPT-2 finance screens, each list answered with the count of all its rows.
   - name: internal
-    description: Local file, push-delivery, migration and health routes.
+    description: Local file, push-delivery, migration, export-read and health routes.
 security:
   - userToken: []
     invocationCredential: []
@@ -304,7 +305,7 @@ paths:
   /v1/finance/records:
     get:
       operationId: listRecords
-      summary: Lists the tenant's finance records for the record list screen and reporting exports.
+      summary: Lists the tenant's finance records for the record list screen and exporters.
       tags:
         - v1
       x-opt2-transport: service
@@ -454,6 +455,9 @@ paths:
       x-opt2-requires:
         - finance.preparer
         - finance.approver
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
       requestBody:
         required: false
         description: Read only by `edit`, which requires all three fields.
@@ -478,7 +482,7 @@ paths:
                   data:
                     $ref: '#/components/schemas/FinanceRecord'
         '400':
-          $ref: '#/components/responses/FixtureBadRequest'
+          $ref: '#/components/responses/FixtureWriteBadRequest'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
@@ -538,6 +542,9 @@ paths:
       x-opt2-transport: service
       x-opt2-requires:
         - finance.preparer
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
       requestBody:
         $ref: '#/components/requestBodies/AttachmentUpload'
       responses:
@@ -557,7 +564,7 @@ paths:
                   data:
                     $ref: '#/components/schemas/FinanceAttachment'
         '400':
-          $ref: '#/components/responses/FixtureBadRequest'
+          $ref: '#/components/responses/FixtureWriteBadRequest'
         '401':
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
@@ -829,6 +836,70 @@ paths:
           $ref: '#/components/responses/FixtureServerError'
         '503':
           $ref: '#/components/responses/LegacyUnavailable503'
+
+  /internal/v1/finance/records:
+    get:
+      operationId: listExportRecords
+      summary: One page of the finance records of a running reporting export job's tenant.
+      description: Reporting's export runs act as System and send no user token. The tenant is the one this service's registry gives `siteId`, served only once reporting's `getExportSourceScope` answers that its job `exportId` is stored under that tenant and site, reads `finance.records` and is `running` under `claim`. Records are shaped and ordered as `listRecords` pages them.
+      tags:
+        - internal
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:reporting
+      security:
+        - invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/ExportId'
+        - $ref: '#/components/parameters/ExportSiteId'
+        - $ref: '#/components/parameters/ExportClaim'
+        - name: page
+          in: query
+          required: true
+          description: Page to answer, from 1.
+          schema:
+            type: integer
+            minimum: 1
+        - name: pageSize
+          in: query
+          required: true
+          description: Records per page.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+      responses:
+        '200':
+          description: One page of the tenant's records and the count of all of them.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                  - total
+                additionalProperties: false
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FinanceRecord'
+                  total:
+                    type: integer
+                    minimum: 0
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+          description: A malformed query, or a tenant without a program.
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+          description: The caller is not reporting, or reporting does not confirm the export scope the read names.
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
+          description: Reporting answered 5xx or could not be reached.
 
   /opt2/files/finance-attachments/{tenantId}/{objectName}:
     parameters:
@@ -1234,6 +1305,52 @@ paths:
         '503':
           $ref: '#/components/responses/LegacyUnavailable503'
           description: The gates could not close within the wait budget.
+  /internal/v1/migration/objects:
+    get:
+      operationId: migrationGetAttachmentObject
+      summary: Reads the stored bytes of one attachment from `finance-attachments`, for the reverse projection to its fixture `varbinary(max)` column.
+      tags:
+        - internal
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: tenantId
+          in: query
+          required: true
+          description: Tenant UUID of the attachment row.
+          schema:
+            type: string
+            format: uuid
+            pattern: '^([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-8][0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}|00000000-0000-0000-0000-000000000000|[Ff]{8}-[Ff]{4}-[Ff]{4}-[Ff]{4}-[Ff]{12})$'
+        - name: attachmentId
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/CfId'
+      responses:
+        '200':
+          description: The bytes stored under the row's `object_key`, whatever the attachment's content type.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+          description: The tenant has no such attachment row, or storage holds no object under its key.
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/LegacyUnavailable503'
   /healthz:
     get:
       operationId: healthz
@@ -1359,6 +1476,29 @@ components:
         minimum: 1
         maximum: 1000
         default: 50
+    ExportId:
+      name: exportId
+      in: query
+      required: true
+      description: Reporting export job whose run sends the read.
+      schema:
+        $ref: '#/components/schemas/CfId'
+    ExportSiteId:
+      name: siteId
+      in: query
+      required: true
+      description: Legacy site id of the export job.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 25
+    ExportClaim:
+      name: claim
+      in: query
+      required: true
+      description: Row version the export job's run claimed it at.
+      schema:
+        $ref: '#/components/schemas/DigitString'
     RecordId:
       name: id
       in: path

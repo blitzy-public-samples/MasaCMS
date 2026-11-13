@@ -243,3 +243,42 @@ describe('CSRF validation of the site saves', () => {
     expect(consumedContexts()).toEqual([request.context]);
   });
 });
+
+/** The step of a site-list transaction a statement is. */
+function listStep(sql: string): string {
+  if (sql === 'BEGIN' || sql === 'COMMIT') return sql;
+  if (/^SELECT set_config\('app\.tenant_id'/.test(sql)) return 'set tenant';
+  if (sql === 'SAVEPOINT opt2_read_fence' || sql === 'RELEASE SAVEPOINT opt2_read_fence') return sql;
+  if (/^SELECT unit, phase FROM .*unit_gate.* FOR SHARE NOWAIT$/.test(sql)) return 'gate fence';
+  if (sql.startsWith('SELECT tenant_id, site_id FROM programs_sites.tenant_registry')) return 'registry';
+  if (/^SELECT \* FROM "programs_sites"\."site" WHERE /.test(sql)) return 'sites';
+  return sql;
+}
+
+describe('GET /v1/sites statements', () => {
+  let t: TestApp;
+
+  beforeEach(async () => {
+    t = await buildTestApp();
+    seedSites(t.db);
+  });
+
+  afterEach(async () => {
+    await t.app.close();
+  });
+
+  it('reads the registry once behind one gate fence, then each tenant in its own fenced transaction of 7 statements', async () => {
+    t.db.clear();
+    const res = await t.app.inject({ method: 'GET', url: '/v1/sites', headers: await headersFor('s2', { site: 'default' }) });
+
+    expect(res.statusCode).toBe(200);
+    const steps = t.db.statements().map((statement) => ({ step: listStep(statement.sql), tenantId: statement.tenantId }));
+    const tenants = STORED_SITES.map((row) => row.tenant_id);
+    const perTransaction = ['BEGIN', 'set tenant', 'SAVEPOINT opt2_read_fence', 'gate fence', 'RELEASE SAVEPOINT opt2_read_fence', 'COMMIT'];
+    const expected = [...perTransaction, 'registry', ...tenants.flatMap(() => [...perTransaction, 'sites'])];
+    expect(steps).toHaveLength(7 * tenants.length + 7);
+    expect(steps.map(({ step }) => step).sort()).toEqual(expected.sort());
+    expect(steps.filter(({ step }) => step === 'sites').map(({ tenantId }) => tenantId).sort()).toEqual([...tenants].sort());
+    expect(steps.filter(({ step }) => step === 'registry')).toEqual([{ step: 'registry', tenantId: null }]);
+  });
+});

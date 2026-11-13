@@ -10,7 +10,7 @@ import {
   LegacyServiceUnavailableError,
   type SerializedLegacyResponse,
 } from '@opt2/platform/legacy-compat';
-import { createLogger, serializeError } from '@opt2/platform/logging';
+import { createLogger, serializeError, validateLogRecord } from '@opt2/platform/logging';
 import { createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { testVerifier } from '@opt2/platform/testing';
 import {
@@ -296,11 +296,14 @@ describe('fixture routes', () => {
     paged: { list: [template], pageIndex: 2, itemsPerPage: 1, totalItems: 3 },
     past: { list: [], pageIndex: 5, itemsPerPage: 1, totalItems: 3 },
   };
-  const thrown: Record<'notFound' | 'invalidParameters' | 'authorization' | 'error' | 'unavailable', () => unknown> = {
+  const thrown: Record<'notFound' | 'invalidParameters' | 'authorization' | 'error' | 'unstorable' | 'unavailable', () => unknown> = {
     notFound: () => new FixtureApiError('notFound'),
     invalidParameters: () => new LegacyApiError('invalidParameters'),
     authorization: () => new LegacyApiError('authorization'),
     error: () => unhandled,
+    // node-pg's DatabaseError for a NUL (U+0000) bound to a text column.
+    unstorable: () =>
+      Object.assign(new Error(`invalid byte sequence for encoding "UTF8": 0x00 in <${secret}>`), { code: '22021', severity: 'ERROR', file: 'mbutils.c' }),
     unavailable: () => new LegacyServiceUnavailableError(),
   };
   let app: FastifyInstance;
@@ -443,6 +446,7 @@ describe('fixture routes', () => {
     ['notFound', 404, 'invalid_request', 'Not Found', false],
     ['invalidParameters', 400, 'invalid_request', 'Invalid parameters', false],
     ['authorization', 401, 'invalid_request', 'Insufficient Account Permissions', false],
+    ['unstorable', 400, 'invalid_request', 'Invalid parameters', false],
     ['error', 500, 'server_error', 'Unhandled Exception', true],
   ])('answers a thrown %s with the fixture envelope at %i, logging only an unhandled error, serialized', async (kind, status, code, text, logged) => {
     const res = await call(`${PREFIX}/messages/${MESSAGE_ID}?kind=${kind}`);
@@ -456,6 +460,27 @@ describe('fixture routes', () => {
     );
     expect(Object.keys(record).sort()).toEqual(['message', 'stack', 'type']);
     expect(res.lines.join('\n')).not.toContain(secret);
+  });
+
+  it.each<[string, number, string | null]>([
+    ['notFound', 404, null],
+    ['invalidParameters', 400, 'request rejected: invalidParameters'],
+    ['authorization', 401, 'request denied: authorization'],
+    ['unstorable', 400, 'request rejected: 22021'],
+    ['error', 500, null],
+  ])('logs a thrown %s (%i) with its fixed reason, if any, ahead of the completion line', async (kind, status, warning) => {
+    const res = await call(`${PREFIX}/messages/${MESSAGE_ID}?kind=${kind}`);
+    const records = res.lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+    const outcome = records.filter(({ severity, message }) => severity === 'WARNING' || message === 'request completed');
+
+    expect(res.status).toBe(status);
+    expect(outcome.map(({ severity, message }) => [severity, message])).toStrictEqual([
+      ...(warning === null ? [] : [['WARNING', warning]]),
+      ['INFO', 'request completed'],
+    ]);
+    for (const record of outcome) expect(record).toMatchObject({ route: `${PREFIX}/messages/:id`, statusCode: status });
+    for (const record of records) expect(validateLogRecord(record).errors).toStrictEqual([]);
+    expect(`${res.lines.join('\n')}${res.body}`).not.toMatch(new RegExp(`${secret}|invalid byte sequence`));
   });
 
   it('propagates LegacyServiceUnavailableError, so service-kit answers the legacy 503', async () => {

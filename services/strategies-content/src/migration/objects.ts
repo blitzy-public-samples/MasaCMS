@@ -11,20 +11,36 @@ import {
 import {
   StorageObjectNotFoundError,
   contentFileKey,
-  type BucketName,
   type ContentFileVariant,
+  type ObjectHead,
   type OpenedObject,
   type StoragePort,
 } from '@opt2/platform/storage';
 import type { TenantDb } from '@opt2/platform/tenancy';
 import type { Clock } from '@opt2/platform/service-kit';
 import { LegacyApiError } from '@opt2/platform/legacy-compat';
-import { listFileObjectsForExport, type FileObjectExportRow } from '../repo/files.js';
+import {
+  claimStagedObject,
+  deleteStagedObject,
+  hasStaleStagedObjects,
+  listFileObjectsForExport,
+  markStagedObjectCommitted,
+  type FileObjectExportRow,
+} from '../repo/files.js';
+import {
+  CONTENT_FILES_BUCKET,
+  STAGED_OBJECT_GRACE_MS,
+  StagedObjectMissingError,
+  StagedObjectsPendingError,
+  recoverStagedObjects,
+  settleStagedObject,
+  stageObject,
+  stagedBackupKey,
+} from './staged-objects.js';
 import type { ContentRepository } from '../repo/repository.js';
 import { FILE, type FileObjectRow } from '../repo/tables.js';
 
-/** The bucket of legacy file-store objects, written only by strategies-content. */
-export const CONTENT_FILES_BUCKET = 'content-files' satisfies BucketName;
+export { CONTENT_FILES_BUCKET } from './staged-objects.js';
 
 /** Rendition suffix of a stored object: `''` for the original, `_source`, `_small`, `_medium`, or an on-demand rendition. */
 export type FileVariant = ContentFileVariant;
@@ -86,42 +102,90 @@ function resultOf(row: FileObjectRow, created: boolean): StoredObjectResult {
   };
 }
 
+/** Whether `head` describes the bytes `row` records. */
+function holdsRecorded(head: ObjectHead | null, row: FileObjectRow): head is ObjectHead {
+  return head !== null && head.sha256 === row.sha256 && head.size === Number(row.size);
+}
+
 /**
- * Stores one legacy object in `content-files` under `<tenantId>/<fileId><variant>.<ext>` and records its `content.file_object`
- * row, once per SHA-256; a `platform.migration` caller's write passes any `content.file` gate state.
+ * Publishes one legacy object under `<tenantId>/<fileId><variant>.<ext>` with its `content.file_object` row, serialized per key;
+ * a no-op when both already hold `sha256`. A replaced consistent version is backed up first, so recovery restores it when the
+ * publication never commits. A `platform.migration` caller's write passes any `content.file` gate state.
  * @throws LegacyApiError `badRequest` when `bytes` do not hash to `sha256`; nothing is stored then.
  */
 export async function storeMigrationObject(deps: StoreObjectDeps, req: MigrationObjectRequest): Promise<StoredObjectResult> {
   if (sha256Hex(req.bytes) !== req.sha256) throw new LegacyApiError('badRequest');
   const key = contentFileKey({ tenantId: req.tenantId, fileId: req.fileId, variant: req.variant, ext: req.ext });
   const { files } = deps.repository;
-
-  const held = await deps.db.withTenant(req.tenantId, (tx) => files.findFileObjectBySha(tx, key));
-  if (held !== null && held.sha256 === req.sha256) return resultOf(held, false);
-
-  // Bytes before the row, so no row names a missing object; a retry after a failed row write rewrites the same object.
-  const put = await deps.storage.put(CONTENT_FILES_BUCKET, key, req.bytes, { contentType: req.contentType });
   const ctx: WriteContext = { origin: req.origin ?? 'backfill', requestId: req.requestId, authority: requestMigrationAuthority() };
-  const stored = await deps.db.withTenant(req.tenantId, async (tx) => {
-    const current = await files.findFileObjectBySha(tx, key);
-    const orphan = !(await files.fileRowExists(tx, req.fileId));
-    return files.upsertFileObject(
-      tx,
-      {
-        file_id: req.fileId,
-        variant: req.variant,
-        ext: req.ext,
-        object_key: key,
-        size: put.size,
-        sha256: put.sha256,
-        content_type: req.contentType,
-        orphan,
-        created_at: current?.created_at ?? deps.clock.now(),
-      },
-      ctx,
-    );
+  await recoverStagedObjects(deps, req.tenantId);
+  const entry = await stageObject(deps, {
+    tenant_id: req.tenantId,
+    object_key: key,
+    kind: 'migration',
+    file_id: req.fileId,
+    variant: req.variant,
+    ext: req.ext,
+    size: req.bytes.length,
+    sha256: req.sha256,
+    content_type: req.contentType,
   });
-  return resultOf(stored, true);
+
+  let published: { result: StoredObjectResult; backedUp: boolean };
+  try {
+    published = await deps.db.withTenant(req.tenantId, async (tx) => {
+      await files.lockFileObjectKey(tx, key);
+      if (!(await claimStagedObject(tx, entry.stage_id))) throw new StagedObjectMissingError(entry.stage_id);
+      const held = await files.findFileObjectBySha(tx, key);
+      const head = await deps.storage.head(CONTENT_FILES_BUCKET, key);
+      const consistent = held !== null && holdsRecorded(head, held);
+      if (consistent && held.sha256 === req.sha256) {
+        await deleteStagedObject(tx, entry.stage_id);
+        return { result: resultOf(held, false), backedUp: false };
+      }
+      if (consistent) {
+        const previous = await deps.storage.get(CONTENT_FILES_BUCKET, key);
+        await deps.storage.put(CONTENT_FILES_BUCKET, stagedBackupKey(entry), previous, { contentType: head.contentType });
+      }
+
+      const stored = await files.upsertFileObject(
+        tx,
+        {
+          file_id: req.fileId,
+          variant: req.variant,
+          ext: req.ext,
+          object_key: key,
+          size: req.bytes.length,
+          sha256: req.sha256,
+          content_type: req.contentType,
+          orphan: !(await files.fileRowExists(tx, req.fileId)),
+          created_at: held?.created_at ?? deps.clock.now(),
+        },
+        ctx,
+      );
+      // Validate the row before replacing bytes; recovery settles an ambiguous put or COMMIT.
+      await deps.storage.put(CONTENT_FILES_BUCKET, key, req.bytes, { contentType: req.contentType });
+      if (consistent) await markStagedObjectCommitted(tx, entry.stage_id);
+      else await deleteStagedObject(tx, entry.stage_id);
+      return { result: resultOf(stored, true), backedUp: consistent };
+    });
+  } catch (err) {
+    try {
+      await settleStagedObject(deps, entry);
+    } catch {
+      // The durable intent remains for recovery; preserve the publication error.
+    }
+    throw err;
+  }
+
+  if (published.backedUp) {
+    try {
+      await settleStagedObject(deps, entry);
+    } catch {
+      // The committed intent keeps its backup until a recovery pass deletes both.
+    }
+  }
+  return published.result;
 }
 
 /** The stored version of the object recorded under `key`, read in the key's own tenant; null when that tenant has no such row or object. */
@@ -151,6 +215,7 @@ function manifestEntry(row: FileObjectExportRow): ObjectManifestEntry {
 /** Object manifest of the `content.file` unit, one page by object key after the owner position `after`; other units store no objects. */
 export const exportObjects: NonNullable<MigrationHandlerOptions['exportObjects']> = async (tx, { unit, after, limit = DEFAULT_EXPORT_LIMIT }) => {
   if (unit !== FILE.unit) return [];
+  if (await hasStaleStagedObjects(tx, STAGED_OBJECT_GRACE_MS)) throw new StagedObjectsPendingError();
   const rows = await listFileObjectsForExport(tx, { afterKey: after, limit });
   // Keyset pages follow the primary key's collation, so the last row read is the position, kept in database order.
   const last = rows.length < limit ? undefined : rows.at(-1);

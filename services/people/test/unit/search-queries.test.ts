@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LegacyApiError, LegacyServiceUnavailableError, legacyQuery, type LegacyQuery } from '@opt2/platform/legacy-compat';
 import { closeGates, ensureUnitGates, openGates } from '@opt2/platform/migration-kit';
-import { tenantIdForSite, type TenantTx } from '@opt2/platform/tenancy';
+import { tenantIdForSite, tenantRegistryConsumer, type TenantTx } from '@opt2/platform/tenancy';
 import {
   TENANT_A,
   TENANT_B,
@@ -14,26 +14,26 @@ import {
   seedRegistry,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
+import * as reads from '../../src/domain/search.js';
 import {
   SEARCH_FIELD_LIST,
   SEARCH_MAX_ROWS,
   USERS_LIST_COLUMNS,
-  getAdvancedSearch,
-  getSearch,
-  getUnassignedUsers,
-  getUsers,
   newAdvancedSearchCriteria,
-  searchAllSites,
+  pageRows,
   type AdvancedSearchCriteria,
   type AdvancedSearchOptions,
   type SearchDeps,
   type SearchParamEntry,
   type UserFeedKeys,
+  type UsersPage,
+  type UsersPaging,
   type ViewerScope,
 } from '../../src/domain/search.js';
 import type { AccountView } from '../../src/legacy/identity-client.js';
 import { createPeopleRepository, type PeopleRepository, type PersonInput } from '../../src/repo/repository.js';
 import { PEOPLE_UNITS } from '../../src/repo/tables.js';
+import { IdentityDouble } from '../helpers/search-doubles.js';
 
 const NOW = new Date(2026, 5, 30, 10, 0, 0, 0);
 const NOWHERE = tenantIdForSite('nowhere');
@@ -84,28 +84,23 @@ function account(tag: string, siteId: string, overrides: Partial<AccountView> = 
   };
 }
 
-type IdentityReads = SearchDeps['identity'];
-
-/** In-file identity double: the two reads search.ts makes, with a call count. */
-class FakeIdentity implements IdentityReads {
-  readonly accounts = new Map<string, AccountView>();
-  readonly memberships = new Map<string, string[]>();
-  readAccountCalls = 0;
-
-  async readAccounts(userIds: readonly string[]): Promise<Map<string, AccountView>> {
-    this.readAccountCalls += 1;
-    const found = new Map<string, AccountView>();
-    for (const userId of userIds) {
-      const view = this.accounts.get(userId.trim());
-      if (view !== undefined) found.set(userId, view);
-    }
-    return found;
-  }
-
-  async membershipGroupIds(userId: string): Promise<string[]> {
-    return [...(this.memberships.get(userId.trim()) ?? [])];
-  }
+/** `read` with the identity double answering for its viewer's token, as the forwarded user token makes identity answer. */
+function asViewer<A extends unknown[], R>(read: (deps: SearchDeps, viewer: ViewerScope, ...args: A) => Promise<R>) {
+  return (deps: SearchDeps, viewer: ViewerScope, ...args: A): Promise<R> => {
+    const identity = deps.identity instanceof IdentityDouble ? deps.identity.withToken({ db: deps.db, tid: viewer.tid, s2: viewer.isS2 }) : deps.identity;
+    return read({ ...deps, identity }, viewer, ...args);
+  };
 }
+
+const getAdvancedSearch = asViewer(reads.getAdvancedSearch);
+const getAdvancedSearchPage = asViewer(reads.getAdvancedSearchPage);
+const getAllSitesUsers = asViewer(reads.getAllSitesUsers);
+const getAllSitesUsersPage = asViewer(reads.getAllSitesUsersPage);
+const getSearch = asViewer(reads.getSearch);
+const getSearchPage = asViewer(reads.getSearchPage);
+const getUnassignedUsers = asViewer(reads.getUnassignedUsers);
+const getUsers = asViewer(reads.getUsers);
+const getUsersPage = asViewer(reads.getUsersPage);
 
 /** pgAvailable asked up to three times, so one connect slower than its 2 s limit under host load does not skip the suite. */
 async function pgReachable(): Promise<boolean> {
@@ -121,7 +116,7 @@ describe.skipIf(!available)('people search queries against PostgreSQL', () => {
   let handle: ThrowawaySchema;
   let repo: PeopleRepository;
   let deps: SearchDeps;
-  const identity = new FakeIdentity();
+  let identity: IdentityDouble;
 
   const viewerA: ViewerScope = { tid: TENANT_A.tenantId, site: TENANT_A.siteId, isS2: false };
   const adminA: ViewerScope = { ...viewerA, isS2: true };
@@ -183,6 +178,7 @@ describe.skipIf(!available)('people search queries against PostgreSQL', () => {
     await closeGates(handle.app, { units: PEOPLE_UNITS, holderId: 'search-queries-test', allowLegacy: true });
     await openGates(handle.app, { units: PEOPLE_UNITS, holderId: 'search-queries-test', state: 'open' });
     repo = createPeopleRepository({ clock: fixedClock(NOW), schema: handle.schema });
+    identity = new IdentityDouble(new Map(), new Map(), { db: handle.app, tid: TENANT_A.tenantId, s2: true });
     deps = { db: handle.app, repo, identity };
 
     const a = TENANT_A.tenantId;
@@ -348,11 +344,24 @@ describe.skipIf(!available)('people search queries against PostgreSQL', () => {
       });
     });
 
-    it('rejects a non-numeric ispublic as the integer binding does', async () => {
-      expect(await rejection(getUsers(deps, viewerA, { siteid: 'tenant-a', ispublic: 'x' }))).toEqual({
+    type WordCase = [ispublic: string, bound: string, pool: string[], viewerTenant: string[]];
+    const privateUsers = ['A4', 'A2', 'A3', 'A1'];
+
+    // Oracle: cUsers.listUsers lists the ispublic=0 users for every casing of no and false, and for ' no', 'no\u0001' and ' FALSE '.
+    it.each<WordCase>([
+      ...['yes', 'Yes', 'YES', 'true', 'True', 'TRUE', ' yes', 'TRUE\t'].map((word): WordCase => [word, '1', ['U2', 'U1'], ['A7']]),
+      ...['no', 'No', 'NO', 'false', 'False', 'FALSE', ' no', 'no\u0001', ' FALSE '].map((word): WordCase => [word, '0', privateUsers, privateUsers]),
+    ])('binds ispublic %j as %s, reading its pool and the viewer tenant as legacy does', async (ispublic, bound, pool, tenant) => {
+      expect(tags(await getUsers(deps, viewerA, { siteid: 'tenant-a', ispublic }))).toEqual(pool);
+      expect(tags(await getUsers(deps, viewerA, { ispublic }))).toEqual(tenant);
+      expect(tags(await getUsers(deps, viewerA, { siteid: 'tenant-a', ispublic: bound }))).toEqual(pool);
+    });
+
+    it.each(['x', 'n', 'off', 'yes!', 'no no'])('rejects a non-numeric ispublic %j as the integer binding does', async (ispublic) => {
+      expect(await rejection(getUsers(deps, viewerA, { siteid: 'tenant-a', ispublic }))).toEqual({
         name: 'LegacyApiError',
         type: 'server_error',
-        detail: 'Invalid data x for CFSQLTYPE CF_SQL_INTEGER.',
+        detail: `Invalid data ${ispublic} for CFSQLTYPE CF_SQL_INTEGER.`,
       });
     });
   });
@@ -361,6 +370,8 @@ describe.skipIf(!available)('people search queries against PostgreSQL', () => {
     it.each<[string, Parameters<typeof getUnassignedUsers>[2], string[]]>([
       ['public pool users without a membership by default', { siteid: 'tenant-a' }, ['U1']],
       ['private pool users without a membership', { siteid: 'tenant-a', ispublic: 0 }, ['A4', 'A2']],
+      ['private pool users without a membership for ispublic False', { siteid: 'tenant-a', ispublic: 'False' }, ['A4', 'A2']],
+      ['public pool users without a membership for ispublic YES', { siteid: 'tenant-a', ispublic: 'YES' }, ['U1']],
     ])('lists %s', async (_label, args, expected) => {
       expect(tags(await getUnassignedUsers(deps, viewerA, args))).toEqual(expected);
     });
@@ -393,10 +404,10 @@ describe.skipIf(!available)('people search queries against PostgreSQL', () => {
     });
 
     it('answers no rows for an empty term without reading identity', async () => {
-      const calls = identity.readAccountCalls;
+      const calls = identity.calls.length;
       const result = await getSearch(deps, adminA, { search: '' });
       expect(result).toEqual(legacyQuery([...SEARCH_FIELD_LIST], []));
-      expect(identity.readAccountCalls).toBe(calls);
+      expect(identity.calls).toHaveLength(calls);
     });
 
     it('answers the fieldList columns with the photo extension', async () => {
@@ -450,8 +461,40 @@ describe.skipIf(!available)('people search queries against PostgreSQL', () => {
       ]);
     });
 
-    it('rejects a non-numeric isPublic as a server error', async () => {
-      expect(await rejection(getSearch(deps, viewerA, { search: 'a', isPublic: 'abc' }))).toMatchObject({ name: 'LegacyApiError', type: 'server_error' });
+    it.each<[string, string]>([
+      ['yes', 'a'],
+      ['Yes', 'a'],
+      ['true', 'a'],
+      ['TRUE', 'a'],
+      ['no', 'a'],
+      ['NO', 'a'],
+      ['false', 'a'],
+      ['FALSE', ''],
+      ['abc', 'a'],
+    ])('rejects isPublic %j with the getSearch argument-type error (search %j)', async (isPublic, search) => {
+      const calls = identity.calls.length;
+      expect(await rejection(getSearch(deps, viewerA, { search, isPublic }))).toEqual({
+        name: 'LegacyApiError',
+        type: 'server_error',
+        detail: 'The ISPUBLIC argument passed to the getSearch function is not of type numeric.',
+      });
+      expect(identity.calls).toHaveLength(calls);
+    });
+
+    it.each<[string | number, string[]]>([
+      ['1', ['U1']],
+      ['1.0', ['U1']],
+      ['1e0', ['U1']],
+      ['+1', ['U1']],
+      ['1.', ['U1']],
+      ['0', ['A1']],
+      ['0.0', ['A1']],
+      ['.0', ['A1']],
+      [0, ['A1']],
+      ['2', []],
+      ['-1', []],
+    ])('searches by the numeric isPublic %j', async (isPublic, expected) => {
+      expect(tags(await getSearch(deps, viewerA, { search: 'u', isPublic }))).toEqual(expected);
     });
 
     describe('with more matches than maxrows', () => {
@@ -495,7 +538,8 @@ describe.skipIf(!available)('people search queries against PostgreSQL', () => {
       ['users interested in a listed category', { isPublic: 0 }, { categoryID: 'C1,C2' }, adminA, ['A2', 'A1']],
       ['members of a listed group', { isPublic: 0 }, { groupID: 'G1,G2' }, adminA, ['A3', 'A1']],
       ['members of a group named in another case', { isPublic: 0 }, { groupID: 'g1' }, adminA, ['A1']],
-      ['type 1 rows for type group', { isPublic: 0 }, { type: 'group' }, adminA, ['A6']],
+      // A6's Type=1 account is a group row, which identity never lists to people.
+      ['no rows for type group', { isPublic: 0 }, { type: 'group' }, adminA, []],
     ])('finds %s', async (_label, options, extra, viewer, expected) => {
       expect(tags(await advanced([], options, extra, viewer))).toEqual(expected);
     });
@@ -674,42 +718,36 @@ describe.skipIf(!available)('people search queries against PostgreSQL', () => {
     });
   });
 
-  describe('searchAllSites', () => {
-    it('runs a non-S2 viewer once for its own site', async () => {
-      const result = legacyQuery(['UserID'], [{ UserID: 'X' }]);
-      const calls: [ViewerScope, string][] = [];
-      const answer = await searchAllSites(deps, viewerA, async (scope, siteid) => {
-        calls.push([scope, siteid]);
-        return result;
-      });
-      expect(answer).toBe(result);
-      expect(calls).toEqual([[viewerA, 'tenant-a']]);
+  describe('with wildcard chains against legacy-width a-heavy values', () => {
+    const nineRuns = 'a%a%a%a%a%a%a%a%a%b';
+
+    beforeAll(async () => {
+      await addPerson(TENANT_B.tenantId, 'R1', { fname: 'Redos', lname: 'a'.repeat(50), email: 'a'.repeat(255), siteid: TENANT_B.siteId });
+      identity.accounts.set(id('R1'), account('R1', TENANT_B.siteId));
     });
 
-    it('runs an S2 viewer once per registered tenant and merges by name', async () => {
-      const byTenant = new Map<string, Record<string, unknown>[]>([
-        [TENANT_A.tenantId, [{ Lname: 'Lee', Fname: 'Ann', UserID: 'U3' }]],
-        [TENANT_B.tenantId, [{ LNAME: 'Lee', FNAME: 'Ann', USERID: 'U1' }, { LNAME: null, FNAME: 'Zed', USERID: 'U9' }, { lname: 'Abbot', fname: 'Zoe', userid: 'U5' }]],
-        [TENANT_UMBRELLA.tenantId, [{ lname: 'Abbot', fname: 'Zoe', userid: 'U5' }]],
-      ]);
-      const calls: [ViewerScope, string][] = [];
-      const answer = await searchAllSites(deps, adminA, async (scope, siteid) => {
-        calls.push([scope, siteid]);
-        return legacyQuery(['UserID', 'Fname', 'Lname'], byTenant.get(scope.tid) ?? []);
-      });
-      expect(calls).toEqual([
-        [{ ...adminA, tid: TENANT_A.tenantId, site: 'tenant-a' }, ''],
-        [{ ...adminA, tid: TENANT_B.tenantId, site: 'tenant-b' }, ''],
-        [{ ...adminA, tid: TENANT_UMBRELLA.tenantId, site: 'umbrella' }, ''],
-      ]);
-      expect(answer.columnList).toEqual(['UserID', 'Fname', 'Lname']);
-      expect(answer.rows.map((row) => row.UserID ?? row.USERID ?? row.userid)).toEqual(['U9', 'U5', 'U5', 'U1', 'U3']);
+    afterAll(async () => {
+      identity.accounts.delete(id('R1'));
+      await inTenant(TENANT_B.tenantId, (tx) => tx.query(`DELETE FROM "${handle.schema}".person WHERE tenant_id = $1 AND userid = $2`, [tx.tenantId, id('R1')]));
     });
 
+    it.each<[string, () => Promise<LegacyQuery>, string[]]>([
+      ['getSearch with no b in any column', () => getSearch(deps, adminB, { search: nineRuns }), []],
+      ['getSearch with nine a in the last name', () => getSearch(deps, adminB, { search: 'a%a%a%a%a%a%a%a%a' }), ['R1']],
+      ['getAdvancedSearch Contains on the email', () => advanced([param('tusers.email^varchar', 'Contains', nineRuns)], { isPublic: 0 }, {}, adminB), []],
+      ['getAdvancedSearch Like on the last name', () => advanced([param('tusers.lname^varchar', 'Like', `${'A%'.repeat(9)}a`)], { isPublic: 0 }, {}, adminB), ['R1']],
+    ])('answers %s within 2 s', async (_label, read, expected) => {
+      const started = performance.now();
+      expect(tags(await read())).toEqual(expected);
+      expect(performance.now() - started).toBeLessThan(2_000);
+    });
+  });
+
+  describe('getAllSitesUsersPage', () => {
     it('lists every site of the registry for siteid all', async () => {
-      const result = await searchAllSites(deps, adminA, (scope, siteid) => getUsers(deps, scope, { siteid, ispublic: 0 }));
-      expect(result.columnList).toEqual([...USERS_LIST_COLUMNS]);
-      expect(tags(result)).toEqual(['A4', 'B2', 'B1', 'A2', 'A3', 'A1']);
+      const page = await getAllSitesUsersPage(deps, adminA, { ispublic: 0 }, { recordsPerPage: 100 });
+      expect(Object.keys(page.rows[0] ?? {})).toEqual([...USERS_LIST_COLUMNS]);
+      expect(tags(legacyQuery([...USERS_LIST_COLUMNS], page.rows))).toEqual(['A4', 'B2', 'B1', 'A2', 'A3', 'A1']);
     });
   });
 
@@ -720,6 +758,210 @@ describe.skipIf(!available)('people search queries against PostgreSQL', () => {
       ['getAdvancedSearch', () => advanced([], {}, {}, stranger)],
     ])('answers 503 to %s', async (_label, read) => {
       await expect(read()).rejects.toBeInstanceOf(LegacyServiceUnavailableError);
+    });
+
+    it.each<[string, () => Promise<unknown>]>([
+      ['getUsersPage of a site', () => getUsersPage(deps, stranger, { siteid: 'nowhere' }, {})],
+      ['getSearchPage', () => getSearchPage(deps, stranger, { search: 'a' }, {})],
+      ['getAdvancedSearchPage', () => getAdvancedSearchPage(deps, stranger, newAdvancedSearchCriteria(), {}, {})],
+    ])('answers 503 to %s', async (_label, read) => {
+      await expect(read()).rejects.toBeInstanceOf(LegacyServiceUnavailableError);
+    });
+  });
+
+  describe('with a pool larger than one scan batch', () => {
+    const bulk = 1200;
+    const bulkId = (n: number): string => `Y${String(n).padStart(7, '0')}-0000-0000-0000000000000000`;
+    const FIRST_NAMES = ['Cy', 'al', 'Bo'];
+    /** The bulk persons and B1, B2 as [userid, lname, fname], the rows tenant-b's private pool holds. */
+    const people: [string, string, string][] = [
+      [id('B1'), 'Bravo', 'Bea'],
+      [id('B2'), 'Bravo', 'Al'],
+      // Two persons share each last name, so name ties fall across batch boundaries.
+      ...Array.from({ length: bulk }, (_, i): [string, string, string] => [bulkId(i + 1), `Ybatch${String((i + 1) % 600).padStart(4, '0')}`, FIRST_NAMES[(i + 1) % 3] as string]),
+    ];
+    const isMember = (userId: string): boolean => userId.startsWith('Y') && Number(userId.slice(1, 8)) % 5 === 0;
+    /** The ids of `people` by the text keys `keys` reads, then userid; all keys are ASCII, so lower-cased code-unit order is the collation's. */
+    const ordered = (keys: (row: [string, string, string]) => string[], rows = people): string[] =>
+      [...rows]
+        .sort((a, b) => {
+          const [ka, kb] = [[...keys(a), a[0]], [...keys(b), b[0]]];
+          for (let i = 0; i < ka.length; i += 1) {
+            const [x, y] = [(ka[i] ?? '').toLowerCase(), (kb[i] ?? '').toLowerCase()];
+            if (x !== y) return x < y ? -1 : 1;
+          }
+          return 0;
+        })
+        .map(([userId]) => userId);
+    const byName = ordered(([, lname, fname]) => [lname, fname]);
+    const byLastName = ordered(([, lname]) => [lname]);
+    const ids = (rows: readonly Record<string, unknown>[]): unknown[] => rows.map((row) => row.userID ?? row.UserID);
+    const PAGINGS: UsersPaging[] = [
+      {},
+      { startRow: 2 },
+      { startRow: 49 },
+      { startRow: 50 },
+      { startRow: 5000 },
+      { startRow: 0, recordsPerPage: 0 },
+      { startRow: 2, recordsPerPage: 1000 },
+      { startRow: 13, recordsPerPage: 100 },
+      { startRow: 3, recordsPerPage: 7 },
+    ];
+
+    /** Search deps over a fresh identity double that records only this read's calls. */
+    function counted(): { deps: SearchDeps; identity: IdentityDouble } {
+      const fake = new IdentityDouble(identity.accounts, identity.memberships, identity.token);
+      return { deps: { ...deps, identity: fake }, identity: fake };
+    }
+
+    beforeAll(async () => {
+      await inTenant(TENANT_B.tenantId, (tx) =>
+        tx.query(
+          `INSERT INTO "${handle.schema}".person (tenant_id, userid, fname, lname, siteid)` +
+            " SELECT $1, 'Y' || lpad(g::text, 7, '0') || '-0000-0000-0000000000000000', ($3::text[])[g % 3 + 1]," +
+            " 'Ybatch' || lpad((g % 600)::text, 4, '0'), 'tenant-b' FROM generate_series(1, $2::int) AS g",
+          [tx.tenantId, bulk, FIRST_NAMES],
+        ),
+      );
+      for (let n = 1; n <= bulk; n += 1) {
+        identity.accounts.set(bulkId(n), { ...account('Y', 'tenant-b'), userId: bulkId(n), username: `y${n}` });
+        if (isMember(bulkId(n))) identity.memberships.set(bulkId(n), ['GY']);
+      }
+    });
+
+    afterAll(async () => {
+      for (let n = 1; n <= bulk; n += 1) {
+        identity.accounts.delete(bulkId(n));
+        identity.memberships.delete(bulkId(n));
+      }
+      await inTenant(TENANT_B.tenantId, (tx) => tx.query(`DELETE FROM "${handle.schema}".person WHERE tenant_id = $1 AND lname LIKE 'Ybatch%'`, [tx.tenantId]));
+    });
+
+    it('lists every person in name order with one account lookup per batch of at most 500', async () => {
+      const { deps: read, identity: fake } = counted();
+      const result = await getUsers(read, adminB, { siteid: 'tenant-b', ispublic: 0 });
+      expect(ids(result.rows)).toEqual(byName);
+      expect(fake.calls).toEqual([
+        { op: 'readAccounts', ids: 500 },
+        { op: 'readAccounts', ids: 500 },
+        { op: 'readAccounts', ids: 202 },
+      ]);
+    });
+
+    it('filters unassigned users in identity, with one account lookup per batch and no membership lookup', async () => {
+      const { deps: read, identity: fake } = counted();
+      const result = await getUnassignedUsers(read, adminB, { siteid: 'tenant-b', ispublic: 0 });
+      expect(ids(result.rows)).toEqual(byName.filter((userId) => !isMember(userId)));
+      expect(fake.calls).toEqual([
+        { op: 'readAccounts', ids: 500 },
+        { op: 'readAccounts', ids: 500 },
+        { op: 'readAccounts', ids: 202 },
+      ]);
+    });
+
+    it('searches every batch by last name', async () => {
+      const { deps: read, identity: fake } = counted();
+      expect(ids((await getSearch(read, adminB, { search: 'ybatch' })).rows)).toEqual(byLastName.filter((userId) => userId.startsWith('Y')));
+      expect(fake.count('readAccounts')).toBe(3);
+    });
+
+    it.each<[string, Partial<AdvancedSearchCriteria & UserFeedKeys>, (userId: string) => boolean, number]>([
+      ['every pool person', {}, () => true, 0],
+      ['the members of a group', { groupID: 'GY' }, isMember, 3],
+    ])('finds %s across batches by last name', async (_label, extra, kept, membershipCalls) => {
+      const { deps: read, identity: fake } = counted();
+      const result = await advanced([], { isPublic: 0 }, extra, adminB, read);
+      expect(ids(result.rows)).toEqual(byLastName.filter(kept));
+      expect(fake.count('readAccounts')).toBe(3);
+      expect(fake.count('lookupMemberships')).toBe(membershipCalls);
+    });
+
+    it.each(PAGINGS)('pages each read as pageRows pages its full result for %o', async (paging) => {
+      const page = <R>(rows: readonly R[]): UsersPage<R> => pageRows(rows, paging);
+      const criteria = { ...newAdvancedSearchCriteria(), groupID: 'GY' };
+      expect(await getUsersPage(deps, adminB, { siteid: 'tenant-b', ispublic: 0 }, paging)).toEqual(
+        page((await getUsers(deps, adminB, { siteid: 'tenant-b', ispublic: 0 })).rows),
+      );
+      expect(await getSearchPage(deps, adminB, { search: 'ybatch' }, paging)).toEqual(page((await getSearch(deps, adminB, { search: 'ybatch' })).rows));
+      expect(await getAdvancedSearchPage(deps, adminB, criteria, { isPublic: 0 }, paging)).toEqual(
+        page((await getAdvancedSearch(deps, adminB, criteria, { isPublic: 0 })).rows),
+      );
+    });
+
+    it('counts a search beyond 2100 matches as 2100 and pages within them', async () => {
+      const more = Array.from({ length: SEARCH_MAX_ROWS }, (_, i) => `X${String(i + 1).padStart(7, '0')}-0000-0000-0000000000000000`);
+      await inTenant(TENANT_B.tenantId, (tx) =>
+        tx.query(
+          `INSERT INTO "${handle.schema}".person (tenant_id, userid, fname, lname, siteid) SELECT $1, u, 'Extra', 'Ybatch9999', 'tenant-b' FROM unnest($2::text[]) AS u`,
+          [tx.tenantId, more],
+        ),
+      );
+      for (const userId of more) identity.accounts.set(userId, { ...account('X', 'tenant-b'), userId });
+      try {
+        const full = await getSearch(deps, adminB, { search: 'ybatch' });
+        expect(full.rows).toHaveLength(SEARCH_MAX_ROWS);
+        for (const paging of [{ startRow: 84 }, { startRow: 85 }, { startRow: 3, recordsPerPage: 1000 }]) {
+          const page = await getSearchPage(deps, adminB, { search: 'ybatch' }, paging);
+          expect(page).toEqual(pageRows(full.rows, paging));
+          expect(page.nextn.TotalRecords).toBe(SEARCH_MAX_ROWS);
+        }
+      } finally {
+        for (const userId of more) identity.accounts.delete(userId);
+      }
+    });
+  });
+
+  describe('siteid=all over every registered site', () => {
+    const DEFAULT_SITE = 'default';
+    const DEFAULT_TENANT = tenantIdForSite(DEFAULT_SITE);
+    /** Identity as a tenant-a token reads it: `lookupAccounts` sees tenant-a's user pools (its own and umbrella) only. */
+    const tokenOfA = (): IdentityDouble =>
+      new IdentityDouble(identity.accounts, identity.memberships, { db: handle.app, tid: TENANT_A.tenantId, s2: true });
+    const pageTags = (page: UsersPage<Record<string, unknown>>): string[] => tags(legacyQuery([...USERS_LIST_COLUMNS], page.rows));
+
+    beforeAll(async () => {
+      const payload = { siteId: DEFAULT_SITE, domains: ['default.opt2.test'] };
+      await inTenant(DEFAULT_TENANT, (tx) => tenantRegistryConsumer.apply(tx, { tenantId: DEFAULT_TENANT, aggregateVersion: 1, payload }));
+      await addPerson(DEFAULT_TENANT, 'D1', { fname: 'Dot', lname: 'Default', siteid: DEFAULT_SITE });
+      identity.accounts.set(id('D1'), account('D1', DEFAULT_SITE));
+    });
+
+    it.each<[string, string, string[]]>([
+      ['system users', '0', ['A4', 'B2', 'B1', 'A2', 'A3', 'D1', 'A1']],
+      ['site members', '1', ['U2', 'A7', 'U1']],
+    ])('lists the %s of default, tenant-a, tenant-b and umbrella once each for an S2 viewer', async (_label, ispublic, expected) => {
+      const fake = tokenOfA();
+      const read: SearchDeps = { ...deps, identity: fake };
+      const page = await getAllSitesUsersPage(read, adminA, { ispublic }, { recordsPerPage: 100 });
+      expect(pageTags(page)).toEqual(expected);
+      expect(page.nextn.TotalRecords).toBe(expected.length);
+      // The token's own lookup would drop tenant-b's and default's people; only identity's S2 all-sites read is used.
+      expect(fake.count('readAccounts')).toBe(0);
+      expect(fake.count('readAccountsAllSites')).toBeGreaterThan(0);
+    });
+
+    it.each<UsersPaging>([{}, { startRow: 2, recordsPerPage: 3 }, { startRow: 3, recordsPerPage: 3 }, { startRow: 4, recordsPerPage: 3 }, { startRow: 0, recordsPerPage: 0 }])(
+      'pages the merged list as pageRows pages the full list for %o',
+      async (paging) => {
+        const read: SearchDeps = { ...deps, identity: tokenOfA() };
+        // A page reaching past every match holds the whole merged list.
+        const full = await getAllSitesUsersPage(read, adminA, { ispublic: 0 }, { recordsPerPage: 100 });
+        expect(pageTags(full)).toEqual(['A4', 'B2', 'B1', 'A2', 'A3', 'D1', 'A1']);
+        expect(await getAllSitesUsersPage(read, adminA, { ispublic: 0 }, paging)).toEqual(pageRows(full.rows, paging));
+      },
+    );
+
+    it('lists only its own site for a viewer without S2, through its own token', async () => {
+      const fake = tokenOfA();
+      const page = await getAllSitesUsersPage({ ...deps, identity: fake }, viewerA, { ispublic: 0 }, {});
+      expect(pageTags(page)).toEqual(['A4', 'A2', 'A3', 'A1']);
+      expect(fake.count('readAccountsAllSites')).toBe(0);
+    });
+
+    it('lists every user of its own site for a viewer without S2, through its own token', async () => {
+      const fake = tokenOfA();
+      expect(tags(await getAllSitesUsers({ ...deps, identity: fake }, viewerA, { ispublic: 0 }))).toEqual(['A4', 'A2', 'A3', 'A1']);
+      expect(fake.calls.map((call) => call.op)).toEqual(['readAccounts']);
     });
   });
 });

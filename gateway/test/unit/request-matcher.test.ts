@@ -347,6 +347,14 @@ describe('createMatcher target destinations', () => {
     });
   });
 
+  it("keys a REST request without a client's consumed-params header, which only the gateway may send", async () => {
+    const url = '/_api/rest/v1/default/group?client_id=C1';
+    const [request, body] = requestOf(url);
+    const outcome = await matcherWith().match({ ...request, headers: { 'X-Opt2-Consumed-Params': 'client_id' } }, body);
+    expect(outcome.result?.key).toBe('rest:group.findquery');
+    expect(outcome.result?.params).toMatchObject({ client_id: 'C1' });
+  });
+
   it('keys a JSON body over the query as legacy merges them', async () => {
     const url = '/_api/json/v1/default/?method=logout';
     const outcome = await matchOf(matcherWith(), url, {

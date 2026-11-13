@@ -239,16 +239,18 @@ describe('createOwnersClient', () => {
     expect(calls[0]?.timeoutMs).toBeUndefined();
   });
 
-  it.each<[string, number | undefined, GateRequest]>([
+  it.each<[string, number | undefined, GateRequest, { timeoutMs?: number }?]>([
     ['close', 40_000, GATE_REQUEST],
     ['close with its own wait', 15_000, { ...GATE_REQUEST, timeoutMs: 5_000 }],
+    ['close bounded by its caller', 1_250, { ...GATE_REQUEST, timeoutMs: 600 }, { timeoutMs: 1_250 }],
     ['phase', 40_000, { op: 'phase', units: [UNIT], holderId: 'window-1', phase: 'executing' }],
+    ['phase bounded by its caller', 900, { op: 'phase', units: [UNIT], holderId: 'window-1', phase: 'executing' }, { timeoutMs: 900 }],
     ['open', undefined, { op: 'open', units: [UNIT], holderId: 'window-1' }],
     ['status', undefined, { op: 'status', units: [UNIT] }],
-  ])('gate posts a %s request to its owner with timeoutMs %s', async (_label, timeoutMs, req) => {
+  ])('gate posts a %s request to its owner with timeoutMs %s', async (_label, timeoutMs, req, options) => {
     const { owners, calls } = routedClient({ 'people POST /internal/v1/migration/gate': [{ body: GATE_ANSWER }] });
 
-    await expect(owners.gate('people', req)).resolves.toEqual(GATE_ANSWER);
+    await expect(owners.gate('people', req, options)).resolves.toEqual(GATE_ANSWER);
     expect(calls).toEqual([{ service: 'people', method: 'POST', path: '/internal/v1/migration/gate', json: req, userToken: null, timeoutMs }]);
     expect(calls[0]?.timeoutMs).toBe(timeoutMs);
   });
@@ -377,6 +379,19 @@ describe('createOwnersClient', () => {
     ]);
   });
 
+  it('getAttachmentObject streams one finance attachment by tenant and attachment id as its undecoded bytes', async () => {
+    const bytes = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x00, 0xff]);
+    const served = Readable.from([bytes]);
+    const { owners, calls } = routedClient({ 'finance GET /internal/v1/migration/objects': [{ body: served }] });
+
+    const body = await owners.getAttachmentObject({ tenantId: TENANT, attachmentId: FILE_ID });
+
+    expect(body).toBe(served);
+    expect(calls).toEqual([
+      { service: 'finance', method: 'GET', path: '/internal/v1/migration/objects', query: { tenantId: TENANT, attachmentId: FILE_ID }, stream: true, userToken: null },
+    ]);
+  });
+
   it.each<QueueControlOp>(['pause', 'resume', 'ensure'])('queueControl posts %s to the queue on the given service', async (op) => {
     const answer: QueueControlResult = { queue: SITEMONITOR_QUEUE, service: 'programs-sites' };
     const path = `/internal/v1/task-queues/${SITEMONITOR_QUEUE}/${op}`;
@@ -442,6 +457,15 @@ describe('createOwnersClient', () => {
       status: 404,
       body: { error: 'notFound' },
       call: (owners) => owners.getObject(`${TENANT}/${FILE_ID}.pdf`),
+    },
+    {
+      name: 'getAttachmentObject answering 404',
+      owner: 'finance',
+      method: 'GET',
+      path: '/internal/v1/migration/objects',
+      status: 404,
+      body: { apiversion: 'v1', method: 'invalid', error: { message: 'Invalid method call', code: 'invalid_request' } },
+      call: (owners) => owners.getAttachmentObject({ tenantId: TENANT, attachmentId: FILE_ID }),
     },
     {
       name: 'gate answering 409 without a gate conflict',

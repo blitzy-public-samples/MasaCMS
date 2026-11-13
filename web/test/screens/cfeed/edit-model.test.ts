@@ -1,6 +1,7 @@
 // Unit tests for the cfeed edit model: the strategies-content screen model read as `cfeed/edit.cfm` reads it.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCsrfRenderer } from '@/lib/csrf';
+import { resetLegacySettingsForTests } from '@/lib/env';
 import { GatewayDenialError } from '@/lib/gateway-client';
 import type { AdminRequest } from '@/lib/request-context';
 import { rbFor } from '@/lib/resource-bundles/rb';
@@ -26,6 +27,8 @@ const FEED_ID = 'F1000000-0000-0000-0000000000000001';
 const CONTENT_ID = 'C1000000-0000-0000-0000000000000001';
 /** The core content renderer's `defaultCollectionDisplayList`. */
 const DEFAULT_FIELDS = 'Date,Title,Image,Summary,Credits';
+/** A theme renderer's own `defaultCollectionDisplayList`. */
+const THEME_FIELDS = 'Title,Summary,Date';
 const ZOOM = '<ul class="navZoom"><li>Home &raquo; News</li></ul>';
 
 type Row = Record<string, unknown>;
@@ -93,6 +96,8 @@ function modelRc(rc: Row = {}): Row {
     categories: [],
     imageSizes: [],
     contentPool: [{ siteID: 'default', site: 'Default' }],
+    useLayoutManager: false,
+    defaultCollectionDisplayList: DEFAULT_FIELDS,
     ...rc,
   };
 }
@@ -113,13 +118,24 @@ function request(rc: Record<string, string> = {}, partial: AdminRequestPartial =
 const LOCAL = { type: 'Local', feedID: '' } as const;
 const SAVED_LOCAL = { type: 'Local', feedID: FEED_ID } as const;
 
+type ConfigVariable = 'MURA_PROXYSERVER' | 'MURA_PROXYUSER' | 'MURA_SHOWUSAGETABS';
+type ConfigFlag = 'hasProxyServer' | 'hasProxyUser' | 'showUsageTabs';
+
+/** Sets the proxy and usage-tab settings in `vars`, unsets the others, and drops cached legacy settings. */
+function useConfig(vars: Partial<Record<ConfigVariable, string>> = {}): void {
+  for (const key of ['MURA_PROXYSERVER', 'MURA_PROXYUSER', 'MURA_SHOWUSAGETABS'] as const) vi.stubEnv(key, vars[key]);
+  resetLegacySettingsForTests();
+}
+
 let restore: () => void;
 
 beforeEach(() => {
   restore = useTestEnv();
+  useConfig();
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   restore();
 });
 
@@ -166,8 +182,8 @@ describe('feedEditModelFrom', () => {
       contentPool: [{ siteID: 'default', site: 'Default' }],
       parentMenuTitle: '',
       hasMarketingManager: false,
-      proxyServer: '',
-      proxyUser: '',
+      hasProxyServer: false,
+      hasProxyUser: false,
       isObjectInstance: false,
       showUsageTabs: true,
       endpoint: undefined,
@@ -392,8 +408,56 @@ describe('feedEditModelFrom', () => {
     ['rslist', { rslist: undefined }, LOCAL],
     ['rsUsage of a saved collection', { feedBean: bean({ feedID: FEED_ID, isNew: 0 }) }, SAVED_LOCAL],
     ['a complex simple value', { feedBean: bean({ name: { a: 1 } }) }, LOCAL],
+    ['useLayoutManager', { useLayoutManager: undefined }, LOCAL],
+    ['useLayoutManager of a Remote collection', { useLayoutManager: undefined }, { type: 'Remote', feedID: '' }],
+    ['defaultCollectionDisplayList', { defaultCollectionDisplayList: undefined }, LOCAL],
   ])('throws when the model lacks %s', (_name, rc, rcValues) => {
     expect(() => feedEditModelFrom(screenModel(rc), request(rcValues))).toThrow(TypeError);
+  });
+
+  it.each<[unknown, boolean]>([
+    [true, true],
+    [false, false],
+    ['true', true],
+    ['NO', false],
+    ['yes', true],
+    [1, true],
+    [0, false],
+  ])("reads the site renderer's useLayoutManager %j as %j", (value, expected) => {
+    expect(feedEditModelFrom(screenModel({ useLayoutManager: value }), request(LOCAL)).useLayoutManager).toBe(expected);
+  });
+
+  it.each<[Partial<Record<ConfigVariable, string>>, Pick<FeedEditModel, ConfigFlag>]>([
+    [{}, { hasProxyServer: false, hasProxyUser: false, showUsageTabs: true }],
+    [{ MURA_PROXYSERVER: 'proxy.example.test' }, { hasProxyServer: true, hasProxyUser: false, showUsageTabs: true }],
+    [{ MURA_PROXYUSER: 'proxyuser' }, { hasProxyServer: false, hasProxyUser: true, showUsageTabs: true }],
+    [
+      { MURA_PROXYSERVER: 'proxy.example.test', MURA_PROXYUSER: 'proxyuser', MURA_SHOWUSAGETABS: 'false' },
+      { hasProxyServer: true, hasProxyUser: true, showUsageTabs: false },
+    ],
+  ])('reads the global configuration %j as %j, without the proxy values', (vars, expected) => {
+    useConfig(vars);
+    const model = feedEditModelFrom(screenModel(), request({ type: 'Remote', feedID: '' }));
+    expect(model).toMatchObject(expected);
+    expect(JSON.stringify(model)).not.toMatch(/proxy\.example\.test|proxyuser/);
+  });
+
+  it.each([
+    { name: 'an empty stored list', stored: '', params: undefined },
+    { name: 'an instance with non-JSON params over an empty stored list', stored: '', params: '' },
+    { name: 'an instance whose JSON params blank the list', stored: 'Date,Title', params: '{"displayList":""}' },
+  ])("gives $name the site renderer's defaultCollectionDisplayList", ({ stored, params }) => {
+    const source = screenModel({
+      feedBean: bean({ feedID: FEED_ID, isNew: 0, displayList: stored }),
+      rsUsage: [],
+      rsDisplayObject: params === undefined ? undefined : [{ object: 'feed', params }],
+      defaultCollectionDisplayList: THEME_FIELDS,
+    });
+    const rc = params === undefined ? SAVED_LOCAL : { ...SAVED_LOCAL, assignmentID: 'ASSIGN1' };
+    expect(feedEditModelFrom(source, request(rc)).feed).toMatchObject({
+      displayList: THEME_FIELDS,
+      availableDisplayList: 'Image,Body,ReadMore,Credits,Comments,Tags,Rating',
+    });
   });
 
   describe('display object instance', () => {

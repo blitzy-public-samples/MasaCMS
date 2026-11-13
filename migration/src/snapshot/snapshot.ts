@@ -135,6 +135,7 @@ const SELECT_SNAPSHOT =
   'FROM migration.snapshot AS s';
 const SNAPSHOT_BY_SEQ_SQL = `${SELECT_SNAPSHOT} WHERE s.seq = $1`;
 const LATEST_READY_SQL = `${SELECT_SNAPSHOT} WHERE s.state = 'ready' ORDER BY s.seq DESC LIMIT 1`;
+const LATEST_READY_OF_KIND_SQL = `${SELECT_SNAPSHOT} WHERE s.kind = $1 AND s.state = 'ready' ORDER BY s.seq DESC LIMIT 1`;
 const DELETE_MANIFEST_SQL = 'DELETE FROM migration.file_manifest WHERE snapshot_seq = $1';
 const MARK_DROPPED_SQL = "UPDATE migration.snapshot SET state = 'dropped', manifest_complete = false WHERE seq = $1";
 
@@ -215,6 +216,13 @@ export async function requireSnapshot(ctx: Pick<SnapshotContext, 'db'>, seq: num
 /** The ready snapshot with the highest sequence, or `null` when there is none. */
 export async function latestSnapshot(ctx: Pick<SnapshotContext, 'db'>): Promise<SnapshotRecord | null> {
   const result = await ctx.db.withMetadata((tx) => tx.query<SnapshotRow>(LATEST_READY_SQL));
+  const row = result.rows[0];
+  return row === undefined ? null : toRecord(row);
+}
+
+/** The ready snapshot of `kind` with the highest sequence, or `null` when there is none. */
+export async function latestSnapshotOfKind(ctx: Pick<SnapshotContext, 'db'>, kind: SnapshotKind): Promise<SnapshotRecord | null> {
+  const result = await ctx.db.withMetadata((tx) => tx.query<SnapshotRow>(LATEST_READY_OF_KIND_SQL, [kind]));
   const row = result.rows[0];
   return row === undefined ? null : toRecord(row);
 }

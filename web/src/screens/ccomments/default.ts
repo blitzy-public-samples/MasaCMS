@@ -3,7 +3,7 @@ import { cfIsBoolean, cfToBoolean } from '@opt2/platform/legacy-compat';
 import { CORE_VERSION } from '@/lib/env';
 import { okBody } from '@/lib/gateway-client';
 import { encodeUrl, html, raw, type SafeHtml } from '@/lib/html';
-import type { AdminRequest } from '@/lib/request-context';
+import { administersRequestedSite, type AdminRequest } from '@/lib/request-context';
 import type { RbLookup } from '@/lib/resource-bundles/rb';
 import type { PageScreen, ScreenContext } from '../registry';
 import { CCOMMENTS_OWNER, COMMENTS_MODULE_ID, ccommentsGate, commentsSiteId } from './shared';
@@ -45,7 +45,7 @@ async function loadCommentsManager(ctx: ScreenContext): Promise<CommentsManagerM
   const processed = processedOf(req);
   return {
     siteid,
-    canManage: req.isSiteAdmin || req.isS2,
+    canManage: administersRequestedSite(req),
     canPurge: PURGE_COMMENTS && req.isS2,
     ...(processed === undefined ? {} : { processed }),
   };

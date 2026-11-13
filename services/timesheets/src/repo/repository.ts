@@ -64,6 +64,8 @@ export type TimesheetsRepository = Repository & {
   getSheet(tx: TenantTx, timesheetId: string): Promise<TimesheetRow | null>;
   /** The days of sheet `timesheetId`, by work date, then day id. */
   daysOfSheet(tx: TenantTx, timesheetId: string): Promise<TimesheetDayRow[]>;
+  /** The days of sheets `timesheetIds` in one query, by sheet id, then in `daysOfSheet` order. */
+  daysOfSheets(tx: TenantTx, timesheetIds: readonly string[]): Promise<TimesheetDayRow[]>;
   /** The day `dayId` joined to its sheet with its blackout flag, or null; `forUpdate` row-locks the day so actions on it serialise. */
   dayWithBlackout(tx: TenantTx, dayId: string, opts?: { forUpdate?: boolean }): Promise<DayWithBlackout | null>;
   /** The blackouts of `dayIds`, by day id. */
@@ -100,6 +102,9 @@ function statementsFor(schema: string) {
       ' ORDER BY t."period_start", t."person_id" COLLATE "C", t."timesheet_id" COLLATE "C" LIMIT $3 OFFSET $4',
     sheet: `SELECT ${sheetColumns} FROM ${sheets} t WHERE t."timesheet_id" = $1::bpchar`,
     daysOfSheet: `SELECT ${dayColumns} FROM ${days} d WHERE d."timesheet_id" = $1::bpchar ORDER BY d."work_date", d."day_id" COLLATE "C"`,
+    daysOfSheets:
+      `SELECT ${dayColumns} FROM ${days} d WHERE d."timesheet_id" = ANY($1::bpchar[])` +
+      ' ORDER BY d."timesheet_id" COLLATE "C", d."work_date", d."day_id" COLLATE "C"',
     lockDay: `SELECT 1 FROM ${days} WHERE "day_id" = $1::bpchar FOR UPDATE`,
     dayWithBlackout:
       `SELECT ${dayColumns}, t."person_id" AS sheet_person_id, t."siteid" AS sheet_siteid, EXISTS (${dayBlackout}) AS blackout` +
@@ -161,6 +166,12 @@ export function createTimesheetsRepository(options: { clock?: Clock; schema?: st
     return (await tx.query<TimesheetDayRow>(sql.daysOfSheet, [timesheetId])).rows;
   }
 
+  async function daysOfSheets(tx: TenantTx, timesheetIds: readonly string[]): Promise<TimesheetDayRow[]> {
+    if (timesheetIds.length === 0) return [];
+    await awaitReadable(tx, [TIMESHEET_DAY.unit]);
+    return (await tx.query<TimesheetDayRow>(sql.daysOfSheets, [timesheetIds])).rows;
+  }
+
   async function dayWithBlackout(tx: TenantTx, dayId: string, opts: { forUpdate?: boolean } = {}): Promise<DayWithBlackout | null> {
     await awaitReadable(tx, [TIMESHEET_DAY.unit, TIMESHEET.unit, BLACKOUT.unit]);
     if (opts.forUpdate === true) {
@@ -194,6 +205,7 @@ export function createTimesheetsRepository(options: { clock?: Clock; schema?: st
     listSheets,
     getSheet,
     daysOfSheet,
+    daysOfSheets,
     dayWithBlackout,
     blackoutsOfDays,
     openDaysOfPerson,

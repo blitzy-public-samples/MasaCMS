@@ -11,7 +11,8 @@ export type AlertKind = 'error' | 'warning' | 'info';
 
 export type SelectOption = { value: string; label: string };
 
-export type FormButton = { label: string; primary?: boolean; name?: string; value?: string };
+/** A submit button; `formAction` sends the form to that URL instead of the form's own action. */
+export type FormButton = { label: string; primary?: boolean; name?: string; value?: string; formAction?: string };
 
 const VAR_WIDTH = html` class="var-width"`;
 
@@ -135,7 +136,7 @@ export function formActions(buttons: readonly FormButton[], hidden?: SafeHtml): 
       html`<button${button.primary === true ? PRIMARY_BUTTON : BUTTON} type="submit"${attr('name', button.name)}${attr(
         'value',
         button.value,
-      )}>${button.label}</button>`,
+      )}${attr('formaction', button.formAction)}>${button.label}</button>`,
   );
   return html`<div class="mura-actions"><div class="form-actions">${items}${hidden}</div></div>`;
 }

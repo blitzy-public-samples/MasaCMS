@@ -318,10 +318,11 @@ describe('createMigrationContext', () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const stdout = vi.spyOn(process.stdout, 'write');
     const { logger: _injected, ...ports } = injectedPorts();
-    const ctx = await createMigrationContext({ env: envWith(), ...ports });
+    const ctx = await createMigrationContext({ env: envWith({ LOG_LEVEL: 'debug' }), ...ports });
 
     ctx.logger.info('migration context ready');
 
+    expect(ctx.logger.level).toBe('debug');
     expect(stderr).toHaveBeenCalledWith(expect.stringContaining('"message":"migration context ready"'));
     expect(stdout).not.toHaveBeenCalledWith(expect.stringContaining('migration context ready'));
     await ctx.close();

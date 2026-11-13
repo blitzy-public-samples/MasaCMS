@@ -122,6 +122,8 @@ export const cpermMainSystemGroupsAnswer: GroupList = Object.freeze({
       isPublic: 0,
     }),
   ],
+  total: 5,
+  nextOffset: null,
 });
 
 export const cpermModuleUsersAnswer: ModulePermissions = Object.freeze({

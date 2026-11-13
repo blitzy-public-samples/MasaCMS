@@ -4,7 +4,7 @@ import { parseLegacyDate } from '@/lib/dates';
 import { encodeHtml, encodeUrl, join, raw, type SafeHtml } from '@/lib/html';
 import { buildUrl } from '@/lib/urls';
 import type { ScreenContext } from '../../registry';
-import { isCusersAdmin, type CusersRc } from '../gate';
+import type { CusersRc } from '../gate';
 import { renderNextN, type NextN } from './dsp_nextn';
 
 // The markup is the include's bytes as ACF 2023 emits them after the caller's indentation, matched against legacy
@@ -216,7 +216,8 @@ export async function renderUsersList(ctx: UsersListContext, input: UsersListInp
   if (rows === undefined) return raw('');
   if (rows.length === 0) return raw(renderEmpty(ctx, input.noUsersMessage));
   // The site-admin role is Admin-group membership in the site's private pool; public-pool Admin groups grant none.
-  const admin = isCusersAdmin(ctx.req);
+  // isInGroup('Admin') and isSuperUser() read the session user's own site, not rc.siteid.
+  const admin = ctx.req.isS2 || ctx.req.isSiteAdmin;
   await ctx.csrf.prefetch(rows.filter((row) => canEditRow(admin, row)).map((row) => row.userid));
   const scope: RowScope = { ctx, input, admin, removable: cfEq(listLastDot(input.muraAction), 'editgroupmembers') };
   const table = `${renderHead((key) => ctx.rb.rbKey(key))}${rows.map((row) => renderRow(scope, row)).join('')}`;

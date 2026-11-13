@@ -4,7 +4,7 @@ import { ServiceUnavailableError, type ServiceRequest, type ServiceResponse } fr
 import type { paths as FinancePaths } from '../generated/clients/finance.js';
 import type { paths as TimesheetsPaths } from '../generated/clients/timesheets.js';
 import { EXPORT_SOURCES, type ExportDefinitionRow, type ExportJobRow, type ExportSource } from '../repo/tables.js';
-import type { ExportRunPayload, ReportingDeps } from './deps.js';
+import type { ReportingDeps } from './deps.js';
 
 /** One definition column: `field` names a source column, matched case-insensitively; `label` heads the column as written. */
 export interface ExportColumn {
@@ -22,11 +22,11 @@ export interface ExportTableStream {
   rows: AsyncIterable<readonly ExportCell[]>;
 }
 
-/** Inputs of {@link openExportTable}: the running job, its definition and the task payload it runs with. */
+/** Inputs of {@link openExportTable}: the job as its run claimed it, its definition and the business date its source is read as of. */
 export interface FetchExportTableInput {
   job: ExportJobRow;
   definition: ExportDefinitionRow;
-  payload: ExportRunPayload;
+  asOf: string;
 }
 
 /** The export's source could not be read: a `broken` source, an unreachable producer or a non-2xx answer. */
@@ -58,16 +58,18 @@ export function parseDefinitionColumns(columnsJson: string): ExportColumn[] {
   return parsed.map((name) => ({ field: name, label: name }));
 }
 
-const SHEET_STATUS_PATH = '/v1/timesheets/sheet-status' satisfies keyof TimesheetsPaths;
-const FINANCE_RECORDS_PATH = '/v1/finance/records' satisfies keyof FinancePaths;
+const SHEET_STATUS_PATH = '/internal/v1/timesheets/sheet-status' satisfies keyof TimesheetsPaths;
+const FINANCE_RECORDS_PATH = '/internal/v1/finance/records' satisfies keyof FinancePaths;
 
-type SheetStatusList = TimesheetsPaths[typeof SHEET_STATUS_PATH]['get']['responses'][200]['content']['application/json'];
-type SheetStatusRow = SheetStatusList['items'][number];
+type SheetStatusPage = TimesheetsPaths[typeof SHEET_STATUS_PATH]['get']['responses'][200]['content']['application/json'];
+type SheetStatusRow = SheetStatusPage['items'][number];
 type FinanceRecordPage = FinancePaths[typeof FINANCE_RECORDS_PATH]['get']['responses'][200]['content']['application/json'];
 type FinanceRecord = FinanceRecordPage['data'][number];
 
-// envelope.cfc's page maximum; the finance contract declares none.
+// envelope.cfc's page maximum, the finance export read's pageSize maximum.
 const FINANCE_PAGE_SIZE = 1000;
+// The timesheets contract's itemsPerPage maximum.
+const SHEET_STATUS_PAGE_SIZE = 1000;
 
 /** Cell reader of each column of a source's result set, keyed by the lower-cased column name. */
 type SourceCells<R> = Readonly<Record<string, (row: R) => ExportCell>>;
@@ -125,35 +127,60 @@ async function readSource<T>(deps: Pick<ReportingDeps, 'client'>, source: Export
   return response.body;
 }
 
-// Both producers act only for a verified user, so each read carries the requester's token from the task payload
-// (undefined forwards the current request's token); the job's tenant and site are those of that token.
-/** The tenant's sheet status rows as of the payload's `asOf`. */
-async function readSheetStatus(deps: Pick<ReportingDeps, 'client'>, payload: ExportRunPayload): Promise<SheetStatusRow[]> {
-  const body = await readSource<SheetStatusList>(deps, 'timesheets.sheets', {
+/** The job and business date a source read takes from {@link FetchExportTableInput}. */
+type SourceReadInput = Pick<FetchExportTableInput, 'job' | 'asOf'>;
+
+/**
+ * The export scope every source read names: the job, its site and the row version its run claimed it at, which the producer has
+ * reporting confirm before it reads that site's tenant.
+ */
+function exportScope({ job }: SourceReadInput): Record<string, string> {
+  return { exportId: job.job_id, siteId: job.siteid, claim: job.row_version };
+}
+
+// A Cloud Tasks run acts as System: each read carries only reporting's invocation credential, never a user token.
+/** Page `pageIndex` of the tenant's sheet status rows as of the input's `asOf`, in the producer's order. */
+function readSheetStatusPage(deps: Pick<ReportingDeps, 'client'>, input: SourceReadInput, pageIndex: number): Promise<SheetStatusPage> {
+  return readSource<SheetStatusPage>(deps, 'timesheets.sheets', {
     service: 'timesheets',
     method: 'GET',
     path: SHEET_STATUS_PATH,
-    query: { asOf: payload.asOf },
-    userToken: payload.userToken,
+    query: { ...exportScope(input), asOf: input.asOf, pageIndex: String(pageIndex), itemsPerPage: String(SHEET_STATUS_PAGE_SIZE) },
+    userToken: null,
   });
-  return body.items;
+}
+
+/** Every sheet status row of the tenant: those of `first`, then each later page, read once the rows before it are consumed. */
+async function* sheetStatusRows(
+  deps: Pick<ReportingDeps, 'client'>,
+  input: SourceReadInput,
+  first: SheetStatusPage,
+): AsyncGenerator<SheetStatusRow> {
+  let body = first;
+  let read = 0;
+  for (let pageIndex = 1; ; pageIndex += 1) {
+    yield* body.items;
+    read += body.items.length;
+    if (body.items.length === 0 || read >= body.total) return;
+    body = await readSheetStatusPage(deps, input, pageIndex + 1);
+  }
 }
 
 /** Page `page` of the tenant's finance records, in the producer's order. */
-function readFinancePage(deps: Pick<ReportingDeps, 'client'>, payload: ExportRunPayload, page: number): Promise<FinanceRecordPage> {
+function readFinancePage(deps: Pick<ReportingDeps, 'client'>, input: SourceReadInput, page: number): Promise<FinanceRecordPage> {
   return readSource<FinanceRecordPage>(deps, 'finance.records', {
     service: 'finance',
     method: 'GET',
     path: FINANCE_RECORDS_PATH,
-    query: { page: String(page), pageSize: String(FINANCE_PAGE_SIZE) },
-    userToken: payload.userToken,
+    query: { ...exportScope(input), page: String(page), pageSize: String(FINANCE_PAGE_SIZE) },
+    userToken: null,
   });
 }
 
 /** Every finance record of the tenant: those of `first`, then each later page, read once the records before it are consumed. */
 async function* financeRecords(
   deps: Pick<ReportingDeps, 'client'>,
-  payload: ExportRunPayload,
+  input: SourceReadInput,
   first: FinanceRecordPage,
 ): AsyncGenerator<FinanceRecord> {
   let body = first;
@@ -162,7 +189,7 @@ async function* financeRecords(
     yield* body.data;
     read += body.data.length;
     if (body.data.length === 0 || read >= body.total) return;
-    body = await readFinancePage(deps, payload, page + 1);
+    body = await readFinancePage(deps, input, page + 1);
   }
 }
 
@@ -170,9 +197,26 @@ function compareText(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-/** The fixture's `ORDER BY period_start, timesheet_id`; the producer also orders by person between them. */
-function bySheetFixtureOrder(a: SheetStatusRow, b: SheetStatusRow): number {
-  return compareText(a.periodStart, b.periodStart) || compareText(a.timesheetId, b.timesheetId);
+function bySheetId(a: SheetStatusRow, b: SheetStatusRow): number {
+  return compareText(a.timesheetId, b.timesheetId);
+}
+
+/**
+ * `rows` in the fixture's `ORDER BY period_start, timesheet_id`. The producer orders by period start, then person, so only each
+ * run of one period start is held and re-sorted, by sheet id.
+ */
+async function* inSheetFixtureOrder(rows: AsyncIterable<SheetStatusRow>): AsyncGenerator<SheetStatusRow> {
+  let periodStart: string | undefined;
+  let period: SheetStatusRow[] = [];
+  for await (const row of rows) {
+    if (row.periodStart !== periodStart) {
+      yield* period.sort(bySheetId);
+      periodStart = row.periodStart;
+      period = [];
+    }
+    period.push(row);
+  }
+  yield* period.sort(bySheetId);
 }
 
 /** The fixture's `WHERE siteID = :siteid`, compared case-insensitively as SQL Server does. */
@@ -215,24 +259,24 @@ function project<R>(
 
 /**
  * Opens the definition's source for the job's site in the fixture's columns, row order and value forms. The first read is
- * made here; later finance pages are read as the rows are consumed, and their failures surface through the rows.
+ * made here; later pages are read as the rows are consumed, and their failures surface through the rows.
  */
 export async function openExportTable(deps: Pick<ReportingDeps, 'client'>, input: FetchExportTableInput): Promise<ExportTableStream> {
-  const { job, definition, payload } = input;
+  const { job, definition } = input;
   const source = definition.source;
   if (!isExportSource(source)) throw new Error(`Unknown export source ${source}`);
   switch (source) {
     case 'broken':
       throw new SourceUnavailableError(source);
     case 'timesheets.sheets': {
-      // A stable sort, so sorting before the site filter keeps the order sorting after it gives.
-      const rows = (await readSheetStatus(deps, payload)).sort(bySheetFixtureOrder);
+      // Ordering before the site filter gives the order ordering after it would.
+      const rows = inSheetFixtureOrder(sheetStatusRows(deps, input, await readSheetStatusPage(deps, input, 1)));
       return project(source, rows, (row) => ofSite(row.siteId, job.siteid), SHEET_CELLS, definition);
     }
     case 'finance.records': {
       // The producer already orders by created, then record_id; its created is cut to seconds, so re-sorting here would
       // lose the millisecond order the fixture's ORDER BY keeps.
-      const rows = financeRecords(deps, payload, await readFinancePage(deps, payload, 1));
+      const rows = financeRecords(deps, input, await readFinancePage(deps, input, 1));
       return project(source, rows, (row) => ofSite(row.siteid, job.siteid), FINANCE_CELLS, definition);
     }
     default: {

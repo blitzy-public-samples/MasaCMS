@@ -40,6 +40,8 @@ import {
   type ProjectorHooks,
   type StartupGuardRunner,
 } from '../../src/reverse/projector.js';
+import { createStartupGuardRunner, type GuardRunnerContext, type ReloadWindowResult } from '../../src/windows/reload.js';
+import { createGatewayDouble } from '../helpers/gateway-double.js';
 
 const catalogs = vi.hoisted((): Record<string, TableCatalog> => ({}));
 
@@ -161,6 +163,8 @@ interface LegacyOptions {
   failOn?: RegExp;
   /** Clearing owed effects fails. */
   failClear?: boolean;
+  /** A table whose rows the fake keeps; it answers the statements on that table and leaves the rest undefined. */
+  table?: { query(text: string, params: Record<string, unknown>, inTransaction: boolean): { recordset: unknown[]; rowsAffected: number[] } | undefined };
 }
 
 /** Legacy database answering exactly the projector's statements; checkpoint upserts stage per transaction until commit. */
@@ -214,6 +218,8 @@ function fakeLegacy(options: LegacyOptions = {}) {
         .map(([, value]) => value);
       return reply([...committed.values()].filter((row) => owners.includes(row.owner)));
     }
+    const kept = options.table?.query(text, params, staged !== null);
+    if (kept !== undefined) return reply(kept.recordset, kept.rowsAffected);
     if (staged === null) throw new Error(`write outside a transaction: ${text}`);
     if (text.startsWith('UPDATE opt2_sync.projector_checkpoint')) return upsert(params, staged);
     if (options.failOn?.test(text) === true) throw new Error('legacy write failed');
@@ -310,10 +316,10 @@ function page(rows: ProjectedChangeRow[], horizon: string, after: string, operat
 type PageSource = ChangesResponse | ((read: number) => ChangesResponse);
 
 interface OwnersOptions {
-  /** Pages by `<owner>|<after>`; other reads answer an empty complete page at `defaultHorizon`. */
+  /** Pages by `<owner>|<tenantId>|<after>`, else `<owner>|<after>`; other reads answer an empty complete page at `defaultHorizon`. */
   pages?: Record<string, PageSource>;
   defaultHorizon?: string;
-  /** Legacy images each unit exports. */
+  /** Legacy images each unit exports by `<unit>|<tenantId>`, else by unit. */
   exportRows?: Record<string, Record<string, unknown>[]>;
   /** Owner whose position read fails. */
   failPosition?: string;
@@ -337,7 +343,7 @@ function fakeOwners({ pages = {}, defaultHorizon = '200', exportRows = {}, failP
   const exportPage = (params: ExportParams) => {
     const unit = UNITS[params.unit];
     const keyNames = unit === undefined ? [] : unitCatalog.keyColumnsOf(unit.legacyTable);
-    const rows = (exportRows[params.unit] ?? [])
+    const rows = (exportRows[`${params.unit}|${params.tenantId}`] ?? exportRows[params.unit] ?? [])
       .map((values) => {
         const row = encodeRow(unit?.columns ?? [], values);
         return { key: keyNames.length === 0 ? row : encodeKey(unit?.columns ?? [], keyNames, values), row, hash: 'h' };
@@ -356,7 +362,7 @@ function fakeOwners({ pages = {}, defaultHorizon = '200', exportRows = {}, failP
       const read = (reads.get(key) ?? 0) + 1;
       reads.set(key, read);
       changes.push({ owner, after: params.after });
-      const source = pages[key];
+      const source = pages[`${owner}|${params.tenantId}|${params.after}`] ?? pages[key];
       if (source === undefined) return page([], defaultHorizon, params.after);
       return typeof source === 'function' ? source(read) : source;
     },
@@ -371,6 +377,7 @@ function fakeOwners({ pages = {}, defaultHorizon = '200', exportRows = {}, failP
       return { owner, position: '150', outbox: null, inbox: null };
     },
     getObject: async () => Readable.from([Buffer.from('hel'), Buffer.from('lo')]),
+    getAttachmentObject: vi.fn((_params: { tenantId: string; attachmentId: string }) => Promise.resolve(Readable.from([Buffer.from('%PDF'), Buffer.from('-1')]))),
     async putWatermark(owner: string, record: { legacyTable: string; direction: string }) {
       watermarks.push({ owner, legacyTable: record.legacyTable, direction: record.direction });
       return record;
@@ -670,6 +677,90 @@ describe('runProjectorCycle streams', () => {
     expect(h.legacy.checkpoint('strategies-content')).toMatchObject({ cursor_xid: '120', cursor_seq: '1' });
   });
 
+  catalogs['Program_1.finance_attachment'] = {
+    ...table(
+      'finance_attachment',
+      [
+        column('attachment_id', 'char'),
+        column('record_id', 'char'),
+        column('file_name', 'nvarchar'),
+        column('content_type', 'nvarchar'),
+        column('size_bytes', 'int', 'i'),
+        column('sha256', 'char'),
+        column('content', 'varbinary', 'b'),
+        column('created', 'datetime', 't'),
+        column('createdByID', 'char'),
+      ],
+      ['attachment_id'],
+    ),
+    schema: 'Program_1',
+    qualified: 'Program_1.finance_attachment',
+  };
+  UNITS['finance.attachment'] = {
+    legacyTable: 'Program_1.finance_attachment',
+    columns: [
+      { name: 'attachment_id', type: 's' },
+      { name: 'record_id', type: 's' },
+      { name: 'file_name', type: 's' },
+      { name: 'content_type', type: 's' },
+      { name: 'size_bytes', type: 'i' },
+      { name: 'sha256', type: 's' },
+      { name: 'created', type: 't' },
+      { name: 'createdByID', type: 's' },
+    ],
+  };
+
+  describe('finance attachment bytes', () => {
+    const attachmentId = 'C1D2E3F4-0001-4A5B-8C7D9E0F1A2B3C4D';
+    const served = Buffer.from('%PDF-1');
+    /** A target insert of program 1's attachment recording `recorded`, as finance's change feed projects it. */
+    const attachmentInsert = (recorded: Buffer): ProjectedChangeRow => {
+      const row = changeRow([130, 1], 'attachment', 'finance.attachment', 'insert', {
+        after: {
+          attachment_id: attachmentId,
+          record_id: USER,
+          file_name: 'scan.pdf',
+          content_type: 'application/pdf',
+          size_bytes: String(recorded.byteLength),
+          sha256: createHash('sha256').update(recorded).digest('hex'),
+          created: '2026-06-30 12:00:00.000',
+          createdByID: USER,
+        },
+      });
+      return { ...row, legacy: row.legacy.map((entry) => ({ ...entry, legacyProgramId: 1 })) };
+    };
+    const attachmentWrites = /^(INSERT INTO|UPDATE|DELETE FROM) \[Program_1\]\.\[finance_attachment\]/;
+
+    it('binds the verified bytes into the INSERT, committed in the transaction of its checkpoint', async () => {
+      const legacy = fakeLegacy({ zeroRows: /^UPDATE \[Program_1\]\.\[finance_attachment\]/ });
+      const owners = fakeOwners({ pages: { [`finance|${CURSOR_START}`]: page([attachmentInsert(served)], '131', CURSOR_START) } });
+      const result = await runProjectorCycle(harness({ legacy, owners }).ctx, cycleDeps());
+
+      expect(result).toMatchObject({ rowsApplied: 1, errors: [] });
+      expect(owners.owners.getAttachmentObject).toHaveBeenCalledWith({ tenantId: TENANT, attachmentId });
+      const [inserted, ...others] = legacy.applied(/^INSERT INTO \[Program_1\]\.\[finance_attachment\]/);
+      expect(others).toEqual([]);
+      expect(inserted?.sql).toMatch(/\[content\]/);
+      const bytes = Object.values(inserted?.params ?? {}).filter((value) => Buffer.isBuffer(value));
+      expect(bytes).toEqual([served]);
+      const checkpoint = legacy.applied(/^UPDATE opt2_sync\.projector_checkpoint/).find((statement) => statement.params.owner === 'finance');
+      expect(checkpoint?.tx).toBe(inserted?.tx);
+      expect(legacy.checkpoint('finance')).toMatchObject({ cursor_xid: '130', cursor_seq: '1', applied_horizon: '131', rows_applied: 1 });
+      expect(owners.watermarks).toEqual([{ owner: 'finance', legacyTable: 'Program_1.finance_attachment', direction: 'reverse' }]);
+    });
+
+    it('stops the stream with nothing written when finance serves bytes other than the change recorded', async () => {
+      const legacy = fakeLegacy({ zeroRows: /^UPDATE \[Program_1\]\.\[finance_attachment\]/ });
+      const owners = fakeOwners({ pages: { [`finance|${CURSOR_START}`]: page([attachmentInsert(Buffer.from('%PDF-2'))], '131', CURSOR_START) } });
+      const result = await runProjectorCycle(harness({ legacy, owners }).ctx, cycleDeps());
+
+      expect(result.errors.map((error) => [error.owner, error.cursor, error.error.name])).toEqual([['finance', CURSOR_START, 'AttachmentContentMismatchError']]);
+      expect(legacy.statements.filter((statement) => attachmentWrites.test(statement.sql))).toEqual([]);
+      expect(legacy.checkpoint('finance')).toBeUndefined();
+      expect(owners.watermarks).toEqual([]);
+    });
+  });
+
   it('stops a stream whose owner fails and projects the others', async () => {
     const h = harness();
     const { changes } = h.owners.owners;
@@ -683,6 +774,131 @@ describe('runProjectorCycle streams', () => {
   it('rejects the cycle when a hook throws', async () => {
     const lost = new Error('process lost');
     await expect(runProjectorCycle(harness().ctx, cycleDeps({ beforeBatch: () => Promise.reject(lost) }))).rejects.toBe(lost);
+  });
+});
+
+catalogs.toauthclients = table('toauthclients', [column('clientid', 'char'), column('siteid', 'nvarchar'), column('name', 'nvarchar')], ['clientid']);
+UNITS['identity.oauth_client'] = {
+  legacyTable: 'toauthclients',
+  columns: [{ name: 'clientid', type: 's' }, { name: 'siteid', type: 's' }, { name: 'name', type: 's' }],
+};
+
+/** One dbo table's rows answering the statements the projector issues on it, compared as the default collation compares; writes apply at once, so no test using it rolls back. */
+function statefulTable(name: string, initial: Record<string, unknown>[]) {
+  const rows = initial.map((row) => ({ ...row }));
+  const same = (a: unknown, b: unknown) => String(a).replace(/ +$/, '').toLowerCase() === String(b).replace(/ +$/, '').toLowerCase();
+  const valueOf = (expr: string, params: Record<string, unknown>) => (expr === 'NULL' ? null : params[expr.slice(1)]);
+  const pairs = (list: string, separator: string, params: Record<string, unknown>) =>
+    list.split(separator).map((pair): [string, unknown] => {
+      const [, column = '', expr = ''] = /^\[(\w+)\] = (@p\d+|NULL)$/.exec(pair.trim()) ?? [];
+      return [column, valueOf(expr, params)];
+    });
+  const where = (text: string, params: Record<string, unknown>) => {
+    const conditions = pairs(text, ' AND ', params);
+    return rows.filter((row) => conditions.every(([column, value]) => same(row[column], value)));
+  };
+  const query = (text: string, params: Record<string, unknown>, inTransaction: boolean) => {
+    if (!text.includes(`[dbo].[${name}]`)) return undefined;
+    const read = /^SELECT (?:\[(\w+)\] AS site|(COUNT)\(\*\) AS n) FROM \S+ WHERE (.+)$/.exec(text);
+    if (read !== null) {
+      const found = where(read[3] ?? '', params);
+      return { recordset: read[2] === undefined ? found.map((row) => ({ site: row[read[1] ?? ''] })) : [{ n: found.length }], rowsAffected: [] };
+    }
+    if (!inTransaction) throw new Error(`write outside a transaction: ${text}`);
+    const update = /^UPDATE \S+ SET (.+) WHERE (.+)$/.exec(text);
+    const insert = /^INSERT INTO \S+ \((.+)\) VALUES \((.+)\);$/.exec(text);
+    const remove = /^DELETE FROM \S+ WHERE (.+)$/.exec(text);
+    if (update !== null) {
+      const found = where(update[2] ?? '', params);
+      for (const row of found) Object.assign(row, Object.fromEntries(pairs(update[1] ?? '', ', ', params)));
+      return { recordset: [], rowsAffected: [found.length] };
+    }
+    if (insert !== null) {
+      const values = (insert[2] ?? '').split(', ');
+      rows.push(Object.fromEntries((insert[1] ?? '').split(', ').map((column, index) => [column.slice(1, -1), valueOf(values[index] ?? '', params)])));
+      return { recordset: [], rowsAffected: [1] };
+    }
+    if (remove !== null) {
+      const found = where(remove[1] ?? '', params);
+      for (const row of found) rows.splice(rows.indexOf(row), 1);
+      return { recordset: [], rowsAffected: [found.length] };
+    }
+    throw new Error(`unexpected ${name} SQL: ${text}`);
+  };
+  return { rows, query };
+}
+
+describe('runProjectorCycle keys moving between tenants', () => {
+  const OTHER_SITE = 'tenant-b';
+  const tenantOf = (site: string) => tenantIdForSite(site);
+  const CLIENT = 'C1D2E3F4-0000-0000-0000000000000001';
+  const client = (siteid: string, name = 'Portal') => ({ clientid: CLIENT, siteid, name });
+  const clientRow = (position: [number, number], op: ProjectedChangeRow['op'], images: Images, changed: string[] = []) =>
+    changeRow(position, 'oauth_client', 'identity.oauth_client', op, images, { changed });
+  /** Streams of each site's tenant from the start, at one horizon past their last row. */
+  const streams = (bySite: Record<string, ProjectedChangeRow[]>) =>
+    Object.fromEntries(
+      Object.entries(bySite).map(([site, rows]) => [`identity|${tenantOf(site)}|${CURSOR_START}`, page(rows, String(Number(rows.at(-1)?.xid ?? 0) + 1), CURSOR_START)]),
+    );
+
+  async function project(initial: Record<string, unknown>[], bySite: Record<string, ProjectedChangeRow[]>, holders: Record<string, Record<string, unknown>[]>) {
+    const clients = statefulTable('toauthclients', initial);
+    const legacy = fakeLegacy({ sites: [SITE, OTHER_SITE], table: clients });
+    const exportRows = Object.fromEntries(Object.entries(holders).map(([site, rows]) => [`identity.oauth_client|${tenantOf(site)}`, rows]));
+    const owners = fakeOwners({ pages: streams(bySite), exportRows });
+    const result = await runProjectorCycle(harness({ legacy, owners }).ctx, cycleDeps());
+    return { result, rows: clients.rows, legacy, owners };
+  }
+
+  it.each([
+    { order: 'the destination stream first', from: OTHER_SITE, to: SITE },
+    { order: 'the source stream first', from: SITE, to: OTHER_SITE },
+  ])('leaves one row at the destination site after a move projected with $order', async ({ from, to }) => {
+    const { result, rows, legacy } = await project(
+      [client(from)],
+      { [to]: [clientRow([600, 1], 'insert', { after: client(to) })], [from]: [clientRow([601, 1], 'delete', { before: client(from) })] },
+      { [to]: [client(to)] },
+    );
+
+    expect(result).toMatchObject({ rowsApplied: 2, errors: [] });
+    expect(rows).toEqual([client(to)]);
+    expect(legacy.applied(/^DELETE FROM \[dbo\]\.\[toauthclients\]/).map((statement) => Object.values(statement.params))).toEqual([[CLIENT, from]]);
+    expect(legacy.checkpoint('identity', tenantOf(to))).toMatchObject({ cursor_xid: '600' });
+    expect(legacy.checkpoint('identity', tenantOf(from))).toMatchObject({ cursor_xid: '601' });
+  });
+
+  it('passes over a source-tenant update made before the move', async () => {
+    const { result, rows } = await project(
+      [client(OTHER_SITE, 'Old')],
+      {
+        [SITE]: [clientRow([602, 1], 'insert', { after: client(SITE, 'New') })],
+        [OTHER_SITE]: [
+          clientRow([600, 1], 'update', { before: client(OTHER_SITE, 'Old'), after: client(OTHER_SITE, 'Mid') }, ['name']),
+          clientRow([603, 1], 'delete', { before: client(OTHER_SITE, 'Mid') }),
+        ],
+      },
+      { [SITE]: [client(SITE, 'New')] },
+    );
+
+    expect(result).toMatchObject({ rowsApplied: 3, errors: [] });
+    expect(rows).toEqual([client(SITE, 'New')]);
+  });
+
+  it('writes nothing for the insert of a move its tenant has since moved back, deciding outside the batch transaction', async () => {
+    const { result, rows, legacy, owners } = await project(
+      [client(SITE)],
+      {
+        [SITE]: [clientRow([601, 1], 'delete', { before: client(SITE) }), clientRow([602, 1], 'insert', { after: client(SITE) })],
+        [OTHER_SITE]: [clientRow([600, 1], 'insert', { after: client(OTHER_SITE) }), clientRow([603, 1], 'delete', { before: client(OTHER_SITE) })],
+      },
+      { [SITE]: [client(SITE)] },
+    );
+
+    expect(result).toMatchObject({ rowsApplied: 4, errors: [] });
+    expect(rows).toEqual([client(SITE)]);
+    expect(legacy.statements.filter((statement) => statement.sql.startsWith('SELECT [siteid] AS site')).map((statement) => statement.tx)).toEqual([null, null]);
+    const clientKey = encodeRow([{ name: 'clientid', type: 's' }], { clientid: CLIENT });
+    expect(owners.exports.filter((call) => call.keys !== undefined)).toEqual([{ owner: 'identity', unit: 'identity.oauth_client', keys: [clientKey], opened: 0 }]);
   });
 });
 
@@ -733,6 +949,58 @@ describe('runProjectorCycle start-up guard', () => {
     expect(result.errors.map((error) => [error.owner, error.cursor, error.error])).toEqual([['strategies-content', CURSOR_START, refused]]);
     expect(legacy.checkpoint('strategies-content')).toBeUndefined();
     expect(legacy.applied(/^UPDATE \[dbo\]\.\[tcontent\]/)).toEqual([]);
+  });
+
+  it('lets the guard reload await content positions only a later cycle projects, then lifts the freeze without a projection timeout', async () => {
+    const guardVersion = 'v9002';
+    const frozenRoute = 'admin:carch.list';
+    writeFileSync(
+      path.join(cutoverDir, 'versions', `${guardVersion}.json`),
+      JSON.stringify({
+        tableVersion: guardVersion,
+        groupAuthority: Object.fromEntries(groupIds.map((id) => [id, 'target'])),
+        entries: [
+          { route: frozenRoute, owningService: 'strategies-content', tableVersion: guardVersion, state: 'legacy', kind: 'read', group: null, units: ['content.content'], disposition: 'legacy-served' },
+        ],
+      }),
+    );
+    const legacy = fakeLegacy({ startupCounts: [2] });
+    // The guarded batch's horizon is 301; the page after it, read only by a later cycle, reaches 401.
+    const owners = fakeOwners({ pages: { ...pages, 'strategies-content|300:1': page([], '401', '300:1') } });
+    // A content write committed after the guarded batch, read as the owner's current position.
+    owners.owners.position = (owner: string) => Promise.resolve({ owner, position: '400', outbox: null, inbox: null });
+    const h = harness({ legacy, owners });
+    const ctx = { ...h.ctx, clock: { now: () => new Date() } } as unknown as MigrationContext;
+    const gateway = createGatewayDouble({ active: guardVersion, epoch: 1 });
+    const logger = { ...h.logger, warn: vi.fn() };
+    const events: string[] = [];
+    // A reload window's open: the content gates close while the freeze holds, then the owner's current position is awaited.
+    const reload = async (): Promise<ReloadWindowResult> => {
+      events.push(`open frozen=${[...gateway.frozen].join(',')}`);
+      await projector.awaitProjection({ owners: ['strategies-content'], timeoutMs: config.windows.openBudgetMs });
+      events.push('projection awaited');
+      return { windowId: 'W1', legacyStatus: 200, windowState: 'closed', startupRowsRemaining: 0 };
+    };
+    const runner = createStartupGuardRunner({ gateway, config, legacy: legacy.legacy, logger } as unknown as GuardRunnerContext, reload);
+    const projector = createProjector(ctx, { startupGuard: runner });
+
+    projector.start();
+    try {
+      await vi.waitFor(() => expect(events).not.toEqual([]), { timeout: 10_000 });
+      await runner.settled();
+    } finally {
+      await projector.stop();
+    }
+
+    expect(events).toEqual([`open frozen=${frozenRoute}`, 'projection awaited']);
+    expect(gateway.calls.filter((call) => call.op === 'freeze' || call.op === 'unfreeze')).toEqual([
+      { op: 'freeze', args: { routes: [frozenRoute] } },
+      { op: 'unfreeze', args: { routes: [frozenRoute] } },
+    ]);
+    expect(gateway.frozen.size).toBe(0);
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(h.logger.error).not.toHaveBeenCalled();
+    expect(legacy.checkpoint('strategies-content')).toMatchObject({ cursor_xid: '300', cursor_seq: '1', applied_horizon: '401' });
   });
 });
 

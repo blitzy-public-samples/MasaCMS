@@ -8,7 +8,7 @@ import {
   type AuthSetup,
   type Opt2RouteConfig,
 } from '@opt2/platform/auth';
-import { isLegacySessionCookie, parseCookieHeader, parseSetCookie } from '@opt2/platform/legacy-compat';
+import { REST_CONSUMED_PARAMS_HEADER, isLegacySessionCookie, parseCookieHeader, parseSetCookie } from '@opt2/platform/legacy-compat';
 import { serializeError } from '@opt2/platform/logging';
 import {
   requireRequestContext,
@@ -87,7 +87,7 @@ export interface DispatcherDeps {
   barrier: Pick<SessionBarrier, 'declare' | 'record' | 'release' | 'awaitForSession' | 'awaitPositions' | 'awaitOwners'>;
   resolver: SessionResolver;
   tokenCache: Pick<TokenCache, 'get'>;
-  /** Identity's record of the admin site a session selected, read for site-less admin requests. */
+  /** Identity's record of the admin site a session selected, read for site-less requests web serves. */
   identity: Pick<IdentityClient, 'adminSite'>;
   stateCheck: Pick<SessionStateChecker, 'check'>;
   hydrator: Hydrator;
@@ -260,6 +260,16 @@ function setCookiesOf(resolution: SessionResolution | undefined): string[] {
   return resolution === undefined || resolution.kind === 'response' ? [] : resolution.setCookies;
 }
 
+/** The destination's extra headers plus, when REST credential handling consumed params, the header naming them for the callee's route key. */
+function targetExtraHeaders(
+  destination: TargetDestination,
+  resolution: SessionResolution | undefined,
+): Readonly<Record<string, string>> | undefined {
+  const consumed = resolution === undefined || resolution.kind === 'response' ? [] : (resolution.consumedParams ?? []);
+  if (consumed.length === 0) return destination.extraHeaders;
+  return { ...destination.extraHeaders, [REST_CONSUMED_PARAMS_HEADER]: consumed.join(',') };
+}
+
 /** The browser's `Cookie` header with its legacy session cookies swapped in place for the jar's live ones; other cookies unchanged. */
 function legacyCookieHeaderFor(browser: string | undefined, jar: JarCookies, now: Date): string {
   const pairs = new Map<string, string>();
@@ -425,11 +435,11 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     if (check.state !== 'active') await deps.invalidation.afterTargetLogout(named, { userAgent });
   };
 
-  /** The site a request's user token is for: its `siteid`, else an admin session's selected site, else `default`. */
-  const tokenSiteOf = async (result: RoutedOutcome['result'], sessionId: string): Promise<string> => {
+  /** The site a request's user token is for: its `siteid`, else for a request web serves the session's selected site, else `default`. */
+  const tokenSiteOf = async (result: RoutedOutcome['result'], destination: TargetDestination, sessionId: string): Promise<string> => {
     if (result.siteId !== undefined && result.siteId !== '') return result.siteId;
-    // An admin request without a site acts in session.siteid, as legacy's set-up fills rc.siteid (admin/Application.cfc:384-412).
-    const selected = result.family === 'admin' ? await deps.identity.adminSite(sessionId) : '';
+    // Web's admin set-up, which also serves the OPT-2 screens, fills a missing rc.siteid from session.siteid (admin/Application.cfc:384-412).
+    const selected = result.family === 'admin' || destination.isWeb ? await deps.identity.adminSite(sessionId) : '';
     return selected === '' ? DEFAULT_SITE_ID : selected;
   };
 
@@ -459,7 +469,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
         if (check.state === 'active') {
           sessionId = resolution.sessionId;
           jar = resolution.legacyCookies;
-          userToken = await deps.tokenCache.get(sessionId, await tokenSiteOf(result, sessionId), check.epoch);
+          userToken = await deps.tokenCache.get(sessionId, await tokenSiteOf(result, destination, sessionId), check.epoch);
         } else {
           await deps.invalidation.afterTargetLogout(resolution.sessionId, { userAgent });
         }
@@ -475,7 +485,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       path: destination.path,
       headers: stripInboundAuthHeaders(request.headers, { afterExchange: true }),
       userToken,
-      extraHeaders: destination.extraHeaders,
+      extraHeaders: targetExtraHeaders(destination, resolution),
       method: destination.method,
       forwardBody: destination.forwardBody,
       sessionId,

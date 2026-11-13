@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { AuthTypes, Connector, IpAddressTypes } from '@google-cloud/cloud-sql-connector';
 import { serviceAccountEmail } from '@opt2/platform/auth';
 import type { Logger } from '@opt2/platform/logging';
-import { iamDbUser } from '@opt2/platform/tenancy';
+import { iamDbUser, sessionTimeZoneSetter } from '@opt2/platform/tenancy';
 import pg from 'pg';
 import type { MigrationConfig, OwnerName } from '../config.js';
 import { migrationsDirFor, stateDirPath } from '../paths.js';
@@ -188,13 +188,21 @@ async function readSecretFile(file: string): Promise<string> {
   return secret;
 }
 
-async function open(client: pg.Client): Promise<ConnectedClient> {
+/** Connects `client` and sets its session TimeZone, ending it when the zone is not set. */
+async function open(client: pg.Client, setTimeZone: ReturnType<typeof sessionTimeZoneSetter>): Promise<ConnectedClient> {
   await client.connect();
+  try {
+    await setTimeZone(client);
+  } catch (error) {
+    await client.end();
+    throw error;
+  }
   return client;
 }
 
 function localDeps(env: LocalEnv): BootstrapDeps {
   const server = { host: env.PG_HOST, port: env.PG_PORT, database: env.PG_DATABASE };
+  const setTimeZone = sessionTimeZoneSetter();
   return {
     connect: async (spec) => {
       if (spec.kind === 'iam') throw new Error('IAM database logins need --target cloud');
@@ -202,7 +210,7 @@ function localDeps(env: LocalEnv): BootstrapDeps {
         spec.kind === 'admin'
           ? { user: env.PG_USER, password: env.PG_PASSWORD }
           : { user: spec.user, password: spec.password };
-      return open(new pg.Client({ ...server, ...login }));
+      return open(new pg.Client({ ...server, ...login }), setTimeZone);
     },
     readSecret: readSecretFile,
     migrationsDir: migrationsDirFor,
@@ -212,6 +220,7 @@ function localDeps(env: LocalEnv): BootstrapDeps {
 function cloudDeps(env: CloudEnv, adminUser: string): BootstrapDeps {
   const connector = new Connector();
   const instanceConnectionName = env.CLOUD_SQL_INSTANCE;
+  const setTimeZone = sessionTimeZoneSetter();
   return {
     connect: async (spec) => {
       if (spec.kind === 'role') throw new Error('password role logins need --target local');
@@ -220,6 +229,7 @@ function cloudDeps(env: CloudEnv, adminUser: string): BootstrapDeps {
         // Cloud SQL's built-in admin is a member of cloudsqlsuperuser, not a PostgreSQL superuser.
         return open(
           new pg.Client({ ...options, user: adminUser, password: env.OPT2_CLOUDSQL_ADMIN_PASSWORD, database: env.PG_DATABASE }),
+          setTimeZone,
         );
       }
       const options = await connector.getOptions({
@@ -228,7 +238,7 @@ function cloudDeps(env: CloudEnv, adminUser: string): BootstrapDeps {
         authType: AuthTypes.IAM,
       });
       // No password: the connector authenticates the stream with short-lived IAM tokens of the job's service account.
-      return open(new pg.Client({ ...options, user: spec.user, database: env.PG_DATABASE }));
+      return open(new pg.Client({ ...options, user: spec.user, database: env.PG_DATABASE }), setTimeZone);
     },
     readSecret: readSecretFile,
     migrationsDir: migrationsDirFor,

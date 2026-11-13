@@ -1,4 +1,5 @@
 // Route key → active cut-over entry → destination; routing changes only through the active version.
+import { stripInboundAuthHeaders } from '@opt2/platform/auth';
 import {
   matchRouteKey,
   routeKeyForRequest,
@@ -233,7 +234,8 @@ export function createMatcher(deps: MatcherDeps): Matcher {
         query: queryOf(search),
         form: body.form,
         jsonBody: body.json,
-        headers: request.headers,
+        // A client's X-Opt2-* header is a conclusion, never a fact the key reads; services read the gateway's own.
+        headers: stripInboundAuthHeaders(request.headers, { afterExchange: false }),
         multipartFileNames: body.files,
       };
       const result = routeKeyForRequest(keyRequest, options);

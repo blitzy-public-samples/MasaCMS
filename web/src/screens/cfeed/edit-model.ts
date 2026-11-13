@@ -10,6 +10,7 @@ import {
   javaTrim,
 } from '@opt2/platform/legacy-compat';
 import type { components } from '@/generated/clients/strategies-content';
+import { legacySettings } from '@/lib/env';
 import { okBody } from '@/lib/gateway-client';
 import type { AdminRequest } from '@/lib/request-context';
 import type { Rc, ScreenContext } from '../registry';
@@ -62,7 +63,7 @@ export interface FeedView {
   readonly cssClass: string;
   readonly viewAllLink: string;
   readonly viewAllLabel: string;
-  /** `getDisplayList()`: the core renderer's default list when none is stored. */
+  /** `getDisplayList()`: the site renderer's `defaultCollectionDisplayList` when none is stored. */
   readonly displayList: string;
   /** `getAvailableDisplayList()`: every display field not in `displayList`. */
   readonly availableDisplayList: string;
@@ -139,6 +140,7 @@ export interface FeedEditModel {
   readonly usage: readonly FeedUsageRow[];
   /** Names of the site's custom image sizes, in iterator order. */
   readonly customImageSizes: readonly string[];
+  /** The site content renderer's `useLayoutManager()`. */
   readonly useLayoutManager: boolean;
   /** The session site's `getHasComments()`, when boolean and true. */
   readonly siteHasComments: boolean;
@@ -149,10 +151,10 @@ export interface FeedEditModel {
   readonly parentMenuTitle: string;
   /** Whether the service factory holds a `marketingManager` bean. */
   readonly hasMarketingManager: boolean;
-  /** `globalConfig('proxyserver')`. */
-  readonly proxyServer: string;
-  /** `globalConfig('proxyuser')`. */
-  readonly proxyUser: string;
+  /** `len(globalConfig('proxyserver'))`. */
+  readonly hasProxyServer: boolean;
+  /** `len(globalConfig('proxyuser'))`. */
+  readonly hasProxyUser: boolean;
   /** A Local edit of a display object instance (`rc.assignmentID` set). */
   readonly isObjectInstance: boolean;
   /** `configBean.getValue('showUsageTabs', true)`. */
@@ -163,18 +165,9 @@ export interface FeedEditModel {
   readonly pluginMessage: string;
 }
 
-// strategies-content and web both see only the core content renderer, whose `useLayoutManager()` is false and whose
-// `defaultCollectionDisplayList` is this list; a theme renderer that overrides either lives in the legacy web root.
-const USE_LAYOUT_MANAGER = false;
-const CORE_COLLECTION_DISPLAY_LIST = 'Date,Title,Image,Summary,Credits';
-
 // Legacy defaults for what neither the contract nor legacySettings() carries: Masa core registers no
-// `marketingManager`, the installation sets no proxy server or user, `showUsageTabs` is unset (configBean default
-// true), and plugin event output renders only in the legacy plugin runtime.
+// `marketingManager`, and plugin event output renders only in the legacy plugin runtime.
 const HAS_MARKETING_MANAGER = false;
-const PROXY_SERVER = '';
-const PROXY_USER = '';
-const SHOW_USAGE_TABS = true;
 const PLUGIN_MESSAGE = '';
 
 /** The fields `getAvailableDisplayList()` starts from, before the site's content attribute names. */
@@ -232,6 +225,12 @@ const rowsOf = (struct: Struct, key: string): readonly Struct[] => rowsIn(member
 function requiredText(struct: Struct, key: string): string {
   if (member(struct, key) === undefined) throw new TypeError(`${key} is missing from the collection edit model`);
   return text(struct, key);
+}
+
+/** A flag member the view tests, read as CFML truthiness; throws when it is absent. */
+function requiredFlag(struct: Struct, key: string): boolean {
+  if (member(struct, key) === undefined) throw new TypeError(`${key} is missing from the collection edit model`);
+  return cfTruthy(flagOf(member(struct, key), key));
 }
 
 /** An error struct as text, in its key order. */
@@ -356,25 +355,25 @@ function parseJson(textValue: string): unknown {
   }
 }
 
-/** `getDisplayList()`: the stored list, else the core renderer's default. */
-function displayListOf(inst: Instance): string {
+/** `getDisplayList()`: the stored list, else `defaultList` (the site renderer's `defaultCollectionDisplayList`). */
+function displayListOf(inst: Instance, defaultList: string): string {
   const list = stored(inst, 'displayList');
-  return list === '' ? CORE_COLLECTION_DISPLAY_LIST : list;
+  return list === '' ? defaultList : list;
 }
 
 /**
  * edit.cfm 160-180: the display object's params become `instanceParams`, then a JSON object overlays the bean, while
- * other params keep the display list and give slideshows medium images.
+ * other params keep the display list (`defaultList` when none is stored) and give slideshows medium images.
  * @throws Error When a no-summary object's list holds `Summary`: legacy then reads an undefined `arguments.hasSummary`.
  */
-function applyDisplayObject(inst: Instance, object: string, params: string): void {
+function applyDisplayObject(inst: Instance, object: string, params: string, defaultList: string): void {
   setValue(inst, 'instanceParams', params);
   const json = parseJson(params);
   if (json !== undefined) {
     setAll(inst, json);
     return;
   }
-  const fields = displayListOf(inst);
+  const fields = displayListOf(inst, defaultList);
   if (listHasNoCase(NO_SUMMARY_OBJECTS, object) && listHasNoCase(fields, 'Summary')) {
     throw new Error('Element HASSUMMARY is undefined in ARGUMENTS.');
   }
@@ -420,13 +419,18 @@ function displayAttributeNames(rows: readonly Struct[]): string[] {
   return [...new Set(rows.map((row) => text(row, 'attribute')))].sort();
 }
 
-/** The bean's getters over `inst`. */
-function feedViewOf(inst: Instance, req: FeedEditRequest, attributeNames: readonly string[]): FeedView {
+/** The bean's getters over `inst`; `defaultList` is the site renderer's `defaultCollectionDisplayList`. */
+function feedViewOf(
+  inst: Instance,
+  req: FeedEditRequest,
+  attributeNames: readonly string[],
+  defaultList: string,
+): FeedView {
   const imageSize = stored(inst, 'imageSize');
   const imageHeight = stored(inst, 'imageHeight');
   const imageWidth = stored(inst, 'imageWidth');
   const custom = cfEq(imageSize, 'Custom');
-  const displayList = displayListOf(inst);
+  const displayList = displayListOf(inst, defaultList);
   // `exists()` params a missing `isNew` to 1.
   const isNew = cfTruthy(flagOf(inst.get('isnew') ?? 1, 'isNew'));
   return {
@@ -562,17 +566,19 @@ export function feedEditModelFrom(source: FeedEditSource, req: FeedEditRequest):
   const local = cfEq(rcText(req.rc, 'type'), 'Local');
   const isObjectInstance = local && rcText(req.rc, 'assignmentID') !== '';
   const inst = instanceOf(structOf(rc, 'feedBean'));
+  const defaultList = requiredText(rc, 'defaultCollectionDisplayList');
   if (local) setValue(inst, 'siteID', rcText(req.rc, 'siteid'));
   if (isObjectInstance && member(rc, 'rsDisplayObject') !== undefined) {
     // An empty query reads its columns as ''.
     const row = rowsOf(rc, 'rsDisplayObject')[0] ?? {};
-    applyDisplayObject(inst, text(row, 'object'), text(row, 'params'));
+    applyDisplayObject(inst, text(row, 'object'), text(row, 'params'), defaultList);
   }
   const attributes = rowsOf(rc, 'rsExtendedAttributes');
-  const feed = feedViewOf(inst, req, displayAttributeNames(attributes));
+  const feed = feedViewOf(inst, req, displayAttributeNames(attributes), defaultList);
   const beanErrors = inst.get('errors');
   const saved = rcText(req.rc, 'feedID') !== '';
   const endpoint = member(rc, 'endpoint');
+  const { hasProxyServer, hasProxyUser, showUsageTabs } = legacySettings();
   return {
     feed,
     errors: writeErrors ?? (isStruct(beanErrors) ? errorsOf(beanErrors) : {}),
@@ -594,17 +600,17 @@ export function feedEditModelFrom(source: FeedEditSource, req: FeedEditRequest):
     categories: feedCategoryTree(rowsOf(rc, 'categories').map(categoryRow)),
     usage: saved || member(rc, 'rsUsage') !== undefined ? rowsOf(rc, 'rsUsage').map(usageRow) : [],
     customImageSizes: rowsOf(rc, 'imageSizes').map((row) => text(row, 'name')),
-    useLayoutManager: USE_LAYOUT_MANAGER,
+    useLayoutManager: requiredFlag(rc, 'useLayoutManager'),
     siteHasComments: req.site?.hasComments === true,
     siteExtranet: req.site?.extranet === true,
     contentPool: rowsOf(rc, 'contentPool').map((row) => ({ siteID: text(row, 'siteID'), site: text(row, 'site') })),
     // Only the Remote import location reads it.
     parentMenuTitle: !local && feed.parentID !== '' ? requiredText(rc, 'parentMenuTitle') : '',
     hasMarketingManager: HAS_MARKETING_MANAGER,
-    proxyServer: PROXY_SERVER,
-    proxyUser: PROXY_USER,
+    hasProxyServer,
+    hasProxyUser,
     isObjectInstance,
-    showUsageTabs: SHOW_USAGE_TABS,
+    showUsageTabs,
     endpoint: typeof endpoint === 'string' && endpoint !== '' ? endpoint : undefined,
     pluginMessage: PLUGIN_MESSAGE,
   };

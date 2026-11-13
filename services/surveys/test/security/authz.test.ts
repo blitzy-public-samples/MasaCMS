@@ -1,6 +1,9 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** In-process authorisation matrix of every surveys route: admitted subjects, denial envelopes, site and transport boundaries, deny by default. */
 import { randomUUID } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -29,6 +32,7 @@ import {
   registryPayloads,
   testEnvelope,
   testVerifier,
+  writeTestSecrets,
   type InjectResponse,
   type RoleSubject,
 } from '@opt2/platform/testing';
@@ -39,6 +43,7 @@ import { UNITS } from '../../src/repo/tables.js';
 import { FIXTURE_BASE } from '../../src/routes/fixture.js';
 import { LAUNCH_TASK_PATH } from '../../src/tasks/launch.js';
 import {
+  STATE_DIR_PREFIX,
   TEST_CLOCK,
   buildTestApp,
   createFakeTaskPort,
@@ -199,7 +204,13 @@ const FIXTURE_SCHEDULE: ProbeRequest = {
   payload: SCHEDULE_BODY,
 };
 const V1_LIST: ProbeRequest = { method: 'GET', url: `/v1/surveys?${ON_SITE_A}` };
-const V1_SCHEDULE: ProbeRequest = { method: 'POST', url: `${V1_SURVEY}/schedule?${ON_SITE_A}`, payload: SCHEDULE_BODY };
+const V1_SCHEDULE: ProbeRequest = { method: 'POST', url: `${V1_SURVEY}/schedule?${ON_SITE_A}`, headers: CSRF_HEADERS, payload: SCHEDULE_BODY };
+const V1_BULK_TARGET: ProbeRequest = {
+  method: 'POST',
+  url: `${V1_SURVEY}/targets/bulk?${ON_SITE_A}`,
+  headers: CSRF_HEADERS,
+  payload: { targets: [{ siteId: SITE_B }] },
+};
 const MIGRATION_POSITION: ProbeRequest = { method: 'GET', url: '/internal/v1/migration/position' };
 const LAUNCH_TASK: ProbeRequest = {
   method: 'POST',
@@ -357,11 +368,7 @@ const EXPECTED: Readonly<Record<string, Expectation>> = {
   'GET /v1/surveys/:surveyId/responses': managerRoute({ method: 'GET', url: `${V1_SURVEY}/responses?${ON_SITE_A}` }),
   'POST /v1/surveys/:surveyId/schedule': managerRoute(V1_SCHEDULE),
   'GET /v1/surveys/:surveyId/targets': managerRoute({ method: 'GET', url: `${V1_SURVEY}/targets?${ON_SITE_A}` }),
-  'POST /v1/surveys/:surveyId/targets/bulk': managerRoute({
-    method: 'POST',
-    url: `${V1_SURVEY}/targets/bulk?${ON_SITE_A}`,
-    payload: { targets: [{ siteId: SITE_B }] },
-  }),
+  'POST /v1/surveys/:surveyId/targets/bulk': managerRoute(V1_BULK_TARGET),
   'GET /v1/surveys/:surveyId/tasks': managerRoute({ method: 'GET', url: `${V1_SURVEY}/tasks?${ON_SITE_A}` }),
 };
 
@@ -684,16 +691,35 @@ describe('site boundary', () => {
   });
 });
 
+describe('CSRF on /v1 writes', () => {
+  it.each([V1_SCHEDULE, V1_BULK_TARGET])('refuses a manager write without a CSRF token on $method $url, consuming and writing nothing', async (request) => {
+    const outcome = await outcomeOf({ ...request, headers: {} }, await headersFor('surveys.manager', { site: SITE_A }));
+    expect(outcome).toEqual({ status: 400, error: errorBody(LEGACY_ERROR_MAP.invalidTokens), effects: NO_EFFECTS });
+  });
+
+  it.each([V1_SCHEDULE, V1_BULK_TARGET])('refuses a manager write whose token identity rejects on $method $url, writing nothing', async (request) => {
+    t.client.csrfValid(false);
+    try {
+      const outcome = await outcomeOf(request, await headersFor('surveys.manager', { site: SITE_A }));
+      expect(outcome).toEqual({ status: 400, error: errorBody(LEGACY_ERROR_MAP.invalidTokens), effects: { ...NO_EFFECTS, calls: 1 } });
+    } finally {
+      t.client.csrfValid(true);
+    }
+  });
+});
+
 describe('deny by default at start-up', () => {
   it.each<[string, string, Opt2RouteConfig | undefined]>([
     ['declares no config.opt2', '/v1/surveys/__undeclared', undefined],
     ['is a public managed route', '/internal/v1/tasks/x', { public: true, transport: 'cloud-tasks' }],
     ['declares the service transport on a task path', '/internal/v1/tasks/y', { transport: 'service', requires: ['surveys.manager'] }],
   ])('fails start-up of the buildApp instance when a route %s', async (_label, url, opt2) => {
+    const stateDir = await mkdtemp(join(tmpdir(), STATE_DIR_PREFIX));
     let app: FastifyInstance | undefined;
     try {
+      await writeTestSecrets(stateDir);
       const built = await buildApp({
-        env: await testEnv(),
+        env: await testEnv({ OPT2_STATE_DIR: stateDir }),
         clock: TEST_CLOCK,
         verifierOverride: testVerifier(),
         db: createRecordingDb({ clock: TEST_CLOCK }),
@@ -708,6 +734,7 @@ describe('deny by default at start-up', () => {
       await expect(startUp).rejects.toBeInstanceOf(UndeclaredRouteError);
     } finally {
       await app?.close().catch(() => undefined);
+      await rm(stateDir, { recursive: true, force: true });
     }
   });
 });

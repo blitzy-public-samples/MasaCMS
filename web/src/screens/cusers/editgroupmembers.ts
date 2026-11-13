@@ -1,5 +1,6 @@
 // `cUsers.editGroupMembers`: the controller's `editGroup()` and the members view of `admin/core/views/cusers/editgroupmembers.cfm` (server-only).
 import { isCfUuid } from '@opt2/platform/legacy-compat';
+import type { components } from '@/generated/clients/identity';
 import { okBody } from '@/lib/gateway-client';
 import { encodeUrl, html, raw, type SafeHtml } from '@/lib/html';
 import { buildUrl } from '@/lib/urls';
@@ -13,6 +14,12 @@ import { renderUsersList, type UsersListRow } from './inc/dsp_users_list';
 
 /** `utility.getNextN` page buffer the cUsers controller passes. */
 const PAGE_BUFFER = 3;
+
+/** Most members one identity `listGroupMembers` call answers. */
+const MEMBER_PAGE_LIMIT = 1000;
+
+/** One identity `listGroupMembers` window with the listing's total and the next window's offset. */
+type GroupMembersPage = components['schemas']['GroupMembers'];
 
 /** Everything the view reads after `editGroup()` and `setUsersIterator()`. */
 export interface EditGroupMembersData {
@@ -66,32 +73,56 @@ async function readGroupName(ctx: ScreenContext, groupId: string): Promise<strin
 }
 
 /**
- * `userManager.readGroupMemberships(groupId)`, by last name; identity lists S2 members to an S2 caller only.
+ * The `limit` members at `offset` of `userManager.readGroupMemberships(groupId)`, by last name, with their total;
+ * identity lists S2 members to an S2 caller only.
  * @throws GatewayDenialError When identity refuses the read (401 or 403).
  */
-async function readMembers(ctx: ScreenContext, groupId: string): Promise<readonly UsersListRow[]> {
-  const response = await ctx.gateway.identity.call('get', '/v1/groups/{groupId}/members', { params: { groupId } });
-  return okBody(response, 'identity', 'listGroupMembers').items.map(memberRow);
+async function readMembers(ctx: ScreenContext, groupId: string, offset: number, limit: number): Promise<GroupMembersPage> {
+  const response = await ctx.gateway.identity.call('get', '/v1/groups/{groupId}/members', {
+    params: { groupId },
+    query: { offset, limit },
+  });
+  return okBody(response, 'identity', 'listGroupMembers');
+}
+
+/** The rows of `page` and of the windows after it up to row `end`, each further call reading at most 1000 rows. */
+async function membersThrough(ctx: ScreenContext, groupId: string, page: GroupMembersPage, end: number): Promise<UsersListRow[]> {
+  const rows = page.items.map(memberRow);
+  for (let next = page.nextOffset; next !== null && next < end; ) {
+    const more: GroupMembersPage = await readMembers(ctx, groupId, next, Math.min(MEMBER_PAGE_LIMIT, end - next));
+    rows.push(...more.items.map(memberRow));
+    next = more.nextOffset;
+  }
+  return rows;
 }
 
 /**
- * The view's data: `editGroup()`'s group name and members, paged as `setUsersIterator()` pages them. Gateway
- * unavailability propagates.
+ * The view's data: `editGroup()`'s group name and members, paged as `setUsersIterator()` pages them, reading only the
+ * page's members besides the total. Gateway unavailability propagates.
  * @throws GatewayDenialError When identity refuses a read (401 or 403).
  */
 export async function loadEditGroupMembers(ctx: ScreenContext): Promise<EditGroupMembersData> {
   const rc = normaliseCusersRc(ctx.req);
   const userid = rc.groupid !== '' ? rc.groupid : rc.userid;
+  // Start row 1 always lands on page 1, which the first read, needed for the total, then covers; any other start row
+  // needs the total before its page is known.
+  const firstLimit = rc.startRow === 1 ? Math.min(MEMBER_PAGE_LIMIT, Math.trunc(rc.recordsperpage)) : 1;
   // An id that is no CF UUID, `before()`'s empty default included, matches no `tusers` row: legacy shows a new bean's
   // empty name and no members, where identity would refuse the id.
-  const [groupName, members]: readonly [string, readonly UsersListRow[]] = isCfUuid(userid)
-    ? await Promise.all([readGroupName(ctx, userid), readMembers(ctx, userid)])
-    : ['', []];
-  const startRow = rc.startRow > members.length ? 1 : rc.startRow;
-  const nextn = getNextN(members.length, rc.recordsperpage, startRow, PAGE_BUFFER);
-  const pageIndex = legacyPageIndex(nextn.startRow, nextn.recordsPerPage, members.length);
+  const [groupName, probe]: readonly [string, GroupMembersPage | null] = isCfUuid(userid)
+    ? await Promise.all([readGroupName(ctx, userid), readMembers(ctx, userid, 0, firstLimit)])
+    : ['', null];
+  const total = probe?.total ?? 0;
+  const startRow = rc.startRow > total ? 1 : rc.startRow;
+  const nextn = getNextN(total, rc.recordsperpage, startRow, PAGE_BUFFER);
+  const pageIndex = legacyPageIndex(nextn.startRow, nextn.recordsPerPage, total);
   const first = (pageIndex - 1) * nextn.recordsPerPage;
-  return { rc, userid, groupName, rows: members.slice(first, first + nextn.recordsPerPage), nextn, pageIndex };
+  // The iterator's rows `first` to `first + recordsPerPage`, fractional bounds truncated as Array#slice truncates them.
+  const start = Math.trunc(first);
+  const end = Math.trunc(first + nextn.recordsPerPage);
+  if (probe === null || start >= total) return { rc, userid, groupName, rows: [], nextn, pageIndex };
+  const page = rc.startRow === 1 ? probe : await readMembers(ctx, userid, start, Math.min(MEMBER_PAGE_LIMIT, end - start));
+  return { rc, userid, groupName, rows: await membersThrough(ctx, userid, page, end), nextn, pageIndex };
 }
 
 /** The view body inside `#mura-content`; the download link shows only when the page lists members. */

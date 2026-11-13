@@ -14,6 +14,7 @@ import { ExportResultCode } from '@opentelemetry/core';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { afterEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { REDACTED } from '../../src/logging/redact.js';
+import { SERVICE_CALLERS } from '../../src/testing/tokens.js';
 import { startSpan } from '../../src/tracing/propagation.js';
 import { RedactingSpanExporter } from '../../src/tracing/redact.js';
 import {
@@ -32,6 +33,7 @@ const TRACE_ID = '4bf92f3577b34da6a3ce929d0e0e4736';
 const SPAN_ID = '00f067aa0ba902b7';
 const PARENT_SPAN_ID = 'b7ad6b7169203331';
 const LINKED_SPAN_ID = '53995c3f42cd8ad8';
+const UNAVAILABLE = 'Service identity unavailable (ECONNREFUSED)';
 
 /** Plain finished server span; `overrides` replace its members. */
 function readable(overrides: Partial<ReadableSpan> = {}): ReadableSpan {
@@ -84,6 +86,21 @@ describe('RedactingSpanExporter', () => {
       expected: `http://${REDACTED}@people:8112${PATH}?key=${REDACTED}&${REDACTED}#top`,
     },
     { key: 'url.full', value: `http://people:8112${PATH}`, expected: `http://people:8112${PATH}` },
+    { key: 'url.path', value: `/opt2/stub/x/${SECRET}%40example.test/next`, expected: `/opt2/stub/x/${REDACTED}/next` },
+    {
+      key: 'url.full',
+      value: `http://stub:8199/opt2/stub/x/${SECRET}%40example.test?key=${SECRET}`,
+      expected: `http://stub:8199/opt2/stub/x/${REDACTED}?key=${REDACTED}`,
+    },
+    { key: 'url.path', value: `/opt2/stub/x/${SECRET}%2540example.test/next`, expected: `/opt2/stub/x/${REDACTED}/next` },
+    { key: 'url.path', value: `/opt2/stub/y/password%3d${SECRET}`, expected: `/opt2/stub/y/password%3d${REDACTED}` },
+    {
+      key: 'url.full',
+      value: `http://stub:8199/opt2/stub/y/token%253A${SECRET}`,
+      expected: `http://stub:8199/opt2/stub/y/token%253A${REDACTED}`,
+    },
+    { key: 'http.target', value: `/cb/%3Fexpires%3D1%26sig%3D${SECRET}`, expected: `/cb/%3Fexpires%3D1%26sig%3D${REDACTED}` },
+    { key: 'opt2.note', value: `%7B%22password%22%3A%22${SECRET}%22%7D`, expected: `%7B%22password%22%3A${REDACTED}` },
     { key: 'http.target', value: `${PATH}?key=${SECRET}&token=${SECRET}`, expected: `${PATH}?key=${REDACTED}&token=${REDACTED}` },
     { key: 'http.url', value: `https://REDACTED:REDACTED@h${PATH}?code=${SECRET}`, expected: `https://${REDACTED}@h${PATH}?code=${REDACTED}` },
     {
@@ -112,6 +129,8 @@ describe('RedactingSpanExporter', () => {
     { key: 'opt2.note', value: `retry token=${SECRET} for ${SECRET}@example.com`, expected: `retry token=${REDACTED} for ${REDACTED}` },
     { key: 'opt2.tags', value: [`password=${SECRET}`, 'plain'], expected: [`password=${REDACTED}`, 'plain'] },
     { key: 'exception.message', value: `invalid input syntax for type uuid: "${SECRET}"`, expected: REDACTED },
+    { key: 'exception.message', value: UNAVAILABLE, expected: UNAVAILABLE },
+    { key: 'exception.message', value: `Service ${SECRET}@example.com unavailable (ECONNREFUSED)`, expected: REDACTED },
     {
       key: 'exception.stacktrace',
       value: `SyntaxError: Unexpected token 'o', "of ${SECRET}" is not valid JSON\n    at JSON.parse (<anonymous>)`,
@@ -161,6 +180,28 @@ describe('RedactingSpanExporter', () => {
     expect(copy.instrumentationScope).toBe(span.instrumentationScope);
   });
 
+  it.each<{ name: string; path: string; expected?: string }>([
+    { name: 'a double-encoded email', path: `/opt2/stub/x/${SECRET}%2540example.test`, expected: `/opt2/stub/x/${REDACTED}` },
+    { name: 'an encoded secret pair', path: `/opt2/stub/y/session%3A${SECRET}`, expected: `/opt2/stub/y/session%3A${REDACTED}` },
+    { name: 'an e-signature path', path: '/opt2/e-signature/envelopes/A1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6%3Asign' },
+    {
+      name: 'an encoded object path',
+      path: '/opt2/files/esignature-documents%2Fedec963e-3516-5bb6-845d-d01a710e32a7%2Fesignature%3A1.pdf',
+    },
+    { name: 'a word containing sig', path: '/opt2/people/Designation%3DManager' },
+    { name: 'malformed escapes', path: '/opt2/stub/y/password%3G1/x%2Gsig%3D1/bob%254example.test' },
+  ])('applies one result for $name to the span name, url.path and url.full', ({ path, expected = path }) => {
+    const copy = redact(readable({ name: `GET ${path}`, attributes: { 'url.path': path, 'url.full': `http://stub:8199${path}` } }));
+
+    expect(copy.name).toBe(`GET ${expected}`);
+    expect(copy.attributes).toEqual({ 'url.path': expected, 'url.full': `http://stub:8199${expected}` });
+    expect(serialized([copy])).not.toContain(SECRET);
+  });
+
+  it.each(SERVICE_CALLERS)('keeps the client span name of callee %s', (service) => {
+    expect(redact(readable({ name: `POST ${service}`, kind: SpanKind.CLIENT })).name).toBe(`POST ${service}`);
+  });
+
   it.each<{ name: string; status: SpanStatus; expected: SpanStatus }>([
     {
       name: 'a URL with userinfo',
@@ -173,6 +214,11 @@ describe('RedactingSpanExporter', () => {
       expected: { code: SpanStatusCode.ERROR, message: REDACTED },
     },
     { name: 'no message', status: { code: SpanStatusCode.OK }, expected: { code: SpanStatusCode.OK } },
+    {
+      name: 'a safe service-unavailable text',
+      status: { code: SpanStatusCode.ERROR, message: UNAVAILABLE },
+      expected: { code: SpanStatusCode.ERROR, message: UNAVAILABLE },
+    },
   ])('masks a status message with $name', ({ status, expected }) => {
     const copy = redact(readable({ status }));
 

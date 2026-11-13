@@ -1,18 +1,21 @@
 // SYNTHETIC: timesheets - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Timesheets fixture routes through `app.inject` against a throwaway `timesheets` schema, compared with legacy-fixtures/cfml/modules/timesheets.cfc. */
+import { readFileSync } from 'node:fs';
 import http from 'node:http';
+import { createRequire } from 'node:module';
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthDenial, INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { cfHash, cfUuid } from '@opt2/platform/legacy-compat';
-import { createLogger } from '@opt2/platform/logging';
+import { REDACTED, createLogger, validateLogRecord } from '@opt2/platform/logging';
 import { closeGates, ensureUnitGates, openGates, registerWritePositionHeader } from '@opt2/platform/migration-kit';
 import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import {
   TENANT_A,
   TENANT_B,
   TENANT_UMBRELLA,
+  assertResponseMatchesOpenApi,
   createThrowawaySchema,
   mintServiceToken,
   mintUserToken,
@@ -25,6 +28,12 @@ import { FixtureApiError } from '../../src/legacy/envelope.js';
 import { createTimesheetsRepository, type TimesheetsRepository } from '../../src/repo/repository.js';
 import { TIMESHEETS_UNITS, type ApprovalActionRow, type TimesheetDayRow, type TimesheetRow } from '../../src/repo/tables.js';
 import { FIXTURE_PREFIX, parseFixtureAsOf, resolveFixtureProgram, timesheetsFixturePlugin } from '../../src/routes/fixture.js';
+import { recordingDb, statementsOn } from '../helpers/recording-db.js';
+
+// js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
+const requireHere = createRequire(import.meta.url);
+const { load } = createRequire(requireHere.resolve('json-schema-to-typescript'))('js-yaml') as { load: (text: string) => unknown };
+const OPENAPI = load(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
 
 const NOW = new Date(2026, 5, 30, 10, 0, 0, 0);
 const CLOCK = fixedClock(NOW);
@@ -93,6 +102,8 @@ describe.skipIf(!available)('timesheets fixture routes', () => {
   let app: FastifyInstance;
   const consumed: Array<{ sessionId: string; token: string; context: string }> = [];
   const logLines: string[] = [];
+  const errorSpies: { mock: { calls: unknown[][] } }[] = [];
+  const statements: string[] = [];
 
   /** Seeded tenant-a sheets: two of tenant-a's site and one of another site in the same tenant. */
   const sheets = { june1: cfUuid(), june8: cfUuid(), foreign: cfUuid() };
@@ -131,8 +142,11 @@ describe.skipIf(!available)('timesheets fixture routes', () => {
       logger: createLogger({ service: 'timesheets', version: '1.0.0', env: 'local', destination: { write: (line: string) => void logLines.push(line) } }),
     });
     registerWritePositionHeader(app);
+    app.addHook('onRequest', async (request) => {
+      errorSpies.push(vi.spyOn(request.log, 'error'));
+    });
     repository = createTimesheetsRepository({ clock: CLOCK, schema: handle.schema });
-    await app.register(timesheetsFixturePlugin, { db: handle.app, repository, clock: CLOCK });
+    await app.register(timesheetsFixturePlugin, { db: recordingDb(handle.app, statements), repository, clock: CLOCK });
     await app.ready();
     await setGates('open');
 
@@ -227,13 +241,30 @@ describe.skipIf(!available)('timesheets fixture routes', () => {
     return app.inject({ method: 'POST', url: `${P}/days/${dayId}/${action}`, headers, ...(payload === undefined ? {} : { payload }) });
   }
 
-  it('declares the four contract routes with the fixture roles on the service transport, site-checked', () => {
+  /** A `method` call of `url` with `X-HTTP-Method-Override: override` (none when undefined), checked against the contract. */
+  async function overridden(
+    method: 'GET' | 'POST',
+    url: string,
+    override: string | undefined,
+    { roles = PRIMARY, site = TENANT_A.siteId }: { roles?: readonly string[]; site?: string } = {},
+  ): Promise<Injected> {
+    const headers = { ...(await headersFor(roles, site)), ...CSRF, ...(override === undefined ? {} : { 'x-http-method-override': override }) };
+    const res = await app.inject({ method, url: `${P}${url}`, headers });
+    assertResponseMatchesOpenApi(OPENAPI, { method, path: `${P}${url}`, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
+    return res;
+  }
+
+  it('declares the four contract routes for GET and POST with the fixture roles on the service transport, site-checked', () => {
     const routes = collectRouteMatrix(app).routes.filter((route) => route.url.startsWith(P));
     expect(routes.map(({ method, url, requires, transport, siteCheck }) => [method, url.slice(P.length), requires, transport, siteCheck])).toEqual([
+      ['GET', '/days/:id/:action', FIXTURE_ROLES, 'service', true],
       ['POST', '/days/:id/:action', FIXTURE_ROLES, 'service', true],
       ['GET', '/sheets', FIXTURE_ROLES, 'service', true],
+      ['POST', '/sheets', FIXTURE_ROLES, 'service', true],
       ['GET', '/sheets/:id', FIXTURE_ROLES, 'service', true],
+      ['POST', '/sheets/:id', FIXTURE_ROLES, 'service', true],
       ['GET', '/sheets/:id/status', FIXTURE_ROLES, 'service', true],
+      ['POST', '/sheets/:id/status', FIXTURE_ROLES, 'service', true],
     ]);
   });
 
@@ -292,6 +323,17 @@ describe.skipIf(!available)('timesheets fixture routes', () => {
     });
     expect((await get('/sheets?pageIndex=3&itemsPerPage=1')).json().data).toMatchObject({ items: [], startindex: 3, endindex: 2, pageindex: 3 });
     expect((await get('/sheets?useDataNamespace=false')).json()).toMatchObject({ method: 'timesheets.sheets', items: [june1, june8], totalitems: 2 });
+  });
+
+  it.each<[string, string, number, [number, number]]>([
+    ['a page of two sheets', '/sheets', 2, [1, 1]],
+    ['a page of one sheet', '/sheets?pageIndex=2&itemsPerPage=1', 1, [1, 1]],
+    ['a page past the end', '/sheets?pageIndex=3&itemsPerPage=1', 0, [0, 0]],
+  ])('reads the days and then the blackouts of %s in at most one query each', async (_case, url, items, [dayReads, blackoutReads]) => {
+    statements.length = 0;
+    const res = await get(url);
+    expect([res.statusCode, res.json().data.items.length]).toEqual([200, items]);
+    expect([statementsOn(statements, 'timesheet_day'), statementsOn(statements, 'blackout')]).toEqual([dayReads, blackoutReads]);
   });
 
   it('reads a sheet with its status fields and days, matching the id ignoring case, and its status row', async () => {
@@ -354,10 +396,17 @@ describe.skipIf(!available)('timesheets fixture routes', () => {
     expect([res.statusCode, res.body]).toEqual([status, errorBody(method, status === 500 ? 'server_error' : 'invalid_request', message)]);
   });
 
-  it('logs an unhandled exception once', async () => {
+  it('logs an unhandled exception once, as a serialized error record without its message', async () => {
     const before = logLines.length;
+    errorSpies.length = 0;
     expect((await get('/sheets?pageIndex=1%D9%A1')).statusCode).toBe(500);
-    expect(logLines.slice(before).filter((line) => line.includes('unhandled fixture exception'))).toHaveLength(1);
+    const record = { type: 'Error', message: REDACTED, stack: expect.stringMatching(/^Error: \[REDACTED\]\n\s+at \S/) };
+    const calls = errorSpies.flatMap((spy) => spy.mock.calls).filter((call) => call[1] === 'unhandled fixture exception');
+    expect(calls).toStrictEqual([[{ error: record }, 'unhandled fixture exception']]);
+    const lines = logLines.slice(before).filter((line) => line.includes('unhandled fixture exception'));
+    expect(lines).toHaveLength(1);
+    expect((JSON.parse(lines[0] ?? '{}') as { error?: unknown }).error).toStrictEqual(record);
+    expect(lines[0]).not.toContain('non-ASCII digits');
   });
 
   it.each<[string, readonly string[], string, string]>([
@@ -396,12 +445,17 @@ describe.skipIf(!available)('timesheets fixture routes', () => {
   it.each<[string, (dayId: string) => Promise<Injected>, number, string, string]>([
     ['path: an unknown action', (id) => act(id, 'approve', EMPLOYEE), 404, 'timesheets.days.approve', 'Not Found'],
     ['csrf: a write without a token', (id) => act(id, 'submit', EMPLOYEE, undefined, false), 400, 'timesheets.days.submit', 'Invalid CSRF tokens'],
+    ['csrf: a GET overridden to POST without a token', async (id) => {
+      const headers = { ...(await headersFor(EMPLOYEE, TENANT_B.siteId)), 'x-http-method-override': 'POST' };
+      return app.inject({ method: 'GET', url: `${P}/days/${id}/submit`, headers });
+    }, 400, 'timesheets.days.submit', 'Invalid CSRF tokens'],
     ['program: a site without a program', async (id) => {
       const headers = { ...(await headersFor(EMPLOYEE, TENANT_UMBRELLA.siteId)), ...CSRF };
       return app.inject({ method: 'POST', url: `${P}/days/${id}/submit`, headers });
     }, 400, 'timesheets.days.submit', 'Invalid parameters'],
     ['existence: an unknown day', () => act(MISSING_ID, 'submit', EMPLOYEE, { comment: ['not', 'simple'] }), 404, 'timesheets.days.submit', 'Not Found'],
     ['validation: a comment that is not simple', (id) => act(id, 'submit', EMPLOYEE, { comment: { text: 'x' } }), 400, 'timesheets.days.submit', 'Invalid parameters'],
+    ['storage: a comment PostgreSQL cannot store', (id) => act(id, 'submit', EMPLOYEE, { comment: 'checked\u0000' }), 400, 'timesheets.days.submit', 'Invalid parameters'],
     ['state: an illegal transition', (id) => act(id, 'resubmit', EMPLOYEE), 409, 'timesheets.days.resubmit', 'illegalTransition'],
     ['state: a role that may not take the action', (id) => act(id, 'submit', PRIMARY), 403, 'timesheets.days.submit', 'Insufficient Account Permissions'],
   ])('fails a day action on %s alone, leaving the day unchanged', async (_case, send, status, method, message) => {
@@ -411,12 +465,96 @@ describe.skipIf(!available)('timesheets fixture routes', () => {
     expect(await storedDay(dayId)).toEqual({ state: 'DRAFT', actions: [] });
   });
 
+  it.each<[string, (dayId: string) => Promise<Injected>, number, string | null]>([
+    ['a comment PostgreSQL cannot store', (id) => act(id, 'submit', EMPLOYEE, { comment: 'nul-probe\u0000comment' }), 400, 'request rejected: 22021'],
+    ['a NUL sheet id PostgreSQL cannot look up', () => get('/sheets/nul-probe%00'), 400, 'request rejected: 22021'],
+    ['no credential', () => app.inject({ url: `${P}/sheets` }), 401, 'request denied: missing-credential'],
+    [
+      'no credential on a NUL comment',
+      (id) => app.inject({ method: 'POST', url: `${P}/days/${id}/submit`, headers: CSRF, payload: { comment: 'nul-probe\u0000comment' } }),
+      401,
+      'request denied: missing-credential',
+    ],
+    ['a role-less user of an unregistered site', () => get('/sheets', [Roles.member], 'retired-site'), 400, 'request rejected: invalidParameters'],
+    ['a write without a CSRF token', (id) => act(id, 'submit', EMPLOYEE, undefined, false), 400, 'request rejected: invalidTokens'],
+    ['a comment that is not simple', (id) => act(id, 'submit', EMPLOYEE, { comment: { text: 'x' } }), 400, 'request rejected: invalidParameters'],
+    ['a role that may not take the action', (id) => act(id, 'submit', PRIMARY), 403, 'request denied: forbidden'],
+    ['an unknown day', () => act(MISSING_ID, 'submit', EMPLOYEE), 404, null],
+    ['an unhandled exception', () => get('/sheets?pageIndex=1%D9%A1'), 500, null],
+  ])('logs %s with its fixed reason, if any, ahead of the completion line, leaving the day unchanged', async (_case, send, status, warning) => {
+    const dayId = await seedTenantBDay('DRAFT');
+    const before = logLines.length;
+    const res = await send(dayId);
+    const lines = logLines.slice(before).map((text) => JSON.parse(text) as Record<string, unknown>);
+    expect(res.statusCode).toBe(status);
+    expect(lines.filter(({ severity, message }) => severity === 'WARNING' || message === 'request completed').map(({ severity, message }) => [severity, message])).toStrictEqual([
+      ...(warning === null ? [] : [['WARNING', warning]]),
+      ['INFO', 'request completed'],
+    ]);
+    expect(lines.filter(({ severity }) => severity === 'ERROR')).toHaveLength(status === 500 ? 1 : 0);
+    for (const line of lines) expect(validateLogRecord(line).errors).toStrictEqual([]);
+    expect(`${JSON.stringify(lines)}${res.body}`).not.toMatch(/nul-probe|invalid byte sequence|0x00/);
+    expect(await storedDay(dayId)).toEqual({ state: 'DRAFT', actions: [] });
+  });
+
   it('consumes no token for an unknown action, and answers notFound for a day of another site in the tenant', async () => {
     const dayId = await seedTenantBDay('DRAFT');
     expect((await act(dayId, 'archive', EMPLOYEE)).statusCode).toBe(404);
     expect(consumed).toEqual([]);
     const foreign = await seedTenantBDay('DRAFT', { siteid: 'tenant-a' });
     expect((await act(foreign, 'submit', EMPLOYEE)).body).toBe(errorBody('timesheets.days.submit', 'invalid_request', 'Not Found'));
+  });
+
+  it.each<[string, 'GET' | 'POST', string | undefined]>([
+    ['/sheets', 'POST', 'GET'],
+    ['/sheets', 'POST', 'get'],
+    ['/sheets', 'GET', ''],
+    [`/sheets/${sheets.june1}?asOf=2026-06-30`, 'POST', 'GET'],
+    [`/sheets/${sheets.june8}/status?asOf=2026-06-30`, 'POST', 'Get'],
+  ])('answers %s by %s with X-HTTP-Method-Override %j as its GET', async (url, method, override) => {
+    const plain = await get(url);
+    const res = await overridden(method, url, override);
+    expect([res.statusCode, res.body, res.headers.etag]).toEqual([200, plain.body, plain.headers.etag]);
+  });
+
+  it.each<[string, 'GET' | 'POST', string | undefined, string]>([
+    ['/sheets', 'GET', 'DELETE', 'timesheets.sheets'],
+    ['/sheets', 'GET', 'put', 'timesheets.sheets'],
+    ['/sheets', 'POST', undefined, 'timesheets.sheets'],
+    [`/sheets/${sheets.june1}`, 'POST', '', 'timesheets.sheets'],
+    [`/sheets/${sheets.june1}/status`, 'GET', 'HEAD', 'timesheets.sheets.status'],
+  ])('answers %s by %s with X-HTTP-Method-Override %j notFound', async (url, method, override, envelopeMethod) => {
+    const res = await overridden(method, url, override);
+    expect([res.statusCode, res.body]).toEqual([404, errorBody(envelopeMethod, 'invalid_request', 'Not Found')]);
+  });
+
+  it.each<['GET' | 'POST', string | undefined]>([
+    ['POST', 'GET'],
+    ['POST', 'get'],
+    ['POST', 'DELETE'],
+    ['GET', undefined],
+    ['GET', ''],
+    ['GET', 'PUT'],
+  ])('answers a day action by %s with X-HTTP-Method-Override %j notFound, writing nothing and consuming no token', async (method, override) => {
+    const dayId = await seedTenantBDay('DRAFT');
+    const res = await overridden(method, `/days/${dayId}/submit`, override, { roles: EMPLOYEE, site: TENANT_B.siteId });
+    expect([res.statusCode, res.body]).toEqual([404, errorBody('timesheets.days.submit', 'invalid_request', 'Not Found')]);
+    expect(await storedDay(dayId)).toEqual({ state: 'DRAFT', actions: [] });
+    expect(consumed).toEqual([]);
+  });
+
+  it.each<['GET' | 'POST', string | undefined]>([
+    ['GET', 'POST'],
+    ['GET', 'post'],
+    ['POST', ''],
+  ])('applies a day action by %s with X-HTTP-Method-Override %j, consuming its token', async (method, override) => {
+    const dayId = await seedTenantBDay('DRAFT');
+    const res = await overridden(method, `/days/${dayId}/submit?comment=checked`, override, { roles: EMPLOYEE, site: TENANT_B.siteId });
+    expect([res.statusCode, res.json().data.state]).toEqual([200, 'SUBMITTED']);
+    expect(res.headers['x-opt2-write-position']).toMatch(/^timesheets=\d+$/);
+    expect(consumed.map(({ token, context }) => [token, context])).toEqual([[GOOD_TOKEN, dayId]]);
+    const stored = await storedDay(dayId);
+    expect([stored.state, stored.actions.map(({ action, comment }) => [action, comment])]).toEqual(['SUBMITTED', [['submit', 'checked']]]);
   });
 
   it('rejects any action on a blackout day with 409 blackout', async () => {

@@ -8,8 +8,9 @@ import { businessClock } from '@opt2/platform/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { loadConfig } from '../../src/config.js';
+import type { CutoverStatus, GatewayClient } from '../../src/cutover/gateway-client.js';
 import type { MigrationEnv } from '../../src/env.js';
-import type { OwnersClient } from '../../src/owners/index.js';
+import type { DataOwner, OwnersClient } from '../../src/owners/index.js';
 import { defaultBackgroundRecord, type BackgroundRecord, type BackgroundStateApi } from '../../src/quiesce/background.js';
 import { ResumeReconcileError, resume, type ResumeContext, type ResumeOptions } from '../../src/quiesce/resume.js';
 import {
@@ -178,7 +179,8 @@ function fakeSubscription(log: string[], id: string, pushConfig: unknown) {
 async function world(monitor: SiteMonitorRecord | null = null) {
   const log: string[] = [];
   const clock = businessClock();
-  const declared = (await Promise.all(CONFIG.dataOwners.map((owner) => declaredSubscriptions(CONFIG, owner)))).flat().map(({ name }) => name);
+  const participants: DataOwner[] = [...CONFIG.dataOwners, 'stub'];
+  const declared = (await Promise.all(participants.map((owner) => declaredSubscriptions(CONFIG, owner)))).flat().map(({ name }) => name);
   const subscriptions = new Map(declared.map((id) => [id, fakeSubscription(log, id, PUSHED.includes(id) ? livePush(id) : PULL)]));
   const subscription = (id: string): ReturnType<typeof fakeSubscription> => {
     const found = subscriptions.get(id);
@@ -209,7 +211,10 @@ async function world(monitor: SiteMonitorRecord | null = null) {
       log.push(`${request.service} ${request.path}`);
       const [, queue = '', op] = /\/([^/]+)\/([^/]+)$/.exec(request.path) ?? [];
       const { service } = request;
-      const body = op === 'ensure' ? { queue, service, ensured: ensuredResult({ service, queue }).ensured } : { queue, service, paused: op === 'pause' };
+      const body =
+        op === 'ensure'
+          ? { queue, service, ensured: ensuredResult({ service, queue }).ensured }
+          : { queue, service, paused: op === 'pause', ...(op === 'pause' ? { running: 0 } : {}) };
       return Promise.resolve({ status: settings.status(request), headers: {}, body } as ServiceResponse<T>);
     },
     close: () => Promise.resolve(),
@@ -257,7 +262,11 @@ async function world(monitor: SiteMonitorRecord | null = null) {
     },
   });
   const ports = (extra: ResumeOptions = {}): ResumeOptions => ({ background: backgroundApi, pubsub, scheduler, ...extra });
-  const suspend = () => drainAndSuspend(context(), { background: backgroundApi, pubsub, scheduler });
+  // No gateway write is in flight.
+  const gateway = {
+    status: () => Promise.resolve({ instances: [], inflight: [] } as unknown as CutoverStatus),
+  } as unknown as GatewayClient;
+  const suspend = () => drainAndSuspend({ ...context(), gateway }, { background: backgroundApi, pubsub, scheduler });
   return { log, subscriptions, subscription, pubsub, requests, settings, background, clear, scheduler, context, ports, suspend };
 }
 

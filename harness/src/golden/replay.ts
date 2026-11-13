@@ -3,6 +3,14 @@ import { randomUUID } from 'node:crypto';
 import { access, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { CookieJar, type SerializedCookieJar } from 'tough-cookie';
+import {
+  ROUTE_FAMILIES,
+  matchRouteKey,
+  normaliseRouteKey,
+  type RouteFamily,
+  type RouteKeyResult,
+} from '@opt2/platform/legacy-compat';
+import type { Logger } from '@opt2/platform/logging';
 import { z } from '@opt2/platform/service-kit';
 import {
   EXCEPTIONS_LIST_PATH,
@@ -61,9 +69,11 @@ import {
 } from './side-effects.js';
 import { redact, runScenarioSteps, type StepRecord, type StepRunOptions } from './steps.js';
 import { isMainModule, parseFlags, runCli, UsageError, type CliOutcome } from '../lib/cli.js';
+import { safeDiagnostic } from '../lib/diagnostics.js';
 import { createHttpSession, type FetchLike, type HttpResult } from '../lib/http.js';
 import { createHarnessInvoker, type HarnessInvoker } from '../lib/invocation.js';
-import { stateDir, type EnvLike } from '../lib/paths.js';
+import { createHarnessLogger } from '../lib/logger.js';
+import { repoPath, stateDir, type EnvLike } from '../lib/paths.js';
 import { readPin } from '../lib/pin.js';
 import { readJson, stableStringify, writeJsonReport } from '../lib/report.js';
 
@@ -267,14 +277,14 @@ function targetOf(callee: InternalTarget['callee'], env: EnvLike): InternalTarge
 async function operatorCall(
   deps: OperatorDeps,
   callee: InternalTarget['callee'],
-  req: { method: string; path: string; json?: unknown },
+  req: { method: string; path: string; query?: Record<string, string>; json?: unknown },
 ): Promise<HttpResult> {
   const env = deps.env ?? process.env;
   const target = targetOf(callee, env);
   const invoker = deps.invoker ?? (await createHarnessInvoker({ caller: 'operator', env }));
   const headers = await invoker.headersFor({ callee, url: `${target.baseUrl}${req.path}` });
   const s = createHttpSession({ baseUrl: target.baseUrl, fetch: deps.fetch });
-  return s.request({ method: req.method, path: req.path, headers, json: req.json, followRedirects: false });
+  return s.request({ method: req.method, path: req.path, query: req.query, headers, json: req.json, followRedirects: false });
 }
 
 const cutoverStatusSchema = z.looseObject({ tableVersion: versionId.nullable() });
@@ -332,6 +342,62 @@ export async function withFaults<T>(deps: OperatorDeps, faults: readonly FaultSp
   return outcome.value;
 }
 
+const cutoverVersionSchema = z.looseObject({
+  tableVersion: versionId,
+  entries: z.array(z.looseObject({ route: z.string().min(1), units: z.array(z.string()) })),
+});
+
+/** Units of each entry of one cut-over version, by normalised route. */
+type RouteUnits = ReadonlyMap<string, readonly string[]>;
+
+/** Cut-over versions read so far, by file; a version file is immutable once committed. */
+const routeUnitsByFile = new Map<string, Promise<RouteUnits>>();
+
+/** `<OPT2_CUTOVER_DIR, else gateway/cutover>/versions/<version>.json`, resolved as the gateway resolves it. */
+function cutoverVersionPath(version: string, env: EnvLike): string {
+  const dir = env.OPT2_CUTOVER_DIR;
+  return path.join(dir ? path.resolve(dir) : repoPath('gateway', 'cutover'), 'versions', `${version}.json`);
+}
+
+/** Entry units of cut-over version file `file`; throws when it is off-schema or names another version. */
+async function readRouteUnits(file: string, version: string): Promise<RouteUnits> {
+  const table = await readJson(file, cutoverVersionSchema);
+  if (table.tableVersion !== version) {
+    throw new GoldenConfigError(`${file}: tableVersion ${table.tableVersion} is not the active ${version}`, { path: file });
+  }
+  return new Map(table.entries.map((entry) => [normaliseRouteKey(entry.route), entry.units]));
+}
+
+const FAMILIES: ReadonlySet<string> = new Set(ROUTE_FAMILIES);
+const VARIANT_SUFFIX = /\{([^{}]*)\}$/;
+
+/** A recorded route key as the computed result `matchRouteKey` reads; `undefined` for an unknown family. */
+function keyResultOf(routeKey: string): RouteKeyResult | undefined {
+  const key = normaliseRouteKey(routeKey);
+  const at = key.indexOf(':');
+  const family = key.slice(0, at);
+  if (at < 1 || !FAMILIES.has(family)) return undefined;
+  const variant = VARIANT_SUFFIX.exec(key)?.[1];
+  const baseKey = variant === undefined ? key : key.slice(0, key.length - variant.length - 2);
+  const result: RouteKeyResult = { key, baseKey, family: family as RouteFamily, httpMethod: '', params: {} };
+  if (variant !== undefined) result.variant = variant;
+  return result;
+}
+
+/** Units of the `version` entry `routeKey` resolves to, matched as the gateway matches; none when no entry matches. */
+export async function routeUnits(routeKey: string, version: string, env: EnvLike = process.env): Promise<readonly string[]> {
+  const file = cutoverVersionPath(version, env);
+  let loaded = routeUnitsByFile.get(file);
+  if (loaded === undefined) {
+    loaded = readRouteUnits(file, version);
+    routeUnitsByFile.set(file, loaded);
+  }
+  const units = await loaded;
+  const result = keyResultOf(routeKey);
+  const route = result === undefined ? undefined : matchRouteKey(result, units.keys());
+  return route === undefined ? [] : (units.get(route) ?? []);
+}
+
 const gatesSchema = z.looseObject({
   units: z.array(
     z.looseObject({
@@ -343,25 +409,28 @@ const gatesSchema = z.looseObject({
 });
 
 /**
- * The fail-closed cause the migration service reports (`gatesList`): each write window holding units in
- * `import-pending`, with those units; `undefined` when no unit is import-pending. The migration contract carries no
- * roster-operation state, so a 503 from a halted roster operation is not reported here and stays a difference.
+ * The fail-closed cause `gatesList` reports for `units`: each write window holding any of them `import-pending`, with
+ * those units; `undefined` when none is, and without a request when `units` is empty. The migration contract carries
+ * no roster-operation state, so a 503 from a halted roster operation is not reported here and stays a difference.
  */
-export async function importPendingCause(deps: OperatorDeps): Promise<string | undefined> {
-  const result = await operatorCall(deps, 'migration', { method: 'GET', path: GATES_PATH });
+export async function importPendingCause(deps: OperatorDeps, units: readonly string[]): Promise<string | undefined> {
+  const wanted = new Set(units);
+  if (wanted.size === 0) return undefined;
+  const query = { units: [...wanted].sort().join(',') };
+  const result = await operatorCall(deps, 'migration', { method: 'GET', path: GATES_PATH, query });
   if (result.status !== 200) throw new Error(`migration gatesList answered ${result.status}`);
   const parsed = gatesSchema.safeParse(result.json());
   if (!parsed.success) throw new Error(`migration gatesList is not a GatesResponse: ${z.prettifyError(parsed.error)}`);
   const byHolder = new Map<string, string[]>();
   for (const { unit, lease, gate } of parsed.data.units) {
-    if (gate?.phase !== IMPORT_PENDING) continue;
+    if (!wanted.has(unit) || gate?.phase !== IMPORT_PENDING) continue;
     const holder = gate.holderId ?? lease?.holderId ?? 'unknown';
     byHolder.set(holder, [...(byHolder.get(holder) ?? []), unit]);
   }
   if (byHolder.size === 0) return undefined;
   return [...byHolder]
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([holder, units]) => `write window ${holder} is ${IMPORT_PENDING} on ${units.sort().join(', ')}`)
+    .map(([holder, held]) => `write window ${holder} is ${IMPORT_PENDING} on ${held.sort().join(', ')}`)
     .join('; ');
 }
 
@@ -443,11 +512,16 @@ function unavailableRecord(
 }
 
 /**
- * Raises `EquivalenceImpossible` for `answer` when the migration service reports units held fail-closed by an
- * import-pending write window; `undefined` otherwise.
+ * Raises `EquivalenceImpossible` for `answer` when an import-pending write window holds a unit of its route's cut-over
+ * entry; `undefined` otherwise.
  */
-async function unavailableHalt(scenarioId: string, answer: Unavailable, deps: OperatorDeps): Promise<Halt | undefined> {
-  const cause = await importPendingCause(deps);
+async function unavailableHalt(
+  scenarioId: string,
+  answer: Unavailable,
+  deps: OperatorDeps & Pick<ReplayDeps, 'tableVersion'>,
+): Promise<Halt | undefined> {
+  const units = await routeUnits(answer.routeKey, deps.tableVersion, deps.env ?? process.env);
+  const cause = await importPendingCause(deps, units);
   if (cause === undefined) return undefined;
   const err = new EquivalenceImpossible({
     scenario: scenarioId,
@@ -518,8 +592,8 @@ export interface ReplayDeps extends OperatorDeps {
   seed?: SeedStore;
   sideEffects?: Omit<SideEffectDeps, 'fetch'>;
   clock?: () => Date;
-  /** Progress lines; default stderr. */
-  log?: (line: string) => void;
+  /** Progress and failure log; default {@link createHarnessLogger} on stderr. */
+  logger?: Logger;
   exceptions?: AppendExceptionOptions;
   routeKeyOptions?: StepRunOptions['routeKeyOptions'];
   /** Default {@link readGoldenSet}. */
@@ -548,10 +622,6 @@ interface StepRun {
   /** A halt that ends the scenario's replay. */
   stop?: Halt;
   error?: ReplayError;
-}
-
-function stderrLine(line: string): void {
-  process.stderr.write(`${line}\n`);
 }
 
 function emptySideEffects(): GoldenSideEffects {
@@ -686,7 +756,7 @@ async function runSteps(
         return { records, error };
       }
       const answer = { step: name, routeKey: legacy.routeKey, legacyStatus: legacy.normalised.status };
-      // An unreadable gate state leaves the step's own error as the outcome.
+      // An unreadable gate state or cut-over version leaves the step's own error as the outcome.
       const stop = await unavailableHalt(scenario.id, answer, deps).catch(() => undefined);
       return stop === undefined ? { records, error } : { records, stop };
     }
@@ -722,9 +792,9 @@ async function replayRun(
   scenario: Scenario,
   phase: RunPhase,
   deps: ReplayDeps,
-  io: { env: EnvLike; log: (line: string) => void; secrets: SecretStore; at: string; write: OutputWriter },
+  io: { env: EnvLike; logger: Logger; secrets: SecretStore; at: string; write: OutputWriter },
 ): Promise<ReplayResult> {
-  const { env, log } = io;
+  const { env, logger } = io;
   const golden = await (deps.readGolden ?? readGoldenSet)(scenario.id);
   if (golden.skipped !== undefined) {
     throw new GoldenConfigError(
@@ -733,7 +803,9 @@ async function replayRun(
   }
   const range = await stepRange(scenario, phase, deps.tableVersion, env);
   if (range === 'resumed-earlier') {
-    log(`${scenario.id}: already resumed after its transition; ${replayOutputPath(scenario.id, env)} stands`);
+    logger.info(
+      safeDiagnostic(`${scenario.id}: already resumed after its transition; ${replayOutputPath(scenario.id, env)} stands`, env),
+    );
     return { status: 'resumed-earlier' };
   }
   const config = deps.sideEffects?.config ?? resolveSideEffectConfig(env);
@@ -755,7 +827,8 @@ async function replayRun(
 
   if (range.end < scenario.steps.length && run.stop === undefined && run.error === undefined) {
     const file = await saveSessions(ctx, records, range.end, deps, io.at);
-    log(`${scenario.id}: paused before step ${scenario.steps[range.end]?.name ?? range.end}; sessions saved to ${file}`);
+    const next = scenario.steps[range.end]?.name ?? range.end;
+    logger.info(safeDiagnostic(`${scenario.id}: paused before step ${next}; sessions saved to ${file}`, env));
     return { status: 'paused', path: file };
   }
 
@@ -771,7 +844,9 @@ async function replayRun(
   }
   const halts = [...declaredHalts(scenario.id, records, goldenSteps(golden)), ...(run.stop === undefined ? [] : [run.stop])];
   const { halted, ids } = await recordHalts(halts, deps);
-  for (const halt of halted) log(`${scenario.id} step ${halt.step}: halted (${halt.reason}); ${halt.exceptionId}`);
+  for (const halt of halted) {
+    logger.warn(safeDiagnostic(`${scenario.id} step ${halt.step}: halted (${halt.reason}); ${halt.exceptionId}`, env));
+  }
 
   const secrets = secretValues(ctx);
   const builder = createGoldenStepBuilder(scenario, deps.rules);
@@ -787,7 +862,9 @@ async function replayRun(
     await writePrivateJson(sessionStatePath(scenario.id, env), { ...range.state, completed: true });
   }
   const outcome = error === undefined ? 'replayed' : `failed${error.step === undefined ? '' : ` at ${error.step}`}`;
-  log(`${scenario.id}: ${outcome}, ${steps.length} exchanges, ${halted.length} halted`);
+  const line = safeDiagnostic(`${scenario.id}: ${outcome}, ${steps.length} exchanges, ${halted.length} halted`, env);
+  if (error === undefined) logger.info(line);
+  else logger.error(line);
   return result;
 }
 
@@ -799,7 +876,7 @@ async function replayRun(
  */
 export async function replayScenario(scenario: Scenario, deps: ReplayDeps, phase: RunPhase = 'full'): Promise<ReplayResult> {
   const env = deps.env ?? process.env;
-  const log = deps.log ?? stderrLine;
+  const logger = deps.logger ?? createHarnessLogger('harness-golden-replay', env);
   const secrets = deps.secrets ?? loadSecretStore(env);
   const at = (deps.clock ?? (() => new Date()))().toISOString();
   const write: OutputWriter = async (status, body) => {
@@ -817,18 +894,19 @@ export async function replayScenario(scenario: Scenario, deps: ReplayDeps, phase
   };
   const skipped = skipReason(scenario, deps.fixtures);
   if (skipped !== null) {
-    log(`${scenario.id}: ${skipped}`);
+    logger.info(safeDiagnostic(`${scenario.id}: ${skipped}`, env));
     return write('skipped', { skipped, steps: [], sideEffects: emptySideEffects(), halted: [] });
   }
   if (scenario.browser !== undefined) {
-    log(`${scenario.id}: browser flow ${scenario.browser.flow}, replayed by harness/e2e/ui/interactions.e2e.ts`);
+    const flow = scenario.browser.flow;
+    logger.info(safeDiagnostic(`${scenario.id}: browser flow ${flow}, replayed by harness/e2e/ui/interactions.e2e.ts`, env));
     return { status: 'browser' };
   }
   try {
-    return await replayRun(scenario, phase, deps, { env, log, secrets, at, write });
+    return await replayRun(scenario, phase, deps, { env, logger, secrets, at, write });
   } catch (err) {
     const message = describeError(err, secretValues({ secrets }));
-    log(`${scenario.id}: replay failed: ${message}`);
+    logger.error(safeDiagnostic(`${scenario.id}: replay failed: ${message}`, env));
     return write('error', { steps: [], sideEffects: emptySideEffects(), halted: [], error: { message } });
   }
 }
@@ -853,7 +931,7 @@ const HELP = [
 /** Collaborators of {@link main} beyond the environment. */
 export type MainDeps = Pick<
   ReplayDeps,
-  'fetch' | 'invoker' | 'secrets' | 'seed' | 'sideEffects' | 'clock' | 'log' | 'exceptions' | 'routeKeyOptions' | 'readGolden'
+  'fetch' | 'invoker' | 'secrets' | 'seed' | 'sideEffects' | 'clock' | 'logger' | 'exceptions' | 'routeKeyOptions' | 'readGolden'
 >;
 
 interface Selection {
@@ -952,6 +1030,7 @@ export async function main(argv: string[], env: EnvLike = process.env, deps: Mai
     secrets: deps.secrets ?? loadSecretStore(env),
     seed: deps.seed ?? loadSeedStore(env),
     sideEffects: { ...deps.sideEffects, config: deps.sideEffects?.config ?? resolveSideEffectConfig(env) },
+    logger: deps.logger ?? createHarnessLogger('harness-golden-replay', env),
   };
   const counts = { replayed: 0, skipped: 0, paused: 0 };
   const halted: { id: string; step: string; exceptionId: string }[] = [];

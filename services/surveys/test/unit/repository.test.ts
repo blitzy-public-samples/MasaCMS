@@ -48,7 +48,7 @@ describe('surveys repository identity', () => {
   });
 });
 
-const available = await pgAvailable();
+const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
 
 describe.skipIf(!available)('surveys repository writes against PostgreSQL', () => {
   let handle: ThrowawaySchema;

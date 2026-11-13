@@ -1,5 +1,5 @@
 // `cUsers.search`: the controller's `search()` and the results view of `admin/core/views/cusers/search.cfm` (server-only).
-import { cfEq } from '@opt2/platform/legacy-compat';
+import { cfEq } from '@/lib/cfml';
 import {
   okBody,
   type GatewayClient,
@@ -19,12 +19,12 @@ import { renderUsersList, type UsersListInput, type UsersListRow } from './inc/d
 // the text around them joins. `\x20` is a trailing space legacy leaves at a line end.
 
 type PeoplePaths = GatewayClient['people'] extends ServiceFacade<infer Paths> ? Paths : never;
-type SearchUsersOperation = OperationOf<PeoplePaths['/v1/users/search'], 'get'>;
+type SearchUsersOperation = OperationOf<PeoplePaths['/v2/users/search'], 'get'>;
 
-/** Query of people `searchUsers`. */
+/** Query of people `searchUsersV2`. */
 export type SearchUsersQuery = QueryOf<SearchUsersOperation>;
 
-/** People's `searchUsers` answer: every match, the paging state and the unassigned ids. */
+/** People's `searchUsersV2` answer: the page's matches, the paging state and the page's unassigned ids. */
 export type SearchUsersPage = SuccessBodyOf<SearchUsersOperation>;
 
 type SearchUserRow = SearchUsersPage['items'][number];
@@ -67,13 +67,12 @@ function nextNOf(nextn: SearchUsersPage['nextn']): NextN {
 // dsp_nextn's `legacyPageIndex` computes the same index; this screen keeps to its declared dependencies.
 /**
  * The userIterator page after `setNextN(rpp)`, `setStartRow(startrow)` and `setPage(startrow)`: page `startrow`, or 1
- * when its first row lies past the last record; its rows are those from `(page-1)*rpp` up to the page's end.
+ * when its first row lies past the last record; people answers that page's rows as `items`.
  */
 function iteratorPage<T>(items: readonly T[], nextn: NextN): { pageIndex: number; rows: readonly T[] } {
-  const { startRow, recordsPerPage } = nextn;
-  const pageIndex = (startRow - 1) * recordsPerPage > items.length ? 1 : startRow;
-  const first = (pageIndex - 1) * recordsPerPage;
-  return { pageIndex, rows: items.slice(first, first + recordsPerPage) };
+  const { startRow, recordsPerPage, totalRecords } = nextn;
+  const pageIndex = (startRow - 1) * recordsPerPage > totalRecords ? 1 : startRow;
+  return { pageIndex, rows: items };
 }
 
 /** One person row as `rc.it` hands it to the users list; a null column reads as CFML's empty string. */
@@ -104,7 +103,7 @@ export async function loadSearch(ctx: ScreenContext): Promise<SearchData> {
     startrow: String(rc.startRow),
     recordsperpage: String(rc.recordsperpage),
   };
-  const page = okBody(await ctx.gateway.people.call('get', '/v1/users/search', { query }), 'people', 'searchUsers');
+  const page = okBody(await ctx.gateway.people.call('get', '/v2/users/search', { query }), 'people', 'searchUsersV2');
   const nextn = nextNOf(page.nextn);
   const { pageIndex, rows } = iteratorPage(page.items, nextn);
   return {
@@ -183,7 +182,7 @@ const activeClass = (active: boolean): SafeHtml => (active ? html` class="active
 function renderTabbed(rc: CusersRc, label: LabelOf, url: UrlBuilder, list: SafeHtml): SafeHtml {
   const tabQuery = (ispublic: string): string =>
     `siteid=${encodeUrl(rc.siteid)}&ispublic=${ispublic}&search=${encodeUrl(rc.search)}`;
-  const members = cfEq(rc.ispublic, '1');
+  const members = cfEq(rc.ispublic, 1);
   return html`
 
       <ul class="mura-tab-links nav-tabs">
@@ -196,7 +195,7 @@ function renderTabbed(rc: CusersRc, label: LabelOf, url: UrlBuilder, list: SafeH
           </li>
 
        \x20
-          <li${activeClass(cfEq(rc.ispublic, '0'))}>
+          <li${activeClass(cfEq(rc.ispublic, 0))}>
             <a href="${url('cusers.search', tabQuery('0'))}">
               ${label('user.systemusers')}
             </a>

@@ -1,18 +1,29 @@
 // Unit tests for the legacy side of reconciliation over a fake SQL Server pool, a fake bridge and a small ownership file.
 import { EventEmitter } from 'node:events';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { encodeKey, encodeRow, sha256Hex, type CanonicalColumn } from '@opt2/platform/migration-kit';
+import {
+  encodeKey,
+  encodeRow,
+  sha256Hex,
+  type CanonicalColumn,
+  type CanonicalValue,
+  type ExportResponse,
+} from '@opt2/platform/migration-kit';
+import { fixedClock } from '@opt2/platform/service-kit';
 import { tenantIdForSite, type TenantDb } from '@opt2/platform/tenancy';
 import type { ConnectionPool } from 'mssql';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { loadConfig } from '../../src/config.js';
-import { clearCatalogCache, compareCanonicalRows } from '../../src/extract/index.js';
+import { clearCatalogCache, compareCanonicalRows, type CanonicalRow } from '../../src/extract/index.js';
 import { UnsupportedFileStoreError, type BridgeClient, type FileListing, type LegacyDb } from '../../src/legacy/index.js';
-import { loadUnitCatalog, type UnitCatalog } from '../../src/owners/index.js';
+import { loadUnitCatalog, type ExportParams, type OwnersClient, type UnitCatalog } from '../../src/owners/index.js';
+import { DIFFERENCE_LIMIT } from '../../src/reconcile/compare.js';
+import { reconcileUnits, type ReconcileContext, type ReconcileSources } from '../../src/reconcile/index.js';
+import { readTargetUnitRows } from '../../src/reconcile/target-side.js';
 import {
   createTenantResolver,
   describeUnitTable,
@@ -20,6 +31,7 @@ import {
   readLegacyObjects,
   readLegacyUnitRows,
   toUnitRow,
+  type LegacyUnitRows,
   type ReconcileLegacyDeps,
   type TenantResolver,
   type UnitTableShape,
@@ -315,6 +327,7 @@ const TABLES: Record<string, FakeTable> = {
       { UserID: 'U02', Type: 1, SiteID: 'tenant-a', UserName: 'Editors', Fname: null },
       { UserID: 'U03', Type: 2, SiteID: 'umbrella', UserName: 'bob', Fname: 'Bob' },
       { UserID: 'U04', Type: 2, SiteID: 'tenant-b', UserName: 'ALICE ', Fname: 'Alice B' },
+      { UserID: 'U05', Type: 1, SiteID: 'umbrella', UserName: 'Bob', Fname: null },
     ],
   },
   'dbo.tuseraddresses': {
@@ -443,11 +456,14 @@ afterEach(() => {
   clearCatalogCache();
 });
 
-/** Context over the main fake database `muradb` and a fixture-less `bare` one; `db` and `bridge` default to unused fakes. */
-function setup(overrides: { db?: TenantDb; bridge?: BridgeClient } = {}) {
+/**
+ * Context over the main fake database `muradb` (`tables` replacing tables of the same name) and a fixture-less `bare`
+ * one; `db` and `bridge` default to unused fakes.
+ */
+function setup(overrides: { db?: TenantDb; bridge?: BridgeClient; tables?: Record<string, FakeTable> } = {}) {
   const base = loadConfig();
   const { legacy, named } = fakeLegacy({
-    muradb: { tables: TABLES, raw: RAW },
+    muradb: { tables: { ...TABLES, ...overrides.tables }, raw: RAW },
     bare: { tables: {}, raw: { [SITES_SQL]: [{ SiteID: 'default' }] } },
   });
   const deps = {
@@ -460,11 +476,28 @@ function setup(overrides: { db?: TenantDb; bridge?: BridgeClient } = {}) {
   return { deps, database: named('muradb'), bare: named('bare') };
 }
 
-async function rowsOf(unit: string, legacyTable: string) {
-  const { deps, database } = setup();
+/** Every tenant's rows of `legacy`, read in tenant order; `legacy` is disposed afterwards. */
+async function collect(legacy: LegacyUnitRows): Promise<Map<string, CanonicalRow[]>> {
+  const byTenant = new Map<string, CanonicalRow[]>();
+  try {
+    for (const tenantId of legacy.tenants) {
+      const rows: CanonicalRow[] = [];
+      for await (const row of legacy.rows(tenantId)) rows.push(row);
+      byTenant.set(tenantId, rows);
+    }
+  } finally {
+    await legacy.dispose();
+  }
+  return byTenant;
+}
+
+async function rowsOf(unit: string, legacyTable: string, options: { sortRunBytes?: number; spillDir?: string; tables?: Record<string, FakeTable> } = {}) {
+  const { deps, database } = setup({ tables: options.tables });
   const shape = await describeUnitTable(deps, { unit, legacyTable, database });
   const tenants = await createTenantResolver(deps, { database });
-  return { shape, ...(await readLegacyUnitRows(deps, shape, { database, tenants })) };
+  const legacy = await readLegacyUnitRows(deps, shape, { database, tenants, sortRunBytes: options.sortRunBytes, spillDir: options.spillDir });
+  const { counts, orphans } = legacy;
+  return { shape, counts, orphans, byTenant: await collect(legacy) };
 }
 
 const keysOf = (byTenant: Map<string, { row: Readonly<Record<string, unknown>> }[]>, column: string) =>
@@ -566,8 +599,9 @@ describe('createTenantResolver', () => {
 
 describe('readLegacyUnitRows', () => {
   it('keeps only the Type 2 rows for the person unit, projected and encoded over its columns', async () => {
-    const { shape, byTenant, orphans } = await rowsOf('people.person', 'tusers');
+    const { shape, byTenant, counts, orphans } = await rowsOf('people.person', 'tusers');
     expect(keysOf(byTenant, 'UserID')).toEqual({ [A]: ['U01'], [UMBRELLA]: ['U03'], [B]: ['U04'] });
+    expect([...counts]).toEqual([A, B, UMBRELLA].sort().map((tenantId) => [tenantId, 1]));
     const [row] = byTenant.get(A) ?? [];
     const values = { UserID: 'U01', SiteID: 'tenant-a', Fname: 'Alice' };
     expect(row).toEqual({
@@ -607,10 +641,41 @@ describe('readLegacyUnitRows', () => {
     expect(keysOf(byTenant, 'objectID')).toEqual({ [A]: expected });
   });
 
+  it.each([
+    ['people.trash', { [A]: ['O5'] }],
+    ['content.trash', {}],
+  ])('assigns trashed extend objects of %s by the single base table their subtype key carries', async (unit, expected) => {
+    const subtype = (subTypeID: string, baseTable: string, type: string): Row => ({ subTypeID, siteID: 'tenant-a', baseTable, type, subType: 'Default' });
+    const trashed = (objectID: string, objectType: string): Row => ({
+      objectID,
+      parentID: 'NA',
+      siteID: 'tenant-a',
+      objectClass: 'extendObject',
+      objectType,
+      objectSubType: 'Default',
+    });
+    const tables = {
+      // User/Default carries tusers twice, once padded; Page/Default carries two base tables, so it decides nothing.
+      'dbo.tclassextend': { ...(TABLES['dbo.tclassextend'] as FakeTable), rows: [subtype('S1', 'tcontent', 'Page'), subtype('S2', 'tusers', 'User'), subtype('S3', 'TUSERS ', 'User'), subtype('S4', 'tsettings', 'Page')] },
+      'dbo.ttrash': { ...(TABLES['dbo.ttrash'] as FakeTable), rows: [trashed('O5', 'User'), trashed('O8', 'Page')] },
+    };
+    const { byTenant } = await rowsOf(unit, 'ttrash', { tables });
+    expect(keysOf(byTenant, 'objectID')).toEqual(expected);
+  });
+
   it('places a child without a parent under the umbrella and lists its key as an orphan', async () => {
     const { byTenant, orphans } = await rowsOf('identity.membership', 'tusersmemb');
     expect(keysOf(byTenant, 'UserID')).toEqual({ [A]: ['U01'], [UMBRELLA]: ['U99'] });
-    expect(orphans).toEqual(new Map([[UMBRELLA, [byTenant.get(UMBRELLA)?.[0]?.key]]]));
+    expect(orphans).toEqual(new Map([[UMBRELLA, { keys: [byTenant.get(UMBRELLA)?.[0]?.key], count: 1 }]]));
+  });
+
+  it(`lists the first ${String(DIFFERENCE_LIMIT)} orphan keys in extraction order and counts them all`, async () => {
+    const members = Array.from({ length: DIFFERENCE_LIMIT + 50 }, (_, index) => ({ UserID: `X${String(index).padStart(3, '0')}`, GroupID: 'U02' }));
+    const tables = { 'dbo.tusersmemb': { ...(TABLES['dbo.tusersmemb'] as FakeTable), rows: members } };
+    const { byTenant, orphans } = await rowsOf('identity.membership', 'tusersmemb', { tables });
+    const keys = (byTenant.get(UMBRELLA) ?? []).map((row) => row.key);
+    expect(keys).toHaveLength(DIFFERENCE_LIMIT + 50);
+    expect(orphans).toEqual(new Map([[UMBRELLA, { keys: keys.slice(0, DIFFERENCE_LIMIT), count: DIFFERENCE_LIMIT + 50 }]]));
   });
 
   it('folds Program_<id> rows onto the tenant of their program site, ordered by canonical key text', async () => {
@@ -633,7 +698,37 @@ describe('readLegacyUnitRows', () => {
     expect(rows).toHaveLength(2);
     expect(rows.every((row) => row.key === row.encoding && row.keyValues.length === 0)).toBe(true);
     const orphan = encodeRow(shape.columns, { SiteID: null, Object: 'x', Name: 'X' });
-    expect(orphans).toEqual(new Map([[UMBRELLA, [sha256Hex(orphan)]]]));
+    expect(orphans).toEqual(new Map([[UMBRELLA, { keys: [sha256Hex(orphan)], count: 1 }]]));
+  });
+
+  it.each([
+    ['people.person', 'tusers'],
+    ['identity.trash', 'ttrash'],
+    ['timesheets.timesheet', 'Program_N.timesheet'],
+    ['programs_sites.system_object', 'tsystemobjects'],
+  ])('reads %s of %s alike through spilled sort runs, leaving no spill files', async (unit, table) => {
+    const spillDir = await mkdtemp(join(dir, 'spill-'));
+    const spilled = await rowsOf(unit, table, { sortRunBytes: 1, spillDir });
+    expect(spilled).toEqual(await rowsOf(unit, table));
+    expect(await readdir(spillDir)).toEqual([]);
+  });
+
+  it('removes its spill files when a row fails to resolve', async () => {
+    const { deps, database } = setup();
+    const real = await createTenantResolver(deps, { database });
+    let resolved = 0;
+    const tenants: TenantResolver = {
+      resolve: (table, row) => {
+        resolved += 1;
+        if (resolved > 1) throw new Error('resolver failed');
+        return real.resolve(table, row);
+      },
+      siteTenants: () => real.siteTenants(),
+    };
+    const shape = await describeUnitTable(deps, { unit: 'content.content', legacyTable: 'tcontent', database });
+    const spillDir = await mkdtemp(join(dir, 'spill-'));
+    await expect(readLegacyUnitRows(deps, shape, { database, tenants, sortRunBytes: 1, spillDir })).rejects.toThrow('resolver failed');
+    expect(await readdir(spillDir)).toEqual([]);
   });
 
   it('builds its own lookups for a resolver it did not create', async () => {
@@ -641,7 +736,7 @@ describe('readLegacyUnitRows', () => {
     const real = await createTenantResolver(deps, { database });
     const tenants: TenantResolver = { resolve: (table, row) => real.resolve(table, row), siteTenants: () => real.siteTenants() };
     const shape = await describeUnitTable(deps, { unit: 'people.user_address', legacyTable: 'tuseraddresses', database });
-    const { byTenant } = await readLegacyUnitRows(deps, shape, { database, tenants });
+    const byTenant = await collect(await readLegacyUnitRows(deps, shape, { database, tenants }));
     expect(keysOf(byTenant, 'addressID')).toEqual({ [A]: ['A1'] });
   });
 
@@ -774,5 +869,135 @@ describe('readLegacyObjects', () => {
   ])('rejects %s', async (_case, snapshot, snapshotSeq, message) => {
     const { deps, database } = setup({ db: migrationDb(snapshot) });
     await expect(readLegacyObjects(deps, { legacySource: 'snapshot', snapshotSeq, database })).rejects.toThrow(message);
+  });
+});
+
+describe('reconciling through spilled sides', () => {
+  type ExportRows = { values: Record<string, CanonicalValue>; legacyProgramId?: number }[];
+  const PERSON_COLUMNS: CanonicalColumn[] = [
+    { name: 'UserID', type: 's' },
+    { name: 'SiteID', type: 's' },
+    { name: 'Fname', type: 's' },
+  ];
+  const OBJECT_COLUMNS: CanonicalColumn[] = [
+    { name: 'SiteID', type: 's' },
+    { name: 'Object', type: 's' },
+    { name: 'Name', type: 's' },
+  ];
+  const TIMESHEET_COLUMNS: CanonicalColumn[] = [
+    { name: 'timesheet_id', type: 'i' },
+    { name: 'person_id', type: 's' },
+  ];
+  /** Per unit: the exported legacy table, its columns and each tenant's rows in PostgreSQL key order. */
+  const EXPORTS: Record<string, { legacyTable: string; columns: CanonicalColumn[]; tenants: Record<string, ExportRows> }> = {
+    'people.person': {
+      legacyTable: 'tusers',
+      columns: PERSON_COLUMNS,
+      tenants: {
+        [A]: [{ values: { UserID: 'U01', SiteID: 'tenant-a', Fname: 'Alicia' } }],
+        [UMBRELLA]: [{ values: { UserID: 'U03', SiteID: 'umbrella', Fname: 'Bob' } }, { values: { UserID: 'U07', SiteID: 'umbrella', Fname: 'Eve' } }],
+      },
+    },
+    'programs_sites.system_object': {
+      legacyTable: 'tsystemobjects',
+      columns: OBJECT_COLUMNS,
+      tenants: { [A]: [{ values: { SiteID: 'tenant-a', Object: 'nav', Name: 'Nav' } }], [UMBRELLA]: [{ values: { SiteID: null, Object: 'x', Name: 'X' } }] },
+    },
+    'timesheets.timesheet': {
+      legacyTable: 'timesheet',
+      columns: TIMESHEET_COLUMNS,
+      tenants: {
+        [A]: [
+          { values: { timesheet_id: '9', person_id: 'U01' }, legacyProgramId: 1 },
+          { values: { timesheet_id: '10', person_id: 'U01' }, legacyProgramId: 1 },
+        ],
+        [B]: [{ values: { timesheet_id: '9', person_id: 'U05' }, legacyProgramId: 2 }],
+      },
+    },
+  };
+
+  /** Owners exporting `EXPORTS` one row per page, a tenant without rows as one empty page of its table. */
+  const owners = {
+    async *exportPages(_owner: string, params: ExportParams): AsyncGenerator<ExportResponse> {
+      const unit = EXPORTS[params.unit];
+      if (unit === undefined) throw new Error(`no export of ${params.unit}`);
+      const rows = unit.tenants[params.tenantId] ?? [];
+      const pages = rows.length === 0 ? [[]] : rows.map((row) => [row]);
+      for (const [index, pageRows] of pages.entries()) {
+        yield await Promise.resolve({
+          unit: params.unit,
+          tenantId: params.tenantId,
+          next: index === pages.length - 1 ? null : `page-${String(index + 1)}`,
+          tables: [
+            {
+              unit: params.unit,
+              legacyTable: unit.legacyTable,
+              targetTable: 'schema.table',
+              keyless: false,
+              columns: unit.columns,
+              rows: pageRows.map(({ values, legacyProgramId }) => ({
+                key: 'owner-key',
+                row: encodeRow(unit.columns, values),
+                hash: 'owner-hash',
+                ...(legacyProgramId === undefined ? {} : { legacyProgramId }),
+              })),
+            },
+          ],
+        });
+      }
+    },
+  } as unknown as OwnersClient;
+
+  const UNITS = ['people.person', 'programs_sites.system_object', 'timesheets.timesheet'];
+
+  function reconcile(sorting: { sortRunBytes?: number; spillDir?: string }, overrides: ReconcileSources = {}) {
+    const { deps, database } = setup();
+    const ctx = { ...deps, owners, env: {}, clock: fixedClock('2026-06-30T12:00:00.000Z'), gateway: {} } as unknown as ReconcileContext;
+    const sources: ReconcileSources = {
+      tableVersion: () => Promise.resolve('v0002'),
+      legacyRows: (legacyDeps, shape, options) => readLegacyUnitRows(legacyDeps, shape, { ...options, ...sorting }),
+      targetRows: (targetDeps, shape, tenantId, options) => readTargetUnitRows(targetDeps, shape, tenantId, { ...options, ...sorting }),
+      ...overrides,
+    };
+    return reconcileUnits(ctx, { point: 'post-cutover', units: UNITS, database }, sources);
+  }
+
+  it('measures both sides through spilled runs exactly as in memory', async () => {
+    const spillDir = await mkdtemp(join(dir, 'spill-'));
+    const inMemory = await reconcile({});
+    const spilled = await reconcile({ sortRunBytes: 1, spillDir });
+
+    expect(spilled.units).toEqual(inMemory.units);
+    expect(spilled.summary).toEqual(inMemory.summary);
+    expect(await readdir(spillDir)).toEqual([]);
+    expect(spilled.result).toBe('difference');
+    expect(spilled.units.map((entry) => [entry.unit, entry.tenantId, entry.legacyCount, entry.targetCount, entry.differences.map((d) => d.kind)])).toEqual(
+      expect.arrayContaining([
+        ['people.person', A, 1, 1, ['changed']],
+        ['people.person', B, 1, 0, ['missing-in-target']],
+        ['people.person', UMBRELLA, 1, 2, ['extra-in-target']],
+        ['programs_sites.system_object', A, 2, 1, ['missing-in-target']],
+        ['programs_sites.system_object', UMBRELLA, 1, 1, []],
+        ['timesheets.timesheet', A, 2, 2, []],
+        ['timesheets.timesheet', B, 1, 1, ['changed']],
+      ]),
+    );
+    expect(spilled.units).toHaveLength(7);
+    const orphaned = spilled.units.find((entry) => entry.unit === 'programs_sites.system_object' && entry.tenantId === UMBRELLA);
+    expect(orphaned?.orphanCount).toBe(1);
+    expect(orphaned?.legacySha256).toBe(orphaned?.targetSha256);
+  });
+
+  it('removes every spill file when a target read fails mid-table', async () => {
+    const spillDir = await mkdtemp(join(dir, 'spill-'));
+    let reads = 0;
+    const targetRows: ReconcileSources['targetRows'] = async (targetDeps, shape, tenantId, options) => {
+      reads += 1;
+      if (reads > 2) throw new Error('owner unreachable');
+      return readTargetUnitRows(targetDeps, shape, tenantId, { ...options, sortRunBytes: 1, spillDir });
+    };
+
+    await expect(reconcile({ sortRunBytes: 1, spillDir }, { targetRows })).rejects.toThrow('owner unreachable');
+    expect(await readdir(spillDir)).toEqual([]);
   });
 });

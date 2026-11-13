@@ -2,12 +2,30 @@
 /** Fixture routes `reporting/exports…` of legacy-fixtures/cfml/api.cfm, answered as legacy-fixtures/cfml/modules/reporting.cfc answers them. */
 import { AuthDenial, Roles, type DenialRenderer, type Opt2RouteConfig } from '@opt2/platform/auth';
 import { LegacyApiError } from '@opt2/platform/legacy-compat';
-import { csrfPreHandler, sendLegacyResponse, type FastifyInstance, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
+import { serializeError } from '@opt2/platform/logging';
+import {
+  csrfPreHandler,
+  recordOutcomeReason,
+  sendLegacyResponse,
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest,
+} from '@opt2/platform/service-kit';
 import type { ReportingDeps } from '../domain/deps.js';
 import { createExportJob, getExportJob, listExportJobs, openExportOutput } from '../domain/jobs.js';
 import type { JobPaging } from '../repo/queries.js';
 import { createExportFields, requireExportJob, requireReadyOutput, resolveFixtureSite, type FixtureSite } from './checks.js';
-import { FIXTURE_MODULE, FixtureApiError, fixtureContext, fixtureFile, fixtureList, fixtureSuccess, toFixtureError, type FixtureContext } from './envelope.js';
+import {
+  FIXTURE_MODULE,
+  FixtureApiError,
+  fixtureContext,
+  fixtureFile,
+  fixtureList,
+  fixtureOutcomeReason,
+  fixtureSuccess,
+  toFixtureError,
+  type FixtureContext,
+} from './envelope.js';
 import { jobRow } from './serialize.js';
 
 /** Fastify path of the reporting fixture module; every fixture route below is built from it. */
@@ -79,11 +97,11 @@ function effectiveMethod(request: FastifyRequest): string {
   return (value === undefined || value === '' ? request.method : value).toUpperCase();
 }
 
-/** The verified requester's Masa UserID and bearer token; the route's role requirement admits no request without them. */
-function requester(request: FastifyRequest): { userId: string; userToken: string } {
-  const { user, userToken } = request.opt2Auth;
-  if (user === undefined || userToken === undefined) throw AuthDenial.unauthenticated('missing-credential');
-  return { userId: user.sub, userToken };
+/** The verified requester's Masa UserID; the route's role requirement admits no request without it. */
+function requester(request: FastifyRequest): { userId: string } {
+  const { user } = request.opt2Auth;
+  if (user === undefined) throw AuthDenial.unauthenticated('missing-credential');
+  return { userId: user.sub };
 }
 
 /** A path id as SQL Server matches it against the stored upper-case char(35) CF UUIDs: ignoring case and trailing spaces. */
@@ -157,13 +175,12 @@ async function requireCsrf(request: FastifyRequest, reply: FastifyReply, context
 
 /** reporting.cfc createExport: the CSRF check, then a queued job of the site's definition, answered as the queued job. */
 async function createExport(deps: ReportingDeps, { request, reply, ctx, site }: FixtureCall): Promise<FastifyReply> {
-  const { userId, userToken } = requester(request);
+  const { userId } = requester(request);
   await requireCsrf(request, reply, COLLECTION_CONTEXT);
   const job = await createExportJob(deps, {
     tenantId: site.tenantId,
     siteId: site.siteId,
     requestedById: userId,
-    userToken,
     ...createExportFields(createParams(request, ctx.params)),
   });
   return sendLegacyResponse(reply, fixtureSuccess(ctx, jobRow(job)));
@@ -248,7 +265,8 @@ export async function registerFixtureRoutes(app: FastifyInstance, deps: Reportin
     scope.setErrorHandler((error, request, reply) => {
       // Rethrows a LegacyServiceUnavailableError, which the service-kit handler answers as the legacy 503.
       const response = toFixtureError(error, contextOf(request));
-      if (response.status === 500 && !(error instanceof LegacyApiError)) request.log.error({ error }, 'unhandled fixture exception');
+      if (response.status === 500 && !(error instanceof LegacyApiError)) request.log.error({ error: serializeError(error) }, 'unhandled fixture exception');
+      else recordOutcomeReason(request, fixtureOutcomeReason(error));
       return sendLegacyResponse(reply, response);
     });
     for (const path of FIXTURE_PATHS) registerPath(scope, deps, path);

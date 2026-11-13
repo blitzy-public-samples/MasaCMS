@@ -4,6 +4,7 @@ import {
   hasGrant,
   poolTenantFor,
   registeredTenants,
+  registryEntries,
   registryEntryForTenant,
   siteForTenant,
   tenantForRegisteredSite,
@@ -140,6 +141,15 @@ describe('tenant registry and grants against PostgreSQL', () => {
   it.each(registryPayloads())('stores $siteId with every pool id and its tenant', async (payload) => {
     const entry = await registryEntryForTenant(handle.app, tenantIdForSite(payload.siteId));
     expect(entry).toMatchObject(expectedEntry(payload));
+  });
+
+  it('reads every entry in one call, equal in site order to the entry of each registered tenant', async () => {
+    const perTenant: Array<TenantRegistryEntry | null> = [];
+    for (const { tenantId } of await registeredTenants(handle.app)) {
+      perTenant.push(await registryEntryForTenant(handle.app, tenantId));
+    }
+    expect(perTenant).toHaveLength(TENANT_LIST.length);
+    expect(await registryEntries(handle.app)).toStrictEqual(perTenant);
   });
 
   it.each(POOL_CASES)("resolves $site's $kind pool to $pool", async ({ tenantId, kind, poolTenant }) => {

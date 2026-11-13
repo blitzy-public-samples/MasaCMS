@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Roles, collectRouteMatrix } from '@opt2/platform/auth';
+import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
 import { createOutbox, resetOutboxRuntimes } from '@opt2/platform/outbox';
 import { ensureUnitGates, sha256Hex } from '@opt2/platform/migration-kit';
@@ -22,6 +22,7 @@ import { siteForTenant, tenantForRegisteredSite, tenantIdForSite, withMetadata }
 import {
   createCapturingPublisher,
   createThrowawaySchema,
+  mintServiceToken,
   mintUserToken,
   pgAvailable,
   testVerifier,
@@ -57,6 +58,11 @@ type Method = 'GET' | 'POST';
 
 const silentLogger = () => createLogger({ service: 'surveys', version: '1.0.0', env: 'local', destination: { write: () => undefined } });
 
+/** The gateway's invocation credential, which accompanies every user request it forwards. */
+async function gatewayInvocation(): Promise<Record<string, string>> {
+  return { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'surveys' })}` };
+}
+
 interface Call {
   method: Method;
   url: string;
@@ -66,7 +72,7 @@ interface Call {
   headers?: Record<string, string>;
 }
 
-const available = await pgAvailable();
+const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
 
 describe.skipIf(!available)('surveys fixture routes', () => {
   let handle: ThrowawaySchema;
@@ -88,7 +94,7 @@ describe.skipIf(!available)('surveys fixture routes', () => {
 
   async function inject({ method, url, roles, site = 'tenant-a', body, headers = {} }: Call) {
     const auth: Record<string, string> =
-      roles === undefined ? {} : { authorization: `Bearer ${await mintUserToken({ site, roles, sub: roles.includes(Roles.surveysManager) ? MANAGER_ID : RESPONDENT_ID })}` };
+      roles === undefined ? {} : { authorization: `Bearer ${await mintUserToken({ site, roles, sub: roles.includes(Roles.surveysManager) ? MANAGER_ID : RESPONDENT_ID })}`, ...(await gatewayInvocation()) };
     return app.inject({
       method,
       url,
@@ -152,6 +158,7 @@ describe.skipIf(!available)('surveys fixture routes', () => {
       clock,
       verifierOverride: testVerifier('surveys'),
       logger: silentLogger(),
+      legacyFixturePaths: true,
     });
     await registerFixtureRoutes(app, {
       db,
@@ -235,6 +242,21 @@ describe.skipIf(!available)('surveys fixture routes', () => {
       expect(res.json()).toEqual({ apiversion: 'v1', method: 'surveys.surveys' + (call.url.includes('/responses') ? '.responses' : ''), error });
     });
 
+    it('answers 401 to a manager token without the gateway invocation credential, creating nothing', async () => {
+      const title = 'created without invocation credential';
+      const token = await mintUserToken({ site: 'tenant-a', roles: [Roles.surveysManager], sub: MANAGER_ID });
+      const res = await app.inject({
+        method: 'POST',
+        url: `${FIXTURE_BASE}${SITE_A}`,
+        headers: { authorization: `Bearer ${token}`, ...CSRF_HEADERS, ...JSON_HEADERS },
+        payload: JSON.stringify({ title }),
+      });
+      expect(res.statusCode).toBe(401);
+      expect(res.json()).toEqual({ apiversion: 'v1', method: 'invalid', error: AUTHORIZATION });
+      expect(calls).toEqual([]);
+      expect(await tenantA('SELECT survey_id FROM $schema.survey WHERE title = $1', [title])).toMatchObject({ rows: [] });
+    });
+
     it('answers the CSRF failure of a write with invalidTokens before the title check', async () => {
       csrfValid = false;
       const res = await asManager({ method: 'POST', url: `${FIXTURE_BASE}${SITE_A}`, body: { title: '' } });
@@ -242,6 +264,41 @@ describe.skipIf(!available)('surveys fixture routes', () => {
       expect(res.json()).toMatchObject({ method: 'surveys.surveys', error: INVALID_TOKENS });
       expect(calls).toEqual([expect.objectContaining({ service: IDENTITY_SERVICE, json: expect.objectContaining({ context: '' }) })]);
     });
+  });
+
+  describe('api.cfm path letter case', () => {
+    const API = '/legacy-fixtures/cfml/api.cfm';
+    const MANAGER = [Roles.surveysManager, Roles.systemUser];
+
+    // No row writes, so both calls of a row see the same data.
+    it.each<[Method, string, string, string[] | undefined, number, string]>([
+      ['GET', '/Surveys/surveys', '/surveys/surveys', undefined, 401, 'surveys.surveys'],
+      ['GET', '/SURVEYS/SURVEYS/', '/surveys/surveys', undefined, 401, 'surveys.surveys'],
+      ['GET', '/%53URVEYS/surveys', '/surveys/surveys', undefined, 401, 'surveys.surveys'],
+      ['GET', '/SURVEYS/Surveys', '/surveys/surveys', MANAGER, 200, 'surveys.surveys'],
+      ['GET', '/Surveys/SURVEYS/{id}', '/surveys/surveys/{id}', MANAGER, 200, 'surveys.surveys'],
+      ['GET', '/surveys/surveys/{id}/RESPONSES', '/surveys/surveys/{id}/responses', MANAGER, 200, 'surveys.surveys.responses'],
+      ['GET', '/SURVEYS/surveys/{lowerId}/Tasks', '/surveys/surveys/{lowerId}/tasks', MANAGER, 200, 'surveys.surveys.tasks'],
+      ['POST', '/surveys/surveys/{id}/Targets/BULK', '/surveys/surveys/{id}/targets/bulk', undefined, 401, 'surveys.surveys.targets.bulk'],
+    ])('dispatches %s %s as %s (roles %j) with %i %s', async (method, variant, lower, roles, status, envelopeMethod) => {
+      const id = await createSurvey('Letter case');
+      const send = (tail: string) =>
+        inject({ method, roles, url: `${API}${tail.replace('{id}', id).replace('{lowerId}', id.toLowerCase())}${SITE_A}`, body: method === 'POST' ? {} : undefined });
+      const cased = await send(variant);
+      const expected = await send(lower);
+      expect(cased.statusCode).toBe(status);
+      expect(cased.json()).toMatchObject({ method: envelopeMethod });
+      expect([cased.statusCode, cased.json()]).toEqual([expected.statusCode, expected.json()]);
+    });
+
+    it.each(['/LEGACY-FIXTURES/cfml/api.cfm/surveys/surveys', '/legacy-fixtures/cfml/API.cfm/Surveys/surveys'])(
+      'answers %s, whose front controller differs in case, with the not-found 404',
+      async (url) => {
+        const res = await asManager({ method: 'GET', url: `${url}${SITE_A}` });
+        expect(res.statusCode).toBe(404);
+        expect(res.json()).toMatchObject({ apiversion: 'v1', method: 'invalid' });
+      },
+    );
   });
 
   it('creates, reads and lists surveys in the fixture envelope, params suppressed as Masa suppresses them', async () => {

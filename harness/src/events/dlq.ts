@@ -1,4 +1,4 @@
-// DLQ check: a tenant-less delivery lands on `<subscription>.dlq` without an effect, and one replay applies it exactly once.
+// DLQ check: a tenant-less delivery is rejected to `<subscription>.dlq` without an effect; one replay of its corrected copy applies it exactly once, and a second adds none.
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';

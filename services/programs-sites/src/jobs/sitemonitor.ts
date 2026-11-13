@@ -274,8 +274,8 @@ async function runPass(
   const sites = await siteFlags.list();
   for (const site of sites) {
     // legacy: contentServer.cfc:692-694 discards listAppend's result, so sites sharing a mail user are never deduped.
-    // coordination gap: legacy getEmailBroadcaster() is 0 while the global emailBroadcaster config is off
-    // (settingsBean.cfc:435-441); the target cannot read it, so jobs.cfm?job=trackBounces re-applies that getter.
+    // The raw flag is gated here; jobs.cfm?job=trackBounces applies legacy getEmailBroadcaster(), which is 0 while the
+    // global emailBroadcaster config is off (settingsBean.cfc:435-441).
     if (site.emailBroadcaster) await run('trackBounces', site.siteId);
     if (site.feedManager) await run('feedAutoImport', site.siteId);
   }

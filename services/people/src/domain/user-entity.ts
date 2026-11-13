@@ -11,6 +11,8 @@ import {
   cfToBoolean,
   cfToNumber,
   javaTrim,
+  legacyQuery,
+  type LegacyQuery,
 } from '@opt2/platform/legacy-compat';
 import type { AccountView } from '../legacy/identity-client.js';
 import { ADDRESS, type AddressRow, type PersonRow } from '../repo/tables.js';
@@ -213,7 +215,7 @@ function storedUserColumns({ person, account, photoFileExt }: UserEntitySource):
 }
 
 /** getAllValues(autocomplete=true): set data appended without overwriting a key in any case, set ids merged (userBean.cfc:246-258). */
-function withExtendSetData<V extends Record<string, unknown> & { extendsetid: string }>(values: V, extend: EntityExtendData): V {
+export function withExtendSetData<V extends Record<string, unknown> & { extendsetid: string }>(values: V, extend: EntityExtendData): V {
   const merged: Record<string, unknown> = { ...values };
   const keys = new Set(Object.keys(merged).map((key) => key.toLowerCase()));
   for (const [name, value] of Object.entries(extend.data)) {
@@ -296,6 +298,14 @@ export function addressBeanValues(src: { address: AddressRow; extend: EntityExte
     ADDRESS_COLUMNS.map((name) => [name, row[name] ?? ''] as const),
   );
   return withExtendSetData(stored, src.extend);
+}
+
+/** {@link ADDRESS_COLUMNS} in ACF's alphabetical `columnList` order, which the serializer writes. */
+const ADDRESS_QUERY_COLUMN_LIST: readonly string[] = [...ADDRESS_COLUMNS].sort();
+
+/** userBean.getAddresses of stored rows already ordered primary first (userBean.cfc:398-404, userDAO.cfc:862-871). */
+export function addressesQuery(rows: readonly AddressRow[]): LegacyQuery {
+  return legacyQuery([...ADDRESS_QUERY_COLUMN_LIST], [...rows]);
 }
 
 /** getFilteredValues arguments and the request values it reads, for one user or address. */

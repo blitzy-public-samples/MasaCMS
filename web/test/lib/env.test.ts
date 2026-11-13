@@ -187,6 +187,8 @@ describe('legacySettings', () => {
         ['appReloadKey', 'appreloadkey', 'appreload', 'appreload'],
         ['javaEnabled', 'javaenabled', 'true', true],
         ['fileDir', 'filedir', '', ''],
+        ['hasProxyServer', 'proxyserver', '', false],
+        ['hasProxyUser', 'proxyuser', '', false],
       ] as const
     ).map(([field, key, raw, expected]) => ({
       field,
@@ -232,6 +234,11 @@ describe('legacySettings', () => {
     ['formPolls', undefined, false],
     ['formPolls', 'true', true],
     ['formPolls', 'maybe', false],
+    ['showUsageTabs', undefined, true],
+    ['showUsageTabs', 'false', false],
+    ['showUsageTabs', 'no', false],
+    ['showUsageTabs', 'yes', true],
+    ['showUsageTabs', 'maybe', true],
     ['fileAssetPath', '//files.example.test/assets', '//files.example.test/assets'],
     ['corePath', 'https://cdn.example.test/core/', 'https://cdn.example.test/core/'],
     ['pluginsPath', 'https://cdn.example.test/plugins', 'https://cdn.example.test/plugins'],
@@ -313,9 +320,20 @@ describe('legacySettings', () => {
     [{ MURA_ASSETPATH: '/assets/' }, 'assetPath', '/assets'],
     [{ MURA_SITEDIR: 'tenants' }, 'assetPath', '/tenants'],
     [{ MURA_SITEDIR: '' }, 'assetPath', ''],
+    [{ MURA_PROXYSERVER: 'proxy.example.test' }, 'hasProxyServer', true],
+    [{ MURA_PROXYSERVER: ' ' }, 'hasProxyServer', true],
+    [{ MURA_PROXYSERVER: '' }, 'hasProxyServer', false],
+    [{ MURA_PROXYUSER: 'proxyuser' }, 'hasProxyUser', true],
+    [{ MURA_PROXYUSER: '' }, 'hasProxyUser', false],
   ])('reads %j as %s %j', (vars, field, expected) => {
     for (const [key, value] of Object.entries(vars)) vi.stubEnv(key, value);
     expect(legacySettings()[field]).toBe(expected);
+  });
+
+  it('keeps only the presence of the proxy server and user, never their values', () => {
+    vi.stubEnv('MURA_PROXYSERVER', 'proxy.example.test');
+    vi.stubEnv('MURA_PROXYUSER', 'proxyuser');
+    expect(JSON.stringify(legacySettings())).not.toMatch(/proxy\.example\.test|proxyuser/);
   });
 
   it.each<[string | undefined, number]>([

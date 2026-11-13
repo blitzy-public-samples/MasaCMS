@@ -50,8 +50,6 @@ import {
 import { ensureTracing, headersToRecord, logRequest, withRequestSpan } from './telemetry';
 import { fw1RedirectTarget } from './urls';
 
-export { attributeBootstrapScript } from '../shell/document';
-
 /** Path params of the admin trees: the route key's circuit and action. */
 export interface AdminRouteParams {
   readonly circuit: string;
@@ -70,21 +68,6 @@ export interface Opt2ActionParams {
   readonly action: string;
 }
 
-/** Query a page adapter receives: Next's `searchParams` record, or the parsed query. */
-export type PageSearchParams = AdminRequestInput['searchParams'];
-
-/**
- * Outcome of a page render. A page cannot set its status, so an adapter renders `document`, calls `redirect(location)`
- * for `redirect` and `notFound()` for `not-found` and `refused`, and throws for `unavailable`: Next answers the failed
- * render with 500, which the gateway replaces with the legacy 503. `handleAdminPage` answers the exact statuses.
- */
-export type AdminPageResult =
-  | { readonly kind: 'document'; readonly document: AdminDocument; readonly setCookies: string[] }
-  | { readonly kind: 'redirect'; readonly location: string; readonly setCookies: string[] }
-  | { readonly kind: 'unavailable' }
-  | { readonly kind: 'not-found' }
-  | { readonly kind: 'refused'; readonly status: 401 | 403 };
-
 /** FW/1 `maxNumContextsPreserved` of the admin. */
 const MAX_PRESERVED_CONTEXTS = 10;
 
@@ -97,27 +80,6 @@ interface Answers<T> {
   /** Status the request is logged with. */
   statusOf(answer: T): number;
 }
-
-const PAGE_ANSWERS: Answers<AdminPageResult> = {
-  redirect: (location, setCookies) => ({ kind: 'redirect', location, setCookies: [...setCookies] }),
-  notFound: () => ({ kind: 'not-found' }),
-  unavailable: () => ({ kind: 'unavailable' }),
-  refused: (status) => ({ kind: 'refused', status }),
-  statusOf: (result) => {
-    switch (result.kind) {
-      case 'document':
-        return 200;
-      case 'redirect':
-        return 302;
-      case 'unavailable':
-        return 503;
-      case 'not-found':
-        return 404;
-      case 'refused':
-        return result.status;
-    }
-  },
-};
 
 const RESPONSE_ANSWERS: Answers<Response> = {
   redirect: (location, setCookies, context) => fw1Redirect(location, { setCookies, context }),
@@ -135,7 +97,7 @@ interface PipelineRequest {
   readonly method: string;
   readonly path: string;
   readonly headers: Headers;
-  readonly searchParams: PageSearchParams;
+  readonly searchParams: AdminRequestInput['searchParams'];
   /** The request whose body is the form scope; absent in page mode, which never carries one. */
   readonly bodySource?: Request;
 }
@@ -453,12 +415,6 @@ function rawDispatch(
   };
 }
 
-const pageResult = (doc: AdminDocument, req: AdminRequest): AdminPageResult => ({
-  kind: 'document',
-  document: doc,
-  setCookies: cookiesOf(req),
-});
-
 const pageResponse = (doc: AdminDocument, req: AdminRequest, context: LegacyResponseContext): Response =>
   documentResponse(doc, 200, cookiesOf(req), context);
 
@@ -476,33 +432,9 @@ function requestInput(mode: AdminMode, route: AdminRouteParams, request: Request
   };
 }
 
-/** Web path of a page adapter's request, which the adapter does not see. */
-const pagePath = (...segments: readonly string[]): string =>
-  segments.map((segment, index) => (index === 0 ? segment : encodeURIComponent(segment))).join('/');
-
 // ---- Entry points ----
 
-/** Page mode: a carried admin view inside the legacy layout, for the page adapter. */
-export function renderAdminPage(
-  params: AdminRouteParams,
-  searchParams: PageSearchParams,
-  headers: Headers,
-): Promise<AdminPageResult> {
-  return withAdminPipeline(
-    {
-      mode: 'page',
-      route: params,
-      method: 'GET',
-      path: pagePath('/admin', params.circuit, params.action),
-      headers,
-      searchParams,
-    },
-    PAGE_ANSWERS,
-    (req) => pageDispatch(req, params, PAGE_ANSWERS, pageResult),
-  );
-}
-
-/** Page mode as a complete `Response`, with the exact legacy statuses a page cannot set. */
+/** Page mode as the complete legacy response: status, headers, cookies and the serialized layout. */
 export function handleAdminPage(request: Request, params: AdminRouteParams): Promise<Response> {
   return withAdminPipeline(requestInput('page', params, request, false), RESPONSE_ANSWERS, (req) =>
     pageDispatch(req, params, RESPONSE_ANSWERS, pageResponse),
@@ -535,28 +467,15 @@ export function handleAdminRaw(request: Request, params: AdminRouteParams): Prom
   });
 }
 
-/** A synthetic-module screen inside the legacy layout, for the OPT-2 page adapter. */
-export function renderOpt2Page(
-  params: Opt2ScreenParams,
-  searchParams: PageSearchParams,
-  headers: Headers,
-): Promise<AdminPageResult> {
-  return withAdminPipeline(
-    {
-      mode: 'opt2',
-      route: { circuit: params.module, action: params.screen },
-      method: 'GET',
-      path: pagePath('/opt2/admin', params.module, params.screen),
-      headers,
-      searchParams,
-    },
-    PAGE_ANSWERS,
-    () => {
-      const def = findOpt2Screen(params.module, params.screen);
-      if (def === undefined) return undefined;
-      return documentDispatch(def.gate, async (ctx) => def.render(ctx, await def.load(ctx)), pageResult);
-    },
-  );
+/** A synthetic-module screen inside the legacy layout, answered like a page-mode view. */
+export function handleOpt2Page(request: Request, params: Opt2ScreenParams): Promise<Response> {
+  const route = { circuit: params.module, action: params.screen };
+  return withAdminPipeline(requestInput('opt2', route, request, false), RESPONSE_ANSWERS, () => {
+    const def = findOpt2Screen(params.module, params.screen);
+    return def === undefined
+      ? undefined
+      : documentDispatch(def.gate, async (ctx) => def.render(ctx, await def.load(ctx)), pageResponse);
+  });
 }
 
 /** A synthetic-module post action, answered like an FW/1 post action. */

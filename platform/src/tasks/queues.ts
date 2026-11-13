@@ -161,12 +161,12 @@ export class UnknownQueueError extends Error {
   }
 }
 
-/** Raised when no base URL is configured for a queue's target service. */
+/** Raised when `OPT2_SERVICE_URLS` has no URL for a task target, a service or a task URL's origin. */
 export class UnknownTaskTargetError extends Error {
   override readonly name = 'UnknownTaskTargetError';
 
   constructor(readonly service: string) {
-    super(`No URL configured for task target service: ${service}`);
+    super(`OPT2_SERVICE_URLS has no URL for task target: ${service}`);
   }
 }
 

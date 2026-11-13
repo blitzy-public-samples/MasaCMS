@@ -1,4 +1,4 @@
-/** `domain/files` over a throwaway `content` schema, the seeded registry and local storage: image halts, restricted files, pooled uploads, deletes, metadata and render resolution. */
+/** `domain/files` over a throwaway `content` schema, the seeded registry and local storage: image halts, restricted files, pooled uploads, failed-upload cleanup, deletes, metadata and render resolution. */
 import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -6,9 +6,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { isCfUuid } from '@opt2/platform/legacy-compat';
-import { closeGates, ensureUnitGates, openGates, withGatedTenant } from '@opt2/platform/migration-kit';
+import { UnitNotAuthoritativeError, closeGates, ensureUnitGates, openGates, withGatedTenant } from '@opt2/platform/migration-kit';
 import { createLocalStorageAdapter, type LocalStorageAdapter } from '@opt2/platform/storage';
-import { tenantIdForSite, withTenant, type TenantTx } from '@opt2/platform/tenancy';
+import { tenantIdForSite, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, createThrowawaySchema, fixedClock, pgAvailable, seedRegistry, type ThrowawaySchema } from '@opt2/platform/testing';
 import { CONTENT_CONFIG_DEFAULTS, type Actor } from '../../src/domain/context.js';
 import {
@@ -30,7 +30,8 @@ import {
   type UploadedFile,
 } from '../../src/domain/files.js';
 import { UnregisteredTenantError } from '../../src/domain/pools.js';
-import { CONTENT_FILES_BUCKET } from '../../src/migration/objects.js';
+import { CONTENT_FILES_BUCKET, exportObjects } from '../../src/migration/objects.js';
+import { StagedObjectsPendingError, recoverStagedObjects } from '../../src/migration/staged-objects.js';
 import { createContentRepository, type ContentRepository, type FileInput } from '../../src/repo/repository.js';
 import { CONTENT_UNITS, type FileRow } from '../../src/repo/tables.js';
 
@@ -238,6 +239,168 @@ describe.skipIf(!(await pgAvailable()))('domain/files', () => {
       const stored = await storeUploadedFile(deps, actorOf(TENANT_B.siteId), { file: upload('multi.pdf') });
       const linked = await gated(TENANT_B.tenantId, (tx) => setFileContentId(tx, repo, stored.fileid, cfId('C', 9)));
       expect(linked?.contentid).toBe(cfId('C', 9));
+    });
+
+    describe('failed uploads', () => {
+      const failure = new Error('injected upload failure');
+      const lostCommit = new Error('connection lost after COMMIT');
+
+      /** `d` with the `files` methods of its repository replaced by `overrides`. */
+      const withFiles = (d: UploadDeps, overrides: Partial<ContentRepository['files']>): UploadDeps => ({
+        ...d,
+        repository: { ...d.repository, files: { ...d.repository.files, ...overrides } },
+      });
+
+      /** Reports failure after the publication transaction committed. */
+      function commitThenReject(db: TenantDb): TenantDb {
+        let calls = 0;
+        return {
+          schema: db.schema,
+          async withTenant<T>(tenantId: string, fn: (tx: TenantTx) => Promise<T>): Promise<T> {
+            const result = await db.withTenant(tenantId, fn);
+            if (++calls === 3) throw lostCommit;
+            return result;
+          },
+          withMetadata: db.withMetadata.bind(db),
+          end: db.end.bind(db),
+        };
+      }
+
+      /** Sets the `content.file` gate to `state` under this file's holder. */
+      async function setFileGate(state: 'open' | 'legacy'): Promise<void> {
+        await closeGates(handle.app, { units: ['content.file'], holderId: HOLDER, allowLegacy: true });
+        await openGates(handle.app, { units: ['content.file'], holderId: HOLDER, state });
+      }
+
+      /** A failing upload: its gate, its collaborators over the test's, the error it rejects with, and what it leaves. */
+      interface FailedUpload {
+        name: string;
+        gate: 'open' | 'legacy';
+        rig: (d: UploadDeps) => UploadDeps;
+        error: Error | typeof UnitNotAuthoritativeError;
+        put: boolean;
+        kept: boolean;
+        committed: boolean;
+      }
+
+      it.each<FailedUpload>([
+        { name: 'a legacy content.file gate', gate: 'legacy', rig: (d) => d, error: UnitNotAuthoritativeError, put: false, kept: false, committed: false },
+        {
+          name: 'a failing file row insert',
+          gate: 'open',
+          rig: (d) => withFiles(d, { insertFile: () => Promise.reject(failure) }),
+          error: failure,
+          put: false,
+          kept: false,
+          committed: false,
+        },
+        {
+          name: 'a failing object row write',
+          gate: 'open',
+          rig: (d) => withFiles(d, { upsertFileObject: () => Promise.reject(failure) }),
+          error: failure,
+          put: true,
+          kept: false,
+          committed: false,
+        },
+        {
+          name: 'a failing object row write whose manifest check fails',
+          gate: 'open',
+          rig: (d) =>
+            withFiles(d, { upsertFileObject: () => Promise.reject(failure), findFileObjectBySha: () => Promise.reject(new Error('manifest check failed')) }),
+          error: failure,
+          put: true,
+          kept: true,
+          committed: false,
+        },
+        {
+          name: 'a failing object row write whose storage cleanup fails',
+          gate: 'open',
+          rig: (d) => ({ ...withFiles(d, { upsertFileObject: () => Promise.reject(failure) }),
+            storage: { ...d.storage, delete: () => Promise.reject(new Error('storage unavailable')) },
+          }),
+          error: failure,
+          put: true,
+          kept: true,
+          committed: false,
+        },
+        {
+          name: 'an ambiguous put followed by database loss',
+          gate: 'open',
+          rig: (d) => {
+            let dead = false;
+            return { ...d,
+              db: { ...d.db, withTenant: (tenantId, fn) => dead ? Promise.reject(new Error('database unavailable')) : d.db.withTenant(tenantId, fn) },
+              storage: { ...d.storage, put: async (...args) => {
+                await d.storage.put(...args);
+                dead = true;
+                throw failure;
+              } },
+            };
+          },
+          error: failure,
+          put: true,
+          kept: true,
+          committed: false,
+        },
+        {
+          name: 'a commit reported failed after it committed',
+          gate: 'open',
+          rig: (d) => ({ ...d, db: commitThenReject(d.db) }),
+          error: lostCommit,
+          put: true,
+          kept: true,
+          committed: true,
+        },
+      ])('$name rejects the upload; bytes put: $put, object kept: $kept, rows committed: $committed', async (c) => {
+        const rigged = c.rig(deps);
+        const fileIds: string[] = [];
+        const putKeys: string[] = [];
+        const recording: UploadDeps = {
+          ...withFiles(rigged, {
+            insertFile: (tx, row, ctx) => {
+              fileIds.push(row.fileid ?? '');
+              return rigged.repository.files.insertFile(tx, row, ctx);
+            },
+          }),
+          storage: {
+            ...rigged.storage,
+            put: (bucket, key, body, opts) => {
+              putKeys.push(key);
+              return rigged.storage.put(bucket, key, body, opts);
+            },
+          },
+        };
+        const file = upload('failed.pdf');
+
+        await setFileGate(c.gate);
+        try {
+          await expect(storeUploadedFile(recording, actorOf(TENANT_A.siteId), { file })).rejects.toThrow(c.error);
+        } finally {
+          await setFileGate('open');
+        }
+
+        expect(fileIds).toHaveLength(1);
+        const objectKey = `${UMBRELLA}/${fileIds[0]}.pdf`;
+        expect(putKeys).toEqual(c.put ? [objectKey] : []);
+        expect(await storage.head(CONTENT_FILES_BUCKET, objectKey)).toEqual(
+          c.kept ? { size: file.bytes.length, sha256: sha256(file.bytes), contentType: 'application/pdf' } : null,
+        );
+        expect((await read(UMBRELLA, (tx) => repo.files.readFileAll(tx, fileIds[0] ?? ''))) !== null).toBe(c.committed);
+        expect((await read(UMBRELLA, (tx) => repo.files.findFileObjectBySha(tx, objectKey))) !== null).toBe(c.committed);
+        const staged = () => read(UMBRELLA, async (tx) =>
+          (await tx.query(`SELECT * FROM ${handle.schema}.staged_object WHERE object_key = $1`, [objectKey])).rows);
+        expect(await staged()).toHaveLength(c.kept && !c.committed ? 1 : 0);
+        if (c.kept && !c.committed) {
+          await read(UMBRELLA, (tx) => tx.query(
+            `UPDATE ${handle.schema}.staged_object SET recorded_at = clock_timestamp() - interval '2 minutes' WHERE object_key = $1`, [objectKey]));
+          await expect(read(UMBRELLA, (tx) => exportObjects(tx, { unit: 'content.file', tenantId: UMBRELLA }))).rejects.toBeInstanceOf(StagedObjectsPendingError);
+          expect(await recoverStagedObjects(deps, UMBRELLA, 0)).toBe(1);
+          expect(await storage.head(CONTENT_FILES_BUCKET, objectKey)).toBeNull();
+          expect(await staged()).toEqual([]);
+          await expect(read(UMBRELLA, (tx) => exportObjects(tx, { unit: 'content.file', tenantId: UMBRELLA }))).resolves.toHaveProperty('objects');
+        }
+      });
     });
   });
 

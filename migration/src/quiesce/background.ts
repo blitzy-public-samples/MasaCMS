@@ -20,7 +20,7 @@ export const backgroundRecordSchema = z.object({
   reason: z.string().nullable(),
   /** Push config per subscription id before the switch to pull; values survive jsonb exactly, key order does not. */
   pushConfigs: z.record(z.string(), savedPushConfigSchema),
-  pausedQueues: z.array(z.object({ service: z.string().min(1), queue: z.string().min(1) })),
+  pausedQueues: z.array(z.object({ service: z.string().min(1), queue: z.string().min(1) }).strict()),
   /** ACF task names `SchedulerService.pauseAll()` reported paused. */
   pausedTasks: z.array(z.string()),
   resumedAt: stampSchema.nullable().optional(),

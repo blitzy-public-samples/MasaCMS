@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   IMAGE_UPLOAD_CONDITION,
   PHOTO_CONDITION,
+  REST_CONSUMED_PARAMS_HEADER,
   ROUTE_FAMILIES,
   SAVEFORM_CONDITION,
   type RouteEntryPoint,
@@ -162,6 +163,22 @@ describe('X-HTTP-Method-Override', () => {
 
   it('upper-cases the request method when no override is sent', () => {
     expect(resultOf('get', `${API}/content/`).httpMethod).toBe('GET');
+  });
+
+  const FIXTURE = '/legacy-fixtures/cfml/api.cfm/timesheets';
+  const SUBMIT_KEY = 'fixture:timesheets/days/{id}/submit';
+  it.each<{ name: string; method: string; url: string; override: string | string[]; key: string; httpMethod: string }>([
+    { name: 'an empty fixture override as absent', method: 'POST', url: `${FIXTURE}/days/42/submit`, override: '', key: `${SUBMIT_KEY}@post`, httpMethod: 'POST' },
+    { name: 'an empty array fixture override as absent', method: 'POST', url: `${FIXTURE}/days/42/submit`, override: [''], key: `${SUBMIT_KEY}@post`, httpMethod: 'POST' },
+    { name: 'an empty override on a fixture read as absent', method: 'GET', url: `${FIXTURE}/sheets`, override: '', key: 'fixture:timesheets/sheets@get', httpMethod: 'GET' },
+    { name: 'an empty override on an unrouted fixture path as absent', method: 'POST', url: FIXTURE, override: '', key: 'fixture:!notfound@post', httpMethod: 'POST' },
+    { name: 'a lower-case fixture override upper-cased', method: 'POST', url: `${FIXTURE}/days/42/submit`, override: 'get', key: `${SUBMIT_KEY}@get`, httpMethod: 'GET' },
+    { name: 'a whitespace fixture override untrimmed, as api.cfm reads it', method: 'POST', url: `${FIXTURE}/days/42/submit`, override: ' ', key: `${SUBMIT_KEY}@ `, httpMethod: ' ' },
+    { name: 'an empty API override as present, which runs no operation', method: 'POST', url: `${API}/content/`, override: '', key: 'api:content.http-', httpMethod: '' },
+  ])('reads $name', ({ method, url, override, key, httpMethod }) => {
+    const result = resultOf(method, url, { headers: { 'X-HTTP-Method-Override': override } });
+    expect(result.key).toBe(key);
+    expect(result.httpMethod).toBe(httpMethod);
   });
 });
 
@@ -528,6 +545,57 @@ describe('REST credentials', () => {
   });
 });
 
+describe('consumed REST credentials', () => {
+  it.each<[string, string, string | string[] | undefined, string, Record<string, string>, string[]]>([
+    ['client credentials from params, the URL still counting towards findQuery', '/_api/rest/v1/default/group?client_id=C1', 'client_id,client_secret', 'rest:group.findquery', {}, ['client_id']],
+    ['names in any case, spaced and repeated', '/_api/rest/v1/default/group?client_id=C1&Client_Secret=S1&x=1', ['CLIENT_ID', ' client_secret '], 'rest:group.findquery', { x: '1' }, ['client_id', 'client_secret']],
+    ['a refresh token', '/_api/rest/v1/default/group?refresh_token=R1&x=1', 'refresh_token', 'rest:group.findquery', { x: '1' }, ['refresh_token']],
+    ['an access token the credential block already deleted', '/_api/rest/v1/default/group?access_token=T1', 'access_token', 'rest:group.findall', {}, ['access_token']],
+    ['nothing for names that are not credentials', '/_api/rest/v1/default/group?client_id=C1', 'method,siteid,entityname,x', 'rest:group.findquery', { client_id: 'C1' }, []],
+    ['nothing without the header', '/_api/rest/v1/default/group?client_id=C1', undefined, 'rest:group.findquery', { client_id: 'C1' }, []],
+  ])('removes %s', (_label, url, consumed, key, kept, removed) => {
+    const headers = consumed === undefined ? {} : { [REST_CONSUMED_PARAMS_HEADER]: consumed };
+    const result = resultOf('GET', url, { headers });
+    expect(result.key).toBe(key);
+    expect(result.params).toMatchObject(kept);
+    for (const name of removed) expect(result.params).not.toHaveProperty(name);
+    expect(result.params).toMatchObject({ entityname: 'group', siteid: 'default' });
+  });
+
+  it('removes them from form and JSON body params too', () => {
+    const form = resultOf('POST', '/_api/rest/v1/default/group', {
+      form: { client_id: 'C1', groupname: 'G' },
+      headers: { 'x-opt2-consumed-params': 'client_id' },
+    });
+    const json = resultOf('POST', '/_api/rest/v1/default/group', {
+      jsonBody: { client_secret: 'S1', groupname: 'G' },
+      headers: { ...JSON_TYPE, 'x-opt2-consumed-params': 'client_secret' },
+    });
+    for (const result of [form, json]) {
+      expect(result.key).toBe('rest:group.save');
+      expect(result.params).toMatchObject({ groupname: 'G' });
+      expect(result.params).not.toHaveProperty('client_id');
+      expect(result.params).not.toHaveProperty('client_secret');
+    }
+  });
+
+  it('cannot steer method, entity or site resolution', () => {
+    const url = '/_api/rest/v1/default/?method=findAll&entityname=group&siteid=default';
+    const steered = resultOf('GET', url, { headers: { [REST_CONSUMED_PARAMS_HEADER]: 'method,entityname,siteid' } });
+    expect(steered).toEqual(resultOf('GET', url));
+    expect(steered.params).toMatchObject({ method: 'findAll', entityname: 'group', siteid: 'default' });
+  });
+
+  it.each([
+    ['an OAuth endpoint the credential block answers', 'GET', '/_api/rest/v1/default/oauth?client_id=C1', 'rest:oauth'],
+    ['the JSON API family', 'GET', `${API}/group?client_id=C1`, 'api:group.findquery'],
+  ])('leaves params alone on %s', (_label, method, url, key) => {
+    const result = resultOf(method, url, { headers: { [REST_CONSUMED_PARAMS_HEADER]: 'client_id' } });
+    expect(result.key).toBe(key);
+    expect(result.params).toMatchObject({ client_id: 'C1' });
+  });
+});
+
 describe('other /_api families', () => {
   it.each<{ url: string; opts?: RouteKeyOptions; key: string }>([
     { url: '/_api/feed/v1/?feedid=F1&siteid=default', key: 'feed:v1' },
@@ -668,6 +736,33 @@ describe('remote CFC proxies, fixtures and path families', () => {
     const result = resultOf(method, url, extra);
     expect(result.key).toBe(key);
     expect(ROUTE_FAMILIES).toContain(result.family);
+  });
+
+  it.each<{ name: string; url: string; form?: Record<string, string>; query?: Record<string, string[]>; siteId: string | undefined }>([
+    { name: 'a query siteid', url: '/opt2/admin/reporting/exports?siteid=tenant-a', siteId: 'tenant-a' },
+    { name: 'any spelling of the name, value as sent', url: '/opt2/admin/reporting/exports?SiteID=Tenant-A', siteId: 'Tenant-A' },
+    {
+      name: 'a form siteid over the query one',
+      url: '/opt2/admin-actions/reporting/create?siteid=tenant-a',
+      form: { SITEID: 'tenant-b' },
+      siteId: 'tenant-b',
+    },
+    {
+      name: 'repeated query values, comma-joined',
+      url: '/opt2/stub/notes',
+      query: { siteid: ['tenant-a', 'tenant-b'] },
+      siteId: 'tenant-a,tenant-b',
+    },
+    { name: 'an empty siteid', url: '/opt2/admin/reporting/exports?siteid=', siteId: '' },
+    { name: 'no siteid', url: '/opt2/admin/reporting/exports?page=2', siteId: undefined },
+  ])('reads the OPT-2 request site from $name, leaving the key unchanged', ({ url, form, query, siteId }) => {
+    const extra: Partial<RouteKeyRequest> = {};
+    if (form !== undefined) extra.form = form;
+    if (query !== undefined) extra.query = query;
+    const result = resultOf(form === undefined ? 'GET' : 'POST', url, extra);
+    expect(result.key).toBe(`opt2:${(url.split('?')[0] ?? '').toLowerCase()}`);
+    expect(result.siteId).toBe(siteId);
+    expect(Object.hasOwn(result, 'siteId')).toBe(siteId !== undefined);
   });
 
   it('merges a fixture JSON body over query and form params', () => {

@@ -1,9 +1,13 @@
+import { execFile } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { createServer as createNetServer, type AddressInfo } from 'node:net';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import pg from 'pg';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   LEASE_MARGIN_S,
   LOCAL_TOMBSTONE_RETENTION_S,
@@ -14,12 +18,20 @@ import {
   type LocalTaskPort,
 } from '../../src/tasks/local-adapter.js';
 import { MAX_TASK_PAGE_SIZE, createTaskPort, type CreateTaskInput, type TaskLogger } from '../../src/tasks/port.js';
-import { RECURRING_RETRY, UnknownQueueError, UnknownTaskTargetError, retryDelayS } from '../../src/tasks/queues.js';
-import { SYSTEM_TENANT_ID, rlsSql, tenantRegistrySql, type TenantDb } from '../../src/tenancy/index.js';
+import { RECURRING_RETRY, UnknownQueueError, UnknownTaskTargetError, queueDefinition, retryDelayS } from '../../src/tasks/queues.js';
+import {
+  SYSTEM_TENANT_ID,
+  registeredTenants,
+  rlsSql,
+  tenantDbFromPool,
+  tenantIdForSite,
+  tenantRegistrySql,
+  type TenantDb,
+} from '../../src/tenancy/index.js';
 import { createLocalCloudTasksTransport } from '../../src/auth/index.js';
-import { MemorySpanExporter, SpanKind, shutdownTracing, startSpan, startTracing } from '../../src/tracing/index.js';
-import { createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '../../src/testing/schema.js';
-import { TENANT_A, TENANT_B, seedRegistry } from '../../src/testing/fixtures.js';
+import { MemorySpanExporter, SpanKind, flushTracing, shutdownTracing, startSpan, startTracing } from '../../src/tracing/index.js';
+import { createThrowawaySchema, pgAvailable, testPgConfig, type ThrowawaySchema } from '../../src/testing/schema.js';
+import { TENANT_A, TENANT_B, TENANT_LIST, TENANT_UMBRELLA, seedRegistry } from '../../src/testing/fixtures.js';
 import { testSigningKeys, writeTestSecrets } from '../../src/testing/tokens.js';
 import { REDACTED } from '../../src/logging/index.js';
 
@@ -28,6 +40,27 @@ const SERVICE_URLS: Readonly<Record<string, string>> = {
   communications: 'http://127.0.0.1:8115',
   stub: 'http://127.0.0.1:8199',
 };
+
+const PLATFORM_DIR = fileURLToPath(new URL('../..', import.meta.url));
+
+// Run in a separate Node process from PLATFORM_DIR: creates OPT2_WRITER's task through its own adapter and pool, as
+// the throwaway app role (the bootstrap user may SET ROLE to it), and prints the create result.
+const EXTERNAL_WRITER = `
+const { createLocalTaskAdapter } = await import('./src/tasks/local-adapter.ts');
+const { tenantDbFromPool } = await import('./src/tenancy/index.ts');
+const { testPgConfig } = await import('./src/testing/schema.ts');
+const { default: pg } = await import('pg');
+const { schema, role, serviceUrls, input } = JSON.parse(process.env.OPT2_WRITER);
+const db = tenantDbFromPool(new pg.Pool({ ...testPgConfig(), options: '-c role=' + role, max: 1 }), { schema });
+const silent = { info() {}, warn() {}, error() {} };
+const port = await createLocalTaskAdapter({ db, stateDir: 'unused', serviceUrls, logger: silent, autoStart: false, signer: async () => 'unused' });
+try {
+  process.stdout.write(JSON.stringify(await port.create({ ...input, scheduleTime: new Date(input.scheduleTime) })));
+} finally {
+  await port.close();
+  await db.end();
+}
+`;
 
 describe('scheduledTaskQueueSql', () => {
   it('returns both tables, the tenant-leading queue indexes and each table RLS block, newline-terminated', () => {
@@ -95,7 +128,7 @@ describe.skipIf(!available)('local task adapter', () => {
   let nowMs = new Date(2026, 5, 30, 12, 0, 0, 0).getTime();
   const clock = { now: () => new Date(nowMs) };
   let calls: Call[] = [];
-  let respond: (call: Call) => Promise<number> = async () => 200;
+  let respond: (call: Call) => Promise<number> = () => Promise.resolve(200);
   const warnings: Array<{ obj: object; msg?: string }> = [];
   const errors: Array<{ obj: object; msg?: string }> = [];
   const logger: TaskLogger = {
@@ -108,7 +141,7 @@ describe.skipIf(!available)('local task adapter', () => {
   const stubRequest = (async (url: string, opts: { headers: Record<string, string>; body: string; headersTimeout: number }) => {
     const call: Call = { url, headers: opts.headers, body: JSON.parse(opts.body), headersTimeout: opts.headersTimeout };
     calls.push(call);
-    return { statusCode: await respond(call), body: { dump: async () => undefined } };
+    return { statusCode: await respond(call), body: { dump: () => Promise.resolve() } };
   }) as unknown as typeof import('undici').request;
 
   /** Task input for the surveys launch route, named `name`, due a second ago. */
@@ -159,7 +192,7 @@ describe.skipIf(!available)('local task adapter', () => {
   });
 
   beforeEach(async () => {
-    respond = async () => 200;
+    respond = () => Promise.resolve(200);
     nowMs += 10 * 3600 * 1000;
     await port.dispatchDue();
     calls = [];
@@ -255,7 +288,7 @@ describe.skipIf(!available)('local task adapter', () => {
   });
 
   it('reschedules a non-2xx answer with backoff and fails the task at maxAttempts', async () => {
-    respond = async () => 503;
+    respond = () => Promise.resolve(503);
     await port.create({
       queue: 'stub-outbox-sweep',
       name: 'retry-sys',
@@ -291,9 +324,7 @@ describe.skipIf(!available)('local task adapter', () => {
   });
 
   it('logs a failed dispatch with its error serialized, never its raw message', async () => {
-    respond = async () => {
-      throw new Error('connect failed https://user:pw@h/?X-Goog-Signature=abc');
-    };
+    respond = () => Promise.reject(new Error('connect failed https://user:pw@h/?X-Goog-Signature=abc'));
     await port.create({
       queue: 'stub-outbox-sweep',
       name: 'raw-error-sys',
@@ -454,7 +485,7 @@ describe.skipIf(!available)('local task adapter', () => {
     const stale = dead.dispatchDue();
     for (let i = 0; i < 50 && calls.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
     expect(await rowOf(TENANT_B.tenantId, 'lease-b')).toMatchObject({ status: 'running', attempts: 1 });
-    respond = async () => 200;
+    respond = () => Promise.resolve(200);
     expect(await port.dispatchDue()).toBe(0);
     nowMs += (60 + LEASE_MARGIN_S + 1) * 1000;
     expect(await port.dispatchDue()).toBe(1);
@@ -478,6 +509,8 @@ describe.skipIf(!available)('local task adapter', () => {
       withMetadata: (fn) => db.withMetadata(fn),
       end: () => db.end(),
     };
+    // Created through another adapter, so only the polling adapter's start-up full scan can find it.
+    await port.create(launch('poll-a', TENANT_A.tenantId));
     const polling = await createLocalTaskAdapter({
       db: flaky,
       stateDir,
@@ -488,14 +521,119 @@ describe.skipIf(!available)('local task adapter', () => {
       request: stubRequest,
     });
     polling.start();
-    await port.create(launch('poll-a', TENANT_A.tenantId));
     for (let i = 0; i < 200 && calls.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
     await polling.stop();
     expect(calls.map((call) => call.headers['x-cloudtasks-taskname'])).toEqual(['poll-a']);
     expect(errors[0]?.msg).toBe('Local tasks scan failed');
-    expect(errors[0]?.obj).toEqual({ error: expect.objectContaining({ type: 'Error', message: REDACTED }) });
+    expect(errors[0]?.obj).toEqual({ error: expect.objectContaining({ type: 'Error', message: REDACTED }) as unknown });
     expect(JSON.stringify(errors)).not.toContain('database unavailable');
     expect(await rowOf(TENANT_A.tenantId, 'poll-a')).toMatchObject({ status: 'done' });
+  });
+
+  it('can start again after opening the listener throws synchronously', async () => {
+    let attempts = 0;
+    const retryDb: TenantDb = {
+      ...db,
+      listen: (channel, handlers) => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('listener not ready');
+        const listener = db.listen?.(channel, handlers);
+        if (listener === undefined) throw new Error('TenantDb has no listener');
+        return listener;
+      },
+    };
+    const polling = await createLocalTaskAdapter({
+      db: retryDb, stateDir, serviceUrls: SERVICE_URLS, clock, logger, autoStart: false, pollIntervalMs: 25, request: stubRequest,
+    });
+    try {
+      expect(() => polling.start()).toThrow('listener not ready');
+      await port.create(launch('retry-start-a', TENANT_A.tenantId));
+      polling.start();
+      for (let i = 0; i < 200 && calls.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+    } finally {
+      await polling.stop();
+    }
+    expect(attempts).toBe(2);
+    expect(await rowOf(TENANT_A.tenantId, 'retry-start-a')).toMatchObject({ status: 'done' });
+  });
+
+
+  it('dispatches by full scans once a first LISTEN the server never answers times out', async () => {
+    // Answers the startup with AuthenticationOk and ReadyForQuery, then nothing.
+    const stalled = createNetServer((socket) => {
+      socket.once('data', () => socket.write(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0, 0x5a, 0, 0, 0, 5, 0x49])));
+      socket.resume();
+    });
+    await new Promise<void>((resolve) => stalled.listen(0, '127.0.0.1', resolve));
+    const { port: stalledPort } = stalled.address() as AddressInfo;
+    const silent = tenantDbFromPool(
+      new pg.Pool({ ...testPgConfig(), host: '127.0.0.1', port: stalledPort, connectionTimeoutMillis: 200, max: 1 }),
+      { schema: db.schema },
+    );
+    // Transactions reach the database; only the LISTEN session goes to the server that never answers.
+    const stalling: TenantDb = {
+      schema: db.schema,
+      withTenant: (tenantId, fn) => db.withTenant(tenantId, fn),
+      withMetadata: (fn, options) => db.withMetadata(fn, options),
+      listen: (channel, handlers) => {
+        const listener = silent.listen?.(channel, handlers);
+        if (listener === undefined) throw new Error('The stalled TenantDb cannot listen');
+        return listener;
+      },
+      end: () => db.end(),
+    };
+    await port.create(launch('stalled-listen-a', TENANT_A.tenantId));
+    const polling = await createLocalTaskAdapter({ db: stalling, stateDir, serviceUrls: SERVICE_URLS, clock, logger, pollIntervalMs: 25, request: stubRequest });
+    try {
+      for (let i = 0; i < 200 && calls.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(calls.map((call) => call.headers['x-cloudtasks-taskname'])).toEqual(['stalled-listen-a']);
+      expect(warnings.map((warning) => warning.msg)).toEqual(['Local tasks listener lost; every check scans all tenants until it listens again']);
+    } finally {
+      await polling.stop();
+      await silent.end();
+      await new Promise((resolve) => stalled.close(resolve));
+    }
+    expect(await rowOf(TENANT_A.tenantId, 'stalled-listen-a')).toMatchObject({ status: 'done' });
+  });
+
+  it('drains its in-flight dispatch on stop() although its listener fails to close, then rejects with that failure', async () => {
+    const failure = new Error('listener close failed');
+    const failing: TenantDb = {
+      schema: db.schema,
+      withTenant: (tenantId, fn) => db.withTenant(tenantId, fn),
+      withMetadata: (fn, options) => db.withMetadata(fn, options),
+      listen: (_channel, handlers) => {
+        setImmediate(() => handlers.onListening());
+        return { close: () => Promise.reject(failure) };
+      },
+      end: () => db.end(),
+    };
+    let answer: (status: number) => void = () => undefined;
+    respond = () =>
+      new Promise<number>((resolve) => {
+        answer = resolve;
+      });
+    await port.create(launch('close-failure-a', TENANT_A.tenantId));
+    const polling = await createLocalTaskAdapter({ db: failing, stateDir, serviceUrls: SERVICE_URLS, clock, logger, pollIntervalMs: 25, request: stubRequest });
+    for (let i = 0; i < 200 && calls.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(calls).toHaveLength(1);
+
+    let settled = false;
+    const stopped = polling.stop().then(
+      () => {
+        settled = true;
+      },
+      (err: unknown) => {
+        settled = true;
+        return err;
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(settled).toBe(false);
+    answer(200);
+
+    expect(await stopped).toBe(failure);
+    expect(await rowOf(TENANT_A.tenantId, 'close-failure-a')).toMatchObject({ status: 'done' });
   });
 
   describe('maxConcurrentDispatches', () => {
@@ -622,7 +760,8 @@ describe.skipIf(!available)('local task adapter', () => {
     }, 40_000);
 
     it('carries the creating trace in exactly one traceparent, instrumented or not', async () => {
-      await startTracing({ serviceName: 'local-tasks-test', version: '1.0.0', exporter: new MemorySpanExporter() });
+      const exporter = new MemorySpanExporter();
+      await startTracing({ serviceName: 'local-tasks-test', version: '1.0.0', exporter });
       let traceId = '';
       const create = (name: string, url: string): Promise<void> =>
         startSpan('create-task', SpanKind.INTERNAL, async (span) => {
@@ -635,6 +774,9 @@ describe.skipIf(!available)('local task adapter', () => {
       const traceparent = received.at(-1)?.traceparent;
       expect(typeof traceparent).toBe('string');
       expect(String(traceparent).split('-')[1]).toBe(instrumentedTrace);
+      await flushTracing();
+      const dispatched = exporter.getFinishedSpans().find((span) => span.spanContext().spanId === String(traceparent).split('-')[2]);
+      expect(dispatched).toMatchObject({ name: 'POST reporting', kind: SpanKind.CLIENT });
 
       await create('trace-stub-b', `${target.reporting}/internal/v1/tasks/exports/3/run`);
       const stored = (await rowOf(TENANT_B.tenantId, 'trace-stub-b'))?.headers as { traceparent?: string };
@@ -643,6 +785,362 @@ describe.skipIf(!available)('local task adapter', () => {
       expect(await stubbed.dispatchDue()).toBe(1);
       expect(calls.at(-1)?.headers.traceparent).toBe(stored.traceparent);
       expect(String(stored.traceparent).split('-')[1]).toBe(traceId);
+    });
+  });
+
+  describe('timer dispatch by tenant wake time', () => {
+    const POLL_MS = 20;
+    let wake: ThrowawaySchema;
+    let counted: TenantDb;
+    // Tenant of every withTenant transaction the adapter opened, in order, and the count of its metadata transactions.
+    let opened: string[] = [];
+    let metadataTx = 0;
+    // Each LISTEN session start ('listening') and loss ('lost') the polling adapter's listener reported, in order.
+    let listenEvents: string[] = [];
+    // A non-polling adapter over its own pool, standing in for another writer of the schema.
+    let writerDb: TenantDb;
+    let writer: LocalTaskPort;
+    // Each dispatcher check that finds no full scan pending reads the clock once.
+    let clockReads = 0;
+    const countedClock = {
+      now: (): Date => {
+        clockReads += 1;
+        return clock.now();
+      },
+    };
+    let adapter: LocalTaskPort | undefined;
+
+    const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+    /** Re-evaluates `ready` every poll interval until it holds; throws after five seconds. */
+    async function until(ready: () => boolean | Promise<boolean>): Promise<void> {
+      for (let i = 0; i < 250; i += 1) {
+        if (await ready()) return;
+        await sleep(POLL_MS);
+      }
+      throw new Error('Condition not met within 5 s');
+    }
+
+    /** Resolves once five poll intervals pass without a new transaction; throws after five seconds. */
+    async function quiet(): Promise<void> {
+      for (let round = 0; round < 50; round += 1) {
+        const seen = opened.length;
+        await sleep(POLL_MS * 5);
+        if (opened.length === seen) return;
+      }
+      throw new Error('Transactions kept opening for 5 s');
+    }
+
+    /** The stored queue row named `name` under `tenant`, read outside the counted handle. */
+    async function storedRow(tenant: string, name: string): Promise<Record<string, unknown> | undefined> {
+      return wake.app.withTenant(tenant, async (tx) => {
+        const { rows } = await tx.query(`SELECT * FROM ${wake.schema}.scheduled_task_queue WHERE name = $1`, [name]);
+        return rows[0];
+      });
+    }
+
+    /** The system tenant and each registered one, in the order a full scan opens them. */
+    async function scanOrder(): Promise<string[]> {
+      return [SYSTEM_TENANT_ID, ...(await registeredTenants(wake.app)).map((entry) => entry.tenantId)];
+    }
+
+    /** Registers generated sites until the registry holds `count` tenants; returns `scanOrder()`. */
+    async function registerUpTo(count: number): Promise<string[]> {
+      const sites = Array.from({ length: Math.max(0, count - TENANT_LIST.length) }, (_, n) => `wake-site-${String(n).padStart(3, '0')}`);
+      await wake.app.withMetadata((tx) =>
+        tx.query(
+          `INSERT INTO ${wake.schema}.tenant_registry (site_id, tenant_id, aggregate_version, updated_at)
+SELECT site_id, tenant_id, 1, LOCALTIMESTAMP(3) FROM unnest($1::text[], $2::uuid[]) AS s(site_id, tenant_id) ON CONFLICT DO NOTHING`,
+          [sites, sites.map((site) => tenantIdForSite(site))],
+        ),
+      );
+      return scanOrder();
+    }
+
+    /** Starts a polling adapter over the counted handle and resolves once it listens and its start-up full scan has opened every transaction. */
+    async function startPolling(tenants: readonly string[]): Promise<LocalTaskPort> {
+      opened = [];
+      metadataTx = 0;
+      listenEvents = [];
+      adapter = await createLocalTaskAdapter({
+        db: counted,
+        stateDir,
+        serviceUrls: SERVICE_URLS,
+        clock: countedClock,
+        logger,
+        pollIntervalMs: POLL_MS,
+        request: stubRequest,
+      });
+      // Checks wait for LISTEN; then the paused read, then one claim transaction per tenant.
+      await until(() => listenEvents.includes('listening') && opened.length >= tenants.length + 1);
+      return adapter;
+    }
+
+    /** `startPolling` over the current registry, with the counters cleared once its start-up scan has finished. */
+    async function startQuiet(): Promise<LocalTaskPort> {
+      const started = await startPolling(await scanOrder());
+      await sleep(POLL_MS * 3);
+      opened = [];
+      metadataTx = 0;
+      return started;
+    }
+
+    const taskNames = (): string[] => calls.map((call) => call.headers['x-cloudtasks-taskname'] ?? '');
+
+    beforeAll(async () => {
+      wake = await createThrowawaySchema({ service: 'taskwake', extraSql: [tenantRegistrySql('taskwake'), scheduledTaskQueueSql('taskwake')] });
+      await seedRegistry(wake.app);
+      counted = {
+        schema: wake.app.schema,
+        withTenant: (tenantId, fn) => {
+          opened.push(tenantId);
+          return wake.app.withTenant(tenantId, fn);
+        },
+        withMetadata: (fn, options) => {
+          metadataTx += 1;
+          return wake.app.withMetadata(fn, options);
+        },
+        listen: (channel, handlers) => {
+          const listener = wake.app.listen?.(channel, {
+            onNotification: (payload) => handlers.onNotification(payload),
+            onListening: () => {
+              listenEvents.push('listening');
+              handlers.onListening();
+            },
+            onLost: (err) => {
+              listenEvents.push('lost');
+              handlers.onLost(err);
+            },
+          });
+          if (listener === undefined) throw new Error('The throwaway TenantDb cannot listen');
+          return listener;
+        },
+        end: () => wake.app.end(),
+      };
+      writerDb = tenantDbFromPool(wake.connect('app'), { schema: wake.schema });
+      writer = await createLocalTaskAdapter({
+        db: writerDb,
+        stateDir,
+        serviceUrls: SERVICE_URLS,
+        clock,
+        logger,
+        autoStart: false,
+        request: stubRequest,
+      });
+    });
+
+    afterEach(async () => {
+      await adapter?.close();
+      adapter = undefined;
+      expect(errors).toEqual([]);
+    });
+
+    afterAll(async () => {
+      await writer?.close();
+      await wake?.drop();
+    });
+
+    it.each([3, 74])('opens no transaction on idle checks after its start-up full scan, with %i registered tenants', async (count) => {
+      const tenants = await registerUpTo(count);
+      expect(tenants).toHaveLength(count + 1);
+      await startPolling(tenants);
+      await sleep(POLL_MS * 3);
+      expect(opened).toEqual([SYSTEM_TENANT_ID, ...tenants]);
+      expect(metadataTx).toBe(1);
+      clockReads = 0;
+      await sleep(POLL_MS * 15);
+      expect(clockReads).toBeGreaterThanOrEqual(3);
+      expect(opened).toHaveLength(tenants.length + 1);
+      expect(metadataTx).toBe(1);
+    });
+
+    // The create when the polling adapter makes it, the paused read, tenant A's claim and the settle, plus one registry read.
+    it.each([
+      ['the polling adapter', 'wake-due-a', true, [TENANT_A.tenantId, SYSTEM_TENANT_ID, TENANT_A.tenantId, TENANT_A.tenantId]],
+      ['another adapter over its own pool', 'wake-cross-a', false, [SYSTEM_TENANT_ID, TENANT_A.tenantId, TENANT_A.tenantId]],
+    ])('dispatches a due task %s creates after the start-up scan at the next check, scanning only its tenant', async (_by, name, itself, expected) => {
+      const polling = await startQuiet();
+      await (itself ? polling : writer).create(launch(name, TENANT_A.tenantId));
+      await until(async () => (await storedRow(TENANT_A.tenantId, name))?.status === 'done');
+      await sleep(POLL_MS * 5);
+      expect(taskNames()).toEqual([name]);
+      expect(opened).toEqual(expected);
+      expect(metadataTx).toBe(1);
+    });
+
+    it('dispatches a due task another process creates after the start-up scan, scanning only its tenant', async () => {
+      await startQuiet();
+      const input = launch('wake-process-a', TENANT_A.tenantId);
+      const writerInput = { ...input, scheduleTime: input.scheduleTime.toISOString() };
+      const { stdout } = await promisify(execFile)(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', EXTERNAL_WRITER], {
+        cwd: PLATFORM_DIR,
+        env: { ...process.env, OPT2_WRITER: JSON.stringify({ schema: wake.schema, role: wake.roles.app, serviceUrls: SERVICE_URLS, input: writerInput }) },
+      });
+      expect(JSON.parse(stdout)).toEqual({ name: 'wake-process-a', created: true });
+      await until(async () => (await storedRow(TENANT_A.tenantId, 'wake-process-a'))?.status === 'done');
+      expect(taskNames()).toEqual(['wake-process-a']);
+      expect(opened).toEqual([SYSTEM_TENANT_ID, TENANT_A.tenantId, TENANT_A.tenantId]);
+    });
+
+    it('opens nothing for a future task until the clock reaches it, then dispatches it', async () => {
+      const polling = await startQuiet();
+      await polling.create(launch('wake-later-b', TENANT_B.tenantId, { scheduleTime: new Date(nowMs + 60_000) }));
+      await sleep(POLL_MS * 10);
+      expect(calls).toEqual([]);
+      expect(opened).toEqual([TENANT_B.tenantId]);
+      nowMs += 60_000;
+      await until(async () => (await storedRow(TENANT_B.tenantId, 'wake-later-b'))?.status === 'done');
+      expect(taskNames()).toEqual(['wake-later-b']);
+    });
+
+    it('redispatches a non-2xx answer once the clock reaches its retry time', async () => {
+      const polling = await startQuiet();
+      const statuses = [503];
+      respond = () => Promise.resolve(statuses.shift() ?? 200);
+      await polling.create(launch('wake-retry-a', TENANT_A.tenantId));
+      await until(async () => (await storedRow(TENANT_A.tenantId, 'wake-retry-a'))?.last_status === 503);
+      await sleep(POLL_MS * 5);
+      expect(calls).toHaveLength(1);
+      nowMs += retryDelayS(queueDefinition('surveys-launch').retry, 1) * 1000;
+      await until(async () => (await storedRow(TENANT_A.tenantId, 'wake-retry-a'))?.status === 'done');
+      expect(calls.map((call) => call.headers['x-cloudtasks-taskretrycount'])).toEqual(['0', '1']);
+    });
+
+    // The pause and the create when the polling adapter makes them, then one scan of tenant B: its paused read and claim.
+    it.each([
+      ['the polling adapter', 'wake-paused-b', true, [SYSTEM_TENANT_ID, TENANT_B.tenantId, SYSTEM_TENANT_ID, TENANT_B.tenantId]],
+      ['another adapter', 'wake-paused-cross-b', false, [SYSTEM_TENANT_ID, TENANT_B.tenantId]],
+    ])('holds a paused queue task without rescanning its tenant and dispatches it after %s resumes the queue', async (_by, name, itself, expected) => {
+      const polling = await startQuiet();
+      const control = itself ? polling : writer;
+      const queue = 'communications-reminders';
+      await control.pauseQueue(queue);
+      try {
+        await control.create({
+          queue,
+          name,
+          scheduleTime: new Date(nowMs),
+          url: `${SERVICE_URLS.communications}/internal/v1/tasks/reminders/2`,
+          deadlineS: 60,
+          tenantId: TENANT_B.tenantId,
+        });
+        await until(() => opened.length >= expected.length);
+        await sleep(POLL_MS * 10);
+        expect(calls).toEqual([]);
+        expect(opened).toEqual(expected);
+      } finally {
+        await control.resumeQueue(queue);
+      }
+      await until(async () => (await storedRow(TENANT_B.tenantId, name))?.status === 'done');
+      expect(taskNames()).toEqual([name]);
+    });
+
+    it('redispatches at its retry time a task another adapter attempted while holding its lease', async () => {
+      await startQuiet();
+      const dueAt = nowMs + 60_000;
+      let otherNowMs = nowMs;
+      const other = await createLocalTaskAdapter({
+        db: writerDb,
+        stateDir,
+        serviceUrls: SERVICE_URLS,
+        clock: { now: () => new Date(otherNowMs) },
+        logger,
+        autoStart: false,
+        request: stubRequest,
+      });
+      let answer: (status: number) => void = () => undefined;
+      respond = () =>
+        new Promise<number>((resolve) => {
+          answer = resolve;
+        });
+      try {
+        await other.create(launch('wake-other-retry-a', TENANT_A.tenantId, { scheduleTime: new Date(dueAt) }));
+        // Only the other adapter's clock has reached the task, so it alone claims and attempts it.
+        otherNowMs = dueAt;
+        const attempt = other.dispatchDue();
+        await until(() => calls.length === 1);
+        nowMs = dueAt;
+        await until(() => opened.length >= 2);
+        await sleep(POLL_MS * 5);
+        // The scan at the create's wake time finds the task leased, so its wake time becomes the lease expiry.
+        expect(opened).toEqual([SYSTEM_TENANT_ID, TENANT_A.tenantId]);
+        respond = () => Promise.resolve(200);
+        answer(503);
+        expect(await attempt).toBe(1);
+        nowMs = dueAt + retryDelayS(queueDefinition('surveys-launch').retry, 1) * 1000;
+        await until(async () => (await storedRow(TENANT_A.tenantId, 'wake-other-retry-a'))?.status === 'done');
+      } finally {
+        await other.close();
+      }
+      expect(calls.map((call) => call.headers['x-cloudtasks-taskretrycount'])).toEqual(['0', '1']);
+      expect(opened).toEqual([SYSTEM_TENANT_ID, TENANT_A.tenantId, SYSTEM_TENANT_ID, TENANT_A.tenantId, TENANT_A.tenantId]);
+    });
+
+    it('purges at its retention a tombstone another adapter left after the start-up scan', async () => {
+      await startQuiet();
+      const tenant = TENANT_B.tenantId;
+      const name = 'wake-other-delete-b';
+      await writer.create(launch(name, tenant, { scheduleTime: new Date(nowMs + 10 * 3600 * 1000) }));
+      expect(await writer.delete('surveys-launch', name, { tenantId: tenant })).toEqual({ name, deleted: true });
+      nowMs += LOCAL_TOMBSTONE_RETENTION_S * 1000 + 60_000;
+      await until(async () => (await storedRow(tenant, name)) === undefined);
+      expect(opened).toEqual([SYSTEM_TENANT_ID, tenant]);
+      expect(calls).toEqual([]);
+    });
+
+    it('scans every tenant at each check while its listener is down, then listens again and wakes by notification', async () => {
+      await startQuiet();
+      const { rows } = await wake.adminPool.query<{ n: number }>(
+        "SELECT count(pg_terminate_backend(pid))::int AS n FROM pg_stat_activity WHERE usename = $1 AND query LIKE 'LISTEN %'",
+        [wake.roles.app],
+      );
+      expect(rows[0]?.n).toBe(1);
+      await until(() => listenEvents.includes('lost'));
+      expect(warnings.map((warning) => warning.msg)).toEqual(['Local tasks listener lost; every check scans all tenants until it listens again']);
+      // Committed while nothing listens, so only a scan of every tenant can find it.
+      await writer.create(launch('wake-lost-a', TENANT_A.tenantId));
+      await until(async () => (await storedRow(TENANT_A.tenantId, 'wake-lost-a'))?.status === 'done');
+      await until(() => listenEvents.length === 3);
+      expect(listenEvents).toEqual(['listening', 'lost', 'listening']);
+      // At least one scan while polling and the full scan after listening again reach a tenant that holds no task.
+      await quiet();
+      expect(opened.filter((tenant) => tenant === TENANT_UMBRELLA.tenantId).length).toBeGreaterThanOrEqual(2);
+
+      opened = [];
+      metadataTx = 0;
+      await sleep(POLL_MS * 15);
+      expect(opened).toEqual([]);
+      await writer.create(launch('wake-relisten-a', TENANT_A.tenantId));
+      await until(async () => (await storedRow(TENANT_A.tenantId, 'wake-relisten-a'))?.status === 'done');
+      expect(opened).toEqual([SYSTEM_TENANT_ID, TENANT_A.tenantId, TENANT_A.tenantId]);
+      expect(taskNames()).toEqual(['wake-lost-a', 'wake-relisten-a']);
+    });
+
+    it('rechecks a tenant outside the registry once per purge interval and never dispatches its task', async () => {
+      await startQuiet();
+      await writer.create(launch('wake-unregistered', tenantIdForSite('wake-unregistered-site')));
+      await until(() => opened.length >= 1);
+      await sleep(POLL_MS * 15);
+      // The paused read and the registry read, then nothing until the purge interval has passed.
+      expect([opened, metadataTx]).toEqual([[SYSTEM_TENANT_ID], 1]);
+      nowMs += 60_000;
+      await until(() => opened.length >= 2);
+      await sleep(POLL_MS * 5);
+      expect([opened, metadataTx, calls]).toEqual([[SYSTEM_TENANT_ID, SYSTEM_TENANT_ID], 2, []]);
+    });
+
+    it('purges a tombstone at the check after its retention and the purge interval have passed', async () => {
+      const polling = await startQuiet();
+      const tenant = TENANT_UMBRELLA.tenantId;
+      await polling.create(launch('wake-purge-u', tenant));
+      await until(async () => (await storedRow(tenant, 'wake-purge-u'))?.status === 'done');
+      const doneAt = nowMs;
+      nowMs = doneAt + (LOCAL_TOMBSTONE_RETENTION_S - 1) * 1000;
+      await sleep(POLL_MS * 5);
+      expect(await storedRow(tenant, 'wake-purge-u')).toMatchObject({ status: 'done' });
+      nowMs = doneAt + LOCAL_TOMBSTONE_RETENTION_S * 1000 + 60_000;
+      await until(async () => (await storedRow(tenant, 'wake-purge-u')) === undefined);
+      expect(taskNames()).toEqual(['wake-purge-u']);
     });
   });
 });

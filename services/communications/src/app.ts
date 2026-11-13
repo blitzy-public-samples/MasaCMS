@@ -9,6 +9,7 @@ import {
   envPort,
   envUrl,
   loadEnv,
+  optionalEnvString,
   publisherEmulatorHost,
   requiredEnvString,
   systemClock,
@@ -41,12 +42,23 @@ export const SERVICE_VERSION = '1.0.0';
 // Project of the harness's local Pub/Sub topology; OPT2_ENV=cloud makes GOOGLE_CLOUD_PROJECT required.
 const LOCAL_PROJECT_ID = 'opt2-local';
 
-/** Base variables plus the SMTP relay address and the Mailpit API origin of delivery confirmation. */
-export const communicationsEnvSchema = baseEnvSchema.extend({
-  SMTP_HOST: requiredEnvString(),
-  SMTP_PORT: envPort(),
-  MAILPIT_API_URL: envUrl(),
-});
+/** Base variables plus the SMTP relay address, the cloud relay credential and the Mailpit API origin of delivery confirmation. */
+export const communicationsEnvSchema = baseEnvSchema
+  .extend({
+    SMTP_HOST: requiredEnvString(),
+    SMTP_PORT: envPort(),
+    SMTP_CREDENTIAL: optionalEnvString(),
+    MAILPIT_API_URL: envUrl(),
+  })
+  .superRefine(
+    (env, ctx) => {
+      if (env.OPT2_ENV === 'cloud' && env.SMTP_CREDENTIAL === undefined) {
+        ctx.addIssue({ code: 'custom', path: ['SMTP_CREDENTIAL'], message: 'is required when OPT2_ENV=cloud' });
+      }
+    },
+    // Runs even when other variables failed, so loadEnv lists this issue with theirs.
+    { when: () => true },
+  );
 
 // LoadedEnv rather than z.infer: createService and the route deps need the adapter choices loadEnv always sets.
 /** Parsed communications environment, as `loadEnv(communicationsEnvSchema)` returns it. */
@@ -71,6 +83,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   const clock = options.clock ?? systemClock;
   // Checked before createService acquires anything; an injected publisher needs no emulator.
   const emulatorHost = options.publisher === undefined ? publisherEmulatorHost(env) : undefined;
+  // Also before createService, so a malformed SMTP_CREDENTIAL fails start-up; unset, it sends without AUTH as local Mailpit expects.
+  const mail =
+    options.mailTransport ??
+    createSmtpTransport({ host: env.SMTP_HOST, port: env.SMTP_PORT, credential: env.SMTP_CREDENTIAL });
   const app = await createService({
     name: SERVICE_NAME,
     version: SERVICE_VERSION,
@@ -100,8 +116,6 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   // An injected throwaway pool names its own schema; the service's own pool names `communications`.
   const repository = createCommunicationsRepository({ clock, schema: db.schema });
-  // No SMTP credential: the environment carries only the relay address, and local Mailpit takes no AUTH.
-  const mail = options.mailTransport ?? createSmtpTransport({ host: env.SMTP_HOST, port: env.SMTP_PORT });
   const deliveryStatus = options.deliveryStatus ?? createMailpitDeliveryStatus({ baseUrl: env.MAILPIT_API_URL });
   const senderAddress = options.senderAddress ?? createSenderAddressSource({ db });
 

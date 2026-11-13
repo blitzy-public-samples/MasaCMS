@@ -37,6 +37,7 @@ import {
   CLOUD_TASKS_HEADERS,
   OUTBOX_SWEEP_INTERVAL_S,
   OUTBOX_SWEEP_PATH,
+  UnknownTaskTargetError,
   createLocalTaskAdapter,
   outboxSweepQueue,
   scheduledTaskQueueSql,
@@ -275,8 +276,8 @@ async function pullUntil(subscription: TestSubscription, wanted: readonly string
   return pulled;
 }
 
-/** A stub service over the test keys, closed with the suite. */
-async function stubService(fx: Fixture, cleanup: CleanupStack): Promise<FastifyInstance> {
+/** A stub service over the test keys, closed with the suite; `overrides` replace its environment variables. */
+async function stubService(fx: Fixture, cleanup: CleanupStack, overrides: NodeJS.ProcessEnv = {}): Promise<FastifyInstance> {
   const env = loadEnv(undefined, {
     PORT: '8199',
     OPT2_SERVICE_NAME: SERVICE,
@@ -287,6 +288,7 @@ async function stubService(fx: Fixture, cleanup: CleanupStack): Promise<FastifyI
     OPT2_SERVICE_URLS: JSON.stringify(SERVICE_URLS),
     OPT2_STATE_DIR: fx.stateDir,
     TZ: 'UTC',
+    ...overrides,
   });
   const app = await createService({
     name: SERVICE,
@@ -483,6 +485,18 @@ describe('outbox sweep, drain counts and replay', () => {
     expect(successorLiveDuringSweep).toEqual([true]);
     expect(capture.published.map(({ envelope }) => envelope.eventId)).toEqual(expect.arrayContaining(seeded));
     expect(Object.values(await publishedAt(fx, TENANT_A.tenantId, seeded))).not.toContain(null);
+  });
+
+  it.each([
+    { label: 'unset', urls: undefined },
+    { label: 'without its own entry', urls: JSON.stringify({ gateway: 'http://127.0.0.1:8100' }) },
+  ])('fails registration naming OPT2_SERVICE_URLS when it is $label', async ({ urls }) => {
+    const app = await stubService(fx, cleanup, { OPT2_SERVICE_URLS: urls });
+    const register = () =>
+      registerOutboxSweep(app, { service: SERVICE, port: taskPort, runtime: runtimeOf(fx, createCapturingPublisher()), clock: CLOCK });
+
+    expect(register).toThrow(UnknownTaskTargetError);
+    expect(register).toThrow('OPT2_SERVICE_URLS has no URL for task target: stub');
   });
 
   it('answers the legacy 503 and sweeps nothing when the successor task cannot be created', async () => {

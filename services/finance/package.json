@@ -11,7 +11,7 @@
   "packageManager": "npm@11.21.0",
   "scripts": {
     "postinstall": "npm ci --prefix ../../platform && npm run build --prefix ../../platform",
-    "generate": "node -e \"require('node:fs').mkdirSync('src/generated/events',{recursive:true})\" && openapi-typescript contracts/openapi.yaml -o src/generated/openapi.ts && json2ts -i ../programs-sites/contracts/events/programs-sites.site.changed.v1.json -o src/generated/events/programs-sites.site.changed.v1.ts",
+    "generate": "node -e \"const fs=require('node:fs');for(const d of ['src/generated/clients','src/generated/events'])fs.mkdirSync(d,{recursive:true})\" && openapi-typescript contracts/openapi.yaml -o src/generated/openapi.ts && openapi-typescript ../reporting/contracts/openapi.yaml -o src/generated/clients/reporting.ts && json2ts -i ../programs-sites/contracts/events/programs-sites.site.changed.v1.json -o src/generated/events/programs-sites.site.changed.v1.ts",
     "prebuild": "npm run generate",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/main.js",

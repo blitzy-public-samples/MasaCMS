@@ -1,4 +1,4 @@
-/** The `getAccount`, `lookupAccounts` and `listSiteGroups` routes over a throwaway `identity` schema: answers, contract shape, auth denials and the legacy 503s. */
+/** The account, membership, login-block and pool-group read routes over a throwaway `identity` schema: answers, contract shape, auth denials and the legacy 503s. */
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -8,7 +8,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
-import { ensureUnitGates, withGatedTenant } from '@opt2/platform/migration-kit';
+import { ensureUnitGates, registerWritePositionHeader, withGatedTenant } from '@opt2/platform/migration-kit';
 import { createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { tenantIdForSite, withMetadata, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import {
@@ -25,7 +25,7 @@ import {
 import { createAccountReads } from '../../src/domain/account-reads.js';
 import { registerAccountReadRoutes } from '../../src/routes/internal-account-reads.js';
 import { createIdentityRepository, type AccountInput, type GroupInput, type IdentityRepository } from '../../src/repo/repository.js';
-import { IDENTITY_UNITS } from '../../src/repo/tables.js';
+import { IDENTITY_UNITS, USER_STRIKE } from '../../src/repo/tables.js';
 
 type ContractOperation = Record<string, unknown>;
 type Method = 'GET' | 'POST';
@@ -33,7 +33,19 @@ type Method = 'GET' | 'POST';
 const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
   paths: Record<string, Record<string, ContractOperation>>;
 };
-const CONTRACT_PATHS = ['/internal/v1/accounts/{userId}', '/internal/v1/accounts:lookup', '/internal/v1/groups'];
+const CONTRACT_PATHS = [
+  '/internal/v1/accounts/{userId}',
+  '/internal/v1/accounts/{userId}/login-block',
+  '/internal/v1/accounts:lookup',
+  '/internal/v1/accounts:lookup-all-sites',
+  '/internal/v1/accounts:count',
+  '/internal/v1/accounts:username-candidates',
+  '/internal/v1/accounts:memberships',
+  '/internal/v1/groups',
+];
+const CANDIDATES = { publicPool: false, pattern: 'a%', limit: 10 };
+/** The bulk routes whose body lists one or more distinct CF UUIDs; lookupMemberships at most 1000. */
+const LOOKUP_URLS = ['/internal/v1/accounts:lookup', '/internal/v1/accounts:lookup-all-sites', '/internal/v1/accounts:memberships'];
 const CLOCK = fixedClock(new Date(2026, 5, 30, 12, 0, 0));
 const SHORT_MS = 300;
 const JSON_BODY = { 'content-type': 'application/json' };
@@ -46,7 +58,10 @@ const ACTIVE = id(1);
 const PENDING = id(2);
 const PUBLIC = id(3);
 const OTHER_TENANT = id(4);
+const DEFAULT_USER = id(8);
 const GROUP = id(5, 'D');
+const MEMBER_GROUP = id(6, 'D');
+const ORPHAN_GROUP = id(7, 'D');
 const MISSING = id(99);
 const ACTIVE_RECORD = {
   UserID: ACTIVE,
@@ -130,6 +145,7 @@ async function seed(): Promise<void> {
   await registerSite('tenant-a', 'tenant-a', 'umbrella');
   await registerSite('umbrella', 'umbrella', 'umbrella');
   await registerSite('tenant-b', 'tenant-b', 'tenant-b');
+  await registerSite('default', 'default', 'default');
   await gated('tenant-a', async (tx) => {
     await repo.insertAccount(tx, account(ACTIVE, 'ada', { admin: 1, s2: 1, remoteid: 'r-1', tablist: 'Basic,Extended' }));
     await repo.writeCredential(tx, ACTIVE, { password: 'stored-hash', passwordcreated: new Date(2026, 5, 1, 9, 15, 0) });
@@ -144,6 +160,12 @@ async function seed(): Promise<void> {
     await repo.insertGroup(tx, groupInput({ groupname: 'Members', ispublic: 1, siteid: 'umbrella' }), null);
   });
   await gated('tenant-b', (tx) => repo.insertAccount(tx, account(OTHER_TENANT, 'bea', { siteid: 'tenant-b' })));
+  await gated('default', (tx) => repo.insertAccount(tx, account(DEFAULT_USER, 'dee', { siteid: 'default' })));
+  await gated('tenant-a', (tx) => repo.addMembership(tx, ACTIVE, GROUP));
+  await gated('umbrella', async (tx) => {
+    await repo.addMembership(tx, PUBLIC, MEMBER_GROUP);
+    await repo.addMembership(tx, ACTIVE, ORPHAN_GROUP);
+  });
 }
 
 beforeAll(async () => {
@@ -173,7 +195,8 @@ beforeAll(async () => {
     verifierOverride: testVerifier('identity'),
     logger: createLogger({ service: 'identity', version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
   });
-  const accountReads = createAccountReads({ repo, closedUserWaitMs: SHORT_MS, gateWaitMs: SHORT_MS });
+  registerWritePositionHeader(app);
+  const accountReads = createAccountReads({ repo, closedUserWaitMs: SHORT_MS, gateWaitMs: SHORT_MS, clock: CLOCK });
   await registerAccountReadRoutes(app, { db: handle?.app ?? NO_DB, accountReads });
   await app.ready();
 });
@@ -184,11 +207,11 @@ afterAll(async () => {
   await rm(stateDir, { recursive: true, force: true });
 });
 
-/** Headers of a `caller` service call made for a user of `site`; no `site` sends the invocation credential alone. */
-async function headersFor(caller: string | null, site: string | null = 'tenant-a'): Promise<Record<string, string>> {
+/** Headers of a `caller` service call made for a user of `site` holding `roles`; no `site` sends the invocation credential alone. */
+async function headersFor(caller: string | null, site: string | null = 'tenant-a', roles: string[] = [Roles.systemUser]): Promise<Record<string, string>> {
   const headers: Record<string, string> = {};
   if (site !== null) {
-    headers.authorization = `Bearer ${await mintUserToken({ sub: 'test-editor', site, roles: [Roles.systemUser] })}`;
+    headers.authorization = `Bearer ${await mintUserToken({ sub: 'test-editor', site, roles })}`;
   }
   if (caller !== null) {
     headers[INVOCATION_HEADER] = `Bearer ${await mintServiceToken({ caller, audience: 'identity' })}`;
@@ -221,8 +244,8 @@ describe('route declarations', () => {
           requires: operation['x-opt2-requires'],
         })),
     );
-    expect(expected).toHaveLength(3);
-    expect(declared).toHaveLength(3);
+    expect(expected).toHaveLength(8);
+    expect(declared).toHaveLength(8);
     expect(declared).toEqual(expect.arrayContaining(expected.map((entry) => expect.objectContaining(entry))));
   });
 });
@@ -230,7 +253,12 @@ describe('route declarations', () => {
 describe('auth denials', () => {
   it.each([
     ['GET', `/internal/v1/accounts/${ACTIVE}`, undefined],
+    ['POST', `/internal/v1/accounts/${ACTIVE}/login-block`, { removeBlock: false }],
     ['POST', '/internal/v1/accounts:lookup', { userIds: [ACTIVE] }],
+    ['POST', '/internal/v1/accounts:lookup-all-sites', { userIds: [ACTIVE] }],
+    ['POST', '/internal/v1/accounts:count', { scope: 'tenant' }],
+    ['POST', '/internal/v1/accounts:username-candidates', CANDIDATES],
+    ['POST', '/internal/v1/accounts:memberships', { userIds: [ACTIVE] }],
     ['GET', '/internal/v1/groups?ispublic=0', undefined],
   ] as const)('refuse %s %s to callers other than people and to people without a user token', async (method, url, payload) => {
     for (const caller of ['gateway', 'strategies-content', 'identity']) {
@@ -242,23 +270,81 @@ describe('auth denials', () => {
 
   it.each([
     ['GET', `/internal/v1/accounts/${ACTIVE}?siteid=tenant-b`, undefined],
+    ['POST', `/internal/v1/accounts/${ACTIVE}/login-block?siteid=tenant-b`, { removeBlock: true }],
     ['POST', '/internal/v1/accounts:lookup?siteid=umbrella', { userIds: [ACTIVE] }],
+    ['POST', '/internal/v1/accounts:lookup-all-sites?siteid=umbrella', { userIds: [ACTIVE] }],
+    ['POST', '/internal/v1/accounts:count?siteid=umbrella', { scope: 'pool', publicPool: true }],
+    ['POST', '/internal/v1/accounts:username-candidates?siteid=umbrella', CANDIDATES],
+    ['POST', '/internal/v1/accounts:memberships?siteid=umbrella', { userIds: [ACTIVE] }],
     ['GET', '/internal/v1/groups?siteid=tenant-b&ispublic=0', undefined],
   ] as const)('answer %s %s, whose siteid is not the token site, with 403', async (method, url, payload) => {
-    const res = await send(method, url, await headersFor('people'), payload);
+    const res = await send(method, url, await headersFor('people', 'tenant-a', [Roles.systemUser, Roles.s2]), payload);
 
     expect(res.statusCode).toBe(403);
     expect(res.json()).toMatchObject({ error: { code: 'invalid_request', message: 'Insufficient Account Permissions' } });
   });
 
-  it.each([
+  it.each(
+    ['tenant-a', 'umbrella'].flatMap((site) => [
+      [site, '/internal/v1/accounts:lookup-all-sites', { userIds: [ACTIVE] }],
+      [site, '/internal/v1/accounts:count', { scope: 'all-sites' }],
+    ]),
+  )('answer an all-sites read for a user of %s whose token is not S2 with the legacy 403 (%s)', async (site, url, payload) => {
+    const res = await send('POST', url, await headersFor('people', site, [Roles.systemUser, Roles.siteAdmin]), payload);
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toMatchObject({ error: { code: 'invalid_request', message: 'Insufficient Account Permissions' } });
+  });
+
+  const badBodies: Array<[string, unknown]> = [
     ['no body', undefined],
     ['no userIds', {}],
     ['an empty list', { userIds: [] }],
     ['a repeated id', { userIds: [ACTIVE, ACTIVE] }],
     ['an id that is no CF UUID', { userIds: ['not-a-uuid'] }],
-  ])('answer a lookup with %s with the legacy 400', async (_label, payload) => {
-    const res = await send('POST', '/internal/v1/accounts:lookup', await headersFor('people'), payload);
+  ];
+
+  it.each([
+    ...LOOKUP_URLS.flatMap((url) => badBodies.map(([label, payload]) => [url, label, payload] as const)),
+    ['/internal/v1/accounts:memberships', 'more than 1000 ids', { userIds: Array.from({ length: 1001 }, (_, n) => id(n + 1000)) }] as const,
+  ])('answer %s with %s with the legacy 400', async (url, _label, payload) => {
+    const res = await send('POST', url, await headersFor('people'), payload);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: { message: 'Invalid parameters' } });
+  });
+
+  it.each([
+    ['/internal/v1/accounts:lookup', 'an empty siteIds list', { userIds: [ACTIVE], where: { siteIds: [] } }],
+    ['/internal/v1/accounts:lookup', 'more than 100 site ids', { userIds: [ACTIVE], where: { siteIds: Array.from({ length: 101 }, (_, n) => `site-${n}`) } }],
+    ['/internal/v1/accounts:lookup-all-sites', 'a non-numeric isPublic', { userIds: [ACTIVE], where: { isPublic: 'yes' } }],
+    ['/internal/v1/accounts:count', 'no body', undefined],
+    ['/internal/v1/accounts:count', 'no scope', {}],
+    ['/internal/v1/accounts:count', 'an unknown scope', { scope: 'site' }],
+    ['/internal/v1/accounts:count', 'a pool scope without publicPool', { scope: 'pool' }],
+    ['/internal/v1/accounts:count', 'a non-boolean unassigned', { scope: 'tenant', where: { unassigned: 'maybe' } }],
+    ['/internal/v1/accounts:username-candidates', 'no pattern', { publicPool: false, limit: 10 }],
+    ['/internal/v1/accounts:username-candidates', 'an empty pattern', { ...CANDIDATES, pattern: '' }],
+    ['/internal/v1/accounts:username-candidates', 'a pattern over 2000 characters', { ...CANDIDATES, pattern: 'a'.repeat(2001) }],
+    ['/internal/v1/accounts:username-candidates', 'no publicPool', { pattern: 'a%', limit: 10 }],
+    ['/internal/v1/accounts:username-candidates', 'no limit', { publicPool: false, pattern: 'a%' }],
+    ['/internal/v1/accounts:username-candidates', 'a limit of 0', { ...CANDIDATES, limit: 0 }],
+    ['/internal/v1/accounts:username-candidates', 'a limit over 5000', { ...CANDIDATES, limit: 5001 }],
+    ['/internal/v1/accounts:username-candidates', 'a fractional limit', { ...CANDIDATES, limit: 1.5 }],
+  ])('answer %s with %s with the legacy 400', async (url, _label, payload) => {
+    const res = await send('POST', url, await headersFor('people', 'tenant-a', [Roles.systemUser, Roles.s2]), payload);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: { message: 'Invalid parameters' } });
+  });
+
+  it.each([
+    ['a user id that is no CF UUID', '/internal/v1/accounts/not-a-uuid/login-block', { removeBlock: false }],
+    ['no body', `/internal/v1/accounts/${ACTIVE}/login-block`, undefined],
+    ['no removeBlock', `/internal/v1/accounts/${ACTIVE}/login-block`, {}],
+    ['a removeBlock that is no boolean', `/internal/v1/accounts/${ACTIVE}/login-block`, { removeBlock: 'yes' }],
+  ])('answer loadLoginBlock with %s with the legacy 400', async (_label, url, payload) => {
+    const res = await send('POST', url, await headersFor('people'), payload);
 
     expect(res.statusCode).toBe(400);
     expect(res.json()).toMatchObject({ error: { message: 'Invalid parameters' } });
@@ -284,13 +370,18 @@ describe.skipIf(!available)('reads against PostgreSQL', () => {
     expect((await send('GET', `/internal/v1/accounts/${PUBLIC}?siteid=TENANT-A`, headers)).json()).toEqual(PUBLIC_RECORD);
   });
 
-  it.each([
-    ['a missing user', MISSING],
-    ['a group', GROUP],
-    ['a pending account', PENDING],
-    ['a user outside the token site\'s pools', OTHER_TENANT],
-  ])('answers getAccount for %s with the legacy 404', async (_label, userId) => {
-    const res = await send('GET', `/internal/v1/accounts/${userId}`, await headersFor('people'));
+  it.each(
+    [
+      ['a missing user', MISSING],
+      ['a group', GROUP],
+      ['a pending account', PENDING],
+      ['a user outside the token site\'s pools', OTHER_TENANT],
+    ].flatMap(([label, userId]) => [
+      ['getAccount', label, 'GET', `/internal/v1/accounts/${userId}`, undefined],
+      ['loadLoginBlock', label, 'POST', `/internal/v1/accounts/${userId}/login-block`, { removeBlock: true }],
+    ] as const),
+  )('answers %s for %s with the legacy 404', async (_op, _label, method, url, payload) => {
+    const res = await send(method, url, await headersFor('people'), payload);
 
     expect(res.statusCode).toBe(404);
     expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request', message: 'Invalid method call' } });
@@ -303,6 +394,129 @@ describe.skipIf(!available)('reads against PostgreSQL', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ items: [PUBLIC_RECORD, ACTIVE_RECORD] });
+  });
+
+  it.each(['tenant-a', 'tenant-b', 'default', 'umbrella'])(
+    'answers lookupAccountsAllSites for an S2 user of %s with every found user of every registered site once, in request order',
+    async (site) => {
+      const headers = await headersFor('people', site, [Roles.systemUser, Roles.s2]);
+      const res = await send('POST', '/internal/v1/accounts:lookup-all-sites', headers, {
+        userIds: [OTHER_TENANT, DEFAULT_USER, MISSING, GROUP, PENDING, PUBLIC, ACTIVE.toLowerCase()],
+      });
+
+      expect(res.statusCode).toBe(200);
+      const { items } = res.json() as { items: Array<{ UserID: string }> };
+      expect(items.map((record) => record.UserID)).toEqual([OTHER_TENANT, DEFAULT_USER, PUBLIC, ACTIVE]);
+      expect(items.slice(2)).toEqual([PUBLIC_RECORD, ACTIVE_RECORD]);
+      expect(items[0]).toMatchObject({ UserID: OTHER_TENANT, SiteID: 'tenant-b', UserName: 'bea' });
+      expect(items[1]).toMatchObject({ UserID: DEFAULT_USER, SiteID: 'default', UserName: 'dee' });
+    },
+  );
+
+  it.each(['/internal/v1/accounts:lookup', '/internal/v1/accounts:lookup-all-sites'])('answers %s for more than 1000 ids', async (url) => {
+    const userIds = [ACTIVE, ...Array.from({ length: 1000 }, (_, n) => id(n + 1000))];
+    const res = await send('POST', url, await headersFor('people', 'tenant-a', [Roles.systemUser, Roles.s2]), { userIds });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ items: [ACTIVE_RECORD] });
+  });
+
+  it('answers lookupAccounts and lookupAccountsAllSites with only the listed users where matches', async () => {
+    const headers = await headersFor('people', 'tenant-a', [Roles.systemUser, Roles.s2]);
+    const userIds = [PUBLIC, ACTIVE, OTHER_TENANT, DEFAULT_USER];
+
+    expect((await send('POST', '/internal/v1/accounts:lookup', headers, { userIds, where: { excludeS2Users: true } })).json()).toEqual({ items: [PUBLIC_RECORD] });
+    expect((await send('POST', '/internal/v1/accounts:lookup', headers, { userIds, where: { isPublic: 0, siteIds: ['TENANT-A '] } })).json()).toEqual({
+      items: [ACTIVE_RECORD],
+    });
+    const unassigned = await send('POST', '/internal/v1/accounts:lookup-all-sites', headers, { userIds, where: { unassigned: true } });
+    expect((unassigned.json() as { items: Array<{ UserID: string }> }).items.map((record) => record.UserID)).toEqual([OTHER_TENANT, DEFAULT_USER]);
+  });
+
+  it.each([
+    ['the private pool', { scope: 'pool', publicPool: false }, 1],
+    ['the public pool', { scope: 'pool', publicPool: true }, 1],
+    ['the token tenant', { scope: 'tenant' }, 1],
+    ['every registered site', { scope: 'all-sites' }, 4],
+    ['every registered site without memberships', { scope: 'all-sites', where: { unassigned: true } }, 2],
+    ['the token tenant\'s non-S2 users', { scope: 'tenant', where: { s2: 0 } }, 0],
+  ])('answers countAccounts for %s', async (_label, body, count) => {
+    const res = await send('POST', '/internal/v1/accounts:count', await headersFor('people', 'tenant-a', [Roles.systemUser, Roles.s2]), body);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ count });
+  });
+
+  it('answers lookupUsernameCandidates with the pool\'s matching user names by user id and whether they were all', async () => {
+    const headers = await headersFor('people');
+
+    const found = await send('POST', '/internal/v1/accounts:username-candidates', headers, { publicPool: false, pattern: 'AD%', limit: 1 });
+    expect(found.statusCode).toBe(200);
+    expect(found.json()).toEqual({ items: [{ userId: ACTIVE, username: 'ada' }], complete: true });
+    expect((await send('POST', '/internal/v1/accounts:username-candidates', headers, { ...CANDIDATES, pattern: '%' })).json()).toEqual({
+      items: [{ userId: ACTIVE, username: 'ada' }],
+      complete: true,
+    });
+    expect((await send('POST', '/internal/v1/accounts:username-candidates', headers, { ...CANDIDATES, publicPool: true, pattern: '%' })).json()).toEqual({
+      items: [],
+      complete: true,
+    });
+  });
+
+  it('keeps lookupAccounts of an S2 user to the token site\'s pools', async () => {
+    const res = await send('POST', '/internal/v1/accounts:lookup', await headersFor('people', 'tenant-a', [Roles.systemUser, Roles.s2]), {
+      userIds: [OTHER_TENANT, DEFAULT_USER, PUBLIC, ACTIVE],
+    });
+
+    expect(res.json()).toEqual({ items: [PUBLIC_RECORD, ACTIVE_RECORD] });
+  });
+
+  /** Replaces the strike row of `username` in `site`'s tenant with `strikes` and `lastattempt`. */
+  async function seedStrike(site: string, username: string, strikes: number, lastattempt: Date): Promise<void> {
+    await gated(site, async (tx) => {
+      await repo.delete(tx, USER_STRIKE.table, { username });
+      await repo.ensureStrike(tx, username, CLOCK.now());
+      await repo.setStrike(tx, username, { strikes, lastattempt });
+    });
+  }
+
+  it('answers loadLoginBlock with the end of a held block, and clears it on removeBlock with a write position', async () => {
+    await seedStrike('tenant-a', 'ADA', 5, new Date(2026, 5, 30, 11, 58, 0));
+    const url = `/internal/v1/accounts/${ACTIVE}/login-block`;
+    const headers = await headersFor('people');
+
+    const held = await send('POST', url, headers, { removeBlock: false });
+    expect(held.statusCode).toBe(200);
+    expect(held.json()).toEqual({ blockedUntil: '2026-06-30T12:08:00.000' });
+
+    const removed = await send('POST', url, headers, { removeBlock: true });
+    expect(removed.json()).toEqual({ blockedUntil: null });
+    expect(removed.headers['x-opt2-write-position']).toMatch(/^identity=[0-9]+$/);
+    expect(await gated('tenant-a', (tx) => repo.readStrike(tx, 'ada'))).toMatchObject({ strikes: 0, lastattempt: new Date(2026, 5, 30, 11, 59, 0) });
+    expect((await send('POST', url, headers, { removeBlock: false })).json()).toEqual({ blockedUntil: null });
+  });
+
+  it('answers loadLoginBlock for a user without a user name with no block and stores no strike row', async () => {
+    const res = await send('POST', `/internal/v1/accounts/${PUBLIC}/login-block`, await headersFor('people'), { removeBlock: true });
+
+    expect(res.json()).toEqual({ blockedUntil: null });
+    expect(await gated('umbrella', (tx) => repo.readStrike(tx, ''))).toBeNull();
+  });
+
+  it('answers lookupMemberships with one item per listed user in request order, from every registered tenant', async () => {
+    const res = await send('POST', '/internal/v1/accounts:memberships', await headersFor('people'), {
+      userIds: [OTHER_TENANT, ACTIVE, PUBLIC.toLowerCase(), MISSING],
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      items: [
+        { userId: OTHER_TENANT, groupIds: [] },
+        { userId: ACTIVE, groupIds: [GROUP, ORPHAN_GROUP] },
+        { userId: PUBLIC.toLowerCase(), groupIds: [MEMBER_GROUP] },
+        { userId: MISSING, groupIds: [] },
+      ],
+    });
   });
 
   it.each([
@@ -321,10 +535,15 @@ describe.skipIf(!available)('reads against PostgreSQL', () => {
   it('answers the legacy 503 while an account operation keeps the user closed past the wait', async () => {
     const op = await gated('tenant-a', (tx) => repo.insertAccountOperation(tx, { user_id: ACTIVE, kind: 'update', state: 'committed' }));
     try {
-      const headers = await headersFor('people');
+      const headers = await headersFor('people', 'tenant-a', [Roles.systemUser, Roles.s2]);
       for (const [method, url, payload] of [
         ['GET', `/internal/v1/accounts/${ACTIVE}`, undefined],
+        ['POST', `/internal/v1/accounts/${ACTIVE}/login-block`, { removeBlock: false }],
         ['POST', '/internal/v1/accounts:lookup', { userIds: [MISSING, ACTIVE] }],
+        ['POST', '/internal/v1/accounts:lookup-all-sites', { userIds: [MISSING, ACTIVE] }],
+        ['POST', '/internal/v1/accounts:count', { scope: 'pool', publicPool: false, where: { isPublic: 1 } }],
+        ['POST', '/internal/v1/accounts:username-candidates', { ...CANDIDATES, pattern: 'ada' }],
+        ['POST', '/internal/v1/accounts:memberships', { userIds: [MISSING, ACTIVE] }],
       ] as const) {
         const res = await send(method, url, headers, payload);
         expect(res.statusCode).toBe(503);
@@ -340,9 +559,15 @@ describe.skipIf(!available)('reads against PostgreSQL', () => {
     ['identity.user_account', 'GET', `/internal/v1/accounts/${ACTIVE}`, undefined],
     ['identity.credential', 'POST', '/internal/v1/accounts:lookup', { userIds: [ACTIVE] }],
     ['identity.group_account', 'GET', '/internal/v1/groups?ispublic=0', undefined],
+    ['identity.membership', 'POST', '/internal/v1/accounts:memberships', { userIds: [ACTIVE] }],
+    ['identity.login_state', 'POST', '/internal/v1/accounts:lookup-all-sites', { userIds: [ACTIVE] }],
+    ['identity.user_account', 'POST', '/internal/v1/accounts:count', { scope: 'tenant' }],
+    ['identity.membership', 'POST', '/internal/v1/accounts:count', { scope: 'tenant', where: { unassigned: true } }],
+    ['identity.user_account', 'POST', '/internal/v1/accounts:username-candidates', CANDIDATES],
+    ['identity.user_strike', 'POST', `/internal/v1/accounts/${ACTIVE}/login-block`, { removeBlock: false }],
   ] as const)('answers the legacy 503 while a window executes on %s past the gate wait', async (unit, method, url, payload) => {
     await adminQuery("UPDATE $schema.unit_gate SET phase = 'executing' WHERE unit = $1", [unit]);
 
-    expect((await send(method, url, await headersFor('people'), payload)).statusCode).toBe(503);
+    expect((await send(method, url, await headersFor('people', 'tenant-a', [Roles.systemUser, Roles.s2]), payload)).statusCode).toBe(503);
   });
 });

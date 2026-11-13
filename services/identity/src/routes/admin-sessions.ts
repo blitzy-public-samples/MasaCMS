@@ -13,14 +13,7 @@ import {
   javaTrim,
 } from '@opt2/platform/legacy-compat';
 import { legacyParamsOf, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
-import {
-  registeredTenants,
-  registryEntryForTenant,
-  withMetadata,
-  withTenant,
-  type TenantDb,
-  type TenantRegistryEntry,
-} from '@opt2/platform/tenancy';
+import { registryEntries, withTenant, type TenantDb, type TenantRegistryEntry } from '@opt2/platform/tenancy';
 import { issueTokens, type CsrfDeps } from '../domain/csrf.js';
 import { LOGIN_SESSION_KEYS, login, logout, type LoginDeps } from '../domain/login.js';
 import { sendLoginByEmail, type LoginMailDeps } from '../domain/login-mail.js';
@@ -340,18 +333,6 @@ function adminStateOf(stored: Readonly<Record<string, unknown>>): AdminState {
   const state: Record<string, unknown> = {};
   for (const key of ADMIN_STATE_KEYS) if (Object.hasOwn(stored, key)) state[key] = stored[key];
   return state as AdminState;
-}
-
-/** Every registry entry, origin domains included, in site id order. */
-function registryEntries(db: TenantDb): Promise<TenantRegistryEntry[]> {
-  return withMetadata(db, async (tx) => {
-    const entries: TenantRegistryEntry[] = [];
-    for (const { tenantId } of await registeredTenants(tx)) {
-      const entry = await registryEntryForTenant(tx, tenantId);
-      if (entry !== null) entries.push(entry);
-    }
-    return entries;
-  });
 }
 
 /** `getSite(siteId).getDomain()` over the registry, with getSite's `default` fallback for an empty or unknown id. */

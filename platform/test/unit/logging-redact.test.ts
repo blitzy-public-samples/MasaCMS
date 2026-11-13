@@ -57,6 +57,13 @@ const MASKED: [string, string, string][] = [
   ['a Set-Cookie header line', `Set-Cookie: CFID=${SECRET}; Path=/; HttpOnly`, 'Set-Cookie: [REDACTED]'],
   ['a JSON Set-Cookie array', `{"set-cookie":["CFID=${SECRET}"]}`, '{"set-cookie":[REDACTED]}'],
   ['a camelCase secret name', `newPassword=${SECRET} csrfToken: ${SECRET}`, 'newPassword=[REDACTED] csrfToken: [REDACTED]'],
+  ['a signature name after a separator', `oauth_signature=${SECRET}&next`, 'oauth_signature=[REDACTED]&next'],
+  ['a signature header line', `X-Hub-Signature: sha256=${SECRET}`, 'X-Hub-Signature: [REDACTED]'],
+  [
+    'a camelCase signature name',
+    `webhookSignature: ${SECRET} HMACSignature=${SECRET}`,
+    'webhookSignature: [REDACTED] HMACSignature=[REDACTED]',
+  ],
   ['a single-quoted value', `password='${SECRET} x'`, "password='[REDACTED]'"],
   ['a double-quoted value', `token="${SECRET} x"`, 'token="[REDACTED]"'],
   ['escaped JSON', `{\\"password\\":\\"${SECRET}\\"}`, '{\\"password\\":\\"[REDACTED]\\"}'],
@@ -71,10 +78,34 @@ const MASKED: [string, string, string][] = [
   ['a SQL Server PASSWORD assignment', `CREATE LOGIN l WITH PASSWORD = '${SECRET}'`, "CREATE LOGIN l WITH PASSWORD = '[REDACTED]'"],
   ['a JWT', `token ${JWT} expired`, 'token [REDACTED] expired'],
   ['an email address', 'notify bob.smith+ops@example.test now', 'notify [REDACTED] now'],
+  ['a percent-encoded email address in a path', '/opt2/stub/x/bob.smith%40example.test/next', '/opt2/stub/x/[REDACTED]/next'],
+  ['a double-encoded email address in a path', '/opt2/stub/x/bob.smith%2540example.test/next', '/opt2/stub/x/[REDACTED]/next'],
+  ['a triple-encoded upper-case email address', 'notify BOB%252540EXAMPLE.TEST now', 'notify [REDACTED] now'],
+  ['an encoded = in a path', `/opt2/stub/y/password%3D${SECRET}/next`, '/opt2/stub/y/password%3D[REDACTED]'],
+  ['a lower-case encoded : before an encoded space', `token%3a%20${SECRET} end`, 'token%3a[REDACTED] end'],
+  [
+    're-encoded separators in either case',
+    `PASSWORD%253D${SECRET} api_key%25253d${SECRET}`,
+    'PASSWORD%253D[REDACTED] api_key%25253d[REDACTED]',
+  ],
+  ['encoded pairs split by &', `password%3D${SECRET}&token%3A${SECRET}`, 'password%3D[REDACTED]&token%3A[REDACTED]'],
+  [
+    'an encoded signed-URL query in a path',
+    `/x/%2Fopt2%2Ffiles%3Fexpires%3D1%26sig%3D${SECRET}`,
+    '/x/%2Fopt2%2Ffiles%3Fexpires%3D1%26sig%3D[REDACTED]',
+  ],
+  [
+    'names after re-encoded delimiters',
+    `%252Fsignature%253D${SECRET} %25253bCFID%25253d${SECRET}`,
+    '%252Fsignature%253D[REDACTED] %25253bCFID%25253d[REDACTED]',
+  ],
+  ['an encoded Authorization header', `authorization%3ABearer%20${SECRET}`, 'authorization%3A[REDACTED]'],
   ...SECRET_NAMES.flatMap((name): [string, string, string][] => [
     [`${name}=value`, `${name}=${SECRET}&next`, `${name}=[REDACTED]&next`],
     [`${name}: value`, `${name.toUpperCase()}: ${SECRET} end`, `${name.toUpperCase()}: [REDACTED] end`],
     [`JSON "${name}"`, `{"${name}":"${SECRET}","n":1}`, `{"${name}":"[REDACTED]","n":1}`],
+    [`${name}%3Dvalue after an encoded &`, `x%26${name}%3D${SECRET}&next`, `x%26${name}%3D[REDACTED]&next`],
+    [`encoded JSON "${name}"`, `%7B%22${name}%22%3a%22${SECRET}%22%7D`, `%7B%22${name}%22%3a[REDACTED]`],
   ]),
 ];
 
@@ -99,6 +130,18 @@ const KEPT: [string, string][] = [
   ['a listen address', 'Server listening at http://127.0.0.1:3000'],
   ['a property access error', "Cannot read properties of undefined (reading 'token')"],
   ['prose naming schemes and secrets', 'basic digest negotiate checks passed; 3 tokens remain'],
+  ['a schema name ending in signature', 'migrated esignature: 1 files'],
+  ['an upper-case name ending in signature', 'ESIGNATURE=2'],
+  ['names ending in signature before encoded separators', 'migrated esignature%3A 1 files; ESIGNATURE%253d2; %2Fesignature%3A3'],
+  ['a word containing sig before an encoded separator', 'Designation%3AManager %26Designation%3dLead'],
+  ['an e-signature path with an encoded segment', '/opt2/e-signature/envelopes/A1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6%3Asign'],
+  [
+    'an encoded object path',
+    '%2Fopt2%2Ffiles%2Fesignature-documents%2Fedec963e-3516-5bb6-845d-d01a710e32a7%2FA1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6.pdf',
+  ],
+  ['encoded pairs of non-secret names', 'title%3DQuarterly%20report%26page%253D2 http%3A%2F%2Fpeople%3A8112%2Fx'],
+  ['names that only begin with a secret name', 'tokens%3D3 keyboard%3Ax signatures%3Dmany sessions%3a2'],
+  ['malformed escapes', 'password%3 password%3G1 password%2%3D1 x%2Gsig%3D1 bob%254example.test bob%2540 bob%25%2540'],
 ];
 
 describe('redactText', () => {
@@ -127,10 +170,18 @@ describe('redactText', () => {
       'a-'.repeat(100_000),
       'token'.padEnd(200_000, ' '),
       'tokentoken'.repeat(20_000),
+      'esignature:'.repeat(20_000),
       '"password":'.repeat(20_000),
       "PASSWORD '".repeat(20_000),
       'https://a'.repeat(20_000),
       'eyJa.'.repeat(40_000),
+      'x%40'.repeat(50_000),
+      '%25'.repeat(100_000),
+      `x%${'25'.repeat(100_000)}`,
+      'a%2540'.repeat(30_000),
+      '%2525sig'.repeat(25_000),
+      'password%25'.repeat(20_000),
+      '%22%25'.repeat(50_000),
     ];
     const started = performance.now();
     for (const input of inputs) {

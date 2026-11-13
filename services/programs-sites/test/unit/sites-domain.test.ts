@@ -1,13 +1,31 @@
 /** Site operations of csettings list, editSite, updateSite{action=Update} and the order form over recording fakes of the tenant database, repository and site.changed writer. */
 import { readFileSync } from 'node:fs';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 import type { UserClaims } from '@opt2/platform/auth';
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import type { AppliedChange, WriteContext } from '@opt2/platform/migration-kit';
-import { registeredTenants, tenantForRegisteredSite, tenantIdForSite, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
+import {
+  registeredTenants,
+  registryEntryForTenant,
+  tenantForRegisteredSite,
+  tenantIdForSite,
+  type MetadataTx,
+  type QueryResult,
+  type TenantDb,
+  type TenantRegistryEntry,
+  type TenantTx,
+  type TransactionCallOptions,
+} from '@opt2/platform/tenancy';
 import { assertResponseMatchesOpenApi } from '@opt2/platform/testing';
-import { createSitesDomain, extendDataRows, fileAttributeBranches, type SitesDomainDeps } from '../../src/domain/sites.js';
+import {
+  SiteColumnTruncationError,
+  createSitesDomain,
+  extendDataRows,
+  fileAttributeBranches,
+  type SitesDomainDeps,
+} from '../../src/domain/sites.js';
 import { siteChangedValidator } from '../../src/events/consumers.js';
 import { writeSiteChanged } from '../../src/events/site-changed.js';
 import { SITE_COLUMNS } from '../../src/legacy/site-fields.js';
@@ -25,7 +43,7 @@ import {
 
 vi.mock('@opt2/platform/tenancy', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@opt2/platform/tenancy')>();
-  return { ...actual, registeredTenants: vi.fn(), tenantForRegisteredSite: vi.fn() };
+  return { ...actual, registeredTenants: vi.fn(), registryEntryForTenant: vi.fn(), tenantForRegisteredSite: vi.fn() };
 });
 
 vi.mock('../../src/events/site-changed.js', async (importOriginal) => {
@@ -49,6 +67,12 @@ const SIZE_ID = 'A0000000-0000-0000-0000000000000001';
 const LAST_DEPLOYMENT = new Date(2026, 0, 2, 3, 4, 5, 6);
 const LAUNCH = new Date(2026, 2, 4, 5, 6, 7, 0);
 const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+/** The read fence `awaitReadable` takes on the site unit of an open gate: savepoint, share lock, release. */
+const SITE_UNIT_FENCE = [
+  ['SAVEPOINT opt2_read_fence', undefined],
+  [expect.stringMatching(/^SELECT unit, phase FROM \S*unit_gate\S* WHERE unit = ANY\(\$1::text\[\]\) ORDER BY unit FOR SHARE NOWAIT$/), [[SITE.unit]]],
+  ['RELEASE SAVEPOINT opt2_read_fence', undefined],
+];
 
 function claimsFor(site: string, s2 = true): UserClaims {
   const roles = s2 ? ['s2'] : ['site-admin'];
@@ -230,11 +254,25 @@ function tenantTx(tenantId: string): TenantTx {
   return { kind: 'tenant', tenantId, schema: 'programs_sites', query: reject, onCommit: vi.fn() };
 }
 
+/** Text and values of one statement a fake transaction received. */
+type Statement = [text: string, values: unknown[] | undefined];
+
+/** A metadata transaction answering every statement with no rows and recording it in `seen`. */
+function metadataTx(seen: Statement[]): MetadataTx {
+  const query = (text: string | { text: string }, values?: unknown[]): Promise<QueryResult> => {
+    seen.push([typeof text === 'string' ? text : text.text, values]);
+    return Promise.resolve({ command: 'SELECT', rowCount: 0, oid: 0, fields: [], rows: [] });
+  };
+  return { kind: 'metadata', schema: 'programs_sites', query: query as MetadataTx['query'], onCommit: vi.fn() };
+}
+
 interface Harness {
   db: TenantDb;
   repo: FakeRepo;
   store: Store;
   opened: string[];
+  /** Statements of each metadata transaction opened, one list per transaction. */
+  metadata: Statement[][];
   domain: ReturnType<typeof createSitesDomain>;
 }
 
@@ -242,13 +280,18 @@ function harness(rows: SiteRow[] = [], deps: Omit<SitesDomainDeps, 'repo'> = {})
   const store = newStore(rows);
   const repo = fakeRepo(store);
   const opened: string[] = [];
+  const metadata: Statement[][] = [];
   const db: TenantDb = {
     schema: 'programs_sites',
     withTenant: (tenantId, fn) => {
       opened.push(tenantId);
       return fn(tenantTx(tenantId));
     },
-    withMetadata: () => Promise.reject(new Error('metadata transaction opened')),
+    withMetadata: (fn) => {
+      const seen: Statement[] = [];
+      metadata.push(seen);
+      return fn(metadataTx(seen));
+    },
     end: () => Promise.resolve(),
   };
   vi.mocked(registeredTenants).mockImplementation(async () =>
@@ -258,7 +301,7 @@ function harness(rows: SiteRow[] = [], deps: Omit<SitesDomainDeps, 'repo'> = {})
     async (_db, siteId) => store.registry.find((entry) => entry.siteId.toLowerCase() === siteId.toLowerCase())?.tenantId ?? null,
   );
   const domain = createSitesDomain({ repo: repo as unknown as ProgramsSitesRepository, ...deps });
-  return { db, repo, store, opened, domain };
+  return { db, repo, store, opened, metadata, domain };
 }
 
 function writesOf(repo: FakeRepo): string[] {
@@ -285,6 +328,24 @@ function updatedColumns(repo: FakeRepo): Readonly<Record<string, unknown>> {
   return call[2];
 }
 
+/** `db` whose tenant transactions record in `settled` whether their callback resolved (commit) or threw (rollback). */
+function settling(db: TenantDb, settled: string[]): TenantDb {
+  return {
+    ...db,
+    withTenant: (tenantId, fn) =>
+      db.withTenant(tenantId, fn).then(
+        (value) => {
+          settled.push('commit');
+          return value;
+        },
+        (error: unknown) => {
+          settled.push('rollback');
+          throw error;
+        },
+      ),
+  };
+}
+
 function assertContract(method: string, path: string, body: unknown): void {
   assertResponseMatchesOpenApi(OPENAPI, { method, path, status: 200, contentType: 'application/json', body });
 }
@@ -292,6 +353,7 @@ function assertContract(method: string, path: string, body: unknown): void {
 beforeEach(() => {
   vi.mocked(writeSiteChanged).mockReset().mockResolvedValue(null);
   vi.mocked(registeredTenants).mockReset();
+  vi.mocked(registryEntryForTenant).mockReset();
   vi.mocked(tenantForRegisteredSite).mockReset();
 });
 
@@ -309,23 +371,26 @@ describe('listSites', () => {
     { name: 'orderno desc, NULL last', sortBy: 'orderno', sortDirection: 'desc', expected: ['tenant-a', 'default', 'tenant-b'] },
     { name: 'orderno asc for an unknown column and direction', sortBy: 'contact', sortDirection: 'sideways', expected: ['tenant-b', 'default', 'tenant-a'] },
   ])('sorts every registered site for S2 by $name as settingsGateway.getList does', async ({ sortBy, sortDirection, expected }) => {
-    const { db, domain, opened } = harness(rows());
+    const { db, domain, opened, metadata } = harness(rows());
 
     const sites = await domain.listSites(db, claimsFor('default'), { sortBy, sortDirection });
 
     expect(sites.map((site) => site.siteid)).toEqual(expected);
     expect(opened).toEqual([TENANT_DEFAULT, TENANT_A, TENANT_B]);
-    expect(registeredTenants).toHaveBeenCalledExactlyOnceWith(db);
+    expect(registeredTenants).toHaveBeenCalledOnce();
+    expect(vi.mocked(registeredTenants).mock.calls[0]?.[0]).toMatchObject({ kind: 'metadata' });
+    expect(metadata).toEqual([SITE_UNIT_FENCE]);
   });
 
   it('lists only the token tenant for a non-S2 token without reading the registry', async () => {
-    const { db, domain, opened } = harness(rows());
+    const { db, domain, opened, metadata } = harness(rows());
 
     const sites = await domain.listSites(db, claimsFor('tenant-a', false));
 
     expect(sites.map((site) => site.siteid)).toEqual(['tenant-a']);
     expect(opened).toEqual([TENANT_A]);
     expect(registeredTenants).not.toHaveBeenCalled();
+    expect(metadata).toEqual([]);
   });
 
   it('reads a tenant registered under two site ids once', async () => {
@@ -347,6 +412,114 @@ describe('listSites', () => {
       { siteid: 'tenant-a', site: null, domain: null, orderno: 4, deploy: 0, lastDeployment: '2026-01-02T03:04:05.006' },
     ]);
     assertContract('GET', '/v1/sites', sites);
+  });
+
+  const SITE_IDS = Array.from({ length: 10 }, (_, n) => `site-${String(n).padStart(2, '0')}`);
+  /** Two tied rows per tenant, so only tenant order and row order decide the listed order. */
+  const manyRows = (): SiteRow[] =>
+    SITE_IDS.flatMap((siteid) => [siteRow(siteid, { orderno: 1 }), siteRow(`${siteid}-b`, { tenant_id: tenantIdForSite(siteid), orderno: 1 })]);
+
+  /** `h.db` recording each transaction's options and the most tenant transactions open at once; later tenants answer first. */
+  function tracking(h: Harness, onRead: (index: number) => void = () => undefined) {
+    const tenantCalls: { tenantId: string; options: TransactionCallOptions | undefined }[] = [];
+    const metadataCalls: (TransactionCallOptions | undefined)[] = [];
+    let open = 0;
+    let peak = 0;
+    const db: TenantDb = {
+      ...h.db,
+      withTenant: async (tenantId, fn, options) => {
+        const index = tenantCalls.push({ tenantId, options }) - 1;
+        open += 1;
+        peak = Math.max(peak, open);
+        try {
+          onRead(index);
+          await sleep(2 * (SITE_IDS.length - index));
+          return await h.db.withTenant(tenantId, fn);
+        } finally {
+          open -= 1;
+        }
+      },
+      withMetadata: (fn, options) => {
+        metadataCalls.push(options);
+        return h.db.withMetadata(fn);
+      },
+    };
+    return { db, tenantCalls, metadataCalls, peak: () => peak };
+  }
+
+  it('reads many tenants at most four at a time, in one registry read, keeping tenant order for the stable sort', async () => {
+    const h = harness(manyRows());
+    const t = tracking(h);
+    const { signal } = new AbortController();
+
+    const sites = await h.domain.listSites(t.db, claimsFor('default'), { signal });
+
+    expect(sites.map((site) => site.siteid)).toEqual(SITE_IDS.flatMap((siteid) => [siteid, `${siteid}-b`]));
+    expect(t.peak()).toBe(4);
+    expect(t.tenantCalls).toEqual(SITE_IDS.map((siteid) => ({ tenantId: tenantIdForSite(siteid), options: { signal } })));
+    expect(t.metadataCalls).toEqual([{ signal }]);
+    expect(h.metadata).toEqual([SITE_UNIT_FENCE]);
+    expect(registeredTenants).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['an S2 token', true, SITE_IDS.length],
+    ['a non-S2 token', false, 1],
+  ] as const)('passes no transaction options for %s when no signal is given', async (_label, s2, reads) => {
+    const h = harness(manyRows());
+    const t = tracking(h);
+
+    await h.domain.listSites(t.db, claimsFor('site-00', s2));
+
+    expect(t.tenantCalls).toHaveLength(reads);
+    expect(t.tenantCalls.every((call) => call.options === undefined)).toBe(true);
+    expect(t.metadataCalls).toEqual(s2 ? [undefined] : []);
+  });
+
+  it('passes the signal to the single tenant transaction of a non-S2 token', async () => {
+    const h = harness(manyRows());
+    const t = tracking(h);
+    const { signal } = new AbortController();
+
+    const sites = await h.domain.listSites(t.db, claimsFor('site-03', false), { signal });
+
+    expect(sites.map((site) => site.siteid)).toEqual(['site-03', 'site-03-b']);
+    expect(t.tenantCalls).toEqual([{ tenantId: tenantIdForSite('site-03'), options: { signal } }]);
+    expect(t.metadataCalls).toEqual([]);
+  });
+
+  it.each([
+    ['before the list starts', -1, 0],
+    ['during the second read', 1, 2],
+    ['during the fourth read', 3, 4],
+  ] as const)('starts no tenant transaction once the signal aborts %s and rejects with its reason', async (_label, abortAt, started) => {
+    const h = harness(manyRows());
+    const controller = new AbortController();
+    const reason = new Error('client closed');
+    const t = tracking(h, (index) => {
+      if (index === abortAt) controller.abort(reason);
+    });
+    if (abortAt < 0) controller.abort(reason);
+
+    await expect(h.domain.listSites(t.db, claimsFor('default'), { signal: controller.signal })).rejects.toBe(reason);
+    expect(t.tenantCalls).toHaveLength(started);
+    expect(t.metadataCalls).toEqual([{ signal: controller.signal }]);
+  });
+
+  it('starts no further tenant read after one fails and rethrows that failure once the running reads settle', async () => {
+    const h = harness(manyRows());
+    const failure = new LegacyServiceUnavailableError('read blocked', 'auto', 'unit-read-blocked');
+    // The fourth tenant answers first of the four running, so its failure lands before any worker moves on.
+    const failing = tenantIdForSite('site-03');
+    h.repo.listSites.mockImplementation(async (tx: TenantTx) => {
+      if (tx.tenantId === failing) throw failure;
+      return [...(h.store.sites.get(tx.tenantId) ?? [])];
+    });
+    const t = tracking(h);
+
+    await expect(h.domain.listSites(t.db, claimsFor('default'))).rejects.toBe(failure);
+    expect(t.tenantCalls).toHaveLength(4);
+    expect(h.repo.listSites).toHaveBeenCalledTimes(4);
   });
 });
 
@@ -588,6 +761,123 @@ describe('readShellSite', () => {
   });
 });
 
+describe('readUserPoolSites', () => {
+  const TENANT_UMBRELLA = tenantIdForSite('umbrella');
+  const URL_A = '/v1/sites/tenant-a/user-pool-sites';
+
+  /** The registry entry site.changed stores for `row`: its user pools as stored, an empty one being the site itself. */
+  function registryEntry(row: SiteRow): TenantRegistryEntry {
+    const pool = (id: string | null): string => (id === null || id === '' ? row.siteid : id);
+    const publicUserPoolId = pool(row.publicuserpoolid);
+    const privateUserPoolId = pool(row.privateuserpoolid);
+    return {
+      siteId: row.siteid,
+      tenantId: row.tenant_id,
+      publicUserPoolId,
+      privateUserPoolId,
+      categoryPoolId: row.siteid,
+      filePoolId: row.siteid,
+      displayPoolId: row.siteid,
+      contentPoolIds: [row.siteid],
+      publicUserPoolTenant: tenantIdForSite(publicUserPoolId),
+      privateUserPoolTenant: tenantIdForSite(privateUserPoolId),
+      categoryPoolTenant: row.tenant_id,
+      filePoolTenant: row.tenant_id,
+      displayPoolTenant: row.tenant_id,
+      contentPoolTenants: [row.tenant_id],
+      domains: [],
+      aggregateVersion: 1,
+      updatedAt: LAUNCH,
+    };
+  }
+
+  /** The harness over `rows`, with each row's registry entry readable by tenant. */
+  function registered(rows: SiteRow[]): Harness {
+    const h = harness(rows);
+    vi.mocked(registryEntryForTenant).mockImplementation(async (_db, tenantId) => {
+      const row = rows.find((candidate) => candidate.tenant_id === tenantId);
+      return row === undefined ? null : registryEntry(row);
+    });
+    return h;
+  }
+
+  it('denies another site with 403 before reading the registry or opening a transaction', async () => {
+    const { db, domain, opened } = registered([siteRow('tenant-b')]);
+
+    await expect(domain.readUserPoolSites(db, claimsFor('tenant-a', false), 'tenant-b')).rejects.toMatchObject({ statusCode: 403 });
+    expect(registryEntryForTenant).not.toHaveBeenCalled();
+    expect(opened).toEqual([]);
+  });
+
+  it('reads the private pool, then a public pool of another tenant in that tenant, as layout settings', async () => {
+    const { db, domain, repo, opened } = registered([
+      siteRow('tenant-a', { publicuserpoolid: 'umbrella' }),
+      siteRow('umbrella', { site: 'Umbrella', filepoolid: 'umbrellafiles', isremote: 1, resourcedomain: 'cdn.example.test' }),
+    ]);
+
+    const result = await domain.readUserPoolSites(db, claimsFor('tenant-a', false), 'tenant-a');
+
+    expect(result.sites.map(({ SiteID }) => SiteID)).toEqual(['tenant-a', 'umbrella']);
+    expect(result.sites[1]).toMatchObject({
+      SiteID: 'umbrella',
+      Site: 'Umbrella',
+      publicUserPoolID: 'umbrella',
+      filePoolID: 'umbrellafiles',
+      isremote: 1,
+      resourceDomain: 'cdn.example.test',
+    });
+    expect(opened).toEqual([TENANT_A, TENANT_UMBRELLA]);
+    expect(writesOf(repo)).toEqual([]);
+    assertContract('GET', URL_A, result);
+  });
+
+  it('reads a site that is both of its own user pools once', async () => {
+    const { db, domain, opened } = registered([siteRow('tenant-a')]);
+
+    const result = await domain.readUserPoolSites(db, claimsFor('tenant-a', false), 'tenant-a');
+
+    expect(result.sites.map(({ SiteID }) => SiteID)).toEqual(['tenant-a']);
+    expect(opened).toEqual([TENANT_A]);
+    assertContract('GET', URL_A, result);
+  });
+
+  it.each<{ name: string; arrange: (h: Harness) => void; sites: string[]; opened: string[] }>([
+    {
+      name: 'a pool site without a registry entry',
+      arrange: ({ store }) => {
+        store.registry = store.registry.filter(({ siteId }) => siteId !== 'umbrella');
+      },
+      sites: ['tenant-a'],
+      opened: [TENANT_A],
+    },
+    {
+      name: 'a registered pool site without a stored row',
+      arrange: ({ store }) => {
+        store.sites.delete(TENANT_UMBRELLA);
+      },
+      sites: ['tenant-a'],
+      opened: [TENANT_A, TENANT_UMBRELLA],
+    },
+    {
+      name: 'every pool of a token site without a registry entry',
+      arrange: () => {
+        vi.mocked(registryEntryForTenant).mockResolvedValue(null);
+      },
+      sites: [],
+      opened: [],
+    },
+  ])('leaves out $name', async ({ arrange, sites, opened: expected }) => {
+    const h = registered([siteRow('tenant-a', { publicuserpoolid: 'umbrella' }), siteRow('umbrella')]);
+    arrange(h);
+
+    const result = await h.domain.readUserPoolSites(h.db, claimsFor('tenant-a', false), 'tenant-a');
+
+    expect(result.sites.map(({ SiteID }) => SiteID)).toEqual(sites);
+    expect(h.opened).toEqual(expected);
+    assertContract('GET', URL_A, result);
+  });
+});
+
 describe('updateSite', () => {
   it.each<{ path: string; posted: string }>([
     { path: 'tenant-b', posted: 'tenant-a' },
@@ -728,6 +1018,31 @@ describe('updateSite', () => {
     expect(announced()).toEqual([]);
   });
 
+  it.each([300, 100_000])('fails a %i-character site name as Msg 2628, writing nothing', async (length) => {
+    const { db, domain, repo, store } = harness([siteRow('tenant-a')]);
+    const before = store.sites.get(TENANT_A)?.[0];
+
+    const update = domain.updateSite(db, claimsFor('tenant-a'), 'tenant-a', { siteid: 'tenant-a', site: 'S'.repeat(length) });
+
+    await expect(update).rejects.toBeInstanceOf(SiteColumnTruncationError);
+    await expect(update).rejects.toMatchObject({
+      column: 'Site',
+      message: "String or binary data would be truncated in table 'tsettings', column 'Site'.",
+    });
+    expect(writesOf(repo)).toEqual([]);
+    expect(store.sites.get(TENANT_A)?.[0]).toBe(before);
+    expect(announced()).toEqual([]);
+  });
+
+  it('stores a site name padded with spaces past its 50 characters trimmed, as setValue trims it', async () => {
+    const { db, domain, repo } = harness([siteRow('tenant-a')]);
+
+    await domain.updateSite(db, claimsFor('tenant-a'), 'tenant-a', { siteid: 'tenant-a', site: `Name${' '.repeat(60)}` });
+
+    expect(updatedColumns(repo).site).toBe('Name');
+    expect(announced()).toHaveLength(1);
+  });
+
   it('fails when the stored row vanishes inside its update and announces nothing', async () => {
     const { db, domain, repo } = harness([siteRow('tenant-a')]);
     repo.updateSiteRow.mockResolvedValueOnce(null);
@@ -767,6 +1082,25 @@ describe('updateSite extended data', () => {
     const order = [...repo.replaceSiteExtendData.mock.invocationCallOrder, ...repo.updateSiteRow.mock.invocationCallOrder];
     expect(order).toEqual([...order].sort((a, b) => a - b));
     expect(announced()).toHaveLength(1);
+  });
+
+  it('commits the posted extended data, then fails an over-long tagline without writing the site row', async () => {
+    const h = extendHarness();
+    const settled: string[] = [];
+
+    const update = h.domain.updateSite(settling(h.db, settled), claimsFor('tenant-a'), 'tenant-a', {
+      siteid: 'tenant-a',
+      extendSetID: SET_1,
+      ext1: 'blue',
+      tagline: 't'.repeat(256),
+    });
+
+    await expect(update).rejects.toMatchObject({ name: 'SiteColumnTruncationError', column: 'tagline' });
+    expect(settled).toEqual(['commit']);
+    expect(replacements(h.repo).map((entry) => entry.attributeId)).toEqual([1, 2, 3, 6]);
+    expect(replacements(h.repo)[0]).toMatchObject({ values: { attributevalue: 'blue' } });
+    expect(h.repo.updateSiteRow).not.toHaveBeenCalled();
+    expect(announced()).toEqual([]);
   });
 
   it('deletes emptied values without reinserting them and defaults a NULL-stored value when empty values are not saved', async () => {

@@ -3,7 +3,12 @@
 import { cfEq, cfIsNumeric, cfLsDateFormat, cfLsTimeFormat, cfToBoolean } from '@opt2/platform/legacy-compat';
 import { parseLegacyDate } from '@/lib/dates';
 import { encodeHtml, encodeHtmlAttr, encodeJs, encodeUrl, raw, type SafeHtml } from '@/lib/html';
-import { ORIGINAL_URL_HEADER, setSessionMuraValue, type AdminRequest } from '@/lib/request-context';
+import {
+  ORIGINAL_URL_HEADER,
+  sessionSiteModulePerm,
+  setSessionMuraValue,
+  type AdminRequest,
+} from '@/lib/request-context';
 import { adminAssetUrl } from '@/lib/urls';
 import type { ShellView } from '@/shell/document';
 import type { PageControllerRedirect, PageScreen, Rc, ScreenContext } from '../registry';
@@ -779,8 +784,9 @@ function contentBody(ctx: ScreenContext, data: ListData): string {
   const variations = (): boolean => requiredFlag(model, 'variations', 'RC');
   const authorOrEditor = (module: string): boolean =>
     listFindNoCase('editor,author', requiredText(modulePerms(), module, 'modulePerms'));
+  const modulePerm = (module: string): boolean => sessionSiteModulePerm(req, module);
   const scaffolding = (): boolean =>
-    requiredFlag(siteConfig, 'scaffolding', 'siteConfig') && req.modulePerm(SCAFFOLD_MODULE_ID);
+    requiredFlag(siteConfig, 'scaffolding', 'siteConfig') && modulePerm(SCAFFOLD_MODULE_ID);
   const activeTab = data.url.has('activetab') ? rcText(rc, 'activeTab') : flat('tab');
 
   const o = new CfOut();
@@ -810,9 +816,9 @@ function contentBody(ctx: ScreenContext, data: ListData): string {
     '</h3>\n\t\t\t\t\t\t  </div>\n\t\t\t\t\t\t  <!-- /block header -->\n\t\t\t\t\t\t  <div class="block-content">\n\n\t\t\t  \t\t',
   );
   if (
-    req.modulePerm(COMPONENT_MODULE_ID) ||
-    (dataCollection() && req.modulePerm(FORM_MODULE_ID)) ||
-    (variations() && req.modulePerm(VARIATION_MODULE_ID))
+    modulePerm(COMPONENT_MODULE_ID) ||
+    (dataCollection() && modulePerm(FORM_MODULE_ID)) ||
+    (variations() && modulePerm(VARIATION_MODULE_ID))
   ) {
     o.t('\n\n\t\t\t\t\t\t\t  <div id="arch-mod" class="mura-input-set">\n\n  \t\t\t\t\t\t\t\t\t  ');
     moduleButton(o, SITE_BUTTON, moduleId, siteId, label);
@@ -826,7 +832,7 @@ function contentBody(ctx: ScreenContext, data: ListData): string {
       moduleButton(o, FORMS_BUTTON, moduleId, siteId, label);
     }
     o.ws();
-    if (variations() && req.modulePerm(VARIATION_MODULE_ID)) {
+    if (variations() && modulePerm(VARIATION_MODULE_ID)) {
       o.t('\n\n  \t\t\t\t\t\t\t\t\t  ');
       moduleButton(o, VARIATIONS_BUTTON, moduleId, siteId, label);
     }

@@ -93,14 +93,22 @@ describe.skipIf(!(await pgAvailable()))('Edit Profile routes', () => {
       return accounts.get(userId);
     },
     readAccounts: () => Promise.reject(new Error('unexpected readAccounts')),
+    readAccountsAllSites: () => Promise.reject(new Error('unexpected readAccountsAllSites')),
+    countAccounts: () => Promise.reject(new Error('unexpected countAccounts')),
+    usernameCandidates: () => Promise.reject(new Error('unexpected usernameCandidates')),
+    lookupMemberships: () => Promise.reject(new Error('identity lists memberships only to cUsers callers')),
     userMemberships: () => Promise.reject(new Error('identity lists memberships only to cUsers callers')),
     membershipGroupIds: () => Promise.reject(new Error('identity lists memberships only to cUsers callers')),
     siteGroups: () => Promise.reject(new Error('unexpected siteGroups')),
     userGroups: () => Promise.reject(new Error('unexpected userGroups')),
+    loginBlock: () => Promise.reject(new Error('unexpected loginBlock')),
     async actingUser() {
       identityCalls.push('actingUser');
       return undefined;
     },
+    adminSessionState: () => Promise.resolve({}),
+    saveAdminSessionState: (state) => Promise.resolve(state),
+    sessionSites: () => Promise.resolve([]),
   };
 
   beforeAll(async () => {
@@ -215,7 +223,8 @@ describe.skipIf(!(await pgAvailable()))('Edit Profile routes', () => {
       errors: {},
       retained: false,
     });
-    expect(identityCalls).toEqual(['readAccount']);
+    // The first read locates the user's tenant; the second is the account observed with the person rows.
+    expect(identityCalls).toEqual(['readAccount', 'readAccount']);
   });
 
   it('refuses an anonymous caller', async () => {

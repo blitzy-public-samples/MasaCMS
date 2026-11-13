@@ -3,6 +3,7 @@ import type { CreateTaskInput, TaskContext, TaskHandler, TaskPort } from './port
 import { queueDefinition, recurringQueues, targetUrl } from './queues.js';
 import type { Clock } from '../service-kit/index.js';
 import { LegacyServiceUnavailableError } from '../legacy-compat/index.js';
+import { SpanKind, startLinkedRootSpan } from '../tracing/index.js';
 
 /** Start, in epoch seconds, of the slot containing `epochS`. */
 export function slotStartS(epochS: number, intervalS: number): number {
@@ -168,7 +169,8 @@ export function recurringHandler(
 
     let successor: DurableSlot;
     try {
-      successor = await durableSlot(port, opts, successorS);
+      // The successor stores this new root span's context, so each run is its own trace, linked to the run that scheduled it.
+      successor = await startLinkedRootSpan(`tasks.successor ${queue}`, SpanKind.PRODUCER, () => durableSlot(port, opts, successorS));
     } catch (err) {
       throw new SuccessorCreationError(queue, slotName(queue, successorS), err);
     }

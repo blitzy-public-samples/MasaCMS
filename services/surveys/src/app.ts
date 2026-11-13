@@ -50,6 +50,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     env,
     clock: options.clock,
     verifierOverride: options.verifierOverride,
+    legacyFixturePaths: true,
     // createService takes an injected pool or the schema whose pool it opens, never both.
     ...(options.db === undefined ? { schema: SCHEMA } : { pool: options.db }),
   });

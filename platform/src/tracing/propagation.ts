@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import {
   context,
   isSpanContextValid,
+  ROOT_CONTEXT,
   SpanStatusCode,
   trace,
   TraceFlags,
@@ -88,7 +89,7 @@ export function injectHttpHeaders<T extends Record<string, unknown>>(
     }
     Object.assign(target, carrier);
   }
-  return headers as T & { traceparent?: string; tracestate?: string };
+  return headers;
 }
 
 /** Returns `base` with the remote span context read from inbound `headers`, or `base` itself when none is valid. */
@@ -149,6 +150,19 @@ export function activeSpanIds(): { traceId: string; spanId: string; traceSampled
   };
 }
 
+/** Runs `fn` with `span`, records a redacted exception and error status on throw, and always ends the span. */
+async function runInSpan<T>(span: Span, fn: (span: Span) => T | Promise<T>): Promise<T> {
+  try {
+    return await fn(span);
+  } catch (err) {
+    span.recordException(redactException(err));
+    span.setStatus({ code: SpanStatusCode.ERROR });
+    throw err;
+  } finally {
+    span.end();
+  }
+}
+
 /** Runs `fn` inside a new active span, records an error status on throw, and always ends the span. */
 export async function startSpan<T>(
   name: string,
@@ -156,15 +170,19 @@ export async function startSpan<T>(
   fn: (span: Span) => T | Promise<T>,
   attributes?: Attributes,
 ): Promise<T> {
-  return trace.getTracer(TRACER_NAME).startActiveSpan(name, { kind, attributes }, async (span: Span): Promise<T> => {
-    try {
-      return await fn(span);
-    } catch (err) {
-      span.recordException(redactException(err));
-      span.setStatus({ code: SpanStatusCode.ERROR });
-      throw err;
-    } finally {
-      span.end();
-    }
-  });
+  return trace.getTracer(TRACER_NAME).startActiveSpan(name, { kind, attributes }, (span: Span) => runInSpan(span, fn));
+}
+
+/** Like `startSpan`, but the span roots a new trace and links to the active span, so work scheduled inside starts its own trace. */
+export async function startLinkedRootSpan<T>(
+  name: string,
+  kind: SpanKind,
+  fn: (span: Span) => T | Promise<T>,
+  attributes?: Attributes,
+): Promise<T> {
+  const active = trace.getSpanContext(context.active());
+  const links = active && isSpanContextValid(active) ? [{ context: active }] : [];
+  return trace
+    .getTracer(TRACER_NAME)
+    .startActiveSpan(name, { kind, attributes, root: true, links }, ROOT_CONTEXT, (span: Span) => runInSpan(span, fn));
 }

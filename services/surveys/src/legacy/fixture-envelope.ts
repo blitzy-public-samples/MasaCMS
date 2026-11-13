@@ -15,7 +15,14 @@ import {
   type SerializedLegacyResponse,
 } from '@opt2/platform/legacy-compat';
 import { serializeError } from '@opt2/platform/logging';
-import { legacyParamsOf, sendLegacyResponse, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
+import {
+  isUnstorableTextError,
+  legacyParamsOf,
+  recordOutcomeReason,
+  sendLegacyResponse,
+  type FastifyReply,
+  type FastifyRequest,
+} from '@opt2/platform/service-kit';
 
 /** Merged fixture request params: URL, then form, then a JSON body object. */
 export type FixtureParams = Record<string, unknown>;
@@ -287,7 +294,13 @@ export function fixtureHandler<R extends FastifyRequest = FastifyRequest>(
       return await fn(request, reply, ctx);
     } catch (error) {
       if (error instanceof LegacyServiceUnavailableError) throw error;
-      if (!(error instanceof FixtureApiError) && !(error instanceof LegacyApiError)) {
+      if (isUnstorableTextError(error)) {
+        recordOutcomeReason(request, error.code);
+        return sendLegacyResponse(reply, fixtureErrorResponse(new LegacyApiError('invalidParameters'), ctx));
+      }
+      if (error instanceof FixtureApiError || error instanceof LegacyApiError) {
+        recordOutcomeReason(request, error.type);
+      } else {
         request.log.error({ error: serializeError(error) }, 'Unhandled fixture exception');
       }
       return sendLegacyResponse(reply, fixtureErrorResponse(error, ctx));

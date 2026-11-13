@@ -5616,6 +5616,11 @@
       "kind": "stored object manifest"
     },
     {
+      "table": "content.staged_object",
+      "owner": "strategies-content",
+      "kind": "staged content-files object ledger"
+    },
+    {
       "table": "content.permission_projection",
       "owner": "strategies-content",
       "kind": "projection of identity.permission.changed.v1"

@@ -39,7 +39,7 @@ export function createContentClient(client: ServiceClient): ContentClient {
     recordWritePositionsFrom(response.headers[WRITE_POSITION_HEADER_LC]);
     if (response.status !== HTTP_OK) {
       const cause = Object.assign(new Error(`${CONTENT_SERVICE} ${LOOKUP.operationId} answered HTTP ${response.status}`), {
-        code: `${LOOKUP.operationId} HTTP_${response.status}`,
+        code: `HTTP_${String(response.status)}`,
       });
       throw new ServiceUnavailableError(CONTENT_SERVICE, cause);
     }

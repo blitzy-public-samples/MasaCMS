@@ -52,7 +52,10 @@ function record(siteId: string, i: number) {
   };
 }
 
-/** A finance producer of `count` records of `siteId` in 1000-record pages; `fail.page` answers `fail.failure` instead. */
+/**
+ * The finance producer's System export read of `count` records of `siteId` in 1000-record pages; `fail.page` answers
+ * `fail.failure` instead, and a read carrying a user token answers 403.
+ */
 function financeClient(
   siteId: string,
   fail?: { page: number; failure: ServiceResponse | Error },
@@ -61,8 +64,10 @@ function financeClient(
   const calls: ServiceRequest[] = [];
   const client: ServiceClient = {
     async request<T>(req: ServiceRequest): Promise<ServiceResponse<T>> {
+      if (req.service !== 'finance' || req.path !== '/internal/v1/finance/records') throw new Error(`unexpected call to ${req.service} ${req.path}`);
       calls.push(req);
       await nextTurn();
+      if (req.userToken !== null) return { status: 403, headers: {}, body: undefined as T };
       const page = Number(req.query?.page);
       if (page === fail?.page) {
         if (fail.failure instanceof Error) throw fail.failure;
@@ -132,7 +137,7 @@ describe.skipIf(!available)('export output through runExport', () => {
     const repository = createReportingRepository({ db: handle.app, storage, clock: CLOCK });
     return runExport(
       { db: handle.app, repository, storage, clock: CLOCK, client },
-      { tenantId: job.tenantId, jobId: job.jobId, payload: { jobId: job.jobId, asOf: '2026-06-30', userToken: 'requester-token' } },
+      { tenantId: job.tenantId, jobId: job.jobId, payload: { jobId: job.jobId, asOf: '2026-06-30' } },
     );
   }
 
@@ -171,6 +176,11 @@ describe.skipIf(!available)('export output through runExport', () => {
     expect(bodies).toHaveLength(1);
     expect(bodies[0]).toBeInstanceOf(Readable);
     expect(calls.map((call) => call.query?.page)).toEqual(['1', '2', '3']);
+    // Every page names the job's scope under the one claim its run holds, as System, with no user token.
+    const claim = String(Number(row.row_version) - 1);
+    expect(calls.map((call) => [call.query?.exportId, call.query?.siteId, call.query?.claim, call.userToken])).toEqual(
+      calls.map(() => [job.jobId, job.siteId, claim, null]),
+    );
     if (format === 'csv') expect(parse(bytes.toString('utf8'))).toHaveLength(RECORD_COUNT + 1);
   });
 
@@ -180,6 +190,17 @@ describe.skipIf(!available)('export output through runExport', () => {
 
     await expect(run(job, local, client)).resolves.toEqual({ outcome: 'failed', state: 'failed', error: 'source-unavailable' });
 
+    expect(await storedRow(job)).toMatchObject({ state: 'failed', error: 'source-unavailable', object_key: null, output_sha256: null });
+    expect(await objectFiles(job)).toEqual([]);
+  });
+
+  it('fails an export source-unavailable when the producer refuses a later page\'s export scope, reading no further page', async () => {
+    const job = await queuedJob('csv');
+    const { client, calls } = financeClient(job.siteId, { page: 2, failure: { status: 403, headers: {}, body: undefined } });
+
+    await expect(run(job, local, client)).resolves.toEqual({ outcome: 'failed', state: 'failed', error: 'source-unavailable' });
+
+    expect(calls.map((call) => call.query?.page)).toEqual(['1', '2']);
     expect(await storedRow(job)).toMatchObject({ state: 'failed', error: 'source-unavailable', object_key: null, output_sha256: null });
     expect(await objectFiles(job)).toEqual([]);
   });

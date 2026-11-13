@@ -1,5 +1,6 @@
 // The carch secondary menu of `carch/dsp_secondary_menu.cfm`, placed by the carch views and the shell's `carch` hook (server-only).
 import { cfEq, cfListToArray, javaTrim, type AdminParam } from '@opt2/platform/legacy-compat';
+import { isCompactDisplay, scanCompactDisplay } from '@/lib/cfml';
 import type { CsrfRenderer } from '@/lib/csrf';
 import { encodeHtml, encodeHtmlAttr, encodeJs, encodeUrl, raw, type SafeHtml } from '@/lib/html';
 import type { AdminRequest, RequestContext } from '@/lib/request-context';
@@ -164,7 +165,7 @@ interface MenuScope {
   readonly fuseaction: string;
   /** `rc.compactDisplay neq 'true'`. */
   readonly notCompact: boolean;
-  /** `listFind(memberships, 'Admin;<private pool>;0') or listFind(memberships, 'S2')`. */
+  /** `listFind(memberships, 'Admin;<private pool of rc.siteid>;0') or listFind(memberships, 'S2')`. */
   readonly siteAdminOrS2: boolean;
   /** `rc[name]`; throws when undefined. */
   text(name: string): string;
@@ -519,7 +520,7 @@ function defaultFiles(m: MenuScope): string {
   const { req } = m.ctx;
   const { content } = m.input;
   if (content === undefined) {
-    if (!eqBoolean(m.text('compactDisplay'), 0)) return '';
+    if (!eqBoolean(scanCompactDisplay(m.text('compactDisplay')), 0)) return '';
     const back = m.label('sitemanager.back');
     return `\n\t\t\t\t\t\n\t\t\t\t\t<a class="btn" href="#" title="${encodeHtmlAttr(back)}" onclick="window.history.back(); return false;"><i class="mi-arrow-circle-left"></i> ${encodeHtml(back)}</a>\n\t\t\t\t`;
   }
@@ -578,8 +579,8 @@ export function renderCarchSecondaryMenu(ctx: CarchMenuContext, input: CarchSeco
     input,
     moduleId: text('moduleid'),
     fuseaction: cfListToArray(req.action, '.').at(-1) ?? '',
-    notCompact: !eqBoolean(text('compactDisplay'), 1),
-    siteAdminOrS2: isSiteAdminOrS2(req),
+    notCompact: !isCompactDisplay(text('compactDisplay')),
+    siteAdminOrS2: isSiteAdminOrS2({ ...req, rc }),
     text,
     optional: (name) => rcValue(rc, name),
     label: (key) => rb.rbKey(key),

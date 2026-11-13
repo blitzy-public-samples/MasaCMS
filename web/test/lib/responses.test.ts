@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LEGACY_ERROR_PAGE_HTML } from '@opt2/platform/legacy-compat';
 import { resetLegacySettingsForTests } from '@/lib/env';
 import { html, raw } from '@/lib/html';
+import { mergeFw1Context } from '@/lib/request-context';
 import {
   HTML_CONTENT_TYPE,
   JSON_CONTENT_TYPE,
@@ -13,7 +14,6 @@ import {
   htmlResponse,
   isCompactDisplay,
   jsonResponse,
-  legacyPageHeaders,
   legacyUnavailable,
   negotiatesIdentityEncoding,
   notFound,
@@ -132,32 +132,21 @@ describe('responses', () => {
     expect(contentLanguage(javaLocale)).toBe(expected);
   });
 
-  describe('legacyPageHeaders', () => {
-    it.each<[string, boolean]>([
-      ['', true],
-      ['compactDisplay=false', true],
-      ['compactDisplay=true', false],
-      ['compactDisplay=Yes', false],
-      ['COMPACTDISPLAY=1', false],
-      ['compactdisplay=true&muraAction=carch.list', false],
-      ['compactDisplay=true&compactDisplay=false', true],
-      ['compactDisplay=true&COMPACTDISPLAY=true', true],
-    ])('answers ?%s with the full layout cache headers: %s', (query, full) => {
-      const headers = legacyPageHeaders(new URLSearchParams(query), new Headers());
-      expect(headers.get('expires')).toBe(full ? '06 Nov 1994 08:37:34 GMT' : null);
-      expect(headers.get('cache-control')).toBe(full ? 'no-cache, no-store, must-revalidate' : null);
-      expect(headers.get('generator')).toBe('Masa CMS 7.6.1');
-      expect(headers.get('strict-transport-security')).toBe('max-age=1200');
-      expect(headers.get('content-language')).toBe('en-US');
-    });
-
-    it.each<[string, string | null]>([
-      ['identity', 'identity'],
-      ['gzip, deflate', null],
-    ])('answers Accept-Encoding %j with Content-Encoding %j', (acceptEncoding, expected) => {
-      const headers = legacyPageHeaders(new URLSearchParams(), new Headers({ 'accept-encoding': acceptEncoding }));
-      expect(headers.get('content-encoding')).toBe(expected);
-    });
+  // The raw query as the request context merges it: names matched case-insensitively, repeated names joined with `,`.
+  it.each<[string, boolean]>([
+    ['', false],
+    ['compactDisplay=false', false],
+    ['compactDisplay=true', true],
+    ['compactDisplay=Yes', true],
+    ['COMPACTDISPLAY=1', true],
+    ['compactDisplay=%20TRUE', true],
+    ['compactDisplay=tr%00ue', true],
+    ['compactDisplay=%20true', false],
+    ['compactdisplay=true&muraAction=carch.list', true],
+    ['compactDisplay=true&compactDisplay=false', false],
+    ['compactDisplay=true&COMPACTDISPLAY=true', false],
+  ])('isCompactDisplay reads the page query ?%s as compact: %s', (query, compact) => {
+    expect(isCompactDisplay(mergeFw1Context([], new URLSearchParams(query), {}).compactDisplay)).toBe(compact);
   });
 
   describe('htmlResponse', () => {

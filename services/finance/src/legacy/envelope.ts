@@ -17,7 +17,7 @@ import {
   type LegacyErrorSpec,
   type SerializedLegacyResponse,
 } from '@opt2/platform/legacy-compat';
-import { legacyParamsOf, type FastifyRequest } from '@opt2/platform/service-kit';
+import { isUnstorableTextError, legacyParamsOf, type FastifyRequest } from '@opt2/platform/service-kit';
 import { TransitionRejectedError } from '@opt2/platform/state-machine';
 import { fixtureFileHeaders, type FixtureFileMeta } from '../domain/attachments.js';
 import { FinanceDomainError } from '../domain/records.js';
@@ -170,11 +170,13 @@ export function fixtureFile(meta: FixtureFileMeta): Omit<FixtureResponse, 'body'
 }
 
 /**
- * Fixture error response for a thrown value, as api.cfm answers it; anything but a fixture, domain, transition or legacy API error is a
- * 500 `server_error`, which the caller logs. Rethrows `LegacyServiceUnavailableError` for service-kit's legacy 503.
+ * Fixture error response for a thrown value, as api.cfm answers it; a value PostgreSQL cannot store is invalidParameters, and anything but
+ * a fixture, domain, transition or legacy API error is a 500 `server_error`, which the caller logs. Rethrows
+ * `LegacyServiceUnavailableError` for service-kit's legacy 503.
  */
 export function toFixtureError(err: unknown, ctx: FixtureContext): SerializedLegacyResponse {
   if (err instanceof LegacyServiceUnavailableError) throw err;
+  if (isUnstorableTextError(err)) return fixtureError('invalidParameters', ctx);
   if (err instanceof FinanceDomainError) return fixtureError(err.type, ctx, err.message);
   if (err instanceof TransitionRejectedError) {
     // finance.cfc raises conflict with the transition table's error value as the message.
@@ -189,4 +191,13 @@ export function toFixtureError(err: unknown, ctx: FixtureContext): SerializedLeg
     return response;
   }
   return fixtureError('server_error', ctx);
+}
+
+/** The fixed reason of `toFixtureError`'s answer to `err`, for its WARNING line: a refused value's SQLSTATE, a denial's reason, else the type. */
+export function fixtureOutcomeReason(err: unknown): string {
+  if (isUnstorableTextError(err)) return err.code;
+  if (err instanceof AuthDenial) return err.reason;
+  if (err instanceof FinanceDomainError || err instanceof LegacyApiError) return err.type;
+  if (err instanceof TransitionRejectedError) return err.decision.outcome === 'illegal' ? 'conflict' : 'forbidden';
+  return 'server_error';
 }

@@ -7,11 +7,12 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
+import { consumeEnvelope } from '@opt2/platform/events';
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { ensureUnitGates, registerWritePositionHeader, withGatedTenant } from '@opt2/platform/migration-kit';
 import { createOutbox } from '@opt2/platform/outbox';
-import { createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
+import { createService, loadEnv, type FastifyInstance, type ServiceClient, type ServiceRequest, type ServiceResponse } from '@opt2/platform/service-kit';
 import { tenantIdForSite, withMetadata, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import {
   assertResponseMatchesOpenApi,
@@ -21,14 +22,17 @@ import {
   mintServiceToken,
   mintUserToken,
   pgAvailable,
+  testEnvelope,
   testVerifier,
   writeTestSecrets,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
 import { issueTokens, type CsrfDeps } from '../../src/domain/csrf.js';
 import type { GroupDeps } from '../../src/domain/groups.js';
+import { PERSON_CHANGED_TOPIC, PERSON_CONTACT_SUBSCRIPTION, personContactConsumer, type PersonChangedPayload } from '../../src/events/person-contact.js';
 import { createIdentityEvents, identityPayloadValidators } from '../../src/events/publish.js';
 import type { BridgeRelay } from '../../src/legacy/bridge-relay.js';
+import { createContentClient } from '../../src/legacy/content-client.js';
 import { createIdentityRepository, type GroupInput, type IdentityRepository } from '../../src/repo/repository.js';
 import { IDENTITY_UNITS } from '../../src/repo/tables.js';
 import { registerAdminGroupRoutes } from '../../src/routes/admin-groups.js';
@@ -67,6 +71,27 @@ const NO_DB: TenantDb = {
 };
 
 const RELAY: BridgeRelay = { markUsed: () => Promise.resolve({ applied: true }) };
+
+const STORED_PHOTO = 'F0000000-0000-0000-0000000000000001';
+const MISSING_PHOTO = 'F0000000-0000-0000-0000000000000002';
+/** The `tfiles` rows strategies-content's photo lookup answers from, by file id. */
+const PHOTO_EXTENSIONS: ReadonlyMap<string, string | null> = new Map([[STORED_PHOTO, 'jpg']]);
+const UNAVAILABLE = { apiversion: 'v1', method: 'invalid', error: { message: 'Unhandled Exception', code: 'server_error' } };
+const content = { lookups: [] as string[][], status: 200 };
+
+/** strategies-content behind identity's content client: records each `lookupFileExtensions` call and answers it from PHOTO_EXTENSIONS. */
+const CONTENT_SERVICE: ServiceClient = {
+  request<T>(req: ServiceRequest): Promise<ServiceResponse<T>> {
+    if (req.service !== 'strategies-content' || req.method !== 'POST' || req.path !== '/internal/v1/files:lookup') {
+      return Promise.reject(new Error(`unexpected request ${req.service} ${req.method} ${req.path}`));
+    }
+    const { fileIds } = req.json as { fileIds: string[] };
+    content.lookups.push(fileIds);
+    const items = fileIds.flatMap((fileId) => (PHOTO_EXTENSIONS.has(fileId) ? [{ fileId, fileExt: PHOTO_EXTENSIONS.get(fileId) ?? null }] : []));
+    return Promise.resolve({ status: content.status, headers: {}, body: (content.status === 200 ? { items } : UNAVAILABLE) as T });
+  },
+  close: () => Promise.resolve(),
+};
 
 const available = await pgAvailable();
 
@@ -182,7 +207,7 @@ beforeAll(async () => {
   registerWritePositionHeader(app);
   const db = handle?.app ?? NO_DB;
   const csrf: CsrfDeps = { db, repo, bridge: RELAY, clock: CLOCK, sleep: () => Promise.resolve() };
-  await registerAdminGroupRoutes(app, { groups: groupsDeps(db), sessions: { db, repo, clock: CLOCK }, csrf });
+  await registerAdminGroupRoutes(app, { groups: groupsDeps(db), content: createContentClient(CONTENT_SERVICE), sessions: { db, repo, clock: CLOCK }, csrf });
   await app.ready();
 });
 
@@ -259,6 +284,16 @@ describe('cUsers gate', () => {
     ['PUT', `/v1/groups/G${UNKNOWN_GROUP.slice(1, 34)}`],
   ])('answers %s %s with a malformed group id as invalid parameters', async (method, url) => {
     const res = await send(method, url, await headersFor([Roles.s2]), { userid: 'not-a-uuid', groupname: 'X' });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: { code: 'invalid_request', message: 'Invalid parameters' } });
+  });
+
+  it.each(
+    ['/v1/groups', `/v1/groups/${UNKNOWN_GROUP}/members`].flatMap((path) =>
+      ['offset=-1', 'offset=1.5', 'offset=x', 'offset=9007199254740992', 'limit=0', 'limit=1001', 'limit=2.5', 'limit=1&limit=2'].map((query) => `${path}?${query}`),
+    ),
+  )('answers GET %s with invalid parameters before any read', async (url) => {
+    const res = await send('GET', url, await headersFor([Roles.s2]));
     expect(res.statusCode).toBe(400);
     expect(res.json()).toMatchObject({ error: { code: 'invalid_request', message: 'Invalid parameters' } });
   });
@@ -376,6 +411,45 @@ describe.skipIf(!available)('cUsers group actions against PostgreSQL', () => {
     expect(asEditor.json<{ items: Record<string, unknown>[] }>().items.map((member) => member.Lname)).toEqual(['alpha', 'Beta']);
   });
 
+  type Page = { items: Record<string, unknown>[]; total: number; nextOffset: number | null };
+
+  it.each<[string, () => Promise<Record<string, string>>, string, (string | null)[], number, number | null]>([
+    ['an S2 caller, the first window', admin, 'offset=0&limit=2', ['alpha', 'Beta'], 3, 2],
+    ['an S2 caller, a middle window', admin, 'offset=1&limit=1', ['Beta'], 3, 2],
+    ['an S2 caller, the last window', admin, 'offset=2&limit=5', ['Zed'], 3, null],
+    ['an S2 caller, past the listing', admin, 'offset=3', [], 3, null],
+    ['an S2 caller, the defaults', admin, '', ['alpha', 'Beta', 'Zed'], 3, null],
+    ['a module-grant editor, without the S2 member', editor, 'offset=1&limit=1', ['Beta'], 2, null],
+  ])('pages the members for %s with the listing total and the next offset', async (_case, caller, query, lnames, total, nextOffset) => {
+    const res = await send('GET', `/v1/groups/${ids.editors}/members?${query}`, await caller());
+
+    expect(res.statusCode).toBe(200);
+    const page = res.json<Page>();
+    expect({ lnames: page.items.map((member) => member.Lname), total: page.total, nextOffset: page.nextOffset }).toEqual({ lnames, total, nextOffset });
+  });
+
+  it('pages the groups by following nextOffset through windows of every listing row, and answers a window past the listing empty', async () => {
+    const headers = await admin();
+    const whole = (await send('GET', '/v1/groups?ispublic=0', headers)).json<Page>();
+    expect(whole.nextOffset).toBeNull();
+    expect(whole.total).toBe(whole.items.length);
+    expect(whole.total).toBeGreaterThan(3);
+
+    const walked: Record<string, unknown>[] = [];
+    const offsets: number[] = [];
+    for (let offset: number | null = 0; offset !== null; ) {
+      offsets.push(offset);
+      const page: Page = (await send('GET', `/v1/groups?ispublic=0&offset=${offset}&limit=2`, headers)).json<Page>();
+      expect(page.total).toBe(whole.total);
+      walked.push(...page.items);
+      offset = page.nextOffset;
+    }
+
+    expect(walked).toEqual(whole.items);
+    expect(offsets).toEqual(Array.from({ length: Math.ceil(whole.total / 2) }, (_, n) => n * 2));
+    expect((await send('GET', `/v1/groups?ispublic=0&offset=${whole.total}`, headers)).json()).toEqual({ items: [], total: whole.total, nextOffset: null });
+  });
+
   it('downloads the members as the legacy users CSV: ACF columnList order, trailing spaces, commas kept, LF ends', async () => {
     const res = await send('GET', `/v1/groups/${ids.editors}/members.csv`, await editor());
 
@@ -392,7 +466,7 @@ describe.skipIf(!available)('cUsers group actions against PostgreSQL', () => {
     const cells = [
       '"A, B "', blank, blank, blank, '"alpha@example.com "', '"F "', `"${ids.alpha} "`, blank, blank, blank, '0 ',
       blank, '0 ', blank, blank, blank, blank, blank, blank, '"alpha "',
-      blank, blank, blank, blank, blank, blank, blank, '0 ', '"tenant-a "', blank,
+      blank, blank, blank, '0 ', blank, blank, blank, '0 ', '"tenant-a "', blank,
       blank, blank, blank, '2 ', `"${ids.alpha} "`, expect.stringMatching(/^"u\d+ "$/), blank,
     ];
     expect(first?.split(/,(?=")|,(?=\d)/)).toEqual(cells);
@@ -433,5 +507,137 @@ describe.skipIf(!available)('cUsers group actions against PostgreSQL', () => {
     const res = await send('POST', '/v1/groups', await headersFor([Roles.s2], sessionId), { userid: groupId, groupname: 'Late', ...csrfFields(groupId) });
 
     expect(res.statusCode).toBe(401);
+  });
+
+  // Oracle: legacy cUsers.list lists the pool its admin Portcullis scan and `before()` scrub leave `ispublic` naming;
+  // the scan re-serializes a padded lowercase `true`/`false` and other JSON, none of which is then a boolean.
+  it.each<[sent: string, who: 'admin' | 'editor', isPublic: 0 | 1]>([
+    [' 0 ', 'admin', 0],
+    ['0 ', 'admin', 0],
+    ['\t0\n', 'admin', 0],
+    ['0\u0000', 'admin', 0],
+    ['\u00010', 'admin', 0],
+    [' -0', 'admin', 0],
+    [' 1 ', 'admin', 1],
+    [' false', 'admin', 1],
+    [' true', 'admin', 1],
+    ['"0"', 'admin', 1],
+    ['[0]', 'admin', 1],
+    ['\u00a00', 'admin', 1],
+    [' 0 ', 'editor', 1],
+  ])('lists ispublic %j for an %s as the isPublic %d pool', async (sent, who, isPublic) => {
+    const res = await send('GET', `/v1/groups?${new URLSearchParams({ ispublic: sent }).toString()}`, who === 'admin' ? await admin() : await editor());
+
+    const { items, total, nextOffset } = res.json<Page>();
+    expect(items.map((item) => item.GroupName)).toContain(isPublic === 0 ? 'Editors' : 'Members');
+    expect(new Set(items.map((item) => item.isPublic))).toEqual(new Set([isPublic]));
+    expect({ total, nextOffset }).toEqual({ total: items.length, nextOffset: null });
+  });
+
+  // The posted form field passes the same scan and scrub before `userBean.set` reads it.
+  it.each<[sent: string, isPublic: 0 | 1, site: string]>([
+    [' 0 ', 0, SITE],
+    ['\t0\n', 0, SITE],
+    ['0\u0000', 0, SITE],
+    [' 1 ', 1, UMBRELLA],
+    [' false', 1, UMBRELLA],
+    ['"0"', 1, UMBRELLA],
+  ])('creates an admin group posted with isPublic %j as isPublic %d of %s', async (sent, isPublic, site) => {
+    const groupId = nextId('B');
+    const res = await send('POST', '/v1/groups', await admin(), { userid: groupId, groupname: `Scanned ${groupId}`, isPublic: sent, ...csrfFields(groupId) });
+
+    expect(res.json()).toMatchObject({ written: true, errors: {}, group: { UserID: groupId, isPublic, SiteID: site } });
+  });
+
+  describe('member columns', () => {
+    const MEMBER_KEYS = [
+      'groupID', 'userID', 'GroupName', 'Fname', 'Lname', 'UserName', 'PasswordCreated', 'Email', 'Company', 'JobTitle', 'MobilePhone',
+      'Website', 'Type', 'subType', 'ContactForm', 'S2', 'LastLogin', 'LastUpdate', 'LastUpdateBy', 'LastUpdateByID', 'Perm', 'InActive',
+      'IsPublic', 'SiteID', 'Subscribe', 'Notes', 'description', 'Interests', 'keepPrivate', 'PhotoFileID', 'IMName', 'IMService',
+      'Created', 'RemoteID', 'Tags', 'tablist', 'photoFileExt',
+    ];
+    const staff = { groupId: '', full: '', bare: '', nested: '' };
+
+    /** The full person state people publishes for `userId`. */
+    function personState(userId: string): PersonChangedPayload {
+      return {
+        userId, siteId: SITE, deleted: false, groupName: null, fname: 'Fay', lname: 'Full', email: 'fay@example.com', company: 'Co',
+        jobTitle: 'Analyst', mobilePhone: '555-0100', website: 'https://fay.example.test', subType: 'Default', ext: 4, contactForm: 'cf',
+        subscribe: 1, notes: 'n', description: 'd', interests: 'i', keepPrivate: 1, photoFileId: STORED_PHOTO, imName: 'im', imService: 'AIM',
+        tags: 't', created: '2025-12-31 23:59:59.997', lastUpdate: '2026-06-30 12:00:00.120', lastUpdateBy: 'Ada Admin', lastUpdateById: ADMIN_USER,
+      };
+    }
+
+    /** Staff: a fully projected user with credential and login state, a bare user with an unstored photo, and a member group sharing the stored photo. */
+    beforeAll(async () => {
+      if (handle === undefined) return;
+      const { app: db } = handle;
+      staff.full = nextId('E');
+      staff.bare = nextId('E');
+      await gated(SITE, async (tx) => {
+        staff.groupId = (await repo.insertGroup(tx, groupInput('Staff', SITE, 0), null)).userid;
+        staff.nested = (await repo.insertGroup(tx, groupInput('Nested', SITE, 0, { lname: 'Nest', jobtitle: 'Group Job', perm: 1, tablist: 'Basic', photofileid: STORED_PHOTO }), null)).userid;
+        await repo.insertAccount(tx, { userid: staff.full, username: 'ufull', type: 2, s2: 0, perm: 1, inactive: 0, ispublic: 0, siteid: SITE, remoteid: 'R-1', tablist: 'Basic,Advanced' });
+        await repo.writeCredential(tx, staff.full, { password: 'hash', passwordcreated: new Date(2026, 0, 2, 3, 4, 5, 670) });
+        await repo.touchLastLogin(tx, staff.full, new Date(2026, 5, 29, 8, 0, 0, 3));
+        await repo.insertAccount(tx, { userid: staff.bare, username: 'ubare', type: 2, s2: 0, perm: 0, inactive: 1, ispublic: 0, siteid: SITE, remoteid: '', tablist: '' });
+        await repo.upsertPersonContact(tx, { user_id: staff.bare, site_id: SITE, email: null, fname: null, lname: 'Bare', company: null, subtype: null, aggregate_version: 1, photofileid: MISSING_PHOTO });
+        for (const member of [staff.full, staff.bare, staff.nested]) await repo.addMembership(tx, member, staff.groupId);
+      });
+      const logger = createLogger({ service: 'identity', version: '1.0.0', env: 'local', level: 'silent' });
+      const envelope = testEnvelope({ topic: PERSON_CHANGED_TOPIC, tenantId: tenantIdForSite(SITE), aggregateId: staff.full, payload: personState(staff.full) });
+      await consumeEnvelope(db, personContactConsumer(repo), envelope, { subscription: PERSON_CONTACT_SUBSCRIPTION, messageId: 'staff-1', logger });
+    });
+
+    it("answers every readGroupMemberships column: the projected person, identity's account rows, a member group's own row and the photo extension", async () => {
+      content.lookups.length = 0;
+      const res = await send('GET', `/v1/groups/${staff.groupId}/members`, await admin());
+
+      expect(res.statusCode).toBe(200);
+      const [bare, full, nested] = res.json<{ items: Record<string, unknown>[] }>().items;
+      expect(Object.keys(full ?? {})).toEqual(MEMBER_KEYS);
+      expect(full).toEqual({
+        groupID: staff.full, userID: staff.full, GroupName: null, Fname: 'Fay', Lname: 'Full', UserName: 'ufull',
+        PasswordCreated: '2026-01-02T03:04:05.670', Email: 'fay@example.com', Company: 'Co', JobTitle: 'Analyst', MobilePhone: '555-0100',
+        Website: 'https://fay.example.test', Type: 2, subType: 'Default', ContactForm: 'cf', S2: 0, LastLogin: '2026-06-29T08:00:00.003',
+        LastUpdate: '2026-06-30T12:00:00.120', LastUpdateBy: 'Ada Admin', LastUpdateByID: ADMIN_USER, Perm: 1, InActive: 0, IsPublic: 0,
+        SiteID: SITE, Subscribe: 1, Notes: 'n', description: 'd', Interests: 'i', keepPrivate: 1, PhotoFileID: STORED_PHOTO, IMName: 'im',
+        IMService: 'AIM', Created: '2025-12-31T23:59:59.997', RemoteID: 'R-1', Tags: 't', tablist: 'Basic,Advanced', photoFileExt: 'jpg',
+      });
+      expect(bare).toMatchObject({ userID: staff.bare, Lname: 'Bare', InActive: 1, PasswordCreated: null, LastLogin: null, JobTitle: null, PhotoFileID: MISSING_PHOTO, photoFileExt: null });
+      expect(nested).toMatchObject({
+        userID: staff.nested, Type: 1, GroupName: 'Nested', Lname: 'Nest', JobTitle: 'Group Job', Perm: 1, tablist: 'Basic', subType: 'Default',
+        Subscribe: 1, LastUpdate: '2026-06-30T12:00:00.123', Created: '2026-06-30T12:00:00.123', PhotoFileID: STORED_PHOTO, photoFileExt: 'jpg',
+      });
+      expect(content.lookups).toEqual([[MISSING_PHOTO, STORED_PHOTO]]);
+    });
+
+    it('writes the timestamps of the members CSV as ACF renders them, and the photo extension', async () => {
+      const res = await send('GET', `/v1/groups/${staff.groupId}/members.csv`, await admin());
+
+      const full = res.body.split('\n').find((line) => line.includes('"ufull "')) ?? '';
+      const cells = new Map(MEMBER_KEYS.map((key) => key.toUpperCase()).sort().map((column, i) => [column, full.split(/,(?=")|,(?=\d)/)[i]]));
+      expect(Object.fromEntries(['CREATED', 'LASTLOGIN', 'LASTUPDATE', 'PASSWORDCREATED', 'PERM', 'PHOTOFILEEXT', 'REMOTEID', 'TABLIST', 'JOBTITLE'].map((column) => [column, cells.get(column)]))).toEqual({
+        CREATED: '"2025-12-31 23:59:59.997 "',
+        LASTLOGIN: '"2026-06-29 08:00:00.003 "',
+        LASTUPDATE: '"2026-06-30 12:00:00.12 "',
+        PASSWORDCREATED: '"2026-01-02 03:04:05.67 "',
+        PERM: '1 ',
+        PHOTOFILEEXT: '"jpg "',
+        REMOTEID: '"R-1 "',
+        TABLIST: '"Basic,Advanced "',
+        JOBTITLE: '"Analyst "',
+      });
+    });
+
+    it.each(['members', 'members.csv'])('answers GET %s with the legacy 503 when the photo lookup fails', async (path) => {
+      content.status = 503;
+      try {
+        const res = await send('GET', `/v1/groups/${staff.groupId}/${path}`, await admin());
+        expect(res.statusCode).toBe(503);
+      } finally {
+        content.status = 200;
+      }
+    });
   });
 });

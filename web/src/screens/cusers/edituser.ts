@@ -13,7 +13,7 @@ import { parseLegacyDate } from '@/lib/dates';
 import { legacySettings } from '@/lib/env';
 import { okBody } from '@/lib/gateway-client';
 import { encodeHtml, encodeHtmlAttr, encodeJs, encodeUrl, raw } from '@/lib/html';
-import type { SiteData } from '@/lib/request-context';
+import { siteDataOf, urlEncodedFormat, type SiteData } from '@/lib/request-context';
 import { buildUrl } from '@/lib/urls';
 import type { PageScreen, ScreenContext } from '../registry';
 import { renderUserCategoriesNest, type InterestCategoryLoader, type InterestCategoryRow } from './dsp_categories_nest';
@@ -128,6 +128,8 @@ export interface EditUserData {
   readonly userPoolId: string;
   /** `settingsManager.getSite(rc.siteid).getThemeAssetPath()`. */
   readonly themeAssetPath: string;
+  /** `getSite(bean.siteid)` of the photo URL; the request's site when there is no photo. */
+  readonly photoSite: SiteData;
   readonly interestCategories: readonly InterestCategoryRow[];
   readonly webServiceTokens: readonly WebServiceToken[];
 }
@@ -313,10 +315,27 @@ const hasDeleteLink = (rc: CusersRc, addresses: readonly EditUserAddress[]): boo
   rc.userid !== '' && addresses.some((address) => !cfEq(address.isPrimary, '1'));
 
 /**
+ * `getSite(bean.siteid)` of a photo: the request's site, else the user pool site programs-sites serves under that id.
+ * @throws GatewayDenialError When programs-sites refuses the read (401 or 403).
+ * @throws LegacyServiceUnavailableError When programs-sites serves no user pool site of that id.
+ */
+async function photoSiteOf(ctx: ScreenContext, site: SiteData, bean: EditUserBean): Promise<SiteData> {
+  if (!hasPhotoFile(bean) || cfEq(bean.siteId, site.siteid)) return site;
+  const response = await ctx.gateway.programsSites.getUserPoolSites(site.siteid);
+  const { sites } = okBody(response, 'programs-sites', 'getUserPoolSites');
+  const pool = sites.find((record) => cfEq(record.SiteID, bean.siteId));
+  if (pool === undefined) {
+    throw new LegacyServiceUnavailableError('programs-sites serves no site of the photo', 'admin', 'photo-site-unserved');
+  }
+  return siteDataOf(pool, legacySettings().defaultLocale);
+}
+
+/**
  * The view's data: `editUser()`'s bean, user type, groups and sites from people, and the view set-up's user pool,
  * subtypes and strike block; issues the form's CSRF pairs. Gateway unavailability propagates.
- * @throws GatewayDenialError When people refuses the read (401 or 403).
- * @throws LegacyServiceUnavailableError For `removeBlock` on a user with a username, whose strike reset no contract serves.
+ * @throws GatewayDenialError When people or programs-sites refuses a read (401 or 403).
+ * @throws LegacyServiceUnavailableError When an owner is unavailable, a photo file name is unserved, or a pooled user's photo
+ * site is not served by programs-sites.
  * @throws TypeError When the request carries no site data, or a preserved bean is malformed.
  */
 export async function loadEditUser(
@@ -332,18 +351,15 @@ export async function loadEditUser(
     userid: rc.userid,
     routeid: rc.routeid,
     ...(setIsPublic === undefined ? {} : { setispublic: rcText(setIsPublic, 'setispublic') }),
+    ...(rc['removeBlock'] === undefined ? {} : { removeBlock: rcText(rc['removeBlock'], 'removeBlock') }),
   };
   const edit = okBody(await ctx.gateway.people.call('get', '/v1/users/edit', { query }), 'people', 'getUserEdit');
   const bean = editBean(rc, edit);
-  // The view clears the user's strikes before reading them; identity's contract has no strike reset, so the request
-  // fails closed rather than show a block legacy would have lifted.
-  if (bean.username !== '' && rc['removeBlock'] !== undefined) {
-    throw new LegacyServiceUnavailableError('No contract serves a login strike reset', 'admin', 'strike-reset-unserved');
-  }
   // `cf_filetools` prints the file name of a non-image file, which people's person record does not carry.
   if (hasPhotoFile(bean) && !IMAGE_FILE_EXTENSIONS.has(bean.photoFileExt.toLowerCase())) {
     throw new LegacyServiceUnavailableError('No contract serves a photo file name', 'admin', 'photo-filename-unserved');
   }
+  const photoSite = await photoSiteOf(ctx, site, bean);
   const exists = !edit.isNew;
   const addresses = edit.addresses.map(addressOf);
   const contexts = hasDeleteLink(rc, addresses) ? [bean.userId, addressCsrfContext(rc)] : [bean.userId];
@@ -367,6 +383,7 @@ export async function loadEditUser(
     sites: edit.sites,
     userPoolId: userPoolIdFor({ site }, rc),
     themeAssetPath: themeAssetPath(site, ctx.req.https),
+    photoSite,
     interestCategories,
     webServiceTokens,
   };
@@ -392,14 +409,11 @@ interface View {
   /** `YesNoFormat($.siteConfig('EmailBroadcaster'))`. */
   readonly emailBroadcaster: boolean;
   readonly compactDisplay: string;
-  /** `getSite(bean.siteid)` when it is the request's site, the only site whose settings web holds. */
-  readonly photoSite: SiteData | undefined;
+  /** `getSite(bean.siteid)`, whose file asset path and file pool the photo URL takes. */
+  readonly photoSite: SiteData;
   /** `<cf_dsp_categories_nest>` output of the Interests tab. */
   readonly interests: string;
 }
-
-/** CFML `URLEncodedFormat`: `URLEncoder` bytes with a space as `%20`. */
-const urlEncodedFormat = (value: string): string => encodeUrl(value).replaceAll('+', '%20');
 
 /** `rsNonDefault`: the subtypes the query of queries keeps by its case-sensitive `subtype <> 'Default'`. */
 const nonDefaultSubTypes = (data: EditUserData): readonly string[] =>
@@ -420,7 +434,6 @@ function renderHeader(o: CfOutput, v: View): void {
 function renderAlerts(o: CfOutput, v: View): void {
   const { data, bean } = v;
   if (bean.username !== '') {
-    // `removeBlock` with a username fails closed in the load, so the strike reset branch never runs here.
     o.t('\n\t');
     o.t('\n\t');
     o.t('\n\t');
@@ -529,15 +542,9 @@ const isCfUrl = (value: string): boolean => /^(?:(?:https?|ftp|file):\/\/|mailto
 /** A stored integer flag of a site record; SQL NULL reads as the bean default 0. */
 const siteFlag = (value: number | null | undefined): boolean => (value ?? 0) !== 0;
 
-// Masa prints the direct cache path under the photo site's file pool. Web holds that site's settings only when it is
-// the request's site, so a pooled user's photo is addressed through the render route, the URL Masa emits for images
-// that are not direct, which serves the same rendition bytes.
 /** `$.getURLForImage(fileid=<photo>, size='medium', siteid=<bean site>, useProtocol=false)` with direct images. */
 function photoImageUrl(v: View): string {
   const { bean, photoSite: site } = v;
-  if (site === undefined) {
-    return `${v.context}/index.cfm/_api/render/${PHOTO_SIZE}/?fileID=${bean.photoFileId}&fileEXT=${bean.photoFileExt}`;
-  }
   const settings = legacySettings();
   const { record } = site;
   const remote = siteFlag(record.isremote);
@@ -1304,7 +1311,7 @@ export async function renderEditUser(ctx: ScreenContext, data: EditUserData): Pr
     sessionSiteId: ctx.req.session.siteid,
     emailBroadcaster: ctx.req.site?.emailBroadcaster === true,
     compactDisplay: ctx.req.rc['compactDisplay'] ?? 'false',
-    photoSite: ctx.req.site !== undefined && cfEq(bean.siteId, ctx.req.site.siteid) ? ctx.req.site : undefined,
+    photoSite: data.photoSite,
     interests: interests.value,
   };
   const o = new CfOutput();

@@ -8,7 +8,7 @@ import {
   renderAuthDenial,
   type UserClaims,
 } from '@opt2/platform/auth';
-import { cfEq, cfIsBoolean, cfNumberString, cfToBoolean } from '@opt2/platform/legacy-compat';
+import { cfEq, cfIsBoolean, cfIsNumeric, cfNumberString, cfToBoolean, javaTrim } from '@opt2/platform/legacy-compat';
 import { legacyParamsOf, sendLegacyResponse, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
 import { viewerScope, type ViewerScope } from '../domain/search.js';
 import type { components } from '../generated/openapi.js';
@@ -68,6 +68,21 @@ function simpleText(value: unknown): string {
   if (typeof value === 'number') return cfNumberString(value);
   if (typeof value === 'boolean') return String(value);
   return '';
+}
+
+/** A JSON boolean literal; the scan re-serializes a padded one as `"YES"` or `"NO"`, which is no boolean. */
+const JSON_BOOLEAN = /^(?:true|false)$/;
+
+/**
+ * A request value as admin start-up's Portcullis scan leaves it, when CFML `isBoolean` then accepts it; else undefined
+ * [legacy: admin/Application.cfc:246-265, core/mura/Portcullis.cfc:113-192,373-400]. The scan drops NUL, keeps a
+ * numeric or boolean value, re-serializes other JSON (ACF reads every char <= U+0020 as JSON whitespace) and trims the rest.
+ */
+function scannedBoolean(value: string): string | undefined {
+  const text = value.replace(/\0/g, '');
+  const trimmed = javaTrim(text);
+  if (cfIsBoolean(text) || cfIsNumeric(text)) return trimmed;
+  return !JSON_BOOLEAN.test(trimmed) && cfIsBoolean(trimmed) ? trimmed : undefined;
 }
 
 /** CFML `Val`: the number the text starts with, else 0. */
@@ -244,8 +259,8 @@ export function normaliseCusersParams(
   if (!isSuperViewer(claims)) rc.delete('s2');
   rc.param(CUSERS_DEFAULTS);
 
-  if (!cfIsBoolean(rc.get('ispublic')) || !isAdmin) rc.set('ispublic', '1');
-  if (!cfIsBoolean(rc.get('unassigned'))) rc.set('unassigned', '0');
+  rc.set('ispublic', (isAdmin ? scannedBoolean(rc.text('ispublic')) : undefined) ?? '1');
+  rc.set('unassigned', scannedBoolean(rc.text('unassigned')) ?? '0');
   const unassignedlink = cfToBoolean(rc.get('unassigned')) ? 0 : 1;
   rc.set('unassignedlink', unassignedlink);
   const startrowVal = cfmlVal(rc.get('startrow'));

@@ -69,11 +69,11 @@ x-opt2-excluded:
   - key: 'admin:carch.multifileupload{upload=image}'
     reason: Halted under EX-FILE-RENDITION.
   - key: 'admin:carch.cropimage'
-    reason: Regenerates renditions with the ColdFusion image engine, which cannot be reproduced; stays on legacy.
+    reason: Halted under EX-FILE-RENDITION; rewrites renditions with the ColdFusion image engine.
   - key: 'admin:carch.flipimage'
-    reason: Regenerates renditions with the ColdFusion image engine, which cannot be reproduced; stays on legacy.
+    reason: Halted under EX-FILE-RENDITION; rewrites renditions with the ColdFusion image engine.
   - key: 'admin:carch.rotateimage'
-    reason: Regenerates renditions with the ColdFusion image engine, which cannot be reproduced; stays on legacy.
+    reason: Halted under EX-FILE-RENDITION; rewrites renditions with the ColdFusion image engine.
   - key: 'admin:carch.update{approved=1}'
     reason: Withheld; writes the decision-list table tcontenteventreminders.
   - key: 'admin:carch.update{notify}'
@@ -3181,6 +3181,7 @@ paths:
     get:
       operationId: listCategories
       summary: Lists the category tree of the site.
+      description: '`rc` holds `categories`, the category tree of the site''s category pool: each level the `categoryManager.getCategories(siteid, parentID)` rows in their name order (`categoryID`, `parentID`, `name`, `hasKids`, `isOpen`, `isInterestGroup`, `isActive`, `restrictGroups`), each row with `children`, the level below it.'
       tags: [categories]
       x-opt2-transport: service
       x-opt2-requires: [s2, site-admin, 'm:010']
@@ -3199,6 +3200,7 @@ paths:
     post:
       operationId: saveCategory
       summary: Adds, updates or deletes a category by the legacy `action` field.
+      description: '`redirect` names `cCategory.list` unless a non-delete `action` leaves bean errors. With a null `redirect`, the result''s `data.rc` is the edit screen model as `getCategory` returns it, its `categoryBean` the bean after `update(rc)` or `create(rc)`; a rejected token leaves no `categoryBean` in it, as legacy leaves `rc.categoryBean` undefined.'
       tags: [categories]
       x-opt2-transport: service
       x-opt2-requires: [s2, site-admin, 'm:010']
@@ -3231,6 +3233,7 @@ paths:
     get:
       operationId: getCategory
       summary: Reads the edit screen model of a category.
+      description: 'An id that matches no category reads the new bean, with an empty `categoryID`, as legacy `categoryManager.read` does. `rc` holds `categoryBean` (its `getAllValues()`, with `errors`), `rsRestrictGroups` (the `contentUtility.getRestrictGroups` rows: `userID`, `groupName`, `isPublic`, in legacy order) and `categories` (the category tree as `listCategories` returns it).'
       tags: [categories]
       x-opt2-transport: service
       x-opt2-requires: [s2, site-admin, 'm:010']
@@ -3310,7 +3313,7 @@ paths:
     get:
       operationId: getFeed
       summary: Reads the edit screen model of a collection.
-      description: 'An id that matches no collection reads a new bean, as legacy `feedManager.read` does. `rc` holds `feedBean` (its `getAllValues()`, with `errors` and the `params` rows), `rsRestrictGroups` (`userID`, `groupName`, `isPublic`), `rslist` (the `getcontentItems` rows, each with its `zoom` markup of `dspZoomNoLinks(getCrumbArray())` and optionally `exists`), `rsExtendedAttributes` (every `tcontent` extended attribute of the site: `attributeID`, `type`, `subType`, `attribute`, `isActive` of its subtype, in legacy order), `hasCategories` (`getCategoryCount`), `categories` (the category pool rows: `categoryID`, `parentID`, `name`, `isOpen`, `permitted`), `imageSizes` (custom image size rows with `name`), `contentPool` (one `siteID`, `site` row per item of the site''s `contentPoolID` list), `rsUsage` (`getUsage` rows with `zoom` and `verdict`; required for a saved collection), `parentMenuTitle` (required when the collection has a `parentID`), `rsDisplayObject` (the `readContentObject` rows, with `object` and `params`, when `assignmentID` is given and `feedBean` is not already merged with it) and optionally `endpoint`.'
+      description: 'An id that matches no collection reads a new bean, as legacy `feedManager.read` does. `rc` holds `feedBean` (its `getAllValues()`, with `errors` and the `params` rows), `rsRestrictGroups` (`userID`, `groupName`, `isPublic`), `rslist` (the `getcontentItems` rows, each with its `zoom` markup of `dspZoomNoLinks(getCrumbArray())` and optionally `exists`), `rsExtendedAttributes` (every `tcontent` extended attribute of the site: `attributeID`, `type`, `subType`, `attribute`, `isActive` of its subtype, in legacy order), `hasCategories` (`getCategoryCount`), `categories` (the category pool rows: `categoryID`, `parentID`, `name`, `isOpen`, `permitted`), `imageSizes` (custom image size rows with `name`), `contentPool` (one `siteID`, `site` row per item of the site''s `contentPoolID` list), `rsUsage` (`getUsage` rows with `zoom` and `verdict`; required for a saved collection), `parentMenuTitle` (required when the collection has a `parentID`), `rsDisplayObject` (the `readContentObject` rows, with `object` and `params`, when `assignmentID` is given and `feedBean` is not already merged with it), `useLayoutManager` (the site content renderer''s `useLayoutManager()`), `defaultCollectionDisplayList` (the site content renderer''s `defaultCollectionDisplayList`, which `feedBean.getDisplayList()` returns for an empty stored list) and optionally `endpoint`.'
       tags: [feeds]
       x-opt2-transport: service
       x-opt2-requires: [s2, site-admin, 'm:011']
@@ -5779,7 +5782,7 @@ paths:
         - $ref: '#/components/parameters/CsrfExpiresQuery'
       responses:
         '200':
-          description: The legacy markup fragment.
+          description: 'The bare body of a branch the view aborts with: `{success:true}` for a `url.qqfile` upload, the ajax save''s `{success:…}` literal, or `success` after a multi-file upload. As JSON, a save the view renders (`redirect` null): with `errors`, the rejected save, whose `data` holds the `getContentEditModel` `rc` keys for the bean as update.cfm leaves it (`contentBean` with its errors and `lastUpdate`), from which web re-renders the editor inside the layout and keeps `contentBean` as `session.mura.editBean`; without `errors`, the compact-display close, whose `data` holds what dsp_close_compact_display.cfm reads: `contentBean` (`type`, `contentID`, `remoteURL`, `active`), `useLayoutManager`, `homeURL` when `rc.homeID` is set, `currentBean` for an add (with `editedPreviewURL`, its URL previewing the saved version), `parentBean` for a File or Link add (with `parentHistPreviewURL` and `parentHistExists` for `rc.parenthistid`) and `parentContentBean` (the active `rc.parentid`) for any other save; each with `active`, `isOnDisplay`, `type`, `contentID`, `contentHistID`, `url` and `previewURL`.'
           headers:
             Generator:
               $ref: '#/components/headers/Generator'
@@ -5787,15 +5790,22 @@ paths:
               $ref: '#/components/headers/StrictTransportSecurity'
             X-Opt2-Write-Position:
               $ref: '#/components/headers/XOpt2WritePosition'
+            X-Opt2-Session-Effects:
+              $ref: '#/components/headers/XOpt2SessionEffects'
           content:
             text/html;charset=UTF-8:
               schema:
                 $ref: '#/components/schemas/LegacyHtml'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminWriteResult'
         '302':
           description: The FW/1 or `returnURL` redirect a saved, deleted or previewed version takes.
           headers:
             Location:
               $ref: '#/components/headers/Location'
+            X-Opt2-Session-Effects:
+              $ref: '#/components/headers/XOpt2SessionEffects'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -5823,7 +5833,7 @@ paths:
         $ref: '#/components/requestBodies/RawForm'
       responses:
         '200':
-          description: The legacy markup fragment.
+          description: 'The bare body of a branch the view aborts with: `{success:true}` for a `url.qqfile` upload, the ajax save''s `{success:…}` literal, or `success` after a multi-file upload. As JSON, a save the view renders (`redirect` null): with `errors`, the rejected save, whose `data` holds the `getContentEditModel` `rc` keys for the bean as update.cfm leaves it (`contentBean` with its errors and `lastUpdate`), from which web re-renders the editor inside the layout and keeps `contentBean` as `session.mura.editBean`; without `errors`, the compact-display close, whose `data` holds what dsp_close_compact_display.cfm reads: `contentBean` (`type`, `contentID`, `remoteURL`, `active`), `useLayoutManager`, `homeURL` when `rc.homeID` is set, `currentBean` for an add (with `editedPreviewURL`, its URL previewing the saved version), `parentBean` for a File or Link add (with `parentHistPreviewURL` and `parentHistExists` for `rc.parenthistid`) and `parentContentBean` (the active `rc.parentid`) for any other save; each with `active`, `isOnDisplay`, `type`, `contentID`, `contentHistID`, `url` and `previewURL`.'
           headers:
             Generator:
               $ref: '#/components/headers/Generator'
@@ -5831,15 +5841,22 @@ paths:
               $ref: '#/components/headers/StrictTransportSecurity'
             X-Opt2-Write-Position:
               $ref: '#/components/headers/XOpt2WritePosition'
+            X-Opt2-Session-Effects:
+              $ref: '#/components/headers/XOpt2SessionEffects'
           content:
             text/html;charset=UTF-8:
               schema:
                 $ref: '#/components/schemas/LegacyHtml'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminWriteResult'
         '302':
           description: The FW/1 or `returnURL` redirect a saved, deleted or previewed version takes.
           headers:
             Location:
               $ref: '#/components/headers/Location'
+            X-Opt2-Session-Effects:
+              $ref: '#/components/headers/XOpt2SessionEffects'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -6253,7 +6270,7 @@ paths:
         - $ref: '#/components/parameters/CsrfExpiresQuery'
       responses:
         '200':
-          description: The legacy markup fragment.
+          description: 'The close document of a compact-display save or delete. As JSON, a rejected save: `redirect` null, the bean errors, and in `data` the `getFeed` `rc` keys of the submitted collection, from which web re-renders the edit form.'
           headers:
             Generator:
               $ref: '#/components/headers/Generator'
@@ -6265,8 +6282,11 @@ paths:
             text/html;charset=UTF-8:
               schema:
                 $ref: '#/components/schemas/LegacyHtml'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminWriteResult'
         '302':
-          description: The redirect to `cFeed.list` after a save or delete.
+          description: The redirect to `cFeed.list` after a save or delete, or for a refused CSRF token.
           headers:
             Location:
               $ref: '#/components/headers/Location'
@@ -6297,7 +6317,7 @@ paths:
         $ref: '#/components/requestBodies/RawForm'
       responses:
         '200':
-          description: The legacy markup fragment.
+          description: 'The close document of a compact-display save or delete. As JSON, a rejected save: `redirect` null, the bean errors, and in `data` the `getFeed` `rc` keys of the submitted collection, from which web re-renders the edit form.'
           headers:
             Generator:
               $ref: '#/components/headers/Generator'
@@ -6309,8 +6329,11 @@ paths:
             text/html;charset=UTF-8:
               schema:
                 $ref: '#/components/schemas/LegacyHtml'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminWriteResult'
         '302':
-          description: The redirect to `cFeed.list` after a save or delete.
+          description: The redirect to `cFeed.list` after a save or delete, or for a refused CSRF token.
           headers:
             Location:
               $ref: '#/components/headers/Location'
@@ -6843,11 +6866,11 @@ paths:
   /internal/v1/files:lookup:
     post:
       operationId: lookupFileExtensions
-      summary: Reads the `fileEXT` of stored files by `fileID`, for the user photos of the people screens.
+      summary: Reads the `fileEXT` of stored files by `fileID`, for the user photos of the people screens and identity's group member lists.
       description: Matches `fileID` alone, as legacy's `LEFT JOIN tfiles` does, ignoring trailing spaces and the case of the single-case stored CF UUIDs, in the file pools of the token's site's public and private user pools; a NULL `fileEXT` answers null.
       tags: [internal]
       x-opt2-transport: service
-      x-opt2-requires: ['service:people']
+      x-opt2-requires: ['service:people', 'service:identity']
       x-opt2-fastify-path: /internal/v1/files::lookup
       security: [{userToken: [], invocationCredential: []}]
       requestBody:
@@ -7185,10 +7208,11 @@ paths:
         - name: ext
           in: query
           required: true
+          description: Extension after the stored name's last dot; the key holds it lower-cased.
           schema:
             type: string
             minLength: 1
-            pattern: ^[^/\\]+$
+            pattern: ^[A-Za-z0-9]+$
         - name: contentType
           in: query
           required: true
@@ -7695,6 +7719,10 @@ components:
         pattern: ^[a-z0-9][a-z0-9-]*=[0-9]+(,[a-z0-9][a-z0-9-]*=[0-9]+)*$
     Location:
       description: Redirect target in the legacy form.
+      schema:
+        type: string
+    XOpt2SessionEffects:
+      description: 'JSON object of the admin session values the controller set, under their legacy names: `openSectionList`, and in `mura` the `session.mura` values (`multifileupload`; `editBean` null where it was deleted). Absent when it set none; web applies it to the session it persists and never relays it.'
       schema:
         type: string
   parameters:
@@ -9348,6 +9376,10 @@ components:
           const: strategies-content
         paused:
           type: boolean
+        running:
+          type: integer
+          minimum: 0
+          description: Tasks of the queue still running when pause answered.
         ensured:
           $ref: '#/components/schemas/EnsureRecurringResult'
     CanonicalType:

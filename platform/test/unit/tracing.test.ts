@@ -5,6 +5,7 @@ import type { AddressInfo } from 'node:net';
 import {
   context,
   createTraceState,
+  diag,
   INVALID_SPAN_CONTEXT,
   propagation,
   ROOT_CONTEXT,
@@ -14,6 +15,9 @@ import {
 import { W3CTraceContextPropagator } from '@opentelemetry/core';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { setDiagnosticLogger } from '../../src/logging/diagnostics.js';
+import { createLogger } from '../../src/logging/logger.js';
+import { validateLogRecord } from '../../src/logging/validate.js';
 import {
   activeSpanIds,
   assertTraceContinuity,
@@ -29,11 +33,13 @@ import {
   SpanKind,
   spansFromOtlpJsonLines,
   SpanStatusCode,
+  startLinkedRootSpan,
   startSpan,
   startTracing,
   taskHeaders,
   toContinuitySpan,
   TraceContinuityError,
+  withCallee,
   withExtractedContext,
   type Context,
   type ContinuitySpan,
@@ -203,6 +209,34 @@ describe('tracing sdk', () => {
   });
 
   it.each([
+    { label: 'after the callee only inside withCallee', callee: 'programs-sites', names: ['POST programs-sites', 'POST'] },
+    { label: 'by method alone without a callee', callee: undefined, names: ['POST', 'POST'] },
+  ])('names undici client spans $label', async ({ callee, names }) => {
+    const server = createServer((request, response) => {
+      request.resume();
+      response.end('ok');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    try {
+      const exporter = new MemorySpanExporter();
+      await startTracing({ ...SERVICE, exporter });
+      const call = async (): Promise<string> =>
+        (await fetch(`http://127.0.0.1:${String(port)}/internal/v1/x`, { method: 'POST' })).text();
+      await expect(callee === undefined ? call() : withCallee(callee, call)).resolves.toBe('ok');
+      await call();
+      expect(clientSpans(await exported(exporter)).map((span) => span.name)).toEqual(names);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => {
+        server.close(() => {
+          resolve();
+        });
+      });
+    }
+  });
+
+  it.each([
     { endpoint: undefined, env: undefined, url: 'http://localhost:4318/v1/traces' },
     { endpoint: undefined, env: '', url: 'http://localhost:4318/v1/traces' },
     { endpoint: undefined, env: '  ', url: 'http://localhost:4318/v1/traces' },
@@ -239,6 +273,122 @@ describe('tracing sdk', () => {
     await startTracing({ ...SERVICE, exporter: next });
     await startSpan('restarted', SpanKind.INTERNAL, () => undefined);
     expect((await exported(next)).map((span) => span.name)).toEqual(['restarted']);
+  });
+});
+
+describe('tracing diag logger', () => {
+  const LEVEL_VAR = 'OTEL_LOG_LEVEL';
+  const savedLevel = process.env[LEVEL_VAR];
+  const SPAN_DUMP = 'raw-span-dump';
+  const VALID = { valid: true, errors: [] };
+
+  /** Registers a diagnostic logger at `level` that captures its parsed lines. */
+  function captureDiagnostics(level = 'trace'): Record<string, unknown>[] {
+    const lines: Record<string, unknown>[] = [];
+    const destination = { write: (line: string) => void lines.push(JSON.parse(line) as Record<string, unknown>) };
+    setDiagnosticLogger(createLogger({ service: 'tracing-test', version: '1.2.3', env: 'local', level, destination }));
+    return lines;
+  }
+
+  function setLevel(value: string | undefined): void {
+    if (value === undefined) {
+      delete process.env[LEVEL_VAR];
+    } else {
+      process.env[LEVEL_VAR] = value;
+    }
+  }
+
+  afterEach(async () => {
+    await shutdownTracing();
+    setDiagnosticLogger(undefined);
+    setLevel(savedLevel);
+    vi.restoreAllMocks();
+  });
+
+  it('writes nothing to the console and restores OTEL_LOG_LEVEL, sending SDK records to the diagnostic logger', async () => {
+    setLevel('debug');
+    const consoleMethods = ['debug', 'info', 'log', 'warn', 'error', 'trace'] as const;
+    const spies = consoleMethods.map((method) => vi.spyOn(console, method).mockImplementation(() => undefined));
+    const lines = captureDiagnostics();
+
+    await startTracing({ ...SERVICE, exporter: new MemorySpanExporter() });
+
+    for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+    expect(process.env[LEVEL_VAR]).toBe('debug');
+    expect(lines.map((line) => line.message)).toContain('@opentelemetry/api: Registered a global for trace v1.10.0.');
+    for (const line of lines) expect(validateLogRecord(line)).toStrictEqual(VALID);
+  });
+
+  it.each([
+    ['error', 'ERROR'],
+    ['warn', 'WARNING'],
+    ['info', 'INFO'],
+    ['debug', 'DEBUG'],
+    ['verbose', 'DEBUG'],
+  ] as const)('writes diag.%s as one %s log-record.v1 line of its primitive values', async (method, severity) => {
+    setLevel('all');
+    const lines = captureDiagnostics();
+    await startTracing({ ...SERVICE, exporter: new MemorySpanExporter() });
+    lines.length = 0;
+
+    diag[method]('component', 'note', 2, false, { raw: SPAN_DUMP });
+
+    expect(lines).toHaveLength(1);
+    expect(validateLogRecord(lines[0])).toStrictEqual(VALID);
+    expect(lines[0]).toMatchObject({ severity, message: 'component note 2 false', service: 'tracing-test' });
+    expect(lines[0]).not.toHaveProperty('error');
+    expect(JSON.stringify(lines)).not.toContain(SPAN_DUMP);
+  });
+
+  it('writes the first Error as a safe error field and drops records below OTEL_LOG_LEVEL', async () => {
+    setLevel('debug');
+    const lines = captureDiagnostics();
+    await startTracing({ ...SERVICE, exporter: new MemorySpanExporter() });
+    lines.length = 0;
+    const failure = Object.assign(new Error(`export failed for ${SPAN_DUMP}`), { code: 'ECONNREFUSED', syscall: 'connect' });
+
+    diag.error('export failed', failure, new Error('second'), { raw: SPAN_DUMP });
+    diag.verbose('below the level');
+
+    expect(lines).toHaveLength(1);
+    expect(validateLogRecord(lines[0])).toStrictEqual(VALID);
+    expect(lines[0]).toMatchObject({
+      severity: 'ERROR',
+      message: 'export failed',
+      error: { type: 'Error', message: 'connect ECONNREFUSED' },
+    });
+    expect(JSON.stringify(lines)).not.toContain(SPAN_DUMP);
+  });
+
+  it('drops records without a diagnostic logger and when it throws, never throwing', async () => {
+    setLevel('debug');
+    const spies = (['debug', 'error'] as const).map((method) => vi.spyOn(console, method).mockImplementation(() => undefined));
+    await startTracing({ ...SERVICE, exporter: new MemorySpanExporter() });
+
+    expect(() => diag.error('no logger yet', new Error('dropped'))).not.toThrow();
+    const failing = {
+      write: () => {
+        throw new Error('sink down');
+      },
+    };
+    setDiagnosticLogger(createLogger({ service: 'tracing-test', version: '1.2.3', env: 'local', destination: failing }));
+    expect(() => diag.error('sink down', new Error('dropped'))).not.toThrow();
+
+    for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, '', '  '])('installs no diag logger for OTEL_LOG_LEVEL %j, and shutdown removes an installed one', async (value) => {
+    const lines = captureDiagnostics();
+    setLevel('debug');
+    await startTracing({ ...SERVICE, exporter: new MemorySpanExporter() });
+    await shutdownTracing();
+    lines.length = 0;
+    setLevel(value);
+
+    await startTracing({ ...SERVICE, exporter: new MemorySpanExporter() });
+    diag.error('not installed');
+
+    expect(lines).toEqual([]);
   });
 });
 
@@ -488,6 +638,23 @@ describe('tracing propagation', () => {
       expect(span?.events).toHaveLength(1);
       expect(span?.events[0]?.name).toBe('exception');
       expect(span?.events[0]?.attributes).toMatchObject(event);
+    });
+  });
+
+  describe('startLinkedRootSpan', () => {
+    it.each<{ name: string; ctx: Context; linked: boolean }>([
+      { name: 'a remote parent', ctx: remoteContext(), linked: true },
+      { name: 'an invalid span context', ctx: trace.setSpanContext(ROOT_CONTEXT, INVALID_SPAN_CONTEXT), linked: false },
+    ])('returns the result of a new root span with its kind and attributes under $name, linked only to a valid one', async ({ ctx, linked }) => {
+      await expect(
+        context.with(ctx, () => startLinkedRootSpan('schedule', SpanKind.PRODUCER, () => 42, { 'opt2.case': 'root' })),
+      ).resolves.toBe(42);
+      const [span] = await exported(exporter);
+
+      expect(span).toMatchObject({ name: 'schedule', kind: SpanKind.PRODUCER, ended: true, attributes: { 'opt2.case': 'root' } });
+      expect(span?.parentSpanContext).toBeUndefined();
+      expect(span?.spanContext().traceId).not.toBe(TRACE_ID);
+      expect(span?.links.map((link) => link.context)).toStrictEqual(linked ? [trace.getSpanContext(ctx)] : []);
     });
   });
 });

@@ -131,9 +131,9 @@ function isPublicGroup(group: GroupProjectionRow): boolean {
   return group.is_public !== null && group.is_public !== 0;
 }
 
-/** A stored grant type as SQL Server's case-insensitive, trailing-space-insensitive `tpermissions.type =` compares it. */
-function grantType(type: string): string {
-  return type.replace(/ +$/u, '').toLowerCase();
+/** A legacy id or grant type as SQL Server's case-insensitive, trailing-space-insensitive `=` compares it. */
+function ciKey(value: string): string {
+  return value.replace(/ +$/u, '').toLowerCase();
 }
 
 function nodeOf(crumb: CrumbNode): NodeRef {
@@ -159,14 +159,15 @@ async function inUserPools<T>(deps: PermissionDeps, tenantId: string, fn: (tx: T
   return results;
 }
 
-/** The projected groups among `groupIds` in the user pool tenants, a live row winning over a tombstone. */
+/** The projected groups among `groupIds` in the user pool tenants, keyed by `ciKey` of the group id, a live row winning over a tombstone. */
 async function projectedGroups(deps: PermissionDeps, tenantId: string, groupIds: readonly string[]): Promise<Map<string, GroupProjectionRow>> {
   const groups = new Map<string, GroupProjectionRow>();
   for (const rows of await inUserPools(deps, tenantId, (tx) => deps.repository.projections.groupNames(tx, groupIds))) {
     for (const row of rows) {
-      const held = groups.get(row.group_id);
+      const key = ciKey(row.group_id);
+      const held = groups.get(key);
       if (held === undefined || (held.deleted && !row.deleted)) {
-        groups.set(row.group_id, row);
+        groups.set(key, row);
       }
     }
   }
@@ -204,7 +205,7 @@ export async function loadMemberships(deps: PermissionDeps, actor: Actor): Promi
   const entries: string[] = [];
   const groupIds: string[] = [];
   for (const groupId of memberOf) {
-    const group = groups.get(groupId);
+    const group = groups.get(ciKey(groupId));
     // A tombstone is a deleted group, whose tusersmemb rows userDAO.deleteGroupMemberships removed with it.
     if (group?.deleted === true) {
       continue;
@@ -254,11 +255,13 @@ function granted(source: VerdictSource, node: NodeRef, type: string): boolean {
   if (pools === null) {
     return false;
   }
+  const contentKey = ciKey(node.contentId);
+  const siteKey = ciKey(node.siteId);
   return source.rows.some((row) => {
-    if (row.content_id !== node.contentId || row.site_id !== node.siteId || grantType(row.type) !== type) {
+    if (ciKey(row.content_id) !== contentKey || ciKey(row.site_id) !== siteKey || ciKey(row.type) !== type) {
       return false;
     }
-    const group = groups.get(row.group_id);
+    const group = groups.get(ciKey(row.group_id));
     if (group === undefined || group.deleted) {
       return false;
     }

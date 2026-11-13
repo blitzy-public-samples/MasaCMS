@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Pool, PoolClient, QueryConfig, QueryResult, QueryResultRow } from 'pg';
 import { untilAborted } from '../auth/deadline.js';
+import type { NotificationHandlers, NotificationListener } from './listener.js';
 import { assertTenantId } from './tenant-id.js';
 import { tenancyWarning } from './warning.js';
 
@@ -44,8 +45,10 @@ export interface TransactionCallOptions {
 export interface TenantDb {
   /** Service schema that qualifies `<schema>.tenant_registry` and `<schema>.tenant_grant`. */
   readonly schema: string;
-  withTenant<T>(tenantId: string, fn: (tx: TenantTx) => Promise<T>): Promise<T>;
+  withTenant<T>(tenantId: string, fn: (tx: TenantTx) => Promise<T>, options?: TransactionCallOptions): Promise<T>;
   withMetadata<T>(fn: (tx: MetadataTx) => Promise<T>, options?: TransactionCallOptions): Promise<T>;
+  /** Opens a LISTEN session on `channel` over its own pool-configured connection, with a bounded start; `end()` closes it. */
+  listen?(channel: string, handlers: NotificationHandlers): NotificationListener;
   end(): Promise<void>;
 }
 
@@ -271,14 +274,20 @@ export async function runTenantTransaction<T>(
   opts: TransactionRunnerOptions,
   tenantId: string,
   fn: (tx: TenantTx) => Promise<T>,
+  options?: TransactionCallOptions,
 ): Promise<T> {
   const tid = assertTenantId(tenantId);
-  return runTransaction(pool, opts, tid, (base): TenantTx => ({ ...base, kind: 'tenant', tenantId: tid }), fn);
+  return runTransaction(pool, opts, tid, (base): TenantTx => ({ ...base, kind: 'tenant', tenantId: tid }), fn, options);
 }
 
 /** Runs `fn` in a transaction whose RLS tenant is `tenantId`, which must come from verified claims, registry data or a stored grant. */
-export function withTenant<T>(db: TenantDb, tenantId: string, fn: (tx: TenantTx) => Promise<T>): Promise<T> {
-  return db.withTenant(tenantId, fn);
+export function withTenant<T>(
+  db: TenantDb,
+  tenantId: string,
+  fn: (tx: TenantTx) => Promise<T>,
+  options?: TransactionCallOptions,
+): Promise<T> {
+  return options === undefined ? db.withTenant(tenantId, fn) : db.withTenant(tenantId, fn, options);
 }
 
 async function rollbackAndRelease(client: Connection): Promise<void> {

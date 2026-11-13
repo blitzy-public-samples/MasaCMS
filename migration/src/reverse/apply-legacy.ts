@@ -440,6 +440,10 @@ export interface ApplyLegacyOptions {
   keyColumns?: readonly string[];
   /** Other owners' values for the change's key, merged into a split-table row this change inserts. */
   fetchOtherParts?: (change: LegacyChange) => Promise<Record<string, CanonicalValue>[]>;
+  /** Site column of a non-split table (`UnitCatalog.siteColumnOf`): keyed updates and deletes act only on the row at the before-image's site. */
+  siteColumn?: string;
+  /** A keyed insert whose tenant no longer holds its key while legacy holds the key under another site: it writes nothing. */
+  supersededInsert?: boolean;
 }
 
 /** Legacy rows the change inserted, updated, deleted or found already current. */
@@ -485,6 +489,11 @@ function keyWhere(change: LegacyChange, key: readonly CatalogColumn[], image: Re
         return keyCondition(column, value, bind);
       })
       .join(' AND ');
+}
+
+/** The site column keyed updates and deletes also match on; none for split tables, whose rows every owner reassembles. */
+function siteColumnOf(opts: ApplyLegacyOptions): CatalogColumn | undefined {
+  return opts.siteColumn === undefined || opts.split ? undefined : columnOf(opts.tableCatalog, opts.siteColumn, 'site column');
 }
 
 function ownedBy(opts: ApplyLegacyOptions): (column: CatalogColumn) => boolean {
@@ -578,8 +587,11 @@ async function updateKeyed(scope: RequestScope, change: LegacyChange, opts: Appl
       !(keyNames.has(column.name) && sameValue(valueOf(locator, column.name), value)),
   );
   if (set.length === 0) return { rows: 0 };
-  const rows = await updateRow(scope, catalog, set, keyWhere(change, key, locator));
+  const site = siteColumnOf(opts);
+  const rows = await updateRow(scope, catalog, set, keyWhere(change, site === undefined ? key : [...key, site], locator));
   if (rows > 0) return { rows };
+  // The key moved to another site, and the stream of that site's tenant projects the row.
+  if (site !== undefined && (await countRows(scope, catalog, keyWhere(change, key, locator))) > 0) return { rows: 0 };
   // A split row is reassembled from every owner's part, so a missing one is inserted rather than treated as divergence.
   if (!opts.split) throw new ProjectionConflictError(change);
   return { rows: await insertRow(scope, catalog, await insertImage(change, opts, after)) };
@@ -588,10 +600,11 @@ async function updateKeyed(scope: RequestScope, change: LegacyChange, opts: Appl
 async function deleteKeyed(scope: RequestScope, change: LegacyChange, opts: ApplyLegacyOptions, key: readonly CatalogColumn[]): Promise<ApplyResult> {
   const request = scope.request();
   const bind = binder(request);
-  const conditions = [keyWhere(change, key, imageOf(change, 'before'))(bind)];
+  const site = siteColumnOf(opts);
+  const conditions = [keyWhere(change, site === undefined ? key : [...key, site], imageOf(change, 'before'))(bind)];
   const predicate = opts.split ? rowPredicateCondition(opts.tableCatalog, opts.target.rowPredicate, bind) : undefined;
   if (predicate !== undefined) conditions.push(predicate);
-  // Zero rows is not divergence: the row is already absent.
+  // Zero rows is not divergence: the row is already absent, or its key moved to another site.
   return { rows: rowsOf(await request.query(`DELETE FROM ${tableName(opts.tableCatalog)} WHERE ${conditions.join(' AND ')}`)) };
 }
 
@@ -631,12 +644,31 @@ export async function applyLegacyChange(tx: RequestScope, change: LegacyChange, 
   if (key === null) return applyKeyless(tx, change, opts.tableCatalog);
   switch (change.op) {
     case 'insert':
-      return upsertKeyed(tx, change, opts, key);
+      return opts.supersededInsert === true ? { rows: 0 } : upsertKeyed(tx, change, opts, key);
     case 'update':
       return updateKeyed(tx, change, opts, key);
     case 'delete':
       return deleteKeyed(tx, change, opts, key);
   }
+}
+
+/**
+ * Site of the live row holding the change's after-image key, matched under the key columns' own collation; null when
+ * no row holds the key. @throws TypeError for a table without a primary key.
+ */
+export async function liveSiteOf(
+  scope: RequestScope,
+  change: LegacyChange,
+  opts: Pick<ApplyLegacyOptions, 'tableCatalog' | 'keyColumns'> & { siteColumn: string },
+): Promise<string | null> {
+  const catalog = opts.tableCatalog;
+  const key = keyColumnsOf(catalog, opts.keyColumns);
+  if (key === null) throw new TypeError(`${catalog.qualified} has no primary key to locate a row by`);
+  const site = columnOf(catalog, opts.siteColumn, 'site column');
+  const request = scope.request();
+  const where = keyWhere(change, key, imageOf(change, 'after'))(binder(request));
+  const result = await request.query<{ site: string }>(`SELECT ${quoteIdent(site.name)} AS site FROM ${tableName(catalog)} WHERE ${where}`);
+  return result.recordset[0]?.site ?? null;
 }
 
 /** What a batch of changes touches, for the projector's post-commit site refreshes, cache purges and watermarks. */

@@ -584,7 +584,7 @@ export function effectiveUseSSL(bean: SiteBean): '1' | '0' {
 
 /**
  * getEmailBroadcaster (settingsBean.cfc:435-441): the stored flag is not the effective one; legacy resolves it from the
- * global config, '0' while the global broadcaster is off (the monitor's bounce gate in src/jobs/ reads the same).
+ * global config, '0' while the global broadcaster is off (the monitor's bounce step applies it in jobs.cfm).
  */
 export function effectiveEmailBroadcaster(
   bean: SiteBean,
@@ -659,6 +659,40 @@ export function updateColumnValues(
   const values: Record<string, string | null> = {};
   for (const [column, rule] of UPDATE_RULES) values[column] = columnValue(bean, column, rule, config);
   return values;
+}
+
+// Character lengths of the bounded text columns in the live tsettings catalog; the others are int or nvarchar(max).
+const COLUMN_LENGTHS: Readonly<Record<string, number>> = Object.freeze({
+  site: 50, locking: 50, domain: 255, exportlocation: 100, contact: 50, mailserverip: 50, mailserverusername: 255,
+  mailserverpassword: 255, extranetpublicregnotify: 255, contactname: 50, contactaddress: 50, contactcity: 50,
+  contactstate: 50, contactzip: 50, contactemail: 100, contactphone: 50, privateuserpoolid: 50, publicuserpoolid: 50,
+  displaypoolid: 50, filepoolid: 25, categorypoolid: 25, smallimageheight: 20, smallimagewidth: 20,
+  mediumimageheight: 20, mediumimagewidth: 20, largeimageheight: 20, largeimagewidth: 20, loginurl: 255,
+  editprofileurl: 255, googleapikey: 100, theme: 50, mailserversmtpport: 5, mailserverpopport: 5, mailservertls: 5,
+  mailserverssl: 5, sitelocale: 50, tagline: 255, baseid: 35, enablelockdown: 255, customtaggroups: 255,
+  recaptchasitekey: 50, recaptchasecret: 50, recaptchalanguage: 25, resourcedomain: 100, remotecontext: 100,
+  placeholderimgid: 35, placeholderimgext: 10,
+});
+
+/** Column values as SQL Server stores them in tsettings, and the legacy names of the columns it refuses. */
+export interface FittedColumnValues {
+  readonly values: Record<string, string | null>;
+  /** Legacy catalog names of the overflowing columns in `values` order; Msg 2628 names the first. */
+  readonly overflowing: readonly string[];
+}
+
+/** SQL Server's length rule over `values` in UTF-16 units: an excess of spaces alone is cut off, any other overflows. */
+export function fitColumnValues(values: Readonly<Record<string, string | null>>): FittedColumnValues {
+  const fitted: Record<string, string | null> = {};
+  const overflowing: string[] = [];
+  for (const [column, value] of Object.entries(values)) {
+    const length = Object.hasOwn(COLUMN_LENGTHS, column) ? COLUMN_LENGTHS[column] : undefined;
+    fitted[column] = value;
+    if (value === null || length === undefined || value.length <= length) continue;
+    if (/^ +$/.test(value.slice(length))) fitted[column] = value.slice(0, length);
+    else overflowing.push(legacyNameFor(column) ?? column);
+  }
+  return { values: fitted, overflowing };
 }
 
 /** Column the site list sorts by. */

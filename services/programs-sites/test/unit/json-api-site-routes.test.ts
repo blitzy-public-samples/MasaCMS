@@ -30,12 +30,13 @@ import {
   testVerifier,
   writeTestSecrets,
 } from '@opt2/platform/testing';
-import type { SitesDomain } from '../../src/domain/sites.js';
+import { SiteColumnTruncationError, type SitesDomain } from '../../src/domain/sites.js';
 import type { components } from '../../src/generated/openapi.js';
 import { SITE_ERROR_REQUIRED } from '../../src/legacy/validation.js';
 import type { ProgramsSitesRepository } from '../../src/repo/repository.js';
 import {
   JSON_API_SITE_PATHS,
+  JSON_API_SITE_PREFIXES,
   jsonApiLegacySettings,
   registerJsonApiSiteRoutes,
   type JsonApiLegacySettings,
@@ -173,6 +174,8 @@ async function startApp(legacy: JsonApiLegacySettings | undefined): Promise<Fast
     }),
     verifierOverride: testVerifier('programs-sites'),
     pool: db,
+    // As app.ts routes them.
+    noCasePathPrefixes: JSON_API_SITE_PREFIXES,
     logger: createLogger({
       service: 'programs-sites',
       version: '1.0.0',
@@ -239,13 +242,24 @@ async function headersAs(name: Subject, site: string): Promise<Record<string, st
   return authHeadersFor(subject, { audience: 'programs-sites', site });
 }
 
+type Verb = 'GET' | 'HEAD' | 'POST' | 'PUT' | 'DELETE' | 'OPTIONS' | 'PATCH';
+
+/** A request path in the contract's spelling: no front controller, the API prefix in lower case and no trailing slash. */
+function contractPath(url: string): string {
+  const path = url.split('?', 1)[0] ?? url;
+  return path
+    .replace(/^\/index\.cfm(?=\/)/i, '')
+    .replace(/^\/(?:_|%5F)api\/(json|ajax|rest)\/v1[^/]*/i, (_lead, family: string) => `/_api/${family.toLowerCase()}/v1`)
+    .replace(/(.)\/$/, '$1');
+}
+
 /** Injects `call` and checks the answer against the contract. */
-async function send(method: 'GET' | 'POST', url: string, call: Call = {}) {
+async function send(method: Verb, url: string, call: Call = {}) {
   const credentials = call.as === undefined ? {} : await headersAs(call.as, call.site ?? TENANT_A.siteId);
   const res = await app.inject({ method, url, headers: { ...credentials, ...call.headers }, payload: call.payload });
   assertResponseMatchesOpenApi(OPENAPI, {
     method,
-    path: url,
+    path: contractPath(url),
     status: res.statusCode,
     contentType: res.headers['content-type'],
     body: res.body,
@@ -326,35 +340,44 @@ describe('jsonApiLegacySettings', () => {
 });
 
 describe('JSON_API_SITE_PATHS', () => {
-  it('names the site entity path of the json, ajax and rest families and is frozen', () => {
-    expect(JSON_API_SITE_PATHS).toEqual([
-      '/_api/json/v1/:siteid/site',
-      '/_api/ajax/v1/:siteid/site',
-      '/_api/rest/v1/:siteid/site',
+  it('leads every path under the json, ajax and rest API prefixes, with and without the front controller, and is frozen', () => {
+    expect(JSON_API_SITE_PREFIXES).toEqual([
+      '/_api/json/v1',
+      '/index.cfm/_api/json/v1',
+      '/_api/ajax/v1',
+      '/index.cfm/_api/ajax/v1',
+      '/_api/rest/v1',
+      '/index.cfm/_api/rest/v1',
     ]);
+    expect(JSON_API_SITE_PATHS).toEqual(JSON_API_SITE_PREFIXES.map((prefix) => `${prefix}*`));
+    expect(Object.isFrozen(JSON_API_SITE_PREFIXES)).toBe(true);
     expect(Object.isFrozen(JSON_API_SITE_PATHS)).toBe(true);
   });
 });
 
 describe('route declarations', () => {
-  it('declare GET and POST on every path as the public contract operations whose site check the handler runs', () => {
-    const declared = collectRouteMatrix(app).routes;
-    const expected = Object.entries(OPENAPI.paths)
-      .filter(([template]) => template.endsWith('/site'))
-      .flatMap(([template, operations]) =>
-        Object.entries(operations)
-          .filter(([method]) => method !== 'parameters')
-          .map(([method, operation]) => ({
+  it('declare every verb on every path as the public contract operations whose site check the handler runs', () => {
+    const declared = collectRouteMatrix(app).routes.filter((route) => /^(?:\/index\.cfm)?\/_api\//.test(route.url));
+    const expected = new Map<string, Record<string, unknown>>();
+    for (const operations of Object.values(OPENAPI.paths)) {
+      for (const [method, operation] of Object.entries(operations)) {
+        const fastifyPath = operation['x-opt2-fastify-path'];
+        if (method === 'parameters' || typeof fastifyPath !== 'string') continue;
+        for (const url of [fastifyPath, `/index.cfm${fastifyPath}`]) {
+          const route = {
             method: method.toUpperCase(),
-            url: template.replace('{siteid}', ':siteid'),
+            url,
             transport: operation['x-opt2-transport'],
             public: operation['x-opt2-public'],
             siteCheck: false,
-          })),
-      );
-    expect(expected).toHaveLength(6);
-    expect(declared.filter((route) => route.url.startsWith('/_api/'))).toEqual(expect.arrayContaining(expected));
-    expect(declared.filter((route) => route.url.startsWith('/_api/'))).toHaveLength(6);
+          };
+          expected.set(`${route.method} ${url}`, route);
+        }
+      }
+    }
+    expect(expected.size).toBe(42);
+    expect(declared).toEqual(expect.arrayContaining([...expected.values()]));
+    expect(declared).toHaveLength(42);
   });
 });
 
@@ -543,9 +566,11 @@ describe('resolution errors', () => {
     ['GET', '?method=findOne', {}, 'findOne'],
     ['GET', '?method=findOne&entityName=content', {}, 'findOne'],
     ['GET', '?method=swagger', {}, 'swagger'],
-    ['POST', '', { 'x-http-method-override': 'DELETE' }, 'invalid'],
+    ['GET', '?method=findMany', {}, 'findMany'],
+    ['GET', '?method=validate', {}, 'validate'],
+    ['DELETE', '?method=findAll&entityName=content', {}, 'findAll'],
   ])('%s %s %j is not served here and answers the legacy 503', async (method, query, headers, reported) => {
-    const res = await send(method as 'GET' | 'POST', `/_api/json/v1/tenant-a/site${query}`, { headers });
+    const res = await send(method as Verb, `/_api/json/v1/tenant-a/site${query}`, { headers });
     expect(res.statusCode).toBe(503);
     expect(res.json()).toEqual({ apiversion: 'v1', method: reported, error: UNAVAILABLE });
     expect(repository.readSite).not.toHaveBeenCalled();
@@ -737,6 +762,23 @@ describe('save', () => {
         errors: { siteid: SITE_ERROR_REQUIRED },
       },
     });
+  });
+
+  it.each([
+    ['a save', '/_api/json/v1/tenant-a/site', 'save'],
+    ['a direct save', '/_api/json/v1/tenant-a/site?method=Save&entityName=site&id=tenant-a', 'Save'],
+  ])('answers %s of a value longer than its tsettings column 500 server_error under its method', async (_label, url, method) => {
+    sites.updateSite.mockRejectedValueOnce(new SiteColumnTruncationError('Site'));
+    const res = await send('POST', url, { as: 's2', headers: FORM, payload: `site=${'S'.repeat(300)}&${TOKEN_FIELDS}` });
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toEqual({ apiversion: 'v1', method, error: UNAVAILABLE });
+  });
+
+  it('lets any other update failure through to the platform error handler', async () => {
+    sites.updateSite.mockRejectedValueOnce(new Error('next week is an invalid date or time string.'));
+    const res = await send('POST', '/_api/json/v1/tenant-a/site', { as: 's2', headers: FORM, payload: TOKEN_FIELDS });
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toMatchObject({ apiversion: 'v1', error: UNAVAILABLE });
   });
 
   it('answers a direct save 200 with the method as requested, errors included', async () => {
@@ -964,5 +1006,351 @@ describe('CORS origin echo', () => {
     const res = await send('GET', '/_api/json/v1/tenant-a/site', { headers: { ...headers, origin } });
     expect(res.statusCode).toBe(200);
     expect(corsOf(res)).toEqual(echoed ? echo(origin) : none);
+  });
+});
+
+const TENANT_A_BASE = `${BASE}/json/v1/tenant-a`;
+const TENANT_A_FIND_ONE = { apiversion: 'v1', method: 'findOne', data: siteValues(TENANT_A_BASE, 'tenant-a', 'tenant-a.example.test') };
+// Oracle ETag of `{"apiversion":"v1","data":"","method":"undefined"}`, the answer of a verb the entity route calls nothing for.
+const EMPTY_RESULT_ETAG = 'C518090A00E2AA315DED12599D338246338788AE5AE875FD4C6757E85A945037';
+const EMPTY_RESULT = '{"apiversion":"v1","data":"","method":"undefined"}';
+
+/** A paged site collection of `items` under `base`, one page of 1000. */
+function collection(base: string, items: unknown[], self: string, overrides: Record<string, unknown> = {}) {
+  const count = new Set(items.map((item) => (item as { siteid: string }).siteid)).size;
+  const page = count > 0 ? { pageindex: 1, totalpages: 1, startindex: 1, endindex: count } : { pageindex: 0, totalpages: 0, startindex: 0, endindex: 0 };
+  return {
+    ...page,
+    itemsperpage: 1000,
+    totalitems: count,
+    links: { permissions: `${base}/site/permissions`, properties: `${base}/site/properties`, self, entities: base },
+    items,
+    entityname: 'site',
+    ...overrides,
+  };
+}
+
+/** The data of a 200 envelope reporting `method`. */
+function dataOf(res: { statusCode: number; json: () => unknown }, method: string): Record<string, unknown> {
+  expect(res.statusCode).toBe(200);
+  const body = res.json() as { method: string; data: Record<string, unknown> };
+  expect(body.method).toBe(method);
+  return body.data;
+}
+
+describe('path, method and case forms', () => {
+  it.each([
+    ['GET', '/_api/json/v1/tenant-a/site/tenant-a'],
+    ['GET', '/_api/json/v1/tenant-a/site/new'],
+    ['GET', '/_api/json/v1/tenant-a/site/properties'],
+    ['GET', '/_api/json/v1/tenant-a/site/tenant-a/permissions'],
+    ['GET', '/_api/json/v1/tenant-a/sites'],
+    ['GET', '/_API/JSON/V1/tenant-a/site'],
+    ['GET', '/index.cfm/_api/json/v1/tenant-a/site'],
+    ['GET', '/INDEX.CFM/_Api/Json/V1/tenant-a/site'],
+    ['GET', '/%5Fapi/json/v1/tenant-a/site'],
+    ['GET', '/_api/json/v1x/tenant-a/site'],
+    ['GET', '/_api/json/v1/tenant-a/site/'],
+    ['GET', '/_api/json/v1/tenant-a?method=findOne&entityname=site'],
+    ['GET', '/_api/json/v1/tenant-a/findOne?entityname=site'],
+    ['GET', '/_api/json/v1/tenant-a?method=site.findMany'],
+    ['POST', '/_api/json/v1/tenant-a/site/tenant-a'],
+    ['PUT', '/_api/json/v1/tenant-a/site/tenant-a'],
+    ['DELETE', '/_api/json/v1/tenant-a/site/tenant-a'],
+    ['OPTIONS', '/_api/json/v1/tenant-a/site/tenant-a'],
+    ['PATCH', '/_api/json/v1/tenant-a/site/new'],
+  ] as const)('%s %s answers the tenant-a findOne as legacy does', async (method, url) => {
+    const res = await send(method, url);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual(TENANT_A_FIND_ONE);
+    expect(identity.calls).toEqual([]);
+    expect(sites.updateSite).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['/_api/json/v1/tenant-a/SITE', 'SITE'],
+    ['/_api/json/v1/tenant-a?method=findOne&entityname=Site', 'Site'],
+  ])('%s reports the entity name as spelled, links staying lowercase', async (url, entityname) => {
+    const res = await send('GET', url);
+    expect(res.json()).toEqual({ ...TENANT_A_FIND_ONE, data: { ...TENANT_A_FIND_ONE.data, entityname } });
+  });
+
+  it.each([
+    ['/_api/json/v1/tenant-a/site/x/y/z', 'GET', 200],
+    ['/_api/json/v1/tenant-a/site/x/y/z', 'POST', 400],
+  ] as const)('%s under %s resolves as the entity route of the path site', async (url, method, status) => {
+    const res = await app.inject({ method, url });
+    expect(res.statusCode).toBe(status);
+  });
+
+  it.each([
+    ['OPTIONS', '/_api/json/v1/tenant-a/site'],
+    ['PATCH', '/_api/json/v1/tenant-a/site'],
+    ['OPTIONS', '/_api/json/v1/tenant-a/site/tenant-a/permissions'],
+  ] as const)('%s %s calls nothing and answers the empty result with method undefined', async (method, url) => {
+    const res = await send(method, url);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toBe(EMPTY_RESULT);
+    expect(res.headers.etag).toBe(EMPTY_RESULT_ETAG);
+    expect(repository.readSite).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['PUT', 400, legacyError('save', 'Invalid CSRF tokens')],
+    ['DELETE', 401, legacyError('delete', 'Insufficient Account Permissions')],
+  ] as const)('anonymous %s of the entity path answers the %s the method it resolves to raises', async (method, status, body) => {
+    const res = await send(method, '/_api/json/v1/tenant-a/site');
+    expect(res.statusCode).toBe(status);
+    expect(res.json()).toEqual(body);
+    expect(identity.calls).toEqual([]);
+    expect(sites.updateSite).not.toHaveBeenCalled();
+  });
+});
+
+describe('HEAD', () => {
+  it.each([
+    ['/_api/json/v1/tenant-a/site/tenant-a', 200],
+    ['/index.cfm/_API/json/v1/tenant-a/SITE/tenant-a', 200],
+    ['/_api/json/v1/tenant-a?method=findPermissions&entityname=site&id=x', 200],
+    ['/_api/json/v1/tenant-a?method=findMany&entityname=site', 500],
+    ['/_api/json/v1', 400],
+    ['/_api/json/v1/tenant-a/site/tenant-a?ishuman', 503],
+  ])('HEAD %s sends the GET answer status %s and ETag without a body or length', async (url, status) => {
+    const get = await send('GET', url);
+    const head = await send('HEAD', url);
+    expect([get.statusCode, head.statusCode]).toEqual([status, status]);
+    expect(head.body).toBe('');
+    expect(head.headers['content-length']).toBeUndefined();
+    expect(head.headers.etag).toBe(get.headers.etag);
+    expect(head.headers['content-type']).toBe(LEGACY_JSON_CONTENT_TYPE);
+    expect(head.headers.generator).toBe('Masa CMS 7.6.1');
+  });
+
+  it.each(['/_api/json/v1/tenant-a/site', '/_api/json/v1/tenant-a/site/x/permissions'])(
+    'HEAD %s, a verb the entity route calls nothing for, sends the empty result ETag',
+    async (url) => {
+      const head = await send('HEAD', url);
+      expect(head.statusCode).toBe(200);
+      expect(head.body).toBe('');
+      expect(head.headers.etag).toBe(EMPTY_RESULT_ETAG);
+    },
+  );
+
+  it('HEAD of a tenant-b site with a tenant-a token is refused with 403 headers alone', async () => {
+    const head = await send('HEAD', '/_api/json/v1/tenant-b/site/tenant-b', { as: 's2' });
+    expect(head.statusCode).toBe(403);
+    expect(head.body).toBe('');
+    expect(head.headers['content-length']).toBeUndefined();
+  });
+});
+
+describe('findAll, findMany and findQuery', () => {
+  const item = (siteid: string, base = TENANT_A_BASE) => siteValues(base, siteid, `${siteid}.example.test`);
+  const self = (query: string) => `${TENANT_A_BASE}/?&${query}`;
+
+  it.each([
+    ['?method=findAll&entityname=site', 'findAll', [item('tenant-a')], self('method=findAll&expanddepth=1&entityname=site&pageIndex=1')],
+    ['/findAll?entityname=site', 'findAll', [item('tenant-a')], self('expanddepth=1&method=findall&entityname=site&pageIndex=1')],
+    ['?method=findAll&entityname=site&siteid=tenant-b', 'findAll', [item('tenant-b')], self('method=findAll&expanddepth=1&siteid=tenant-b&entityname=site&pageIndex=1')],
+    ['?method=findAll&entityname=site&contentpoolid=*', 'findAll', [item('tenant-a')], self('method=findAll&expanddepth=1&entityname=site&contentpoolid=*&pageIndex=1')],
+    ['?method=findMany&entityname=site&ids=tenant-a,TENANT-A', 'findMany', [item('tenant-a'), item('tenant-a')], self('method=findMany&ids=tenant-a,TENANT-A&expanddepth=1&entityname=site&pageIndex=1')],
+    ['?method=findMany&entityname=site&ids=tenant-b', 'findMany', [], self('method=findMany&ids=tenant-b&entityname=site&pageIndex=0')],
+    ['?method=findQuery&entityname=site&domain=tenant-a.example.test', 'findQuery', [item('tenant-a')], `${TENANT_A_BASE}/site/?method=findQuery&entityname=site&domain=tenant-a.example.test&pageIndex=1`],
+    ['?method=findQuery&entityname=site&domain=nomatch', 'findQuery', [], `${TENANT_A_BASE}/site/?method=findQuery&entityname=site&domain=nomatch&pageIndex=0`],
+    ['?method=findQuery&entityname=site&domain=like%5Etenant%25&innerJoin=content', 'findQuery', [item('tenant-a')], `${TENANT_A_BASE}/site/?method=findQuery&entityname=site&domain=like%5Etenant%25&innerJoin=content&pageIndex=1`],
+    ['?method=findQuery&entityname=site&domain=NULL', 'findQuery', [], `${TENANT_A_BASE}/site/?method=findQuery&entityname=site&domain=NULL&pageIndex=0`],
+  ])('GET %s answers the paged site feed of the scope site', async (query, method, items, link) => {
+    const res = await send('GET', `/_api/json/v1/tenant-a${query}`);
+    expect(dataOf(res, method)).toEqual(collection(TENANT_A_BASE, items, link));
+    expect(sites.updateSite).not.toHaveBeenCalled();
+  });
+
+  it('reads each listed site of the feed in its own tenant', async () => {
+    const res = await send('GET', '/_api/json/v1/tenant-a?method=findAll&entityname=site&siteid=tenant-b');
+    expect(res.statusCode).toBe(200);
+    expect(reads()).toEqual([[TENANT_B.tenantId, 'tenant-b']]);
+  });
+
+  it('answers countOnly with the count as text', async () => {
+    const res = await send('GET', '/_api/json/v1/tenant-a?method=findAll&entityname=site&countonly=true');
+    expect(res.body).toBe('{"apiversion":"v1","data":{"count":"1"},"method":"findAll"}');
+  });
+
+  it('answers a distinct feed as generic beans that link only their entities', async () => {
+    const res = await send('GET', '/_api/json/v1/tenant-a?method=findAll&entityname=site&distinct=true');
+    const data = dataOf(res, 'findAll');
+    expect(data).toMatchObject({ entityname: 'bean', totalitems: 1 });
+    expect(Object.keys(data.links as object)).toEqual(['self', 'entities']);
+    expect(data.items).toEqual([{ ...item('tenant-a'), links: { entities: TENANT_A_BASE } }]);
+  });
+
+  it('pages past the rows with blank sites as the query iterator does', async () => {
+    const res = await send('GET', '/_api/json/v1/tenant-a?method=findAll&entityname=site&pageindex=0&itemsperpage=2');
+    const data = dataOf(res, 'findAll');
+    expect(data).toMatchObject({ pageindex: 0, itemsperpage: 2, totalpages: 1, totalitems: 1, startindex: -1, endindex: 0 });
+    expect(data.items).toEqual([siteValues(TENANT_A_BASE, '', ''), siteValues(TENANT_A_BASE, '', '')]);
+    expect(Object.keys(data.links as object)).toEqual(['permissions', 'properties', 'next', 'self', 'entities']);
+  });
+
+  it('adds the posted fieldnames of a form body to the self link', async () => {
+    const res = await send('POST', '/_api/json/v1/tenant-a?method=findAll&entityname=site', { headers: FORM, payload: 'a=1&B=2&b=3' });
+    const data = dataOf(res, 'findAll');
+    expect((data.links as { self: string }).self).toMatch(/[?&]fieldnames=A,B(&|$)/);
+  });
+
+  it.each([
+    ['?method=findMany&entityname=site', 500, legacyError('findMany', 'Unhandled Exception', 'server_error')],
+    ['?method=findAll&entityname=site&offset=1', 500, legacyError('findAll', 'Unhandled Exception', 'server_error')],
+    ['?method=findAll&entityname=site&sort=-bogus', 500, legacyError('findAll', 'Unhandled Exception', 'server_error')],
+    ['?method=findAll&entityname=site&maxitems=-1', 500, legacyError('findAll', 'Unhandled Exception', 'server_error')],
+    ['?method=findQuery&entityname=site&bogus=1', 500, legacyError('findQuery', 'Unhandled Exception', 'server_error')],
+    ['?method=findQuery&entityname=site&orderno=abc', 500, legacyError('findQuery', 'Unhandled Exception', 'server_error')],
+    ['?method=findQuery&entityname=site&tcontent.title=x', 500, legacyError('findQuery', 'Unhandled Exception', 'server_error')],
+    ['?method=findQuery&entityname=site&params=x', 500, legacyError('findQuery', 'Unhandled Exception', 'server_error')],
+    ['?method=findQuery&entityname=site&changesetid=1', 500, legacyError('findQuery', 'Unhandled Exception', 'server_error')],
+    ['?method=findAll&entityname=site&sort=tusers.username', 401, legacyError('findAll', 'Insufficient Account Permissions')],
+    ['?method=findQuery&entityname=site&sum=orderno', 503, { apiversion: 'v1', method: 'findQuery', error: UNAVAILABLE }],
+    ['?method=findQuery&entityname=site&distinct=true', 503, { apiversion: 'v1', method: 'findQuery', error: UNAVAILABLE }],
+    ['?method=findQuery&entityname=site&dbo.tsettings.domain=x', 503, { apiversion: 'v1', method: 'findQuery', error: UNAVAILABLE }],
+  ])('GET %s answers %s as the legacy query fails, or the legacy 503 where it is not reproduced', async (query, status, body) => {
+    const res = await send('GET', `/_api/json/v1/tenant-a${query}`);
+    expect(res.statusCode).toBe(status);
+    expect(res.json()).toEqual(body);
+  });
+});
+
+describe('findNew, findProperties and findPermissions', () => {
+  it('answers a new site bean seeded with the scope site id', async () => {
+    const res = await send('GET', '/_api/json/v1/tenant-a?method=findNew&entityname=site');
+    expect(dataOf(res, 'findNew')).toEqual(siteValues(TENANT_A_BASE, 'tenant-a', '', 1));
+    expect(repository.readSite).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [undefined, '', false],
+    ['site-admin' as const, '', true],
+    ['s2' as const, '&properties=siteid,bogus', true],
+  ])('answers the site properties to %s, the table only to an admin', async (as, query, table) => {
+    const res = await send('GET', `/_api/json/v1/tenant-a?method=findProperties&entityname=site${query}`, { as });
+    const data = dataOf(res, 'findProperties');
+    expect(data).toMatchObject({ entityname: 'site', primarykey: 'siteid', displayname: 'site', public: true });
+    expect('table' in data).toBe(table);
+    expect((data.properties as Array<{ name: string }>).map(({ name }) => name)).toEqual(query === '' ? ['domain', 'siteid'] : ['siteid']);
+    expect(data.links).toEqual({
+      swagger_json: `${TENANT_A_BASE}/swagger?mode=json&entities=site`,
+      endpoint: `${TENANT_A_BASE}/site`,
+      swagger_rest: `${TENANT_A_BASE}/swagger?mode=rest&entities=site`,
+      self: `${TENANT_A_BASE}/site/properties`,
+      entities: TENANT_A_BASE,
+    });
+  });
+
+  it.each([
+    [undefined, { read: true, delete: false, save: false }],
+    ['site-admin' as const, { read: true, delete: false, save: false }],
+    ['s2' as const, { read: true, delete: true, save: true }],
+  ])('answers the site permissions of %s', async (as, permissions) => {
+    const res = await send('GET', '/_api/json/v1/tenant-a?method=findPermissions&entityname=site&id=nosuch', { as });
+    expect(dataOf(res, 'findPermissions')).toEqual(permissions);
+  });
+
+  it.each([
+    ['?method=findPermissions&entityname=site', 'findPermissions'],
+    ['?method=findProperties&entityname=site&properties=links', 'findProperties'],
+  ])('GET %s answers server_error as the legacy method raises', async (query, method) => {
+    const res = await send('GET', `/_api/json/v1/tenant-a${query}`);
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toEqual(legacyError(method, 'Unhandled Exception', 'server_error'));
+  });
+
+  it('refuses an ishuman findNew with the legacy 503, the CFML form protection not being rendered here', async () => {
+    const res = await send('GET', '/_api/json/v1/tenant-a?method=findNew&entityname=site&ishuman=1');
+    expect(res.statusCode).toBe(503);
+  });
+});
+
+describe('validate', () => {
+  const encoded = (value: unknown) => encodeURIComponent(JSON.stringify(value));
+
+  it.each([
+    [{ entityname: 'site', siteid: 'admin' }, undefined, { siteid: "The 'SiteID' variable == invalid." }],
+    [{ entityname: 'SITE', siteid: ' Tasks ' }, undefined, { siteid: "The 'SiteID' variable == invalid." }],
+    [{ entityname: 'site', siteid: 'tenant-b' }, undefined, {}],
+    [{ entityname: 'site', siteid: 123 }, undefined, {}],
+    [[1], undefined, { invalid: 'Invalid validation request' }],
+    [{}, [], { invalid: 'Invalid validation request' }],
+    [{ bean: 'site', loadby: 'domain', domain: 'x' }, undefined, {}],
+    [{}, { x: 1 }, {}],
+  ])('validates data %j with validations %j', async (data, validations, errors) => {
+    const query = `&data=${encoded(data)}${validations === undefined ? '' : `&validations=${encoded(validations)}`}`;
+    const res = await send('GET', `/_api/json/v1/tenant-a?method=validate&entityname=site${query}`);
+    expect(dataOf(res, 'validate')).toEqual(errors);
+  });
+
+  it('reads a JSON body data struct as sent', async () => {
+    const res = await send('POST', '/_api/json/v1/tenant-a?method=validate&entityname=site', {
+      headers: JSON_BODY,
+      payload: { data: { entityname: 'site', siteid: 'admin' } },
+    });
+    expect(dataOf(res, 'validate')).toEqual({ siteid: "The 'SiteID' variable == invalid." });
+  });
+
+  it.each([
+    ['notjson', undefined, 400, legacyError('validate', 'Invalid parameters')],
+    [encoded({ entityname: 'site', siteid: { a: 1 } }), undefined, 500, legacyError('validate', 'Unhandled Exception', 'server_error')],
+    [encoded({ bean: 'site', loadby: 'domain' }), undefined, 500, legacyError('validate', 'Unhandled Exception', 'server_error')],
+    [encoded({ bean: 'site', loadby: 'orderby' }), undefined, 400, legacyError('validate', 'Invalid parameters')],
+    [encoded({}), encoded({ properties: { value: [{ required: true }] }, conditions: {} }), 500, legacyError('validate', 'Unhandled Exception', 'server_error')],
+    [encoded({ entityname: 'content' }), undefined, 503, { apiversion: 'v1', method: 'validate', error: UNAVAILABLE }],
+    [encoded({}), encoded({ properties: { domain: [{ required: true }] } }), 503, { apiversion: 'v1', method: 'validate', error: UNAVAILABLE }],
+  ])('answers data %s with validations %s as status %s', async (data, validations, status, body) => {
+    const query = `&data=${data}${validations === undefined ? '' : `&validations=${validations}`}`;
+    const res = await send('GET', `/_api/json/v1/tenant-a?method=validate&entityname=site${query}`);
+    expect(res.statusCode).toBe(status);
+    expect(res.json()).toEqual(body);
+  });
+});
+
+describe('delete', () => {
+  it.each([
+    ['DELETE', '/_api/json/v1/tenant-a/site', {}],
+    ['GET', '/_api/json/v1/tenant-a?method=delete&entityname=site&id=tenant-a', {}],
+    ['POST', '/_api/json/v1/tenant-a/site', { headers: { 'x-http-method-override': 'DELETE' } }],
+  ] as const)('refuses %s %s by a caller without S2 with authorization before any CSRF check', async (method, url, call) => {
+    const res = await send(method, url, { as: 'site-admin', ...call });
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual(legacyError('delete', 'Insufficient Account Permissions'));
+    expect(identity.calls).toEqual([]);
+    expect(sites.updateSite).not.toHaveBeenCalled();
+  });
+
+  it('answers an S2 json delete without a token as invalidTokens, consuming nothing', async () => {
+    const res = await send('DELETE', '/_api/json/v1/tenant-a/site', { as: 's2' });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual(legacyError('delete', 'Invalid CSRF tokens'));
+    expect(identity.calls).toEqual([]);
+  });
+
+  it.each([
+    ['json', { headers: FORM, payload: TOKEN_FIELDS }, 1],
+    ['rest', {}, 0],
+  ] as const)('answers an authorised %s delete with the server_error the site bean raises, deleting nothing', async (family, call, consumed) => {
+    const res = await send('DELETE', `/_api/${family}/v1/tenant-a/site`, { as: 's2', ...call });
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toEqual(legacyError('delete', 'Unhandled Exception', 'server_error'));
+    expect(identity.calls).toHaveLength(consumed);
+    expect(identity.calls.map((consume) => consume.context)).toEqual(consumed === 1 ? ['tenant-a'] : []);
+    expect(sites.updateSite).not.toHaveBeenCalled();
+    expect(sites.saveOrderAndDeploy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['?method=delete&entityname=site&id=nosuch', 200, { apiversion: 'v1', data: '', method: 'delete' }],
+    ['?method=delete&entityname=site', 500, legacyError('delete', 'Unhandled Exception', 'server_error')],
+  ])('answers a direct %s as legacy does without a stored site', async (query, status, body) => {
+    const res = await send('GET', `/_api/json/v1/tenant-a${query}`, { as: 's2' });
+    expect(res.statusCode).toBe(status);
+    expect(res.json()).toEqual(body);
+    expect(identity.calls).toEqual([]);
   });
 });

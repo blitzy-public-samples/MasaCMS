@@ -1,18 +1,21 @@
 // Unit tests for `opt2-ops drain-and-suspend`, using the consumers' contracts, in-memory owners, Pub/Sub, background record, scheduler and service client.
 import { dlqReplaySubscriptionName, subscriptionName } from '@opt2/platform/events';
-import type { PositionResponse } from '@opt2/platform/migration-kit';
+import type { PositionResponse, PublishedEvent } from '@opt2/platform/migration-kit';
 import type { Clock, ServiceClient, ServiceRequest, ServiceResponse } from '@opt2/platform/service-kit';
-import { QUEUE_CONTROL_PREFIX, QUEUES } from '@opt2/platform/tasks';
+import { QUEUE_CONTROL_PREFIX, QUEUES, type QueueControlResult } from '@opt2/platform/tasks';
 import { businessClock } from '@opt2/platform/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { loadConfig } from '../../src/config.js';
+import { GatewayWaitTimeoutError, type CutoverStatus, type GatewayClient, type InflightRow } from '../../src/cutover/gateway-client.js';
 import type { MigrationEnv } from '../../src/env.js';
 import type { DataOwner, OwnersClient, PositionParams } from '../../src/owners/index.js';
 import { defaultBackgroundRecord, type BackgroundRecord, type BackgroundStateApi } from '../../src/quiesce/background.js';
-import { DrainTimeoutError, type DrainResult } from '../../src/quiesce/drain.js';
+import { DEFAULT_DRAIN_POLL_MS, DrainTimeoutError, type DrainResult } from '../../src/quiesce/drain.js';
 import { createPubSub, type PubSubLike, type SavedPushConfig, type SubscriptionLike } from '../../src/quiesce/subscriptions.js';
 import {
+  InvocationsRunningError,
+  OrphanedWritesError,
   drainAndSuspend,
   queueControlTargets,
   type DrainAndSuspendContext,
@@ -81,6 +84,35 @@ const ALL_TARGETS = [
   target('stub', 'stub-outbox-sweep'),
   target('surveys', 'surveys-outbox-sweep'),
 ];
+const isSweepTarget = ({ queue }: QueueTarget): boolean => queue.endsWith('-outbox-sweep');
+/** Queues paused first, while the sweeps keep publishing. */
+const PRODUCER_TARGETS = ALL_TARGETS.filter((entry) => !isSweepTarget(entry));
+/** Sweep queues, paused once the final drain is done. */
+const SWEEP_TARGETS = ALL_TARGETS.filter(isSweepTarget);
+/** Drained owners when every service is deployed: the data owners, then the stub. */
+const PARTICIPANTS: DataOwner[] = [...CONFIG.dataOwners, 'stub'];
+const NOTE_CREATED = 'stub.note.created.v1';
+const NOTE_EVENT = 'd0000000-0000-4000-8000-00000000000d';
+const TENANT = '0b0c4f7e-3f7a-4c1e-9a55-1d2b3c4d5e6f';
+const LIVE_GATEWAY = 'gateway-live';
+const DEAD_GATEWAY = 'gateway-dead';
+const MONITOR_ROUTE = 'job:/_api/sitemonitor/';
+const inflightRow = (instanceId: string, route: string): InflightRow => ({ instanceId, route, side: 'legacy', count: 1, oldestStartedAt: NOW });
+/** Gateway status with one live and one dead instance and the given in-flight rows. */
+const cutoverStatus = (inflight: InflightRow[]): CutoverStatus => ({
+  tableVersion: 'v0001',
+  previous: null,
+  epoch: 1,
+  groupAuthority: {},
+  frozen: [],
+  instances: [
+    { instanceId: LIVE_GATEWAY, seenEpoch: 1, heartbeatAt: NOW, live: true },
+    { instanceId: DEAD_GATEWAY, seenEpoch: 1, heartbeatAt: NOW, live: false },
+  ],
+  acknowledgedEpoch: 1,
+  inflight,
+  sessionMode: 'legacy-primary',
+});
 
 const endpoint = (name: string): string => `http://127.0.0.1:20118/internal/v1/events/${name}`;
 /** Push config as Pub/Sub reports it: the local endpoint with its push key, and null oneof members. */
@@ -110,10 +142,11 @@ const PLANNED: BackgroundRecord = {
   pausedTasks: [],
 };
 const DRAINED: DrainResult = {
-  owners: CONFIG.dataOwners.map((owner) => ({ owner, unpublished: 0, held: 0, pendingReceipts: 0 })),
+  owners: PARTICIPANTS.map((owner) => ({ owner, unpublished: 0, held: 0, pendingReceipts: 0 })),
   polls: 1,
   elapsedMs: 0,
 };
+const DRAIN_LOG = PARTICIPANTS.map((owner) => `position ${owner}`);
 
 const pausePath = (queue: string): string => `${QUEUE_CONTROL_PREFIX}/${queue}/pause`;
 const pauseRequest = ({ service, queue }: QueueTarget): ServiceRequest => ({
@@ -124,6 +157,16 @@ const pauseRequest = ({ service, queue }: QueueTarget): ServiceRequest => ({
   userToken: null,
 });
 const pauseEntry = ({ service, queue }: QueueTarget): string => `${service} ${pausePath(queue)}`;
+const controlEntry = ({ service, queue }: QueueTarget, op: string): string => `${service} ${QUEUE_CONTROL_PREFIX}/${queue}/${op}`;
+/** Log of the barrier with nothing running or in flight: producer pauses, gateway read, final drain, confirmation, sweep pauses. */
+const quietBarrierLog = (producers: readonly QueueTarget[], sweeps: readonly QueueTarget[], drain: readonly string[] = DRAIN_LOG): string[] => [
+  ...producers.map(pauseEntry),
+  'gateway status',
+  ...drain,
+  ...producers.map(pauseEntry),
+  'gateway status',
+  ...sweeps.map(pauseEntry),
+];
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
 /** Port that fails the test when any member is read; drain-and-suspend reaches it only through defaults these tests replace. */
@@ -163,7 +206,7 @@ function fakeSubscription(log: string[], id: string, pushConfig: unknown) {
 }
 
 interface WorldOptions {
-  /** Unpublished outbox rows per owner; owners not named have no outbox. */
+  /** Unpublished outbox rows per owner; owners not named have no outbox. Tests may change it during a run. */
   unpublished?: Partial<Record<DataOwner, number>>;
 }
 
@@ -171,7 +214,7 @@ interface WorldOptions {
 async function world({ unpublished = {} }: WorldOptions = {}) {
   const log: string[] = [];
   const clock = steppingClock();
-  const declared = (await Promise.all(CONFIG.dataOwners.map((owner) => declaredSubscriptions(CONFIG, owner)))).flat().map(({ name }) => name);
+  const declared = (await Promise.all(PARTICIPANTS.map((owner) => declaredSubscriptions(CONFIG, owner)))).flat().map(({ name }) => name);
   const subscriptions = new Map(
     [...declared, DLQ_REPLAY, FOREIGN].map((id) => [id, fakeSubscription(log, id, declared.includes(id) && !PUSHED.includes(id) ? PULL : livePush(id))]),
   );
@@ -189,15 +232,25 @@ async function world({ unpublished = {} }: WorldOptions = {}) {
     close: vi.fn<() => Promise<void>>(() => Promise.resolve()),
   } satisfies PubSubLike;
 
+  /** Events each owner lists as published and the inbox receipts of each consumer by event id; tests change them during a run. */
+  const events = {
+    published: {} as Partial<Record<DataOwner, PublishedEvent[]>>,
+    receipts: {} as Partial<Record<DataOwner, Record<string, string[]>>>,
+  };
   const position = (owner: DataOwner, params?: PositionParams): Promise<PositionResponse> => {
-    log.push(`position ${owner}`);
+    log.push(params?.eventIds === undefined ? `position ${owner}` : `receipts ${owner} ${params.eventIds.join(' ')}`);
     const rows = unpublished[owner];
+    const topics = params?.publishedTopics;
+    const asked = params?.eventIds;
     return Promise.resolve({
       owner,
       position: '4242',
       outbox: rows === undefined ? null : { tenants: [], unpublished: rows, held: 0 },
-      inbox: null,
-      ...(params?.publishedTopics === undefined ? {} : { published: [] }),
+      inbox:
+        asked === undefined
+          ? null
+          : { total: 0, bySubscription: {}, receipts: Object.fromEntries(asked.map((id) => [id, events.receipts[owner]?.[id] ?? []])) },
+      ...(topics === undefined ? {} : { published: (events.published[owner] ?? []).filter(({ topic }) => topics.includes(topic)) }),
     });
   };
   const owners = new Proxy({} as OwnersClient, {
@@ -207,13 +260,36 @@ async function world({ unpublished = {} }: WorldOptions = {}) {
     },
   });
 
-  const settings: { paused: PauseResult; status: (request: ServiceRequest) => number; inFlight: number; maxInFlight: number } = {
+  const settings: {
+    paused: PauseResult;
+    status: (request: ServiceRequest) => number;
+    /** Running tasks a pause of the target answers, its call count included; undefined leaves the count out. */
+    running: (target: QueueTarget, calls: number) => number | undefined;
+    /** Runs on each queue-control request before it is answered. */
+    onRequest: (request: ServiceRequest) => void;
+    inFlight: number;
+    maxInFlight: number;
+  } = {
     paused: PAUSED,
     status: () => 200,
+    running: () => 0,
+    onRequest: () => undefined,
     inFlight: 0,
     maxInFlight: 0,
   };
   const requests: ServiceRequest[] = [];
+  const pauses = new Map<string, number>();
+  /** The queue-control answer the creating service gives. */
+  const answer = (request: ServiceRequest): QueueControlResult => {
+    const [, queue = '', op = ''] = /\/([^/]+)\/([^/]+)$/.exec(request.path) ?? [];
+    const { service } = request;
+    if (op === 'ensure') return { queue, service, ensured: { queue, name: `${queue}-1782820800`, created: false, reason: 'live' } };
+    if (op === 'resume') return { queue, service, paused: false };
+    const key = `${service} ${queue}`;
+    pauses.set(key, (pauses.get(key) ?? 0) + 1);
+    const running = settings.running({ service, queue }, pauses.get(key) ?? 0);
+    return { queue, service, paused: true, ...(running === undefined ? {} : { running }) };
+  };
   const client: ServiceClient = {
     async request<T>(request: ServiceRequest): Promise<ServiceResponse<T>> {
       requests.push(request);
@@ -224,10 +300,32 @@ async function world({ unpublished = {} }: WorldOptions = {}) {
         setImmediate(resolve);
       });
       settings.inFlight -= 1;
-      return { status: settings.status(request), headers: {}, body: undefined } as ServiceResponse<T>;
+      settings.onRequest(request);
+      return { status: settings.status(request), headers: {}, body: answer(request) } as ServiceResponse<T>;
     },
     close: () => Promise.resolve(),
   };
+
+  /** Status the gateway answers; `settle` runs when a wait for in-flight writes is asked, which then answers the awaited routes' dead-instance rows. */
+  const gatewayState = { status: cutoverStatus([]), settle: (): void => undefined };
+  const awaitInflightDrained = vi.fn<GatewayClient['awaitInflightDrained']>((routes) => {
+    log.push(`gateway awaitInflightDrained ${routes.join(' ')}`);
+    gatewayState.settle();
+    const { instances, inflight } = copy(gatewayState.status);
+    const live = new Set(instances.filter((instance) => instance.live).map((instance) => instance.instanceId));
+    return Promise.resolve({ orphans: inflight.filter((row) => routes.includes(row.route) && !live.has(row.instanceId)) });
+  });
+  const gatewayStatus = (): Promise<CutoverStatus> => {
+    log.push('gateway status');
+    return Promise.resolve(copy(gatewayState.status));
+  };
+  const gateway = new Proxy({} as GatewayClient, {
+    get(_target, member) {
+      if (member === 'status') return gatewayStatus;
+      if (member === 'awaitInflightDrained') return awaitInflightDrained;
+      throw new Error(`gateway.${String(member)} was read`);
+    },
+  });
 
   /** Stored record and every write, each a JSON copy as jsonb keeps it. */
   const background = { stored: defaultBackgroundRecord(), writes: [] as BackgroundRecord[] };
@@ -256,6 +354,11 @@ async function world({ unpublished = {} }: WorldOptions = {}) {
     clock.advance(CONFIG.transition.drainTimeoutMs);
     return Promise.resolve();
   });
+  // Each pause moves the clock by the time asked.
+  const shortSleep = vi.fn<(ms: number) => Promise<void>>((ms) => {
+    clock.advance(ms);
+    return Promise.resolve();
+  });
 
   const context = (serviceUrls: Record<string, string> = ALL_SERVICES): DrainAndSuspendContext => ({
     env: { GOOGLE_CLOUD_PROJECT: PROJECT, OPT2_SERVICE_URLS: serviceUrls } as MigrationEnv,
@@ -263,6 +366,7 @@ async function world({ unpublished = {} }: WorldOptions = {}) {
     clock,
     owners,
     client,
+    gateway,
     catalog: untouched('catalog'),
     db: untouched('db'),
     bridge: untouched('bridge'),
@@ -278,7 +382,24 @@ async function world({ unpublished = {} }: WorldOptions = {}) {
     sleep,
     ...extra,
   });
-  return { log, clock, subscription, pubsub, requests, settings, background, scheduler, sleep, context, ports };
+  return {
+    log,
+    clock,
+    subscription,
+    pubsub,
+    events,
+    unpublished,
+    requests,
+    settings,
+    gatewayState,
+    awaitInflightDrained,
+    background,
+    scheduler,
+    sleep,
+    shortSleep,
+    context,
+    ports,
+  };
 }
 
 afterEach(() => {
@@ -308,29 +429,32 @@ describe('queueControlTargets', () => {
 });
 
 describe('drainAndSuspend', () => {
-  it('drains, stores the plan, then pauses and switches to pull', async () => {
+  it('drains, stores the plan, stops producers, drains again, then pauses the sweeps and switches to pull', async () => {
     const w = await world();
 
     const result = await drainAndSuspend(w.context(), w.ports());
 
     expect(w.log).toStrictEqual([
-      ...CONFIG.dataOwners.map((owner) => `position ${owner}`),
       'get',
+      ...DRAIN_LOG,
+      'gateway status',
       'suspend',
       'pauseAll',
-      ...ALL_TARGETS.map(pauseEntry),
+      ...quietBarrierLog(PRODUCER_TARGETS, SWEEP_TARGETS),
       `modifyPushConfig ${PEOPLE_GROUP} {}`,
       `modifyPushConfig ${TIMESHEETS_ARCHIVED} {}`,
       'suspend',
     ]);
     expect(w.background.writes).toStrictEqual([PLANNED, { ...PLANNED, pausedTasks: PAUSED_TASKS }]);
-    expect(w.requests).toStrictEqual(ALL_TARGETS.map(pauseRequest));
+    expect(w.requests).toStrictEqual([...PRODUCER_TARGETS, ...PRODUCER_TARGETS, ...SWEEP_TARGETS].map(pauseRequest));
     expect(w.settings.maxInFlight).toBe(1);
     expect(w.scheduler.pauseAll).toHaveBeenCalledTimes(1);
     expect(w.sleep).not.toHaveBeenCalled();
+    expect(w.awaitInflightDrained).not.toHaveBeenCalled();
     expect(result).toStrictEqual({
       alreadySuspended: false,
       drained: DRAINED,
+      finalDrained: DRAINED,
       pausedTasks: PAUSED_TASKS,
       pausedQueues: ALL_TARGETS,
       switchedToPull: [PEOPLE_GROUP, TIMESHEETS_ARCHIVED],
@@ -347,7 +471,7 @@ describe('drainAndSuspend', () => {
     expect(createPubSub).not.toHaveBeenCalled();
   });
 
-  it('keeps the saved push configs on a second run', async () => {
+  it('reopens the sweeps and saved push delivery of a suspended record before draining, keeps the saved configs and suspends again', async () => {
     const w = await world();
     await drainAndSuspend(w.context(), w.ports({ reason: 'golden capture' }));
     const first = copy(w.background.stored);
@@ -355,8 +479,31 @@ describe('drainAndSuspend', () => {
     w.subscription(TIMESHEETS_ARCHIVED).state.pushConfig = livePush(TIMESHEETS_ARCHIVED, 'rotated-key');
     w.subscription(FINANCE_SITE).state.pushConfig = livePush(FINANCE_SITE);
     w.settings.paused = { siteMonitor: [], surveys: ['opt2-survey-43-launch'] };
+    w.log.length = 0;
+    const requestsBefore = w.requests.length;
 
     const result = await drainAndSuspend(w.context({ 'programs-sites': 'http://p', timesheets: 'http://t' }), w.ports());
+
+    const drainLog = CONFIG.dataOwners.map((owner) => `position ${owner}`);
+    expect(w.log).toStrictEqual([
+      'get',
+      ...SWEEP_TARGETS.map((entry) => controlEntry(entry, 'resume')),
+      `modifyPushConfig ${PEOPLE_GROUP} ${JSON.stringify(savedPush(PEOPLE_GROUP))}`,
+      ...drainLog,
+      'gateway status',
+      'suspend',
+      'pauseAll',
+      ...quietBarrierLog(
+        PROGRAMS_SITES_TARGETS.filter((entry) => !isSweepTarget(entry)),
+        PROGRAMS_SITES_TARGETS.filter(isSweepTarget),
+        drainLog,
+      ),
+      `modifyPushConfig ${FINANCE_SITE} {}`,
+      `modifyPushConfig ${PEOPLE_GROUP} {}`,
+      `modifyPushConfig ${TIMESHEETS_ARCHIVED} {}`,
+      'suspend',
+    ]);
+    expect(w.requests.slice(requestsBefore).filter((request) => request.path.endsWith('/resume'))).toHaveLength(SWEEP_TARGETS.length);
 
     const planned: BackgroundRecord = {
       ...PLANNED,
@@ -374,14 +521,13 @@ describe('drainAndSuspend', () => {
       alreadySuspended: true,
       pausedTasks: ['opt2-survey-43-launch'],
       pausedQueues: PROGRAMS_SITES_TARGETS,
-      switchedToPull: [FINANCE_SITE, TIMESHEETS_ARCHIVED],
+      switchedToPull: [FINANCE_SITE, PEOPLE_GROUP, TIMESHEETS_ARCHIVED],
     });
-    expect(w.requests.slice(ALL_TARGETS.length)).toStrictEqual(PROGRAMS_SITES_TARGETS.map(pauseRequest));
-    expect(w.subscription(PEOPLE_GROUP).modifyPushConfig).toHaveBeenCalledTimes(1);
+    expect(w.subscription(PEOPLE_GROUP).modifyPushConfig.mock.calls).toStrictEqual([[{}], [savedPush(PEOPLE_GROUP)], [{}]]);
     expect(w.subscription(TIMESHEETS_ARCHIVED).modifyPushConfig).toHaveBeenLastCalledWith({});
   });
 
-  it('changes nothing when the drain times out', async () => {
+  it('changes nothing when the first drain of a first run times out', async () => {
     const w = await world({ unpublished: { people: 2 } });
 
     const failure = await drainAndSuspend(w.context(), w.ports()).catch((error: unknown) => error);
@@ -391,18 +537,104 @@ describe('drainAndSuspend', () => {
       timeoutMs: CONFIG.transition.drainTimeoutMs,
       owners: [{ owner: 'people', unpublished: 2, held: 0, pendingReceipts: 0 }],
     });
-    expect(w.log.filter((entry) => !entry.startsWith('position '))).toStrictEqual([`people ${QUEUE_CONTROL_PREFIX}/people-outbox-sweep/ensure`]);
+    expect(w.log.filter((entry) => !entry.startsWith('position '))).toStrictEqual(['get', `people ${QUEUE_CONTROL_PREFIX}/people-outbox-sweep/ensure`]);
     expect(w.background.writes).toStrictEqual([]);
     expect(w.scheduler.pauseAll).not.toHaveBeenCalled();
   });
 
-  it.each<[string, (w: Awaited<ReturnType<typeof world>>) => void, number, string]>([
+  it('re-pauses a queue still running tasks until it reports none, then drains again', async () => {
+    const w = await world();
+    const reporting = target('reporting', 'reporting-export-run');
+    w.settings.running = ({ queue }, calls) => (queue === reporting.queue && calls === 1 ? 2 : 0);
+
+    const result = await drainAndSuspend(w.context(), w.ports({ sleep: w.shortSleep }));
+
+    const pausedAll = w.log.indexOf('pauseAll');
+    expect(w.log.slice(pausedAll + 1, w.log.indexOf('gateway status', pausedAll))).toStrictEqual([
+      ...PRODUCER_TARGETS.map(pauseEntry),
+      pauseEntry(reporting),
+    ]);
+    expect(w.shortSleep.mock.calls).toStrictEqual([[DEFAULT_DRAIN_POLL_MS]]);
+    expect(result.finalDrained).toStrictEqual(DRAINED);
+    expect(w.background.stored.pausedTasks).toStrictEqual(PAUSED_TASKS);
+  });
+
+  it('waits for a producer commit that lands after the first drain: its sweep publishes it and its consumer applies it before push stops', async () => {
+    const w = await world({ unpublished: {} });
+    // The held stub note commits once its ACF and queue producers are stopped; no in-request flush publishes it.
+    w.scheduler.pauseAll.mockImplementationOnce(() => {
+      w.log.push('pauseAll');
+      w.unpublished.stub = 1;
+      return Promise.resolve(PAUSED);
+    });
+    w.settings.onRequest = (request) => {
+      if (request.path !== `${QUEUE_CONTROL_PREFIX}/stub-outbox-sweep/ensure`) return;
+      w.unpublished.stub = 0;
+      w.events.published.stub = [{ eventId: NOTE_EVENT, topic: NOTE_CREATED, tenantId: TENANT }];
+      w.events.receipts.stub = { [NOTE_EVENT]: [TENANT] };
+    };
+
+    const result = await drainAndSuspend(w.context(), w.ports({ sleep: w.shortSleep }));
+
+    const at = (entry: string): number => w.log.indexOf(entry);
+    const ensure = controlEntry(target('stub', 'stub-outbox-sweep'), 'ensure');
+    expect(at('pauseAll')).toBeLessThan(at(ensure));
+    expect(at(ensure)).toBeLessThan(at(`receipts stub ${NOTE_EVENT}`));
+    expect(at(`receipts stub ${NOTE_EVENT}`)).toBeLessThan(at(pauseEntry(target('stub', 'stub-outbox-sweep'))));
+    expect(at(pauseEntry(target('stub', 'stub-outbox-sweep')))).toBeLessThan(at(`modifyPushConfig ${PEOPLE_GROUP} {}`));
+    expect(result.drained).toStrictEqual(DRAINED);
+    expect(result.finalDrained).toMatchObject({ owners: DRAINED.owners, polls: 3 });
+    expect(w.shortSleep.mock.calls).toStrictEqual([[DEFAULT_DRAIN_POLL_MS], [DEFAULT_DRAIN_POLL_MS]]);
+  });
+
+  it('waits for the live in-flight writes of the gateway before the final drain', async () => {
+    const w = await world();
+    w.gatewayState.status = cutoverStatus([inflightRow(LIVE_GATEWAY, MONITOR_ROUTE)]);
+    w.gatewayState.settle = () => {
+      w.gatewayState.status = cutoverStatus([]);
+    };
+
+    const result = await drainAndSuspend(w.context(), w.ports());
+
+    expect(w.awaitInflightDrained).toHaveBeenCalledExactlyOnceWith([MONITOR_ROUTE], {
+      timeoutMs: CONFIG.transition.drainTimeoutMs,
+      intervalMs: DEFAULT_DRAIN_POLL_MS,
+    });
+    const waited = w.log.indexOf(`gateway awaitInflightDrained ${MONITOR_ROUTE}`);
+    expect(w.log.slice(waited + 1, waited + 1 + DRAIN_LOG.length)).toStrictEqual(DRAIN_LOG);
+    expect(waited).toBeLessThan(w.log.indexOf(`modifyPushConfig ${PEOPLE_GROUP} {}`));
+    expect(result.switchedToPull).toStrictEqual(PUSHED);
+  });
+
+  it.each<[string, InflightRow]>([
+    ['legacy-bound native task run', inflightRow(DEAD_GATEWAY, MONITOR_ROUTE)],
+    ['target-bound write', { ...inflightRow(DEAD_GATEWAY, 'admin:carch.update'), side: 'target', count: 2 }],
+  ])('changes nothing on a first run when a dead instance holds a %s after the first drain', async (_label, orphan) => {
+    const w = await world();
+    w.gatewayState.status = cutoverStatus([inflightRow(LIVE_GATEWAY, MONITOR_ROUTE), orphan]);
+
+    const failure = await drainAndSuspend(w.context(), w.ports()).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(OrphanedWritesError);
+    expect(failure).toMatchObject({
+      name: 'OrphanedWritesError',
+      message: `In-flight writes of dead gateway instances clear only with legacy-restart or gates-closed evidence: ${DEAD_GATEWAY} ${orphan.side} ${orphan.route} (${String(orphan.count)} since ${NOW})`,
+      rows: [orphan],
+    });
+    expect(w.log).toStrictEqual(['get', ...DRAIN_LOG, 'gateway status']);
+    expect(w.background.writes).toStrictEqual([]);
+    expect(w.scheduler.pauseAll).not.toHaveBeenCalled();
+    expect(w.requests).toStrictEqual([]);
+    expect(w.awaitInflightDrained).not.toHaveBeenCalled();
+  });
+
+  it.each<[string, (w: Awaited<ReturnType<typeof world>>) => void, QueueTarget[], string | Error | (new (...args: never[]) => Error)]>([
     [
       'failed pauseAll',
       (w) => {
         w.scheduler.pauseAll.mockRejectedValueOnce(new Error('ACF pause failed'));
       },
-      0,
+      [],
       'ACF pause failed',
     ],
     [
@@ -410,27 +642,107 @@ describe('drainAndSuspend', () => {
       (w) => {
         w.settings.status = (request) => (request.path === pausePath('surveys-launch') ? 500 : 200);
       },
-      3,
+      PRODUCER_TARGETS.slice(0, 2),
       'Queue control pause of surveys-launch on communications answered HTTP 500',
+    ],
+    [
+      'pause answer without a running count',
+      (w) => {
+        w.settings.running = ({ queue }) => (queue === 'content-feed-import' ? undefined : 0);
+      },
+      PRODUCER_TARGETS.slice(0, 3),
+      'Queue control pause of content-feed-import on programs-sites answered without its running tasks',
+    ],
+    [
+      'queue running tasks past the barrier budget',
+      (w) => {
+        w.settings.running = ({ queue }) => (queue === 'reporting-export-run' ? 1 : 0);
+      },
+      [...PRODUCER_TARGETS, target('reporting', 'reporting-export-run')],
+      InvocationsRunningError,
+    ],
+    [
+      'live in-flight write left at the barrier deadline',
+      (w) => {
+        w.gatewayState.status = cutoverStatus([inflightRow(LIVE_GATEWAY, MONITOR_ROUTE)]);
+        // Each wait outlasts the budget, and another write starts before the confirming read.
+        w.gatewayState.settle = () => {
+          w.clock.advance(CONFIG.transition.drainTimeoutMs);
+        };
+      },
+      [...PRODUCER_TARGETS, ...PRODUCER_TARGETS],
+      GatewayWaitTimeoutError,
+    ],
+    [
+      'dead instance’s in-flight write found before the final drain',
+      (w) => {
+        w.scheduler.pauseAll.mockImplementationOnce(() => {
+          w.gatewayState.status = cutoverStatus([inflightRow(DEAD_GATEWAY, MONITOR_ROUTE)]);
+          return Promise.resolve(PAUSED);
+        });
+      },
+      PRODUCER_TARGETS,
+      new OrphanedWritesError([inflightRow(DEAD_GATEWAY, MONITOR_ROUTE)]),
+    ],
+    [
+      'live in-flight write whose instance dies during the wait',
+      (w) => {
+        w.gatewayState.status = cutoverStatus([inflightRow(LIVE_GATEWAY, MONITOR_ROUTE)]);
+        w.gatewayState.settle = () => {
+          w.gatewayState.status.instances = w.gatewayState.status.instances.map((instance) => ({ ...instance, live: false }));
+        };
+      },
+      PRODUCER_TARGETS,
+      new OrphanedWritesError([inflightRow(LIVE_GATEWAY, MONITOR_ROUTE)]),
+    ],
+    [
+      'dead instance’s in-flight write found by the confirming read',
+      (w) => {
+        w.gatewayState.status = cutoverStatus([inflightRow(LIVE_GATEWAY, MONITOR_ROUTE)]);
+        w.gatewayState.settle = () => {
+          w.gatewayState.status = cutoverStatus([inflightRow(DEAD_GATEWAY, 'admin:carch.update')]);
+        };
+      },
+      [...PRODUCER_TARGETS, ...PRODUCER_TARGETS],
+      new OrphanedWritesError([inflightRow(DEAD_GATEWAY, 'admin:carch.update')]),
     ],
     [
       'failed push switch',
       (w) => {
         w.subscription(PEOPLE_GROUP).modifyPushConfig.mockRejectedValueOnce(new Error('5 NOT_FOUND: Subscription does not exist'));
       },
-      ALL_TARGETS.length,
+      [...PRODUCER_TARGETS, ...PRODUCER_TARGETS, ...SWEEP_TARGETS],
       '5 NOT_FOUND: Subscription does not exist',
     ],
-  ])('propagates a %s with the plan stored', async (_label, arrange, pauses, message) => {
+  ])('propagates a %s with the plan stored and push delivery untouched', async (_label, arrange, pauses, failure) => {
     const w = await world();
     arrange(w);
 
-    await expect(drainAndSuspend(w.context(), w.ports())).rejects.toThrow(message);
+    await expect(drainAndSuspend(w.context(), w.ports())).rejects.toThrow(failure);
 
     expect(w.background.writes).toStrictEqual([PLANNED]);
-    expect(w.requests).toStrictEqual(ALL_TARGETS.slice(0, pauses).map(pauseRequest));
+    expect(w.requests).toStrictEqual(pauses.map(pauseRequest));
     expect(w.subscription(TIMESHEETS_ARCHIVED).modifyPushConfig).not.toHaveBeenCalled();
     expect(w.pubsub.close).not.toHaveBeenCalled();
+  });
+
+  it('names each queue still running tasks and the budget in InvocationsRunningError', async () => {
+    const w = await world();
+    w.settings.running = ({ queue }) => (queue === 'reporting-export-run' || queue === 'surveys-launch' ? 3 : 0);
+
+    const failure = await drainAndSuspend(w.context(), w.ports()).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(InvocationsRunningError);
+    expect(failure).toMatchObject({
+      name: 'InvocationsRunningError',
+      message: `tasks still running after ${String(CONFIG.transition.drainTimeoutMs)} ms: surveys-launch on communications (3), reporting-export-run on reporting (3)`,
+      timeoutMs: CONFIG.transition.drainTimeoutMs,
+      queues: [
+        { service: 'communications', queue: 'surveys-launch', running: 3 },
+        { service: 'reporting', queue: 'reporting-export-run', running: 3 },
+      ],
+    });
+    expect(w.sleep).toHaveBeenCalledExactlyOnceWith(DEFAULT_DRAIN_POLL_MS);
   });
 
   it.each<[string, WorldOptions, string]>([

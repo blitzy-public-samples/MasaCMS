@@ -19,11 +19,11 @@ import {
   type FastifyReply,
   type FastifyRequest,
 } from '@opt2/platform/service-kit';
-import { tenantForRegisteredSite, withTenant } from '@opt2/platform/tenancy';
+import { tenantForRegisteredSite, type TenantTx } from '@opt2/platform/tenancy';
 import { listAddresses } from '../domain/addresses.js';
 import { EXTEND_CONFIG_DEFAULTS, extendSetData, type ExtendValue } from '../domain/extended-data.js';
 import { normaliseParams, type UserValues } from '../domain/person.js';
-import { PhotoBranchError, awaitPersonOpen, runRosterOperation, type RosterDeps } from '../domain/roster-protocol.js';
+import { PhotoBranchError, observePersons, runRosterOperation, type RosterDeps } from '../domain/roster-protocol.js';
 import { userBeanValues } from '../domain/user-entity.js';
 import type { LegacyErrors } from '../domain/validation.js';
 import type { components } from '../generated/openapi.js';
@@ -218,12 +218,15 @@ function failOnUnsetUserBean(): never {
   throw new Error(`${PROFILE_UPDATE_ACTION} refused its CSRF token; legacy fails on the unset rc.userBean`);
 }
 
+/** The legacy 503 of a session user identity holds no account of. */
+function accountUnknown(userId: string): LegacyServiceUnavailableError {
+  return new LegacyServiceUnavailableError(`User ${userId} has no account in the token site's user pools`, 'auto', 'person-unknown');
+}
+
 /** The session user's account and the tenant of its user-pool site, from identity and the site registry only. */
 async function sessionAccount(roster: RosterDeps, claims: UserClaims): Promise<{ account: AccountView; tenantId: string }> {
   const account = await roster.identity.readAccount(claims.sub);
-  if (account === undefined) {
-    throw new LegacyServiceUnavailableError(`User ${claims.sub} has no account in the token site's user pools`, 'auto', 'person-unknown');
-  }
+  if (account === undefined) throw accountUnknown(claims.sub);
   const tenantId = await tenantForRegisteredSite(roster.db, account.siteId);
   if (tenantId === null) {
     throw new LegacyServiceUnavailableError(`Site ${account.siteId} has no site registry entry`, 'auto', 'tenant-unregistered');
@@ -234,22 +237,28 @@ async function sessionAccount(roster: RosterDeps, claims: UserClaims): Promise<{
 // The bean's memberships are left empty: the screen shows none, and identity lists them only to cUsers callers.
 /** `edit()`: `userManager.read(session.mura.userID)` and the data of every Edit Profile tab [legacy: admin/core/controllers/ceditprofile.cfc:117-123]. */
 async function readProfile(roster: RosterDeps, claims: UserClaims): Promise<ProfileData> {
-  const { account, tenantId } = await sessionAccount(roster, claims);
-  await awaitPersonOpen(roster.db, tenantId, claims.sub, { clock: roster.clock, sleep: roster.sleep });
+  // The located account names the tenant, which no roster save moves; the profile shows the account read with the person.
+  const { account: located, tenantId } = await sessionAccount(roster, claims);
   const config = roster.extendConfig ?? EXTEND_CONFIG_DEFAULTS;
-  const stored = await withTenant(roster.db, tenantId, async (tx) => {
+  const readPerson = async (tx: TenantTx) => {
     const person = await roster.repo.findPerson(tx, claims.sub);
     if (person === null) return null;
     const categoryIds = (await roster.repo.listInterests(tx, person.userid)).map((row) => row.categoryid);
     const addresses = await listAddresses(roster.repo, tx, person.userid);
     const scope = { siteId: person.siteid ?? '', type: '2', subtype: person.subtype ?? '' };
     const extend = await extendSetData(roster.repo, tx, person.userid, scope, config);
-    const subtypes = await roster.repo.listExtendSubtypes(tx, { siteId: account.siteId, types: ['2'] });
+    const subtypes = await roster.repo.listExtendSubtypes(tx, { siteId: located.siteId, types: ['2'] });
     return { person, categoryIds, addresses, extend, subtypes };
-  });
+  };
+  const { stored, account } = await observePersons(
+    roster,
+    (observer) => observer.read(tenantId, readPerson, (rows) => (rows === null ? [] : [rows.person.userid]), [claims.sub]),
+    async (rows) => ({ stored: rows, account: rows === null ? undefined : await roster.identity.readAccount(claims.sub) }),
+  );
   if (stored === null) {
     throw new LegacyServiceUnavailableError(`User ${claims.sub} is not a person of this tenant`, 'auto', 'person-unknown');
   }
+  if (account === undefined) throw accountUnknown(claims.sub);
   const { person, categoryIds, addresses, extend, subtypes } = stored;
   const values = userBeanValues({ person, account, groupIds: [], categoryIds, extend, photoFileExt: '' }, roster.clock);
   return {

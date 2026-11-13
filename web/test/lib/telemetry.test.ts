@@ -59,7 +59,7 @@ const REQUEST = {
 } satisfies RequestLogFields;
 
 const MODES = [
-  { env: 'local', overrides: {}, cloudTrace: {} },
+  { env: 'local', overrides: {}, level: 'info', cloudTrace: {} },
   {
     env: 'cloud',
     overrides: {
@@ -67,7 +67,9 @@ const MODES = [
       GOOGLE_CLOUD_PROJECT: CLOUD_PROJECT,
       OPT2_TASKS_ADAPTER: 'cloud',
       OPT2_STORAGE_ADAPTER: 'cloud',
+      LOG_LEVEL: 'debug',
     },
+    level: 'debug',
     cloudTrace: {
       'logging.googleapis.com/trace': `projects/${CLOUD_PROJECT}/traces/${INBOUND_TRACE_ID}`,
       'logging.googleapis.com/trace_sampled': true,
@@ -116,12 +118,13 @@ afterAll(async () => {
 });
 
 describe('logRequest', () => {
-  it.each(MODES)('writes one log-record.v1 line echoing the request ($env)', ({ env, overrides }) => {
+  it.each(MODES)('writes one log-record.v1 line echoing the request ($env)', ({ env, overrides, level }) => {
     installEnv(overrides);
     const lines = captureLines();
 
     logRequest(REQUEST);
 
+    expect(webLogger().level).toBe(level);
     expect(lines).toHaveLength(1);
     const [line] = lines;
     expect(validateLogRecord(line).errors).toEqual([]);

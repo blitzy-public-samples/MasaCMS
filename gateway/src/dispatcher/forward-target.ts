@@ -15,6 +15,7 @@ import {
 import { injectHttpHeaders } from '@opt2/platform/tracing';
 import type { SessionMode } from '../session/mode.js';
 import type { SessionBarrier } from './barrier.js';
+import { replyFromCallee } from './callee-span.js';
 import { failClosed, isTargetUnavailable, neverSent, type FailContext } from './fail-closed.js';
 import {
   HOP_BY_HOP_HEADERS,
@@ -360,7 +361,7 @@ export async function forwardToTarget(
 
   let forwarded: FastifyReply;
   try {
-    forwarded = reply.from(`${ctx.serviceUrl.replace(/\/+$/, '')}${path}`, options);
+    forwarded = replyFromCallee(reply, ctx.service, `${ctx.serviceUrl.replace(/\/+$/, '')}${path}`, options);
   } catch (error) {
     // reply-from rejects a path it cannot parse, and a GET or HEAD carrying a body, before anything is sent.
     return failUnsent(error, 'target forward rejected before sending');

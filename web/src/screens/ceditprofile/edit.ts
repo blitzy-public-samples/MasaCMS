@@ -718,11 +718,11 @@ ${renderAdvancedPane(parts)}
   return { body, ajax: renderUsersJs(ctx), htmlHead: editGroupHtmlHead(ctx) };
 }
 
-/** `cEditProfile.edit`, owned by people, behind the cEditProfile `before()` gate. */
+/** `cEditProfile.edit`, owned by identity, behind the cEditProfile `before()` gate. */
 export const editProfileScreen: PageScreen<EditProfileView> = Object.freeze({
   circuit: 'ceditprofile',
   action: 'edit',
-  owner: 'people',
+  owner: 'identity',
   mode: 'page',
   gate: ceditprofileGate,
   load: (ctx: ScreenContext) => loadEditProfileView(ctx),

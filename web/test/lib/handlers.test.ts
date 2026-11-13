@@ -1,10 +1,11 @@
-// Page-mode entry points over the real screen registry, with the loopback gateway fake as the only data source.
+// Page-mode entry points over the real screen registry, with the in-memory gateway relay as the only data source.
+import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN } from '@opt2/platform/legacy-compat';
+import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, LEGACY_ERROR_PAGE_HTML } from '@opt2/platform/legacy-compat';
 import { setServiceClientForTests } from '@/lib/gateway-client';
-import { renderAdminPage, renderOpt2Page, type AdminPageResult } from '@/lib/handlers';
+import { handleAdminPage, handleOpt2Page } from '@/lib/handlers';
 import { logRequest } from '@/lib/telemetry';
-import { OPT2_NAV_MODULES, serializeAdminDocument, type AdminDocument } from '@/shell/document';
+import { OPT2_NAV_MODULES } from '@/shell/document';
 import { CSRF_BY_CONTEXT, CSRF_LOGIN } from '../fixtures/identity/csrf';
 import { loginPageDefault, loginSessionAnonymous } from '../fixtures/identity/session-login';
 import { timesheetsAnswersByRole } from '../fixtures/opt2/timesheets';
@@ -12,7 +13,13 @@ import { siteById, type FixtureSiteId } from '../fixtures/programs-sites/sites';
 import { sessionPresets } from '../fixtures/session';
 import { domModel } from '../helpers/dom-model';
 import { useTestEnv } from '../helpers/env';
-import { routeKey, startFakeGateway, type FakeGateway, type FakeRoute, type FakeRouteTable } from '../helpers/fake-gateway';
+import {
+  fakeServiceClient,
+  routeKey,
+  type FakeRoute,
+  type FakeRouteTable,
+  type FakeServiceClient,
+} from '../helpers/fake-gateway';
 import { adminRequest, type AdminRequestOptions } from '../helpers/requests';
 import { SUBJECTS, serviceInvocation, syntheticSubject, type WebTestSubject } from '../helpers/tokens';
 
@@ -41,6 +48,15 @@ const NO_PROMPTS = Object.freeze({ drafts: 0, submissions: 0, approvals: 0, expi
 
 const employee = syntheticSubject('timesheets.employee');
 const timesheetsNav = OPT2_NAV_MODULES.find((entry) => entry.module === 'timesheets');
+
+/** The admin set-up cookies of a browser that sends none, in the order legacy sets them. */
+const ADMIN_COOKIES: readonly SentCookie[] = [
+  { name: 'rb', value: '', path: '/', persistent: true, httpOnly: true, sameSite: 'Lax' },
+  { name: 'ADMINCONTROLWIDTH', value: '300', path: '/', persistent: true, httpOnly: false, sameSite: undefined },
+  { name: 'ADMINSIDEBAR', value: 'off', path: '/', persistent: true, httpOnly: false, sameSite: undefined },
+];
+const RB_COOKIE: SentCookie = { name: 'RB', value: 'de', path: '/', persistent: true, httpOnly: true, sameSite: 'Lax' };
+const ADMIN_COOKIE_HEADER = 'rb=; ADMINCONTROLWIDTH=300; ADMINSIDEBAR=off';
 
 /** identity `issueCsrfTokens` answering each requested context with its fixture pair. */
 const issueCsrfTokens: FakeRoute = (request) => {
@@ -118,7 +134,7 @@ function tenantAUserRoutes(subject: WebTestSubject): FakeRouteTable {
   });
 }
 
-let fake: FakeGateway;
+let fake: FakeServiceClient;
 let restoreEnv: () => void;
 let restoreClient: () => void;
 
@@ -126,29 +142,45 @@ function install(routes: FakeRouteTable): void {
   for (const [key, route] of Object.entries(routes)) fake.setRoute(key, route);
 }
 
-/** Next's awaited `searchParams` of `url`: repeated names as arrays. */
-function searchParamsOf(url: string): Record<string, string | string[]> {
-  const record: Record<string, string | string[]> = {};
-  for (const [name, value] of new URL(url).searchParams) {
-    const previous = record[name];
-    record[name] = previous === undefined ? value : [previous, value].flat();
-  }
-  return record;
+async function adminPage(circuit: string, action: string, opts: AdminRequestOptions = {}): Promise<Response> {
+  return handleAdminPage(await adminRequest(`/admin/${circuit}/${action}`, opts), { circuit, action });
 }
 
-async function adminPage(circuit: string, action: string, opts: AdminRequestOptions = {}): Promise<AdminPageResult> {
-  const request = await adminRequest(`/admin/${circuit}/${action}`, opts);
-  return renderAdminPage({ circuit, action }, searchParamsOf(request.url), request.headers);
+async function opt2Page(module: string, screen: string, opts: AdminRequestOptions = {}): Promise<Response> {
+  return handleOpt2Page(await adminRequest(`/opt2/admin/${module}/${screen}`, opts), { module, screen });
 }
 
-async function opt2Page(module: string, screen: string, opts: AdminRequestOptions = {}): Promise<AdminPageResult> {
-  const request = await adminRequest(`/opt2/admin/${module}/${screen}`, opts);
-  return renderOpt2Page({ module, screen }, searchParamsOf(request.url), request.headers);
+/** One `Set-Cookie` as the browser stores it. */
+interface SentCookie {
+  readonly name: string;
+  readonly value: string;
+  readonly path: string | undefined;
+  /** Carries an expiry, so it outlives the browser session. */
+  readonly persistent: boolean;
+  readonly httpOnly: boolean;
+  readonly sameSite: string | undefined;
 }
 
-function documentOf(result: AdminPageResult): AdminDocument {
-  if (result.kind !== 'document') throw new Error(`Expected a document, got ${JSON.stringify(result)}`);
-  return result.document;
+/** The `Set-Cookie` headers of `response`, in order. */
+function sentCookies(response: Response): SentCookie[] {
+  return response.headers.getSetCookie().map((header) => {
+    const [pair = '', ...parts] = header.split(';').map((part) => part.trim());
+    const attributes = new Map(
+      parts.filter((part) => part !== '').map((part) => {
+        const at = part.indexOf('=');
+        return at < 0 ? [part.toLowerCase(), ''] : [part.slice(0, at).toLowerCase(), part.slice(at + 1)];
+      }),
+    );
+    const at = pair.indexOf('=');
+    return {
+      name: pair.slice(0, at),
+      value: pair.slice(at + 1),
+      path: attributes.get('path'),
+      persistent: attributes.has('expires'),
+      httpOnly: attributes.has('httponly'),
+      sameSite: attributes.get('samesite'),
+    };
+  });
 }
 
 /** The call wrote one request log line, with `route` and `statusCode`. */
@@ -160,29 +192,59 @@ function expectLogged(route: string, statusCode: number): void {
 
 const gatewayCalls = (): string[] => fake.requests.map(({ method, path }) => `${method} ${path}`);
 
-beforeEach(async () => {
-  fake = await startFakeGateway(BASE_ROUTES);
-  restoreEnv = useTestEnv({ OPT2_GATEWAY_URL: fake.url });
-  restoreClient = setServiceClientForTests(undefined);
+beforeEach(() => {
+  fake = fakeServiceClient(BASE_ROUTES);
+  restoreEnv = useTestEnv();
+  restoreClient = setServiceClientForTests(fake);
   vi.mocked(logRequest).mockClear();
 });
 
-afterEach(async () => {
+afterEach(() => {
   restoreClient();
   restoreEnv();
-  await fake.close();
 });
 
-describe('renderAdminPage', () => {
-  it.each<{ layout: AdminDocument['layout']; query: Record<string, string>; view: typeof loginPageDefault }>([
-    { layout: 'template', query: {}, view: loginPageDefault },
-    { layout: 'compact', query: { compactDisplay: 'true' }, view: { ...loginPageDefault, compactDisplay: 'true' } },
-  ])('renders clogin.main in the $layout layout for an anonymous browser', async ({ layout, query, view }) => {
-    const doc = documentOf(await adminPage('clogin', 'main', { query }));
+/** One layout of clogin.main: its query and the view state, body class and cache headers legacy answers with. */
+interface LoginLayout {
+  readonly layout: string;
+  readonly query: Record<string, string>;
+  readonly view: typeof loginPageDefault;
+  readonly bodyClass: RegExp;
+  readonly cacheControl: string | null;
+  readonly expires: string | null;
+}
 
-    expect(doc.layout).toBe(layout);
-    expect(doc.title).toMatch(/^Masa CMS/);
-    const { controls } = domModel(serializeAdminDocument(doc));
+const LOGIN_LAYOUTS: readonly LoginLayout[] = [
+  {
+    layout: 'template',
+    query: {},
+    view: loginPageDefault,
+    bodyClass: /^mura-admin /,
+    cacheControl: 'no-cache, no-store, must-revalidate',
+    expires: '06 Nov 1994 08:37:34 GMT',
+  },
+  {
+    layout: 'compact',
+    query: { compactDisplay: 'true' },
+    view: { ...loginPageDefault, compactDisplay: 'true' },
+    bodyClass: /^compact modal-wrapper$/,
+    cacheControl: null,
+    expires: null,
+  },
+];
+
+describe('handleAdminPage', () => {
+  it.each(LOGIN_LAYOUTS)('renders clogin.main in the $layout layout for an anonymous browser', async (layout) => {
+    const { query, view } = layout;
+    const response = await adminPage('clogin', 'main', { query });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe(layout.cacheControl);
+    expect(response.headers.get('expires')).toBe(layout.expires);
+    const markup = await response.text();
+    expect(cheerio.load(markup)('body').attr('class')).toMatch(layout.bodyClass);
+    const { title, controls } = domModel(markup);
+    expect(title).toMatch(/^Masa CMS/);
     expect(controls).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: 'username', type: 'text' }),
@@ -197,15 +259,65 @@ describe('renderAdminPage', () => {
     expectLogged('page:clogin.main', 200);
   });
 
-  it('sends an anonymous browser on a secured screen to the login form with its return URL', async () => {
-    const result = await adminPage('cusers', 'list');
+  it.each(LOGIN_LAYOUTS)('answers the $layout layout as the complete legacy document', async ({ query }) => {
+    const markup = await (await adminPage('clogin', 'main', { query })).text();
 
-    expect(result).toMatchObject({
-      kind: 'redirect',
-      location: expect.stringMatching(/^\.\/\?muraAction=cLogin\.main&returnURL=/),
-    });
-    expect(result.kind === 'redirect' && decodeURIComponent(result.location)).toContain('muraAction=cusers.list');
+    expect(markup).toMatch(/^<!DOCTYPE html>\n/);
+    expect(markup.match(/<head>/g)).toHaveLength(1);
+    expect(markup.match(/<body[\s>]/g)).toHaveLength(1);
+    const head = markup.slice(markup.indexOf('<head>'), markup.indexOf('</head>'));
+    expect(markup.indexOf('</head>')).toBeLessThan(markup.indexOf('<body'));
+    expect(head).toMatch(/<title>Masa CMS[^<]*<\/title>/);
+    expect(head).toMatch(/<link rel="icon" href="[^"]*\/favicon\.ico[^"]*"/);
+    expect(markup).toMatch(/<html lang="[^"]+" class="mura[^"]*">/);
+    expect(markup).toMatch(/<body id="clogin" class="[^"]+">/);
+    expect(markup).not.toContain('d.documentElement');
+    expect(markup).not.toContain('/_next/');
+  });
+
+  it('sends an anonymous browser on a secured screen to the login form with its return URL', async () => {
+    const response = await adminPage('cusers', 'list');
+
+    expect(response.status).toBe(302);
+    const location = response.headers.get('location') ?? '';
+    expect(location).toMatch(/^\.\/\?muraAction=cLogin\.main&returnURL=/);
+    expect(decodeURIComponent(location)).toContain('muraAction=cusers.list');
+    expect(response.headers.get('cache-control')).toBe('no-cache');
+    expect(response.headers.get('pragma')).toBe('no-cache');
+    expect(response.headers.get('expires')).toBeNull();
+    expect(await response.text()).toBe('');
     expectLogged('page:cusers.list', 302);
+  });
+
+  it.each([
+    { outcome: 'the 200', circuit: 'clogin', action: 'main', status: 200 },
+    { outcome: 'the 302', circuit: 'cusers', action: 'list', status: 302 },
+  ])('sets the admin cookies on $outcome of a browser that sends none', async ({ circuit, action, status }) => {
+    const response = await adminPage(circuit, action);
+
+    expect(response.status).toBe(status);
+    expect(sentCookies(response)).toEqual(ADMIN_COOKIES);
+  });
+
+  it.each<{ label: string; cookie?: string; query: Record<string, string>; cookies: readonly SentCookie[] }>([
+    { label: 'sends the admin cookies', cookie: ADMIN_COOKIE_HEADER, query: {}, cookies: [] },
+    {
+      label: 'sends none and asks for ?rb=de',
+      query: { rb: 'de' },
+      cookies: [...ADMIN_COOKIES.slice(0, 1), RB_COOKIE, ...ADMIN_COOKIES.slice(1)],
+    },
+    {
+      label: 'sends the admin cookies and asks for ?rb=de',
+      cookie: ADMIN_COOKIE_HEADER,
+      query: { rb: 'de' },
+      cookies: [RB_COOKIE],
+    },
+  ])('sets only the cookies legacy sets when the browser $label', async ({ cookie, query, cookies }) => {
+    const headers: Record<string, string> = cookie === undefined ? {} : { cookie };
+    const response = await adminPage('clogin', 'main', { query, headers });
+
+    expect(response.status).toBe(200);
+    expect(sentCookies(response)).toEqual(cookies);
   });
 
   it('sends a logged-in public-pool user who administers no site to clogin.logout', async () => {
@@ -218,27 +330,28 @@ describe('renderAdminPage', () => {
       }),
     );
 
-    const result = await adminPage('cusers', 'list', { user: SUBJECTS.member });
+    const response = await adminPage('cusers', 'list', { user: SUBJECTS.member });
 
-    expect(result).toMatchObject({ kind: 'redirect', location: '/admin/?muraAction=clogin.logout' });
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toBe('/admin/?muraAction=clogin.logout');
     expectLogged('page:cusers.list', 302);
   });
 
   it.each([
-    ['the gateway refuses connections', (): Promise<void> => fake.refuse()],
-    [
-      'identity answers 503 for the session',
-      async (): Promise<void> => fake.setRoute(CURRENT_SESSION, { status: 503, body: 'down' }),
-    ],
-  ])('answers unavailable when %s', async (_case, fail) => {
-    await fail();
+    ['the gateway refuses connections', (): void => fake.failWith()],
+    ['identity answers 503 for the session', (): void => fake.setRoute(CURRENT_SESSION, { status: 503, body: 'down' })],
+  ])('answers the legacy 503 when %s', async (_case, fail) => {
+    fail();
 
-    expect(await adminPage('clogin', 'main')).toEqual({ kind: 'unavailable' });
+    const response = await adminPage('clogin', 'main');
+
+    expect(response.status).toBe(503);
+    expect(await response.text()).toBe(LEGACY_ERROR_PAGE_HTML);
     expectLogged('page:clogin.main', 503);
   });
 
-  it('answers not-found for an action no screen serves', async () => {
-    expect(await adminPage('cnope', 'zzz')).toEqual({ kind: 'not-found' });
+  it('answers 404 for an action no screen serves', async () => {
+    expect((await adminPage('cnope', 'zzz')).status).toBe(404);
     expectLogged('page:cnope.zzz', 404);
   });
 
@@ -250,25 +363,31 @@ describe('renderAdminPage', () => {
       status: 403,
     },
     { caller: 'with an invalid user token', opts: async () => ({ userToken: 'not-a-token' }), status: 401 },
-  ])('refuses a request $caller before any gateway call', async ({ opts, status }) => {
-    expect(await adminPage('cusers', 'list', await opts())).toEqual({ kind: 'refused', status });
+  ])('refuses a request $caller with a bare status before any gateway call', async ({ opts, status }) => {
+    const response = await adminPage('cusers', 'list', await opts());
+
+    expect(response.status).toBe(status);
+    expect(await response.text()).toBe('');
+    expect(response.headers.getSetCookie()).toEqual([]);
     expect(fake.requests).toHaveLength(0);
     expectLogged('page:cusers.list', status);
   });
 });
 
-describe('renderOpt2Page', () => {
+describe('handleOpt2Page', () => {
   const query = { siteid: TENANT_A.SiteID };
 
   it('renders the timesheets sheet list inside the shell for an employee', async () => {
     if (timesheetsNav === undefined) throw new Error('OPT2_NAV_MODULES has no timesheets entry');
     install({ ...tenantAUserRoutes(employee), ...timesheetsAnswersByRole.employee });
 
-    const doc = documentOf(await opt2Page(timesheetsNav.module, timesheetsNav.screen, { user: employee, query }));
+    const response = await opt2Page(timesheetsNav.module, timesheetsNav.screen, { user: employee, query });
 
-    const body = String(doc.body);
-    expect(body).toContain('class="mura-header"');
-    expect(body).toContain('mura-table-grid');
+    expect(response.status).toBe(200);
+    const markup = await response.text();
+    expect(markup).toMatch(/^<!DOCTYPE html>\n/);
+    expect(markup).toContain('class="mura-header"');
+    expect(markup).toContain('mura-table-grid');
     expect(gatewayCalls()).toContain(TIMESHEETS_SHEETS);
     expectLogged(`opt2:timesheets.${timesheetsNav.screen}`, 200);
   });
@@ -276,28 +395,32 @@ describe('renderOpt2Page', () => {
   it.each([
     ['an unknown screen', 'timesheets', 'nope'],
     ['an unknown module', 'nope', 'sheets'],
-  ])('answers not-found for %s', async (_case, module, screen) => {
+  ])('answers 404 for %s', async (_case, module, screen) => {
     install(tenantAUserRoutes(employee));
 
-    expect(await opt2Page(module, screen, { user: employee, query })).toEqual({ kind: 'not-found' });
+    expect((await opt2Page(module, screen, { user: employee, query })).status).toBe(404);
     expectLogged(`opt2:${module}.${screen}`, 404);
   });
 
-  it('sends a user without a timesheets role to cMessage.noaccess without calling timesheets', async () => {
+  it('sends a user without a timesheets role to cMessage.noaccess with the admin cookies', async () => {
     install({ ...tenantAUserRoutes(SUBJECTS.systemUser), ...timesheetsAnswersByRole.employee });
 
-    const result = await opt2Page('timesheets', 'sheets', { user: SUBJECTS.systemUser, query });
+    const response = await opt2Page('timesheets', 'sheets', { user: SUBJECTS.systemUser, query });
 
-    expect(result).toMatchObject({ kind: 'redirect', location: '/admin/?muraAction=cMessage.noaccess' });
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toBe('/admin/?muraAction=cMessage.noaccess');
+    expect(sentCookies(response)).toEqual(ADMIN_COOKIES);
     expect(gatewayCalls().filter((call) => call.includes('/opt2/svc/timesheets/'))).toEqual([]);
     expectLogged('opt2:timesheets.sheets', 302);
   });
 
-  it('answers unavailable when timesheets answers 503', async () => {
+  it('answers the legacy 503 when timesheets answers 503', async () => {
     install({ ...tenantAUserRoutes(employee), [TIMESHEETS_SHEETS]: { status: 503, body: 'down' } });
 
-    expect(await opt2Page('timesheets', 'sheets', { user: employee, query })).toEqual({ kind: 'unavailable' });
+    const response = await opt2Page('timesheets', 'sheets', { user: employee, query });
+
+    expect(response.status).toBe(503);
+    expect(await response.text()).toBe(LEGACY_ERROR_PAGE_HTML);
     expectLogged('opt2:timesheets.sheets', 503);
   });
 });
-

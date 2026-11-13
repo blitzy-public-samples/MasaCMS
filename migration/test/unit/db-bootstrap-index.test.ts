@@ -1,9 +1,11 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { Connector } from '@google-cloud/cloud-sql-connector';
 import { createLogger, type Logger } from '@opt2/platform/logging';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { loadConfig, type MigrationConfig } from '../../src/config.js';
+import pg from 'pg';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { loadConfig, type MigrationConfig, type OwnerName } from '../../src/config.js';
 import {
   bootstrap,
   bootstrapOwners,
@@ -13,6 +15,7 @@ import {
   secretPathsFor,
   SecretFileError,
   type BootstrapDeps,
+  type ConnectedClient,
   type ConnectSpec,
 } from '../../src/db-bootstrap/index.js';
 import { loadBootstrapEnv, type BootstrapEnv, type BootstrapTarget } from '../../src/db-bootstrap/env.js';
@@ -402,6 +405,118 @@ describe('cloud bootstrap', () => {
       bootstrap({ target: 'cloud', env: cloudEnv(), config: { ...config, owners } as MigrationConfig, logger }),
     );
     expect(thrown).toBeInstanceOf(MigrationDirectoryError);
+  });
+});
+
+/** Replaces pg.Client with a double that records its settings and serves the `db` session its login names. */
+function servePgClients(db: ReturnType<typeof fakeDatabase>, adminUser: string): pg.ClientConfig[] {
+  const configs: pg.ClientConfig[] = [];
+  vi.spyOn(pg, 'Client').mockImplementation(
+    class {
+      private session: ConnectedClient | undefined;
+
+      constructor(private readonly config: pg.ClientConfig) {
+        configs.push(config);
+      }
+
+      async connect(): Promise<void> {
+        const { user = '', password } = this.config;
+        const spec: ConnectSpec =
+          user === adminUser ? { kind: 'admin' } : typeof password === 'string' ? { kind: 'role', user, password } : { kind: 'iam', user };
+        this.session = await db.deps.connect(spec);
+      }
+
+      query(text: string, values?: unknown[]) {
+        return this.session!.query(text, values);
+      }
+
+      end() {
+        return this.session!.end();
+      }
+    } as unknown as typeof pg.Client,
+  );
+  return configs;
+}
+
+describe('default database sessions', () => {
+  const sessionStateDir = (): string => path.join(tmp, 'session-state');
+  const stream = vi.fn();
+  const SET_TIME_ZONE = "SELECT set_config('TimeZone', $1, false)";
+  const sessionOf = ({ spec }: { spec: ConnectSpec }): string => (spec.kind === 'admin' ? 'admin' : `${spec.kind}:${spec.user}`);
+
+  beforeAll(async () => {
+    await mkdir(path.join(sessionStateDir(), 'secrets'), { recursive: true });
+    for (const [kind, file] of Object.entries(secretPathsFor(sessionStateDir(), 'stub'))) {
+      await writeFile(file, `${secretFor('stub', kind)}\n`);
+    }
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  it.each<{ target: BootstrapTarget; owner: OwnerName; env: () => BootstrapEnv; sessions: (env: BootstrapEnv) => pg.ClientConfig[] }>([
+    {
+      target: 'local',
+      owner: 'stub',
+      env: () => localEnv({ OPT2_STATE_DIR: sessionStateDir() }),
+      sessions: ({ PG_PASSWORD }) => [
+        { host: '127.0.0.1', port: 5432, database: 'opt2_test', user: 'admin_role', password: PG_PASSWORD },
+        { host: '127.0.0.1', port: 5432, database: 'opt2_test', user: 'stub_migrator', password: secretFor('stub', 'migrator') },
+      ],
+    },
+    {
+      target: 'cloud',
+      owner: 'people',
+      env: cloudEnv,
+      sessions: ({ OPT2_CLOUDSQL_ADMIN_PASSWORD }) => [
+        { stream, user: config.cloud.adminUser, password: OPT2_CLOUDSQL_ADMIN_PASSWORD, database: 'opt2' },
+        { stream, user: iamUser('db-bootstrap'), database: 'opt2' },
+      ],
+    },
+  ])('sets the process zone as the TimeZone of every default $target session first', async ({ target, owner, env, sessions }) => {
+    vi.stubEnv('TZ', 'America/New_York');
+    vi.spyOn(Connector.prototype, 'getOptions').mockResolvedValue({ stream });
+    const db = fakeDatabase({ roles: { [iamUser(owner)]: true, [iamUser('db-bootstrap')]: true } });
+    const configs = servePgClients(db, target === 'local' ? 'admin_role' : config.cloud.adminUser);
+    const bootstrapEnv = env();
+
+    const summary = await bootstrap({
+      target,
+      env: bootstrapEnv,
+      config: { ...config, owners: { [owner]: config.owners[owner] } } as unknown as MigrationConfig,
+      logger: capturingLogger().logger,
+    });
+
+    expect(summary).toMatchObject({ target, ok: true, schemas: [{ owner }] });
+    expect(configs).toEqual(sessions(bootstrapEnv));
+    expect(configs.every((settings) => !('options' in settings))).toBe(true);
+    const opened = db.connections.map(sessionOf);
+    expect(opened.map((session) => db.calls.find((call) => call.session === session))).toEqual(
+      opened.map((session) => ({ session, text: SET_TIME_ZONE, values: ['America/New_York'] })),
+    );
+    expect(db.calls.filter((call) => call.text === SET_TIME_ZONE)).toHaveLength(opened.length);
+    expect(db.connections.every((connection) => connection.ended)).toBe(true);
+  });
+
+  it('ends a default session whose TimeZone cannot be set and fails the bootstrap with that error', async () => {
+    vi.stubEnv('TZ', 'America/New_York');
+    const db = fakeDatabase({ failOn: /^SELECT set_config\('TimeZone'/ });
+    servePgClients(db, 'admin_role');
+
+    const thrown = await failure(
+      bootstrap({
+        target: 'local',
+        env: localEnv({ OPT2_STATE_DIR: sessionStateDir() }),
+        config: { ...config, owners: { stub: config.owners.stub } } as unknown as MigrationConfig,
+        logger: capturingLogger().logger,
+      }),
+    );
+
+    expect(thrown).toMatchObject({ message: 'statement rejected', code: '42000' });
+    expect(db.connections).toEqual([{ spec: { kind: 'admin' }, ended: true }]);
+    expect(db.calls.map((call) => call.text)).toEqual([SET_TIME_ZONE]);
   });
 });
 

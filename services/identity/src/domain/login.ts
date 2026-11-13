@@ -98,6 +98,15 @@ export type LoginResult = ({ ok: true; hasDefaultPassword: boolean } & LoginSucc
 /** `loginByUserID`'s answer; it never takes a strike. */
 export type LoginByUserIdResult = ({ ok: true } & LoginSuccess) | { ok: false; reason: 'invalid' | 'public-pool' };
 
+/** A credential login with a lockdown check, CFML true or `unreadable`, under configBean `sessionBasedLockdown` [legacy: core/mura/user/userUtility.cfc:183-184,207-221]. */
+export interface LockdownLoginRequest extends LoginRequest {
+  lockdown: 'check' | 'unreadable';
+  sessionBased: boolean;
+}
+
+/** `lockdownLogin`'s answer: a passed check logs nobody in; `session-lockdown` is refused before the check writes; `unreadable` failed to convert. */
+export type LockdownLoginResult = { ok: true; hasDefaultPassword: boolean } | LoginFailure | { ok: false; reason: 'session-lockdown' | 'unreadable' };
+
 /** The account whose stored credential the password matched, in its tenant; undefined for no match. */
 export type LookupResult = { account: UserAccountRow; credential: CredentialRow | null; tenantId: string } | undefined;
 
@@ -120,12 +129,16 @@ interface LoginRead {
   own: GroupAccountRow[];
 }
 
-/** What the strike transaction of `login` decided; `stale` when the account or credential changed since the password check. */
+/** What the strike transaction of a login decided; `stale` when the account or credential changed since the password check. */
 type Decision =
   | { outcome: 'ok'; read: LoginRead }
+  | { outcome: 'lockdown' | 'refuse' | 'unreadable' }
   | { outcome: 'invalid' | 'public-pool' }
   | { outcome: 'blocked'; until: Date }
   | { outcome: 'stale' };
+
+/** What a matched lockdown check does: `pass` clears the strikes without logging in, `refuse` and `unreadable` write nothing more. */
+type LockdownStep = 'pass' | 'refuse' | 'unreadable';
 
 /** A password check: whether it matched and the credential then stored, an upgrade's own row included; `stale` when the credential changed before the upgrade. */
 type Verification = { match: boolean; stored: CredentialRow | null } | 'stale';
@@ -307,14 +320,29 @@ export async function lookupByCredentials(deps: LoginDeps, username: string, pas
   return verification.match ? candidate : undefined;
 }
 
-/** Logs the session in by username and password under the strike rules, without plugin events or lockdown [legacy: core/mura/user/userUtility.cfc:179-259]. */
-export async function login(deps: LoginDeps, request: LoginRequest): Promise<LoginResult> {
+/** Merges `values` into the admin state of the session `sessionId` wherever it lives; an unknown session gets none. */
+async function recordOnSession(deps: LoginDeps, sessionId: string, values: Readonly<Record<string, unknown>>): Promise<void> {
+  const located = await locateSession(deps, sessionId);
+  if (located !== undefined) await recordSessionValues(deps, located.tenantId, sessionId, values);
+}
+
+/** Whether `username` and `password` set legacy's `session.hasdefaultpassword` [legacy: core/mura/user/userUtility.cfc:226-228]. */
+function isDefaultPassword(username: string, password: string): boolean {
+  return cfEq(password, 'admin') && cfEq(username, 'admin');
+}
+
+/** The password check and strike transaction, with the strike tenant; `lockdown` replaces the matched account's login [legacy: core/mura/user/userUtility.cfc:179-259]. */
+async function decideLogin(
+  deps: LoginDeps,
+  request: LoginRequest,
+  lockdown: LockdownStep | undefined,
+): Promise<{ decision: Exclude<Decision, { outcome: 'stale' }>; tenantId: string }> {
   const { db, repo, clock, settings } = deps;
-  const { username, password, siteId, sessionId } = request;
+  const { username, password, siteId } = request;
   const candidate = await credentialCandidate(deps, username);
   const verification = candidate === undefined ? undefined : await verifyPassword(deps, candidate, password);
   // The credential changed after it was read, so the login starts again from the stored rows.
-  if (verification === 'stale') return login(deps, request);
+  if (verification === 'stale') return decideLogin(deps, request, lockdown);
   const matched = verification?.match === true ? candidate : undefined;
   const poolRejects = matched !== undefined && flag(matched.account.ispublic) && (siteId === '' || !(await publicPoolAdmits(db, matched.account, siteId)));
   const tenantId = await strikeTenant(deps, username, candidate);
@@ -328,6 +356,11 @@ export async function login(deps: LoginDeps, request: LoginRequest): Promise<Log
       if (poolRejects) {
         await addStrike(repo, tx, strikes, options);
         return { outcome: 'public-pool' };
+      }
+      if (lockdown === 'refuse' || lockdown === 'unreadable') return { outcome: lockdown };
+      if (lockdown === 'pass') {
+        await clearStrikes(repo, tx, strikes, options);
+        return { outcome: 'lockdown' };
       }
       // The snapshot carries the credential the lookup checked, before any upgrade, as loginByQuery(rsUser) does.
       const read = await readAndTouch(deps, tx, fresh, matched.credential);
@@ -356,24 +389,72 @@ export async function login(deps: LoginDeps, request: LoginRequest): Promise<Log
           { sleep: deps.sleep },
         );
   // The account or credential changed after the password check, so the login starts again from the stored rows.
-  if (decision.outcome === 'stale') return login(deps, request);
+  if (decision.outcome === 'stale') return decideLogin(deps, request, lockdown);
+  return { decision, tenantId };
+}
 
-  if (decision.outcome === 'ok') {
-    const success = await completeLogin(deps, tenantId, decision.read, request);
-    const hasDefaultPassword = cfEq(password, 'admin') && cfEq(username, 'admin');
-    const values: Record<string, unknown> = { [LOGIN_SESSION_KEYS.blockLoginUntil]: '' };
-    if (hasDefaultPassword) values[LOGIN_SESSION_KEYS.hasDefaultPassword] = true;
-    await recordSessionValues(deps, success.session.tenantId, sessionId, values);
-    return { ok: true, ...success, hasDefaultPassword };
-  }
-  if (decision.outcome === 'blocked') {
-    const located = await locateSession(deps, sessionId);
-    if (located !== undefined) {
-      await recordSessionValues(deps, located.tenantId, sessionId, { [LOGIN_SESSION_KEYS.blockLoginUntil]: formatCanonicalTimestamp(decision.until) });
+/** The session-scope values of a passed login or lockdown check: the block cleared, and the default-password flag for `admin`/`admin`. */
+function passedValues(hasDefaultPassword: boolean): Record<string, unknown> {
+  const values: Record<string, unknown> = { [LOGIN_SESSION_KEYS.blockLoginUntil]: '' };
+  if (hasDefaultPassword) values[LOGIN_SESSION_KEYS.hasDefaultPassword] = true;
+  return values;
+}
+
+/** A held strike block: its end recorded on the session, as `blockLoginUntil` [legacy: core/mura/user/userUtility.cfc:253]. */
+async function blockedFailure(deps: LoginDeps, sessionId: string, until: Date): Promise<LoginFailure> {
+  await recordOnSession(deps, sessionId, { [LOGIN_SESSION_KEYS.blockLoginUntil]: formatCanonicalTimestamp(until) });
+  return { ok: false, reason: 'blocked', blockedUntil: until };
+}
+
+/** Logs the session in by username and password under the strike rules, without plugin events or lockdown [legacy: core/mura/user/userUtility.cfc:179-259]. */
+export async function login(deps: LoginDeps, request: LoginRequest): Promise<LoginResult> {
+  const { username, password, sessionId } = request;
+  const { decision, tenantId } = await decideLogin(deps, request, undefined);
+  switch (decision.outcome) {
+    case 'ok': {
+      const success = await completeLogin(deps, tenantId, decision.read, request);
+      const hasDefaultPassword = isDefaultPassword(username, password);
+      await recordSessionValues(deps, success.session.tenantId, sessionId, passedValues(hasDefaultPassword));
+      return { ok: true, ...success, hasDefaultPassword };
     }
-    return { ok: false, reason: 'blocked', blockedUntil: decision.until };
+    case 'blocked':
+      return blockedFailure(deps, sessionId, decision.until);
+    case 'invalid':
+    case 'public-pool':
+      return { ok: false, reason: decision.outcome };
+    default:
+      throw new Error(`A login without a lockdown check decided ${decision.outcome}`);
   }
-  return { ok: false, reason: decision.outcome };
+}
+
+/**
+ * A lockdown check instead of the login, under the login's lookup, pool and strike rules; a cookie-based check sets no cookie, as the
+ * JSON API passes `lockdownExpires` for `lockdownExpries` [legacy: core/mura/user/userUtility.cfc:179-259; jsonApiUtility.cfc:1856].
+ */
+export async function lockdownLogin(deps: LoginDeps, request: LockdownLoginRequest): Promise<LockdownLoginResult> {
+  const { username, password, sessionId } = request;
+  const step: LockdownStep = request.lockdown === 'unreadable' ? 'unreadable' : request.sessionBased ? 'refuse' : 'pass';
+  const { decision } = await decideLogin(deps, request, step);
+  switch (decision.outcome) {
+    case 'lockdown': {
+      const hasDefaultPassword = isDefaultPassword(username, password);
+      await recordOnSession(deps, sessionId, passedValues(hasDefaultPassword));
+      return { ok: true, hasDefaultPassword };
+    }
+    case 'unreadable':
+      // Legacy clears the block before `not arguments.lockdownCheck` fails to convert the check (userUtility.cfc:205-207).
+      await recordOnSession(deps, sessionId, { [LOGIN_SESSION_KEYS.blockLoginUntil]: '' });
+      return { ok: false, reason: 'unreadable' };
+    case 'refuse':
+      return { ok: false, reason: 'session-lockdown' };
+    case 'blocked':
+      return blockedFailure(deps, sessionId, decision.until);
+    case 'invalid':
+    case 'public-pool':
+      return { ok: false, reason: decision.outcome };
+    default:
+      throw new Error(`A lockdown check decided ${decision.outcome}`);
+  }
 }
 
 /** Logs the session in as the account `userId`, refusing a public account outside the site's public user pool [legacy: core/mura/user/userUtility.cfc:261-304]. */

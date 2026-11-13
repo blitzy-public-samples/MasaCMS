@@ -9,12 +9,11 @@ import { businessClock } from '@opt2/platform/testing';
 import { createCsrfRenderer } from '@/lib/csrf';
 import { resetLegacySettingsForTests } from '@/lib/env';
 import { GatewayDenialError, GatewayUnavailableError } from '@/lib/gateway-client';
-import { encodeHtmlAttr, isSafeHtml, raw, toString } from '@/lib/html';
+import { isSafeHtml, raw, toString } from '@/lib/html';
 import { mergeFw1Context, type AdminRequest } from '@/lib/request-context';
 import { rbFor } from '@/lib/resource-bundles/rb';
 import {
   OPT2_NAV_MODULES,
-  attributeBootstrapScript,
   loadShellData,
   renderAdminDocument,
   selectLayout,
@@ -162,6 +161,10 @@ describe('selectLayout', () => {
     { compactDisplay: ' yes', layout: 'compact' },
     { compactDisplay: '1.0', layout: 'compact' },
     { compactDisplay: '01', layout: 'compact' },
+    { compactDisplay: ' TRUE', layout: 'compact' },
+    { compactDisplay: 'TRUE ', layout: 'compact' },
+    { compactDisplay: ' True ', layout: 'compact' },
+    { compactDisplay: ' FALSE', layout: 'template' },
     { compactDisplay: 'false', layout: 'template' },
     { compactDisplay: ' true', layout: 'template' },
     { compactDisplay: 'true ', layout: 'template' },
@@ -571,97 +574,5 @@ describe('serializeAdminDocument', () => {
 
   it('emits a bare body tag without attributes', () => {
     expect(serializeAdminDocument({ ...doc, bodyAttrs: {} })).toContain('\n</head>\n<body>\n<p>x</p>\n</body>\n</html>');
-  });
-});
-
-/** Attributes the stub DOM received. */
-interface AppliedAttributes {
-  html: Record<string, string>;
-  body: Record<string, string>;
-  templates: number;
-}
-
-/** Runs the bootstrap `script` against a stub DOM whose templates parse markup with cheerio. */
-function runBootstrap(script: string): AppliedAttributes {
-  const applied: AppliedAttributes = { html: {}, body: {}, templates: 0 };
-  const code = /^<script>([\s\S]*)<\/script>$/.exec(script)?.[1];
-  if (code === undefined) throw new TypeError(`Not one inline script: ${script}`);
-  const element = (target: Record<string, string>) => ({
-    setAttribute: (name: string, value: string) => {
-      target[name] = value;
-    },
-  });
-  const document = {
-    documentElement: element(applied.html),
-    body: element(applied.body),
-    createElement(tag: string) {
-      expect(tag).toBe('template');
-      applied.templates += 1;
-      const content = { firstChild: { attributes: [] as Array<{ name: string; value: string }> } };
-      return {
-        content,
-        set innerHTML(markup: string) {
-          const attrs = cheerio.load(markup, null, false)('i').attr() ?? {};
-          content.firstChild.attributes = Object.entries(attrs).map(([name, value]) => ({ name, value }));
-        },
-      };
-    },
-  };
-  (new Function('document', code) as (dom: typeof document) => void)(document);
-  return applied;
-}
-
-describe('attributeBootstrapScript', () => {
-  it('applies the full layout html and body attributes', async () => {
-    const doc = await documentFor(adminS2Request({ circuit: 'cUsers', item: 'list' }));
-    const script = attributeBootstrapScript(doc);
-    expect(isSafeHtml(script)).toBe(true);
-    expect(runBootstrap(toString(script))).toEqual({
-      html: { lang: 'en_US', class: 'mura no-focus' },
-      body: { id: 'cusers', class: 'mura-admin header-navbar-fixed no-constrain ' },
-      templates: 1,
-    });
-  });
-
-  it('applies the encoded compact body id as the browser decodes it', async () => {
-    const ctx = adminS2Request({ circuit: 'cArch', item: 'edit', rc: { compactDisplay: 'true' } });
-    const doc = await documentFor(ctx, { originalCircuit: 'a&b<c"d' });
-    expect(doc.bodyAttrs.id).toBe(encodeHtmlAttr('a&b<c"d'));
-    expect(runBootstrap(toString(attributeBootstrapScript(doc))).body).toEqual({
-      id: 'a&b<c"d',
-      class: 'compact modal-wrapper',
-    });
-  });
-
-  it('keeps hostile attribute text inside its string literals and parses it as the serialized page would', () => {
-    const hostile = '"></i></script><script>alert(1)</script>';
-    const doc: AdminDocument = {
-      layout: 'template',
-      title: '',
-      htmlAttrs: { lang: hostile },
-      bodyAttrs: { id: 'x', class: `a${hostile}` },
-      preamble: raw(''),
-      head: raw(''),
-      body: raw(''),
-      noCache: true,
-    };
-    const script = toString(attributeBootstrapScript(doc));
-    const code = script.slice('<script>'.length, -'</script>'.length);
-    expect(code).not.toMatch(/<\/|<!--|<script/i);
-    expect(runBootstrap(script)).toEqual({ html: { lang: hostile }, body: { id: 'x', class: 'a' }, templates: 1 });
-  });
-
-  it('sets nothing for a document without attributes', () => {
-    const doc: AdminDocument = {
-      layout: 'compact',
-      title: '',
-      htmlAttrs: {},
-      bodyAttrs: {},
-      preamble: raw(''),
-      head: raw(''),
-      body: raw(''),
-      noCache: false,
-    };
-    expect(runBootstrap(toString(attributeBootstrapScript(doc)))).toEqual({ html: {}, body: {}, templates: 0 });
   });
 });

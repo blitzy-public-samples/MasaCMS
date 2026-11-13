@@ -40,6 +40,8 @@ const NOW = new Date('2026-06-30T12:00:00.000Z');
 
 const FILE_ID = 'B1C2D3E4-0001-4A5B-8C7D9E0F1A2B3C4D';
 const ORPHAN_ID = 'B1C2D3E4-0002-4A5B-8C7D9E0F1A2B3C4D';
+const REJECTED_ID = 'B1C2D3E4-0003-4A5B-8C7D9E0F1A2B3C4D';
+const ROUND_TRIP_ID = 'B1C2D3E4-0004-4A5B-8C7D9E0F1A2B3C4D';
 const BYTES = Buffer.from('legacy png bytes');
 
 let handle: ThrowawaySchema;
@@ -57,6 +59,14 @@ async function serviceHeaders(caller: string): Promise<Record<string, string>> {
 /** The upload query of `bytes` for `fileId`, with `overrides` applied. */
 function putQuery(fileId: string, bytes: Buffer, overrides: Record<string, string> = {}): Record<string, string> {
   return { tenantId: TENANT_A.tenantId, fileId, variant: '', ext: 'PNG', contentType: 'image/png', sha256: sha256(bytes), ...overrides };
+}
+
+/** The contract's `pattern` of query parameter `name` of the `method` operation. */
+function contractPattern(method: 'get' | 'post', name: string): string {
+  const parameters = (OPENAPI.paths[OBJECTS_URL]?.[method]?.['parameters'] ?? []) as { name: string; schema?: { pattern?: string } }[];
+  const pattern = parameters.find((parameter) => parameter.name === name)?.schema?.pattern;
+  if (pattern === undefined) throw new Error(`the contract declares no pattern for ${method.toUpperCase()} ${OBJECTS_URL} ${name}`);
+  return pattern;
 }
 
 /** Sends one request and checks the answer against the contract. */
@@ -194,6 +204,43 @@ describe.skipIf(!(await pgAvailable()))('migration object routes', () => {
     expect(res.json()).toMatchObject({ error: { message } });
     expect(await storage.head(CONTENT_FILES_BUCKET, `${TENANT_A.tenantId}/${FILE_ID}_source.png`)).toBeNull();
   });
+
+  it('declares the upload variant and extension grammars as those of the object key', () => {
+    const variant = contractPattern('post', 'variant');
+    const ext = contractPattern('post', 'ext');
+    expect(contractPattern('get', 'key').endsWith(`${variant.slice(1, -1)}\\.${ext.slice(1)}`)).toBe(true);
+  });
+
+  it.each(['x-y', 'tar.gz', 'a b', 'é'])('refuses, as the contract does, an upload with the extension %j outside the stored-name grammar', async (ext) => {
+    expect(new RegExp(contractPattern('post', 'ext'), 'u').test(ext)).toBe(false);
+    const bytes = Buffer.from(`extension ${ext}`);
+    const res = await call('POST', putQuery(REJECTED_ID, bytes, { ext }), await serviceHeaders('migration'), bytes);
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: { message: 'Invalid parameters' } });
+    expect(await storage.head(CONTENT_FILES_BUCKET, `${TENANT_A.tenantId}/${REJECTED_ID}.${ext.toLowerCase()}`)).toBeNull();
+    const { rows } = await handle.app.withTenant(TENANT_A.tenantId, (tx) =>
+      tx.query(`SELECT object_key FROM ${handle.schema}.file_object WHERE object_key LIKE $1`, [`${TENANT_A.tenantId}/${REJECTED_ID}%`]),
+    );
+    expect(rows).toEqual([]);
+  });
+
+  it.each(['PNG', 'jpg', '7z'].flatMap((ext) => ['', '_small', '_W100_H200', '_a.b'].map((variant): [string, string] => [ext, variant])))(
+    'reads back by its returned key the object uploaded with extension %j and variant %j',
+    async (ext, variant) => {
+      expect(new RegExp(contractPattern('post', 'ext'), 'u').test(ext)).toBe(true);
+      const headers = await serviceHeaders('migration');
+      const bytes = Buffer.from(`round trip ${ext}${variant}`);
+      const put = await call('POST', putQuery(ROUND_TRIP_ID, bytes, { variant, ext }), headers, bytes);
+      expect(put.statusCode).toBe(200);
+      const { key } = put.json<{ key: string }>();
+      expect(key).toBe(`${TENANT_A.tenantId}/${ROUND_TRIP_ID}${variant}.${ext.toLowerCase()}`);
+      expect(key).toMatch(new RegExp(contractPattern('get', 'key'), 'u'));
+
+      const res = await call('GET', { key }, headers);
+      expect(res.statusCode).toBe(200);
+      expect(res.rawPayload).toEqual(bytes);
+    },
+  );
 
   it('reads back the stored bytes of a recorded object as an octet stream', async () => {
     const bytes = Buffer.from([0, 1, 2, 255, 254, 10, 13]);

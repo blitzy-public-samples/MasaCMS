@@ -1,5 +1,6 @@
 // The cform controller `before()` and the carried form-builder actions for the screen registry (server-only).
 import type { GateDecision, ScreenGate } from '@/lib/access-gate';
+import { servesRequestedSite } from '@/lib/request-context';
 import type {
   DownloadScreen,
   FragmentScreen,
@@ -26,9 +27,12 @@ const ALLOW: GateDecision = Object.freeze({ kind: 'allow' });
 const SITE_MANAGER_MODULE_ID = '00000000000000000000000000000000000';
 const FORMS_MODULE_ID = '00000000000000000000000000000000004';
 
-/** cform `before()`: Site Manager and Forms module access for the site, otherwise the controller's `secure()`. */
+/** cform `before()`: S2, or Site Manager and Forms module access on `rc.siteid`; otherwise `secure()`. */
 export const cformGate: ScreenGate = (req, { secure }) =>
-  req.modulePerm(SITE_MANAGER_MODULE_ID) && req.modulePerm(FORMS_MODULE_ID) ? ALLOW : secure();
+  req.isS2 ||
+  (servesRequestedSite(req) && req.modulePerm(SITE_MANAGER_MODULE_ID) && req.modulePerm(FORMS_MODULE_ID))
+    ? ALLOW
+    : secure();
 
 const CFORM = { circuit: 'cform', owner: 'strategies-content', gate: cformGate } as const;
 

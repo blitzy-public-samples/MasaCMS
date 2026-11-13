@@ -6,11 +6,11 @@ import type { Rc, RedirectScreen, ScreenContext, SubmitResult } from '../registr
 import { cusersGate, normaliseCusersRc } from './gate';
 import type { UsersCsvSource } from './inc/dsp_download';
 
-/** Query of people `setAdvancedSearch`. */
-export type AdvancedSearchQuery = NonNullable<operations['setAdvancedSearch']['parameters']['query']>;
+/** Query of people `setAdvancedSearchV2`. */
+export type AdvancedSearchQuery = NonNullable<operations['setAdvancedSearchV2']['parameters']['query']>;
 
-/** The result page people answers for stored criteria. */
-export type AdvancedSearchPage = components['schemas']['AdvancedSearchPage'];
+/** The result page people answers for stored criteria: only the people of the page `nextn` selects. */
+export type AdvancedSearchPage = components['schemas']['AdvancedSearchPageV2'];
 
 /** Fields admin/Application.cfc reads beside the rows; `muraAction` gives the circuit `paramCircuit` records. */
 const CRITERIA_FIELDS = ['muraAction', 'param', 'inActive', 'categoryID', 'groupID', 'membersOnly', 'visitorStatus'];
@@ -43,8 +43,8 @@ export async function storeAdvancedSearchCriteria(
   // The request context keeps its capture in web's session state, which people never reads; people searches its own.
   const form = criteriaForm(req.rc);
   if (form === undefined) return undefined;
-  const response = await gateway.people.call('post', '/v1/users/advanced-search', { query, form });
-  return okBody(response, 'people', 'setAdvancedSearch');
+  const response = await gateway.people.call('post', '/v2/users/advanced-search', { query, form });
+  return okBody(response, 'people', 'setAdvancedSearchV2');
 }
 
 /** Stores the criteria, then `fw.redirect(action='cUsers.download', preserve='records')` with FW/1's default path. */

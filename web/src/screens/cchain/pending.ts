@@ -8,6 +8,7 @@ import {
   cfToBoolean,
 } from '@opt2/platform/legacy-compat';
 import type { components } from '@/generated/clients/strategies-content';
+import { isCompactDisplay } from '@/lib/cfml';
 import { parseLegacyDate } from '@/lib/dates';
 import { legacySettings } from '@/lib/env';
 import { okBody } from '@/lib/gateway-client';
@@ -425,8 +426,7 @@ export function renderCchainPending(ctx: ScreenContext, data: CchainPendingData)
       versionHistory: label(rb, 'sitemanager.content.versionhistory'),
     },
     hasChangesets: data.hasChangesets,
-    // The platform's CFML `eq`: text compared case-insensitively, since `'true'` is not numeric.
-    compact: cfEq(req.rc.compactDisplay ?? '', 'true'),
+    compact: isCompactDisplay(req.rc.compactDisplay),
     dateKeyFormat: req.session.dateKeyFormat,
     locale: req.session.locale,
   };

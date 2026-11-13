@@ -264,11 +264,11 @@ export async function loadAdvancedSearch(
   const page =
     stored ??
     okBody(
-      await ctx.gateway.people.call('get', '/v1/users/advanced-search', {
+      await ctx.gateway.people.call('get', '/v2/users/advanced-search', {
         query: { ...query, newsearch: String(rc.newsearch) },
       }),
       'people',
-      'getAdvancedSearch',
+      'getAdvancedSearchV2',
     );
   return { rc, page, extendedAttributes, qs: advancedSearchQueryString(ctx.req) };
 }
@@ -443,9 +443,9 @@ export async function renderAdvancedSearch(ctx: ScreenContext, data: AdvancedSea
   const { rc, page } = data;
   const nextn = usersNextN(page.nextn);
   const pageIndex = legacyPageIndex(nextn.startRow, nextn.recordsPerPage, nextn.totalRecords);
-  const rows = page.items.slice((pageIndex - 1) * nextn.recordsPerPage, pageIndex * nextn.recordsPerPage);
+  // people answers only the people of the page `nextn` selects.
   const list = await renderUsersList(ctx, {
-    rows: rows.map(usersListRow),
+    rows: page.items.map(usersListRow),
     nextn,
     pageIndex,
     noUsersMessage: rb.rbKey('user.nosearchresults'),
@@ -472,7 +472,8 @@ export async function renderAdvancedSearch(ctx: ScreenContext, data: AdvancedSea
     inactiveOption(0, 'user.yes'),
     inactiveOption(1, 'user.no'),
     `${nl(4)}</select>${nl(3)}</div>${nl(2)}\n${nl(1)}`,
-    renderActions(ctx, rc, page.items.length > 0),
+    // `rc.it.getRecordcount()` counts every match, so a page past the end still offers the download.
+    renderActions(ctx, rc, nextn.totalRecords > 0),
     `\n</form>\n\n</div>\n\n<div class="block block-constrain">${nl(1)}\n    `,
     rc.isAdmin ? renderAdminResults(ctx, data, list.value) : renderMemberResults(ctx, list.value),
     `  \n  \n\n</div> <!-- /.block-constrain -->\n\n<script type="text/javascript">$searchParams.setSearchButtons();</script>\n\n`,

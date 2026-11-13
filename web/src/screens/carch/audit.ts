@@ -1,18 +1,17 @@
 // The `cArch.audit` page of `carch/audit.cfm`: the audit trail of one content version's source chain (server-only).
 import {
   cfEq,
-  cfIsNumeric,
   cfLsDateFormat,
   cfLsTimeFormat,
   cfToBoolean,
   cfToNumber,
-  javaTrim,
   type AdminParam,
 } from '@opt2/platform/legacy-compat';
+import { isCompactDisplay } from '@/lib/cfml';
 import { parseLegacyDate } from '@/lib/dates';
 import { legacySettings } from '@/lib/env';
 import { encodeHtml, encodeHtmlAttr, encodeJs, raw, type SafeHtml } from '@/lib/html';
-import type { AdminRequest, RequestContext } from '@/lib/request-context';
+import { sessionSiteModulePerm, type AdminRequest, type RequestContext } from '@/lib/request-context';
 import type { RbLookup } from '@/lib/resource-bundles/rb';
 import { relativeAdminUrl } from '@/lib/urls';
 import type { ShellView } from '@/shell/document';
@@ -226,18 +225,8 @@ export function auditData(req: AdminRequest, model: CarchPageModel): AuditData {
 
 // ---- View rules ----
 
-/** ACF `rc.compactDisplay eq 'true'`: `true` in any case, or `yes` or a numeric 1 after Java trimming. */
-function isCompact(value: string): boolean {
-  const trimmed = javaTrim(value);
-  return (
-    value.toLowerCase() === 'true' ||
-    trimmed.toLowerCase() === 'yes' ||
-    (cfIsNumeric(trimmed) && !trimmed.endsWith('.') && Number(trimmed) === 1)
-  );
-}
-
 /** `not isLockedBySomeoneElse or poweruser`: the version's edit links are shown. */
-const canEdit = (data: AuditData): boolean => !data.view.isLockedBySomeoneElse || data.view.siteAdminOrS2;
+const canEdit = (data: AuditData): boolean => !data.view.isLockedBySomeoneElse || data.view.poweruser;
 
 /** `audit.cfm` line 192: the Delete item, its membership tests read from the verified request flags. */
 function canDelete(data: AuditData, version: AuditVersion): boolean {
@@ -340,7 +329,7 @@ function statusModel(data: AuditData): StatusModel {
 /** The CSRF contexts the page renders url tokens for: the secondary menu's and each shown Delete link's. */
 function csrfContexts(req: AdminRequest, data: AuditData): string[] {
   const deletes = data.versions.filter((version) => canDelete(data, version)).map((v) => `${v.contentHistId}delete`);
-  if (isCompact(rcText(req.rc, 'compactDisplay'))) return deletes;
+  if (isCompactDisplay(rcText(req.rc, 'compactDisplay'))) return deletes;
   return [...carchSecondaryMenuCsrfContexts(req.rc), ...deletes];
 }
 
@@ -570,7 +559,7 @@ function changesetCell(ctx: ScreenContext, version: AuditVersion, out: ViewOutpu
       out.text('" data-original-title=""><i class="mi-calendar"></i></span>\n\t\t\t\t\t\t');
     }
     const name = encodeHtml(version.changesetName);
-    if (ctx.req.modulePerm(CHANGESETS_MODULE_ID)) {
+    if (sessionSiteModulePerm(ctx.req, CHANGESETS_MODULE_ID)) {
       out.text('\n\t\t\t\t\t\t\t<a href="');
       out.value(
         relativeAdminUrl('cChangesets', 'assignments', [
@@ -664,7 +653,7 @@ const DIFF_SCRIPT = `
 
 /** The FW/1 view body of `audit.cfm`. */
 async function auditBody(ctx: ScreenContext, data: AuditData): Promise<SafeHtml> {
-  const compact = isCompact(rcText(ctx.req.rc, 'compactDisplay'));
+  const compact = isCompactDisplay(rcText(ctx.req.rc, 'compactDisplay'));
   const out = new ViewOutput();
   await header(ctx, data, compact, out);
   const layout: RowLayout = {

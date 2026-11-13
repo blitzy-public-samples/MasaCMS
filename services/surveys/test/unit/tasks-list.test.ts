@@ -53,7 +53,7 @@ const listers = [
   ['listSurveyTaskViews', listSurveyTaskViews],
 ] as const;
 
-const available = await pgAvailable();
+const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
 
 describe.skipIf(!available)('survey task lists against PostgreSQL', () => {
   let handle: ThrowawaySchema;

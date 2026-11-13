@@ -31,7 +31,7 @@ const UNKNOWN_ID = '00000000-0000-0000-0000000000000000';
 const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
 const ANSWERS = '{"q1":"yes","q2":"4"}';
 
-const available = await pgAvailable();
+const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
 
 describe.skipIf(!available)('survey responses against PostgreSQL', () => {
   let handle: ThrowawaySchema;
@@ -132,12 +132,13 @@ describe.skipIf(!available)('survey responses against PostgreSQL', () => {
   });
 
   it.each([
-    ['an untargeted survey of another site', false],
-    ['an unknown survey', true],
-  ])('answers notFound and writes nothing for %s', async (_label, unknown) => {
+    ['forbidden', 'an untargeted survey of another site', false, ANSWERS],
+    ['forbidden', 'an untargeted survey of another site, before checking empty answers', false, ''],
+    ['notFound', 'an unknown survey', true, ANSWERS],
+  ])('answers %s and writes nothing for %s', async (type, _label, unknown, answers) => {
     const survey = await newSurvey();
     const surveyId = unknown ? UNKNOWN_ID : survey.survey_id;
-    await expectError(submit(TENANT_B, surveyId, { answers: ANSWERS }), 'notFound', FixtureApiError);
+    await expectError(submit(TENANT_B, surveyId, { answers }), type, FixtureApiError);
     expect(await storedCounts(surveyId)).toEqual({ A: 0, B: 0, umbrella: 0 });
   });
 

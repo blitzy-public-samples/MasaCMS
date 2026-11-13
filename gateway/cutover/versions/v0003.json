@@ -297,8 +297,8 @@
       "owningService": "strategies-content",
       "tableVersion": "v0001",
       "state": "legacy",
-      "kind": "write",
-      "group": "grp:content.approval_action",
+      "kind": "legacy-write",
+      "group": null,
       "units": [
         "content.file"
       ],
@@ -367,7 +367,7 @@
         "content.trash",
         "content.variation_targeting"
       ],
-      "disposition": "carry"
+      "disposition": "legacy-served"
     },
     {
       "route": "admin:carch.downloaddata",
@@ -769,48 +769,10 @@
       "owningService": "strategies-content",
       "tableVersion": "v0001",
       "state": "legacy",
-      "kind": "read",
+      "kind": "legacy-write",
       "group": null,
       "units": [
-        "content.approval_action",
-        "content.approval_assignment",
-        "content.approval_chain",
-        "content.approval_membership",
-        "content.approval_request",
-        "content.category",
-        "content.changeset",
-        "content.changeset_category_assign",
-        "content.changeset_rollback",
-        "content.changeset_tag_assign",
-        "content.comment",
-        "content.commenter",
-        "content.content",
-        "content.content_assignment",
-        "content.content_category_assign",
-        "content.content_object",
-        "content.content_rating",
-        "content.content_related",
-        "content.content_remote_pointer",
-        "content.content_stats",
-        "content.content_tag",
-        "content.display_title_approval",
-        "content.extend_attribute",
-        "content.extend_data",
-        "content.extend_rc_set",
-        "content.extend_set",
-        "content.extend_subtype",
-        "content.feed",
-        "content.feed_advanced_param",
-        "content.feed_item",
-        "content.file",
-        "content.file_metadata",
-        "content.filename_archive",
-        "content.form_response_packet",
-        "content.form_response_question",
-        "content.public_submission_approval",
-        "content.source_map",
-        "content.trash",
-        "content.variation_targeting"
+        "content.file"
       ],
       "disposition": "carry"
     },
@@ -862,7 +824,7 @@
         "content.trash",
         "content.variation_targeting"
       ],
-      "disposition": "carry"
+      "disposition": "legacy-served"
     },
     {
       "route": "admin:carch.getaudittrail",
@@ -1837,7 +1799,7 @@
         "content.trash",
         "content.variation_targeting"
       ],
-      "disposition": "carry"
+      "disposition": "legacy-served"
     },
     {
       "route": "admin:carch.loadselectedrelatedcontent",
@@ -2356,48 +2318,10 @@
       "owningService": "strategies-content",
       "tableVersion": "v0001",
       "state": "legacy",
-      "kind": "read",
+      "kind": "legacy-write",
       "group": null,
       "units": [
-        "content.approval_action",
-        "content.approval_assignment",
-        "content.approval_chain",
-        "content.approval_membership",
-        "content.approval_request",
-        "content.category",
-        "content.changeset",
-        "content.changeset_category_assign",
-        "content.changeset_rollback",
-        "content.changeset_tag_assign",
-        "content.comment",
-        "content.commenter",
-        "content.content",
-        "content.content_assignment",
-        "content.content_category_assign",
-        "content.content_object",
-        "content.content_rating",
-        "content.content_related",
-        "content.content_remote_pointer",
-        "content.content_stats",
-        "content.content_tag",
-        "content.display_title_approval",
-        "content.extend_attribute",
-        "content.extend_data",
-        "content.extend_rc_set",
-        "content.extend_set",
-        "content.extend_subtype",
-        "content.feed",
-        "content.feed_advanced_param",
-        "content.feed_item",
-        "content.file",
-        "content.file_metadata",
-        "content.filename_archive",
-        "content.form_response_packet",
-        "content.form_response_question",
-        "content.public_submission_approval",
-        "content.source_map",
-        "content.trash",
-        "content.variation_targeting"
+        "content.file"
       ],
       "disposition": "carry"
     },
@@ -13527,8 +13451,8 @@
       "owningService": "identity",
       "tableVersion": "v0001",
       "state": "legacy",
-      "kind": "write",
-      "group": "grp:identity.credential",
+      "kind": "legacy-write",
+      "group": null,
       "units": [
         "identity.group_account",
         "identity.login_state",

@@ -35,7 +35,7 @@ const UNREGISTERED_TENANT_SITE = 'ghost';
 
 type ReminderState = { task_name: string; sent_at: Date | null };
 
-const available = await pgAvailable();
+const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
 
 describe.skipIf(!available)('remind routes', () => {
   let handle: ThrowawaySchema;
@@ -281,7 +281,9 @@ describe.skipIf(!available)('remind routes', () => {
 
     it('answers forbidden for a user token of another site', async () => {
       const token = await mintUserToken({ sub: USER_ID, site: 'tenant-b', roles: [Roles.member] });
-      const res = await remind('GET', `siteid=tenant-a&opt2TaskToken=${TOKEN}&reminder=1`, { headers: { authorization: `Bearer ${token}` } });
+      const res = await remind('GET', `siteid=tenant-a&opt2TaskToken=${TOKEN}&reminder=1`, {
+        headers: { authorization: `Bearer ${token}`, ...(await serviceHeaders('gateway')) },
+      });
       expect(res.statusCode).toBe(403);
     });
 

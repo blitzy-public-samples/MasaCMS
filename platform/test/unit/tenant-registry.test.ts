@@ -8,6 +8,7 @@ import {
   contentPoolTenants,
   poolTenantFor,
   registeredTenants,
+  registryEntries,
   registryEntryForTenant,
   siteForTenant,
   tenantForRegisteredSite,
@@ -51,6 +52,7 @@ const COLUMNS = [
 
 const SQL = {
   registered: `SELECT tenant_id, site_id FROM ${TABLE} ORDER BY site_id`,
+  entries: `SELECT ${COLUMNS.join(', ')} FROM ${TABLE} ORDER BY site_id`,
   entry: `SELECT ${COLUMNS.join(', ')} FROM ${TABLE} WHERE tenant_id = $1`,
   tenantForSite: `SELECT tenant_id FROM ${TABLE} WHERE lower(site_id) = lower($1)`,
   siteForTenant: `SELECT site_id FROM ${TABLE} WHERE tenant_id = $1`,
@@ -238,6 +240,39 @@ describe('registeredTenants', () => {
     const h = setup();
 
     await expect(registeredTenants(h.db)).resolves.toEqual([]);
+  });
+});
+
+describe('registryEntries', () => {
+  const NULL_ROW = {
+    ...ROW_A,
+    site_id: 'umbrella',
+    tenant_id: UMBRELLA,
+    public_user_pool_id: null,
+    public_user_pool_tenant: null,
+    content_pool_ids: null,
+    content_pool_tenants: null,
+    domains: null,
+  };
+
+  it('maps every row as registryEntryForTenant does, in the order read, with one statement in a metadata transaction', async () => {
+    const h = setup({ [SQL.entries]: [ROW_A, NULL_ROW] });
+    const expected = await Promise.all(
+      [ROW_A, NULL_ROW].map((row) => registryEntryForTenant(setup({ [SQL.entry]: [row] }).db, row.tenant_id)),
+    );
+
+    const entries = await registryEntries(h.db);
+
+    expect(entries).toStrictEqual(expected);
+    expect(entries[1]).toMatchObject({ siteId: 'umbrella', publicUserPoolId: null, contentPoolIds: [], contentPoolTenants: [], domains: [] });
+    expect(h.connect).toHaveBeenCalledOnce();
+    expect(metadataReads(h.client)).toEqual([[SQL.entries, undefined]]);
+  });
+
+  it('returns an empty list for an empty registry', async () => {
+    const h = setup();
+
+    await expect(registryEntries(h.db)).resolves.toEqual([]);
   });
 });
 

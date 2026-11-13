@@ -1,13 +1,16 @@
 /** Tenant isolation of the programs-sites schema, its site routes and its site registry consumer against PostgreSQL. */
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import {
   PLATFORM_TABLE_GROUPS,
   TENANT_A,
   TENANT_B,
   TENANT_LIST,
   TENANT_UMBRELLA,
+  assertResponseMatchesOpenApi,
   createThrowawaySchema,
   crossTenantPairs,
   defineIsolationSuite,
@@ -40,6 +43,7 @@ const FORM = { 'content-type': 'application/x-www-form-urlencoded' };
 const ALL_PLATFORM_GROUPS = Object.keys(PLATFORM_TABLE_GROUPS) as PlatformTableGroup[];
 const DEFINITIONS = new Map([...OWNED_TABLES, SITE_MONITOR_STATE].map((definition) => [definition.table, definition]));
 const MONITOR = SITE_MONITOR_STATE.table;
+const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
 
 const REQUIRED_COLUMNS_SQL = `
 SELECT c.relname::text AS table, a.attname::text AS column,
@@ -308,11 +312,25 @@ describe.skipIf(!available)('programs-sites tenant isolation', () => {
       }));
     }
 
+    /** GETs `path`'s user pool sites with a `token` site token of ROLE_SET subject `subject`, checked against the contract. */
+    async function getUserPoolSites(subject: string, token: TenantFixture, path: TenantFixture) {
+      const url = `/v1/sites/${path.siteId}/user-pool-sites`;
+      const res = await service().app.inject({ method: 'GET', url, headers: await headersFor(subject, { site: token.siteId }) });
+      const { statusCode: status, body } = res;
+      assertResponseMatchesOpenApi(OPENAPI, { method: 'GET', path: url, status, contentType: res.headers['content-type'], body });
+      return res;
+    }
+
+    /** The layout settings of `fixture`'s site as its own site-admin reads them in its own tenant. */
+    async function ownShellSite(fixture: TenantFixture): Promise<unknown> {
+      const headers = await headersFor('site-admin', { site: fixture.siteId });
+      const res = await service().app.inject({ method: 'GET', url: `/v1/sites/${fixture.siteId}/shell`, headers });
+      expect(res.statusCode).toBe(200);
+      return res.json<{ site: unknown }>().site;
+    }
+
     beforeAll(async () => {
       const db = created().app;
-      for (const fixture of TENANT_LIST) {
-        await db.withTenant(fixture.tenantId, (tx) => insertRow(tx, SITE.table, fixtureSiteRow(fixture)));
-      }
       ctx = await startApp(db);
       // Opened after the build, whose onReady inserts every missing gate as `legacy`.
       await db.withMetadata((tx) =>
@@ -322,6 +340,17 @@ describe.skipIf(!available)('programs-sites tenant isolation', () => {
           [[...UNITS]],
         ),
       );
+    });
+
+    // Every case starts from each fixture's seeded site row, row_version 0.
+    beforeEach(async () => {
+      const db = created().app;
+      for (const fixture of TENANT_LIST) {
+        await db.withTenant(fixture.tenantId, async (tx) => {
+          await tx.query(`DELETE FROM "${tx.schema}"."${SITE.table}" WHERE siteid = $1`, [fixture.siteId]);
+          await insertRow(tx, SITE.table, fixtureSiteRow(fixture));
+        });
+      }
     });
 
     afterAll(async () => {
@@ -356,10 +385,40 @@ describe.skipIf(!available)('programs-sites tenant isolation', () => {
       expect(other.statusCode).toBe(403);
     });
 
+    it.each([
+      { subject: 'system-user', fixture: TENANT_A, pools: [TENANT_A, TENANT_UMBRELLA] },
+      { subject: 'editor', fixture: TENANT_A, pools: [TENANT_A, TENANT_UMBRELLA] },
+      { subject: 'site-admin', fixture: TENANT_A, pools: [TENANT_A, TENANT_UMBRELLA] },
+      { subject: 'site-admin', fixture: TENANT_B, pools: [TENANT_B] },
+    ])('gives a tenant $fixture.key $subject its private then public user pool sites, each read in its own tenant', async ({
+      subject,
+      fixture,
+      pools,
+    }) => {
+      const res = await getUserPoolSites(subject, fixture, fixture);
+      expect(res.statusCode).toBe(200);
+      const { sites } = res.json<{ sites: Array<{ SiteID: string; Site: string | null }> }>();
+      expect(sites.map(({ SiteID, Site }) => ({ SiteID, Site }))).toEqual(
+        pools.map(({ siteId, key }) => ({ SiteID: siteId, Site: `Isolation site ${key}` })),
+      );
+      expect(sites).toEqual(await Promise.all(pools.map(ownShellSite)));
+      // Of the pool sites the token's tenant sees only its own, so the others were read in their pool tenants.
+      const visible = await storedSiteIds(fixture);
+      expect(pools.filter(({ siteId }) => visible.includes(siteId))).toEqual([fixture]);
+    });
+
+    it('refuses the tenant B user pool sites to a tenant A site-admin and returns no tenant B data', async () => {
+      const res = await getUserPoolSites('site-admin', TENANT_A, TENANT_B);
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).not.toHaveProperty('sites');
+      expect(res.body).not.toContain(`Isolation site ${TENANT_B.key}`);
+    });
+
     it('lets a tenant A site-admin update only its own site and never writes tenant B', async () => {
       const db = created().app;
       const tenantBRows = (): Promise<unknown[]> => db.withTenant(TENANT_B.tenantId, (tx) => readAs(tx, SITE.table));
       const before = await tenantBRows();
+      const ownAuditBefore = await auditRows(TENANT_A);
       const form = (siteId: string, name: string): Record<string, string> => ({
         siteid: siteId,
         action: 'Update',
@@ -379,8 +438,8 @@ describe.skipIf(!available)('programs-sites tenant isolation', () => {
       );
       expect(updated.rows).toEqual([{ site: 'Renamed A', row_version: '1' }]);
       const ownAudit = await auditRows(TENANT_A);
-      expect(ownAudit.changelog).toBeGreaterThan(0);
-      expect(ownAudit.outbox).toBeGreaterThan(0);
+      expect(ownAudit.changelog).toBeGreaterThan(ownAuditBefore.changelog);
+      expect(ownAudit.outbox).toBeGreaterThan(ownAuditBefore.outbox);
       expect(await tenantBRows()).toEqual(before);
       expect(await auditRows(TENANT_B)).toEqual({ changelog: 0, outbox: 0 });
     });

@@ -46,7 +46,7 @@ export function csrfHeadersFrom(form: Readonly<Record<string, unknown>>): Record
 }
 
 /** The envelope's `error.message`, else its `error.code`, else the HTTP status text. */
-function errorMessage(res: GatewayResponse): string {
+export function errorMessage(res: GatewayResponse): string {
   const error = (res.body as { error?: { message?: unknown; code?: unknown } } | null | undefined)?.error;
   if (typeof error?.message === 'string') return error.message;
   if (typeof error?.code === 'string') return error.code;

@@ -9,6 +9,7 @@ import {
   legacyParamsOf,
   z,
   type FastifyInstance,
+  type FastifyReply,
   type FastifyRequest,
 } from '@opt2/platform/service-kit';
 import type { TenantDb } from '@opt2/platform/tenancy';
@@ -95,6 +96,19 @@ function listOptionsOf(params: Readonly<Record<string, unknown>>): SiteListOptio
   };
 }
 
+/** Aborts once the client disconnects, or at once if it already has, before the response has been ended. */
+function clientGoneSignal(reply: FastifyReply): AbortSignal {
+  const controller = new AbortController();
+  // writableEnded, not writableFinished: an injected reply closes unflushed, and once ended the list's work is done.
+  const abortUnlessEnded = (): void => {
+    if (!reply.raw.writableEnded) controller.abort();
+  };
+  // A disconnect before the handler, during authentication say, has already destroyed the reply and emitted 'close'.
+  if (reply.raw.destroyed) abortUnlessEnded();
+  else reply.raw.once('close', abortUnlessEnded);
+  return controller.signal;
+}
+
 /** `rc.siteID`: the posted `siteid`, or the request's site when absent or empty (admin Application.cfc:401-412). */
 function rcSiteId(request: FastifyRequest): string {
   const posted = fieldText(legacyParamsOf(request), 'siteid');
@@ -111,14 +125,34 @@ function updateFormOf(request: FastifyRequest): Record<string, unknown> {
 
 /**
  * Registers `GET /v1/sites`, `POST /v1/sites/order`, `GET /v1/sites/:siteId`, `GET /v1/sites/:siteId/shell`,
- * `POST /v1/sites/:siteId/update` and `GET /v1/href-domains`.
+ * `GET /v1/sites/:siteId/user-pool-sites`, `POST /v1/sites/:siteId/update` and `GET /v1/href-domains`.
  */
 export async function registerSiteRoutes(app: FastifyInstance, deps: SiteRouteDeps): Promise<void> {
   /** Sites screen rows for an S2 user [csettings.cfc:97-114]. */
   app.get<{ Reply: Schemas['SiteListItem'][] }>(
     '/v1/sites',
     { config: { opt2: { transport: 'service', requires: S2_ONLY } } },
-    async (request) => deps.sites.listSites(deps.db, userOf(request), listOptionsOf(legacyParamsOf(request))),
+    async (request, reply) => {
+      const claims = userOf(request);
+      const signal = clientGoneSignal(reply);
+      try {
+        return await deps.sites.listSites(deps.db, claims, { ...listOptionsOf(legacyParamsOf(request)), signal });
+      } catch (err) {
+        if (!signal.aborted || err !== signal.reason) throw err;
+        // The client has gone, so nothing is sent; the abandoned list is logged instead of answered.
+        request.log.info(
+          {
+            route: request.routeOptions.url,
+            httpMethod: request.method,
+            latencyMs: Math.round(reply.elapsedTime),
+            tenantId: claims.tid,
+            userId: claims.sub,
+          },
+          'client closed the request',
+        );
+        return undefined;
+      }
+    },
   );
 
   /** Bind order and batch-deploy save of the Sites screen, then its rows [csettings.cfc:108-112]. */
@@ -168,6 +202,18 @@ export async function registerSiteRoutes(app: FastifyInstance, deps: SiteRouteDe
       const { siteId } = request.params;
       assertSiteMatches(siteId, claims);
       return deps.sites.readShellSite(deps.db, claims, siteId);
+    },
+  );
+
+  /** Settings of the site's user pool sites, which `getSite(bean.siteid)` reads for a pooled user [filetools.cfm:37]. */
+  app.get<{ Params: SiteParams; Reply: Schemas['UserPoolSites'] }>(
+    '/v1/sites/:siteId/user-pool-sites',
+    { config: { opt2: { transport: 'service', requires: PRIVATE_ADMIN } } },
+    async (request) => {
+      const claims = userOf(request);
+      const { siteId } = request.params;
+      assertSiteMatches(siteId, claims);
+      return deps.sites.readUserPoolSites(deps.db, claims, siteId);
     },
   );
 

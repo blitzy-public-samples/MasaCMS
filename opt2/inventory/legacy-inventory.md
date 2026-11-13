@@ -50,8 +50,8 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | relations | — | 121 |
 | storedProcedures | static | 0 |
 | storedProcedures | live | pending-run |
-| dispositions | carry | 757 |
-| dispositions | legacy-served | 147 |
+| dispositions | carry | 754 |
+| dispositions | legacy-served | 150 |
 | dispositions | decision | 136 |
 | dispositions | retired | 21 |
 | notes | withSiteIdStatic | Counts tcontentfilemetadata, whose siteID comes from the beanORMVersioned base, and tremotepointer, which an install creates lazily; a fresh live catalog shows one fewer. |
@@ -67,9 +67,9 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:carch.audit` | `admin:carch.audit` | strategies-content | carry (5) | none | page (text/html) |
 | `ctl:carch.availablechangesets` | `admin:carch.availablechangesets` | strategies-content | carry (5) | none | fragment (text/html) |
 | `ctl:carch.copy` | `admin:carch.copy` | spans identity, strategies-content | decision (3) (corrected; expected carry) | none | json (application/json) |
-| `ctl:carch.cropimage` | `admin:carch.cropimage` | strategies-content | carry (5) | validates `rc.fileid` | page (text/html) |
+| `ctl:carch.cropimage` | `admin:carch.cropimage` | strategies-content | carry (5) `EX-FILE-RENDITION` | validates `rc.fileid` | page (text/html) |
 | `ctl:carch.datamanager` | `admin:carch.datamanager` | strategies-content | carry (5) | validates `rc.responseid` | page (text/html) |
-| `ctl:carch.displayobjectmodal` | `admin:carch.displayobjectmodal` | strategies-content | carry (5) | none | page (text/html) |
+| `ctl:carch.displayobjectmodal` | `admin:carch.displayobjectmodal` | strategies-content | legacy-served (4) (corrected; expected carry) | none | page (text/html) |
 | `ctl:carch.downloaddata` | `admin:carch.downloaddata` | strategies-content | carry (5) | none | download (application/msexcel) |
 | `ctl:carch.draft` | `admin:carch.draft` | strategies-content | carry (5) | none | page (text/html) |
 | `ctl:carch.draftpromptdata` | `admin:carch.draftpromptdata` | strategies-content | carry (5) | none | json (application/json) |
@@ -80,8 +80,8 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:carch.export` | `admin:carch.export` | strategies-content | legacy-served (4) | none | page (text/html) |
 | `ctl:carch.exportcomponent` | `admin:carch.exportcomponent` | strategies-content | legacy-served (4) | none | download (application/zip) |
 | `ctl:carch.exportcontent` | `admin:carch.exportcontent` | strategies-content | legacy-served (4) | none | redirect |
-| `ctl:carch.flipimage` | `admin:carch.flipimage` | strategies-content | carry (5) | validates `rc.fileid` | page (text/html) |
-| `ctl:carch.frontendconfigurator` | `admin:carch.frontendconfigurator` | strategies-content | carry (5) | none | page (text/html) |
+| `ctl:carch.flipimage` | `admin:carch.flipimage` | strategies-content | carry (5) `EX-FILE-RENDITION` | validates `rc.fileid` | page (text/html) |
+| `ctl:carch.frontendconfigurator` | `admin:carch.frontendconfigurator` | strategies-content | legacy-served (4) (corrected; expected carry) | none | page (text/html) |
 | `ctl:carch.getaudittrail` | `admin:carch.getaudittrail` | strategies-content | carry (5) | none | json (application/json) |
 | `ctl:carch.getimagesizeurl` | `admin:carch.getimagesizeurl` | strategies-content | carry (5) | none | json (application/json) |
 | `ctl:carch.hist` | `admin:carch.hist` | strategies-content | carry (5) | none | page (text/html) |
@@ -102,7 +102,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:carch.loadnotify` | `admin:carch.loadnotify` | strategies-content | carry (5) | none | fragment (text/html) |
 | `ctl:carch.loadquickedit` | `admin:carch.loadquickedit` | strategies-content | carry (5) | none | fragment (text/html) |
 | `ctl:carch.loadrelatedcontent` | `admin:carch.loadrelatedcontent` | strategies-content | carry (5) | none | fragment (text/html) |
-| `ctl:carch.loadrepomanager` | `admin:carch.loadrepomanager` | strategies-content | carry (5) | none | redirect |
+| `ctl:carch.loadrepomanager` | `admin:carch.loadrepomanager` | strategies-content | legacy-served (4) (corrected; expected carry) | none | redirect |
 | `ctl:carch.loadselectedrelatedcontent` | `admin:carch.loadselectedrelatedcontent` | strategies-content | carry (5) | none | fragment (text/html) |
 | `ctl:carch.loadsiteflat` | `admin:carch.loadsiteflat` | strategies-content | carry (5) | none | fragment (text/html) |
 | `ctl:carch.loadsitemanager` | `admin:carch.loadsitemanager` | strategies-content | carry (5) | none | json (application/json) |
@@ -114,7 +114,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:carch.multifileupload` | `admin:carch.multifileupload` | strategies-content | carry (5) | none | page (text/html) |
 | `ctl:carch.refreshsitesection` | `admin:carch.refreshsitesection` | strategies-content | carry (5) | none | fragment (text/html) |
 | `ctl:carch.relatedcontent` | `admin:carch.relatedcontent` | strategies-content | carry (5) | none | page (text/html) |
-| `ctl:carch.rotateimage` | `admin:carch.rotateimage` | strategies-content | carry (5) | validates `rc.fileid` | page (text/html) |
+| `ctl:carch.rotateimage` | `admin:carch.rotateimage` | strategies-content | carry (5) `EX-FILE-RENDITION` | validates `rc.fileid` | page (text/html) |
 | `ctl:carch.savecopyinfo` | `admin:carch.savecopyinfo` | strategies-content | carry (5) | none | json (application/json) |
 | `ctl:carch.savequickedit` | `admin:carch.savequickedit` | strategies-content | carry (5) | validates `rc.contentid & "quickedit"` | json (application/json) |
 | `ctl:carch.search` | `admin:carch.search` | strategies-content | carry (5) | none | page (text/html) |
@@ -267,7 +267,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:cusers.advancedsearch` | `admin:cusers.advancedsearch` | people | carry (5) | none | page (text/html) |
 | `ctl:cusers.advancedsearchtocsv` | `admin:cusers.advancedsearchtocsv` | people | carry (5) | none | redirect |
 | `ctl:cusers.default` | `admin:cusers.default` | people | carry (5) | none | redirect |
-| `ctl:cusers.download` | `admin:cusers.download` | people | carry (5) | none | page (text/html) |
+| `ctl:cusers.download` | `admin:cusers.download` | people | carry (5) | none | download (text/csv) |
 | `ctl:cusers.downloadgroupmembers` | `admin:cusers.downloadgroupmembers` | identity | carry (5) | none | redirect |
 | `ctl:cusers.editaddress` | `admin:cusers.editaddress` | people | carry (5) | none | page (text/html) |
 | `ctl:cusers.editgroup` | `admin:cusers.editgroup` | identity | carry (5) | none | page (text/html) |

@@ -1,16 +1,26 @@
 // SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** `/v1` and `/v2` finance routes through app.inject over a throwaway `finance` schema and the local storage adapter, each answer checked against the contract. */
+/** `/v1` and `/v2` finance routes through app.inject over a throwaway `finance` schema, the local storage adapter and an identity CSRF double, each answer checked against the contract. */
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
-import { createLogger } from '@opt2/platform/logging';
+import { createLogger, validateLogRecord } from '@opt2/platform/logging';
 import { closeGates, ensureUnitGates, openGates, registerWritePositionHeader } from '@opt2/platform/migration-kit';
-import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
+import {
+  CSRF_CONSUME_PATH,
+  IDENTITY_SERVICE,
+  createService,
+  fixedClock,
+  loadEnv,
+  type CsrfConsumeRequest,
+  type FastifyInstance,
+  type ServiceRequest,
+  type ServiceResponse,
+} from '@opt2/platform/service-kit';
 import { createLocalStorageAdapter, type LocalStorageAdapter, type StoragePort } from '@opt2/platform/storage';
 import { tenantDbFromPool, tenantIdForSite, type TenantDb } from '@opt2/platform/tenancy';
 import { assertResponseMatchesOpenApi, createThrowawaySchema, mintServiceToken, mintUserToken, pgAvailable, testVerifier, type ThrowawaySchema } from '@opt2/platform/testing';
@@ -44,6 +54,8 @@ const SITE_FILES = 'v1-files';
 const SITE_OTHER = 'v1-other';
 const SITE_UNBOUND = 'v1-unbound';
 const PREPARER = { roles: [Roles.financePreparer], sub: PREPARER_ID } as const;
+const SESSION_ID = '0F1E2D3C-4B5A-6978-8796A5B4C3D2E1F0';
+const CSRF_EXPIRES = '260630120000123';
 const APPROVER = { roles: [Roles.financeApprover], sub: APPROVER_ID } as const;
 
 /** One gateway call; `roles: null` sends no user token. */
@@ -54,6 +66,8 @@ interface Call {
   json?: unknown;
   /** One multipart part; `filename` makes it a file part. */
   part?: { name: string; filename?: string; type?: string; body: string };
+  /** CSRF request headers; a POST otherwise sends a fresh pair issued for the record id in its path. */
+  csrf?: Readonly<Record<string, string>>;
 }
 
 /** An injected answer, its JSON body already validated against the contract. */
@@ -78,6 +92,40 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
   let stateDir: string;
   let storage: LocalStorageAdapter;
   let app: FastifyInstance;
+  /** Context identity issued each token for; a token is valid for that context alone. */
+  const issued = new Map<string, string>();
+  /** `token context` keys identity has consumed in the test session. */
+  const consumed = new Set<string>();
+  /** Every consume call the routes made, in order. */
+  const consumeCalls: CsrfConsumeRequest[] = [];
+  let identityStatus = 200;
+  /** Every line the apps' loggers wrote, parsed. */
+  const logLines: Array<Record<string, unknown>> = [];
+
+  /** Identity's consume verdict: valid once per token and context, for the context the token was issued for. */
+  function consume(request: ServiceRequest): ServiceResponse {
+    if (request.service !== IDENTITY_SERVICE || request.method !== 'POST' || request.path !== CSRF_CONSUME_PATH) {
+      throw new Error(`the finance /v1 routes call no other service: ${request.method} ${request.service} ${request.path}`);
+    }
+    const call = request.json as CsrfConsumeRequest;
+    consumeCalls.push(call);
+    const key = `${call.token} ${call.context}`;
+    const valid = identityStatus === 200 && call.sessionId === SESSION_ID && issued.get(call.token) === call.context && !consumed.has(key);
+    if (valid) consumed.add(key);
+    return { status: identityStatus, headers: {}, body: identityStatus === 200 ? { valid } : undefined };
+  }
+
+  /** A fresh CSRF pair identity issued for `context`, as the record screen renders one per form. */
+  function issueCsrf(context: string): Record<string, string> {
+    const token = `V1ROUTES${String(issued.size + 1).padStart(24, '0')}`;
+    issued.set(token, context);
+    return { 'x-csrf_token': token, 'x-csrf_token_expires': CSRF_EXPIRES };
+  }
+
+  /** The `{id}` segment of a `/v1/finance/records/{id}/…` path as sent; '' for any other path. */
+  function recordIdOf(url: string): string {
+    return new URL(url, 'http://finance.test').pathname.split('/')[4] ?? '';
+  }
 
   /** Deps over the throwaway schema with `port` as attachment storage. */
   function depsWith(port: StoragePort): FinanceDomainDeps & { db: TenantDb } {
@@ -101,11 +149,17 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
         TZ: 'UTC',
       }),
       verifierOverride: testVerifier('finance'),
-      logger: createLogger({ service: 'finance', version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
+      logger: createLogger({
+        service: 'finance',
+        version: '1.0.0',
+        env: 'local',
+        destination: { write: (line: string) => void logLines.push(JSON.parse(line) as Record<string, unknown>) },
+      }),
     });
     registerWritePositionHeader(built);
     await registerV1Routes(built, deps);
     await built.ready();
+    vi.spyOn(built.opt2.client, 'request').mockImplementation((request: ServiceRequest) => Promise.resolve(consume(request)));
     return built;
   }
 
@@ -138,8 +192,9 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
     const { site, roles = PREPARER.roles, sub = PREPARER_ID } = request;
     const headers: Record<string, string> = {
       [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'finance' })}`,
+      ...(request.csrf ?? (method === 'POST' ? issueCsrf(recordIdOf(url)) : {})),
     };
-    if (roles !== null) headers.authorization = `Bearer ${await mintUserToken({ site, roles, sub })}`;
+    if (roles !== null) headers.authorization = `Bearer ${await mintUserToken({ site, roles, sub, sid: SESSION_ID })}`;
     let payload: string | Buffer | undefined;
     if (request.json !== undefined) {
       headers['content-type'] = 'application/json';
@@ -176,6 +231,8 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
 
   beforeEach(async () => {
     await setGates('open');
+    consumeCalls.length = 0;
+    identityStatus = 200;
   });
 
   it('declares exactly the contract /v1 and /v2 operations with their requires and transport', () => {
@@ -536,8 +593,9 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
     ['a system user', `${ROLLUPS}`, 'GET', { roles: [Roles.systemUser] }, 403],
     ['another site named in siteid', `${RECORDS}?siteid=${SITE_OTHER}`, 'GET', {}, 403],
     ['an approver uploading', `${RECORDS}/${MISSING_ID}/attachments`, 'POST', APPROVER, 403],
-  ] as const)('refuses %s', async (_case, url, method, request, status) => {
+  ] as const)('refuses %s before any CSRF token is consumed', async (_case, url, method, request, status) => {
     expect((await call(method, url, { site: SITE_LIST, ...request })).status).toBe(status);
+    expect(consumeCalls).toEqual([]);
   });
 
   describe('a reporting exporter', () => {
@@ -574,6 +632,7 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
       ['a transition', 'POST', (id: string) => `${RECORDS}/${id}/transitions/submit`],
     ] as const)('refuses it %s', async (_case, method, url) => {
       expect((await call(method, url(may), { site: SITE_EXPORT, ...EXPORTER })).status).toBe(403);
+      expect(consumeCalls).toEqual([]);
     });
   });
 
@@ -604,5 +663,142 @@ describe.skipIf(!available)('finance /v1 and /v2 routes', () => {
     } finally {
       await failingApp.opt2.shutdown();
     }
+  });
+
+  describe('CSRF of the /v1 writes', () => {
+    const SITE_CSRF = 'v1-csrf';
+    const site = { site: SITE_CSRF };
+    const PART = { name: 'file', filename: 'c.pdf', type: 'application/pdf', body: '%PDF' };
+
+    /** Each write: its path tail, the envelope method of its refusals, and its request body. */
+    const WRITES = [
+      ['a transition', '/transitions/submit', 'finance.records.submit', {}],
+      ['an upload', '/attachments', 'finance.records.attachments', { part: PART }],
+    ] as const;
+
+    /** The record's state, version and attachment count, read back through the routes. */
+    async function stateOf(id: string): Promise<[string, number, number]> {
+      const detail = (await call('GET', `${RECORDS}/${id}`, site)).body.data;
+      return [detail.state, detail.version, detail.attachments.length];
+    }
+
+    beforeAll(async () => {
+      await setGates('open');
+      await bind(SITE_CSRF, 8);
+    });
+
+    it.each(WRITES)("has identity consume the pair of %s for the record id as sent, in the token's session", async (_case, tail, _method, body) => {
+      const id = await seed(SITE_CSRF, { title: 'Consumed', amount: 1n, period: '2026-06' });
+      const csrf = issueCsrf(id.toLowerCase());
+
+      const res = await call('POST', `${RECORDS}/${id.toLowerCase()}${tail}`, { ...site, ...body, csrf });
+
+      expect(res.status).toBe(200);
+      expect(consumeCalls).toEqual([{ sessionId: SESSION_ID, token: csrf['x-csrf_token'], expires: CSRF_EXPIRES, context: id.toLowerCase() }]);
+    });
+
+    it.each(
+      WRITES.flatMap(([write, ...rest]) =>
+        (
+          [
+            ['no token', () => ({}), 0],
+            ['a token without its expiry', () => ({ 'x-csrf_token': issueCsrf('')['x-csrf_token'] ?? '' }), 0],
+            ["another record's token", () => issueCsrf(MISSING_ID), 1],
+          ] as const
+        ).map(([token, csrf, calls]) => [token, write, ...rest, csrf, calls] as const),
+      ),
+    )('answers %s on %s with invalidTokens, writing nothing', async (_token, _case, tail, method, body, csrf, calls) => {
+      const id = await seed(SITE_CSRF, { title: 'Refused', amount: 1n, period: '2026-06' });
+
+      const res = await call('POST', `${RECORDS}/${id}${tail}`, { ...site, ...body, csrf: csrf() });
+
+      expect(res).toMatchObject({ status: 400, body: fixtureError(method, 'Invalid CSRF tokens') });
+      expect(consumeCalls).toHaveLength(calls);
+      expect(await stateOf(id)).toEqual(['IN-PROGRESS', 1, 0]);
+    });
+
+    it('accepts a token once and answers its replay with invalidTokens, writing one version', async () => {
+      const id = await seed(SITE_CSRF, { title: 'Replayed', amount: 1n, period: '2026-06' });
+      const csrf = issueCsrf(id);
+      const edit = (): Promise<Answer> =>
+        call('POST', `${RECORDS}/${id}/transitions/edit`, { ...site, csrf, json: { title: 'Replayed v2', amount: '2', period: '2026-06' } });
+
+      const first = await edit();
+      const replay = await edit();
+
+      expect([first.status, replay.status]).toEqual([200, 400]);
+      expect(replay.body).toEqual(fixtureError('finance.records.edit', 'Invalid CSRF tokens'));
+      expect(await stateOf(id)).toEqual(['IN-PROGRESS', 2, 0]);
+    });
+
+    it.each(WRITES)('answers %s with the legacy 503 and writes nothing when identity cannot consume the token', async (_case, tail, _method, body) => {
+      const id = await seed(SITE_CSRF, { title: 'Unavailable', amount: 1n, period: '2026-06' });
+      identityStatus = 503;
+
+      const res = await call('POST', `${RECORDS}/${id}${tail}`, { ...site, ...body });
+
+      expect(res.status).toBe(503);
+      identityStatus = 200;
+      expect(await stateOf(id)).toEqual(['IN-PROGRESS', 1, 0]);
+    });
+
+    it('consumes no CSRF token on a read, even one sent with it', async () => {
+      const id = await seed(SITE_CSRF, { title: 'Read', amount: 1n, period: '2026-06' });
+
+      expect((await call('GET', `${RECORDS}/${id}`, { ...site, csrf: issueCsrf(id) })).status).toBe(200);
+      expect(consumeCalls).toEqual([]);
+    });
+  });
+
+  describe('outcome log lines', () => {
+    const SITE_LOG = 'v1-log';
+    const site = { site: SITE_LOG };
+    const transition = (id: string, action: string, request: Omit<Call, 'site'> = {}): Promise<Answer> =>
+      call('POST', `${RECORDS}/${id}/transitions/${action}`, { ...site, ...request });
+
+    beforeAll(async () => {
+      await setGates('open');
+      await bind(SITE_LOG, 10);
+    });
+
+    it.each<[string, (id: string) => Promise<Answer>, number, string | null]>([
+      ['a write without a CSRF token', (id) => transition(id, 'submit', { csrf: {} }), 400, 'request rejected: invalidTokens'],
+      ['a role that may not take the action', (id) => transition(id, 'submit', APPROVER), 403, 'request denied: forbidden'],
+      ['an illegal transition', (id) => transition(id, 'resubmit'), 409, null],
+      [
+        'an edit whose amount is not a string',
+        (id) => transition(id, 'edit', { json: { title: 'reason-probe', amount: 12, period: '2026-06' } }),
+        400,
+        'request rejected: invalidParameters',
+      ],
+      [
+        'an edited title PostgreSQL cannot store',
+        (id) => transition(id, 'edit', { json: { title: 'reason-probe\u0000title', amount: '2', period: '2026-06' } }),
+        400,
+        'request rejected: 22021',
+      ],
+      ['a page outside the query schema', () => call('GET', `${V2_ROLLUPS}?page=0`, site), 400, 'request rejected: FST_ERR_VALIDATION'],
+      ['a tenant without a program', () => call('GET', RECORDS, { site: SITE_UNBOUND }), 400, 'request rejected: invalidParameters'],
+      ['no credential', () => call('GET', RECORDS, { ...site, roles: null }), 401, 'request denied: missing-credential'],
+      ['another site named in siteid', () => call('GET', `${RECORDS}?siteid=${SITE_OTHER}`, site), 403, 'request denied: site-mismatch'],
+      ['an unknown record', () => call('GET', `${RECORDS}/${MISSING_ID}`, site), 404, null],
+    ])('logs %s with its fixed reason, if any, ahead of the completion line, writing nothing', async (_case, send, status, warning) => {
+      const id = await seed(SITE_LOG, { title: 'Logged', amount: 1n, period: '2026-06' });
+      const before = logLines.length;
+
+      const res = await send(id);
+      const lines = logLines.slice(before);
+
+      expect(res.status).toBe(status);
+      expect(lines.filter(({ severity, message }) => severity === 'WARNING' || message === 'request completed').map(({ severity, message }) => [severity, message])).toStrictEqual([
+        ...(warning === null ? [] : [['WARNING', warning]]),
+        ['INFO', 'request completed'],
+      ]);
+      expect(lines.filter(({ severity }) => severity === 'ERROR')).toEqual([]);
+      for (const line of lines) expect(validateLogRecord(line).errors).toStrictEqual([]);
+      expect(JSON.stringify(lines)).not.toMatch(/reason-probe|invalid byte sequence|0x00/);
+      const detail = (await call('GET', `${RECORDS}/${id}`, site)).body.data;
+      expect([detail.state, detail.version]).toEqual(['IN-PROGRESS', 1]);
+    });
   });
 });

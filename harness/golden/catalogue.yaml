@@ -3677,8 +3677,10 @@ scenarios:
     role: admin
     sessions:
       admin: {login: admin, via: admin}
+      requester: {login: 'seed:tenant-a:reporting.exporter', via: admin}
     seedRefs:
-      - {as: page, source: dataset, path: masa.content, where: {siteID: tenant-a, type: Page}, index: 0}
+      - {as: page, source: dataset, path: masa.content, where: {siteID: tenant-a, type: Page}, index: 1}
+      - {as: requesterGroup, source: dataset, path: masa.groups, where: {siteID: tenant-a, groupname: reporting.exporter}}
     browser: {flow: edit-modal-tabs-status-approval, console: no-new-errors}
     steps:
       - name: find
@@ -3687,6 +3689,113 @@ scenarios:
         as: admin
         extract:
           contenthistid: {from: body, path: data.contenthistid}
+      - name: setup-chain-form
+        method: GET
+        route: /admin/?muraAction=cChain.edit&siteid=tenant-a&chainID=
+        as: admin
+        extract:
+          chainID: {from: dom, selector: 'form input[name=chainID]', attr: value}
+          adminGroupID: {from: dom, selector: '#groupAvailableListSort li:contains("Admin") input[name=availableID]', attr: value}
+      - name: setup-chain
+        method: POST
+        route: /admin/?muraAction=cchain.save
+        as: admin
+        csrf: fetch-form
+        csrfFrom: setup-chain-form
+        form:
+          chainID: ${setup-chain-form.chainID}
+          siteid: tenant-a
+          name: GS-UI-02 Chain
+          description: ''
+          groupID: ${setup-chain-form.adminGroupID}
+      - name: setup-module-form
+        method: GET
+        route: /admin/?muraAction=cPerm.module&siteid=tenant-a&contentid=00000000000000000000000000000000000&moduleid=00000000000000000000000000000000000
+        as: admin
+      - name: setup-module
+        method: POST
+        route: /admin/?muraAction=cPerm.updatemodule&contentid=00000000000000000000000000000000000
+        as: admin
+        csrf: fetch-form
+        csrfFrom: setup-module-form
+        form:
+          groupid: ${seed.requesterGroup.groupID}
+          siteid: tenant-a
+          moduleid: '00000000000000000000000000000000000'
+          topid: ''
+      - name: setup-perm-form
+        method: GET
+        route: /admin/?muraAction=cPerm.main&siteid=tenant-a&contentid=${seed.page.contentID}&parentid=${seed.page.parentID}&topid=00000000000000000000000000000000001&moduleid=00000000000000000000000000000000000
+        as: admin
+      - name: setup-perm
+        method: POST
+        route: /admin/?muraAction=cPerm.update&contentid=${seed.page.contentID}&parentid=${seed.page.parentID}
+        as: admin
+        csrf: fetch-form
+        csrfFrom: setup-perm-form
+        form:
+          p${nodash:${seed.requesterGroup.groupID}}: editor
+          chainID: ${setup-chain-form.chainID}
+          siteid: tenant-a
+          topid: '00000000000000000000000000000000001'
+          moduleid: '00000000000000000000000000000000000'
+        expected: withheld
+        decisionListRef: admin:cperm.update
+      - name: setup-submit-form
+        method: GET
+        route: /admin/?muraAction=cArch.edit&siteid=tenant-a&contentid=${seed.page.contentID}&parentid=${seed.page.parentID}&topid=00000000000000000000000000000000001&moduleid=00000000000000000000000000000000000&type=Page&contenthistid=${find.contenthistid}
+        as: requester
+      - name: setup-submit
+        method: POST
+        route: /admin/?muraAction=cArch.update
+        as: requester
+        csrf: fetch-form
+        csrfFrom: setup-submit-form
+        form:
+          muraAction: cArch.update
+          action: add
+          siteid: tenant-a
+          moduleid: '00000000000000000000000000000000000'
+          contentid: ${seed.page.contentID}
+          contenthistid: ${find.contenthistid}
+          parentid: ${seed.page.parentID}
+          type: Page
+          approved: '1'
+        expected: withheld
+        decisionListRef: admin:carch.update{approved=1}
+      - name: setup-restore-perm-form
+        method: GET
+        route: /admin/?muraAction=cPerm.main&siteid=tenant-a&contentid=${seed.page.contentID}&parentid=${seed.page.parentID}&topid=00000000000000000000000000000000001&moduleid=00000000000000000000000000000000000
+        as: admin
+      - name: setup-restore-perm
+        method: POST
+        route: /admin/?muraAction=cPerm.update&contentid=${seed.page.contentID}&parentid=${seed.page.parentID}
+        as: admin
+        csrf: fetch-form
+        csrfFrom: setup-restore-perm-form
+        form:
+          p${nodash:${seed.requesterGroup.groupID}}: none
+          chainID: ${setup-chain-form.chainID}
+          siteid: tenant-a
+          topid: '00000000000000000000000000000000001'
+          moduleid: '00000000000000000000000000000000000'
+        expected: withheld
+        decisionListRef: admin:cperm.update
+      - name: setup-restore-module-form
+        method: GET
+        route: /admin/?muraAction=cPerm.module&siteid=tenant-a&contentid=00000000000000000000000000000000000&moduleid=00000000000000000000000000000000000
+        as: admin
+      - name: setup-restore-module
+        method: POST
+        route: /admin/?muraAction=cPerm.updatemodule&contentid=00000000000000000000000000000000000
+        as: admin
+        csrf: fetch-form
+        csrfFrom: setup-restore-module-form
+        form:
+          groupid: ''
+          siteid: tenant-a
+          moduleid: '00000000000000000000000000000000000'
+          topid: ''
       - name: edit
         method: GET
         route: /admin/?muraAction=cArch.edit&siteid=tenant-a&moduleid=00000000000000000000000000000000000&topid=00000000000000000000000000000000001&contentid=${seed.page.contentID}&contenthistid=${find.contenthistid}&compactDisplay=true
@@ -3733,7 +3842,14 @@ scenarios:
     normalisationOverrides: {}
     covers:
       - api:content.findone
+      - admin:cchain.edit
+      - admin:cchain.save
+      - admin:cperm.module
+      - admin:cperm.updatemodule
+      - admin:cperm.main
+      - admin:cperm.update
       - admin:carch.edit
+      - admin:carch.update{approved=1}
       - admin:carch.loadextendedattributes
       - admin:carch.loadcategoryassignment
       - admin:carch.loadrelatedcontent
@@ -4940,6 +5056,45 @@ scenarios:
       - fixture:surveys/surveys/{id}/responses@post
       - fixture:surveys/surveys/{id}/responses@get
       - fixture:surveys/surveys/{id}@get
+  - id: GS-SU-04
+    title: A response from a site the survey does not target
+    service: surveys
+    role: surveys.manager, tenant-b system user
+    fixtures: required
+    sessions:
+      manager: {login: 'seed:tenant-a:surveys.manager', via: jsonapi}
+      admin: {login: admin, via: admin}
+      respondentB: {login: 'seed:tenant-b:system-user', via: jsonapi}
+    seedRefs: []
+    steps:
+      - name: survey
+        method: POST
+        route: /legacy-fixtures/cfml/api.cfm/surveys/surveys?siteid=tenant-a
+        as: manager
+        csrf: 'json-api:'
+        body:
+          title: GS-SU-04 Untargeted Survey
+        extract:
+          id: {from: body, path: data.survey_id}
+      - name: respond-untargeted
+        method: POST
+        route: /legacy-fixtures/cfml/api.cfm/surveys/surveys/${survey.id}/responses?siteid=tenant-b
+        as: respondentB
+        csrf: json-api:${survey.id}
+        body:
+          answers: '{"q1":"no"}'
+      - name: responses
+        method: GET
+        route: /legacy-fixtures/cfml/api.cfm/surveys/surveys/${survey.id}/responses?siteid=tenant-a
+        as: manager
+    compare: [status, envelope, rows]
+    rows:
+      - {table: synthetic.survey_response, where: {survey_id: '${survey.id}'}}
+    normalisationOverrides: {}
+    covers:
+      - fixture:surveys/surveys@post
+      - fixture:surveys/surveys/{id}/responses@post
+      - fixture:surveys/surveys/{id}/responses@get
   - id: GS-RE-01
     title: XLSX, CSV and PDF export jobs
     service: reporting
@@ -5563,6 +5718,30 @@ scenarios:
       - rest:group.save{extdata}
       - rest:group.save{photo}
       - rest:group.delete
+  - id: GS-ID-11
+    title: Session-based lockdown check through the JSON API login
+    service: identity
+    role: admin
+    purpose: coverage
+    sessions:
+      visitor: {login: none, via: jsonapi}
+    seedRefs: []
+    steps:
+      - name: session-lockdown-check
+        method: POST
+        route: /_api/json/v1/tenant-a/login
+        as: visitor
+        csrf: json-api:login
+        form:
+          username: admin
+          'password': ${secret:admin}
+          lockdowncheck: 'true'
+        expected: halted
+        exceptionId: EX-LOGIN-LOCKDOWN
+    compare: [status, envelope, headers, auth]
+    normalisationOverrides: {}
+    covers:
+      - api:login
   - id: GS-PE-06
     title: User and address extended attributes, photo and delete through the admin, JSON API and REST
     service: people
@@ -6522,6 +6701,8 @@ scenarios:
         method: GET
         route: /admin/?muraAction=carch.cropimage&fileid=${upload-image.fileid}&size=small&x=0&y=0&width=4&height=4&siteid=tenant-a&csrf_token=${crop-tokens.csrfToken}&csrf_token_expires=${crop-tokens.csrfExpires}
         as: admin
+        expected: halted
+        exceptionId: EX-FILE-RENDITION
       - name: flip-tokens
         method: GET
         route: /_api/json/v1/tenant-a/generateCSRFTokens?context=${upload-image.fileid}
@@ -6533,6 +6714,8 @@ scenarios:
         method: GET
         route: /admin/?muraAction=carch.flipimage&fileid=${upload-image.fileid}&siteid=tenant-a&transpose=horizontal&csrf_token=${flip-tokens.csrfToken}&csrf_token_expires=${flip-tokens.csrfExpires}
         as: admin
+        expected: halted
+        exceptionId: EX-FILE-RENDITION
       - name: rotate-tokens
         method: GET
         route: /_api/json/v1/tenant-a/generateCSRFTokens?context=${upload-image.fileid}
@@ -6544,6 +6727,8 @@ scenarios:
         method: GET
         route: /admin/?muraAction=carch.rotateimage&fileid=${upload-image.fileid}&siteid=tenant-a&degrees=90&csrf_token=${rotate-tokens.csrfToken}&csrf_token_expires=${rotate-tokens.csrfExpires}
         as: admin
+        expected: halted
+        exceptionId: EX-FILE-RENDITION
       - name: render-small
         method: GET
         route: /_api/render/small/?fileid=${upload-image.fileid}

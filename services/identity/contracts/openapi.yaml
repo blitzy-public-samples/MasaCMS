@@ -14,6 +14,7 @@ servers:
 x-opt2-calls:
   - people
   - gateway
+  - strategies-content
 tags:
   - name: legacy-api
     description: Masa JSON, AJAX and REST API routes identity serves once cut over.
@@ -45,11 +46,11 @@ paths:
       - $ref: '#/components/parameters/LegacySiteId'
     get:
       operationId: jsonRootGet
-      summary: Calls the identity method or group operation the `method` parameter names through the JSON API.
+      summary: Calls the identity method or group operation the `method` parameter names through the JSON API. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route; the bare family path answers as this operation.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -79,11 +80,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: jsonRootPost
-      summary: Calls the identity method or group operation the `method` parameter names through the JSON API.
+      summary: Calls the identity method or group operation the `method` parameter names through the JSON API. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route; the bare family path answers as this operation.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -115,11 +116,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: jsonRootPut
-      summary: Calls the identity method or group operation the `method` parameter names through the JSON API.
+      summary: Calls the identity method or group operation the `method` parameter names through the JSON API. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route; the bare family path answers as this operation.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -151,11 +152,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     delete:
       operationId: jsonRootDelete
-      summary: Calls the identity method or group operation the `method` parameter names through the JSON API.
+      summary: Calls the identity method or group operation the `method` parameter names through the JSON API. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route; the bare family path answers as this operation.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -191,11 +192,11 @@ paths:
       - $ref: '#/components/parameters/LegacySegment'
     get:
       operationId: jsonSegmentGet
-      summary: Calls the identity method the segment names, or reads groups, through the JSON API.
+      summary: Calls the identity method the segment names, or reads groups, through the JSON API. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -223,11 +224,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: jsonSegmentPost
-      summary: Calls the identity method the segment names, or saves a group, through the JSON API.
+      summary: Calls the identity method the segment names, or saves a group, through the JSON API. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -257,11 +258,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: jsonSegmentPut
-      summary: Calls the identity method the segment names, or saves a group, through the JSON API.
+      summary: Calls the identity method the segment names, or saves a group, through the JSON API. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -291,11 +292,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     delete:
       operationId: jsonSegmentDelete
-      summary: Calls the identity method the segment names through the JSON API; a group delete stays on legacy.
+      summary: Calls the identity method the segment names through the JSON API; a group delete stays on legacy. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -330,11 +331,11 @@ paths:
       - $ref: '#/components/parameters/LegacyItem'
     get:
       operationId: jsonItemGet
-      summary: Reads one group, or calls an identity method with path parameters, through the JSON API.
+      summary: Reads one group, or calls an identity method with path parameters, through the JSON API. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -362,11 +363,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: jsonItemPost
-      summary: Saves one group, or calls an identity method with path parameters, through the JSON API.
+      summary: Saves one group, or calls an identity method with path parameters, through the JSON API. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -396,11 +397,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: jsonItemPut
-      summary: Saves one group, or calls an identity method with path parameters, through the JSON API.
+      summary: Saves one group, or calls an identity method with path parameters, through the JSON API. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -430,11 +431,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     delete:
       operationId: jsonItemDelete
-      summary: Calls an identity method with path parameters through the JSON API; a group delete stays on legacy.
+      summary: Calls an identity method with path parameters through the JSON API; a group delete stays on legacy. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -470,11 +471,11 @@ paths:
       - $ref: '#/components/parameters/LegacySuffix'
     get:
       operationId: jsonSuffixGet
-      summary: Reads a group's permissions, or calls an identity method with path parameters, through the JSON API.
+      summary: Reads a group's permissions, or calls an identity method with path parameters, through the JSON API. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -502,11 +503,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: jsonSuffixPost
-      summary: Reads a group's permissions, or calls an identity method with path parameters, through the JSON API.
+      summary: Reads a group's permissions, or calls an identity method with path parameters, through the JSON API. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -536,11 +537,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: jsonSuffixPut
-      summary: Reads a group's permissions, or calls an identity method with path parameters, through the JSON API.
+      summary: Reads a group's permissions, or calls an identity method with path parameters, through the JSON API. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -570,11 +571,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     delete:
       operationId: jsonSuffixDelete
-      summary: Reads a group's permissions, or calls an identity method with path parameters, through the JSON API.
+      summary: Reads a group's permissions, or calls an identity method with path parameters, through the JSON API. Any path starting `/_api/json/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/json/v1/*
+      x-opt2-fastify-path: [/_api/json/v1*, /index.cfm/_api/json/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -607,11 +608,11 @@ paths:
       - $ref: '#/components/parameters/LegacySiteId'
     get:
       operationId: ajaxRootGet
-      summary: Calls the identity method or group operation the `method` parameter names through the AJAX API.
+      summary: Calls the identity method or group operation the `method` parameter names through the AJAX API. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route; the bare family path answers as this operation.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -641,11 +642,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: ajaxRootPost
-      summary: Calls the identity method or group operation the `method` parameter names through the AJAX API.
+      summary: Calls the identity method or group operation the `method` parameter names through the AJAX API. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route; the bare family path answers as this operation.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -677,11 +678,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: ajaxRootPut
-      summary: Calls the identity method or group operation the `method` parameter names through the AJAX API.
+      summary: Calls the identity method or group operation the `method` parameter names through the AJAX API. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route; the bare family path answers as this operation.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -713,11 +714,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     delete:
       operationId: ajaxRootDelete
-      summary: Calls the identity method or group operation the `method` parameter names through the AJAX API.
+      summary: Calls the identity method or group operation the `method` parameter names through the AJAX API. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route; the bare family path answers as this operation.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -753,11 +754,11 @@ paths:
       - $ref: '#/components/parameters/LegacySegment'
     get:
       operationId: ajaxSegmentGet
-      summary: Calls the identity method the segment names, or reads groups, through the AJAX API.
+      summary: Calls the identity method the segment names, or reads groups, through the AJAX API. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -785,11 +786,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: ajaxSegmentPost
-      summary: Calls the identity method the segment names, or saves a group, through the AJAX API.
+      summary: Calls the identity method the segment names, or saves a group, through the AJAX API. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -819,11 +820,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: ajaxSegmentPut
-      summary: Calls the identity method the segment names, or saves a group, through the AJAX API.
+      summary: Calls the identity method the segment names, or saves a group, through the AJAX API. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -853,11 +854,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     delete:
       operationId: ajaxSegmentDelete
-      summary: Calls the identity method the segment names through the AJAX API; a group delete stays on legacy.
+      summary: Calls the identity method the segment names through the AJAX API; a group delete stays on legacy. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -892,11 +893,11 @@ paths:
       - $ref: '#/components/parameters/LegacyItem'
     get:
       operationId: ajaxItemGet
-      summary: Reads one group, or calls an identity method with path parameters, through the AJAX API.
+      summary: Reads one group, or calls an identity method with path parameters, through the AJAX API. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -924,11 +925,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: ajaxItemPost
-      summary: Saves one group, or calls an identity method with path parameters, through the AJAX API.
+      summary: Saves one group, or calls an identity method with path parameters, through the AJAX API. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -958,11 +959,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: ajaxItemPut
-      summary: Saves one group, or calls an identity method with path parameters, through the AJAX API.
+      summary: Saves one group, or calls an identity method with path parameters, through the AJAX API. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -992,11 +993,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     delete:
       operationId: ajaxItemDelete
-      summary: Calls an identity method with path parameters through the AJAX API; a group delete stays on legacy.
+      summary: Calls an identity method with path parameters through the AJAX API; a group delete stays on legacy. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -1032,11 +1033,11 @@ paths:
       - $ref: '#/components/parameters/LegacySuffix'
     get:
       operationId: ajaxSuffixGet
-      summary: Reads a group's permissions, or calls an identity method with path parameters, through the AJAX API.
+      summary: Reads a group's permissions, or calls an identity method with path parameters, through the AJAX API. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -1064,11 +1065,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: ajaxSuffixPost
-      summary: Reads a group's permissions, or calls an identity method with path parameters, through the AJAX API.
+      summary: Reads a group's permissions, or calls an identity method with path parameters, through the AJAX API. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -1098,11 +1099,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: ajaxSuffixPut
-      summary: Reads a group's permissions, or calls an identity method with path parameters, through the AJAX API.
+      summary: Reads a group's permissions, or calls an identity method with path parameters, through the AJAX API. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -1132,11 +1133,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     delete:
       operationId: ajaxSuffixDelete
-      summary: Reads a group's permissions, or calls an identity method with path parameters, through the AJAX API.
+      summary: Reads a group's permissions, or calls an identity method with path parameters, through the AJAX API. Any path starting `/_api/ajax/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/ajax/v1/*
+      x-opt2-fastify-path: [/_api/ajax/v1*, /index.cfm/_api/ajax/v1*]
       x-opt2-route-keys: ['api:login', 'api:logout', 'api:generatecsrftokens', 'api:findcurrentuser', 'api:validateemail', 'api:group.findall', 'api:group.findmany', 'api:group.findnew', 'api:group.findone', 'api:group.findpermissions', 'api:group.findproperties', 'api:group.findquery', 'api:group.save', 'api:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'api:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -1169,11 +1170,11 @@ paths:
       - $ref: '#/components/parameters/LegacySiteId'
     get:
       operationId: restRootGet
-      summary: Calls the identity method or group operation the `method` parameter names through the sessionless REST API.
+      summary: Calls the identity method or group operation the `method` parameter names through the sessionless REST API. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route; the bare family path answers as this operation.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
       x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -1207,11 +1208,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: restRootPost
-      summary: Calls the identity method or group operation the `method` parameter names through the sessionless REST API.
+      summary: Calls the identity method or group operation the `method` parameter names through the sessionless REST API. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route; the bare family path answers as this operation.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
       x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -1247,11 +1248,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: restRootPut
-      summary: Calls the identity method or group operation the `method` parameter names through the sessionless REST API.
+      summary: Calls the identity method or group operation the `method` parameter names through the sessionless REST API. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route; the bare family path answers as this operation.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
       x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -1287,11 +1288,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     delete:
       operationId: restRootDelete
-      summary: Calls the identity method or group operation the `method` parameter names through the sessionless REST API.
+      summary: Calls the identity method or group operation the `method` parameter names through the sessionless REST API. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route; the bare family path answers as this operation.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
       x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -1331,11 +1332,11 @@ paths:
       - $ref: '#/components/parameters/LegacySegment'
     get:
       operationId: restSegmentGet
-      summary: Issues OAuth tokens or token info, calls the identity method the segment names, or reads groups, through the sessionless REST API.
+      summary: Issues OAuth tokens or token info, calls the identity method the segment names, or reads groups, through the sessionless REST API. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
       x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate', 'rest:oauth', 'rest:oauth2', 'rest:tokeninfo']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -1367,11 +1368,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: restSegmentPost
-      summary: Issues OAuth tokens or token info, calls the identity method the segment names, or saves a group, through the sessionless REST API.
+      summary: Issues OAuth tokens or token info, calls the identity method the segment names, or saves a group, through the sessionless REST API. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
       x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate', 'rest:oauth', 'rest:oauth2', 'rest:tokeninfo']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -1405,11 +1406,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: restSegmentPut
-      summary: Issues OAuth tokens or token info, calls the identity method the segment names, or saves a group, through the sessionless REST API.
+      summary: Issues OAuth tokens or token info, calls the identity method the segment names, or saves a group, through the sessionless REST API. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
       x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate', 'rest:oauth', 'rest:oauth2', 'rest:tokeninfo']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -1443,11 +1444,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     delete:
       operationId: restSegmentDelete
-      summary: Issues OAuth tokens or token info, or calls the identity method the segment names, through the sessionless REST API; a group delete stays on legacy.
+      summary: Issues OAuth tokens or token info, or calls the identity method the segment names, through the sessionless REST API; a group delete stays on legacy. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
       x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate', 'rest:oauth', 'rest:oauth2', 'rest:tokeninfo']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -1486,11 +1487,11 @@ paths:
       - $ref: '#/components/parameters/LegacyItem'
     get:
       operationId: restItemGet
-      summary: Issues OAuth tokens or token info, reads one group, or calls an identity method with path parameters, through the sessionless REST API.
+      summary: Issues OAuth tokens or token info, reads one group, or calls an identity method with path parameters, through the sessionless REST API. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
       x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate', 'rest:oauth', 'rest:oauth2', 'rest:tokeninfo']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -1522,11 +1523,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: restItemPost
-      summary: Issues OAuth tokens or token info, saves one group, or calls an identity method with path parameters, through the sessionless REST API.
+      summary: Issues OAuth tokens or token info, saves one group, or calls an identity method with path parameters, through the sessionless REST API. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
       x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate', 'rest:oauth', 'rest:oauth2', 'rest:tokeninfo']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -1560,11 +1561,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: restItemPut
-      summary: Issues OAuth tokens or token info, saves one group, or calls an identity method with path parameters, through the sessionless REST API.
+      summary: Issues OAuth tokens or token info, saves one group, or calls an identity method with path parameters, through the sessionless REST API. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
       x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate', 'rest:oauth', 'rest:oauth2', 'rest:tokeninfo']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -1598,11 +1599,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     delete:
       operationId: restItemDelete
-      summary: Issues OAuth tokens or token info, or calls an identity method with path parameters, through the sessionless REST API; a group delete stays on legacy.
+      summary: Issues OAuth tokens or token info, or calls an identity method with path parameters, through the sessionless REST API; a group delete stays on legacy. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
       x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate', 'rest:oauth', 'rest:oauth2', 'rest:tokeninfo']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -1642,11 +1643,11 @@ paths:
       - $ref: '#/components/parameters/LegacySuffix'
     get:
       operationId: restSuffixGet
-      summary: Reads a group's permissions, or calls an identity method with path parameters, through the sessionless REST API.
+      summary: Reads a group's permissions, or calls an identity method with path parameters, through the sessionless REST API. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
       x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -1678,11 +1679,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     post:
       operationId: restSuffixPost
-      summary: Reads a group's permissions, or calls an identity method with path parameters, through the sessionless REST API.
+      summary: Reads a group's permissions, or calls an identity method with path parameters, through the sessionless REST API. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
       x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -1716,11 +1717,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     put:
       operationId: restSuffixPut
-      summary: Reads a group's permissions, or calls an identity method with path parameters, through the sessionless REST API.
+      summary: Reads a group's permissions, or calls an identity method with path parameters, through the sessionless REST API. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
       x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -1754,11 +1755,11 @@ paths:
           $ref: '#/components/responses/Unavailable'
     delete:
       operationId: restSuffixDelete
-      summary: Reads a group's permissions, or calls an identity method with path parameters, through the sessionless REST API.
+      summary: Reads a group's permissions, or calls an identity method with path parameters, through the sessionless REST API. Any path starting `/_api/rest/v1` in any letter case, also behind `/index.cfm` or the configured context, is the same route.
       tags: [legacy-api]
       x-opt2-transport: service
       x-opt2-public: true
-      x-opt2-fastify-path: /_api/rest/v1/*
+      x-opt2-fastify-path: [/_api/rest/v1*, /index.cfm/_api/rest/v1*]
       x-opt2-route-keys: ['rest:login', 'rest:logout', 'rest:generatecsrftokens', 'rest:findcurrentuser', 'rest:validateemail', 'rest:group.findall', 'rest:group.findmany', 'rest:group.findnew', 'rest:group.findone', 'rest:group.findpermissions', 'rest:group.findproperties', 'rest:group.findquery', 'rest:group.save', 'rest:group.validate']
       x-opt2-route-keys-excluded:
         - {key: 'rest:group.delete', reason: 'Withheld and served by legacy; a group delete writes identity and strategies-content units.'}
@@ -2026,9 +2027,11 @@ paths:
       parameters:
         - $ref: '#/components/parameters/SiteIdQuery'
         - $ref: '#/components/parameters/IsPublicQuery'
+        - $ref: '#/components/parameters/ListOffset'
+        - $ref: '#/components/parameters/ListLimit'
       responses:
         '200':
-          description: The groups, by `Perm` descending, then group name.
+          description: One page of the groups, by `Perm` descending, then group name.
           content:
             application/json:
               schema:
@@ -2164,9 +2167,12 @@ paths:
         - site-admin
         - m:008
       security: [{userToken: [], invocationCredential: []}]
+      parameters:
+        - $ref: '#/components/parameters/ListOffset'
+        - $ref: '#/components/parameters/ListLimit'
       responses:
         '200':
-          description: The members.
+          description: One page of the members.
           content:
             application/json:
               schema:
@@ -2426,9 +2432,11 @@ paths:
       security: [{userToken: [], invocationCredential: []}]
       parameters:
         - $ref: '#/components/parameters/SiteIdQuery'
+        - $ref: '#/components/parameters/ListOffset'
+        - $ref: '#/components/parameters/ListLimit'
       responses:
         '200':
-          description: The clients.
+          description: One page of the clients, by client id.
           content:
             application/json:
               schema:
@@ -2580,6 +2588,7 @@ paths:
     post:
       operationId: mintUserToken
       summary: Mints the site-scoped user token of a session; a site the user may not use yields a token without roles.
+      description: Only the gateway mints, per request; a minted token carries every role of the session, so no other workload may obtain one.
       tags: [internal]
       x-opt2-transport: service
       x-opt2-requires:
@@ -2611,7 +2620,7 @@ paths:
     post:
       operationId: authenticateRequest
       summary: Resolves a client request's session cookie, Basic or Bearer credentials or OAuth client credentials by legacy rules.
-      description: The gateway sends the request facts before routing; `legacyResponse` is the exact answer when legacy credential handling answers on its own, such as a 401 or 500 with its `WWW-Authenticate`, an OAuth token or token info.
+      description: The gateway sends the request facts before routing; `legacyResponse` is the exact answer when legacy credential handling answers on its own, such as a 401 or 500 with its `WWW-Authenticate`, an OAuth token or token info, carrying legacy's CORS origin echo for an allowed `Origin`.
       tags: [internal]
       x-opt2-transport: service
       x-opt2-requires:
@@ -2799,6 +2808,11 @@ paths:
         - service:strategies-content
         - service:identity
         - service:gateway
+        - service:communications
+        - service:finance
+        - service:reporting
+        - service:surveys
+        - service:timesheets
       security: [{invocationCredential: []}, {userToken: [], invocationCredential: []}]
       requestBody:
         required: true
@@ -3092,6 +3106,46 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
           description: The user stayed closed by an open account operation for 10 s, or a legacy write window executed or imported on an account unit for 30 s.
+  /internal/v1/accounts/{userId}/login-block:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    post:
+      operationId: loadLoginBlock
+      summary: Loads the login strikes of a `getAccount` user's stored user name as `cUsers.editUser` does, clears them on `removeBlock`, and reads the block's end.
+      tags: [internal]
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:people
+      security: [{userToken: [], invocationCredential: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginBlockRequest'
+      responses:
+        '200':
+          description: The block state; loading inserts a missing strike row and resets one whose block window has passed, and an empty user name reads no strikes.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginBlock'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: A malformed user id or body.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+          description: No such account in the user pools of the token's site, a group, or a `pending` account.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: The user stayed closed by an open account operation for 10 s, or a legacy write window executed or imported on an account or strike unit for 30 s.
   /internal/v1/accounts:lookup:
     post:
       operationId: lookupAccounts
@@ -3110,7 +3164,7 @@ paths:
               $ref: '#/components/schemas/AccountLookupRequest'
       responses:
         '200':
-          description: The listed users that `getAccount` finds, in request order; the others are left out.
+          description: The listed users that `getAccount` finds and `where` matches, in request order; the others are left out.
           content:
             application/json:
               schema:
@@ -3123,7 +3177,137 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
-          description: A listed user stayed closed by an open account operation for 10 s, or a legacy write window executed or imported on an account unit for 30 s.
+          description: A listed user stayed closed by an open account operation for 10 s, or a legacy write window executed or imported on an account unit, or with `unassigned` on `identity.membership`, for 30 s.
+  /internal/v1/accounts:lookup-all-sites:
+    post:
+      operationId: lookupAccountsAllSites
+      summary: Reads the `getAccount` columns of many users stored under any registered site or its user pools in one call, for an S2 user's `siteid=all` user list.
+      tags: [internal]
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:people
+      x-opt2-fastify-path: /internal/v1/accounts::lookup-all-sites
+      security: [{userToken: [], invocationCredential: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountLookupRequest'
+      responses:
+        '200':
+          description: The listed active `Type=2` accounts of every registered site's tenant and user pool tenants that `where` matches, in request order; the others are left out.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+          description: A caller other than people, a user token whose `s2` claim is not true, or a supplied `siteid` other than the token's site.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: A listed user stayed closed by an open account operation for 10 s, or a legacy write window executed or imported on an account unit, or with `unassigned` on `identity.membership`, for 30 s.
+  /internal/v1/accounts:count:
+    post:
+      operationId: countAccounts
+      summary: Counts the active `Type=2` accounts of the token site's user pool, the token tenant or every registered site that `where` matches, for the user list's total.
+      tags: [internal]
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:people
+      x-opt2-fastify-path: /internal/v1/accounts::count
+      security: [{userToken: [], invocationCredential: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountCountRequest'
+      responses:
+        '200':
+          description: The count; `lookupAccounts` (`lookupAccountsAllSites` for `all-sites`) with the same `where` over the scope's users finds as many.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountCount'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+          description: A caller other than people, `all-sites` for a user token whose `s2` claim is not true, or a supplied `siteid` other than the token's site.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: A user of the scope stayed closed by an open account operation for 10 s, or a legacy write window executed or imported on `identity.user_account`, or with `unassigned` on `identity.membership`, for 30 s.
+  /internal/v1/accounts:username-candidates:
+    post:
+      operationId: lookupUsernameCandidates
+      summary: Lists the active `Type=2` accounts of the token site's user pool whose UserName matches a LIKE pattern, for the user search screen's prefilter.
+      tags: [internal]
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:people
+      x-opt2-fastify-path: /internal/v1/accounts::username-candidates
+      security: [{userToken: [], invocationCredential: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UsernameCandidateRequest'
+      responses:
+        '200':
+          description: The first `limit` matches by user id; `complete` is false when more matched.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsernameCandidateList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: A read candidate stayed closed by an open account operation for 10 s, or a legacy write window executed or imported on `identity.user_account`, or with `unassigned` on `identity.membership`, for 30 s.
+  /internal/v1/accounts:memberships:
+    post:
+      operationId: lookupMemberships
+      summary: Reads the stored `tusersmemb` group ids of many users in one call, for the unassigned and group filters of the user list and search screens.
+      tags: [internal]
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:people
+      x-opt2-fastify-path: /internal/v1/accounts::memberships
+      security: [{userToken: [], invocationCredential: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MembershipLookupRequest'
+      responses:
+        '200':
+          description: One item per listed user, in request order and spelling, with its membership rows from every registered tenant; an empty `groupIds` for a user without any.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MembershipList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: A listed user stayed closed by an open account operation for 10 s, or a legacy write window executed or imported on `identity.membership` for 30 s.
   /internal/v1/groups:
     get:
       operationId: listSiteGroups
@@ -3953,6 +4137,26 @@ components:
       description: Page size, 1 to 10000; 1000 when omitted.
       schema:
         $ref: '#/components/schemas/DigitString'
+    ListOffset:
+      name: offset
+      in: query
+      required: false
+      description: Items of the listing to skip; 0 when omitted.
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 9007199254740991
+        default: 0
+    ListLimit:
+      name: limit
+      in: query
+      required: false
+      description: Most items to return, 1 to 1000; 1000 when omitted.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 1000
     PushKey:
       name: key
       in: query
@@ -4297,6 +4501,16 @@ components:
       type: string
       description: Non-negative decimal integer without leading zeros.
       pattern: '^(0|[1-9][0-9]{0,14})$'
+    ListTotal:
+      type: integer
+      minimum: 0
+      description: Items in the whole listing the caller may see.
+    NextOffset:
+      description: The `offset` of the next page; null when this page ends the listing.
+      type:
+        - integer
+        - 'null'
+      minimum: 0
     LocalTimestamp:
       type: string
       description: Wall-clock time in the legacy server's zone, without an offset.
@@ -5049,12 +5263,18 @@ components:
       type: object
       required:
         - items
+        - total
+        - nextOffset
       additionalProperties: false
       properties:
         items:
           type: array
           items:
             $ref: '#/components/schemas/GroupListItem'
+        total:
+          $ref: '#/components/schemas/ListTotal'
+        nextOffset:
+          $ref: '#/components/schemas/NextOffset'
     GroupAccount:
       type: object
       description: A `tusers` row with `Type=1` in bootstrap column casing; person-style columns are normally null, and columns added later in the live catalog, such as `tablist`, follow.
@@ -5205,7 +5425,7 @@ components:
           $ref: '#/components/schemas/LegacyErrors'
     GroupMember:
       type: object
-      description: One member row of `readGroupMemberships`; the person columns come from people.
+      description: One member row of `readGroupMemberships`, every column in query order; a user's person columns come from people's person events, `photoFileExt` from strategies-content.
       required:
         - groupID
         - userID
@@ -5223,12 +5443,20 @@ components:
           $ref: '#/components/schemas/NullableString'
         UserName:
           $ref: '#/components/schemas/NullableString'
+        PasswordCreated:
+          $ref: '#/components/schemas/NullableTimestamp'
         Email:
           $ref: '#/components/schemas/NullableString'
         Type:
           $ref: '#/components/schemas/NullableInteger'
         S2:
           $ref: '#/components/schemas/NullableInteger'
+        LastLogin:
+          $ref: '#/components/schemas/NullableTimestamp'
+        LastUpdate:
+          $ref: '#/components/schemas/NullableTimestamp'
+        Created:
+          $ref: '#/components/schemas/NullableTimestamp'
         InActive:
           $ref: '#/components/schemas/NullableInteger'
         IsPublic:
@@ -5241,12 +5469,18 @@ components:
       type: object
       required:
         - items
+        - total
+        - nextOffset
       additionalProperties: false
       properties:
         items:
           type: array
           items:
             $ref: '#/components/schemas/GroupMember'
+        total:
+          $ref: '#/components/schemas/ListTotal'
+        nextOffset:
+          $ref: '#/components/schemas/NextOffset'
     GroupSummary:
       type: object
       required:
@@ -5449,12 +5683,18 @@ components:
       type: object
       required:
         - items
+        - total
+        - nextOffset
       additionalProperties: false
       properties:
         items:
           type: array
           items:
             $ref: '#/components/schemas/OAuthClient'
+        total:
+          $ref: '#/components/schemas/ListTotal'
+        nextOffset:
+          $ref: '#/components/schemas/NextOffset'
     OAuthClientDetail:
       type: object
       required:
@@ -5667,6 +5907,7 @@ components:
         body: {}
     LegacyHttpResponse:
       type: object
+      description: Legacy's answer as the client receives it; `headers` include `Access-Control-Allow-Origin` and `Access-Control-Allow-Credentials` when the request's `Origin` is on the site registry's allow-list.
       required:
         - status
         - headers
@@ -5701,6 +5942,11 @@ components:
           $ref: '#/components/schemas/NullableString'
         legacyResponse:
           $ref: '#/components/schemas/LegacyHttpResponse'
+        consumedParams:
+          type: array
+          description: For `authenticated`, the request parameter names legacy's credential block consumed. The gateway passes them to the owning service in `X-Opt2-Consumed-Params`, whose route key removes them from params but not from the URL scope.
+          items:
+            type: string
     LoginSnapshot:
       type: object
       description: The user struct and roles as `loginByQuery` built them at the session's last login.
@@ -6195,6 +6441,120 @@ components:
           uniqueItems: true
           items:
             $ref: '#/components/schemas/CfUuid'
+        where:
+          $ref: '#/components/schemas/AccountWhere'
+    AccountWhere:
+      type: object
+      description: Account predicates a read applies together, as the user list and search screens filter; a NULL column matches no given value.
+      additionalProperties: false
+      properties:
+        isPublic:
+          type: number
+          description: '`isPublic` numerically equal.'
+        s2:
+          type: number
+          description: '`S2` numerically equal.'
+        excludeS2Users:
+          type: boolean
+          description: True keeps only accounts whose `S2` is set and not 1, as legacy `showsuperusers` does; false filters nothing.
+        inActive:
+          type: number
+          description: '`InActive` numerically equal.'
+        siteIds:
+          type: array
+          description: '`SiteID` equal to one of these, ignoring case and trailing spaces.'
+          minItems: 1
+          maxItems: 100
+          items:
+            type: string
+        unassigned:
+          type: boolean
+          description: True keeps only users without a `tusersmemb` row in any registered tenant, as `lookupMemberships` reads them; false filters nothing.
+    AccountCountRequest:
+      type: object
+      description: '`pool` counts the token site''s public or private user pool as `publicPool` selects, `tenant` the token tenant and `all-sites` every registered site.'
+      required:
+        - scope
+      additionalProperties: false
+      properties:
+        scope:
+          type: string
+          enum:
+            - pool
+            - tenant
+            - all-sites
+        publicPool:
+          type: boolean
+          description: Required with `pool`; other scopes ignore it.
+        where:
+          $ref: '#/components/schemas/AccountWhere'
+      if:
+        required:
+          - scope
+        properties:
+          scope:
+            const: pool
+      then:
+        required:
+          - publicPool
+        properties:
+          publicPool:
+            type: boolean
+    AccountCount:
+      type: object
+      required:
+        - count
+      additionalProperties: false
+      properties:
+        count:
+          type: integer
+          minimum: 0
+    UsernameCandidateRequest:
+      type: object
+      description: '`pattern` is matched as `UserName COLLATE "C" ILIKE pattern ESCAPE ''''`: `%` and `_` are wildcards, every other character is literal and only ASCII letters fold case.'
+      required:
+        - publicPool
+        - pattern
+        - limit
+      additionalProperties: false
+      properties:
+        publicPool:
+          type: boolean
+          description: True reads the token site's public user pool, false its private one.
+        pattern:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        where:
+          $ref: '#/components/schemas/AccountWhere'
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 5000
+    UsernameCandidate:
+      type: object
+      required:
+        - userId
+        - username
+      additionalProperties: false
+      properties:
+        userId:
+          $ref: '#/components/schemas/CfUuid'
+        username:
+          type: string
+    UsernameCandidateList:
+      type: object
+      required:
+        - items
+        - complete
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/UsernameCandidate'
+        complete:
+          type: boolean
     AccountList:
       type: object
       required:
@@ -6205,6 +6565,62 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AccountRecord'
+    MembershipLookupRequest:
+      type: object
+      required:
+        - userIds
+      additionalProperties: false
+      properties:
+        userIds:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/CfUuid'
+    MembershipListItem:
+      type: object
+      description: The `tusersmemb` group ids of one user, de-duplicated ignoring case, by registry site order then group id.
+      required:
+        - userId
+        - groupIds
+      additionalProperties: false
+      properties:
+        userId:
+          $ref: '#/components/schemas/CfUuid'
+        groupIds:
+          type: array
+          items:
+            $ref: '#/components/schemas/CfUuid'
+    MembershipList:
+      type: object
+      required:
+        - items
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/MembershipListItem'
+    LoginBlockRequest:
+      type: object
+      description: '`removeBlock` true clears the loaded strikes before the block is read, as the `removeBlock` link of `cUsers.editUser` does.'
+      required:
+        - removeBlock
+      additionalProperties: false
+      properties:
+        removeBlock:
+          type: boolean
+    LoginBlock:
+      type: object
+      description: Login throttling of the account's user name, as `userstrikes.cfc` reports it.
+      required:
+        - blockedUntil
+      additionalProperties: false
+      properties:
+        blockedUntil:
+          description: Last failed attempt plus the block duration while the strikes exceed the allowed count; null when not blocked or the user name is empty.
+          $ref: '#/components/schemas/NullableTimestamp'
     SiteGroup:
       type: object
       description: One `Type=1` row of a site's user pool.
@@ -6389,6 +6805,10 @@ components:
           const: identity
         paused:
           type: boolean
+        running:
+          type: integer
+          minimum: 0
+          description: Tasks of the queue still running when pause answered.
         ensured:
           $ref: '#/components/schemas/EnsureRecurringResult'
     CanonicalType:

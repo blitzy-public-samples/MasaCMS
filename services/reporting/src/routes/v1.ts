@@ -1,12 +1,19 @@
 // SYNTHETIC: reporting - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** `/v1/reporting` routes of the OPT-2 reporting screen: the export job list, queueing a job, one job and a done job's download URL. */
 import { AuthDenial, Roles, type Opt2RouteConfig, type UserClaims } from '@opt2/platform/auth';
-import { sendLegacyResponse, type FastifyInstance, type FastifyPluginAsync, type FastifyRequest } from '@opt2/platform/service-kit';
+import {
+  csrfPreHandler,
+  recordOutcomeReason,
+  sendLegacyResponse,
+  type FastifyInstance,
+  type FastifyPluginAsync,
+  type FastifyRequest,
+} from '@opt2/platform/service-kit';
 import type { ReportingDeps } from '../domain/deps.js';
 import { ReportingDomainError, createExportJob, getExportJob, listExportJobs, openExportOutput, signedExportUrl } from '../domain/jobs.js';
 import type { components, operations } from '../generated/openapi.js';
 import { createExportFields, requireExportJob, requireReadyOutput } from '../legacy/checks.js';
-import { FixtureApiError, fixtureMethod, fixtureParams, toFixtureError } from '../legacy/envelope.js';
+import { FixtureApiError, fixtureMethod, fixtureOutcomeReason, fixtureParams, toFixtureError } from '../legacy/envelope.js';
 import { jobRow } from '../legacy/serialize.js';
 import type { JobPaging } from '../repo/queries.js';
 import type { ExportJobRow } from '../repo/tables.js';
@@ -27,10 +34,9 @@ interface ExportListQuery {
   pageSize: number;
 }
 
-/** Verified user claims and bearer token of a request. */
+/** Verified user claims of a request. */
 interface VerifiedCaller {
   user: UserClaims;
-  userToken: string;
 }
 
 const EXPORTS_PATH = '/v1/reporting/exports';
@@ -60,8 +66,15 @@ const LIST_QUERY_SCHEMA = {
 const EXPORT_PARAMS_SCHEMA = { type: 'object', required: ['id'], properties: { id: { type: 'string', minLength: 1 } } } as const;
 
 const LIST_OPTIONS = { config: { opt2: EXPORTER_AUTH }, schema: { querystring: LIST_QUERY_SCHEMA } };
-// No body schema: createExportJob checks the definition, then format and asOf, in the fixture's order.
-const CREATE_OPTIONS = { config: { opt2: EXPORTER_AUTH } };
+/** CSRF context of the export collection: the empty route id reporting.cfc createExport validates its token under. */
+const COLLECTION_CSRF_CONTEXT = '';
+
+// No body schema: createExportJob checks the definition, then format and asOf, in the fixture's order, after identity
+// has consumed the write's token.
+const CREATE_OPTIONS = {
+  config: { opt2: EXPORTER_AUTH },
+  preHandler: csrfPreHandler({ contextOf: () => COLLECTION_CSRF_CONTEXT }),
+};
 const EXPORT_OPTIONS = { config: { opt2: EXPORTER_AUTH }, schema: { params: EXPORT_PARAMS_SCHEMA } };
 
 /** The contract's `ExportJob` of a stored job: the fixture row projection, so `/v1` and the fixture routes answer one shape. */
@@ -69,13 +82,13 @@ export function toV1ExportJob(row: ExportJobRow): ExportJob {
   return jobRow(row);
 }
 
-/** The verified user and token; every route requires a user role, so a request without them is unauthenticated. */
+/** The verified user; every route requires a user role, so a request without one is unauthenticated. */
 function callerOf(request: FastifyRequest): VerifiedCaller {
-  const { user, userToken } = request.opt2Auth;
-  if (user === undefined || userToken === undefined) {
+  const { user } = request.opt2Auth;
+  if (user === undefined) {
     throw AuthDenial.unauthenticated('missing-credential');
   }
-  return { user, userToken };
+  return { user };
 }
 
 /** Envelope `method` the fixture reports for the same operation. */
@@ -85,14 +98,16 @@ function envelopeMethod(request: FastifyRequest): string {
 
 /**
  * The contract's `/v1/reporting` operations. Domain and existence or state failures answer in the fixture error envelope of the
- * same operation; every other error reaches service-kit's handler.
+ * same operation, with their fixed outcome reason recorded; every other error reaches service-kit's handler.
  */
 export const reportingV1Plugin: FastifyPluginAsync<ReportingDeps> = async (instance, deps) => {
   instance.setErrorHandler((error, request, reply) => {
     if (!(error instanceof ReportingDomainError || error instanceof FixtureApiError)) {
       throw error;
     }
-    return sendLegacyResponse(reply, toFixtureError(error, { method: envelopeMethod(request), params: fixtureParams(request) }));
+    const response = toFixtureError(error, { method: envelopeMethod(request), params: fixtureParams(request) });
+    recordOutcomeReason(request, fixtureOutcomeReason(error));
+    return sendLegacyResponse(reply, response);
   });
 
   instance.get<{ Querystring: ExportListQuery }>(EXPORTS_PATH, LIST_OPTIONS, async (request): Promise<ExportListBody> => {
@@ -102,13 +117,12 @@ export const reportingV1Plugin: FastifyPluginAsync<ReportingDeps> = async (insta
   });
 
   instance.post(EXPORTS_PATH, CREATE_OPTIONS, async (request): Promise<CreatedExportBody> => {
-    const { user, userToken } = callerOf(request);
+    const { user } = callerOf(request);
     const job = await createExportJob(deps, {
       ...createExportFields(fixtureParams(request)),
       tenantId: user.tid,
       siteId: user.site,
       requestedById: user.sub,
-      userToken,
     });
     return { data: toV1ExportJob(job) };
   });

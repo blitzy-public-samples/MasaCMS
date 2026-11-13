@@ -1,4 +1,4 @@
-// Undertow's `identity` content negotiation as one pattern, shared by the response builders and next.config.
+// Undertow's `identity` content negotiation as one pattern, for the response builders.
 const WS = '[\\x00-\\x20]';
 const PARAM = '[^,;]*';
 const VISIBLE = '[^,;\\x00-\\x20]';
@@ -15,8 +15,8 @@ const NONZERO_Q_PARAM = `${WS}*q=${NONZERO_Q}${PARAM}`;
 /** An `identity` or `*` element whose first `q=` parameter, if any, is not zero. */
 const IDENTITY_ELEMENT = `${WS}*(?:identity|\\*)${WS}*(?:;${OTHER_PARAM})*(?:;${NONZERO_Q_PARAM}(?:;${PARAM})*)?`;
 
-/** `Accept-Encoding` values that negotiate `identity`, unanchored as Next `has` conditions take them (`^…$`). */
-export const IDENTITY_ACCEPT_ENCODING = `(?:[^,]*,)*${IDENTITY_ELEMENT}(?:,[\\s\\S]*)?`;
+/** `Accept-Encoding` values that negotiate `identity`, unanchored. */
+const IDENTITY_ACCEPT_ENCODING = `(?:[^,]*,)*${IDENTITY_ELEMENT}(?:,[\\s\\S]*)?`;
 
 const IDENTITY_ACCEPT_ENCODING_RE = new RegExp(`^${IDENTITY_ACCEPT_ENCODING}$`);
 

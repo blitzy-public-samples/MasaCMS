@@ -964,6 +964,22 @@
       "contentType": "application/json;charset=utf-8",
       "hasEtag": true,
       "body": "{\"apiversion\":\"v1\",\"data\":{},\"method\":\"validate\"}"
+    },
+    "findOneProtoFields": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group/3BE10D43-C960-A7E5-0FB807B791D31787?fields=__proto__,constructor,groupname",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"groupname\":\"Admin\",\"userid\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"id\":\"3BE10D43-C960-A7E5-0FB807B791D31787\",\"constructor\":\"\",\"siteid\":\"default\",\"__proto__\":\"\",\"isnew\":0,\"type\":\"group\",\"entityname\":\"group\"},\"method\":\"findOne\"}"
+    },
+    "findManyAmpProto": {
+      "caller": "admin (S2)",
+      "request": "GET /_api/json/v1/default/group?id=3BE10D43-C960-A7E5-0FB807B791D31787,3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D&amp;__proto__=x",
+      "status": 200,
+      "contentType": "application/json;charset=utf-8",
+      "hasEtag": true,
+      "body": "{\"apiversion\":\"v1\",\"data\":{\"pageindex\":0,\"itemsperpage\":1000,\"totalpages\":0,\"totalitems\":0,\"links\":{\"permissions\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/permissions\",\"properties\":\"http://localhost:8080/index.cfm/_api/json/v1/default/group/properties\",\"self\":\"http://localhost:8080/index.cfm/_api/json/v1/default/?&method=findmany&id=3BE10D43-C960-A7E5-0FB807B791D31787,3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D&siteid=default&__proto__=x&type=1&entityname=group&pageIndex=0\",\"entities\":\"http://localhost:8080/index.cfm/_api/json/v1/default\"},\"items\":[],\"endindex\":0,\"entityname\":\"group\",\"startindex\":0},\"method\":\"findMany\"}"
     }
   }
 }

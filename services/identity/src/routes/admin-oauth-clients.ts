@@ -15,7 +15,9 @@ import {
 } from '../domain/oauth.js';
 import { locateSession, type SessionDeps } from '../domain/sessions.js';
 import type { components } from '../generated/openapi.js';
+import type { ListPage } from '../repo/repository.js';
 import { validateCsrfForRoute, type CsrfRouteDeps } from './internal-csrf.js';
+import { LIST_PAGE_PROPERTIES, continuation } from './list-page.js';
 
 // The contract's write results carry no redirect: web answers `cwebservice.list` with `siteid` appended, as legacy redirects
 // after every delete and after a save without errors.
@@ -25,7 +27,7 @@ type Schemas = components['schemas'];
 /** The OAuth client, session and CSRF operations the routes delegate to. */
 export type AdminOAuthClientRouteDeps = { oauth: OAuthDeps; sessions: SessionDeps; csrf: CsrfRouteDeps['csrf'] };
 
-type StoredClient = Awaited<ReturnType<typeof listClients>>[number];
+type StoredClient = Awaited<ReturnType<typeof listClients>>['items'][number];
 
 interface ClientParams {
   clientId: string;
@@ -34,6 +36,9 @@ interface ClientParams {
 interface SiteQuery {
   siteid?: string;
 }
+
+/** The list's query after the schema applied the page defaults. */
+type ListQuery = SiteQuery & ListPage;
 
 /** `before()` param defaults; `clientid` is the path id [legacy: admin/core/controllers/cwebservice.cfc:90-96]. */
 const RC_DEFAULTS = Object.freeze({
@@ -63,6 +68,8 @@ const CLIENT_PARAMS = {
 } as const;
 
 const SITE_QUERY = { type: 'object', properties: { siteid: { type: 'string', minLength: 1 } } } as const;
+
+const LIST_QUERY = { type: 'object', properties: { ...SITE_QUERY.properties, ...LIST_PAGE_PROPERTIES } } as const;
 
 const SAVE_BODY = {
   type: 'object',
@@ -135,13 +142,15 @@ export async function registerAdminOAuthClientRoutes(app: FastifyInstance, deps:
   const csrfDeps: CsrfRouteDeps = { csrf: deps.csrf };
 
   // [legacy: admin/core/views/cwebservice/list.cfm:78]
-  app.get<{ Querystring: SiteQuery; Reply: Schemas['OAuthClientList'] }>(
+  app.get<{ Querystring: ListQuery; Reply: Schemas['OAuthClientList'] }>(
     '/v1/oauth-clients',
-    { schema: { querystring: SITE_QUERY }, config: { opt2: ROUTE_AUTH } },
+    { schema: { querystring: LIST_QUERY }, config: { opt2: ROUTE_AUTH } },
     async (request) => {
       // The list reads session.siteid, which is the token's site, never rc.siteid.
       const user = userOf(request.opt2Auth);
-      return { items: (await listClients(oauth, user.site)).map((row) => clientView(row)) };
+      const page = { offset: request.query.offset, limit: request.query.limit };
+      const { items, total } = await listClients(oauth, user.site, page);
+      return { items: items.map((row) => clientView(row)), ...continuation(page, items.length, total) };
     },
   );
 

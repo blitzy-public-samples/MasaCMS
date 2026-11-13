@@ -11,7 +11,15 @@ import {
   type SerializedLegacyResponse,
 } from '@opt2/platform/legacy-compat';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
-import { multipartFilesOf, sendLegacyResponse, type FastifyInstance, type FastifyPluginAsync, type FastifyRequest } from '@opt2/platform/service-kit';
+import {
+  csrfPreHandler,
+  multipartFilesOf,
+  recordOutcomeReason,
+  sendLegacyResponse,
+  type FastifyInstance,
+  type FastifyPluginAsync,
+  type FastifyRequest,
+} from '@opt2/platform/service-kit';
 import { TransitionRejectedError } from '@opt2/platform/state-machine';
 import { withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { getAttachment, listAttachments, signedDownloadUrl, uploadAttachment, type AttachmentDownloadUrl } from '../domain/attachments.js';
@@ -29,6 +37,7 @@ import {
 } from '../domain/records.js';
 import { getRollups, rebuildRollups } from '../domain/rollup.js';
 import { requireProgram, validateRecordInput } from '../legacy/checks.js';
+import { fixtureOutcomeReason } from '../legacy/envelope.js';
 import {
   attachmentRow,
   recordDetail,
@@ -103,7 +112,7 @@ const READER_AUTH: Opt2RouteConfig = Object.freeze({
   requires: Object.freeze([Roles.financePreparer, Roles.financeApprover]),
 });
 
-/** The record list also serves reporting's finance export, which reads as the exporter. */
+/** Exporters read the record list beside the preparers and approvers. */
 const RECORD_LIST_AUTH: Opt2RouteConfig = Object.freeze({
   transport: 'service',
   requires: Object.freeze([Roles.financePreparer, Roles.financeApprover, Roles.reportingExporter]),
@@ -171,8 +180,10 @@ const V2_ROLLUP_QUERY_SCHEMA = { type: 'object', properties: { ...ROLLUP_QUERY_S
 const RECORD_LIST_OPTIONS = { config: { opt2: RECORD_LIST_AUTH }, schema: { querystring: RECORD_LIST_QUERY_SCHEMA } };
 const RECORD_OPTIONS = { config: { opt2: READER_AUTH }, schema: { params: RECORD_PARAMS_SCHEMA } };
 const RECORD_PAGE_OPTIONS = { config: { opt2: READER_AUTH }, schema: { params: RECORD_PARAMS_SCHEMA, querystring: PAGE_QUERY_SCHEMA } };
-const TRANSITION_OPTIONS = { config: { opt2: READER_AUTH }, schema: { params: TRANSITION_PARAMS_SCHEMA } };
-const UPLOAD_OPTIONS = { config: { opt2: PREPARER_AUTH }, schema: { params: RECORD_PARAMS_SCHEMA } };
+// As finance.cfc's writes do, identity consumes the write's token for the record id as sent before the record is read.
+const RECORD_CSRF = csrfPreHandler({ contextOf: (request) => (request.params as RecordParams).id });
+const TRANSITION_OPTIONS = { config: { opt2: READER_AUTH }, schema: { params: TRANSITION_PARAMS_SCHEMA }, preHandler: RECORD_CSRF };
+const UPLOAD_OPTIONS = { config: { opt2: PREPARER_AUTH }, schema: { params: RECORD_PARAMS_SCHEMA }, preHandler: RECORD_CSRF };
 const DOWNLOAD_URL_OPTIONS = { config: { opt2: READER_AUTH }, schema: { params: ATTACHMENT_PARAMS_SCHEMA } };
 const ROLLUP_OPTIONS = { config: { opt2: READER_AUTH }, schema: { querystring: ROLLUP_QUERY_SCHEMA } };
 const V2_ROLLUP_OPTIONS = { config: { opt2: READER_AUTH }, schema: { querystring: V2_ROLLUP_QUERY_SCHEMA } };
@@ -291,11 +302,15 @@ function errorResponse(error: unknown, method: () => string): SerializedLegacyRe
   return undefined;
 }
 
-/** The contract's `/v1/finance` and `/v2/finance` operations, with an error handler encapsulated to them; other errors reach service-kit's. */
+/**
+ * The contract's `/v1/finance` and `/v2/finance` operations, with an error handler encapsulated to them that records each answered
+ * error's fixed outcome reason; other errors reach service-kit's.
+ */
 export const financeV1Plugin: FastifyPluginAsync<FinanceV1Deps> = async (instance, deps) => {
   instance.setErrorHandler((error, request, reply) => {
     const response = errorResponse(error, () => envelopeMethod(request));
     if (response === undefined) throw error;
+    recordOutcomeReason(request, fixtureOutcomeReason(error));
     return sendLegacyResponse(reply, response);
   });
 

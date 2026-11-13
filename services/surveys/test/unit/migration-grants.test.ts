@@ -41,7 +41,7 @@ const WINDOW_HOLDER = 'window-grants';
 type RowOp = 'upsert' | 'delete';
 type LegacyTarget = { target_id: string; survey_id: string; siteID: string; group_name: string | null; created: string };
 
-const available = await pgAvailable();
+const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
 
 describe.skipIf(!available)('survey-response grants of migration applies', () => {
   let handle: ThrowawaySchema;
@@ -114,25 +114,25 @@ describe.skipIf(!available)('survey-response grants of migration applies', () =>
     return res.json<Record<string, unknown>>();
   }
 
+  /** One legacy tenant-A survey row titled `title`. */
+  function legacySurvey(surveyId: string, title = 'Pulse'): Record<string, unknown> {
+    return {
+      survey_id: surveyId,
+      siteID: TENANT_A.siteId,
+      title,
+      status: 'DRAFT',
+      created: CREATED,
+      createdByID: USER_ID,
+      lastUpdate: null,
+      lastUpdateByID: null,
+      launched_at: null,
+    };
+  }
+
   /** Backfills one tenant-A survey and returns its id. */
   async function backfillSurvey(): Promise<string> {
     const surveyId = cfUuid();
-    await apply(surveyMapping.legacyTable, [
-      [
-        'upsert',
-        {
-          survey_id: surveyId,
-          siteID: TENANT_A.siteId,
-          title: 'Pulse',
-          status: 'DRAFT',
-          created: CREATED,
-          createdByID: USER_ID,
-          lastUpdate: null,
-          lastUpdateByID: null,
-          launched_at: null,
-        },
-      ],
-    ]);
+    await apply(surveyMapping.legacyTable, [['upsert', legacySurvey(surveyId)]]);
     return surveyId;
   }
 
@@ -144,7 +144,7 @@ describe.skipIf(!available)('survey-response grants of migration applies', () =>
     return apply(surveyTargetMapping.legacyTable, rows, extra);
   }
 
-  /** Grantees of tenant A's `survey-response` grants on `surveyId`, sorted. */
+  /** Grantees of tenant A's `survey-response` grants on `surveyId`, sorted; a stored tenant-A survey grants tenant A itself. */
   async function grantees(surveyId: string): Promise<string[]> {
     const { rows } = await withMetadata(handle.app, (tx) =>
       tx.query<{ grantee_tenant: string }>(
@@ -170,7 +170,7 @@ describe.skipIf(!available)('survey-response grants of migration applies', () =>
     ]);
 
     expect(result).toMatchObject({ duplicate: false, applied: 5, skipped: 0 });
-    expect(await grantees(surveyId)).toEqual(sorted(TENANT_B.tenantId, TENANT_UMBRELLA.tenantId));
+    expect(await grantees(surveyId)).toEqual(sorted(TENANT_A.tenantId, TENANT_B.tenantId, TENANT_UMBRELLA.tenantId));
     const outbox = await handle.app.withTenant(TENANT_A.tenantId, (tx) => tx.query(`SELECT 1 FROM ${handle.schema}.outbox`));
     expect(outbox.rows).toEqual([]);
   });
@@ -182,7 +182,7 @@ describe.skipIf(!available)('survey-response grants of migration applies', () =>
     const repeat = await applyTargets([['upsert', target(surveyId, 'umbrella')]], { batchId });
 
     expect(repeat).toEqual({ batchId, duplicate: true, applied: 0, skipped: 0 });
-    expect(await grantees(surveyId)).toEqual([TENANT_B.tenantId]);
+    expect(await grantees(surveyId)).toEqual(sorted(TENANT_A.tenantId, TENANT_B.tenantId));
   });
 
   it('re-syncs on migration-feed moves and deletes, dropping a tenant only with its last target', async () => {
@@ -198,12 +198,29 @@ describe.skipIf(!available)('survey-response grants of migration applies', () =>
     const feed = { origin: 'migration-feed' } as const;
 
     await applyTargets([['upsert', { ...other, siteID: TENANT_A.siteId }]], feed);
-    expect(await grantees(surveyId)).toEqual([TENANT_B.tenantId]);
+    expect(await grantees(surveyId)).toEqual(sorted(TENANT_A.tenantId, TENANT_B.tenantId));
     await applyTargets([['delete', first]], feed);
-    expect(await grantees(surveyId)).toEqual([TENANT_B.tenantId]);
+    expect(await grantees(surveyId)).toEqual(sorted(TENANT_A.tenantId, TENANT_B.tenantId));
     expect(await applyTargets([['delete', second], ['delete', first]], feed)).toMatchObject({ applied: 1, skipped: 1 });
-    expect(await grantees(surveyId)).toEqual([]);
+    expect(await grantees(surveyId)).toEqual([TENANT_A.tenantId]);
   });
+
+  it.each<ApplyOrigin>(['backfill', 'migration-feed'])(
+    'grants the survey tenant its own grant on a %s survey upsert, keeps it on a repeat and drops only it with the survey delete',
+    async (origin) => {
+      const surveyId = cfUuid();
+      await apply(surveyMapping.legacyTable, [['upsert', legacySurvey(surveyId)]], { origin });
+      expect(await grantees(surveyId)).toEqual([TENANT_A.tenantId]);
+      await applyTargets([['upsert', target(surveyId, 'tenant-b')]], { origin });
+      await apply(surveyMapping.legacyTable, [['upsert', legacySurvey(surveyId, 'Renamed')]], { origin });
+      expect(await grantees(surveyId)).toEqual(sorted(TENANT_A.tenantId, TENANT_B.tenantId));
+
+      const removed = await apply(surveyMapping.legacyTable, [['delete', legacySurvey(surveyId, 'Renamed')]], { origin });
+
+      expect(removed).toMatchObject({ duplicate: false, applied: 1 });
+      expect(await grantees(surveyId)).toEqual([TENANT_B.tenantId]);
+    },
+  );
 
   it('writes the grant of a legacy-window import while the target unit is in the importing phase', async () => {
     const surveyId = await backfillSurvey();
@@ -218,7 +235,7 @@ describe.skipIf(!available)('survey-response grants of migration applies', () =>
 
       expect(Date.now() - started).toBeLessThan(5_000);
       expect(result).toMatchObject({ duplicate: false, applied: 1 });
-      expect(await grantees(surveyId)).toEqual([TENANT_B.tenantId]);
+      expect(await grantees(surveyId)).toEqual(sorted(TENANT_A.tenantId, TENANT_B.tenantId));
     } finally {
       await post('/gate', { op: 'open', units, holderId: WINDOW_HOLDER, state: 'legacy' });
     }

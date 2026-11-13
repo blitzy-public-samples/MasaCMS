@@ -15,7 +15,7 @@ import {
   type LegacyErrorSpec,
   type SerializedLegacyResponse,
 } from '@opt2/platform/legacy-compat';
-import { legacyParamsOf, type FastifyRequest } from '@opt2/platform/service-kit';
+import { isUnstorableTextError, legacyParamsOf, type FastifyRequest } from '@opt2/platform/service-kit';
 import { TransitionRejectedError } from '@opt2/platform/state-machine';
 import type { DayActionResult } from '../domain/day-action.js';
 
@@ -164,11 +164,13 @@ export function fixtureDayAction(
 }
 
 /**
- * Fixture error response for a thrown value, as api.cfm answers it; anything unrecognised is a 500 `server_error`
- * without detail, which the caller logs. Rethrows `LegacyServiceUnavailableError` for service-kit's legacy 503.
+ * Fixture error response for a thrown value, as api.cfm answers it; a value PostgreSQL cannot store is invalidParameters, and
+ * anything unrecognised is a 500 `server_error` without detail, which the caller logs. Rethrows `LegacyServiceUnavailableError`
+ * for service-kit's legacy 503.
  */
 export function toFixtureError(err: unknown, ctx: FixtureContext): FixtureResponse {
   if (err instanceof LegacyServiceUnavailableError) throw err;
+  if (isUnstorableTextError(err)) return fixtureError('invalidParameters', ctx);
   if (err instanceof FixtureApiError) return fixtureError(err.type, ctx, err.message);
   if (err instanceof TransitionRejectedError) {
     // timesheets.cfc raises conflict with the procedure's error, the transition table's code, as the message.
@@ -180,4 +182,13 @@ export function toFixtureError(err: unknown, ctx: FixtureContext): FixtureRespon
   }
   if (err instanceof LegacyApiError) return fixtureError(mappedType(err.type), ctx);
   return fixtureError('server_error', ctx);
+}
+
+/** The fixed reason of `toFixtureError`'s answer to `err`, for its WARNING line: a refused value's SQLSTATE, a denial's reason, else the type. */
+export function fixtureOutcomeReason(err: unknown): string {
+  if (isUnstorableTextError(err)) return err.code;
+  if (err instanceof AuthDenial) return err.reason;
+  if (err instanceof FixtureApiError || err instanceof LegacyApiError) return err.type;
+  if (err instanceof TransitionRejectedError) return err.decision.outcome === 'illegal' ? 'conflict' : 'forbidden';
+  return 'server_error';
 }

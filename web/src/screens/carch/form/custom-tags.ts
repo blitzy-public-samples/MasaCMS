@@ -3,8 +3,8 @@
 import { cfDateTimeFormat, cfEq, cfHour, cfMinute, cfUuid } from '@opt2/platform/legacy-compat';
 import { formatDateField, isMoreThanFiftyYearsAfter, parseLegacyDate } from '@/lib/dates';
 import { legacySettings } from '@/lib/env';
-import { encodeHtmlAttr, encodeJs, encodeUrl, raw, type SafeHtml } from '@/lib/html';
-import type { AdminRequest } from '@/lib/request-context';
+import { encodeHtmlAttr, encodeJs, raw, type SafeHtml } from '@/lib/html';
+import { urlEncodedFormat, type AdminRequest } from '@/lib/request-context';
 import { cfListToArray } from '@/lib/resource-bundles/properties';
 import type { ScreenContext } from '../../registry';
 import type { CarchPageData } from '../model';
@@ -483,7 +483,7 @@ export async function fileTools(input: FileTagInput, attrs: FileToolsAttrs): Pro
     if (meta.hasCroppableImageFileExt && cfListHas('content,user,group', bean.entityName, { noCase: true })) {
       const owner = isContent ? `contenthistid=${bean.contentHistId}` : `userid=${bean.userId}`;
       o.ws().text(
-        `\n\t\t\t\t\t<a class="btn" href="./?muraAction=cArch.imagedetails&${owner}&siteid=${bean.siteId}&fileid=${bean.propertyValue}&compactDisplay=${encodeUrl(compactDisplay)}"><i class="mi-crop"></i></a>\n\t\t\t\t`,
+        `\n\t\t\t\t\t<a class="btn" href="./?muraAction=cArch.imagedetails&${owner}&siteid=${bean.siteId}&fileid=${bean.propertyValue}&compactDisplay=${urlEncodedFormat(compactDisplay)}"><i class="mi-crop"></i></a>\n\t\t\t\t`,
       );
       o.ws();
     }

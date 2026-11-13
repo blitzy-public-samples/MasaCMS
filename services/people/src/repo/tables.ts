@@ -401,6 +401,7 @@ const ROSTER_OPERATION_CATALOG = [
   { name: 'started_at', type: 't' },
   { name: 'updated_at', type: 't' },
   { name: 'identity_unreachable_since', type: 't' },
+  { name: 'claimed_by', type: 's' },
 ] as const satisfies Columns;
 
 /** `people.roster_operation`: durable intent of a roster write operation. */
@@ -523,7 +524,7 @@ export type PersonArchiveRow = RowOf<
   'tenant_id' | 'archive_id' | 'person_id' | 'siteid' | 'effective_from' | 'archived_at'
 >;
 // `kind` has no CHECK constraint; its vocabulary belongs to the roster protocol, so it stays a string here.
-/** A `roster_operation` row; `payload` and `before_image` are JSON text, `identity_xid` identity's xid8 decimal text. */
+/** A `roster_operation` row; `payload` and `before_image` are JSON text, `identity_xid` identity's xid8 decimal text, `claimed_by` the owning recovery's token. */
 export type RosterOperationRow = Override<
   RowOf<typeof ROSTER_OPERATION_CATALOG, 'tenant_id' | 'operation_id' | 'kind' | 'user_id' | 'payload' | 'state' | 'started_at' | 'updated_at'>,
   { state: RosterState }

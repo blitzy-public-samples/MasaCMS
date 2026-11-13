@@ -12,6 +12,7 @@ import {
   isDeletable,
   isS2IsPrivate,
   isSiteAdminOrS2,
+  isSuperOrAdminUser,
   lockState,
   pageLevelList,
   permOf,
@@ -30,6 +31,7 @@ import {
   noSitesRequest,
   siteAdminRequest,
 } from '../../helpers/admin-request';
+import { REQUESTED_SITE_CASES } from '../../helpers/requested-site';
 import { SUBJECTS } from '../../helpers/tokens';
 
 const here = import.meta.dirname ?? __dirname;
@@ -207,11 +209,17 @@ describe('isDeletable', () => {
     ['a locked node as text', { isLocked: '1' }, false],
     ['an unlocked node as text', { isLocked: '0' }, true],
     // ACF 2023 `neq "true"` and `neq 1`: numbers and trimmed yes/no/true/false words compare as values, the rest as text.
+    // rc holds the request value as the admin scan leaves it: the oracle echoes ' true' as "YES" and ' TRUE' as TRUE.
     ["compactDisplay '1'", { compactDisplay: '1' }, false],
     ["compactDisplay 'yes'", { compactDisplay: 'yes' }, false],
-    ["compactDisplay ' true'", { compactDisplay: ' true' }, false],
-    ["compactDisplay 'true '", { compactDisplay: 'true ' }, false],
+    ["compactDisplay ' true'", { compactDisplay: ' true' }, true],
+    ["compactDisplay 'true '", { compactDisplay: 'true ' }, true],
+    ["compactDisplay '\"YES\"'", { compactDisplay: '"YES"' }, true],
+    ["compactDisplay ' TRUE'", { compactDisplay: ' TRUE' }, false],
+    ["compactDisplay 'tr\\0ue'", { compactDisplay: 'tr\u0000ue' }, false],
+    ["compactDisplay '\\u0001yes'", { compactDisplay: '\u0001yes' }, false],
     ["compactDisplay '1.0'", { compactDisplay: '1.0' }, false],
+    ["compactDisplay ' 1.0 '", { compactDisplay: ' 1.0 ' }, false],
     ["compactDisplay '0'", { compactDisplay: '0' }, true],
     ["compactDisplay 'no'", { compactDisplay: 'no' }, true],
     ["compactDisplay 'on'", { compactDisplay: 'on' }, true],
@@ -241,6 +249,19 @@ describe('session membership checks', () => {
     ['an editor whose rc claims S2', editorRequest({ rc: { isS2: 'true', memberships: 'S2' } }), false],
   ])('grants site admin or S2 to %s from the verified claims', (_, req, expected) => {
     expect(isSiteAdminOrS2(req)).toBe(expected);
+  });
+
+  it.each(REQUESTED_SITE_CASES)('grants site admin or S2 to $who only when it administers that site', (testCase) => {
+    expect(isSiteAdminOrS2(testCase.request({}))).toBe(testCase.administers);
+  });
+
+  it.each([
+    ['the S2 admin', adminS2Request(), true],
+    ['the tenant-a site admin on tenant-a', siteAdminRequest('tenant-a'), true],
+    ['the tenant-a site admin on tenant-b, which its own site does not change', siteAdminRequest('tenant-b'), true],
+    ['the editor', editorRequest(), false],
+  ])('reads isSuperUser() or isAdminUser() for %s without rc.siteid', (_, req, expected) => {
+    expect(isSuperOrAdminUser(req)).toBe(expected);
   });
 
   it.each([
@@ -292,8 +313,14 @@ describe('carchViewState', () => {
       perm: 'editor',
       deletable: true,
       siteAdminOrS2: true,
+      poweruser: true,
       s2IsPrivate: true,
     });
+  });
+
+  it('keeps poweruser for a site admin on a site its token does not serve, which siteAdminOrS2 refuses', () => {
+    const req = siteAdminRequest('tenant-b');
+    expect(carchViewState(req, { ...input, stats: {} })).toMatchObject({ siteAdminOrS2: false, poweruser: true });
   });
 
   it('reports the node lock of the session user with the session flags', () => {
@@ -310,6 +337,7 @@ describe('carchViewState', () => {
       perm: 'author',
       deletable: false,
       siteAdminOrS2: false,
+      poweruser: false,
       s2IsPrivate: true,
     });
   });

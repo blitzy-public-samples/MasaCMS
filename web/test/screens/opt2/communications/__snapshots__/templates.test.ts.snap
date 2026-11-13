@@ -1,0 +1,258 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`communications save-template action > re-renders Templates with the service error and the posted values on a 400 1`] = `
+{
+  "alerts": [
+    {
+      "className": "alert alert-error",
+      "text": "Invalid parameters",
+    },
+  ],
+  "buttons": [
+    {
+      "hasOnclick": false,
+      "text": "Save Template",
+      "type": "submit",
+    },
+  ],
+  "controls": [
+    {
+      "checked": false,
+      "name": "name",
+      "options": [],
+      "selected": [],
+      "tag": "input",
+      "type": "text",
+      "value": "<b>bold</b>",
+    },
+    {
+      "checked": false,
+      "name": "subject",
+      "options": [],
+      "selected": [],
+      "tag": "input",
+      "type": "text",
+      "value": "Timesheet {{periodLabel}} is overdue",
+    },
+    {
+      "checked": false,
+      "name": "bodyText",
+      "options": [],
+      "selected": [],
+      "tag": "textarea",
+      "type": "textarea",
+      "value": "Hello {{firstName}},
+
+Your timesheet for {{periodLabel}} is still in draft.",
+    },
+    {
+      "checked": false,
+      "name": "bodyHtml",
+      "options": [],
+      "selected": [],
+      "tag": "textarea",
+      "type": "textarea",
+      "value": "<p>Hello {{firstName}},</p><p>Your timesheet for {{periodLabel}} is still in draft.</p>",
+    },
+    {
+      "checked": false,
+      "name": "csrf_token",
+      "options": [],
+      "selected": [],
+      "tag": "input",
+      "type": "hidden",
+      "value": "<token>",
+    },
+    {
+      "checked": false,
+      "name": "csrf_token_expires",
+      "options": [],
+      "selected": [],
+      "tag": "input",
+      "type": "hidden",
+      "value": "<token>",
+    },
+  ],
+  "headings": [
+    "Templates",
+    "Add Template",
+  ],
+  "labels": [
+    "Name",
+    "Subject",
+    "Text Body",
+    "HTML Body",
+  ],
+  "links": [
+    {
+      "href": "/opt2/admin/communications/templates?siteid=tenant-a",
+      "text": "Templates",
+    },
+    {
+      "href": "/opt2/admin/communications/sends?siteid=tenant-a",
+      "text": "Sends",
+    },
+    {
+      "href": "/opt2/admin/communications/sends?siteid=tenant-a&templateId=<id:1>",
+      "text": "Send",
+    },
+    {
+      "href": "/opt2/admin/communications/sends?siteid=tenant-a&templateId=<id:2>",
+      "text": "Send",
+    },
+  ],
+  "tables": [
+    {
+      "headers": [
+        "Name",
+        "Subject",
+        "Created",
+        "Last Update",
+        "Actions",
+      ],
+      "rows": [
+        [
+          "welcome",
+          "Welcome to {{siteName}}, {{firstName}}",
+          "2026-05-04T09:00:00",
+          "2026-06-12T14:30:00",
+          "Send",
+        ],
+        [
+          "survey-reminder",
+          "Reminder: {{surveyTitle}} closes {{closeDate}}",
+          "2026-05-18T10:15:00",
+          "2026-06-30T08:45:00",
+          "Send",
+        ],
+      ],
+    },
+  ],
+  "title": "",
+}
+`;
+
+exports[`communications templates screen > renders the site templates with send links and the new-template form 1`] = `
+{
+  "alerts": [],
+  "buttons": [
+    {
+      "hasOnclick": false,
+      "text": "Save Template",
+      "type": "submit",
+    },
+  ],
+  "controls": [
+    {
+      "checked": false,
+      "name": "name",
+      "options": [],
+      "selected": [],
+      "tag": "input",
+      "type": "text",
+      "value": "",
+    },
+    {
+      "checked": false,
+      "name": "subject",
+      "options": [],
+      "selected": [],
+      "tag": "input",
+      "type": "text",
+      "value": "",
+    },
+    {
+      "checked": false,
+      "name": "bodyText",
+      "options": [],
+      "selected": [],
+      "tag": "textarea",
+      "type": "textarea",
+      "value": "",
+    },
+    {
+      "checked": false,
+      "name": "bodyHtml",
+      "options": [],
+      "selected": [],
+      "tag": "textarea",
+      "type": "textarea",
+      "value": "",
+    },
+    {
+      "checked": false,
+      "name": "csrf_token",
+      "options": [],
+      "selected": [],
+      "tag": "input",
+      "type": "hidden",
+      "value": "<token>",
+    },
+    {
+      "checked": false,
+      "name": "csrf_token_expires",
+      "options": [],
+      "selected": [],
+      "tag": "input",
+      "type": "hidden",
+      "value": "<token>",
+    },
+  ],
+  "headings": [
+    "Templates",
+    "Add Template",
+  ],
+  "labels": [
+    "Name",
+    "Subject",
+    "Text Body",
+    "HTML Body",
+  ],
+  "links": [
+    {
+      "href": "/opt2/admin/communications/templates?siteid=tenant-a",
+      "text": "Templates",
+    },
+    {
+      "href": "/opt2/admin/communications/sends?siteid=tenant-a",
+      "text": "Sends",
+    },
+    {
+      "href": "/opt2/admin/communications/sends?siteid=tenant-a&templateId=<id:1>",
+      "text": "Send",
+    },
+    {
+      "href": "/opt2/admin/communications/sends?siteid=tenant-a&templateId=<id:2>",
+      "text": "Send",
+    },
+  ],
+  "tables": [
+    {
+      "headers": [
+        "Name",
+        "Subject",
+        "Created",
+        "Last Update",
+        "Actions",
+      ],
+      "rows": [
+        [
+          "welcome",
+          "Welcome to {{siteName}}, {{firstName}}",
+          "2026-05-04T09:00:00",
+          "2026-06-12T14:30:00",
+          "Send",
+        ],
+        [
+          "survey-reminder",
+          "Reminder: {{surveyTitle}} closes {{closeDate}}",
+          "2026-05-18T10:15:00",
+          "2026-06-30T08:45:00",
+          "Send",
+        ],
+      ],
+    },
+  ],
+  "title": "",
+}
+`;

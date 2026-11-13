@@ -3037,7 +3037,7 @@ export const CSRF_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   [CSRF_HEADER_EXPIRES]: '991231235959000',
 });
 
-/** Identity's CSRF consume route as the app's service client reaches it; any other service call throws. */
+/** Identity's CSRF consume route as the app's service client reaches it. */
 export interface CsrfDouble {
   /** Consume requests identity received, in order. */
   readonly calls: readonly CsrfConsumeRequest[];
@@ -3045,22 +3045,58 @@ export interface CsrfDouble {
   answer(valid: boolean): void;
 }
 
-/** Replaces `request` on the app's service client, which the CSRF hook reads at request time. */
-function installCsrfDouble(app: FastifyInstance): CsrfDouble {
+/** Reporting's answer to an export source-scope lookup: a status and body, or an error the service client throws. */
+export type ReportingScopeAnswer = { status: number; body?: unknown } | Error;
+
+/** Reporting's export source-scope route as the app's service client reaches it. */
+export interface ReportingDouble {
+  /** Scope lookups reporting received, in order. */
+  readonly lookups: readonly ServiceRequest[];
+  /** Sets how reporting answers each later lookup; initially its notFound, as for a job it does not store. */
+  answer(next: ReportingScopeAnswer | ((req: ServiceRequest) => ReportingScopeAnswer)): void;
+}
+
+/** Path of reporting's export source-scope lookup, with the job id in place. */
+const REPORTING_SCOPE_PATH = /^\/internal\/v1\/exports\/[^/]+\/source-scope$/;
+
+/** Reporting's legacy notFound envelope. */
+const REPORTING_NOT_FOUND: ReportingScopeAnswer = { status: 404, body: { error: { code: 'invalid_request', message: 'Not Found' } } };
+
+/**
+ * Replaces `request` on the app's service client, which the CSRF hook and the export reads use at request time, with identity's
+ * CSRF consume and reporting's scope lookup; any other service call throws.
+ */
+function installServiceDoubles(app: FastifyInstance): { csrf: CsrfDouble; reporting: ReportingDouble } {
   const calls: CsrfConsumeRequest[] = [];
+  const lookups: ServiceRequest[] = [];
   let valid = true;
+  let scope: ReportingScopeAnswer | ((req: ServiceRequest) => ReportingScopeAnswer) = REPORTING_NOT_FOUND;
   function request<T = unknown>(req: ServiceRequest): Promise<ServiceResponse<T>> {
     if (req.service === IDENTITY_SERVICE && req.method === 'POST' && req.path === CSRF_CONSUME_PATH) {
       calls.push(req.json as CsrfConsumeRequest);
       return Promise.resolve({ status: 200, headers: {}, body: { valid } as T });
     }
+    if (req.service === 'reporting' && req.method === 'GET' && REPORTING_SCOPE_PATH.test(req.path)) {
+      lookups.push(req);
+      const answer = typeof scope === 'function' ? scope(req) : scope;
+      if (answer instanceof Error) return Promise.reject(answer);
+      return Promise.resolve({ status: answer.status, headers: { 'content-type': 'application/json' }, body: answer.body as T });
+    }
     return Promise.reject(new Error(`finance test app made an unexpected service call: ${req.service} ${req.method} ${req.path}`));
   }
   Object.defineProperty(app.opt2.client, 'request', { value: request, writable: true, configurable: true, enumerable: true });
   return {
-    calls,
-    answer(next) {
-      valid = next;
+    csrf: {
+      calls,
+      answer(next) {
+        valid = next;
+      },
+    },
+    reporting: {
+      lookups,
+      answer(next) {
+        scope = next;
+      },
     },
   };
 }
@@ -3094,6 +3130,7 @@ export interface TestApp<D extends TenantDb = RecordingDb, P extends EventPublis
   readonly clock: Clock;
   readonly stateDir: string;
   readonly csrf: CsrfDouble;
+  readonly reporting: ReportingDouble;
 }
 
 /** Builds the finance app for `app.inject` over local fakes; it never listens, and needs no PostgreSQL, emulator or network. */
@@ -3113,7 +3150,7 @@ export async function buildTestApp<D extends TenantDb = RecordingDb, P extends E
     const recording = isRecordingDb(db) ? db : undefined;
     if (opts.registry ?? opts.db === undefined) await seedRegistry(db, db.schema);
     app = await buildApp({ env, clock, verifierOverride: testVerifier(), db, stagingDb: opts.stagingDb ?? recording?.handle(), publisher, storage });
-    const csrf = installCsrfDouble(app);
+    const { csrf, reporting } = installServiceDoubles(app);
     if (ownStateDir) {
       app.addHook('onClose', (_instance, done) => {
         removeStateDir(stateDir);
@@ -3124,7 +3161,7 @@ export async function buildTestApp<D extends TenantDb = RecordingDb, P extends E
       await app.ready();
       recording?.clear();
     }
-    return { app, db: db as D, storage, publisher, clock, stateDir, csrf };
+    return { app, db: db as D, storage, publisher, clock, stateDir, csrf, reporting };
   } catch (err) {
     await app?.close().catch(() => undefined);
     if (ownStateDir) removeStateDir(stateDir);

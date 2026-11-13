@@ -21,6 +21,7 @@ import {
   type AdminRequestPartial,
 } from '../helpers/admin-request';
 import { siteTenantA } from '../fixtures/programs-sites/sites';
+import { SESSION_SITE_CASES } from '../helpers/requested-site';
 
 const FIXTURES = path.resolve(import.meta.dirname, '../fixtures/shell');
 const Z = '00000000000000000000000000000000';
@@ -335,6 +336,25 @@ describe('visibility', () => {
     );
   });
 
+  it.each(SESSION_SITE_CASES)('gives $who Categories only when it administers that site', (testCase) => {
+    const markup = render(shell(testCase.request({ circuit: 'cArch', item: 'list' })));
+    expect(linksTo(markup, 'cCategory.list')).toBe(testCase.administers);
+  });
+
+  it.each<[string, AdminRequestPartial, boolean]>([
+    ['on its token site', {}, true],
+    ['in a tenant-b session', { session: { siteid: 'tenant-b' } }, false],
+    ['on Default, its token site in another case', { session: { siteid: 'Default' } }, true],
+    ['in a default session under a tenant-a token', { user: { site: 'tenant-a' } }, false],
+  ])('checks the Categories grant of qa_editor %s against session.siteid', (_case, partial, shown) => {
+    const roles = [Roles.systemUser, moduleRole(MODULE_IDS.categories)];
+    const ctx = makeAdminRequest(
+      { ...partial, circuit: 'cArch', item: 'list', user: { ...partial.user, roles }, rc: { siteid: 'default' } },
+      'qaEditor',
+    );
+    expect(linksTo(render(shell(ctx)), 'cCategory.list')).toBe(shown);
+  });
+
   it('shows the email entries only for an email-broadcasting site with module grants', () => {
     const on = adminOn({ circuit: 'cEmail', item: 'list', site: { emailBroadcaster: true } });
     expect(marks(render(shell(on)))).toEqual(['a.active cEmail.list&siteid=default']);
@@ -365,6 +385,20 @@ describe('visibility', () => {
     expect(manager(true, [moduleRole(MODULE_IDS.users)])).toContain('id="admin-nav-users"');
     expect(manager(false, [moduleRole(MODULE_IDS.users)])).not.toContain('id="admin-nav-users"');
     expect(manager(true, [])).not.toContain('id="admin-nav-users"');
+  });
+
+  it.each(SESSION_SITE_CASES)('gives $who Users and Site Settings only when it administers that site', (testCase) => {
+    const markup = render(shell(testCase.request({ circuit: 'cArch', item: 'list' })));
+    expect(markup.includes('id="admin-nav-users"')).toBe(testCase.administers);
+    expect(markup.includes('id="admin-nav-site-config"')).toBe(testCase.administers);
+  });
+
+  it('checks the session site on csettings.editSite, which leaves rc.siteid empty', () => {
+    const ctx = siteAdminRequest('tenant-a', { circuit: 'cSettings', item: 'editSite' });
+    expect(ctx.rc.siteid ?? '').toBe('');
+    const markup = render(shell(ctx));
+    expect(markup).toContain('id="admin-nav-users"');
+    expect(markup).toContain('id="admin-nav-site-config"');
   });
 
   it('gives a site admin Users and Site Settings without the S2-only entries', () => {

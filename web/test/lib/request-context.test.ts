@@ -17,6 +17,7 @@ import {
   resolveAction,
   restoreFlashContext,
   saveSessionWrites,
+  sessionSiteModulePerm,
   setSessionMuraValue,
   withSessionMuraValue,
   type AdminMode,
@@ -410,6 +411,34 @@ describe('nextSessionSite', () => {
     );
   });
 });
+
+describe('sessionSiteModulePerm', () => {
+  /** The session-site check for a token on `tokenSite` with the module grant `granted`. */
+  const check = (tokenSite: string | undefined, sessionSiteId: string, isS2: boolean, granted: boolean): boolean =>
+    sessionSiteModulePerm(
+      {
+        isS2,
+        user: tokenSite === undefined ? undefined : ({ site: tokenSite } as AdminRequest['user']),
+        session: { siteid: sessionSiteId } as AdminSessionState,
+        modulePerm: () => granted,
+      },
+      CONTENT_MODULE,
+    );
+
+  it.each<[string, string | undefined, string, boolean, boolean, boolean]>([
+    ['the grant on the token site', 'tenant-a', 'tenant-a', false, true, true],
+    ['the grant on the token site in another case', 'tenant-a', 'Tenant-A', false, true, true],
+    ['the grant on an empty session site, which getSite reads as default', 'default', '', false, true, true],
+    ['no grant on the token site', 'tenant-a', 'tenant-a', false, false, false],
+    ['the grant on a site the token does not serve', 'tenant-a', 'default', false, true, false],
+    ['the grant on an empty session site under a tenant-a token', 'tenant-a', '', false, true, false],
+    ['S2 on a site the token does not serve', 'default', 'tenant-b', true, false, true],
+    ['no token', undefined, 'default', false, true, false],
+  ])('answers %s', (_label, tokenSite, sessionSiteId, isS2, granted, expected) => {
+    expect(check(tokenSite, sessionSiteId, isS2, granted)).toBe(expected);
+  });
+});
+
 
 describe('buildAdminRequest', () => {
   describe('request context', () => {

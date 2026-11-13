@@ -1,9 +1,13 @@
 // Unit tests for the target side of reconciliation over a fake owners client serving fixed export pages.
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { encodeRow, type CanonicalColumn, type CanonicalValue, type ExportResponse, type ExportTable } from '@opt2/platform/migration-kit';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { compareCanonicalRows } from '../../src/extract/index.js';
+import { compareCanonicalRows, type CanonicalRow } from '../../src/extract/index.js';
 import { OwnerCallError, type ExportParams, type OwnersClient } from '../../src/owners/index.js';
 import { toUnitRow, type UnitTableShape } from '../../src/reconcile/legacy-side.js';
 import {
@@ -11,6 +15,7 @@ import {
   readTargetObjects,
   readTargetUnitRows,
   type ReconcileTargetDeps,
+  type TargetUnitRows,
 } from '../../src/reconcile/target-side.js';
 
 type Values = Record<string, CanonicalValue>;
@@ -122,19 +127,74 @@ const content = (id: string, title: string | null, identity: string): Values => 
 const legacyContent = (id: string, title: string | null): ReturnType<typeof toUnitRow> =>
   toUnitRow(CONTENT_SHAPE, { ContentHistID: id, Title: title, Display: '1', Amount: '12.3400' });
 
-describe('readTargetUnitRows', () => {
-  it('reads the unit export for the tenant, concatenates its pages and sorts the rows', async () => {
-    const { deps, calls } = ownersServing([
-      page([exportTable('tcontent', CONTENT_EXPORT_COLUMNS, [{ values: content(ID_C, 'C', '3') }, { values: content(ID_A, 'A', '1') }])], 'cursor-1'),
-      page([exportTable('tcontent', CONTENT_EXPORT_COLUMNS, [{ values: content(ID_B, null, '2') }])], null),
-    ]);
+/** The rows of `result` in reading order. */
+async function drain(result: TargetUnitRows): Promise<CanonicalRow[]> {
+  const rows: CanonicalRow[] = [];
+  for await (const row of result.rows) rows.push(row);
+  return rows;
+}
 
-    const result = await readTargetUnitRows(deps, CONTENT_SHAPE, TENANT);
+let spillDir: string;
+
+beforeEach(async () => {
+  spillDir = await mkdtemp(join(tmpdir(), 'opt2-target-side-test-'));
+});
+
+afterEach(async () => {
+  await rm(spillDir, { recursive: true, force: true });
+});
+
+describe('readTargetUnitRows', () => {
+  const unordered = (): ExportResponse[] => [
+    page([exportTable('tcontent', CONTENT_EXPORT_COLUMNS, [{ values: content(ID_C, 'C', '3') }, { values: content(ID_A, 'A', '1') }])], 'cursor-1'),
+    page([exportTable('tcontent', CONTENT_EXPORT_COLUMNS, [{ values: content(ID_B, null, '2') }])], null),
+  ];
+
+  it.each([undefined, 1])('reads the unit export for the tenant, concatenates its pages and sorts the rows (sortRunBytes %s)', async (sortRunBytes) => {
+    const { deps, calls } = ownersServing(unordered());
+
+    const result = await readTargetUnitRows(deps, CONTENT_SHAPE, TENANT, { sortRunBytes, spillDir });
+    const rows = await drain(result);
 
     expect(calls).toEqual([['strategies-content', { unit: 'content.content', tenantId: TENANT }]]);
-    expect(result.objects).toBeNull();
-    expect(result.rows).toEqual([legacyContent(ID_A, 'A'), legacyContent(ID_B, null), legacyContent(ID_C, 'C')]);
-    expect([...result.rows].sort(compareCanonicalRows)).toEqual(result.rows);
+    expect(result).toMatchObject({ count: 3, objects: null });
+    expect(rows).toEqual([legacyContent(ID_A, 'A'), legacyContent(ID_B, null), legacyContent(ID_C, 'C')]);
+    expect([...rows].sort(compareCanonicalRows)).toEqual(rows);
+    expect(await readdir(spillDir)).toEqual([]);
+  });
+
+  it.each([
+    ['disposed without being read', (result: TargetUnitRows) => result.dispose()],
+    [
+      'left after its first row',
+      async (result: TargetUnitRows) => {
+        for await (const row of result.rows) {
+          expect(row.row.ContentHistID).toBe(ID_A);
+          break;
+        }
+      },
+    ],
+  ])('removes its spill files when %s', async (_case, finish) => {
+    const { deps } = ownersServing(unordered());
+
+    const result = await readTargetUnitRows(deps, CONTENT_SHAPE, TENANT, { sortRunBytes: 1, spillDir });
+    expect(await readdir(spillDir)).toHaveLength(1);
+    await finish(result);
+
+    expect(await readdir(spillDir)).toEqual([]);
+  });
+
+  it('removes the rows it spilled when a later export page fails', async () => {
+    const mistyped = CONTENT_EXPORT_COLUMNS.map((column) => (column.name === 'display' ? { ...column, type: 's' as const } : column));
+    const values: Values = { tcontent_ID: '2', contenthistid: ID_B, TITLE: 'B', display: '1', amount: '1.0000' };
+    const [first] = unordered();
+    const { deps } = ownersServing([first as ExportResponse, page([exportTable('tcontent', mistyped, [{ values }])], null)]);
+
+    await expect(readTargetUnitRows(deps, CONTENT_SHAPE, TENANT, { sortRunBytes: 1, spillDir })).rejects.toMatchObject({
+      name: 'TargetShapeError',
+      mismatchedColumns: ['Display'],
+    });
+    expect(await readdir(spillDir)).toEqual([]);
   });
 
   it('drops an excluded IDENTITY column, so differing IDENTITY values encode alike', async () => {
@@ -142,7 +202,7 @@ describe('readTargetUnitRows', () => {
       page([exportTable('dbo.TCONTENT', CONTENT_EXPORT_COLUMNS, [{ values: content(ID_A, 'A', '999') }])], null),
     ]);
 
-    const [row] = (await readTargetUnitRows(deps, CONTENT_SHAPE, TENANT)).rows;
+    const [row] = await drain(await readTargetUnitRows(deps, CONTENT_SHAPE, TENANT));
 
     expect(row?.encoding).toBe(legacyContent(ID_A, 'A').encoding);
     expect(Object.keys(row?.row ?? {})).toEqual(['ContentHistID', 'Title', 'Display', 'Amount']);
@@ -152,7 +212,7 @@ describe('readTargetUnitRows', () => {
     const other = exportTable('tcontentobjects', [{ name: 'ContentHistID', type: 's' }], [{ values: { ContentHistID: ID_B } }]);
     const { deps } = ownersServing([page([other, exportTable('tcontent', CONTENT_EXPORT_COLUMNS, [{ values: content(ID_A, 'A', '1') }])], null)]);
 
-    const { rows } = await readTargetUnitRows(deps, CONTENT_SHAPE, TENANT);
+    const rows = await drain(await readTargetUnitRows(deps, CONTENT_SHAPE, TENANT));
 
     expect(rows).toEqual([legacyContent(ID_A, 'A')]);
   });
@@ -164,13 +224,13 @@ describe('readTargetUnitRows', () => {
     ];
     const { deps } = ownersServing([page([exportTable('timesheet', PROGRAM_EXPORT_COLUMNS, rows)], null)]);
 
-    const result = await readTargetUnitRows(deps, PROGRAM_SHAPE, TENANT);
+    const read = await drain(await readTargetUnitRows(deps, PROGRAM_SHAPE, TENANT));
 
-    expect(result.rows).toEqual([
+    expect(read).toEqual([
       toUnitRow(PROGRAM_SHAPE, { timesheet_id: '7', status: 'SUBMITTED', legacy_program_id: '1' }, 1),
       toUnitRow(PROGRAM_SHAPE, { timesheet_id: '7', status: 'DRAFT', legacy_program_id: '2' }, 2),
     ]);
-    expect(result.rows.map((row) => row.table)).toEqual(['Program_N.timesheet', 'Program_N.timesheet']);
+    expect(read.map((row) => row.table)).toEqual(['Program_N.timesheet', 'Program_N.timesheet']);
   });
 
   it('orders keyless rows by their encoding and keys them by it', async () => {
@@ -181,10 +241,10 @@ describe('readTargetUnitRows', () => {
     const rows = [{ values: { mlid: 'L', email: 'b@example.com' } }, { values: { mlid: 'L', email: 'a@example.com' } }];
     const { deps } = ownersServing([page([exportTable('tmailinglistmembers', columns, rows)], null)]);
 
-    const result = await readTargetUnitRows(deps, KEYLESS_SHAPE, TENANT);
+    const read = await drain(await readTargetUnitRows(deps, KEYLESS_SHAPE, TENANT));
 
-    expect(result.rows.map((row) => row.row.Email)).toEqual(['a@example.com', 'b@example.com']);
-    expect(result.rows.every((row) => row.key === row.encoding && row.keyValues.length === 0)).toBe(true);
+    expect(read.map((row) => row.row.Email)).toEqual(['a@example.com', 'b@example.com']);
+    expect(read.every((row) => row.key === row.encoding && row.keyValues.length === 0)).toBe(true);
   });
 
   it.each([
@@ -239,7 +299,8 @@ describe('readTargetUnitRows', () => {
 
     const result = await readTargetUnitRows(deps, CONTENT_SHAPE, TENANT, { includeObjects });
 
-    expect(result.objects).toEqual(expected);
+    expect(result).toMatchObject({ objects: expected, count: 0 });
+    expect(await drain(result)).toEqual([]);
   });
 
   it('lets an owner failure propagate', async () => {

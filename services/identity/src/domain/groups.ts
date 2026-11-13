@@ -14,7 +14,7 @@ import {
   javaTrim,
   type CfHashAlgorithm,
 } from '@opt2/platform/legacy-compat';
-import { OperationBlockedError, withGatedTenant } from '@opt2/platform/migration-kit';
+import { OperationBlockedError, withGatedTenant, type RepositoryRow } from '@opt2/platform/migration-kit';
 import type { Clock } from '@opt2/platform/service-kit';
 import {
   registeredTenants,
@@ -29,9 +29,11 @@ import {
   type TenantTx,
 } from '@opt2/platform/tenancy';
 import type { IdentityEvents } from '../events/publish.js';
+import type { ContentClient } from '../legacy/content-client.js';
 import { hashNewPassword, type LegacyPasswordConfig } from '../legacy/hash.js';
 import { WddxRecordset, cfml2wddx, type WddxValue } from '../legacy/wddx.js';
 import {
+  READ_PAGE_SIZE,
   charKey,
   type AuditActor,
   type GroupAddressInput as GroupAddressRowInput,
@@ -40,9 +42,12 @@ import {
   type GroupInput,
   type GroupMemberPage,
   type GroupMemberRow,
+  type GroupRelation,
   type IdentityRepository,
   type KeyedGroupMember,
+  type ListPage,
 } from '../repo/repository.js';
+import type { GroupFeedQuery } from '../repo/group-feed.js';
 import { GROUP_TRASH, type GroupAccountRow, type GroupAddressRow, type GroupTrashRow } from '../repo/tables.js';
 import { ACCOUNT_OPERATION_UNITS, DEFAULT_ACCOUNT_SETTINGS, USER_CLOSED_WAIT_MS, randomPassword, withOpenAccount, type LegacyErrors } from './account-operations.js';
 
@@ -716,6 +721,37 @@ export async function findGroupForSite(deps: GroupDeps, input: { groupId: string
   return located === null ? null : { tenantId: located.tenantId, group: recordOf(located.group) };
 }
 
+/**
+ * The `tusers` rows a name lookup of `userManager.read` selects in a site's two user pools: the groups, and how many accounts
+ * (none by `groupname`, which reads Type=1) [legacy: core/mura/user/userManager.cfc:136-148; core/mura/user/userDAO.cfc:122-300].
+ */
+export async function findPoolRows(
+  deps: GroupDeps,
+  input: { siteId: string; column: 'groupname' | 'username' | 'remoteid'; value: string },
+): Promise<{ groups: GroupLocation[]; accounts: number }> {
+  // settingsManager.getSite of an unregistered site id answers the default site.
+  const entry = (await siteEntry(deps.db, input.siteId)) ?? (await siteEntry(deps.db, 'default'));
+  const pools = new Map<string, Set<string>>();
+  const choices = [
+    [entry?.publicUserPoolId, entry?.publicUserPoolTenant],
+    [entry?.privateUserPoolId, entry?.privateUserPoolTenant],
+  ] as const;
+  for (const [poolId, tenantId] of choices) {
+    if (poolId === undefined || poolId === null || poolId === '' || tenantId === undefined || tenantId === null) continue;
+    pools.set(tenantId, (pools.get(tenantId) ?? new Set<string>()).add(poolId));
+  }
+  const groups: GroupLocation[] = [];
+  let accounts = 0;
+  for (const [tenantId, poolIds] of pools) {
+    const siteIds = [...poolIds];
+    await withTenant(deps.db, tenantId, async (tx) => {
+      for (const row of await deps.repo.findGroupsByColumn(tx, input.column, input.value, siteIds)) groups.push({ tenantId, group: recordOf(row) });
+      if (input.column !== 'groupname') accounts += await deps.repo.countAccountsByColumn(tx, input.column, input.value, siteIds);
+    });
+  }
+  return { groups, accounts };
+}
+
 /** Runs `read` until it reports no closed user, sleeping between attempts outside its transactions; OperationBlockedError (the legacy 503) once the sleeps total `USER_CLOSED_WAIT_MS`. */
 async function readUnclosed<T>(deps: GroupDeps, read: () => Promise<{ value: T; closed: readonly string[] }>): Promise<T> {
   const sleep = deps.sleep ?? timerSleep;
@@ -744,6 +780,58 @@ export async function listGroups(deps: GroupDeps, input: { siteId: string; isPub
   const rows: GroupListRow[] = counted.map(({ counter, ...group }) => ({ ...recordOf(group), counter }));
   // A stable sort of the name-ordered list; SQL Server sorts a NULL Perm last under DESC.
   return rows.sort((a, b) => (a.perm === b.perm ? 0 : a.perm === null ? 1 : b.perm === null ? -1 : b.perm - a.perm));
+}
+
+/** The `relation` rows of `groupIds` in the user pool `listGroups` reads for `siteId` and `isPublic` [legacy: core/mura/user/userGateway.cfc:227-238,525-553]. */
+export async function listGroupRelationRows(
+  deps: GroupDeps,
+  input: { siteId: string; isPublic: number; relation: GroupRelation; groupIds: readonly string[] },
+): Promise<RepositoryRow[]> {
+  const { tenantId } = await resolveGroupSite(deps.db, { siteId: input.siteId, isPublic: input.isPublic });
+  if (tenantId === null || input.groupIds.length === 0) return [];
+  return withTenant(deps.db, tenantId, (tx) => deps.repo.listGroupRelationRows(tx, input.relation, input.groupIds));
+}
+
+/** One window of a listing of groups and the listing's total. */
+export interface GroupListPage {
+  rows: GroupListRow[];
+  total: number;
+}
+
+/** The `page` window of `listGroups`' listing in its order and the listing's total, the window counted and closed as `listGroups` counts and closes it. */
+export async function listGroupsPage(deps: GroupDeps, input: { siteId: string; isPublic: number; page: ListPage }): Promise<GroupListPage> {
+  const { poolSiteId, tenantId } = await resolveGroupSite(deps.db, { siteId: input.siteId, isPublic: input.isPublic });
+  if (poolSiteId === null || tenantId === null) return { rows: [], total: 0 };
+  return readUnclosed(deps, async () => {
+    const { groups, total, closed } = await withTenant(deps.db, tenantId, (tx) => deps.repo.pageCountedGroups(tx, poolSiteId, input.isPublic, input.page));
+    return { value: { rows: groups.map(({ counter, ...group }) => ({ ...recordOf(group), counter })), total }, closed };
+  });
+}
+
+/** Passes `visit` each cursor page, by userid, of the groups of a site's private (`isPublic` 0) or public user pool: S2 ones only with `includeS2`, only `inactive` ones when given; no member counts. */
+export async function scanFeedGroups(
+  deps: GroupDeps,
+  input: { siteId: string; isPublic: number; includeS2: boolean; inactive?: number },
+  visit: (rows: GroupRecord[]) => void,
+): Promise<void> {
+  const { poolSiteId, tenantId } = await resolveGroupSite(deps.db, { siteId: input.siteId, isPublic: input.isPublic });
+  if (poolSiteId === null || tenantId === null) return;
+  const opts = { includeS2: input.includeS2, inactive: input.inactive };
+  await withTenant(deps.db, tenantId, async (tx) => {
+    for await (const page of deps.repo.groupFeedPages(tx, poolSiteId, input.isPublic, opts)) visit(page.map(recordOf));
+  });
+}
+
+/** The scanFeedGroups selection that `query` filters, in its order: the first `limit` groups and how many it selects up to `top`; no member counts. */
+export async function readFeedGroups(
+  deps: GroupDeps,
+  input: { siteId: string; isPublic: number },
+  query: GroupFeedQuery,
+): Promise<{ rows: GroupRecord[]; total: number }> {
+  const { poolSiteId, tenantId } = await resolveGroupSite(deps.db, { siteId: input.siteId, isPublic: input.isPublic });
+  if (poolSiteId === null || tenantId === null) return { rows: [], total: 0 };
+  const { rows, total } = await withTenant(deps.db, tenantId, (tx) => deps.repo.readGroupFeed(tx, poolSiteId, input.isPublic, query));
+  return { rows: rows.map(recordOf), total };
 }
 
 /** The listing's `ORDER BY lower(lname) COLLATE "C" NULLS FIRST, userid` across tenants: NULL keys first, keys by code point, ties by id. */
@@ -785,7 +873,7 @@ interface MemberPager {
 }
 
 /** Starts the transaction of `tenantId`'s member pages, which reads one page per `pull`. */
-function openPager(deps: GroupDeps, tenantId: string, groupId: string, opts: { includeS2?: boolean }): MemberPager {
+function openPager(deps: GroupDeps, tenantId: string, groupId: string, opts: { includeS2?: boolean; limit?: number }): MemberPager {
   let demand = deferred<boolean>();
   let reply = deferred<GroupMemberPage | null>();
   let delivered = false;
@@ -847,6 +935,52 @@ function headRow(head: MemberHead): KeyedGroupMember {
   return head.rows[head.at] as KeyedGroupMember;
 }
 
+/** Opens into `open` the pagers of `tenants`, keeping those whose first page lists a member; a first page naming a closure closes every pager and is answered. */
+async function openHeads(
+  deps: GroupDeps,
+  open: Set<MemberPager>,
+  tenants: readonly string[],
+  groupId: string,
+  opts: { includeS2?: boolean; limit?: number },
+): Promise<{ value: MemberHead[]; closed: string[] }> {
+  const opened: MemberHead[] = [];
+  for (const tenantId of tenants) {
+    const pager = openPager(deps, tenantId, groupId, opts);
+    open.add(pager);
+    const page = await pager.pull();
+    if (page !== null && page.closed.length > 0) {
+      await closePagers(open);
+      return { value: [], closed: page.closed };
+    }
+    if (page === null || page.members.length === 0) {
+      open.delete(pager);
+      await pager.close();
+    } else {
+      opened.push({ pager, rows: page.members, at: 0 });
+    }
+  }
+  return { value: opened, closed: [] };
+}
+
+/** The members of `heads` in listing order, each tenant's next page pulled once its head runs out and its pager closed once its pages end. */
+async function* mergeHeads(heads: MemberHead[], open: Set<MemberPager>): AsyncGenerator<GroupMemberRow, void, undefined> {
+  while (heads.length > 0) {
+    const head = heads.reduce((best, candidate) => (memberOrder(headRow(candidate), headRow(best)) < 0 ? candidate : best));
+    yield headRow(head).member;
+    head.at += 1;
+    if (head.at < head.rows.length) continue;
+    const page = await head.pager.pull();
+    if (page === null || page.members.length === 0) {
+      heads.splice(heads.indexOf(head), 1);
+      open.delete(head.pager);
+      await head.pager.close();
+    } else {
+      head.rows = page.members;
+      head.at = 0;
+    }
+  }
+}
+
 /** Members of a group by last name, S2 members only with `includeS2` [legacy: core/mura/user/userDAO.cfc:646-660], streamed from one page per member tenant at a time; each membership row lives in its member's tenant. */
 export async function* streamGroupMembers(deps: GroupDeps, groupId: string, opts: { includeS2?: boolean } = {}): AsyncGenerator<GroupMemberRow, void, undefined> {
   const open = new Set<MemberPager>();
@@ -859,39 +993,9 @@ export async function* streamGroupMembers(deps: GroupDeps, groupId: string, opts
         if (probe.closed.length > 0) return { value: [], closed: probe.closed };
         if (probe.listed) holding.push(tenantId);
       }
-      const opened: MemberHead[] = [];
-      for (const tenantId of holding) {
-        const pager = openPager(deps, tenantId, groupId, opts);
-        open.add(pager);
-        const page = await pager.pull();
-        if (page !== null && page.closed.length > 0) {
-          await closePagers(open);
-          return { value: [], closed: page.closed };
-        }
-        if (page === null || page.members.length === 0) {
-          open.delete(pager);
-          await pager.close();
-        } else {
-          opened.push({ pager, rows: page.members, at: 0 });
-        }
-      }
-      return { value: opened, closed: [] };
+      return openHeads(deps, open, holding, groupId, opts);
     });
-    while (heads.length > 0) {
-      const head = heads.reduce((best, candidate) => (memberOrder(headRow(candidate), headRow(best)) < 0 ? candidate : best));
-      yield headRow(head).member;
-      head.at += 1;
-      if (head.at < head.rows.length) continue;
-      const page = await head.pager.pull();
-      if (page === null || page.members.length === 0) {
-        heads.splice(heads.indexOf(head), 1);
-        open.delete(head.pager);
-        await head.pager.close();
-      } else {
-        head.rows = page.members;
-        head.at = 0;
-      }
-    }
+    yield* mergeHeads(heads, open);
   } finally {
     await closePagers(open);
   }
@@ -902,6 +1006,93 @@ export async function listGroupMembers(deps: GroupDeps, groupId: string, opts: {
   const members: GroupMemberRow[] = [];
   for await (const member of streamGroupMembers(deps, groupId, opts)) members.push(member);
   return members;
+}
+
+/** A member with the `photoFileExt` legacy left-joins from `tfiles`: null without a photo id, a stored file or its `fileEXT`. */
+export type ListedGroupMember = GroupMemberRow & { photofileext: string | null };
+
+/** Most members `resolveMemberPhotos` takes, and the batch size of `streamListedGroupMembers`. */
+export const MEMBER_BATCH_SIZE = READ_PAGE_SIZE;
+
+/**
+ * `members` in order with their photo extensions, from one strategies-content lookup of their distinct photo ids
+ * [legacy: core/mura/user/userDAO.cfc:78,654].
+ * @throws RangeError For more than `MEMBER_BATCH_SIZE` members.
+ */
+export async function resolveMemberPhotos(content: ContentClient, members: readonly GroupMemberRow[]): Promise<ListedGroupMember[]> {
+  if (members.length > MEMBER_BATCH_SIZE) throw new RangeError(`A photo lookup takes at most ${MEMBER_BATCH_SIZE} members, not ${members.length}`);
+  const extensions = await content.photoFileExts(members.map((member) => member.photofileid));
+  return members.map((member) => ({ ...member, photofileext: member.photofileid === null ? null : (extensions.get(member.photofileid) ?? null) }));
+}
+
+/** The members `streamGroupMembers` yields, in its order, as batches of at most `MEMBER_BATCH_SIZE` with their photos resolved. */
+export async function* streamListedGroupMembers(
+  deps: GroupDeps,
+  content: ContentClient,
+  groupId: string,
+  opts: { includeS2?: boolean } = {},
+): AsyncGenerator<ListedGroupMember[], void, undefined> {
+  let batch: GroupMemberRow[] = [];
+  for await (const member of streamGroupMembers(deps, groupId, opts)) {
+    batch.push(member);
+    if (batch.length === MEMBER_BATCH_SIZE) {
+      yield await resolveMemberPhotos(content, batch);
+      batch = [];
+    }
+  }
+  if (batch.length > 0) yield await resolveMemberPhotos(content, batch);
+}
+
+/** One window of a group's member listing with its photos resolved, and the listing's total. */
+export interface GroupMemberListPage {
+  members: ListedGroupMember[];
+  total: number;
+}
+
+/**
+ * The `page` window of `streamGroupMembers`' listing in its order, closed as it closes, and the listing's total: each member
+ * tenant is counted, then read no further than the window's end, and only the window's photos are resolved.
+ */
+export async function listGroupMembersPage(
+  deps: GroupDeps,
+  content: ContentClient,
+  groupId: string,
+  opts: { includeS2?: boolean; page: ListPage },
+): Promise<GroupMemberListPage> {
+  const { offset, limit } = opts.page;
+  const filter = { includeS2: opts.includeS2 === true };
+  const open = new Set<MemberPager>();
+  const members: GroupMemberRow[] = [];
+  let total: number;
+  try {
+    const window = await readUnclosed<{ heads: MemberHead[]; total: number }>(deps, async () => {
+      // Counted one transaction at a time, as streamGroupMembers probes.
+      const holding: string[] = [];
+      let counted = 0;
+      for (const tenantId of await candidateTenants(deps.db)) {
+        const count = await withTenant(deps.db, tenantId, (tx) => deps.repo.countMembers(tx, groupId, filter));
+        if (count.closed.length > 0) return { value: { heads: [], total: 0 }, closed: count.closed };
+        counted += count.total;
+        if (count.total > 0) holding.push(tenantId);
+      }
+      if (offset >= counted) return { value: { heads: [], total: counted }, closed: [] };
+      const opened = await openHeads(deps, open, holding, groupId, { ...filter, limit: offset + limit });
+      return { value: { heads: opened.value, total: counted }, closed: opened.closed };
+    });
+    total = window.total;
+    let skipped = 0;
+    for await (const member of mergeHeads(window.heads, open)) {
+      if (skipped < offset) skipped += 1;
+      else if (members.push(member) === limit) break;
+    }
+  } finally {
+    await closePagers(open);
+  }
+  const listed: ListedGroupMember[] = [];
+  for (let start = 0; start < members.length; start += MEMBER_BATCH_SIZE) {
+    listed.push(...(await resolveMemberPhotos(content, members.slice(start, start + MEMBER_BATCH_SIZE))));
+  }
+  return { members: listed, total };
 }
 
 /** Publishes the group's own membership set when the save changed it. */

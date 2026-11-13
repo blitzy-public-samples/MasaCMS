@@ -10,7 +10,6 @@ import { isCompactDisplay } from '@/lib/cfml';
 import type { CsrfRenderer } from '@/lib/csrf';
 import { legacySettings } from '@/lib/env';
 import { okBody, type GatewayClient } from '@/lib/gateway-client';
-import { encodeJs, raw, type SafeHtml } from '@/lib/html';
 import { tokenServesSite, type AdminRequest, type RequestContext } from '@/lib/request-context';
 import type { RbLookup } from '@/lib/resource-bundles/rb';
 import { renderCompact } from './compact';
@@ -214,28 +213,10 @@ function attributeText(attrs: Readonly<Record<string, string>>): string {
     .join('');
 }
 
-/** The complete page markup, as raw responses and validation re-renders send it. */
+/** The complete page markup, as every document response sends it. */
 export function serializeAdminDocument(doc: AdminDocument): string {
   return (
     `${String(doc.preamble)}\n<head>\n${String(doc.head)}\n</head>\n` +
     `<body${attributeText(doc.bodyAttrs)}>\n${String(doc.body)}\n</body>\n</html>`
   );
-}
-
-/**
- * Inline script, placed first in `<body>`, that applies the document's `<html>` and `<body>` attributes where the page
- * layout cannot; body attribute text is parsed by the browser in an inert template, as the serialized page would be.
- */
-export function attributeBootstrapScript(doc: AdminDocument): SafeHtml {
-  const literal = (text: string): string => `"${encodeJs(text)}"`;
-  const htmlSets = Object.entries(doc.htmlAttrs)
-    .map(([name, value]) => `h.setAttribute(${literal(name)},${literal(value)});`)
-    .join('');
-  const bodyText = attributeText(doc.bodyAttrs);
-  const bodySets =
-    bodyText === ''
-      ? ''
-      : `var t=d.createElement("template");t.innerHTML=${literal(`<i${bodyText}></i>`)};` +
-        'var a=t.content.firstChild.attributes;for(var i=0;i<a.length;i++)d.body.setAttribute(a[i].name,a[i].value);';
-  return raw(`<script>(function(d){var h=d.documentElement;${htmlSets}${bodySets}})(document);</script>`);
 }

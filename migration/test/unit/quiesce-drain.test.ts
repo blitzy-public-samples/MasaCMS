@@ -19,6 +19,7 @@ import {
   RECEIPT_QUERY_MAX_IDS,
   UnlistedProducerError,
   awaitDrained,
+  drainParticipants,
   isDrained,
   ownerDrainCounts,
 } from '../../src/quiesce/drain.js';
@@ -37,8 +38,9 @@ vi.mock('../../src/quiesce/subscriptions.js', async (importOriginal) => {
 });
 
 const CONFIG = loadConfig();
-// The drain hands the environment only to createPubSub, which these tests replace.
-const ENV = { GOOGLE_CLOUD_PROJECT: 'opt2-unit' } as MigrationEnv;
+// The drain reads only the deployed services of the environment and hands it to createPubSub, which these tests replace.
+const ENV = { GOOGLE_CLOUD_PROJECT: 'opt2-unit', OPT2_SERVICE_URLS: {} } as MigrationEnv;
+const STUB_ENV = { ...ENV, OPT2_SERVICE_URLS: { stub: 'http://127.0.0.1:20199', people: 'http://127.0.0.1:20112' } } as MigrationEnv;
 const SUBSCRIPTION_PREFIX = 'projects/opt2-unit/subscriptions/';
 const UMBRELLA = '5e5c8a41-0f3b-4b8e-9d2a-6a7b8c9d0e1f';
 const TENANT_A = '0b0c4f7e-3f7a-4c1e-9a55-1d2b3c4d5e6f';
@@ -211,9 +213,14 @@ const CATALOG = new Proxy({} as UnitCatalog, {
   },
 });
 
-/** Drain context with the real config and the unit-map catalog; client and clock default to a 200 client and a stepping clock. */
-function context(owners: OwnersClient, client: ServiceClient = fakeClient().client, clock: Clock = steppingClock()): DrainContext {
-  return { env: ENV, config: CONFIG, clock, catalog: CATALOG, owners, client };
+/** Drain context with the real config and the unit-map catalog; client, clock and env default to a 200 client, a stepping clock and no services. */
+function context(
+  owners: OwnersClient,
+  client: ServiceClient = fakeClient().client,
+  clock: Clock = steppingClock(),
+  env: MigrationEnv = ENV,
+): DrainContext {
+  return { env, config: CONFIG, clock, catalog: CATALOG, owners, client };
 }
 
 afterEach(() => {
@@ -257,6 +264,15 @@ describe('isDrained', () => {
   });
 });
 
+describe('drainParticipants', () => {
+  it.each<[string, MigrationEnv, DataOwner[]]>([
+    ['the data owners alone when the stub is not deployed', ENV, [...CONFIG.dataOwners]],
+    ['the data owners, then the deployed stub', STUB_ENV, [...CONFIG.dataOwners, 'stub']],
+  ])('lists %s', (_label, env, expected) => {
+    expect(drainParticipants({ config: CONFIG, env })).toStrictEqual(expected);
+  });
+});
+
 describe('awaitDrained', () => {
   it('drains in one round when every data owner, as producer and consumer, has nothing unpublished and nothing published', async () => {
     const { pubsub, peeked } = fakePubSub(await declaredOf(...CONFIG.dataOwners));
@@ -277,6 +293,37 @@ describe('awaitDrained', () => {
     expect(peeked).toStrictEqual([]);
     expect(pubsub.close).not.toHaveBeenCalled();
     expect(createPubSub).not.toHaveBeenCalled();
+  });
+
+  it.each<[string, MigrationEnv, boolean, number, ServiceRequest[]]>([
+    ['deployed', STUB_ENV, true, 3, [ensureRequest('stub')]],
+    ['not deployed', ENV, false, 1, []],
+  ])('waits for the stub’s outbox and its projection of its own note only when the stub is %s', async (_label, env, polled, polls, ensured) => {
+    const noteCreated = 'stub.note.created.v1';
+    const state = world({ outbox: { stub: { unpublished: 1, held: 0 } } });
+    const { pubsub } = fakePubSub(await declaredOf(...CONFIG.dataOwners, 'stub'), state);
+    const { owners, calls } = fakeOwners(state);
+    const { client, calls: requests } = fakeClient();
+    const clock = steppingClock();
+    // The ensured sweep publishes the note, then its push delivery projects it.
+    const sleep = steppingSleep(clock, (pauses) => {
+      if (pauses === 1) {
+        state.outbox.stub = { unpublished: 0, held: 0 };
+        state.published.stub = [event(EVENT_A, noteCreated, TENANT_A)];
+      }
+      if (pauses === 2) state.receipts.stub = { [EVENT_A]: [TENANT_A] };
+    });
+
+    const result = await awaitDrained(context(owners, client, clock, env), { timeoutMs: 10_000, sleep, pubsub });
+
+    expect(result.polls).toBe(polls);
+    expect(requests).toStrictEqual(ensured);
+    expect(result.owners.some(({ owner }) => owner === 'stub')).toBe(polled);
+    expect(calls.filter((call) => call.owner === 'stub')).toEqual(
+      polled
+        ? [producerCall('stub', [noteCreated]), producerCall('stub', [noteCreated]), consumerCall('stub', [EVENT_A]), producerCall('stub', [noteCreated])]
+        : [],
+    );
   });
 
   it('lists only the checked consumers’ declared topics, at their producers, and takes no obligation from a live subscription no contract declares', async () => {

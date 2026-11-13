@@ -42,8 +42,6 @@ export interface CreateExportInput {
   definitionId: string;
   format: string;
   requestedById: string;
-  /** The request's verified bearer token (`request.opt2Auth.userToken`), which the run's source reads carry. */
-  userToken: string;
   params: CreateExportParams;
 }
 
@@ -169,7 +167,7 @@ export async function createExportJob(deps: CreateExportDeps, input: CreateExpor
   const job = await withGatedTenant(deps.db, input.tenantId, (tx) =>
     deps.repository.insertJob(tx, queuedJob(tx.tenantId, input, definition, format, deps.clock.now()), { actorUserId: input.requestedById }),
   );
-  const payload: ExportRunPayload = { jobId: job.job_id, asOf, userToken: input.userToken };
+  const payload: ExportRunPayload = { jobId: job.job_id, asOf };
   try {
     await deps.enqueue({ tenantId: input.tenantId, jobId: job.job_id, payload });
   } catch (failure) {

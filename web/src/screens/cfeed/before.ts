@@ -1,6 +1,6 @@
 // The collections (cFeed) controller `before()`: its access gate and its `rc` param defaults (server-only).
 import type { ScreenGate } from '@/lib/access-gate';
-import { restoreFlashContext } from '@/lib/request-context';
+import { administersRequestedSite, restoreFlashContext, servesRequestedSite } from '@/lib/request-context';
 import { MODULE_IDS } from '@/shell/nav';
 import type { Rc } from '../registry';
 
@@ -10,8 +10,8 @@ export const cfeedGate: ScreenGate = (req, { secure }) => {
   // `||` binds loosest, as in legacy: a site without the feed manager secures everyone, S2 included.
   const denied =
     !hasFeedManager ||
-    ((!req.isSiteAdmin && !req.isS2) &&
-      !(req.modulePerm(MODULE_IDS.collections) && req.modulePerm(MODULE_IDS.content)));
+    (!administersRequestedSite(req) &&
+      !(servesRequestedSite(req) && req.modulePerm(MODULE_IDS.collections) && req.modulePerm(MODULE_IDS.content)));
   return denied ? secure() : { kind: 'allow' };
 };
 

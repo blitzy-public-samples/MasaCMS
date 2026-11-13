@@ -429,7 +429,7 @@ function rejectionOf(err: unknown, rows: boolean): 'invalidParameters' | 'badReq
   }
   if (!rows) return undefined;
   if (err instanceof MappingError || err instanceof CanonicalEncodingError) return 'invalidParameters';
-  return err instanceof RepositoryError ? 'badRequest' : undefined;
+  return err instanceof RepositoryError || (err instanceof Error && isDataException(err)) ? 'badRequest' : undefined;
 }
 
 /** Runs a handler body, answering request problems with the legacy 400 and logging their sanitized error. */

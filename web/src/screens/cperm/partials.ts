@@ -1,7 +1,7 @@
 // The cperm controller's `before()` gate and rc defaults, and the markup the permission views share (server-only).
 import type { ScreenGate } from '@/lib/access-gate';
 import { encodeHtmlAttr, html, raw, type SafeHtml } from '@/lib/html';
-import type { RequestContext } from '@/lib/request-context';
+import { administersRequestedSite, type RequestContext } from '@/lib/request-context';
 import type { RbLookup } from '@/lib/resource-bundles/rb';
 import { boundAdminUrl } from '@/lib/urls';
 
@@ -11,8 +11,9 @@ export const TOP_NODE_ID = '00000000000000000000000000000000001';
 /** Site Manager module. */
 export const CONTENT_MODULE_ID = '00000000000000000000000000000000000';
 
-/** cperm `before()`: site admins and S2 users pass; everyone else gets the controller's `secure()`. */
-export const cpermGate: ScreenGate = (req, { secure }) => (req.isSiteAdmin || req.isS2 ? { kind: 'allow' } : secure());
+/** cperm `before()`: S2 or the private-pool Admin of `getSite(rc.siteid)` passes; everyone else gets `secure()`. */
+export const cpermGate: ScreenGate = (req, { secure }) =>
+  administersRequestedSite(req) ? { kind: 'allow' } : secure();
 
 /** The `param` statements of `before()` in source order; a name already present keeps its value. */
 const CPERM_RC_DEFAULTS: ReadonlyArray<readonly [name: string, value: string]> = Object.freeze([

@@ -5,7 +5,8 @@ import { Agent, errors, request, type Dispatcher } from 'undici';
 import { untilAborted } from '../auth/deadline.js';
 import { INVOCATION_HEADER, type InvocationMinter } from '../auth/index.js';
 import { LegacyServiceUnavailableError } from '../legacy-compat/index.js';
-import { injectHttpHeaders } from '../tracing/index.js';
+import { isSafeFailureCode, SAFE_ERROR_TEXT } from '../logging/safe-error.js';
+import { injectHttpHeaders, withCallee } from '../tracing/index.js';
 import { currentRequestContext, REQUEST_ID_HEADER } from './context.js';
 
 /** Upper bound of one service call, from credential acquisition to the last body byte. */
@@ -68,10 +69,10 @@ export interface ServiceClient {
   close(): Promise<void>;
 }
 
+/** The cause's code, else its name, when it has a safe failure-code shape; otherwise `unknown`. */
 function failureCode(cause: unknown): string {
   const { code, name } = (cause ?? {}) as { code?: unknown; name?: unknown };
-  if (typeof code === 'string') return code;
-  return typeof name === 'string' ? name : 'unknown';
+  return [code, name].find((token): token is string => typeof token === 'string' && isSafeFailureCode(token)) ?? 'unknown';
 }
 
 /** The callee refused, dropped or outlasted the call; renders as the legacy 503. */
@@ -83,6 +84,11 @@ export class ServiceUnavailableError extends LegacyServiceUnavailableError {
     override readonly cause: unknown,
   ) {
     super(`Service ${service} unavailable (${failureCode(cause)})`, 'auto', 'service-unavailable');
+  }
+
+  /** The message, which names only the callee and the failure code, for logs and spans. */
+  get [SAFE_ERROR_TEXT](): string {
+    return this.message;
   }
 }
 
@@ -199,15 +205,17 @@ export function createServiceClient(options: ServiceClientOptions): ServiceClien
     let response: Dispatcher.ResponseData;
     let raw: Buffer | undefined;
     try {
-      response = await request(url, {
-        method: req.method,
-        headers,
-        body,
-        dispatcher,
-        headersTimeout: callTimeoutMs,
-        bodyTimeout: callTimeoutMs,
-        signal: deadline,
-      });
+      response = await withCallee(req.service, () =>
+        request(url, {
+          method: req.method,
+          headers,
+          body,
+          dispatcher,
+          headersTimeout: callTimeoutMs,
+          bodyTimeout: callTimeoutMs,
+          signal: deadline,
+        }),
+      );
       // A streamed 2xx body stays unread; the deadline still destroys it once it fires.
       const streamed = req.stream === true && response.statusCode >= 200 && response.statusCode <= 299;
       if (!streamed) raw = Buffer.from(await response.body.arrayBuffer());

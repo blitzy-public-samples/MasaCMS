@@ -1,6 +1,7 @@
 // SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
 /** Composition root of the finance service. */
 import { createPublisher, registerConsumers, type EventPublisher } from '@opt2/platform/events';
+import { serializeError } from '@opt2/platform/logging';
 import { registerMigrationHandlers, registerWritePositionHeader } from '@opt2/platform/migration-kit';
 import {
   baseEnvSchema,
@@ -125,7 +126,7 @@ async function closePartialApp(app: FastifyInstance, ownsPool: boolean): Promise
     try {
       await step();
     } catch (err) {
-      logger.error({ error: err instanceof Error ? err : new Error(String(err)) }, 'start-up cleanup failed');
+      logger.error({ error: serializeError(err) }, 'start-up cleanup failed');
     }
   }
 }

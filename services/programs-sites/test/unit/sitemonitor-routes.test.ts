@@ -239,7 +239,13 @@ describe('route declarations', () => {
     const contractTemplate = (url: string): string => url.replace(/^\/index\.cfm/, '').replace(/\*$/, '');
     const expected: RouteMatrixEntry[] = [
       ...['/_api/sitemonitor*', '/index.cfm/_api/sitemonitor*'].flatMap((url) =>
-        ['GET', 'POST'].map((method) => ({ method, url, transport: 'service' as const, public: true as const, siteCheck: false })),
+        ['DELETE', 'GET', 'HEAD', 'OPTIONS', 'PATCH', 'POST', 'PUT'].map((method) => ({
+          method,
+          url,
+          transport: 'service' as const,
+          public: true as const,
+          siteCheck: false,
+        })),
       ),
       { method: 'POST', url: TASK_PATH, transport: 'cloud-tasks', requires: ['service:tasks-invoker'], siteCheck: true },
       { method: 'GET', url: STATE_PATH, transport: 'service', requires: ['platform.migration'], siteCheck: true },
@@ -349,6 +355,11 @@ describe.skipIf(!available)('public legacy run', () => {
     ['POST', '/Index.CFM/_Api/SiteMonitor'],
     ['GET', '/_api/%53ITEMONITOR?siteid=x'],
     ['GET', '/_api%2Fsitemonitor'],
+    ['HEAD', '/_api/sitemonitor'],
+    ['PUT', '/_api/sitemonitor/'],
+    ['DELETE', '/index.cfm/_api/sitemonitor/'],
+    ['PATCH', '/_API/SITEMONITOR'],
+    ['OPTIONS', '/index.cfm/_api/sitemonitor'],
   ] as const)('%s %s runs one pass and answers the empty legacy page', async (method, url) => {
     const res = await app.inject({ method, url });
 
@@ -361,6 +372,13 @@ describe.skipIf(!available)('public legacy run', () => {
     expect(await readState(db)).toEqual({ lastMonitored: RUN_AT, updatedAt: RUN_AT });
     expect(port.creates).toEqual([]);
     assertContract(method, RUN_CONTRACT_PATH, res);
+  });
+
+  it.each(['QUERY', 'PROPFIND', 'TRACE'])('refuses %s /_api/sitemonitor, a method outside the declared set, without running the monitor', async (method) => {
+    const res = await app.inject({ method, url: '/_api/sitemonitor' });
+
+    expect(res.statusCode).toBeGreaterThanOrEqual(400);
+    expect(runSpy).not.toHaveBeenCalled();
   });
 
   it('ignores a siteid that differs from the user token site', async () => {

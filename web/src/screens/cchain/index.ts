@@ -1,6 +1,6 @@
 // The cchain controller `before()` and the carried approval-chain actions for the screen registry (server-only).
 import type { GateDecision, ScreenGate } from '@/lib/access-gate';
-import { assignContext, type RequestContext } from '@/lib/request-context';
+import { administersRequestedSite, assignContext, type RequestContext } from '@/lib/request-context';
 import type { PageScreen, RedirectScreen, ScreenContext, ScreenDefinition, SubmitResult } from '../registry';
 import { submitCchainDelete } from './delete';
 import { loadCchainList, renderCchainList } from './list';
@@ -11,7 +11,7 @@ import { loadCchainUpdate, renderCchainUpdate } from './update';
 const ALLOW: GateDecision = Object.freeze({ kind: 'allow' });
 
 /** cchain `before()`: S2 or the site's private-pool Admin (`Admin;<privateUserPoolID>;0`); otherwise `secure()`. */
-export const cchainGate: ScreenGate = (req, { secure }) => (req.isSiteAdmin || req.isS2 ? ALLOW : secure());
+export const cchainGate: ScreenGate = (req, { secure }) => (administersRequestedSite(req) ? ALLOW : secure());
 
 /** The `param` defaults `before()` gives every cchain action once the gate lets it through. */
 export const CCHAIN_RC_DEFAULTS: Readonly<Record<string, string>> = Object.freeze({

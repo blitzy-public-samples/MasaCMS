@@ -173,6 +173,7 @@ describe('createResponseModes over the committed inventory', () => {
     ['admin:carch.loaddiff', 'fragment', 'text/html'],
     ['admin:carch.loadsitemanager', 'json', 'application/json'],
     ['admin:carch.downloaddata', 'download', 'application/msexcel'],
+    ['admin:cusers.download', 'download', 'text/csv'],
     ['admin:cusers.update{type=1}', 'redirect', undefined],
   ])('records %s as %s, content type %s', (key, responseMode, contentType) => {
     expect(committed.modeFor(key)).toStrictEqual(contentType === undefined ? { responseMode } : { responseMode, contentType });
@@ -262,6 +263,15 @@ describe('mapAdminToWeb by response mode', () => {
 
   it('takes circuit and action from the lower-cased base key, not the query spelling', () => {
     expect(route(committed, '/admin/?muraAction=cUsers.List').target.path).toBe('/admin/cusers/list?muraAction=cUsers.List');
+  });
+
+  it('maps the committed cUsers.download to its raw download handler, not a page', () => {
+    const url = '/admin/?muraAction=cUsers.download&siteid=default&ispublic=0';
+    const { result, target } = route(committed, url);
+    expect(result.key).toBe('admin:cusers.download');
+    expect(target).toStrictEqual(
+      expectedTarget('download', '/admin-raw/cusers/download?muraAction=cUsers.download&siteid=default&ispublic=0', 'GET', url, 'text/csv'),
+    );
   });
 
   it('maps a committed variant by its base action, without variant braces', () => {

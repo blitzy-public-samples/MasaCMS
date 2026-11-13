@@ -1,14 +1,24 @@
 // SYNTHETIC: timesheets - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** `/v1/timesheets` routes through `app.inject` against a throwaway `timesheets` schema, each answer checked against contracts/openapi.yaml. */
+/** `/v1/timesheets` routes through `app.inject` against a throwaway `timesheets` schema and an identity CSRF double, each answer checked against contracts/openapi.yaml. */
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { cfUuid } from '@opt2/platform/legacy-compat';
-import { createLogger } from '@opt2/platform/logging';
+import { createLogger, validateLogRecord } from '@opt2/platform/logging';
 import { closeGates, ensureUnitGates, openGates, registerWritePositionHeader } from '@opt2/platform/migration-kit';
-import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
+import {
+  CSRF_CONSUME_PATH,
+  IDENTITY_SERVICE,
+  createService,
+  fixedClock,
+  loadEnv,
+  type CsrfConsumeRequest,
+  type FastifyInstance,
+  type ServiceRequest,
+  type ServiceResponse,
+} from '@opt2/platform/service-kit';
 import {
   TENANT_A,
   TENANT_B,
@@ -27,6 +37,7 @@ import type { components } from '../../src/generated/openapi.js';
 import { createTimesheetsRepository, type TimesheetsRepository } from '../../src/repo/repository.js';
 import { TIMESHEETS_UNITS, type ApprovalActionRow, type BlackoutRow, type TimesheetDayRow, type TimesheetRow } from '../../src/repo/tables.js';
 import { allowedActions, timesheetsV1Plugin } from '../../src/routes/v1.js';
+import { recordingDb, statementsOn } from '../helpers/recording-db.js';
 
 // js-yaml is not declared here, so it is loaded through the declared json-schema-to-typescript, which depends on it.
 const requireHere = createRequire(import.meta.url);
@@ -49,16 +60,19 @@ const PERSON = 'AAAAAAAA-BBBB-CCCC-DDDDEEEEFFFF0000';
 const OTHER_PERSON = 'AAAAAAAA-BBBB-CCCC-DDDDEEEEFFFF0001';
 const MISSING_ID = '00000000-0000-0000-0000000000000000';
 const PAGED_SHEETS = 1001;
+const SESSION_ID = '0F1E2D3C-4B5A-6978-8796A5B4C3D2E1F0';
+const CSRF_EXPIRES = '260630120000123';
 
 type New<R> = Omit<R, 'tenant_id'>;
 type Injected = Awaited<ReturnType<FastifyInstance['inject']>>;
 type Schemas = components['schemas'];
 type ErrorBody = Schemas['LegacyErrorEnvelope'];
 
-/** An injected answer, its body already validated against the contract as `T`. */
+/** An injected answer, its body already validated against the contract as `T`; `text` is the body as sent. */
 interface Answer<T = ErrorBody> {
   status: number;
   body: T;
+  text: string;
   headers: Record<string, unknown>;
 }
 
@@ -68,6 +82,8 @@ interface Call {
   site?: string;
   payload?: Record<string, unknown>;
   invocationRoles?: string[];
+  /** CSRF request headers; a POST otherwise sends a fresh pair issued for the day id in its path. */
+  csrf?: Readonly<Record<string, string>>;
 }
 
 /** The exact v1 error body the route's own error paths send. */
@@ -104,6 +120,37 @@ describe.skipIf(!available)('timesheets /v1 routes', () => {
   let handle: ThrowawaySchema;
   let repository: TimesheetsRepository;
   let app: FastifyInstance;
+  const statements: string[] = [];
+  const logLines: string[] = [];
+  /** The sheet page whose read fails inside its transaction, as a database error would; undefined fails none. */
+  let failingSheetPage: number | undefined;
+  /** Context identity issued each token for; a token is valid for that context alone. */
+  const issued = new Map<string, string>();
+  /** `token context` keys identity has consumed in the test session. */
+  const consumed = new Set<string>();
+  /** Every consume call the routes made, in order. */
+  const consumeCalls: CsrfConsumeRequest[] = [];
+  let identityStatus = 200;
+
+  /** Identity's consume verdict: valid once per token and context, for the context the token was issued for. */
+  function consume(request: ServiceRequest): ServiceResponse {
+    if (request.service !== IDENTITY_SERVICE || request.method !== 'POST' || request.path !== CSRF_CONSUME_PATH) {
+      throw new Error(`the timesheets /v1 routes call no other service: ${request.method} ${request.service} ${request.path}`);
+    }
+    const call = request.json as CsrfConsumeRequest;
+    consumeCalls.push(call);
+    const key = `${call.token} ${call.context}`;
+    const valid = identityStatus === 200 && call.sessionId === SESSION_ID && issued.get(call.token) === call.context && !consumed.has(key);
+    if (valid) consumed.add(key);
+    return { status: identityStatus, headers: {}, body: identityStatus === 200 ? { valid } : undefined };
+  }
+
+  /** A fresh CSRF pair identity issued for `context`, as the sheet screen renders one per day form. */
+  function issueCsrf(context: string): Record<string, string> {
+    const token = `V1ROUTES${String(issued.size + 1).padStart(24, '0')}`;
+    issued.set(token, context);
+    return { 'x-csrf_token': token, 'x-csrf_token_expires': CSRF_EXPIRES };
+  }
 
   /** Seeded tenant-a sheets in period order; `returned` belongs to another site of the same tenant. */
   const sheets = { approved: cfUuid(), submitted: cfUuid(), first: cfUuid(), partial: cfUuid(), returned: cfUuid(), empty: cfUuid() };
@@ -121,6 +168,25 @@ describe.skipIf(!available)('timesheets /v1 routes', () => {
   };
   /** Umbrella sheets, one more than a sheet-status page holds, in period order. */
   const paged = Array.from({ length: PAGED_SHEETS }, () => cfUuid());
+  /** One day on the first umbrella sheet, blacked out, and one on the last, so each sheet-status page reads days and blackouts. */
+  const pagedDays = { first: cfUuid(), last: cfUuid() };
+  /** The status rows of `paged` as of today. */
+  const pagedRows = paged.map((timesheetId, index) => {
+    const start = new Date(2024, 0, 1 + index);
+    const row = {
+      timesheetId,
+      siteId: TENANT_UMBRELLA.siteId,
+      personId: PERSON,
+      periodStart: `${String(start.getFullYear())}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}T00:00:00`,
+      status: 'DRAFT',
+      overdue: false,
+      dayCount: 0,
+      blackoutCount: 0,
+      approvedCount: 0,
+    };
+    if (index === 0) return { ...row, dayCount: 1, blackoutCount: 1 };
+    return index === PAGED_SHEETS - 1 ? { ...row, status: 'SUBMITTED', dayCount: 1 } : row;
+  });
 
   beforeAll(async () => {
     handle = await createThrowawaySchema({ service: 'timesheets', migrationsDir: fileURLToPath(new URL('../../db/migrations', import.meta.url)) });
@@ -140,12 +206,20 @@ describe.skipIf(!available)('timesheets /v1 routes', () => {
       }),
       verifierOverride: testVerifier('timesheets'),
       pool: handle.app,
-      logger: createLogger({ service: 'timesheets', version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
+      logger: createLogger({ service: 'timesheets', version: '1.0.0', env: 'local', destination: { write: (line: string) => void logLines.push(line) } }),
     });
     registerWritePositionHeader(app);
     repository = createTimesheetsRepository({ clock: CLOCK, schema: handle.schema });
-    await app.register(timesheetsV1Plugin, { db: handle.app, repository, clock: CLOCK });
+    const routeRepository: TimesheetsRepository = {
+      ...repository,
+      async listSheets(tx, filter) {
+        if (filter.pageIndex === failingSheetPage) await tx.query('SELECT 1 / 0');
+        return repository.listSheets(tx, filter);
+      },
+    };
+    await app.register(timesheetsV1Plugin, { db: recordingDb(handle.app, statements), repository: routeRepository, clock: CLOCK });
     await app.ready();
+    vi.spyOn(app.opt2.client, 'request').mockImplementation((request: ServiceRequest) => Promise.resolve(consume(request)));
     await setGates('open');
 
     await handle.app.withTenant(TENANT_A.tenantId, async (tx) => {
@@ -181,14 +255,17 @@ describe.skipIf(!available)('timesheets /v1 routes', () => {
       await repository.insert(tx, 'blackout', blackout(days.blackedOut));
       await repository.insert(tx, 'blackout', blackout(days.approvedBlackout));
     });
-    await handle.app.withTenant(TENANT_UMBRELLA.tenantId, (tx) =>
-      repository.insertAbsent(
+    await handle.app.withTenant(TENANT_UMBRELLA.tenantId, async (tx) => {
+      await repository.insertAbsent(
         tx,
         'timesheet',
         paged.map((id, index) => ({ ...sheet(id, new Date(2024, 0, 1 + index), new Date(2024, 0, 10 + index), 3), siteid: TENANT_UMBRELLA.siteId })),
         ['timesheet_id'],
-      ),
-    );
+      );
+      await repository.insert(tx, 'timesheet_day', day(pagedDays.first, paged[0] as string, new Date(2024, 0, 1), 'DRAFT', 3));
+      await repository.insert(tx, 'timesheet_day', day(pagedDays.last, paged[PAGED_SHEETS - 1] as string, new Date(2026, 8, 27), 'SUBMITTED', 3));
+      await repository.insert(tx, 'blackout', blackout(pagedDays.first, 3));
+    });
   });
 
   afterAll(async () => {
@@ -198,6 +275,8 @@ describe.skipIf(!available)('timesheets /v1 routes', () => {
 
   beforeEach(async () => {
     await setGates('open');
+    consumeCalls.length = 0;
+    identityStatus = 200;
   });
 
   /** Moves every timesheets gate to `state` through the holder compare-and-set. */
@@ -251,21 +330,28 @@ describe.skipIf(!available)('timesheets /v1 routes', () => {
   /** Validates an injected response against the contract operation of `method` and `url`. */
   function checked<T = ErrorBody>(method: 'GET' | 'POST', url: string, res: Injected): Answer<T> {
     assertResponseMatchesOpenApi(OPENAPI, { method, path: url, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
-    return { status: res.statusCode, body: res.json() as T, headers: res.headers };
+    return { status: res.statusCode, body: res.json<T>(), text: res.body, headers: res.headers };
   }
 
   /** Injects one gateway call with a user token and the gateway's invocation credential, checked against the contract. */
   async function call<T = ErrorBody>(method: 'GET' | 'POST', url: string, request: Call = {}): Promise<Answer<T>> {
     const { roles = PRIMARY, site = TENANT_A.siteId, payload, invocationRoles } = request;
     const invocation = await mintServiceToken({ caller: 'gateway', audience: 'timesheets', ...(invocationRoles === undefined ? {} : { roles: invocationRoles }) });
-    const headers: Record<string, string> = { [INVOCATION_HEADER]: `Bearer ${invocation}` };
-    if (roles !== null) headers.authorization = `Bearer ${await mintUserToken({ sub: USER_ID, site, roles })}`;
+    const csrf = request.csrf ?? (method === 'POST' ? issueCsrf(new URL(url, 'http://timesheets.test').pathname.split('/')[4] ?? '') : {});
+    const headers: Record<string, string> = { [INVOCATION_HEADER]: `Bearer ${invocation}`, ...csrf };
+    if (roles !== null) headers.authorization = `Bearer ${await mintUserToken({ sub: USER_ID, site, roles, sid: SESSION_ID })}`;
     return checked<T>(method, url, await app.inject({ method, url, headers, ...(payload === undefined ? {} : { payload }) }));
   }
 
-  /** A day action as `roles` on tenant-b. */
-  function act<T = ErrorBody>(dayId: string, action: string, roles: readonly string[], payload?: Record<string, unknown>): Promise<Answer<T>> {
-    return call<T>('POST', `${DAYS}/${dayId}/${action}`, { roles, site: TENANT_B.siteId, payload });
+  /** A day action as `roles` on tenant-b, with `csrf` instead of a fresh pair for the day when given. */
+  function act<T = ErrorBody>(
+    dayId: string,
+    action: string,
+    roles: readonly string[],
+    payload?: Record<string, unknown>,
+    csrf?: Readonly<Record<string, string>>,
+  ): Promise<Answer<T>> {
+    return call<T>('POST', `${DAYS}/${dayId}/${action}`, { roles, site: TENANT_B.siteId, payload, ...(csrf === undefined ? {} : { csrf }) });
   }
 
   const timesheet = {
@@ -576,6 +662,64 @@ describe.skipIf(!available)('timesheets /v1 routes', () => {
       expect(res.headers['x-opt2-write-position']).toBeUndefined();
       expect(await storedDay(dayId)).toMatchObject({ day: { state: 'DRAFT' }, actions: [] });
     });
+
+    it("has identity consume the pair for the day id as sent, in the token's session, before the write", async () => {
+      const { dayId } = await seedTenantBDay('DRAFT');
+      const csrf = issueCsrf(dayId.toLowerCase());
+
+      const res = await act(dayId.toLowerCase(), 'submit', EMPLOYEE, undefined, csrf);
+
+      expect(res.status).toBe(200);
+      expect(consumeCalls).toEqual([{ sessionId: SESSION_ID, token: csrf['x-csrf_token'], expires: CSRF_EXPIRES, context: dayId.toLowerCase() }]);
+    });
+
+    it.each<[string, () => Record<string, string>, number]>([
+      ['no token', () => ({}), 0],
+      ['a token without its expiry', () => ({ 'x-csrf_token': issueCsrf('')['x-csrf_token'] ?? '' }), 0],
+      ["another day's token", () => issueCsrf(MISSING_ID), 1],
+    ])('answers %s with invalidTokens before the comment check, leaving the day unchanged', async (_case, csrf, calls) => {
+      const { dayId } = await seedTenantBDay('DRAFT');
+
+      const res = await act(dayId, 'submit', EMPLOYEE, { comment: 5 }, csrf());
+
+      expect([res.status, JSON.stringify(res.body)]).toEqual([400, v1Error('timesheets.days.submit', 'invalid_request', 'Invalid CSRF tokens')]);
+      expect(consumeCalls).toHaveLength(calls);
+      expect(await storedDay(dayId)).toMatchObject({ day: { state: 'DRAFT', lastupdate: null }, actions: [] });
+    });
+
+    it('consumes no token for an action the lifecycle does not name', async () => {
+      const { dayId } = await seedTenantBDay('DRAFT');
+
+      expect((await act(dayId, 'approve', EMPLOYEE)).status).toBe(404);
+      expect(consumeCalls).toEqual([]);
+    });
+
+    it('accepts a token once and answers its replay with invalidTokens', async () => {
+      const { dayId } = await seedTenantBDay('DRAFT');
+      const csrf = issueCsrf(dayId);
+
+      const first = await act(dayId, 'submit', EMPLOYEE, undefined, csrf);
+      const replay = await act(dayId, 'primary-approve', PRIMARY, undefined, csrf);
+
+      expect([first.status, replay.status]).toEqual([200, 400]);
+      expect(JSON.stringify(replay.body)).toBe(v1Error('timesheets.days.primary-approve', 'invalid_request', 'Invalid CSRF tokens'));
+      expect((await storedDay(dayId)).actions.map(({ action }) => action)).toEqual(['submit']);
+    });
+
+    it('answers the legacy 503 and writes nothing when identity cannot consume the token', async () => {
+      const { dayId } = await seedTenantBDay('DRAFT');
+      identityStatus = 503;
+
+      const res = await act(dayId, 'submit', EMPLOYEE);
+
+      expect(res.status).toBe(503);
+      expect(await storedDay(dayId)).toMatchObject({ day: { state: 'DRAFT' }, actions: [] });
+    });
+
+    it('consumes no CSRF token on a sheet read, even one sent with it', async () => {
+      expect((await call('GET', `${SHEETS}/${sheets.first}`, { csrf: issueCsrf(sheets.first) })).status).toBe(200);
+      expect(consumeCalls).toEqual([]);
+    });
   });
 
   describe('listSheetStatus', () => {
@@ -585,10 +729,13 @@ describe.skipIf(!available)('timesheets /v1 routes', () => {
       ['the secondary approver', SECONDARY],
     ])('lists the status row of every tenant sheet as of today for %s', async (_case, roles) => {
       const res = await call('GET', SHEET_STATUS, { roles });
-      expect([res.status, res.body]).toEqual([
-        200,
-        { items: [statusRow.approved, statusRow.submitted, statusRow.first, statusRow.partial, statusRow.returned, statusRow.empty] },
-      ]);
+      const items = [statusRow.approved, statusRow.submitted, statusRow.first, statusRow.partial, statusRow.returned, statusRow.empty];
+      expect([res.status, res.headers['content-type'], res.text]).toEqual([200, 'application/json; charset=utf-8', JSON.stringify({ items })]);
+    });
+
+    it('lists every row of a tenant holding more sheets than a page, unpaged and without total', async () => {
+      const res = await call('GET', SHEET_STATUS, { roles: EXPORTER, site: TENANT_UMBRELLA.siteId });
+      expect([res.status, res.headers['content-type'], res.text]).toEqual([200, 'application/json; charset=utf-8', JSON.stringify({ items: pagedRows })]);
     });
 
     it.each<[string, boolean]>([
@@ -599,26 +746,88 @@ describe.skipIf(!available)('timesheets /v1 routes', () => {
       expect(res.body.items).toEqual([statusRow.approved, statusRow.submitted, { ...statusRow.first, overdue }, statusRow.partial, statusRow.returned, statusRow.empty]);
     });
 
-    it('reads past the largest sheet page', async () => {
-      const res = await call<Schemas['SheetStatusList']>('GET', SHEET_STATUS, { roles: EXPORTER, site: TENANT_UMBRELLA.siteId });
-      expect(res.status).toBe(200);
-      expect(res.body.items.map((row) => row.timesheetId)).toEqual(paged);
-      expect(res.body.items[PAGED_SHEETS - 1]).toEqual({
-        timesheetId: paged[PAGED_SHEETS - 1],
-        siteId: TENANT_UMBRELLA.siteId,
-        personId: PERSON,
-        periodStart: '2026-09-27T00:00:00',
-        status: 'DRAFT',
-        overdue: false,
-        dayCount: 0,
-        blackoutCount: 0,
-        approvedCount: 0,
-      });
+    it.each<[string, string, string, string[], number]>([
+      ['a middle page', '?pageIndex=2&itemsPerPage=2', TENANT_A.siteId, [sheets.first, sheets.partial], 6],
+      ['the last page', '?pageIndex=3&itemsPerPage=2', TENANT_A.siteId, [sheets.returned, sheets.empty], 6],
+      ['a page past the end', '?pageIndex=4&itemsPerPage=2', TENANT_A.siteId, [], 6],
+      ['the largest page index', `?pageIndex=${Number.MAX_SAFE_INTEGER}`, TENANT_A.siteId, [], 6],
+      ['the first page when only itemsPerPage is given', '?itemsPerPage=2', TENANT_A.siteId, [sheets.approved, sheets.submitted], 6],
+      ['the first full page of a tenant holding more sheets than it', '?pageIndex=1', TENANT_UMBRELLA.siteId, paged.slice(0, 1000), PAGED_SHEETS],
+      ['the second full page of that tenant', '?pageIndex=2', TENANT_UMBRELLA.siteId, paged.slice(1000), PAGED_SHEETS],
+    ])('pages: %s', async (_case, query, site, ids, total) => {
+      const res = await call<Schemas['SheetStatusList']>('GET', `${SHEET_STATUS}${query}`, { roles: EXPORTER, site });
+      expect([res.status, res.body.items.map((row) => row.timesheetId), res.body.total]).toEqual([200, ids, total]);
     });
 
-    it('refuses a non-calendar asOf as invalidParameters', async () => {
-      const res = await call('GET', `${SHEET_STATUS}?asOf=2026-02-30`, { roles: EXPORTER });
+    it('answers the rows of a page in the shape of the full list', async () => {
+      const middle = await call<Schemas['SheetStatusList']>('GET', `${SHEET_STATUS}?pageIndex=2&itemsPerPage=2`, { roles: EXPORTER });
+      expect(middle.body).toEqual({ items: [statusRow.first, statusRow.partial], total: 6 });
+      const pages = await Promise.all(
+        ['?itemsPerPage=1000', '?pageIndex=2'].map((query) => call<Schemas['SheetStatusList']>('GET', `${SHEET_STATUS}${query}`, { roles: EXPORTER, site: TENANT_UMBRELLA.siteId })),
+      );
+      expect(pages.map(({ body }) => body)).toEqual([
+        { items: pagedRows.slice(0, 1000), total: PAGED_SHEETS },
+        { items: pagedRows.slice(1000), total: PAGED_SHEETS },
+      ]);
+      expect(pagedRows[PAGED_SHEETS - 1]).toMatchObject({ periodStart: '2026-09-27T00:00:00', status: 'SUBMITTED' });
+    });
+
+    it.each([
+      'asOf=2026-02-30',
+      'pageIndex=0',
+      'pageIndex=x',
+      `pageIndex=${Number.MAX_SAFE_INTEGER + 1}`,
+      'itemsPerPage=0',
+      'itemsPerPage=1001',
+      'itemsPerPage=1.5',
+    ])('refuses the query %s as invalidParameters', async (query) => {
+      const res = await call('GET', `${SHEET_STATUS}?${query}`, { roles: EXPORTER });
       expect([res.status, JSON.stringify(res.body)]).toEqual([400, v1Error('timesheets.sheet-status', 'invalid_request', 'Invalid parameters')]);
+    });
+  });
+
+  describe('page reads', () => {
+    it.each<[string, string, string, readonly string[], number, [number, number]]>([
+      ['the sheet list of tenant-a', SHEETS, TENANT_A.siteId, PRIMARY, 6, [1, 1]],
+      ['a full sheet list page', `${SHEETS}?itemsPerPage=1000`, TENANT_UMBRELLA.siteId, PRIMARY, 1000, [1, 1]],
+      ['a sheet list page past the end', `${SHEETS}?pageIndex=2`, TENANT_A.siteId, PRIMARY, 0, [0, 0]],
+      ['the sheet status of tenant-a', SHEET_STATUS, TENANT_A.siteId, EXPORTER, 6, [1, 1]],
+      ['a full sheet status page', `${SHEET_STATUS}?itemsPerPage=1000`, TENANT_UMBRELLA.siteId, EXPORTER, 1000, [1, 1]],
+      ['each page of the unpaged sheet status of a tenant spanning two pages', SHEET_STATUS, TENANT_UMBRELLA.siteId, EXPORTER, PAGED_SHEETS, [2, 2]],
+    ])('reads the days and then the blackouts of %s in at most one query each', async (_case, url, site, roles, items, [dayReads, blackoutReads]) => {
+      statements.length = 0;
+      const res = await call<{ items: unknown[] }>('GET', url, { site, roles });
+      expect([res.status, res.body.items.length]).toEqual([200, items]);
+      expect([statementsOn(statements, 'timesheet_day'), statementsOn(statements, 'blackout')]).toEqual([dayReads, blackoutReads]);
+    });
+  });
+
+  describe('unpaged sheet status failures', () => {
+    /** The exporter's unpaged sheet-status read of the umbrella tenant with page `page` failing in its transaction. */
+    async function readFailing(page: number): Promise<Injected> {
+      const invocation = await mintServiceToken({ caller: 'gateway', audience: 'timesheets' });
+      const user = await mintUserToken({ sub: USER_ID, site: TENANT_UMBRELLA.siteId, roles: EXPORTER });
+      failingSheetPage = page;
+      try {
+        return await app.inject({ url: SHEET_STATUS, headers: { authorization: `Bearer ${user}`, [INVOCATION_HEADER]: `Bearer ${invocation}` } });
+      } finally {
+        failingSheetPage = undefined;
+      }
+    }
+
+    it('answers a failing first page as the v1 500 before any row is sent', async () => {
+      const res = checked('GET', SHEET_STATUS, await readFailing(1));
+      expect([res.status, res.body.error]).toEqual([500, { message: 'Unhandled Exception', code: 'server_error' }]);
+    });
+
+    it('cuts the response short on a failing later page, logs it and holds no connection', async () => {
+      logLines.length = 0;
+      await expect(readFailing(2)).rejects.toMatchObject({ code: 'LIGHT_ECONNRESET' });
+      expect(handle.appPool.idleCount).toBe(handle.appPool.totalCount);
+      const logged = logLines.map((line) => JSON.parse(line) as Record<string, unknown>).find((record) => record.message === 'sheet status stream failed');
+      expect(logged).toMatchObject({ severity: 'ERROR', error: { message: 'PostgreSQL error 22012' } });
+      const next = await call('GET', SHEET_STATUS, { roles: EXPORTER, site: TENANT_UMBRELLA.siteId });
+      expect([next.status, next.text]).toEqual([200, JSON.stringify({ items: pagedRows })]);
     });
   });
 
@@ -632,6 +841,7 @@ describe.skipIf(!available)('timesheets /v1 routes', () => {
     ])('denies %s before the handler runs', async (_case, send, status, error) => {
       const res = await send();
       expect([res.status, res.body.error]).toEqual([status, error]);
+      expect(consumeCalls).toEqual([]);
     });
 
     it('answers a rejected user token with invalid_token and the bearer challenge', async () => {
@@ -655,6 +865,45 @@ describe.skipIf(!available)('timesheets /v1 routes', () => {
     ])('refuses %s to a workload credential holding the role without a user token', async (_case, url, method, role, envelopeMethod) => {
       const res = await call(method, url, { roles: null, invocationRoles: [role] });
       expect([res.status, JSON.stringify(res.body)]).toEqual([403, v1Error(envelopeMethod, 'invalid_request', 'Insufficient Account Permissions')]);
+      expect(consumeCalls).toEqual([]);
+    });
+  });
+
+  describe('outcome log lines', () => {
+    it.each<[string, (dayId: string) => Promise<Answer>, number, string | null]>([
+      ['a write without a CSRF token', (id) => act(id, 'submit', EMPLOYEE, undefined, {}), 400, 'request rejected: invalidTokens'],
+      ['a role that may not take the action', (id) => act(id, 'submit', PRIMARY), 403, 'request denied: forbidden'],
+      ['an illegal transition', (id) => act(id, 'resubmit', EMPLOYEE), 409, null],
+      ['a comment that is not a string', (id) => act(id, 'submit', EMPLOYEE, { comment: 5 }), 400, 'request rejected: invalidParameters'],
+      ['a comment PostgreSQL cannot store', (id) => act(id, 'submit', EMPLOYEE, { comment: 'reason-probe\u0000comment' }), 400, 'request rejected: 22021'],
+      ['an asOf that is not a date', () => call('GET', `${SHEETS}?asOf=reason-probe`), 400, 'request rejected: invalidParameters'],
+      ['a page outside the query schema', () => call('GET', `${SHEET_STATUS}?pageIndex=0`, { roles: EXPORTER }), 400, 'request rejected: FST_ERR_VALIDATION'],
+      [
+        'a workload credential without a user token',
+        () => call('GET', SHEETS, { roles: null, invocationRoles: [Roles.timesheetsEmployee] }),
+        403,
+        'request denied: missing-credential',
+      ],
+      ['no credential', async () => checked('GET', SHEETS, await app.inject({ url: SHEETS })), 401, 'request denied: missing-credential'],
+      ['a siteid other than the token site', () => call('GET', `${SHEETS}?siteid=${TENANT_B.siteId}`), 403, 'request denied: site-mismatch'],
+      ['an action the lifecycle does not name', (id) => act(id, 'approve', EMPLOYEE), 404, null],
+      ['an unknown day', () => act(MISSING_ID, 'submit', EMPLOYEE), 404, null],
+    ])('logs %s with its fixed reason, if any, ahead of the completion line, leaving the day unchanged', async (_case, send, status, warning) => {
+      const { dayId } = await seedTenantBDay('DRAFT');
+      const before = logLines.length;
+
+      const res = await send(dayId);
+      const lines = logLines.slice(before).map((text) => JSON.parse(text) as Record<string, unknown>);
+
+      expect(res.status).toBe(status);
+      expect(lines.filter(({ severity, message }) => severity === 'WARNING' || message === 'request completed').map(({ severity, message }) => [severity, message])).toStrictEqual([
+        ...(warning === null ? [] : [['WARNING', warning]]),
+        ['INFO', 'request completed'],
+      ]);
+      expect(lines.filter(({ severity }) => severity === 'ERROR')).toEqual([]);
+      for (const line of lines) expect(validateLogRecord(line).errors).toStrictEqual([]);
+      expect(JSON.stringify(lines)).not.toMatch(/reason-probe|invalid byte sequence|0x00/);
+      expect(await storedDay(dayId)).toMatchObject({ day: { state: 'DRAFT', lastupdate: null }, actions: [] });
     });
   });
 });

@@ -7,6 +7,7 @@ import { withGatedTenant } from '@opt2/platform/migration-kit';
 import {
   csrfPreHandler,
   multipartFilesOf,
+  recordOutcomeReason,
   sendLegacyResponse,
   type FastifyInstance,
   type FastifyPluginAsync,
@@ -34,7 +35,15 @@ import {
   resolveFixtureSite,
   type FixtureSite,
 } from '../legacy/checks.js';
-import { FixtureApiError, fixtureContext, fixtureList, fixtureSuccess, toFixtureError, type FixtureContext } from '../legacy/envelope.js';
+import {
+  FixtureApiError,
+  fixtureContext,
+  fixtureList,
+  fixtureOutcomeReason,
+  fixtureSuccess,
+  toFixtureError,
+  type FixtureContext,
+} from '../legacy/envelope.js';
 import { attachmentRow, recordRow, rollupRow, versionRow } from '../legacy/serialize.js';
 import type { FinanceRecordRow } from '../repo/tables.js';
 
@@ -189,7 +198,9 @@ function sendPage<R>(
 function fixtureDenialRenderer(db: TenantDb): DenialRenderer {
   return async (denial, request) => {
     const claims = (request.opt2Auth as Opt2AuthContext | null)?.user;
-    return toFixtureError(await fixtureDenialOverride(denial, { claims, registry: db }), contextOf(request));
+    const answered = await fixtureDenialOverride(denial, { claims, registry: db });
+    recordOutcomeReason(request, fixtureOutcomeReason(answered));
+    return toFixtureError(answered, contextOf(request));
   };
 }
 
@@ -204,6 +215,7 @@ export const financeFixturePlugin: FastifyPluginAsync<FixtureRouteDeps> = async 
   app.setErrorHandler((error, request, reply) => {
     const response = toFixtureError(error, contextOf(request));
     if (response.status === 500 && !(error instanceof LegacyApiError)) request.log.error({ error: serializeError(error) }, 'unhandled fixture exception');
+    else recordOutcomeReason(request, fixtureOutcomeReason(error));
     return sendLegacyResponse(reply, response);
   });
 

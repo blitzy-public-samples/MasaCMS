@@ -1,11 +1,12 @@
 // Masa addressBean values and userManager address saves (addressBean.cfc, userManager.cfc:596-611, 860-937,
 // userDAO.cfc:749-869) over people's `people.user_address` rows of Type=2 users.
-import { withGatedTenant, type WriteContext } from '@opt2/platform/migration-kit';
+import type { WriteContext } from '@opt2/platform/migration-kit';
 import { registryEntryForTenant, type RegistrySource, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { LegacyServiceUnavailableError, cfEq, cfIsNumeric, cfNumberString, cfToNumber, cfUuid, javaTrim } from '@opt2/platform/legacy-compat';
 import type { Clock } from '@opt2/platform/service-kit';
 import type { AddressInput, AddressUpdate, PeopleRepository } from '../repo/repository.js';
 import { ADDRESS, type AddressRow } from '../repo/tables.js';
+import type { PersonFence } from './person-fence.js';
 import type { CfNumeric } from './person.js';
 import { takeOut } from './trash.js';
 
@@ -250,12 +251,12 @@ export function listAddresses(repo: PeopleRepository, tx: TenantTx, userId: stri
   return repo.listAddresses(tx, userId);
 }
 
-/** Collaborators of the request-level saves; `awaitPersonOpen` is the roster protocol's wait on a user an open operation closes. */
+/** Collaborators of the request-level saves; `fence` is the roster protocol's per-user fence (roster-protocol.ts `personFence`). */
 export interface AddressDeps {
   db: TenantDb;
   repo: PeopleRepository;
   clock: Clock;
-  awaitPersonOpen: (db: TenantDb, tenantId: string, userId: string, opts: { clock: Clock }) => Promise<void>;
+  fence: PersonFence;
 }
 
 /** Who saves: the token tenant whose registry entry the pool rule reads, and the audit context of the writes. */
@@ -301,6 +302,27 @@ function storedValues(row: AddressRow): AddressValues {
   return applyAddressInput(newAddressValues(), new Map(STORED_COLUMNS.map((name) => [name, columns[name] ?? ''] as const)));
 }
 
+/** The trimmed owner of a stored address; '' for none. */
+function storedOwner(row: AddressRow | null): string {
+  return row === null ? '' : javaTrim(simpleText(row.userid, 'userid'));
+}
+
+/** The address `addressId` row-locked until `tx` ends; null when absent. A row deleted and inserted again while the lock waited is locked anew. */
+async function lockedAddress(repo: PeopleRepository, tx: TenantTx, addressId: string): Promise<AddressRow | null> {
+  for (;;) {
+    const stored = await repo.findAddressForUpdate(tx, addressId);
+    if (stored !== null || (await repo.findAddress(tx, addressId)) === null) return stored;
+  }
+}
+
+/** The stored address `addressId` (null for '' or none), row-locked so its owner holds still, then `posted` and that owner fenced; row locks precede roster locks. */
+async function fencedAddress(deps: AddressDeps, tx: TenantTx, addressId: string, posted: string | undefined): Promise<AddressRow | null> {
+  const stored = addressId === '' ? null : await lockedAddress(deps.repo, tx, addressId);
+  const owners = [posted ?? '', storedOwner(stored)].filter((id) => id !== '');
+  if (owners.length > 0) await deps.fence.fencePersons(tx, owners);
+  return stored;
+}
+
 /** createAddress after `set` (userManager.cfc:877-896): the owner's site, the posted or a new id, the insert, then takeOut. */
 async function createInTx(
   deps: AddressDeps,
@@ -341,11 +363,16 @@ export async function createAddress(
 ): Promise<AddressSaveResult> {
   const userId = requiredUserId(input);
   assertNoExtendedData(input);
-  await deps.awaitPersonOpen(deps.db, tenantId, userId, { clock: deps.clock });
-  return withGatedTenant(deps.db, tenantId, async (tx) => {
-    const values = applyAddressInput(newAddressValues(), input, await resolveAddressPoolSite(tx, actor.tid, input));
-    return createInTx(deps, tx, values, postedText(input, 'addressid'), input, actor.write);
-  });
+  return deps.fence.withPersonsOpen(
+    deps.db,
+    tenantId,
+    async (tx) => {
+      await deps.fence.fencePersons(tx, [userId]);
+      const values = applyAddressInput(newAddressValues(), input, await resolveAddressPoolSite(tx, actor.tid, input));
+      return createInTx(deps, tx, values, postedText(input, 'addressid'), input, actor.write);
+    },
+    { clock: deps.clock },
+  );
 }
 
 /** userManager.updateAddress (userManager.cfc:899-937): createAddress without a posted `addressid`, else the stored address with `input` applied. */
@@ -359,13 +386,17 @@ export async function updateAddress(
   const addressId = postedText(input, 'addressid');
   if (addressId === '') return createAddress(deps, tenantId, input, actor);
   assertNoExtendedData(input);
-  await deps.awaitPersonOpen(deps.db, tenantId, userId, { clock: deps.clock });
-  return withGatedTenant(deps.db, tenantId, async (tx) => {
-    const stored = await deps.repo.findAddress(tx, addressId);
-    const current = stored === null ? newAddressValues() : storedValues(stored);
-    const values = applyAddressInput(current, input, await resolveAddressPoolSite(tx, actor.tid, input));
-    return updateInTx(deps, tx, values, stored !== null, actor.write);
-  });
+  return deps.fence.withPersonsOpen(
+    deps.db,
+    tenantId,
+    async (tx) => {
+      const stored = await fencedAddress(deps, tx, addressId, userId);
+      const current = stored === null ? newAddressValues() : storedValues(stored);
+      const values = applyAddressInput(current, input, await resolveAddressPoolSite(tx, actor.tid, input));
+      return updateInTx(deps, tx, values, stored !== null, actor.write);
+    },
+    { clock: deps.clock },
+  );
 }
 
 /**
@@ -380,17 +411,20 @@ export async function saveAddress(
 ): Promise<AddressSaveResult> {
   assertNoExtendedData(input);
   const addressId = postedText(input, 'addressid');
-  const find = (tx: TenantTx): Promise<AddressRow | null> => (addressId === '' ? Promise.resolve(null) : deps.repo.findAddress(tx, addressId));
-  // Without a posted userid the stored owner saves, so the address is read first to know whose operation to wait out.
-  const owner = input.has('userid') ? postedText(input, 'userid') : simpleText((await withGatedTenant(deps.db, tenantId, find))?.userid, 'userid');
-  const userId = javaTrim(owner);
-  if (userId === '') throw new Error(USER_ID_REQUIRED);
-  await deps.awaitPersonOpen(deps.db, tenantId, userId, { clock: deps.clock });
-  return withGatedTenant(deps.db, tenantId, async (tx) => {
-    const stored = await find(tx);
-    const current = stored === null ? newAddressValues() : storedValues(stored);
-    const values = applyAddressInput(current, input, await resolveAddressPoolSite(tx, actor.tid, input));
-    if (stored !== null) return updateInTx(deps, tx, values, true, actor.write);
-    return createInTx(deps, tx, values, simpleText(values.addressid, 'addressid'), input, actor.write);
-  });
+  // Without a posted userid the stored owner saves.
+  const posted = input.has('userid') ? javaTrim(postedText(input, 'userid')) : undefined;
+  if (posted === '') throw new Error(USER_ID_REQUIRED);
+  return deps.fence.withPersonsOpen(
+    deps.db,
+    tenantId,
+    async (tx) => {
+      const stored = await fencedAddress(deps, tx, addressId, posted);
+      if (posted === undefined && storedOwner(stored) === '') throw new Error(USER_ID_REQUIRED);
+      const current = stored === null ? newAddressValues() : storedValues(stored);
+      const values = applyAddressInput(current, input, await resolveAddressPoolSite(tx, actor.tid, input));
+      if (stored !== null) return updateInTx(deps, tx, values, true, actor.write);
+      return createInTx(deps, tx, values, simpleText(values.addressid, 'addressid'), input, actor.write);
+    },
+    { clock: deps.clock },
+  );
 }

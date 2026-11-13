@@ -392,9 +392,28 @@ const PERSON_CONTACT_COLUMNS = [
   { name: 'subtype', type: 's' },
   { name: 'aggregate_version', type: 'i' },
   { name: 'updated_at', type: 't' },
+  { name: 'groupname', type: 's' },
+  { name: 'jobtitle', type: 's' },
+  { name: 'mobilephone', type: 's' },
+  { name: 'website', type: 's' },
+  { name: 'ext', type: 'i' },
+  { name: 'contactform', type: 's' },
+  { name: 'subscribe', type: 'i' },
+  { name: 'notes', type: 's' },
+  { name: 'description', type: 's' },
+  { name: 'interests', type: 's' },
+  { name: 'keepprivate', type: 'i' },
+  { name: 'photofileid', type: 's' },
+  { name: 'imname', type: 's' },
+  { name: 'imservice', type: 's' },
+  { name: 'tags', type: 's' },
+  { name: 'created', type: 't' },
+  { name: 'lastupdate', type: 't' },
+  { name: 'lastupdateby', type: 's' },
+  { name: 'lastupdatebyid', type: 's' },
 ] as const satisfies Columns;
 
-/** `identity.person_contact`: the projection of `people.person.changed.v1` used for mail and lookup by email. */
+/** `identity.person_contact`: the projection of `people.person.changed.v1` used for mail, lookup by email and group member listings. */
 export const PERSON_CONTACT = nonUnitTable('person_contact', PERSON_CONTACT_COLUMNS, ['user_id']);
 
 const AGGREGATE_VERSION_COLUMNS = [

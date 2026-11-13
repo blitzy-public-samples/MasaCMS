@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { createServer, type IncomingMessage } from 'node:http';
+import { createRequire } from 'node:module';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -28,7 +29,7 @@ import {
   etag,
   legacyErrorResponse,
 } from '../../src/legacy-compat/index.js';
-import { createLogger, validateLogRecord, type Logger } from '../../src/logging/index.js';
+import { REDACTED, createLogger, validateLogRecord, type Logger } from '../../src/logging/index.js';
 import { tenantIdForSite, type TenantDb } from '../../src/tenancy/index.js';
 import {
   MemorySpanExporter,
@@ -44,8 +45,10 @@ import {
   LEGACY_POST_LIMIT_BYTES,
   createService,
   defaultSurfaceOf,
+  isUnstorableTextError,
   legacyParamsOf,
   multipartFilesOf,
+  recordOutcomeReason,
   sendLegacyResponse,
   type CreateServiceOptions,
 } from '../../src/service-kit/create-service.js';
@@ -235,12 +238,17 @@ describe('createService options', () => {
     await app.opt2.shutdown();
   });
 
-  it('builds the default logger and system clock when none are given', async () => {
-    const app = await createService({ name: 'people', version: '1.0.0', env: ENV, verifierOverride: OVERRIDES });
+  it.each([
+    { LOG_LEVEL: undefined, level: 'info' },
+    { LOG_LEVEL: 'debug', level: 'debug' },
+  ] as const)('builds the default logger at LOG_LEVEL $LOG_LEVEL ($level) and system clock when none are given', async ({ LOG_LEVEL, level }) => {
+    const env: BaseEnv = { ...ENV, LOG_LEVEL };
+    const app = await createService({ name: 'people', version: '1.0.0', env, verifierOverride: OVERRIDES });
     apps.push(app);
-    expect(app.opt2).toMatchObject({ name: 'people', version: '1.0.0', env: ENV });
+    expect(app.opt2).toMatchObject({ name: 'people', version: '1.0.0', env });
     expect(app.opt2.clock.now()).toBeInstanceOf(Date);
     expect(typeof app.opt2.logger.info).toBe('function');
+    expect(app.opt2.logger.level).toBe(level);
     expect(app.opt2.db).toBeUndefined();
   });
 
@@ -407,6 +415,68 @@ describe('no-case path prefixes', () => {
   );
 });
 
+describe('legacy fixture paths', () => {
+  const API = '/legacy-fixtures/cfml/api.cfm';
+  const LIST = `${API}/surveys/surveys`;
+  const RESPONSES = `${API}/surveys/surveys/:id/responses`;
+  const TARGETS = `${API}/surveys/surveys/:id/targets/:tail`;
+  const ARCHIVE = `${API}/people/persons/:id/archive`;
+  const SITEMONITOR = '/_api/sitemonitor*';
+  const CATCH_ALL = '/*';
+  const MIXED_UUID = 'e2840384-07BC-2b9d-3A32BF32E4F5E736';
+
+  /** A service with public lower-case fixture probes and a catch-all, each echoing the route and URL it was routed under. */
+  async function probed(overrides: Partial<CreateServiceOptions> = { legacyFixturePaths: true }): Promise<FastifyInstance> {
+    const { app } = await build(overrides);
+    for (const url of [LIST, RESPONSES, TARGETS, ARCHIVE, SITEMONITOR, CATCH_ALL]) {
+      app.get(url, { config: { opt2: { public: true } } }, async (request) => ({ route: request.routeOptions.url, url: request.url }));
+    }
+    return app;
+  }
+
+  async function routed(app: FastifyInstance, url: string): Promise<unknown> {
+    const res = await app.inject({ method: 'GET', url });
+    expect(res.statusCode).toBe(200);
+    return res.json();
+  }
+
+  it.each([
+    [`${API}/Surveys/SURVEYS?siteid=Tenant-A&X=%41`, LIST, `${API}/surveys/surveys?siteid=Tenant-A&X=%41`],
+    [`${API}/SURVEYS/Surveys/`, LIST, `${API}/surveys/surveys/`],
+    [`${API}/%53URVEYS/sur%76EYS`, LIST, `${API}/surveys/surveys`],
+    [`${API}/SURVEYS/surveys/AbCd-Id/RESPONSES`, RESPONSES, `${API}/surveys/surveys/AbCd-Id/responses`],
+    [`${API}/surveys/surveys/%41b%2Fc/Responses?Q=%2F`, RESPONSES, `${API}/surveys/surveys/%41b%2Fc/responses?Q=%2F`],
+    [`${API}/surveys/surveys/AbCd-Id/Targets/BULK`, TARGETS, `${API}/surveys/surveys/AbCd-Id/targets/bulk`],
+    [`${API}/surveys/surveys/X/Targets/Not%2DA%20UUID`, TARGETS, `${API}/surveys/surveys/X/targets/not-a%20uuid`],
+    [`${API}/surveys/surveys/X/Targets/${MIXED_UUID}`, TARGETS, `${API}/surveys/surveys/X/targets/${MIXED_UUID}`],
+    [`${API}/People/PERSONS/AbC/Archive/`, ARCHIVE, `${API}/people/persons/AbC/archive/`],
+  ])('routes %s under %s as %s', async (url, route, rewritten) => {
+    expect(await routed(await probed(), url)).toStrictEqual({ route, url: rewritten });
+  });
+
+  it.each([
+    ['a prefix in another case', '/LEGACY-FIXTURES/cfml/api.cfm/Surveys/surveys'],
+    ['another front-controller case', '/legacy-fixtures/cfml/API.cfm/Surveys/surveys'],
+    ['one segment', `${API}/Surveys/`],
+    ['six segments', `${API}/Surveys/surveys/X/Targets/BULK/Y`],
+    ['no path info', `${API}?Surveys/SURVEYS`],
+  ])('leaves %s as sent: %s', async (_label, url) => {
+    expect(await routed(await probed(), url)).toStrictEqual({ route: CATCH_ALL, url });
+  });
+
+  it.each([{}, { legacyFixturePaths: false }])('keeps fixture paths case-sensitive with %j', async (overrides) => {
+    const app = await probed(overrides);
+    expect(await routed(app, `${API}/Surveys/SURVEYS`)).toStrictEqual({ route: CATCH_ALL, url: `${API}/Surveys/SURVEYS` });
+    expect(await routed(app, LIST)).toStrictEqual({ route: LIST, url: LIST });
+  });
+
+  it('rewrites fixture paths and no-case prefixes in one service', async () => {
+    const app = await probed({ legacyFixturePaths: true, noCasePathPrefixes: ['/_api/sitemonitor'] });
+    expect(await routed(app, `${API}/Surveys/SURVEYS`)).toStrictEqual({ route: LIST, url: LIST });
+    expect(await routed(app, '/_API/SiteMonitor?siteid=X')).toStrictEqual({ route: SITEMONITOR, url: '/_api/sitemonitor?siteid=X' });
+  });
+});
+
 describe('legacy error mapping', () => {
   async function failing(error: unknown, url = '/fail'): Promise<FastifyInstance> {
     const { app } = await build();
@@ -503,10 +573,58 @@ describe('legacy error mapping', () => {
     expect(res.body).toBe(LEGACY_ERROR_PAGE_HTML);
   });
 
+  const refused = (): Error =>
+    Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:26011'), { code: 'ECONNREFUSED', syscall: 'connect' });
+
   it.each([
-    ['a LegacyServiceUnavailableError', new LegacyServiceUnavailableError()],
-    ['a ServiceUnavailableError', new ServiceUnavailableError('identity', new Error('ECONNREFUSED'))],
-  ])('answers %s on the API surface with the legacy 503 envelope and logs a warning', async (_label, error) => {
+    { code: '22021', file: 'mbutils.c', status: 400, errorCode: 'invalid_request', message: 'Invalid parameters', logged: false },
+    { code: '22P05', file: 'jsonfuncs.c', status: 400, errorCode: 'invalid_request', message: 'Invalid parameters', logged: false },
+    { code: '22P05', file: 'mbutils.c', status: 500, errorCode: 'server_error', message: 'Unhandled Exception', logged: true },
+    { code: '22001', file: 'varchar.c', status: 500, errorCode: 'server_error', message: 'Unhandled Exception', logged: true },
+  ])('answers PostgreSQL error $code from $file with $status, logging only an unhandled error', async ({ code, file, status, errorCode, message, logged }) => {
+    const { app, lines } = await build();
+    app.post('/notes', { config: { opt2: { public: true } } }, async () => {
+      throw Object.assign(new Error('database refused the value'), { code, severity: 'ERROR', file });
+    });
+    const res = await app.inject({ method: 'POST', url: '/notes?method=save', payload: { title: 'a\u0000b' } });
+    expect(res.statusCode).toBe(status);
+    expect(res.headers['content-type']).toBe(LEGACY_JSON_CONTENT_TYPE);
+    expect(res.json()).toStrictEqual({ apiversion: 'v1', method: 'save', error: { code: errorCode, message } });
+    expect(lines.some((line) => line.message === 'unhandled error')).toBe(logged);
+  });
+
+  it.each([
+    { label: 'a pg-shaped 22021', error: { code: '22021', severity: 'ERROR' }, expected: true },
+    { label: 'a 22021 without a severity', error: { code: '22021' }, expected: false },
+    { label: 'a 22021 with a non-string severity', error: { code: '22021', severity: 1 }, expected: false },
+    { label: "JSON input's 22P05", error: { code: '22P05', severity: 'ERROR', file: 'jsonfuncs.c' }, expected: true },
+    { label: "an encoding conversion's 22P05", error: { code: '22P05', severity: 'ERROR', file: 'mbutils.c' }, expected: false },
+    { label: 'a 22P05 without a source file', error: { code: '22P05', severity: 'ERROR' }, expected: false },
+    { label: 'a JSON 22P05 without a severity', error: { code: '22P05', file: 'jsonfuncs.c' }, expected: false },
+    { label: 'another SQLSTATE', error: { code: '22P02', severity: 'ERROR' }, expected: false },
+    { label: 'null', error: null, expected: false },
+    { label: 'a string', error: '22021', expected: false },
+  ])('isUnstorableTextError reads $label as $expected', ({ error, expected }) => {
+    expect(isUnstorableTextError(error)).toBe(expected);
+  });
+
+  it.each([
+    ['a LegacyServiceUnavailableError', new LegacyServiceUnavailableError(), 'LegacyServiceUnavailableError', REDACTED],
+    [
+      'a ServiceUnavailableError',
+      new ServiceUnavailableError('identity', refused()),
+      'ServiceUnavailableError',
+      'Service identity unavailable (ECONNREFUSED)',
+    ],
+    [
+      'an unavailability caused by a ServiceUnavailableError',
+      Object.assign(new LegacyServiceUnavailableError('emailSend stopped for site tenant-a'), {
+        cause: new ServiceUnavailableError('migration', refused()),
+      }),
+      'LegacyServiceUnavailableError',
+      'Service migration unavailable (ECONNREFUSED)',
+    ],
+  ])('answers %s on the API surface with the legacy 503 envelope and logs a warning with its safe message', async (_label, error, type, message) => {
     const { app, lines } = await build();
     app.get('/busy', { config: { opt2: { public: true } } }, async () => {
       throw error;
@@ -519,7 +637,10 @@ describe('legacy error mapping', () => {
       method: 'save',
       error: { code: 'server_error', message: 'Unhandled Exception' },
     });
-    expect(lines.find((line) => line.message === 'service unavailable')).toMatchObject({ severity: 'WARNING' });
+    const warning = lines.find((line) => line.message === 'service unavailable');
+    expect(warning).toMatchObject({ severity: 'WARNING', error: { type, message } });
+    expect(validateLogRecord(warning).errors).toStrictEqual([]);
+    expect(JSON.stringify(warning)).not.toMatch(/127\.0\.0\.1|tenant-a|emailSend/);
   });
 
   it.each([
@@ -904,6 +1025,40 @@ describe('request scope and context', () => {
   });
 });
 
+describe('HTTP server span name', () => {
+  const ROUTE = '/v1/surveys/:surveyId/tasks';
+
+  it.each([
+    { label: 'a matched route', url: '/v1/surveys/S-1/tasks', headers: AUTHENTICATED, status: 200, name: `GET ${ROUTE}` },
+    { label: 'a denied request on a declared route', url: '/v1/surveys/S-2/tasks', headers: {}, status: 401, name: `GET ${ROUTE}` },
+    { label: 'an unmatched path', url: '/v1/surveys/S-3', headers: {}, status: 404, name: 'GET' },
+  ])('is "$name" for $label on a real socket', async ({ url, headers, status, name }) => {
+    const exporter = new MemorySpanExporter();
+    await startTracing({ serviceName: 'people', version: '1.0.0', exporter });
+    try {
+      // Patches the http module this worker loaded before tracing started.
+      createRequire(import.meta.url)('http');
+      const { app } = await build();
+      app.get(ROUTE, { config: { opt2: { requires: ['s2'] } } }, () => ({ ok: true }));
+      await app.listen({ port: 0, host: '127.0.0.1' });
+      const { port } = app.server.address() as AddressInfo;
+      const res = await fetch(`http://127.0.0.1:${String(port)}${url}`, { headers });
+      await res.arrayBuffer();
+      expect(res.status).toBe(status);
+      const span = await vi.waitFor(async () => {
+        await flushTracing();
+        const servers = exporter.getFinishedSpans().filter((finished) => finished.kind === SpanKind.SERVER);
+        expect(servers).toHaveLength(1);
+        return servers[0];
+      });
+      expect(span?.name).toBe(name);
+      expect(span?.attributes['url.path']).toBe(url);
+    } finally {
+      await shutdownTracing();
+    }
+  });
+});
+
 describe('request log line', () => {
   it('writes exactly one valid line per request with the inbound request id and no query string', async () => {
     const { app, lines } = await build();
@@ -945,6 +1100,159 @@ describe('request log line', () => {
     expect(completed[0]).not.toHaveProperty('userId');
     expect(typeof completed[0]?.requestId).toBe('string');
   });
+
+  const PRINCIPAL = { tenantId: TENANT_A_ID, userId: USER_ID };
+  const ANONYMOUS = { tenantId: undefined, userId: undefined };
+
+  interface OutcomeCase {
+    label: string;
+    method: 'GET' | 'POST';
+    url: string;
+    route: string;
+    /** Defaults to the user token and the invocation credential. */
+    headers?: Record<string, string>;
+    payload?: string;
+    status: number;
+    warning: string | null;
+    scope: typeof PRINCIPAL | typeof ANONYMOUS;
+  }
+
+  it.each<OutcomeCase>([
+    { label: 'a 200', method: 'GET', url: '/items/a', route: '/items/:id', status: 200, warning: null, scope: PRINCIPAL },
+    {
+      label: 'a 401 without a credential',
+      method: 'GET',
+      url: '/items/a',
+      route: '/items/:id',
+      headers: {},
+      status: 401,
+      warning: 'request denied: missing-credential',
+      scope: ANONYMOUS,
+    },
+    {
+      label: 'a 401 with only the invocation credential',
+      method: 'GET',
+      url: '/items/a',
+      route: '/items/:id',
+      headers: { [INVOCATION_HEADER]: SERVICE_CREDENTIAL },
+      status: 401,
+      warning: 'request denied: missing-credential',
+      scope: ANONYMOUS,
+    },
+    { label: 'a role-denied 403', method: 'GET', url: '/staff/a', route: '/staff/:id', status: 403, warning: 'request denied: forbidden', scope: PRINCIPAL },
+    {
+      label: 'a handler 403 with a recorded reason',
+      method: 'GET',
+      url: '/owned/a',
+      route: '/owned/:id',
+      status: 403,
+      warning: 'request denied: notOwner',
+      scope: PRINCIPAL,
+    },
+    {
+      label: 'a site-mismatch 403',
+      method: 'GET',
+      url: '/items/a?siteid=tenant-b',
+      route: '/items/:id',
+      status: 403,
+      warning: 'request denied: site-mismatch',
+      scope: PRINCIPAL,
+    },
+    {
+      label: 'a thrown LegacyApiError 400',
+      method: 'GET',
+      url: '/rejected/a',
+      route: '/rejected/:id',
+      status: 400,
+      warning: 'request rejected: invalidParameters',
+      scope: PRINCIPAL,
+    },
+    {
+      label: 'a schema validation 400',
+      method: 'GET',
+      url: '/validated/a',
+      route: '/validated/:id',
+      status: 400,
+      warning: 'request rejected: FST_ERR_VALIDATION',
+      scope: PRINCIPAL,
+    },
+    {
+      label: 'a Fastify client error 400',
+      method: 'POST',
+      url: '/small/a',
+      route: '/small/:id',
+      payload: '{"payload":"far too long"}',
+      status: 400,
+      warning: 'request rejected: FST_ERR_CTP_BODY_TOO_LARGE',
+      scope: PRINCIPAL,
+    },
+    {
+      label: 'a PostgreSQL 22021 400',
+      method: 'POST',
+      url: '/notes/a',
+      route: '/notes/:id',
+      payload: '{"title":"a\\u0000b"}',
+      status: 400,
+      warning: 'request rejected: 22021',
+      scope: PRINCIPAL,
+    },
+    {
+      label: 'a PostgreSQL JSON 22P05 400',
+      method: 'POST',
+      url: '/events/a',
+      route: '/events/:id',
+      payload: '{"title":"a\\u0000b"}',
+      status: 400,
+      warning: 'request rejected: 22P05',
+      scope: PRINCIPAL,
+    },
+  ])(
+    'writes the warning of $label, if any, ahead of its one completion line, both with the verified tenant and user',
+    async ({ method, url, route, headers = AUTHENTICATED, payload, status, warning, scope }) => {
+      const { app, lines } = await build();
+      const s2 = { config: { opt2: { requires: ['s2'] } } };
+      app.get('/items/:id', s2, async () => ({ ok: true }));
+      app.get('/staff/:id', { config: { opt2: { requires: ['site-admin'] } } }, async () => 'never');
+      app.get('/owned/:id', s2, async (request, reply) => {
+        recordOutcomeReason(request, 'notOwner');
+        return reply.code(403).send('denied');
+      });
+      app.get('/rejected/:id', s2, async () => {
+        throw new LegacyApiError('invalidParameters');
+      });
+      app.get(
+        '/validated/:id',
+        { ...s2, schema: { querystring: { type: 'object', required: ['count'], properties: { count: { type: 'integer' } } } } },
+        async () => 'never',
+      );
+      app.post('/small/:id', { ...s2, bodyLimit: 8 }, async () => 'never');
+      app.post('/notes/:id', s2, async () => {
+        throw Object.assign(new Error('database refused the value'), { code: '22021', severity: 'ERROR' });
+      });
+      app.post('/events/:id', s2, async () => {
+        throw Object.assign(new Error('unsupported Unicode escape sequence'), { code: '22P05', severity: 'ERROR', file: 'jsonfuncs.c' });
+      });
+      const res = await app.inject({
+        method,
+        url: `${url}${url.includes('?') ? '&' : '?'}key=push-key-value`,
+        headers: { ...headers, 'content-type': 'application/json' },
+        payload,
+      });
+      expect(res.statusCode).toBe(status);
+      const warnings = lines.filter((line) => line.severity === 'WARNING');
+      const completed = completedLines(lines);
+      expect(warnings.map((line) => line.message)).toStrictEqual(warning === null ? [] : [warning]);
+      expect(completed).toHaveLength(1);
+      expect(completed[0]).toMatchObject({ severity: 'INFO' });
+      for (const line of [...warnings, ...completed]) {
+        expect(validateLogRecord(line).errors).toStrictEqual([]);
+        expect(line).toMatchObject({ route, httpMethod: method, statusCode: status });
+        expect({ tenantId: line.tenantId, userId: line.userId }).toStrictEqual(scope);
+      }
+      expect(lines.slice(-1 - warnings.length)).toStrictEqual([...warnings, ...completed]);
+      expect(JSON.stringify(lines)).not.toContain('push-key-value');
+    },
+  );
 });
 
 describe('graceful shutdown', () => {

@@ -687,7 +687,7 @@ export function createRecordingDb(seed: RecordingDbSeed = {}): RecordingDb {
   // tenantDbFromPool freezes its TenantDb, so the recording members sit on an object that delegates to it.
   return {
     schema: base.schema,
-    withTenant: (tenantId, fn) => base.withTenant(tenantId, fn),
+    withTenant: (tenantId, fn, options) => base.withTenant(tenantId, fn, options),
     withMetadata: (fn, options) => base.withMetadata(fn, options),
     end: () => base.end(),
     startup: [],

@@ -164,10 +164,19 @@ describe('secure (controller.cfc 83-92)', () => {
     expect(secure(anonymousListRequest({ https }))).toEqual(loginRedirect(returnUrl, 'false'));
   });
 
-  it('carries a compact display value into the login redirect', () => {
-    const request = anonymousListRequest({ rc: { compactDisplay: 'true' } });
+  // Oracle: anonymous cArch.list answered 302 with each raw value as the admin scan leaves it.
+  it.each<[value: string, scanned: string]>([
+    ['true', 'true'],
+    [' TRUE', 'TRUE'],
+    ['tr\u0000ue', 'true'],
+    [' 1.0 ', '1.0'],
+    [' true', '"YES"'],
+    [' false', '"NO"'],
+    ['abc ', 'abc'],
+  ])('carries compactDisplay %j into the login redirect as %j', (value, scanned) => {
+    const request = anonymousListRequest({ rc: { compactDisplay: value } });
 
-    expect(secure(request)).toEqual(loginRedirect('http://example.test/admin/?&muraAction=cusers.list', 'true'));
+    expect(secure(request)).toEqual(loginRedirect('http://example.test/admin/?&muraAction=cusers.list', scanned));
   });
 
   it('appends no compactDisplay when rc holds none', () => {

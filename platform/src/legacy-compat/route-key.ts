@@ -97,7 +97,7 @@ export interface RouteKeyResult {
   family: RouteFamily;
   variant?: string;
   siteId?: string;
-  /** Request method after X-HTTP-Method-Override, upper-case. */
+  /** Request method after X-HTTP-Method-Override as the family reads it, upper-case; fixtures ignore an empty override. */
   httpMethod: string;
   /** The family's merged params as legacy merges them, lower-cased keys, simple values only. */
   params: Record<string, string>;
@@ -138,6 +138,9 @@ export const IMAGE_UPLOAD_CONDITION: VariantCondition = Object.freeze<VariantCon
 
 /** Request carrying a form submission (core/modules/v1/form/index.cfm:114). */
 export const SAVEFORM_CONDITION: VariantCondition = Object.freeze<VariantCondition>({ param: 'saveform', nonEmpty: true });
+
+/** Gateway-set header naming, comma-separated and in any case, the REST credential params its exchange consumed. */
+export const REST_CONSUMED_PARAMS_HEADER = 'X-Opt2-Consumed-Params';
 
 /** Extra request facts any entry point may carry. */
 interface EntryPointExtras {
@@ -197,6 +200,8 @@ interface BaseRoute {
   body: string;
   params: ParamMap;
   siteId?: string;
+  /** The family's own effective method, when it reads X-HTTP-Method-Override differently from the JSON API. */
+  httpMethod?: string;
 }
 
 const GLOB_FAMILIES: ReadonlySet<RouteFamily> = new Set<RouteFamily>(['opt2', 'bridge', 'static', 'cfm', 'apiother']);
@@ -219,6 +224,8 @@ const REST_HEADER_PARAMS: ReadonlyArray<readonly [string, string]> = [
   ['X-client-secret', 'client_secret'],
   ['X-access-token', 'access_token'],
 ];
+/** The params legacy's REST credential block deletes; the only names {@link REST_CONSUMED_PARAMS_HEADER} may remove. */
+const REST_CREDENTIAL_PARAMS: ReadonlySet<string> = new Set(['client_id', 'client_secret', 'access_token', 'refresh_token']);
 
 // ---- CFML semantics ----
 
@@ -496,6 +503,14 @@ function restCredentials(c: RouteContext, P: ParamMap, url: ParamMap): string | 
   return undefined;
 }
 
+/** Deletes the credentials the gateway's exchange consumed from params, never from the URL scope (jsonApiUtility.cfc:474-475,823-824). */
+function dropConsumedCredentials(c: RouteContext, P: ParamMap): void {
+  for (const name of listToArray(header(c.req.headers, REST_CONSUMED_PARAMS_HEADER) ?? '')) {
+    const key = name.trim().toLowerCase();
+    if (REST_CREDENTIAL_PARAMS.has(key)) P.delete(key);
+  }
+}
+
 /** The GET case of the operation switch (jsonApiUtility.cfc:1243-1285). */
 function getOperation(entity: string, pi: readonly string[], P: ParamMap, url: ParamMap, opts: ResolvedOptions): string {
   let id = P.get('id');
@@ -600,6 +615,7 @@ function resolveJsonApi(c: RouteContext, restMode: boolean, siteId: string, P: P
   if (restMode) {
     const credentialKey = restCredentials(c, P, url);
     if (credentialKey !== undefined) return credentialKey;
+    dropConsumedCredentials(c, P);
   } else {
     for (const name of ['X-csrf_token', 'X-csrf_token_expires']) {
       const v = header(req.headers, name);
@@ -821,15 +837,22 @@ function isFixtureId(s: string): boolean {
   return isCfUuid(s) || RFC_UUID.test(s) || DIGITS.test(s);
 }
 
+/** api.cfm's method: a non-empty X-HTTP-Method-Override, else the request method, upper-cased (api.cfm:16-23). */
+function fixtureHttpMethod(req: RouteKeyRequest): string {
+  const override = header(req.headers, 'X-HTTP-Method-Override');
+  return (override === undefined || override === '' ? req.method : override).toUpperCase();
+}
+
 /** Fixture front controller paths `api.cfm/<module>/<resource>[/<id>][/<action>…]`. */
 function fixtureRoute(c: RouteContext): BaseRoute {
   const { req } = c;
   const params = append(queryThenForm(req), isPlainObject(req.jsonBody) ? jsonMap(req.jsonBody) : new Map());
   const items = listToArray(c.path.slice(FIXTURE_PREFIX.length), '/');
-  const method = c.httpMethod.toLowerCase();
-  if (items.length < 2) return { family: 'fixture', body: `!notfound@${method}`, params };
+  const httpMethod = fixtureHttpMethod(req);
+  const method = httpMethod.toLowerCase();
+  if (items.length < 2) return { family: 'fixture', body: `!notfound@${method}`, params, httpMethod };
   const body = items.map((s, i) => (i < 2 ? s : i === 2 || isFixtureId(s) ? '{id}' : s)).join('/');
-  return { family: 'fixture', body: `${body}@${method}`, params };
+  return { family: 'fixture', body: `${body}@${method}`, params, httpMethod };
 }
 
 /** Remote CFC proxy call keyed by its method; form `method` wins over the query. */
@@ -855,6 +878,15 @@ function pageRoute(c: RouteContext, allowStatic: boolean): BaseRoute {
   return { family: 'page', body, params };
 }
 
+/** OPT-2 namespace request; its site is the merged `siteid`, form over query, as web's request set-up reads it. */
+function opt2Route(req: RouteKeyRequest, path: string): BaseRoute {
+  const params = queryThenForm(req);
+  const route: BaseRoute = { family: 'opt2', body: path, params };
+  const siteId = str(params, 'siteid');
+  if (siteId !== undefined) route.siteId = siteId;
+  return route;
+}
+
 /** First matching rule of the shared precedence; `rootPath` is the path the root front controller reads. */
 function baseRoute(c: RouteContext, indexAt: number, rootPath: string): BaseRoute {
   const { req, path, segments } = c;
@@ -865,7 +897,7 @@ function baseRoute(c: RouteContext, indexAt: number, rootPath: string): BaseRout
   const rootFirst = nth(root.segments, 1).toLowerCase();
   const rootApi = rootFirst === '_api' || rootFirst === 'tasks';
   if (!frontController) {
-    if (first === 'opt2') return { family: 'opt2', body: path, params: queryThenForm(req) };
+    if (first === 'opt2') return opt2Route(req, path);
     if (startsNoCase(path, BRIDGE_PREFIX)) return { family: 'bridge', body: path, params: queryThenForm(req) };
   }
   if (first === '_api' || first === 'tasks' || (frontController && rootApi)) return apiRoute(root);
@@ -959,9 +991,11 @@ export function normaliseRouteKey(s: string): string {
 /** Route key of a live request under the shared precedence. */
 export function routeKeyForRequest(req: RouteKeyRequest, opts: RouteKeyOptions = {}): RouteKeyResult {
   const resolved = resolveOptions(opts);
-  const httpMethod = (header(req.headers, 'X-HTTP-Method-Override') ?? req.method).toUpperCase();
+  // The JSON API reads a present override even when empty (jsonApiUtility.cfc:995-999, 1157-1161, 1198-1202).
+  const apiMethod = (header(req.headers, 'X-HTTP-Method-Override') ?? req.method).toUpperCase();
   const { path, indexAt, rootPath } = normalisePath(req.path, resolved.context);
-  const route = baseRoute({ req, path, segments: listToArray(path, '/'), httpMethod, opts: resolved }, indexAt, rootPath);
+  const route = baseRoute({ req, path, segments: listToArray(path, '/'), httpMethod: apiMethod, opts: resolved }, indexAt, rootPath);
+  const httpMethod = route.httpMethod ?? apiMethod;
   const baseKey = `${route.family}:${route.body}`.toLowerCase();
   const params = simpleParams(route.params);
   const result = keyedResult({ baseKey, family: route.family, httpMethod, params, siteId: route.siteId }, req, resolved);

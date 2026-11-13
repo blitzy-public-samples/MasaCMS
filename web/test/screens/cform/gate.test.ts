@@ -1,6 +1,7 @@
 // cform before(): the Site Manager and Forms module gate of admin/core/controllers/cform.cfc, and the registered actions.
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { Roles, moduleRole } from '@opt2/platform/auth';
 import { normaliseRouteKey } from '@opt2/platform/legacy-compat';
 import { runGate, secure, type GateDecision } from '@/lib/access-gate';
 import type { AdminRequest } from '@/lib/request-context';
@@ -12,8 +13,10 @@ import {
   buildTestAdminRequest,
   editorRequest,
   siteAdminRequest,
+  type AdminRequestPartial,
 } from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
+import { REQUESTED_SITE_CASES } from '../../helpers/requested-site';
 
 const M000 = '00000000000000000000000000000000000';
 const M004 = '00000000000000000000000000000000004';
@@ -78,11 +81,15 @@ afterEach(() => {
 const gate = async (req: AdminRequest): Promise<GateDecision> => cformGate(req, { secure: secureSpy });
 
 // makeAdminRequest derives modulePerm from the claims and takes no override, so the preset's member is replaced.
-/** The S2 preset with `modulePerm` granting only `granted`, recording each module id it was asked. */
-function s2Granting(granted: string): { req: AdminRequest; modulePerm: Mock<(moduleId: string) => boolean> } {
+/** The qa_editor preset on its token site with `modulePerm` granting only `granted`, recording each module id asked. */
+function editorGranting(granted: string): { req: AdminRequest; modulePerm: Mock<(moduleId: string) => boolean> } {
   const modulePerm = vi.fn((moduleId: string) => moduleId === granted);
-  return { req: { ...adminS2Request(GETFORM), modulePerm }, modulePerm };
+  return { req: { ...editorRequest(GETFORM), modulePerm }, modulePerm };
 }
+
+/** qa_editor holding the Site Manager and Forms grants of its token site. */
+const editorWithForms = (partial: AdminRequestPartial): AdminRequest =>
+  editorRequest({ ...GETFORM, ...partial, user: { roles: [Roles.systemUser, moduleRole(M000), moduleRole(M004)] } });
 
 describe('cformGate', () => {
   it('allows s2', async () => {
@@ -114,18 +121,23 @@ describe('cformGate', () => {
     ['secures with m:000 only', M000, [[M000], [M004]]],
     ['secures with m:004 only', M004, [[M000]]],
   ])('%s', async (_label, granted, asked) => {
-    const { req, modulePerm } = s2Granting(granted);
+    const { req, modulePerm } = editorGranting(granted);
 
     expect(await gate(req)).toBe(SENTINEL);
     expect(modulePerm.mock.calls).toEqual(asked);
     expect(secureSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('binds to the token site, not rc.siteid', async () => {
-    const req = siteAdminRequest('tenant-a', { ...GETFORM, rc: { siteid: 'tenant-b' } });
+  it.each(REQUESTED_SITE_CASES)('admits $who only when it administers that site', async ({ request, administers }) => {
+    expect(await gate(request(GETFORM))).toEqual(administers ? ALLOW : SENTINEL);
+  });
 
-    expect(req.rc['siteid']).toBe('tenant-b');
-    expect(await gate(req)).toEqual(ALLOW);
+  it.each<[string, AdminRequestPartial, GateDecision]>([
+    ['on its token site', {}, ALLOW],
+    ['on Default, its token site in another case', { rc: { siteid: 'Default' } }, ALLOW],
+    ['on tenant-b, a site its token does not serve', { rc: { siteid: 'tenant-b' } }, SENTINEL],
+  ])('checks the module grants of qa_editor %s against rc.siteid', async (_case, partial, expected) => {
+    expect(await gate(editorWithForms(partial))).toEqual(expected);
   });
 
   it.each<[string, 'siteAdmin' | 'qaEditor', string, GateDecision]>([

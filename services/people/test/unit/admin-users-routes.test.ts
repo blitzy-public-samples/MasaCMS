@@ -6,12 +6,13 @@ import path from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles, moduleRole, recordedRoutes } from '@opt2/platform/auth';
+import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { tenantIdForSite, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { assertResponseMatchesOpenApi, mintServiceToken, mintUserToken, testVerifier, writeTestSecrets } from '@opt2/platform/testing';
 import type { AccountView, AdminSessionState, GroupSummary, IdentityClient, UserGroupRow } from '../../src/legacy/identity-client.js';
-import type { PeopleRepository } from '../../src/repo/repository.js';
+import type { PeopleRepository, PersonOrderScope, PersonSortKey } from '../../src/repo/repository.js';
 import type { AddressRow, ExtendSubtypeRow, PersonRow } from '../../src/repo/tables.js';
 import {
   parseDomain,
@@ -20,6 +21,7 @@ import {
   routeRedirect,
   sanitizeHref,
 } from '../../src/routes/admin-users.js';
+import { IdentityDouble, personsInOrder } from '../helpers/search-doubles.js';
 
 const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
   paths: Record<string, Record<string, { operationId?: string; 'x-opt2-transport'?: string; 'x-opt2-requires'?: string[] }>>;
@@ -126,8 +128,10 @@ function fakeTx(tenantId: string): TenantTx {
 }
 
 const tenantsRead: string[] = [];
+const registryReads: string[] = [];
+const REGISTRY_ENTRIES = /^SELECT site_id, tenant_id, .+ FROM people\.tenant_registry ORDER BY site_id$/;
 
-/** A TenantDb whose metadata transactions answer the registry queries, and whose tenant transactions record the tenant. */
+/** A TenantDb whose metadata transactions record and answer the registry queries, and whose tenant transactions record the tenant. */
 const db: TenantDb = {
   schema: 'people',
   withTenant: async (tenantId, fn) => {
@@ -138,7 +142,10 @@ const db: TenantDb = {
     fn({
       schema: 'people',
       query: async (sql: string, params: unknown[] = []) => {
+        registryReads.push(sql);
+        if (REGISTRY_ENTRIES.test(sql)) return { rows: REGISTRY };
         if (/ORDER BY site_id/.test(sql)) return { rows: REGISTRY.map((row) => ({ tenant_id: row.tenant_id, site_id: row.site_id })) };
+        if (/lower\(site_id\) = lower\(\$1\)/.test(sql)) return { rows: REGISTRY.filter((row) => sameId(row.site_id, String(params[0]))) };
         return { rows: REGISTRY.filter((row) => row.tenant_id === params[0]) };
       },
     } as never),
@@ -153,6 +160,15 @@ const repository = {
   findPerson: async (tx: TenantTx, userId: string) => ofTenant(PERSONS, tx).find((row) => sameId(row.userid, userId)) ?? null,
   queryPersons: async (tx: TenantTx) => ofTenant(PERSONS, tx),
   listPersonsForSite: async (tx: TenantTx, siteId: string) => ofTenant(PERSONS, tx).filter((row) => sameId(row.siteid, siteId)),
+  pagePersonsForSite: async (tx: TenantTx, siteId: string) => ({
+    rows: ofTenant(PERSONS, tx).filter((row) => sameId(row.siteid, siteId)), next: null,
+  }),
+  pageQueryPersons: async (tx: TenantTx, query: { siteIds?: readonly string[] }) => ({
+    rows: ofTenant(PERSONS, tx).filter((row) => query.siteIds === undefined || query.siteIds.some((siteId) => sameId(row.siteid, siteId))), next: null,
+  }),
+  pagePersonsInOrder: async (tx: TenantTx, scope: PersonOrderScope, opts: { orderBy: readonly PersonSortKey[] }) => ({
+    rows: personsInOrder(ofTenant(PERSONS, tx), scope, opts.orderBy), next: null,
+  }),
   listInterests: async (_tx: TenantTx, userId: string) => (userId === JANE ? [{ userid: JANE, categoryid: 'E0000000-0000-0000-0000000000000001' }] : []),
   listAddresses: async (tx: TenantTx, userId: string) => ofTenant(ADDRESSES, tx).filter((row) => sameId(row.userid, userId)),
   findAddress: async (tx: TenantTx, addressId: string) => ofTenant(ADDRESSES, tx).find((row) => sameId(row.addressid, addressId)) ?? null,
@@ -172,11 +188,25 @@ const repository = {
   listExtendSets: async () => [],
   listExtendSubtypes: async (tx: TenantTx, filter: { siteId: string; types?: readonly string[] }) =>
     ofTenant(SUBTYPES, tx).filter((row) => sameId(row.siteid, filter.siteId) && (filter.types === undefined || filter.types.includes(row.type ?? ''))),
+  // No roster operation is ever open over these rows.
+  lockRosterUsers: () => Promise.resolve(),
+  lockRosterTenant: () => Promise.resolve(),
+  findOpenRosterOperations: () => Promise.resolve([]),
+  countRosterOperations: () => Promise.resolve(0),
 } as unknown as PeopleRepository;
 
 let sessionState: AdminSessionState = {};
 const saves: AdminSessionState[] = [];
+const groupReads: Array<readonly [siteId: string, isPublic: number]> = [];
+/** Errors the routes threw, as the service-kit error handler receives them. */
+const routeErrors: Error[] = [];
+const loginBlocks = new Map<string, string>();
+const loginBlockCalls: { userId: string; removeBlock: boolean }[] = [];
 const unused = (name: string) => (): Promise<never> => Promise.reject(new Error(`unexpected identity call ${name}`));
+/** The account and membership lookups of the current test, with the ids each carried. */
+const identityReads: { op: 'readAccounts' | 'readAccountsAllSites' | 'lookupMemberships'; userIds: string[] }[] = [];
+// Every token here that reaches identity is of tenant-a, so `lookupAccounts` reads only its user pools; S2 alone reads every site.
+const accountReads = new IdentityDouble(ACCOUNTS, MEMBERSHIPS, { db, tid: tenantIdForSite(SITE), s2: true });
 
 /** Identity's reads over the in-memory accounts, groups and session state. */
 const identity: IdentityClient = {
@@ -187,11 +217,27 @@ const identity: IdentityClient = {
   revert: unused('revert'),
   operationState: unused('operationState'),
   readAccount: async (userId) => ACCOUNTS.get(userId),
-  readAccounts: async (userIds) => new Map(userIds.flatMap((id) => (ACCOUNTS.has(id) ? [[id, ACCOUNTS.get(id) as AccountView] as const] : []))),
+  readAccounts: async (userIds, where) => {
+    identityReads.push({ op: 'readAccounts', userIds: [...userIds] });
+    return accountReads.readAccounts(userIds, where);
+  },
+  readAccountsAllSites: async (userIds, where) => {
+    identityReads.push({ op: 'readAccountsAllSites', userIds: [...userIds] });
+    return accountReads.readAccountsAllSites(userIds, where);
+  },
+  countAccounts: (request) => accountReads.countAccounts(request),
+  usernameCandidates: (request) => accountReads.usernameCandidates(request),
+  lookupMemberships: async (userIds) => {
+    identityReads.push({ op: 'lookupMemberships', userIds: [...userIds] });
+    return accountReads.lookupMemberships(userIds);
+  },
   userMemberships: unused('userMemberships'),
   membershipGroupIds: async (userId) => MEMBERSHIPS.get(userId) ?? [],
   siteGroups: async (_siteId, isPublic) => (isPublic === 1 ? PUBLIC_GROUPS : PRIVATE_GROUPS),
-  userGroups: async () => GROUP_ROWS,
+  userGroups: (siteId, isPublic) => {
+    groupReads.push([siteId, isPublic]);
+    return Promise.resolve(GROUP_ROWS);
+  },
   actingUser: unused('actingUser'),
   adminSessionState: async () => sessionState,
   saveAdminSessionState: async (state) => {
@@ -203,6 +249,19 @@ const identity: IdentityClient = {
     { siteID: SITE, site: 'Tenant A' },
     { siteID: UMBRELLA, site: 'Umbrella' },
   ],
+  loginBlock: async (userId, removeBlock) => {
+    loginBlockCalls.push({ userId, removeBlock });
+    if (removeBlock) loginBlocks.delete(userId);
+    return loginBlocks.get(userId) ?? null;
+  },
+};
+
+/** The tenants and users the roster closure was awaited on, and the error it answers for a closed user. */
+const openWaits: Array<{ tenantId: string; userId: string }> = [];
+let closedError: Error | undefined;
+const awaitOpen = async (_db: TenantDb, tenantId: string, userId: string): Promise<void> => {
+  openWaits.push({ tenantId, userId });
+  if (closedError !== undefined) throw closedError;
 };
 
 let stateDir: string;
@@ -229,7 +288,10 @@ beforeAll(async () => {
     logger,
   });
   const photoFileExts = async (ids: readonly (string | null | undefined)[]) => new Map(ids.flatMap((id) => (id === 'PHOTO-1' ? [[id, 'jpg'] as const] : [])));
-  await registerAdminUserRoutes(app, { db, repository, identity, clock: fixedClock(NOW), photoFileExts });
+  app.addHook('onError', async (_request, _reply, error) => {
+    routeErrors.push(error);
+  });
+  await registerAdminUserRoutes(app, { db, repository, identity, clock: fixedClock(NOW), photoFileExts, awaitPersonOpen: awaitOpen });
   await app.ready();
 });
 
@@ -242,6 +304,14 @@ beforeEach(() => {
   sessionState = {};
   saves.length = 0;
   tenantsRead.length = 0;
+  groupReads.length = 0;
+  routeErrors.length = 0;
+  identityReads.length = 0;
+  loginBlocks.clear();
+  loginBlockCalls.length = 0;
+  openWaits.length = 0;
+  closedError = undefined;
+  registryReads.length = 0;
 });
 
 /** Headers of web's call for a user of `site` holding `roles`. */
@@ -254,9 +324,11 @@ async function headersFor(roles: readonly string[], site = SITE): Promise<Record
 
 const S2 = [Roles.s2, Roles.systemUser];
 const SITE_ADMIN = [Roles.siteAdmin, Roles.systemUser];
+/** The path prefixes of the user list reads: `/v1` answers every match, `/v2` only the page `nextn` selects. */
+const VERSIONS = ['/v1', '/v2'] as const;
 
 /** Injects a request and checks the answer against the contract. */
-async function call(method: 'GET' | 'POST', url: string, headers: Record<string, string>, form?: Record<string, string>) {
+async function checked(method: 'GET' | 'POST', url: string, headers: Record<string, string>, form?: Record<string, string>) {
   const res = await app.inject({
     method,
     url,
@@ -265,6 +337,12 @@ async function call(method: 'GET' | 'POST', url: string, headers: Record<string,
   });
   const pathOnly = url.split('?')[0] ?? url;
   assertResponseMatchesOpenApi(OPENAPI, { method, path: pathOnly, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
+  return res;
+}
+
+/** {@link checked}'s status, with the JSON body of a 200. */
+async function call(method: 'GET' | 'POST', url: string, headers: Record<string, string>, form?: Record<string, string>) {
+  const res = await checked(method, url, headers, form);
   return { status: res.statusCode, body: res.statusCode === 200 ? (res.json() as Record<string, any>) : undefined };
 }
 
@@ -330,7 +408,10 @@ describe('route() URL helpers [legacy: core/mura/utility.cfc:1326-1469]', () => 
 });
 
 describe('registration', () => {
-  const OPERATIONS = ['listUserGroups', 'listUsers', 'searchUsers', 'getAdvancedSearch', 'setAdvancedSearch', 'getUserEdit', 'getAddressEdit', 'routeUser'];
+  const OPERATIONS = [
+    'listUserGroups', 'listUsers', 'searchUsers', 'getAdvancedSearch', 'setAdvancedSearch', 'getUserEdit', 'getAddressEdit', 'routeUser', 'readCurrentUser',
+    'listUsersV2', 'searchUsersV2', 'getAdvancedSearchV2', 'setAdvancedSearchV2',
+  ];
 
   it('registers exactly the contract operations of these reads, with their transport and roles', () => {
     const declared = Object.entries(OPENAPI.paths).flatMap(([url, methods]) =>
@@ -354,7 +435,11 @@ describe('the cUsers gate', () => {
     ['Users module only', () => headersFor([USERS_MODULE, Roles.systemUser]), 403],
     ['a member', () => headersFor([Roles.member]), 403],
   ])('refuses %s', async (_case, headers, status) => {
-    for (const url of ['/v1/users/groups', '/v1/users', '/v1/users/search', '/v1/users/advanced-search', '/v1/users/edit', '/v1/users/address', '/v1/users/route']) {
+    const urls = [
+      '/v1/users/groups', '/v1/users', '/v1/users/search', '/v1/users/advanced-search', '/v1/users/edit', '/v1/users/address', '/v1/users/route',
+      '/v2/users', '/v2/users/search', '/v2/users/advanced-search',
+    ];
+    for (const url of urls) {
       expect((await call('GET', url, await headers())).status, url).toBe(status);
     }
   });
@@ -363,16 +448,24 @@ describe('the cUsers gate', () => {
     expect((await call('GET', '/v1/users/groups', await headersFor([USERS_MODULE, SITE_MANAGER_MODULE, Roles.systemUser]))).status).toBe(200);
   });
 
-  it.each(['/v1/users/groups', '/v1/users', '/v1/users/edit', '/v1/users/route'])('refuses another site than the token’s on %s', async (url) => {
+  it.each(['/v1/users/groups', '/v1/users', '/v1/users/edit', '/v1/users/route', '/v2/users'])('refuses another site than the token’s on %s', async (url) => {
     expect((await call('GET', `${url}?siteid=${OTHER}`, await headersFor(S2))).status).toBe(403);
   });
 
-  it('refuses siteid=all to a caller without S2', async () => {
-    expect((await call('GET', '/v1/users?siteid=all', await headersFor(SITE_ADMIN))).status).toBe(403);
+  it.each(VERSIONS)('refuses siteid=all on %s/users to a caller without S2', async (version) => {
+    expect((await call('GET', `${version}/users?siteid=all`, await headersFor(SITE_ADMIN))).status).toBe(403);
   });
 
-  it('answers the legacy 503 for a token tenant the registry does not hold', async () => {
-    expect((await call('GET', '/v1/users/edit?siteid=unknown-site', await headersFor(S2, 'unknown-site'))).status).toBe(503);
+  it.each([
+    '/v1/users/edit?siteid=unknown-site',
+    '/v1/users?siteid=unknown-site&ispublic=0',
+    '/v1/users/search?siteid=unknown-site&ispublic=0&search=jane',
+    '/v1/users/search?siteid=unknown-site&ispublic=0&search=',
+    '/v2/users?siteid=unknown-site&ispublic=0',
+    '/v2/users/search?siteid=unknown-site&ispublic=0&search=jane',
+    '/v2/users/search?siteid=unknown-site&ispublic=0&search=',
+  ])('answers the legacy 503 for a token tenant the registry does not hold: %s', async (url) => {
+    expect((await call('GET', url, await headersFor(S2, 'unknown-site'))).status).toBe(503);
   });
 });
 
@@ -385,8 +478,51 @@ describe('lists and searches', () => {
     expect(body?.nextn).toMatchObject({ totalrecords: 2, recordsperpage: 1, startrow: 1, numberofpages: 2, next: 2 });
   });
 
-  it("lists the private pool's users by name with their unassigned ids", async () => {
-    const { body } = await call('GET', '/v1/users?ispublic=0', await headersFor(SITE_ADMIN));
+  // `before()` scrubs a value the admin Portcullis scan does not leave boolean, such as 'abc' or ' false' (scanned to '"NO"'),
+  // to 1 [legacy: admin/core/controllers/cusers.cfc:163]; the scan trims ' 0 ' to 0.
+  it.each<[string, number]>([
+    ['0', 0],
+    ['0.0', 0],
+    ['1', 1],
+    ['1.0', 1],
+    ['2', 2],
+    ['-1', -1],
+    [' 1', 1],
+    [' 0 ', 0],
+    ['0\u0001', 0],
+    ['abc', 1],
+    [' false', 1],
+    ['\ttrue', 1],
+    ['"0"', 1],
+  ])('reads identity groups for ispublic %j as the number %j', async (ispublic, flag) => {
+    expect((await call('GET', `/v1/users/groups?ispublic=${encodeURIComponent(ispublic)}`, await headersFor(SITE_ADMIN))).status).toBe(200);
+    expect(groupReads).toEqual([[SITE, flag]]);
+  });
+
+  // Oracle: an admin's cUsers.list or cUsers.search with a boolean word answers ACF's 500 page, its h2 the message below;
+  // the scan trims ' no', '\tFALSE\n' and ' True' to words first.
+  it.each(
+    ['yes', 'No', 'TRUE', 'false', ' no', '\tFALSE\n', ' True'].flatMap((ispublic) => [
+      ['/v1/users/groups', ispublic, 'getUserGroups'] as const,
+      ['/v1/users/search', ispublic, 'getSearch'] as const,
+      ['/v2/users/search', ispublic, 'getSearch'] as const,
+    ]),
+  )(
+    'answers %s the legacy server_error 500 for ispublic %j, with the %s argument error off the wire, before any read',
+    async (url, ispublic, fn) => {
+      const res = await checked('GET', `${url}?ispublic=${encodeURIComponent(ispublic)}&search=doe`, await headersFor(SITE_ADMIN));
+      expect(res.statusCode).toBe(500);
+      expect(res.json()).toMatchObject({ error: { message: 'Unhandled Exception', code: 'server_error' } });
+      expect(res.body).not.toMatch(/ISPUBLIC|numeric/);
+      expect(routeErrors).toHaveLength(1);
+      expect(routeErrors[0]).toMatchObject({ name: 'LegacyApiError', type: 'server_error' });
+      expect((routeErrors[0]?.cause as Error).message).toBe(`The ISPUBLIC argument passed to the ${fn} function is not of type numeric.`);
+      expect([groupReads, tenantsRead]).toEqual([[], []]);
+    },
+  );
+
+  it.each(VERSIONS)("%s lists the private pool's users by name with their unassigned ids", async (version) => {
+    const { body } = await call('GET', `${version}/users?ispublic=0`, await headersFor(SITE_ADMIN));
     expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual([ROOT, JANE]);
     expect(Object.keys(body?.items[0])).toEqual([
       'UserID', 'GroupName', 'Fname', 'Lname', 'UserName', 'Email', 'Type', 'subType', 'Admin', 'S2', 'LastUpdate', 'LastUpdateBy', 'isPublic', 'SiteID',
@@ -395,28 +531,150 @@ describe('lists and searches', () => {
     expect(body?.listUnassignedUsers).toEqual([JANE]);
   });
 
-  it('lists only unassigned users, reusing that list for the marks', async () => {
-    const { body } = await call('GET', '/v1/users?ispublic=0&unassigned=1', await headersFor(SITE_ADMIN));
-    expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual([JANE]);
+  // Oracle: cUsers.listUsers lists only unassigned users for an unassigned value the scan leaves true, ' TRUE' trimmed included.
+  type UnassignedCase = [version: string, unassigned: string, users: string[]];
+  it.each<UnassignedCase>(
+    VERSIONS.flatMap((version): UnassignedCase[] => [
+      [version, '1', [JANE]],
+      [version, ' yes', [JANE]],
+      [version, ' TRUE', [JANE]],
+      [version, ' true', [ROOT, JANE]],
+      [version, '"1"', [ROOT, JANE]],
+    ]),
+  )('%s lists for unassigned %j the users %j, reusing an unassigned list for the marks', async (version, unassigned, users) => {
+    const { body } = await call('GET', `${version}/users?ispublic=0&unassigned=${encodeURIComponent(unassigned)}`, await headersFor(SITE_ADMIN));
+    expect((body?.items as Array<{ UserID: string }>).map((row) => row.UserID)).toEqual(users);
     expect(body?.listUnassignedUsers).toEqual([JANE]);
   });
 
-  it('reads the public pool for members and every site for an S2 siteid=all', async () => {
-    const members = await call('GET', '/v1/users?ispublic=1', await headersFor(SITE_ADMIN));
-    expect(members.body?.items.map((row: { UserID: string }) => row.UserID)).toEqual([MEMBER]);
-    const all = await call('GET', '/v1/users?siteid=ALL&ispublic=0', await headersFor(S2));
-    expect(all.body?.items.map((row: { UserID: string }) => row.UserID)).toEqual([ROOT, JANE, OUTSIDER]);
+  // Oracle: an admin's cUsers.listUsers binds a boolean word through `cf_sql_integer` and lists that pool, answering 200;
+  // the scan trims padded words, and turns a padded lowercase literal into a quoted "YES" or "NO" that scrubs to 1.
+  type WordCase = [version: string, ispublic: string, users: string[], unassigned: string[]];
+  it.each<WordCase>(
+    VERSIONS.flatMap((version): WordCase[] => [
+      ...['yes', 'Yes', 'YES', 'true', 'True', 'TRUE', ' YES', 'True\n'].map((word): WordCase => [version, word, [MEMBER], [MEMBER]]),
+      ...['no', 'No', 'NO', 'false', 'False', 'FALSE', '\tno', ' FALSE ', 'fALSE\u0001'].map((word): WordCase => [version, word, [ROOT, JANE], [JANE]]),
+      ...[' false', 'false\n', '\u0001false'].map((word): WordCase => [version, word, [MEMBER], [MEMBER]]),
+    ]),
+  )('%s lists the pool of ispublic %j as its scanned 1 or 0 does, with the unassigned ids', async (version, ispublic, users, unassigned) => {
+    const { status, body } = await call('GET', `${version}/users?ispublic=${encodeURIComponent(ispublic)}`, await headersFor(SITE_ADMIN));
+    expect(status).toBe(200);
+    expect((body?.items as Array<{ UserID: string }>).map((row) => row.UserID)).toEqual(users);
+    expect(body?.listUnassignedUsers).toEqual(unassigned);
+    expect(routeErrors).toEqual([]);
   });
 
-  it('searches the pool with full user rows in bootstrap casing', async () => {
-    const { body } = await call('GET', '/v1/users/search?ispublic=0&search=doe', await headersFor(S2));
+  it.each<[version: string, ispublic: string, users: string[]]>(
+    VERSIONS.flatMap((version): [string, string, string[]][] => [
+      [version, 'no', [ROOT, JANE, OUTSIDER]],
+      [version, 'TRUE', [MEMBER]],
+    ]),
+  )('%s reads every site for an S2 siteid=all with ispublic %j', async (version, ispublic, users) => {
+    const { body } = await call('GET', `${version}/users?siteid=all&ispublic=${ispublic}`, await headersFor(S2));
+    expect((body?.items as Array<{ UserID: string }>).map((row) => row.UserID)).toEqual(users);
+  });
+
+  it.each(VERSIONS)('%s reads the public pool for members', async (version) => {
+    const { body } = await call('GET', `${version}/users?ispublic=1`, await headersFor(SITE_ADMIN));
+    expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual([MEMBER]);
+  });
+
+  // tenant-b's person is found only because the S2 read asks identity for every site's accounts, not the token's pools; the
+  // default tenant holds no person, so it costs no lookup. Each tenant's persons are read by name.
+  const EVERY_SITE_READS = [
+    { op: 'readAccountsAllSites', userIds: [OUTSIDER] },
+    { op: 'readAccountsAllSites', userIds: [ROOT, JANE] },
+    { op: 'readAccountsAllSites', userIds: [MEMBER] },
+  ];
+
+  it.each<[string, string[], (typeof EVERY_SITE_READS)[number][]]>([
+    // The list and its unassigned query each read every site once.
+    ['/v1', [JANE, OUTSIDER], [...EVERY_SITE_READS, ...EVERY_SITE_READS]],
+    ['/v2', [JANE, OUTSIDER], EVERY_SITE_READS],
+  ])('%s reads every site once for an S2 siteid=all, with its people without a membership', async (version, unassigned, reads) => {
+    const { body } = await call('GET', `${version}/users?siteid=ALL&ispublic=0`, await headersFor(S2));
+    expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual([ROOT, JANE, OUTSIDER]);
+    expect(body?.listUnassignedUsers).toEqual(unassigned);
+    expect(identityReads.filter(({ op }) => op !== 'lookupMemberships')).toEqual(reads);
+  });
+
+  it.each<[string, string, number, string[]]>([
+    ['a later page', 'ispublic=0&startrow=2&recordsperpage=1', 2, [JANE]],
+    ['page 1 for a start row past the end', 'ispublic=0&startrow=50&recordsperpage=1', 1, [JANE]],
+    ['a page of every site for S2', 'siteid=all&ispublic=0&startrow=3&recordsperpage=1', 3, [JANE, OUTSIDER]],
+  ])('/v1 answers every match for %s, with nextn over them and every unassigned user', async (_label, query, startrow, unassigned) => {
+    const { body } = await call('GET', `/v1/users?${query}`, await headersFor(S2));
+    const items = query.startsWith('siteid=all') ? [ROOT, JANE, OUTSIDER] : [ROOT, JANE];
+    expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual(items);
+    expect(body?.nextn).toMatchObject({ totalrecords: items.length, recordsperpage: 1, startrow });
+    expect(body?.listUnassignedUsers).toEqual(unassigned);
+  });
+
+  it.each<[string, string, string[], number, string[]]>([
+    ['the first page', 'ispublic=0&recordsperpage=1', [ROOT], 1, []],
+    ['a later page', 'ispublic=0&startrow=2&recordsperpage=1', [JANE], 2, [JANE]],
+    ['page 1 for a start row past the end', 'ispublic=0&startrow=50&recordsperpage=1', [ROOT], 1, []],
+    ['a page of every site for S2', 'siteid=all&ispublic=0&startrow=3&recordsperpage=1', [OUTSIDER], 3, [OUTSIDER]],
+  ])('/v2 answers only the people of %s, with nextn over every match', async (_label, query, items, startrow, unassigned) => {
+    const { body } = await call('GET', `/v2/users?${query}`, await headersFor(S2));
+    expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual(items);
+    expect(body?.nextn).toMatchObject({ totalrecords: query.startsWith('siteid=all') ? 3 : 2, recordsperpage: 1, startrow });
+    expect(body?.listUnassignedUsers).toEqual(unassigned);
+    // One membership lookup, over the page's people only.
+    expect(identityReads.filter(({ op }) => op === 'lookupMemberships')).toEqual([{ op: 'lookupMemberships', userIds: items }]);
+  });
+
+  it('/v2 marks every person of an unassigned-only page without another membership lookup', async () => {
+    const { body } = await call('GET', '/v2/users?ispublic=0&unassigned=1&recordsperpage=1', await headersFor(S2));
+    expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual([JANE]);
+    expect(body?.listUnassignedUsers).toEqual([JANE]);
+    // Identity's lookup applies the list's unassigned filter; the marks reuse the page.
+    expect(identityReads.filter(({ op }) => op === 'lookupMemberships')).toEqual([]);
+  });
+
+  it.each<[string, string[], string[]]>([
+    ['search=o&recordsperpage=1&startrow=2', [ROOT, JANE], [JANE]],
+    // Jane is no match, but every unassigned user of the pool is marked.
+    ['search=admin', [ROOT], [JANE]],
+  ])('/v1 answers every search match of %s, with every unassigned user of the pool', async (query, items, unassigned) => {
+    const { body } = await call('GET', `/v1/users/search?ispublic=0&${query}`, await headersFor(S2));
+    expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual(items);
+    expect(body?.nextn).toMatchObject({ totalrecords: items.length });
+    expect(body?.listUnassignedUsers).toEqual(unassigned);
+  });
+
+  it.each<[string, string[], string[]]>([
+    ['search=o&recordsperpage=1&startrow=1', [ROOT], []],
+    ['search=o&recordsperpage=1&startrow=2', [JANE], [JANE]],
+    ['search=admin', [ROOT], []],
+  ])('/v2 answers only the search matches of the page of %s', async (query, items, unassigned) => {
+    const { body } = await call('GET', `/v2/users/search?ispublic=0&${query}`, await headersFor(S2));
+    expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual(items);
+    expect(body?.nextn).toMatchObject({ totalrecords: query.startsWith('search=o') ? 2 : 1 });
+    expect(body?.listUnassignedUsers).toEqual(unassigned);
+    expect(identityReads.filter(({ op }) => op === 'lookupMemberships')).toEqual([{ op: 'lookupMemberships', userIds: items }]);
+  });
+
+  it.each<[string, string[]]>([
+    ['/v1', [ROOT, JANE]],
+    ['/v2', [JANE]],
+  ])('%s answers the advanced-search matches for page 2, marking none', async (version, items) => {
+    const { body } = await call('GET', `${version}/users/advanced-search?ispublic=0&startrow=2&recordsperpage=1`, await headersFor(S2));
+    expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual(items);
+    expect(body?.nextn).toMatchObject({ totalrecords: 2, recordsperpage: 1, startrow: 2 });
+    expect(body?.listUnassignedUsers).toEqual([]);
+    expect(identityReads.filter(({ op }) => op === 'lookupMemberships')).toEqual([]);
+  });
+
+  it.each(VERSIONS)('%s searches the pool with full user rows in bootstrap casing', async (version) => {
+    const { body } = await call('GET', `${version}/users/search?ispublic=0&search=doe`, await headersFor(S2));
     expect(body?.items).toHaveLength(1);
     expect(body?.items[0]).toMatchObject({ UserID: JANE, mobilePhone: null, isPublic: 0, photoFileExt: 'jpg', created: '2026-06-30T09:15:00.000' });
     expect(body?.listUnassignedUsers).toEqual([JANE]);
   });
 });
 
-describe('advanced search', () => {
+describe.each(VERSIONS)('advanced search under %s', (version) => {
   const form = {
     muraAction: 'cUsers.advancedSearch',
     param: '1,2',
@@ -432,7 +690,7 @@ describe('advanced search', () => {
   };
 
   it("stores a posted form's criteria for the session, then runs them", async () => {
-    const { body } = await call('POST', '/v1/users/advanced-search?ispublic=0', await headersFor(SITE_ADMIN), form);
+    const { body } = await call('POST', `${version}/users/advanced-search?ispublic=0`, await headersFor(SITE_ADMIN), form);
     expect(saves).toEqual([
       {
         paramArray: [{ Field: 'tusers.lname^varchar', Relationship: 'and', Criteria: 'Doe', Condition: 'Contains' }],
@@ -457,12 +715,12 @@ describe('advanced search', () => {
       paramCount: 1,
       paramCircuit: 'cUsers',
     };
-    const posted = await call('POST', '/v1/users/advanced-search?ispublic=0', await headersFor(S2), { inActive: '0' });
+    const posted = await call('POST', `${version}/users/advanced-search?ispublic=0`, await headersFor(S2), { inActive: '0' });
     expect(saves).toEqual([]);
     expect(posted.body?.items.map((row: { UserID: string }) => row.UserID)).toEqual([ROOT]);
-    const read = await call('GET', '/v1/users/advanced-search?ispublic=0', await headersFor(S2));
+    const read = await call('GET', `${version}/users/advanced-search?ispublic=0`, await headersFor(S2));
     expect(read.body?.items.map((row: { UserID: string }) => row.UserID)).toEqual([ROOT]);
-    const hidden = await call('GET', '/v1/users/advanced-search?ispublic=0', await headersFor(SITE_ADMIN));
+    const hidden = await call('GET', `${version}/users/advanced-search?ispublic=0`, await headersFor(SITE_ADMIN));
     expect(hidden.body?.items).toEqual([]);
     expect(read.body?.criteria).toEqual({
       paramArray: [{ Field: 'tusers.fname^varchar', Relationship: 'and', Criteria: 'Root', Condition: 'Equals' }],
@@ -474,14 +732,57 @@ describe('advanced search', () => {
     });
   });
 
+  // A boolean word `rc.ispublic` is no number, so the criterion's `ispublic` stays the feed's, and `getIsPublic() eq 0` or
+  // `eq 1` reads a word as its 0 or 1 [legacy: core/mura/user/userGateway.cfc:211-218]; `rc.ispublic == 1` picks the groups.
+  it.each<[ispublic: string, criterion: string, users: string[], group: string]>([
+    ['yes', 'no', [JANE], 'Fans'],
+    [' YES', 'False', [JANE], 'Fans'],
+    ['no', 'TRUE', [MEMBER], 'Admin'],
+    ['yes', 'abc', [JANE, MEMBER], 'Fans'],
+  ])('reads, for ispublic %j and an ispublic criterion %j, the users %j with the %s groups', async (ispublic, criterion, users, group) => {
+    const posted = { param: '1', paramField1: 'ispublic', paramRelationship1: 'and', paramCriteria1: criterion, paramCondition1: 'Equals' };
+    const { body } = await call('POST', `${version}/users/advanced-search?ispublic=${encodeURIComponent(ispublic)}`, await headersFor(SITE_ADMIN), posted);
+    expect((body?.items as Array<{ UserID: string }>).map((row) => row.UserID)).toEqual(users);
+    expect((body?.groups as Array<{ GroupName: string }>).map((row) => row.GroupName)).toEqual([group]);
+  });
+
   it('runs empty criteria over the member pool with the member groups', async () => {
-    const { body } = await call('GET', '/v1/users/advanced-search?ispublic=1', await headersFor(SITE_ADMIN));
+    const { body } = await call('GET', `${version}/users/advanced-search?ispublic=1`, await headersFor(SITE_ADMIN));
     expect(body?.items.map((row: { UserID: string }) => row.UserID)).toEqual([MEMBER]);
     expect(body?.groups).toEqual([{ UserID: MEMBER_GROUP, GroupName: 'Fans', SiteID: UMBRELLA, isPublic: 1, Perm: 0 }]);
   });
 });
 
 describe('edit reads', () => {
+  it.each([
+    { query: '', removeBlock: false },
+    { query: '&removeBlock=', removeBlock: true },
+    { query: '&REMOVEBLOCK', removeBlock: true },
+    { query: '&removeblock=false', removeBlock: true },
+    { query: '&ReMoVeBlOcK=anything', removeBlock: true },
+  ])('reads the identity-owned block with query "$query"', async ({ query, removeBlock }) => {
+    const blockedUntil = '2026-06-30T09:30:00.000';
+    loginBlocks.set(JANE, blockedUntil);
+    const { status, body } = await call('GET', `/v1/users/edit?userid=${JANE}${query}`, await headersFor(SITE_ADMIN));
+    expect(status).toBe(200);
+    expect(body?.blockedUntil).toBe(removeBlock ? null : blockedUntil);
+    expect(loginBlockCalls).toEqual([{ userId: JANE, removeBlock }]);
+  });
+
+  it.each(['', '&removeBlock='])('does not load strikes for a new or username-less bean with query "%s"', async (query) => {
+    const fresh = await call('GET', `/v1/users/edit?userid=${query}`, await headersFor(SITE_ADMIN));
+    expect(fresh.body).toMatchObject({ isNew: true, blockedUntil: null });
+    const account = ACCOUNTS.get(JANE) as AccountView;
+    ACCOUNTS.set(JANE, { ...account, username: '' });
+    try {
+      const unnamed = await call('GET', `/v1/users/edit?userid=${JANE}${query}`, await headersFor(SITE_ADMIN));
+      expect(unnamed.body).toMatchObject({ isNew: false, blockedUntil: null });
+      expect(loginBlockCalls).toEqual([]);
+    } finally {
+      ACCOUNTS.set(JANE, account);
+    }
+  });
+
   it('reads a stored person with the tab data of the Edit User screen', async () => {
     const { body } = await call('GET', `/v1/users/edit?userid=${JANE}&ispublic=0`, await headersFor(SITE_ADMIN));
     expect(body).toMatchObject({
@@ -538,10 +839,11 @@ describe('edit reads', () => {
 });
 
 describe('route()', () => {
-  it('clears the retained edit bean and sends a return URL through sanitizeHref over the registry', async () => {
+  it('clears the retained edit bean and sends a return URL through sanitizeHref over the registry, read in one statement', async () => {
     sessionState = { mura: { editBean: { userBean: {} }, errors: '' } };
     const { body } = await call('GET', `/v1/users/route?returnurl=${encodeURIComponent('http://evil.test//x.test/p')}`, await headersFor(SITE_ADMIN));
     expect(body).toEqual({ redirect: { url: 'http://a.example.test/p' } });
+    expect(registryReads).toEqual([expect.stringMatching(REGISTRY_ENTRIES)]);
     expect(saves).toEqual([{ mura: { errors: '' } }]);
     const allowed = await call('GET', `/v1/users/route?returnurl=${encodeURIComponent('https://ALIAS.example.test/q')}`, await headersFor(SITE_ADMIN));
     expect(allowed.body).toEqual({ redirect: { url: 'https://ALIAS.example.test/q' } });
@@ -556,5 +858,139 @@ describe('route()', () => {
     sessionState = {};
     expect((await call('GET', '/v1/users/route', await headersFor(S2))).status).toBe(200);
     expect(saves).toEqual([]);
+  });
+});
+
+describe("the current user read of identity's findCurrentUser [legacy: core/mura/client/api/json/v1/jsonApiUtility.cfc:2268-2382]", () => {
+  const ENDPOINT = `http://localhost:8080/index.cfm/_api/json/v1/${SITE}`;
+  const ADMIN_PATH = 'http://localhost:8080/admin';
+  const CURRENT = `/internal/v1/users/current?siteid=${SITE}&endpoint=${encodeURIComponent(ENDPOINT)}&adminpath=${encodeURIComponent(ADMIN_PATH)}`;
+  const UNKNOWN = 'A0000000-0000-0000-0000000000000099';
+  const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
+  // The legacy oracle's anonymous findCurrentUser keys, less the session's role lists identity adds.
+  const USER_KEYS = [
+    'addressid', 'categoryid', 'company', 'contactform', 'created', 'description', 'email', 'entityname', 'fname', 'groupid',
+    'groupname', 'id', 'imname', 'imservice', 'inactive', 'interests', 'isnew', 'ispublic', 'jobtitle', 'keepprivate',
+    'lastlogin', 'lastupdate', 'lastupdateby', 'lastupdatebyid', 'links', 'lname', 'mobilephone', 'newfile', 'notes',
+    'passwordcreated', 'perm', 'photofileext', 'photofileid', 'primaryaddressid', 'remoteid', 's2', 'siteid', 'subscribe',
+    'subtype', 'tablist', 'tags', 'type', 'userid', 'username', 'website',
+  ];
+
+  /** Identity's invocation credential, with a user token for `sub` holding `roles` when given. */
+  async function identityHeaders(user?: { sub: string; roles: readonly string[]; site?: string }): Promise<Record<string, string>> {
+    const headers: Record<string, string> = { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'identity', audience: 'people' })}` };
+    if (user !== undefined) headers.authorization = `Bearer ${await mintUserToken({ sub: user.sub, sid: 'S-9', site: user.site ?? SITE, roles: user.roles })}`;
+    return headers;
+  }
+
+  /** The links legacy builds for `userId`, with the edit link when given. */
+  function linksOf(userId: string, edit?: string): Record<string, string> {
+    return {
+      entities: ENDPOINT,
+      ...(edit === undefined ? {} : { edit }),
+      all: `${ENDPOINT}/user`,
+      properties: `${ENDPOINT}/user/properties`,
+      self: `${ENDPOINT}/user/${userId}`,
+      permissions: `${ENDPOINT}/user/${userId}/permissions`,
+    };
+  }
+
+  it.each([
+    ['web with a member token', async () => ({ ...(await identityHeaders({ sub: MEMBER, roles: [Roles.member] })), [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'web', audience: 'people' })}` }), 403],
+    ['web without a user token', async () => ({ [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'web', audience: 'people' })}` }), 403],
+    ['no invocation credential', async () => ({}), 401],
+  ])('serves identity alone, refusing %s', async (_label, headers, status) => {
+    expect((await call('GET', CURRENT, await headers())).status).toBe(status);
+  });
+
+  it.each([
+    ['a member, from the public user pool', MEMBER, [Roles.member], { siteid: UMBRELLA, ispublic: 1, fname: 'Mo', photofileext: '' }, undefined],
+    [
+      'a system user, with the edit link',
+      JANE,
+      [Roles.systemUser],
+      { siteid: SITE, ispublic: 0, fname: 'Jane', photofileext: 'jpg' },
+      `${ADMIN_PATH}/?muraAction=cusers.edituser&siteid=${SITE}&userid=${JANE}`,
+    ],
+  ])("reads %s as the token's own stored user, with identity's membership ids", async (_label, sub, roles, values, edit) => {
+    const { status, body } = await call('GET', `${CURRENT}&groupids=${GROUP},${MEMBER_GROUP}`, await identityHeaders({ sub, roles }));
+
+    expect(status).toBe(200);
+    expect(Object.keys(body?.data).sort()).toEqual(USER_KEYS);
+    expect(body?.data).toMatchObject({
+      ...values,
+      id: sub,
+      userid: sub,
+      isnew: 0,
+      type: 'user',
+      entityname: 'user',
+      groupid: `${GROUP},${MEMBER_GROUP}`,
+      s2: 0,
+      inactive: 0,
+      subscribe: 1,
+      created: '2026-06-30T09:15:00',
+      lastlogin: '2026-06-29T08:00:00',
+      // A NULL PasswordCreated leaves userBean.init's now().
+      passwordcreated: '2026-06-30T09:15:00',
+    });
+    expect(body?.data.links).toEqual(linksOf(sub, edit));
+    expect(openWaits).toEqual([tenantIdForSite(SITE), tenantIdForSite(UMBRELLA)].map((tenantId) => ({ tenantId, userId: sub })));
+  });
+
+  it.each([
+    ['an anonymous call', undefined],
+    ['a user people holds no person of', { sub: UNKNOWN, roles: [Roles.systemUser] }],
+  ])("reads a new bean under a fresh id and the call's site for %s", async (_label, user) => {
+    const { status, body } = await call('GET', `${CURRENT}&groupids=${GROUP}`, await identityHeaders(user));
+
+    expect(status).toBe(200);
+    expect(Object.keys(body?.data).sort()).toEqual(USER_KEYS);
+    expect(body?.data).toMatchObject({ siteid: SITE, isnew: 1, ispublic: 1, subtype: 'Default', type: 'user', groupid: '', fname: '', lastlogin: '' });
+    expect(body?.data.userid).toMatch(CF_UUID);
+    expect(body?.data.userid).not.toBe(UNKNOWN);
+    expect(body?.data.id).toBe(body?.data.userid);
+    expect(body?.data.links).toEqual(linksOf(body?.data.userid));
+  });
+
+  it('selects the requested fields plus userid, siteid and isnew', async () => {
+    const { body } = await call('GET', `${CURRENT}&fields=fname,groupid&groupids=${GROUP}`, await identityHeaders({ sub: JANE, roles: [Roles.systemUser] }));
+
+    expect(body?.data).toEqual({ fname: 'Jane', groupid: GROUP, userid: JANE, siteid: SITE, isnew: 0, id: JANE, type: 'user', entityname: 'user' });
+  });
+
+  // Jane's stored row as the oracle serializes `tuseraddresses`: alphabetical columns, NULL as '', numerics unquoted.
+  const JANE_ADDRESSES: Record<string, unknown>[] = [
+    {
+      address1: '1 Main St', address2: '', addressemail: '', addressid: ADDRESS, addressname: 'Home', addressnotes: '', addressurl: '',
+      city: 'Springfield', country: '', fax: '', hours: '', isprimary: 1, latitude: '', longitude: 1.5, phone: '', siteid: SITE,
+      state: '', userid: JANE, zip: '',
+    },
+  ];
+
+  it.each([
+    ['a stored user', { sub: JANE, roles: [Roles.systemUser] }, JANE_ADDRESSES],
+    ['an anonymous call', undefined, []],
+    ['a user people holds no person of', { sub: UNKNOWN, roles: [Roles.systemUser] }, []],
+  ])("selects getAddresses()' rows as fields=addresses for %s", async (_label, user, addresses: Record<string, unknown>[]) => {
+    const { status, body } = await call('GET', `${CURRENT}&fields=addresses`, await identityHeaders(user));
+
+    expect(status).toBe(200);
+    expect(Object.keys(body?.data).sort()).toEqual(['addresses', 'entityname', 'id', 'isnew', 'siteid', 'type', 'userid']);
+    expect(body?.data.addresses).toEqual(addresses);
+    expect(body?.data.addresses.map((row: Record<string, unknown>) => Object.keys(row))).toEqual(addresses.map((row) => Object.keys(row)));
+  });
+
+  it.each([
+    ["a siteid other than the token's site", CURRENT.replace(`siteid=${SITE}`, `siteid=${OTHER}`), 403],
+    ['a call without the link bases', `/internal/v1/users/current?siteid=${SITE}`, 400],
+  ])('refuses %s', async (_label, url, status) => {
+    expect((await call('GET', url, await identityHeaders({ sub: JANE, roles: [Roles.systemUser] }))).status).toBe(status);
+  });
+
+  it('answers the legacy 503 for a user an open roster operation keeps closed', async () => {
+    closedError = new LegacyServiceUnavailableError(`Roster operation R-1 keeps user ${JANE} closed`, 'auto', 'roster-closed');
+
+    expect((await call('GET', CURRENT, await identityHeaders({ sub: JANE, roles: [Roles.systemUser] }))).status).toBe(503);
+    expect(tenantsRead).toEqual([]);
   });
 });

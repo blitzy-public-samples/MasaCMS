@@ -1,4 +1,4 @@
-/** Read-only queries of the `content` file tables (Masa `tfiles`, `tcontentfilemetadata` and the stored-object manifest); each runs in the caller's tenant transaction, whose RLS scopes the rows. */
+/** Tenant-scoped file reads, manifest queries and durable publication intents. */
 import { awaitReadable, qualified } from '@opt2/platform/migration-kit';
 import type { QueryResultRow, TenantTx } from '@opt2/platform/tenancy';
 import {
@@ -237,6 +237,112 @@ export async function listFileObjects(tx: TenantTx, fileId: string): Promise<Fil
 
 // The migration object transfer and the manifest export run while a write window's import holds content.file in phase
 // `importing`, so these reads take no gate, as the platform's migration export does; file_object has no unit to wait on.
+
+const FILE_OBJECT_LOCK_SQL = 'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))';
+
+/** Holds the publication lock of the stored object `objectKey` until `tx` ends, so its bytes and manifest row change together. */
+export async function lockFileObjectKey(tx: TenantTx, objectKey: string): Promise<void> {
+  await tx.query(FILE_OBJECT_LOCK_SQL, [`${tx.schema}.${FILE_OBJECT.table}:${objectKey}`]);
+}
+
+/** A durable content-files publication intent; `committed` once its publication committed with a backup still to delete. */
+export interface StagedObjectEntry {
+  tenant_id: string;
+  stage_id: string;
+  object_key: string;
+  kind: 'migration' | 'upload';
+  file_id: string;
+  variant: string;
+  ext: string;
+  size: number | string;
+  sha256: string;
+  content_type: string | null;
+  state: 'staged' | 'committed';
+}
+
+export interface StagedObjectCursor {
+  recorded_at: string;
+  stage_id: string;
+}
+
+/** Records an intent without a changelog row. */
+export async function insertStagedObject(tx: TenantTx, entry: StagedObjectEntry): Promise<void> {
+  await tx.query(
+    `INSERT INTO ${qualified(tx.schema, 'staged_object')}` +
+      ' (tenant_id, stage_id, object_key, kind, file_id, variant, ext, size, sha256, content_type, state)' +
+      ' VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)',
+    [
+      tx.tenantId,
+      entry.stage_id,
+      entry.object_key,
+      entry.kind,
+      entry.file_id,
+      entry.variant,
+      entry.ext,
+      entry.size,
+      entry.sha256,
+      entry.content_type,
+      entry.state,
+    ],
+  );
+}
+
+/** Locks an intent and returns its stored form; null when it no longer exists. */
+export function claimStagedObject(tx: TenantTx, stageId: string): Promise<StagedObjectEntry | null> {
+  return firstRow<StagedObjectEntry>(
+    tx,
+    `SELECT * FROM ${qualified(tx.schema, 'staged_object')} WHERE stage_id = $1 FOR UPDATE`,
+    [stageId],
+  );
+}
+
+/** Marks an intent whose publication commits with a backup of the replaced version still stored. */
+export async function markStagedObjectCommitted(tx: TenantTx, stageId: string): Promise<void> {
+  await tx.query(`UPDATE ${qualified(tx.schema, 'staged_object')} SET state = 'committed' WHERE stage_id = $1`, [stageId]);
+}
+
+/** Removes a settled intent without a changelog row. */
+export async function deleteStagedObject(tx: TenantTx, stageId: string): Promise<void> {
+  await tx.query(`DELETE FROM ${qualified(tx.schema, 'staged_object')} WHERE stage_id = $1`, [stageId]);
+}
+
+/** Locks one stale page, retaining PostgreSQL's timestamp precision for the cursor. */
+export async function listStaleStagedObjects(
+  tx: TenantTx,
+  graceMs: number,
+  limit: number,
+  after?: StagedObjectCursor,
+): Promise<(StagedObjectEntry & StagedObjectCursor)[]> {
+  const { rows } = await tx.query<StagedObjectEntry & StagedObjectCursor>(
+    `SELECT s.*, s.recorded_at::text AS recorded_at FROM ${qualified(tx.schema, 'staged_object')} s` +
+      " WHERE recorded_at < clock_timestamp() - ($1 * interval '1 millisecond')" +
+      (after === undefined ? '' : ' AND (recorded_at, stage_id) > ($3::timestamptz, $4::bpchar)') +
+      ' ORDER BY s.recorded_at, stage_id LIMIT $2 FOR UPDATE SKIP LOCKED',
+    after === undefined ? [graceMs, limit] : [graceMs, limit, after.recorded_at, after.stage_id],
+  );
+  return rows;
+}
+
+/** Whether reconciliation must wait for stale publication recovery. */
+export async function hasStaleStagedObjects(tx: TenantTx, graceMs: number): Promise<boolean> {
+  const row = await firstRow(
+    tx,
+    `SELECT 1 FROM ${qualified(tx.schema, 'staged_object')}` +
+      " WHERE recorded_at < clock_timestamp() - ($1 * interval '1 millisecond') LIMIT 1",
+    [graceMs],
+  );
+  return row !== null;
+}
+
+/** Tries the publication lock without waiting on a live writer. */
+export async function tryLockFileObjectKey(tx: TenantTx, objectKey: string): Promise<boolean> {
+  const row = await firstRow<{ locked: boolean }>(
+    tx,
+    'SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS locked',
+    [`${tx.schema}.${FILE_OBJECT.table}:${objectKey}`],
+  );
+  return row?.locked === true;
+}
 
 /** The stored object under `objectKey`, whose `sha256` tells a repeated transfer of the same bytes; null when absent. */
 export function findFileObjectBySha(tx: TenantTx, objectKey: string): Promise<FileObjectRow | null> {

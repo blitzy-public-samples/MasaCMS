@@ -4,7 +4,7 @@
 
 Source SHA: 696383140578f8dea3ece26f80cd7bfb370ddf0f
 
-Surveys has no Masa equivalent. It is a synthetic module, and its legacy oracle is the surveys fixture in [`legacy-fixtures/`](../../legacy-fixtures/README.md): the service answers the fixture's routes as the fixture does, and the outputs captured from the fixture are its parity tests.
+Surveys has no Masa equivalent. It is a synthetic module, and its legacy oracle is the surveys fixture in [`legacy-fixtures/`](../../legacy-fixtures/README.md): the service is built to answer the fixture's routes as the fixture does, and the outputs captured from the fixture are its parity tests.
 
 Contracts: [`contracts/openapi.yaml`](contracts/openapi.yaml), [`contracts/events/surveys.survey.scheduled.v1.json`](contracts/events/surveys.survey.scheduled.v1.json). Behaviour-to-code-to-test rows: [`TRACEABILITY.md`](TRACEABILITY.md). Shared components: [`platform/README.md`](../../platform/README.md).
 
@@ -54,7 +54,7 @@ Fixture tables, as assigned in [`opt2/table-ownership.json`](../../opt2/table-ow
 
 Every table adds `tenant_id uuid NOT NULL`, with row-level security enabled and forced under the `tenant_isolation` policy on `app.tenant_id`. No table declares a foreign key.
 
-Platform tables (`db/migrations/0001_platform.sql`): `tenant_registry`, `tenant_grant`, `changelog`, `unit_gate`, `open_operation`, `migration_batch`, `migration_watermark`, `inbox`, `consumer_aggregate_version`, `outbox`, `scheduled_task_queue` and `scheduled_task_queue_state`. `tenant_registry`, `tenant_grant`, `unit_gate`, `open_operation` and `migration_watermark` carry no `tenant_id`: they hold metadata, never tenant data.
+Platform tables (`db/migrations/0001_platform.sql`): `tenant_registry`, `tenant_grant`, `changelog`, `unit_gate`, `open_operation`, `migration_batch`, `migration_watermark`, `inbox`, `consumer_aggregate_version`, `outbox`, `scheduled_task_queue` and `scheduled_task_queue_state`. `tenant_registry`, `tenant_grant`, `unit_gate`, `open_operation` and `migration_watermark` are non-tenant tables without row-level security or a `tenant_isolation` policy: they hold tenant metadata, never tenant data. `tenant_registry` maps each site to its `tenant_id` and pool tenants; `tenant_grant` stores `grantor_tenant` and `grantee_tenant`.
 
 ## Routes
 
@@ -62,7 +62,7 @@ Every route declares `config.opt2.requires` or `config.opt2.public`; anything el
 
 ### Fixture routes
 
-Paths below are under `/legacy-fixtures/cfml/api.cfm/surveys/surveys`. Each answers in the Masa envelope with the method name shown. Transport is `service`. The routes are public on the platform because, as in the fixture, the handler checks the site first, then login, the role group and, on writes, the CSRF token for context `id`. The gateway routes them `legacy` in `v0001` and `target` from `v0002` (groups `grp:surveys.survey`, `grp:surveys.survey_target`, `grp:surveys.survey_response`).
+Paths below are under `/legacy-fixtures/cfml/api.cfm/surveys/surveys`. Each answers in the Masa envelope with the method name shown. Transport is `service`. The routes are public on the platform because, as in the fixture, the handler checks the site first, then login, the role group and, on writes, the CSRF token for context `id`, which identity consumes once (`POST /internal/v1/csrf/consume`, called as `service:surveys`). The gateway routes them `legacy` in `v0001` and `target` from `v0002` (groups `grp:surveys.survey`, `grp:surveys.survey_target`, `grp:surveys.survey_response`).
 
 | Method | Path | Method name | Checked in the handler | Does |
 |---|---|---|---|---|
@@ -79,7 +79,7 @@ Paths below are under `/legacy-fixtures/cfml/api.cfm/surveys/surveys`. Each answ
 
 ### `/v1` APIs
 
-Used by the OPT-2 screens at `/opt2/admin/surveys/*`, which `web/` renders. Transport `service`; every route requires `surveys.manager`.
+Used by the OPT-2 screens at `/opt2/admin/surveys/*`, which `web/` renders. Transport `service`; every route requires `surveys.manager`. Each `POST` first has identity consume the CSRF token of the survey id context, as the fixture's writes do; a missing, foreign or replayed token answers 400 `invalidTokens` and writes nothing.
 
 | Method | Path | Does |
 |---|---|---|
@@ -125,8 +125,9 @@ Consumes `programs-sites.site.changed.v1` into `surveys.tenant_registry`, the si
 
 ## Multi-site responses
 
+- **Own grant.** Every stored survey carries its tenant's own `tenant_grant(kind = 'survey-response')`, with grantor and grantee both the survey tenant, written in the transaction that inserts or upserts the survey row, migration applies included, and removed with it (`src/repo/repository.ts`). Re-deriving the target grants never removes it.
 - **Grant.** Bulk targeting writes `tenant_grant(kind = 'survey-response')` for each distinct registered targeted site other than the survey's own, in the survey tenant's transaction (`src/repo/grants.ts`). Migration applies of target rows re-derive the survey's grants from its stored targets.
-- **Check.** A respondent's request runs first in the token's tenant. If the survey is not there, the stored grant decides: without one the answer is `notFound`; with one the grantor is the survey's tenant.
+- **Check.** A respondent's request runs first in the token's tenant. If the survey is not there, a stored grant to the token's tenant names the survey's tenant as grantor. Without one, a metadata-only read of `tenant_grant` answers as the fixture does: `forbidden` when any `survey-response` grant names the survey, `notFound` when none does; no other tenant's transaction is opened.
 - **Write.** The response is written with `withTenant(grantor)`: `siteID` is the survey's site and `respondentSiteID` is the token's `site`.
 - **No caller-supplied destination.** The tenant comes only from the verified token and the stored grant, never from the request (AAP 0.5.1).
 
@@ -144,7 +145,7 @@ npm run test:security
 `test/unit` and `test/contract` need nothing external. The isolation and event suites need PostgreSQL 16 through `PG_HOST`, `PG_PORT`, `PG_USER`, `PG_PASSWORD` and `PG_DATABASE`, plus `PUBSUB_EMULATOR_HOST`, and create a throwaway schema and roles per run through `@opt2/platform/testing`.
 
 - **Local.** `harness/repro/up.sh` starts the service natively on port 8117 (`harness/repro/ports.env`), with `PORT=8117` and `PG_USER=surveys_app`. It reads `baseEnvSchema` of `@opt2/platform/service-kit` (details in [`platform/README.md`](../../platform/README.md#configuration)): `PORT`, `OPT2_SERVICE_NAME`, `OPT2_ENV`, `PG_HOST`, `PG_PORT`, `PG_DATABASE`, `PG_USER`, `PG_PASSWORD`, `OPT2_DB_AUTH`, `CLOUD_SQL_INSTANCE`, `PUBSUB_EMULATOR_HOST`, `GOOGLE_CLOUD_PROJECT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OPT2_JWKS_URL`, `OPT2_TOKEN_ISSUER`, `OPT2_TOKEN_AUDIENCE`, `OPT2_GATEWAY_URL`, `OPT2_MIGRATION_URL`, `OPT2_SERVICE_URLS`, `OPT2_STATE_DIR`, `OPT2_TASKS_ADAPTER`, `OPT2_STORAGE_ADAPTER`, `TZ`.
-- **`OPT2_SERVICE_URLS`** must contain `communications` (task list), `identity` (CSRF checks of fixture writes) and `surveys` itself (target of its own sweep chain).
+- **`OPT2_SERVICE_URLS`** must contain `communications` (task list), `identity` (CSRF checks of fixture and `/v1` writes) and `surveys` itself (target of its own sweep chain).
 - **Cloud.** Cloud Run with `min_instance_count = 0`, internal-only ingress, Cloud SQL IAM database authentication (`OPT2_DB_AUTH=iam`) as a member of `surveys_app`, and the OpenTelemetry Collector sidecar (`infra/terraform/`, plan only).
 
 ## Parity evidence
@@ -156,5 +157,6 @@ The GS-SU scenarios in `harness/golden/catalogue.yaml` are captured from the fix
 | GS-SU-01 | Schedule with launch and reminders, the task list, the launch and reminder callbacks, the survey list and the OPT-2 surveys screens |
 | GS-SU-02 | Single-site responses |
 | GS-SU-03 | Bulk targeting and a response from another targeted site |
+| GS-SU-04 | A response from a site the survey does not target, refused with the fixture's 403 `forbidden` and nothing stored |
 
 Each behaviour's code and test are listed in [`TRACEABILITY.md`](TRACEABILITY.md).

@@ -1,5 +1,5 @@
-import { context, propagation, ProxyTracerProvider, trace } from '@opentelemetry/api';
-import { ExportResultCode, getStringFromEnv, W3CTraceContextPropagator } from '@opentelemetry/core';
+import { context, createContextKey, diag, propagation, ProxyTracerProvider, trace, type Span } from '@opentelemetry/api';
+import { diagLogLevelFromString, ExportResultCode, getStringFromEnv, W3CTraceContextPropagator } from '@opentelemetry/core';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { HttpInstrumentation } from '@opentelemetry/instrumentation-http';
 import { PgInstrumentation } from '@opentelemetry/instrumentation-pg';
@@ -7,6 +7,7 @@ import { UndiciInstrumentation } from '@opentelemetry/instrumentation-undici';
 import { defaultResource, resourceFromAttributes } from '@opentelemetry/resources';
 import { NodeSDK, type NodeSDKConfiguration } from '@opentelemetry/sdk-node';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
+import { platformDiagLogger } from './diag.js';
 import { RedactingSpanExporter } from './redact.js';
 
 /** Span exporter accepted by the SDK. */
@@ -53,7 +54,20 @@ export class MemorySpanExporter implements SpanExporter {
   }
 }
 
-let state: { sdk: NodeSDK; instrumentations: { disable(): void }[] } | undefined;
+const CALLEE = createContextKey('opt2.tracing.callee');
+
+/** Runs `fn` so that the undici client spans it starts are named `<METHOD> <service>`. */
+export function withCallee<T>(service: string, fn: () => T): T {
+  return context.with(context.active().setValue(CALLEE, service), fn);
+}
+
+/** Undici request hook: names the client span after the active callee, when one is set. */
+function nameAfterCallee(span: Span, request: { method: string }): void {
+  const callee = context.active().getValue(CALLEE);
+  if (typeof callee === 'string') span.updateName(`${request.method} ${callee}`);
+}
+
+let state: { sdk: NodeSDK; instrumentations: { disable(): void }[]; diagInstalled: boolean } | undefined;
 // Reused across restarts: a module already loaded is re-patched only by the instance whose require hook saw it load.
 let instrumentationSet: [HttpInstrumentation, UndiciInstrumentation, PgInstrumentation] | undefined;
 
@@ -70,22 +84,38 @@ export async function startTracing(options: StartTracingOptions): Promise<void> 
     /\/+$/,
     '',
   );
-  instrumentationSet ??= [new HttpInstrumentation(), new UndiciInstrumentation(), new PgInstrumentation()];
+  instrumentationSet ??= [
+    new HttpInstrumentation(),
+    new UndiciInstrumentation({ requestHook: nameAfterCallee }),
+    new PgInstrumentation(),
+  ];
   const instrumentations = instrumentationSet;
   for (const instrumentation of instrumentations) instrumentation.enable();
-  const sdk = new NodeSDK({
-    resource: defaultResource().merge(
-      resourceFromAttributes({ [ATTR_SERVICE_NAME]: options.serviceName, [ATTR_SERVICE_VERSION]: options.version }),
-    ),
-    autoDetectResources: false,
-    textMapPropagator: new W3CTraceContextPropagator(),
-    traceExporter: new RedactingSpanExporter(options.exporter ?? new OTLPTraceExporter({ url: `${base}/v1/traces` })),
-    metricReaders: [],
-    logRecordProcessors: [],
-    instrumentations,
-  });
+  const diagLevel = getStringFromEnv('OTEL_LOG_LEVEL');
+  // Withheld while NodeSDK is built: for OTEL_LOG_LEVEL it installs a console diag logger, whose lines are not log-record.v1.
+  const rawDiagLevel = process.env.OTEL_LOG_LEVEL;
+  delete process.env.OTEL_LOG_LEVEL;
+  let sdk: NodeSDK;
+  try {
+    sdk = new NodeSDK({
+      resource: defaultResource().merge(
+        resourceFromAttributes({ [ATTR_SERVICE_NAME]: options.serviceName, [ATTR_SERVICE_VERSION]: options.version }),
+      ),
+      autoDetectResources: false,
+      textMapPropagator: new W3CTraceContextPropagator(),
+      traceExporter: new RedactingSpanExporter(options.exporter ?? new OTLPTraceExporter({ url: `${base}/v1/traces` })),
+      metricReaders: [],
+      logRecordProcessors: [],
+      instrumentations,
+    });
+  } finally {
+    if (rawDiagLevel !== undefined) process.env.OTEL_LOG_LEVEL = rawDiagLevel;
+  }
+  const diagInstalled =
+    diagLevel !== undefined &&
+    diag.setLogger(platformDiagLogger, { logLevel: diagLogLevelFromString(diagLevel), suppressOverrideMessage: true });
   sdk.start();
-  state = { sdk, instrumentations };
+  state = { sdk, instrumentations, diagInstalled };
 }
 
 /** Exports every span the batch processor still holds; a no-op before {@link startTracing}. */
@@ -100,7 +130,7 @@ export async function flushTracing(): Promise<void> {
 /** Flushes and stops the SDK, then unpatches and unregisters everything so tracing can start again. */
 export async function shutdownTracing(): Promise<void> {
   if (!state) return;
-  const { sdk, instrumentations } = state;
+  const { sdk, instrumentations, diagInstalled } = state;
   state = undefined;
   try {
     await sdk.shutdown();
@@ -110,5 +140,6 @@ export async function shutdownTracing(): Promise<void> {
     trace.disable();
     context.disable();
     propagation.disable();
+    if (diagInstalled) diag.disable();
   }
 }

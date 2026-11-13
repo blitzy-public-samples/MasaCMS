@@ -111,8 +111,8 @@ function model(feed: FeedView, fields: Partial<FeedEditModel> = {}): FeedEditMod
     contentPool: [],
     parentMenuTitle: feed.parentID === '' ? '' : 'Home',
     hasMarketingManager: false,
-    proxyServer: '',
-    proxyUser: '',
+    hasProxyServer: false,
+    hasProxyUser: false,
     isObjectInstance: false,
     showUsageTabs: true,
     pluginMessage: '',
@@ -245,7 +245,7 @@ describe('renderRemoteFeedEdit', () => {
     ];
     const data = model(
       { ...SAVED_FEED, categoryID: CATEGORY_ID, authType: 'ntlm' },
-      { errors: { name: 'Bad <name>', siteID: 'ignored' }, categories: tree, proxyServer: 'proxy', proxyUser: 'user' },
+      { errors: { name: 'Bad <name>', siteID: 'ignored' }, categories: tree, hasProxyServer: true, hasProxyUser: true },
     );
     const markup = toString((await render(request({ feedID: FEED_ID }), data, 'update')).body);
     const $ = cheerio.load(markup);
@@ -262,8 +262,8 @@ describe('renderRemoteFeedEdit', () => {
   });
 
   it.each([
-    ['proxy server', { proxyServer: 'proxy' }, ['DEFAULT', 'BASIC', 'PROXY']],
-    ['proxy user', { proxyUser: 'user' }, ['DEFAULT', 'BASIC', 'NTLM']],
+    ['proxy server', { hasProxyServer: true }, ['DEFAULT', 'BASIC', 'PROXY']],
+    ['proxy user', { hasProxyUser: true }, ['DEFAULT', 'BASIC', 'NTLM']],
     ['no proxy', {}, []],
   ] as const)('lists the auth types for a %s', async (_case, proxies, expected) => {
     const markup = toString((await render(request({ feedID: FEED_ID }), model(SAVED_FEED, proxies))).body);

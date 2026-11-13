@@ -24,7 +24,7 @@ import {
   type GateState,
   type UnitGate,
 } from '../../src/migration-kit/index.js';
-import { rlsSql, withMetadata, withTenant, type TenantTx } from '../../src/tenancy/index.js';
+import { rlsSql, withMetadata, withTenant, type MetadataTx, type TenantTx } from '../../src/tenancy/index.js';
 import { LegacyServiceUnavailableError, cfUuid } from '../../src/legacy-compat/index.js';
 import { TENANT_A, createThrowawaySchema, pgAvailable, testPgConfig, type ThrowawaySchema } from '../../src/testing/index.js';
 
@@ -88,6 +88,21 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   });
   return { promise, resolve };
 }
+
+/** `tx` appending the text of each statement it runs to `seen`. */
+function recording<T extends TenantTx | MetadataTx>(tx: T, seen: string[]): T {
+  const query = ((text: string | { text: string }, values?: unknown[]) => {
+    seen.push(typeof text === 'string' ? text : text.text);
+    return tx.query(text, values);
+  }) as T['query'];
+  return { ...tx, query };
+}
+
+const FENCE_SAVEPOINT = 'SAVEPOINT opt2_read_fence';
+const FENCE_LOCK = expect.stringMatching(/^SELECT unit, phase FROM \S+ WHERE unit = ANY\(\$1::text\[\]\) ORDER BY unit FOR SHARE NOWAIT$/);
+const FENCE_RELEASE = 'RELEASE SAVEPOINT opt2_read_fence';
+const FENCE_ROLLBACK = 'ROLLBACK TO SAVEPOINT opt2_read_fence';
+const GATE_LOOK = expect.stringMatching(/^SELECT unit, state, holder_id, phase FROM /);
 
 describe('unit gates against PostgreSQL', () => {
   let handle: ThrowawaySchema | undefined;
@@ -237,6 +252,122 @@ describe('unit gates against PostgreSQL', () => {
 
     await expect(withTenant(db().app, TENANT, (tx) => awaitReadable(tx, units, { budgetMs: PROMPT_MS }))).resolves.toBeUndefined();
     await expect(withMetadata(db().app, (tx) => awaitReadable(tx, units, { budgetMs: PROMPT_MS }))).resolves.toBeUndefined();
+  });
+
+  /** Holds `unit`'s gate row locked, as an uncommitted phase change does, until `release` runs. */
+  async function lockGateRow(unit: string): Promise<{ release: () => void; done: Promise<unknown> }> {
+    const locked = deferred();
+    const release = deferred();
+    const done = withMetadata(db().app, async (tx) => {
+      await tx.query(`UPDATE ${db().schema}.unit_gate SET phase = phase WHERE unit = $1`, [unit]);
+      locked.resolve();
+      await release.promise;
+    });
+    await Promise.race([locked.promise, done]);
+    return { release: release.resolve, done };
+  }
+
+  it.each([
+    ['tenant', (fn: (tx: TenantTx | MetadataTx) => Promise<void>) => withTenant(db().app, TENANT, fn)],
+    ['metadata', (fn: (tx: TenantTx | MetadataTx) => Promise<void>) => withMetadata(db().app, fn)],
+  ] as const)('fences an open gate in a %s transaction without an unlocked look and keeps the lock until commit', async (label, run) => {
+    const unit = `note.read.fence-first.${label}`;
+    await openGate(unit);
+    const seen: string[] = [];
+    const fenced = deferred();
+    const release = deferred();
+    let closing: Tracked<UnitGate[]>;
+
+    const reader = run(async (tx) => {
+      await awaitReadable(recording(tx, seen), [unit], { budgetMs: PROMPT_MS });
+      fenced.resolve();
+      await release.promise;
+    });
+    try {
+      await Promise.race([fenced.promise, reader]);
+      closing = track(closeGates(db().app, { units: [unit], holderId: 'H-fence-first' }));
+      await sleep(300);
+      expect(closing.settled()).toBe(false);
+    } finally {
+      release.resolve();
+    }
+
+    await reader;
+    expect(seen).toEqual([FENCE_SAVEPOINT, FENCE_LOCK, FENCE_RELEASE]);
+    expect(await closing.promise).toEqual([gate(unit, 'closed', 'H-fence-first')]);
+  });
+
+  it('waits out an executing window holding no share lock, so the window moves on, then fences once the gate reopens', async () => {
+    const unit = 'note.read.fence-first.wait';
+    await openGate(unit);
+    await closeGates(db().app, { units: [unit], holderId: 'H-wait', phase: 'executing' });
+    const seen: string[] = [];
+
+    const reader = track(withTenant(db().app, TENANT, (tx) => awaitReadable(recording(tx, seen), [unit], { budgetMs: PROMPT_MS })));
+    await sleep(200);
+    expect(reader.settled()).toBe(false);
+    const phaseChange = await Promise.race([
+      setGatePhase(db().app, { units: [unit], holderId: 'H-wait', phase: 'importing' }).then(() => 'changed'),
+      sleep(PROMPT_MS / 2).then(() => 'blocked'),
+    ]);
+    expect(phaseChange).toBe('changed');
+    await openGates(db().app, { units: [unit], holderId: 'H-wait' });
+
+    await expect(reader.promise).resolves.toBeUndefined();
+    expect(seen.slice(0, 5)).toEqual([FENCE_SAVEPOINT, FENCE_LOCK, FENCE_ROLLBACK, FENCE_RELEASE, GATE_LOOK]);
+    expect(seen.slice(-3)).toEqual([FENCE_SAVEPOINT, FENCE_LOCK, FENCE_RELEASE]);
+  });
+
+  it('waits while a phase change holds the gate row: fails after the budget, and reads once the change commits', async () => {
+    const unit = 'note.read.fence-first.row-lock';
+    await openGate(unit);
+    const lock = await lockGateRow(unit);
+    let reader: Tracked<void>;
+    try {
+      const { err, elapsedMs } = await failure(() =>
+        withTenant(db().app, TENANT, (tx) => awaitReadable(tx, [unit], { budgetMs: BUDGET_MS })),
+      );
+      expect(elapsedMs).toBeGreaterThanOrEqual(BUDGET_MS);
+      expect(err).toBeInstanceOf(UnitReadBlockedError);
+      expect(err).toMatchObject({ units: [unit] });
+
+      reader = track(withTenant(db().app, TENANT, (tx) => awaitReadable(tx, [unit], { budgetMs: PROMPT_MS })));
+      await sleep(200);
+      expect(reader.settled()).toBe(false);
+    } finally {
+      lock.release();
+    }
+    await lock.done;
+    await expect(reader.promise).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ['a write gate', 'an executing window', 'write.window'],
+    ['a write gate', 'a phase change holding the gate row', 'write.row'],
+    ['a fenced read', 'an executing window', 'read.window'],
+    ['a fenced read', 'a phase change holding the gate row', 'read.row'],
+  ] as const)('fails fast with GateRaceError when the transaction holds %s and the read meets %s', async (held, blocker, slug) => {
+    const [heldUnit, unit] = [`note.race.${slug}.held`, `note.race.${slug}.read`];
+    await openGate(heldUnit);
+    await openGate(unit);
+    const lock = blocker === 'an executing window' ? undefined : await lockGateRow(unit);
+    if (lock === undefined) {
+      await closeGates(db().app, { units: [unit], holderId: 'H-race', phase: 'executing' });
+    }
+    try {
+      const { err, elapsedMs } = await failure(() =>
+        withTenant(db().app, TENANT, async (tx) => {
+          await (held === 'a write gate' ? acquireWriteGates(tx, [heldUnit]) : awaitReadable(tx, [heldUnit]));
+          await awaitReadable(tx, [unit], { budgetMs: PROMPT_MS });
+        }),
+      );
+      expect(elapsedMs).toBeLessThan(PROMPT_MS);
+      expect(err).toBeInstanceOf(GateRaceError);
+      expect(err).toMatchObject({ units: [unit], reason: 'unit-gate-race' });
+    } finally {
+      lock?.release();
+    }
+    await lock?.done;
   });
 
   it('waits for an in-flight writer holding FOR SHARE before closing the gate', async () => {

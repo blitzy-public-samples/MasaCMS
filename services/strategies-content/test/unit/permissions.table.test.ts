@@ -271,4 +271,75 @@ describe.skipIf(!(await pgAvailable()))('domain/permissions', () => {
     expect(await allowContentAction(deps, anon, { type: 'Page', contentId: id('X', 1), siteId: SITE, parentId: C.parent })).toEqual({ allowed: false, forceUnapproved: false });
     await grant(G.editors, []);
   });
+
+  it.each([
+    [id('K', 1), SITE, id('K', 1).toLowerCase(), SITE, 'editor'],
+    [id('K', 2), SITE, id('K', 2), 'TENANT-A', 'editor'],
+    [id('K', 3), SITE, id('K', 3), `${SITE} `, 'editor'],
+    [id('K', 4), SITE, `${id('K', 4)} `, SITE, 'editor'],
+    [id('K', 5).toLowerCase(), SITE, id('K', 5), SITE, 'editor'],
+    [id('K', 6), 'TENANT-A', id('K', 6), SITE, 'editor'],
+    [id('K', 7), SITE, ` ${id('K', 7)}`, SITE, 'none'],
+    [id('K', 8), SITE, id('K', 8), ` ${SITE}`, 'none'],
+  ] as Array<[string, string, string, string, string]>)('a grant stored as %j on %j matches node %j on %j as SQL Server = does -> %s', async (storedId, storedSite, contentId, siteId, expected) => {
+    await inT(TENANT_A.tenantId, (tx) => repo.projections.replaceGroupPermissions(tx, G.editors, storedSite, [{ contentId: storedId, siteId: storedSite, type: 'editor' }]));
+    expect(await getPerm(deps, actor(U.user), contentId, siteId)).toBe(expected);
+    expect(await getNodePerm(deps, actor(U.user), [crumb(id('K', 99)), crumb(contentId, { siteid: siteId })])).toBe(expected);
+    await inT(TENANT_A.tenantId, (tx) => repo.projections.replaceGroupPermissions(tx, G.editors, storedSite, []));
+  });
+
+  it.each([
+    [G.editors, id('V', 1), G.editors, id('V', 1), 'editor', [G.editors]],
+    [G.editors.toLowerCase(), id('V', 2), G.editors, id('V', 2), 'editor', [G.editors]],
+    [G.editors, id('V', 3).toLowerCase(), G.editors, id('V', 3), 'editor', [G.editors]],
+    [G.editors, id('V', 4), G.editors.toLowerCase(), id('V', 4), 'editor', [G.editors.toLowerCase()]],
+    [G.editors, id('V', 5), G.editors, id('V', 5).toLowerCase(), 'editor', [G.editors]],
+    [G.editors, id('V', 6), G.editors, ` ${id('V', 6)}`, 'none', []],
+  ] as Array<[string, string, string, string, string, string[]]>)(
+    'a grant to %j reaches member %j of %j as actor %j -> %s, membershipids %j',
+    async (permGroup, memberUser, memberGroup, sub, expected, groupIds) => {
+      nodeSeq += 1;
+      const node = id('N', nodeSeq);
+      await inT(TENANT_A.tenantId, async (tx) => {
+        await repo.projections.replaceUserMemberships(tx, memberUser, SITE, [memberGroup]);
+        await repo.projections.replaceGroupPermissions(tx, permGroup, SITE, [{ contentId: node, siteId: SITE, type: 'editor' }]);
+      });
+      expect(await getPerm(deps, actor(sub), node, SITE)).toBe(expected);
+      expect((await loadMemberships(deps, actor(sub))).groupIds).toEqual(groupIds);
+      await inT(TENANT_A.tenantId, async (tx) => {
+        await repo.projections.replaceGroupPermissions(tx, permGroup, SITE, []);
+        await repo.projections.replaceUserMemberships(tx, memberUser, SITE, []);
+      });
+    },
+  );
+
+  it.each([
+    [G.editors.toLowerCase(), 'TENANT-A', 'read', 'none'],
+    [G.editors.toLowerCase(), `${SITE} `, 'read', 'none'],
+    [G.editors, ` ${SITE}`, 'editor', 'editor'],
+  ] as Array<[string, string, string, string]>)('replaceGroupPermissions as %j on %j replaces the canonical grant -> %s, then revokes it -> %s', async (groupId, siteId, replaced, revoked) => {
+    nodeSeq += 1;
+    const node = id('N', nodeSeq);
+    await grant(G.editors, [[node, 'editor']]);
+    await inT(TENANT_A.tenantId, (tx) => repo.projections.replaceGroupPermissions(tx, groupId, siteId, [{ contentId: node, siteId: SITE, type: 'read' }]));
+    expect(await getPerm(deps, actor(U.user), node, SITE)).toBe(replaced);
+    await inT(TENANT_A.tenantId, (tx) => repo.projections.replaceGroupPermissions(tx, groupId, siteId, []));
+    expect(await getPerm(deps, actor(U.user), node, SITE)).toBe(revoked);
+    await grant(G.editors, []);
+  });
+
+  it.each([
+    [id('M', 1), id('M', 1).toLowerCase(), 'none'],
+    [id('M', 2), ` ${id('M', 2)}`, 'editor'],
+  ] as Array<[string, string, string]>)('replaceUserMemberships of member %j as %j replaces its membership -> %s', async (member, userId, expected) => {
+    nodeSeq += 1;
+    const node = id('N', nodeSeq);
+    await inT(TENANT_A.tenantId, (tx) => repo.projections.replaceUserMemberships(tx, member, SITE, [G.editors]));
+    await grant(G.editors, [[node, 'editor']]);
+    expect(await getPerm(deps, actor(member), node, SITE)).toBe('editor');
+    await inT(TENANT_A.tenantId, (tx) => repo.projections.replaceUserMemberships(tx, userId, SITE, []));
+    expect(await getPerm(deps, actor(member), node, SITE)).toBe(expected);
+    await inT(TENANT_A.tenantId, (tx) => repo.projections.replaceUserMemberships(tx, member, SITE, []));
+    await grant(G.editors, []);
+  });
 });

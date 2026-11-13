@@ -204,7 +204,14 @@ export interface FileStoreReport {
   haltedUnits: string[];
 }
 
-/** Counts over a point's unit entries. */
+/** A unit's legacy table left uncompared, with why; it neither differs nor affects `result`. */
+export interface SkippedUnitReport {
+  unit: string;
+  legacyTable: string;
+  reason: string;
+}
+
+/** Counts over a point's unit entries; `skippedUnits` counts the units with a skipped table. */
 export interface ReconcileSummary {
   units: number;
   tenants: number;
@@ -212,6 +219,7 @@ export interface ReconcileSummary {
   differences: number;
   orphans: number;
   haltedUnits: number;
+  skippedUnits: number;
 }
 
 /** Verdict of a point; `gateway/src/cutover/validate.ts` accepts rollback evidence only when it is `zero-difference`. */
@@ -229,12 +237,13 @@ export interface ReconcileReport {
   tolerance: 0;
   measures: Measure[];
   units: UnitReport[];
+  skippedUnits: SkippedUnitReport[];
   summary: ReconcileSummary;
   fileStore: FileStoreReport;
   result: ReconcileResult;
 }
 
-/** Inputs of {@link buildReport}; `legacySource` overrides the point's own. */
+/** Inputs of {@link buildReport}; `legacySource` overrides the point's own, `skippedUnits` defaults to none. */
 export interface BuildReportInput {
   point: ResolvedPoint;
   legacySource?: LegacySource;
@@ -242,6 +251,7 @@ export interface BuildReportInput {
   snapshotSeq: number | null;
   legacyDatabase: string;
   units: readonly UnitReport[];
+  skippedUnits?: readonly SkippedUnitReport[];
   fileStore: FileStoreReport;
 }
 
@@ -258,9 +268,15 @@ function isZeroEntry(entry: UnitReport): boolean {
   return isZeroDifference(entry, entry.files);
 }
 
-/** Assembles a point report: entries sorted by unit, legacy table and tenant; halted file units leave `result` unaffected. */
+/**
+ * Assembles a point report: entries sorted by unit, legacy table and tenant, skipped tables by unit and legacy table;
+ * halted file units and skipped tables leave `result` unaffected.
+ */
 export function buildReport(input: BuildReportInput): ReconcileReport {
   const units = [...input.units].sort(compareUnitReports);
+  const skippedUnits = (input.skippedUnits ?? [])
+    .map((skipped) => ({ ...skipped }))
+    .sort((a, b) => compareText(a.unit, b.unit) || compareText(a.legacyTable, b.legacyTable));
   const differing = units.filter((entry) => !isZeroEntry(entry));
   return {
     point: input.point.name,
@@ -273,6 +289,7 @@ export function buildReport(input: BuildReportInput): ReconcileReport {
     tolerance: 0,
     measures: [...MEASURES],
     units,
+    skippedUnits,
     summary: {
       units: new Set(units.map((entry) => entry.unit)).size,
       tenants: new Set(units.map((entry) => entry.tenantId)).size,
@@ -280,6 +297,7 @@ export function buildReport(input: BuildReportInput): ReconcileReport {
       differences: units.reduce((sum, entry) => sum + entry.differenceCount, 0),
       orphans: units.reduce((sum, entry) => sum + entry.orphanCount, 0),
       haltedUnits: input.fileStore.haltedUnits.length,
+      skippedUnits: new Set(skippedUnits.map((skipped) => skipped.unit)).size,
     },
     fileStore: input.fileStore,
     result: differing.length === 0 ? 'zero-difference' : 'difference',

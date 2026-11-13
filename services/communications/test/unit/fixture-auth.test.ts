@@ -2,7 +2,7 @@
 /** Check order, statuses and fixture error bodies of the communications fixture auth port (legacy-fixtures/cfml/lib/auth.cfc). */
 import { readFileSync } from 'node:fs';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { Roles, SYNTHETIC_ROLES, type UserClaims } from '@opt2/platform/auth';
+import { INVOCATION_HEADER, Roles, SYNTHETIC_ROLES, type UserClaims } from '@opt2/platform/auth';
 import {
   createService,
   CSRF_CONSUME_PATH,
@@ -13,7 +13,7 @@ import {
   type FastifyRequest,
 } from '@opt2/platform/service-kit';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
-import { mintUserToken, testVerifier } from '@opt2/platform/testing';
+import { mintServiceToken, mintUserToken, testVerifier } from '@opt2/platform/testing';
 import { fixtureHandler, fixtureMethod, fixtureSuccess } from '../../src/legacy/fixture-envelope.js';
 import {
   FIXTURE_ROLES,
@@ -63,6 +63,14 @@ function claims(roles: string[], s2 = false): UserClaims {
     epoch: 0,
     iat: now,
     exp: now + 300,
+  };
+}
+
+/** Headers of a user request as the gateway forwards it: the bearer user token plus the gateway's invocation credential. */
+async function userHeaders(token: string): Promise<Record<string, string>> {
+  return {
+    authorization: `Bearer ${token}`,
+    [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'communications' })}`,
   };
 }
 
@@ -271,7 +279,7 @@ describe('fixture check order through app.inject', () => {
     const headers: Record<string, string> = {};
     if (token !== undefined) {
       const bearer = await mintUserToken({ site: token.site ?? 'tenant-a', roles: token.roles, s2: token.s2, sub: USER_ID });
-      headers.authorization = `Bearer ${bearer}`;
+      Object.assign(headers, await userHeaders(bearer));
     }
     const query = method === 'GET' ? `?${new URLSearchParams(params as Record<string, string>).toString()}` : '';
     if (method === 'POST') headers['content-type'] = 'application/json';
@@ -387,7 +395,7 @@ describe('requireCsrf check order through app.inject', () => {
   /** Injects a tenant-a JSON message POST with `headers`, carrying a user token when `roles` is given. */
   async function send(roles: string[] | undefined, headers: Record<string, string>) {
     const auth: Record<string, string> = {};
-    if (roles !== undefined) auth.authorization = `Bearer ${await mintUserToken({ site: 'tenant-a', roles, sub: USER_ID })}`;
+    if (roles !== undefined) Object.assign(auth, await userHeaders(await mintUserToken({ site: 'tenant-a', roles, sub: USER_ID })));
     return app.inject({
       method: 'POST',
       url: `${PREFIX}/messages`,

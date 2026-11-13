@@ -1,7 +1,7 @@
 // The ccomments circuit's controller gate, site default and strategies-content relay (server-only).
 import type { ScreenGate } from '@/lib/access-gate';
 import { assertNotDenied, type GatewayResponse } from '@/lib/gateway-client';
-import type { AdminRequest } from '@/lib/request-context';
+import { administersRequestedSite, servesRequestedSite, type AdminRequest } from '@/lib/request-context';
 import type { RawBody, ScreenContext, ScreenOwner } from '../registry';
 
 /** Comments module id. */
@@ -28,9 +28,10 @@ export function commentsSiteId(req: AdminRequest): string {
   return siteid === undefined || siteid === '' ? req.session.siteid : siteid;
 }
 
-/** The ccomments controller `before()`: site admins and S2, or users with both comments and content module access. */
+/** The ccomments controller `before()`: S2 or the site's admins, or comments and content module access on that site. */
 export const ccommentsGate: ScreenGate = (req, { secure }) =>
-  req.isSiteAdmin || req.isS2 || (req.modulePerm(COMMENTS_MODULE_ID) && req.modulePerm(CONTENT_MODULE_ID))
+  administersRequestedSite(req) ||
+  (servesRequestedSite(req) && req.modulePerm(COMMENTS_MODULE_ID) && req.modulePerm(CONTENT_MODULE_ID))
     ? { kind: 'allow' }
     : secure();
 

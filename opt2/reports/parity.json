@@ -28,27 +28,21 @@
       {
         "scenario": "GS-ID-05",
         "routeKeys": [
-          "admin:cusers.update{type=2,action=delete}",
           "admin:cusers.update{photo}",
-          "admin:cusers.update{type=2,action=add,extdata}",
-          "admin:cusers.update{type=2,action=update,extdata}"
+          "admin:cusers.update{type=2,action=delete}"
         ],
         "decisionListRef": [
-          "opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=delete}",
           "opt2/decision-list.json#actionVariants/admin:cusers.update{photo}",
-          "opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=add,extdata}",
-          "opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=update,extdata}"
+          "opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=delete}"
         ]
       },
       {
         "scenario": "GS-ID-06",
         "routeKeys": [
-          "admin:cusers.update{type=1,action=delete}",
-          "admin:cusers.update{type=1,extdata}"
+          "admin:cusers.update{type=1,action=delete}"
         ],
         "decisionListRef": [
-          "opt2/decision-list.json#actionVariants/admin:cusers.update{type=1,action=delete}",
-          "opt2/decision-list.json#actionVariants/admin:cusers.update{type=1,extdata}"
+          "opt2/decision-list.json#actionVariants/admin:cusers.update{type=1,action=delete}"
         ]
       },
       {
@@ -61,24 +55,39 @@
         ]
       },
       {
-        "scenario": "GS-PE-04",
+        "scenario": "GS-ID-09",
         "routeKeys": [
-          "admin:ceditprofile.update{photo}",
+          "admin:cusers.update{type=2,action=delete}",
+          "page:render",
           "admin:ceditprofile.update{extdata}"
         ],
         "decisionListRef": [
-          "opt2/decision-list.json#actionVariants/admin:ceditprofile.update{photo}",
+          "opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=delete}",
+          "opt2/decision-list.json#actionVariants/page:render",
           "opt2/decision-list.json#actionVariants/admin:ceditprofile.update{extdata}"
+        ]
+      },
+      {
+        "scenario": "GS-PE-04",
+        "routeKeys": [
+          "admin:ceditprofile.update{photo}"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#actionVariants/admin:ceditprofile.update{photo}"
         ]
       },
       {
         "scenario": "GS-PS-01",
         "routeKeys": [
-          "admin:csettings.updatesite{action=add}"
+          "admin:csettings.updatesite{action=add}",
+          "admin:csettings.updatesite{action=delete}"
         ],
         "decisionListRef": [
           "opt2/decision-list.json#actionVariants/admin:csettings.updatesite{action=add}",
-          "opt2/decision-list.json#tables/trazunasettings"
+          "opt2/decision-list.json#tables/trazunasettings",
+          "opt2/decision-list.json#actionVariants/admin:csettings.updatesite{action=delete}",
+          "opt2/decision-list.json#tables/tremotepointer",
+          "opt2/decision-list.json#tables/tcontenteventreminders"
         ]
       },
       {
@@ -93,17 +102,23 @@
       {
         "scenario": "GS-PS-03",
         "routeKeys": [
+          "admin:csettings.sitecopy",
+          "admin:csettings.updatesite{action=add}",
           "admin:csettings.sitecopyselect",
-          "admin:csettings.sitecopy"
+          "admin:csettings.updatesite{action=delete}"
         ],
         "decisionListRef": [
-          "opt2/decision-list.json#actionVariants/admin:csettings.sitecopyselect",
           "opt2/decision-list.json#actionVariants/admin:csettings.sitecopy",
           "opt2/decision-list.json#tables/tplugins",
           "opt2/decision-list.json#tables/tpluginsettings",
           "opt2/decision-list.json#tables/tpluginscripts",
           "opt2/decision-list.json#tables/tplugindisplayobjects",
-          "opt2/decision-list.json#tables/trazunasettings"
+          "opt2/decision-list.json#tables/tremotepointer",
+          "opt2/decision-list.json#tables/trazunasettings",
+          "opt2/decision-list.json#actionVariants/admin:csettings.updatesite{action=add}",
+          "opt2/decision-list.json#actionVariants/admin:csettings.sitecopyselect",
+          "opt2/decision-list.json#actionVariants/admin:csettings.updatesite{action=delete}",
+          "opt2/decision-list.json#tables/tcontenteventreminders"
         ]
       },
       {
@@ -112,12 +127,7 @@
           "admin:cextend.*"
         ],
         "decisionListRef": [
-          "opt2/decision-list.json#actionVariants/admin:cextend.*",
-          "opt2/decision-list.json#tables/tplugins",
-          "opt2/decision-list.json#tables/tpluginsettings",
-          "opt2/decision-list.json#tables/tpluginscripts",
-          "opt2/decision-list.json#tables/tplugindisplayobjects",
-          "opt2/decision-list.json#tables/trazunasettings"
+          "opt2/decision-list.json#actionVariants/admin:cextend.*"
         ]
       },
       {
@@ -126,8 +136,7 @@
           "admin:ctrash.*"
         ],
         "decisionListRef": [
-          "opt2/decision-list.json#actionVariants/admin:ctrash.*",
-          "opt2/decision-list.json#tables/tcontenteventreminders"
+          "opt2/decision-list.json#actionVariants/admin:ctrash.*"
         ]
       },
       {
@@ -136,6 +145,17 @@
           "admin:carch.update{approved=1}"
         ],
         "decisionListRef": [
+          "opt2/decision-list.json#tables/tcontenteventreminders"
+        ]
+      },
+      {
+        "scenario": "GS-CO-09",
+        "routeKeys": [
+          "admin:cperm.update",
+          "admin:carch.update{approved=1}"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#actionVariants/admin:cperm.update",
           "opt2/decision-list.json#tables/tcontenteventreminders"
         ]
       },
@@ -158,25 +178,67 @@
         ]
       },
       {
-        "scenario": "GS-PUB-03",
+        "scenario": "GS-PUB-01",
         "routeKeys": [
-          "page:createprofile",
-          "page:updateprofile"
+          "page:render"
         ],
         "decisionListRef": [
-          "opt2/decision-list.json#actionVariants/page:createprofile",
-          "opt2/decision-list.json#actionVariants/page:updateprofile"
+          "opt2/decision-list.json#actionVariants/page:render"
+        ]
+      },
+      {
+        "scenario": "GS-PUB-02",
+        "routeKeys": [
+          "page:render"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#actionVariants/page:render"
+        ]
+      },
+      {
+        "scenario": "GS-PUB-03",
+        "routeKeys": [
+          "page:updateprofile",
+          "page:createprofile"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#actionVariants/page:updateprofile",
+          "opt2/decision-list.json#actionVariants/page:createprofile"
         ]
       },
       {
         "scenario": "GS-PUB-05",
         "routeKeys": [
+          "page:render",
+          "page:saveform",
           "api:processasyncobject{saveform}",
-          "page:saveform"
+          "api:processasyncobject"
         ],
         "decisionListRef": [
+          "opt2/decision-list.json#actionVariants/page:render",
+          "opt2/decision-list.json#actionVariants/page:saveform",
           "opt2/decision-list.json#actionVariants/api:processasyncobject{saveform}",
-          "opt2/decision-list.json#actionVariants/page:saveform"
+          "opt2/decision-list.json#actionVariants/api:processasyncobject"
+        ]
+      },
+      {
+        "scenario": "GS-UI-01",
+        "routeKeys": [
+          "admin:carch.copy"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#actionVariants/admin:carch.copy"
+        ]
+      },
+      {
+        "scenario": "GS-UI-02",
+        "routeKeys": [
+          "admin:cperm.update",
+          "admin:carch.update{approved=1}"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#actionVariants/admin:cperm.update",
+          "opt2/decision-list.json#tables/tcontenteventreminders"
         ]
       },
       {
@@ -186,6 +248,149 @@
         ],
         "decisionListRef": [
           "opt2/decision-list.json#actionVariants/page:render"
+        ]
+      },
+      {
+        "scenario": "GS-ID-10",
+        "routeKeys": [
+          "admin:cextend.*",
+          "admin:cusers.update{type=1,extdata}",
+          "api:group.save{extdata}",
+          "api:group.save{photo}",
+          "api:group.delete"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#actionVariants/admin:cextend.*",
+          "opt2/decision-list.json#actionVariants/admin:cusers.update{type=1,extdata}",
+          "opt2/decision-list.json#actionVariants/api:group.save{extdata}",
+          "opt2/decision-list.json#actionVariants/api:group.save{photo}",
+          "opt2/decision-list.json#actionVariants/api:group.delete"
+        ]
+      },
+      {
+        "scenario": "GS-PE-06",
+        "routeKeys": [
+          "admin:cextend.*",
+          "admin:cusers.update{type=2,action=add,extdata}",
+          "admin:cusers.update{type=2,action=update,extdata}",
+          "admin:cusers.updateaddress{extdata}",
+          "admin:cusers.updateaddress{action=delete}",
+          "admin:ceditprofile.update{extdata}",
+          "api:user.save{extdata}",
+          "api:user.save{photo}",
+          "api:address.save{extdata}",
+          "api:address.delete",
+          "api:user.delete",
+          "admin:cusers.update"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#actionVariants/admin:cextend.*",
+          "opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=add,extdata}",
+          "opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=update,extdata}",
+          "opt2/decision-list.json#actionVariants/admin:cusers.updateaddress{extdata}",
+          "opt2/decision-list.json#actionVariants/admin:cusers.updateaddress{action=delete}",
+          "opt2/decision-list.json#actionVariants/admin:ceditprofile.update{extdata}",
+          "opt2/decision-list.json#actionVariants/api:user.save{extdata}",
+          "opt2/decision-list.json#actionVariants/api:user.save{photo}",
+          "opt2/decision-list.json#actionVariants/api:address.save{extdata}",
+          "opt2/decision-list.json#actionVariants/api:address.delete",
+          "opt2/decision-list.json#actionVariants/api:user.delete",
+          "opt2/decision-list.json#actionVariants/admin:cusers.update"
+        ]
+      },
+      {
+        "scenario": "GS-PS-08",
+        "routeKeys": [
+          "api:site.save",
+          "api:site.save{bundle}",
+          "api:declareentity",
+          "api:undeclareentity",
+          "api:checkschema",
+          "rest:site.save",
+          "rest:site.save{bundle}",
+          "rest:declareentity",
+          "rest:undeclareentity",
+          "rest:checkschema"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#tables/trazunasettings",
+          "opt2/decision-list.json#tables/tplugins",
+          "opt2/decision-list.json#tables/tpluginsettings",
+          "opt2/decision-list.json#tables/tpluginscripts",
+          "opt2/decision-list.json#tables/tplugindisplayobjects",
+          "opt2/decision-list.json#tables/tremotepointer",
+          "opt2/decision-list.json#tables/tentity",
+          "opt2/decision-list.json#tables/tentity-declared:*"
+        ]
+      },
+      {
+        "scenario": "GS-CO-18",
+        "routeKeys": [
+          "admin:carch.update{notify}",
+          "admin:carch.updateobjectparams{approved=1}",
+          "api:content.save{approved=1}",
+          "api:content.save{notify}",
+          "api:contentnav.save{approved=1}",
+          "api:contentnav.save{notify}",
+          "rest:content.save{approved=1}",
+          "rest:content.save{notify}",
+          "rest:contentnav.save{approved=1}",
+          "rest:contentnav.save{notify}"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#tables/tcontenteventreminders"
+        ]
+      },
+      {
+        "scenario": "GS-CO-19",
+        "routeKeys": [
+          "admin:carch.variationtargeting{notify}"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#actionVariants/admin:carch.variationtargeting{notify}"
+        ]
+      },
+      {
+        "scenario": "GS-LS-02",
+        "routeKeys": [
+          "page:setreminder"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#tables/tcontenteventreminders"
+        ]
+      },
+      {
+        "scenario": "GS-LS-03",
+        "routeKeys": [
+          "admin:carch.importcontent",
+          "admin:carch.importcomponent"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#tables/tplugins",
+          "opt2/decision-list.json#tables/tpluginsettings",
+          "opt2/decision-list.json#tables/tpluginscripts",
+          "opt2/decision-list.json#tables/tplugindisplayobjects",
+          "opt2/decision-list.json#tables/tremotepointer",
+          "opt2/decision-list.json#tables/trazunasettings",
+          "opt2/decision-list.json#tables/tcontenteventreminders"
+        ]
+      },
+      {
+        "scenario": "GS-LS-04",
+        "routeKeys": [
+          "admin:csettings.deleteplugin",
+          "admin:csettings.deployplugin",
+          "admin:csettings.updateplugin",
+          "admin:csettings.updatesite{bundle}"
+        ],
+        "decisionListRef": [
+          "opt2/decision-list.json#tables/tplugins",
+          "opt2/decision-list.json#tables/tpluginsettings",
+          "opt2/decision-list.json#tables/tpluginscripts",
+          "opt2/decision-list.json#tables/tplugindisplayobjects",
+          "opt2/decision-list.json#tables/tremotepointer",
+          "opt2/decision-list.json#tables/trazunasettings",
+          "opt2/decision-list.json#tables/tcontenteventreminders"
         ]
       }
     ],
@@ -197,7 +402,30 @@
           "admin:carch.update{upload=image}",
           "admin:carch.multifileupload{upload=image}",
           "api:file.save{upload=image}",
-          "rest:file.save{upload=image}"
+          "rest:file.save{upload=image}",
+          "admin:carch.cropimage",
+          "admin:carch.flipimage",
+          "admin:carch.rotateimage"
+        ]
+      },
+      {
+        "scenario": "GS-ID-11",
+        "exceptionId": "EX-LOGIN-LOCKDOWN",
+        "routeKeys": [
+          "api:login"
+        ]
+      },
+      {
+        "scenario": "GS-CO-17",
+        "exceptionId": "EX-FILE-RENDITION",
+        "routeKeys": [
+          "admin:carch.update{upload=image}",
+          "admin:carch.multifileupload{upload=image}",
+          "api:file.save{upload=image}",
+          "rest:file.save{upload=image}",
+          "admin:carch.cropimage",
+          "admin:carch.flipimage",
+          "admin:carch.rotateimage"
         ]
       }
     ]

@@ -348,6 +348,44 @@ describe('forwardToTarget web', () => {
     await expectSettledOnce(harness);
   });
 
+  it('passes a page-mode 302 through with its Location, cache headers and ordered cookies', async () => {
+    const cookies = ['rb=;path=/;HttpOnly;SameSite=Lax;', 'ADMINCONTROLWIDTH=300;path=/;', 'ADMINSIDEBAR=off;path=/;'];
+    service.setHandler((_req, res) =>
+      sendBytes(res, 302, '', {
+        location: './?muraAction=cLogin.main&returnURL=%2Fadmin%2F',
+        'cache-control': 'no-cache',
+        pragma: 'no-cache',
+        'set-cookie': cookies,
+      }),
+    );
+    harness.set({ service: 'web', isWeb: true, failContext: ADMIN, path: '/admin/cusers/list?muraAction=cUsers.list' });
+    const res = await harness.app.inject({ method: 'GET', url: '/admin/?muraAction=cUsers.list' });
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toBe('./?muraAction=cLogin.main&returnURL=%2Fadmin%2F');
+    expect(res.headers['cache-control']).toBe('no-cache');
+    expect(res.headers.pragma).toBe('no-cache');
+    expect(res.headers['set-cookie']).toEqual(cookies);
+  });
+
+  it.each([
+    {
+      label: "Next's own Cache-Control",
+      cacheHeaders: { 'cache-control': 'private, no-cache, no-store, max-age=0, must-revalidate' },
+      expected: undefined,
+    },
+    {
+      label: "the full layout's Cache-Control and Expires",
+      cacheHeaders: { 'cache-control': 'no-cache, no-store, must-revalidate', expires: '06 Nov 1994 08:37:34 GMT' },
+      expected: 'no-cache, no-store, must-revalidate',
+    },
+  ])('answers a page 200 carrying $label with Cache-Control $expected', async ({ cacheHeaders, expected }) => {
+    service.setHandler((_req, res) => sendBytes(res, 200, '<html></html>', { ...webHeaders, ...cacheHeaders }));
+    harness.set({ service: 'web', isWeb: true, failContext: ADMIN, path: '/admin/cusers/list?muraAction=cUsers.list' });
+    const res = await harness.app.inject({ method: 'GET', url: '/admin/?muraAction=cUsers.list' });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['cache-control']).toBe(expected);
+  });
+
   it('forwards /_next/ assets with their headers in both directions', async () => {
     service.setHandler((_req, res) => sendBytes(res, 200, 'js', { 'content-type': 'application/javascript', 'x-nextjs-cache': 'HIT' }));
     harness.set({ service: 'web', isWeb: true, failContext: ADMIN, path: '/_next/static/chunk.js' });
@@ -988,28 +1026,185 @@ describe('forwardToTarget trace context without undici instrumentation', () => {
 
 describe('forwardToTarget trace context with the SDK started', () => {
   const exporter = new MemorySpanExporter();
+  const [, ACTIVE_TRACE_ID, ACTIVE_SPAN_ID] = ACTIVE_TRACE.traceparent.split('-');
+  let side: HttpDouble;
+
+  /** Exported client spans of the active trace; a span still open is not among them. */
+  async function activeClientSpans(): Promise<ReturnType<MemorySpanExporter['getFinishedSpans']>> {
+    await flushTracing();
+    return exporter
+      .getFinishedSpans()
+      .filter((span) => span.kind === SpanKind.CLIENT && span.spanContext().traceId === ACTIVE_TRACE_ID);
+  }
 
   beforeAll(async () => {
     await startTracing({ serviceName: 'gateway-forward-target-test', version: '1.0.0', exporter });
+    side = await startHttpDouble((_req, res) => {
+      sendBytes(res, 200, 'side');
+    });
+  });
+
+  afterEach(() => {
+    exporter.reset();
+    side.clearRequests();
   });
 
   afterAll(async () => {
+    await side.close();
     await shutdownTracing();
   });
 
-  it('sends one traceparent, from the client span the instrumentation starts under the active context', async () => {
-    expect(channel('undici:request:create').hasSubscribers).toBe(true);
-    harness.set({ traced: true });
-    await harness.app.inject({ method: 'GET', url: '/v1/notes', headers: { traceparent: INBOUND_TRACEPARENT } });
-    const received = only(service);
-    const traceparents = rawValues(received, 'traceparent');
-    expect(traceparents).toHaveLength(1);
-    const [, traceId, parentId] = /^00-([0-9a-f]{32})-([0-9a-f]{16})-01$/.exec(traceparents[0] ?? '') ?? [];
-    expect(traceId).toBe(ACTIVE_TRACE.traceparent.split('-')[1]);
-    expect(rawValues(received, 'tracestate')).toEqual([ACTIVE_TRACE.tracestate]);
+  it.each([
+    ['people', false],
+    ['web', true],
+  ] as const)(
+    'sends one traceparent, from the client span `GET %s` started under the active context',
+    async (callee, isWeb) => {
+      expect(channel('undici:request:create').hasSubscribers).toBe(true);
+      harness.set({ traced: true, service: callee, isWeb });
+      await harness.app.inject({
+        method: 'GET',
+        url: '/v1/notes?token=s3cr3t',
+        headers: { traceparent: INBOUND_TRACEPARENT },
+      });
+      const received = only(service);
+      const traceparents = rawValues(received, 'traceparent');
+      expect(traceparents).toHaveLength(1);
+      const [, traceId, parentId] = /^00-([0-9a-f]{32})-([0-9a-f]{16})-01$/.exec(traceparents[0] ?? '') ?? [];
+      expect(traceId).toBe(ACTIVE_TRACE_ID);
+      expect(rawValues(received, 'tracestate')).toEqual([ACTIVE_TRACE.tracestate]);
 
-    await flushTracing();
-    const client = exporter.getFinishedSpans().find((span) => span.spanContext().spanId === parentId);
-    expect(client?.kind).toBe(SpanKind.CLIENT);
+      const clients = await activeClientSpans();
+      expect(clients.map((span) => span.name)).toEqual([`GET ${callee}`]);
+      expect(clients[0]?.spanContext().spanId).toBe(parentId);
+      expect(clients[0]?.parentSpanContext?.spanId).toBe(ACTIVE_SPAN_ID);
+    },
+  );
+
+  it('runs its hooks outside the callee context, so the calls they make keep their own names', async () => {
+    const call = async (hook: string): Promise<void> => {
+      await (await fetch(`${side.url}/${hook}`)).arrayBuffer();
+    };
+    harness.set({
+      traced: true,
+      mapSetCookies: async (setCookies) => {
+        await call('mapSetCookies');
+        return setCookies;
+      },
+      beforeSend: () => call('beforeSend'),
+      onSettled: () => call('onSettled'),
+    });
+    const res = await harness.app.inject({ method: 'POST', url: '/v1/people', payload: 'name=a' });
+    expect(res.statusCode).toBe(200);
+    await vi.waitFor(async () => {
+      expect(await activeClientSpans()).toHaveLength(4);
+    });
+
+    const names = Object.fromEntries((await activeClientSpans()).map((span) => [String(span.attributes['url.path']), span.name]));
+    expect(names).toEqual({ '/v1/people': 'POST people', '/mapSetCookies': 'GET', '/beforeSend': 'GET', '/onSettled': 'GET' });
+  });
+
+  it.each([
+    ['answers a GET 503', 503],
+    ['refuses the connection', undefined],
+  ] as const)('names the one client span `GET people` of a forward whose service %s', async (_label, status) => {
+    const target = await startHttpDouble((_req, res) => {
+      sendBytes(res, status ?? 200, 'busy', { 'retry-after': '0' });
+    });
+    if (status === undefined) await target.close();
+    const h = await startHarness(() => target);
+    try {
+      h.set({ traced: true });
+      const res = await h.app.inject({ method: 'GET', url: '/v1/notes' });
+      expect(res.statusCode).toBe(503);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      const clients = await activeClientSpans();
+      expect(clients.map((span) => span.name)).toEqual(['GET people']);
+      if (status === undefined) expect(clients[0]?.attributes['error.type']).toBe('ECONNREFUSED');
+      else expect(clients[0]?.attributes['http.response.status_code']).toBe(status);
+    } finally {
+      await h.app.close();
+      await target.close();
+    }
+  });
+
+  it.each<[string, () => void]>([
+    [
+      'a path reply-from rejects',
+      () => {
+        harness.set({ traced: true, path: '/v1/%2e%2e/secret' });
+      },
+    ],
+    [
+      'an invocation credential that cannot be minted',
+      () => {
+        harness.set({ traced: true });
+        harness.setMinter({ headersFor: () => Promise.reject(new Error('metadata server unreachable')) });
+      },
+    ],
+  ])('starts no client span for a forward refused before sending: %s', async (_label, refuse) => {
+    refuse();
+    const res = await harness.app.inject({ method: 'GET', url: '/v1/notes' });
+    expect(res.statusCode).toBe(503);
+    expect(service.requests).toHaveLength(0);
+    await expectSettledOnce(harness);
+    expect(await activeClientSpans()).toEqual([]);
+  });
+
+  it.each([
+    ['reads the whole streamed response', false],
+    ['goes away after the first streamed byte', true],
+  ] as const)('ends the one client span `POST people` once a listening client %s', async (_label, abort) => {
+    const target = await startHttpDouble(async (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      for (let sent = 0; sent < 8; sent += 1) {
+        res.write(Buffer.alloc(1024, 0x61));
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      res.end();
+    });
+    const h = await startHarness(() => target);
+    await h.app.listen({ host: '127.0.0.1', port: 0 });
+    try {
+      h.set({ traced: true });
+      const received = await new Promise<number>((resolve) => {
+        let length = 0;
+        const req = httpRequest(
+          { host: '127.0.0.1', port: (h.app.server.address() as AddressInfo).port, path: '/v1/people', method: 'POST', agent: false },
+          (res) => {
+            res.on('data', (chunk: Buffer) => {
+              length += chunk.length;
+              if (abort) req.destroy();
+            });
+            res.once('end', () => {
+              resolve(length);
+            });
+            res.once('close', () => {
+              resolve(length);
+            });
+          },
+        );
+        req.once('error', () => {
+          resolve(length);
+        });
+        req.end('name=streamed');
+      });
+      if (!abort) expect(received).toBe(8 * 1024);
+
+      await vi.waitFor(
+        async () => {
+          expect(await activeClientSpans()).toHaveLength(1);
+        },
+        { timeout: 3000 },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const clients = await activeClientSpans();
+      expect(clients.map((span) => span.name)).toEqual(['POST people']);
+      expect(clients[0]?.attributes['http.response.status_code']).toBe(200);
+    } finally {
+      await h.app.close();
+      await target.close();
+    }
   });
 });

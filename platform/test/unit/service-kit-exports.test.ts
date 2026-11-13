@@ -69,8 +69,10 @@ const VALUE_EXPORTS = {
     [
       'createService',
       'defaultSurfaceOf',
+      'isUnstorableTextError',
       'legacyParamsOf',
       'multipartFilesOf',
+      'recordOutcomeReason',
       'sendLegacyResponse',
       'LEGACY_POST_LIMIT_BYTES',
     ],

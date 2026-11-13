@@ -15,6 +15,7 @@ import {
   bindValue,
   clearPendingEffects,
   decodeLegacyChange,
+  liveSiteOf,
   readCheckpoint,
   readCheckpoints,
   readyHorizonOf,
@@ -747,6 +748,101 @@ describe('applyLegacyChange on a keyed table', () => {
     const tx = fakeTx();
 
     await expect(applyLegacyChange(tx.scope, change(op, TUSERS, fields), options(TUSERS, opts))).rejects.toThrow(new TypeError(message));
+    expect(tx.issued).toEqual([]);
+  });
+});
+
+describe('applyLegacyChange with a site column', () => {
+  const CLIENTS = table('dbo', 'toauthclients', [column('clientid', 'char'), column('siteid', 'nvarchar'), column('name', 'nvarchar')], { primaryKey: ['clientid'] });
+  const AT_B = { clientid: 'c1', siteid: 'tenant-b', name: 'Old' };
+  const sited = (extra: Partial<ApplyLegacyOptions> = {}) => options(CLIENTS, { keyColumns: ['clientid'], siteColumn: 'siteid', ...extra });
+  const renamed = () => change('update', CLIENTS, { before: AT_B, after: { ...AT_B, name: 'New' }, changedColumns: ['name'] });
+
+  it.each([
+    {
+      label: 'an update',
+      apply: () => renamed(),
+      sql: 'UPDATE [dbo].[toauthclients] SET [name] = @p0 WHERE [clientid] = @p1 AND [siteid] = @p2',
+      values: { p0: 'New', p1: 'c1', p2: 'tenant-b' },
+    },
+    {
+      label: 'a delete',
+      apply: () => change('delete', CLIENTS, { before: AT_B }),
+      sql: 'DELETE FROM [dbo].[toauthclients] WHERE [clientid] = @p0 AND [siteid] = @p1',
+      values: { p0: 'c1', p1: 'tenant-b' },
+    },
+  ])('matches $label on its key and its before-image site', async ({ apply, sql: text, values }) => {
+    const tx = fakeTx({ rowsAffected: [1] });
+
+    await expect(applyLegacyChange(tx.scope, apply(), sited())).resolves.toEqual({ rows: 1 });
+    expect(tx.statements()).toEqual([text]);
+    expect(valuesOf(tx.issued[0])).toEqual(values);
+  });
+
+  it('writes nothing for an update whose key legacy holds under another site', async () => {
+    const tx = fakeTx({ rowsAffected: [0] }, { recordset: [{ n: 1 }] });
+
+    await expect(applyLegacyChange(tx.scope, renamed(), sited())).resolves.toEqual({ rows: 0 });
+    expect(tx.statements()).toEqual([
+      'UPDATE [dbo].[toauthclients] SET [name] = @p0 WHERE [clientid] = @p1 AND [siteid] = @p2',
+      'SELECT COUNT(*) AS n FROM [dbo].[toauthclients] WHERE [clientid] = @p0',
+    ]);
+    expect(valuesOf(tx.issued[1])).toEqual({ p0: 'c1' });
+  });
+
+  it('rejects an update whose key legacy holds under no site', async () => {
+    const tx = fakeTx({ rowsAffected: [0] }, { recordset: [{ n: 0 }] });
+
+    const error = await failureOf(applyLegacyChange(tx.scope, renamed(), sited()));
+
+    expect(error).toBeInstanceOf(ProjectionConflictError);
+    expect(error).toMatchObject({ table: 'toauthclients', op: 'update' });
+    expect(tx.issued).toHaveLength(2);
+  });
+
+  it('moves a row in from another site by key when an insert is not superseded', async () => {
+    const tx = fakeTx({ rowsAffected: [1] });
+
+    await expect(applyLegacyChange(tx.scope, change('insert', CLIENTS, { after: { ...AT_B, siteid: 'tenant-a' } }), sited())).resolves.toEqual({ rows: 1 });
+    expect(tx.statements()).toEqual(['UPDATE [dbo].[toauthclients] SET [siteid] = @p0, [name] = @p1 WHERE [clientid] = @p2']);
+    expect(valuesOf(tx.issued[0])).toEqual({ p0: 'tenant-a', p1: 'Old', p2: 'c1' });
+  });
+
+  it('writes nothing for a superseded insert', async () => {
+    const tx = fakeTx();
+
+    await expect(applyLegacyChange(tx.scope, change('insert', CLIENTS, { after: AT_B }), sited({ supersededInsert: true }))).resolves.toEqual({ rows: 0 });
+    expect(tx.issued).toEqual([]);
+  });
+
+  it.each([
+    { label: 'an update', op: 'update' as const, sql: 'UPDATE [dbo].[toauthclients] SET [name] = @p0 WHERE [clientid] = @p1' },
+    { label: 'a delete', op: 'delete' as const, sql: 'DELETE FROM [dbo].[toauthclients] WHERE [clientid] = @p0' },
+  ])('ignores the site column for $label of a split table', async ({ op, sql: text }) => {
+    const tx = fakeTx({ rowsAffected: [1] });
+    const fields = op === 'update' ? { before: AT_B, after: { ...AT_B, name: 'New' }, changedColumns: ['name'] } : { before: AT_B };
+
+    await applyLegacyChange(tx.scope, change(op, CLIENTS, fields), sited({ split: true }));
+    expect(tx.statements()).toEqual([text]);
+  });
+
+  it.each([
+    { label: 'the site of the row holding the key', recordset: [{ site: 'tenant-b' }], site: 'tenant-b' },
+    { label: 'null when no row holds the key', recordset: [], site: null },
+  ])('liveSiteOf reads $label', async ({ recordset, site }) => {
+    const tx = fakeTx({ recordset });
+
+    await expect(liveSiteOf(tx.scope, change('insert', CLIENTS, { after: AT_B }), { tableCatalog: CLIENTS, keyColumns: ['clientid'], siteColumn: 'siteid' })).resolves.toBe(site);
+    expect(tx.statements()).toEqual(['SELECT [siteid] AS site FROM [dbo].[toauthclients] WHERE [clientid] = @p0']);
+    expect(valuesOf(tx.issued[0])).toEqual({ p0: 'c1' });
+  });
+
+  it('liveSiteOf rejects a table without a primary key before reading', async () => {
+    const tx = fakeTx();
+
+    await expect(liveSiteOf(tx.scope, change('insert', TLOG, { after: { entry: 'login' } }), { tableCatalog: TLOG, siteColumn: 'entry' })).rejects.toThrow(
+      new TypeError('tlog has no primary key to locate a row by'),
+    );
     expect(tx.issued).toEqual([]);
   });
 });

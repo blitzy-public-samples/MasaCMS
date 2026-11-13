@@ -45,6 +45,7 @@ CREATE TABLE migration.write_window (
   state text NOT NULL CHECK (state IN ('opening', 'open', 'closed', 'failed', 'import-pending', 'resolved')),
   phase text CHECK (phase IN ('quiet', 'executing', 'importing', 'import-pending')),
   closed_gates jsonb NOT NULL DEFAULT '{}',
+  closing_gates jsonb NOT NULL DEFAULT '{}',
   phases jsonb NOT NULL DEFAULT '[]',
   lease_expires_at timestamp(3) without time zone,
   legacy_status integer,
@@ -54,7 +55,9 @@ CREATE TABLE migration.write_window (
   error jsonb,
   opened_at timestamp(3) without time zone NOT NULL,
   updated_at timestamp(3) without time zone NOT NULL,
-  closed_at timestamp(3) without time zone
+  closed_at timestamp(3) without time zone,
+  claimed_by text,
+  claim_expires_at timestamp(3) without time zone
 );
 CREATE INDEX write_window_state_idx ON migration.write_window (state);
 

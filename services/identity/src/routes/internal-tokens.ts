@@ -3,14 +3,22 @@ import { serviceRole, type Opt2RouteConfig } from '@opt2/platform/auth';
 import type { FastifyInstance } from '@opt2/platform/service-kit';
 import type { Jwks, TokenRequest, TokenService, UserTokenResponse } from '../domain/tokens.js';
 import type { components } from '../generated/openapi.js';
+import { legacyApiSettings, type LegacyApiSettings } from './legacy-api.js';
+import { legacyOriginEcho } from './legacy-origin.js';
 import { authenticateRestRequest, type OAuthRouteDeps, type RestAuthInput, type RestAuthOutcome } from './oauth.js';
 
 type Schemas = components['schemas'];
 type Struct = Record<string, unknown>;
 
 /** The token service and the REST credential flow the routes delegate to. */
-export type TokenRouteDeps = { tokens: TokenService; rest: OAuthRouteDeps };
+export type TokenRouteDeps = {
+  tokens: TokenService;
+  rest: OAuthRouteDeps;
+  /** The CORS allow-list's admin domains; defaults to `MURA_ADMINDOMAIN` of `process.env`. */
+  legacy?: Pick<LegacyApiSettings, 'adminDomain'>;
+};
 
+// A minted token carries every role of its session, so only the gateway, which holds the client's session, may mint one.
 const GATEWAY_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', requires: Object.freeze([serviceRole('gateway')]) });
 
 const PUBLIC_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', public: true });
@@ -77,16 +85,32 @@ function restAuthInput(body: Schemas['AuthenticateRequest']): RestAuthInput {
   };
 }
 
-/** The contract's `AuthenticateResponse` of a REST credential outcome: the request's session, or legacy's own answer. */
-function authenticateResponse(outcome: RestAuthOutcome): Schemas['AuthenticateResponse'] {
-  if (outcome.kind === 'session') return { outcome: 'authenticated', sessionId: outcome.sessionId };
+/** Names of the request's params the credential block consumed: those its outcome no longer holds, ignoring case. */
+function consumedParams(sent: Readonly<Struct>, remaining: Readonly<Struct>): string[] {
+  const kept = new Set(Object.keys(remaining).map((name) => name.toLowerCase()));
+  return Object.keys(sent).filter((name) => !kept.has(name.toLowerCase()));
+}
+
+/** The contract's `AuthenticateResponse` of a REST credential outcome: the request's session, or legacy's own answer behind its Origin echo. */
+async function authenticateResponse(
+  input: RestAuthInput,
+  outcome: RestAuthOutcome,
+  originEcho: () => Promise<Record<string, string>>,
+): Promise<Schemas['AuthenticateResponse']> {
+  if (outcome.kind === 'session') {
+    // Only removals travel: values kept from exchanged Basic credentials stay here, as the client's Authorization never reaches services.
+    return { outcome: 'authenticated', sessionId: outcome.sessionId, consumedParams: consumedParams(input.params, outcome.params) };
+  }
   const { status, headers, body } = outcome;
-  return { outcome: status >= FIRST_ERROR_STATUS ? 'denied' : 'answered', sessionId: null, legacyResponse: { status, headers, body } };
+  // processRequest echoes an allowed Origin before any credential code runs [legacy: core/mura/client/api/json/v1/jsonApiUtility.cfc:382-394].
+  const answer = { status, headers: { ...(await originEcho()), ...headers }, body };
+  return { outcome: status >= FIRST_ERROR_STATUS ? 'denied' : 'answered', sessionId: null, legacyResponse: answer };
 }
 
 /** Registers the token mint and REST credential routes, which only the gateway may call, and the public JWKS. */
 export async function registerTokenRoutes(app: FastifyInstance, deps: TokenRouteDeps): Promise<void> {
   const { tokens, rest } = deps;
+  const { adminDomain } = deps.legacy ?? legacyApiSettings(process.env);
 
   // Claims come from identity's own session state; the body names only the session and the site.
   app.post<{ Body: TokenRequest; Reply: UserTokenResponse }>(
@@ -99,7 +123,11 @@ export async function registerTokenRoutes(app: FastifyInstance, deps: TokenRoute
   app.post<{ Body: Schemas['AuthenticateRequest']; Reply: Schemas['AuthenticateResponse'] }>(
     '/internal/v1/authenticate',
     { schema: { body: AUTHENTICATE_BODY }, config: { opt2: GATEWAY_AUTH } },
-    async (request) => authenticateResponse(await authenticateRestRequest(rest, restAuthInput(request.body))),
+    async (request) => {
+      const input = restAuthInput(request.body);
+      const outcome = await authenticateRestRequest(rest, input);
+      return authenticateResponse(input, outcome, () => legacyOriginEcho(rest.login.db, request.body.headers, adminDomain));
+    },
   );
 
   app.get<{ Reply: Jwks }>('/.well-known/jwks.json', { config: { opt2: PUBLIC_AUTH } }, async () => tokens.jwks());

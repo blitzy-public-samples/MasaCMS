@@ -1,5 +1,5 @@
 // SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
-/** Survey-response grants over `tenant_grant`: grantees of targeted sites, their per-survey and per-target locks, writes and re-sync, and the grantor lookup. */
+/** Survey-response grants over `tenant_grant`: the owner's own grant, grantees of targeted sites, their per-survey and per-target locks, writes and re-sync, and the grantor and granted-survey lookups. */
 import { tenantForRegisteredSite, withMetadata, writeGrant, type GrantInput, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 
 /** Grant kind that lets a targeted site's tenant respond to the grantor's survey. */
@@ -65,7 +65,20 @@ export async function grantSurveyResponses(tx: TenantTx, surveyId: string, sites
   }
 }
 
-/** Makes the transaction tenant's `survey-response` grants on `surveyId` exactly those `sites` derive, under the caller's `lockSurveyGrants`. */
+/** Grants the transaction tenant `survey-response` on its own survey `surveyId`, under the caller's `lockSurveyGrants`; a grant already held is kept. */
+export async function grantOwnSurveyResponses(tx: TenantTx, surveyId: string): Promise<void> {
+  await writeGrant(tx, { grantee: tx.tenantId, kind: SURVEY_RESPONSE_GRANT, resourceId: surveyId });
+}
+
+/** Removes the transaction tenant's own `survey-response` grant on `surveyId`, under the caller's `lockSurveyGrants`. */
+export async function revokeOwnSurveyResponses(tx: TenantTx, surveyId: string): Promise<void> {
+  await tx.query(
+    `DELETE FROM ${tx.schema}.tenant_grant WHERE grantor_tenant = $1 AND grantee_tenant = $2 AND kind = $3 AND resource_id = $4`,
+    [tx.tenantId, tx.tenantId, SURVEY_RESPONSE_GRANT, surveyId],
+  );
+}
+
+/** Makes the transaction tenant's `survey-response` grants on `surveyId` to other tenants exactly those `sites` derive, under the caller's `lockSurveyGrants`. */
 export async function syncSurveyResponseGrants(tx: TenantTx, surveyId: string, sites: Iterable<string>): Promise<void> {
   const wanted = new Set<string>();
   for await (const grantee of responseGrantees(tx, sites)) {
@@ -79,7 +92,7 @@ export async function syncSurveyResponseGrants(tx: TenantTx, surveyId: string, s
   for (const grantee of wanted) {
     if (!held.has(grantee)) await writeGrant(tx, { grantee, kind: SURVEY_RESPONSE_GRANT, resourceId: surveyId });
   }
-  const stale = [...held].filter((grantee) => !wanted.has(grantee));
+  const stale = [...held].filter((grantee) => grantee !== tx.tenantId && !wanted.has(grantee));
   if (stale.length > 0) {
     await tx.query(
       `DELETE FROM ${tx.schema}.tenant_grant WHERE grantor_tenant = $1 AND kind = $2 AND resource_id = $3 AND grantee_tenant = ANY($4::uuid[])`,
@@ -98,4 +111,12 @@ export async function findGrantor(db: TenantDb, { grantee, kind, resourceId }: G
     ),
   );
   return result.rows[0]?.grantor_tenant ?? null;
+}
+
+/** True when any tenant holds a `survey-response` grant on `surveyId`, as every stored survey's own tenant does; reads metadata only. */
+export async function isGrantedSurvey(db: TenantDb, surveyId: string): Promise<boolean> {
+  const result = await withMetadata(db, (tx) =>
+    tx.query(`SELECT 1 FROM ${tx.schema}.tenant_grant WHERE kind = $1 AND resource_id = $2 LIMIT 1`, [SURVEY_RESPONSE_GRANT, surveyId]),
+  );
+  return result.rows.length > 0;
 }

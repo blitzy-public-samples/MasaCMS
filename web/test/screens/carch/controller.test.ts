@@ -17,9 +17,11 @@ import {
   editorRequest,
   makeAdminRequest,
   siteAdminRequest,
+  unservedEditorRequest,
   type AdminRequestPartial,
 } from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
+import { REQUESTED_SITE_CASES } from '../../helpers/requested-site';
 
 type Subject = NonNullable<Parameters<typeof makeAdminRequest>[1]>;
 
@@ -27,6 +29,7 @@ type Subject = NonNullable<Parameters<typeof makeAdminRequest>[1]>;
 const LONG_VARIATION_ID = '000000000000000000000000000000000099';
 const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
 const REFERER = 'http://localhost/admin/?muraAction=cArch.list';
+const LIST = { circuit: 'carch', item: 'list' } as const;
 /** `session['m<moduleid>']` defaults of carch.cfc 90-101. */
 const LEGACY_TOPS: Readonly<Record<string, string>> = {
   m00000000000000000000000000000000000: '00000000000000000000000000000000001',
@@ -81,6 +84,25 @@ describe('carchGate', () => {
     const rc = { s2: '1', roles: 's2,site-admin,m:000', moduleperm: 'true' };
     const req = makeAdminRequest({ circuit: 'carch', item: 'list', rc }, 'systemUser');
     await expect(gate(req)).resolves.toEqual(secure(req));
+  });
+
+  it.each(REQUESTED_SITE_CASES)('admits $who only when it administers that site', async ({ request, administers }) => {
+    const req = request(LIST);
+    await expect(gate(req)).resolves.toEqual(administers ? { kind: 'allow' } : secure(req));
+  });
+
+  it.each<[string, () => AdminRequest, boolean]>([
+    ['on Default, its token site in another case', () => editorRequest({ ...LIST, rc: { siteid: 'Default' } }), true],
+    ['on tenant-b, its token serving default', () => editorRequest({ ...LIST, rc: { siteid: 'tenant-b' } }), false],
+    [
+      'on default from a tenant-b session',
+      () => editorRequest({ ...LIST, session: { siteid: 'tenant-b' }, rc: { siteid: 'default' } }),
+      true,
+    ],
+    ['on its default session site under a tenant-a token', () => unservedEditorRequest(LIST), false],
+  ])('checks the Site Manager grant of qa_editor %s against rc.siteid', async (_case, request, allowed) => {
+    const req = request();
+    await expect(gate(req)).resolves.toEqual(allowed ? { kind: 'allow' } : secure(req));
   });
 });
 
@@ -161,6 +183,21 @@ describe('applyCarchDefaults', () => {
       'true',
     ]);
     expect(Object.keys(rc)).toContain('Type');
+  });
+
+  // Oracle: the value cArch.hist echoes for each raw query value, on page and ajax requests alike.
+  it.each<[value: string, ajaxrequest: string, scanned: string]>([
+    [' TRUE', 'false', 'TRUE'],
+    ['tr\u0000ue', 'false', 'true'],
+    [' 1.0 ', 'false', '1.0'],
+    [' true', 'false', '"YES"'],
+    [' false', 'true', '"NO"'],
+    ['\u0001yes', 'true', 'yes'],
+  ])('holds compactDisplay %j as the admin scan leaves it (ajaxrequest %s)', (value, ajaxrequest, scanned) => {
+    const { rc } = applyCarchDefaults(carchRequest({ ajaxrequest, CompactDisplay: value }));
+    expect(rc['compactDisplay']).toBe(scanned);
+    expect(Object.keys(rc)).toContain('CompactDisplay');
+    expect(applyCarchDefaults({ ...carchRequest(), rc }).rc['compactDisplay']).toBe(scanned);
   });
 
   it.each([

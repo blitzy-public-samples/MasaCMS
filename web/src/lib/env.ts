@@ -62,6 +62,12 @@ export interface LegacySettings {
   readonly keepMetaKeywords: boolean;
   /** `formpolls`: the Form editor shows the poll presentation checkbox. */
   readonly formPolls: boolean;
+  /** `len(globalConfig('proxyserver'))`: a proxy server is configured (its value is not kept). */
+  readonly hasProxyServer: boolean;
+  /** `len(globalConfig('proxyuser'))`: a proxy user is configured (its value is not kept). */
+  readonly hasProxyUser: boolean;
+  /** `showUsageTabs`: editors show the Usage Report tab. */
+  readonly showUsageTabs: boolean;
   /** configBean `fileAssetPath`: when set, site file asset URLs are `<fileAssetPath>/<filePoolID>`. */
   readonly fileAssetPath: string;
   /** configBean `corepath`: when set, the core URL on an admin domain. */
@@ -209,6 +215,10 @@ const SETTING_RULES: { readonly [K in keyof RuledSettings]: SettingRule<RuledSet
   keepMetaKeywords: { key: 'keepmetakeywords', fallback: false, apply: cfBoolean },
   // Not a configBean property; the Form panels read it with defaultValue=false.
   formPolls: { key: 'formpolls', fallback: false, apply: cfBoolean },
+  hasProxyServer: { key: 'proxyserver', template: '', fallback: false, apply: (value) => value !== '' },
+  hasProxyUser: { key: 'proxyuser', template: '', fallback: false, apply: (value) => value !== '' },
+  // Not a configBean property; the editors read it with defaultValue=true.
+  showUsageTabs: { key: 'showusagetabs', fallback: true, apply: cfBoolean },
   fileAssetPath: { key: 'fileassetpath', fallback: '', apply: asIs },
   corePath: { key: 'corepath', fallback: '', apply: asIs },
   pluginsPath: { key: 'pluginspath', fallback: '', apply: asIs },

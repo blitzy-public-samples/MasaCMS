@@ -7,7 +7,7 @@ import type { EditFormState, EditPageData } from './custom-tags';
 /** What the include reads; an `EditFormInput` satisfies it. */
 export interface FormBuilderInput {
   readonly ctx: Pick<ScreenContext, 'rb'>;
-  /** The edit model; `rc.contentBean` body is the form JSON (strategies-content's `createJSONForm` for a new form). */
+  /** The edit model; `rc.contentBean` body is the form JSON (`createJSONForm` of edit-panels.ts for a new form). */
   readonly data: EditPageData;
   readonly state: Pick<EditFormState, 'isExtended'>;
 }

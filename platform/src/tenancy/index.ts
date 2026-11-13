@@ -11,13 +11,15 @@ export {
   TransactionRolledBackError,
 } from './transaction.js';
 export type { TenantDb, TenantTx, TxBase, Queryable, CommitCallback, CommitErrorHandler, TransactionCallOptions } from './transaction.js';
+export type { NotificationHandlers, NotificationListener } from './listener.js';
 export { withMetadata, NON_TENANT_TABLES, isNonTenantTable } from './metadata.js';
 export type { MetadataTx, NonTenantTable } from './metadata.js';
-export { createPool, tenantDbFromPool, iamDbUser } from './pool.js';
+export { createPool, tenantDbFromPool, iamDbUser, sessionTimeZoneSetter } from './pool.js';
 // TenantDbOptions is tenantDbFromPool's parameter type; outside platform it is reachable only through this subpath.
 export type { DbEnv, CreatePoolOptions, TenantDbOptions } from './pool.js';
 export {
   registeredTenants,
+  registryEntries,
   registryEntryForTenant,
   tenantForRegisteredSite,
   siteForTenant,

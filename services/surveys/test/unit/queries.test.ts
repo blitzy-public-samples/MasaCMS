@@ -34,7 +34,7 @@ function cfId(n: number): string {
   return `${String(n).padStart(8, '0')}-AAAA-BBBB-CCCCDDDDEEEEFFFF`;
 }
 
-const available = await pgAvailable();
+const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
 
 describe.skipIf(!available)('surveys queries against PostgreSQL', () => {
   let handle: ThrowawaySchema;

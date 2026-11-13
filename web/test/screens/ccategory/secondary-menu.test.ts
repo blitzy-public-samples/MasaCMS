@@ -1,18 +1,30 @@
 // The category manager secondary menu against ccategory/dsp_secondary_menu.cfm.
+import { moduleRole, Roles } from '@opt2/platform/auth';
+import { tenantIdForSite } from '@opt2/platform/tenancy';
 import * as cheerio from 'cheerio';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { encodeUrl, isSafeHtml, toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
 import { ccategorySecondaryMenu, originalFuseactionOf } from '@/screens/ccategory/secondary-menu';
 import type { ShellHooks } from '@/shell/document';
-import { adminS2Request, editorRequest, siteAdminRequest } from '../../helpers/admin-request';
+import { adminS2Request, editorRequest, makeAdminRequest, siteAdminRequest } from '../../helpers/admin-request';
 import { fragmentModel, normaliseAdminUrl, type DomLink } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
 import { fakeGatewayClient } from '../../helpers/fake-gateway';
 import { makeScreenContext } from '../../helpers/screen-context';
+import { TENANT_UMBRELLA } from '../../helpers/tokens';
+
+// The registry imports every circuit barrel; the screen context reads only its shell hooks.
+vi.mock('@/screens/registry', () => ({ shellHooks: Object.freeze({ secondaryMenus: Object.freeze({}) }) }));
 
 const CATEGORY_MODULE_ID = '00000000000000000000000000000000010';
+const SITE_MANAGER_MODULE_ID = '00000000000000000000000000000000000';
 const CIRCUIT = 'cCategory';
+
+/** Claims of a site-admin token minted for the umbrella pool site. */
+const UMBRELLA_TOKEN = { site: TENANT_UMBRELLA.siteId, tid: TENANT_UMBRELLA.tenantId };
+/** Claims of a site-admin token minted for `default`. */
+const DEFAULT_TOKEN = { site: 'default', tid: tenantIdForSite('default') };
 
 const menu: NonNullable<ShellHooks['secondaryMenus']['ccategory']> = ccategorySecondaryMenu;
 
@@ -159,6 +171,81 @@ describe('ccategorySecondaryMenu on list', () => {
 
     expect(hrefs).toEqual([addHref(site), permissionsHref(site)]);
     expect(hrefs.every((href) => href?.includes('&siteid=a+b%26c'))).toBe(true);
+  });
+});
+
+describe('ccategorySecondaryMenu Permissions on list, by the requested site', () => {
+  it.each<[string, () => AdminRequest, string]>([
+    [
+      'the tenant-a site admin on Tenant-A, the token site in another case',
+      () => siteAdminRequest('tenant-a', { circuit: CIRCUIT, item: 'list', rc: { siteid: 'Tenant-A' } }),
+      'Tenant-A',
+    ],
+    [
+      'the S2 admin on tenant-b, a site its token does not serve',
+      () => adminS2Request({ circuit: CIRCUIT, item: 'list', rc: { siteid: 'tenant-b' } }),
+      'tenant-b',
+    ],
+    [
+      'the umbrella pool admin on umbrella',
+      () => siteAdminRequest('umbrella', { circuit: CIRCUIT, item: 'list', user: UMBRELLA_TOKEN }),
+      'umbrella',
+    ],
+    [
+      'the default site admin on an empty siteid, which getSite reads as default',
+      () => siteAdminRequest('default', { circuit: CIRCUIT, item: 'list', rc: { siteid: '' }, user: DEFAULT_TOKEN }),
+      '',
+    ],
+  ])('renders Add Category and Permissions for %s', (_, request, site) => {
+    const markup = render(request());
+
+    expect(shapeOf(markup)).toEqual({ ...ROOT, buttons: [addButton(site), permissionsButton(site)] });
+    expect(fragmentModel(markup).links).toEqual([addLink(site), permissionsLink(site)]);
+  });
+
+  it.each<[string, () => AdminRequest, string]>([
+    [
+      'the tenant-a site admin on default',
+      () => siteAdminRequest('tenant-a', { circuit: CIRCUIT, item: 'list', rc: { siteid: 'default' } }),
+      'default',
+    ],
+    [
+      'the tenant-a site admin on tenant-b',
+      () => siteAdminRequest('tenant-a', { circuit: CIRCUIT, item: 'list', rc: { siteid: 'tenant-b' } }),
+      'tenant-b',
+    ],
+    [
+      'the umbrella pool admin on tenant-a, whose category and public user pools umbrella holds',
+      () =>
+        siteAdminRequest('umbrella', {
+          circuit: CIRCUIT,
+          item: 'list',
+          rc: { siteid: 'tenant-a' },
+          user: UMBRELLA_TOKEN,
+        }),
+      'tenant-a',
+    ],
+    [
+      'Categories plus Site Manager module access on its own site',
+      () =>
+        makeAdminRequest(
+          {
+            circuit: CIRCUIT,
+            item: 'list',
+            user: { roles: [Roles.systemUser, moduleRole(CATEGORY_MODULE_ID), moduleRole(SITE_MANAGER_MODULE_ID)] },
+          },
+          'qaEditor',
+        ),
+      'default',
+    ],
+  ])('renders only Add Category for %s', (_, request, site) => {
+    const req = request();
+    expect(req.isS2).toBe(false);
+    const markup = render(req);
+
+    expect(shapeOf(markup)).toEqual({ ...ROOT, buttons: [addButton(site)] });
+    expect(fragmentModel(markup).links).toEqual([addLink(site)]);
+    expect(markup).not.toContain('cPerm.module');
   });
 });
 

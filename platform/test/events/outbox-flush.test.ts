@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   createPublisher,
@@ -14,6 +15,7 @@ import {
 import { createLogger } from '../../src/logging/index.js';
 import { migrationKitSql } from '../../src/migration-kit/index.js';
 import {
+  FLUSH_DEADLINE_MS,
   OutboxNotConfiguredError,
   OutboxTransactionError,
   createOutbox,
@@ -24,6 +26,7 @@ import {
   releaseOperation,
   resetOutboxRuntimes,
   rowFromDb,
+  selectPublishable,
   sweepOutbox,
   writeOutbox,
   type OutboxOrigin,
@@ -60,6 +63,10 @@ const NOTES_ROUTE = '/test/notes';
 const clock = businessClock();
 const STAMP = localTimestamp(clock.now());
 const logger = createLogger({ service: SERVICE, version: '1.0.0', env: 'local', destination: { write: () => undefined } });
+// Nothing listens on the discard port, so every publish through it stays pending while the client retries.
+const UNREACHABLE_PUBSUB_HOST = '127.0.0.1:9';
+// Room for the flush's own statements beyond its deadline.
+const FLUSH_MARGIN_MS = 1_000;
 
 interface NotePayload {
   noteId: string;
@@ -506,6 +513,74 @@ describe('outbox writer and in-request flush against PostgreSQL and the Pub/Sub 
 
     await sweepOutbox(runtime, { service: SERVICE, clock });
     expect(capturedFor(capture, eventId)).toHaveLength(1);
+  });
+
+  it('answers a write within the flush deadline while Pub/Sub is unreachable and leaves its row to the sweep, which publishes it once', async () => {
+    const unreachable = createPublisher({ projectId: process.env.GOOGLE_CLOUD_PROJECT ?? 'opt2-local', emulatorHost: UNREACHABLE_PUBSUB_HOST });
+    // close() first flushes the publish the client still retries, so it is bounded rather than awaited.
+    cleanups.push(() => Promise.race([unreachable.close(), sleep(1_000)]));
+    outboxWith(unreachable);
+
+    const started = performance.now();
+    const envelope = await withTenant(handle.app, TENANT_A.tenantId, (tx) => saveNote(tx, noteEvent(stateTopic, randomUUID())));
+    expect(performance.now() - started).toBeLessThan(FLUSH_DEADLINE_MS + FLUSH_MARGIN_MS);
+    const eventId = String(envelope?.eventId);
+    expect(await rowsFor(TENANT_A.tenantId, eventId)).toMatchObject([{ held: false, publishedAt: null }]);
+
+    const { runtime, capture } = capturingOutbox();
+    await expect(sweepOutbox(runtime, { service: SERVICE, clock })).resolves.toMatchObject({ failed: 0, tenants: 3 });
+    expect(capturedFor(capture, eventId)).toEqual([envelope]);
+    expect(await rowsFor(TENANT_A.tenantId, eventId)).toMatchObject([{ publishedAt: STAMP }]);
+
+    await sweepOutbox(runtime, { service: SERVICE, clock });
+    expect(capturedFor(capture, eventId)).toHaveLength(1);
+  });
+
+  it("answers a write within the flush deadline while another transaction locks its key's earlier row, then the sweep publishes both in seq order", async () => {
+    const { runtime, capture } = capturingOutbox();
+    const aggregateId = randomUUID();
+    capture.failNext(1);
+    const first = await withTenant(handle.app, TENANT_A.tenantId, (tx) => saveNote(tx, noteEvent(stateTopic, aggregateId)));
+
+    let release = (): void => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let markLocked = (_rows: OutboxRow[]): void => undefined;
+    const locked = new Promise<OutboxRow[]>((resolve) => {
+      markLocked = resolve;
+    });
+    const holder = withTenant(handle.app, TENANT_A.tenantId, async (tx) => {
+      markLocked(await selectPublishable(tx, handle.schema, { limit: 500 }));
+      await released;
+    });
+    try {
+      expect((await locked).map((row) => row.eventId)).toContain(first?.eventId);
+
+      const started = performance.now();
+      const second = await withTenant(handle.app, TENANT_A.tenantId, (tx) =>
+        saveNote(tx, noteEvent(stateTopic, aggregateId, { aggregateVersion: 2 })),
+      );
+      expect(performance.now() - started).toBeLessThan(FLUSH_DEADLINE_MS + FLUSH_MARGIN_MS);
+      const unpublished = (await outboxRows(TENANT_A.tenantId)).filter((row) => row.orderingKey === aggregateId);
+      expect(unpublished.map((row) => [row.eventId, row.publishedAt])).toEqual([
+        [first?.eventId, null],
+        [second?.eventId, null],
+      ]);
+      expect(capturedForAggregate(capture, aggregateId)).toEqual([]);
+
+      release();
+      await holder;
+      await expect(sweepOutbox(runtime, { service: SERVICE, clock })).resolves.toMatchObject({ failed: 0, tenants: 3 });
+      expect(capturedForAggregate(capture, aggregateId)).toEqual([first, second]);
+      expect((await outboxRows(TENANT_A.tenantId)).filter((row) => row.orderingKey === aggregateId)).toMatchObject([
+        { publishedAt: STAMP },
+        { publishedAt: STAMP },
+      ]);
+    } finally {
+      release();
+      await holder;
+    }
   });
 
   it('rejects a write inside a metadata transaction with OutboxTransactionError', async () => {

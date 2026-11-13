@@ -163,7 +163,7 @@ Caller: the migration service, for the programs-sites site-monitor orchestrator 
 | `sendReminders` | `theTime` | `contentManager.sendReminders(theTime)` (`:683`). The orchestrator sends the 30-minute catch-up (`:677-681`) as a separate call |
 | `emailSend` | — | `emailManager.send()` (`:685`) |
 | `publishScheduledChangesets` | — | `changesetManager.publishBySchedule()` (`:687`) |
-| `trackBounces` | `siteid` | `emailManager.trackBounces(siteid)` (`:693`) |
+| `trackBounces` | `siteid` | `emailManager.trackBounces(siteid)` (`:693`), only when `settingsManager.getSite(siteid).getEmailBroadcaster()` (`:691`) is truthy; otherwise completes without calling it |
 | `feedAutoImport` | `siteid` | `feedManager.doAutoImport(siteid)` (`:698`) |
 | `purgeDisplayWindow` | `lastMonitored`, `theTime` | The display-window query over `[lastMonitored, theTime]` (`:702-711`), then `purgeContentCache` per content and `purgeCache()` per site (`:713-733`) |
 | `clearOldCommands` | — | `clusterManager.clearOldCommands()` (`:735`) |
@@ -173,7 +173,7 @@ Caller: the migration service, for the programs-sites site-monitor orchestrator 
 | `getCursor` | — | Reads `application.lastMonitored`; seeds `programs_sites.sitemonitor_state` at hand-off |
 | `purgeCache` | `siteid` | `settingsBean.purgeCache(name, broadcast=false)` for `output` and `data` (`core/mura/settings/settingsBean.cfc:639-645`) |
 
-- The per-site gating (`EmailBroadcaster`, `FeedManager`), the step order, the catch-up and the ineffective mail-server dedupe (`:694` discards the `listAppend` result) belong to the orchestrator, not to the bridge.
+- The per-site flag gating (`EmailBroadcaster`, `FeedManager`), the step order, the catch-up and the ineffective mail-server dedupe (`:694` discards the `listAppend` result) belong to the orchestrator. The global `emailBroadcaster` part of `getEmailBroadcaster()` (0 while that config is off, `core/mura/settings/settingsBean.cfc:435-441`) is applied by the bridge, because only legacy reads that config.
 - A step that writes `target`-authoritative units runs here only inside a write window that migration opens (AAP 0.5.4). The bridge itself is unaware of windows.
 
 ### `scheduler.cfm?op=…`

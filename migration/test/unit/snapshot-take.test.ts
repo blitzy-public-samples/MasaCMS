@@ -25,8 +25,10 @@ import {
   SnapshotBlockedError,
   SnapshotError,
   getSnapshot,
+  latestSnapshotOfKind,
   takeSnapshot,
   type SnapshotContext,
+  type SnapshotKind,
   type SnapshotState,
 } from '../../src/snapshot/snapshot.js';
 
@@ -196,6 +198,7 @@ function pgLabel(text: string, values: readonly unknown[]): string {
   if (text.startsWith('DELETE FROM migration.file_manifest')) return 'manifest-delete';
   if (text.startsWith('UPDATE migration.snapshot SET manifest_complete = true')) return 'manifest-complete';
   if (text.includes('FROM migration.snapshot AS s WHERE s.seq = $1')) return 'read';
+  if (text.endsWith("FROM migration.snapshot AS s WHERE s.kind = $1 AND s.state = 'ready' ORDER BY s.seq DESC LIMIT 1")) return 'latest-of-kind';
   throw new Error(`unexpected statement: ${text}`);
 }
 
@@ -273,6 +276,10 @@ function fakeMigrationDb(events: string[], opts: { leases?: LeaseRow[]; rows?: S
         }
         case 'read': {
           const row = rowFor(seq);
+          return { rows: row === undefined ? [] : [{ ...row, objects: 0 }], rowCount: row === undefined ? 0 : 1 };
+        }
+        case 'latest-of-kind': {
+          const row = [...rows.values()].filter((stored) => stored.kind === values[0] && stored.state === 'ready').sort((a, b) => b.seq - a.seq)[0];
           return { rows: row === undefined ? [] : [{ ...row, objects: 0 }], rowCount: row === undefined ? 0 : 1 };
         }
         default:
@@ -547,6 +554,34 @@ describe('takeSnapshot', () => {
 
     expect(migration.rows.get(0)).toMatchObject({ state: 'failed', checkpoint_lsn: '45000000123000' });
     expect((await getSnapshot(ctx, 0))?.fileStore).toEqual({ status: 'error', message: 'building the file manifest failed' });
+  });
+});
+
+describe('latestSnapshotOfKind', () => {
+  it.each<[SnapshotKind, number | null]>([
+    ['seed', 3],
+    ['feed', 1],
+    ['checkpoint', null],
+  ])('reads the highest ready %s snapshot with one parameterized statement', async (kind, seq) => {
+    const of = (at: number, state: SnapshotState, snapshotKind: SnapshotKind): StoredSnapshot => ({ ...stored(at, state), kind: snapshotKind });
+    const rows = [
+      of(0, 'ready', 'seed'),
+      of(1, 'ready', 'feed'),
+      of(2, 'ready', 'seed'),
+      of(3, 'ready', 'seed'),
+      of(4, 'dropped', 'seed'),
+      of(5, 'failed', 'feed'),
+      of(6, 'creating', 'checkpoint'),
+      of(7, 'ready', 'workload'),
+    ];
+    const { ctx, migration } = await takeContext({ rows });
+
+    const snapshot = await latestSnapshotOfKind(ctx, kind);
+
+    expect(snapshot === null ? null : { seq: snapshot.seq, kind: snapshot.kind, state: snapshot.state }).toEqual(
+      seq === null ? null : { seq, kind, state: 'ready' },
+    );
+    expect(migration.statements).toEqual([{ label: 'latest-of-kind', values: [kind] }]);
   });
 });
 

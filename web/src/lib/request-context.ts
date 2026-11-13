@@ -636,7 +636,7 @@ function alertsOf(mura: SessionUser): Record<string, Record<string, AdminAlert>>
 }
 
 /** Named view of the served site settings; flags read as CFML truthiness of the served integer. */
-function siteDataOf(record: SiteRecord, defaultLocale: string): SiteData {
+export function siteDataOf(record: SiteRecord, defaultLocale: string): SiteData {
   const flag = (value: number | null | undefined): boolean => (value ?? 0) !== 0;
   const text = (value: string | null | undefined): string => value ?? '';
   const pool = (value: string | undefined): string => value ?? record.SiteID;
@@ -694,6 +694,36 @@ export function tokenServesSite(claims: Pick<UserClaims, 'site'>, siteId: string
   }
 }
 
+// identity mints site-admin and m:<NNN> for the token's site, while legacy checks them for getSite(rc.siteid), which
+// answers `default` for an empty id; so they count only when the token serves that site.
+/** Whether the token's site-scoped roles apply to the site `getSite(rc.siteid)` reads. */
+export function servesRequestedSite(req: Pick<AdminRequest, 'user' | 'rc'>): boolean {
+  return req.user !== undefined && tokenServesSite(req.user, req.rc['siteid'] || 'default');
+}
+
+/** Membership `Admin;<privateUserPoolID of getSite(rc.siteid)>;0` or `S2` (global), read from the verified claims. */
+export function administersRequestedSite(req: Pick<AdminRequest, 'isS2' | 'isSiteAdmin' | 'user' | 'rc'>): boolean {
+  return req.isS2 || (req.isSiteAdmin && servesRequestedSite(req));
+}
+
+/** Whether the token's site-scoped roles apply to the site `getSite(session.siteid)` reads. */
+export function servesSessionSite(req: Pick<AdminRequest, 'user' | 'session'>): boolean {
+  return req.user !== undefined && tokenServesSite(req.user, req.session.siteid || 'default');
+}
+
+/** Membership `Admin;<privateUserPoolID of getSite(session.siteid)>;0` or `S2`, which the layout checks. */
+export function administersSessionSite(req: Pick<AdminRequest, 'isS2' | 'isSiteAdmin' | 'user' | 'session'>): boolean {
+  return req.isS2 || (req.isSiteAdmin && servesSessionSite(req));
+}
+
+/** permission `getModulePerm(moduleId, session.siteid)`: S2, else the token's module grant when it serves that site. */
+export function sessionSiteModulePerm(
+  req: Pick<AdminRequest, 'isS2' | 'user' | 'session' | 'modulePerm'>,
+  moduleId: string,
+): boolean {
+  return req.isS2 || (servesSessionSite(req) && req.modulePerm(moduleId));
+}
+
 // Services serve only the token's site, so any other site is known to exist only through the identity-computed site
 // list, and its locale falls back to the default locale.
 /** Per-request site lookups, each site read at most once; a denied read rejects with GatewayDenialError. */
@@ -738,7 +768,7 @@ function reverseLookup(
 }
 
 /** CFML `URLEncodedFormat`: every character but ASCII letters and digits as `%XX` of its UTF-8 bytes. */
-function urlEncodedFormat(value: string): string {
+export function urlEncodedFormat(value: string): string {
   return encodeURIComponent(value).replace(/[-_.!~*'()]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 

@@ -2,8 +2,8 @@
   "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
   "generatedBy": "gateway/src/cutover/build-groups.ts",
   "inputs": {
-    "inventorySha256": "9bfd7b37c8620385db96321ff82614d434ad67b178d2d0c673b5d8d7457233a1",
-    "tableOwnershipSha256": "405850deacb39e24c86f4553d2f2baecd05c87d0279f2874be02c2b57107fbec"
+    "inventorySha256": "c04cd132cd81cb194e8e1a6aa3e49302fbbcef93abd96d1b23f14c77db7c0fb8",
+    "tableOwnershipSha256": "fa0eda738deedda9002a8b7d570459d5a001d78b1d725e22c4b6c0ad3044f668"
   },
   "groups": [
     {
@@ -112,7 +112,6 @@
       "writeEntries": [
         "admin:carch.approvalaction",
         "admin:carch.approvalaction{action=approve}",
-        "admin:carch.cropimage",
         "admin:carch.datamanager",
         "admin:carch.edit",
         "admin:carch.list",
@@ -353,7 +352,6 @@
         "admin:cwebservice.save",
         "api:address.save",
         "api:group.save",
-        "api:login",
         "api:user.save",
         "rest:address.save",
         "rest:group.save",

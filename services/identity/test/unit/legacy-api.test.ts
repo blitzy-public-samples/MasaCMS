@@ -1,19 +1,23 @@
 /** The JSON API routes against Masa 7.6.1 oracle answers, over an in-memory registry and a throwaway `identity` schema: headers, CORS, route ownership, identity's named methods, group operations and access, saves, and REST credential delegation. */
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { inspect } from 'node:util';
 import bcrypt from 'bcryptjs';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, etag } from '@opt2/platform/legacy-compat';
-import { createLogger, type Logger } from '@opt2/platform/logging';
+import { createLogger, validateLogRecord, type LogFn, type Logger } from '@opt2/platform/logging';
 import { ensureUnitGates, withGatedTenant } from '@opt2/platform/migration-kit';
 import { createOutbox } from '@opt2/platform/outbox';
 import {
   EnvValidationError,
+  SERVICE_CALL_TIMEOUT_MS,
   createService,
   loadEnv,
   type FastifyInstance,
@@ -37,12 +41,14 @@ import {
 import { issueTokens } from '../../src/domain/csrf.js';
 import { EN_GROUP_MESSAGES } from '../../src/domain/groups.js';
 import { DEFAULT_LOGIN_SETTINGS, type LoginDeps } from '../../src/domain/login.js';
-import { ensureSession, type SessionDeps } from '../../src/domain/sessions.js';
+import { ensureSession, sessionState, type SessionDeps } from '../../src/domain/sessions.js';
 import { createIdentityEvents, identityPayloadValidators } from '../../src/events/publish.js';
 import type { BridgeRelay } from '../../src/legacy/bridge-relay.js';
 import { createIdentityRepository, type GroupInput, type IdentityRepository } from '../../src/repo/repository.js';
 import { IDENTITY_UNITS } from '../../src/repo/tables.js';
-import { registerLegacyApiRoutes, type LegacyApiRouteDeps, type LegacyApiSettings } from '../../src/routes/legacy-api.js';
+import { feedHalted, feedRefused, legacyApiPrefixes, likeMatcher, lockdownRefused, registerLegacyApiRoutes, userRecordRefused, type LegacyApiRouteDeps, type LegacyApiSettings } from '../../src/routes/legacy-api.js';
+import { validateHalted, validateRefused } from '../../src/routes/legacy-bean-validator.js';
+import { authenticateRestRequest } from '../../src/routes/oauth.js';
 import { createRecordingDb } from '../helpers/memory-repo.js';
 import { TEST_PASSWORDS } from '../helpers/rows.js';
 
@@ -147,6 +153,131 @@ const INSTALL_FIELDS: ReadonlyMap<string, readonly string[]> = new Map([
 const MEMORY_ANSWERS = Object.keys(ORACLE).filter((name) => ORACLE[name]?.caller === 'anonymous' && !ANONYMOUS_DATA_ANSWERS.has(name));
 const DATA_ANSWERS = Object.keys(ORACLE).filter((name) => !MEMORY_ANSWERS.includes(name));
 
+/** An oracle answer of `validate` (fixture json-api-validate-answers.json); `refusal` marks a case identity answers with the legacy 503. */
+interface ValidateAnswer {
+  family: 'adhoc' | 'datatype' | 'comparison' | 'entity' | 'loadby';
+  caller: 'admin' | 'anonymous';
+  data: string;
+  validations?: string;
+  status: number;
+  contentType: string;
+  hasEtag: boolean;
+  body: string;
+  stacktraceRemoved?: true;
+  refusal?: string;
+}
+
+const VALIDATE_ORACLE = (
+  JSON.parse(readFileSync(new URL('../fixtures/legacy/json-api-validate-answers.json', import.meta.url), 'utf8')) as { answers: Record<string, ValidateAnswer> }
+).answers;
+
+/** Names of the validate answers of `family`, those identity refuses when `refused`. */
+function validateAnswers(family: ValidateAnswer['family'], refused = false): string[] {
+  return Object.keys(VALIDATE_ORACLE).filter((name) => VALIDATE_ORACLE[name]?.family === family && (VALIDATE_ORACLE[name]?.refusal !== undefined) === refused);
+}
+
+function validateAnswer(name: string): ValidateAnswer {
+  const answer = VALIDATE_ORACLE[name];
+  if (answer === undefined) throw new Error(`no validate answer ${name}`);
+  return answer;
+}
+
+/** The request path of a validate answer. */
+function validatePath(answer: ValidateAnswer): string {
+  const validations = answer.validations === undefined ? '' : `&validations=${encodeURIComponent(answer.validations)}`;
+  return `${API}/validate?entityname=group&data=${encodeURIComponent(answer.data)}${validations}`;
+}
+
+/** The caller of a validate answer: the oracle's admin is S2. */
+function validateCaller(answer: ValidateAnswer): Caller | undefined {
+  return answer.caller === 'admin' ? S2 : undefined;
+}
+
+/** Asserts that `res` answers as the oracle did: status, content type, parsed envelope with its `data` keys in order, and ETag rule. */
+function expectValidateAnswer(res: Answer, answer: ValidateAnswer): void {
+  const expected = JSON.parse(answer.body) as { data?: unknown };
+  expect(res.statusCode).toBe(answer.status);
+  expect(res.headers['content-type']).toBe(answer.contentType);
+  expect(json(res)).toEqual(expected);
+  if (typeof expected.data === 'object' && expected.data !== null) expect(Object.keys(dataOf(res))).toEqual(Object.keys(expected.data));
+  expect(res.headers.etag).toBe(answer.hasEtag ? etag(res.body) : undefined);
+}
+
+/** An oracle answer of a group feed (fixture json-api-feed-answers.json); `refusal` marks a case identity answers with the legacy 503. */
+interface FeedAnswer {
+  family: 'distinct' | 'aggregate' | 'subquery' | 'join' | 'table' | 'sort' | 'fields' | 'bracket' | 'setter' | 'extended';
+  path: string;
+  status: number;
+  contentType: string;
+  hasEtag: boolean;
+  body: string;
+  stacktraceRemoved?: true;
+  detail?: string;
+  refusal?: string;
+}
+
+const FEED_FIXTURE = JSON.parse(readFileSync(new URL('../fixtures/legacy/json-api-feed-answers.json', import.meta.url), 'utf8')) as {
+  oracleOrigin: string;
+  answers: Record<string, FeedAnswer>;
+};
+const FEED_ORACLE = FEED_FIXTURE.answers;
+
+/** Names of the feed answers of `family`, those identity refuses when `refused`. */
+function feedAnswers(family: FeedAnswer['family'], refused = false): string[] {
+  return Object.keys(FEED_ORACLE).filter((name) => FEED_ORACLE[name]?.family === family && (FEED_ORACLE[name]?.refusal !== undefined) === refused);
+}
+
+function feedAnswer(name: string): FeedAnswer {
+  const answer = FEED_ORACLE[name];
+  if (answer === undefined) throw new Error(`no feed answer ${name}`);
+  return answer;
+}
+
+/** Item ids of a feed page body, in item order. */
+function itemIds(body: string): string[] {
+  const data = (JSON.parse(body) as { data?: { items?: Array<{ userid?: string }> } }).data;
+  return (data?.items ?? []).map((item) => item.userid ?? '');
+}
+
+type FeedEnvelope = { data?: { items?: Array<Record<string, unknown>>; links?: Record<string, string> } };
+
+/** A findAll or findMany page with the query pairs of its url-scope links sorted: ACF iterates that scope in an order that varies from request to request. */
+function withScopeLinksSorted(envelope: FeedEnvelope): FeedEnvelope {
+  const links = envelope.data?.links;
+  if (links === undefined || !/&method=find(all|many)&/i.test(links.self ?? '')) return envelope;
+  for (const name of ['self', 'first', 'previous', 'next', 'last']) {
+    const link = links[name];
+    if (link === undefined) continue;
+    const [base = '', query = ''] = link.split('?');
+    links[name] = `${base}?${query.split('&').sort().join('&')}`;
+  }
+  return envelope;
+}
+
+/** The test clock's time as a feed item serializes it. */
+const NOW_TEXT = `${NOW.getFullYear()}-${String(NOW.getMonth() + 1).padStart(2, '0')}-${String(NOW.getDate()).padStart(2, '0')}T${String(NOW.getHours()).padStart(2, '0')}:${String(NOW.getMinutes()).padStart(2, '0')}:${String(NOW.getSeconds()).padStart(2, '0')}`;
+
+/**
+ * Asserts that `res` answers as the oracle did: status, content type, parsed envelope on this host and ETag rule; a new bean's generated
+ * id stands in for the oracle's, and the request time a NULL `passwordcreated` of `undated` rows reads (userBean.cfc:137) is the test clock's.
+ */
+function expectFeedAnswer(res: Answer, answer: FeedAnswer, seeded: readonly string[], undated: readonly string[] = []): void {
+  let expected = answer.body.replaceAll(FEED_FIXTURE.oracleOrigin, `http://${HOST}`);
+  const ours = itemIds(res.body);
+  itemIds(expected).forEach((theirs, i) => {
+    const generated = ours[i];
+    if (!seeded.includes(theirs) && generated !== undefined) expected = expected.replaceAll(theirs, generated);
+  });
+  const envelope = JSON.parse(expected) as FeedEnvelope;
+  for (const item of envelope.data?.items ?? []) {
+    if (undated.includes(String(item.userid)) && 'passwordcreated' in item) item.passwordcreated = NOW_TEXT;
+  }
+  expect(res.statusCode).toBe(answer.status);
+  expect(res.headers['content-type']).toBe(answer.contentType);
+  expect(withScopeLinksSorted(json(res) as FeedEnvelope)).toEqual(withScopeLinksSorted(envelope));
+  expect(res.headers.etag).toBe(answer.hasEtag ? etag(res.body) : undefined);
+}
+
 function oracle(name: string): OracleAnswer {
   const answer = ORACLE[name];
   if (answer === undefined) throw new Error(`no oracle answer ${name}`);
@@ -160,6 +291,39 @@ function oraclePath(answer: OracleAnswer): string {
 
 function quietLogger(): Logger {
   return createLogger({ service: 'identity', version: '1.0.0', env: 'local', destination: { write: () => undefined } });
+}
+
+/** A logger that keeps the arguments of every log call, on it and its children, and every line it writes. */
+function capturingLogger(): { logger: Logger; calls: unknown[][]; lines: string[] } {
+  const calls: unknown[][] = [];
+  const lines: string[] = [];
+  const recording = (inner: Logger): Logger => {
+    const forward =
+      (level: 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace'): LogFn =>
+      (...args: unknown[]) => {
+        calls.push(args);
+        Reflect.apply(inner[level], inner, args);
+      };
+    return {
+      get level() {
+        return inner.level;
+      },
+      set level(level: string) {
+        inner.level = level;
+      },
+      fatal: forward('fatal'),
+      error: forward('error'),
+      warn: forward('warn'),
+      info: forward('info'),
+      debug: forward('debug'),
+      trace: forward('trace'),
+      child: (bindings) => recording(inner.child(bindings)),
+      isLevelEnabled: (level) => inner.isLevelEnabled(level),
+      flush: (cb) => inner.flush(cb),
+    };
+  };
+  const root = createLogger({ service: 'identity', version: '1.0.0', env: 'local', destination: { write: (line: string) => void lines.push(line) } });
+  return { logger: recording(root), calls, lines };
 }
 
 function recordingPeople(): RecordingPeople {
@@ -294,8 +458,8 @@ function routeDeps(db: TenantDb, repo: IdentityRepository, client: ServiceClient
   };
 }
 
-/** An identity service with only the JSON API routes registered. */
-async function buildApp(deps: LegacyApiRouteDeps): Promise<FastifyInstance> {
+/** An identity service with only the JSON API routes registered, routing `noCasePathPrefixes` in any letter case. */
+async function buildApp(deps: LegacyApiRouteDeps, logger: Logger = quietLogger(), noCasePathPrefixes: readonly string[] = []): Promise<FastifyInstance> {
   const app = await createService({
     name: 'identity',
     version: '1.0.0',
@@ -310,7 +474,8 @@ async function buildApp(deps: LegacyApiRouteDeps): Promise<FastifyInstance> {
       TZ: 'UTC',
     }),
     verifierOverride: testVerifier('identity'),
-    logger: quietLogger(),
+    logger,
+    noCasePathPrefixes,
   });
   await registerLegacyApiRoutes(app, deps);
   await app.ready();
@@ -352,6 +517,7 @@ const MEMORY_REGISTRY = [
   aggregate_version: 1,
   updated_at: NOW,
 }));
+const REGISTRY_ENTRIES = /^SELECT site_id, tenant_id, .+ FROM identity\.tenant_registry ORDER BY site_id$/;
 
 describe('JSON API over an in-memory registry', () => {
   const people = recordingPeople();
@@ -363,7 +529,8 @@ describe('JSON API over an in-memory registry', () => {
   };
   const db = createRecordingDb({
     responses: [
-      [/FROM identity\.tenant_registry ORDER BY site_id/, () => registryRows(MEMORY_REGISTRY.map(({ site_id, tenant_id }) => ({ site_id, tenant_id })))],
+      [/SELECT tenant_id, site_id FROM identity\.tenant_registry ORDER BY site_id/, () => registryRows(MEMORY_REGISTRY.map(({ site_id, tenant_id }) => ({ site_id, tenant_id })))],
+      [REGISTRY_ENTRIES, () => registryRows(MEMORY_REGISTRY)],
       [/FROM identity\.tenant_registry WHERE tenant_id = \$1/, (_sql, values) => registryRows(MEMORY_REGISTRY.filter((row) => row.tenant_id === values[0]))],
     ],
   });
@@ -379,19 +546,21 @@ describe('JSON API over an in-memory registry', () => {
     await app?.opt2.shutdown();
   });
 
-  it('declares GET, POST, PUT and DELETE of the json, ajax and rest families as the contract does: public, service transport, no hook site check', () => {
-    const declared = collectRouteMatrix(app).routes.filter((route) => route.url.startsWith('/_api/') && route.method !== 'HEAD');
+  it('declares GET, POST, PUT and DELETE of the json, ajax and rest families, bare and behind /index.cfm, as the contract does: public, service transport, no hook site check', () => {
+    const declared = collectRouteMatrix(app).routes.filter((route) => /^(?:\/index\.cfm)?\/_api\//.test(route.url) && route.method !== 'HEAD');
     const expected = new Map<string, unknown>();
     for (const [template, operations] of Object.entries(OPENAPI.paths)) {
       if (!template.startsWith('/_api/')) continue;
       for (const [method, operation] of Object.entries(operations)) {
         if (method === 'parameters') continue;
-        const entry = { method: method.toUpperCase(), url: operation['x-opt2-fastify-path'], transport: operation['x-opt2-transport'], public: operation['x-opt2-public'], siteCheck: false };
-        expected.set(JSON.stringify(entry), entry);
+        for (const url of operation['x-opt2-fastify-path'] as string[]) {
+          const entry = { method: method.toUpperCase(), url, transport: operation['x-opt2-transport'], public: operation['x-opt2-public'], siteCheck: false };
+          expected.set(JSON.stringify(entry), entry);
+        }
       }
     }
-    expect(expected.size).toBe(12);
-    expect(declared).toHaveLength(12);
+    expect(expected.size).toBe(24);
+    expect(declared).toHaveLength(24);
     expect(declared).toEqual(expect.arrayContaining([...expected.values()]));
   });
 
@@ -402,7 +571,8 @@ describe('JSON API over an in-memory registry', () => {
       const user = Object.entries((JSON.parse(answer.body) as { data: Record<string, unknown> }).data).filter(
         ([key]) => !['memberships', 'membershipids', 'isloggedin'].includes(key),
       );
-      people.answer = { status: 200, headers: {}, body: { apiversion: 'v1', method: 'findOne', data: Object.fromEntries(user) } };
+      people.answer = { status: 200, headers: {}, body: { data: Object.fromEntries(user) } };
+      people.calls.length = 0;
     }
     if (name === 'validateEmail') {
       const fileContent = JSON.parse(answer.body) as string;
@@ -412,6 +582,12 @@ describe('JSON API over an in-memory registry', () => {
     const res = await send(app, 'GET', oraclePath(answer), await headersFor());
 
     expectOracleAnswer(res, answer);
+    if (name === 'findCurrentUserAnonymous') {
+      // No user token to forward, so people reads a new bean of the call's site.
+      expect(people.calls).toEqual([
+        { service: 'people', method: 'GET', path: '/internal/v1/users/current', query: { siteid: SITE, endpoint: `http://${HOST}/index.cfm${API}`, adminpath: `http://${HOST}/admin` } },
+      ]);
+    }
   });
 
   it('sends an envelope with the uppercase SHA-256 ETag of its body and the Masa Generator and HSTS headers', async () => {
@@ -426,13 +602,16 @@ describe('JSON API over an in-memory registry', () => {
   it.each([
     ['a 200', `${API}/group/properties`, 200],
     ['an authorization 401', `${API}/group/new`, 401],
-  ])('echoes the Origin of a registered site domain and its subdomains with credentials on %s', async (_label, url, status) => {
+  ])('echoes the Origin of a registered site domain and its subdomains with credentials on %s, reading the registry in one statement', async (_label, url, status) => {
     for (const origin of ['http://localhost', 'https://www.localhost:8443']) {
+      const before = db.statements().length;
       const res = await send(app, 'GET', url, { ...(await headersFor()), origin });
 
       expect(res.statusCode).toBe(status);
       expect(res.headers['access-control-allow-origin']).toBe(origin);
       expect(res.headers['access-control-allow-credentials']).toBe('true');
+      const registryReads = db.statements().slice(before).filter((statement) => statement.sql.includes('tenant_registry'));
+      expect(registryReads.map((statement) => statement.sql)).toEqual([expect.stringMatching(REGISTRY_ENTRIES)]);
     }
   });
 
@@ -499,13 +678,13 @@ describe('JSON API over an in-memory registry', () => {
 
   it("falls back to the default site for a call that names none, which another site's token may not address", async () => {
     people.calls.length = 0;
-    people.answer = { status: 200, headers: {}, body: { apiversion: 'v1', method: 'findOne', data: { userid: '', siteid: SITE } } };
+    people.answer = { status: 200, headers: {}, body: { data: { userid: '', siteid: SITE } } };
 
     const anonymous = await send(app, 'GET', '/_api/json/v1/findCurrentUser', await headersFor());
     const otherSite = await send(app, 'GET', '/_api/json/v1/findCurrentUser', await headersFor({ ...S2, site: SITE_B }));
 
     expect(anonymous.statusCode).toBe(200);
-    expect(people.calls.map((call) => call.path)).toEqual([`/_api/json/v1/${SITE}/user/new`]);
+    expect(people.calls.map((call) => [call.path, call.query?.siteid])).toEqual([['/internal/v1/users/current', SITE]]);
     expect(otherSite.statusCode).toBe(403);
   });
 
@@ -517,15 +696,20 @@ describe('JSON API over an in-memory registry', () => {
     expect(res.headers['www-authenticate']).toBe('Basic');
   });
 
-  it("reads the anonymous user from people's user findOne in the call's family, forwarding fields, expand and expanddepth", async () => {
+  it("reads the anonymous user from people's readCurrentUser with the call's site, link bases, fields, expand and expanddepth", async () => {
     people.calls.length = 0;
     const addresses = [{ addressid: 'A1', isprimary: 1, latitude: 40.25 }];
-    people.answer = { status: 200, headers: {}, body: { apiversion: 'v1', method: 'findOne', data: { userid: 'U1', fname: '', isnew: 1, score: 1.5, addresses } } };
+    people.answer = { status: 200, headers: {}, body: { data: { userid: 'U1', fname: '', isnew: 1, score: 1.5, addresses } } };
 
     const res = await send(app, 'GET', `/_api/ajax/v1/${SITE}/findCurrentUser?fields=fname&expand=x&expanddepth=2`, await headersFor());
 
     expect(people.calls).toEqual([
-      { service: 'people', method: 'GET', path: `/_api/ajax/v1/${SITE}/user/new`, query: { fields: 'fname', expand: 'x', expanddepth: '2' } },
+      {
+        service: 'people',
+        method: 'GET',
+        path: '/internal/v1/users/current',
+        query: { siteid: SITE, endpoint: `http://${HOST}/index.cfm${API}`, adminpath: `http://${HOST}/admin`, fields: 'fname', expand: 'x', expanddepth: '2' },
+      },
     ]);
     expect(json(res)).toEqual({
       apiversion: 'v1',
@@ -534,18 +718,16 @@ describe('JSON API over an in-memory registry', () => {
     });
   });
 
-  it("re-emits people's error envelope under findCurrentUser with its status and WWW-Authenticate", async () => {
-    people.answer = { status: 401, headers: { 'www-authenticate': 'Basic' }, body: legacyError('findOne', ERRORS.authorization) };
+  it("fails closed with the legacy 503 on findCurrentUser's ishuman field, which renders a CFML display object", async () => {
+    people.answer = { status: 200, headers: {}, body: { data: { userid: 'U1' } } };
 
-    const res = await send(app, 'GET', `${API}/findCurrentUser`, await headersFor());
+    const res = await send(app, 'GET', `${API}/findCurrentUser?ishuman=1`, await headersFor());
 
-    expect(res.statusCode).toBe(401);
-    expect(json(res)).toEqual(legacyError('findCurrentUser', ERRORS.authorization));
-    expect(res.headers['www-authenticate']).toBe('Basic');
-    expect(res.headers.etag).toBe(etag(res.body));
+    expect(res.statusCode).toBe(503);
+    expect(json(res)).toMatchObject({ error: ERRORS.serverError });
   });
 
-  it("answers people's 503 with the legacy 503", async () => {
+  it("answers people's 503 to findCurrentUser with the legacy 503", async () => {
     people.answer = { status: 503, headers: {}, body: legacyError('invalid', ERRORS.serverError) };
 
     const res = await send(app, 'GET', `${API}/findCurrentUser`, await headersFor());
@@ -556,8 +738,11 @@ describe('JSON API over an in-memory registry', () => {
 
   it.each<[string, ServiceResponse]>([
     ['a text body', { status: 200, headers: {}, body: 'not json' }],
-    ['an error status without an error struct', { status: 404, headers: {}, body: { apiversion: 'v1' } }],
-    ['data that is not a struct', { status: 200, headers: {}, body: { apiversion: 'v1', data: [1] } }],
+    ['a body without data', { status: 200, headers: {}, body: {} }],
+    ['data that is not a struct', { status: 200, headers: {}, body: { data: [1] } }],
+    ['401 refusing the invocation', { status: 401, headers: {}, body: legacyError('invalid', ERRORS.authorization) }],
+    ['403 refusing the site', { status: 403, headers: {}, body: legacyError('invalid', ERRORS.authorization) }],
+    ['400 refusing the query', { status: 400, headers: {}, body: legacyError('invalid', ERRORS.invalidParameters) }],
   ])("answers people's %s with the unhandled-exception 500 under findCurrentUser", async (_label, answer) => {
     people.answer = answer;
 
@@ -589,6 +774,67 @@ describe('JSON API over an in-memory registry', () => {
     expect(res.headers.etag).toBeUndefined();
   });
 
+  describe('with a BriteVerify that outlasts the deadline', () => {
+    const DEADLINE_MS = 200;
+    const stalling = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.write('{"status":');
+    });
+    let stallingOrigin = '';
+
+    beforeAll(async () => {
+      await new Promise<void>((resolve) => stalling.listen(0, '127.0.0.1', resolve));
+      stallingOrigin = `http://127.0.0.1:${String((stalling.address() as AddressInfo).port)}`;
+    });
+
+    afterAll(async () => {
+      stalling.closeAllConnections();
+      await new Promise((resolve) => stalling.close(resolve));
+    });
+
+    it.each<[string, typeof globalThis.fetch]>([
+      ['never-ending body', () => Promise.resolve(new Response(new ReadableStream()))],
+      [
+        'never-settling exchange that honours its signal',
+        (_input, init) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => {
+              reject(init.signal?.reason as Error);
+            });
+          }),
+      ],
+      [
+        'real headers and stalled body',
+        (input, init) => {
+          const target = new URL(input instanceof Request ? input.url : input);
+          return fetch(new URL(`${target.pathname}${target.search}`, stallingOrigin), init);
+        },
+      ],
+    ])("answers BriteVerify's %s with ACF's Connection Failure filecontent once validateEmailTimeoutMs passes", async (_label, stall) => {
+      const signals: Array<AbortSignal | null | undefined> = [];
+      const watched: typeof globalThis.fetch = (input, init) => {
+        signals.push(init?.signal);
+        return stall(input, init);
+      };
+      const bounded = await buildApp({ ...deps, fetch: watched, validateEmailTimeoutMs: DEADLINE_MS });
+      try {
+        const headers = await headersFor();
+        const started = performance.now();
+
+        const res = await send(bounded, 'GET', `${API}/validateEmail?email=a@example.test`, headers);
+
+        expect(performance.now() - started).toBeLessThan(SERVICE_CALL_TIMEOUT_MS);
+        expect(signals.map((signal) => (signal?.reason as DOMException | undefined)?.name)).toEqual(['TimeoutError']);
+        expect(res.statusCode).toBe(200);
+        expect(res.headers['content-type']).toBe(LEGACY_JSON_TYPE);
+        expect(res.body).toBe('"Connection Failure"');
+        expect(res.headers.etag).toBeUndefined();
+      } finally {
+        await bounded.opt2.shutdown();
+      }
+    });
+  });
+
   it.each([
     ['X-Forwarded-Proto https', { 'x-forwarded-proto': 'HTTPS' }],
     ['a true Front-End-Https', { 'front-end-https': 'true' }],
@@ -617,16 +863,42 @@ describe('JSON API over an in-memory registry', () => {
     expect(json(res)).toEqual({ apiversion: 'v1', method: 'findPermissions', data: expected });
   });
 
-  it.each([
-    ['another entity', { entityname: 'content' }, {}],
-    ['ad hoc validation rules', {}, { groupname: { required: true } }],
-    ['a loadby bean', { bean: 'content', loadby: 'contentid' }, {}],
-  ])('fails closed with the legacy 503 when validating %s', async (_label, data, validations) => {
-    const query = new URLSearchParams({ entityname: 'group', data: JSON.stringify(data), validations: JSON.stringify(validations) });
+  describe('validate of ad hoc rules (jsonApiUtility.cfc:3657-3700,3770-3780; beanValidator.cfc:80-480)', () => {
+    it.each(validateAnswers('adhoc'))('answers the oracle ad hoc validation %s as Masa 7.6.1 does', async (name) => {
+      const answer = validateAnswer(name);
 
-    const res = await send(app, 'GET', `${API}/validate?${query.toString()}`, await headersFor());
+      const res = await send(app, 'GET', validatePath(answer), await headersFor(validateCaller(answer)));
 
-    expect(res.statusCode).toBe(503);
+      expectValidateAnswer(res, answer);
+    });
+
+    it.each(validateAnswers('datatype'))('answers the oracle dataType validation %s as Masa 7.6.1 does', async (name) => {
+      const answer = validateAnswer(name);
+
+      const res = await send(app, 'GET', validatePath(answer), await headersFor(validateCaller(answer)));
+
+      expectValidateAnswer(res, answer);
+    });
+
+    it.each(validateAnswers('comparison'))('answers the oracle comparison validation %s as Masa 7.6.1 does', async (name) => {
+      const answer = validateAnswer(name);
+
+      const res = await send(app, 'GET', validatePath(answer), await headersFor(validateCaller(answer)));
+
+      expectValidateAnswer(res, answer);
+    });
+
+    it.each([...validateAnswers('adhoc', true), ...validateAnswers('datatype', true)])(
+      'answers %s, which reaches a check of the ACF runtime, with the legacy 503 of EX-GROUP-VALIDATE',
+      async (name) => {
+        const answer = validateAnswer(name);
+
+        const res = await send(app, 'GET', validatePath(answer), await headersFor(validateCaller(answer)));
+
+        expect(res.statusCode).toBe(503);
+        expect(json(res)).toMatchObject({ error: ERRORS.serverError });
+      },
+    );
   });
 
   it('refuses validating a group to a caller without the Users module', async () => {
@@ -644,6 +916,8 @@ describe('JSON API over an in-memory registry', () => {
     ['MURA_CONTEXT', 'masa', 'must be blank or a path from / or \\'],
     ['MURA_ADMINDOMAIN', 'admin.example.test/x', 'must be a comma list of host names'],
     ['MURA_APPRELOADKEY', 're load', 'must not contain whitespace or control characters'],
+    ['MURA_STRICTHTML', 'maybe', 'must be a CFML boolean'],
+    ['MURA_SESSIONBASEDLOCKDOWN', 'maybe', 'must be a CFML boolean'],
   ])('refuses to register with a malformed %s as an EnvValidationError naming it', async (name, value, message) => {
     for (const [setting, valid] of Object.entries(VALID_MURA_ENV)) vi.stubEnv(setting, valid);
     vi.stubEnv(name, value);
@@ -658,10 +932,70 @@ describe('JSON API over an in-memory registry', () => {
   });
 });
 
+describe('JSON API path forms', () => {
+  const origin = 'http://localhost';
+  const db = createRecordingDb({
+    responses: [
+      [/SELECT tenant_id, site_id FROM identity\.tenant_registry ORDER BY site_id/, () => MEMORY_REGISTRY.map(({ site_id, tenant_id }) => ({ site_id, tenant_id }))],
+      [REGISTRY_ENTRIES, () => MEMORY_REGISTRY],
+      [/FROM identity\.tenant_registry WHERE tenant_id = \$1/, (_sql, values) => MEMORY_REGISTRY.filter((row) => row.tenant_id === values[0])],
+    ],
+  });
+  const behindContext: LegacyApiSettings = { ...SETTINGS, context: '/masa' };
+  const apps: Partial<Record<'root' | 'context', FastifyInstance>> = {};
+
+  beforeAll(async () => {
+    const deps = (legacy: LegacyApiSettings): LegacyApiRouteDeps =>
+      routeDeps(db, createIdentityRepository({ clock: CLOCK }), recordingPeople(), recordingFetch().fetch, legacy);
+    apps.root = await buildApp(deps(SETTINGS), quietLogger(), legacyApiPrefixes());
+    apps.context = await buildApp(deps(behindContext), quietLogger(), legacyApiPrefixes(behindContext.context));
+  });
+
+  afterAll(async () => {
+    await Promise.all(Object.values(apps).map((app) => app?.opt2.shutdown()));
+  });
+
+  it.each<[string, 'root' | 'context', string, string]>([
+    ['behind /index.cfm', 'root', '/index.cfm/_api/json/v1/default/group/properties', 'groupProperties'],
+    ['in upper case', 'root', '/_API/JSON/V1/default/group/properties', 'groupProperties'],
+    ['behind an upper-case /INDEX.CFM', 'root', '/INDEX.CFM/_api/json/v1/default/group/properties', 'groupProperties'],
+    ['with a trailing slash', 'root', '/_api/json/v1/default/group/properties/', 'groupProperties'],
+    ['as the bare family path with method parameters', 'root', '/_api/json/v1?method=findProperties&entityname=group', 'groupProperties'],
+    ['as the bare family path behind /index.cfm', 'root', '/index.cfm/_api/json/v1?method=findProperties&entityname=group', 'groupProperties'],
+    ['as the bare family path alone', 'root', '/_api/json/v1', 'unregisteredPathSite'],
+    ['as a segment only starting with the family prefix', 'root', '/_api/json/v1x', 'unregisteredPathSite'],
+    ['in the ajax family behind /index.cfm', 'root', '/index.cfm/_api/ajax/v1/default/group/properties', 'groupProperties'],
+    ['in the ajax family in upper case', 'root', '/_API/AJAX/V1/default/group/properties', 'groupProperties'],
+    ['in the rest family behind /index.cfm', 'root', '/index.cfm/_api/rest/v1/default/group/properties', 'restNoCredentials'],
+    ['in the rest family in upper case', 'root', '/_API/REST/V1/default/group/properties', 'restNoCredentials'],
+    ['behind the configured context', 'context', '/masa/_api/json/v1/default/group/new', 'findNewDenied'],
+    ['behind the configured context and /index.cfm', 'context', '/masa/index.cfm/_api/rest/v1/default/group/properties', 'restNoCredentials'],
+  ])('answers the JSON API %s as the oracle request and Masa 7.6.1 do: status, body, ETag and Origin echo', async (_label, appName, alias, name) => {
+    const app = apps[appName];
+    if (app === undefined) throw new Error(`no ${appName} app`);
+    const answer = oracle(name);
+    const headers = { ...(await headersFor()), origin };
+
+    const canonical = await send(app, 'GET', oraclePath(answer), headers);
+    const res = await app.inject({ method: 'GET', url: alias, headers: { host: HOST, ...headers } });
+
+    // An alias answers as the contract operation of the canonical path it stands for.
+    assertResponseMatchesOpenApi(OPENAPI, { method: 'GET', path: oraclePath(answer), status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
+    expectOracleAnswer(canonical, answer);
+    expectOracleAnswer(res, answer);
+    expect(res.body).toBe(canonical.body);
+    expect(res.headers.etag).toBe(canonical.headers.etag);
+    for (const each of [canonical, res]) {
+      expect(each.headers['access-control-allow-origin']).toBe(origin);
+      expect(each.headers['access-control-allow-credentials']).toBe('true');
+    }
+  });
+});
+
 describe('JSON API URLs from the MURA environment', () => {
   const people = recordingPeople();
   const db = createRecordingDb({
-    responses: [[/FROM identity\.tenant_registry ORDER BY site_id/, () => [{ site_id: SITE, tenant_id: tenantIdForSite(SITE) }]]],
+    responses: [[/SELECT tenant_id, site_id FROM identity\.tenant_registry ORDER BY site_id/, () => [{ site_id: SITE, tenant_id: tenantIdForSite(SITE) }]]],
   });
   let app: FastifyInstance;
 
@@ -725,12 +1059,67 @@ describe('JSON API URLs from the MURA environment', () => {
   });
 });
 
+describe('JSON API unhandled-exception log', () => {
+  const captured = capturingLogger();
+  const raw = 'connect ECONNREFUSED 10.0.0.7:443 for jane.doe@example.test with password=Hunter2-probe';
+  const people: ServiceClient = {
+    request: () => Promise.reject(Object.assign(new Error(raw), { code: 'ECONNREFUSED', syscall: 'connect' })),
+    close: () => Promise.resolve(),
+  };
+  const db = createRecordingDb({
+    responses: [[/FROM identity\.tenant_registry ORDER BY site_id/, () => [{ site_id: SITE, tenant_id: tenantIdForSite(SITE) }]]],
+  });
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    app = await buildApp(routeDeps(db, createIdentityRepository({ clock: CLOCK }), people, recordingFetch().fetch, SETTINGS), captured.logger);
+  });
+
+  afterAll(async () => {
+    await app?.opt2.shutdown();
+  });
+
+  it('answers the unhandled-exception 500 and hands the logger only the serialized error, logged once under the request id', async () => {
+    const res = await send(app, 'GET', `${API}/findCurrentUser`, { ...(await headersFor()), 'x-request-id': 'legacy-api-log-probe' });
+
+    expect(res.statusCode).toBe(500);
+    expect(json(res)).toEqual(legacyError('findCurrentUser', ERRORS.serverError));
+    const record = { type: 'Error', message: 'connect ECONNREFUSED', stack: expect.stringMatching(/^Error: connect ECONNREFUSED(?:\n {4}at \S.*)+$/) };
+    expect(captured.calls.filter(([, message]) => message === 'unhandled JSON API error')).toEqual([[{ error: record }, 'unhandled JSON API error']]);
+    const lines = captured.lines.map((text) => JSON.parse(text) as Record<string, unknown>).filter((line) => line.message === 'unhandled JSON API error');
+    expect(lines).toEqual([expect.objectContaining({ severity: 'ERROR', requestId: 'legacy-api-log-probe', error: record })]);
+    expect(validateLogRecord(lines[0])).toStrictEqual({ valid: true, errors: [] });
+    for (const text of [raw, 'jane.doe@example.test', 'password=', 'Hunter2-probe']) {
+      expect(inspect(captured.calls, { depth: null })).not.toContain(text);
+      expect(captured.lines.join('')).not.toContain(text);
+    }
+  });
+});
+
+describe('SQL Server LIKE matcher of group feeds', () => {
+  it.each<[string, string, string, boolean]>([
+    ['an empty pattern', '', '', true],
+    ['an empty pattern', '', 'a', false],
+    ['an all-% pattern', '%%%', '', true],
+    ['_ as one UTF-16 code unit', '_', '\u{1F600}', false],
+    ['_ as one UTF-16 code unit', '__', '\u{1F600}', true],
+    ['a negated class', '[^a-c]x', 'dx', true],
+    ['a negated class', '[^a-c]x', 'Ax', false],
+    ['the whole value', 'abc', 'abcd', false],
+    ['the whole value', 'bcd', 'abcd', false],
+    ['the whole value', '%b', 'ab\n', false],
+  ])('matches %s: %j against %j is %s', (_label, pattern, value, expected) => {
+    expect(likeMatcher(pattern)(value)).toBe(expected);
+  });
+});
+
 // --- Calls that read or write identity data ---
 
 const available = await pgAvailable();
 
 describe.skipIf(!available)('JSON API against PostgreSQL', () => {
   const people = recordingPeople();
+  const outbound = recordingFetch();
   let handle: ThrowawaySchema;
   let repo: IdentityRepository;
   let app: FastifyInstance;
@@ -823,7 +1212,7 @@ describe.skipIf(!available)('JSON API against PostgreSQL', () => {
       await repo.insertGroup(tx, { ...groupInput('Pictured', SITE_B, 0, { photofileid: 'F0000000-0000-0000-0000000000000001' }), userid: ids.pictured }, null);
     });
     await gated(SITE_C, (tx) => repo.insertGroup(tx, { ...groupInput('Helpers', SITE_C, 1, { email: 'helpers@example.test' }), userid: ids.helpers }, null));
-    app = await buildApp(routeDeps(handle.app, repo, people, recordingFetch().fetch, SETTINGS));
+    app = await buildApp(routeDeps(handle.app, repo, people, outbound.fetch, SETTINGS));
   });
 
   afterAll(async () => {
@@ -872,15 +1261,23 @@ describe.skipIf(!available)('JSON API against PostgreSQL', () => {
   });
 
   it.each([
-    ['a user record', SITE, () => `${API}/group/${ids.userAccount}`],
-    ['the ishuman field', SITE, () => `${API}/group/${ADMIN_GROUP}?ishuman=1`],
-    ['extended data fields', SITE, () => `${API}/group/${ADMIN_GROUP}?fields=groupname,extendeddata`],
-    ["a photo's file extension", SITE_B, () => `/_api/json/v1/${SITE_B}/group/${ids.pictured}?fields=photofileext`],
-  ])('fails closed with the legacy 503 on a findOne of %s', async (_label, site, url) => {
-    const res = await send(app, 'GET', url(), await headersFor({ ...S2, site }));
+    ['a user record', SITE, () => `${API}/group/${ids.userAccount}`, /at userRecordRefused .*\\n\s+at loadedUserRefused /],
+    ['the ishuman field', SITE, () => `${API}/group/${ADMIN_GROUP}?ishuman=1`, /at unavailable .*\\n\s+at assertNoHumanCheck /],
+    ['extended data fields', SITE, () => `${API}/group/${ADMIN_GROUP}?fields=groupname,extendeddata`, /at unavailable .*\\n\s+at filteredValues /],
+    ["a photo's file extension", SITE_B, () => `/_api/json/v1/${SITE_B}/group/${ids.pictured}?fields=photofileext`, /at unavailable .*\\n\s+at beanValue /],
+  ])('fails closed with the legacy 503 on a findOne of %s', async (_label, site, url, frames) => {
+    const captured = capturingLogger();
+    const logged = await buildApp(routeDeps(handle.app, repo, people, outbound.fetch, SETTINGS), captured.logger);
+    try {
+      const res = await send(logged, 'GET', url(), await headersFor({ ...S2, site }));
 
-    expect(res.statusCode).toBe(503);
-    expect(json(res)).toMatchObject({ error: ERRORS.serverError });
+      expect(res.statusCode).toBe(503);
+      expect(json(res)).toMatchObject({ error: ERRORS.serverError });
+      // The logger redacts the message, whose entry the refusing helper names; its stack shows the helper and the refusing site.
+      expect(captured.lines.find((line) => line.includes('service unavailable'))).toMatch(frames);
+    } finally {
+      await logged.opt2.shutdown();
+    }
   });
 
   it.each([
@@ -905,24 +1302,40 @@ describe.skipIf(!available)('JSON API against PostgreSQL', () => {
   });
 
   it.each([
-    ['a distinct feed', 'distinct=true'],
-    ['a membership filter', 'groupid=x'],
-    ['a tag filter', 'tag=x'],
-    ['an extended attribute filter', 'nosuchattribute=x'],
-    ['an aggregate', 'sum=perm'],
-    ['an inner join', 'innerJoin=content'],
-    ['a bracketed name', 'filter%5Bgroupname%5D=x'],
-    ['a changeset filter', 'changesetid=x'],
     ['a user feed', 'type=2'],
     ['a user feed by name', 'type=user'],
-    ["another table's column", 'tfiles.fileid=x'],
-    ["another table's ordering", 'sort=tfiles.fileext'],
-    ['a feed setter identity does not reproduce', 'params=x'],
-  ])('fails closed with the legacy 503 on a group query with %s', async (_label, query) => {
-    const res = await send(app, 'GET', `${API}/group?ispublic=0&${query}`, await headersFor(S2));
+  ])('fails closed with the legacy 503 of EX-GROUP-FEED on a group query with %s', async (_label, query) => {
+    const captured = capturingLogger();
+    const logged = await buildApp(routeDeps(handle.app, repo, people, outbound.fetch, SETTINGS), captured.logger);
+    try {
+      const res = await send(logged, 'GET', `${API}/group?ispublic=0&${query}`, await headersFor(S2));
 
-    expect(res.statusCode).toBe(503);
-    expect(json(res)).toMatchObject({ error: ERRORS.serverError });
+      expect(res.statusCode).toBe(503);
+      expect(json(res)).toMatchObject({ error: ERRORS.serverError });
+      // The logger redacts the message, whose entry the refusing helper names; its stack shows the helper and the refusing site.
+      expect(captured.lines.find((line) => line.includes('service unavailable'))).toMatch(/at feedHalted .*\\n\s+at feedPage /);
+      expect(feedHalted('A user feed', 'user-feed')).toMatchObject({ message: 'A user feed stays on legacy (EX-GROUP-FEED)', reason: 'user-feed' });
+    } finally {
+      await logged.opt2.shutdown();
+    }
+  });
+
+  it.each<[string, Record<string, string>]>([
+    ['naming the client credentials the gateway exchange consumed', { 'x-opt2-consumed-params': 'client_id,client_secret' }],
+    ['without a consumed-params header', {}],
+  ])('keys a REST group collection whose only query param is client_id to findQuery %s', async (_label, consumed) => {
+    const url = `/_api/rest/v1/${SITE_C}/group?client_id=C1`;
+    const member = await inSession(MEMBER, SITE_C, `Members;${SITE_C};1`);
+    const admin = await inSession(S2, SITE_C, 'S2');
+
+    const asMember = await send(app, 'GET', url, { ...(await headersFor(member)), ...consumed });
+    const asAdmin = await send(app, 'GET', url, { ...(await headersFor(admin)), ...consumed });
+
+    // The registered site's sessionless event raises inside findQuery, ahead of its access check and its feed.
+    for (const res of [asMember, asAdmin]) {
+      expect(res.statusCode).toBe(500);
+      expect(json(res)).toEqual(legacyError('findQuery', ERRORS.serverError));
+    }
   });
 
   it('lists S2 groups only to an S2 caller and filters by inactive', async () => {
@@ -975,20 +1388,219 @@ describe.skipIf(!available)('JSON API against PostgreSQL', () => {
     expect(namesOf(listed)).toEqual(['Visible', 'Dormant']);
     expect(namesOf(reversed)).toEqual(['Dormant', 'Visible']);
     expect(namesOf(sorted)).toEqual(['Visible', 'Dormant']);
+    // getFilteredValues left `url.expanddepth` behind once an item was packaged (oracle answer distinct:findmany-fields).
     expect((dataOf(listed).links as Record<string, string>).self).toBe(
-      `http://${HOST}/index.cfm/_api/json/v1/${SITE_B}/?&ids=${listedIds}&method=findmany&entityname=group&pageIndex=1`,
+      `http://${HOST}/index.cfm/_api/json/v1/${SITE_B}/?&ids=${listedIds}&expanddepth=1&method=findmany&entityname=group&pageIndex=1`,
     );
   });
 
-  it.each([
-    ['a user id no group holds', () => ({ entityname: 'user', userid: nextId('D') })],
-    ['a group without a user id', () => ({ entityname: 'group' })],
-  ])("fails closed with the legacy 503 when validating %s, whose new bean takes people's user rules", async (_label, data) => {
-    const query = new URLSearchParams({ entityname: 'group', data: JSON.stringify(data()) });
+  describe('bounded group feeds', () => {
+    const SITE_P = 'tenant-feed-pages';
+    /** Groups seeded in userid order: seven public ones, two private ones and an S2 one, which S2 keeps private. */
+    const SEEDED: ReadonlyArray<{ name: string; perm: number; ispublic: 0 | 1; s2: number }> = [
+      { name: 'golf', perm: 0, ispublic: 1, s2: 0 },
+      { name: 'Foxtrot', perm: 1, ispublic: 1, s2: 0 },
+      { name: 'echo', perm: 0, ispublic: 1, s2: 0 },
+      { name: 'delta', perm: 1, ispublic: 1, s2: 0 },
+      { name: 'charlie', perm: 0, ispublic: 1, s2: 0 },
+      { name: 'Bravo', perm: 1, ispublic: 1, s2: 0 },
+      { name: 'alpha', perm: 0, ispublic: 1, s2: 0 },
+      { name: 'Hotel', perm: 1, ispublic: 0, s2: 0 },
+      { name: 'india', perm: 0, ispublic: 0, s2: 0 },
+      { name: 'Juliet', perm: 0, ispublic: 0, s2: 1 },
+    ];
+    type Order = 'userid' | 'name' | '-name' | '-perm';
+    const userids: string[] = [];
+    const statements: string[] = [];
+    /** Each statement `paged` ran with the rows it returned. */
+    const transferred: Array<{ text: string; rows: number }> = [];
+    let countedReads = 0;
+    let paged: FastifyInstance;
 
-    const res = await send(app, 'GET', `${API}/validate?${query.toString()}`, await headersFor(S2));
+    beforeAll(async () => {
+      await registerSite(SITE_P);
+      await gated(SITE_P, async (tx) => {
+        for (const { name, perm, ispublic, s2 } of SEEDED) {
+          const userid = nextId('B');
+          userids.push(userid);
+          await repo.insertGroup(tx, { ...groupInput(name, SITE_P, ispublic, { perm, s2 }), userid }, null);
+        }
+      });
+      const pagedRepo = createIdentityRepository({ clock: CLOCK, schema: handle.schema, pageSize: 2 });
+      const counting: IdentityRepository = {
+        ...pagedRepo,
+        listCountedGroups: (...args) => {
+          countedReads += 1;
+          return pagedRepo.listCountedGroups(...args);
+        },
+      };
+      const recordingDb: TenantDb = {
+        ...handle.app,
+        withTenant: (tenantId, fn) =>
+          handle.app.withTenant(tenantId, (tx) => {
+            const query = (async (text: string, values?: unknown[]) => {
+              statements.push(text);
+              const result = await tx.query(text, values);
+              transferred.push({ text, rows: result.rows.length });
+              return result;
+            }) as TenantTx['query'];
+            return fn({ ...tx, query });
+          }),
+      };
+      paged = await buildApp(routeDeps(recordingDb, counting, people, recordingFetch().fetch, SETTINGS));
+    });
 
-    expect(res.statusCode).toBe(503);
+    afterAll(async () => {
+      await paged?.opt2.shutdown();
+    });
+
+    /** The seeded names a feed of `pools` (and the seeds `only` lists) shows, fully sorted by `order`, ties by userid. */
+    function referenceOrder(order: Order, pools: readonly number[], superUser: boolean, only?: readonly number[]): string[] {
+      const by = (x: string, y: string): number => (x < y ? -1 : x > y ? 1 : 0);
+      const keyed = (a: (typeof SEEDED)[number], b: (typeof SEEDED)[number]): number =>
+        order === 'name' ? by(a.name.toLowerCase(), b.name.toLowerCase())
+          : order === '-name' ? by(b.name.toLowerCase(), a.name.toLowerCase())
+            : order === '-perm' ? b.perm - a.perm
+              : 0;
+      return SEEDED.map((group, n) => ({ ...group, n, userid: userids[n] ?? '' }))
+        .filter((group) => pools.includes(group.ispublic) && (superUser || group.s2 === 0) && (only === undefined || only.includes(group.n)))
+        .sort((a, b) => keyed(a, b) || by(a.userid, b.userid))
+        .map((group) => group.name);
+    }
+
+    /** `request`'s answer and the length of each array of stored group rows sorted while it ran. */
+    async function withGroupSorts(request: () => Promise<Answer>): Promise<{ res: Answer; sorted: number[] }> {
+      const sort = vi.spyOn(Array.prototype, 'sort');
+      try {
+        const res = await request();
+        const sorted = (sort.mock.contexts as unknown[])
+          .filter((rows): rows is object[] => Array.isArray(rows) && rows.length > 0 && rows.every((row) => typeof row === 'object' && row !== null && 'password' in row && 'groupname' in row))
+          .map((rows) => rows.length);
+        return { res, sorted };
+      } finally {
+        sort.mockRestore();
+      }
+    }
+
+    it.each<[string, Caller, string, Order, readonly number[], readonly number[] | undefined, number[], number, number, number]>([
+      ['findAll by itemsPerPage and pageIndex', S2, 'findAll?entityname=group&itemsPerPage=2&pageIndex=3', 'userid', [1], undefined, [4, 5], 7, 4, 3],
+      ['findAll by a startindex inside a page', S2, 'findAll?entityname=group&itemsPerPage=3&startindex=5&sort=groupname', 'name', [1], undefined, [4, 5], 7, 3, 2],
+      ['findAll by a startindex after a pageIndex', S2, 'findAll?entityname=group&itemsPerPage=2&pageIndex=1&startindex=4&sort=-groupname', '-name', [1], undefined, [3], 7, 4, 2],
+      ['findAll by maxItems ending inside the last page', S2, 'findAll?entityname=group&maxItems=5&itemsPerPage=2&pageIndex=3&sort=-perm', '-perm', [1], undefined, [4], 5, 3, 3],
+      ['findAll by a pageIndex beyond the last page', S2, 'findAll?entityname=group&itemsPerPage=2&pageIndex=9&sort=groupname', 'name', [1], undefined, [0, 1], 7, 4, 1],
+      ['findAll by one item per page at the last startindex', S2, 'findAll?entityname=group&itemsPerPage=1&startindex=7&sort=-perm', '-perm', [1], undefined, [6], 7, 7, 7],
+      ['findAll of every item', S2, 'findAll?entityname=group&itemsPerPage=*&sort=groupname', 'name', [1], undefined, [0, 1, 2, 3, 4, 5, 6], 7, 1, 1],
+      ['findAll by a fractional itemsPerPage', S2, 'findAll?entityname=group&itemsPerPage=1.5&pageIndex=3', 'userid', [1], undefined, [3, 4], 7, 5, 3],
+      ['findAll by a negative itemsPerPage from a startindex', S2, 'findAll?entityname=group&itemsPerPage=-1&startindex=4', 'userid', [1], undefined, [3], 7, -7, -4],
+      ['findQuery of both pools by nextn', S2, 'group?ispublic=*&nextn=3&pageIndex=2&sort=groupname', 'name', [0, 1], undefined, [3, 4, 5], 10, 4, 2],
+      ['findQuery of both pools under maxItems', S2, 'group?ispublic=*&maxItems=8&itemsPerPage=3&pageIndex=3&sort=-perm', '-perm', [0, 1], undefined, [6, 7], 8, 3, 3],
+      ['findQuery of both pools without S2 groups', SITE_ADMIN, 'group?ispublic=*&itemsPerPage=4&pageIndex=3&sort=groupname', 'name', [0, 1], undefined, [8], 9, 3, 3],
+      ['findMany of listed ids', S2, 'findMany?entityname=group&itemsPerPage=2&pageIndex=2&sort=groupname', 'name', [1], [0, 6, 3, 7], [2], 3, 2, 2],
+    ])('pages %s as a full sort of every selected group does, whatever the read page size', async (_label, caller, path, order, pools, only, positions, totalItems, totalPages, pageIndex) => {
+      const ids = only === undefined ? '' : `&ids=${only.map((n) => userids[n] ?? '').join(',')}`;
+      const url = `/_api/json/v1/${SITE_P}/${path}${ids}`;
+      const headers = await headersFor({ ...caller, site: SITE_P });
+      const reference = referenceOrder(order, pools, caller === S2, only);
+
+      const res = await send(paged, 'GET', url, headers);
+      const unpaged = await send(app, 'GET', url, headers);
+
+      expect(res.statusCode).toBe(200);
+      expect(namesOf(res)).toEqual(positions.map((n) => reference[n]));
+      expect(dataOf(res)).toMatchObject({ totalitems: totalItems, totalpages: totalPages, pageindex: pageIndex });
+      expect(res.body).toBe(unpaged.body);
+    });
+
+    it.each<[string, () => string, number[], boolean, number[]]>([
+      ['a findAll page of two at pageIndex 2', () => 'findAll?entityname=group&itemsPerPage=2&pageIndex=2', [4], true, []],
+      ['a findAll under maxItems 3', () => 'findAll?entityname=group&maxItems=3', [3], true, []],
+      ['a findAll page of one at startindex 3', () => 'findAll?entityname=group&itemsPerPage=1&startindex=3', [3], true, []],
+      ['a findQuery page of nextn 2 over both pools', () => 'group?ispublic=*&nextn=2', [2, 2], true, [4]],
+      ['a findAll of every item', () => 'findAll?entityname=group&itemsPerPage=*', [7], true, []],
+      ['a findQuery by perm sorted by name under maxItems 2', () => 'group?perm=1&maxItems=2&sort=-groupname', [2], true, []],
+      ['a findMany page of one of three ids', () => `findMany?entityname=group&itemsPerPage=1&ids=${[0, 3, 6].map((n) => userids[n] ?? '').join(',')}`, [1], true, []],
+      ['a findAll page that addresses no row, as its count alone', () => 'findAll?entityname=group&itemsPerPage=-1', [1], false, []],
+    ])('reads %s in one identity statement per pool that filters, orders, counts and cuts, transferring only the rows its page can address', async (_label, path, rows, cut, merged) => {
+      const headers = await headersFor({ ...S2, site: SITE_P });
+      statements.length = 0;
+      transferred.length = 0;
+
+      const { res, sorted } = await withGroupSorts(() => send(paged, 'GET', `/_api/json/v1/${SITE_P}/${path()}`, headers));
+
+      expect(res.statusCode).toBe(200);
+      const feeds = transferred.filter(({ text }) => text.includes('"group_account"'));
+      expect(feeds.map((read) => read.rows)).toEqual(rows);
+      expect(feeds.every(({ text }) => /^SELECT .*\(SELECT count\(\*\)::integer FROM \(SELECT 1 FROM .* WHERE .* LIMIT \$6\) c\)/s.test(text))).toBe(true);
+      expect(feeds.every(({ text }) => / ORDER BY .* LIMIT \$\d+$/s.test(text) === cut)).toBe(true);
+      expect(sorted).toEqual(merged);
+      expect(statements.some((text) => /^(DECLARE|FETCH|CLOSE)\b/.test(text) || /"membership"|"account_operation"/.test(text))).toBe(false);
+      expect(countedReads).toBe(0);
+    });
+
+    it('falls back to the fenced cursor scan for a LIKE class, which PostgreSQL LIKE lacks', async () => {
+      const headers = await headersFor({ ...S2, site: SITE_P });
+      statements.length = 0;
+
+      const res = await send(paged, 'GET', `/_api/json/v1/${SITE_P}/group?groupname=begins%5E%5Bab%5D&sort=groupname`, headers);
+
+      expect(res.statusCode).toBe(200);
+      expect(namesOf(res)).toEqual(['alpha', 'Bravo']);
+      const declared = statements.filter((text) => text.startsWith('DECLARE'));
+      expect(declared.length).toBeGreaterThan(0);
+      expect(declared.every((text) => text.includes('"group_account"'))).toBe(true);
+      expect(statements.filter((text) => text.startsWith('FETCH')).length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('group feed LIKE patterns', () => {
+    const SITE_L = 'tenant-like';
+    const LONG_A = 'a'.repeat(255);
+    const NAMES = ['Alpha', 'alpine', 'Bravo', 'a.b', 'axb', 'x[y', 'Cost$(9)+', 'Line\nTwo', LONG_A];
+
+    beforeAll(async () => {
+      await registerSite(SITE_L);
+      await gated(SITE_L, async (tx) => {
+        for (const name of NAMES) await repo.insertGroup(tx, { ...groupInput(name, SITE_L, 1), userid: nextId('B') }, null);
+      });
+    });
+
+    /** The findQuery answer of `groupname=<criteria>` on the LIKE site, to S2. */
+    async function queryByName(criteria: string): Promise<Answer> {
+      return send(app, 'GET', `/_api/json/v1/${SITE_L}/group?groupname=${encodeURIComponent(criteria)}`, await headersFor({ ...S2, site: SITE_L }));
+    }
+
+    it.each<[string, string, string[]]>([
+      ['an all-% pattern', '*', NAMES],
+      ['% as any run', 'begins^a%b', ['a.b', 'axb']],
+      ['_ as exactly one character', 'begins^Brav__', []],
+      ['_ as any character, a newline included', 'begins^Line_Two', ['Line\nTwo']],
+      ['a class', 'begins^[ab]l', ['Alpha', 'alpine']],
+      ['a class range', 'ends^[n-p]', ['Bravo', 'Line\nTwo']],
+      ['an unterminated [ as a literal', 'contains^x[y', ['x[y']],
+      ['case-insensitivity', 'begins^ALP', ['Alpha', 'alpine']],
+      ['a value anchored at its start', 'begins^lp', []],
+      ['regex metacharacters as literals', 'contains^$(9)+', ['Cost$(9)+']],
+      ['a dot as a literal', 'begins^a.b', ['a.b']],
+      ['an asterisk after a condition as a literal', 'begins^a*', []],
+    ])('selects groups by %s through findQuery', async (_label, criteria, expected) => {
+      const res = await queryByName(criteria);
+
+      expect(res.statusCode).toBe(200);
+      expect(namesOf(res).sort()).toEqual([...expected].sort());
+    });
+
+    it.each([
+      ['a%a%a%a%a%a%a%a%a%b', 'begins^a%a%a%a%a%a%a%a%a%b'],
+      ['a long %a%a…%b', `*${'a*'.repeat(100)}b`],
+    ])('answers the backtracking pattern %s against a 255-character run of a quickly with no match', async (_label, criteria) => {
+      const started = performance.now();
+      const res = await queryByName(criteria);
+      const elapsed = performance.now() - started;
+
+      expect(res.statusCode).toBe(200);
+      expect(namesOf(res)).toEqual([]);
+      expect(elapsed).toBeLessThan(500);
+    });
   });
 
   describe('login', () => {
@@ -1035,12 +1647,97 @@ describe.skipIf(!available)('JSON API against PostgreSQL', () => {
       expect(await withTenant(handle.app, SYSTEM_TENANT_ID, (tx) => repo.findSession(tx, sessionId))).toMatchObject({ user_id: null });
     });
 
-    it('fails closed with the legacy 503 on a lockdown login', async () => {
-      const { headers, tokens } = await anonymousLogin();
+    describe('with a lockdown check (userUtility.cfc:179-259; oracle answers of lockdowncheck true, 1, yes, 2, abc, \'\' and false)', () => {
+      let cookieLockdown: FastifyInstance;
 
-      const res = await send(app, 'POST', `${API}/login`, headers, { username: 'x', password: 'y', lockdowncheck: 'true', ...tokens });
+      beforeAll(async () => {
+        cookieLockdown = await buildApp(routeDeps(handle.app, repo, people, outbound.fetch, { ...SETTINGS, sessionBasedLockdown: false }));
+      });
 
-      expect(res.statusCode).toBe(503);
+      afterAll(async () => {
+        await cookieLockdown?.opt2.shutdown();
+      });
+
+      /** An account named `username` holding one strike from a wrong attempt, and a fresh anonymous login of its own. */
+      async function struckLogin(username: string): Promise<{ sessionId: string; headers: Record<string, string>; tokens: Record<string, string> }> {
+        await seedAccount(SITE, username, TEST_PASSWORDS.editor);
+        const first = await anonymousLogin();
+        await send(app, 'POST', `${API}/login`, first.headers, { username, password: TEST_PASSWORDS.admin, ...first.tokens });
+        expect(await strikeOf(username)).toMatchObject({ strikes: 1 });
+        return anonymousLogin();
+      }
+
+      function adminStateOf(sessionId: string): Promise<unknown> {
+        return withTenant(handle.app, SYSTEM_TENANT_ID, (tx) => repo.readSessionAdminState(tx, sessionId));
+      }
+
+      it.each(['true', '1', 'yes', '2'])(
+        'passes a cookie-based check of %j as success without a cookie or a login, clearing the strikes',
+        async (lockdowncheck) => {
+          const username = `jsonapi-lock-${lockdowncheck}`;
+          const { sessionId, headers, tokens } = await struckLogin(username);
+
+          const res = await send(cookieLockdown, 'POST', `${API}/login`, headers, { username, password: TEST_PASSWORDS.editor, lockdowncheck, ...tokens });
+
+          expect(json(res)).toEqual({ apiversion: 'v1', method: 'login', data: { status: 'success' } });
+          expect(res.headers['set-cookie']).toBeUndefined();
+          expect(await withTenant(handle.app, SYSTEM_TENANT_ID, (tx) => repo.findSession(tx, sessionId))).toMatchObject({ user_id: null });
+          expect(await strikeOf(username)).toMatchObject({ strikes: 0 });
+          expect(await adminStateOf(sessionId)).toEqual({ blockLoginUntil: '' });
+        },
+      );
+
+      it.each(['abc', ''])('answers a check of %j that CFML cannot read as a boolean with the 500 of the conversion, keeping the strikes', async (lockdowncheck) => {
+        const username = `jsonapi-lock-unreadable-${lockdowncheck}`;
+        const { sessionId, headers, tokens } = await struckLogin(username);
+
+        const res = await send(app, 'POST', `${API}/login`, headers, { username, password: TEST_PASSWORDS.editor, lockdowncheck, ...tokens });
+
+        expect(res.statusCode).toBe(500);
+        expect(json(res)).toEqual({ apiversion: 'v1', method: 'login', error: { message: 'Unhandled Exception', code: 'server_error' } });
+        expect(await withTenant(handle.app, SYSTEM_TENANT_ID, (tx) => repo.findSession(tx, sessionId))).toMatchObject({ user_id: null });
+        expect(await strikeOf(username)).toMatchObject({ strikes: 1 });
+        expect(await adminStateOf(sessionId)).toEqual({ blockLoginUntil: '' });
+      });
+
+      it('answers a check with a wrong password as failed with a strike, as the login does', async () => {
+        const username = 'jsonapi-lock-wrong';
+        const { headers, tokens } = await struckLogin(username);
+
+        const res = await send(app, 'POST', `${API}/login`, headers, { username, password: TEST_PASSWORDS.admin, lockdowncheck: 'true', ...tokens });
+
+        expect(json(res)).toEqual({ apiversion: 'v1', method: 'login', data: { status: 'failed' } });
+        expect(await strikeOf(username)).toMatchObject({ strikes: 2 });
+      });
+
+      it('logs in for a check of "false"', async () => {
+        const username = 'jsonapi-lock-false';
+        const { sessionId, headers, tokens } = await struckLogin(username);
+
+        const res = await send(app, 'POST', `${API}/login`, headers, { username, password: TEST_PASSWORDS.editor, lockdowncheck: 'false', ...tokens });
+
+        expect(json(res)).toEqual({ apiversion: 'v1', method: 'login', data: { status: 'success' } });
+        expect(await withTenant(handle.app, SYSTEM_TENANT_ID, (tx) => repo.findSession(tx, sessionId))).not.toMatchObject({ user_id: null });
+      });
+
+      it('refuses a passed session-based check, the configBean default, with the legacy 503 of EX-LOGIN-LOCKDOWN before clearing strikes', async () => {
+        const username = 'jsonapi-lock-session';
+        const { sessionId, headers, tokens } = await struckLogin(username);
+        const captured = capturingLogger();
+        const logged = await buildApp(routeDeps(handle.app, repo, people, outbound.fetch, SETTINGS), captured.logger);
+        try {
+          const res = await send(logged, 'POST', `${API}/login`, headers, { username, password: TEST_PASSWORDS.editor, lockdowncheck: 'true', ...tokens });
+
+          expect(res.statusCode).toBe(503);
+          // The logger redacts the message, whose entry the refusing helper names; its stack shows the helper.
+          expect(captured.lines.find((line) => line.includes('service unavailable'))).toContain('at lockdownRefused');
+          expect(lockdownRefused().message).toBe('A session-based lockdown check is refused (EX-LOGIN-LOCKDOWN)');
+          expect(await strikeOf(username)).toMatchObject({ strikes: 1 });
+          expect(await adminStateOf(sessionId)).toEqual({});
+        } finally {
+          await logged.opt2.shutdown();
+        }
+      });
     });
   });
 
@@ -1071,11 +1768,11 @@ describe.skipIf(!available)('JSON API against PostgreSQL', () => {
   it("adds the session's login-time memberships, membership ids and login flag to people's current user", async () => {
     const caller = await inSession(USERS_EDITOR, SITE, `Admin;${SITE};0,S2IsPrivate;${SITE}`, `${ADMIN_GROUP},${USERS_EDITOR.sub}`);
     people.calls.length = 0;
-    people.answer = { status: 200, headers: {}, body: { apiversion: 'v1', method: 'findOne', data: { userid: USERS_EDITOR.sub, ispublic: 0, s2: 0 } } };
+    people.answer = { status: 200, headers: {}, body: { data: { userid: USERS_EDITOR.sub, ispublic: 0, s2: 0 } } };
 
     const res = await send(app, 'GET', `${API}/findCurrentUser`, await headersFor(caller));
 
-    expect(people.calls.map((call) => call.path)).toEqual([`${API}/user/${USERS_EDITOR.sub}`]);
+    expect(people.calls.map((call) => call.path)).toEqual(['/internal/v1/users/current']);
     expect(dataOf(res)).toEqual({
       userid: USERS_EDITOR.sub,
       ispublic: 0,
@@ -1089,11 +1786,135 @@ describe.skipIf(!available)('JSON API against PostgreSQL', () => {
   it('answers an anonymous session with no memberships and isloggedin false', async () => {
     const sessionId = `S-legacy-api-anon-${nextId('S')}`;
     await ensureSession({ db: handle.app, repo, clock: CLOCK }, { sessionId, mode: 'target-primary' });
-    people.answer = { status: 200, headers: {}, body: { apiversion: 'v1', method: 'findOne', data: { userid: '' } } };
+    people.calls.length = 0;
+    people.answer = { status: 200, headers: {}, body: { data: { userid: '' } } };
 
     const res = await send(app, 'GET', `${API}/findCurrentUser`, await headersFor({ sub: '', sid: sessionId, roles: [] }));
 
     expect(dataOf(res)).toEqual({ userid: '', memberships: [], membershipids: [], isloggedin: false });
+    expect(people.calls.map((call) => call.query)).toEqual([{ siteid: SITE, endpoint: `http://${HOST}/index.cfm${API}`, adminpath: `http://${HOST}/admin` }]);
+  });
+
+  it("answers a member's findCurrentUser with people's read of their own user and identity's current membership ids, not a 401", async () => {
+    const member = await inSession({ sub: nextId('E'), roles: [Roles.member] }, SITE, `Editor;${SITE};0,S2IsPublic;${SITE}`, EDITOR_GROUP);
+    await gated(SITE, (tx) => repo.replaceMemberships(tx, { userId: member.sub, groupIds: [EDITOR_GROUP, ADMIN_GROUP] }));
+    people.calls.length = 0;
+    people.answer = { status: 200, headers: {}, body: { data: { userid: member.sub, isnew: 0, groupid: `${ADMIN_GROUP},${EDITOR_GROUP}` } } };
+
+    const res = await send(app, 'GET', `${API}/findCurrentUser?fields=groupid`, await headersFor(member));
+
+    expect(res.statusCode).toBe(200);
+    expect(people.calls).toEqual([
+      {
+        service: 'people',
+        method: 'GET',
+        path: '/internal/v1/users/current',
+        query: { siteid: SITE, endpoint: `http://${HOST}/index.cfm${API}`, adminpath: `http://${HOST}/admin`, fields: 'groupid', groupids: `${ADMIN_GROUP},${EDITOR_GROUP}` },
+      },
+    ]);
+    expect(dataOf(res)).toEqual({
+      userid: member.sub,
+      isnew: 0,
+      groupid: `${ADMIN_GROUP},${EDITOR_GROUP}`,
+      memberships: [`Editor;${SITE};0`, `S2IsPublic;${SITE}`],
+      membershipids: [EDITOR_GROUP],
+      isloggedin: true,
+    });
+  });
+
+  describe("findCurrentUser memberships of the token site's user pools", () => {
+    /** A site with its own private pool whose public pool is `tenant-b`. */
+    const SITE_POOLED = 'tenant-pooled-member';
+
+    beforeAll(async () => {
+      await withMetadata(handle.app, (tx) =>
+        tx.query(
+          `INSERT INTO ${handle.schema}.tenant_registry (site_id, tenant_id, private_user_pool_id, public_user_pool_id,` +
+            ' private_user_pool_tenant, public_user_pool_tenant, aggregate_version, updated_at) VALUES ($1, $2, $1, $3, $2, $4, 1, $5)',
+          [SITE_POOLED, tenantIdForSite(SITE_POOLED), SITE_B, tenantIdForSite(SITE_B), NOW],
+        ),
+      );
+    });
+
+    it.each([
+      ['a membership row whose group is stored in a registered tenant outside the pools', SITE, (): Array<[string, string]> => [[SITE, EDITOR_GROUP], [SITE, ids.visible]], (): string[] => [EDITOR_GROUP]],
+      ['a membership row of the same user id stored in a registered tenant outside the pools', SITE, (): Array<[string, string]> => [[SITE, EDITOR_GROUP], [SITE_B, ADMIN_GROUP]], (): string[] => [EDITOR_GROUP]],
+      ["a public-pool membership stored in the pool's tenant beside a row stored outside the pools", SITE_POOLED, (): Array<[string, string]> => [[SITE_B, ids.visible], [SITE, ADMIN_GROUP]], (): string[] => [ids.visible]],
+    ])("sends people only the token site's user-pool groups past %s", async (_label, site, rows, expected) => {
+      const member = await inSession({ sub: nextId('E'), roles: [Roles.member] }, site, '');
+      for (const [rowSite, groupId] of rows()) await gated(rowSite, (tx) => repo.addMembership(tx, member.sub, groupId));
+      people.calls.length = 0;
+      people.answer = { status: 200, headers: {}, body: { data: { userid: member.sub } } };
+
+      const res = await send(app, 'GET', `/_api/json/v1/${site}/findCurrentUser`, await headersFor(member));
+
+      expect(res.statusCode).toBe(200);
+      expect(people.calls.map((call) => call.query?.groupids)).toEqual([expected().join(',')]);
+    });
+  });
+
+  describe('REST continuations of a registered site, whose sessionless events raise (jsonApiUtility.cfc:1486-1487)', () => {
+    it.each<[string, Method, () => string, Record<string, string> | undefined, string]>([
+      ['login', 'POST', () => '/login', { username: 'jsonapi-rest', password: 'x' }, 'login'],
+      ['login with a lockdown check', 'POST', () => '/login', { username: 'jsonapi-rest', password: 'x', lockdowncheck: 'true' }, 'login'],
+      ['logout', 'POST', () => '/logout', undefined, 'logout'],
+      ['generateCSRFTokens', 'GET', () => '/generateCSRFTokens?context=cusers.update', undefined, 'generateCSRFTokens'],
+      ['findCurrentUser', 'GET', () => '/findCurrentUser', undefined, 'findCurrentUser'],
+      ['validateEmail', 'GET', () => '/validateEmail?email=a@example.test', undefined, 'validateEmail'],
+      ['findOne', 'GET', () => `/group/${ids.helpers}`, undefined, 'findOne'],
+      ['direct findAll, reported as spelled', 'GET', () => '/findall?entityname=group', undefined, 'findall'],
+      ['findQuery', 'GET', () => '/group?groupname=Helpers', undefined, 'findQuery'],
+      ['findMany', 'GET', () => `/group?id=${ADMIN_GROUP},${EDITOR_GROUP}`, undefined, 'findMany'],
+      ['findNew', 'GET', () => '/group/new', undefined, 'findNew'],
+      ['findProperties', 'GET', () => '/group/properties', undefined, 'findProperties'],
+      ['findPermissions', 'GET', () => '/group/permissions', undefined, 'findPermissions'],
+      ['findPermissions on the <id>/permissions path, which keeps params.method', 'GET', () => `/group/${ids.helpers}/permissions`, undefined, 'invalid'],
+      ['validate', 'GET', () => '/validate?entityname=group&data=%7B%7D', undefined, 'validate'],
+      ['validate of data that is not a struct', 'GET', () => '/validate?entityname=group&data=%5B1%5D', undefined, 'validate'],
+    ])("answers %s with legacy's unhandled-exception 500 at its sessionless event, calling no service", async (_label, method, path, form, reported) => {
+      const caller = await inSession(S2, SITE_C, 'S2');
+      people.calls.length = 0;
+      outbound.calls.length = 0;
+
+      const res = await send(app, method, `/_api/rest/v1/${SITE_C}${path()}`, await headersFor(caller), form);
+
+      expect(res.statusCode).toBe(500);
+      expect(json(res)).toEqual(legacyError(reported, ERRORS.serverError));
+      expect(res.headers.etag).toBe(etag(res.body));
+      expect(people.calls).toEqual([]);
+      expect(outbound.calls).toEqual([]);
+      // Only logout runs before its envelope raises, deleting the remember-me cookies and ending the request's session.
+      const loggedOut = reported === 'logout';
+      expect(cookiesWithoutExpiry(res)).toEqual(loggedOut ? oracle('logoutAnonymous').deletedCookies : []);
+      expect(await gated(SITE_C, (tx) => repo.findSession(tx, caller.sid ?? ''))).toMatchObject(loggedOut ? { user_id: null } : { state: 'active', user_id: S2.sub });
+    });
+
+    it('answers validate data that is not JSON with invalidParameters, raised before its event (jsonApiUtility.cfc:3705-3711)', async () => {
+      const caller = await inSession(S2, SITE_C, 'S2');
+
+      const res = await send(app, 'GET', `/_api/rest/v1/${SITE_C}/validate?entityname=group&data=notjson`, await headersFor(caller));
+
+      expect(res.statusCode).toBe(400);
+      expect(json(res)).toEqual(legacyError('validate', ERRORS.invalidParameters));
+    });
+
+    it('answers a group read with the 500 after a migrated token restored its session JSON, which raises nothing itself', async () => {
+      const { rest } = routeDeps(handle.app, repo, people, outbound.fetch, SETTINGS);
+      const token = nextId('T');
+      const data = readFileSync(new URL('../fixtures/legacy/oauth-token-data.json', import.meta.url), 'utf8');
+      const expires = new Date(NOW.getTime() + 3_600_000);
+      await gated(SITE_C, (tx) => repo.insertToken(tx, { token, granttype: 'password', clientid: nextId('C'), userid: S2.sub, accesscode: null, data, expires }));
+      const url = `/_api/rest/v1/${SITE_C}/group/${ids.helpers}`;
+
+      const outcome = await authenticateRestRequest(rest, { path: url, httpMethod: 'GET', headers: { authorization: `Bearer ${token}` }, query: {}, params: {}, siteId: SITE_C });
+      if (outcome.kind !== 'session') throw new Error(`expected a restored session, got ${outcome.status} ${outcome.body}`);
+      const state = await sessionState(rest.sessions, outcome.sessionId);
+      const res = await send(app, 'GET', url, await headersFor({ sub: state.userId, sid: outcome.sessionId, site: SITE_C, roles: [Roles.systemUser, USERS_MODULE] }));
+
+      expect(state).toMatchObject({ state: 'active', userId: '7E3C1A20-5B4D-4F6E-8A9B0C1D2E3F4A5B' });
+      expect(res.statusCode).toBe(500);
+      expect(json(res)).toEqual(legacyError('findOne', ERRORS.serverError));
+    });
   });
 
   describe('group save', () => {
@@ -1194,34 +2015,39 @@ describe.skipIf(!available)('JSON API against PostgreSQL', () => {
     });
 
     it.each([
-      ['a direct S2 save posting type 2', S2, `/_api/json/v1/${SITE_C}/save`, (): Record<string, string> => ({ entityname: 'group', id: ids.helpers, type: '2', ...csrfFields(ids.helpers) })],
-      ["a Users-module editor's new group, whose stripped type stays the new bean's 2", USERS_EDITOR, GROUP_C, (): Record<string, string> => ({ groupname: 'Fresh', ...csrfFields('new') })],
-    ])('fails closed with the legacy 503 on %s, which writes a user record', async (_label, who, url, form) => {
+      ['a direct S2 save posting type 2', S2, () => `/_api/json/v1/${SITE_C}/save`, (): Record<string, string> => ({ entityname: 'group', id: ids.helpers, type: '2', ...csrfFields(ids.helpers) }), 'group-save-user', /at userRecordRefused .*\\n\s+at save /],
+      ["a Users-module editor's new group, whose stripped type stays the new bean's 2", USERS_EDITOR, () => GROUP_C, (): Record<string, string> => ({ groupname: 'Fresh', ...csrfFields('new') }), 'group-save-user', /at userRecordRefused .*\\n\s+at save /],
+      ['an S2 save of an id naming a stored user', S2, () => `${GROUP_C}/${ids.userAccount}`, (): Record<string, string> => ({ groupname: 'Mine', ...csrfFields(ids.userAccount) }), 'group-api-user-record', /at userRecordRefused .*\\n\s+at loadedUserRefused /],
+    ])('fails closed with the legacy 503 of EX-GROUP-USER-RECORD on %s, which writes a user record', async (_label, who, url, form, reason, frames) => {
       const caller = await inSession(who, SITE_C, who === S2 ? 'S2' : `Editor;${SITE_C};0`);
+      const captured = capturingLogger();
+      const logged = await buildApp(routeDeps(handle.app, repo, people, outbound.fetch, SETTINGS), captured.logger);
+      try {
+        const res = await send(logged, 'POST', url(), await headersFor(caller), form());
 
-      const res = await send(app, 'POST', url, await headersFor(caller), form());
-
-      expect(res.statusCode).toBe(503);
-      expect(await groupOf(ids.helpers)).toMatchObject({ groupname: 'Helpers', isnew: 0 });
+        expect(res.statusCode).toBe(503);
+        expect(await groupOf(ids.helpers)).toMatchObject({ groupname: 'Helpers', isnew: 0 });
+        // The logger redacts the message, whose entry the refusing helper names; its stack shows the helper and the refusing site.
+        expect(captured.lines.find((line) => line.includes('service unavailable'))).toMatch(frames);
+        expect(userRecordRefused('A case', reason)).toMatchObject({ message: 'A case is refused (EX-GROUP-USER-RECORD)', reason });
+      } finally {
+        await logged.opt2.shutdown();
+      }
     });
 
-    it('refuses a REST save from a session that has ended as a missing credential', async () => {
+    it.each([
+      ['an entity-route save without a CSRF token', () => `/_api/rest/v1/${SITE_C}/group/${ids.helpers}`, false],
+      ['an entity-route save from a session that has ended', () => `/_api/rest/v1/${SITE_C}/group/${ids.helpers}`, true],
+      ['a direct save', () => `/_api/rest/v1/${SITE_C}/save`, false],
+    ])("answers %s over REST with legacy's unhandled-exception 500, before any check or write (jsonApiUtility.cfc:1905)", async (_label, url, ended) => {
       const caller = await inSession(S2, SITE_C, 'S2');
-      await gated(SITE_C, (tx) => repo.updateSession(tx, caller.sid ?? '', { state: 'ended' }));
+      if (ended) await gated(SITE_C, (tx) => repo.updateSession(tx, caller.sid ?? '', { state: 'ended' }));
 
-      const res = await send(app, 'POST', `/_api/rest/v1/${SITE_C}/group/${ids.helpers}`, await headersFor(caller), { groupname: 'Late' });
+      const res = await send(app, 'POST', url(), await headersFor(caller), { entityname: 'group', id: ids.helpers, groupname: 'Late', remoteid: 'r-1' });
 
-      expect(res.statusCode).toBe(401);
+      expect(res.statusCode).toBe(500);
+      expect(json(res)).toEqual(legacyError('save', ERRORS.serverError));
       expect(await groupOf(ids.helpers)).toMatchObject({ groupname: 'Helpers' });
-    });
-
-    it('saves over REST without a CSRF token, as a sessionless REST call does', async () => {
-      const caller = await inSession(S2, SITE_C, 'S2');
-
-      const res = await send(app, 'POST', `/_api/rest/v1/${SITE_C}/group/${ids.helpers}`, await headersFor(caller), { groupname: 'Helpers', remoteid: 'r-1' });
-
-      expect(res.statusCode).toBe(200);
-      expect(dataOf(res)).toMatchObject({ remoteid: 'r-1', errors: {} });
     });
 
     it('leaves a group delete under its CSRF context to legacy with the 404 envelope', async () => {
@@ -1234,4 +2060,320 @@ describe.skipIf(!available)('JSON API against PostgreSQL', () => {
       expect(await groupOf(ids.helpers)).toMatchObject({ groupname: 'Helpers', isnew: 0 });
     });
   });
+});
+
+const ALPHA = 'F0000000-0000-0000-0000000000000001';
+const BETA = 'F0000000-0000-0000-0000000000000002';
+const GAMMA = 'F0000000-0000-0000-0000000000000003';
+const ORACLE_ADMIN = '3BE10CC9-9421-80A7-719F9D4816FA78E5';
+
+/** A group of the oracle's `default` site: `columns` over empty values. */
+function oracleGroup(userid: string, groupname: string, columns: Partial<GroupInput>): GroupInput {
+  return {
+    userid, groupname, fname: '', lname: '', username: '', password: '', email: '', company: '', jobtitle: '', mobilephone: '',
+    website: '', type: 1, subtype: 'Default', contactform: '', s2: 0, perm: 0, inactive: 0, ispublic: 1, siteid: SITE,
+    subscribe: 1, notes: '', description: '', interests: '', keepprivate: 0, photofileid: '', imname: '', imservice: '',
+    remoteid: '', tags: '', tablist: '', ...columns,
+  };
+}
+
+describe.skipIf(!available)('JSON API validate of the user and group beans against PostgreSQL (jsonApiUtility.cfc:3736-3805; userBean.cfc:446-500)', () => {
+  const DELTA = 'F0000000-0000-0000-0000000000000004';
+  let handle: ThrowawaySchema;
+  let repo: IdentityRepository;
+  let app: FastifyInstance;
+
+  function gated<T>(fn: (tx: TenantTx) => Promise<T>): Promise<T> {
+    return withGatedTenant(handle.app, tenantIdForSite(SITE), fn);
+  }
+
+  beforeAll(async () => {
+    handle = await createThrowawaySchema({ service: 'identity', migrationsDir: fileURLToPath(new URL('../../db/migrations', import.meta.url)) });
+    const { schema } = handle;
+    repo = createIdentityRepository({ clock: CLOCK, schema });
+    await ensureUnitGates(handle.app, IDENTITY_UNITS);
+    await withMetadata(handle.app, (tx) => tx.query(`UPDATE ${schema}.unit_gate SET state = 'open', holder_id = NULL, phase = 'quiet'`));
+    createOutbox({ service: 'identity', db: handle.app, publisher: createCapturingPublisher(), logger: quietLogger(), clock: CLOCK, payloadValidators: identityPayloadValidators });
+    await withMetadata(handle.app, (tx) =>
+      tx.query(
+        `INSERT INTO ${schema}.tenant_registry (site_id, tenant_id, private_user_pool_id, public_user_pool_id,` +
+          ' private_user_pool_tenant, public_user_pool_tenant, aggregate_version, updated_at) VALUES ($1, $2, $1, $1, $2, $2, 1, $3)',
+        [SITE, tenantIdForSite(SITE), NOW],
+      ),
+    );
+    // The oracle's default site: its system groups, the public groups the fixture answers read, and its two accounts.
+    await gated(async (tx) => {
+      await repo.insertGroup(tx, oracleGroup(ADMIN_GROUP, 'Admin', { perm: 1, subscribe: 0, ispublic: 0 }), null);
+      await repo.insertGroup(tx, oracleGroup(EDITOR_GROUP, 'Editor', { password: 'stored-hash', contactform: '0', ispublic: 0 }), null);
+      await repo.insertGroup(tx, oracleGroup(ALPHA, 'Alpha', { email: 'alpha@example.test', remoteid: 'r-a', tags: 'red,blue' }), null);
+      await repo.insertGroup(tx, oracleGroup(BETA, 'Beta', { email: 'beta@example.test', remoteid: 'r-b', tags: 'red' }), null);
+      await repo.insertGroup(tx, oracleGroup(GAMMA, 'Gamma', { inactive: 1, remoteid: 'r-c' }), null);
+      await repo.insertGroup(tx, oracleGroup(DELTA, 'Delta', { remoteid: 'r-d' }), null);
+      await repo.replaceGroupInterests(tx, { groupId: ALPHA, categoryIds: ['C0000000-0000-0000-0000000000000001', 'C0000000-0000-0000-0000000000000002'] });
+      await repo.replaceGroupInterests(tx, { groupId: BETA, categoryIds: ['C0000000-0000-0000-0000000000000002'] });
+      const extended = { siteid: SITE, attributevalue: 'v', remoteid: null, datetimevalue: null, numericvalue: null, stringvalue: 'v' };
+      await repo.replaceGroupExtendData(tx, { groupId: DELTA, rows: [{ attributeId: 7, values: extended }] });
+      // The install and the admin save stamped these audit columns on the oracle's system groups.
+      await tx.query(
+        `UPDATE ${schema}.group_account SET lastupdateby = CASE userid WHEN $2 THEN 'System' WHEN $3 THEN 'Admin User' END,` +
+          ' lastupdatebyid = CASE userid WHEN $3 THEN $4 END WHERE tenant_id = $1',
+        [tx.tenantId, ADMIN_GROUP, EDITOR_GROUP, ORACLE_ADMIN],
+      );
+      for (const [userid, username] of [[ORACLE_ADMIN, 'admin'], ['3BEC10FC-F5B5-5517-7E7F2072657EFB68', 'qa_editor']] as const) {
+        await repo.insertAccount(tx, { userid, username, type: 2, s2: 0, perm: 0, inactive: 0, ispublic: 0, siteid: SITE, remoteid: '', tablist: '' });
+      }
+    });
+    app = await buildApp(routeDeps(handle.app, repo, recordingPeople(), recordingFetch().fetch, SETTINGS));
+  });
+
+  afterAll(async () => {
+    await app?.opt2.shutdown();
+    await handle?.drop();
+  });
+
+  it.each(validateAnswers('entity'))('answers the oracle entity validation %s as Masa 7.6.1 does', async (name) => {
+    const answer = validateAnswer(name);
+
+    const res = await send(app, 'GET', validatePath(answer), await headersFor(validateCaller(answer)));
+
+    expectValidateAnswer(res, answer);
+  });
+
+  it.each(validateAnswers('loadby'))('answers the oracle loadby validation %s as Masa 7.6.1 does', async (name) => {
+    const answer = validateAnswer(name);
+
+    const res = await send(app, 'GET', validatePath(answer), await headersFor(validateCaller(answer)));
+
+    expectValidateAnswer(res, answer);
+  });
+
+  it.each([...validateAnswers('entity', true), ...validateAnswers('loadby', true)])(
+    'answers %s, which reads another owner, the session or one user record, with the legacy 503 of its exceptions entry',
+    async (name) => {
+      const answer = validateAnswer(name);
+
+      const res = await send(app, 'GET', validatePath(answer), await headersFor(validateCaller(answer)));
+
+      expect(res.statusCode).toBe(503);
+      expect(json(res)).toMatchObject({ error: ERRORS.serverError });
+    },
+  );
+
+  it.each([
+    ['EX-GROUP-VALIDATE', 'validate-entity', { entityname: 'content' }],
+    ['EX-GROUP-VALIDATE', 'validate-session-site', { bean: 'group', loadby: 'remoteid', remoteid: 'r-a', siteid: '' }],
+    ['EX-GROUP-VALIDATE-DATA', 'validate-loadby-user', { bean: 'user', loadby: 'username', username: 'admin' }],
+    ['EX-GROUP-VALIDATE-DATA', 'validate-user-record', { entityname: 'group', userid: ORACLE_ADMIN }],
+    ['EX-GROUP-VALIDATE-DATA', 'validate-user-record', { bean: 'group', loadby: 'userid', userid: ORACLE_ADMIN }],
+    ['EX-GROUP-VALIDATE-DATA', 'validate-user-record', { bean: 'user', loadby: 'groupid', groupid: ORACLE_ADMIN }],
+    ['EX-GROUP-VALIDATE-DATA', 'validate-extended-data', { entityname: 'group', userid: DELTA }],
+    ['EX-GROUP-VALIDATE-DATA', 'validate-extended-data', { bean: 'group', loadby: 'remoteid', remoteid: 'r-d' }],
+  ])('refuses with the legacy 503 and logs %s for the %s case of %j', async (entry, reason, data) => {
+    const captured = capturingLogger();
+    const logged = await buildApp(routeDeps(handle.app, repo, recordingPeople(), recordingFetch().fetch, SETTINGS), captured.logger);
+    try {
+      const res = await send(logged, 'GET', `${API}/validate?entityname=group&data=${encodeURIComponent(JSON.stringify(data))}`, await headersFor(S2));
+
+      expect(res.statusCode).toBe(503);
+      // The logger redacts the message, whose entry the refusing helper names; its stack shows which one refused.
+      const warning = captured.lines.find((line) => line.includes('service unavailable'));
+      expect(warning).toContain(entry === 'EX-GROUP-VALIDATE' ? 'at validateHalted' : 'at validateRefused');
+      expect([validateHalted, validateRefused].map((refusal) => refusal('A case', reason).message)).toContain(`A case ${entry === 'EX-GROUP-VALIDATE' ? 'stays on legacy' : 'is refused'} (${entry})`);
+    } finally {
+      await logged.opt2.shutdown();
+    }
+  });
+
+  it('refuses a user or group bean validation under stricthtml, whose pass reads every property, and still answers ad hoc rules', async () => {
+    const strict = await buildApp(routeDeps(handle.app, repo, recordingPeople(), recordingFetch().fetch, { ...SETTINGS, strictHtml: true }));
+    try {
+      const bean = await send(strict, 'GET', `${API}/validate?entityname=group&data=${encodeURIComponent(JSON.stringify({ entityname: 'group', userid: ALPHA }))}`, await headersFor(S2));
+      const adHoc = validateAnswer('anon:adhoc');
+      const rules = await send(strict, 'GET', validatePath(adHoc), await headersFor(validateCaller(adHoc)));
+
+      expect(bean.statusCode).toBe(503);
+      expectValidateAnswer(rules, adHoc);
+    } finally {
+      await strict.opt2.shutdown();
+    }
+  });
+});
+
+
+describe.skipIf(!available)('JSON API group feeds against PostgreSQL (userGateway.cfc:164-592; jsonApiUtility.cfc:2712-2920,4981-4996)', () => {
+  const INTEREST_ONE = 'C0000000-0000-0000-0000000000000001';
+  const INTEREST_TWO = 'C0000000-0000-0000-0000000000000002';
+  const SEEDED = [ADMIN_GROUP, EDITOR_GROUP, ALPHA, BETA, GAMMA];
+  let handle: ThrowawaySchema;
+  let repo: IdentityRepository;
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    handle = await createThrowawaySchema({ service: 'identity', migrationsDir: fileURLToPath(new URL('../../db/migrations', import.meta.url)) });
+    const { schema } = handle;
+    repo = createIdentityRepository({ clock: CLOCK, schema });
+    await ensureUnitGates(handle.app, IDENTITY_UNITS);
+    await withMetadata(handle.app, (tx) => tx.query(`UPDATE ${schema}.unit_gate SET state = 'open', holder_id = NULL, phase = 'quiet'`));
+    createOutbox({ service: 'identity', db: handle.app, publisher: createCapturingPublisher(), logger: quietLogger(), clock: CLOCK, payloadValidators: identityPayloadValidators });
+    await withMetadata(handle.app, (tx) =>
+      tx.query(
+        `INSERT INTO ${schema}.tenant_registry (site_id, tenant_id, private_user_pool_id, public_user_pool_id,` +
+          ' private_user_pool_tenant, public_user_pool_tenant, aggregate_version, updated_at) VALUES ($1, $2, $1, $1, $2, $2, 1, $3)',
+        [SITE, tenantIdForSite(SITE), NOW],
+      ),
+    );
+    // The oracle's default site: its system groups and the public groups with their tags, interests, addresses, favorite and membership.
+    await withGatedTenant(handle.app, tenantIdForSite(SITE), async (tx) => {
+      await repo.insertGroup(tx, oracleGroup(ADMIN_GROUP, 'Admin', { perm: 1, subscribe: 0, ispublic: 0 }), null);
+      await repo.insertGroup(tx, oracleGroup(EDITOR_GROUP, 'Editor', { contactform: '0', ispublic: 0 }), null);
+      await repo.insertGroup(tx, oracleGroup(ALPHA, 'Alpha', { email: 'alpha@example.test', remoteid: 'r-a', tags: 'red,blue' }), null);
+      await repo.insertGroup(tx, oracleGroup(BETA, 'Beta', { email: 'beta@example.test', remoteid: 'r-b', tags: 'red' }), null);
+      await repo.insertGroup(tx, oracleGroup(GAMMA, 'Gamma', { inactive: 1, remoteid: 'r-c' }), null);
+      // The oracle's public groups carry the dates its seed wrote, and no password date or audit actor.
+      await tx.query(
+        `UPDATE ${schema}.group_account SET created = $3::timestamp + (CASE userid WHEN $4 THEN 1 WHEN $5 THEN 2 ELSE 0 END) * interval '1 day',` +
+          ' lastupdate = $3::timestamp + (CASE userid WHEN $4 THEN 1 WHEN $5 THEN 2 ELSE 0 END) * interval \'1 day\', passwordcreated = NULL,' +
+          ' lastupdateby = NULL, lastupdatebyid = NULL WHERE tenant_id = $1 AND userid = ANY($2::text[])',
+        [tx.tenantId, [ALPHA, BETA, GAMMA], '2026-01-01 00:00:00', BETA, GAMMA],
+      );
+      // Migrated tag rows keep the oracle's IDENTITY values, which tuserstags.tagid criteria read.
+      for (const [tagid, userid, tag] of [[1, ALPHA, 'red'], [2, ALPHA, 'blue'], [3, BETA, 'red']] as const) {
+        await tx.query(`INSERT INTO ${schema}.user_tag (tenant_id, tagid, userid, siteid, tag) VALUES ($1, $2, $3, $4, $5)`, [tx.tenantId, tagid, userid, SITE, tag]);
+      }
+      await repo.replaceGroupInterests(tx, { groupId: ALPHA, categoryIds: [INTEREST_ONE, INTEREST_TWO] });
+      await repo.replaceGroupInterests(tx, { groupId: BETA, categoryIds: [INTEREST_TWO] });
+      for (const [userid, addressid, addressname, city, isprimary, longitude, latitude] of [
+        [EDITOR_GROUP, '3BEA17DE-AC7A-6DA4-1E7D093F02DAF72E', 'Primary', '', 1, 0, 0],
+        [ALPHA, 'D0000000-0000-0000-0000000000000001', 'HQ', 'Springfield', 1, null, null],
+        [ALPHA, 'D0000000-0000-0000-0000000000000002', 'Branch', 'Shelbyville', 0, null, null],
+        [BETA, 'D0000000-0000-0000-0000000000000003', 'Main', 'Ogdenville', 1, 1.5, -2.25],
+      ] as const) {
+        await repo.insertGroupAddress(tx, { userid, addressid, siteid: SITE, addressname, city, isprimary });
+        await tx.query(`UPDATE ${schema}.user_address SET longitude = $3, latitude = $4 WHERE tenant_id = $1 AND addressid = $2`, [
+          tx.tenantId,
+          addressid,
+          longitude,
+          latitude,
+        ]);
+      }
+      await tx.query(
+        `INSERT INTO ${schema}.user_favorite (tenant_id, favoriteid, userid, favoritename, favorite, type, siteid, datecreated, columnnumber,` +
+          " rownumber, maxrssitems) VALUES ($1, 'A0000000-0000-0000-0000000000000001', $2, 'Fav', 'x', 'Content', $3, '2026-01-05 00:00:00', 2, 3, 5)",
+        [tx.tenantId, BETA, SITE],
+      );
+      await repo.replaceMemberships(tx, { userId: BETA, groupIds: [EDITOR_GROUP] });
+    });
+    app = await buildApp(routeDeps(handle.app, repo, recordingPeople(), recordingFetch().fetch, SETTINGS));
+  });
+
+  afterAll(async () => {
+    await app?.opt2.shutdown();
+    await handle?.drop();
+  });
+
+  async function feedOf(name: string): Promise<Answer> {
+    return send(app, 'GET', feedAnswer(name).path, await headersFor(S2));
+  }
+
+  it.each(feedAnswers('distinct'))('answers the oracle distinct feed %s, iterated as generic beans, as Masa 7.6.1 does', async (name) => {
+    expectFeedAnswer(await feedOf(name), feedAnswer(name), SEEDED, [ALPHA, BETA, GAMMA]);
+  });
+
+  it.each(feedAnswers('aggregate'))('answers the oracle aggregate feed %s as Masa 7.6.1 does', async (name) => {
+    expectFeedAnswer(await feedOf(name), feedAnswer(name), SEEDED);
+  });
+
+  it.each(feedAnswers('subquery'))('answers the oracle membership or interest filter %s as Masa 7.6.1 does', async (name) => {
+    expectFeedAnswer(await feedOf(name), feedAnswer(name), SEEDED);
+  });
+
+  it.each(feedAnswers('join'))('answers the oracle joined feed %s as Masa 7.6.1 does', async (name) => {
+    expectFeedAnswer(await feedOf(name), feedAnswer(name), SEEDED);
+  });
+
+  it.each(feedAnswers('table'))('answers the oracle reference to another table %s as Masa 7.6.1 does', async (name) => {
+    expectFeedAnswer(await feedOf(name), feedAnswer(name), SEEDED);
+  });
+
+  it.each(feedAnswers('sort'))('answers the oracle ordering %s as Masa 7.6.1 does', async (name) => {
+    expectFeedAnswer(await feedOf(name), feedAnswer(name), SEEDED);
+  });
+
+  it.each(feedAnswers('fields'))('answers the oracle field selection %s as Masa 7.6.1 does', async (name) => {
+    expectFeedAnswer(await feedOf(name), feedAnswer(name), SEEDED);
+  });
+
+  it.each(feedAnswers('bracket'))('answers the oracle bracketed name %s as Masa 7.6.1 does', async (name) => {
+    expectFeedAnswer(await feedOf(name), feedAnswer(name), SEEDED);
+  });
+
+  it.each(feedAnswers('setter'))('answers the oracle feed setter %s as Masa 7.6.1 does', async (name) => {
+    expectFeedAnswer(await feedOf(name), feedAnswer(name), SEEDED);
+  });
+
+  it.each(feedAnswers('extended'))('answers the oracle name %s, which no request scope keeps, as Masa 7.6.1 does', async (name) => {
+    expectFeedAnswer(await feedOf(name), feedAnswer(name), SEEDED);
+  });
+
+  /** Refusals of stored rows, SQL Server's plan over them or the database name (EX-GROUP-FEED-DATA); the rest stay on legacy (EX-GROUP-FEED). */
+  const DATA_REFUSALS = new Set(['feed-join-sort-tie', 'feed-typed-param', 'feed-database-name']);
+  const FEED_FAMILIES: ReadonlyArray<FeedAnswer['family']> = ['distinct', 'aggregate', 'subquery', 'join', 'table', 'sort', 'fields', 'bracket', 'setter', 'extended'];
+
+  it.each(FEED_FAMILIES.flatMap((family) => feedAnswers(family, true)))(
+    'answers %s, which reads another owner, the legacy runtime or the stored rows, with the legacy 503 its exceptions entry names',
+    async (name) => {
+      const captured = capturingLogger();
+      const logged = await buildApp(routeDeps(handle.app, repo, recordingPeople(), recordingFetch().fetch, SETTINGS), captured.logger);
+      try {
+        const res = await send(logged, 'GET', feedAnswer(name).path, await headersFor(S2));
+
+        expect(res.statusCode).toBe(503);
+        expect(json(res)).toMatchObject({ error: ERRORS.serverError });
+        // The logger redacts the message, whose entry the refusing helper names; its stack shows which one refused.
+        const reason = feedAnswer(name).refusal ?? '';
+        const data = DATA_REFUSALS.has(reason);
+        expect(captured.lines.find((line) => line.includes('service unavailable'))).toContain(`at ${data ? 'feedRefused' : 'feedHalted'}`);
+        expect((data ? feedRefused : feedHalted)('A case', reason).message).toBe(
+          data ? 'A case is refused (EX-GROUP-FEED-DATA)' : 'A case stays on legacy (EX-GROUP-FEED)',
+        );
+      } finally {
+        await logged.opt2.shutdown();
+      }
+    },
+  );
+
+  describe('with one group per cursor page', () => {
+    let paged: FastifyInstance;
+    let countedReads = 0;
+
+    beforeAll(async () => {
+      const pagedRepo = createIdentityRepository({ clock: CLOCK, schema: handle.schema, pageSize: 1 });
+      const counting: IdentityRepository = {
+        ...pagedRepo,
+        listCountedGroups: (...args) => {
+          countedReads += 1;
+          return pagedRepo.listCountedGroups(...args);
+        },
+      };
+      paged = await buildApp(routeDeps(handle.app, counting, recordingPeople(), recordingFetch().fetch, SETTINGS));
+    });
+
+    afterAll(async () => {
+      await paged?.opt2.shutdown();
+    });
+
+    it.each(FEED_FAMILIES.flatMap((family) => [...feedAnswers(family), ...feedAnswers(family, true)]))(
+      'answers %s as it does from a single page, its child rows read page by page and no member count loaded',
+      async (name) => {
+        const answer = feedAnswer(name);
+
+        const res = await send(paged, 'GET', answer.path, await headersFor(S2));
+
+        if (answer.refusal === undefined) expectFeedAnswer(res, answer, SEEDED, answer.family === 'distinct' ? [ALPHA, BETA, GAMMA] : []);
+        else expect([res.statusCode, res.body]).toEqual([503, (await feedOf(name)).body]);
+        expect(countedReads).toBe(0);
+      },
+    );
+  });
+
 });

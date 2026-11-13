@@ -1,6 +1,6 @@
 // The people reads of the cUsers admin circuit: group and user lists, search, advanced search, the Edit User and Edit
 // Address reads, and `route()` with its return-URL sanitising [legacy: admin/core/controllers/cusers.cfc:172-451,498-518].
-import type { Opt2RouteConfig, UserClaims } from '@opt2/platform/auth';
+import { Roles, hasAnyRole, serviceRole, type Opt2RouteConfig, type UserClaims } from '@opt2/platform/auth';
 import {
   LegacyServiceUnavailableError,
   accessControlOriginDomains,
@@ -12,38 +12,50 @@ import {
   cfToBoolean,
   cfToNumber,
   cfUuid,
+  createApiSerializer,
+  esapiUrlEncode,
   javaTrim,
+  type ApiKeyHint,
   type LegacyQuery,
 } from '@opt2/platform/legacy-compat';
 import { legacyParamsOf, type Clock, type FastifyInstance, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
 import {
-  registeredTenants,
+  registryEntries,
   registryEntryForTenant,
+  tenantForRegisteredSite,
   tenantIdForSite,
-  withMetadata,
   withTenant,
   type TenantDb,
   type TenantRegistryEntry,
+  type TenantTx,
 } from '@opt2/platform/tenancy';
 import { listAddresses } from '../domain/addresses.js';
 import { extendSetData, type ExtendValue } from '../domain/extended-data.js';
 import { newUserValues, type UserValues } from '../domain/person.js';
+import { awaitPersonOpen, observePersons, type PersonObserver, type PersonObserverDeps } from '../domain/roster-protocol.js';
 import {
   buildAdvancedSearchCriteria,
   getAdvancedSearch,
+  getAdvancedSearchPage,
+  getAllSitesUsers,
+  getAllSitesUsersPage,
   getSearch,
+  getSearchPage,
   getUnassignedUsers,
   getUsers,
+  getUsersPage,
   newAdvancedSearchCriteria,
+  numericArgument,
   pageRows,
-  searchAllSites,
   type AdvancedSearchCriteria,
   type NextN,
   type SearchDeps,
-  type ViewerScope,
+  type UsersPage,
+  type UsersPaging,
+  type UsersQueryArgs,
 } from '../domain/search.js';
-import { userBeanValues } from '../domain/user-entity.js';
-import type { components } from '../generated/openapi.js';
+import { addressesQuery, filteredEntityValues, userBeanValues, withExtendSetData } from '../domain/user-entity.js';
+import type { components, operations } from '../generated/openapi.js';
 import type { AdminSessionState, GroupSummary, IdentityClient, SessionSite, UserGroupRow } from '../legacy/identity-client.js';
 import type { PeopleRepository } from '../repo/repository.js';
 import type { AddressRow, ExtendSubtypeRow, PersonRow } from '../repo/tables.js';
@@ -65,6 +77,7 @@ type AddressRecord = Schemas['AddressRecord'];
 type GroupOption = Schemas['GroupOption'];
 type UserListRow = Schemas['UserListRow'];
 type RouteRedirect = Schemas['RouteRedirect'];
+type CurrentUserQuery = operations['readCurrentUser']['parameters']['query'];
 
 /** What the cUsers reads use; `photoFileExts` is strategies-content's photo lookup, without which every `photoFileExt` is ''. */
 export type AdminUserRouteDeps = {
@@ -73,6 +86,10 @@ export type AdminUserRouteDeps = {
   identity: IdentityClient;
   clock: Clock;
   photoFileExts?: SearchDeps['photoFileExts'];
+  /** Waits between closed-user polls; defaults to a timer. */
+  sleep?: SearchDeps['sleep'];
+  /** The roster protocol's wait on a user an open operation closes; defaults to `awaitPersonOpen`. */
+  awaitPersonOpen?: (db: TenantDb, tenantId: string, userId: string, opts: { clock: Clock }) => Promise<void>;
 };
 
 /** What `sanitizeHref` checks an absolute URL against. */
@@ -90,6 +107,33 @@ const CUSERS_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', requi
 
 // `siteid=all` is no site, so the handler's own `before()` check holds every other value to the token's site.
 const LIST_USERS_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', requires: CUSERS_ROUTE_REQUIRES, siteCheck: false });
+
+// Only identity's `findCurrentUser` reads it; the auth hooks hold `siteid` to a present user token's site.
+const CURRENT_USER_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', requires: Object.freeze([serviceRole('identity')]) });
+
+// The readCurrentUser query as the contract declares it; Fastify validates it once, before the handler.
+const CURRENT_USER_QUERY = {
+  type: 'object',
+  required: ['siteid', 'endpoint', 'adminpath'],
+  properties: {
+    siteid: { type: 'string', minLength: 1 },
+    fields: { type: 'string' },
+    expand: { type: 'string' },
+    expanddepth: { type: 'string' },
+    endpoint: { type: 'string', minLength: 1 },
+    adminpath: { type: 'string', minLength: 1 },
+    groupids: { type: 'string' },
+  },
+} as const;
+
+/** userBean properties whose datatype registerEntity hints for the JSON API serializer (jsonApiUtility.cfc:261-271; userBean.cfc:78-123). */
+const USER_ENTITY_HINTS: readonly ApiKeyHint[] = Object.freeze([
+  ...['type', 's2', 'perm', 'inactive', 'ispublic', 'subscribe', 'keepprivate', 'isnew'].map((key): ApiKeyHint => ({ key, hint: 'integer' })),
+  ...['passwordcreated', 'lastlogin', 'lastupdate', 'created'].map((key): ApiKeyHint => ({ key, hint: 'date' })),
+]);
+
+/** addressBean `numeric` properties registerEntity hints as floats, which an `addresses` query's cells take (addressBean.cfc:83-98). */
+const ADDRESS_ENTITY_HINTS: readonly ApiKeyHint[] = Object.freeze(['isprimary', 'longitude', 'latitude'].map((key): ApiKeyHint => ({ key, hint: 'float' })));
 
 /** `tusers` columns in bootstrap casing without `Password`, plus `photoFileExt`, with the kind each value takes on the wire. */
 const TUSERS_COLUMNS: ReadonlyArray<readonly [name: string, kind: 's' | 'i' | 't']> = [
@@ -182,18 +226,6 @@ export function routeRedirect(ctx: RouteContext, sanitize: (href: string) => str
   return { action: 'cUsers.listusers', params: { siteid: ctx.siteid, ispublic: ctx.ispublic } };
 }
 
-/** Every site registry entry, origin domains included, in site id order. */
-function registryEntries(db: TenantDb): Promise<TenantRegistryEntry[]> {
-  return withMetadata(db, async (tx) => {
-    const entries: TenantRegistryEntry[] = [];
-    for (const { tenantId } of await registeredTenants(tx)) {
-      const entry = await registryEntryForTenant(tx, tenantId);
-      if (entry !== null) entries.push(entry);
-    }
-    return entries;
-  });
-}
-
 /**
  * `sanitizeHref` over people's site registry: every site's origin domains, and the domain of the session site (the
  * token's site), with getSite's `default` fallback; a site without a domain gives ''.
@@ -230,9 +262,9 @@ function userListRow(row: Readonly<Record<string, unknown>>): UserListRow {
   return wire as UserListRow;
 }
 
-/** The ids of a user query's rows. */
-function userIdsOf(query: LegacyQuery): string[] {
-  return query.rows.map((row) => String(userListRow(row).UserID));
+/** The ids of user query rows. */
+function userIdsOf(rows: readonly Readonly<Record<string, unknown>>[]): string[] {
+  return rows.map((row) => String(userListRow(row).UserID));
 }
 
 /** `utility.getNextN`'s struct under the contract's lower-cased keys. */
@@ -251,9 +283,14 @@ function wireNextN(n: NextN): Schemas['NextN'] {
   };
 }
 
+/** The cusers paging of `rc` after `before()`. */
+function pagingOf(ctx: CusersContext): UsersPaging {
+  return { startRow: ctx.startrow, recordsPerPage: ctx.recordsperpage };
+}
+
 /** The nextN of the page cusers shows for `rows` [legacy: admin/core/controllers/cusers.cfc:498-518]. */
 function pageNextN(rows: readonly unknown[], ctx: CusersContext): Schemas['NextN'] {
-  return wireNextN(pageRows(rows, { startRow: ctx.startrow, recordsPerPage: ctx.recordsperpage }).nextn);
+  return wireNextN(pageRows(rows, pagingOf(ctx)).nextn);
 }
 
 /** One `getUserGroups` row; a NULL `Type` is left out, as the contract allows only 1. */
@@ -391,6 +428,8 @@ interface UserBean {
   groupIds: string[];
   categoryIds: string[];
   extendedAttributes: Record<string, string>;
+  /** `getExtendedData().getAllExtendSetData().data`, as the JSON API's `extendeddata` field reads it. */
+  extendData: Readonly<Record<string, ExtendValue>>;
 }
 
 /** A new bean: `userBean.init` values with the id `getUserID()` generates; legacy `read` of an unknown id never fails. */
@@ -404,35 +443,54 @@ function newUserBean(clock: Clock): UserBean {
     groupIds: [],
     categoryIds: [],
     extendedAttributes: {},
+    extendData: {},
   };
 }
 
-/** The person `userId` with its interests, addresses and extended data, from the first of `tenants` that holds it. */
-async function findPersonRows(deps: AdminUserRouteDeps, tenants: readonly string[], userId: string) {
+/** The roster observer collaborators of `deps`. */
+function observerDeps(deps: AdminUserRouteDeps): PersonObserverDeps {
+  return { db: deps.db, repo: deps.repository, clock: deps.clock, sleep: deps.sleep };
+}
+
+/** The person `userId` with its interests, addresses and extended data, from the first of `tenants` that holds it, fenced in each. */
+async function findPersonRows(deps: AdminUserRouteDeps, observer: PersonObserver, tenants: readonly string[], userId: string) {
   const { repository: repo } = deps;
+  const read = async (tx: TenantTx) => {
+    const person: PersonRow | null = await repo.findPerson(tx, userId);
+    if (person === null) return null;
+    const categoryIds = (await repo.listInterests(tx, person.userid)).map((row) => row.categoryid);
+    const addresses = await listAddresses(repo, tx, person.userid);
+    // getAllValues builds the bean's extended data for its site, Type 2 and subtype (beanExtendable.cfc:139-151).
+    const extend = await extendSetData(repo, tx, person.userid, { siteId: person.siteid ?? '', type: '2', subtype: person.subtype ?? '' });
+    return { person, categoryIds, addresses, extend };
+  };
   for (const tenantId of tenants) {
-    const found = await withTenant(deps.db, tenantId, async (tx) => {
-      const person: PersonRow | null = await repo.findPerson(tx, userId);
-      if (person === null) return null;
-      const categoryIds = (await repo.listInterests(tx, person.userid)).map((row) => row.categoryid);
-      const addresses = await listAddresses(repo, tx, person.userid);
-      // getAllValues builds the bean's extended data for its site, Type 2 and subtype (beanExtendable.cfc:139-151).
-      const extend = await extendSetData(repo, tx, person.userid, { siteId: person.siteid ?? '', type: '2', subtype: person.subtype ?? '' });
-      return { person, categoryIds, addresses, extend };
-    });
+    const found = await observer.read(tenantId, read, (rows) => (rows === null ? [] : [rows.person.userid]), [userId]);
     if (found !== null) return { tenantId, ...found };
   }
   return null;
 }
 
-/** `userManager.read(userid)` within the token's user tenants: people's rows with identity's account and memberships. */
-async function readUserBean(deps: AdminUserRouteDeps, entry: TenantRegistryEntry, userId: string): Promise<UserBean> {
-  const stored = userId === '' ? null : await findPersonRows(deps, userTenants(entry), userId);
-  // A person identity does not list (a missing or pending account) has no complete `tusers` row to read.
-  const account = stored === null ? undefined : await deps.identity.readAccount(stored.person.userid);
-  if (stored === null || account === undefined) return newUserBean(deps.clock);
+/**
+ * `userManager.read(userid)` within the token's user tenants: people's rows with identity's account and memberships, observed together;
+ * `memberships` are the user's group ids identity already supplied, which then are not read from identity.
+ */
+async function readUserBean(deps: AdminUserRouteDeps, entry: TenantRegistryEntry, userId: string, memberships?: readonly string[]): Promise<UserBean> {
+  if (userId === '') return newUserBean(deps.clock);
+  const read = await observePersons(
+    observerDeps(deps),
+    (observer) => findPersonRows(deps, observer, userTenants(entry), userId),
+    async (stored) => {
+      // A person identity does not list (a missing or pending account) has no complete `tusers` row to read.
+      const account = stored === null ? undefined : await deps.identity.readAccount(stored.person.userid);
+      if (stored === null || account === undefined) return null;
+      const groupIds = memberships === undefined ? await deps.identity.membershipGroupIds(stored.person.userid) : [...memberships];
+      return { stored, account, groupIds };
+    },
+  );
+  if (read === null) return newUserBean(deps.clock);
+  const { stored, account, groupIds } = read;
   const { person } = stored;
-  const groupIds = await deps.identity.membershipGroupIds(person.userid);
   const photoFileId = person.photofileid ?? '';
   const photoFileExt =
     deps.photoFileExts === undefined || photoFileId === '' ? '' : ((await deps.photoFileExts([photoFileId])).get(photoFileId) ?? '');
@@ -447,19 +505,87 @@ async function readUserBean(deps: AdminUserRouteDeps, entry: TenantRegistryEntry
     groupIds,
     categoryIds: stored.categoryIds,
     extendedAttributes: extendedValues(stored.extend.data),
+    extendData: stored.extend.data,
   };
 }
 
-/** `getAddressByID(addressID)` with the address's extended data, from the first of `tenants` that holds it. */
+/** `getAddressByID(addressID)` with the address's extended data, from the first of `tenants` that holds it, while its owner is open. */
 async function findAddressRows(deps: AdminUserRouteDeps, tenants: readonly string[], addressId: string) {
-  for (const tenantId of tenants) {
-    const found = await withTenant(deps.db, tenantId, async (tx) => {
-      const row = await deps.repository.findAddress(tx, addressId);
-      return row === null ? null : { row, extend: await extendSetData(deps.repository, tx, row.addressid) };
-    });
-    if (found !== null) return found;
+  const read = async (tx: TenantTx) => {
+    const row = await deps.repository.findAddress(tx, addressId);
+    return row === null ? null : { row, extend: await extendSetData(deps.repository, tx, row.addressid) };
+  };
+  const owner = (found: Awaited<ReturnType<typeof read>>): string[] => {
+    const userId = found?.row.userid ?? null;
+    return userId === null ? [] : [userId];
+  };
+  const people = async (observer: PersonObserver) => {
+    for (const tenantId of tenants) {
+      const found = await observer.read(tenantId, read, owner);
+      if (found !== null) return found;
+    }
+    return null;
+  };
+  return observePersons(observerDeps(deps), people, (found) => Promise.resolve(found));
+}
+
+// ---- The current user of the JSON API's findCurrentUser [legacy: core/mura/client/api/json/v1/jsonApiUtility.cfc:2268-2382] ----
+
+/** `userManager.read` of the token's own user, once no open roster operation closes it in the token site's user tenants. */
+async function readTokenUser(deps: AdminUserRouteDeps, claims: UserClaims, memberships: readonly string[]): Promise<UserBean> {
+  const entry = await tokenSite(deps.db, claims);
+  const awaitOpen = deps.awaitPersonOpen ?? awaitPersonOpen;
+  for (const tenantId of userTenants(entry)) await awaitOpen(deps.db, tenantId, claims.sub, { clock: deps.clock });
+  return readUserBean(deps, entry, claims.sub, memberships);
+}
+
+/** A bean no row loaded, seeded with the call's site as `$.getBean('user')` seeds it, with that site's extended defaults (cfobject.cfc:138-149; userBean.cfc:246-258). */
+async function seededNewBean(deps: AdminUserRouteDeps, bean: UserBean, siteId: string): Promise<UserBean> {
+  const tenantId = await tenantForRegisteredSite(deps.db, siteId);
+  if (tenantId === null) throw new LegacyServiceUnavailableError(`Site ${siteId} has no site registry entry`, 'auto', 'tenant-unregistered');
+  const values = { ...bean.values, siteid: siteId };
+  const scope = { siteId, type: '2', subtype: String(values.subtype) };
+  const extend = await withTenant(deps.db, tenantId, (tx) => extendSetData(deps.repository, tx, values.userid, scope));
+  return { ...bean, values: withExtendSetData(values, extend), extendData: extend.data };
+}
+
+/** `getLinks(user, editablecheck=true)`; the edit link only for a logged-in system user whom AllowAction admits (jsonApiUtility.cfc:1809-1818,3374-3440; userBean.cfc:818-824). */
+function currentUserLinks(claims: UserClaims | undefined, values: UserValues, query: CurrentUserQuery): Record<string, string> {
+  const base = query.endpoint;
+  const userId = values.userid;
+  const links: Record<string, string> = { entities: base };
+  const roles = claims?.roles ?? [];
+  const superUser = hasAnyRole(roles, [Roles.s2]) || claims?.s2 === true;
+  const systemUser = superUser || hasAnyRole(roles, [Roles.systemUser]);
+  const sub = claims?.sub ?? '';
+  // getModulePerm of the Users module, or the caller's own record.
+  const allowAction = superUser || hasAnyRole(roles, CUSERS_ROUTE_REQUIRES) || (sub !== '' && cfEq(userId, sub));
+  if (sub !== '' && systemUser && allowAction) {
+    links.edit = `${query.adminpath}/?muraAction=cusers.edituser&siteid=${esapiUrlEncode(values.siteid)}&userid=${esapiUrlEncode(userId)}`;
   }
-  return null;
+  links.all = `${base}/user`;
+  links.properties = `${base}/user/properties`;
+  links.self = `${base}/user/${userId}`;
+  links.permissions = `${base}/user/${userId}/permissions`;
+  return links;
+}
+
+/** `findOne(entityName='user', id=currentUser('userid'), method='findCurrentUser')`, which runs neither allowAccess nor allowRead. */
+async function readCurrentUser(deps: AdminUserRouteDeps, claims: UserClaims | undefined, query: CurrentUserQuery): Promise<Record<string, unknown>> {
+  const loaded = claims === undefined || claims.sub === '' ? newUserBean(deps.clock) : await readTokenUser(deps, claims, cfListToArray(query.groupids ?? ''));
+  const bean = loaded.exists ? loaded : await seededNewBean(deps, loaded, query.siteid);
+  return filteredEntityValues(bean.values, {
+    entityName: 'user',
+    pk: 'userid',
+    fields: query.fields,
+    expandLinks: query.expand,
+    expandDepth: query.expanddepth,
+    links: currentUserLinks(claims, bean.values, query),
+    isEntityNameMatch: true,
+    expanded: 0,
+    extendSetData: bean.extendData,
+    getters: { addresses: addressesQuery(bean.addresses) },
+  });
 }
 
 // ---- Advanced-search criteria and the session's retained values ----
@@ -548,24 +674,62 @@ function cusersHandler<R>(handler: (admitted: Admitted) => Promise<R>, options?:
   };
 }
 
+/** One API version of the cUsers user list reads: `L` answers the list and the search, `A` the advanced search. */
+interface UserListReads<L, A> {
+  /** `cUsers.listUsers`; `siteid=all` reads every site for S2 [legacy: admin/core/controllers/cusers.cfc:184-217]. */
+  listUsers(admitted: Admitted): Promise<L>;
+  /** `cUsers.search` [legacy: admin/core/controllers/cusers.cfc:402-427]. */
+  searchUsers(admitted: Admitted): Promise<L>;
+  /** `cUsers.advancedSearch` over `criteria` [legacy: admin/core/controllers/cusers.cfc:429-451]. */
+  advancedSearch(admitted: Admitted, criteria: AdvancedSearchCriteria): Promise<A>;
+}
+
 /** Registers the cUsers reads people serves: lists, searches, the edit reads and `route()`. */
 export async function registerAdminUserRoutes(app: FastifyInstance, deps: AdminUserRouteDeps): Promise<void> {
   const { identity } = deps;
-  const search: SearchDeps = { db: deps.db, repo: deps.repository, identity, photoFileExts: deps.photoFileExts };
+  const search: SearchDeps = { db: deps.db, repo: deps.repository, identity, photoFileExts: deps.photoFileExts, clock: deps.clock, sleep: deps.sleep };
 
-  /** cusers `advancedSearch()` over `criteria`: the result rows and the group options of the form [legacy: admin/core/controllers/cusers.cfc:429-451]. */
-  async function advancedSearchPage({ claims, ctx }: Admitted, criteria: AdvancedSearchCriteria): Promise<Schemas['AdvancedSearchPage']> {
+  /** A user list page on the wire; `listUnassignedUsers` marks its people without a stored group membership, or all with `allUnassigned`. */
+  async function userListPage(page: UsersPage<Record<string, unknown>>, allUnassigned: boolean): Promise<Schemas['UserListPageV2']> {
+    const ids = userIdsOf(page.rows);
+    // The view marks only the rows it shows, so the unassigned ids of the page stand for legacy's whole unassigned query.
+    const memberships = allUnassigned || ids.length === 0 ? new Map<string, string[]>() : await identity.lookupMemberships(ids);
+    return {
+      items: page.rows.map(userListRow),
+      nextn: wireNextN(page.nextn),
+      listUnassignedUsers: allUnassigned ? ids : ids.filter((id) => (memberships.get(id) ?? []).length === 0),
+    };
+  }
+
+  /** The search form of an advanced-search answer: no unassigned mark, the criteria and the group options [legacy: admin/core/controllers/cusers.cfc:429-451]. */
+  async function advancedSearchForm(ctx: CusersContext, criteria: AdvancedSearchCriteria): Promise<Pick<Schemas['AdvancedSearchPage'], 'listUnassignedUsers' | 'criteria' | 'groups'>> {
     // `rc.ispublic == 1` picks the member groups; the view reads no group, so their site names are not looked up.
     const groups = await identity.siteGroups(ctx.siteid, poolFlag(ctx.ispublic) === 1 ? 1 : 0);
-    const rs = await getAdvancedSearch(search, viewerScopeFor(claims), criteria, { siteid: ctx.siteid, isPublic: ctx.ispublic });
     // The action sets no `rc.listUnassignedUsers`, so the list marks no row.
-    return {
-      items: rs.rows.map(userListRow),
-      nextn: pageNextN(rs.rows, ctx),
-      listUnassignedUsers: [],
-      criteria: wireCriteria(criteria),
-      groups: groups.map((group) => groupOption(group, new Map())),
-    };
+    return { listUnassignedUsers: [], criteria: wireCriteria(criteria), groups: groups.map((group) => groupOption(group, new Map())) };
+  }
+
+  /** Registers `reads` under `prefix` behind the cUsers gate, each route with its roles and service transport. */
+  function registerUserListReads<L, A>(prefix: '/v1' | '/v2', reads: UserListReads<L, A>): void {
+    app.get(`${prefix}/users`, { config: { opt2: LIST_USERS_AUTH } }, cusersHandler((admitted) => reads.listUsers(admitted), { allowAllSites: true }));
+    app.get(`${prefix}/users/search`, { config: { opt2: CUSERS_AUTH } }, cusersHandler((admitted) => reads.searchUsers(admitted)));
+    // `cUsers.advancedSearch` of the session's stored criteria.
+    app.get(
+      `${prefix}/users/advanced-search`,
+      { config: { opt2: CUSERS_AUTH } },
+      cusersHandler(async (admitted) => reads.advancedSearch(admitted, storedCriteria(await identity.adminSessionState()))),
+    );
+    // Admin request start-up's capture of a non-empty `param`, then `cUsers.advancedSearch` [legacy: admin/Application.cfc:459-498].
+    app.post(
+      `${prefix}/users/advanced-search`,
+      { config: { opt2: CUSERS_AUTH } },
+      cusersHandler(async (admitted) => {
+        const previous = storedCriteria(await identity.adminSessionState());
+        const criteria = buildAdvancedSearchCriteria(new Map(Object.entries(admitted.params)), previous);
+        if (criteria !== previous) await identity.saveAdminSessionState(sessionCriteria(criteria));
+        return reads.advancedSearch(admitted, criteria);
+      }),
+    );
   }
 
   // `cUsers.list` [legacy: admin/core/controllers/cusers.cfc:177-182, core/mura/user/userGateway.cfc:93-122]
@@ -573,62 +737,62 @@ export async function registerAdminUserRoutes(app: FastifyInstance, deps: AdminU
     '/v1/users/groups',
     { config: { opt2: CUSERS_AUTH } },
     cusersHandler(async ({ ctx }): Promise<Schemas['UserGroupsPage']> => {
-      const groups = await identity.userGroups(ctx.siteid, poolFlag(ctx.ispublic));
+      // userManager's numeric `isPublic` rejects a boolean word before any read [legacy: core/mura/user/userManager.cfc:119-123].
+      const groups = await identity.userGroups(ctx.siteid, numericArgument(ctx.ispublic, 'isPublic', 'getUserGroups'));
       return { items: groups.map(groupListRow), nextn: pageNextN(groups, ctx) };
     }),
   );
 
-  // `cUsers.listUsers`; `siteid=all` reads every site for S2 [legacy: admin/core/controllers/cusers.cfc:184-217]
-  app.get(
-    '/v1/users',
-    { config: { opt2: LIST_USERS_AUTH } },
-    cusersHandler(
-      async ({ claims, ctx }): Promise<Schemas['UserListPage']> => {
-        const viewer = viewerScopeFor(claims);
-        const allSites = cfEq(ctx.siteid, 'all');
-        const users = (args: { ispublic: string; isunassigned: unknown }): Promise<LegacyQuery> =>
-          allSites
-            ? searchAllSites(search, viewer, (scope: ViewerScope, siteid: string) => getUsers(search, scope, { ...args, siteid }))
-            : getUsers(search, viewer, { ...args, siteid: ctx.siteid });
-        const rs = await users({ ispublic: ctx.ispublic, isunassigned: ctx.unassigned });
-        // With `unassigned` set, the unassigned query is the list query itself.
-        const unassigned = cfToBoolean(ctx.unassigned) ? rs : await users({ ispublic: ctx.ispublic, isunassigned: 1 });
-        return { items: rs.rows.map(userListRow), nextn: pageNextN(rs.rows, ctx), listUnassignedUsers: userIdsOf(unassigned) };
-      },
-      { allowAllSites: true },
-    ),
-  );
-
-  // `cUsers.search` [legacy: admin/core/controllers/cusers.cfc:402-427]
-  app.get(
-    '/v1/users/search',
-    { config: { opt2: CUSERS_AUTH } },
-    cusersHandler(async ({ claims, ctx }): Promise<Schemas['UserListPage']> => {
+  // `/v1` answers every match, with every unassigned user of the pool.
+  registerUserListReads<Schemas['UserListPage'], Schemas['AdvancedSearchPage']>('/v1', {
+    async listUsers({ claims, ctx }) {
+      const viewer = viewerScopeFor(claims);
+      const users = (args: Omit<UsersQueryArgs, 'siteid'>): Promise<LegacyQuery> =>
+        cfEq(ctx.siteid, 'all') ? getAllSitesUsers(search, viewer, args) : getUsers(search, viewer, { ...args, siteid: ctx.siteid });
+      const rs = await users({ ispublic: ctx.ispublic, isunassigned: ctx.unassigned });
+      // With `unassigned` set, the unassigned query is the list query itself.
+      const unassigned = cfToBoolean(ctx.unassigned) ? rs : await users({ ispublic: ctx.ispublic, isunassigned: 1 });
+      return { items: rs.rows.map(userListRow), nextn: pageNextN(rs.rows, ctx), listUnassignedUsers: userIdsOf(unassigned.rows) };
+    },
+    async searchUsers({ claims, ctx }) {
       const viewer = viewerScopeFor(claims);
       const rs = await getSearch(search, viewer, { search: ctx.search, siteid: ctx.siteid, isPublic: ctx.ispublic });
       const unassigned = await getUnassignedUsers(search, viewer, { siteid: ctx.siteid, ispublic: ctx.ispublic });
-      return { items: rs.rows.map(userListRow), nextn: pageNextN(rs.rows, ctx), listUnassignedUsers: userIdsOf(unassigned) };
-    }),
-  );
+      return { items: rs.rows.map(userListRow), nextn: pageNextN(rs.rows, ctx), listUnassignedUsers: userIdsOf(unassigned.rows) };
+    },
+    async advancedSearch({ claims, ctx }, criteria) {
+      const form = await advancedSearchForm(ctx, criteria);
+      const rs = await getAdvancedSearch(search, viewerScopeFor(claims), criteria, { siteid: ctx.siteid, isPublic: ctx.ispublic });
+      return { items: rs.rows.map(userListRow), nextn: pageNextN(rs.rows, ctx), ...form };
+    },
+  });
 
-  // `cUsers.advancedSearch` of the session's stored criteria.
-  app.get(
-    '/v1/users/advanced-search',
-    { config: { opt2: CUSERS_AUTH } },
-    cusersHandler(async (admitted) => advancedSearchPage(admitted, storedCriteria(await identity.adminSessionState()))),
-  );
-
-  // Admin request start-up's capture of a non-empty `param`, then `cUsers.advancedSearch` [legacy: admin/Application.cfc:459-498].
-  app.post(
-    '/v1/users/advanced-search',
-    { config: { opt2: CUSERS_AUTH } },
-    cusersHandler(async (admitted) => {
-      const previous = storedCriteria(await identity.adminSessionState());
-      const criteria = buildAdvancedSearchCriteria(new Map(Object.entries(admitted.params)), previous);
-      if (criteria !== previous) await identity.saveAdminSessionState(sessionCriteria(criteria));
-      return advancedSearchPage(admitted, criteria);
-    }),
-  );
+  // `/v2` answers only the people of the page `nextn` selects, and marks only theirs.
+  registerUserListReads<Schemas['UserListPageV2'], Schemas['AdvancedSearchPageV2']>('/v2', {
+    async listUsers({ claims, ctx }) {
+      const viewer = viewerScopeFor(claims);
+      const args = { ispublic: ctx.ispublic, isunassigned: ctx.unassigned };
+      const page = cfEq(ctx.siteid, 'all')
+        ? await getAllSitesUsersPage(search, viewer, args, pagingOf(ctx))
+        : await getUsersPage(search, viewer, { ...args, siteid: ctx.siteid }, pagingOf(ctx));
+      // With `unassigned` set, the unassigned query is the list query itself.
+      return userListPage(page, cfToBoolean(ctx.unassigned));
+    },
+    async searchUsers({ claims, ctx }) {
+      const query = { search: ctx.search, siteid: ctx.siteid, isPublic: ctx.ispublic };
+      const page = await getSearchPage(search, viewerScopeFor(claims), query, pagingOf(ctx));
+      // An empty term reads no pool, but the unassigned query still reads the site's: an unregistered tenant answers 503.
+      if (query.search === '') await tokenSite(deps.db, claims);
+      // Every search row is a user of the pool `getUnassignedUsers` reads, so it is unassigned exactly when it has no membership.
+      return userListPage(page, false);
+    },
+    async advancedSearch({ claims, ctx }, criteria) {
+      const form = await advancedSearchForm(ctx, criteria);
+      const options = { siteid: ctx.siteid, isPublic: ctx.ispublic };
+      const page = await getAdvancedSearchPage(search, viewerScopeFor(claims), criteria, options, pagingOf(ctx));
+      return { items: page.rows.map(userListRow), nextn: wireNextN(page.nextn), ...form };
+    },
+  });
 
   // `cUsers.editUser` and the view's set-up [legacy: admin/core/controllers/cusers.cfc:243-261, admin/core/views/cusers/edituser.cfm:79-113]
   app.get(
@@ -648,13 +812,15 @@ export async function registerAdminUserRoutes(app: FastifyInstance, deps: AdminU
       // The view's `userPoolID`: the private pool for an admin on the System Users side, else the public pool.
       const pool = userPool(entry, !(poolFlag(ctx.ispublic) === 0 && ctx.isAdmin));
       const subTypes = await withTenant(deps.db, pool.tenantId, (tx) => deps.repository.listExtendSubtypes(tx, { siteId: pool.siteId, types: ['2'] }));
+      const blockedUntil = bean.exists && bean.values.username !== ''
+        ? await identity.loginBlock(bean.values.userid, contextValue(ctx, 'removeblock') !== undefined)
+        : null;
       return {
         user: personRecord(bean.values, bean),
         isNew: !bean.exists,
         tempIsPublic: poolFlag(simpleText(tempIsPublic)),
         lockedSuper: bean.exists && cfToBoolean(bean.values.s2) && !isSuperViewer(claims),
-        // Login strikes are identity's, and its contract serves no read of another user's block.
-        blockedUntil: null,
+        blockedUntil,
         addresses: bean.addresses.map(addressRecord),
         privateGroups: privateGroups.map((group) => groupOption(group, siteNames)),
         publicGroups: publicGroups.map((group) => groupOption(group, siteNames)),
@@ -698,5 +864,15 @@ export async function registerAdminUserRoutes(app: FastifyInstance, deps: AdminU
       const sanitize = ctx.routeid === '' && ctx.returnurl !== '' ? await hrefSanitizer(deps.db, claims) : (href: string) => href;
       return { redirect: routeRedirect(ctx, sanitize) };
     }),
+  );
+
+  // The user read of identity's JSON API `findCurrentUser`, in the JSON API's serialization [legacy: core/mura/client/api/json/v1/jsonApiUtility.cfc:2268-2290]
+  app.get<{ Querystring: CurrentUserQuery }>(
+    '/internal/v1/users/current',
+    { schema: { querystring: CURRENT_USER_QUERY }, config: { opt2: CURRENT_USER_AUTH } },
+    async (request, reply) => {
+      const data = await readCurrentUser(deps, request.opt2Auth.user, request.query);
+      return reply.type('application/json').send(createApiSerializer([...USER_ENTITY_HINTS, ...ADDRESS_ENTITY_HINTS]).serialize({ data }));
+    },
   );
 }

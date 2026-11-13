@@ -304,6 +304,7 @@ export function rosterOperationRow(overrides: Partial<RosterOperationRow> = {}):
     started_at: businessNoon(),
     updated_at: businessNoon(),
     identity_unreachable_since: null,
+    claimed_by: null,
     ...overrides,
   };
 }

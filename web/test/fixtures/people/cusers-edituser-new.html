@@ -1,0 +1,461 @@
+<div class="mura-header">
+	<h1>User Maintenance Form</h1>
+	<div class="nav-module-specific btn-group">
+		<a class="btn" href="#" title="Back" onclick="actionModal();window.history.back(); return false;">
+				<i class="mi-arrow-circle-left"></i> Back
+		</a>
+	</div>
+</div> <!-- /.mura-header -->
+
+
+
+<form novalidate="novalidate" action="/admin/index.cfm?muraAction=cUsers.update&userid=5CF995EF-B34B-9CE6-76824A0C4C536543&routeid=" method="post" enctype="multipart/form-data" name="form1" onsubmit="return userManager.submitForm(this);;" autocomplete="off">
+
+	<div class="block block-constrain">
+
+		
+			<ul class="mura-tabs nav-tabs" data-toggle="tabs">
+				
+					<li class="active">
+						<a href="#tabBasic" onclick="return false;">
+							<span>Basic</span>
+						</a>
+					</li>
+				
+					<li>
+						<a href="#tabAddressinformation" onclick="return false;">
+							<span>Address Information</span>
+						</a>
+					</li>
+				
+					<li>
+						<a href="#tabGroupmemberships" onclick="return false;">
+							<span>Group Memberships</span>
+						</a>
+					</li>
+				
+					<li>
+						<a href="#tabInterests" onclick="return false;">
+							<span>Interests</span>
+						</a>
+					</li>
+				
+					<li>
+						<a href="#tabAdvanced" onclick="return false;">
+							<span>Advanced</span>
+						</a>
+					</li>
+				
+			</ul>
+
+			<div class="tab-content block-content">
+				
+
+				
+					<div id="tabBasic" class="tab-pane active">
+						<div class="block block-bordered">
+							<!-- block header -->
+							<div class="block-header">
+								<h3 class="block-title">Basic Settings</h3>
+							</div> <!-- /.block header -->
+							<div class="block-content">
+
+							<div class="help-block-inline">*Required, **Required to log in to Site</div>
+
+							
+							
+
+							
+							<div class="mura-control-group">
+									<label for="fname">First Name*</label>
+									<input id="fname" name="fname" type="text" value=""  required="true" message="The 'First Name' field is required.">
+								</div>
+
+							<div class="mura-control-group">
+									<label for="lname">Last Name*</label>
+									<input id="lname" name="lname" type="text" value=""  required="true" message="The 'Last Name' field is required.">
+							</div>
+
+							
+							<div class="mura-control-group">
+								<label for="organization">Company</label>
+								<input id="organization" name="company" type="text" value="">
+								</div>
+
+							<div class="mura-control-group">
+								<label for="jobtitle">Job Title</label>
+								<input id="jobtitle" name="jobtitle" type="text" value="">
+							</div>
+
+							
+							<div class="mura-control-group">
+								<label for="email">Email*</label>
+								<input  id="email" name="email" type="text" value="" required="true" validate="email" message="The 'Email' field must be in a valid email format.">
+								</div>
+
+							<div class="mura-control-group">
+								<label for="mobilePhone">Mobile Phone</label>
+								<input id="mobilePhone" name="mobilePhone" type="text" value="">
+							</div>
+
+							
+							<div class="mura-control-group">
+								<label for="username">Username*</label>
+								<input  id="username"  name="usernameNoCache" type="text" value="" required="true" message="The 'Username' field is required" autocomplete="off">
+							</div>
+							
+
+								
+								<div class="mura-control-group">
+									<label for="passwordNoCache">Password**</label>
+									<input id="passwordNoCache" name="passwordNoCache" autocomplete="off" validate="match" matchfield="password2" type="password" value=""  message="The 'Password' and 'Confirm Password' fields must match.">
+									</div>
+
+								<div class="mura-control-group">
+									<label for="password2">Confirm Password**</label>
+									<input id="password2" name="password2" autocomplete="off" type="password" value=""  message="user.passwordconfirm_missing">
+								</div>
+							
+
+							
+							<div class="mura-control-group">
+								<label for="newFile">Profile Image</label>
+								
+	<div data-name="newfile" data-property="photofileid" data-fileid="" data-filetype="File" data-contentid="" data-siteid="" class="mura-file-selector ">			
+		<div class="mura-input-set mura-file-selector-tabs" data-toggle="buttons-radio">
+			<button type="button" style="display:none">placeholder</button>
+			<button type="button" class="btn btn-default mura-file-type-selector active" value="Upload"><i class="mi-upload"></i> Via Upload</button>
+			<button type="button" class="btn btn-default mura-file-type-selector" value="URL"><i class="mi-download"></i> Via URL</button>
+			<button type="button" class="btn btn-default mura-file-type-selector" value="Existing"><i class="mi-file-picture-o"></i> Select Existing</button>
+			
+		</div>
+
+		<div id="mura-file-upload-newfile" class="mura-file-option mura-file-upload fileTypeOptionnewfile">
+
+			<div class="mura-control-group">
+					<input name="newfile" type="file" class="mura-file-selector-newfile"
+						data-label="" data-label="newfile" data-validation="" data-regex="" data-message="">
+					<a style="display:none;" class="btn btn-default" href="" onclick="return openFileMetaData('','','','photofileid');"><i class="mi-info-circle"></i></a>
+			</div>
+
+		</div>
+		<div id="mura-file-url-newfile" class="mura-file-option mura-file-url fileTypeOptionnewfile">
+
+			<div class="mura-control-group">
+					<input type="text" name="newfile" class="mura-file-selector-newfile span6" type="url" placeholder="http://www.domain.com/yourfile.JPG"	value=""
+					data-label="" data-label="newfile" data-validate="" data-regex="" data-message="">
+					<a style="display:none;" class="btn btn-default file-meta-open" href="" onclick="return openFileMetaData('','','','photofileid');"><i class="mi-info-circle"></i></a>
+			</div>
+
+		</div>
+
+		<div id="mura-file-existing-newfile" class="mura-file-option mura-file-existing fileTypeOptionnewfile">
+
+		</div>
+		
+	</div>
+
+
+
+							</div>
+
+							<span id="extendSetsBasic"></span>
+
+						</div> <!-- /.block-content -->
+					</div> <!-- /.block-bordered -->
+				</div> <!-- /.tab-pane -->
+				
+
+				
+					<div id="tabAddressinformation" class="tab-pane">
+						<div class="block block-bordered">
+							<!-- block header -->
+							<div class="block-header">
+								<h3 class="block-title">Address Information</h3>
+							</div> <!-- /.block header -->
+							<div class="block-content">
+
+						
+
+								
+								<div class="mura-control-group">
+									<label>Street Address 1</label>
+									<input id="address1" name="address1" type="text" value="1 Main &lt;St&gt;">
+									</div>
+
+								<div class="mura-control-group">
+									<label>Street Address 2</label>
+									<input id="address2" name="address2" type="text" value="">
+								</div>
+
+								
+								<div class="mura-control-group">
+									<label>City</label>
+									<input id="city" name="city" type="text" value="Springfield">
+								</div>
+
+								<div class="mura-control-group">
+									<label>State</label>
+									<input id="state" name="state" type="text" value="">
+								</div>
+
+								<div class="mura-control-group">
+									<label>Zip</label>
+									<input id="zip" name="zip" type="text" value="12345">
+								</div>
+
+								<div class="mura-control-group">
+									<label>Country</label>
+									<input id="country" name="country" type="text" value="">
+								</div>
+
+								
+								<div class="mura-control-group">
+									<label>Phone</label>
+									<input id="phone" name="phone" type="text" value="">
+								</div>
+
+								<div class="mura-control-group">
+									<label>Fax</label>
+									<input id="fax" name="fax" type="text" value="">
+								</div>
+
+								
+								<div class="mura-control-group">
+									<label>Website (Including HTTP://)</label>
+									<input id="addressURL" name="addressURL" type="text" value="">
+								</div>
+
+								<div class="mura-control-group">
+									<label>Email</label>
+									<input id="addressEmail" name="addressEmail" validate="email" message="The 'Email' field must be in a valid email format." type="text" value="">
+								</div>
+
+								
+								<div class="mura-control-group">
+									<label>Hours</label>
+									<textarea id="hours" name="hours" rows="6">9-5&#xa;Weekdays</textarea>
+								</div>
+
+								<input type="hidden" name="isPrimary" value="1" />
+
+							
+						</div> <!-- /.block-content -->
+					</div> <!-- /.block-bordered -->
+				</div> <!-- /.tab-pane -->
+				
+
+				
+					<div id="tabGroupmemberships" class="tab-pane">
+						<div class="block block-bordered">
+							<!-- block header -->
+							<div class="block-header">
+								<h3 class="block-title">Group Memberships</h3>
+							</div> <!-- /.block header -->
+							<div class="block-content">
+
+							
+							
+								<div class="mura-control-group">
+									<label>
+										User Type
+									</label>
+
+										<label class="radio inline">
+											<input name="isPublic" type="radio" class="radio inline" value="1" Checked>
+											Site Member
+										</label>
+
+										<label class="radio inline">
+											<input name="isPublic" type="radio" class="radio inline" value="0">
+											System User
+										</label>
+									</div>
+
+								<script>
+									jQuery(document).ready(function($){
+
+										$('input[name="isPublic"]').click(function(e){
+
+											if($('input[name="isPublic"]:checked').val()==1){
+												$('#privateGroupsList').hide();
+											} else {
+												$('#privateGroupsList').show();
+											}
+										});
+
+										$('input[name="s2"]').click(function(e){
+											if($('input[name="s2"]:checked').val()==1){
+												$('input[name="isPublic"][value="0"]').attr('checked',true);
+												$('input[name="isPublic"]').trigger('clicked');
+											}
+										});
+
+									});
+								</script>
+							
+									<div id="privateGroupsList" class="mura-control-group" style="display:none">
+										<label>
+											System Groups
+										</label>
+
+										
+										
+										
+											
+													<label class="checkbox">
+														<input name="groupid" type="checkbox" class="checkbox" value="3BE10D43-C960-A7E5-0FB807B791D31787" >
+														Admin
+													</label>
+												
+													<label class="checkbox">
+														<input name="groupid" type="checkbox" class="checkbox" value="3BEA0C3E-ADEF-CA41-18EF6712DF2AA18D" >
+														Editor
+													</label>
+												
+										</div>
+								
+
+							
+							<div class="mura-control-group">
+								<label>
+									Member Groups
+								</label>
+									
+										<p class="help-block-empty">
+											There are currently no groups available.
+										</p>
+									
+								</div>
+
+						</div> <!-- /.block-content -->
+					</div> <!-- /.block-bordered -->
+				</div> <!-- /.tab-pane -->
+				
+
+				
+					<div id="tabInterests" class="tab-pane">
+						<div class="block block-bordered">
+							<!-- block header -->
+							<div class="block-header">
+								<h3 class="block-title">Interests</h3>
+							</div> <!-- /.block header -->
+							<div class="block-content">
+							<div id="mura-list-tree" class="mura-control-group">
+
+								
+<div class="help-block-empty">There are currently no interest groups.</div>
+	
+
+							</div>
+						</div> <!-- /.block-content -->
+					</div> <!-- /.block-bordered -->
+				</div> <!-- /.tab-pane -->
+				
+
+				
+					
+				
+
+				
+					<div id="tabAdvanced" class="tab-pane">
+						<div class="block block-bordered">
+							<!-- block header -->
+							<div class="block-header">
+								<h3 class="block-title">Advanced</h3>
+							</div> <!-- /.block header -->
+							<div class="block-content">
+
+							
+								
+								<div class="mura-control-group">
+									<label>
+											Super Admin Account
+										</label>
+											<label class="radio inline"><input name="s2" type="radio" class="radio inline" value="1" >
+												Yes
+											</label>
+											<label class="radio inline"><input name="s2" type="radio" class="radio inline" value="0" Checked>
+												No
+											</label>
+										</div>
+								
+
+							
+							<div class="mura-control-group">
+								
+								<label>
+										Active
+									</label>
+										<label class="radio inline">
+											<input name="InActive" type="radio" class="radio inline" value="0"Checked>
+											Yes
+										</label>
+										<label class="radio inline">
+											<input name="InActive" type="radio" class="radio inline" value="1">
+											No
+										</label>
+									</div>
+
+								
+								
+								<div class="mura-control-group">
+									<label>
+											Site
+										</label>
+										<select name="siteid">
+											
+												<option value="default" selected="selected">
+													Default
+												</option>
+											
+										</select>
+									</div>
+								
+
+							
+							<div class="mura-control-group">
+								<label>Tags</label>
+								<input id="tags" name="tags" type="text" value="">
+								</div>
+
+							<div class="mura-control-group">
+								<label>Remote ID</label>
+								<input id="remoteID" name="remoteID" type="text" value="">
+							</div>
+
+							
+
+						</div> <!-- /.block-content -->
+					</div> <!-- /.block-bordered -->
+				</div> <!-- /.tab-pane -->
+				
+			
+				<div class="load-inline tab-preloader"></div>
+				<script>$('.tab-preloader').spin(spinnerArgs2);</script>
+
+				<div class="mura-actions">
+					<div class="form-actions">
+						
+							<button type="button" class="btn mura-primary" onclick="userManager.submitForm(document.forms.form1,'add');"><i class="mi-check-circle"></i>Add</button>
+						
+					</div>
+				</div>
+
+				<input type="hidden" name="type" value="2">
+				
+				<input type="hidden" name="action" value="Add">
+				<input type="hidden" name="contact" value="0">
+				<input type="hidden" name="groupid" value="">
+				<input type="hidden" name="ContactForm" value="">
+				<input type="hidden" name="returnurl" value="/admin/index.cfm?muraAction=cUsers.listUsers&ispublic=1">
+
+				
+					<input type="hidden" name="subtype" value="Default"/>
+				<input type="hidden" name="csrf_token" value="TESTCSRFTOKEN0000000000000000000" /><input type="hidden" name="csrf_token_expires" value="260630150000000" />
+
+
+			</div> <!-- /.block-content.tab-content -->
+		
+
+	</div> <!-- /.block-constrain -->

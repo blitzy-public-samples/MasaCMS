@@ -48,7 +48,10 @@ try {
 			break;
 
 		case "trackBounces":
-			application.emailManager.trackBounces(url.siteid);
+			// contentServer.cfc:691: the getter folds in the global emailBroadcaster config only legacy reads (settingsBean.cfc:435-441).
+			if (application.settingsManager.getSite(url.siteid).getEmailBroadcaster()) {
+				application.emailManager.trackBounces(url.siteid);
+			}
 			break;
 
 		case "feedAutoImport":

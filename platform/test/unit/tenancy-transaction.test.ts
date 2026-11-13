@@ -746,4 +746,23 @@ describe('withTenant', () => {
     expect(delegate).toHaveBeenCalledExactlyOnceWith(TENANT_A, fn);
     expect(h.client.calls[1]).toEqual([SET_TENANT, [TENANT_A]]);
   });
+
+  it('forwards its options to the TenantDb, so an aborted signal rejects before connecting', async () => {
+    const h = setup();
+    const db: TenantDb = {
+      schema: 'people',
+      withTenant: (tenantId, fn, options) => runTenantTransaction(h.pool, h.opts, tenantId, fn, options),
+      withMetadata: (fn) => runTransaction(h.pool, h.opts, '', asMetadata, fn),
+      end: () => Promise.resolve(),
+    };
+    const delegate = vi.spyOn(db, 'withTenant');
+    const reason = new Error('client closed');
+    const options = { signal: AbortSignal.abort(reason) };
+    const fn = vi.fn((tx: TenantTx): Promise<string> => Promise.resolve(tx.tenantId));
+
+    await expect(withTenant(db, TENANT_A, fn, options)).rejects.toBe(reason);
+    expect(delegate).toHaveBeenCalledExactlyOnceWith(TENANT_A, fn, options);
+    expect(h.connect).not.toHaveBeenCalled();
+    expect(fn).not.toHaveBeenCalled();
+  });
 });

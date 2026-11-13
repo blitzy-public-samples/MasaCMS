@@ -1,4 +1,4 @@
-/** Identity's consumer of `people.person.changed.v1`, which keeps the `identity.person_contact` projection used for mail and lookup by email. */
+/** Identity's consumer of `people.person.changed.v1`, which keeps the `identity.person_contact` projection used for mail, lookup by email and group member listings. */
 import {
   readTopicSchema,
   subscriptionName,
@@ -25,6 +25,12 @@ export const PERSON_CONTACT_SUBSCRIPTION = subscriptionName('identity', PERSON_C
 export const personChangedSchema = readTopicSchema(
   new URL('../../../people/contracts/events/people.person.changed.v1.json', import.meta.url),
 );
+
+/** A payload `yyyy-mm-dd HH:nn:ss.lll` wall-clock text as the Date pg stores back as that same `timestamp(3)` in the process zone. */
+function localTimestampDate(text: string | null): Date | null {
+  // ISO date-time text without an offset parses as local time.
+  return text === null ? null : new Date(text.replace(' ', 'T'));
+}
 
 /**
  * Stores or removes the contact of each applied person state in the envelope tenant, through the repository so the changelog row commits with it.
@@ -59,6 +65,25 @@ export function personContactConsumer(repository: IdentityRepository): ConsumerD
         company: payload.company,
         subtype: payload.subType,
         aggregate_version: envelope.aggregateVersion,
+        groupname: payload.groupName,
+        jobtitle: payload.jobTitle,
+        mobilephone: payload.mobilePhone,
+        website: payload.website,
+        ext: payload.ext,
+        contactform: payload.contactForm,
+        subscribe: payload.subscribe,
+        notes: payload.notes,
+        description: payload.description,
+        interests: payload.interests,
+        keepprivate: payload.keepPrivate,
+        photofileid: payload.photoFileId,
+        imname: payload.imName,
+        imservice: payload.imService,
+        tags: payload.tags,
+        created: localTimestampDate(payload.created),
+        lastupdate: localTimestampDate(payload.lastUpdate),
+        lastupdateby: payload.lastUpdateBy,
+        lastupdatebyid: payload.lastUpdateById,
       });
     },
   };

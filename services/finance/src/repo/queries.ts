@@ -62,6 +62,7 @@ interface Statements {
   readonly countAttachments: string;
   readonly attachmentPage: string;
   readonly attachment: string;
+  readonly attachmentObjectKey: string;
   readonly countRollups: string;
   readonly rollupPage: string;
   readonly binding: string;
@@ -96,6 +97,7 @@ function statementsFor(schema: string): Statements {
     countAttachments: `${count(FINANCE_ATTACHMENT)} WHERE "record_id" = $1`,
     attachmentPage: `${attachment} WHERE "record_id" = $1 ORDER BY "created", "attachment_id" COLLATE "C" LIMIT $2 OFFSET $3`,
     attachment: `${attachment} WHERE "record_id" = $1 AND "attachment_id" = $2`,
+    attachmentObjectKey: `SELECT "object_key" FROM ${qualified(schema, FINANCE_ATTACHMENT.table)} WHERE "attachment_id" = $1`,
     countRollups: count(FINANCE_ROLLUP),
     rollupPage:
       `SELECT ${columnList(FINANCE_ROLLUP)} FROM ${qualified(schema, FINANCE_ROLLUP.table)}` +
@@ -183,6 +185,12 @@ export async function findAttachment(tx: TenantTx, recordId: string, attachmentI
   await awaitReadable(tx, [FINANCE_ATTACHMENT.unit]);
   const { rows } = await tx.query<FinanceAttachmentRow>(statements.attachment, [recordId, attachmentId]);
   return rows[0] ?? null;
+}
+
+/** The `object_key` of the tenant's attachment `attachmentId`, or null; ungated, as the reverse projection reads it while a window holds the unit. */
+export async function findAttachmentObjectKey(tx: TenantTx, attachmentId: string): Promise<string | null> {
+  const { rows } = await tx.query<Pick<FinanceAttachmentRow, 'object_key'>>(statementsFor(tx.schema).attachmentObjectKey, [attachmentId]);
+  return rows[0]?.object_key ?? null;
 }
 
 /** One page of the tenant's rollup rows by period, then state, in binary order, and their total. */

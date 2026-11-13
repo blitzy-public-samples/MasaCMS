@@ -5,7 +5,14 @@ import { withGatedTenant } from '@opt2/platform/migration-kit';
 import type { Clock } from '@opt2/platform/service-kit';
 import { registeredTenants, tenantIdForSite, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import { tokenInfoFromSessionJson, type AcfStruct } from '../legacy/session-json.js';
-import { charKey, type IdentityRepository, type OAuthClientValues, type OAuthTokenInput } from '../repo/repository.js';
+import {
+  charKey,
+  type IdentityRepository,
+  type ListPage,
+  type ListedPage,
+  type OAuthClientValues,
+  type OAuthTokenInput,
+} from '../repo/repository.js';
 import { OAUTH_TOKEN, type OAuthClientRow, type OAuthTokenRow } from '../repo/tables.js';
 
 /** Database, repository and clock of the OAuth operations. */
@@ -213,10 +220,10 @@ function addYears(at: Date, years: number): Date {
   return moved;
 }
 
-/** The OAuth clients of `siteId` by clientid, read in the site's tenant [legacy: admin/core/views/cwebservice/list.cfm:78]. */
-export async function listClients(deps: OAuthDeps, siteId: string): Promise<OAuthClientRow[]> {
-  if (siteId === '') return [];
-  return withTenant(deps.db, tenantIdForSite(siteId), (tx) => deps.repo.listOAuthClients(tx, siteId));
+/** The `page` window of the OAuth clients of `siteId` by clientid and their total, read in the site's tenant [legacy: admin/core/views/cwebservice/list.cfm:78]. */
+export async function listClients(deps: OAuthDeps, siteId: string, page: ListPage): Promise<ListedPage<OAuthClientRow>> {
+  if (siteId === '') return { items: [], total: 0 };
+  return withTenant(deps.db, tenantIdForSite(siteId), (tx) => deps.repo.listOAuthClients(tx, siteId, page));
 }
 
 /** The client `clientId` in any tenant, the tenant of `siteId` first, as `loadBy(clientid=…)` finds it; null when absent [legacy: core/mura/bean/beanORM.cfc:750-925]. */

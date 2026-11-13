@@ -1,8 +1,8 @@
 // Shared view-model types and pure derivations of the carch screens: module ids, type lists, lock and delete state.
 import { cfListToArray } from '@opt2/platform/legacy-compat';
 import type { components } from '@/generated/clients/strategies-content';
-import { cfEq } from '@/lib/cfml';
-import type { AdminRequest, AdminSessionState } from '@/lib/request-context';
+import { cfEq, isCompactDisplay } from '@/lib/cfml';
+import { administersRequestedSite, type AdminRequest, type AdminSessionState } from '@/lib/request-context';
 
 /** Site Manager module. */
 export const CONTENT_MODULE_ID = '00000000000000000000000000000000000';
@@ -143,7 +143,7 @@ export function isDeletable(input: DeletableInput): boolean {
   const { compactDisplay, parentId, contentId, siteLocking, perm, isLocked } = input;
   const underRoot = cfEq(parentId, ROOT_CONTENT_ID);
   return (
-    (compactDisplay === undefined || !cfEq(compactDisplay, 'true')) &&
+    !isCompactDisplay(compactDisplay) &&
     ((!underRoot && !cfEq(siteLocking, 'all')) || (underRoot && cfEq(siteLocking, 'none'))) &&
     cfEq(perm, 'editor') &&
     !cfEq(contentId, ROOT_CONTENT_ID) &&
@@ -154,15 +154,20 @@ export function isDeletable(input: DeletableInput): boolean {
 type SessionUser = AdminSessionState['mura'];
 
 /** The verified session data the membership checks read; an `AdminRequest` satisfies it. */
-export type CarchSessionFlags = Pick<AdminRequest, 'isS2' | 'isSiteAdmin'> & {
+export type CarchSessionFlags = Pick<AdminRequest, 'isS2' | 'isSiteAdmin' | 'user' | 'rc'> & {
   readonly session: Pick<AdminSessionState, 's2IsPrivate'> & {
     readonly mura: Pick<SessionUser, 'userID' | 'memberships'>;
   };
 };
 
-/** Membership `Admin;<privateUserPoolID>;0` of the request's site, or `S2`. */
-export function isSiteAdminOrS2(req: Pick<AdminRequest, 'isS2' | 'isSiteAdmin'>): boolean {
-  return req.isSiteAdmin || req.isS2;
+/** Membership `Admin;<privateUserPoolID of getSite(rc.siteid)>;0`, or `S2`. */
+export function isSiteAdminOrS2(req: Pick<AdminRequest, 'isS2' | 'isSiteAdmin' | 'user' | 'rc'>): boolean {
+  return administersRequestedSite(req);
+}
+
+/** `$.currentUser().isSuperUser() or isAdminUser()`, which read the session user's own site, not rc.siteid. */
+export function isSuperOrAdminUser(req: Pick<AdminRequest, 'isS2' | 'isSiteAdmin'>): boolean {
+  return req.isS2 || req.isSiteAdmin;
 }
 
 /** Membership `S2IsPrivate`, or with `siteId` the case-insensitive `S2IsPrivate;<siteId>`. */
@@ -177,6 +182,8 @@ export interface CarchViewState extends LockState {
   readonly perm: NodePerm;
   readonly deletable: boolean;
   readonly siteAdminOrS2: boolean;
+  /** {@link isSuperOrAdminUser}: the view's `poweruser`. */
+  readonly poweruser: boolean;
   readonly s2IsPrivate: boolean;
 }
 
@@ -193,6 +200,7 @@ export function carchViewState(req: CarchSessionFlags, input: CarchViewStateInpu
     perm: input.perm,
     deletable: isDeletable(input),
     siteAdminOrS2: isSiteAdminOrS2(req),
+    poweruser: isSuperOrAdminUser(req),
     s2IsPrivate: isS2IsPrivate(req),
   };
 }

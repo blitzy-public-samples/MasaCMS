@@ -1,6 +1,6 @@
 // Change-set secondary menu of `cchangesets/dsp_secondary_menu.cfm`, also the shell's `cchangesets` hook (server-only).
 import { encodeHtml, encodeJs, html, join, raw, type SafeHtml } from '@/lib/html';
-import type { AdminRequest } from '@/lib/request-context';
+import { administersRequestedSite, type AdminRequest } from '@/lib/request-context';
 import { rbFor, type RbLookup } from '@/lib/resource-bundles/rb';
 import { relativeAdminUrl } from '@/lib/urls';
 import type { ShellHooks } from '@/shell/types';
@@ -65,7 +65,7 @@ export function renderChangesetsMenu(
         ['siteid', siteid],
       ]);
       parts.push(INDENT_4, titled('addchangeset', 'mi-plus-circle', addHref), INDENT_4);
-      if (req.isSiteAdmin || req.isS2) {
+      if (administersRequestedSite(req)) {
         const permHref = raw(
           relativeAdminUrl('cPerm', 'module', [
             ['contentid', CHANGESETS_MODULE_ID, 'raw'],

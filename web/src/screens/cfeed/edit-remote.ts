@@ -126,13 +126,13 @@ function option(value: string, stored: string): SafeHtml {
 
 /** The authentication select, shown only when a proxy server or proxy user is configured. */
 function authType(p: Parts): SafeHtml | '' {
-  const { proxyServer, proxyUser } = p.model;
-  if (proxyServer === '' && proxyUser === '') return '';
+  const { hasProxyServer, hasProxyUser } = p.model;
+  if (!hasProxyServer && !hasProxyUser) return '';
   const stored = p.feed.authType;
   const choice = (value: string, indent: string): SafeHtml =>
     html`${raw(indent)}<option value="${value}" ${cfEq(stored, value) && SELECTED}>${value}</option>`;
-  const proxy = proxyServer === '' ? '' : html`\n${choice('PROXY', '\t\t\t\t\t\t\t')}\n\t\t\t\t\t\t`;
-  const ntlm = proxyUser === '' ? '' : html`\n${choice('NTLM', '\t\t\t\t\t\t\t')}\n\t\t\t\t\t\t`;
+  const proxy = hasProxyServer ? html`\n${choice('PROXY', '\t\t\t\t\t\t\t')}\n\t\t\t\t\t\t` : '';
+  const ntlm = hasProxyUser ? html`\n${choice('NTLM', '\t\t\t\t\t\t\t')}\n\t\t\t\t\t\t` : '';
   return html`
 \t\t\t\t\t<label>${label(p.rb, 'collections.authtype')}</label>
 \t\t\t\t\t<select name="authtype">

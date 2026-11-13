@@ -13,6 +13,7 @@ import {
   type AdminRequestPartial,
 } from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
+import { REQUESTED_SITE_CASES } from '../../helpers/requested-site';
 
 const COLLECTIONS = moduleRole('00000000000000000000000000000000011');
 const CONTENT = moduleRole('00000000000000000000000000000000000');
@@ -82,10 +83,22 @@ describe('cfeedGate', () => {
       () => editorWith([Roles.systemUser, CONTENT], { ...FEEDS, rc: { s2: '1', memberships: 'S2' } }),
     ],
     ['anonymous', () => anonymousRequest(FEEDS)],
+    [
+      'collections and content module access granted for a site the token does not serve',
+      () => editorWith([Roles.systemUser, COLLECTIONS, CONTENT], { ...FEEDS, rc: { siteid: 'tenant-b' } }),
+    ],
   ])('secures %s', async (_label, request) => {
     const req = request();
 
     expect(await gate(req)).toEqual({ decision: secure(req), secureCalls: 1 });
+  });
+
+  it.each(REQUESTED_SITE_CASES)('admits $who only when it administers that site', async ({ request, administers }) => {
+    const req = request(FEEDS);
+
+    expect(await gate(req)).toEqual(
+      administers ? { decision: { kind: 'allow' }, secureCalls: 0 } : { decision: secure(req), secureCalls: 1 },
+    );
   });
 });
 

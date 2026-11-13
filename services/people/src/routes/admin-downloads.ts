@@ -1,15 +1,16 @@
 // The users CSV downloads of the cUsers circuit: `cUsers.download` and `cUsers.advancedSearchToCSV`
 // [legacy: admin/core/controllers/cusers.cfc:453-496, admin/core/views/cusers/inc/dsp_download.cfm].
 import type { Opt2RouteConfig, UserClaims } from '@opt2/platform/auth';
-import { cfDateTimeFormat, cfNumberString, cfToBoolean, legacyQuery, legacyUsersCsv, type LegacyQuery } from '@opt2/platform/legacy-compat';
+import { cfToBoolean, legacyUsersCsvStream } from '@opt2/platform/legacy-compat';
 import { legacyParamsOf, sendLegacyResponse, type FastifyInstance, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
 import {
-  getAdvancedSearch,
-  getUnassignedUsers,
-  getUsers,
+  getAdvancedSearchStream,
+  getUnassignedUsersStream,
+  getUsersStream,
   newAdvancedSearchCriteria,
   type AdvancedSearchCriteria,
   type SearchDeps,
+  type StreamedQuery,
 } from '../domain/search.js';
 import type { operations } from '../generated/openapi.js';
 import {
@@ -38,39 +39,6 @@ type DownloadAdvancedSearchQuery = NonNullable<operations['downloadAdvancedSearc
 
 const ROUTE_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', requires: CUSERS_ROUTE_REQUIRES });
 
-/** A datetime cell as ACF renders a `java.sql.Timestamp`: `yyyy-mm-dd HH:nn:ss.f`, trailing fraction zeros dropped. */
-function timestampText(value: Date): string {
-  // The first fraction digit always stays, so `.000` reads `.0` and `.370` reads `.37`.
-  return cfDateTimeFormat(value, 'yyyy-mm-dd HH:nn:ss.lll').replace(/0{1,2}$/, '');
-}
-
-/**
- * A query cell as ACF renders it in string context; NULL reads as ''.
- * @throws TypeError For a complex value, which ACF cannot convert to a simple value either.
- */
-function cellText(value: unknown): string {
-  if (value === null || value === undefined) return '';
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number') return cfNumberString(value);
-  if (value instanceof Date) return timestampText(value);
-  throw new TypeError('Complex object types cannot be converted to simple values.');
-}
-
-/**
- * The query as `setDownloadData` reads it on ACF: `columnList` upper-cased and sorted by code unit, which is also the order
- * the row cells follow, with every cell already rendered as text.
- */
-function acfQuery(query: LegacyQuery): LegacyQuery {
-  const columns = query.columnList
-    .map((name) => ({ name, upper: name.toUpperCase() }))
-    .sort((a, b) => (a.upper < b.upper ? -1 : a.upper > b.upper ? 1 : 0));
-  const rows = query.rows.map((row) => Object.fromEntries(columns.map(({ name, upper }) => [upper, cellText(row[name])])));
-  return legacyQuery(
-    columns.map(({ upper }) => upper),
-    rows,
-  );
-}
-
 /** The cUsers `before()` prologue: the admitted caller and its scrubbed request context, or the denial `secure()` answers. */
 function cusersPrologue(request: FastifyRequest): { claims: UserClaims; rc: CusersContext } | AdminDenial {
   const claims = requireCusersAccess(request);
@@ -78,9 +46,12 @@ function cusersPrologue(request: FastifyRequest): { claims: UserClaims; rc: Cuse
   return { claims, rc: normaliseCusersParams(legacyParamsOf(request), claims) };
 }
 
-/** Answers `dsp_download.cfm`: the users CSV of `query` with the legacy download headers. */
-function sendUsersCsv(reply: FastifyReply, query: LegacyQuery): FastifyReply {
-  const { body, headers } = legacyUsersCsv(acfQuery(query));
+/**
+ * Answers `dsp_download.cfm`: the users CSV of `query` as ACF reads it, its rows read batch by batch as the body is sent.
+ * A row failing in the first batch answers the error response; a later one aborts the body already being sent.
+ */
+async function sendUsersCsv(reply: FastifyReply, query: StreamedQuery): Promise<FastifyReply> {
+  const { body, headers } = await legacyUsersCsvStream(query.columnList, query.rows);
   return sendLegacyResponse(reply, { status: 200, headers, body });
 }
 
@@ -94,8 +65,8 @@ export async function registerAdminDownloadRoutes(app: FastifyInstance, deps: Ad
     const viewer = viewerScopeFor(claims);
     const args = { siteid: rc.siteid, ispublic: rc.ispublic };
     const users = cfToBoolean(rc.unassigned)
-      ? await getUnassignedUsers(deps.search, viewer, args)
-      : await getUsers(deps.search, viewer, args);
+      ? await getUnassignedUsersStream(deps.search, viewer, args)
+      : await getUsersStream(deps.search, viewer, args);
     return sendUsersCsv(reply, users);
   });
 
@@ -110,7 +81,7 @@ export async function registerAdminDownloadRoutes(app: FastifyInstance, deps: Ad
       // Legacy runs `getAdvancedSearch(session, …)`: the criteria are the session's as `setAdvancedSearch` stored them, never
       // this request's fields, and a session that stored none holds admin start-up's defaults.
       const criteria = (await deps.searchCriteria.read(claims)) ?? newAdvancedSearchCriteria();
-      const users = await getAdvancedSearch(deps.search, viewerScopeFor(claims), criteria, { siteid: rc.siteid, isPublic: rc.ispublic });
+      const users = await getAdvancedSearchStream(deps.search, viewerScopeFor(claims), criteria, { siteid: rc.siteid, isPublic: rc.ispublic });
       return sendUsersCsv(reply, users);
     },
   );

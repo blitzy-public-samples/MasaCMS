@@ -13,7 +13,8 @@ const LIST_REDIRECT: SubmitResult = Object.freeze({
 });
 
 // Bean errors take no redirect and cchain has no save view, so legacy answers its 500 page, not an edit re-render.
-// It is error.html, as the admin error surface sends; legacy's debuggingEnabled stack-trace page is not reproducible.
+// It is error.html, as the admin error surface sends; legacy's debuggingEnabled stack-trace page is not reproducible
+// (EX-ADMIN-DEBUGPAGE).
 const MISSING_VIEW_ERROR: SubmitResult = Object.freeze({
   kind: 'raw',
   response: Object.freeze({ status: 500, contentType: LEGACY_HTML_CONTENT_TYPE, body: LEGACY_ERROR_PAGE_HTML }),

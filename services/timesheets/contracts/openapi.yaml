@@ -8,12 +8,14 @@ info:
 servers:
   - url: http://127.0.0.1:8118
     description: Local service
-x-opt2-calls: []
+x-opt2-calls: [identity, reporting]
 tags:
   - name: fixture
     description: Fixture routes, answered as `legacy-fixtures/cfml/modules/timesheets.cfc` answers them.
   - name: v1
     description: JSON API of the OPT-2 timesheets screens and reporting; a breaking change takes a /v2/ prefix.
+  - name: internal
+    description: Service-to-service reads of reporting's export runs.
   - name: events
     description: Pub/Sub push deliveries of the consumed topics.
   - name: migration
@@ -25,6 +27,7 @@ paths:
     parameters:
       - $ref: '#/components/parameters/SiteId'
       - $ref: '#/components/parameters/UseDataNamespace'
+      - $ref: '#/components/parameters/MethodOverride'
     get:
       operationId: fixtureListSheets
       summary: Lists one page of the site's sheets with status, overdue flag and day counts as of `asOf`.
@@ -53,6 +56,44 @@ paths:
           $ref: '#/components/responses/FixtureUnauthorized'
         '403':
           $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: fixtureListSheetsByPost
+      summary: Answers as `fixtureListSheets` when `X-HTTP-Method-Override` is `GET`.
+      description: Any other effective method answers 404 `notFound`.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - timesheets.employee
+        - timesheets.primary-approver
+        - timesheets.secondary-approver
+      x-opt2-route-keys: ['fixture:timesheets/sheets@get']
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/AsOf'
+        - $ref: '#/components/parameters/PageIndex'
+        - $ref: '#/components/parameters/ItemsPerPage'
+      requestBody:
+        $ref: '#/components/requestBodies/FixtureMergedFields'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureSheetListOk'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
         '500':
           $ref: '#/components/responses/FixtureServerError'
         '503':
@@ -62,6 +103,7 @@ paths:
       - $ref: '#/components/parameters/Id'
       - $ref: '#/components/parameters/SiteId'
       - $ref: '#/components/parameters/UseDataNamespace'
+      - $ref: '#/components/parameters/MethodOverride'
     get:
       operationId: fixtureGetSheet
       summary: Reads one sheet of the site with its status fields as of `asOf` and its days.
@@ -93,11 +135,46 @@ paths:
           $ref: '#/components/responses/FixtureServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: fixtureGetSheetByPost
+      summary: Answers as `fixtureGetSheet` when `X-HTTP-Method-Override` is `GET`.
+      description: Any other effective method answers 404 `notFound`.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - timesheets.employee
+        - timesheets.primary-approver
+        - timesheets.secondary-approver
+      x-opt2-route-keys: ['fixture:timesheets/sheets/{id}@get']
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/AsOf'
+      requestBody:
+        $ref: '#/components/requestBodies/FixtureMergedFields'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureSheetOk'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /legacy-fixtures/cfml/api.cfm/timesheets/sheets/{id}/status:
     parameters:
       - $ref: '#/components/parameters/Id'
       - $ref: '#/components/parameters/SiteId'
       - $ref: '#/components/parameters/UseDataNamespace'
+      - $ref: '#/components/parameters/MethodOverride'
     get:
       operationId: fixtureGetSheetStatus
       summary: Reads the sheet's `usp_timesheet_status` row as of `asOf`.
@@ -129,12 +206,93 @@ paths:
           $ref: '#/components/responses/FixtureServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: fixtureGetSheetStatusByPost
+      summary: Answers as `fixtureGetSheetStatus` when `X-HTTP-Method-Override` is `GET`.
+      description: Any other effective method answers 404 `notFound`.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - timesheets.employee
+        - timesheets.primary-approver
+        - timesheets.secondary-approver
+      x-opt2-route-keys: ['fixture:timesheets/sheets/{id}/status@get']
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/AsOf'
+      requestBody:
+        $ref: '#/components/requestBodies/FixtureMergedFields'
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureSheetStatusOk'
+        '400':
+          $ref: '#/components/responses/FixtureBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /legacy-fixtures/cfml/api.cfm/timesheets/days/{id}/{action}:
     parameters:
       - $ref: '#/components/parameters/Id'
       - $ref: '#/components/parameters/Action'
       - $ref: '#/components/parameters/SiteId'
       - $ref: '#/components/parameters/UseDataNamespace'
+      - $ref: '#/components/parameters/MethodOverride'
+    get:
+      operationId: fixtureDayActionByGet
+      summary: Answers as `fixtureDayAction` when `X-HTTP-Method-Override` is `POST`, CSRF check included.
+      description: Any other effective method answers 404 `notFound` and changes nothing.
+      tags:
+        - fixture
+      x-opt2-transport: service
+      x-opt2-requires:
+        - timesheets.employee
+        - timesheets.primary-approver
+        - timesheets.secondary-approver
+      x-opt2-route-keys:
+        - 'fixture:timesheets/days/{id}/submit@post'
+        - 'fixture:timesheets/days/{id}/primary-approve@post'
+        - 'fixture:timesheets/days/{id}/secondary-approve@post'
+        - 'fixture:timesheets/days/{id}/return@post'
+        - 'fixture:timesheets/days/{id}/resubmit@post'
+      security:
+        - userToken: []
+          invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
+        - name: comment
+          in: query
+          required: false
+          description: Optional audit comment.
+          schema:
+            type: string
+      responses:
+        '200':
+          $ref: '#/components/responses/FixtureDayActionOk'
+        '400':
+          $ref: '#/components/responses/FixtureWriteBadRequest'
+        '401':
+          $ref: '#/components/responses/FixtureUnauthorized'
+        '403':
+          $ref: '#/components/responses/FixtureForbidden'
+        '404':
+          $ref: '#/components/responses/FixtureNotFound'
+        '409':
+          $ref: '#/components/responses/FixtureConflict'
+        '500':
+          $ref: '#/components/responses/FixtureServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
     post:
       operationId: fixtureDayAction
       summary: Applies a day lifecycle action, records its approval action and returns the day.
@@ -276,6 +434,9 @@ paths:
       security:
         - userToken: []
           invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
       requestBody:
         required: false
         content:
@@ -294,6 +455,7 @@ paths:
                 $ref: '#/components/schemas/DayActionResult'
         '400':
           $ref: '#/components/responses/BadRequest'
+          description: 'Legacy 400: `invalidTokens` (`Invalid CSRF tokens`) without a valid CSRF token of the day id context, `invalidParameters` or `badRequest`.'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -309,8 +471,8 @@ paths:
   /v1/timesheets/sheet-status:
     get:
       operationId: listSheetStatus
-      summary: Lists the tenant's sheet status rows as of `asOf` for reporting exports.
-      description: Rows are shaped like `tvf_timesheet_status` and ordered by period start, person id and sheet id.
+      summary: Lists the tenant's sheet status rows as of `asOf`, every row or one page.
+      description: Rows are shaped like `tvf_timesheet_status` and ordered by period start, person id and sheet id. Without `pageIndex` and `itemsPerPage` the answer holds every row of the tenant and no `total`; with either, it holds one page and `total`.
       tags:
         - v1
       x-opt2-transport: service
@@ -323,9 +485,11 @@ paths:
           invocationCredential: []
       parameters:
         - $ref: '#/components/parameters/AsOf'
+        - $ref: '#/components/parameters/StatusPageIndex'
+        - $ref: '#/components/parameters/StatusItemsPerPage'
       responses:
         '200':
-          description: The tenant's sheet status rows.
+          description: Every sheet status row of the tenant, or one page of them and the count of its sheets.
           content:
             application/json:
               schema:
@@ -340,6 +504,62 @@ paths:
           $ref: '#/components/responses/ServerError'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /internal/v1/timesheets/sheet-status:
+    get:
+      operationId: listExportSheetStatus
+      summary: One page of the sheet status rows of a running reporting export job's tenant, as of `asOf`.
+      description: Reporting's export runs act as System and send no user token. The tenant is the one this service's registry gives `siteId`, served only once reporting's `getExportSourceScope` answers that its job `exportId` is stored under that tenant and site, reads `timesheets.sheets` and is `running` under `claim`. Rows are shaped and ordered as `listSheetStatus` pages them.
+      tags:
+        - internal
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:reporting
+      security:
+        - invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/ExportId'
+        - $ref: '#/components/parameters/ExportSiteId'
+        - $ref: '#/components/parameters/ExportClaim'
+        - name: asOf
+          in: query
+          required: true
+          description: Business date for the overdue flag; a non-calendar date or one before 1753 answers 400.
+          schema:
+            $ref: '#/components/schemas/LocalDate'
+        - name: pageIndex
+          in: query
+          required: true
+          description: Page to answer, from 1.
+          schema:
+            type: integer
+            minimum: 1
+        - name: itemsPerPage
+          in: query
+          required: true
+          description: Page size.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+      responses:
+        '200':
+          description: One page of the tenant's sheet status rows and the count of its sheets.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportSheetStatusPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+          description: The caller is not reporting, or reporting does not confirm the export scope the read names.
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: Reporting answered 5xx or could not be reached.
   /internal/v1/events/timesheets.people.person.archived.v1:
     post:
       operationId: pushPersonArchived
@@ -792,6 +1012,13 @@ components:
       description: '`false` moves the keys of a struct `data` to the envelope root.'
       schema:
         type: string
+    MethodOverride:
+      name: X-HTTP-Method-Override
+      in: header
+      required: false
+      description: HTTP method the fixture dispatches on instead of the request method, ignoring case; an empty value is ignored.
+      schema:
+        type: string
     PageIndex:
       name: pageIndex
       in: query
@@ -809,6 +1036,44 @@ components:
         minimum: 1
         maximum: 1000
         default: 50
+    StatusPageIndex:
+      name: pageIndex
+      in: query
+      required: false
+      description: Page to answer, from 1; 1 when only `itemsPerPage` is given. Omitting both paging parameters answers every row unpaged.
+      schema:
+        type: integer
+        minimum: 1
+    StatusItemsPerPage:
+      name: itemsPerPage
+      in: query
+      required: false
+      description: Page size; 1000 when only `pageIndex` is given. Omitting both paging parameters answers every row unpaged.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+    ExportId:
+      name: exportId
+      in: query
+      required: true
+      description: Reporting export job whose run sends the read.
+      schema:
+        $ref: '#/components/schemas/CfUuid'
+    ExportSiteId:
+      name: siteId
+      in: query
+      required: true
+      description: Legacy site id of the export job.
+      schema:
+        $ref: '#/components/schemas/SiteId'
+    ExportClaim:
+      name: claim
+      in: query
+      required: true
+      description: Row version the export job's run claimed it at.
+      schema:
+        $ref: '#/components/schemas/DigitString'
     AsOf:
       name: asOf
       in: query
@@ -873,6 +1138,17 @@ components:
       description: Page size, 1 to 10000; 1000 when omitted.
       schema:
         $ref: '#/components/schemas/DigitString'
+  requestBodies:
+    FixtureMergedFields:
+      required: false
+      description: Optional query fields sent as a form or JSON body, merged over the query string as legacy merges url, form and a JSON body.
+      content:
+        application/x-www-form-urlencoded:
+          schema:
+            type: object
+        application/json:
+          schema:
+            type: object
   responses:
     FixtureSheetListOk:
       description: One page of the site's sheet status rows.
@@ -1065,7 +1341,7 @@ components:
                             const: Insufficient Account Permissions
               - $ref: '#/components/schemas/LegacyErrorEnvelope'
     FixtureNotFound:
-      description: Fixture 404 `notFound` for a sheet or day outside the site, or an unknown day action.
+      description: Fixture 404 `notFound` for a sheet or day outside the site, an unknown day action, or an effective method (after `X-HTTP-Method-Override`) the path does not dispatch on.
       headers:
         Generator:
           $ref: '#/components/headers/Generator'
@@ -1790,6 +2066,26 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SheetStatusRow'
+        total:
+          type: integer
+          minimum: 0
+          description: Count of every sheet of the tenant; present only on a paged read.
+    ExportSheetStatusPage:
+      type: object
+      description: One page of a tenant's sheet status rows for a reporting export read.
+      required:
+        - items
+        - total
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SheetStatusRow'
+        total:
+          type: integer
+          minimum: 0
+          description: Count of every sheet of the tenant.
     DayActionInput:
       type: object
       description: Optional audit comment stored on the approval action.

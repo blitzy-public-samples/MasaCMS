@@ -20,6 +20,7 @@ import {
 } from '@opt2/platform/migration-kit';
 import { SERVICE_CALL_TIMEOUT_MS, type ServiceClient, type ServiceRequest, type ServiceResponse } from '@opt2/platform/service-kit';
 import { callQueueControl, type QueueControlOp, type QueueControlResult } from '@opt2/platform/tasks';
+import type { paths as financePaths } from '../generated/clients/finance.js';
 import type { components, paths } from '../generated/clients/strategies-content.js';
 import type { DataOwner, UnitCatalog } from './units.js';
 
@@ -29,12 +30,13 @@ const CHANGES_PATH = `${MIGRATION_PATH_PREFIX}/changes`;
 const POSITION_PATH = `${MIGRATION_PATH_PREFIX}/position`;
 const WATERMARK_PATH = `${MIGRATION_PATH_PREFIX}/watermark`;
 const GATE_PATH = `${MIGRATION_PATH_PREFIX}/gate`;
-const OBJECTS_PATH = '/internal/v1/migration/objects' satisfies keyof paths;
+const OBJECTS_PATH = '/internal/v1/migration/objects' satisfies keyof paths & keyof financePaths;
 const SITEMONITOR_STATE_PATH = '/internal/v1/sitemonitor/state';
 const ADOPT_TASKS_PATH = '/internal/v1/migration/adopt-scheduled-tasks';
 const CANCEL_ADOPTED_TASKS_PATH = '/internal/v1/migration/cancel-adopted-scheduled-tasks';
 
 const CONTENT: DataOwner = 'strategies-content';
+const FINANCE: DataOwner = 'finance';
 const PROGRAMS_SITES: DataOwner = 'programs-sites';
 const COMMUNICATIONS: DataOwner = 'communications';
 
@@ -49,6 +51,9 @@ export type PutObjectParams = paths[typeof OBJECTS_PATH]['post']['parameters']['
 
 /** Query of strategies-content's object read: the `content-files` key `<tenantId>/<fileId><variant>.<ext>`. */
 type GetObjectParams = paths[typeof OBJECTS_PATH]['get']['parameters']['query'];
+
+/** Query of finance's attachment object read: the attachment row's tenant and CF UUID. */
+export type GetAttachmentObjectParams = financePaths[typeof OBJECTS_PATH]['get']['parameters']['query'];
 
 /** An apply answer with the write positions its response header reported. */
 export type ApplyResult = ApplyResponse & { writePositions: WritePositions };
@@ -144,12 +149,17 @@ export interface OwnersClient {
   watermark(owner: DataOwner, legacyTable: string, direction: WatermarkDirection): Promise<WatermarkRecord | null>;
   /** Stores a watermark and returns it as stored. */
   putWatermark(owner: DataOwner, record: WatermarkWrite): Promise<WatermarkRecord>;
-  /** Closes, re-phases, opens or reads unit gates. @throws GateConflict when the owner refuses the holder compare-and-set. */
-  gate(owner: DataOwner, req: GateRequest): Promise<GateResponse>;
+  /**
+   * Closes, re-phases, opens or reads unit gates; `options.timeoutMs` bounds the whole call instead of the owner's gate wait
+   * plus the call bound. @throws GateConflict when the owner refuses the holder compare-and-set.
+   */
+  gate(owner: DataOwner, req: GateRequest, options?: { timeoutMs?: number }): Promise<GateResponse>;
   /** Stores one legacy file-store object in strategies-content's `content-files`. */
   putObject(params: PutObjectParams, bytes: Uint8Array): Promise<PutObjectResult>;
   /** Streams the bytes of one stored `content-files` object by its key. */
   getObject(key: string): Promise<Readable>;
+  /** Streams the stored `finance-attachments` bytes of one finance attachment. */
+  getAttachmentObject(params: GetAttachmentObjectParams): Promise<Readable>;
   /** Reads programs-sites' site-monitor cursor. */
   siteMonitorState(): Promise<SiteMonitorState>;
   /** Seeds programs-sites' site-monitor cursor. */
@@ -308,8 +318,9 @@ export function createOwnersClient(options: CreateOwnersClientOptions): OwnersCl
       return (await call<WatermarkRecord>(owner, 'POST', WATERMARK_PATH, { json })).body;
     },
 
-    async gate(owner, req) {
-      return (await call<GateResponse>(owner, 'POST', GATE_PATH, { json: req, timeoutMs: gateCallTimeoutMs(req) })).body;
+    async gate(owner, req, options = {}) {
+      const timeoutMs = options.timeoutMs ?? gateCallTimeoutMs(req);
+      return (await call<GateResponse>(owner, 'POST', GATE_PATH, { json: req, timeoutMs })).body;
     },
 
     async putObject(params, bytes) {
@@ -325,6 +336,11 @@ export function createOwnersClient(options: CreateOwnersClientOptions): OwnersCl
       const query: GetObjectParams = { key };
       // Streamed undecoded, so an object stored as JSON or text keeps its exact bytes.
       return (await call<Readable>(CONTENT, 'GET', OBJECTS_PATH, { query, stream: true })).body;
+    },
+
+    async getAttachmentObject(params) {
+      const query: GetAttachmentObjectParams = { tenantId: params.tenantId, attachmentId: params.attachmentId };
+      return (await call<Readable>(FINANCE, 'GET', OBJECTS_PATH, { query, stream: true })).body;
     },
 
     async siteMonitorState() {

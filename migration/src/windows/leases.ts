@@ -17,12 +17,16 @@ export interface LeaseRow {
   acquiredAt: Date;
 }
 
-/** Input of {@link acquireLeases}; `budgetMs` bounds the wait for units other holders own, `sleep` replaces the timer in tests. */
+/**
+ * Input of {@link acquireLeases}; `budgetMs` bounds the wait for units other holders own, `signal` aborts its transactions,
+ * `sleep` replaces the timer in tests.
+ */
 export interface AcquireLeasesInput {
   units: string[];
   holderId: string;
   kind: LeaseKind;
   budgetMs: number;
+  signal?: AbortSignal;
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -105,16 +109,18 @@ function tryAcquire(ctx: AcquireContext, units: string[], input: AcquireLeasesIn
       [input.holderId, input.kind, ctx.clock.now(), missing],
     );
     return [...held.rows, ...inserted.rows].map(toLeaseRow).sort(byUnit);
-  });
+  }, { signal: input.signal });
 }
 
-/** Holders other than `holderId` of any of `units`, sorted. */
-async function otherHolders(ctx: LeaseContext, units: string[], holderId: string): Promise<string[]> {
-  const { rows } = await ctx.db.withMetadata((tx) =>
-    tx.query<{ holder_id: string }>(
-      `SELECT DISTINCT holder_id FROM ${leaseTable(tx)} WHERE unit = ANY($1::text[]) AND holder_id <> $2`,
-      [units, holderId],
-    ),
+/** Holders other than `holderId` of any of `units`, sorted; `signal` aborts the read. */
+async function otherHolders(ctx: LeaseContext, units: string[], holderId: string, signal?: AbortSignal): Promise<string[]> {
+  const { rows } = await ctx.db.withMetadata(
+    (tx) =>
+      tx.query<{ holder_id: string }>(
+        `SELECT DISTINCT holder_id FROM ${leaseTable(tx)} WHERE unit = ANY($1::text[]) AND holder_id <> $2`,
+        [units, holderId],
+      ),
+    { signal },
   );
   return rows.map((row) => row.holder_id).sort();
 }
@@ -139,7 +145,12 @@ export async function acquireLeases(ctx: AcquireContext, input: AcquireLeasesInp
     if (remainingMs <= 0) break;
     await sleep(Math.min(LEASE_RETRY_INTERVAL_MS, remainingMs));
   }
-  throw new LeaseUnavailableError(units, input.holderId, await otherHolders(ctx, units, input.holderId));
+  // The budget and the signal end together, so an aborted lookup still reports the units as unavailable.
+  const holders = await otherHolders(ctx, units, input.holderId, input.signal).catch((error: unknown) => {
+    if (input.signal?.aborted === true) return [];
+    throw error;
+  });
+  throw new LeaseUnavailableError(units, input.holderId, holders);
 }
 
 /** Deletes every lease of `holderId`; call only after every gate it closed is reopened or reset. @returns the number released. */

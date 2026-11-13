@@ -18,12 +18,13 @@ export {
   UnlistedProducerError,
   ownerDrainCounts,
   isDrained,
+  drainParticipants,
   awaitDrained,
 } from './drain.js';
 export type { OwnerDrainCounts, DrainRole, AwaitDrainedOptions, DrainResult, CheckedOwner, DrainContext } from './drain.js';
 
-export { queueControlTargets, drainAndSuspend } from './suspend.js';
-export type { QueueTarget, DrainAndSuspendContext, DrainAndSuspendOptions, DrainAndSuspendResult } from './suspend.js';
+export { InvocationsRunningError, OrphanedWritesError, queueControlTargets, drainAndSuspend } from './suspend.js';
+export type { QueueTarget, RunningQueue, DrainAndSuspendContext, DrainAndSuspendOptions, DrainAndSuspendResult } from './suspend.js';
 
 export { ResumeReconcileError, resume } from './resume.js';
 export type { ResumeContext, ResumeOptions, ResumeResult } from './resume.js';

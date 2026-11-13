@@ -29,6 +29,8 @@ const GRANT_INSERT = /^INSERT INTO "?surveys"?\."?tenant_grant"?/;
 const GRANT_READ = /\bFROM "?surveys"?\."?tenant_grant"?/;
 const TARGET_INSERT = /^INSERT INTO "?surveys"?\."?survey_target"?/;
 const RESPONSE_INSERT = /^INSERT INTO "?surveys"?\."?survey_response"?/;
+const SURVEY_INSERT = /^INSERT INTO "?surveys"?\."?survey"? /;
+const UNKNOWN_SURVEY_ID = '00000000-0000-0000-0000000000000000';
 
 describe('survey-response grants and multi-site responses through the fixture routes', () => {
   let harness: TestApp<RecordingDb>;
@@ -93,6 +95,11 @@ describe('survey-response grants and multi-site responses through the fixture ro
       .map(({ grantor_tenant, grantee_tenant, kind, resource_id }) => ({ grantor_tenant, grantee_tenant, kind, resource_id }));
   }
 
+  /** Tenant A's own `survey-response` grant on its survey `surveyId`. */
+  function ownGrant(surveyId: string): Row {
+    return { grantor_tenant: TENANT_A.tenantId, grantee_tenant: TENANT_A.tenantId, kind: 'survey-response', resource_id: surveyId };
+  }
+
   /** Transactions recorded from index `from` on, optionally only those that ran a statement matching `pattern`. */
   function transactionsSince(from: number, pattern?: RegExp): RecordedTransaction[] {
     return harness.db.transactions
@@ -104,6 +111,18 @@ describe('survey-response grants and multi-site responses through the fixture ro
     return new Set(transactionsSince(from).map((tx) => tx.tenantId));
   }
 
+  it('grants the survey tenant its own survey-response grant in the transaction that creates the survey', async () => {
+    const from = harness.db.transactions.length;
+
+    const surveyId = await createSurvey('Pulse');
+
+    expect(grants()).toEqual([ownGrant(surveyId)]);
+    const writes = transactionsSince(from, GRANT_INSERT);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ tenantId: TENANT_A.tenantId, committed: true });
+    expect(writes[0]?.statements.some((statement) => SURVEY_INSERT.test(statement.text))).toBe(true);
+  });
+
   describe('bulk targeting', () => {
     it('refuses a target list naming a site outside the registry and stores no target or grant for any site', async () => {
       const surveyId = await createSurvey('Pulse');
@@ -114,7 +133,7 @@ describe('survey-response grants and multi-site responses through the fixture ro
       expect(res.statusCode).toBe(400);
       expect(res.json<FixtureBody>().error).toEqual(INVALID_PARAMETERS);
       expect(harness.db.rows('survey_target')).toEqual([]);
-      expect(grants()).toEqual([]);
+      expect(grants()).toEqual([ownGrant(surveyId)]);
     });
 
     it('grants only the targeted site of another tenant, in the transaction that stores the targets', async () => {
@@ -129,6 +148,7 @@ describe('survey-response grants and multi-site responses through the fixture ro
       expect(targets.map((row) => row.siteid).sort()).toEqual([TENANT_A.siteId, TENANT_B.siteId]);
       expect(targets.every((row) => row.tenant_id === TENANT_A.tenantId && row.survey_id === surveyId)).toBe(true);
       expect(grants()).toEqual([
+        ownGrant(surveyId),
         { grantor_tenant: TENANT_A.tenantId, grantee_tenant: TENANT_B.tenantId, kind: 'survey-response', resource_id: surveyId },
       ]);
       const writes = transactionsSince(from, GRANT_INSERT);
@@ -145,7 +165,7 @@ describe('survey-response grants and multi-site responses through the fixture ro
       expect(res.statusCode).toBe(200);
       expect(res.json<FixtureBody>().data).toEqual({ inserted: 0, total: 2 });
       expect(harness.db.rows('survey_target')).toHaveLength(2);
-      expect(grants()).toHaveLength(1);
+      expect(grants()).toHaveLength(2);
     });
   });
 
@@ -178,15 +198,18 @@ describe('survey-response grants and multi-site responses through the fixture ro
       expect(writes[0]).toMatchObject({ tenantId: TENANT_A.tenantId, committed: true });
     });
 
-    it('answers notFound for another tenant survey it holds no grant on, probing no tenant but its own', async () => {
+    it.each([
+      ['forbidden', 403, 'another tenant survey it holds no grant on', FORBIDDEN, false],
+      ['notFound', 404, 'a survey id stored in no tenant', NOT_FOUND, true],
+    ])('answers %s with %i for %s, probing no tenant but its own', async (_type, status, _label, error, unknown) => {
       await targetedSurvey();
-      const ungranted = await createSurvey('Closed');
+      const ungranted = unknown ? UNKNOWN_SURVEY_ID : await createSurvey('Closed');
       const from = harness.db.transactions.length;
 
       const res = await respond(ungranted, respondentB);
 
-      expect(res.statusCode).toBe(404);
-      expect(res.json<FixtureBody>().error).toEqual(NOT_FOUND);
+      expect(res.statusCode).toBe(status);
+      expect(res.json()).toEqual({ apiversion: 'v1', method: 'surveys.surveys.responses', error });
       expect(tenantsSince(from)).toEqual(new Set([null, TENANT_B.tenantId]));
       expect(transactionsSince(from, GRANT_READ).every((tx) => tx.tenantId === null)).toBe(true);
       expect(transactionsSince(from, GRANT_READ)).not.toHaveLength(0);

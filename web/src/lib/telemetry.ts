@@ -23,6 +23,7 @@ export function createWebLogger(destination?: CreateLoggerOptions['destination']
     service: 'web',
     version: WEB_VERSION,
     env: env.OPT2_ENV,
+    level: env.LOG_LEVEL,
     googleCloudProject: env.GOOGLE_CLOUD_PROJECT,
     destination,
   });

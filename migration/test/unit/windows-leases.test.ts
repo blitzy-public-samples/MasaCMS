@@ -293,6 +293,32 @@ describe('acquireLeases', () => {
     expect(table.holderOf('identity.account')).toBe('tr-1');
   });
 
+  it('passes its signal to every transaction and reports the units unavailable when the signal ends the holder lookup', async () => {
+    const table = new LeaseTable();
+    table.seed('identity.account', 'tr-1', 'transition', T0);
+    const controller = new AbortController();
+    const inner = table.db();
+    const signals: (AbortSignal | undefined)[] = [];
+    // The signal aborts as the budget ends, between the last attempt and the holder lookup.
+    const db: TenantDb = {
+      ...inner,
+      withMetadata: (fn, options) => {
+        signals.push(options?.signal);
+        if (signals.length === 2) controller.abort(new Error('open budget over'));
+        return options?.signal?.aborted === true ? Promise.reject(options.signal.reason as Error) : inner.withMetadata(fn, options);
+      },
+    };
+
+    const error = await acquireLeases(
+      { db, clock: manualClock() },
+      { units: ['identity.account'], holderId: 'win-1', kind: 'window', budgetMs: 0, signal: controller.signal },
+    ).catch((caught: unknown) => caught);
+
+    expect(signals).toEqual([controller.signal, controller.signal]);
+    expect(error).toBeInstanceOf(LeaseUnavailableError);
+    expect(error).toMatchObject({ units: ['identity.account'], holderId: 'win-1', conflictingHolders: [], reason: 'lease-unavailable' });
+  });
+
   it('lets windows on disjoint units hold leases concurrently while shared units exclude a transition', async () => {
     const table = new LeaseTable();
     const ctx = { db: table.db(), clock: manualClock() };

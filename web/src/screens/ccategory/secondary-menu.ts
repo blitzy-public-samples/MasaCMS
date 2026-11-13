@@ -1,6 +1,6 @@
 // Category manager secondary menu of `ccategory/dsp_secondary_menu.cfm`, placed by the list and edit screens (server-only).
 import { html, raw, type SafeHtml } from '@/lib/html';
-import type { AdminRequest } from '@/lib/request-context';
+import { tokenServesSite, type AdminRequest } from '@/lib/request-context';
 import { rbFor } from '@/lib/resource-bundles/rb';
 import { relativeAdminUrl } from '@/lib/urls';
 import type { ShellHooks } from '@/shell/types';
@@ -13,7 +13,16 @@ export function originalFuseactionOf(action: string): string {
   return action.split('.').filter((item) => item !== '').at(-1) ?? '';
 }
 
-/** Renders `div.nav-module-specific`: Add plus, for site admins and S2 users, Permissions on `list`; Back otherwise. */
+// identity mints site-admin for the token's site, while legacy checks getSite(rc.siteid), which answers `default` for
+// an empty id; so the role counts only when the token serves that site. S2 is global.
+/** Membership `Admin;<privateUserPoolID of getSite(rc.siteid)>;0` or `S2`, read from the verified claims. */
+function seesPermissions(ctx: AdminRequest): boolean {
+  return (
+    ctx.isS2 || (ctx.isSiteAdmin && ctx.user !== undefined && tokenServesSite(ctx.user, ctx.rc.siteid || 'default'))
+  );
+}
+
+/** Renders `div.nav-module-specific`: Add, plus Permissions if {@link seesPermissions}, on `list`; Back otherwise. */
 export const ccategorySecondaryMenu: NonNullable<ShellHooks['secondaryMenus']['ccategory']> = (
   ctx: AdminRequest,
 ): SafeHtml => {
@@ -38,7 +47,7 @@ export const ccategorySecondaryMenu: NonNullable<ShellHooks['secondaryMenus']['c
       html`\n\t\t\t\t<a class="btn" title="${addLabel}" href="${categoryHref('edit')}"><i class="mi-plus-circle"></i> ${addLabel}</a>\n\t\t\t`,
     ];
     // `Admin;<private pool>;0` or `S2` membership; legacy's `active` class test cannot match here, leaving `btn `.
-    if (ctx.isSiteAdmin || ctx.isS2) {
+    if (seesPermissions(ctx)) {
       const permHref = raw(
         relativeAdminUrl('cPerm', 'module', [
           ['contentid', CATEGORY_MODULE_ID, 'raw'],

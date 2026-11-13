@@ -1,9 +1,11 @@
 /** Non-image uploads, file version deletes, file metadata and `/_api/render/*` object resolution (Masa fileBean, fileManager and fileDAO, `fileDir` store). */
 import { cfUuid, isCfUuid } from '@opt2/platform/legacy-compat';
-import { withGatedTenant, type WriteContext } from '@opt2/platform/migration-kit';
+import { sha256Hex, withGatedTenant, type WriteContext } from '@opt2/platform/migration-kit';
 import { contentFileKey, type ContentFileVariant, type StoragePort } from '@opt2/platform/storage';
 import { registryEntryForTenant, type TenantTx } from '@opt2/platform/tenancy';
 import { CONTENT_FILES_BUCKET } from '../migration/objects.js';
+import { StagedObjectMissingError, recoverStagedObjects, settleStagedObject, stageObject } from '../migration/staged-objects.js';
+import { claimStagedObject, deleteStagedObject, lockFileObjectKey } from '../repo/files.js';
 import type { ContentFilesDeletion, ContentRepository, Patch } from '../repo/repository.js';
 import type { FileMetadataRow, FileObjectRow, FileRow } from '../repo/tables.js';
 import { writeContextFor, type Actor, type DomainDeps } from './context.js';
@@ -112,8 +114,8 @@ export type StoredUpload =
   | { kind: 'rejected'; fileid: string; filename: string };
 
 /**
- * fileBean.save → fileManager.create → fileDAO.create for a non-image upload: stores the bytes under the site's file
- * pool tenant in `content-files`, then the `content.file` row (siteid = the site's filePoolID) and its object row.
+ * fileBean.save → fileManager.create → fileDAO.create for a non-image upload: in one gated transaction of the site's
+ * file pool tenant, the `content.file` row (siteid = the site's filePoolID), the bytes in `content-files`, then their object row.
  * @throws ImageUploadHaltedError for an image extension; UnregisteredTenantError when the token tenant has no file pool.
  */
 export async function storeUploadedFile(deps: UploadDeps, actor: Actor, args: StoreUploadArgs): Promise<StoredUpload> {
@@ -135,13 +137,26 @@ export async function storeUploadedFile(deps: UploadDeps, actor: Actor, args: St
   const ext = serverExt.toLowerCase();
   const objectKey = contentFileKey({ tenantId: poolTenantId, fileId, variant: '', ext });
   const mime = args.file.contentType;
-  // Bytes before the row: a failed transaction leaves an object without a row, which reconciliation reports as an orphan.
-  const put = await deps.storage.put(CONTENT_FILES_BUCKET, objectKey, args.file.bytes, { contentType: mime });
   const [contentType, contentSubType] = splitMime(mime);
   const write = writeContextFor(actor, args.requestId);
+  await recoverStagedObjects(deps, poolTenantId);
+  const staged = await stageObject(deps, {
+    tenant_id: poolTenantId,
+    object_key: objectKey,
+    kind: 'upload',
+    file_id: fileId,
+    variant: '',
+    ext,
+    size: args.file.bytes.length,
+    sha256: sha256Hex(args.file.bytes),
+    content_type: mime,
+  });
 
-  return withGatedTenant(deps.db, poolTenantId, async (tx) => {
+  return withGatedTenant<StoredUpload>(deps.db, poolTenantId, async (tx) => {
+    await lockFileObjectKey(tx, objectKey);
+    if (!(await claimStagedObject(tx, staged.stage_id))) throw new StagedObjectMissingError(staged.stage_id);
     const now = deps.clock.now();
+    // insertFile takes the content.file write gate, so a legacy or closed gate fails the upload before any bytes exist.
     const file = await deps.repository.files.insertFile(
       tx,
       {
@@ -152,7 +167,7 @@ export async function storeUploadedFile(deps: UploadDeps, actor: Actor, args: St
         filename: args.file.fileName,
         contenttype: contentType,
         contentsubtype: contentSubType,
-        filesize: put.size,
+        filesize: args.file.bytes.length,
         fileext: ext,
         created: now,
         deleted: 0,
@@ -169,6 +184,7 @@ export async function storeUploadedFile(deps: UploadDeps, actor: Actor, args: St
       },
       write,
     );
+    const put = await deps.storage.put(CONTENT_FILES_BUCKET, objectKey, args.file.bytes, { contentType: mime });
     const object = await deps.repository.files.upsertFileObject(
       tx,
       {
@@ -184,7 +200,15 @@ export async function storeUploadedFile(deps: UploadDeps, actor: Actor, args: St
       },
       write,
     );
+    await deleteStagedObject(tx, staged.stage_id);
     return { kind: 'stored', fileid: file.fileid, filename: file.filename ?? '', file, object };
+  }).catch(async (err: unknown) => {
+    try {
+      await settleStagedObject(deps, staged);
+    } catch {
+      // The durable intent remains for recovery; preserve the upload error.
+    }
+    throw err;
   });
 }
 

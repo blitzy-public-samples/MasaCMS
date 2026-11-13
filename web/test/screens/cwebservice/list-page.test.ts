@@ -16,6 +16,7 @@ import {
 } from '@/screens/cwebservice/list';
 import type { ScreenContext } from '@/screens/registry';
 import { CSRF_CWEBSERVICE } from '../../fixtures/identity/csrf';
+import { oauthClients } from '../../fixtures/identity/oauth-clients';
 import { adminS2Request } from '../../helpers/admin-request';
 import { fragmentModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
@@ -134,9 +135,9 @@ describe('cwebservice.list', () => {
   });
 
   describe('loadList', () => {
-    it("lists session.siteid's clients through identity in identity's order", async () => {
+    it("lists session.siteid's clients through identity in identity's order, as one window of 1000", async () => {
       const gateway = fakeGatewayClient({
-        [LIST_ROUTE]: { status: 200, body: { items: [BASIC_CLIENT, CREDENTIALS_CLIENT] } },
+        [LIST_ROUTE]: { status: 200, body: { items: [BASIC_CLIENT, CREDENTIALS_CLIENT], total: 2, nextOffset: null } },
       });
       const req = adminS2Request({
         circuit: 'cwebservice',
@@ -149,8 +150,26 @@ describe('cwebservice.list', () => {
         clients: [BASIC_CLIENT, CREDENTIALS_CLIENT],
       });
       expect(gateway.calls).toEqual([
-        { service: 'identity', method: 'GET', path: LIST_PATH, query: { siteid: 'tenant-a' } },
+        {
+          service: 'identity',
+          method: 'GET',
+          path: LIST_PATH,
+          query: { siteid: 'tenant-a', offset: '0', limit: '1000' },
+        },
       ]);
+    });
+
+    it('lists only the first 1000 clients when the site holds more, as the legacy iterator shows them', async () => {
+      const window = Array.from({ length: 1000 }, (_, n) => ({
+        ...oauthClients[n % oauthClients.length],
+        clientid: `0B000000-0000-0000-${String(n).padStart(16, '0')}`,
+      }));
+      const gateway = fakeGatewayClient({
+        [LIST_ROUTE]: { status: 200, body: { items: window, total: 1003, nextOffset: 1000 } },
+      });
+
+      await expect(loadList(contextFor(adminS2Request(), gateway))).resolves.toEqual({ clients: window });
+      expect(gateway.calls).toHaveLength(1);
     });
 
     it('lists no clients and calls nothing when the session has no site', async () => {

@@ -16,6 +16,7 @@ import {
   type TaskInfo,
   type TaskPort,
 } from '@opt2/platform/tasks';
+import { LOCAL_USER_TOKEN } from '@opt2/platform/auth';
 import { fixedClock, type ServiceClient, type ServiceRequest, type ServiceResponse } from '@opt2/platform/service-kit';
 import { LegacyServiceUnavailableError, cfUuid } from '@opt2/platform/legacy-compat';
 import { GateClosedError, closeGates, ensureUnitGates, openGates, withGatedTenant } from '@opt2/platform/migration-kit';
@@ -32,7 +33,7 @@ import { createExportRunEnqueuer, createExportRunProbe, exportRunTaskName } from
 
 const QUEUE = QUEUES['reporting-export-run'];
 const JOB_ID = '6F0A2C1E-5B7D-4E8A-9C3F0D1E2F3A4B5C';
-const PAYLOAD = { jobId: JOB_ID, asOf: '2026-06-30', userToken: 'requester-token' };
+const PAYLOAD = { jobId: JOB_ID, asOf: '2026-06-30' };
 const CLOCK = fixedClock('2026-06-30T10:00:00.000Z');
 const SERVICE_URLS = { reporting: 'http://127.0.0.1:8116/' };
 
@@ -209,27 +210,39 @@ function sheetRow(timesheetId: string, siteId: string): Record<string, unknown> 
   };
 }
 
-/** Timesheets stub answering each read with `items` when it carries token `accepted` and with 401 otherwise, after `beforeAnswer`; records each read's token. */
+/** The System export read of the timesheets producer. */
+const SHEET_STATUS_PATH = '/internal/v1/timesheets/sheet-status';
+
+/**
+ * Timesheets stub of the System export read: after `beforeAnswer`, answers a read carrying no user token with `status` and, when 200,
+ * the one page `items`; any other read answers 403. Records every read; nothing else may be called.
+ */
 function sheetsClient(
-  accepted: string,
   items: readonly unknown[],
   beforeAnswer: () => Promise<void> = () => Promise.resolve(),
-): { client: ServiceClient; tokens: (string | null | undefined)[] } {
-  const tokens: (string | null | undefined)[] = [];
+  status = 200,
+): { client: ServiceClient; reads: ServiceRequest[] } {
+  const reads: ServiceRequest[] = [];
   const client: ServiceClient = {
     async request<T>(req: ServiceRequest): Promise<ServiceResponse<T>> {
-      if (req.service !== 'timesheets') throw new Error(`unexpected call to ${req.service} ${req.path}`);
-      tokens.push(req.userToken);
+      if (req.service !== 'timesheets' || req.path !== SHEET_STATUS_PATH) throw new Error(`unexpected call to ${req.service} ${req.path}`);
+      reads.push(req);
       await beforeAnswer();
+      const answered = req.userToken === null ? status : 403;
       const response: ServiceResponse =
-        req.userToken === accepted
-          ? { status: 200, headers: { 'content-type': 'application/json' }, body: { items } }
-          : { status: 401, headers: { 'content-type': 'application/json' }, body: { error: 'invalid_token' } };
+        answered === 200
+          ? { status: 200, headers: { 'content-type': 'application/json' }, body: { items, total: items.length } }
+          : { status: answered, headers: { 'content-type': 'application/json' }, body: { error: { code: 'invalid_request', message: 'Insufficient Account Permissions' } } };
       return response as ServiceResponse<T>;
     },
     close: () => Promise.resolve(),
   };
-  return { client, tokens };
+  return { client, reads };
+}
+
+/** The query of a sheet-status page read naming `queued`'s export scope under run claim `claim`. */
+function scopeQuery(queued: QueuedJob, claim: string, pageIndex = '1'): Record<string, string> {
+  return { exportId: queued.job.job_id, siteId: queued.siteId, claim, asOf: '2026-06-30', pageIndex, itemsPerPage: '1000' };
 }
 
 /** A source read held open: `hold` signals `started`, then waits until `release` is called. */
@@ -304,7 +317,7 @@ describe.skipIf(!(await pgAvailable()))('export runner against PostgreSQL', () =
     };
     const job = await createExportJob(
       { db: handle.app, repository, storage, clock: fixedClock(CREATED_AT), enqueue, runScheduled: () => Promise.resolve(true) },
-      { tenantId, siteId, definitionId, format: 'csv', requestedById: cfUuid(), userToken: `requester-token-${String(sites)}`, params: {} },
+      { tenantId, siteId, definitionId, format: 'csv', requestedById: cfUuid(), params: {} },
     );
     const [run] = runs as [Parameters<EnqueueExportRun>[0]];
     return { job, payload: run.payload, siteId };
@@ -361,13 +374,13 @@ describe.skipIf(!(await pgAvailable()))('export runner against PostgreSQL', () =
     expect(head?.size).toBeGreaterThan(0);
   }
 
-  it("runs a queued job to done, reading its source with the requester's token and storing at its claim's attempt key", async () => {
+  it("runs a queued job to done as System, reading its source under the job's export scope and claim with no user token, storing at its claim's attempt key", async () => {
     const queued = await queuedJob();
-    const { client, tokens } = sheetsClient(queued.payload.userToken, [sheetRow('T1', queued.siteId)]);
+    const { client, reads } = sheetsClient([sheetRow('T1', queued.siteId)]);
 
     expect(await deliver(runnerDeps(client), queued)).toStrictEqual({ outcome: 'done', state: 'done' });
 
-    expect(tokens).toStrictEqual([queued.payload.userToken]);
+    expect(reads).toStrictEqual([{ service: 'timesheets', method: 'GET', path: SHEET_STATUS_PATH, query: scopeQuery(queued, '2'), userToken: null }]);
     await expectDoneAt(queued.job, attemptKey(queued.job, 2), { started_at: RUN_AT, finished_at: RUN_AT, row_version: '3' });
     expect((await changelogOf(queued.job)).map((row) => row.op)).toStrictEqual(['insert', 'update', 'update']);
   });
@@ -375,10 +388,12 @@ describe.skipIf(!(await pgAvailable()))('export runner against PostgreSQL', () =
   it('reclaims a job an interrupted delivery left running, restarting it, and runs it to done at its own attempt key', async () => {
     const queued = await queuedJob();
     await claim(queued);
-    const { client } = sheetsClient(queued.payload.userToken, [sheetRow('T1', queued.siteId)]);
+    const { client, reads } = sheetsClient([sheetRow('T1', queued.siteId)]);
 
     expect(await deliver(runnerDeps(client, RERUN_AT), queued)).toStrictEqual({ outcome: 'done', state: 'done' });
 
+    // The read names the reclaim's own claim, so a producer refuses the interrupted delivery's earlier one.
+    expect(reads.map((read) => read.query)).toStrictEqual([scopeQuery(queued, '3')]);
     await expectDoneAt(queued.job, attemptKey(queued.job, 3), { started_at: RERUN_AT, finished_at: RERUN_AT, row_version: '4' });
     const reclaim = (await changelogOf(queued.job))[2];
     expect(reclaim?.op).toBe('update');
@@ -390,7 +405,7 @@ describe.skipIf(!(await pgAvailable()))('export runner against PostgreSQL', () =
     const queued = await queuedJob();
     const holderId = `window-${cfUuid()}`;
     const closeAfterStart = once(() => closeGates(handle.app, { units: [EXPORT_JOB.unit], holderId }));
-    const { client } = sheetsClient(queued.payload.userToken, [sheetRow('T1', queued.siteId)], closeAfterStart);
+    const { client } = sheetsClient([sheetRow('T1', queued.siteId)], closeAfterStart);
 
     const refused: unknown = await deliverWithinBudget(runnerDeps(client), queued).catch((thrown: unknown) => thrown);
     expect(refused).toBeInstanceOf(GateClosedError);
@@ -410,7 +425,7 @@ describe.skipIf(!(await pgAvailable()))('export runner against PostgreSQL', () =
     const takeOver = once(() =>
       withGatedTenant(handle.app, queued.job.tenant_id, (tx) => reclaimRun(tx, repository, { jobId: queued.job.job_id, now: RERUN_AT })),
     );
-    const { client } = sheetsClient(queued.payload.userToken, [sheetRow('T1', queued.siteId)], takeOver);
+    const { client } = sheetsClient([sheetRow('T1', queued.siteId)], takeOver);
 
     const result = await deliver(runnerDeps(client), queued);
 
@@ -424,7 +439,7 @@ describe.skipIf(!(await pgAvailable()))('export runner against PostgreSQL', () =
     const queued = await queuedJob();
     const [first, second] = [heldRead(), heldRead()];
     const deliveryOf = (timesheetId: string, hold?: () => Promise<void>): Promise<RunExportResult> =>
-      deliver(runnerDeps(sheetsClient(queued.payload.userToken, [sheetRow(timesheetId, queued.siteId)], hold).client), queued);
+      deliver(runnerDeps(sheetsClient([sheetRow(timesheetId, queued.siteId)], hold).client), queued);
 
     const stale = deliveryOf('OLD', first.hold);
     await first.started;
@@ -446,28 +461,28 @@ describe.skipIf(!(await pgAvailable()))('export runner against PostgreSQL', () =
     ['failed', 'broken', { state: 'failed', error: 'source-unavailable' }],
   ])('skips a redelivery of a %s job without changing its row or changelog', async (state, source, fields) => {
     const queued = await queuedJob(source);
-    const { client, tokens } = sheetsClient(queued.payload.userToken, [sheetRow('T1', queued.siteId)]);
+    const { client, reads } = sheetsClient([sheetRow('T1', queued.siteId)]);
     await deliver(runnerDeps(client), queued);
     const before = await read(queued.job);
     expect(before).toMatchObject(fields);
     const logged = await changelogOf(queued.job);
-    const reads = tokens.length;
+    const sent = reads.length;
 
     expect(await deliver(runnerDeps(client, RERUN_AT), queued)).toStrictEqual({ outcome: 'skipped', state });
 
     expect(await read(queued.job)).toStrictEqual(before);
     expect(await changelogOf(queued.job)).toStrictEqual(logged);
-    expect(tokens).toHaveLength(reads);
+    expect(reads).toHaveLength(sent);
   });
 
   it('skips a delivery for a job that does not exist', async () => {
     const queued = await queuedJob();
-    const { client, tokens } = sheetsClient(queued.payload.userToken, []);
+    const { client, reads } = sheetsClient([]);
 
     const result = await runExport(runnerDeps(client), { tenantId: queued.job.tenant_id, jobId: cfUuid(), payload: queued.payload });
 
     expect(result).toStrictEqual({ outcome: 'skipped', state: null });
-    expect(tokens).toStrictEqual([]);
+    expect(reads).toStrictEqual([]);
   });
 
   it('fails a job whose definition is gone with export-failed without reading a source', async () => {
@@ -475,36 +490,54 @@ describe.skipIf(!(await pgAvailable()))('export runner against PostgreSQL', () =
     await handle.app.withTenant(queued.job.tenant_id, (tx) =>
       tx.query(`DELETE FROM ${handle.schema}.export_definition WHERE definition_id = $1`, [queued.job.definition_id]),
     );
-    const { client, tokens } = sheetsClient(queued.payload.userToken, []);
+    const { client, reads } = sheetsClient([]);
 
     expect(await deliver(runnerDeps(client), queued)).toStrictEqual({ outcome: 'failed', state: 'failed', error: 'export-failed' });
 
-    expect(tokens).toStrictEqual([]);
+    expect(reads).toStrictEqual([]);
     expect(await read(queued.job)).toMatchObject({ state: 'failed', error: 'export-failed', finished_at: RUN_AT, object_key: null });
   });
 
-  it('fails a job terminally with source-unavailable when the source refuses the expired requester token with 401', async () => {
+  it('runs a job delivered past the local token lifetime after its create to done, its task carrying no credential', async () => {
     const queued = await queuedJob();
-    const { client, tokens } = sheetsClient('a-fresh-token', [sheetRow('T1', queued.siteId)]);
+    const late = new Date(CREATED_AT.getTime() + (LOCAL_USER_TOKEN.lifetimeSeconds + 60) * 1000);
+    const { client, reads } = sheetsClient([sheetRow('T1', queued.siteId)]);
 
-    expect(await deliver(runnerDeps(client), queued)).toStrictEqual({ outcome: 'failed', state: 'failed', error: 'source-unavailable' });
-    expect(await deliver(runnerDeps(client, RERUN_AT), queued)).toStrictEqual({ outcome: 'skipped', state: 'failed' });
+    expect(queued.payload).toStrictEqual({ jobId: queued.job.job_id, asOf: '2026-06-30' });
+    expect(await deliver(runnerDeps(client, late), queued)).toStrictEqual({ outcome: 'done', state: 'done' });
 
-    expect(tokens).toStrictEqual([queued.payload.userToken]);
-    expect(await read(queued.job)).toMatchObject({ state: 'failed', error: 'source-unavailable', finished_at: RUN_AT, object_key: null });
+    expect(reads.map((read) => [read.query, read.userToken])).toStrictEqual([[scopeQuery(queued, '2'), null]]);
+    await expectDoneAt(queued.job, attemptKey(queued.job, 2), { started_at: late, finished_at: late });
   });
 
-  it.each<[string, (queued: QueuedJob) => string, (queued: QueuedJob) => Partial<ExportJobRow>]>([
-    ['done', (queued) => queued.payload.userToken, (queued) => ({ state: 'done', object_key: attemptKey(queued.job, 3) })],
-    ['failed', () => 'a-fresh-token', () => ({ state: 'failed', error: 'source-unavailable', object_key: null })],
+  it.each([
+    ['refuses its export scope with 403', 403],
+    ['answers 404', 404],
+    ['answers 503', 503],
+  ])('fails a job terminally with source-unavailable when the source %s, and a redelivery changes nothing', async (_case, status) => {
+    const queued = await queuedJob();
+    const { client, reads } = sheetsClient([sheetRow('T1', queued.siteId)], undefined, status);
+
+    expect(await deliver(runnerDeps(client), queued)).toStrictEqual({ outcome: 'failed', state: 'failed', error: 'source-unavailable' });
+    const failed = await read(queued.job);
+    expect(await deliver(runnerDeps(client, RERUN_AT), queued)).toStrictEqual({ outcome: 'skipped', state: 'failed' });
+
+    expect(reads).toHaveLength(1);
+    expect(failed).toMatchObject({ state: 'failed', error: 'source-unavailable', finished_at: RUN_AT, object_key: null });
+    expect(await read(queued.job)).toStrictEqual(failed);
+  });
+
+  it.each<[string, number, (queued: QueuedJob) => Partial<ExportJobRow>]>([
+    ['done', 200, (queued) => ({ state: 'done', object_key: attemptKey(queued.job, 3) })],
+    ['failed', 403, () => ({ state: 'failed', error: 'source-unavailable', object_key: null })],
   ])(
     'deletes the outputs an interrupted claim and both slots hold when the next delivery finishes the job %s',
-    async (state, accepted, fields) => {
+    async (state, status, fields) => {
       const queued = await queuedJob();
       await claim(queued);
       const leftovers = [attemptKey(queued.job, 2), ...slotKeys(queued.job)];
       await leaveObjects(leftovers);
-      const { client } = sheetsClient(accepted(queued), [sheetRow('T1', queued.siteId)]);
+      const { client } = sheetsClient([sheetRow('T1', queued.siteId)], undefined, status);
 
       expect(await deliver(runnerDeps(client, RERUN_AT), queued)).toMatchObject({ outcome: state, state });
 
@@ -529,7 +562,6 @@ describe.skipIf(!(await pgAvailable()))('export runner against PostgreSQL', () =
         definitionId: queued.job.definition_id,
         format: 'csv',
         requestedById: cfUuid(),
-        userToken: queued.payload.userToken,
         params: {},
       },
     );

@@ -709,17 +709,26 @@ export async function loadComments(
   const requestedPage = cfVal(scope.get('pageno'));
   if (nextN < 1) nextN = 25;
   return withTenant(deps.db, actor.tenantId, async (tx) => {
-    const all = await deps.repository.comments.commentFeed(tx, args);
-    const window = pageWindow(all.length, nextN, requestedPage);
-    const rows: LoadCommentsRow[] = [];
-    for (const index of window.indexes) {
-      const comment = all[index] as CommentRow;
-      const [content] = await deps.repository.content.readActive(tx, {
-        contentId: javaTrim(comment.contentid ?? ''),
-        siteId: javaTrim(comment.siteid ?? ''),
-      });
-      rows.push({ comment, content: content ?? null });
+    const recordCount = await deps.repository.comments.commentFeedCount(tx, args);
+    const window = pageWindow(recordCount, nextN, requestedPage);
+    // The page's indexes are consecutive, so the page is one LIMIT/OFFSET read in the feed's total order.
+    const [first] = window.indexes;
+    const page = first === undefined ? [] : await deps.repository.comments.commentFeedPage(tx, args, { offset: first, limit: window.indexes.length });
+    const keyed = page.map((comment) => ({ comment, contentId: javaTrim(comment.contentid ?? ''), contentSiteId: javaTrim(comment.siteid ?? '') }));
+    const contentIdsBySite = new Map<string, string[]>();
+    for (const { contentId, contentSiteId } of keyed) {
+      const contentIds = contentIdsBySite.get(contentSiteId) ?? [];
+      contentIds.push(contentId);
+      contentIdsBySite.set(contentSiteId, contentIds);
     }
+    const activeBySite = new Map<string, Map<string, ActiveContent>>();
+    for (const [contentSiteId, contentIds] of contentIdsBySite) {
+      activeBySite.set(contentSiteId, await deps.repository.content.readActiveIn(tx, { siteId: contentSiteId, contentIds }));
+    }
+    const rows: LoadCommentsRow[] = keyed.map(({ comment, contentId, contentSiteId }) => ({
+      comment,
+      content: activeBySite.get(contentSiteId)?.get(contentId) ?? null,
+    }));
     return {
       siteId,
       keywords: scope.text('keywords'),
@@ -735,7 +744,7 @@ export async function loadComments(
       totalPages: window.totalPages,
       startPage: window.startPage,
       endPage: window.endPage,
-      recordCount: all.length,
+      recordCount,
       rows,
       now,
     };
@@ -793,22 +802,20 @@ export async function loadCommentsPage(
     const comments = deps.repository.comments;
     const all = await comments.commentFeed(tx, { contentId, siteId, sortDirection: sort });
     const { startRow, endRow } = commentsPageRows(all, commentId, upperId, lowerId);
-    const rows: CommentsPageRow[] = [];
-    for (const [index, comment] of all.entries()) {
-      const shown = index + 1 >= startRow && index + 1 <= endRow;
-      if (!shown) {
-        rows.push({ comment, commenterRemoteId: '', parentName: null });
-        continue;
-      }
-      const commenter = await comments.findCommenter(tx, { commenterId: javaTrim(comment.userid ?? '') });
+    const isShown = (index: number): boolean => index + 1 >= startRow && index + 1 <= endRow;
+    const shown = all.filter((_, index) => isShown(index));
+    const commenters = await comments.findCommenters(tx, shown.map((comment) => javaTrim(comment.userid ?? '')));
+    const parents = await comments.commentNames(tx, shown.map((comment) => javaTrim(comment.parentid ?? '')).filter((parentId) => parentId !== ''));
+    const rows: CommentsPageRow[] = all.map((comment, index) => {
+      if (!isShown(index)) return { comment, commenterRemoteId: '', parentName: null };
       const parentId = javaTrim(comment.parentid ?? '');
-      const parent = parentId === '' ? null : await comments.findComment(tx, { commentId: parentId });
-      rows.push({
+      const parent = parentId === '' ? undefined : parents.get(parentId);
+      return {
         comment,
-        commenterRemoteId: javaTrim(commenter?.remoteid ?? ''),
-        parentName: parent === null ? null : javaTrim(parent.name ?? ''),
-      });
-    }
+        commenterRemoteId: javaTrim(commenters.get(javaTrim(comment.userid ?? ''))?.remoteid ?? ''),
+        parentName: parent === undefined ? null : javaTrim(parent.name ?? ''),
+      };
+    });
     return { siteId, contentId, commentId, upperId, lowerId, sort, startRow, endRow, rows, now };
   });
 }

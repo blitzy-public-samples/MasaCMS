@@ -11,7 +11,7 @@ import {
   LegacyServiceUnavailableError,
   type SerializedLegacyResponse,
 } from '@opt2/platform/legacy-compat';
-import { createLogger, serializeError } from '@opt2/platform/logging';
+import { createLogger, serializeError, validateLogRecord } from '@opt2/platform/logging';
 import { createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { TENANT_A, TENANT_B, testVerifier, type TenantFixture } from '@opt2/platform/testing';
 import {
@@ -33,6 +33,7 @@ import {
   type FixturePage,
   type FixtureParams,
 } from '../../src/legacy/fixture-envelope.js';
+import { requireAny, resolveSite } from '../../src/legacy/fixture-auth.js';
 import { TEST_CLOCK, buildTestApp, createRecordingDb, headersFor, type TestApp } from '../helpers/app.js';
 
 const SURVEY_ID = '6F9619FF-8B86-D011-B42D00C04FC964FF';
@@ -304,16 +305,19 @@ describe('fixture routes', () => {
     past: { list: [], pageIndex: 5, itemsPerPage: 1, totalItems: 3 },
     memory: { list: responses, pageIndex: 2, itemsPerPage: 2 },
   };
-  const thrown: Record<'notFound' | 'conflict' | 'authorization' | 'error' | 'unavailable', () => unknown> = {
+  const thrown: Record<'notFound' | 'conflict' | 'authorization' | 'error' | 'unstorable' | 'unavailable', () => unknown> = {
     notFound: () => new FixtureApiError('notFound'),
     conflict: () => new FixtureApiError('conflict', 'Survey is already scheduled'),
     authorization: () => new LegacyApiError('authorization'),
     error: () => unhandled,
+    // node-pg's DatabaseError for a NUL (U+0000) bound to a text column.
+    unstorable: () => Object.assign(new Error('invalid byte sequence for encoding "UTF8": 0x00'), { code: '22021', severity: 'ERROR' }),
     unavailable: () => new LegacyServiceUnavailableError(),
   };
   const survey = { surveyid: SURVEY_ID, title: 'Pulse', version: '2', overdue: 'no', reminders: [{ offset_minutes: '30' }] };
   const surveyJson = `"surveyid":"${SURVEY_ID}","title":"Pulse","version":2,"overdue":false,"reminders":[{"offset_minutes":30}]`;
   let app: FastifyInstance;
+  let tokens: Record<'member' | 'managerB', Record<string, string>>;
   let seen: FixtureContext | undefined;
   /** The context the schedule route last ran with, cleared once read. */
   const takeSeen = (): FixtureContext | undefined => {
@@ -387,7 +391,21 @@ describe('fixture routes', () => {
         (_request, reply, ctx) => fixtureSuccess(reply, ctx),
       ),
     );
+    const sites = [TENANT_A.siteId, TENANT_B.siteId];
+    app.get(
+      `${ROUTE}/:id/guarded`,
+      { config: { opt2: { public: true, siteCheck: false } } },
+      fixtureHandler(fixtureMethod('surveys', 'guarded'), async (request, reply, ctx) => {
+        await resolveSite(request, ctx.params, { registeredSite: async (site) => sites.find((s) => s === site.toLowerCase()) });
+        requireAny(request, [Roles.surveysManager]);
+        return fixtureSuccess(reply, ctx);
+      }),
+    );
     await app.ready();
+    tokens = {
+      member: await headersFor(Roles.member),
+      managerB: await headersFor(Roles.surveysManager, { site: TENANT_B.siteId }),
+    };
   });
 
   afterAll(async () => {
@@ -397,7 +415,7 @@ describe('fixture routes', () => {
   /** Injects one request and returns its wire view, its log lines and logger `error` calls, and whether it logged an unhandled fixture exception. */
   async function call(
     url: string,
-    opts: { method?: 'GET' | 'POST'; payload?: string; contentType?: string } = {},
+    opts: { method?: 'GET' | 'POST'; payload?: string; contentType?: string; headers?: Record<string, string> } = {},
   ): Promise<Wire & { logged: boolean; lines: string[]; errorCalls: unknown[][] }> {
     const before = logLines.length;
     const spiesBefore = errorSpies.length;
@@ -405,7 +423,7 @@ describe('fixture routes', () => {
       method: opts.method ?? 'GET',
       url,
       ...(opts.payload === undefined ? {} : { payload: opts.payload }),
-      ...(opts.contentType === undefined ? {} : { headers: { 'content-type': opts.contentType } }),
+      headers: { ...opts.headers, ...(opts.contentType === undefined ? {} : { 'content-type': opts.contentType }) },
     });
     const lines = logLines.slice(before);
     return {
@@ -506,6 +524,7 @@ describe('fixture routes', () => {
       ['notFound', 404, 'invalid_request', 'Not Found', false],
       ['conflict', 409, 'invalid_request', 'Survey is already scheduled', false],
       ['authorization', 401, 'invalid_request', 'Insufficient Account Permissions', false],
+      ['unstorable', 400, 'invalid_request', 'Invalid parameters', false],
       ['error', 500, 'server_error', 'Unhandled Exception', true],
     ])('answers a thrown %s with the fixture envelope at %i, logging only an unhandled error, serialized', async (kind, status, code, message, logged) => {
       const res = await call(`${ROUTE}/${SURVEY_ID}/launch?kind=${kind}`);
@@ -528,6 +547,29 @@ describe('fixture routes', () => {
       expect(res.etag).toBe(cfHash(res.body));
       expect(JSON.parse(res.body)).toMatchObject({ apiversion: 'v1', error: { message: 'Unhandled Exception', code: 'server_error' } });
       expect(res.logged).toBe(false);
+    });
+
+    const GUARDED = `${ROUTE}/${SURVEY_ID}/guarded`;
+    const GUARDED_ROUTE = `${ROUTE}/:id/guarded`;
+    it.each<{ label: string; url: string; as?: keyof typeof tokens; route: string; status: number; method: string; message: string; warning: string }>([
+      { label: 'an anonymous caller', url: `${GUARDED}?siteid=tenant-a`, route: GUARDED_ROUTE, status: 401, method: 'surveys.surveys.guarded', message: 'Insufficient Account Permissions', warning: 'request denied: authorization' },
+      { label: 'a member without the role', url: `${GUARDED}?siteid=tenant-a`, as: 'member', route: GUARDED_ROUTE, status: 403, method: 'surveys.surveys.guarded', message: 'Insufficient Account Permissions', warning: 'request denied: forbidden' },
+      { label: 'a manager of another site', url: `${GUARDED}?siteid=tenant-a`, as: 'managerB', route: GUARDED_ROUTE, status: 403, method: 'surveys.surveys.guarded', message: 'Insufficient Account Permissions', warning: 'request denied: forbidden' },
+      { label: 'an unknown site', url: `${GUARDED}?siteid=nowhere`, route: GUARDED_ROUTE, status: 400, method: 'surveys.surveys.guarded', message: 'Invalid parameters', warning: 'request rejected: invalidParameters' },
+      { label: 'a value PostgreSQL refuses', url: `${ROUTE}/${SURVEY_ID}/launch?kind=unstorable`, route: `${ROUTE}/:id/launch`, status: 400, method: 'surveys.surveys.launch', message: 'Invalid parameters', warning: 'request rejected: 22021' },
+    ])('logs $label as one WARNING line with its reason before the completion line', async ({ url, as, route, status, method, message, warning }) => {
+      const res = await call(url, { headers: as === undefined ? {} : tokens[as] });
+      const records = res.lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+
+      expectFixtureResponse(res, status, errorBody(method, 'invalid_request', message));
+      expect(records.map(({ severity, message: text }) => [severity, text])).toStrictEqual([
+        ['WARNING', warning],
+        ['INFO', 'request completed'],
+      ]);
+      for (const record of records) {
+        expect(validateLogRecord(record).errors).toStrictEqual([]);
+        expect(record).toMatchObject({ route, httpMethod: 'GET', statusCode: status });
+      }
     });
   });
 });

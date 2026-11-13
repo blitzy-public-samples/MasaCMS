@@ -1,6 +1,7 @@
 // `cUsers.list`: the controller's `list()` and the group list of `admin/core/views/cusers/list.cfm` (server-only).
-import { cfIsNumeric, cfLsDateFormat, cfLsTimeFormat, cfToBoolean, cfToNumber } from '@opt2/platform/legacy-compat';
+import { cfLsDateFormat, cfLsTimeFormat } from '@opt2/platform/legacy-compat';
 import type { components } from '@/generated/clients/people';
+import { cfEq } from '@/lib/cfml';
 import { parseLegacyDate } from '@/lib/dates';
 import { okBody } from '@/lib/gateway-client';
 import { encodeHtml, encodeJs, encodeUrl, join, raw } from '@/lib/html';
@@ -44,9 +45,8 @@ const cfSpace = (output: string): string => (output === '' || output.charCodeAt(
 const urlEncodedFormat = (value: string): string =>
   encodeURIComponent(value).replace(/[-_.!~*'()]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
 
-/** `rc.ispublic eq n` over its CFML boolean text: numerically when numeric, else true as 1 and false as 0. */
-const isPublicEq = (ispublic: string, n: 0 | 1): boolean =>
-  cfIsNumeric(ispublic) ? cfToNumber(ispublic) === n : Number(cfToBoolean(ispublic)) === n;
+/** `rc.ispublic eq n` under ACF's loose comparison (`'1.'` stays text, so it equals neither 1 nor 0). */
+const isPublicEq = (ispublic: string, n: 0 | 1): boolean => cfEq(ispublic, n);
 
 /** `local.item.getValue('perm') eq 0`: only such groups get a delete link; a NULL `Perm` reads as '' and gets none. */
 const isDeletable = (row: GroupListRow): boolean => row.Perm === 0;

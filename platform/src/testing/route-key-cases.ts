@@ -263,6 +263,12 @@ export const routeKeyConflictCases: readonly RouteKeyConflictCase[] = deepFreeze
     'api:user.delete',
   ),
   conflict(
+    'api-empty-method-override-runs-no-operation',
+    `${JSON_API}:1156-1161,1243-1305`,
+    request('POST', `${API_ROOT}/user/${ID}`, { headers: { 'X-HTTP-Method-Override': '' } }),
+    'api:user.http-',
+  ),
+  conflict(
     'api-index-cfm-prefix-stripped',
     `${CONTENT_SERVER}:150-152,783-784`,
     request('GET', `/index.cfm${API_ROOT}/content/${ID}`),
@@ -501,6 +507,14 @@ export const routeKeyConflictCases: readonly RouteKeyConflictCase[] = deepFreeze
       headers: { 'X-HTTP-Method-Override': 'GET' },
     }),
     'fixture:people/persons/{id}/archive@get',
+  ),
+  conflict(
+    'fixture-empty-method-override-keeps-request-method',
+    `${FIXTURE_API}:16,21-23`,
+    request('POST', `/legacy-fixtures/cfml/api.cfm/people/persons/${ID}/archive`, {
+      headers: { 'X-HTTP-Method-Override': '' },
+    }),
+    'fixture:people/persons/{id}/archive@post',
   ),
   conflict(
     'opt2-stub-namespace',

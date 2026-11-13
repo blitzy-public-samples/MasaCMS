@@ -22,6 +22,7 @@ import {
 } from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
 import { fakeGatewayClient, routeKey, type FakeGatewayClient, type FakeRouteTable } from '../../helpers/fake-gateway';
+import { REQUESTED_SITE_CASES } from '../../helpers/requested-site';
 
 const LOAD = routeKey('GET', 'strategies-content', '/v1/raw/ccomments/loadcomments');
 const PAGE = routeKey('GET', 'strategies-content', '/v1/raw/ccomments/loadcommentspage');
@@ -97,11 +98,31 @@ describe('ccommentsGate', () => {
     ['content module access alone', () => editorRequest({ circuit: 'ccomments', item: 'loadcomments' })],
     ['anonymous', () => anonymousRequest({ circuit: 'ccomments', item: 'loadcomments' })],
     ['privileges claimed in rc', () => editorRequest({ rc: { s2: '1', roles: 's2', memberships: 'S2' } })],
+    [
+      'comments and content module access granted for a site the token does not serve',
+      () =>
+        makeAdminRequest(
+          {
+            circuit: 'ccomments',
+            item: 'loadcomments',
+            rc: { siteid: 'tenant-b' },
+            user: { roles: [Roles.systemUser, moduleRole(COMMENTS_MODULE_ID), moduleRole(CONTENT_MODULE_ID)] },
+          },
+          'qaEditor',
+        ),
+    ],
   ])('secures %s', async (_name, request) => {
     const req = request();
     const { decision, secureCalls } = await gate(req);
     expect(decision).toEqual(secure(req));
     expect(secureCalls).toBe(1);
+  });
+
+  it.each(REQUESTED_SITE_CASES)('admits $who only when it administers that site', async ({ request, administers }) => {
+    const req = request({ circuit: 'ccomments', item: 'loadcomments' });
+    expect(await gate(req)).toEqual(
+      administers ? { decision: { kind: 'allow' }, secureCalls: 0 } : { decision: secure(req), secureCalls: 1 },
+    );
   });
 
   it('sends anonymous users to cLogin.main', async () => {

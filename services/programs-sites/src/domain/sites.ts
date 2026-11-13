@@ -15,9 +15,18 @@ import {
   masaCf2Java,
   sqlServerDatetime,
 } from '@opt2/platform/legacy-compat';
-import { withGatedTenant, type MigrationHandlerOptions, type WriteContext } from '@opt2/platform/migration-kit';
+import { awaitReadable, withGatedTenant, type MigrationHandlerOptions, type WriteContext } from '@opt2/platform/migration-kit';
 import { localTimestamp, type OutboxOrigin } from '@opt2/platform/outbox';
-import { registeredTenants, tenantForRegisteredSite, withTenant, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
+import {
+  registeredTenants,
+  registryEntryForTenant,
+  tenantForRegisteredSite,
+  withMetadata,
+  withTenant,
+  type MetadataTx,
+  type TenantDb,
+  type TenantTx,
+} from '@opt2/platform/tenancy';
 import { writeSiteChanged } from '../events/site-changed.js';
 import type { components } from '../generated/openapi.js';
 import {
@@ -25,6 +34,7 @@ import {
   SITE_COLUMNS,
   applySet,
   effectiveEmailBroadcaster,
+  fitColumnValues,
   getSiteText,
   getSiteValue,
   newSiteBean,
@@ -49,6 +59,7 @@ type SiteListItem = Schemas['SiteListItem'];
 type SiteDetail = Schemas['SiteDetail'];
 type ShellSite = Schemas['ShellSite'];
 type ShellSiteDetail = Schemas['ShellSiteDetail'];
+type UserPoolSites = Schemas['UserPoolSites'];
 type SiteExtendSet = Schemas['SiteExtendSet'];
 type SiteExtendAttribute = Schemas['SiteExtendAttribute'];
 type SiteUpdateResult = Schemas['SiteUpdateResult'];
@@ -60,6 +71,8 @@ type HrefDomains = Schemas['HrefDomains'];
 export interface SiteListOptions {
   sortBy?: string;
   sortDirection?: string;
+  /** Ends the list's reads when it aborts, e.g. when the client disconnects. */
+  signal?: AbortSignal;
 }
 
 /** The Sites screen order form: comma lists in row order, plus the sort of the list returned. */
@@ -110,15 +123,21 @@ export interface ExtendDataWrite {
  */
 export interface SitesDomain {
   /**
-   * The Sites screen rows: every registered site for an S2 token, else the token's own. Always read fresh; legacy's
-   * per-sort list cache can show stale order numbers after an order save, a golden-comparison parity point.
+   * The Sites screen rows: every registered site for an S2 token, else the token's own, one transaction per tenant and
+   * at most SITE_LIST_CONCURRENCY at once. Always read fresh; legacy's per-sort list cache can show stale order numbers
+   * after an order save, a golden-comparison parity point. An abort of `options.signal` rejects with its reason.
    */
   listSites(db: TenantDb, claims: UserClaims, options?: SiteListOptions): Promise<SiteListItem[]>;
   /** The Edit Site data of `siteId`; an unknown id yields the defaulted new site with `isNew = 1`. */
   readSite(db: TenantDb, claims: UserClaims, siteId: string): Promise<SiteDetail>;
   /** The admin layout's settings of `siteId`, EmailBroadcaster effective; an unknown id yields the new site, `isNew = 1`. */
   readShellSite(db: TenantDb, claims: UserClaims, siteId: string): Promise<ShellSiteDetail>;
-  /** Port of `settingsManager.update`: validation errors are returned, never thrown, and leave everything unwritten. */
+  /** The layout settings of `siteId`'s private, then public, user pool site, each once; unregistered or unstored ones left out. */
+  readUserPoolSites(db: TenantDb, claims: UserClaims, siteId: string): Promise<UserPoolSites>;
+  /**
+   * Port of `settingsManager.update`: validation errors are returned, never thrown, and leave everything unwritten; a
+   * value longer than its tsettings column throws SiteColumnTruncationError once the extended data has committed.
+   */
   updateSite(
     db: TenantDb,
     claims: UserClaims,
@@ -140,6 +159,43 @@ const DATE_VALIDATIONS: ReadonlySet<string> = new Set(['date', 'datetime']);
 const DYNAMIC_CONTENT = /(\[sava\]|\[mura\]|\[m\]).+?(\[\/sava\]|\[\/mura\]|\[\/m\])/i;
 
 const COLUMN_TYPES: ReadonlyMap<string, string> = new Map(SITE.columns.map((column) => [column.name, column.type]));
+
+/** Most tenant transactions one site list holds at once: below pg's default pool of 10, so one list never takes the pool. */
+const SITE_LIST_CONCURRENCY = 4;
+
+/** Every registered tenant once, in registry order, after waiting out a window on the site unit once for the whole list. */
+async function siteListTenants(tx: MetadataTx): Promise<string[]> {
+  await awaitReadable(tx, [SITE.unit]);
+  return [...new Set((await registeredTenants(tx)).map(({ tenantId }) => tenantId))];
+}
+
+/**
+ * `read` of each tenant, at most SITE_LIST_CONCURRENCY at a time, in tenant order. No read starts once `signal` has
+ * aborted or a read has failed; the first failure is rethrown once the running reads settle.
+ */
+async function readEachTenant<T>(
+  tenants: readonly string[],
+  signal: AbortSignal | undefined,
+  read: (tenantId: string) => Promise<T>,
+): Promise<T[]> {
+  const results: T[] = [];
+  const failures: unknown[] = [];
+  const queue = tenants.entries();
+  const worker = async (): Promise<void> => {
+    for (const [index, tenantId] of queue) {
+      if (failures.length > 0) return;
+      try {
+        signal?.throwIfAborted();
+        results[index] = await read(tenantId);
+      } catch (err) {
+        failures.push(err);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(SITE_LIST_CONCURRENCY, tenants.length) }, worker));
+  if (failures.length > 0) throw failures[0];
+  return results;
+}
 
 /** CFML list items: comma-split with empty elements dropped and no trimming. */
 function cfList(list: string): string[] {
@@ -479,6 +535,15 @@ function nextRowVersion(rowVersion: unknown): string {
   return String(BigInt(String(rowVersion)) + 1n);
 }
 
+/** SQL Server Msg 2628 of `settingsDAO.update` for a value longer than its tsettings column; names the column, not the value. */
+export class SiteColumnTruncationError extends Error {
+  override readonly name: string = 'SiteColumnTruncationError';
+
+  constructor(readonly column: string) {
+    super(`String or binary data would be truncated in table 'tsettings', column '${column}'.`);
+  }
+}
+
 /** Builds the site operations over the injected repository; it holds no state of its own. */
 export function createSitesDomain({
   repo,
@@ -527,12 +592,11 @@ export function createSitesDomain({
   }
 
   async function listSites(db: TenantDb, claims: UserClaims, options: SiteListOptions = {}): Promise<SiteListItem[]> {
-    const tenants = claims.s2 ? [...new Set((await registeredTenants(db)).map(({ tenantId }) => tenantId))] : [claims.tid];
-    const rows: SiteRow[] = [];
-    for (const tenantId of tenants) {
-      rows.push(...(await withTenant(db, tenantId, (tx) => repo.listSites(tx))));
-    }
-    return sortSites(rows, options.sortBy ?? 'orderno', options.sortDirection ?? 'asc').map(listItem);
+    const { signal } = options;
+    const call = signal === undefined ? undefined : { signal };
+    const tenants = claims.s2 ? await withMetadata(db, siteListTenants, call) : [claims.tid];
+    const rows = await readEachTenant(tenants, signal, (tenantId) => withTenant(db, tenantId, (tx) => repo.listSites(tx), call));
+    return sortSites(rows.flat(), options.sortBy ?? 'orderno', options.sortDirection ?? 'asc').map(listItem);
   }
 
   async function readSite(db: TenantDb, claims: UserClaims, siteId: string): Promise<SiteDetail> {
@@ -562,6 +626,22 @@ export function createSitesDomain({
     });
   }
 
+  async function readUserPoolSites(db: TenantDb, claims: UserClaims, siteId: string): Promise<UserPoolSites> {
+    assertSiteMatches(siteId, claims);
+    const entry = await registryEntryForTenant(db, claims.tid);
+    const poolIds = [entry?.privateUserPoolId, entry?.publicUserPoolId].filter((id) => typeof id === 'string');
+    const read = new Set<string>();
+    const sites: ShellSite[] = [];
+    for (const poolId of poolIds) {
+      const tenantId = await tenantForRegisteredSite(db, poolId);
+      if (tenantId === null || read.has(tenantId)) continue;
+      read.add(tenantId);
+      const row = await withTenant(db, tenantId, (tx) => findSite(tx, poolId));
+      if (row !== null) sites.push(toShellSite(readBean(row), row, config));
+    }
+    return { sites };
+  }
+
   async function updateSite(
     db: TenantDb,
     claims: UserClaims,
@@ -573,7 +653,7 @@ export function createSitesDomain({
     const requested = cfString(lookup(data, 'siteid') ?? '');
     assertSiteMatches(siteId, claims);
     assertSiteMatches(requested, claims);
-    return withGatedTenant(db, claims.tid, async (tx) => {
+    const outcome = await withGatedTenant(db, claims.tid, async (tx): Promise<SiteUpdateResult | SiteColumnTruncationError> => {
       const row = await findSite(tx, requested);
       if (row === null) {
         // Legacy's UPDATE of a missing site matches no row.
@@ -592,13 +672,18 @@ export function createSitesDomain({
         // Admin requests read in the stored site's locale, set before the update runs (admin/Application.cfc:384-399).
         await saveExtendedData(tx, bean, ctx.write, ctx.locale ?? getSiteText(storedBean, 'siteLocale'));
       }
-      const updated = await repo.updateSiteRow(tx, row, updateColumnValues(bean, config), ctx.write);
+      const { values, overflowing } = fitColumnValues(updateColumnValues(bean, config));
+      // settingsDAO.update throws after saveExtendedData committed (settingsManager.cfc:267-290): commit, then fail.
+      if (overflowing[0] !== undefined) return new SiteColumnTruncationError(overflowing[0]);
+      const updated = await repo.updateSiteRow(tx, row, values, ctx.write);
       if (updated === null) {
         throw new Error(`Site ${row.siteid} disappeared inside its own update transaction`);
       }
       await announce(tx, updated);
       return { written: true, errors: {}, site: toSite(readBean(updated), updated) };
     });
+    if (outcome instanceof SiteColumnTruncationError) throw outcome;
+    return outcome;
   }
 
   async function saveOrderAndDeploy(db: TenantDb, claims: UserClaims, input: SiteOrderInput): Promise<SiteOrderResult> {
@@ -648,6 +733,7 @@ export function createSitesDomain({
     listSites,
     readSite,
     readShellSite,
+    readUserPoolSites,
     updateSite,
     saveOrderAndDeploy,
     hrefDomains,

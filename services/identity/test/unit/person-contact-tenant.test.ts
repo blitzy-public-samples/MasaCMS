@@ -1,4 +1,4 @@
-/** Identity's person-contact consumer through the platform consumer against a throwaway `identity` schema: site and aggregate binding to the envelope tenant, and dead letters that leave the projection and inbox unchanged. */
+/** Identity's person-contact consumer through the platform consumer against a throwaway `identity` schema: the stored person columns, site and aggregate binding to the envelope tenant, and dead letters that leave the projection and inbox unchanged. */
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DeadLetterError, consumeEnvelope, type ConsumerDefinition, type EventEnvelope } from '@opt2/platform/events';
@@ -128,6 +128,34 @@ describe.skipIf(!available)('person-contact consumer tenant binding', () => {
 
     expect(deletion.destinations).toStrictEqual([{ tenantId: TENANT_A.tenantId, result: 'applied' }]);
     expect(await contacts(TENANT_A.tenantId, [userId])).toStrictEqual([null]);
+  });
+
+  it('stores every person column of a state, timestamps at their wall-clock time, and a later state replaces each one', async () => {
+    const userId = nextId();
+    const photoFileId = nextId();
+    const full = person(userId, {
+      groupName: 'Unused Group', company: 'Engines', jobTitle: 'Analyst', mobilePhone: '555-0100', website: 'https://ada.example.test', ext: 7,
+      contactForm: 'yes', subscribe: 1, notes: 'Notes', description: 'Description', interests: 'Math', keepPrivate: 1, photoFileId,
+      imName: 'ada', imService: 'AIM', tags: 'math', created: '2026-06-30 11:59:00.370', lastUpdate: '2026-06-30 12:00:01.005',
+    });
+
+    await consume(personEvent(userId, 1, full));
+
+    expect(await contacts(TENANT_A.tenantId, [userId])).toMatchObject([
+      {
+        groupname: 'Unused Group', company: 'Engines', jobtitle: 'Analyst', mobilephone: '555-0100', website: 'https://ada.example.test', ext: 7,
+        contactform: 'yes', subscribe: 1, notes: 'Notes', description: 'Description', interests: 'Math', keepprivate: 1, photofileid: photoFileId,
+        imname: 'ada', imservice: 'AIM', tags: 'math', created: new Date(2026, 5, 30, 11, 59, 0, 370), lastupdate: new Date(2026, 5, 30, 12, 0, 1, 5),
+        lastupdateby: 'Admin User', lastupdatebyid: 'A0000000-0000-0000-0000000000000001', aggregate_version: '1',
+      },
+    ]);
+
+    const cleared = person(userId, { jobTitle: null, ext: null, subscribe: null, keepPrivate: null, photoFileId: null, created: null, lastUpdate: null, lastUpdateBy: null });
+    await consume(personEvent(userId, 2, cleared));
+
+    expect(await contacts(TENANT_A.tenantId, [userId])).toMatchObject([
+      { company: null, jobtitle: null, ext: null, subscribe: null, keepprivate: null, photofileid: null, created: null, lastupdate: null, lastupdateby: null, aggregate_version: '2' },
+    ]);
   });
 
   it.each(

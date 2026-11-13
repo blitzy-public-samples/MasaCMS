@@ -56,6 +56,7 @@ const NEXT_ROUTER_VARY_MEMBERS: ReadonlySet<string> = new Set([
   'next-router-segment-prefetch',
 ]);
 const NEXT_REDIRECT_STATUS = 307;
+const NEXT_CACHE_CONTROL = 'private, no-cache, no-store, max-age=0, must-revalidate';
 
 /** True for web's page-mode paths: `/admin/<circuit>/<action>` and `/opt2/admin/<module>/<screen>`. */
 export function isWebPagePath(path: string): boolean {
@@ -111,7 +112,7 @@ export function normaliseWebResponseHeaders(
     // The 302 is sent without Next's body, so that body's framing must not reach the client.
     delete out['content-length'];
     delete out['transfer-encoding'];
-  } else if (out.expires === undefined) {
+  } else if (out['cache-control'] === NEXT_CACHE_CONTROL) {
     delete out['cache-control'];
   }
   return out;

@@ -12,7 +12,6 @@ import {
   TASKS_INVOKER_ROLE,
   UndeclaredRouteError,
   collectRouteMatrix,
-  hasAnyRole,
   renderAuthDenial,
   type DenialResponse,
   type Role,
@@ -78,17 +77,57 @@ const PUSH_SUBSCRIPTIONS: Readonly<Record<string, string>> = {
   [SITE_PUSH_URL]: SITE_CHANGED_SUBSCRIPTION,
 };
 
+const SYNTHETIC = [
+  'timesheets.employee',
+  'timesheets.primary-approver',
+  'timesheets.secondary-approver',
+  'finance.preparer',
+  'finance.approver',
+  'esignature.signer',
+  'esignature.auditor',
+  'reporting.exporter',
+  'surveys.manager',
+  'communications.sender',
+] as const;
+
+const SYSTEM_USERS = ['system-user', 'editor', 'site-admin', 's2', 'other-tenant', ...SYNTHETIC] as const;
+const USERS = ['member', ...SYSTEM_USERS] as const;
+const WORKLOADS = [
+  'service:identity',
+  'service:people',
+  'service:programs-sites',
+  'service:strategies-content',
+  'service:communications',
+  'service:reporting',
+  'service:surveys',
+  'service:timesheets',
+  'service:finance',
+  'service:e-signature',
+  'service:stub',
+  'service:gateway',
+  'service:web',
+  'service:migration',
+  'service:operator',
+  'service:pubsub-invoker',
+  'service:tasks-invoker',
+] as const;
+const EVERYONE: readonly string[] = ['anonymous', ...USERS, ...WORKLOADS];
 const MINIMUM_SUBJECTS = ['anonymous', 'member', 'system-user', 'editor', 'site-admin', 's2', 'other-tenant'] as const;
+
+function everyoneBut(...excluded: string[]): string[] {
+  return EVERYONE.filter((name) => !excluded.includes(name));
+}
 
 type Method = 'GET' | 'POST' | 'DELETE';
 
-/** One registered route with its declaration: exactly one of `requires` and `public`. */
+/** A route's declaration and independently admitted subject names. */
 interface ExpectedRoute {
   method: Method;
   url: string;
   transport: Transport;
   requires?: readonly Role[];
   public?: true;
+  allow: readonly string[];
 }
 
 const READERS: readonly Role[] = [Roles.member, Roles.systemUser, Roles.siteAdmin, Roles.s2];
@@ -96,25 +135,25 @@ const MIGRATION_ONLY: readonly Role[] = [Roles.platformMigration];
 const QUEUE_CONTROLLERS: readonly Role[] = [Roles.platformMigration, Roles.platformOperator];
 
 const EXPECTED: readonly ExpectedRoute[] = [
-  { method: 'GET', url: '/healthz', transport: 'service', public: true },
-  { method: 'POST', url: '/opt2/stub/notes', transport: 'service', requires: [Roles.systemUser] },
-  { method: 'GET', url: '/opt2/stub/notes', transport: 'service', requires: READERS },
-  { method: 'GET', url: '/opt2/stub/notes/:noteId', transport: 'service', requires: READERS },
-  { method: 'GET', url: '/opt2/stub/notes/:noteId/projection', transport: 'service', requires: READERS },
-  { method: 'DELETE', url: '/opt2/stub/notes/:noteId', transport: 'service', requires: [Roles.s2] },
-  { method: 'POST', url: '/internal/v1/migration/apply', transport: 'service', requires: MIGRATION_ONLY },
-  { method: 'GET', url: '/internal/v1/migration/export', transport: 'service', requires: MIGRATION_ONLY },
-  { method: 'GET', url: '/internal/v1/migration/changes', transport: 'service', requires: MIGRATION_ONLY },
-  { method: 'GET', url: '/internal/v1/migration/position', transport: 'service', requires: MIGRATION_ONLY },
-  { method: 'GET', url: '/internal/v1/migration/watermark', transport: 'service', requires: MIGRATION_ONLY },
-  { method: 'POST', url: '/internal/v1/migration/watermark', transport: 'service', requires: MIGRATION_ONLY },
-  { method: 'POST', url: '/internal/v1/migration/gate', transport: 'service', requires: MIGRATION_ONLY },
-  { method: 'POST', url: '/internal/v1/task-queues/:queue/pause', transport: 'service', requires: QUEUE_CONTROLLERS },
-  { method: 'POST', url: '/internal/v1/task-queues/:queue/resume', transport: 'service', requires: QUEUE_CONTROLLERS },
-  { method: 'POST', url: '/internal/v1/task-queues/:queue/ensure', transport: 'service', requires: QUEUE_CONTROLLERS },
-  { method: 'POST', url: '/internal/v1/outbox/sweep', transport: 'cloud-tasks', requires: [TASKS_INVOKER_ROLE] },
-  { method: 'POST', url: NOTE_PUSH_URL, transport: 'pubsub-push', requires: [PUBSUB_INVOKER_ROLE] },
-  { method: 'POST', url: SITE_PUSH_URL, transport: 'pubsub-push', requires: [PUBSUB_INVOKER_ROLE] },
+  { method: 'GET', url: '/healthz', transport: 'service', public: true, allow: everyoneBut('service:tasks-invoker') },
+  { method: 'POST', url: '/opt2/stub/notes', transport: 'service', requires: [Roles.systemUser], allow: SYSTEM_USERS },
+  { method: 'GET', url: '/opt2/stub/notes', transport: 'service', requires: READERS, allow: USERS },
+  { method: 'GET', url: '/opt2/stub/notes/:noteId', transport: 'service', requires: READERS, allow: USERS },
+  { method: 'GET', url: '/opt2/stub/notes/:noteId/projection', transport: 'service', requires: READERS, allow: USERS },
+  { method: 'DELETE', url: '/opt2/stub/notes/:noteId', transport: 'service', requires: [Roles.s2], allow: ['s2'] },
+  { method: 'POST', url: '/internal/v1/migration/apply', transport: 'service', requires: MIGRATION_ONLY, allow: ['service:migration'] },
+  { method: 'GET', url: '/internal/v1/migration/export', transport: 'service', requires: MIGRATION_ONLY, allow: ['service:migration'] },
+  { method: 'GET', url: '/internal/v1/migration/changes', transport: 'service', requires: MIGRATION_ONLY, allow: ['service:migration'] },
+  { method: 'GET', url: '/internal/v1/migration/position', transport: 'service', requires: MIGRATION_ONLY, allow: ['service:migration'] },
+  { method: 'GET', url: '/internal/v1/migration/watermark', transport: 'service', requires: MIGRATION_ONLY, allow: ['service:migration'] },
+  { method: 'POST', url: '/internal/v1/migration/watermark', transport: 'service', requires: MIGRATION_ONLY, allow: ['service:migration'] },
+  { method: 'POST', url: '/internal/v1/migration/gate', transport: 'service', requires: MIGRATION_ONLY, allow: ['service:migration'] },
+  { method: 'POST', url: '/internal/v1/task-queues/:queue/pause', transport: 'service', requires: QUEUE_CONTROLLERS, allow: ['service:migration', 'service:operator'] },
+  { method: 'POST', url: '/internal/v1/task-queues/:queue/resume', transport: 'service', requires: QUEUE_CONTROLLERS, allow: ['service:migration', 'service:operator'] },
+  { method: 'POST', url: '/internal/v1/task-queues/:queue/ensure', transport: 'service', requires: QUEUE_CONTROLLERS, allow: ['service:migration', 'service:operator'] },
+  { method: 'POST', url: '/internal/v1/outbox/sweep', transport: 'cloud-tasks', requires: [TASKS_INVOKER_ROLE], allow: ['service:tasks-invoker'] },
+  { method: 'POST', url: NOTE_PUSH_URL, transport: 'pubsub-push', requires: [PUBSUB_INVOKER_ROLE], allow: ['service:pubsub-invoker'] },
+  { method: 'POST', url: SITE_PUSH_URL, transport: 'pubsub-push', requires: [PUBSUB_INVOKER_ROLE], allow: ['service:pubsub-invoker'] },
 ];
 
 /** One concrete request; a subject's credentials are added when it is sent. */
@@ -412,27 +451,6 @@ function subscriptionOf(route: ExpectedRoute): string {
   return subscription;
 }
 
-/** Roles the route's transport verifies from what `subject` presents; null when the transport refuses the credential itself. */
-function verifiedRoles(route: ExpectedRoute, subject: RoleSubject): readonly Role[] | null {
-  const invoker = (role: Role): readonly Role[] => (subject.roles.includes(role) ? [role] : []);
-  switch (route.transport) {
-    case 'pubsub-push':
-      return invoker(PUBSUB_INVOKER_ROLE);
-    case 'cloud-tasks':
-      return invoker(TASKS_INVOKER_ROLE);
-    case 'service':
-      // authHeadersFor sends the tasks invoker's token in Authorization, which this transport verifies as a user token,
-      // so it is refused even on a public route.
-      if (subject.roles.includes(TASKS_INVOKER_ROLE)) return null;
-      // The push invoker's only credential is the push key, so it presents nothing here.
-      return subject.roles.includes(PUBSUB_INVOKER_ROLE) ? [] : subject.roles;
-  }
-}
-
-function admits(route: ExpectedRoute, roles: readonly Role[] | null): boolean {
-  return roles !== null && (route.public === true || hasAnyRole(roles, route.requires ?? []));
-}
-
 /** Sends `route`'s probe as `subject`, with the credential the route's transport takes from that subject. */
 function sendAs(route: ExpectedRoute, subject: RoleSubject): () => Promise<InjectResponse> {
   if (route.transport === 'pubsub-push') {
@@ -446,8 +464,8 @@ function sendAs(route: ExpectedRoute, subject: RoleSubject): () => Promise<Injec
   return async () => inject(probeRequest(route), await credentialsOf(subject));
 }
 
-function cellOf(route: ExpectedRoute, subject: string, roles: readonly Role[] | null, send: () => Promise<InjectResponse>): Cell {
-  return { method: route.method, url: route.url, subject, allow: admits(route, roles), send };
+function cellOf(route: ExpectedRoute, subject: string, allow: boolean, send: () => Promise<InjectResponse>): Cell {
+  return { method: route.method, url: route.url, subject, allow, send };
 }
 
 const PUSH_ROUTES = EXPECTED.filter((route) => route.transport === 'pubsub-push');
@@ -458,19 +476,19 @@ const EXTRA_CELLS: readonly Cell[] = [
   ...PUSH_ROUTES.flatMap((route) => {
     const subscription = subscriptionOf(route);
     return [
-      cellOf(route, 'push-key', [PUBSUB_INVOKER_ROLE], () => pushTo(t.app, subscription, envelopeFor(subscription))),
-      cellOf(route, 'push-key-wrong', [], () => pushTo(t.app, subscription, envelopeFor(subscription), { key: WRONG_PUSH_KEY })),
-      cellOf(route, 'no-key', [], () => inject(pushRequest(subscription), {})),
+      cellOf(route, 'push-key', true, () => pushTo(t.app, subscription, envelopeFor(subscription))),
+      cellOf(route, 'push-key-wrong', false, () => pushTo(t.app, subscription, envelopeFor(subscription), { key: WRONG_PUSH_KEY })),
+      cellOf(route, 'no-key', false, () => inject(pushRequest(subscription), {})),
     ];
   }),
   ...TASK_ROUTES.map((route) =>
-    cellOf(route, 'tasks-invoker', [TASKS_INVOKER_ROLE], async () => inject(probeRequest(route), await tasksInvokerCredentials())),
+    cellOf(route, 'tasks-invoker', true, async () => inject(probeRequest(route), await tasksInvokerCredentials())),
   ),
 ];
 
 const CELLS: readonly Cell[] = [
   ...EXPECTED.flatMap((route) =>
-    ROLE_SET.map((subject) => cellOf(route, subject.name, verifiedRoles(route, subject), sendAs(route, subject))),
+    ROLE_SET.map((subject) => cellOf(route, subject.name, route.allow.includes(subject.name), sendAs(route, subject))),
   ),
   ...EXTRA_CELLS,
 ];
@@ -545,6 +563,15 @@ describe('route declarations', () => {
     expect(ROLE_SET.map((subject) => subject.name)).toEqual(expect.arrayContaining([...MINIMUM_SUBJECTS]));
     expect(subjectNamed('other-tenant').crossTenant).toBe(true);
   });
+
+  it('literal subjects equal ROLE_SET', () => {
+    expect([...EVERYONE].sort()).toEqual(ROLE_SET.map((subject) => subject.name).sort());
+  });
+
+  it('names only ROLE_SET subjects in allow lists', () => {
+    const names = ROLE_SET.map((subject) => subject.name);
+    expect(EXPECTED.flatMap((route) => route.allow.filter((name) => !names.includes(name)))).toEqual([]);
+  });
 });
 
 describe('route admission', () => {
@@ -575,6 +602,48 @@ describe('route admission', () => {
   });
 });
 
+
+describe('unrelated user roles', () => {
+  const SERVICE_ROUTES = EXPECTED.filter((route) => route.transport === 'service' && route.requires !== undefined);
+  const WORKLOAD_ROUTES = SERVICE_ROUTES.filter(
+    (route) => route.url.startsWith('/internal/v1/migration/') || route.url.startsWith('/internal/v1/task-queues/'),
+  );
+  const NEAR_MISSES: readonly (readonly string[])[] = [
+    [],
+    ['unrelated'],
+    ['system-user-x'],
+    ['s2 '],
+    ['S2'],
+    ['site-admin.extra'],
+    ['service:'],
+    ['platform.'],
+  ];
+  const WORKLOAD_CLAIMS: readonly (readonly string[])[] = [
+    ['platform.migration'],
+    ['platform.operator'],
+    ['service:migration'],
+    ['service:operator'],
+  ];
+  const CASES = [
+    ...SERVICE_ROUTES.flatMap((route) => NEAR_MISSES.map((roles) => ({ route, roles }))),
+    ...WORKLOAD_ROUTES.flatMap((route) => WORKLOAD_CLAIMS.map((roles) => ({ route, roles }))),
+  ].map(({ route, roles }) => ({ method: route.method, url: route.url, claim: JSON.stringify(roles), route, roles }));
+
+  it.each(CASES)('$method $url refuses user roles $claim', async ({ route, roles, claim }) => {
+    const userToken = await mintUserToken({ sub: 'test-unrelated-roles', tid: TENANT_A.tenantId, site: SITE_A, roles });
+    const invocationToken = await mintServiceToken({ caller: 'gateway', audience: SERVICE });
+    const outcome = await outcomeOf(() =>
+      inject(probeRequest(route), {
+        authorization: `Bearer ${userToken}`,
+        [INVOCATION_HEADER]: `Bearer ${invocationToken}`,
+      }),
+    );
+    expect({ status: outcome.status, problems: denialProblems(outcome, `${keyOf(route)} user roles ${claim}`) }).toEqual({
+      status: 403,
+      problems: [],
+    });
+  });
+});
 
 /** `data` of a legacy success envelope. */
 function dataOf(body: unknown): unknown {

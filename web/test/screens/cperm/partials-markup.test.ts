@@ -29,6 +29,7 @@ import {
   type AdminRequestPartial,
 } from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
+import { REQUESTED_SITE_CASES } from '../../helpers/requested-site';
 
 const MAIN = { circuit: 'cperm', item: 'main' } as const;
 const ALLOW: GateDecision = { kind: 'allow' };
@@ -117,6 +118,13 @@ describe('cpermGate', () => {
   it('secures a system user without the Admin group', async () => {
     const req = makeAdminRequest({ ...MAIN, session: { siteid: 'tenant-a' } }, 'systemUser');
     expect(await gate(req)).toEqual({ decision: { kind: 'redirect', location: './' }, secureCalls: 1 });
+  });
+
+  it.each(REQUESTED_SITE_CASES)('admits $who only when it administers that site', async ({ request, administers }) => {
+    const req = request(MAIN);
+    expect(await gate(req)).toEqual(
+      administers ? { decision: ALLOW, secureCalls: 0 } : { decision: secure(req), secureCalls: 1 },
+    );
   });
 
   it.each([

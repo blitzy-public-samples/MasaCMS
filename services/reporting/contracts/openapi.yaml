@@ -8,7 +8,7 @@ info:
 servers:
   - url: http://127.0.0.1:8116
     description: local
-x-opt2-calls: [finance, timesheets]
+x-opt2-calls: [finance, identity, timesheets]
 tags:
   - name: fixture
     description: Fixture routes, answered as `legacy-fixtures/cfml/modules/reporting.cfc` answers them.
@@ -16,6 +16,8 @@ tags:
     description: JSON API of the OPT-2 reporting screens; a breaking change takes a /v2/ prefix.
   - name: files
     description: Local signed-URL downloads of export objects.
+  - name: internal
+    description: Service-to-service reads of the export source producers.
   - name: tasks
     description: Managed Cloud Tasks deliveries and queue control.
   - name: events
@@ -260,6 +262,8 @@ paths:
           invocationCredential: []
       parameters:
         - $ref: '#/components/parameters/SiteIdQuery'
+        - $ref: '#/components/parameters/CsrfTokenHeader'
+        - $ref: '#/components/parameters/CsrfExpiresHeader'
       requestBody:
         required: true
         content:
@@ -278,6 +282,7 @@ paths:
                 $ref: '#/components/schemas/ExportJobBody'
         '400':
           $ref: '#/components/responses/BadRequest'
+          description: 'Legacy 400: `invalidTokens` (`Invalid CSRF tokens`) without a valid CSRF token of the empty context, `invalidParameters` or `badRequest`.'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -432,6 +437,53 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
           description: No object is stored under the key.
+  /internal/v1/exports/{exportId}/source-scope:
+    parameters:
+      - name: exportId
+        in: path
+        required: true
+        description: Id of the export job a source read names.
+        schema:
+          $ref: '#/components/schemas/CfUuid'
+    get:
+      operationId: getExportSourceScope
+      summary: The stored scope of an export job whose definition reads the calling producer's source, which that producer checks before it serves an export read.
+      description: The job is read under the tenant reporting's own registry gives `siteId`. A source read is served only while the job is `running` under the claim the read names, in the tenant the producer's own registry gives the same site.
+      tags:
+        - internal
+      x-opt2-transport: service
+      x-opt2-requires:
+        - service:finance
+        - service:timesheets
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: siteId
+          in: query
+          required: true
+          description: Legacy site id the source read names.
+          schema:
+            $ref: '#/components/schemas/SiteId'
+      responses:
+        '200':
+          description: The job's stored scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportSourceScope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+          description: The site is unregistered, the job is not stored under its tenant or site, or its definition reads no source of the caller.
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /internal/v1/tasks/exports/{exportId}/run:
     parameters:
       - name: exportId
@@ -1860,11 +1912,10 @@ components:
         payload: {}
     ExportTaskPayload:
       type: object
-      description: The export job a `reporting-export-run` task runs, the business date its source is read as of and the requester's token the source reads carry.
+      description: The export job a `reporting-export-run` task runs and the business date its source is read as of. The run acts as System; it carries no user credential and reads its source through the producers' export reads.
       required:
         - jobId
         - asOf
-        - userToken
       additionalProperties: false
       properties:
         jobId:
@@ -1874,10 +1925,47 @@ components:
           type: string
           format: date
           pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+        sessionId:
+          type: string
+          minLength: 1
+          deprecated: true
+          description: Creating session in tasks queued by an earlier release; accepted and never read.
         userToken:
           type: string
           minLength: 1
-          description: Site-scoped user token of the requester, sent as `Authorization` on the finance and timesheets source reads, whose routes act only for a verified user; the task route itself never accepts it as a credential.
+          deprecated: true
+          description: Requester's user token in tasks queued by an earlier release; accepted, never read and never sent.
+    ExportSourceScope:
+      type: object
+      description: An export job's stored scope, as an export source producer checks it before serving a read the job's run names.
+      required:
+        - exportId
+        - tenantId
+        - siteId
+        - source
+        - state
+        - claim
+      additionalProperties: false
+      properties:
+        exportId:
+          $ref: '#/components/schemas/CfUuid'
+        tenantId:
+          type: string
+          format: uuid
+          description: Tenant the job is stored under.
+        siteId:
+          $ref: '#/components/schemas/SiteId'
+        source:
+          type: string
+          description: Source the job's definition reads.
+          enum:
+            - timesheets.sheets
+            - finance.records
+        state:
+          $ref: '#/components/schemas/ExportState'
+        claim:
+          $ref: '#/components/schemas/DigitString'
+          description: Row version the job holds; a running job's reads name the version its current run claimed it at.
     ExportTaskWireBody:
       description: Task wire body of an export task, which names the tenant of its job.
       allOf:
@@ -1989,6 +2077,10 @@ components:
           const: reporting
         paused:
           type: boolean
+        running:
+          type: integer
+          minimum: 0
+          description: Tasks of the queue still running when pause answered.
         ensured:
           $ref: '#/components/schemas/EnsureRecurringResult'
     CanonicalType:

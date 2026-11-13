@@ -38,6 +38,7 @@ import { baseEnvSchema, loadEnv } from '../../src/service-kit/env.js';
 import { testVerifier } from '../../src/testing/index.js';
 import {
   activeSpanIds,
+  flushTracing,
   MemorySpanExporter,
   shutdownTracing,
   SpanKind,
@@ -348,6 +349,15 @@ describe('createServiceClient with a MockAgent', () => {
     expect(callCount()).toBe(1);
   });
 
+  it.each<[string, unknown, string]>([
+    ['a cause whose code has another shape', Object.assign(new Error('x'), { code: 'auth/network-error', name: 'FirebaseAuthError' }), 'FirebaseAuthError'],
+    ['a cause with a numeric code', new DOMException('aborted', 'AbortError'), 'AbortError'],
+    ['a cause with a free-text code and name', { code: 'refused by ada@example.com', name: 'Ada Lovelace' }, 'unknown'],
+    ['a missing cause', undefined, 'unknown'],
+  ])('names %s in the ServiceUnavailableError message by a safe failure code only', (_label, cause, code) => {
+    expect(new ServiceUnavailableError('identity', cause).message).toBe(`Service identity unavailable (${code})`);
+  });
+
   it('propagates any other dispatch error unchanged', async () => {
     const boom = new Error('boom');
     agent.get(IDENTITY).intercept({ path: '/x' }).replyWithError(boom);
@@ -586,10 +596,13 @@ describe('createServiceClient with its own Agent', () => {
       await shutdownTracing();
     });
 
-    it('sends exactly one traceparent, from the undici client span', async () => {
+    it.each<[ServiceRequest['method'], string]>([
+      ['GET', '/ok'],
+      ['POST', '/echo'],
+    ])('sends exactly one traceparent, from the undici client span named "%s echo"', async (method, path) => {
       const client = ownClient();
       const caller = await startSpan('caller', SpanKind.SERVER, async () => {
-        await client.request({ service: 'echo', method: 'GET', path: '/ok' });
+        await client.request({ service: 'echo', method, path });
         return activeSpanIds();
       });
       await client.close();
@@ -598,6 +611,9 @@ describe('createServiceClient with its own Agent', () => {
       const [, traceId, parentId] = TRACEPARENT.exec(received?.[0] ?? '') ?? [];
       expect(traceId).toBe(caller?.traceId);
       expect(parentId).not.toBe(caller?.spanId);
+      await flushTracing();
+      const span = exporter.getFinishedSpans().find((finished) => finished.spanContext().spanId === parentId);
+      expect(span).toMatchObject({ name: `${method} echo`, kind: SpanKind.CLIENT });
     });
   });
 });

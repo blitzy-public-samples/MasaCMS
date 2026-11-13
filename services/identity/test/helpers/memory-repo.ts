@@ -38,6 +38,7 @@ import {
   charKey,
   createIdentityRepository,
   lastUpdateInfo,
+  type AccountFilter,
   type AccountInput,
   type AccountOperationInput,
   type AccountOperationPatch,
@@ -46,6 +47,7 @@ import {
   type AuditActor,
   type AuditNames,
   type CountedGroupList,
+  type CountedGroupPage,
   type CountedGroupRow,
   type CredentialValues,
   type CsrfClaimFilter,
@@ -59,14 +61,20 @@ import {
   type GroupAddressUpdate,
   type GroupExtendDataReplacement,
   type GroupInput,
+  type GroupMemberCount,
   type GroupMemberPage,
   type GroupMemberProbe,
   type GroupMemberRow,
   type GroupMembership,
+  type GroupRelation,
   type GroupUpdate,
   type IdentityRepository,
   type IdentityRepositoryOptions,
   type KeyedGroupMember,
+  type ListPage,
+  type ListedAccountCount,
+  type ListedPage,
+  type MembershipRecords,
   type ModuleGrant,
   type OAuthClientInput,
   type OAuthClientValues,
@@ -83,6 +91,7 @@ import {
   type SessionLockMode,
   type SessionPatch,
   type StrikeValues,
+  type UsernameCandidateRow,
 } from '../../src/repo/repository.js';
 import {
   ACCOUNT_OPERATION,
@@ -139,6 +148,8 @@ import {
   type UserDeviceRow,
   type UserStrikeRow,
 } from '../../src/repo/tables.js';
+import type { GroupFeedPage, GroupFeedQuery } from '../../src/repo/group-feed.js';
+import { conditionTest, feedOrder } from '../../src/routes/legacy-api.js';
 
 const DEFINITIONS: ReadonlyMap<string, IdentityTableDefinition> = new Map(OWNED_TABLES.map((def) => [def.table, def]));
 
@@ -972,8 +983,13 @@ export interface MemoryWrite {
   readonly after?: Readonly<RepositoryRow>;
 }
 
-/** Members of the platform repository the memory store cannot honour without SQL; reading one throws. */
-type Unimplemented = 'base' | 'read' | 'insertAbsent' | 'deleteOne' | 'replaceOne';
+/** Repository members the memory store cannot honour without SQL; reading one throws. */
+type Unimplemented =
+  | 'base'
+  | 'read'
+  | 'insertAbsent'
+  | 'deleteOne'
+  | 'replaceOne';
 
 /** The recording members of a {@link MemoryIdentityRepo}. */
 interface MemoryExtras {
@@ -1095,6 +1111,35 @@ function ciEq(a: string | null | undefined, b: string | null | undefined): boole
 
 function isOpenState(state: unknown): boolean {
   return (OPEN_OPERATION_STATES as readonly unknown[]).includes(state);
+}
+
+/** `value COLLATE "C" ILIKE pattern ESCAPE ''`: `%` any run, `_` one character, ASCII letters folded, every other character literal. */
+function cIlike(value: string, pattern: string): boolean {
+  const fold = (text: string): string[] => Array.from(text.replace(/[A-Z]/g, (c) => c.toLowerCase()));
+  const chars = fold(value);
+  const wanted = fold(pattern);
+  let i = 0;
+  let j = 0;
+  let star = -1;
+  let resume = 0;
+  while (i < chars.length) {
+    if (wanted[j] === '%') {
+      star = j;
+      resume = i;
+      j += 1;
+    } else if (j < wanted.length && (wanted[j] === '_' || wanted[j] === chars[i])) {
+      i += 1;
+      j += 1;
+    } else if (star !== -1) {
+      resume += 1;
+      i = resume;
+      j = star + 1;
+    } else {
+      return false;
+    }
+  }
+  while (wanted[j] === '%') j += 1;
+  return j === wanted.length;
 }
 
 type Order<R> = (a: R, b: R) => number;
@@ -1443,11 +1488,45 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     return row !== undefined && (row.opt2_state === 'active' || opts.includePending === true) ? copyRow(row) : null;
   }
 
-  async function readAccountRecords(tx: TenantTx, userIds: readonly string[]): Promise<AccountRecordRow[]> {
-    const tenantId = await gated(tx, [USER_ACCOUNT.unit, CREDENTIAL.unit, LOGIN_STATE.unit]);
+  /** The users of `tenantId` an open account operation keeps closed, by user id key. */
+  function closedUserKeys(tenantId: string): Set<string> {
+    return new Set(scan(ACCOUNT_OPERATION.table, tenantId, (operation) => isOpenState(operation.state)).map((operation) => charKey(operation.user_id)));
+  }
+
+  /** `units` plus the membership unit an `unassigned` filter reads. */
+  function filterUnits(units: readonly string[], filter: AccountFilter | undefined): string[] {
+    return filter?.unassigned === undefined ? [...units] : [...units, MEMBERSHIP.unit];
+  }
+
+  /** Whether account `row` of `tenantId` passes `filter`; a NULL column fails every given predicate, as SQL Server's comparisons do. */
+  function passesFilter(row: UserAccountRow, tenantId: string, filter: AccountFilter = {}): boolean {
+    const { unassigned } = filter;
+    const held = (): boolean => scan(MEMBERSHIP.table, tenantId, (membership) => ciEq(membership.userid, row.userid)).length > 0;
+    return (
+      (filter.isPublic === undefined || row.ispublic === filter.isPublic) &&
+      (filter.s2 === undefined || row.s2 === filter.s2) &&
+      (filter.excludeS2Users !== true || (row.s2 !== null && row.s2 !== 1)) &&
+      (filter.inActive === undefined || row.inactive === filter.inActive) &&
+      (filter.siteIds === undefined || filter.siteIds.some((siteId) => ciEq(row.siteid, siteId))) &&
+      (unassigned === undefined || (!(unassigned.ownMemberships && held()) && !unassigned.assignedElsewhere.some((userId) => ciEq(userId, row.userid))))
+    );
+  }
+
+  /** The Type=2 accounts of `tenantId`, of pool site `siteId` unless null. */
+  function scopedAccounts(tenantId: string, siteId: string | null, where: (row: UserAccountRow) => boolean = () => true): UserAccountRow[] {
+    return scan(USER_ACCOUNT.table, tenantId, (row) => row.type === 2 && (siteId === null || ciEq(row.siteid, siteId)) && where(row));
+  }
+
+  async function readAccountRecords(tx: TenantTx, userIds: readonly string[], filter?: AccountFilter): Promise<AccountRecordRow[]> {
+    const tenantId = await gated(tx, filterUnits([USER_ACCOUNT.unit, CREDENTIAL.unit, LOGIN_STATE.unit], filter));
     const wanted = new Set(userIds.map(charKey));
-    const closed = new Set(scan(ACCOUNT_OPERATION.table, tenantId, (operation) => isOpenState(operation.state)).map((operation) => charKey(operation.user_id)));
-    const accounts = scan(USER_ACCOUNT.table, tenantId, (row) => row.type === 2 && wanted.has(charKey(row.userid)));
+    const closed = closedUserKeys(tenantId);
+    // A closed account is read whatever the filter, so the caller still waits for it.
+    const accounts = scan(
+      USER_ACCOUNT.table,
+      tenantId,
+      (row) => row.type === 2 && wanted.has(charKey(row.userid)) && (filter === undefined || closed.has(charKey(row.userid)) || passesFilter(row, tenantId, filter)),
+    );
     return sorted(accounts, byUserid).map((row) => {
       const { tenant_id: _tenantId, ...account } = copyRow(row);
       return {
@@ -1457,6 +1536,50 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
         closed: closed.has(charKey(row.userid)),
       };
     });
+  }
+
+  async function countListedAccounts(tx: TenantTx, scope: { siteId: string | null; filter?: AccountFilter }): Promise<ListedAccountCount> {
+    const tenantId = await gated(tx, filterUnits([USER_ACCOUNT.unit], scope.filter));
+    const count = scopedAccounts(tenantId, scope.siteId, (row) => row.opt2_state === 'active' && passesFilter(row, tenantId, scope.filter)).length;
+    const scoped = new Set(scopedAccounts(tenantId, scope.siteId).map((row) => charKey(row.userid)));
+    const operations = scan(ACCOUNT_OPERATION.table, tenantId, (operation) => isOpenState(operation.state) && scoped.has(charKey(operation.user_id)));
+    return { count, closed: sorted(operations.map((operation) => operation.user_id), by(charKey)) };
+  }
+
+  async function readUsernameCandidates(
+    tx: TenantTx,
+    query: { siteId: string; pattern: string; filter?: AccountFilter; limit: number },
+  ): Promise<UsernameCandidateRow[]> {
+    const tenantId = await gated(tx, filterUnits([USER_ACCOUNT.unit], query.filter));
+    const closed = closedUserKeys(tenantId);
+    const matched = scopedAccounts(tenantId, query.siteId, (row) => row.opt2_state === 'active' && passesFilter(row, tenantId, query.filter)).filter(
+      (row): row is UserAccountRow & { username: string } => row.username !== null && cIlike(row.username, query.pattern),
+    );
+    return sorted(matched, byUserid)
+      .slice(0, query.limit)
+      .map(({ userid, username }) => ({ userid, username, closed: closed.has(charKey(userid)) }));
+  }
+
+  async function foreignMemberIds(tx: TenantTx, userIds: readonly string[] | null): Promise<string[]> {
+    const tenantId = await gated(tx, [MEMBERSHIP.unit, USER_ACCOUNT.unit, GROUP_ACCOUNT.unit]);
+    const wanted = userIds === null ? null : new Set(userIds.map(charKey));
+    const foreign = new Map<string, string>();
+    for (const membership of scan(MEMBERSHIP.table, tenantId, (row) => wanted === null || wanted.has(charKey(row.userid)))) {
+      const stored = find(USER_ACCOUNT, tenantId, { userid: membership.userid }) ?? find(GROUP_ACCOUNT, tenantId, { userid: membership.userid });
+      if (stored === undefined && !foreign.has(charKey(membership.userid))) foreign.set(charKey(membership.userid), membership.userid);
+    }
+    return sorted([...foreign.values()], by(charKey));
+  }
+
+  async function readMembershipRecords(tx: TenantTx, userIds: readonly string[]): Promise<MembershipRecords> {
+    const tenantId = await gated(tx, [MEMBERSHIP.unit]);
+    const wanted = new Set(userIds.map(charKey));
+    const rows = scan(MEMBERSHIP.table, tenantId, (row) => wanted.has(charKey(row.userid)));
+    const operations = scan(ACCOUNT_OPERATION.table, tenantId, (operation) => isOpenState(operation.state) && wanted.has(charKey(operation.user_id)));
+    return {
+      rows: sorted(rows, byUserid, by((row) => charKey(row.groupid))).map(({ userid, groupid }) => ({ userid, groupid })),
+      closed: sorted(operations.map((operation) => operation.user_id), by(charKey)),
+    };
   }
 
   async function isUsernameTaken(tx: TenantTx, username: string, exceptUserId: string): Promise<boolean> {
@@ -1550,6 +1673,28 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     return first === undefined ? null : copyRow(first);
   }
 
+  async function findGroupsByColumn(
+    tx: TenantTx,
+    column: 'groupname' | 'username' | 'remoteid',
+    value: string,
+    siteIds: readonly string[],
+  ): Promise<GroupAccountRow[]> {
+    if (siteIds.length === 0) return [];
+    const tenantId = await gated(tx, [GROUP_ACCOUNT.unit]);
+    const found = scan(
+      GROUP_ACCOUNT.table,
+      tenantId,
+      (row) => ci(row[column]) === charKey(value) && siteIds.includes(row.siteid ?? '') && (column !== 'groupname' || row.type === 1),
+    );
+    return sorted(found, byUserid).map(copyRow);
+  }
+
+  async function countAccountsByColumn(tx: TenantTx, column: 'username' | 'remoteid', value: string, siteIds: readonly string[]): Promise<number> {
+    if (siteIds.length === 0) return 0;
+    const tenantId = await gated(tx, [USER_ACCOUNT.unit]);
+    return scan(USER_ACCOUNT.table, tenantId, (row) => ci(row[column]) === charKey(value) && siteIds.includes(row.siteid ?? '')).length;
+  }
+
   /** Type=1 groups of `poolSiteId` with that visibility, by lowered name (NULL first) then userid. */
   function groupsOf(tenantId: string, poolSiteId: string, isPublic: boolean | number, excludeAdmin: boolean): GroupAccountRow[] {
     const visibility = flag(isPublic) ? 1 : 0;
@@ -1596,6 +1741,77 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     // The closure rides on the listed rows, so a listing without groups names no closing user.
     const closed = groups.length === 0 ? [] : affectingUsers(tenantId, (groupId) => listedIds.has(charKey(groupId)));
     return { groups: closed.length > 0 ? groups.slice(0, pageSize) : groups, closed };
+  }
+
+  async function pageCountedGroups(tx: TenantTx, poolSiteId: string, isPublic: boolean | number, page: ListPage): Promise<CountedGroupPage> {
+    const tenantId = await gated(tx, [GROUP_ACCOUNT.unit, MEMBERSHIP.unit, USER_ACCOUNT.unit]);
+    // SQL Server sorts a NULL Perm last under DESC; the name order breaks ties.
+    const listed = sorted(
+      groupsOf(tenantId, poolSiteId, isPublic, false),
+      by((row) => row.perm, { desc: true, nulls: 'last' }),
+      by((row) => row.groupname?.toLowerCase() ?? null, { nulls: 'first' }),
+      byUserid,
+    );
+    const windowed = listed.slice(page.offset, page.offset + page.limit);
+    const windowIds = new Set(windowed.map((group) => charKey(group.userid)));
+    const counts = new Map<string, number>();
+    for (const membership of scan(MEMBERSHIP.table, tenantId, (row) => windowIds.has(charKey(row.groupid)))) {
+      const account = find(USER_ACCOUNT, tenantId, { userid: membership.userid });
+      const counted = (account?.opt2_state === 'active' ? 1 : 0) + (find(GROUP_ACCOUNT, tenantId, { userid: membership.userid }) === undefined ? 0 : 1);
+      const groupKey = charKey(membership.groupid);
+      if (counted > 0) counts.set(groupKey, (counts.get(groupKey) ?? 0) + counted);
+    }
+    const groups: CountedGroupRow[] = windowed.map((group) => ({ ...copyRow(group), counter: counts.get(charKey(group.userid)) ?? null }));
+    // The closure rides on the window's groups, so a window without groups names no closing user.
+    const closed = groups.length === 0 ? [] : affectingUsers(tenantId, (groupId) => windowIds.has(charKey(groupId)));
+    return { groups, total: listed.length, closed };
+  }
+
+  async function* groupFeedPages(
+    tx: TenantTx,
+    poolSiteId: string,
+    isPublic: boolean | number,
+    opts: { includeS2?: boolean; inactive?: number } = {},
+  ): AsyncGenerator<GroupAccountRow[], void, undefined> {
+    const tenantId = await gated(tx, [GROUP_ACCOUNT.unit]);
+    const visibility = flag(isPublic) ? 1 : 0;
+    // A NULL s2 or inactive matches neither filter, as in SQL.
+    const rows = scan(
+      GROUP_ACCOUNT.table,
+      tenantId,
+      (row) =>
+        row.type === 1 &&
+        row.ispublic === visibility &&
+        ciEq(row.siteid, poolSiteId) &&
+        (opts.includeS2 === true || row.s2 === 0) &&
+        (opts.inactive === undefined || row.inactive === opts.inactive),
+    );
+    const ordered = sorted(rows, byUserid);
+    for (let start = 0; start < ordered.length; start += pageSize) yield ordered.slice(start, start + pageSize).map(copyRow);
+  }
+
+  /** readGroupFeed with the feed's own row tests and order, which its SQL reproduces. */
+  async function readGroupFeed(tx: TenantTx, poolSiteId: string, isPublic: boolean | number, query: GroupFeedQuery): Promise<GroupFeedPage> {
+    const tenantId = await gated(tx, [GROUP_ACCOUNT.unit]);
+    const visibility = flag(isPublic) ? 1 : 0;
+    const groups: Array<Array<(row: GroupAccountRow) => boolean>> = [];
+    query.filters.forEach(({ relationship, condition }, i) => {
+      if (i === 0 || relationship === 'or') groups.push([conditionTest(condition)]);
+      else groups.at(-1)?.push(conditionTest(condition));
+    });
+    const rows = scan(
+      GROUP_ACCOUNT.table,
+      tenantId,
+      (row) =>
+        row.type === 1 &&
+        row.ispublic === visibility &&
+        ciEq(row.siteid, poolSiteId) &&
+        (query.includeS2 === true || row.s2 === 0) &&
+        (query.inactive === undefined || row.inactive === query.inactive) &&
+        (groups.length === 0 || groups.some((group) => group.every((test) => test(row)))),
+    );
+    const ordered = [...rows].sort((a, b) => feedOrder(query.order, a, b));
+    return { rows: ordered.slice(0, query.limit).map(copyRow), total: Math.min(ordered.length, query.top) };
   }
 
   async function listPoolGroups(tx: TenantTx, poolSiteId: string, isPublic: 0 | 1): Promise<PoolGroupRow[]> {
@@ -1852,6 +2068,41 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     return sorted(rows, by((row) => charKey(row.categoryid))).map((row) => row.categoryid);
   }
 
+  async function hasGroupExtendData(tx: TenantTx, groupId: string): Promise<boolean> {
+    const tenantId = await gated(tx, [GROUP_EXTEND_DATA.unit]);
+    return scan(GROUP_EXTEND_DATA.table, tenantId, (row) => ciEq(row.baseid, groupId)).length > 0;
+  }
+
+  async function listGroupRelationRows(tx: TenantTx, relation: GroupRelation, groupIds: readonly string[]): Promise<RepositoryRow[]> {
+    if (groupIds.length === 0) return [];
+    const wanted = new Set(groupIds.map(charKey));
+    const held = (userid: string | null): boolean => userid !== null && wanted.has(charKey(userid));
+    switch (relation) {
+      case 'tuserstags': {
+        const tenantId = await gated(tx, [GROUP_TAG.unit]);
+        return sorted(scan(GROUP_TAG.table, tenantId, (row) => held(row.userid)), by((row) => row.tagid)).map(copyRow);
+      }
+      case 'tusersinterests': {
+        const tenantId = await gated(tx, [GROUP_INTEREST.unit]);
+        const rows = scan(GROUP_INTEREST.table, tenantId, (row) => held(row.userid));
+        return sorted(rows, by((row) => charKey(row.userid)), by((row) => charKey(row.categoryid))).map(copyRow);
+      }
+      case 'tuseraddresses': {
+        const tenantId = await gated(tx, [GROUP_ADDRESS.unit]);
+        return sorted(scan(GROUP_ADDRESS.table, tenantId, (row) => held(row.userid)), by((row) => charKey(row.addressid))).map(copyRow);
+      }
+      case 'tusersfavorites': {
+        const tenantId = await gated(tx, [GROUP_FAVORITE.unit]);
+        return sorted(scan(GROUP_FAVORITE.table, tenantId, (row) => held(row.userid)), by((row) => charKey(row.favoriteid))).map(copyRow);
+      }
+      case 'tusersmemb': {
+        const tenantId = await gated(tx, [MEMBERSHIP.unit]);
+        const rows = scan(MEMBERSHIP.table, tenantId, (row) => held(row.userid));
+        return sorted(rows, by((row) => charKey(row.userid)), by((row) => charKey(row.groupid))).map(copyRow);
+      }
+    }
+  }
+
   /** Deletes every tag stored for `groupId`. */
   async function deleteTagRows(tx: TenantTx, groupId: string, ctx: WriteContext): Promise<number> {
     const tenantId = await gated(tx, [GROUP_TAG.unit]);
@@ -2019,24 +2270,43 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
       const account = find(USER_ACCOUNT, tenantId, { userid: membership.userid });
       if (account !== undefined && account.opt2_state === 'active' && (includeS2 || account.s2 === 0)) {
         const contact = find(PERSON_CONTACT, tenantId, { user_id: account.userid });
+        const { userid, type, username, siteid, ispublic, s2, inactive, perm, remoteid, tablist } = account;
         members.push({
-          userid: account.userid,
-          type: account.type,
-          username: account.username,
-          siteid: account.siteid,
-          ispublic: account.ispublic,
-          s2: account.s2,
-          inactive: account.inactive,
+          userid, type, username, siteid, ispublic, s2, inactive,
           fname: contact?.fname ?? null,
           lname: contact?.lname ?? null,
           email: contact?.email ?? null,
           company: contact?.company ?? null,
+          groupname: contact?.groupname ?? null,
+          passwordcreated: find(CREDENTIAL, tenantId, { userid })?.passwordcreated ?? null,
+          jobtitle: contact?.jobtitle ?? null,
+          mobilephone: contact?.mobilephone ?? null,
+          website: contact?.website ?? null,
+          subtype: contact?.subtype ?? null,
+          contactform: contact?.contactform ?? null,
+          lastlogin: find(LOGIN_STATE, tenantId, { userid })?.lastlogin ?? null,
+          lastupdate: contact?.lastupdate ?? null,
+          lastupdateby: contact?.lastupdateby ?? null,
+          lastupdatebyid: contact?.lastupdatebyid ?? null,
+          perm,
+          subscribe: contact?.subscribe ?? null,
+          notes: contact?.notes ?? null,
+          description: contact?.description ?? null,
+          interests: contact?.interests ?? null,
+          keepprivate: contact?.keepprivate ?? null,
+          photofileid: contact?.photofileid ?? null,
+          imname: contact?.imname ?? null,
+          imservice: contact?.imservice ?? null,
+          created: contact?.created ?? null,
+          remoteid,
+          tags: contact?.tags ?? null,
+          tablist,
         });
       }
       const group = find(GROUP_ACCOUNT, tenantId, { userid: membership.userid });
       if (group !== undefined && (includeS2 || group.s2 === 0)) {
-        const { userid, type, username, siteid, ispublic, s2, inactive, fname, lname, email, company } = group;
-        members.push({ userid, type, username, siteid, ispublic, s2, inactive, fname, lname, email, company });
+        const { tenant_id: _tenant, password: _password, ext: _ext, admin: _admin, row_version: _version, ...member } = group;
+        members.push(member);
       }
     }
     // Legacy orders by lname, NULL first; the lowered names compare by code point, as the "C" collation does.
@@ -2047,9 +2317,13 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     );
   }
 
-  async function* memberPages(tx: TenantTx, groupId: string, opts: { includeS2?: boolean } = {}): AsyncGenerator<GroupMemberPage, void, undefined> {
-    const tenantId = await gated(tx, [MEMBERSHIP.unit, USER_ACCOUNT.unit, GROUP_ACCOUNT.unit]);
-    const members = memberRows(tenantId, groupId, opts.includeS2 === true);
+  async function* memberPages(
+    tx: TenantTx,
+    groupId: string,
+    opts: { includeS2?: boolean; limit?: number } = {},
+  ): AsyncGenerator<GroupMemberPage, void, undefined> {
+    const tenantId = await gated(tx, [MEMBERSHIP.unit, USER_ACCOUNT.unit, CREDENTIAL.unit, LOGIN_STATE.unit, GROUP_ACCOUNT.unit]);
+    const members = memberRows(tenantId, groupId, opts.includeS2 === true).slice(0, opts.limit);
     const closed = affectingUsers(tenantId, (id) => ciEq(id, groupId));
     // The first page is yielded even when empty, carrying the closure; later pages only when they hold members.
     for (let start = 0; start === 0 || start < members.length; start += pageSize) {
@@ -2064,9 +2338,17 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
   }
 
   async function probeMembers(tx: TenantTx, groupId: string, opts: { includeS2?: boolean } = {}): Promise<GroupMemberProbe> {
-    const tenantId = await gated(tx, [MEMBERSHIP.unit, USER_ACCOUNT.unit, GROUP_ACCOUNT.unit]);
+    const tenantId = await gated(tx, [MEMBERSHIP.unit, USER_ACCOUNT.unit, CREDENTIAL.unit, LOGIN_STATE.unit, GROUP_ACCOUNT.unit]);
     return {
       listed: memberRows(tenantId, groupId, opts.includeS2 === true).length > 0,
+      closed: affectingUsers(tenantId, (id) => ciEq(id, groupId)),
+    };
+  }
+
+  async function countMembers(tx: TenantTx, groupId: string, opts: { includeS2?: boolean } = {}): Promise<GroupMemberCount> {
+    const tenantId = await gated(tx, [MEMBERSHIP.unit, USER_ACCOUNT.unit, CREDENTIAL.unit, LOGIN_STATE.unit, GROUP_ACCOUNT.unit]);
+    return {
+      total: memberRows(tenantId, groupId, opts.includeS2 === true).length,
       closed: affectingUsers(tenantId, (id) => ciEq(id, groupId)),
     };
   }
@@ -2295,12 +2577,13 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     return insert<RedirectRow>(tx, REDIRECT.table, ormRow(stored, REDIRECT), ctx);
   }
 
-  async function listOAuthClients(tx: TenantTx, siteId: string): Promise<OAuthClientRow[]> {
+  async function listOAuthClients(tx: TenantTx, siteId: string, page: ListPage): Promise<ListedPage<OAuthClientRow>> {
     const tenantId = await gated(tx, [OAUTH_CLIENT.unit]);
-    return sorted(
+    const clients = sorted(
       scan(OAUTH_CLIENT.table, tenantId, (row) => ciEq(row.siteid, siteId)),
       by((row) => charKey(row.clientid)),
-    ).map(copyRow);
+    );
+    return { items: clients.slice(page.offset, page.offset + page.limit).map(copyRow), total: clients.length };
   }
 
   function findOAuthClient(tx: TenantTx, clientId: string): Promise<OAuthClientRow | null> {
@@ -2613,6 +2896,9 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     findAccountByUsername,
     findAccountById,
     readAccountRecords,
+    countListedAccounts,
+    readUsernameCandidates,
+    foreignMemberIds,
     isUsernameTaken,
     insertAccount,
     updateAccount,
@@ -2625,8 +2911,13 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     findGroup,
     findGroupsByIds,
     findGroupByName,
+    findGroupsByColumn,
+    countAccountsByColumn,
     listGroups,
     listCountedGroups,
+    pageCountedGroups,
+    groupFeedPages,
+    readGroupFeed,
     listPoolGroups,
     insertGroup,
     updateGroup,
@@ -2638,6 +2929,8 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     deleteGroupAddresses,
     replaceGroupInterests,
     groupInterestIds,
+    hasGroupExtendData,
+    listGroupRelationRows,
     replaceGroupTags,
     deleteGroupTags,
     deleteGroupFavorites,
@@ -2645,6 +2938,7 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     deleteGroupExtendData,
     membershipsOf,
     membershipGroupIds,
+    readMembershipRecords,
     replaceMemberships,
     clearBadMemberships,
     addMembership,
@@ -2652,6 +2946,7 @@ export function createMemoryIdentityRepo(seed: IdentitySeed = {}, options: Ident
     membersOf,
     memberPages,
     probeMembers,
+    countMembers,
     permissionsFor,
     groupPermissions,
     replaceNodePermissions,

@@ -18,14 +18,32 @@ const NAMED_CODE = /^(?:ERR|FST)_[A-Z0-9_]+$/;
 /** Stack frame line. */
 const FRAME = /^\s+at \S/;
 
+/** Failure code of an unavailable callee: a system, undici or HTTP-status code, an error class name, or `unknown`. */
+const FAILURE_CODE = String.raw`(?:E[A-Z0-9_]+|UND_ERR_[A-Z0-9_]+|HTTP_[0-9]{3}|(?:[A-Z][A-Za-z0-9]*)?Error|unknown)`;
+
+/** Text that is exactly one FAILURE_CODE. */
+const FAILURE_CODE_TEXT = new RegExp(`^${FAILURE_CODE}$`);
+
 /** Every text `safeErrorMessage` produces besides REDACTED, plus the sanitized message of @opentelemetry/instrumentation-pg. */
-const SAFE_TEXT =
-  /^(?:PostgreSQL error [0-9A-Z]{5}|[a-z][A-Za-z0-9_]* E[A-Z0-9_]+|(?:ERR|FST)_[A-Z0-9_]+|PostgreSQL error of type '\w+' occurred \(code: [0-9A-Z]{5}\))$/;
+const SAFE_TEXT = new RegExp(
+  String.raw`^(?:PostgreSQL error [0-9A-Z]{5}|[a-z][A-Za-z0-9_]* E[A-Z0-9_]+|(?:ERR|FST)_[A-Z0-9_]+|PostgreSQL error of type '\w+' occurred \(code: [0-9A-Z]{5}\)|Service [a-z][a-z0-9-]* unavailable \(${FAILURE_CODE}\))$`,
+);
+
+/** Most causes `safeErrorMessage` follows past an error without identifiers; also ends a cyclic chain. */
+const MAX_CAUSE_DEPTH = 4;
+
+/** Key under which an error supplies its own diagnostic text; kept only when it is a fixed safe text. */
+export const SAFE_ERROR_TEXT: unique symbol = Symbol.for('@opt2/platform/logging.safeErrorText');
+
+/** Whether `token` may stand as the failure code in `Service <name> unavailable (<code>)`. */
+export function isSafeFailureCode(token: string): boolean {
+  return FAILURE_CODE_TEXT.test(token);
+}
 
 /** String property `key` of an object value, or undefined. */
-function stringProperty(value: unknown, key: string): string | undefined {
+function stringProperty(value: unknown, key: PropertyKey): string | undefined {
   if (typeof value !== 'object' || value === null) return undefined;
-  const property: unknown = (value as Record<string, unknown>)[key];
+  const property: unknown = (value as Record<PropertyKey, unknown>)[key];
   return typeof property === 'string' ? property : undefined;
 }
 
@@ -34,14 +52,27 @@ function withFrames(header: string, lines: readonly string[]): string {
   return [header, ...lines.filter((line) => FRAME.test(line)).map(redactText)].join('\n');
 }
 
-/** Message of `err` built only from its diagnostic identifiers (SQLSTATE, system call and code, Node or Fastify code); otherwise REDACTED. */
-export function safeErrorMessage(err: unknown): string {
+/** Message from `err`'s own supplied safe text or diagnostic identifiers alone; otherwise REDACTED. */
+function ownSafeMessage(err: unknown): string {
+  const supplied = stringProperty(err, SAFE_ERROR_TEXT);
+  if (supplied !== undefined && SAFE_TEXT.test(supplied)) return supplied;
   const code = stringProperty(err, 'code');
   if (code === undefined) return REDACTED;
   if (SQLSTATE.test(code) && stringProperty(err, 'severity') !== undefined) return `PostgreSQL error ${code}`;
   const syscall = stringProperty(err, 'syscall');
   if (SYSTEM_CODE.test(code) && syscall !== undefined && SYSCALL.test(syscall)) return `${syscall} ${code}`;
   return NAMED_CODE.test(code) ? code : REDACTED;
+}
+
+/** Message of `err` from its supplied safe text or diagnostic identifiers (SQLSTATE, system call and code, Node or Fastify code), else from its nearest cause's; otherwise REDACTED. */
+export function safeErrorMessage(err: unknown): string {
+  let message = ownSafeMessage(err);
+  let link = err;
+  for (let depth = 0; message === REDACTED && depth < MAX_CAUSE_DEPTH && typeof link === 'object' && link !== null; depth += 1) {
+    link = (link as { cause?: unknown }).cause;
+    message = ownSafeMessage(link);
+  }
+  return message;
 }
 
 /** `header` followed by the redacted frames of `err.stack`, with every line of its message dropped; undefined without a string stack. */

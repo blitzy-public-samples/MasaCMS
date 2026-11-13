@@ -38,7 +38,10 @@ type Produced =
   | { error: ExportError }
   | { error?: undefined; fileName: string; contentType: string; objectKey: string; outputSha256: string };
 
-/** Opens, renders and streams the job's export into storage at `objectKey`, hashing it on the way; an unreadable source or any other failure becomes the job's error, a legacy 503 propagates. */
+/**
+ * Opens, renders and streams the job's export into storage at `objectKey`, hashing it on the way; an unreadable or refusing source
+ * or any other failure becomes the job's error, a legacy 503 propagates.
+ */
 async function produce(
   deps: RunExportDeps,
   input: RunExportInput,
@@ -47,7 +50,7 @@ async function produce(
   objectKey: string,
 ): Promise<Produced> {
   try {
-    const table = await openExportTable(deps, { job, definition, payload: input.payload });
+    const table = await openExportTable(deps, { job, definition, asOf: input.payload.asOf });
     const rendering = await renderExport(job.format, { definition, table, job });
     const hash = createHash('sha256');
     const hashing = new Transform({

@@ -2,7 +2,7 @@
 /** Check order, statuses and fixture error bodies of the surveys fixture auth port (legacy-fixtures/cfml/lib/auth.cfc). */
 import { readFileSync } from 'node:fs';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { Roles, SYNTHETIC_ROLES, type UserClaims } from '@opt2/platform/auth';
+import { INVOCATION_HEADER, Roles, SYNTHETIC_ROLES, type UserClaims } from '@opt2/platform/auth';
 import {
   createService,
   CSRF_CONSUME_PATH,
@@ -14,7 +14,7 @@ import {
 } from '@opt2/platform/service-kit';
 import { sha256Hex } from '@opt2/platform/migration-kit';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
-import { mintUserToken, testVerifier } from '@opt2/platform/testing';
+import { mintServiceToken, mintUserToken, testVerifier } from '@opt2/platform/testing';
 import { fixtureHandler, fixtureMethod, fixtureSuccess } from '../../src/legacy/fixture-envelope.js';
 import {
   FIXTURE_ROLES,
@@ -68,6 +68,14 @@ function claims(roles: string[], s2 = false): UserClaims {
     epoch: 0,
     iat: now,
     exp: now + 300,
+  };
+}
+
+/** Headers of a user request as the gateway forwards it: the bearer user token plus the gateway's invocation credential. */
+async function userHeaders(token: string): Promise<Record<string, string>> {
+  return {
+    authorization: `Bearer ${token}`,
+    [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'surveys' })}`,
   };
 }
 
@@ -253,7 +261,7 @@ describe('fixture check order through app.inject', () => {
     const headers: Record<string, string> = {};
     if (opts.roles !== undefined) {
       const token = await mintUserToken({ site: opts.site ?? 'tenant-a', tid: opts.tid, roles: opts.roles, sub: USER_ID });
-      headers.authorization = `Bearer ${token}`;
+      Object.assign(headers, await userHeaders(token));
     }
     if (opts.payload !== undefined) headers['content-type'] = 'application/json';
     const res = await app.inject({
@@ -335,7 +343,7 @@ describe('fixture check order through app.inject', () => {
     const res = await app.inject({
       method: 'POST',
       url: `${ROUTE}/X/responses`,
-      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/x-www-form-urlencoded' },
+      headers: { ...(await userHeaders(token)), 'content-type': 'application/x-www-form-urlencoded' },
       payload: new URLSearchParams({ siteid }).toString(),
     });
     expect(res.statusCode).toBe(status);
@@ -346,7 +354,7 @@ describe('fixture check order through app.inject', () => {
   /** Injects a tenant-a JSON schedule POST for SURVEY_ID with `headers`, carrying a user token when `roles` is given. */
   async function schedule(roles: string[] | undefined, headers: Record<string, string>) {
     const auth: Record<string, string> = {};
-    if (roles !== undefined) auth.authorization = `Bearer ${await mintUserToken({ site: 'tenant-a', roles, sub: USER_ID })}`;
+    if (roles !== undefined) Object.assign(auth, await userHeaders(await mintUserToken({ site: 'tenant-a', roles, sub: USER_ID })));
     return app.inject({
       method: 'POST',
       url: `${ROUTE}/${SURVEY_ID}/schedule?siteid=tenant-a`,

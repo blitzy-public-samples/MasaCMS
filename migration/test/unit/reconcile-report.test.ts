@@ -211,6 +211,32 @@ describe('buildReport', () => {
     expect(report.summary.haltedUnits).toBe(1);
     expect(reportFor('after-backfill', [], null)).toMatchObject({ tableVersionMatches: false, result: 'zero-difference', summary: { units: 0, orphans: 0 } });
   });
+
+  it('lists skipped unit tables sorted by unit and table, counts their units and leaves the result to the compared entries', () => {
+    const reason = 'fixtures unavailable: Mailpit unavailable';
+    const skippedUnits = [
+      { unit: 'timesheets.blackout', legacyTable: 'Program_N.blackout', reason },
+      { unit: 'people.person_archive', legacyTable: 'synthetic.person_archive', reason },
+      { unit: 'finance.split', legacyTable: 'synthetic.b', reason },
+      { unit: 'finance.split', legacyTable: 'synthetic.a', reason },
+    ];
+    const build = (units: readonly UnitReport[]) =>
+      buildReport({ point: resolvePoint(config, 'rollback-before'), tableVersion: 'v0002', snapshotSeq: null, legacyDatabase: 'muradb', units, skippedUnits, fileStore: NOT_APPLICABLE });
+
+    const report = build([entry('people.person', TENANT_A)]);
+
+    expect(report.skippedUnits.map((skipped) => `${skipped.unit}|${skipped.legacyTable}`)).toEqual([
+      'finance.split|synthetic.a',
+      'finance.split|synthetic.b',
+      'people.person_archive|synthetic.person_archive',
+      'timesheets.blackout|Program_N.blackout',
+    ]);
+    expect(report.skippedUnits[0]).not.toBe(skippedUnits[3]);
+    expect(report.summary).toEqual({ units: 1, tenants: 1, unitsWithDifferences: 0, differences: 0, orphans: 0, haltedUnits: 0, skippedUnits: 3 });
+    expect(report.result).toBe('zero-difference');
+    expect(build([entry('people.person', TENANT_A, { targetCount: 1 })]).result).toBe('difference');
+    expect(reportFor('post-cutover', []).skippedUnits).toEqual([]);
+  });
 });
 
 describe('writing reports', () => {
@@ -239,7 +265,7 @@ describe('writing reports', () => {
     const written = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>;
     expect(Object.keys(written)).toEqual([
       'sourceSha', 'generatedBy', 'generatedAt', 'status', 'point', 'expectedTableVersion', 'tableVersion', 'tableVersionMatches',
-      'snapshotSeq', 'legacySource', 'legacyDatabase', 'tolerance', 'measures', 'units', 'summary', 'fileStore', 'result',
+      'snapshotSeq', 'legacySource', 'legacyDatabase', 'tolerance', 'measures', 'units', 'skippedUnits', 'summary', 'fileStore', 'result',
     ]);
     expect(written).toMatchObject({ sourceSha: PIN_SHA, generatedBy: GENERATED_BY, generatedAt: FIXED_AT, status: 'generated', result: 'zero-difference' });
     expect(written.units).toEqual(report.units);

@@ -1,5 +1,12 @@
 // Fastify bindings of @opt2/platform/tasks: managed Cloud Tasks routes, queue-control routes and the reconcile client.
-import { CLOUD_TASKS_HEADERS, parseTaskWireBody, type TaskHandler, type TaskPort, type TaskWireBody } from './port.js';
+import {
+  CLOUD_TASKS_HEADERS,
+  MAX_TASK_PAGE_SIZE,
+  parseTaskWireBody,
+  type TaskHandler,
+  type TaskPort,
+  type TaskWireBody,
+} from './port.js';
 import { QUEUES, SITEMONITOR_QUEUE, isQueueName, queueDefinition, recurringQueues, type QueueDefinition } from './queues.js';
 import { ensureRecurring, recurringSpec, type EnsureRecurringResult } from './recurring.js';
 import { Roles, TASKS_INVOKER_ROLE, transportForPath, type Opt2RouteConfig } from '../auth/index.js';
@@ -119,7 +126,21 @@ export interface QueueControlResult {
   queue: string;
   service: string;
   paused?: boolean;
+  /** Tasks of the queue still running when `pause` answered. */
+  running?: number;
   ensured?: EnsureRecurringResult;
+}
+
+/** Live tasks of `queue` whose status is `running`, counted over every page. */
+async function runningTasks(port: TaskPort, queue: string): Promise<number> {
+  let running = 0;
+  let pageToken: string | undefined;
+  do {
+    const page = await port.list(queue, { pageSize: MAX_TASK_PAGE_SIZE, ...(pageToken === undefined ? {} : { pageToken }) });
+    running += page.tasks.filter((task) => task.status === 'running').length;
+    pageToken = page.nextPageToken;
+  } while (pageToken !== undefined);
+  return running;
 }
 
 /** Registers POST `<QUEUE_CONTROL_PREFIX>/:queue/{pause,resume,ensure}` for queues this service creates; list them in its contracts/openapi.yaml. */
@@ -143,7 +164,8 @@ export function registerQueueControl(
       async (request): Promise<QueueControlResult> => {
         const { name: queue } = ownQueue(request.params.queue);
         await (op === 'pause' ? port.pauseQueue(queue) : port.resumeQueue(queue));
-        return { queue, service, paused: (await port.queueState(queue)).paused };
+        const { paused } = await port.queueState(queue);
+        return op === 'pause' ? { queue, service, paused, running: await runningTasks(port, queue) } : { queue, service, paused };
       },
     );
   }

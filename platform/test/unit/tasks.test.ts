@@ -27,6 +27,7 @@ import {
 import {
   CLOUD_TASKS_HEADERS,
   InvalidTaskNameError,
+  MAX_TASK_PAGE_SIZE,
   TASK_NAME_PATTERN,
   TaskPortConfigError,
   assertCreateInput,
@@ -347,7 +348,7 @@ describe('targetUrl', () => {
     expect(error).toMatchObject({
       name: 'UnknownTaskTargetError',
       service: 'surveys',
-      message: 'No URL configured for task target service: surveys',
+      message: 'OPT2_SERVICE_URLS has no URL for task target: surveys',
     });
   });
 
@@ -999,13 +1000,36 @@ describe('registerQueueControl', () => {
     const { app, port } = await controlApp('communications');
     const paused = await postControl(app, 'surveys-launch', 'pause', caller);
     expect(paused.statusCode).toBe(200);
-    expect(paused.json()).toStrictEqual({ queue: 'surveys-launch', service: 'communications', paused: true });
+    expect(paused.json()).toStrictEqual({ queue: 'surveys-launch', service: 'communications', paused: true, running: 0 });
     expect([...port.paused]).toStrictEqual(['surveys-launch']);
 
     const resumed = await postControl(app, 'surveys-launch', 'resume', caller);
     expect(resumed.statusCode).toBe(200);
     expect(resumed.json()).toStrictEqual({ queue: 'surveys-launch', service: 'communications', paused: false });
     expect(port.paused.size).toBe(0);
+  });
+
+  it('answers pause with the running tasks of every page of the queue', async () => {
+    const { app, port } = await controlApp('communications');
+    const task = (name: string, status: TaskInfo['status']): TaskInfo => ({
+      queue: 'surveys-launch',
+      name,
+      scheduleTime: new Date(SWEEP_SLOT_S * 1000),
+      status,
+      attempts: 1,
+    });
+    const list = vi
+      .spyOn(port, 'list')
+      .mockResolvedValueOnce({ tasks: [task('launch-a', 'running'), task('launch-b', 'pending')], nextPageToken: 'page-2' })
+      .mockResolvedValueOnce({ tasks: [task('launch-c', 'running')] });
+
+    const paused = await postControl(app, 'surveys-launch', 'pause');
+
+    expect(paused.json()).toStrictEqual({ queue: 'surveys-launch', service: 'communications', paused: true, running: 2 });
+    expect(list.mock.calls).toStrictEqual([
+      ['surveys-launch', { pageSize: MAX_TASK_PAGE_SIZE }],
+      ['surveys-launch', { pageSize: MAX_TASK_PAGE_SIZE, pageToken: 'page-2' }],
+    ]);
   });
 
   it.each([

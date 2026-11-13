@@ -144,6 +144,8 @@ describe('loadEnv', () => {
     ['TZ', '+05:00', 'TZ: must be an IANA time zone name that this process applies, such as UTC or America/New_York'],
     ['TZ', 'america/new_york', 'TZ: must be an IANA time zone name that this process applies, such as UTC or America/New_York'],
     ['TZ', 'EST+5', 'TZ: must be an IANA time zone name that this process applies, such as UTC or America/New_York'],
+    ['LOG_LEVEL', 'verbose', 'LOG_LEVEL: Invalid option: expected one of "fatal"|"error"|"warn"|"info"|"debug"|"trace"'],
+    ['LOG_LEVEL', 'INFO', 'LOG_LEVEL: Invalid option: expected one of "fatal"|"error"|"warn"|"info"|"debug"|"trace"'],
   ])('reports an invalid %s %s as one issue that never echoes the value', (key, value, expected) => {
     const error = rejectionOf({ ...localEnv, [key]: value });
 
@@ -159,6 +161,7 @@ describe('loadEnv', () => {
     ['TZ', 'Etc/UTC'],
     ['TZ', 'America/New_York'],
     ['TZ', 'US/Eastern'],
+    ...['fatal', 'error', 'warn', 'info', 'debug', 'trace'].map((level) => ['LOG_LEVEL', level]),
   ])('accepts %s %s and returns it unchanged', (key, value) => {
     expect(loadEnv(baseEnvSchema, { ...localEnv, [key]: value })).toMatchObject({ [key]: value });
   });
@@ -230,6 +233,7 @@ describe('loadEnv', () => {
       OPT2_SERVICE_URLS: '',
       OPT2_STATE_DIR: '   ',
       OPT2_TASKS_ADAPTER: '',
+      LOG_LEVEL: ' ',
     });
 
     expect(env.OPT2_DB_AUTH).toBeUndefined();
@@ -240,6 +244,7 @@ describe('loadEnv', () => {
     expect(env.OPT2_SERVICE_URLS).toEqual({});
     expect(env.OPT2_STATE_DIR).toBe(path.join(homedir(), '.opt2', 'state'));
     expect(env.OPT2_TASKS_ADAPTER).toBe('local');
+    expect(env.LOG_LEVEL).toBeUndefined();
     expect(issuesOf({ ...localEnv, TZ: '', OPT2_TOKEN_ISSUER: ' ' })).toEqual([
       'OPT2_TOKEN_ISSUER: is required',
       'TZ: is required',

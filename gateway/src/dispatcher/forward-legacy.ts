@@ -9,6 +9,7 @@ import { serializeError } from '@opt2/platform/logging';
 import type { FastifyReply, FastifyRequest } from '@opt2/platform/service-kit';
 import { injectHttpHeaders } from '@opt2/platform/tracing';
 import type { SessionMode } from '../session/mode.js';
+import { LEGACY_CALLEE, replyFromCallee } from './callee-span.js';
 import { failClosed, neverSent, type FailContext } from './fail-closed.js';
 import { HOP_BY_HOP_HEADERS, forwardedHeaders } from './headers.js';
 import { settlingRelay } from './settling-relay.js';
@@ -277,12 +278,14 @@ export async function forwardToLegacy(
     },
   };
 
+  let forwarded: FastifyReply;
   try {
-    return reply.from(`${ctx.legacyOrigin.replace(/\/+$/, '')}${path}`, options);
+    forwarded = replyFromCallee(reply, LEGACY_CALLEE, `${ctx.legacyOrigin.replace(/\/+$/, '')}${path}`, options);
   } catch (error) {
     // reply-from rejects a path it cannot parse before anything is sent to legacy.
     request.log.warn({ error: serializeError(error) }, 'legacy forward rejected before sending');
     await settle('not-sent');
     return failClosed(reply, ctx.failContext);
   }
+  return forwarded;
 }

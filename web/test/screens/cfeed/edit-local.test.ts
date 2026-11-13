@@ -8,7 +8,7 @@ import type { AdminRequest } from '@/lib/request-context';
 import { rbFor, type RbLookup } from '@/lib/resource-bundles/rb';
 import type { ScreenContext } from '@/screens/registry';
 import { applyCfeedDefaults } from '@/screens/cfeed/before';
-import { feedEditModelFrom, type FeedEditModel } from '@/screens/cfeed/edit-model';
+import { feedEditModelFrom } from '@/screens/cfeed/edit-model';
 import { renderFeedEditLocal, type FeedEditBranchView } from '@/screens/cfeed/edit-local';
 import { cfeedAjaxScripts } from '@/screens/cfeed/js';
 import { loadShellData, renderAdminDocument, serializeAdminDocument } from '@/shell/document';
@@ -137,6 +137,8 @@ function modelRc(rc: Row = {}): Row {
     categories: [],
     imageSizes: [],
     contentPool: [{ siteID: 'default', site: 'Default' }],
+    useLayoutManager: false,
+    defaultCollectionDisplayList: 'Date,Title,Image,Summary,Credits',
     ...rc,
   };
 }
@@ -176,14 +178,14 @@ function context(req: AdminRequest, rb: RbLookup = rbFor(req.session.rb)): Scree
   return { req, gateway, csrf: createCsrfRenderer(gateway), rb, hooks: { secondaryMenus: {} }, now: new Date() };
 }
 
-/** The branch view of `rc` over the screen model `modelValues`, with `adjust` applied to the mapped model. */
+/** The branch view of `rc` over the screen model `modelValues`. */
 async function render(
   req: AdminRequest,
   modelValues: Row = {},
-  { adjust = (m: FeedEditModel) => m, rb }: { adjust?: (m: FeedEditModel) => FeedEditModel; rb?: RbLookup } = {},
+  { rb }: { rb?: RbLookup } = {},
 ): Promise<{ view: FeedEditBranchView; $: cheerio.CheerioAPI; markup: string; rb: RbLookup }> {
   const ctx = context(req, rb);
-  const model = adjust(feedEditModelFrom({ rc: modelRc(modelValues) }, req));
+  const model = feedEditModelFrom({ rc: modelRc(modelValues) }, req);
   const view = await renderFeedEditLocal(req, ctx, model, { fuseaction: 'edit' });
   const markup = toString(view.body);
   return { view, $: cheerio.load(markup, null, false), markup, rb: ctx.rb };
@@ -348,8 +350,10 @@ describe('renderFeedEditLocal', () => {
 
   it('moves maxItems and nextN into the Basic tab and drops the Display tab under the layout manager', async () => {
     const req = request(SAVED_LOCAL);
-    const { $, markup } = await render(req, { feedBean: { ...NEW_BEAN, isNew: 0, MaxItems: 100000 }, rsUsage: [] }, {
-      adjust: (m) => ({ ...m, useLayoutManager: true }),
+    const { $, markup } = await render(req, {
+      feedBean: { ...NEW_BEAN, isNew: 0, MaxItems: 100000 },
+      rsUsage: [],
+      useLayoutManager: true,
     });
 
     expect(tabHrefs($)).toEqual(['#tabBasic', '#tabAdvancedfilters', '#tabRss', '#tabUsagereport']);

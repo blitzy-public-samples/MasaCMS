@@ -6,7 +6,7 @@ import { LegacyApiError } from '@opt2/platform/legacy-compat';
 import { requireSurvey, type DomainDeps } from './surveys.js';
 import { SURVEY_RESPONSE_GRANT } from './bulk-target.js';
 import * as queries from '../repo/queries.js';
-import { collated, findGrantor } from '../repo/grants.js';
+import { collated, findGrantor, isGrantedSurvey } from '../repo/grants.js';
 import type { SurveysRepository } from '../repo/repository.js';
 import type { SurveyResponseRow, SurveyRow } from '../repo/tables.js';
 import { FixtureApiError, fixturePage, type FixtureListResult, type FixtureParams } from '../legacy/fixture-envelope.js';
@@ -67,7 +67,7 @@ async function writeResponse(
   return repository.insertResponse(tx, { survey, respondentSiteId: site, respondentUserId: userId, answers });
 }
 
-/** Stores a response to the token tenant's survey, or to a survey whose grantor granted that tenant `survey-response`; returns the stored row. */
+/** Stores a response to the token tenant's survey, or to a survey whose grantor granted that tenant `survey-response`; returns the stored row, else throws forbidden for another tenant's survey and notFound for an unknown one. */
 export async function submitResponse(
   { db, repository }: Pick<DomainDeps, 'db' | 'repository'>,
   { tenantId, site, userId, surveyId, input }: SubmitResponseRequest,
@@ -83,8 +83,8 @@ export async function submitResponse(
   const grant = { grantee: tenantId, kind: SURVEY_RESPONSE_GRANT, resourceId: surveyId };
   const grantor = await findGrantor(db, grant);
   if (grantor === null || !(await hasGrant(db, { grantor, ...grant }))) {
-    // Without a grant the survey's tenant is unknown, so an untargeted survey of another site answers notFound where the fixture answers forbidden.
-    throw new FixtureApiError('notFound');
+    // Every stored survey carries its own tenant's grant, so a granted survey exists in a tenant this site may not respond in.
+    throw new FixtureApiError((await isGrantedSurvey(db, surveyId)) ? 'forbidden' : 'notFound');
   }
   return withGatedTenant(db, grantor, async (tx) => writeResponse(repository, tx, await requireSurvey(tx, surveyId), respondent));
 }

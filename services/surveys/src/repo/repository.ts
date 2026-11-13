@@ -12,7 +12,15 @@ import {
 import type { TenantTx } from '@opt2/platform/tenancy';
 import type { Clock } from '@opt2/platform/service-kit';
 import { cfUuid } from '@opt2/platform/legacy-compat';
-import { collated, grantSurveyResponses, lockSurveyGrants, lockTargetKey, syncSurveyResponseGrants } from './grants.js';
+import {
+  collated,
+  grantOwnSurveyResponses,
+  grantSurveyResponses,
+  lockSurveyGrants,
+  lockTargetKey,
+  revokeOwnSurveyResponses,
+  syncSurveyResponseGrants,
+} from './grants.js';
 import {
   OWNED_TABLES,
   SURVEY,
@@ -91,11 +99,11 @@ export interface NewResponse {
   answers: string;
 }
 
-/** The platform repository of schema `surveys`, whose generic `survey_target` writes keep response grants in step, plus the fixture's writes; every helper takes the caller's open tenant transaction. */
+/** The platform repository of schema `surveys`, whose generic `survey` and `survey_target` writes keep response grants in step, plus the fixture's writes; every helper takes the caller's open tenant transaction. */
 export interface SurveysRepository extends Repository {
   /** Locks the survey row FOR UPDATE until the transaction ends and returns it, as the fixture's task callbacks and the status, schedule, reminder and target writes lock it before any child row; null when absent. */
   lockSurvey(tx: TenantTx, surveyId: string): Promise<SurveyRow | null>;
-  /** Inserts a `DRAFT` survey created now. */
+  /** Inserts a `DRAFT` survey created now, with its own tenant's response grant. */
   insertSurvey(tx: TenantTx, input: NewSurvey, ctx?: WriteContext): Promise<SurveyRow>;
   /** Sets `status`; `LAUNCHED` also stamps `launched_at` and writes only while it is null. Null when the survey is absent. */
   setSurveyStatus(
@@ -167,7 +175,7 @@ export function createSurveysRepository({ clock, schema = SCHEMA }: SurveysRepos
       created: clock.now(),
       createdbyid: createdById,
     };
-    return base.insert<SurveyRow>(tx, SURVEY.table, row, ctx);
+    return insert<SurveyRow>(tx, SURVEY.table, row, ctx);
   }
 
   async function setSurveyStatus(
@@ -369,7 +377,17 @@ export function createSurveysRepository({ clock, schema = SCHEMA }: SurveysRepos
     }
   }
 
+  /** Grants the stored survey's own tenant `survey-response` on it, under its grant lock, and returns the survey. */
+  async function grantOwner(tx: TenantTx, survey: SurveyRow): Promise<SurveyRow> {
+    await lockSurveyGrants(tx, [survey.survey_id]);
+    await grantOwnSurveyResponses(tx, survey.survey_id);
+    return survey;
+  }
+
   async function insert<R = RepositoryRow>(tx: TenantTx, table: string, row: RepositoryRow, ctx: WriteContext = {}): Promise<R> {
+    if (table === SURVEY.table) {
+      return (await grantOwner(tx, await base.insert<SurveyRow>(tx, table, row, ctx))) as R;
+    }
     if (table !== SURVEY_TARGET.table) {
       return base.insert<R>(tx, table, row, ctx);
     }
@@ -400,6 +418,9 @@ export function createSurveysRepository({ clock, schema = SCHEMA }: SurveysRepos
   }
 
   async function upsert<R = RepositoryRow>(tx: TenantTx, table: string, row: RepositoryRow, ctx: WriteContext = {}): Promise<R> {
+    if (table === SURVEY.table) {
+      return (await grantOwner(tx, await base.upsert<SurveyRow>(tx, table, row, ctx))) as R;
+    }
     if (table !== SURVEY_TARGET.table) {
       return base.upsert<R>(tx, table, row, ctx);
     }
@@ -411,6 +432,14 @@ export function createSurveysRepository({ clock, schema = SCHEMA }: SurveysRepos
   }
 
   async function remove<R = RepositoryRow>(tx: TenantTx, table: string, key: RepositoryRow, ctx: WriteContext = {}): Promise<R | null> {
+    if (table === SURVEY.table) {
+      const removed = await base.delete<SurveyRow>(tx, table, key, ctx);
+      if (removed !== null) {
+        await lockSurveyGrants(tx, [removed.survey_id]);
+        await revokeOwnSurveyResponses(tx, removed.survey_id);
+      }
+      return removed as R | null;
+    }
     if (table !== SURVEY_TARGET.table) {
       return base.delete<R>(tx, table, key, ctx);
     }

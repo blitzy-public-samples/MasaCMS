@@ -138,6 +138,7 @@ export async function createMigrationContext(options: CreateContextOptions = {})
       service: SERVICE_NAME,
       version: SERVICE_VERSION,
       env: env.OPT2_ENV,
+      level: env.LOG_LEVEL,
       googleCloudProject: env.GOOGLE_CLOUD_PROJECT,
       destination: process.stderr,
     });

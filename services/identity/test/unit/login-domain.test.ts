@@ -12,11 +12,13 @@ import { OperationBlockedError, USER_CLOSED_WAIT_MS, withOpenAccount } from '../
 import {
   DEFAULT_LOGIN_SETTINGS,
   LOGIN_SESSION_KEYS,
+  lockdownLogin,
   login,
   loginByQuery,
   loginByUserID,
   logout,
   lookupByCredentials,
+  type LockdownLoginRequest,
   type LoginDeps,
   type LoginRequest,
   type LoginSettings,
@@ -624,6 +626,59 @@ describe.skipIf(!available)('login against PostgreSQL', () => {
       expect(await lastLoginOf(userId)).toEqual(expected.ok ? NOW : LAST_LOGIN);
     });
   });
+
+  describe('lockdownLogin (userUtility.cfc:179-259)', () => {
+    function lockdownRequest(username: string, password: string, sessionId: string, lockdown: LockdownLoginRequest['lockdown'], sessionBased: boolean): LockdownLoginRequest {
+      return { ...request(username, password, sessionId), lockdown, sessionBased };
+    }
+
+    it.each([
+      ['passes a cookie-based check: strikes cleared, the block cleared on the session, nobody logged in', 'check', false, { ok: true, hasDefaultPassword: false }, 0, { blockLoginUntil: '' }],
+      ['refuses a session-based check before clearing strikes or touching the session', 'check', true, { ok: false, reason: 'session-lockdown' }, 2, {}],
+      ['answers a check CFML cannot read once the block is cleared, keeping the strikes', 'unreadable', false, { ok: false, reason: 'unreadable' }, 2, { blockLoginUntil: '' }],
+      ['answers an unreadable session-based check the same way', 'unreadable', true, { ok: false, reason: 'unreadable' }, 2, { blockLoginUntil: '' }],
+    ] as const)('on matching credentials %s', async (_case, lockdown, sessionBased, expected, strikes, adminState) => {
+      const username = uname('lock');
+      const userId = await seedUser(username);
+      await seedStrikes(username, 2, minutesAfter(NOW, -2));
+      const { sessionId } = await newSession();
+
+      expect(await lockdownLogin(deps(), lockdownRequest(username, PASSWORD, sessionId, lockdown, sessionBased))).toEqual(expected);
+      expect(await strikeOf(username)).toMatchObject(strikes === 0 ? { strikes: 0, lastattempt: minutesAfter(NOW, -1) } : { strikes });
+      expect(await lastLoginOf(userId)).toEqual(LAST_LOGIN);
+      expect(await sessionOf(sessionId, SYSTEM_TENANT_ID)).toMatchObject({ user_id: null, epoch: '1' });
+      expect(await adminStateOf(sessionId, SYSTEM_TENANT_ID)).toEqual(adminState);
+    });
+
+    it('sets hasdefaultpassword on a passed check for admin/admin', async () => {
+      const username = 'admin';
+      if ((await gated(DEFAULT, (tx) => repo.findAccountByUsername(tx, username))) === null) await seedUser(username, { site: DEFAULT, password: 'admin' });
+      const { sessionId } = await newSession();
+
+      expect(await lockdownLogin(deps({ settings: PLAIN_SETTINGS }), { ...lockdownRequest(username, 'admin', sessionId, 'check', false), siteId: DEFAULT })).toEqual({
+        ok: true,
+        hasDefaultPassword: true,
+      });
+      expect(await adminStateOf(sessionId, SYSTEM_TENANT_ID)).toEqual({ blockLoginUntil: '', [LOGIN_SESSION_KEYS.hasDefaultPassword]: true });
+      expect(await sessionOf(sessionId, SYSTEM_TENANT_ID)).toMatchObject({ user_id: null });
+    });
+
+    it.each([
+      ['a wrong password', 'wrong', 'unreadable', { ok: false, reason: 'invalid' }, 1],
+      ['a public account outside the site public user pool', 'public', 'check', { ok: false, reason: 'public-pool' }, 1],
+      ['a held strike block', 'blocked', 'unreadable', { ok: false, reason: 'blocked', blockedUntil: minutesAfter(NOW, DEFAULT_STRIKE_SETTINGS.blockedDurationMinutes) }, 5],
+    ] as const)('refuses %s before the check is read, as the login does', async (_case, kind, lockdown, expected, strikes) => {
+      const username = uname(`lock-${kind}`);
+      await seedUser(username, kind === 'public' ? { site: SITE_B, account: { ispublic: 1 } } : {});
+      if (kind === 'blocked') await seedStrikes(username, DEFAULT_STRIKE_SETTINGS.allowedStrikes + 1, NOW);
+      const { sessionId } = await newSession();
+
+      expect(await lockdownLogin(deps(), lockdownRequest(username, kind === 'wrong' ? 'Secret13' : PASSWORD, sessionId, lockdown, true))).toEqual(expected);
+      expect(await strikeOf(username, kind === 'public' ? SITE_B : SITE_A)).toMatchObject({ strikes });
+      expect(await adminStateOf(sessionId, SYSTEM_TENANT_ID)).toEqual(kind === 'blocked' ? { blockLoginUntil: wallClock(minutesAfter(NOW, DEFAULT_STRIKE_SETTINGS.blockedDurationMinutes)) } : {});
+    });
+  });
+
 
   describe('loginByUserID', () => {
     it('logs an active account in by id without a password check, leaving its strikes as they were', async () => {

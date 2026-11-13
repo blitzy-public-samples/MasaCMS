@@ -1,8 +1,9 @@
-/** The legacy_ci and legacy_char_ci collations of the identity migrations against the SQL Server SQL_Latin1_General_CP1_CI_AS equality recorded in the fixture. */
+/** The legacy_ci and legacy_char_ci collations of the identity migrations against the SQL Server SQL_Latin1_General_CP1_CI_AS equality recorded in the fixture, and legacy_feed_ci against the group feeds' compareText. */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
+import { compareText } from '../../src/routes/legacy-api.js';
 
 interface LegacyEquality {
   classes: string[][];
@@ -65,6 +66,38 @@ describe.skipIf(!available)('identity legacy collations against SQL Server equal
       [DOMAIN],
     );
     expect(rows.map((row) => codes(row.c)).sort()).toEqual(FIXTURE[collation].ignorables.map(codes).sort());
+  });
+
+  it.each([
+    ['the domain characters', DOMAIN],
+    [
+      'mixed case, accents, trailing spaces, punctuation, digits, combining marks and the empty string',
+      [
+        '', ' ', 'a', 'A', 'a ', 'A  ', ' a', 'á', 'Á', 'a\u0301', 'à', 'ä', 'b', 'B', 'ab', 'aB', 'Ab', 'a-b', 'a_b', 'a b', 'a.b', 'a,b', "a'b", 'ß', 'ss', 'SS',
+        'ẞ', 'æ', 'ae', 'Æ', 'œ', 'oe', 'ø', 'o', 'ð', 'd', 'þ', 'th', 'ı', 'i', 'I', 'İ', 'ſ', 's', '\u212A', 'k', 'K', 'µ', 'μ', 'Μ', 'σ', 'ς', 'Σ',
+        'ϑ', 'θ', 'Θ', 'ǅ', 'ǆ', 'Ǆ', '0', '1', '2', '9', '10', '01', '1.5', '-1', '½', '²', '€', '$', '#', '@', '!', '~', '\t', 'a\tb', 'a\nb', 'Zeta',
+        'zeta', 'zèta', 'ÿ', 'Ÿ', 'y', 'emoji\u{1F600}', 'emoji', '\u{1F600}', '中', '日本', 'Ελλάδα', 'ελλαδα', 'Москва', 'москва', 'a\u0323\u0301',
+        'a\u0301\u0323', 'Admin', 'admin', 'Editor', 'editors', 'Group 10', 'Group 9', 'group-9',
+      ],
+    ],
+  ])('legacy_feed_ci orders and equates %s, trailing spaces stripped, as compareText does', async (_label, corpus) => {
+    const { rows } = await handle.appPool.query<{ i: string; j: string; o: number }>(
+      `SELECT x.i, y.j, CASE WHEN rtrim(x.s, ' ') COLLATE ${handle.schema}.legacy_feed_ci < rtrim(y.s, ' ') THEN -1` +
+        ` WHEN rtrim(x.s, ' ') COLLATE ${handle.schema}.legacy_feed_ci = rtrim(y.s, ' ') THEN 0 ELSE 1 END AS o` +
+        ' FROM unnest($1::text[]) WITH ORDINALITY x(s, i) CROSS JOIN unnest($1::text[]) WITH ORDINALITY y(s, j)',
+      [corpus],
+    );
+    const differing = rows
+      .filter(({ i, j, o }) => Math.sign(compareText(corpus[Number(i) - 1] ?? '', corpus[Number(j) - 1] ?? '')) !== o)
+      .map(({ i, j, o }) => `${codes(corpus[Number(i) - 1] ?? '')} vs ${codes(corpus[Number(j) - 1] ?? '')}: ${o}`);
+    expect(rows).toHaveLength(corpus.length ** 2);
+    expect(differing).toEqual([]);
+    const ordered = await handle.appPool.query<{ s: string }>(
+      `SELECT s FROM unnest($1::text[]) WITH ORDINALITY u(s, i) ORDER BY rtrim(s, ' ') COLLATE ${handle.schema}.legacy_feed_ci, i`,
+      [corpus],
+    );
+    const expected = corpus.map((s, i) => ({ s, i })).sort((a, b) => compareText(a.s, b.s) || a.i - b.i).map(({ s }) => s);
+    expect(ordered.rows.map(({ s }) => s)).toEqual(expected);
   });
 
   it.each(COLLATIONS)('%s expands a domain character into a candidate string exactly where SQL Server does', async (collation) => {

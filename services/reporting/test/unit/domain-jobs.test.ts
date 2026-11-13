@@ -278,7 +278,7 @@ describe.skipIf(!available)('export jobs against PostgreSQL', () => {
         [tenantId, definitionId, siteId],
       ),
     );
-    return { tenantId, siteId, definitionId, format: 'csv', requestedById: REQUESTER, userToken: `requester-token-${String(sites)}`, params: {} };
+    return { tenantId, siteId, definitionId, format: 'csv', requestedById: REQUESTER, params: {} };
   }
 
   /** Inserts a csv job of `input`'s definition past the repository, `row` overriding a queued job of `input`'s site created at NOW. */
@@ -389,7 +389,7 @@ describe.skipIf(!available)('export jobs against PostgreSQL', () => {
         row_version: '1',
       });
       expect(runs).toStrictEqual([
-        { tenantId: input.tenantId, jobId: job.job_id, payload: { jobId: job.job_id, asOf: '2026-06-30', userToken: input.userToken } },
+        { tenantId: input.tenantId, jobId: job.job_id, payload: { jobId: job.job_id, asOf: '2026-06-30' } },
       ]);
       expect(visible).toEqual([job]);
       expect(await read(input.tenantId, job.job_id)).toEqual(job);
@@ -410,7 +410,7 @@ describe.skipIf(!available)('export jobs against PostgreSQL', () => {
       const job = await createExportJob(depsWith(enqueue), input);
 
       expect(job).toMatchObject({ state: 'queued', format: input.format });
-      expect(runs.map((run) => run.payload)).toStrictEqual([{ jobId: job.job_id, asOf, userToken: input.userToken }]);
+      expect(runs.map((run) => run.payload)).toStrictEqual([{ jobId: job.job_id, asOf }]);
     });
 
     it.each<[string, Partial<CreateExportInput>]>([
@@ -549,7 +549,7 @@ describe.skipIf(!available)('export jobs against PostgreSQL', () => {
 
       expect(attempts).toBe(2);
       expect(runs).toStrictEqual([
-        { tenantId: input.tenantId, jobId: job.job_id, payload: { jobId: job.job_id, asOf: '2026-06-30', userToken: input.userToken } },
+        { tenantId: input.tenantId, jobId: job.job_id, payload: { jobId: job.job_id, asOf: '2026-06-30' } },
       ]);
       expect(probed).toStrictEqual([{ tenantId: input.tenantId, jobId: live.job_id }]);
       expect((await jobsOf(input)).map((row) => row.job_id).sort()).toEqual([live.job_id, job.job_id].sort());

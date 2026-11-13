@@ -12,7 +12,7 @@ import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, deleteCookieLegacy } from '@opt2/
 import { createLogger } from '@opt2/platform/logging';
 import { ensureUnitGates, registerWritePositionHeader, withGatedTenant } from '@opt2/platform/migration-kit';
 import { createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
-import { tenantIdForSite, withMetadata, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
+import { tenantIdForSite, withMetadata, type QueryConfig, type QueryResultRow, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import {
   assertResponseMatchesOpenApi,
   createThrowawaySchema,
@@ -69,6 +69,30 @@ const NO_DB: TenantDb = {
 };
 
 const NO_RELAY: BridgeRelay = { markUsed: () => Promise.resolve({ applied: true }) };
+
+const REGISTRY_ENTRIES = /^SELECT site_id, tenant_id, .+ FROM \S+\.tenant_registry ORDER BY site_id$/;
+const registryReads: string[] = [];
+
+/** `db` with the SQL of every statement its metadata transactions run recorded in `registryReads`. */
+function recordingRegistryDb(db: TenantDb): TenantDb {
+  return {
+    schema: db.schema,
+    withTenant: (tenantId, fn) => db.withTenant(tenantId, fn),
+    withMetadata: (fn, options) =>
+      db.withMetadata(
+        (tx) =>
+          fn({
+            ...tx,
+            query: <R extends QueryResultRow = QueryResultRow>(text: string | QueryConfig, values?: unknown[]) => {
+              registryReads.push(typeof text === 'string' ? text : text.text);
+              return tx.query<R>(text, values);
+            },
+          }),
+        options,
+      ),
+    end: () => db.end(),
+  };
+}
 
 /** Login-mail settings answering each site by name, recording the site ids asked for. */
 function recordingMailSettings(): LoginMailDeps['settings'] & { sitesAsked: string[] } {
@@ -158,7 +182,7 @@ beforeAll(async () => {
     csrf: { db, repo, bridge: NO_RELAY, clock: CLOCK, sleep },
     loginMail: { db, repo, events: mailEvents, clock: CLOCK, settings: mailSettings, sleep },
     permissions: { db, repo, events: { publishPermissionChanged: () => Promise.resolve(null) } },
-    db,
+    db: recordingRegistryDb(db),
   });
   await app.ready();
 });
@@ -172,6 +196,7 @@ afterAll(async () => {
 beforeEach(() => {
   mailSettings.sitesAsked.length = 0;
   mailEvents.payloads.length = 0;
+  registryReads.length = 0;
 });
 
 /** Headers of a gateway-relayed call; null `roles` sends no user token, null `caller` no invocation credential. */
@@ -460,15 +485,16 @@ describe.skipIf(!available)('admin sessions against PostgreSQL', () => {
   });
 
   it.each([
-    [{ linkServID: 'L-1' }, './?LinkServID=L-1'],
-    [{ returnUrl: '/admin/?muraAction=cArch.list&doaction=logout' }, '/admin/?muraAction=cArch.list&'],
-    [{ returnUrl: 'http://evil.com/admin/?doaction=logoutdoaction=logout&x=1' }, 'http://localhost/admin/?&x=1'],
-    [{ returnUrl: 'https://alias-a.example.test//evil.com/admin/' }, 'https://alias-a.example.test/admin/'],
-    [{ returnUrl: '//evil.com/admin/' }, '/evil.com/admin/'],
-  ])('redirects a successful login with %j to %j', async (fields, location) => {
+    [{ linkServID: 'L-1' }, './?LinkServID=L-1', 0],
+    [{ returnUrl: '/admin/?muraAction=cArch.list&doaction=logout' }, '/admin/?muraAction=cArch.list&', 1],
+    [{ returnUrl: 'http://evil.com/admin/?doaction=logoutdoaction=logout&x=1' }, 'http://localhost/admin/?&x=1', 1],
+    [{ returnUrl: 'https://alias-a.example.test//evil.com/admin/' }, 'https://alias-a.example.test/admin/', 1],
+    [{ returnUrl: '//evil.com/admin/' }, '/evil.com/admin/', 1],
+  ])('redirects a successful login with %j to %j, reading the registry with %i statements', async (fields, location, reads) => {
     const { body } = await loginAs('editor', fields);
 
     expect(body).toMatchObject({ outcome: 'success', location });
+    expect(registryReads).toEqual(Array.from({ length: reads }, () => expect.stringMatching(REGISTRY_ENTRIES)));
   });
 
   it('redirects a failed admin login to the login page with the legacy parameters, encoded as URLEncodedFormat', async () => {

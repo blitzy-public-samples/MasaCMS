@@ -768,10 +768,11 @@ const CASES: Record<string, Case[]> = {
   ],
   scheduleSurvey: [
     {
-      name: 'schedules the seeded survey and announces the schedule version',
+      name: 'schedules the seeded survey and announces the schedule version once identity consumed the CSRF token',
       method: 'POST',
       url: v1Url('/schedule'),
       as: MANAGER,
+      headers: CSRF_HEADERS,
       payload: { launchAt: LAUNCH_AT, reminders: [{ offsetMinutes: 15 }, { offsetMinutes: 45 }] },
       seed: 'draft',
       status: 200,
@@ -786,10 +787,24 @@ const CASES: Record<string, Case[]> = {
       method: 'POST',
       url: v1Url('/schedule'),
       as: MANAGER,
+      headers: CSRF_HEADERS,
       payload: { launchAt: LAUNCH_AT, title: 'not a schedule field' },
       seed: 'draft',
       status: 400,
       verify: ({ body }) => expect(record(body).error).toMatchObject({ code: 'invalid_request' }),
+    },
+    {
+      name: 'answers a schedule without a CSRF token as invalidTokens and announces nothing',
+      method: 'POST',
+      url: v1Url('/schedule'),
+      as: MANAGER,
+      payload: { launchAt: LAUNCH_AT },
+      seed: 'draft',
+      status: 400,
+      verify: ({ body }, ctx) => {
+        expect(record(body).error).toMatchObject({ code: 'invalid_request', message: 'Invalid CSRF tokens' });
+        expect(ctx.publisher.published).toEqual([]);
+      },
     },
   ],
   listSurveyTargets: [
@@ -803,7 +818,7 @@ const CASES: Record<string, Case[]> = {
         const res = await ctx.app.inject({
           method: 'POST',
           url: v1Url('/targets/bulk')(seeded),
-          headers: await subjectHeaders(MANAGER),
+          headers: { ...(await subjectHeaders(MANAGER)), ...CSRF_HEADERS },
           payload: { targets: [{ siteId: SITE_B, groupName: 'Staff' }] },
         });
         expect(res.statusCode, res.body).toBe(200);
@@ -820,10 +835,23 @@ const CASES: Record<string, Case[]> = {
       method: 'POST',
       url: v1Url('/targets/bulk'),
       as: MANAGER,
+      headers: CSRF_HEADERS,
       payload: { targets: [{ siteId: SITE_B, groupName: null }, { siteId: SITE_B }] },
       seed: 'draft',
       status: 200,
       verify: ({ body }) => expect(dataOf(body)).toEqual({ inserted: 1, total: 1 }),
+    },
+    {
+      name: 'answers a CSRF token identity refuses as invalidTokens and adds no target',
+      method: 'POST',
+      url: v1Url('/targets/bulk'),
+      as: MANAGER,
+      headers: CSRF_HEADERS,
+      payload: { targets: [{ siteId: SITE_B }] },
+      seed: 'draft',
+      setup: (ctx) => ctx.client.csrfValid(false),
+      status: 400,
+      verify: ({ body }) => expect(record(body).error).toMatchObject({ code: 'invalid_request', message: 'Invalid CSRF tokens' }),
     },
   ],
   listSurveyResponses: [
@@ -1133,7 +1161,7 @@ const CASES: Record<string, Case[]> = {
       url: `/internal/v1/task-queues/${SWEEP_QUEUE}/pause`,
       as: 'service:operator',
       status: 200,
-      verify: ({ body }) => expect(record(body)).toEqual({ queue: SWEEP_QUEUE, service: 'surveys', paused: true }),
+      verify: ({ body }) => expect(record(body)).toEqual({ queue: SWEEP_QUEUE, service: 'surveys', paused: true, running: 0 }),
     },
     {
       name: 'answers a queue surveys does not create tasks on as invalidParameters',

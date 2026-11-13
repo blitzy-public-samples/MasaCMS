@@ -1225,6 +1225,19 @@ function authenticate(
   return authenticator.authenticate({ path: route, headers, query }, { optional: false });
 }
 
+/** Authenticates `sent` as Node parses it: every pair in `rawHeaders`, only each name's first value in `headers`. */
+function authenticateSent(
+  authenticator: TransportAuthenticator,
+  route: string,
+  sent: ReadonlyArray<readonly [string, string]>,
+): Promise<AuthResult> {
+  const headers: Record<string, string> = {};
+  for (const [name, value] of sent) {
+    headers[name.toLowerCase()] ??= value;
+  }
+  return authenticator.authenticate({ path: route, headers, rawHeaders: sent.flat() }, { optional: false });
+}
+
 /** Bearer header of a test-kit service token from `caller` addressed to `audience`. */
 async function localServiceBearer(caller: string, audience = 'people'): Promise<string> {
   return `Bearer ${await mintServiceToken({ caller, audience })}`;
@@ -1345,6 +1358,33 @@ describe('createServiceTransport', () => {
     const repeated = name === 'authorization' ? authorization : invocation;
     const headers = { authorization, [INVOCATION_HEADER]: invocation, [name]: [repeated, repeated] };
     expect(await denialOf(() => authenticate(peopleService(), PEOPLE_PATH, headers))).toEqual(INVALID_CREDENTIAL);
+  });
+
+  it.each([
+    { label: 'Authorization and authorization', names: ['Authorization', 'authorization', INVOCATION_HEADER] },
+    {
+      label: 'X-Serverless-Authorization and x-serverless-AUTHORIZATION',
+      names: ['authorization', 'X-Serverless-Authorization', 'x-serverless-AUTHORIZATION'],
+    },
+  ])('refuses raw headers sending $label as invalid-credential', async ({ names }) => {
+    const authorization = `Bearer ${await userToken()}`;
+    const invocation = await localServiceBearer('gateway');
+    const sent = names.map((name) => [name, name.toLowerCase() === 'authorization' ? authorization : invocation] as const);
+    expect(await denialOf(() => authenticateSent(peopleService(), PEOPLE_PATH, sent))).toEqual(INVALID_CREDENTIAL);
+  });
+
+  it('verifies credential headers sent once each, in any letter case', async () => {
+    const token = await userToken();
+    const sent = [
+      ['AUTHORIZATION', `Bearer ${token}`],
+      ['X-Note', 'Authorization'],
+      ['X-Serverless-Authorization', await localServiceBearer('gateway')],
+    ] as const;
+    await expect(authenticateSent(peopleService(), PEOPLE_PATH, sent)).resolves.toEqual({
+      user: userClaims(),
+      userToken: token,
+      service: { name: 'gateway', roles: ['service:gateway'] },
+    });
   });
 
   it.each([
@@ -1623,6 +1663,33 @@ describe('createLocalCloudTasksTransport', () => {
     { header: 'Bearer', expected: INVALID_CREDENTIAL },
   ])('answers the Authorization $header with reason $expected.reason', async ({ header, expected }) => {
     expect(await denialOf(() => authenticate(tasks(), TASK_PATH, { authorization: header }))).toEqual(expected);
+  });
+
+  it.each([
+    {
+      label: 'Authorization, then authorization with a garbage token',
+      first: 'Authorization',
+      second: 'authorization',
+      copy: 'Bearer garbage',
+    },
+    {
+      label: 'authorization, then AUTHORIZATION with the same token',
+      first: 'authorization',
+      second: 'AUTHORIZATION',
+      copy: undefined,
+    },
+  ])('refuses raw headers sending $label as invalid-credential', async ({ first, second, copy }) => {
+    const bearer = `Bearer ${await mintTasksInvokerToken({ audience: 'people' })}`;
+    const sent = [
+      [first, bearer],
+      [second, copy ?? bearer],
+    ] as const;
+    expect(await denialOf(() => authenticateSent(tasks(), TASK_PATH, sent))).toEqual(INVALID_CREDENTIAL);
+  });
+
+  it('verifies a tasks-invoker token sent once in raw headers', async () => {
+    const sent = [['Authorization', `Bearer ${await mintTasksInvokerToken({ audience: 'people' })}`]] as const;
+    await expect(authenticateSent(tasks(), TASK_PATH, sent)).resolves.toEqual(TASKS_INVOKER_IDENTITY);
   });
 });
 

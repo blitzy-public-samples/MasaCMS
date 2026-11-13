@@ -2,7 +2,15 @@
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { LegacyApiError, LegacyServiceUnavailableError } from '../../src/legacy-compat/index.js';
+import {
+  LEGACY_ERROR_PAGE_HTML,
+  LEGACY_ERROR_STATUS_TEXT,
+  LEGACY_HTML_CONTENT_TYPE,
+  LEGACY_JSON_CONTENT_TYPE,
+  LegacyApiError,
+  LegacyServiceUnavailableError,
+  legacyErrorResponse,
+} from '../../src/legacy-compat/index.js';
 import { createLogger, validateLogRecord } from '../../src/logging/index.js';
 import {
   baseEnvSchema,
@@ -213,5 +221,121 @@ describe('createService', () => {
     expect(validateLogRecord(completed[0]).errors).toStrictEqual([]);
     expect(completed[0]).toMatchObject({ requestId: 'req-err', route: url, httpMethod: 'GET', statusCode: status });
     expect(completed[0]?.latencyMs).toEqual(expect.any(Number));
+  });
+
+  const LONG_ID = 'A'.repeat(600);
+  const MASA_HEADERS = { generator: 'Masa CMS 7.6.1', 'strict-transport-security': 'max-age=1200' };
+  const NO_MASA_HEADERS = { generator: undefined, 'strict-transport-security': undefined };
+  type ConstraintStrategy = Parameters<FastifyInstance['addConstraintStrategy']>[0];
+  /** The route handler the router keeps in a constraint strategy's storage. */
+  type ConstraintHandler = Parameters<ReturnType<ConstraintStrategy['storage']>['set']>[1];
+
+  it.each([
+    {
+      label: 'an over-long API path parameter',
+      route: '/v1/items/:id',
+      path: `/v1/items/${LONG_ID}`,
+      failing: false,
+      status: 404,
+      statusMessage: 'Not Found',
+      body: legacyErrorResponse('invalidMethodCall', { method: 'findOne', mura404: true }).body,
+      headers: { connection: 'keep-alive', 'content-type': LEGACY_JSON_CONTENT_TYPE, ...MASA_HEADERS },
+      errors: [],
+      warnings: [],
+    },
+    {
+      label: 'an over-long admin path parameter',
+      route: '/admin-actions/carch/:id',
+      path: `/admin-actions/carch/${LONG_ID}`,
+      failing: false,
+      status: 404,
+      statusMessage: 'Not Found',
+      body: LEGACY_ERROR_PAGE_HTML,
+      headers: { connection: 'keep-alive', 'content-type': LEGACY_HTML_CONTENT_TYPE, ...MASA_HEADERS },
+      errors: [],
+      warnings: [],
+    },
+    {
+      label: 'a malformed path escape',
+      route: '/x/:id',
+      path: '/x/%zz',
+      failing: false,
+      status: 400,
+      statusMessage: 'Bad Request',
+      body: '',
+      headers: { connection: 'close', 'content-type': undefined, ...NO_MASA_HEADERS },
+      errors: [],
+      warnings: ['request rejected: FST_ERR_BAD_URL'],
+    },
+    {
+      label: 'a failing async constraint on the API surface',
+      route: '/v1/items/:id',
+      path: '/v1/items/1',
+      failing: true,
+      status: 500,
+      statusMessage: 'Internal Server Error',
+      body: legacyErrorResponse('server_error', { method: 'findOne' }).body,
+      headers: { connection: 'keep-alive', 'content-type': LEGACY_JSON_CONTENT_TYPE, ...MASA_HEADERS },
+      errors: ['unhandled error'],
+      warnings: [],
+    },
+    {
+      label: 'a failing async constraint on the admin surface',
+      route: '/admin-actions/carch/:id',
+      path: '/admin-actions/carch/1',
+      failing: true,
+      status: 500,
+      statusMessage: LEGACY_ERROR_STATUS_TEXT,
+      body: LEGACY_ERROR_PAGE_HTML,
+      headers: { connection: 'keep-alive', 'content-type': LEGACY_HTML_CONTENT_TYPE, ...MASA_HEADERS },
+      errors: ['unhandled error'],
+      warnings: [],
+    },
+  ])('answers $label as legacy does, without router detail, and logs its warning, if any, ahead of one valid completion line', async (row) => {
+    const { app, lines } = await build();
+    if (row.failing) {
+      app.addConstraintStrategy({
+        name: 'failing',
+        storage: () => {
+          const stored = new Map<unknown, ConstraintHandler>();
+          return { get: (value) => stored.get(value) ?? null, set: (value, store) => void stored.set(value, store) };
+        },
+        // Three parameters make the strategy asynchronous, so its error reaches the router's error callback.
+        // The router's typings declare only the synchronous form, so `done` is optional, as in fastify's RouteConstraintType.
+        deriveConstraint: (_req: unknown, _ctx?: unknown, done?: (err: Error | null, value?: unknown) => void) => {
+          const failure = new Error('constraint lookup failed');
+          if (done === undefined) throw failure;
+          done(failure);
+        },
+        mustMatchWhenDerived: false,
+      });
+    }
+    app.get(row.route, { config: { opt2: { public: true } }, ...(row.failing ? { constraints: { failing: 'x' } } : {}) }, async () => 'never');
+
+    const res = await app.inject({ method: 'GET', url: `${row.path}?method=findOne`, headers: { 'x-request-id': 'req-router' } });
+
+    expect(res.statusCode).toBe(row.status);
+    expect(res.statusMessage).toBe(row.statusMessage);
+    expect(res.body).toBe(row.body);
+    expect(res.body).not.toMatch(/FST_|A{101}/);
+    const names = Object.keys(row.headers);
+    expect(Object.fromEntries(names.map((name) => [name, res.headers[name]]))).toStrictEqual(row.headers);
+    for (const line of lines) expect(validateLogRecord(line).errors).toStrictEqual([]);
+    expect(lines.filter((line) => line.severity === 'ERROR').map((line) => line.message)).toStrictEqual(row.errors);
+    const completed = lines.filter((line) => line.message === 'request completed');
+    expect(completed).toHaveLength(1);
+    expect(completed[0]).toMatchObject({
+      requestId: 'req-router',
+      route: row.path,
+      httpMethod: 'GET',
+      statusCode: row.status,
+      latencyMs: expect.any(Number),
+    });
+    const outcomes = lines.filter((line) => line.severity === 'WARNING' || line.message === 'request completed');
+    expect(outcomes.map((line) => line.message)).toStrictEqual([...row.warnings, 'request completed']);
+    for (const line of outcomes) {
+      expect(line).toMatchObject({ requestId: 'req-router', route: row.path, httpMethod: 'GET', statusCode: row.status });
+    }
+    expect(JSON.stringify(lines)).not.toContain('method=findOne');
   });
 });

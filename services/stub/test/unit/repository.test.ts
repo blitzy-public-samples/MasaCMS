@@ -62,7 +62,7 @@ describe('stub repository identity', () => {
   });
 });
 
-const available = await pgAvailable();
+const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
 
 describe.skipIf(!available)('stub repository against PostgreSQL', () => {
   let handle: ThrowawaySchema;

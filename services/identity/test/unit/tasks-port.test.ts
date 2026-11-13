@@ -237,7 +237,7 @@ describe.skipIf(!available)('identity task wiring against PostgreSQL', () => {
     const resumed = await control('resume');
     const ensured = await control('ensure');
 
-    expect([paused.statusCode, paused.json()]).toStrictEqual([200, { queue: SWEEP_QUEUE, service: IDENTITY_SERVICE, paused: true }]);
+    expect([paused.statusCode, paused.json()]).toStrictEqual([200, { queue: SWEEP_QUEUE, service: IDENTITY_SERVICE, paused: true, running: 0 }]);
     expect([resumed.statusCode, resumed.json()]).toStrictEqual([200, { queue: SWEEP_QUEUE, service: IDENTITY_SERVICE, paused: false }]);
     expect(ensured.statusCode).toBe(200);
     expect(ensured.json()).toMatchObject({ queue: SWEEP_QUEUE, service: IDENTITY_SERVICE, ensured: { queue: SWEEP_QUEUE } });

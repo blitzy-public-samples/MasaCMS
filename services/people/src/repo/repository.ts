@@ -57,8 +57,12 @@ export const OWNER = 'people' as const;
 export const SCHEMA = 'people' as const;
 
 const UNIQUE_VIOLATION = '23505';
+const LOCK_NOT_AVAILABLE = '55P03';
+const SET_LOCK_TIMEOUT_SQL = "SELECT set_config('lock_timeout', $1, true)";
+// The outer projection sets the new value only after the materialised CTE has read the one in force.
+const SWAP_LOCK_TIMEOUT_SQL = "WITH saved AS MATERIALIZED (SELECT current_setting('lock_timeout') AS value) SELECT value, set_config('lock_timeout', $1, true) FROM saved";
 /** Width of the legacy `char(35)` id columns. */
-const ID_WIDTH = 35;
+export const ID_WIDTH = 35;
 /** PostgreSQL's name for the unnamed `UNIQUE (tenant_id, person_id, effective_from)` of 0004_roster_archive.sql. */
 const ARCHIVE_UNIQUE_CONSTRAINT = 'person_archive_tenant_id_person_id_effective_from_key';
 /** The case-insensitive unique index on `(tenant_id, person_id, effective_from)` (0007_person_lookup_indexes.sql). */
@@ -67,7 +71,9 @@ const ARCHIVE_CI_UNIQUE_INDEX = 'person_archive_tenant_ci_person_effective_uidx'
 const OPEN_ROSTER_INDEX = 'roster_operation_open_user_uidx';
 const NEXT_IDS_SQL = 'SELECT nextval(pg_get_serial_sequence($1, $2)::regclass)::text AS id FROM generate_series(1, $3::integer)';
 /** SQL Server's char/varchar equality collation (0006_extend_attribute_set_ci_index.sql), as identity and programs-sites define it. */
-const LEGACY_CHAR_CI_COLLATION = 'legacy_char_ci';
+export const LEGACY_CHAR_CI_COLLATION = 'legacy_char_ci';
+/** SQL Server's case-insensitive, accent-sensitive text sort order (0010_person_text_order.sql), as the people domain compares names. */
+export const LEGACY_TEXT_ORDER_COLLATION = 'legacy_text_order';
 /** Rows per page when a caller gives no limit. */
 const DEFAULT_PAGE_SIZE = 500;
 /** The most rows one page returns. */
@@ -98,6 +104,41 @@ function isUniqueViolation(err: unknown, constraint: string): boolean {
   if (typeof err !== 'object' || err === null) return false;
   const { code, constraint: violated } = err as { code?: unknown; constraint?: unknown };
   return code === UNIQUE_VIOLATION && violated === constraint;
+}
+
+function isLockNotAvailable(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === LOCK_NOT_AVAILABLE;
+}
+
+/** One roster lock statement and what it locks, for RosterLockTimeoutError. */
+interface RosterLock {
+  sql: string;
+  params: unknown[];
+  subject: string;
+}
+
+/** Takes `locks` in order, with `timeoutMs` waiting at most that long in all under a transaction-local `lock_timeout` restored after the last; throws RosterLockTimeoutError on expiry. */
+async function takeRosterLocks(tx: TenantTx, locks: readonly RosterLock[], timeoutMs: number | undefined): Promise<void> {
+  if (timeoutMs === undefined) {
+    for (const { sql, params } of locks) await tx.query(sql, params);
+    return;
+  }
+  const wait = Math.max(1, Math.ceil(timeoutMs));
+  const deadline = Date.now() + wait;
+  let saved: string | undefined;
+  for (const { sql, params, subject } of locks) {
+    // lock_timeout 0 disables the timeout, so a spent wait still gets the shortest positive one.
+    const setting = `${String(Math.max(1, Math.ceil(deadline - Date.now())))}ms`;
+    if (saved === undefined) saved = (await select<{ value: string }>(tx, SWAP_LOCK_TIMEOUT_SQL, [setting]))[0]?.value ?? '0';
+    else await tx.query(SET_LOCK_TIMEOUT_SQL, [setting]);
+    try {
+      await tx.query(sql, params);
+    } catch (err) {
+      if (isLockNotAvailable(err)) throw new RosterLockTimeoutError(wait, subject, err);
+      throw err;
+    }
+  }
+  if (saved !== undefined) await tx.query(SET_LOCK_TIMEOUT_SQL, [saved]);
 }
 
 /** The next `row_version` of a stored row; pg returns int8 as a decimal string. */
@@ -264,6 +305,39 @@ export interface PersonSearch {
   limit?: number;
 }
 
+/** One sort key of `pagePersonsInOrder`: text by `LEGACY_TEXT_ORDER_COLLATION` ignoring trailing spaces, other types natively; NULLs lowest. */
+export interface PersonSortKey {
+  column: PersonQueryColumn;
+  descending: boolean;
+}
+
+/** getUsers' order: last name, first name. */
+export const PERSON_NAME_ORDER: readonly PersonSortKey[] = [
+  { column: 'lname', descending: false },
+  { column: 'fname', descending: false },
+];
+
+/** getSearch's order: last name. */
+export const PERSON_LAST_NAME_ORDER: readonly PersonSortKey[] = [{ column: 'lname', descending: false }];
+
+/** An ILIKE prefilter over last and first name, company, email and job title, or the users `orUserIds`. */
+export interface PersonNameLike {
+  /** A PostgreSQL ILIKE pattern, with no escape character, matched with ASCII-only case folding. */
+  pattern: string;
+  orUserIds?: readonly string[];
+}
+
+/** Persons `pagePersonsInOrder` reads in the transaction tenant: only `siteIds` and matches of `nameLike` when given. */
+export interface PersonOrderScope {
+  siteIds?: readonly string[];
+  nameLike?: PersonNameLike;
+}
+
+/** Paging of `pagePersonsInOrder` by `orderBy`, then userid. */
+export interface PersonOrderPageOptions extends PageOptions<PersonCursor> {
+  orderBy: readonly PersonSortKey[];
+}
+
 /** Paging of a keyset listing: `after` is the previous page's `next`; `limit` defaults to 500 and is capped at 1000. */
 export interface PageOptions<C> {
   after?: C | null;
@@ -333,13 +407,37 @@ export interface RosterOperationInput {
   payload: string;
 }
 
+/** How a roster lock is held: fenced readers and writers share it, a roster intent takes it exclusively. */
+export type RosterLockMode = 'shared' | 'exclusive';
+
+/** The longest the roster locks of one call wait together; unbounded when `timeoutMs` is omitted. */
+export interface RosterLockOptions {
+  timeoutMs?: number;
+}
+
 /** The new state of a roster operation and the optional columns set with it. */
 export interface RosterOperationStatePatch {
   state: RosterState;
+  /** JSON text replacing the intent's payload. */
+  payload?: string;
   beforeImage?: string | null;
   identityXid?: string | null;
   error?: string | null;
   identityUnreachableSince?: Date | null;
+}
+
+/** Who writes a roster operation: its request when `claim` is absent, else the recovery resolution holding that claim token. */
+export interface RosterOperationOwner {
+  claim?: string;
+}
+
+/** A recovery resolution's claim of a roster operation: its token, and the state and claim it observed. */
+export interface RosterOperationClaim {
+  token: string;
+  state: RosterState;
+  claimedBy: string | null;
+  /** The claim needs `updated_at` before this; null claims whatever the age. */
+  staleBefore: Date | null;
 }
 
 /** A group-name projection row to store. */
@@ -363,6 +461,29 @@ export class RosterOperationOpenError extends LegacyServiceUnavailableError {
 
   constructor(readonly userId: string) {
     super(`user ${userId} has an open roster operation`, 'auto', 'roster-operation-open');
+  }
+}
+
+/** Raised when a roster lock waits past its `timeoutMs`; PostgreSQL has aborted the transaction; unhandled, it answers the legacy 503. */
+export class RosterLockTimeoutError extends LegacyServiceUnavailableError {
+  override readonly name: string = 'RosterLockTimeoutError';
+
+  constructor(
+    readonly timeoutMs: number,
+    subject: string,
+    cause: unknown,
+  ) {
+    super(`roster lock of ${subject} not granted within ${String(timeoutMs)} ms`, 'auto', 'roster-lock-timeout');
+    this.cause = cause;
+  }
+}
+
+/** Raised when a roster operation is not held, in the expected state, by the writing request or recovery; nothing was written; unhandled, it answers the legacy 503. */
+export class RosterOperationClaimedError extends LegacyServiceUnavailableError {
+  override readonly name: string = 'RosterOperationClaimedError';
+
+  constructor(readonly operationId: string) {
+    super(`roster operation ${operationId} is held by another resolver`, 'auto', 'roster-operation-claimed');
   }
 }
 
@@ -414,11 +535,17 @@ export interface PeopleRepository extends Repository {
   queryPersons(tx: TenantTx, query: PersonQuery): Promise<PersonRow[]>;
   /** One keyset page of the persons matching `query`, by its order. */
   pageQueryPersons(tx: TenantTx, query: Omit<PersonQuery, 'limit'>, opts?: PageOptions<PersonCursor>): Promise<Page<PersonRow, PersonCursor>>;
+  /** One keyset page of the persons in `scope`, in the people domain's comparator order: `opts.orderBy`, then userid. */
+  pagePersonsInOrder(tx: TenantTx, scope: PersonOrderScope, opts: PersonOrderPageOptions): Promise<Page<PersonRow, PersonCursor>>;
 
   /** The person's addresses, primary first [legacy: core/mura/user/userDAO.cfc:862-871]. */
   listAddresses(tx: TenantTx, userId: string): Promise<AddressRow[]>;
   /** The address `addressId`; null when absent. */
   findAddress(tx: TenantTx, addressId: string): Promise<AddressRow | null>;
+  /** The address `addressId`, row-locked until `tx` ends; null when absent. */
+  findAddressForUpdate(tx: TenantTx, addressId: string): Promise<AddressRow | null>;
+  /** Row-locks the addresses `addressIds` and every address of `userId` until `tx` ends, in address id order. */
+  lockAddresses(tx: TenantTx, addressIds: readonly string[], userId: string): Promise<void>;
   /** Inserts an address as `createAddress` does [legacy: core/mura/user/userDAO.cfc:776-808]. */
   insertAddress(tx: TenantTx, input: AddressInput, ctx?: WriteContext): Promise<AddressRow>;
   /** Updates an address as `updateAddress` does; null when absent. */
@@ -466,14 +593,32 @@ export interface PeopleRepository extends Repository {
   /** Inserts the archive record; throws DuplicateArchiveError, writing nothing, when the person already has one. */
   insertPersonArchive(tx: TenantTx, row: PersonArchiveInput, ctx?: WriteContext): Promise<PersonArchiveRow>;
 
-  /** Records a roster operation in state `started`; throws RosterOperationOpenError while the user has an open one. */
-  insertRosterOperation(tx: TenantTx, input: RosterOperationInput, ctx?: WriteContext): Promise<RosterOperationRow>;
-  /** Sets the operation's state, the given optional columns and `updated_at`; null when absent. */
-  setRosterOperationState(tx: TenantTx, operationId: string, patch: RosterOperationStatePatch, ctx?: WriteContext): Promise<RosterOperationRow | null>;
+  /** Records a roster operation in state `started` under the user's, then the tenant's, exclusive roster locks; throws RosterOperationOpenError while the user has an open one, RosterLockTimeoutError past `opts.timeoutMs`. */
+  insertRosterOperation(tx: TenantTx, input: RosterOperationInput, ctx?: WriteContext, opts?: RosterLockOptions): Promise<RosterOperationRow>;
+  /** Sets the operation's state, the given optional columns and `updated_at` while `owner` (default its request) holds it; null when absent; throws RosterOperationClaimedError otherwise. */
+  setRosterOperationState(
+    tx: TenantTx,
+    operationId: string,
+    patch: RosterOperationStatePatch,
+    ctx?: WriteContext,
+    owner?: RosterOperationOwner,
+  ): Promise<RosterOperationRow | null>;
+  /** Locks the operation until `tx` ends; null when absent; throws RosterOperationClaimedError unless it is in `state` and held by `owner` (default its request). */
+  holdRosterOperation(tx: TenantTx, operationId: string, state: RosterState, owner?: RosterOperationOwner): Promise<RosterOperationRow | null>;
+  /** Sets `claim.token` as the operation's claim and renews `updated_at` while its state, claim and age are as `claim` observed; null otherwise. */
+  claimRosterOperation(tx: TenantTx, operationId: string, claim: RosterOperationClaim, ctx?: WriteContext): Promise<RosterOperationRow | null>;
   /** The operation `operationId`; null when absent. */
   findRosterOperation(tx: TenantTx, operationId: string): Promise<RosterOperationRow | null>;
   /** The user's open (started, people-committed or halted) operation; null when none. */
   findOpenRosterOperation(tx: TenantTx, userId: string): Promise<RosterOperationRow | null>;
+  /** The open operations of any of `userIds`, or of the whole tenant when omitted, oldest first; ids match as `findOpenRosterOperation` matches them. */
+  findOpenRosterOperations(tx: TenantTx, userIds?: readonly string[]): Promise<RosterOperationRow[]>;
+  /** How many operations, in any state and only among `operationIds` when given, any of `userIds` has; ids match as `findOpenRosterOperation` matches them. */
+  countRosterOperations(tx: TenantTx, userIds: readonly string[], operationIds?: readonly string[]): Promise<number>;
+  /** Takes the transaction tenant's roster lock until `tx` ends; tenant-wide readers share it, a roster intent takes it exclusively; throws RosterLockTimeoutError past `opts.timeoutMs`. */
+  lockRosterTenant(tx: TenantTx, mode: RosterLockMode, opts?: RosterLockOptions): Promise<void>;
+  /** Takes each user's roster lock until `tx` ends, once per collation-equal id and in key order, before the tenant's when both are needed; throws RosterLockTimeoutError past `opts.timeoutMs`. */
+  lockRosterUsers(tx: TenantTx, userIds: readonly string[], mode: RosterLockMode, opts?: RosterLockOptions): Promise<void>;
   /** Started or people-committed operations, and done ones whose identity finish is pending, last updated before `olderThan`, oldest first, locked FOR UPDATE SKIP LOCKED. */
   listStaleRosterOperations(tx: TenantTx, olderThan: Date): Promise<RosterOperationRow[]>;
   /** One keyset page of `listStaleRosterOperations`. */
@@ -578,6 +723,9 @@ function orderKey(order: PersonOrder): PersonOrderKey {
   return { expression: text ? `lower(${column})` : column, descending: order.direction === 'desc' };
 }
 
+/** Person columns `PersonNameLike.pattern` matches. */
+const NAME_LIKE_COLUMNS = ['lname', 'fname', 'company', 'email', 'jobtitle'] as const;
+
 /** One ORDER BY key: NULLs lowest as in SQL Server. */
 function orderSql(key: PersonOrderKey): string {
   return key.descending ? `${key.expression} DESC NULLS LAST` : `${key.expression} ASC NULLS FIRST`;
@@ -650,6 +798,14 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
   const siteEquals = (column: string, param: string): string => `${column}::bpchar COLLATE ${legacyCi} = ${param}::bpchar`;
   /** The text site id `column` equals an element of the array parameter `param`, compared as `siteEquals` does. */
   const siteIn = (column: string, param: string): string => `${column}::bpchar COLLATE ${legacyCi} = ANY (${param}::bpchar[])`;
+  const textOrder = qualified(schema, LEGACY_TEXT_ORDER_COLLATION);
+  /** The sort key of `key` in the legacy text order, in the expression form person_tenant_text_name_order_idx indexes. */
+  const textOrderKey = (key: PersonSortKey): PersonOrderKey => {
+    const { sql: column, text } = personColumn(key.column);
+    return { expression: text ? `rtrim(${column}) COLLATE ${textOrder}` : column, descending: key.descending };
+  };
+  // The collated userid is the comparator's last key; the stored userid after it only orders ids equal under the collation.
+  const textOrderTie = textOrderKey({ column: 'userid', descending: false });
 
   // A person matching several spellings is returned once, at the first of them.
   const personsByIdSql =
@@ -670,6 +826,10 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     ' AND isprimary IS DISTINCT FROM 0 ORDER BY addressid FOR UPDATE';
   const addressByIdSql = `SELECT * FROM ${address} WHERE tenant_id = $1 AND ${idEquals('addressid', '$2')}`;
   const lockAddressSql = `SELECT addressid, isprimary FROM ${address} WHERE tenant_id = $1 AND ${idEquals('addressid', '$2')} FOR UPDATE`;
+  const lockAddressRowSql = `${addressByIdSql} FOR UPDATE`;
+  const lockAddressSetSql =
+    `SELECT addressid FROM ${address} WHERE tenant_id = $1 AND (${idIn('addressid', '$2')} OR ${idEquals('userid', '$3')})` +
+    ' ORDER BY addressid FOR UPDATE';
   const lockInterestsSql =
     `SELECT userid, categoryid FROM ${interest} WHERE tenant_id = $1 AND ${idEquals('userid', '$2')}` +
     ` AND ($3::bpchar[] IS NULL OR ${idIn('categoryid', '$3')}) ORDER BY categoryid FOR UPDATE`;
@@ -706,9 +866,22 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     ' ORDER BY effective_from, archive_id LIMIT 1';
   // The id is hashed under the collation, so every spelling of one person takes the same lock.
   const archiveLockSql = `SELECT pg_advisory_xact_lock(hashtext($1::text), hashbpchar($2::bpchar COLLATE ${legacyCi}))`;
+  const rosterLockFunction: Readonly<Record<RosterLockMode, string>> = { shared: 'pg_advisory_xact_lock_shared', exclusive: 'pg_advisory_xact_lock' };
+  const rosterTenantLockSql = (mode: RosterLockMode): string => `SELECT ${rosterLockFunction[mode]}(hashtext($1::text), hashtext($2::text))`;
+  const rosterUserLockSql = (mode: RosterLockMode): string => `SELECT ${rosterLockFunction[mode]}(hashtext($1::text), $2::integer)`;
+  // Hashed under the collation, as archiveLockSql hashes ids, so every spelling of one user yields one key; ascending keys fix the lock order.
+  const rosterUserKeysSql = `SELECT DISTINCT hashbpchar(u.v COLLATE ${legacyCi}) AS key FROM unnest($1::bpchar[]) AS u(v) ORDER BY key`;
+  const openRostersSql =
+    `SELECT * FROM ${rosterOperation} WHERE tenant_id = $1 AND ${idIn('user_id', '$2')} AND state = ANY($3::text[])` +
+    ' ORDER BY started_at, operation_id';
+  const openTenantRostersSql = `SELECT * FROM ${rosterOperation} WHERE tenant_id = $1 AND state = ANY($2::text[]) ORDER BY started_at, operation_id`;
+  const rosterCountSql = `SELECT count(*)::int AS count FROM ${rosterOperation} WHERE tenant_id = $1 AND ${idIn('user_id', '$2')}`;
+  const rosterCountAmongSql = `${rosterCountSql} AND operation_id = ANY($3::bpchar[])`;
   const openRosterSql =
     `SELECT * FROM ${rosterOperation} WHERE tenant_id = $1 AND ${idEquals('user_id', '$2')} AND state = ANY($3::text[])` +
     ' ORDER BY started_at, operation_id LIMIT 1';
+  // Keyed as the platform repository keys its writes of the row.
+  const lockRosterSql = `SELECT * FROM ${rosterOperation} WHERE tenant_id = $1 AND operation_id = $2 FOR UPDATE`;
   // SKIP LOCKED leaves a row another sweep or a request holds to the next sweep.
   const staleRosterSql =
     `SELECT * FROM ${rosterOperation} WHERE tenant_id = $1 AND (state = ANY($2::text[]) OR (state = 'done' AND error = $7)) AND updated_at < $3` +
@@ -835,17 +1008,44 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     return { where, params };
   }
 
+  /** WHERE terms of the persons in `scope`, over their bound parameters. */
+  function orderScopeFilter(tx: TenantTx, scope: PersonOrderScope): PersonFilter {
+    const params: unknown[] = [tx.tenantId];
+    const bind = binder(params);
+    const where = ['tenant_id = $1'];
+    if (scope.siteIds !== undefined) where.push(siteIn('siteid', bind([...scope.siteIds])));
+    if (scope.nameLike !== undefined) {
+      const pattern = bind(scope.nameLike.pattern);
+      // COLLATE "C" folds ASCII case only; ESCAPE '' keeps a backslash literal.
+      const terms: string[] = NAME_LIKE_COLUMNS.map((column) => `${column} COLLATE "C" ILIKE ${pattern} ESCAPE ''`);
+      const orUserIds = scope.nameLike.orUserIds ?? [];
+      if (orUserIds.length > 0) terms.push(idIn('userid', bind([...orUserIds])));
+      where.push(`(${terms.join(' OR ')})`);
+    }
+    return { where, params };
+  }
+
   /** The `take` persons of `filter` after `after`, in `orderBy` order then userid; the sort-key values ride along under alias columns. */
-  async function personPage(
+  function personPage(
     tx: TenantTx,
     filter: PersonFilter,
     orderBy: readonly PersonOrder[],
     after: PersonCursor | null | undefined,
     take: number,
   ): Promise<Page<PersonRow, PersonCursor>> {
+    return keyedPersonPage(tx, filter, orderBy.map(orderKey), after, take);
+  }
+
+  /** The `take` persons of `filter` after `after`, by `keys` then userid; the sort-key values ride along under alias columns. */
+  async function keyedPersonPage(
+    tx: TenantTx,
+    filter: PersonFilter,
+    keys: readonly PersonOrderKey[],
+    after: PersonCursor | null | undefined,
+    take: number,
+  ): Promise<Page<PersonRow, PersonCursor>> {
     const params = [...filter.params];
     const bind = binder(params);
-    const keys = orderBy.map(orderKey);
     const aliases = keys.map((_, index) => orderAlias(index));
     const where = after === null || after === undefined ? filter.where : [...filter.where, afterSql(keys, after, bind)];
     const columns = ['*', ...keys.map((key, index) => `${key.expression} AS "${orderAlias(index)}"`)].join(', ');
@@ -901,12 +1101,25 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     return personPage(tx, queryFilter(tx, query), query.orderBy ?? DEFAULT_PERSON_ORDER, opts.after, pageSize(opts.limit));
   }
 
+  async function pagePersonsInOrder(tx: TenantTx, scope: PersonOrderScope, opts: PersonOrderPageOptions): Promise<Page<PersonRow, PersonCursor>> {
+    const keys = [...opts.orderBy.map(textOrderKey), textOrderTie];
+    return keyedPersonPage(tx, orderScopeFilter(tx, scope), keys, opts.after, pageSize(opts.limit));
+  }
+
   function listAddresses(tx: TenantTx, userId: string): Promise<AddressRow[]> {
     return readUnits<AddressRow>(tx, ADDRESS.unit, addressesSql, [tx.tenantId, userId]);
   }
 
   async function findAddress(tx: TenantTx, addressId: string): Promise<AddressRow | null> {
     return (await readUnits<AddressRow>(tx, ADDRESS.unit, addressByIdSql, [tx.tenantId, addressId]))[0] ?? null;
+  }
+
+  async function findAddressForUpdate(tx: TenantTx, addressId: string): Promise<AddressRow | null> {
+    return (await readUnits<AddressRow>(tx, ADDRESS.unit, lockAddressRowSql, [tx.tenantId, addressId]))[0] ?? null;
+  }
+
+  async function lockAddresses(tx: TenantTx, addressIds: readonly string[], userId: string): Promise<void> {
+    await readUnits<{ addressid: string }>(tx, ADDRESS.unit, lockAddressSetSql, [tx.tenantId, [...addressIds], userId]);
   }
 
   /** Locks the address `addressId` and returns its stored id and primary flag; undefined when absent. */
@@ -1143,7 +1356,14 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     }
   }
 
-  async function insertRosterOperation(tx: TenantTx, input: RosterOperationInput, ctx: WriteContext = {}): Promise<RosterOperationRow> {
+  async function insertRosterOperation(
+    tx: TenantTx,
+    input: RosterOperationInput,
+    ctx: WriteContext = {},
+    opts: RosterLockOptions = {},
+  ): Promise<RosterOperationRow> {
+    // Lock order user → tenant, so an intent queued behind a fenced user holds no tenant lock against tenant-wide readers.
+    await takeRosterLocks(tx, [...(await userLocks(tx, [input.userId], 'exclusive')), tenantLock(tx, 'exclusive')], opts.timeoutMs);
     const now = clock.now();
     const row: Omit<RosterOperationRow, 'tenant_id'> = {
       operation_id: cfUuid(),
@@ -1157,6 +1377,7 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
       started_at: now,
       updated_at: now,
       identity_unreachable_since: null,
+      claimed_by: null,
     };
     try {
       return await base.insert<RosterOperationRow>(tx, ROSTER_OPERATION.table, row, ctx);
@@ -1168,15 +1389,25 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     }
   }
 
-  function setRosterOperationState(
+  /** The operation's row, locked until `tx` ends; undefined when absent. */
+  async function lockRosterOperation(tx: TenantTx, operationId: string): Promise<RosterOperationRow | undefined> {
+    return (await select<RosterOperationRow>(tx, lockRosterSql, [tx.tenantId, operationId]))[0];
+  }
+
+  async function setRosterOperationState(
     tx: TenantTx,
     operationId: string,
     patch: RosterOperationStatePatch,
     ctx: WriteContext = {},
+    owner: RosterOperationOwner = {},
   ): Promise<RosterOperationRow | null> {
+    const held = await lockRosterOperation(tx, operationId);
+    if (held === undefined) return null;
+    if (held.claimed_by !== (owner.claim ?? null)) throw new RosterOperationClaimedError(operationId);
     // Undefined optional columns are left as stored; null clears them.
     const values: RepositoryRow = {
       state: patch.state,
+      payload: patch.payload,
       before_image: patch.beforeImage,
       identity_xid: patch.identityXid,
       error: patch.error,
@@ -1186,12 +1417,62 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     return base.update<RosterOperationRow>(tx, ROSTER_OPERATION.table, { operation_id: operationId }, values, ctx);
   }
 
+  async function holdRosterOperation(tx: TenantTx, operationId: string, state: RosterState, owner: RosterOperationOwner = {}): Promise<RosterOperationRow | null> {
+    const held = await lockRosterOperation(tx, operationId);
+    if (held === undefined) return null;
+    if (held.state !== state || held.claimed_by !== (owner.claim ?? null)) throw new RosterOperationClaimedError(operationId);
+    return held;
+  }
+
+  async function claimRosterOperation(tx: TenantTx, operationId: string, claim: RosterOperationClaim, ctx: WriteContext = {}): Promise<RosterOperationRow | null> {
+    const held = await lockRosterOperation(tx, operationId);
+    if (held === undefined || held.state !== claim.state || held.claimed_by !== claim.claimedBy) return null;
+    if (claim.staleBefore !== null && held.updated_at.getTime() >= claim.staleBefore.getTime()) return null;
+    return base.update<RosterOperationRow>(tx, ROSTER_OPERATION.table, { operation_id: operationId }, { claimed_by: claim.token, updated_at: clock.now() }, ctx);
+  }
+
   function findRosterOperation(tx: TenantTx, operationId: string): Promise<RosterOperationRow | null> {
     return base.findByKey<RosterOperationRow>(tx, ROSTER_OPERATION.table, { operation_id: operationId });
   }
 
   async function findOpenRosterOperation(tx: TenantTx, userId: string): Promise<RosterOperationRow | null> {
     return (await select<RosterOperationRow>(tx, openRosterSql, [tx.tenantId, userId, [...OPEN_ROSTER_STATES]]))[0] ?? null;
+  }
+
+  async function findOpenRosterOperations(tx: TenantTx, userIds?: readonly string[]): Promise<RosterOperationRow[]> {
+    if (userIds === undefined) return select<RosterOperationRow>(tx, openTenantRostersSql, [tx.tenantId, [...OPEN_ROSTER_STATES]]);
+    if (userIds.length === 0) return [];
+    return select<RosterOperationRow>(tx, openRostersSql, [tx.tenantId, [...userIds], [...OPEN_ROSTER_STATES]]);
+  }
+
+  async function countRosterOperations(tx: TenantTx, userIds: readonly string[], operationIds?: readonly string[]): Promise<number> {
+    if (userIds.length === 0 || operationIds?.length === 0) return 0;
+    const [row] =
+      operationIds === undefined
+        ? await select<{ count: number }>(tx, rosterCountSql, [tx.tenantId, [...userIds]])
+        : await select<{ count: number }>(tx, rosterCountAmongSql, [tx.tenantId, [...userIds], [...operationIds]]);
+    return row?.count ?? 0;
+  }
+
+  /** The statement taking the transaction tenant's roster lock. */
+  function tenantLock(tx: TenantTx, mode: RosterLockMode): RosterLock {
+    return { sql: rosterTenantLockSql(mode), params: [`${schema}.${ROSTER_OPERATION.table}:tenant`, tx.tenantId], subject: `tenant ${tx.tenantId}` };
+  }
+
+  /** The statements taking the roster locks of `userIds`, one per collation-equal id, in key order. */
+  async function userLocks(tx: TenantTx, userIds: readonly string[], mode: RosterLockMode): Promise<RosterLock[]> {
+    if (userIds.length === 0) return [];
+    const namespace = `${schema}.${ROSTER_OPERATION.table}:${tx.tenantId}:`;
+    const subject = `user ${userIds.join(', ')}`;
+    return (await select<{ key: number }>(tx, rosterUserKeysSql, [[...userIds]])).map(({ key }) => ({ sql: rosterUserLockSql(mode), params: [namespace, key], subject }));
+  }
+
+  async function lockRosterTenant(tx: TenantTx, mode: RosterLockMode, opts: RosterLockOptions = {}): Promise<void> {
+    await takeRosterLocks(tx, [tenantLock(tx, mode)], opts.timeoutMs);
+  }
+
+  async function lockRosterUsers(tx: TenantTx, userIds: readonly string[], mode: RosterLockMode, opts: RosterLockOptions = {}): Promise<void> {
+    await takeRosterLocks(tx, await userLocks(tx, userIds, mode), opts.timeoutMs);
   }
 
   /** The `take` stale roster operations after `after`, oldest first. */
@@ -1275,8 +1556,11 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     searchPersons,
     queryPersons,
     pageQueryPersons,
+    pagePersonsInOrder,
     listAddresses,
     findAddress,
+    findAddressForUpdate,
+    lockAddresses,
     insertAddress,
     updateAddress,
     deleteAddress,
@@ -1297,8 +1581,14 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     insertPersonArchive,
     insertRosterOperation,
     setRosterOperationState,
+    holdRosterOperation,
+    claimRosterOperation,
     findRosterOperation,
     findOpenRosterOperation,
+    findOpenRosterOperations,
+    countRosterOperations,
+    lockRosterTenant,
+    lockRosterUsers,
     listStaleRosterOperations,
     pageStaleRosterOperations,
     upsertGroupName,

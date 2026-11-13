@@ -42,7 +42,6 @@
     "src/**/*.tsx",
     "test/**/*.ts",
     "next.config.ts",
-    "proxy.ts",
     "vitest.config.ts",
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts"

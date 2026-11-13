@@ -25,9 +25,10 @@ const AS_OF_PATTERN = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/;
 /** `raw` as the contract's `ExportTaskPayload`, or null when it is not one. */
 function exportRunPayload(raw: unknown): ExportRunPayload | null {
   if (typeof raw !== 'object' || raw === null) return null;
-  const { jobId, asOf, userToken } = raw as Record<string, unknown>;
+  const { jobId, asOf } = raw as Record<string, unknown>;
   if (typeof jobId !== 'string' || !isCfUuid(jobId) || typeof asOf !== 'string' || !AS_OF_PATTERN.test(asOf)) return null;
-  return typeof userToken === 'string' && userToken !== '' ? { jobId, asOf, userToken } : null;
+  // The run acts as System, so the `sessionId` or `userToken` of a task queued by an earlier release is never read or forwarded.
+  return { jobId, asOf };
 }
 
 /** The payload's job under the body's tenant; null when the payload is malformed or names no job there. */

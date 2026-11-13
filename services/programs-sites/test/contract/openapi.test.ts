@@ -21,7 +21,7 @@ import { SITE_COLUMNS } from '../../src/legacy/site-fields.js';
 import { RAZUNA_KEYS } from '../../src/legacy/update-branches.js';
 import { buildTestApp, headersFor, type RecordingDb, type TestApp } from '../helpers/app.js';
 
-type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
+type HttpMethod = 'GET' | 'HEAD' | 'POST' | 'PUT' | 'DELETE' | 'OPTIONS' | 'PATCH';
 type JsonApiFamily = 'json' | 'ajax' | 'rest';
 type OperationObject = Record<string, unknown> & { operationId?: string };
 
@@ -261,9 +261,15 @@ function routeKeys(routes: readonly RouteMatrixEntry[]): Set<string> {
   return new Set(routes.map(routeKey));
 }
 
+/** `METHOD path` key of a contract operation: the Fastify route `x-opt2-fastify-path` names, in contract form, else its template. */
+function operationKey({ method, path, op }: ContractOperation): string {
+  const fastifyPath = op['x-opt2-fastify-path'];
+  return `${method} ${typeof fastifyPath === 'string' ? toOpenApiPath(fastifyPath) : path}`;
+}
+
 /** `METHOD path` keys of the contract operations. */
 function operationKeys(operations: readonly ContractOperation[]): Set<string> {
-  return new Set(operations.map(({ method, path }) => `${method} ${path}`));
+  return new Set(operations.map(operationKey));
 }
 
 /** Routes the contract does not declare, and operations no route serves, each sorted. */
@@ -323,19 +329,6 @@ function expectNothingWritten(ctx: TestApp): void {
   expect(ctx.publisher.published).toEqual([]);
 }
 
-/** Anonymous `site.findOne` of tenant-a through `family`; the `site` entity is public. */
-function jsonApiRead(family: JsonApiFamily): Case {
-  return {
-    name: `reads the tenant-a site anonymously through the ${family} family`,
-    method: 'GET',
-    url: `/_api/${family}/v1/${SITE_A}/site`,
-    status: 200,
-    verify: ({ body }) => {
-      expect(record(record(body).data)).toMatchObject({ siteid: SITE_A, entityname: 'site' });
-    },
-  };
-}
-
 /** `site.save` of tenant-a as S2 through `family`; the session-managed families send the CSRF fields. */
 function jsonApiSave(family: JsonApiFamily): Case {
   return {
@@ -353,38 +346,120 @@ function jsonApiSave(family: JsonApiFamily): Case {
   };
 }
 
-const CASES: Record<string, Case[]> = {
-  jsonSiteGet: [
-    jsonApiRead('json'),
-    {
-      name: 'refuses a token of another tenant on the JSON API site read with the legacy 403',
-      method: 'GET',
-      url: `/_api/json/v1/${SITE_A}/site`,
-      as: 'other-tenant',
-      status: 403,
+/** A path of each JSON API template and the site method its route key resolves under every verb. */
+const JSON_API_TEMPLATES = [
+  { name: 'Root', url: `?method=findAll&entityname=site&siteid=${SITE_A}`, method: 'findAll' },
+  { name: 'Site', url: `/${SITE_A}?method=findPermissions&entityname=site&id=${SITE_A}`, method: 'findPermissions' },
+  { name: 'Segment', url: `/${SITE_A}/findNew?entityname=site`, method: 'findNew' },
+  { name: 'Item', url: `/${SITE_A}/site/${SITE_A}`, method: 'findOne' },
+  { name: 'Suffix', url: `/${SITE_A}/site/${SITE_A}/permissions?method=findProperties&entityname=site`, method: 'findProperties' },
+] as const;
+
+const JSON_API_METHODS: readonly HttpMethod[] = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'];
+
+/** One anonymous call per JSON API family, template and verb: the method's envelope, or for HEAD its headers alone. */
+function jsonApiCases(): Record<string, Case[]> {
+  const cases: Record<string, Case[]> = {};
+  for (const family of ['json', 'ajax', 'rest'] as const) {
+    for (const template of JSON_API_TEMPLATES) {
+      for (const method of JSON_API_METHODS) {
+        const verb = `${method.charAt(0)}${method.slice(1).toLowerCase()}`;
+        cases[`${family}Api${template.name}${verb}`] = [
+          {
+            name: `answers ${template.method} of tenant-a anonymously through the ${family} family`,
+            method,
+            url: `/_api/${family}/v1${template.url}`,
+            status: 200,
+            verify: ({ res, body }) => {
+              expect(res.headers.etag).toMatch(/^[0-9A-F]{64}$/);
+              if (method === 'HEAD') {
+                expect(res.body).toBe('');
+                expect(res.headers['content-length']).toBeUndefined();
+              } else {
+                expect(record(body).method).toBe(template.method);
+              }
+            },
+          },
+        ];
+      }
+    }
+  }
+  return cases;
+}
+
+const JSON_API_CASES = jsonApiCases();
+
+/** The generated cases of `operationId` followed by `extra`. */
+function jsonApiOperation(operationId: string, ...extra: Case[]): Case[] {
+  return [...(JSON_API_CASES[operationId] ?? []), ...extra];
+}
+
+/** Anonymous public site-monitor run through `method`; legacy matches the path only. */
+function siteMonitorRun(method: HttpMethod): Case {
+  return {
+    name: `runs the site monitor anonymously on ${method} with the legacy empty body`,
+    method,
+    url: '/_api/sitemonitor',
+    status: 200,
+    verify: ({ res }, ctx) => {
+      expect(res.body).toBe('');
+      expect(ctx.client.requestsTo('migration', '/internal/v1/legacy-steps')).not.toEqual([]);
     },
-  ],
-  jsonSitePost: [
-    jsonApiSave('json'),
+  };
+}
+
+const CASES: Record<string, Case[]> = {
+  ...JSON_API_CASES,
+  jsonApiSegmentGet: jsonApiOperation('jsonApiSegmentGet', {
+    name: 'refuses a token of another tenant on the JSON API site read with the legacy 403',
+    method: 'GET',
+    url: `/_api/json/v1/${SITE_A}/site`,
+    as: 'other-tenant',
+    status: 403,
+  }),
+  jsonApiSegmentPost: jsonApiOperation('jsonApiSegmentPost', jsonApiSave('json'), {
+    name: 'rejects a JSON API site save with a CSRF token identity refuses as invalidTokens, writing nothing',
+    method: 'POST',
+    url: `/_api/json/v1/${SITE_A}/site`,
+    as: 's2',
+    headers: FORM,
+    payload: `${SITE_SAVE_FIELDS}&${TOKEN_FIELDS}`,
+    setup: (ctx) => ctx.client.csrfValid(false),
+    status: 400,
+    verify: (_answer, ctx) => {
+      expect(ctx.client.requestsTo('identity')).toHaveLength(1);
+      expectNothingWritten(ctx);
+    },
+  }),
+  jsonApiSegmentDelete: jsonApiOperation(
+    'jsonApiSegmentDelete',
     {
-      name: 'rejects a JSON API site save with a CSRF token identity refuses as invalidTokens, writing nothing',
-      method: 'POST',
+      name: 'refuses an anonymous JSON API site delete with the legacy 401 before any CSRF check',
+      method: 'DELETE',
       url: `/_api/json/v1/${SITE_A}/site`,
-      as: 's2',
-      headers: FORM,
-      payload: `${SITE_SAVE_FIELDS}&${TOKEN_FIELDS}`,
-      setup: (ctx) => ctx.client.csrfValid(false),
-      status: 400,
-      verify: (_answer, ctx) => {
-        expect(ctx.client.requestsTo('identity')).toHaveLength(1);
+      status: 401,
+      verify: ({ body }, ctx) => {
+        expect(record(body).method).toBe('delete');
+        expect(ctx.client.requestsTo('identity')).toEqual([]);
         expectNothingWritten(ctx);
       },
     },
-  ],
-  ajaxSiteGet: [jsonApiRead('ajax')],
-  ajaxSitePost: [jsonApiSave('ajax')],
-  restSiteGet: [jsonApiRead('rest')],
-  restSitePost: [jsonApiSave('rest')],
+    {
+      name: 'answers an S2 JSON API site delete with a valid token as the legacy server_error, deleting nothing',
+      method: 'DELETE',
+      url: `/_api/json/v1/${SITE_A}/site`,
+      as: 's2',
+      headers: FORM,
+      payload: TOKEN_FIELDS,
+      status: 500,
+      verify: ({ body }, ctx) => {
+        expect(record(body)).toMatchObject({ method: 'delete', error: { code: 'server_error' } });
+        expectNothingWritten(ctx);
+      },
+    },
+  ),
+  ajaxApiSegmentPost: jsonApiOperation('ajaxApiSegmentPost', jsonApiSave('ajax')),
+  restApiSegmentPost: jsonApiOperation('restApiSegmentPost', jsonApiSave('rest')),
   sitemonitorRunGet: [
     {
       name: 'runs the site monitor anonymously with the legacy empty body',
@@ -409,6 +484,11 @@ const CASES: Record<string, Case[]> = {
       },
     },
   ],
+  sitemonitorRunHead: [siteMonitorRun('HEAD')],
+  sitemonitorRunPut: [siteMonitorRun('PUT')],
+  sitemonitorRunDelete: [siteMonitorRun('DELETE')],
+  sitemonitorRunPatch: [siteMonitorRun('PATCH')],
+  sitemonitorRunOptions: [siteMonitorRun('OPTIONS')],
   listSites: [
     {
       name: 'lists every registered site for s2',
@@ -483,6 +563,25 @@ const CASES: Record<string, Case[]> = {
       verify: ({ body }) => expect(record(body)).toMatchObject({ isNew: 0, site: { SiteID: SITE_A } }),
     },
   ],
+  getUserPoolSites: [
+    {
+      name: 'reads the tenant-a private and umbrella public user pool sites as a system user',
+      method: 'GET',
+      url: `/v1/sites/${SITE_A}/user-pool-sites`,
+      as: 'system-user',
+      status: 200,
+      verify: ({ body }) => {
+        expect((record(body).sites as Array<{ SiteID: string }>).map((site) => site.SiteID)).toEqual([SITE_A, UMBRELLA]);
+      },
+    },
+    {
+      name: 'refuses the tenant-a user pool sites to a token of another tenant',
+      method: 'GET',
+      url: `/v1/sites/${SITE_A}/user-pool-sites`,
+      as: 'other-tenant',
+      status: 403,
+    },
+  ],
   updateSite: [
     {
       name: 'updates tenant-a as its site admin and announces the site state',
@@ -512,6 +611,23 @@ const CASES: Record<string, Case[]> = {
         expect(record(body)).toMatchObject({ written: false, errors: {}, site: { SiteID: SITE_A } });
         expect(ctx.client.requestsTo('identity')).toHaveLength(1);
         expectNothingWritten(ctx);
+      },
+    },
+    {
+      name: 'answers the legacy 500 for a site name longer than its tsettings column, writing nothing',
+      method: 'POST',
+      url: `/v1/sites/${SITE_A}/update`,
+      as: 'site-admin',
+      headers: FORM,
+      payload: `siteid=${SITE_A}&action=Update&site=${'S'.repeat(300)}&${TOKEN_FIELDS}`,
+      status: 500,
+      verify: ({ body }, ctx) => {
+        expect(record(body)).toMatchObject({ error: { code: 'server_error', message: 'Unhandled Exception' } });
+        expectNothingWritten(ctx);
+        // The update transaction commits, as legacy's commits the extended data before the failing UPDATE.
+        const control = ctx.db.statements().map(({ sql }) => sql.split(' ')[0]?.toUpperCase());
+        expect(control).toContain('COMMIT');
+        expect(control).not.toContain('ROLLBACK');
       },
     },
     {
@@ -756,7 +872,7 @@ const CASES: Record<string, Case[]> = {
       url: `/internal/v1/task-queues/${MONITOR_QUEUE}/pause`,
       as: 'service:operator',
       status: 200,
-      verify: ({ body }) => expect(record(body)).toEqual({ queue: MONITOR_QUEUE, service: 'programs-sites', paused: true }),
+      verify: ({ body }) => expect(record(body)).toEqual({ queue: MONITOR_QUEUE, service: 'programs-sites', paused: true, running: 0 }),
     },
   ],
   resumeTaskQueue: [
@@ -860,7 +976,7 @@ describe('route declarations', () => {
   });
 
   it('declares each route with the contract roles, public flag and transport', () => {
-    const operations = new Map(contractOperations(DOC).map((operation) => [`${operation.method} ${operation.path}`, operation.op]));
+    const operations = new Map(contractOperations(DOC).map((operation) => [operationKey(operation), operation.op]));
     const declared = routes.map((route) => ({
       route: routeKey(route),
       requires: [...(route.requires ?? [])].sort(),

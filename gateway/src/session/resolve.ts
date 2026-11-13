@@ -51,9 +51,11 @@ export type SessionResolution =
       setCookies: string[];
       /** Set once a legacy logout of the session began and identity has not confirmed its end, which must complete before any use. */
       identityEndPending?: true;
+      /** Request parameter names REST credential handling consumed, which the owning service's route key removes from params. */
+      consumedParams?: string[];
     }
   | { kind: 'response'; status: number; headers: Record<string, string>; body: string }
-  | { kind: 'none'; setCookies: string[] };
+  | { kind: 'none'; setCookies: string[]; consumedParams?: string[] };
 
 /** Options of {@link SessionResolver.resolveSession}. */
 export interface ResolveSessionOptions {
@@ -317,8 +319,12 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
     });
     if (outcome.outcome === 'denied' || outcome.outcome === 'answered') return legacyAnswer(outcome);
     if (outcome.outcome === 'anonymous' || outcome.sessionId === null) return none();
+    // Consumed credentials stay out of the service's params even when the session ended and it continues anonymously.
+    const consumed = outcome.consumedParams?.length ? { consumedParams: outcome.consumedParams } : {};
     const check = await state.check(outcome.sessionId);
-    return check.state === 'active' ? session(outcome.sessionId, check.epoch, mode, undefined, []) : none();
+    if (check.state !== 'active') return { kind: 'none', setCookies: [], ...consumed };
+    // A REST session has no jar, so legacy receives no cookies in its place.
+    return { kind: 'session', sessionId: outcome.sessionId, epoch: check.epoch, mode, legacyCookies: {}, setCookies: [], ...consumed };
   }
 
   /** Target-primary: identity-issued cookies name the session; otherwise describe's legacy session is adopted. */

@@ -2,7 +2,7 @@
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LegacyServiceUnavailableError, cfUuid } from '@opt2/platform/legacy-compat';
-import { closeGates, ensureUnitGates, openGates } from '@opt2/platform/migration-kit';
+import { closeGates, ensureUnitGates, openGates, withGatedTenant } from '@opt2/platform/migration-kit';
 import { tenantIdForSite, withMetadata, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
 import {
   TENANT_A,
@@ -30,6 +30,7 @@ import {
   type AddressDeps,
   type AddressValues,
 } from '../../src/domain/addresses.js';
+import type { PersonFence } from '../../src/domain/person-fence.js';
 import { normaliseParams } from '../../src/domain/person.js';
 import { createPeopleRepository, type PeopleRepository, type PersonInput } from '../../src/repo/repository.js';
 import { PEOPLE_UNITS, type AddressRow, type PersonRow } from '../../src/repo/tables.js';
@@ -61,20 +62,18 @@ async function rejection(outcome: Promise<unknown>): Promise<unknown> {
   throw new Error('expected a rejection');
 }
 
-/** Save collaborators whose `awaitPersonOpen` records each wait, then resolves or rejects with `refusal`. */
-function harness(db: TenantDb, repo: PeopleRepository, refusal?: Error): { deps: AddressDeps; waits: [string, string][] } {
-  const waits: [string, string][] = [];
-  const deps: AddressDeps = {
-    db,
-    repo,
-    clock: CLOCK,
-    awaitPersonOpen: (waitDb, tenantId, userId, opts) => {
-      if (waitDb !== db || opts.clock !== CLOCK) return Promise.reject(new Error('awaitPersonOpen got foreign collaborators'));
-      waits.push([tenantId, userId]);
+/** Save collaborators whose fence records each `fencePersons` call as its tenant and ids, then resolves or rejects with `refusal`. */
+function harness(db: TenantDb, repo: PeopleRepository, refusal?: Error): { deps: AddressDeps; fenced: string[][] } {
+  const fenced: string[][] = [];
+  const fence: PersonFence = {
+    fencePersons: (tx, userIds) => {
+      fenced.push([tx.tenantId, ...userIds]);
       return refusal === undefined ? Promise.resolve() : Promise.reject(refusal);
     },
+    withPersonsOpen: (fenceDb, tenantId, fn, opts) =>
+      fenceDb !== db || opts.clock !== CLOCK ? Promise.reject(new Error('withPersonsOpen got foreign collaborators')) : withGatedTenant(fenceDb, tenantId, fn),
   };
-  return { deps, waits };
+  return { deps: { db, repo, clock: CLOCK, fence }, fenced };
 }
 
 /** A database and repository that fail on any use, so a refusal that never reaches them read and wrote nothing. */
@@ -86,6 +85,19 @@ const UNTOUCHABLE_DB: TenantDb = {
 };
 const UNTOUCHABLE_REPO = new Proxy({} as PeopleRepository, {
   get: (_target, key) => {
+    throw new Error(`unexpected repository use: ${String(key)}`);
+  },
+});
+/** A database whose tenant transactions get a handle that runs no statement, so only the collaborators act. */
+const STATEMENTLESS_DB: TenantDb = {
+  ...UNTOUCHABLE_DB,
+  withTenant: (tenantId, fn) =>
+    fn({ kind: 'tenant', tenantId, schema: 'people', query: () => Promise.reject(new Error('unexpected statement')), onCommit: () => undefined }),
+};
+/** A repository that holds no address and fails on any other use. */
+const ADDRESSLESS_REPO = new Proxy({} as PeopleRepository, {
+  get: (_target, key) => {
+    if (key === 'findAddress' || key === 'findAddressForUpdate') return () => Promise.resolve(null);
     throw new Error(`unexpected repository use: ${String(key)}`);
   },
 });
@@ -204,11 +216,11 @@ describe('address save refusals', () => {
   it.each(SAVES.flatMap(([name, save]) => ['', 'SET-1'].map((extendSetId) => [name, save, extendSetId] as const)))(
     '%s refuses a posted extendSetID %j before any read or write',
     async (_name, save, extendSetId) => {
-      const { deps, waits } = harness(UNTOUCHABLE_DB, UNTOUCHABLE_REPO);
+      const { deps, fenced } = harness(UNTOUCHABLE_DB, UNTOUCHABLE_REPO);
       const error = await rejection(save(deps, A, normaliseParams({ userid: 'U1', addressid: 'A1', extendSetID: extendSetId }), ACTOR_A));
       expect(error).toBeInstanceOf(LegacyServiceUnavailableError);
       expect(error).toMatchObject({ message: 'Address extended data is saved by legacy', surface: 'auto', reason: 'address-extdata-withheld' });
-      expect(waits).toEqual([]);
+      expect(fenced).toEqual([]);
     },
   );
 
@@ -226,18 +238,18 @@ describe('address save refusals', () => {
     ['saveAddress', saveAddress, { userid: '' }],
     ['saveAddress', saveAddress, { userid: ' \t', addressid: 'A1' }],
   ])('%s throws the USERID-required error for %j', async (_name, save, params) => {
-    const { deps, waits } = harness(UNTOUCHABLE_DB, UNTOUCHABLE_REPO);
+    const { deps, fenced } = harness(UNTOUCHABLE_DB, UNTOUCHABLE_REPO);
     const error = await rejection(save(deps, A, normaliseParams(params), ACTOR_A));
     expect(Object.getPrototypeOf(error)).toBe(Error.prototype);
     expect(error).toMatchObject({ message: USER_ID_REQUIRED });
-    expect(waits).toEqual([]);
+    expect(fenced).toEqual([]);
   });
 
-  it.each(SAVES)('%s waits out an open roster operation on the trimmed owner before its transaction', async (_name, save) => {
+  it.each(SAVES)('%s fences the trimmed owner inside its transaction before any write', async (_name, save) => {
     const busy = new Error('roster operation open');
-    const { deps, waits } = harness(UNTOUCHABLE_DB, UNTOUCHABLE_REPO, busy);
+    const { deps, fenced } = harness(STATEMENTLESS_DB, ADDRESSLESS_REPO, busy);
     await expect(save(deps, A, normaliseParams({ userid: ' U1 ', addressid: 'A1' }), ACTOR_A)).rejects.toBe(busy);
-    expect(waits).toEqual([[A, 'U1']]);
+    expect(fenced).toEqual([[A, 'U1']]);
   });
 });
 
@@ -421,15 +433,15 @@ describe.skipIf(!available)('addresses against PostgreSQL', () => {
   });
 
   describe('createAddress', () => {
-    it('inserts at the owner site under a new id after waiting out the owner', async () => {
+    it('inserts at the owner site under a new id after fencing the owner', async () => {
       const person = await addPerson();
-      const { deps, waits } = harness(db, repo);
+      const { deps, fenced } = harness(db, repo);
       const params = { userID: ` ${person.userid} `, siteid: 'tenant-b', city: ' Oslo ', isPrimary: '1' };
       const result = await createAddress(deps, A, normaliseParams(params), ACTOR_A);
       expect(result.address).toMatchObject({ userid: person.userid, siteid: 'tenant-a', city: 'Oslo', isprimary: 1, addressname: null });
       expect(result.address?.addressid).toMatch(CF_UUID);
       expect(result.values).toMatchObject({ addressid: result.address?.addressid, userid: person.userid, siteid: 'tenant-a' });
-      expect(waits).toEqual([[A, person.userid]]);
+      expect(fenced).toEqual([[A, person.userid]]);
       expect((await addressChanges()).at(-1)).toEqual({ op: 'insert', actor_user_id: 'ACTOR', request_id: 'REQ-1' });
     });
 
@@ -488,13 +500,25 @@ describe.skipIf(!available)('addresses against PostgreSQL', () => {
   });
 
   describe('updateAddress', () => {
-    it('creates without a posted addressid, waiting once', async () => {
+    it('creates without a posted addressid, fencing once', async () => {
       const person = await addPerson();
-      const { deps, waits } = harness(db, repo);
+      const { deps, fenced } = harness(db, repo);
       const result = await updateAddress(deps, A, normaliseParams({ userid: person.userid, addressid: '', city: 'Bergen' }), ACTOR_A);
       expect(result.address).toMatchObject({ userid: person.userid, siteid: 'tenant-a', city: 'Bergen' });
       expect(result.address?.addressid).toMatch(CF_UUID);
-      expect(waits).toEqual([[A, person.userid]]);
+      expect(fenced).toEqual([[A, person.userid]]);
+    });
+
+    it.each<[string, AddressSave]>([
+      ['updateAddress', updateAddress],
+      ['saveAddress', saveAddress],
+    ])('%s moving a stored address to another person fences the posted and the stored owner together', async (_name, save) => {
+      const [from, to] = [await addPerson(), await addPerson()];
+      const stored = (await createAddress(harness(db, repo).deps, A, normaliseParams({ userid: from.userid, city: 'Oslo' }), ACTOR_A)).address as AddressRow;
+      const { deps, fenced } = harness(db, repo);
+      const result = await save(deps, A, normaliseParams({ userid: to.userid, addressid: stored.addressid, city: 'Bergen' }), ACTOR_A);
+      expect(result.address).toEqual({ ...stored, userid: to.userid, city: 'Bergen' });
+      expect(fenced).toEqual([[A, to.userid, from.userid]]);
     });
 
     it('applies the posted values over the stored address at the owner site, keeping isPrimary', async () => {
@@ -562,22 +586,22 @@ describe.skipIf(!available)('addresses against PostgreSQL', () => {
       const person = await addPerson();
       const stored = (await saveAddress(harness(db, repo).deps, A, normaliseParams({ userid: person.userid, city: 'Oslo', zip: '0150' }), ACTOR_A))
         .address as AddressRow;
-      const { deps, waits } = harness(db, repo);
+      const { deps, fenced } = harness(db, repo);
       const result = await saveAddress(deps, A, normaliseParams({ addressid: stored.addressid, city: 'Bergen' }), ACTOR_A);
       expect(result.address).toEqual({ ...stored, city: 'Bergen' });
-      expect(waits).toEqual([[A, person.userid]]);
+      expect(fenced).toEqual([[A, person.userid]]);
     });
 
     it.each<[string, () => Record<string, unknown>]>([
       ['no addressid', () => ({ city: 'Oslo' })],
       ['an unknown addressid', () => ({ addressid: cfUuid(), city: 'Oslo' })],
     ])('throws the USERID-required error without a posted or stored owner for %s', async (_label, params) => {
-      const { deps, waits } = harness(db, repo);
+      const { deps, fenced } = harness(db, repo);
       const before = (await addressChanges()).length;
       const error = await rejection(saveAddress(deps, A, normaliseParams(params()), ACTOR_A));
       expect(Object.getPrototypeOf(error)).toBe(Error.prototype);
       expect(error).toMatchObject({ message: USER_ID_REQUIRED });
-      expect(waits).toEqual([]);
+      expect(fenced).toEqual([]);
       expect(await addressChanges()).toHaveLength(before);
     });
 

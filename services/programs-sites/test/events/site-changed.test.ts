@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   TENANT_A,
   TENANT_B,
@@ -92,7 +92,6 @@ describe.skipIf(!process.env.PG_HOST)('programs-sites.site.changed.v1', () => {
   let publisher!: CapturingPublisher;
   let taskPort!: FakeTaskPort;
   let clock!: TestApp['clock'];
-  let unflushedEventId: string | undefined;
 
   /** `<throwaway schema>.<name>`. */
   const table = (name: string): string => `${schema.schema}.${name}`;
@@ -155,6 +154,19 @@ describe.skipIf(!process.env.PG_HOST)('programs-sites.site.changed.v1', () => {
       );
     }
     return rows;
+  }
+
+  /** Outbox rows a sweep selects (unpublished, not held), summed over every fixture tenant. */
+  async function unpublishedOutboxCount(): Promise<number> {
+    let count = 0;
+    for (const fixture of TENANT_LIST) {
+      const [row] = await tenantQuery<{ count: string }>(
+        fixture,
+        `SELECT count(*)::text AS count FROM ${table('outbox')} WHERE published_at IS NULL AND NOT held`,
+      );
+      count += Number(row?.count ?? 0);
+    }
+    return count;
   }
 
   /** The fixture registry payload of `siteId`. */
@@ -268,6 +280,14 @@ describe.skipIf(!process.env.PG_HOST)('programs-sites.site.changed.v1', () => {
     publisher.clear();
   });
 
+  // Registry cases push versions of the same fixture sites, so each starts from the seeded registry with no consumer progress.
+  beforeEach(async () => {
+    await seedRegistry(schema.app, schema.schema);
+    for (const fixture of TENANT_LIST) {
+      await tenantQuery(fixture, `DELETE FROM ${table('consumer_aggregate_version')} WHERE subscription = $1`, [SITE_CHANGED_SUBSCRIPTION]);
+    }
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
     // An injected publish failure a case did not consume must not fail a later case's publish.
@@ -340,7 +360,6 @@ describe.skipIf(!process.env.PG_HOST)('programs-sites.site.changed.v1', () => {
     expect(log.xid_low).toBe(site.xmin);
     const position = parseWritePosition(res.headers[WRITE_POSITION_HEADER_LC] as string | undefined);
     expect(position.get(SERVICE)).toBe(log.xid);
-    unflushedEventId = row.event_id;
   });
 
   it('applies a pushed site event to the tenant registry with resolved pool tenants and one applied inbox receipt', async () => {
@@ -457,12 +476,14 @@ describe.skipIf(!process.env.PG_HOST)('programs-sites.site.changed.v1', () => {
 
   it('emits a backfilled site as a state event with Masa pool defaults, and treats a repeated batch as a no-op', async () => {
     const batch = tsettingsBatch('site-changed-events-backfill-tenant-b', tsettingsRow(TENANT_B.siteId, { Domain: 'tenant-b.opt2.test' }));
+    const before = await outboxRows(TENANT_B);
 
     const res = await migrationPost('apply', batch);
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ batchId: batch.batchId, duplicate: false, applied: 1, skipped: 0 });
-    const rows = await outboxRows(TENANT_B);
+    const applied = await outboxRows(TENANT_B);
+    const rows = applied.slice(before.length);
     expect(rows).toHaveLength(1);
     const [row] = rows as [OutboxRow];
     const site = await storedSite(TENANT_B);
@@ -484,7 +505,7 @@ describe.skipIf(!process.env.PG_HOST)('programs-sites.site.changed.v1', () => {
 
     expect(repeated.statusCode).toBe(200);
     expect(repeated.json()).toEqual({ batchId: batch.batchId, duplicate: true, applied: 0, skipped: 0 });
-    expect(await outboxRows(TENANT_B)).toEqual(rows);
+    expect(await outboxRows(TENANT_B)).toEqual(applied);
     expect(await siteChangelog(TENANT_B)).toEqual(logs);
     expect(await storedSite(TENANT_B)).toEqual(site);
     const batches = await tenantQuery<{ batch_id: string }>(TENANT_B, `SELECT batch_id FROM ${table('migration_batch')} WHERE batch_id = $1`, [
@@ -494,24 +515,36 @@ describe.skipIf(!process.env.PG_HOST)('programs-sites.site.changed.v1', () => {
   });
 
   it('publishes unflushed outbox rows from the sweep task and secures the next slot of the sweep chain', async () => {
-    expect(unflushedEventId).toBeDefined();
+    const before = await outboxRows(TENANT_A);
+    publisher.failNext();
+    const update = await updateTenantA({ site: 'Tenant A Swept', domain: 'a3.events.test' });
+    expect(update.statusCode).toBe(200);
+    expect(update.json()).toMatchObject({ written: true, errors: {} });
     const site = await storedSite(TENANT_A);
     publisher.failNext();
     const envelope = await schema.app.withTenant(TENANT_A.tenantId, (tx) =>
       writeSiteChanged(tx, { siteId: TENANT_A.siteId, rowVersion: BigInt(site.row_version), payload: siteChangedPayload(site) }),
     );
     expect(envelope).not.toBeNull();
-    const written = (await outboxRows(TENANT_A)).find((row) => row.event_id === envelope?.eventId);
-    expect(written?.published_at).toBeNull();
+    const own = (await outboxRows(TENANT_A)).slice(before.length);
+    expect(own).toHaveLength(2);
+    expect(own[1]?.event_id).toBe(envelope?.eventId);
+    expect(own.map((row) => row.published_at)).toEqual([null, null]);
+    const ownIds = own.map((row) => row.event_id);
+    const pending = await unpublishedOutboxCount();
+    const callsBefore = taskPort.calls.length;
 
     const res = await sweep();
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ published: 2, failed: 0 });
+    expect(res.json()).toMatchObject({ published: pending, failed: 0 });
     const published = new Map((await outboxRows(TENANT_A)).map((row) => [row.event_id, row.published_at]));
-    expect(published.get(envelope?.eventId ?? '')).toBeInstanceOf(Date);
-    expect(published.get(unflushedEventId ?? '')).toBeInstanceOf(Date);
-    expect(publisher.published.map((event) => event.envelope.eventId)).toEqual(expect.arrayContaining([unflushedEventId, envelope?.eventId]));
+    expect(ownIds.map((id) => published.get(id))).toEqual([expect.any(Date), expect.any(Date)]);
+    expect(publisher.published.map((event) => event.envelope.eventId)).toEqual(expect.arrayContaining(ownIds));
     expect(taskPort.tasks(SWEEP_QUEUE).map((task) => task.input.name)).toContain(sweepTaskName(1));
+    expect(taskPort.calls.slice(callsBefore)).toContainEqual({
+      op: 'create',
+      args: [expect.objectContaining({ queue: SWEEP_QUEUE, name: sweepTaskName(1) })],
+    });
   });
 });

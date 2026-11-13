@@ -3,7 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { parseTopic, subscriptionName } from '@opt2/platform/events';
 import type { PositionResponse, PublishedEvent } from '@opt2/platform/migration-kit';
-import { OUTBOX_PRODUCERS, callQueueControl, outboxSweepQueue } from '@opt2/platform/tasks';
+import { LOCAL_ONLY_PRODUCERS, OUTBOX_PRODUCERS, callQueueControl, outboxSweepQueue } from '@opt2/platform/tasks';
 
 import type { MigrationContext } from '../context.js';
 import type { DataOwner } from '../owners/index.js';
@@ -35,7 +35,7 @@ export interface DrainRole {
 
 /** Options of {@link awaitDrained}. */
 export interface AwaitDrainedOptions {
-  /** Owners checked as producers; every configured data owner when absent. */
+  /** Owners checked as producers; every {@link drainParticipants} entry when absent. */
   owners?: readonly DataOwner[];
   /** Unit ids whose owners are checked as consumers; when absent the producers are checked as consumers too. */
   consumersWriting?: readonly string[];
@@ -89,7 +89,7 @@ export class MissingSubscriptionError extends Error {
   }
 }
 
-/** Declared subscriptions of checked consumers whose topic's producer is no data owner, so no owner lists their events. */
+/** Declared subscriptions of checked consumers whose topic's producer is no drain participant, so no participant lists their events. */
 export class UnlistedProducerError extends Error {
   override readonly name: string = 'UnlistedProducerError';
   readonly subscriptions: string[];
@@ -126,9 +126,15 @@ export function isDrained(c: OwnerDrainCounts, role: DrainRole): boolean {
   return producerDrained && consumerDrained;
 }
 
+/** The configured data owners, then each local-only producer the deployment's `OPT2_SERVICE_URLS` names. */
+export function drainParticipants(ctx: Pick<DrainContext, 'config' | 'env'>): DataOwner[] {
+  const deployedLocalOnly = LOCAL_ONLY_PRODUCERS.filter((producer) => Object.hasOwn(ctx.env.OPT2_SERVICE_URLS, producer));
+  return [...new Set<DataOwner>([...ctx.config.dataOwners, ...deployedLocalOnly])];
+}
+
 /** Each owner checked, polled once, with its roles; producers first, then consumers in unit order. */
 function drainRoles(ctx: DrainContext, options: AwaitDrainedOptions): Map<DataOwner, DrainRole> {
-  const producers = options.owners ?? ctx.config.dataOwners;
+  const producers = options.owners ?? drainParticipants(ctx);
   const consumers =
     options.consumersWriting === undefined ? producers : options.consumersWriting.map((unit) => ctx.catalog.ownerOf(unit));
   const roles = new Map<DataOwner, DrainRole>();
@@ -137,7 +143,8 @@ function drainRoles(ctx: DrainContext, options: AwaitDrainedOptions): Map<DataOw
   return roles;
 }
 
-const SWEEP_PRODUCERS: ReadonlySet<string> = new Set(OUTBOX_PRODUCERS);
+/** Producers that own an outbox sweep queue, deployed and local-only. */
+export const SWEEP_PRODUCERS: ReadonlySet<string> = new Set([...OUTBOX_PRODUCERS, ...LOCAL_ONLY_PRODUCERS]);
 
 /** A published event one consumer must receive in the event's envelope tenant or dead-letter; ids are lower case. */
 interface Delivery {
@@ -155,10 +162,10 @@ interface Routes {
 
 /**
  * Routes of the subscriptions the checked consumers declare in their contracts.
- * @throws UnlistedProducerError naming each declared subscription whose topic's producer is no data owner.
+ * @throws UnlistedProducerError naming each declared subscription whose topic's producer is no drain participant.
  */
 async function declaredRoutes(ctx: DrainContext, consumers: readonly DataOwner[]): Promise<Routes> {
-  const producerOf = new Map<string, DataOwner>(ctx.config.dataOwners.map((owner) => [owner, owner]));
+  const producerOf = new Map<string, DataOwner>(drainParticipants(ctx).map((owner) => [owner, owner]));
   const declared = await Promise.all(
     consumers.map(async (consumer) => ({ consumer, subscriptions: await declaredSubscriptions(ctx.config, consumer) })),
   );

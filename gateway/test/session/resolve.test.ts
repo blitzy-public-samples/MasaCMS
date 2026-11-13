@@ -295,6 +295,20 @@ describe('sessionless REST', () => {
     expect(s.authenticated[0]?.siteId).toBe('default');
   });
 
+  it.each<[string, string[], ActiveStates, SessionResolution]>([
+    [
+      'its active session',
+      ['access_token'],
+      { R1: { state: 'active', epoch: 3 } },
+      { kind: 'session', sessionId: 'R1', epoch: 3, mode: 'target-primary', legacyCookies: {}, setCookies: [], consumedParams: ['access_token'] },
+    ],
+    ['the anonymous continuation of its ended session', ['client_id', 'client_secret'], {}, { kind: 'none', setCookies: [], consumedParams: ['client_id', 'client_secret'] }],
+    ['its session, when nothing was consumed', [], { R1: { state: 'active', epoch: 3 } }, { kind: 'session', sessionId: 'R1', epoch: 3, mode: 'target-primary', legacyCookies: {}, setCookies: [] }],
+  ])('an authenticated outcome carries the params it consumed into %s', async (_label, consumedParams, states, expected) => {
+    const s = setup({ authenticate: () => ({ outcome: 'authenticated', sessionId: 'R1', consumedParams }), states });
+    expect(await s.resolver.resolveSession(request(), { family: 'rest', mode: 'target-primary' })).toStrictEqual(expected);
+  });
+
   it('an anonymous outcome or an ended session is no session', async () => {
     expect(await setup().resolver.resolveSession(request(), { family: 'rest', mode: 'target-primary' })).toEqual({
       kind: 'none',

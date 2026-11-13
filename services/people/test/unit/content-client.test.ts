@@ -117,8 +117,11 @@ describe('photo file extensions', () => {
     const { content, requests } = contentWith(reply);
     const failure = content.photoFileExt(PHOTO_ID);
     await expect(failure).rejects.toBeInstanceOf(ServiceUnavailableError);
-    await expect(failure).rejects.toMatchObject({ service: 'strategies-content' });
-    await expect(failure).rejects.toThrow(`lookupFileExtensions HTTP_${status}`);
+    await expect(failure).rejects.toMatchObject({
+      service: 'strategies-content',
+      message: `Service strategies-content unavailable (HTTP_${status})`,
+      cause: { code: `HTTP_${status}`, message: `strategies-content lookupFileExtensions answered HTTP ${status}` },
+    });
     assertContentReply(requests[0], reply);
   });
 

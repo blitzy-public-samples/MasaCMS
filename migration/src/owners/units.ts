@@ -69,6 +69,11 @@ export interface UnitCatalog {
    * @throws UnknownLegacyTableError, or UnitCatalogError for a table that does not migrate.
    */
   keyColumnsOf(table: string): readonly string[];
+  /**
+   * Site column of a table whose keys can pass between tenants' change streams: tenant resolved by `siteID`, not split,
+   * and the site column outside the key; null for any other table. @throws UnknownLegacyTableError
+   */
+  siteColumnOf(table: string): string | null;
 }
 
 /** The ownership file is unreadable, malformed or breaks a catalog invariant, or a key was asked of a table that does not migrate. */
@@ -119,6 +124,8 @@ const ownershipSchema = z.object({
       table: name(),
       owner: name(),
       primaryKey: names(),
+      siteIdColumn: name().nullish(),
+      tenantResolution: z.string().nullish(),
       migrated: z.boolean().optional(),
       programFold: z.boolean().optional(),
       targets: z.array(
@@ -140,6 +147,7 @@ interface Entry {
   readonly owner: string;
   readonly split: boolean;
   readonly keyColumns: readonly string[];
+  readonly siteColumn: string | null;
   readonly targets: readonly LegacyTableTarget[];
   readonly owners: readonly DataOwner[];
 }
@@ -242,11 +250,14 @@ function buildEntry(raw: RawTable, ctx: LoadContext): Entry {
   }
   const targets = raw.targets.map((target) => buildTarget(raw, target, service, ctx));
   const owners = ctx.dataOwners.filter((owner) => targets.some((target) => target.owner === owner)) as DataOwner[];
+  const site = raw.tenantResolution === 'siteID' && !split ? (raw.siteIdColumn ?? null) : null;
+  const siteInKey = site !== null && raw.primaryKey.some((column) => column.toLowerCase() === site.toLowerCase());
   return Object.freeze({
     table: raw.table,
     owner: raw.owner,
     split,
     keyColumns: Object.freeze([...raw.primaryKey]),
+    siteColumn: siteInKey ? null : site,
     targets: Object.freeze(targets),
     owners: Object.freeze(owners),
   });
@@ -321,5 +332,6 @@ export function loadUnitCatalog(tableOwnershipPath: string, options: LoadUnitCat
       if (entry.targets.length === 0) throw new UnitCatalogError(`legacy table ${table} is not migratable (owner "${entry.owner}")`);
       return entry.keyColumns;
     },
+    siteColumnOf: (table: string) => resolve(table).siteColumn,
   });
 }

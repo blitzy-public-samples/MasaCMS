@@ -1,7 +1,7 @@
 /** Request mapping, CSRF skip semantics and contract shape of the site-settings routes over a recording SitesDomain. */
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { createServer, type Server } from 'node:http';
+import { createServer, request, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -11,7 +11,7 @@ import { INVOCATION_HEADER, collectRouteMatrix } from '@opt2/platform/auth';
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
-import type { TenantDb } from '@opt2/platform/tenancy';
+import { tenantIdForSite, type TenantDb } from '@opt2/platform/tenancy';
 import {
   ROLE_SET,
   assertResponseMatchesOpenApi,
@@ -21,9 +21,11 @@ import {
   testVerifier,
   writeTestSecrets,
 } from '@opt2/platform/testing';
-import type { SitesDomain } from '../../src/domain/sites.js';
+import { createSitesDomain, type SitesDomain } from '../../src/domain/sites.js';
 import type { components } from '../../src/generated/openapi.js';
+import { createProgramsSitesRepository } from '../../src/repo/repository.js';
 import { registerSiteRoutes } from '../../src/routes/sites.js';
+import { TEST_CLOCK, createRecordingDb } from '../helpers/app.js';
 
 type ContractOperation = Record<string, unknown>;
 
@@ -35,6 +37,7 @@ const SITE_PATHS = [
   '/v1/sites/order',
   '/v1/sites/{siteId}',
   '/v1/sites/{siteId}/shell',
+  '/v1/sites/{siteId}/user-pool-sites',
   '/v1/sites/{siteId}/update',
   '/v1/href-domains',
 ];
@@ -65,6 +68,10 @@ interface StubIdentity {
 let stateDir: string;
 let identity: StubIdentity;
 let app: FastifyInstance;
+/** Awaited before each service-transport authentication of the current test, when set. */
+let authenticateDelay: (() => Promise<void>) | undefined;
+/** Log records the service wrote during the current test. */
+let logLines: Record<string, unknown>[] = [];
 let sites: { [K in Exclude<keyof SitesDomain, 'emitStateEvents'>]: Mock<SitesDomain[K]> };
 
 const db: TenantDb = {
@@ -108,13 +115,22 @@ beforeEach(async () => {
   identity.valid = true;
   identity.status = 200;
   identity.calls.length = 0;
+  authenticateDelay = undefined;
+  logLines = [];
   sites = {
     listSites: vi.fn<SitesDomain['listSites']>(async () => [SITE_ROW]),
     readSite: vi.fn<SitesDomain['readSite']>(async () => ({ site: SITE, isNew: 0, extendSets: [], imageSizes: [] })),
     readShellSite: vi.fn<SitesDomain['readShellSite']>(async () => ({ site: SHELL_SITE, isNew: 0 })),
+    readUserPoolSites: vi.fn<SitesDomain['readUserPoolSites']>(async () => ({ sites: [SHELL_SITE] })),
     updateSite: vi.fn<SitesDomain['updateSite']>(async () => ({ written: true, errors: {}, site: SITE })),
     saveOrderAndDeploy: vi.fn<SitesDomain['saveOrderAndDeploy']>(async () => ({ written: true, sites: [SITE_ROW] })),
     hrefDomains: vi.fn<SitesDomain['hrefDomains']>(async () => DOMAINS),
+  };
+  const verifier = testVerifier('programs-sites');
+  const { authenticate } = verifier.transports.service;
+  verifier.transports.service.authenticate = async (req, opts) => {
+    await authenticateDelay?.();
+    return authenticate(req, opts);
   };
   app = await createService({
     name: 'programs-sites',
@@ -130,13 +146,13 @@ beforeEach(async () => {
       OPT2_STATE_DIR: stateDir,
       TZ: 'UTC',
     }),
-    verifierOverride: testVerifier('programs-sites'),
+    verifierOverride: verifier,
     pool: db,
     logger: createLogger({
       service: 'programs-sites',
       version: '1.0.0',
       env: 'local',
-      destination: { write: () => undefined },
+      destination: { write: (line: string) => logLines.push(JSON.parse(line) as Record<string, unknown>) },
     }),
   });
   await registerSiteRoutes(app, { db, sites: { ...sites, emitStateEvents: vi.fn() } });
@@ -189,9 +205,9 @@ describe('route declarations', () => {
         })),
     );
     const routes = declared.filter((route) => route.url.startsWith('/v1/'));
-    expect(expected).toHaveLength(6);
+    expect(expected).toHaveLength(7);
     expect(routes).toEqual(expect.arrayContaining(expected.map((entry) => expect.objectContaining(entry))));
-    expect(routes).toHaveLength(6);
+    expect(routes).toHaveLength(7);
   });
 });
 
@@ -205,7 +221,154 @@ describe('GET /v1/sites', () => {
     const res = await send('GET', `/v1/sites${query}`, 's2');
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual([SITE_ROW]);
-    expect(sites.listSites).toHaveBeenCalledWith(db, expect.objectContaining({ site: 'tenant-a', s2: true }), options);
+    expect(sites.listSites).toHaveBeenCalledWith(db, expect.objectContaining({ site: 'tenant-a', s2: true }), {
+      ...options,
+      signal: expect.any(AbortSignal),
+    });
+    expect(sites.listSites.mock.calls[0]?.[2]?.signal?.aborted).toBe(false);
+  });
+
+  it('answers a failed list of a connected client with the legacy 503, as before', async () => {
+    sites.listSites.mockRejectedValueOnce(new LegacyServiceUnavailableError());
+    const res = await send('GET', '/v1/sites', 's2');
+    expect(res.statusCode).toBe(503);
+    expect(logLines.find((line) => line.message === 'service unavailable')).toMatchObject({ severity: 'WARNING' });
+  });
+
+  it.each([
+    ['completes', false],
+    ['disconnects first', true],
+  ])('over HTTP, aborts the list signal only when the client %s', async (_label, disconnect) => {
+    let signal: AbortSignal | undefined;
+    let entered!: () => void;
+    const listing = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    sites.listSites.mockImplementation(
+      (_db, _claims, options) =>
+        new Promise((resolve, reject) => {
+          signal = options?.signal;
+          entered();
+          if (!disconnect) {
+            resolve([SITE_ROW]);
+            return;
+          }
+          signal?.addEventListener('abort', () => reject(signal?.reason), { once: true });
+        }),
+    );
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const { port } = app.server.address() as AddressInfo;
+    const req = request({ host: '127.0.0.1', port, path: '/v1/sites', headers: await headersAs('s2') });
+    const answered = new Promise<{ status: number | undefined; body: string }>((resolve, reject) => {
+      req.on('response', (res) => {
+        let body = '';
+        res.on('data', (chunk: Buffer) => {
+          body += chunk.toString('utf8');
+        });
+        res.on('end', () => resolve({ status: res.statusCode, body }));
+      });
+      req.on('error', reject);
+    });
+    req.end();
+    await listing;
+
+    if (disconnect) {
+      answered.catch(() => undefined);
+      req.destroy();
+      await vi.waitFor(() => expect(logLines.map((line) => line.message)).toContain('client closed the request'));
+      expect(signal?.aborted).toBe(true);
+      expect(logLines.find((line) => line.message === 'client closed the request')).toMatchObject({
+        severity: 'INFO',
+        route: '/v1/sites',
+        httpMethod: 'GET',
+        latencyMs: expect.any(Number),
+      });
+    } else {
+      expect(await answered).toEqual({ status: 200, body: JSON.stringify([SITE_ROW]) });
+      await vi.waitFor(() => expect(logLines.map((line) => line.message)).toContain('request completed'));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(signal?.aborted).toBe(false);
+    }
+    expect(logLines.filter((line) => line.severity === 'ERROR')).toEqual([]);
+  });
+
+  it.each([
+    ['completes', false],
+    ['disconnects during authentication', true],
+  ])('over HTTP, reads every registered tenant only when the client %s', async (_label, disconnect) => {
+    const siteIds = Array.from({ length: 74 }, (_, n) => `site-${n}`);
+    const recording = createRecordingDb();
+    recording.respond(
+      'SELECT tenant_id, site_id FROM programs_sites.tenant_registry ORDER BY site_id',
+      siteIds.map((siteId) => ({ tenant_id: tenantIdForSite(siteId), site_id: siteId })),
+    );
+    const domain = createSitesDomain({ repo: createProgramsSitesRepository({ clock: TEST_CLOCK }) });
+    let signal: AbortSignal | undefined;
+    let abortedOnEntry: boolean | undefined;
+    sites.listSites.mockImplementation(async (_db, claims, options) => {
+      signal = options?.signal;
+      abortedOnEntry = signal?.aborted;
+      return domain.listSites(recording, claims, options);
+    });
+    let authenticating!: () => void;
+    let release!: () => void;
+    let replyClosed!: () => void;
+    const authStarted = new Promise<void>((resolve) => {
+      authenticating = resolve;
+    });
+    const authReleased = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const closed = new Promise<void>((resolve) => {
+      replyClosed = resolve;
+    });
+    authenticateDelay = async () => {
+      authenticating();
+      await authReleased;
+    };
+    app.server.on('request', (_req, res) => res.once('close', replyClosed));
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const { port } = app.server.address() as AddressInfo;
+    const req = request({ host: '127.0.0.1', port, path: '/v1/sites', headers: await headersAs('s2') });
+    const answered = new Promise<number | undefined>((resolve, reject) => {
+      req.on('response', (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode));
+      });
+      req.on('error', reject);
+    });
+    req.end();
+    await authStarted;
+    const siteReads = () =>
+      recording
+        .statements()
+        .filter((statement) => statement.kind === 'tenant' && statement.sql.startsWith('SELECT * FROM "programs_sites"."site"'));
+
+    if (disconnect) {
+      answered.catch(() => undefined);
+      req.destroy();
+      await closed;
+      release();
+      await vi.waitFor(() => expect(logLines.map((line) => line.message)).toContain('client closed the request'));
+      expect(abortedOnEntry).toBe(true);
+      expect(recording.statements()).toEqual([]);
+      expect(logLines.find((line) => line.message === 'client closed the request')).toMatchObject({
+        severity: 'INFO',
+        route: '/v1/sites',
+        httpMethod: 'GET',
+        latencyMs: expect.any(Number),
+      });
+    } else {
+      release();
+      expect(await answered).toBe(200);
+      await vi.waitFor(() => expect(logLines.map((line) => line.message)).toContain('request completed'));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(abortedOnEntry).toBe(false);
+      expect(signal?.aborted).toBe(false);
+      expect(new Set(siteReads().map((statement) => statement.tenantId))).toEqual(new Set(siteIds.map((siteId) => tenantIdForSite(siteId))));
+    }
+    expect(siteReads()).toHaveLength(disconnect ? 0 : siteIds.length);
+    expect(logLines.filter((line) => line.severity === 'ERROR')).toEqual([]);
   });
 });
 
@@ -299,6 +462,34 @@ describe('GET /v1/sites/:siteId/shell', () => {
     assertResponseMatchesOpenApi(OPENAPI, { method: 'GET', path: url, status, contentType: res.headers['content-type'], body });
     expect(status).toBe(403);
     expect(sites.readShellSite).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /v1/sites/:siteId/user-pool-sites', () => {
+  const url = '/v1/sites/tenant-a/user-pool-sites';
+
+  it.each<SubjectName>(['editor', 'site-admin', 's2'])('reads the path site for %s', async (as) => {
+    const res = await send('GET', url, as);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ sites: [SHELL_SITE] });
+    expect(sites.readUserPoolSites).toHaveBeenCalledWith(db, expect.objectContaining({ site: 'tenant-a' }), 'tenant-a');
+  });
+
+  it.each<[SubjectName, number]>([
+    ['member', 403],
+    ['anonymous', 401],
+  ])('refuses %s with %i', async (as, status) => {
+    const res = await send('GET', url, as);
+    expect(res.statusCode).toBe(status);
+    expect(sites.readUserPoolSites).not.toHaveBeenCalled();
+  });
+
+  it('refuses an editor token for another site with 403', async () => {
+    const res = await app.inject({ method: 'GET', url, headers: await headersAs('editor', { site: 'tenant-b' }) });
+    const { statusCode: status, body } = res;
+    assertResponseMatchesOpenApi(OPENAPI, { method: 'GET', path: url, status, contentType: res.headers['content-type'], body });
+    expect(status).toBe(403);
+    expect(sites.readUserPoolSites).not.toHaveBeenCalled();
   });
 });
 

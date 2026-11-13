@@ -279,6 +279,7 @@ const STAMP_SQL = 'UPDATE "stub".outbox SET published_at = $1 WHERE event_id = A
 // Flush SQL and publishLockedRows ordering are specified in outbox-flush.test.ts; here flush statements match by prefix.
 const FLUSH_SELECT = /^SELECT o\.\* FROM "stub"\.outbox o JOIN /;
 const FLUSH_BLOCKERS = /^SELECT ordering_key, min\(seq\)::text AS seq FROM "stub"\.outbox /;
+const FLUSH_LOCK_TIMEOUT_SQL = "SELECT set_config('lock_timeout', $1, true)";
 
 const NOTE: OutboxWriteInput<{ noteId: string; body: string }> = {
   topic: TOPIC,
@@ -427,7 +428,7 @@ describe('writeOutbox', () => {
       expect(envelope).toMatchObject({ tenantId: tenant, aggregateId: 'N1' });
       expect(sqlByConnection(statements)).toEqual([
         ['BEGIN', SET_TENANT_SQL, INSERT_SQL, 'COMMIT'],
-        ['BEGIN', SET_TENANT_SQL, expect.stringMatching(FLUSH_SELECT), 'COMMIT'],
+        ['BEGIN', SET_TENANT_SQL, FLUSH_LOCK_TIMEOUT_SQL, expect.stringMatching(FLUSH_SELECT), 'COMMIT'],
       ]);
     }
   });
@@ -444,7 +445,7 @@ describe('writeOutbox', () => {
     expect(publisher.published).toEqual(written.map((envelope) => ({ topic: TOPIC, envelope })));
     expect(sqlByConnection(statements)).toEqual([
       ['BEGIN', SET_TENANT_SQL, INSERT_SQL, INSERT_SQL, 'COMMIT'],
-      ['BEGIN', SET_TENANT_SQL, expect.stringMatching(FLUSH_SELECT), expect.stringMatching(FLUSH_BLOCKERS), STAMP_SQL, 'COMMIT'],
+      ['BEGIN', SET_TENANT_SQL, FLUSH_LOCK_TIMEOUT_SQL, expect.stringMatching(FLUSH_SELECT), expect.stringMatching(FLUSH_BLOCKERS), STAMP_SQL, 'COMMIT'],
     ]);
     expect(statements.find((s) => FLUSH_SELECT.test(s.sql))).toMatchObject({ tenantId: tenant, values: [ids] });
     expect(statements.find((s) => s.sql === STAMP_SQL)).toMatchObject({ tenantId: tenant, values: [WRITTEN_AT, ids] });
@@ -532,7 +533,7 @@ describe('releaseOperation and discardOperation', () => {
     expect(publisher.published.map((event) => event.envelope)).toEqual(envelopes.slice(0, 2));
     expect(sqlByConnection(statements)).toEqual([
       ['BEGIN', SET_TENANT_SQL, RELEASE_SQL, 'COMMIT'],
-      ['BEGIN', SET_TENANT_SQL, expect.stringMatching(FLUSH_SELECT), expect.stringMatching(FLUSH_BLOCKERS), STAMP_SQL, 'COMMIT'],
+      ['BEGIN', SET_TENANT_SQL, FLUSH_LOCK_TIMEOUT_SQL, expect.stringMatching(FLUSH_SELECT), expect.stringMatching(FLUSH_BLOCKERS), STAMP_SQL, 'COMMIT'],
     ]);
     expect(statements.find((s) => s.sql === RELEASE_SQL)).toMatchObject({ tenantId: tenant, values: ['op-1'] });
   });

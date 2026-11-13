@@ -347,7 +347,7 @@ async function registeredTenantIds(db: TenantDb): Promise<string[]> {
 }
 
 /** Resource-bundle `messageFormat` of one argument, which legacy splits as a comma list [legacy: core/mura/resourceBundle/resourceBundle.cfc:164-192]. */
-function messageFormat(pattern: string, arg: string): string {
+export function messageFormat(pattern: string, arg: string): string {
   const args = ['', ...cfListToArray(arg)];
   return pattern.replace(/\{(\d+)\}/g, (placeholder, index: string) => args[Number(index)] ?? placeholder);
 }

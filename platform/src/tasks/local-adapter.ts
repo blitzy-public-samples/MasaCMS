@@ -17,9 +17,19 @@ import {
   type TaskPort,
 } from './port.js';
 import { UnknownTaskTargetError, queueDefinition, retryDelayS, type RetryPolicy } from './queues.js';
-import { SYSTEM_TENANT_ID, registeredTenants, rlsSql, withTenant, type TenantDb, type TenantTx } from '../tenancy/index.js';
+import {
+  SYSTEM_TENANT_ID,
+  isTenantId,
+  registeredTenants,
+  rlsSql,
+  withTenant,
+  type NotificationHandlers,
+  type NotificationListener,
+  type TenantDb,
+  type TenantTx,
+} from '../tenancy/index.js';
 import { loadLocalSigningKeys, signLocalServiceToken, type MANAGED_INVOKER_NAMES } from '../auth/index.js';
-import { taskHeaders, withExtractedContext, type TraceCarrier } from '../tracing/index.js';
+import { taskHeaders, withCallee, withExtractedContext, type TraceCarrier } from '../tracing/index.js';
 import { systemClock, z, type Clock } from '../service-kit/index.js';
 import { serializeError } from '../logging/index.js';
 
@@ -41,7 +51,13 @@ export const DEFAULT_MAX_CONCURRENT_DISPATCHES = 100;
 const SCHEMA_NAME = /^[a-z_][a-z0-9_]*$/;
 const LOCAL_TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/;
 const PURGE_INTERVAL_MS = 60_000;
+// A tombstone is purged PURGE_INTERVAL_MS after its retention ends, so tombstones of neighbouring times go in one scan.
+const TOMBSTONE_WAKE_MS = LOCAL_TOMBSTONE_RETENTION_S * 1000 + PURGE_INTERVAL_MS;
 const TASKS_INVOKER: (typeof MANAGED_INVOKER_NAMES)[number] = 'tasks-invoker';
+const MAX_CHANNEL_BYTES = 63;
+const NOTIFY_SQL = 'SELECT pg_notify($1, $2)';
+// A wake notification: the tenant and the epoch ms from which it may hold due work; any other payload asks for a full scan.
+const WAKE_PAYLOAD = /^(\S+) (-?\d{1,15})$/;
 
 // The OTel undici instrumentation subscribes here and injects a child of the active context into every request.
 const undiciRequestCreated = channel('undici:request:create');
@@ -97,7 +113,10 @@ export interface LocalTaskAdapterOptions {
   serviceUrls: Record<string, string>;
   clock?: Clock;
   logger: TaskLogger;
-  /** Default 1000. */
+  /**
+   * Milliseconds between dispatcher checks, default 1000. While the adapter listens for task notifications, a check
+   * with nothing due issues no statement; without a listener every check scans every tenant.
+   */
   pollIntervalMs?: number;
   /** Most rows claimed per tenant per scan, within free dispatch capacity; default 20. */
   batchSize?: number;
@@ -112,11 +131,11 @@ export interface LocalTaskAdapterOptions {
 /** Local task port with control over its dispatcher. */
 export interface LocalTaskPort extends TaskPort {
   readonly kind: 'local';
-  /** Starts the polling dispatcher; repeated calls are no-ops. */
+  /** Starts the dispatcher and, where the TenantDb can listen, its task-notification listener; repeated calls are no-ops. */
   start(): void;
-  /** Stops polling and waits for in-flight dispatches. */
+  /** Stops the dispatcher and its listener and waits for in-flight dispatches. */
   stop(): Promise<void>;
-  /** Runs one scan within free dispatch capacity, awaits its dispatches and returns how many it started. */
+  /** Runs one full scan within free dispatch capacity, awaits its dispatches and returns how many it started. */
   dispatchDue(): Promise<number>;
 }
 
@@ -253,6 +272,8 @@ export async function createLocalTaskAdapter(opts: LocalTaskAdapterOptions): Pro
   const resolveTarget = targetResolver(opts.serviceUrls);
   const table = `${db.schema}.${SCHEDULED_TASK_QUEUE_TABLE}`;
   const stateTable = `${db.schema}.${SCHEDULED_TASK_QUEUE_STATE_TABLE}`;
+  // Every adapter over this schema, in any process, listens here for the commits of every other.
+  const channel = `tasks_${db.schema}`.slice(0, MAX_CHANNEL_BYTES);
   // MATERIALIZED runs the locking subquery once; as an IN semi-join the planner may rescan it and claim past LIMIT.
   const claimSql = `WITH due AS MATERIALIZED (
   SELECT tenant_id, queue, name FROM ${table}
@@ -264,8 +285,17 @@ UPDATE ${table} t SET status = 'running', attempts = t.attempts + 1,
 FROM due
 WHERE (t.tenant_id, t.queue, t.name) = (due.tenant_id, due.queue, due.name)
 RETURNING t.*`;
+  const purgeSql = `DELETE FROM ${table} WHERE tenant_id = $1 AND status IN ('done', 'failed', 'deleted') AND updated_at < $2::timestamp(3)`;
+  // Earliest instant the tenant holds a claimable row outside paused queues, a lease once strictly past, or a purgeable tombstone.
+  const wakeSql = `SELECT LEAST(
+  (SELECT min(schedule_time) FROM ${table} WHERE tenant_id = $1 AND status = 'pending' AND NOT (queue = ANY($2::text[]))),
+  (SELECT min(lease_until) FROM ${table} WHERE tenant_id = $1 AND status = 'running' AND NOT (queue = ANY($2::text[]))) + interval '1 millisecond',
+  (SELECT min(updated_at) FROM ${table} WHERE tenant_id = $1 AND status IN ('done', 'failed', 'deleted')) + make_interval(secs => $3)
+) AS wake_at`;
 
   const inTenant = <T>(tenantId: string, fn: (tx: TenantTx) => Promise<T>): Promise<T> => withTenant(db, tenantId, fn);
+  /** Notifies every listening adapter, once `tx` commits, that its tenant may hold due work from `atMs`. */
+  const notifyWake = (tx: TenantTx, atMs: number): Promise<unknown> => tx.query(NOTIFY_SQL, [channel, `${tx.tenantId} ${String(atMs)}`]);
   const nowText = (): string => toLocalTimestamp(clock.now());
   const scanTenants = async (): Promise<string[]> => [
     ...new Set([SYSTEM_TENANT_ID, ...(await registeredTenants(db)).map((entry) => entry.tenantId)]),
@@ -277,27 +307,32 @@ RETURNING t.*`;
     const body = JSON.stringify(taskWireBody(input));
     const headers = JSON.stringify(taskHeaders());
     const now = nowText();
-    const { rows } = await inTenant(input.tenantId ?? SYSTEM_TENANT_ID, (tx) =>
-      tx.query(
+    const { rows } = await inTenant(input.tenantId ?? SYSTEM_TENANT_ID, async (tx) => {
+      const inserted = await tx.query(
         `INSERT INTO ${table} (tenant_id, queue, name, schedule_time, url, body, headers, deadline_s, status, attempts, created_at, updated_at)
 VALUES ($1, $2, $3, $4::timestamp(3), $5, $6::jsonb, $7::jsonb, $8, 'pending', 0, $9::timestamp(3), $9::timestamp(3))
 ON CONFLICT (tenant_id, queue, name) DO NOTHING RETURNING name`,
         [tx.tenantId, input.queue, input.name, toLocalTimestamp(input.scheduleTime), input.url, body, headers, input.deadlineS, now],
-      ),
-    );
+      );
+      if (inserted.rows.length > 0) await notifyWake(tx, input.scheduleTime.getTime());
+      return inserted;
+    });
     return { name: input.name, created: rows.length > 0 };
   }
 
   async function deleteTask(queue: string, name: string, deleteOpts?: { tenantId?: string }): Promise<DeleteTaskResult> {
     const tenants = deleteOpts?.tenantId === undefined ? await scanTenants() : [deleteOpts.tenantId];
     for (const tenant of tenants) {
-      const { rowCount } = await inTenant(tenant, (tx) =>
-        tx.query(
+      const { rowCount } = await inTenant(tenant, async (tx) => {
+        const now = clock.now();
+        const updated = await tx.query(
           `UPDATE ${table} SET status = 'deleted', updated_at = $4::timestamp(3)
 WHERE tenant_id = $1 AND queue = $2 AND name = $3 AND status IN ('pending', 'running')`,
-          [tx.tenantId, queue, name, nowText()],
-        ),
-      );
+          [tx.tenantId, queue, name, toLocalTimestamp(now)],
+        );
+        if ((updated.rowCount ?? 0) > 0) await notifyWake(tx, now.getTime() + TOMBSTONE_WAKE_MS);
+        return updated;
+      });
       if ((rowCount ?? 0) > 0) return { name, deleted: true };
     }
     return { name, deleted: false };
@@ -348,13 +383,15 @@ WHERE tenant_id = $1 AND queue = $2 AND name = $3 AND status IN ('pending', 'run
 
   async function setPaused(queue: string, paused: boolean): Promise<void> {
     queueDefinition(queue);
-    await inTenant(SYSTEM_TENANT_ID, (tx) =>
-      tx.query(
+    await inTenant(SYSTEM_TENANT_ID, async (tx) => {
+      await tx.query(
         `INSERT INTO ${stateTable} (tenant_id, queue, paused, updated_at) VALUES ($1, $2, $3, $4::timestamp(3))
 ON CONFLICT (tenant_id, queue) DO UPDATE SET paused = EXCLUDED.paused, updated_at = EXCLUDED.updated_at`,
         [tx.tenantId, queue, paused, nowText()],
-      ),
-    );
+      );
+      // Wake times leave out paused queues, so a resume asks every listening adapter for a full scan.
+      if (!paused) await tx.query(NOTIFY_SQL, [channel, '']);
+    });
   }
 
   async function queueState(queue: string): Promise<QueueState> {
@@ -368,12 +405,17 @@ ON CONFLICT (tenant_id, queue) DO UPDATE SET paused = EXCLUDED.paused, updated_a
     const guard = 'WHERE tenant_id = $1 AND queue = $2 AND name = $3 AND status = $4 AND attempts = $5';
     const keys = [row.tenant_id, row.queue, row.name, 'running', row.attempts];
     const now = clock.now();
+    // Settles the row unless its lease was reclaimed, and then notifies the wake time it leaves.
+    const record = (sql: string, values: unknown[], wakeMs: number): Promise<void> =>
+      inTenant(row.tenant_id, async (tx) => {
+        const { rowCount } = await tx.query(sql, [...keys, ...values]);
+        if ((rowCount ?? 0) > 0) await notifyWake(tx, wakeMs);
+      });
     if (failure === undefined && statusCode !== null && statusCode >= 200 && statusCode < 300) {
-      await inTenant(row.tenant_id, (tx) =>
-        tx.query(
-          `UPDATE ${table} SET status = 'done', lease_until = NULL, last_status = $6, updated_at = $7::timestamp(3) ${guard}`,
-          [...keys, statusCode, toLocalTimestamp(now)],
-        ),
+      await record(
+        `UPDATE ${table} SET status = 'done', lease_until = NULL, last_status = $6, updated_at = $7::timestamp(3) ${guard}`,
+        [statusCode, toLocalTimestamp(now)],
+        now.getTime() + TOMBSTONE_WAKE_MS,
       );
       return;
     }
@@ -382,12 +424,11 @@ ON CONFLICT (tenant_id, queue) DO UPDATE SET paused = EXCLUDED.paused, updated_a
     const delayS = retryDelayS(policy, row.attempts);
     const retryAt = exhausted ? null : toLocalTimestamp(new Date(now.getTime() + delayS * 1000));
     const status = exhausted ? 'failed' : 'pending';
-    await inTenant(row.tenant_id, (tx) =>
-      tx.query(
-        `UPDATE ${table} SET status = $6, schedule_time = COALESCE($7::timestamp(3), schedule_time), lease_until = NULL,
+    await record(
+      `UPDATE ${table} SET status = $6, schedule_time = COALESCE($7::timestamp(3), schedule_time), lease_until = NULL,
   last_status = $8, updated_at = $9::timestamp(3) ${guard}`,
-        [...keys, status, retryAt, statusCode, toLocalTimestamp(now)],
-      ),
+      [status, retryAt, statusCode, toLocalTimestamp(now)],
+      now.getTime() + (exhausted ? TOMBSTONE_WAKE_MS : delayS * 1000),
     );
     const outcome = statusCode === null ? 'got no response' : `answered HTTP ${String(statusCode)}`;
     const next = exhausted ? 'task failed' : `retry in ${String(delayS)} s`;
@@ -425,15 +466,17 @@ ON CONFLICT (tenant_id, queue) DO UPDATE SET paused = EXCLUDED.paused, updated_a
       };
       const deadlineMs = row.deadline_s * 1000;
       const response = await withExtractedContext(row.headers, () =>
-        send(row.url, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(row.body),
-          headersTimeout: deadlineMs,
-          bodyTimeout: deadlineMs,
-          // undici's parser timers fire up to ~500 ms late, so the signal holds the whole attempt to the deadline.
-          signal: AbortSignal.timeout(deadlineMs),
-        }),
+        withCallee(audience, () =>
+          send(row.url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(row.body),
+            headersTimeout: deadlineMs,
+            bodyTimeout: deadlineMs,
+            // undici's parser timers fire up to ~500 ms late, so the signal holds the whole attempt to the deadline.
+            signal: AbortSignal.timeout(deadlineMs),
+          }),
+        ),
       );
       statusCode = response.statusCode;
       await response.body.dump();
@@ -455,20 +498,49 @@ ON CONFLICT (tenant_id, queue) DO UPDATE SET paused = EXCLUDED.paused, updated_a
     return tracked;
   }
 
-  let lastPurgeMs: number | undefined;
+  // Epoch ms from which each tenant may hold claimable rows or purgeable tombstones; a tenant without an entry holds none known.
+  const wakeAt = new Map<string, number>();
+  // Marks per tenant, so a scan that overlapped a mark merges its wake time instead of overwriting it.
+  const markSeq = new Map<string, number>();
+  // Set at construction, by each LISTEN session start and by a resume notification; a full scan that fails or cannot
+  // reach every tenant sets it again.
+  let fullScanNeeded = true;
+  // 'listening': notifications mark wake times. 'polling': no listener, or it is down, so every check is a full scan.
+  // 'connecting': the first LISTEN is pending and checks wait for it, as the full scan after it covers every earlier commit.
+  let discovery: 'polling' | 'connecting' | 'listening' = 'polling';
+  let listener: NotificationListener | undefined;
+  const notifications: NotificationHandlers = {
+    onNotification(payload) {
+      const [, tenant, at] = WAKE_PAYLOAD.exec(payload) ?? [];
+      if (isTenantId(tenant) && at !== undefined) mark(tenant, Number(at));
+      else fullScanNeeded = true;
+    },
+    onListening() {
+      discovery = 'listening';
+      fullScanNeeded = true;
+    },
+    onLost(err) {
+      discovery = 'polling';
+      logger.warn({ error: serializeError(err) }, 'Local tasks listener lost; every check scans all tenants until it listens again');
+    },
+  };
 
-  async function purgeTombstones(tenants: readonly string[], now: Date): Promise<void> {
-    if (lastPurgeMs !== undefined && now.getTime() - lastPurgeMs < PURGE_INTERVAL_MS) return;
-    lastPurgeMs = now.getTime();
-    const cutoff = toLocalTimestamp(new Date(now.getTime() - LOCAL_TOMBSTONE_RETENTION_S * 1000));
-    for (const tenant of tenants) {
-      await inTenant(tenant, (tx) =>
-        tx.query(
-          `DELETE FROM ${table} WHERE tenant_id = $1 AND status IN ('done', 'failed', 'deleted') AND updated_at < $2::timestamp(3)`,
-          [tx.tenantId, cutoff],
-        ),
-      );
-    }
+  function wakeNoLaterThan(tenant: string, atMs: number): void {
+    const current = wakeAt.get(tenant);
+    if (current === undefined || atMs < current) wakeAt.set(tenant, atMs);
+  }
+
+  /** Records a committed write's notice that `tenant` may hold due work from `atMs`. */
+  function mark(tenant: string, atMs: number): void {
+    const key = tenant.toLowerCase();
+    markSeq.set(key, (markSeq.get(key) ?? 0) + 1);
+    wakeNoLaterThan(key, atMs);
+  }
+
+  /** Stores the wake time a scan of `tenant` read, merged with any mark recorded since the scan read `seq`. */
+  function refreshWake(tenant: string, seq: number, atMs: number | undefined): void {
+    if ((markSeq.get(tenant) ?? 0) === seq) wakeAt.delete(tenant);
+    if (atMs !== undefined) wakeNoLaterThan(tenant, atMs);
   }
 
   // Slots reserved by claims still awaiting their rows, so overlapping scans stay within the cap together.
@@ -476,10 +548,15 @@ ON CONFLICT (tenant_id, queue) DO UPDATE SET paused = EXCLUDED.paused, updated_a
   // Tenant index the next scan starts at: the first tenant a saturated scan could not reach.
   let nextTenant = 0;
 
-  /** Claims due rows into free dispatch slots, tenant by tenant from a rotating start, and starts their dispatches; resolves after the claims. */
-  async function scan(): Promise<Promise<void>[]> {
+  /**
+   * Claims due rows into free dispatch slots, tenant by tenant from a rotating start, starts their dispatches, purges
+   * expired tombstones and refreshes each scanned tenant's wake time; `due` limits it to those tenants.
+   * Resolves after the claims, with whether it reached every tenant it was to scan.
+   */
+  async function scan(due?: ReadonlySet<string>): Promise<{ dispatches: Promise<void>[]; reachedAll: boolean }> {
     const now = clock.now();
     const nowTs = toLocalTimestamp(now);
+    const cutoff = toLocalTimestamp(new Date(now.getTime() - LOCAL_TOMBSTONE_RETENTION_S * 1000));
     const paused = await inTenant(SYSTEM_TENANT_ID, async (tx) => {
       const { rows } = await tx.query<{ queue: string }>(`SELECT queue FROM ${stateTable} WHERE tenant_id = $1 AND paused`, [
         tx.tenantId,
@@ -487,25 +564,69 @@ ON CONFLICT (tenant_id, queue) DO UPDATE SET paused = EXCLUDED.paused, updated_a
       return rows.map((row) => row.queue);
     });
     const tenants = await scanTenants();
+    if (due !== undefined) {
+      // A tenant outside the registry is never scanned, so it is rechecked each purge interval rather than at every check.
+      const registered = new Set(tenants);
+      for (const tenant of due) if (!registered.has(tenant)) wakeAt.set(tenant, now.getTime() + PURGE_INTERVAL_MS);
+    }
     const dispatches: Promise<void>[] = [];
     const first = nextTenant % tenants.length;
     for (const [offset, tenant] of [...tenants.slice(first), ...tenants.slice(0, first)].entries()) {
+      if (due !== undefined && !due.has(tenant)) continue;
       const limit = Math.min(batchSize, maxConcurrentDispatches - inflight.size - claiming);
       if (limit <= 0) {
         nextTenant = (first + offset) % tenants.length;
-        break;
+        return { dispatches, reachedAll: false };
       }
       claiming += limit;
+      const seq = markSeq.get(tenant) ?? 0;
       let rows: QueueRow[];
+      let wakeMs: number | undefined;
       try {
-        ({ rows } = await inTenant(tenant, (tx) => tx.query<QueueRow>(claimSql, [nowTs, LEASE_MARGIN_S, paused, limit])));
+        ({ rows, wakeMs } = await inTenant(tenant, async (tx) => {
+          const claimed = await tx.query<QueueRow>(claimSql, [nowTs, LEASE_MARGIN_S, paused, limit]);
+          await tx.query(purgeSql, [tx.tenantId, cutoff]);
+          const { rows: wake } = await tx.query<{ wake_at: Date | string | null }>(wakeSql, [
+            tx.tenantId,
+            paused,
+            TOMBSTONE_WAKE_MS / 1000,
+          ]);
+          const next = wake[0]?.wake_at ?? null;
+          return { rows: claimed.rows, wakeMs: next === null ? undefined : fromLocalTimestamp(next).getTime() };
+        }));
       } finally {
         claiming -= limit;
       }
       for (const row of rows) dispatches.push(track(dispatch(row)));
+      refreshWake(tenant, seq, wakeMs);
     }
-    await purgeTombstones(tenants, now);
-    return dispatches;
+    return { dispatches, reachedAll: true };
+  }
+
+  /** Scans the system and every registered tenant, leaving a full scan to the next check when it fails or cannot reach them all. */
+  async function fullScan(): Promise<Promise<void>[]> {
+    fullScanNeeded = false;
+    try {
+      const { dispatches, reachedAll } = await scan();
+      if (!reachedAll) fullScanNeeded = true;
+      return dispatches;
+    } catch (err) {
+      fullScanNeeded = true;
+      throw err;
+    }
+  }
+
+  /**
+   * One dispatcher check: nothing while the first LISTEN is pending, a full scan when needed or not listening, otherwise
+   * a scan of the tenants whose wake time has come, if any; resolves with its dispatches.
+   */
+  async function check(): Promise<Promise<void>[]> {
+    if (discovery === 'connecting') return [];
+    if (fullScanNeeded || discovery === 'polling') return fullScan();
+    const nowMs = clock.now().getTime();
+    const due = new Set<string>();
+    for (const [tenant, atMs] of wakeAt) if (atMs <= nowMs) due.add(tenant);
+    return due.size === 0 ? [] : (await scan(due)).dispatches;
   }
 
   let started = false;
@@ -515,7 +636,7 @@ ON CONFLICT (tenant_id, queue) DO UPDATE SET paused = EXCLUDED.paused, updated_a
   function schedule(): void {
     timer = setTimeout(() => {
       timer = undefined;
-      ticking = scan()
+      ticking = check()
         .then(
           () => undefined,
           (err: unknown) => {
@@ -532,6 +653,10 @@ ON CONFLICT (tenant_id, queue) DO UPDATE SET paused = EXCLUDED.paused, updated_a
 
   function start(): void {
     if (started) return;
+    if (db.listen !== undefined) {
+      discovery = 'connecting';
+      listener = db.listen(channel, notifications);
+    }
     started = true;
     if (timer === undefined && ticking === undefined) schedule();
   }
@@ -542,8 +667,16 @@ ON CONFLICT (tenant_id, queue) DO UPDATE SET paused = EXCLUDED.paused, updated_a
       clearTimeout(timer);
       timer = undefined;
     }
-    await ticking;
-    while (inflight.size > 0) await Promise.all(inflight);
+    const closing = listener;
+    listener = undefined;
+    discovery = 'polling';
+    try {
+      await closing?.close();
+    } finally {
+      // Drained even when the listener fails to close, whose failure stop() then rejects with.
+      await ticking;
+      while (inflight.size > 0) await Promise.all(inflight);
+    }
   }
 
   const port: LocalTaskPort = {
@@ -559,7 +692,7 @@ ON CONFLICT (tenant_id, queue) DO UPDATE SET paused = EXCLUDED.paused, updated_a
     start,
     stop,
     async dispatchDue() {
-      const dispatches = await scan();
+      const dispatches = await fullScan();
       await Promise.all(dispatches);
       return dispatches.length;
     },

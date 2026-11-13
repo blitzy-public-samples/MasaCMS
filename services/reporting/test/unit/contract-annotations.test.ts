@@ -74,8 +74,8 @@ describe('reporting contract', () => {
     expect(contract.info?.['x-source-sha']).toBe(pin.sha);
   });
 
-  it('calls only finance and timesheets', () => {
-    expect(contract['x-opt2-calls']).toEqual(['finance', 'timesheets']);
+  it('calls only finance, identity and timesheets', () => {
+    expect(contract['x-opt2-calls']).toEqual(['finance', 'identity', 'timesheets']);
   });
 
   it('names every operation with a unique operationId', () => {

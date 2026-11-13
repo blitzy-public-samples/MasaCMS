@@ -10,8 +10,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { loadConfig } from '../../src/config.js';
 import type { MigrationContext } from '../../src/context.js';
 import { GatewayWaitTimeoutError, loadVersion, type CutoverEntry } from '../../src/cutover/index.js';
-import { StartupGuardFrozenError } from '../../src/legacy/index.js';
-import { loadUnitCatalog } from '../../src/owners/units.js';
+import { loadUnitCatalog, type Unit } from '../../src/owners/units.js';
 import type { StartupGuardRunner } from '../../src/reverse/projector.js';
 import type { WindowLifecycle } from '../../src/windows/legacy-steps.js';
 import {
@@ -28,6 +27,7 @@ import {
   tryGuardLock,
   unfreezeLegacyBound,
   withGuardLock,
+  type GuardRunnerContext,
   type ReloadWindowResult,
 } from '../../src/windows/reload.js';
 import { createCallLog, createGatewayDouble, type CallLog, type GatewayDoubleOptions } from '../helpers/gateway-double.js';
@@ -109,12 +109,12 @@ const env = (overrides: Partial<MigrationContext['env']> = {}): MigrationContext
   ({ LEGACY_ORIGIN: legacyOrigin, MURA_APPRELOADKEY: undefined, ...overrides }) as MigrationContext['env'];
 
 /** Legacy database whose live pool counts `rows()` matching rows, appending `count` to `log` on each count. */
-function fakeLegacy(rows: () => number, log?: CallLog): MigrationContext['legacy'] {
+function fakeLegacy(rows: () => number | Promise<number>, log?: CallLog): MigrationContext['legacy'] {
   const pool = {
     request: () => ({
       query: async () => {
         log?.append('legacy', 'count');
-        return { recordset: [{ n: rows() }] };
+        return { recordset: [{ n: await rows() }] };
       },
     }),
   };
@@ -165,8 +165,13 @@ describe('reloadKey', () => {
 
 describe('contentUnits', () => {
   it('returns the sorted content units of the catalog', () => {
-    const units = [{ id: 'people.person' }, { id: 'content.file' }, { id: 'content.content' }, { id: 'contents.other' }];
-    const catalog = { units: () => units as ReturnType<typeof CATALOG.units> };
+    const units: readonly Unit[] = [
+      { id: 'people.person', owner: 'people', schema: 'people', legacyTables: ['tusers'] },
+      { id: 'content.file', owner: 'strategies-content', schema: 'content', legacyTables: ['tfiles'] },
+      { id: 'content.content', owner: 'strategies-content', schema: 'content', legacyTables: ['tcontent'] },
+      { id: 'contents.other', owner: 'strategies-content', schema: 'contents', legacyTables: [] },
+    ];
+    const catalog = { units: () => units };
     expect(contentUnits(catalog)).toEqual(['content.content', 'content.file']);
   });
 
@@ -407,21 +412,78 @@ describe('guard lock', () => {
 
 describe('createStartupGuardRunner', () => {
   const RELOADED: ReloadWindowResult = { windowId: WINDOW_ID, legacyStatus: 200, windowState: 'closed', startupRowsRemaining: 0 };
+  const GUARD_STEPS: ReadonlySet<string> = new Set(['freeze', 'commit', 'reload', 'count', 'unfreeze', 'sleep']);
 
-  function runnerHarness(opts: { rows?: number; reload?: () => Promise<ReloadWindowResult>; commit?: () => Promise<void> } = {}) {
-    const log = createCallLog();
-    const gateway = gatewayDouble({ log });
+  interface RunnerOptions {
+    /** Matching rows the caller's scope counts. */
+    rows?: number;
+    /** Live predicate counts, one per count in order, then 0. */
+    liveCounts?: number[];
+    /** Answers each live predicate count instead of `liveCounts`. */
+    liveCount?: () => Promise<number>;
+    /** Result of the reload window by attempt, numbered from 1; `RELOADED` by default. */
+    reload?: (attempt: number) => Promise<ReloadWindowResult>;
+    commit?: () => Promise<void>;
+    /** Runs during each retry pause. */
+    onSleep?: () => Promise<void>;
+    /** Log shared with another runner's harness. */
+    log?: CallLog;
+    /** Gateway shared with another runner's harness. */
+    gateway?: ReturnType<typeof gatewayDouble>;
+  }
+
+  /** A promise resolved by `open`. */
+  function latch() {
+    let open = (): void => undefined;
+    const opened = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    return {
+      opened,
+      open: () => {
+        open();
+      },
+    };
+  }
+
+  function runnerHarness(opts: RunnerOptions = {}) {
+    const log = opts.log ?? createCallLog();
+    const gateway = opts.gateway ?? gatewayDouble({ log });
     const commit = vi.fn(opts.commit ?? (async () => log.append('caller', 'commit')));
-    const reload = vi.fn(
-      opts.reload ??
-        (async () => {
-          log.append('caller', 'reload');
-          return RELOADED;
-        }),
-    );
-    const runner = createStartupGuardRunner({ gateway, config: config(), legacy: fakeLegacy(() => 0) }, reload);
+    let attempts = 0;
+    const reload = vi.fn(async () => {
+      attempts += 1;
+      log.append('caller', 'reload');
+      return opts.reload === undefined ? RELOADED : opts.reload(attempts);
+    });
+    const liveCounts = [...(opts.liveCounts ?? [])];
+    const warn = vi.fn();
+    const sleeps: { ms: number; frozen: string[] }[] = [];
+    const ctx: GuardRunnerContext = {
+      gateway,
+      config: config(),
+      legacy: fakeLegacy(opts.liveCount ?? (() => liveCounts.shift() ?? 0), log),
+      logger: { warn } as unknown as GuardRunnerContext['logger'],
+    };
+    const sleep = async (ms: number): Promise<void> => {
+      sleeps.push({ ms, frozen: [...gateway.frozen].sort() });
+      log.append('runner', 'sleep');
+      await opts.onSleep?.();
+    };
+    const runner = createStartupGuardRunner(ctx, reload, { sleep });
     const scope = fakeLegacy(() => opts.rows ?? 0);
-    return { log, gateway, commit, reload, runner, scope: async () => (await scope.live()) as unknown as Parameters<typeof runner.run>[1] };
+    return {
+      log,
+      gateway,
+      commit,
+      reload,
+      runner,
+      warn,
+      sleeps,
+      /** The guard's steps in call order. */
+      steps: () => log.ops().filter((op) => GUARD_STEPS.has(op)),
+      scope: async () => (await scope.live()) as unknown as Parameters<typeof runner.run>[1],
+    };
   }
 
   it('fits the projector runner', () => {
@@ -432,89 +494,261 @@ describe('createStartupGuardRunner', () => {
   it('only commits when the scope has no matching row', async () => {
     const { runner, commit, reload, gateway, scope } = runnerHarness({ rows: 0 });
     await expect(runner.run(commit, await scope())).resolves.toEqual({ guarded: false, count: 0 });
+    await runner.settled();
     expect(commit).toHaveBeenCalledOnce();
     expect(reload).not.toHaveBeenCalled();
     expect(gateway.calls).toEqual([]);
   });
 
-  it('freezes, commits, reloads and unfreezes in order when the scope has matching rows', async () => {
-    const { runner, commit, log, gateway, scope } = runnerHarness({ rows: 3 });
-    await expect(runner.run(commit, await scope())).resolves.toEqual({ guarded: true, count: 3, reload: RELOADED });
-    const ops = log.ops().filter((op) => ['freeze', 'commit', 'reload', 'unfreeze'].includes(op));
-    expect(ops).toEqual(['freeze', 'commit', 'reload', 'unfreeze']);
-    expect(gateway.frozen.size).toBe(0);
+  it.each([
+    ['a caller that found the rows', undefined, { guarded: true, count: null }],
+    ['a scope with matching rows', 3, { guarded: true, count: 3 }],
+  ])('returns once %s has committed under the freeze, then reloads, counts and unfreezes without it', async (_label, rows, outcome) => {
+    const reloading = latch();
+    const h = runnerHarness({
+      rows,
+      reload: async () => {
+        await reloading.opened;
+        return RELOADED;
+      },
+    });
+    await expect(h.runner.run(h.commit, rows === undefined ? undefined : await h.scope())).resolves.toEqual(outcome);
+    expect(h.steps()).toEqual(['freeze', 'commit', 'reload']);
+    expect([...h.gateway.frozen].sort()).toEqual(LEGACY_BOUND);
+
+    reloading.open();
+    await h.runner.settled();
+    expect(h.steps()).toEqual(['freeze', 'commit', 'reload', 'count', 'unfreeze']);
+    expect(h.gateway.frozen.size).toBe(0);
+    expect(h.warn).not.toHaveBeenCalled();
   });
 
-  it('runs the guard sequence when the caller found the rows', async () => {
-    const { runner, commit, log } = runnerHarness();
-    await expect(runner.run(commit)).resolves.toEqual({ guarded: true, count: null, reload: RELOADED });
-    expect(log.ops()).toContain('reload');
+  it.each([
+    ['a caller that found the rows', undefined, null],
+    ['a scope with matching rows', 2, 2],
+  ])('lets %s join the held freeze while its reload runs, and counts that commit before unfreezing', async (_label, rows, count) => {
+    const reloading = latch();
+    const h = runnerHarness({
+      rows,
+      reload: async () => {
+        await reloading.opened;
+        return RELOADED;
+      },
+    });
+    await h.runner.run(h.commit);
+    await expect(h.runner.run(h.commit, rows === undefined ? undefined : await h.scope())).resolves.toEqual({ guarded: true, count });
+    expect(h.steps()).toEqual(['freeze', 'commit', 'reload', 'commit']);
+
+    reloading.open();
+    await h.runner.settled();
+    expect(h.steps()).toEqual(['freeze', 'commit', 'reload', 'commit', 'count', 'unfreeze']);
+    expect(h.gateway.calls.filter((call) => call.op === 'freeze')).toHaveLength(1);
+    expect(h.gateway.frozen.size).toBe(0);
+  });
+
+  it.each<[string, RunnerOptions, ((h: ReturnType<typeof runnerHarness>) => void) | undefined, string[]]>([
+    [
+      'the reload window is refused',
+      { reload: async (attempt) => (attempt === 1 ? Promise.reject(new Error('reload window refused')) : RELOADED) },
+      undefined,
+      ['freeze', 'commit', 'reload', 'sleep', 'reload', 'count', 'unfreeze'],
+    ],
+    ['rows still match after the reload', { liveCounts: [2] }, undefined, ['freeze', 'commit', 'reload', 'count', 'sleep', 'reload', 'count', 'unfreeze']],
+    [
+      'unfreezing fails',
+      {},
+      (h) => {
+        h.gateway.failNext('unfreeze', new Error('gateway down'));
+      },
+      ['freeze', 'commit', 'reload', 'count', 'unfreeze', 'sleep', 'reload', 'count', 'unfreeze'],
+    ],
+  ])('keeps the freeze and retries at the import-retry cadence when %s', async (_label, opts, setup, steps) => {
+    const h = runnerHarness(opts);
+    setup?.(h);
+    await h.runner.run(h.commit);
+    await h.runner.settled();
+    expect(h.steps()).toEqual(steps);
+    expect(h.sleeps).toEqual([{ ms: CONFIG.windows.importRetryMs, frozen: LEGACY_BOUND }]);
+    expect(h.warn).toHaveBeenCalledOnce();
+    expect(h.commit).toHaveBeenCalledOnce();
+    expect(h.gateway.frozen.size).toBe(0);
+  });
+
+  it('freezes again for a commit made after an unfreeze whose answer was lost, and lifts both', async () => {
+    let duringSleep = (): Promise<void> => Promise.resolve();
+    const h = runnerHarness({ onSleep: () => duringSleep() });
+    const unfreeze = h.gateway.unfreeze.bind(h.gateway);
+    h.gateway.unfreeze = async (routes) => {
+      h.gateway.unfreeze = unfreeze;
+      await unfreeze(routes);
+      throw new Error('unfreeze answer lost');
+    };
+    duringSleep = async () => {
+      duringSleep = () => Promise.resolve();
+      await h.runner.run(h.commit);
+    };
+
+    await h.runner.run(h.commit);
+    await h.runner.settled();
+    expect(h.steps()).toEqual(['freeze', 'commit', 'reload', 'count', 'unfreeze', 'sleep', 'freeze', 'commit', 'reload', 'count', 'unfreeze']);
+    expect(h.sleeps).toEqual([{ ms: CONFIG.windows.importRetryMs, frozen: [] }]);
+    expect(h.gateway.frozen.size).toBe(0);
   });
 
   it('unfreezes and rethrows when the commit fails', async () => {
     const failure = new Error('commit failed');
     const { runner, commit, gateway, reload } = runnerHarness({ commit: async () => Promise.reject(failure) });
     await expect(runner.run(commit)).rejects.toBe(failure);
+    await runner.settled();
     expect(reload).not.toHaveBeenCalled();
     expect(gateway.frozen.size).toBe(0);
   });
 
-  it.each([
-    ['the reload window fails', async () => Promise.reject(new Error('reload window refused')), undefined],
-    ['rows still match after the reload', async () => ({ ...RELOADED, startupRowsRemaining: 2 }), 2],
-  ])('keeps the freeze after commit when %s', async (_label, reload, remaining) => {
-    const { runner, commit, gateway } = runnerHarness({ reload });
+  it('throws both failures when unfreezing after a failed commit fails', async () => {
+    const failure = new Error('commit failed');
+    const unfreezeFailure = new Error('gateway down');
+    const { runner, commit, gateway, reload } = runnerHarness({ commit: async () => Promise.reject(failure) });
+    gateway.failNext('unfreeze', unfreezeFailure);
     const error = await runner.run(commit).catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(StartupGuardFrozenError);
-    expect((error as StartupGuardFrozenError).remaining).toBe(remaining);
-    expect(commit).toHaveBeenCalledOnce();
-    expect([...gateway.frozen].sort()).toEqual(LEGACY_BOUND);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors).toEqual([failure, unfreezeFailure]);
+    expect(reload).not.toHaveBeenCalled();
   });
 
-  it('never overlaps two guard sequences', async () => {
-    const events: string[] = [];
-    let release = (): void => undefined;
+  it("never interleaves two runners' freezes and commits", async () => {
+    const log = createCallLog();
+    const committing = latch();
     const slow = runnerHarness({
-      reload: async () => {
-        events.push('slow:reload');
-        await new Promise<void>((resolve) => {
-          release = resolve;
-        });
-        events.push('slow:done');
-        return RELOADED;
+      log,
+      commit: async () => {
+        log.append('slow', 'commit');
+        await committing.opened;
       },
     });
-    const fast = runnerHarness({
-      reload: async () => {
-        events.push('fast:reload');
-        return RELOADED;
-      },
-    });
-    const first = slow.runner.run(async () => {
-      events.push('slow:commit');
-    });
-    const second = fast.runner.run(async () => {
-      events.push('fast:commit');
-    });
-    await vi.waitFor(() => expect(events).toContain('slow:reload'));
-    await expect(tryGuardLock(async () => 'probe')).resolves.toEqual({ ran: false });
-    release();
+    const fast = runnerHarness({ log, commit: () => Promise.resolve(log.append('fast', 'commit')) });
+    const first = slow.runner.run(slow.commit);
+    await vi.waitFor(() => expect(log.ops()).toContain('commit'));
+    const second = fast.runner.run(fast.commit);
+    await expect(tryGuardLock(() => Promise.resolve('probe'))).resolves.toEqual({ ran: false });
+    expect(log.ops('fast')).toEqual([]);
+
+    committing.open();
     await Promise.all([first, second]);
-    expect(events).toEqual(['slow:commit', 'slow:reload', 'slow:done', 'fast:commit', 'fast:reload']);
+    await Promise.all([slow.runner.settled(), fast.runner.settled()]);
+    expect(log.indexOf('slow', 'commit')).toBeLessThan(log.indexOf('fast', 'commit'));
+    expect(slow.gateway.frozen.size + fast.gateway.frozen.size).toBe(0);
   });
 
-  it('refuses a scope with matching rows while another guard sequence holds the lock', async () => {
-    let release = (): void => undefined;
-    const held = withGuardLock(
-      () =>
-        new Promise<void>((resolve) => {
-          release = resolve;
-        }),
+  it("keeps another runner's freeze and commit out of the span between its final count and unfreeze", async () => {
+    const log = createCallLog();
+    const counting = latch();
+    const first = runnerHarness({
+      log,
+      liveCount: async () => {
+        await counting.opened;
+        return 0;
+      },
+    });
+    await first.runner.run(first.commit);
+    await vi.waitFor(() => expect(first.steps()).toEqual(['freeze', 'commit', 'reload', 'count']));
+    const second = runnerHarness({ log });
+    const late = second.runner.run(second.commit);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(first.steps()).toEqual(['freeze', 'commit', 'reload', 'count']);
+
+    counting.open();
+    await late;
+    await Promise.all([first.runner.settled(), second.runner.settled()]);
+    expect(first.steps()).toEqual(['freeze', 'commit', 'reload', 'count', 'unfreeze', 'freeze', 'commit', 'reload', 'count', 'unfreeze']);
+  });
+
+  it.each([
+    ['a caller that found the rows', undefined, { guarded: true, count: null }],
+    ['a scope with matching rows', 1, { guarded: true, count: 1 }],
+  ])('lets %s join the freeze another runner on the same gateway holds, and freezes again for a commit after it lifts', async (_label, rows, outcome) => {
+    const log = createCallLog();
+    let live = 0;
+    const liveCount = () => Promise.resolve(live);
+    const commit = async () => {
+      log.append('caller', 'commit');
+      live = 1;
+    };
+    const reloads = [latch(), latch()] as const;
+    // The first reload window converts only the rows committed before it, so the joined commit's row needs a second one.
+    const first = runnerHarness({
+      log,
+      liveCount,
+      commit,
+      reload: async (attempt) => {
+        await reloads[0].opened;
+        if (attempt > 1) live = 0;
+        return RELOADED;
+      },
+    });
+    const second = runnerHarness({
+      log,
+      liveCount,
+      commit,
+      rows,
+      gateway: first.gateway,
+      reload: async () => {
+        await reloads[1].opened;
+        live = 0;
+        return RELOADED;
+      },
+    });
+    const gateway = first.gateway;
+
+    await first.runner.run(first.commit);
+    await expect(second.runner.run(second.commit, rows === undefined ? undefined : await second.scope())).resolves.toEqual(outcome);
+    expect([...gateway.frozen].sort()).toEqual(LEGACY_BOUND);
+
+    reloads[0].open();
+    await first.runner.settled();
+    expect(gateway.frozen.size).toBe(0);
+    await second.runner.run(second.commit);
+    expect(live).toBe(1);
+    expect([...gateway.frozen].sort()).toEqual(LEGACY_BOUND);
+
+    reloads[1].open();
+    await Promise.all([first.runner.settled(), second.runner.settled()]);
+    expect(first.steps()).toEqual([
+      ...['freeze', 'commit', 'reload', 'commit', 'count', 'sleep', 'reload', 'count', 'unfreeze'],
+      ...['freeze', 'commit', 'reload', 'count', 'unfreeze'],
+    ]);
+    expect(first.sleeps).toEqual([{ ms: CONFIG.windows.importRetryMs, frozen: LEGACY_BOUND }]);
+    expect(gateway.calls.filter((call) => call.op === 'freeze' || call.op === 'unfreeze')).toEqual(
+      ['freeze', 'unfreeze', 'freeze', 'unfreeze'].map((op) => ({ op, args: { routes: LEGACY_BOUND } })),
     );
-    const { runner, commit, scope } = runnerHarness({ rows: 1 });
-    const error = await runner.run(commit, await scope()).catch((caught: unknown) => caught);
-    release();
-    await held;
+    expect(first.reload).toHaveBeenCalledTimes(2);
+    expect(second.reload).toHaveBeenCalledOnce();
+    expect(gateway.frozen.size).toBe(0);
+  });
+
+  it.each([
+    ['another guard sequence holds the lock', 'lock'],
+    ['a commit joining the held freeze runs', 'join'],
+  ])('refuses a scope with matching rows while %s', async (_label, holder) => {
+    const released = latch();
+    const reloading = latch();
+    const h = runnerHarness({
+      rows: 1,
+      reload: async () => {
+        await reloading.opened;
+        return RELOADED;
+      },
+    });
+    let held: Promise<unknown>;
+    if (holder === 'lock') held = withGuardLock(() => released.opened);
+    else {
+      await h.runner.run(h.commit);
+      held = h.runner.run(() => released.opened);
+    }
+    const commit = vi.fn(() => Promise.resolve());
+    const error = await h.runner.run(commit, await h.scope()).catch((caught: unknown) => caught);
+    released.open();
+    reloading.open();
+    await Promise.all([held, h.runner.settled()]);
     expect(error).toBeInstanceOf(StartupGuardBusyError);
     expect((error as StartupGuardBusyError).count).toBe(1);
     expect(commit).not.toHaveBeenCalled();

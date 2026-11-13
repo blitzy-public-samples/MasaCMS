@@ -1,6 +1,7 @@
 // Unit tests for the admin alert block against admin/common/layouts/template.cfm 260-311.
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { businessClock } from '@opt2/platform/testing';
 import { resetLegacySettingsForTests } from '@/lib/env';
 import { html, isSafeHtml, toString } from '@/lib/html';
@@ -18,6 +19,7 @@ import {
   type AdminRequestPartial,
 } from '../helpers/admin-request';
 import { fragmentModel, type DomAlert } from '../helpers/dom-model';
+import { SESSION_SITE_CASES } from '../helpers/requested-site';
 
 type SiteAlerts = Readonly<Record<string, AdminAlert>>;
 
@@ -140,6 +142,20 @@ describe('renderAlerts audience', () => {
   ])('renders nothing for the $name', ({ ctx }) => {
     useSettings({ MURA_EXPIREPASSWORDS: '30' });
     expect(render(ctx(), NOTICE_USER)).toBe('');
+  });
+
+  it.each(SESSION_SITE_CASES)('renders session alerts for $who only when it administers that site', (testCase) => {
+    const ctx = testCase.request({ site: CACHED, session: { alerts: { [testCase.siteid]: SESSION_ALERTS } } });
+    expect(idSetOf(render(ctx))).toEqual(testCase.administers ? new Set(SESSION_IDS) : new Set());
+  });
+
+  it.each([
+    ['a default site admin', { site: 'default', tid: tenantIdForSite('default') }, true],
+    ['a tenant-a site admin', {}, false],
+  ])('reads an empty session site as default, as getSite does, for %s', (_who, user, shown) => {
+    const ctx = siteAdminRequest('', { user, site: CACHED, session: { alerts: { '': SESSION_ALERTS } } });
+    expect(ctx.session.siteid).toBe('');
+    expect(idSetOf(render(ctx))).toEqual(shown ? new Set(SESSION_IDS) : new Set());
   });
 
   it('renders nothing when no alert or notice is due', () => {

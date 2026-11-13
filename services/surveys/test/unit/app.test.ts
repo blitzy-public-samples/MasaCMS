@@ -131,7 +131,7 @@ function testEnv(stateDir: string, overrides: Record<string, string> = {}): Base
   });
 }
 
-const available = await pgAvailable();
+const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
 
 describe('surveys buildApp without a database', () => {
   let stateDir: string;
@@ -208,6 +208,19 @@ describe.skipIf(!available)('surveys buildApp against PostgreSQL', () => {
         }),
       );
       expect(matrix.sort(byRoute)).toEqual(contractRoutes());
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('routes a fixture path in any module and resource case as its lower-case path', async () => {
+    const app = await build({ publisher: createCapturingPublisher(), taskPort: fakeTaskPort() });
+    try {
+      await app.ready();
+      const lower = await app.inject({ method: 'GET', url: '/legacy-fixtures/cfml/api.cfm/surveys/surveys?siteid=tenant-a' });
+      const cased = await app.inject({ method: 'GET', url: '/legacy-fixtures/cfml/api.cfm/Surveys/SURVEYS?siteid=tenant-a' });
+      expect(cased.json()).toMatchObject({ method: 'surveys.surveys' });
+      expect([cased.statusCode, cased.json()]).toEqual([lower.statusCode, lower.json()]);
     } finally {
       await app.close();
     }

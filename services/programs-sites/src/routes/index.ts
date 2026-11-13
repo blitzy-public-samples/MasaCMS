@@ -11,6 +11,7 @@ import { registerSiteRoutes } from './sites.js';
 import { registerUserSiteRoutes } from './user-sites.js';
 
 export { SITEMONITOR_RUN_PREFIXES, registerSiteMonitorRoutes } from './sitemonitor.js';
+export { JSON_API_SITE_PREFIXES } from './json-api-site.js';
 export type { SiteMonitorRouteDeps } from './sitemonitor.js';
 export type { ImageSizeRouteDeps } from './image-sizes.js';
 export type { JsonApiSiteRouteDeps } from './json-api-site.js';

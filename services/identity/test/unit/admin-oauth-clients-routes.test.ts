@@ -249,12 +249,29 @@ describe('request validation', () => {
     ['PUT', clientUrl(NEW_CLIENT), { siteid: SITE, name: 'Feed reader', router: { url: './' } }],
     ['PUT', clientUrl(NEW_CLIENT), undefined],
     ['GET', `${LIST_URL}?siteid=`, undefined],
+    ...['offset=-1', 'offset=0.5', 'offset=first', 'offset=9007199254740992', 'limit=0', 'limit=1001', 'limit=10.5', 'offset=1&offset=2'].map(
+      (query): [Method, string, undefined] => ['GET', `${LIST_URL}?${query}`, undefined],
+    ),
   ])('answer %s %s with the shared invalidParameters 400 before any read or write', async (method, url, payload) => {
     const res = await send(method, url, await headersFor([Roles.s2]), payload);
 
     expect(res.statusCode).toBe(400);
     expect(res.json()).toMatchObject({ error: { code: 'invalid_request', message: 'Invalid parameters' } });
     expect(relay.calls).toEqual([]);
+  });
+});
+
+describe('list without a session site', () => {
+  it('answer an empty listing, as a feed filtered on an empty site id matches no client, reading nothing', async () => {
+    const headers = {
+      authorization: `Bearer ${await mintUserToken({ sub: ADMIN_USER, site: '', tid: tenantIdForSite(SITE), roles: [Roles.s2] })}`,
+      [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'identity' })}`,
+    };
+
+    const res = await send('GET', LIST_URL, headers);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ items: [], total: 0, nextOffset: null });
   });
 });
 
@@ -336,6 +353,33 @@ describe.skipIf(!available)('cwebservice screens against PostgreSQL', () => {
       { clientid: second.clientid, name: 'Second', granttype: 'password', description: 'Two' },
     ]);
     expect(seeded[0]?.created).toMatch(LOCAL_TIMESTAMP);
+  });
+
+  describe('list windows', () => {
+    const WINDOW_SITE = 'tenant-w';
+    const windowIds = [3, 1, 4, 2, 5].map((n) => `20000000-0000-0000-000000000000000${n}`);
+
+    beforeAll(async () => {
+      if (handle === undefined) return;
+      await registerSite(handle.app, handle.schema, WINDOW_SITE);
+      for (const clientid of windowIds) await seedClient(WINDOW_SITE, { clientid, name: `Window ${clientid.slice(-1)}` });
+    });
+
+    it.each<[string, (string | number)[], number | null]>([
+      ['', [1, 2, 3, 4, 5], null],
+      ['offset=0&limit=2', [1, 2], 2],
+      ['offset=2&limit=2', [3, 4], 4],
+      ['offset=4&limit=2', [5], null],
+      ['offset=3', [4, 5], null],
+      ['offset=5&limit=1', [], null],
+      ['offset=40&limit=1000', [], null],
+    ])('page the session site clients by clientid for "%s" with their total and the next offset', async (query, names, nextOffset) => {
+      const res = await send('GET', `${LIST_URL}?${query}`, await headersFor([Roles.s2], undefined, 'gateway', WINDOW_SITE));
+
+      expect(res.statusCode).toBe(200);
+      const page = res.json<{ items: { name: string }[]; total: number; nextOffset: number | null }>();
+      expect(page).toEqual({ items: names.map((n) => expect.objectContaining({ name: `Window ${n}` })), total: 5, nextOffset });
+    });
   });
 
   it('answer edit with the stored client, and an unknown id with the new bean init leaves under the requested site', async () => {

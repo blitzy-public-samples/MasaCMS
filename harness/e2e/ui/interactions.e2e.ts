@@ -28,7 +28,6 @@ import {
 } from '../../src/golden/catalogue.js';
 import {
   createGoldenStepBuilder,
-  goldenRun,
   goldenSetPath,
   goldenSetSchema,
   readGoldenSet,
@@ -38,19 +37,21 @@ import {
   type GoldenStepBuilder,
 } from '../../src/golden/capture.js';
 import {
+  BROWSER_FINAL_STEP as FINAL_DOM,
+  browserDifferences,
   browserRecordSchema,
   browserResultPath,
   classifyScenario,
   exceptionEntries,
   loadDecisionList,
   loadExceptionsList,
+  type ClassifyOptions,
   type DecisionList,
   type ParityResult,
   type ScenarioVerdict,
 } from '../../src/golden/compare.js';
 import { GoldenConfigError, type ExceptionEntry } from '../../src/golden/errors.js';
 import {
-  compareNormalised,
   loadRules,
   normaliseText,
   rulesForScenario,
@@ -59,8 +60,8 @@ import {
   type NormalisedStep,
 } from '../../src/golden/normalise/index.js';
 import type { ReplayOutput } from '../../src/golden/replay.js';
-// Outside this suite's declared inputs, but the one source of the committed variants: without it an image upload would
-// not key as `{upload=image}` and keys would not match the dispatcher's, the catalogue's or the exceptions list's.
+// The committed route-key variants: an image upload keys as `{upload=image}`, as the dispatcher, catalogue and
+// exceptions list key it.
 import { defaultRouteKeyOptions } from '../../src/golden/route-key-options.js';
 import {
   ADMIN_LOGIN_PATH,
@@ -78,7 +79,7 @@ import {
 import { stateDir } from '../../src/lib/paths.js';
 import { pinnedSha } from '../../src/lib/pin.js';
 import { readJson, writeJsonReport } from '../../src/lib/report.js';
-import { credentialsFor, redactSecrets } from '../helpers/admin-login.js';
+import { credentialsFor, redactSecrets, type Credentials } from '../helpers/admin-login.js';
 import { resetMailpit } from '../helpers/mailpit.js';
 import { activeTableVersion } from '../helpers/stack.js';
 
@@ -117,6 +118,10 @@ const ACCEPTED_RESULTS: ReadonlySet<ParityResult> = new Set<ParityResult>([
 
 /** Masa's Site Manager module id (the site tree), not a content id. */
 const SITE_TREE_MODULE_ID = '00000000000000000000000000000000000';
+/** The chain's approving group: the site's Admin group, whose members legacy offers the approval. */
+const APPROVER_GROUP = 'Admin';
+/** GS-UI-02 session whose save of the page goes to approval. */
+const REQUESTER_SESSION = 'requester';
 const TREE = '#gridContainer';
 const TREE_NEXT_PAGE = `${TREE} > .mura-results-wrapper ul.pagination a:has(i.mi-angle-right)`;
 const UPLOAD_INPUT = 'form#fileupload input[type="file"][name="files"]';
@@ -140,15 +145,11 @@ const KEY = {
   saveQuickEdit: 'admin:carch.savequickedit',
 } as const;
 
-const FINAL_DOM = 'final-dom';
 /** Fixed so the final DOM pairs across sides whatever their XHR counts. */
 const FINAL_DOM_INDEX = 1_000_000;
-const CONSOLE_STEP = 'console';
 const HTML_TYPE = 'text/html';
 
-// Departs from Rule "WIP - Minimal Change 2" (no timeouts), which does not bind this refactor: an XHR that never
-// answers would otherwise hold the test until the suite bound, with no message naming what it waited for.
-/** Longest wait for one awaited XHR, or for a multipart body's DevTools record. */
+/** Longest wait for one awaited XHR, or for a multipart request's DevTools record or sent Content-Length. */
 const XHR_TIMEOUT_MS = 30_000;
 /** Longest wait for the page's XHRs and navigations to finish after an action. */
 const SETTLE_TIMEOUT_MS = 60_000;
@@ -374,6 +375,27 @@ async function recordedBody(buffer: Buffer | null, contentType: string | undefin
   }
 }
 
+/** Rejects a multipart `body` whose length is not the Content-Length the browser sent with `request`. */
+async function assertMultipartSentInFull(
+  request: PwRequest,
+  contentType: string | undefined,
+  body: Buffer | null,
+): Promise<void> {
+  const boundary = boundaryOf(contentType);
+  if (boundary === undefined) return;
+  const sent = await withTimeout(
+    request.headerValue('content-length'),
+    XHR_TIMEOUT_MS,
+    `the Content-Length sent with multipart request ${boundary}`,
+  );
+  const recorded = body?.length ?? 0;
+  if (sent !== null && Number(sent) === recorded) return;
+  throw new Error(
+    `multipart request ${boundary}: recorded body is ${recorded} bytes, sent Content-Length is ${sent ?? 'absent'}; ` +
+      "its file parts' bytes are not available, so their sizes and digests cannot be recorded",
+  );
+}
+
 /** Records the page's XHR and fetch exchanges in request-start order, its console errors and its documents. */
 class XhrRecorder {
   readonly records: XhrRecord[] = [];
@@ -523,6 +545,7 @@ class XhrRecorder {
   /** Fills the record's parsed body and route key. */
   private async describe(request: PwRequest, record: XhrRecord): Promise<void> {
     const buffer = request.postDataBuffer() ?? (await this.multipartBody(record.requestContentType));
+    await assertMultipartSentInFull(request, record.requestContentType, buffer);
     record.body = await recordedBody(buffer, record.requestContentType);
     const key = routeKeyOf(record.method, record.url, request.headers(), record.body);
     record.routeKey = key.key;
@@ -608,7 +631,8 @@ class XhrRecorder {
 
   /**
    * Body of a multipart request from DevTools, matched by its unique boundary: Playwright returns no post data for a
-   * body with file parts. Null for a request that is not multipart.
+   * body with file parts, and DevTools leaves out the bytes of files read from disk. Null for a request that is not
+   * multipart.
    */
   private async multipartBody(contentType: string | undefined): Promise<Buffer | null> {
     const boundary = boundaryOf(contentType);
@@ -698,9 +722,10 @@ function catalogueRoute(run: FlowRun, name: string): string {
   return resolvePlaceholders(catalogueStep(run, name).route, run.ctx);
 }
 
-/** Single-valued form field `field` of catalogue step `stepName`, its placeholders resolved. */
+/** Single-valued form field of catalogue step `stepName` whose key resolves to `field`, its placeholders resolved. */
 function catalogueField(run: FlowRun, stepName: string, field: string): string {
-  const value = catalogueStep(run, stepName).form?.[field];
+  const fields = Object.entries(catalogueStep(run, stepName).form ?? {});
+  const value = fields.find(([key]) => resolvePlaceholders(key, run.ctx) === field)?.[1];
   if (typeof value !== 'string') {
     throw new GoldenConfigError(`${run.scenario.id}: step ${stepName} has no single form field ${field}`, {
       path: `scenario ${run.scenario.id}`,
@@ -855,12 +880,166 @@ async function siteManagerTree(page: Page, run: FlowRun): Promise<void> {
   await run.shot();
 }
 
-/** The legacy handler behind the edit screen's status link (dsp_status.cfm). */
-interface StatusWindow {
-  viewStatusInfo(contentHistId: string, siteId: string): boolean;
+/** Clicks `button` and waits for the page to leave admin action `baseKey` and load. */
+async function submitLeaving(page: Page, button: Locator, baseKey: string): Promise<void> {
+  const left = (url: URL): boolean => routeKeyOf('GET', url, {}, { kind: 'none' }).baseKey !== baseKey;
+  await Promise.all([page.waitForURL(left), button.click()]);
 }
 
-/** GS-UI-02: edit a page from the tree, expand every panel, open its status modal and approve when offered. */
+/** Credentials of admin session `name` of the run's scenario. */
+function sessionCredentials(run: FlowRun, name: string): Credentials {
+  const login = run.scenario.sessions[name]?.login;
+  const seeded = /^seed:([^:]+):(.+)$/.exec(login ?? '');
+  if (seeded !== null) return credentialsFor(`\${user:${seeded[1] ?? ''}:${seeded[2] ?? ''}}`);
+  if (login === 'admin' || login === 'qa_editor') return credentialsFor(`\${secret:${login}}`);
+  throw new GoldenConfigError(`${run.scenario.id}: session ${name} names no admin login`, {
+    path: `scenario ${run.scenario.id}`,
+  });
+}
+
+/** Runs `work` on a page of a fresh, unrecorded context logged in at the run's origin as `credentials`. */
+async function asUser(
+  suite: Suite,
+  run: FlowRun,
+  credentials: Credentials,
+  work: (page: Page) => Promise<void>,
+): Promise<void> {
+  const context = await suite.browser.newContext(contextOptions());
+  try {
+    const page = await context.newPage();
+    await loginAdmin(page, run.baseUrl, credentials);
+    await work(page);
+  } finally {
+    await context.close();
+  }
+}
+
+/**
+ * GS-UI-02's unrecorded prerequisite, its catalogue `setup-*` steps: a page version the requester sent for Admin
+ * approval, its grants reverted.
+ */
+async function pendingApproval(suite: Suite, run: FlowRun): Promise<void> {
+  const pageId = seedValue(run, 'page', 'contentID');
+  const groupId = seedValue(run, 'requesterGroup', 'groupID');
+  const at = (route: string): string => `${run.baseUrl}${route}`;
+  const admin = credentialsFor('${secret:admin}');
+  const accessBox = `input[name="groupid"][value="${catalogueField(run, 'setup-module', 'groupid')}"]`;
+  const roleField = `p${groupId.replaceAll('-', '')}`;
+  const prior: { moduleAccess?: boolean; role?: string } = {};
+  let failure: { error: unknown; step: string } | undefined;
+
+  try {
+    await asUser(suite, run, admin, async (page) => {
+      run.step = 'setup-chain';
+      await page.goto(at(catalogueRoute(run, 'setup-chain-form')));
+      const chainForm = page.locator('form[name="form1"]');
+      const chainId = await chainForm.locator('input[name="chainID"]').inputValue();
+      if (chainId === '') throw new Error('the approval chain form carries no chainID');
+      run.ctx.bindings.set('setup-chain-form.chainID', chainId);
+      await chainForm.locator('input[name="name"]').fill(catalogueField(run, 'setup-chain', 'name'));
+      const approver = page
+        .locator('#groupAvailableListSort li')
+        .filter({ hasText: new RegExp(`^\\s*${APPROVER_GROUP}\\s*$`) });
+      if ((await approver.count()) !== 1) throw new Error(`the approval chain form lists no group ${APPROVER_GROUP}`);
+      await approver.dragTo(page.locator('#groupAssignmentListSort'));
+      if ((await page.locator('#groupAssignmentListSort input[name="groupID"]').count()) !== 1) {
+        throw new Error(`the approval chain did not take group ${APPROVER_GROUP}`);
+      }
+      await submitLeaving(page, chainForm.locator('.form-actions button.mura-primary'), 'admin:cchain.edit');
+
+      run.step = 'setup-module';
+      await page.goto(at(catalogueRoute(run, 'setup-module-form')));
+      const moduleForm = page.locator('form[name="form1"]');
+      const access = moduleForm.locator(accessBox);
+      if ((await access.count()) === 0) throw new Error(`the Site Manager permission form lists no group ${groupId}`);
+      prior.moduleAccess = await access.isChecked();
+      await access.check();
+      await submitLeaving(page, moduleForm.locator('.form-actions button'), 'admin:cperm.module');
+
+      run.step = 'setup-perm';
+      await page.goto(at(catalogueRoute(run, 'setup-perm-form')));
+      const permForm = page.locator('form[name="form1"]');
+      const granted = catalogueField(run, 'setup-perm', roleField);
+      const grant = permForm.locator(`input[name="${roleField}"][value="${granted}"]`);
+      if ((await grant.count()) === 0) {
+        throw new Error(`the permission form of ${pageId} offers group ${groupId} no ${granted} role`);
+      }
+      const current = permForm.locator(`input[name="${roleField}"]:checked`);
+      const role = (await current.count()) === 1 ? await current.getAttribute('value') : null;
+      if (role === null) throw new Error(`the permission form of ${pageId} shows no role for group ${groupId}`);
+      prior.role = role;
+      await grant.check();
+      await permForm.locator('select[name="chainID"]').selectOption(catalogueField(run, 'setup-perm', 'chainID'));
+      await submitLeaving(page, permForm.locator('.form-actions button'), 'admin:cperm.main');
+    });
+
+    run.step = 'setup-submit';
+    await asUser(suite, run, sessionCredentials(run, REQUESTER_SESSION), async (page) => {
+      const found = await page.request.get(at(catalogueRoute(run, 'find')));
+      const { data } = (await found.json()) as { data?: { contenthistid?: unknown } };
+      const active = data?.contenthistid;
+      if (typeof active !== 'string' || active === '') throw new Error(`content ${pageId} has no active version`);
+      run.ctx.bindings.set('find.contenthistid', active);
+      await page.goto(at(catalogueRoute(run, 'setup-submit-form')));
+      const send = page.locator('.mura-actions .form-actions button:has(i.mi-share-alt)');
+      if ((await send.count()) === 0) {
+        throw new Error(`the edit screen of ${pageId} offers session ${REQUESTER_SESSION} no Send for Approval`);
+      }
+      await submitLeaving(page, send.first(), KEY.edit);
+    });
+  } catch (err) {
+    failure = { error: err, step: run.step };
+  }
+
+  run.step = 'setup-restore';
+  try {
+    if (prior.role !== undefined || prior.moduleAccess === false) {
+      await asUser(suite, run, admin, async (page) => {
+        if (prior.role !== undefined) {
+          run.step = 'setup-restore-perm';
+          await page.goto(at(catalogueRoute(run, 'setup-restore-perm-form')));
+          const permForm = page.locator('form[name="form1"]');
+          await permForm.locator(`input[name="${roleField}"][value="${prior.role}"]`).check();
+          await submitLeaving(page, permForm.locator('.form-actions button'), 'admin:cperm.main');
+        }
+        if (prior.moduleAccess === false) {
+          run.step = 'setup-restore-module';
+          await page.goto(at(catalogueRoute(run, 'setup-restore-module-form')));
+          const moduleForm = page.locator('form[name="form1"]');
+          await moduleForm.locator(accessBox).uncheck();
+          await submitLeaving(page, moduleForm.locator('.form-actions button'), 'admin:cperm.module');
+        }
+      });
+    }
+  } catch (err) {
+    if (failure === undefined) throw err;
+    run.notes.push(`setup-restore failed: ${redactSecrets(messageOf(err))}`);
+  }
+  if (failure !== undefined) {
+    run.step = failure.step;
+    throw failure.error;
+  }
+}
+
+/** History id of the pending draft a draftpromptdata body names, its keys read in any case; throws when none. */
+function pendingDraftId(run: FlowRun, body: string | null): string {
+  const parsed: unknown = body === null ? null : JSON.parse(body);
+  const entries = typeof parsed === 'object' && parsed !== null ? Object.entries(parsed) : [];
+  const fields = new Map(entries.map(([name, value]) => [name.toLowerCase(), value as unknown]));
+  const flag = fields.get('hasdraftpending');
+  const historyId = fields.get('historyid');
+  if ((flag === true || String(flag).toLowerCase() === 'true') && typeof historyId === 'string' && historyId !== '') {
+    return historyId;
+  }
+  // Legacy opens the edit screen at once when it has no prompt to show, which leaves the body unreadable.
+  const reported =
+    body === null
+      ? 'no readable body'
+      : `hasdraftpending=${JSON.stringify(flag)}, historyid=${JSON.stringify(historyId)}`;
+  throw new Error(`${run.scenario.id} needs a version pending approval; the draft prompt reports ${reported}`);
+}
+
+/** GS-UI-02: open the page's pending version from the tree, expand every panel, and approve it in the status modal. */
 async function editPanelsAndStatus(page: Page, run: FlowRun): Promise<void> {
   const pageId = seedValue(run, 'page', 'contentID');
   const comment = catalogueField(run, 'approve', 'comment');
@@ -872,9 +1051,14 @@ async function editPanelsAndStatus(page: Page, run: FlowRun): Promise<void> {
   const from = run.xhr.mark();
   await page.locator('#newContentOptions li.li-action.edit a').first().click();
   const [prompt] = await run.xhr.waitFor(from, keyIs(KEY.draftPromptData), 'the draft prompt');
-  if (/"showdialog"\s*:\s*"true"/i.test(prompt?.response?.text ?? '')) {
-    await page.locator('.draft-prompt-option').first().click();
+  const pending = pendingDraftId(run, prompt?.response?.text ?? null);
+  const option = page.locator(`.draft-prompt-option[data-contenthistid="${pending}"]`).first();
+  try {
+    await option.waitFor({ state: 'visible' });
+  } catch (err) {
+    throw new Error(`the draft prompt offers no option for pending version ${pending}`, { cause: err });
   }
+  await option.click();
   await page.waitForURL((url) => routeKeyOf('GET', url, {}, { kind: 'none' }).baseKey === KEY.edit);
   await run.xhr.settle();
   await run.shot();
@@ -893,21 +1077,9 @@ async function editPanelsAndStatus(page: Page, run: FlowRun): Promise<void> {
 
   run.step = 'status';
   const link = page.locator('a[onclick*="viewStatusInfo"]:visible').first();
+  if ((await link.count()) === 0) throw new Error(`the edit screen of version ${pending} renders no status link`);
   const opened = run.xhr.mark();
-  if ((await link.count()) > 0) {
-    await link.click();
-  } else {
-    // The seed carries no approval chain, so the screen may render no status link; its own handler opens the modal.
-    run.notes.push('the edit screen renders no status link; its viewStatusInfo handler opened the status modal');
-    const contentHistId = await page.inputValue('form#contentForm input[name="contenthistid"]');
-    const siteId = await page.inputValue('form#contentForm input[name="siteid"]');
-    await page.evaluate(
-      ([histId, site]) => {
-        (globalThis as unknown as StatusWindow).viewStatusInfo(histId, site);
-      },
-      [contentHistId, siteId] as const,
-    );
-  }
+  await link.click();
   await run.xhr.waitFor(opened, keyIs(KEY.statusModal), 'the status modal');
   await page.locator('#approvalModalContainer').waitFor({ state: 'visible' });
   await run.xhr.settle();
@@ -915,10 +1087,7 @@ async function editPanelsAndStatus(page: Page, run: FlowRun): Promise<void> {
 
   run.step = 'approve';
   const apply = page.locator('#mura-approval-apply');
-  if (!(await apply.isVisible())) {
-    run.notes.push('the status modal offers no approval action for this version');
-    return;
-  }
+  if (!(await apply.isVisible())) throw new Error(`the status modal offers no approval action for version ${pending}`);
   await page.locator('#approval-approve').check();
   await page.locator('#approval-comments').fill(comment);
   await act(run, () => apply.click(), keyIs(KEY.approvalAction), 'the approval action');
@@ -954,21 +1123,25 @@ async function versionDiff(page: Page, run: FlowRun): Promise<void> {
   await run.shot();
 
   run.step = 'diff';
-  const first = page.locator('input[name="compare1"]');
-  const second = page.locator('input[name="compare2"]');
-  const versions = await first.count();
+  const rows = await page.locator('input[name="compare1"]').all();
+  const ids = await Promise.all(rows.map((row) => row.getAttribute('value')));
+  const versions = [...new Set(ids.filter((id): id is string => id !== null && id !== ''))];
+  const [newest, previous] = versions;
   const viewDiff = page.locator('#viewDiff');
-  if (versions === 0 || (await viewDiff.count()) === 0) {
-    throw new Error('the history screen offers no version comparison');
+  const hasCompare = (await viewDiff.count()) > 0;
+  if (newest === undefined || previous === undefined || !hasCompare) {
+    throw new Error(
+      `${run.scenario.id} needs two distinct versions to compare; the history screen offers ${versions.length}` +
+        (hasCompare ? '' : ' and no compare button (#viewDiff)'),
+    );
   }
-  await first.nth(0).check();
-  if (versions > 1) {
-    await second.nth(1).check();
-  } else {
-    run.notes.push('the seeded node has one version, compared with itself');
-    await second.nth(0).check();
-  }
-  await act(run, () => viewDiff.click(), keyIs(KEY.loadDiff), 'the version diff fragment');
+  await page.locator(`input[name="compare1"][value="${newest}"]`).check();
+  await page.locator(`input[name="compare2"][value="${previous}"]`).check();
+  const pair = (record: XhrRecord): boolean =>
+    record.baseKey === KEY.loadDiff &&
+    record.params.contenthistid1 === newest &&
+    record.params.contenthistid2 === previous;
+  await act(run, () => viewDiff.click(), pair, `the version diff fragment of ${newest} against ${previous}`);
   await page.locator('#contentDiffContainer').waitFor({ state: 'visible' });
   await run.shot();
 }
@@ -1013,6 +1186,11 @@ const FLOWS: Readonly<Record<ScenarioId, Flow>> = {
   'GS-UI-05': inlineSave,
 };
 
+/** Unrecorded setup a flow needs at its origin before the recorded run. */
+type Prepare = (suite: Suite, run: FlowRun) => Promise<void>;
+
+const PREPARE: Readonly<Partial<Record<ScenarioId, Prepare>>> = { 'GS-UI-02': pendingApproval };
+
 
 /** What the tests share, resolved once in `beforeAll`. */
 interface Suite {
@@ -1029,9 +1207,13 @@ interface Suite {
   browser: Browser;
 }
 
-/** Admin login through the real form, alike on both origins; throws when legacy refuses it. */
-async function loginAdmin(page: Page, baseUrl: string): Promise<void> {
-  const { username, password } = credentialsFor('${secret:admin}');
+/** Admin login as `credentials` through the real form, alike on both origins; throws when legacy refuses it. */
+async function loginAdmin(
+  page: Page,
+  baseUrl: string,
+  credentials: Credentials = credentialsFor('${secret:admin}'),
+): Promise<void> {
+  const { username, password } = credentials;
   await page.goto(`${baseUrl}${ADMIN_LOGIN_PATH}`);
   const loginPage = page.url();
   const form = page.locator('form#loginForm');
@@ -1084,6 +1266,8 @@ async function runFlow(suite: Suite, scenario: Scenario, id: ScenarioId, origin:
     };
     let error: FlowError | undefined;
     try {
+      await PREPARE[id]?.(suite, run);
+      run.step = 'login';
       await loginAdmin(page, ctx.baseUrl);
       xhr.start();
       await FLOWS[id](page, run);
@@ -1203,64 +1387,38 @@ async function capturedSide(id: ScenarioId): Promise<BrowserSide> {
   return storedSide((await readGoldenSet(id)).steps, committed);
 }
 
-/** An unlisted difference on `step` at `at`. */
-function difference(
-  step: string,
-  at: string,
-  kind: Difference['kind'],
-  expected: unknown,
-  actual: unknown,
-): Difference {
-  return { step, path: at, kind, expected, actual, classification: 'difference' };
+/** The golden set of scenario `id` holding the legacy side's steps. */
+function goldenSetOf(id: string, legacy: BrowserSide): GoldenSet {
+  const { available, reason } = readFixtureStatus();
+  return {
+    sourceSha: pinnedSha(),
+    scenarioId: id,
+    capturedAt: new Date().toISOString(),
+    origin: 'legacy',
+    tableVersion: null,
+    fixtures: { available, reason },
+    steps: legacy.steps,
+    sideEffects: EMPTY_SIDE_EFFECTS,
+  };
 }
 
-/**
- * Differences of `target` against the legacy side: the normaliser's (status, content type, body, DOM model, masks),
- * route keys of paired steps, target console errors legacy did not raise (as a multiset), and target XHRs that
- * bypassed `ownOrigin`.
- */
-function browserDifferences(
-  legacy: BrowserSide,
-  target: BrowserSide,
+/** compare.ts's verdict on a browser record against the legacy side it was compared with. */
+function verdictOf(
+  suite: Suite,
   scenario: Scenario,
-  rules: NormaliseRules,
-  ownOrigin: string,
-): Difference[] {
-  const found = compareNormalised(
-    goldenRun({ steps: legacy.steps, sideEffects: EMPTY_SIDE_EFFECTS }),
-    goldenRun({ steps: target.steps, sideEffects: EMPTY_SIDE_EFFECTS }),
-    { rules, scenario },
-  );
-  const legacyKeys = new Map(legacy.steps.map((step) => [`${step.index}|${step.name}`, step.routeKey]));
-  for (const step of target.steps) {
-    const expected = legacyKeys.get(`${step.index}|${step.name}`);
-    if (expected !== undefined && expected !== step.routeKey) {
-      found.push(difference(step.name, 'routeKey', 'changed', expected, step.routeKey));
-    }
-  }
-  const remaining = new Map<string, number>();
-  for (const message of legacy.console) remaining.set(message, (remaining.get(message) ?? 0) + 1);
-  target.console.forEach((message, i) => {
-    const left = remaining.get(message) ?? 0;
-    if (left > 0) remaining.set(message, left - 1);
-    else found.push(difference(CONSOLE_STEP, `console[${i}]`, 'extra', undefined, message));
-  });
-  for (const { step, origin } of target.foreignOrigins) {
-    found.push(difference(step, 'request.origin', 'changed', ownOrigin, origin));
-  }
-  return found;
-}
-
-/** compare.ts's verdict on a browser record. */
-function verdictOf(suite: Suite, scenario: Scenario, record: Record<string, unknown>): ScenarioVerdict {
+  legacy: BrowserSide,
+  record: Record<string, unknown>,
+  expected?: ClassifyOptions['expected'],
+): ScenarioVerdict {
   if (suite.decisionList === undefined) throw new Error('the decision list was not loaded for this phase');
-  return classifyScenario(null, null, {
+  return classifyScenario(goldenSetOf(scenario.id, legacy), null, {
     scenario,
     exceptions: suite.exceptions,
     rules: suite.rules,
     decisionList: suite.decisionList,
     fixtures: readFixtureStatus(),
     browser: browserRecordSchema.parse(record),
+    expected,
   });
 }
 
@@ -1280,17 +1438,7 @@ const REPORT = { generatedBy: GENERATED_BY } as const;
 /** Capture against legacy: the committed golden set when it validates, else the state-directory fallback. */
 async function captureFlow(suite: Suite, id: ScenarioId, scenario: Scenario): Promise<void> {
   const side = await runFlow(suite, scenario, id, 'legacy');
-  const { available, reason } = readFixtureStatus();
-  const set: GoldenSet = {
-    sourceSha: pinnedSha(),
-    scenarioId: id,
-    capturedAt: new Date().toISOString(),
-    origin: 'legacy',
-    tableVersion: null,
-    fixtures: { available, reason },
-    steps: side.steps,
-    sideEffects: EMPTY_SIDE_EFFECTS,
-  };
+  const set = goldenSetOf(id, side);
   const parsed = goldenSetSchema.safeParse(set);
   const issues = parsed.success
     ? undefined
@@ -1310,7 +1458,8 @@ async function replayFlow(suite: Suite, id: ScenarioId, scenario: Scenario): Pro
   const legacy = await capturedSide(id);
   const target = await runFlow(suite, scenario, id, 'gateway');
   const gatewayOrigin = new URL(originBaseUrl('gateway')).origin;
-  const differences = browserDifferences(legacy, target, scenario, suite.rules, gatewayOrigin);
+  const opts = { scenario, rules: suite.rules, gatewayOrigin };
+  const differences = browserDifferences(goldenSetOf(id, legacy), target, opts);
   const record: BrowserReplayRecord = {
     sourceSha: pinnedSha(),
     scenarioId: id,
@@ -1326,7 +1475,7 @@ async function replayFlow(suite: Suite, id: ScenarioId, scenario: Scenario): Pro
     foreignOrigins: target.foreignOrigins,
   };
   if (target.error !== undefined) record.error = target.error;
-  const verdict = await classifyAndWrite(suite, scenario, browserResultPath(id), { ...record });
+  const verdict = await classifyAndWrite(suite, scenario, legacy, browserResultPath(id), { ...record });
   expect(ACCEPTED_RESULTS.has(verdict.result), describeVerdict(id, verdict)).toBe(true);
 }
 
@@ -1335,22 +1484,29 @@ async function unsetFlow(suite: Suite, id: ScenarioId, scenario: Scenario): Prom
   const legacy = await runFlow(suite, scenario, id, 'legacy');
   const target = await runFlow(suite, scenario, id, 'gateway');
   const gatewayOrigin = new URL(originBaseUrl('gateway')).origin;
-  const differences = browserDifferences(legacy, target, scenario, suite.rules, gatewayOrigin);
+  const opts = { scenario, rules: suite.rules, gatewayOrigin };
+  const differences = browserDifferences(goldenSetOf(id, legacy), target, opts);
   const error = legacy.error ?? target.error;
   const failedSide = error === legacy.error ? 'legacy' : 'gateway';
-  const record: Record<string, unknown> = {
+  const record: BrowserReplayRecord & { legacy: BrowserSide; gateway: BrowserSide } = {
     sourceSha: pinnedSha(),
     scenarioId: id,
-    comparedAt: new Date().toISOString(),
+    replayedAt: new Date().toISOString(),
+    origin: 'gateway',
     tableVersion: suite.activeVersion,
     legacy,
     gateway: target,
-    steps: [...legacy.steps, ...target.steps],
+    steps: target.steps,
+    sideEffects: EMPTY_SIDE_EFFECTS,
     halted: [],
     differences,
+    console: target.console,
+    notes: target.notes,
+    foreignOrigins: target.foreignOrigins,
     ...(error === undefined ? {} : { error: { ...error, message: `${failedSide}: ${error.message}` } }),
   };
-  const verdict = await classifyAndWrite(suite, scenario, unsetPath(id), record);
+  const expected = { tableVersion: suite.activeVersion };
+  const verdict = await classifyAndWrite(suite, scenario, legacy, unsetPath(id), { ...record }, expected);
   expect(ACCEPTED_RESULTS.has(verdict.result), describeVerdict(id, verdict)).toBe(true);
 }
 
@@ -1358,12 +1514,14 @@ async function unsetFlow(suite: Suite, id: ScenarioId, scenario: Scenario): Prom
 async function classifyAndWrite(
   suite: Suite,
   scenario: Scenario,
+  legacy: BrowserSide,
   file: string,
   record: Record<string, unknown>,
+  expected?: ClassifyOptions['expected'],
 ): Promise<ScenarioVerdict> {
   let verdict: ScenarioVerdict;
   try {
-    verdict = verdictOf(suite, scenario, record);
+    verdict = verdictOf(suite, scenario, legacy, record, expected);
   } catch (err) {
     await writeJsonReport(file, record, REPORT);
     throw err;

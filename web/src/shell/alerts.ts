@@ -2,7 +2,7 @@
 import { cfEq, cfToBoolean } from '@opt2/platform/legacy-compat';
 import { legacySettings } from '@/lib/env';
 import { html, join, raw, type SafeHtml } from '@/lib/html';
-import type { AdminAlert } from '@/lib/request-context';
+import { administersSessionSite, type AdminAlert } from '@/lib/request-context';
 import type { ShellContext } from './types';
 
 type SiteAlerts = Readonly<Record<string, AdminAlert>>;
@@ -70,7 +70,7 @@ function masaNotices(sc: ShellContext, alerts: SiteAlerts): SafeHtml[] {
 
 /** The layout's alert block for site admins and S2 users off the login page; empty markup for everyone else. */
 export function renderAlerts(sc: ShellContext): SafeHtml {
-  if (cfEq(sc.ctx.action, LOGIN_ACTION) || !(sc.ctx.isSiteAdmin || sc.ctx.isS2)) return raw('');
+  if (cfEq(sc.ctx.action, LOGIN_ACTION) || !administersSessionSite(sc.ctx)) return raw('');
   const all = sc.ctx.session.alerts;
   const siteKey = structKey(all, sc.ctx.session.siteid);
   const alerts = (siteKey === undefined ? undefined : all[siteKey]) ?? NO_ALERTS;

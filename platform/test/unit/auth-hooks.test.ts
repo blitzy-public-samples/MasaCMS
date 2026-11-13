@@ -43,6 +43,8 @@ const PLUGIN_MODULE_ID = 'A1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
 const PUSH_URL = '/internal/v1/events/x.y.z.v1';
 const SWEEP_URL = '/internal/v1/outbox/sweep';
 const PEOPLE_ONLY_URL = '/internal/v1/people/lookup';
+const MIGRATION_ONLY_URL = '/internal/v1/migration/gate';
+const OPERATOR_ONLY_URL = '/internal/v1/task-queues/sweep/pause';
 const SITE_A = TENANT_A.siteId;
 const SITE_B = TENANT_B.siteId;
 
@@ -282,6 +284,8 @@ describe('request authentication and role checks', () => {
     app.get('/v1/open', { config: { opt2: { public: true } } }, ok);
     app.get('/v1/proxy', { config: { opt2: { public: true, edge: true } } }, ok);
     app.get(PEOPLE_ONLY_URL, { config: { opt2: { requires: [serviceRole('people')] } } }, ok);
+    app.get(MIGRATION_ONLY_URL, { config: { opt2: { requires: [Roles.platformMigration] } } }, ok);
+    app.get(OPERATOR_ONLY_URL, { config: { opt2: { requires: [Roles.platformOperator] } } }, ok);
     app.post(PUSH_URL, { config: { opt2: { requires: [PUBSUB_INVOKER_ROLE], transport: 'pubsub-push' } } }, ok);
     app.post(SWEEP_URL, { config: { opt2: { requires: [TASKS_INVOKER_ROLE], transport: 'cloud-tasks' } } }, ok);
   });
@@ -335,6 +339,17 @@ describe('request authentication and role checks', () => {
     expect(lastAuth()?.user).toMatchObject({ sub: USER_ID, roles: [Roles.member] });
   });
 
+  it('answers 401 to a valid user token presented to a public route without an invocation credential', async () => {
+    const token = await mintUserToken({ sub: USER_ID, site: SITE_A, roles: [Roles.member] });
+
+    const res = await app.inject({ url: '/v1/open', headers: { authorization: `Bearer ${token}` } });
+
+    expect(res.statusCode).toBe(401);
+    expect(res.headers['www-authenticate']).toBeUndefined();
+    expect(res.json()).toStrictEqual(DENIED_ENVELOPE);
+    expect(handled).not.toHaveBeenCalled();
+  });
+
   it.each([
     { label: 'a user-role route', url: '/v1/admin', caller: 'people', status: 401 },
     { label: 'a service-role route it lacks', url: PEOPLE_ONLY_URL, caller: 'gateway', status: 403 },
@@ -357,6 +372,47 @@ describe('request authentication and role checks', () => {
     });
   });
 
+  const PLATFORM_ROUTES = [
+    { url: MIGRATION_ONLY_URL, workload: 'migration', role: Roles.platformMigration },
+    { url: OPERATOR_ONLY_URL, workload: 'operator', role: Roles.platformOperator },
+  ];
+  const WORKLOAD_ROUTES = [{ url: PEOPLE_ONLY_URL, workload: 'people', role: serviceRole('people') }, ...PLATFORM_ROUTES];
+  const CLAIMED_WORKLOAD_ROLES = WORKLOAD_ROUTES.map(({ role }) => role);
+
+  it.each(WORKLOAD_ROUTES.flatMap((route) => ['gateway', 'web'].map((caller) => ({ ...route, caller }))))(
+    "answers 403 on $url to a user token claiming $role with $caller's invocation credential",
+    async ({ url, caller }) => {
+      const token = await mintUserToken({ sub: USER_ID, site: SITE_A, roles: [Roles.member, ...CLAIMED_WORKLOAD_ROLES] });
+
+      const res = await app.inject({
+        url,
+        headers: { authorization: `Bearer ${token}`, [INVOCATION_HEADER]: await invocationFrom(caller) },
+      });
+
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toStrictEqual(DENIED_ENVELOPE);
+      expect(handled).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(PLATFORM_ROUTES)('admits the $workload workload holding $role on $url', async ({ url, workload, role }) => {
+    const res = await app.inject({ url, headers: { [INVOCATION_HEADER]: await invocationFrom(workload) } });
+
+    expect(res.statusCode).toBe(200);
+    expect(lastAuth()?.service?.name).toBe(workload);
+    expect(lastAuth()?.roles).toStrictEqual([serviceRole(workload), role]);
+  });
+
+  it('leaves workload roles a user token claims out of request.opt2Auth.roles', async () => {
+    const claimed = [Roles.siteAdmin, ...CLAIMED_WORKLOAD_ROLES];
+
+    const res = await app.inject({ url: '/v1/staff', headers: await userHeaders(claimed) });
+
+    expect(res.statusCode).toBe(200);
+    expect(lastAuth()?.roles).toStrictEqual([Roles.siteAdmin, serviceRole('gateway')]);
+    expect(lastAuth()?.user?.roles).toStrictEqual(claimed);
+  });
+
   it.each([
     { label: 'an expired user token', exp: -300, aud: undefined, message: 'Access Token Expired' },
     { label: 'a user token for another audience', exp: 300, aud: 'another-audience', message: 'Invalid Access Token' },
@@ -372,6 +428,24 @@ describe('request authentication and role checks', () => {
     expect(res.statusCode).toBe(401);
     expect(res.headers['www-authenticate']).toBe('Bearer error="invalid_access_token"');
     expect(res.json()).toStrictEqual({ apiversion: 'v1', method: 'invalid', error: { message, code: 'invalid_token' } });
+    expect(handled).not.toHaveBeenCalled();
+  });
+
+  it('answers 401 to a repeated Authorization header whose first copy is valid, without running the handler', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const [valid, expired] = await Promise.all([
+      mintUserToken({ sub: USER_ID, site: SITE_A, roles: [Roles.s2] }),
+      mintUserToken({ sub: USER_ID, site: SITE_A, roles: [Roles.s2], iat: now - 600, exp: now - 300 }),
+    ]);
+
+    const res = await app.inject({
+      url: '/v1/admin',
+      headers: { Authorization: [`Bearer ${valid}`, `Bearer ${expired}`], [INVOCATION_HEADER]: await invocationFrom('gateway') },
+    });
+
+    expect(res.statusCode).toBe(401);
+    expect(res.headers['www-authenticate']).toBeUndefined();
+    expect(res.json()).toStrictEqual(DENIED_ENVELOPE);
     expect(handled).not.toHaveBeenCalled();
   });
 
@@ -555,6 +629,40 @@ describe('registerAuth fallbacks and options', () => {
     expect(instanceRender).not.toHaveBeenCalled();
     expect(handled).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { label: 'a missing credential', roles: undefined, query: '', status: 401, reason: 'missing-credential', user: undefined },
+    { label: 'a role denial', roles: [Roles.member], query: '', status: 403, reason: 'forbidden', user: USER_ID },
+    { label: 'a site mismatch', roles: [Roles.siteAdmin], query: `?siteid=${SITE_B}`, status: 403, reason: 'site-mismatch', user: USER_ID },
+  ].flatMap((denial) => ['/v1/plain', '/v1/fixture'].map((url) => ({ ...denial, url }))))(
+    'reports $label on $url to onDenial once, with what was verified, before rendering it',
+    async ({ roles, query, url, status, reason, user }) => {
+      const events: string[] = [];
+      const seenUser: Array<string | undefined> = [];
+      const render = (by: string) => (denial: AuthDenial): DenialResponse => {
+        events.push(`${by} render`);
+        return { status: denial.statusCode, headers: {}, body: by };
+      };
+      const onDenial = vi.fn((denial: AuthDenial, request: FastifyRequest) => {
+        events.push(`onDenial ${denial.reason}`);
+        seenUser.push((request.opt2Auth as Opt2AuthContext | null)?.user?.sub);
+      });
+      const custom = trackedApp();
+      registerAuth(custom, { transports, renderDenial: render('instance'), onDenial });
+      custom.get('/v1/plain', { config: { opt2: { requires: [Roles.siteAdmin] } } }, ok);
+      custom.get('/v1/fixture', { config: { opt2: { requires: [Roles.siteAdmin], renderDenial: render('route') } } }, ok);
+
+      const res = await custom.inject({ url: `${url}${query}`, headers: roles === undefined ? {} : await userHeaders(roles) });
+
+      const renderer = url === '/v1/fixture' ? 'route' : 'instance';
+      expect([res.statusCode, res.body]).toStrictEqual([status, renderer]);
+      expect(onDenial).toHaveBeenCalledOnce();
+      expect(onDenial.mock.calls[0]?.[0]).toBeInstanceOf(AuthDenial);
+      expect(events).toStrictEqual([`onDenial ${reason}`, `${renderer} render`]);
+      expect(seenUser).toStrictEqual([user]);
+      expect(handled).not.toHaveBeenCalled();
+    },
+  );
 
   it('passes a failing route renderDenial to the error handler', async () => {
     const custom = trackedApp();

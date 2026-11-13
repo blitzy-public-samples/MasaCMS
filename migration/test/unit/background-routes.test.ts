@@ -170,12 +170,23 @@ describe('backgroundSuspend', () => {
     expect(table.rows.get(BACKGROUND_KEY)).toEqual(again);
   });
 
+  it('stores a push config key the record does not declare', async () => {
+    const pushConfigs = Object.fromEntries(Object.entries(RECORD.pushConfigs).map(([name, config]) => [name, { ...config, unexpected: true }]));
+    const body = { ...RECORD, since: SINCE, pushConfigs };
+
+    const res = await post(SUSPEND_PATH, await operator(), body);
+
+    expect(res.statusCode).toBe(200);
+    expect(table.rows.get(BACKGROUND_KEY)).toEqual(body);
+  });
+
   it.each([
     ['no paused tasks', { suspended: true, since: null, reason: null, pushConfigs: {}, pausedQueues: [] }],
     ['a suspended flag that is not a boolean', { ...RECORD, suspended: 'yes' }],
     ['a since that is not a timestamp', { ...RECORD, since: 'yesterday' }],
     ['a paused queue without a name', { ...RECORD, pausedQueues: [{ service: 'identity', queue: '' }] }],
     ['an extra top-level key', { ...RECORD, background: { suspended: true } }],
+    ['an extra key in a paused queue', { ...RECORD, pausedQueues: [{ service: 'people', queue: 'people-outbox-sweep', unexpected: true }] }],
     ['an array', [RECORD]],
     ['a body that is not JSON, which service-kit parses to no body', '{"suspended": tr'],
   ])('answers %s with the legacy 400 and stores nothing', async (_label, body) => {

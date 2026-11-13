@@ -16,11 +16,11 @@ import type { ImageSizeRow } from '../../src/repo/tables.js';
 import { registerRoutes, registerSiteMonitorRoutes, type RouteDeps } from '../../src/routes/index.js';
 
 const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
-  paths: Record<string, Record<string, unknown>>;
+  paths: Record<string, Record<string, Record<string, unknown>>>;
 };
 const HTTP_METHODS = new Set(['get', 'put', 'post', 'delete', 'patch', 'head', 'options']);
 // Contract paths of the site, image size and JSON API `site` modules.
-const MODULE_PATH = /^\/v1\/|^\/_api\/(?:json|ajax|rest)\/v1\/\{siteid\}\/site$/;
+const MODULE_PATH = /^\/v1\/|^\/_api\/(?:json|ajax|rest)\/v1(?:\/|$)/;
 const SITE_MONITOR_URLS = [
   '/_api/sitemonitor*',
   '/index.cfm/_api/sitemonitor*',
@@ -132,16 +132,24 @@ afterEach(async () => {
 
 describe('registerRoutes', () => {
   it('adds exactly the contract operations of the site, image size and JSON API site modules', async () => {
-    const expected = Object.entries(OPENAPI.paths)
-      .filter(([template]) => MODULE_PATH.test(template))
-      .flatMap(([template, item]) =>
-        Object.keys(item)
-          .filter((method) => HTTP_METHODS.has(method))
-          .map((method) => `${method.toUpperCase()} ${template.replace(/\{(\w+)\}/g, ':$1')}`),
-      )
-      .sort();
+    // A JSON API operation names its Fastify route, served with and without the front controller.
+    const expected = [
+      ...new Set(
+        Object.entries(OPENAPI.paths)
+          .filter(([template]) => MODULE_PATH.test(template))
+          .flatMap(([template, item]) =>
+            Object.entries(item)
+              .filter(([method]) => HTTP_METHODS.has(method))
+              .flatMap(([method, operation]) => {
+                const fastifyPath = operation['x-opt2-fastify-path'];
+                const urls = typeof fastifyPath === 'string' ? [fastifyPath, `/index.cfm${fastifyPath}`] : [template.replace(/\{(\w+)\}/g, ':$1')];
+                return urls.map((url) => `${method.toUpperCase()} ${url}`);
+              }),
+          ),
+      ),
+    ].sort();
     const { added } = await addedBy((app) => registerRoutes(app, deps()));
-    expect(expected.length).toBeGreaterThan(0);
+    expect(expected.filter((route) => route.includes('/_api/'))).toHaveLength(42);
     expect(added).toEqual(expected);
   });
 

@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { cfHash, cfUuid } from '@opt2/platform/legacy-compat';
+import { REDACTED, createLogger, validateLogRecord } from '@opt2/platform/logging';
 import { closeGates, ensureUnitGates, openGates } from '@opt2/platform/migration-kit';
 import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { createLocalStorageAdapter, type LocalStorageAdapter } from '@opt2/platform/storage';
@@ -23,6 +24,7 @@ const NOW = new Date(2026, 5, 30, 10, 0, 0, 0);
 const P = `${FIXTURE_PREFIX}/exports`;
 const EXPORTER = [Roles.systemUser, Roles.reportingExporter];
 const USER_ID = '11111111-2222-3333-4444555566667777';
+const SESSION_ID = 'fixture-routes-session';
 const GOOD_TOKEN = 'VALIDCSRFTOKEN';
 const CSRF = { 'x-csrf_token': GOOD_TOKEN, 'x-csrf_token_expires': '991231235959000' };
 const OUTPUT = Buffer.from('a,b\r\n1,2\r\n');
@@ -43,6 +45,7 @@ describe.skipIf(!available)('reporting fixture routes', () => {
   let failEnqueue = false;
   const defs: Record<string, string> = {};
   const errorSpies: { mock: { calls: unknown[][] } }[] = [];
+  const logLines: string[] = [];
 
   beforeAll(async () => {
     handle = await createThrowawaySchema({ service: 'reporting', migrationsDir: fileURLToPath(new URL('../../db/migrations', import.meta.url)) });
@@ -87,6 +90,7 @@ describe.skipIf(!available)('reporting fixture routes', () => {
       }),
       verifierOverride: testVerifier('reporting'),
       pool: handle.app,
+      logger: createLogger({ service: 'reporting', version: '1.0.0', env: 'local', destination: { write: (line: string) => void logLines.push(line) } }),
     });
     app.addHook('onRequest', async (request) => {
       errorSpies.push(vi.spyOn(request.log, 'error'));
@@ -129,9 +133,12 @@ describe.skipIf(!available)('reporting fixture routes', () => {
     await setGates('open');
   });
 
-  /** A user token for `roles` on `site` plus the gateway's invocation credential. */
+  /** A user token of session SESSION_ID for `roles` on `site` plus the gateway's invocation credential. */
   async function headers(roles: readonly string[] = EXPORTER, site: string = TENANT_A.siteId): Promise<Record<string, string>> {
-    const [token, inv] = await Promise.all([mintUserToken({ sub: USER_ID, site, roles }), mintServiceToken({ caller: 'gateway', audience: 'reporting' })]);
+    const [token, inv] = await Promise.all([
+      mintUserToken({ sub: USER_ID, site, roles, sid: SESSION_ID }),
+      mintServiceToken({ caller: 'gateway', audience: 'reporting' }),
+    ]);
     return { authorization: `Bearer ${token}`, [INVOCATION_HEADER]: `Bearer ${inv}` };
   }
 
@@ -195,7 +202,7 @@ describe.skipIf(!available)('reporting fixture routes', () => {
     expect(res.headers['www-authenticate']).toBeDefined();
   });
 
-  it('creates a queued job', async () => {
+  it("creates a queued job whose run task carries neither the requester's session nor a token", async () => {
     const res = await create({ definitionId: defs[TENANT_A.siteId], format: 'csv', asOf: '2026-06-30' });
     expect(res.statusCode).toBe(200);
     expectEtag(res);
@@ -203,7 +210,8 @@ describe.skipIf(!available)('reporting fixture routes', () => {
     expect(data).toMatchObject({ siteid: 'tenant-a', definition_id: defs[TENANT_A.siteId], format: 'csv', state: 'queued', requested_by_id: USER_ID, started_at: '', error: '' });
     expect(res.json().method).toBe('reporting.exports');
     expect(enqueued).toHaveLength(1);
-    expect(enqueued[0]?.payload.asOf).toBe('2026-06-30');
+    const { job_id: jobId } = res.json<{ data: { job_id: string } }>().data;
+    expect(enqueued[0]?.payload).toStrictEqual({ jobId, asOf: '2026-06-30' });
     expect(consumed).toEqual([expect.objectContaining({ context: '', token: GOOD_TOKEN })]);
   });
 
@@ -240,6 +248,40 @@ describe.skipIf(!available)('reporting fixture routes', () => {
     const unknown = await app.inject({ url: `${P}?siteid=nowhere`, headers: await headers() });
     expect(unknown.statusCode).toBe(400);
     expect(unknown.body).toBe(errorBody('reporting.exports', 'invalid_request', 'Invalid parameters'));
+  });
+
+  it.each<[string, () => Promise<Awaited<ReturnType<FastifyInstance['inject']>>>, number, string | null]>([
+    ['a definition id PostgreSQL cannot look up', () => create({ definitionId: 'nul-probe\u0000', format: 'csv' }), 400, 'request rejected: 22021'],
+    ['a NUL job id PostgreSQL cannot look up', async () => app.inject({ url: `${P}/nul-probe%00`, headers: await headers() }), 400, 'request rejected: 22021'],
+    ['a NUL siteid PostgreSQL cannot look up', async () => app.inject({ url: `${P}?siteid=nul-probe%00`, headers: await headers() }), 400, 'request rejected: 22021'],
+    ['an anonymous caller', () => app.inject({ url: P }), 401, 'request denied: missing-credential'],
+    [
+      'an anonymous create naming a NUL definition id',
+      () => app.inject({ method: 'POST', url: P, headers: CSRF, payload: { definitionId: 'nul-probe\u0000', format: 'csv' } }),
+      401,
+      'request denied: missing-credential',
+    ],
+    ['a user without reporting.exporter', async () => app.inject({ url: P, headers: await headers([Roles.systemUser]) }), 403, 'request denied: forbidden'],
+    ['another site', async () => app.inject({ url: `${P}?siteid=tenant-b`, headers: await headers() }), 403, 'request denied: site-mismatch'],
+    ['a create without a valid CSRF token', () => create({ definitionId: defs[TENANT_A.siteId], format: 'csv' }, {}), 400, 'request rejected: invalidTokens'],
+    ['a bad format', () => create({ definitionId: defs[TENANT_A.siteId], format: 'doc' }), 400, 'request rejected: invalidParameters'],
+    ['a missing definition', () => create({ format: 'csv' }), 404, null],
+    ['an unhandled exception', async () => app.inject({ url: `${P}?pageIndex=${encodeURIComponent('1\u0663')}`, headers: await headers() }), 500, null],
+  ])('logs %s with its fixed reason, if any, ahead of the completion line, queueing nothing', async (_case, send, status, warning) => {
+    const stored = async (): Promise<number> => (await app.inject({ url: `${P}?itemsPerPage=1000`, headers: await headers() })).json().data.totalitems;
+    const total = await stored();
+    const before = logLines.length;
+    const res = await send();
+    const lines = logLines.slice(before).map((text) => JSON.parse(text) as Record<string, unknown>);
+    expect(res.statusCode).toBe(status);
+    expect(lines.filter(({ severity, message }) => severity === 'WARNING' || message === 'request completed').map(({ severity, message }) => [severity, message])).toStrictEqual([
+      ...(warning === null ? [] : [['WARNING', warning]]),
+      ['INFO', 'request completed'],
+    ]);
+    expect(lines.filter(({ severity }) => severity === 'ERROR')).toHaveLength(status === 500 ? 1 : 0);
+    for (const line of lines) expect(validateLogRecord(line).errors).toStrictEqual([]);
+    expect(`${JSON.stringify(lines)}${res.body}`).not.toMatch(/nul-probe|invalid byte sequence|0x00/);
+    expect([enqueued.length, await stored()]).toEqual([0, total]);
   });
 
   it('lists jobs with paging and rejects bad paging', async () => {
@@ -324,7 +366,10 @@ describe.skipIf(!available)('reporting fixture routes', () => {
     errorSpies.length = 0;
     const missing = await app.inject({ url: `${P}/${gone}/download`, headers: await headers() });
     expect(missing.statusCode).toBe(500);
-    expect(errorSpies.some((s) => s.mock.calls.some((c) => c[1] === 'unhandled fixture exception'))).toBe(true);
+    const calls = errorSpies.flatMap((s) => s.mock.calls).filter((c) => c[1] === 'unhandled fixture exception');
+    const stack = expect.stringMatching(/^StorageObjectNotFoundError: \[REDACTED\]\n\s+at \S/);
+    expect(calls).toStrictEqual([[{ error: { type: 'StorageObjectNotFoundError', message: REDACTED, stack } }, 'unhandled fixture exception']]);
+    expect(JSON.stringify(calls)).not.toContain(job.job_id);
   });
 
   it('dispatches on X-HTTP-Method-Override', async () => {

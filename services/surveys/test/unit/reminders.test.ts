@@ -25,7 +25,7 @@ interface LoggedChange {
   columns: string[];
 }
 
-const available = await pgAvailable();
+const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
 
 describe.skipIf(!available)('recordReminderSent against PostgreSQL', () => {
   let handle: ThrowawaySchema;

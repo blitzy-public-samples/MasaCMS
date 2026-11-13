@@ -42,7 +42,18 @@ const CLOCK = fixedClock(NOW);
 const SECRET = 'K0000000-0000-0000-0000000000000001';
 const CONTEXT = 'cusers.update';
 const JSON_BODY = { 'content-type': 'application/json' };
-const CONSUME_CALLERS = ['people', 'programs-sites', 'strategies-content', 'identity', 'gateway'];
+const CONSUME_CALLERS = [
+  'people',
+  'programs-sites',
+  'strategies-content',
+  'identity',
+  'gateway',
+  'communications',
+  'finance',
+  'reporting',
+  'surveys',
+  'timesheets',
+];
 
 // Unit and auth cases run without PostgreSQL; the stub fails any SQL they would reach.
 const NO_DB: TenantDb = {
@@ -163,9 +174,9 @@ describe('route declarations', () => {
 });
 
 describe('auth denials', () => {
-  it('refuse consumeCsrfToken to callers outside its five services and to calls without an invocation credential', async () => {
+  it('refuse consumeCsrfToken to callers outside its admitted services and to calls without an invocation credential', async () => {
     const body = tokenBody('S-denied');
-    for (const caller of ['communications', 'web', 'migration']) {
+    for (const caller of ['e-signature', 'web', 'migration']) {
       expect((await send(CONSUME, await headersFor(caller, 'S-denied'), body)).statusCode).toBe(403);
     }
     expect((await send(CONSUME, await headersFor(null, 'S-denied'), body)).statusCode).toBe(401);
@@ -185,7 +196,7 @@ describe('auth denials', () => {
     [CLAIMS, tokenBody('S-denied')],
     [SETTLE, { sessionId: 'S-denied', consumed: [], released: [] }],
   ])('refuse %s to callers other than the gateway', async (url, body) => {
-    for (const caller of ['people', 'identity', 'strategies-content']) {
+    for (const caller of CONSUME_CALLERS.filter((name) => name !== 'gateway')) {
       expect((await send(url, await headersFor(caller, 'S-denied'), body)).statusCode).toBe(403);
     }
     expect((await send(url, await headersFor(null, 'S-denied'), body)).statusCode).toBe(401);

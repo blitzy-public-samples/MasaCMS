@@ -64,11 +64,11 @@ let handle: ThrowawaySchema;
 let stateDir: string;
 let app: FastifyInstance;
 
-/** User token of `site` with people's invocation credential, as people's service client sends them. */
-async function peopleHeaders(site: string = SITE_C): Promise<Record<string, string>> {
+/** User token of `site` with the invocation credential of `caller`, as that service's client sends them. */
+async function peopleHeaders(site: string = SITE_C, caller = 'people'): Promise<Record<string, string>> {
   const [user, invocation] = await Promise.all([
     mintUserToken({ sub: USER_ID, site, roles: [Roles.systemUser] }),
-    mintServiceToken({ caller: 'people', audience: SERVICE }),
+    mintServiceToken({ caller, audience: SERVICE }),
   ]);
   return { authorization: `Bearer ${user}`, [INVOCATION_HEADER]: `Bearer ${invocation}` };
 }
@@ -196,6 +196,18 @@ describe.skipIf(!(await pgAvailable()))('lookupFileExtensions', () => {
     expect(res.json()).toEqual({ items });
   });
 
+  it("answers identity's group member photo lookup under the same user-pool file pools", async () => {
+    const res = await lookup(await peopleHeaders(SITE_C, 'identity'), { fileIds: [MISSING, C_PHOTO, UMBRELLA_PHOTO, NULL_EXT] });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      items: [
+        { fileId: C_PHOTO, fileExt: 'png' },
+        { fileId: UMBRELLA_PHOTO, fileExt: 'jpg' },
+        { fileId: NULL_EXT, fileExt: null },
+      ],
+    });
+  });
+
   it.each([
     ['a lower-case CF UUID', C_PHOTO.toLowerCase(), 'png'],
     ['a mixed-case CF UUID', `${C_PHOTO.slice(0, 9).toLowerCase()}${C_PHOTO.slice(9)}`, 'png'],
@@ -215,15 +227,7 @@ describe.skipIf(!(await pgAvailable()))('lookupFileExtensions', () => {
       LOOKUP_URL,
       401,
     ],
-    [
-      'another service',
-      async () => ({
-        ...(await peopleHeaders()),
-        [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'identity', audience: SERVICE })}`,
-      }),
-      LOOKUP_URL,
-      403,
-    ],
+    ['another service', () => peopleHeaders(SITE_C, 'communications'), LOOKUP_URL, 403],
     [
       'the gateway',
       async () => ({

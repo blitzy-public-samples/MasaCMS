@@ -159,6 +159,16 @@ export async function registeredTenants(db: RegistrySource): Promise<Array<{ ten
   });
 }
 
+/** Every registry entry, ordered by site id. */
+export async function registryEntries(db: RegistrySource): Promise<TenantRegistryEntry[]> {
+  return read(db, async (reader) => {
+    const { rows } = await reader.query<RegistryRow>(
+      `SELECT ${ENTRY_COLUMNS} FROM ${registryTable(reader)} ORDER BY site_id`,
+    );
+    return rows.map((row) => toEntry(row));
+  });
+}
+
 /** The registry entry of `tenantId`, or null when the tenant is unregistered. */
 export async function registryEntryForTenant(db: RegistrySource, tenantId: string): Promise<TenantRegistryEntry | null> {
   const tid = assertTenantId(tenantId);

@@ -32,6 +32,7 @@ import {
   cancellableQuery,
   clearPendingEffects,
   decodeLegacyChange,
+  liveSiteOf,
   readCheckpoints,
   summarise,
   upsertCheckpoint,
@@ -40,7 +41,9 @@ import {
   type CheckpointRow,
   type LegacyChange,
   type LegacyEffect,
+  type RequestScope,
 } from './apply-legacy.js';
+import { bindAttachmentContent } from './attachments.js';
 import { FILE_OBJECT_UNIT, executeFileOps, isFileObjectChange, planFileOps } from './files.js';
 import { OperationTracker, classifyRow, splitAtHold, type FenceRequest, type RowDisposition, type TrackedOperation } from './operations.js';
 
@@ -57,6 +60,7 @@ export interface ProjectorHooks {
 
 /** Commits a batch inside the start-up guard sequence: freeze legacy-bound entries, `commit`, reload window, unfreeze. */
 export interface StartupGuardRunner {
+  /** Resolves once `commit` has committed under the freeze; the reload window and unfreeze continue without the caller. */
   run(commit: () => Promise<void>): Promise<unknown>;
 }
 
@@ -369,6 +373,59 @@ class OtherParts {
   }
 }
 
+/** Site ids compared as SQL Server's default collation compares them: case-insensitive, trailing spaces ignored. */
+function sameSite(site: string, other: CanonicalValue | undefined): boolean {
+  return typeof other === 'string' && site.replace(/ +$/, '').toLowerCase() === other.replace(/ +$/, '').toLowerCase();
+}
+
+/** True when the change's owner still exports a row with the change's after-image key in the change's own tenant. */
+async function tenantHoldsKey(ctx: Pick<ProjectorContext, 'catalog' | 'owners'>, change: LegacyChange, keyColumns: readonly string[]): Promise<boolean> {
+  const { catalog, owners } = ctx;
+  const generic = genericTable(catalog, change.legacyTable);
+  const wanted = keyText(keyColumns, change.after ?? {});
+  const params = {
+    unit: change.unit,
+    tenantId: change.tenantId,
+    ...(change.programId === undefined ? {} : { programId: change.programId }),
+    keys: [exportKey(keyColumns, change)],
+  };
+  for await (const page of owners.exportPages(catalog.ownerOf(change.unit), params)) {
+    for (const table of page.tables) {
+      if (table.unit !== change.unit || genericTable(catalog, table.legacyTable) !== generic) continue;
+      if (table.rows.some((row) => keyText(keyColumns, decodeRow(table.columns, row.row)) === wanted)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Inserts of the batch whose key moved on to another tenant: legacy holds the key under another site, and the change's
+ * own tenant no longer exports it. Read before the batch transaction opens.
+ */
+async function supersededInserts(
+  ctx: Pick<ProjectorContext, 'catalog' | 'owners'>,
+  pool: RequestScope,
+  changes: readonly LegacyChange[],
+  catalogs: ReadonlyMap<string, TableCatalog>,
+): Promise<Set<LegacyChange>> {
+  const { catalog } = ctx;
+  const superseded = new Set<LegacyChange>();
+  for (const change of changes) {
+    const after = change.op === 'insert' ? change.after : undefined;
+    const siteColumn = after === undefined ? null : catalog.siteColumnOf(change.legacyTable);
+    if (after === undefined || siteColumn === null) continue;
+    const keyColumns = catalog.keyColumnsOf(change.legacyTable);
+    // Read for every physical table of the batch before this runs.
+    const tableCatalog = catalogs.get(change.physicalTable.qualified.toLowerCase()) as TableCatalog;
+    // A keyless row is inserted as a new occurrence, which no move supersedes.
+    if (keyColumns.length === 0 || !tableCatalog.hasPrimaryKey) continue;
+    const site = await liveSiteOf(pool, change, { tableCatalog, keyColumns, siteColumn });
+    if (site === null || sameSite(site, valueAt(after, siteColumn))) continue;
+    if (!(await tenantHoldsKey(ctx, change, keyColumns))) superseded.add(change);
+  }
+  return superseded;
+}
+
 /** One leading cycle's streams over the owners of `target`-authoritative units and every live tenant. */
 class ProjectorCycle {
   readonly #ctx: ProjectorContext;
@@ -654,9 +711,10 @@ class ProjectorCycle {
     }
     const others = new OtherParts(this.#ctx);
     await others.preload(changes);
+    const superseded = await supersededInserts(this.#ctx, pool, changes, catalogs);
     const batchId = randomUUID();
     const write = async (tx: Transaction): Promise<CheckpointRow[]> => {
-      for (const change of changes) await applyLegacyChange(tx, change, this.#applyOptions(change, catalogs, others));
+      for (const change of changes) await applyLegacyChange(tx, change, this.#applyOptions(change, catalogs, others, superseded));
       const stored: CheckpointRow[] = [];
       for (const part of decoded) {
         const { xid, seq } = parseCursor(part.endCursor);
@@ -695,7 +753,10 @@ class ProjectorCycle {
     if (guardError !== undefined) throw guardError;
   }
 
-  /** Splits a part's rows into legacy changes and file-store rows; rows whose table has no legacy form count as target-only. */
+  /**
+   * Splits a part's rows into legacy changes and file-store rows; rows whose table has no legacy form count as target-only.
+   * Finance attachment changes carry their bytes, read from finance before the batch transaction opens.
+   */
   async #decode(part: BatchPart): Promise<DecodedPart> {
     const { owner, tenantId } = part.stream;
     const changes: LegacyChange[] = [];
@@ -711,7 +772,7 @@ class ProjectorCycle {
       const columns = projection === undefined ? [] : await this.#legacyColumns(owner, tenantId, unit, projection.legacyTable);
       const change = decodeLegacyChange(row, { owner, tenantId, unit, columns });
       if (change === null) targetOnly += 1;
-      else changes.push(change);
+      else changes.push(await bindAttachmentContent(this.#ctx, change));
     }
     return { ...part, changes, fileRows, targetOnly };
   }
@@ -736,10 +797,16 @@ class ProjectorCycle {
     throw new Error(`Owner ${owner} exports no columns of ${legacyTable} for unit ${unit}`);
   }
 
-  #applyOptions(change: LegacyChange, catalogs: ReadonlyMap<string, TableCatalog>, others: OtherParts): ApplyLegacyOptions {
+  #applyOptions(
+    change: LegacyChange,
+    catalogs: ReadonlyMap<string, TableCatalog>,
+    others: OtherParts,
+    superseded: ReadonlySet<LegacyChange>,
+  ): ApplyLegacyOptions {
     const { catalog } = this.#ctx;
     const target = catalog.unitsForLegacyTable(change.legacyTable).find((entry) => entry.unit === change.unit);
     if (target === undefined) throw new Error(`Unit ${change.unit} takes no rows of legacy table ${change.legacyTable}`);
+    const siteColumn = catalog.siteColumnOf(change.legacyTable);
     return {
       // Read for every physical table of the batch before the transaction opened.
       tableCatalog: catalogs.get(change.physicalTable.qualified.toLowerCase()) as TableCatalog,
@@ -748,13 +815,17 @@ class ProjectorCycle {
       ownedColumns: target.ownedColumns,
       keyColumns: catalog.keyColumnsOf(change.legacyTable),
       fetchOtherParts: (merged) => Promise.resolve(others.fetch(merged)),
+      ...(siteColumn === null ? {} : { siteColumn }),
+      supersededInsert: superseded.has(change),
     };
   }
 
   /**
    * Commits the batch, through the start-up guard when rows would match Masa's start-up predicate. The guarded batch is
    * rolled back first and re-applied by the guard's commit, so no projector lock is held while the freeze drains legacy
-   * requests. A guard failure after its commit is returned, so the post-commit steps still run.
+   * requests. The guard returns once that commit is made under the freeze, and its reload window, which awaits this
+   * projector's later batches, runs on without it. A guard failure after its commit is returned, so the post-commit
+   * steps still run.
    */
   async #commit(
     write: (tx: Transaction) => Promise<CheckpointRow[]>,

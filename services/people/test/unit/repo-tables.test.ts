@@ -39,12 +39,14 @@ const LOOKUP_SQL = readFileSync(new URL('0007_person_lookup_indexes.sql', MIGRAT
 const CREATE_TABLE = /^CREATE TABLE (\w+)\.(\w+) \(\n([\s\S]*?)\n\);/gm;
 const COLUMN = /^"?([a-z_0-9]+)"? (.+?)(?= NOT NULL| NULL| DEFAULT | PRIMARY KEY| UNIQUE| CHECK | GENERATED |$)/;
 const CONSTRAINT = /^(PRIMARY KEY|UNIQUE) /;
+const ADD_COLUMN = /^ALTER TABLE (\w+)\.(\w+) ADD COLUMN (\w+) (.+?)(?= NOT NULL| NULL| DEFAULT |;)/gm;
 
-/** Every `CREATE TABLE` of the service-table migrations (0002 onwards), keyed `<schema>.<table>`. */
+/** Every `CREATE TABLE` of the service-table migrations (0002 onwards) with the columns later migrations add, keyed `<schema>.<table>`. */
 function migrationTables(): Map<string, DdlTable> {
   const tables = new Map<string, DdlTable>();
   for (const file of readdirSync(MIGRATIONS).filter((name) => /^\d{4}_\w+\.sql$/.test(name) && !name.startsWith('0001_')).sort()) {
-    for (const [, schema, table, body] of readFileSync(new URL(file, MIGRATIONS), 'utf8').matchAll(CREATE_TABLE)) {
+    const sql = readFileSync(new URL(file, MIGRATIONS), 'utf8');
+    for (const [, schema, table, body] of sql.matchAll(CREATE_TABLE)) {
       const lines = (body as string)
         .split('\n')
         .map((line) => line.trim().replace(/,$/, ''))
@@ -58,6 +60,9 @@ function migrationTables(): Map<string, DdlTable> {
         columns,
         primaryKey: primaryKey === undefined ? [] : primaryKey.split(',').map((column) => column.trim()),
       });
+    }
+    for (const [, schema, table, name, type] of sql.matchAll(ADD_COLUMN)) {
+      tables.get(`${schema as string}.${table as string}`)?.columns.push({ name: name as string, type: type as string });
     }
   }
   return tables;
@@ -171,6 +176,7 @@ describe('people tables', () => {
       started_at: now,
       updated_at: now,
       identity_unreachable_since: null,
+      claimed_by: null,
     };
     expect(Object.keys(row)).toEqual(ROSTER_OPERATION.columns.map((column) => column.name));
   });

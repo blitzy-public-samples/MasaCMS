@@ -1,6 +1,7 @@
 // cUsers.listUsers: the user list of `cusers/listusers.cfm` over the `cusers.cfc listUsers()` controller (server-only).
-import { cfEq, cfIsNumeric, cfToBoolean, cfToNumber } from '@opt2/platform/legacy-compat';
+import { cfToBoolean } from '@opt2/platform/legacy-compat';
 import type { components } from '@/generated/clients/people';
+import { cfEq } from '@/lib/cfml';
 import { okBody } from '@/lib/gateway-client';
 import { encodeUrl, html, join, raw, type SafeHtml } from '@/lib/html';
 import { buildUrl } from '@/lib/urls';
@@ -31,11 +32,11 @@ export interface ListUsersData {
   readonly noUsersMessage: string;
 }
 
-/** CFML `value eq 1` for a value `before()` left a CFML boolean: numbers by value, boolean words as 1 or 0. */
-const eqOne = (value: string): boolean => (cfIsNumeric(value) ? cfToNumber(value) === 1 : cfToBoolean(value));
+/** CFML `value eq 1` under ACF's loose comparison: boolean words as 1 or 0, and `'1.'` stays text. */
+const eqOne = (value: string): boolean => cfEq(value, 1);
 
-/** CFML `value eq 0` for a value `before()` left a CFML boolean. */
-const eqZero = (value: string): boolean => !cfToBoolean(value);
+/** CFML `value eq 0` under ACF's loose comparison: boolean words as 1 or 0, and `'0.'` stays text. */
+const eqZero = (value: string): boolean => cfEq(value, 0);
 
 /** What whitespace-only text prints after `output`: one space after non-whitespace (char > U+0020), else nothing. */
 const cfSpace = (output: string): string => (output !== '' && output.charCodeAt(output.length - 1) > 0x20 ? ' ' : '');
@@ -93,14 +94,14 @@ export async function loadListUsers(ctx: ScreenContext): Promise<ListUsersData> 
     startrow: String(rc.startRow),
     recordsperpage: String(rc.recordsperpage),
   };
-  const page = okBody(await ctx.gateway.people.call('get', '/v1/users', { query }), 'people', 'listUsers');
+  const page = okBody(await ctx.gateway.people.call('get', '/v2/users', { query }), 'people', 'listUsersV2');
   const nextn = nextNOf(page.nextn);
   const pageIndex = legacyPageIndex(nextn.startRow, nextn.recordsPerPage, nextn.totalRecords);
-  const first = (pageIndex - 1) * nextn.recordsPerPage;
   const msgArg = eqOne(rc.unassigned) ? `'${ctx.rb.rbKey('user.unassigned')}'` : '';
   return {
     rc: cfEq(rc.siteid, 'all') ? withSiteId(rc, '') : rc,
-    rows: page.items.slice(first, first + nextn.recordsPerPage).map(rowOf),
+    // people answers only the people of the page `nextn` selects.
+    rows: page.items.map(rowOf),
     nextn,
     pageIndex,
     listUnassignedUsers: page.listUnassignedUsers.join(','),

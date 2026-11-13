@@ -9,13 +9,15 @@ import {
   openGates,
   type RepositoryRow,
 } from '@opt2/platform/migration-kit';
-import { cfUuid } from '@opt2/platform/legacy-compat';
+import { LegacyServiceUnavailableError, cfUuid } from '@opt2/platform/legacy-compat';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import {
   DuplicateArchiveError,
   LegacyStorageError,
   OWNER,
+  RosterLockTimeoutError,
+  RosterOperationClaimedError,
   RosterOperationOpenError,
   SCHEMA,
   createPeopleRepository,
@@ -32,10 +34,13 @@ import {
   type PersonInput,
   type PersonQuery,
   type PersonUpdate,
+  type RosterLockMode,
+  type RosterOperationClaim,
   type RosterOperationCursor,
+  type RosterOperationOwner,
   type TrashInput,
 } from '../../src/repo/repository.js';
-import { FAVORITE, FINISH_PENDING_ERROR, PEOPLE_UNITS, PERSON, type PersonRow } from '../../src/repo/tables.js';
+import { FAVORITE, FINISH_PENDING_ERROR, PEOPLE_UNITS, PERSON, type PersonRow, type RosterOperationRow } from '../../src/repo/tables.js';
 
 const NOW = new Date(2026, 5, 30, 10, 0, 0, 0);
 const LATER = new Date(2026, 5, 30, 11, 0, 0, 0);
@@ -181,6 +186,9 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
       " SELECT $1, 'FILL-' || g, 'FILL-' || g, 's', now(), now() FROM generate_series(1, 3000) AS g",
     group_name: "INSERT INTO <s>.group_name (tenant_id, group_id, aggregate_version) SELECT $1, 'FILL-' || g, 1 FROM generate_series(1, 3000) AS g",
     person_tombstone: "INSERT INTO <s>.person_tombstone (tenant_id, userid, row_version) SELECT $1, 'FILL-' || g, 1 FROM generate_series(1, 3000) AS g",
+    roster_operation:
+      'INSERT INTO <s>.roster_operation (tenant_id, operation_id, kind, user_id, payload, state, started_at, updated_at)' +
+      " SELECT $1, 'FILL-' || g, 'admin-update', 'FILL-' || g, '{}', 'done', now(), now() FROM generate_series(1, 3000) AS g",
   };
 
   /** Every node of an `EXPLAIN (FORMAT JSON)` result as `planOf` returns it. */
@@ -832,6 +840,289 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
         inTenant((tx) => repo.insertRosterOperation(tx, { kind: 'x', userId: 'x'.repeat(36), payload: '{}' })),
       ).rejects.not.toBeInstanceOf(RosterOperationOpenError);
     });
+
+    /** A new `started` operation of a new user, written at NOW. */
+    function startedOperation(): Promise<RosterOperationRow> {
+      return inTenant((tx) => repo.insertRosterOperation(tx, { kind: 'admin-update', userId: cfUuid(), payload: '{}' }));
+    }
+
+    it.each<[string, Partial<RosterOperationClaim>]>([
+      ['another state than the stored one', { state: 'people-committed' }],
+      ['another claim than the stored one', { claimedBy: 'OTHER' }],
+      ['an operation updated at the stale bound', { staleBefore: NOW }],
+    ])('claims nothing for %s', async (_label, observed) => {
+      const op = await startedOperation();
+      const claim: RosterOperationClaim = { token: 'TOKEN', state: 'started', claimedBy: null, staleBefore: LATER, ...observed };
+      expect(await inTenant((tx) => repo.claimRosterOperation(tx, op.operation_id, claim))).toBeNull();
+      expect(await inTenant((tx) => repo.findRosterOperation(tx, op.operation_id))).toMatchObject({ claimed_by: null, updated_at: NOW });
+    });
+
+    it('claims a stale operation for one token, fences every other writer, and hands a stale claim over', async () => {
+      const { operation_id: id } = await startedOperation();
+      repo = createPeopleRepository({ clock: fixedClock(LATER), schema: handle.schema });
+      const observed = { state: 'started', claimedBy: null, staleBefore: LATER } as const;
+      expect(await inTenant((tx) => repo.claimRosterOperation(tx, id, { ...observed, token: 'TOKEN-1' }))).toMatchObject({ claimed_by: 'TOKEN-1', updated_at: LATER });
+      expect(await inTenant((tx) => repo.claimRosterOperation(tx, id, { ...observed, token: 'TOKEN-2', staleBefore: null }))).toBeNull();
+      expect((await changelog('roster_operation', id)).at(-1)).toMatchObject({ op: 'update', columns: ['updated_at', 'claimed_by'] });
+
+      const others: RosterOperationOwner[] = [{}, { claim: 'TOKEN-2' }];
+      for (const owner of others) {
+        const write = inTenant((tx) => repo.setRosterOperationState(tx, id, { state: 'done' }, {}, owner));
+        await expect(write).rejects.toBeInstanceOf(RosterOperationClaimedError);
+        await expect(write).rejects.toBeInstanceOf(LegacyServiceUnavailableError);
+        await expect(write).rejects.toMatchObject({ operationId: id, reason: 'roster-operation-claimed' });
+        await expect(inTenant((tx) => repo.holdRosterOperation(tx, id, 'started', owner))).rejects.toBeInstanceOf(RosterOperationClaimedError);
+      }
+      await expect(inTenant((tx) => repo.holdRosterOperation(tx, id, 'people-committed', { claim: 'TOKEN-1' }))).rejects.toBeInstanceOf(RosterOperationClaimedError);
+      expect(await inTenant((tx) => repo.holdRosterOperation(tx, id, 'started', { claim: 'TOKEN-1' }))).toMatchObject({ state: 'started', claimed_by: 'TOKEN-1' });
+
+      const renewed = new Date(LATER.getTime() + 1_000);
+      repo = createPeopleRepository({ clock: fixedClock(renewed), schema: handle.schema });
+      expect(await inTenant((tx) => repo.setRosterOperationState(tx, id, { state: 'people-committed' }, {}, { claim: 'TOKEN-1' }))).toMatchObject({
+        state: 'people-committed',
+        claimed_by: 'TOKEN-1',
+        updated_at: renewed,
+      });
+      const takeover = { token: 'TOKEN-2', state: 'people-committed', claimedBy: 'TOKEN-1' } as const;
+      expect(await inTenant((tx) => repo.claimRosterOperation(tx, id, { ...takeover, staleBefore: renewed }))).toBeNull();
+      expect(await inTenant((tx) => repo.claimRosterOperation(tx, id, { ...takeover, staleBefore: new Date(renewed.getTime() + 1) }))).toMatchObject({ claimed_by: 'TOKEN-2' });
+      await expect(inTenant((tx) => repo.setRosterOperationState(tx, id, { state: 'rolled-back' }, {}, { claim: 'TOKEN-1' }))).rejects.toBeInstanceOf(RosterOperationClaimedError);
+      expect(await inTenant((tx) => repo.findRosterOperation(tx, id))).toMatchObject({ state: 'people-committed', claimed_by: 'TOKEN-2' });
+    });
+
+    it('reports an absent operation as null to every claim-aware call', async () => {
+      const id = cfUuid();
+      expect(await inTenant((tx) => repo.claimRosterOperation(tx, id, { token: 'TOKEN', state: 'started', claimedBy: null, staleBefore: null }))).toBeNull();
+      expect(await inTenant((tx) => repo.holdRosterOperation(tx, id, 'started'))).toBeNull();
+      expect(await inTenant((tx) => repo.setRosterOperationState(tx, id, { state: 'done' }, {}, { claim: 'TOKEN' }))).toBeNull();
+    });
+
+    it('makes a claim wait for a request transition holding the row, then refuse the state it moved to', async () => {
+      const { operation_id: id } = await startedOperation();
+      let release: () => void = () => undefined;
+      let moved: () => void = () => undefined;
+      const released = new Promise<void>((resolve) => (release = resolve));
+      const holding = new Promise<void>((resolve) => (moved = resolve));
+      const transition = inTenant(async (tx) => {
+        await repo.setRosterOperationState(tx, id, { state: 'people-committed' });
+        moved();
+        await released;
+      });
+      await holding;
+      const claim = inTenant((tx) => repo.claimRosterOperation(tx, id, { token: 'TOKEN', state: 'started', claimedBy: null, staleBefore: null }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      release();
+      await transition;
+      expect(await claim).toBeNull();
+      expect(await inTenant((tx) => repo.findRosterOperation(tx, id))).toMatchObject({ state: 'people-committed', claimed_by: null });
+    });
+  });
+
+  describe('roster locks', () => {
+    const A = TENANT_A.tenantId;
+    const B = TENANT_B.tenantId;
+    type Hold = (tx: TenantTx) => Promise<unknown>;
+
+    /** How many transactions of the schema's app role wait for an advisory lock. */
+    async function advisoryWaiters(): Promise<number> {
+      const sql = "SELECT count(*)::int AS n FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE NOT l.granted AND l.locktype = 'advisory' AND a.usename = $1";
+      return (await handle.adminPool.query<{ n: number }>(sql, [handle.roles.app])).rows[0]?.n ?? 0;
+    }
+
+    /** True while a transaction of the schema's app role waits for an advisory lock. */
+    async function advisoryWait(): Promise<boolean> {
+      return (await advisoryWaiters()) > 0;
+    }
+
+    /** Whether `second`, run in `tenants[1]` while `first` holds its transaction in `tenants[0]` open, waits until that transaction ends. */
+    async function blocks(first: Hold, second: Hold, tenants: [string, string] = [A, A]): Promise<boolean> {
+      let release: () => void = () => undefined;
+      let taken: () => void = () => undefined;
+      const released = new Promise<void>((resolve) => (release = resolve));
+      const holding = new Promise<void>((resolve) => (taken = resolve));
+      const holder = inTenant(async (tx) => {
+        await first(tx);
+        taken();
+        await released;
+      }, tenants[0]);
+      await holding;
+      let done = false as boolean;
+      const outcome = inTenant(second, tenants[1]).then(() => (done = true));
+      while (!done && !(await advisoryWait())) await new Promise((resolve) => setTimeout(resolve, 20));
+      const waited = !done;
+      release();
+      await holder;
+      await outcome;
+      return waited;
+    }
+
+    it.each<[string, RosterLockMode, RosterLockMode, (id: string) => string, string, boolean]>([
+      ['shared beside shared', 'shared', 'shared', (id) => id, A, false],
+      ['shared behind exclusive', 'exclusive', 'shared', (id) => id, A, true],
+      ['exclusive behind shared', 'shared', 'exclusive', (id) => id, A, true],
+      ['a lower-case spelling behind exclusive', 'exclusive', 'shared', (id) => id.toLowerCase(), A, true],
+      ['a trailing-space spelling behind shared', 'shared', 'exclusive', (id) => `${id}  `, A, true],
+      ['another user beside exclusive', 'exclusive', 'exclusive', () => cfUuid(), A, false],
+      ['the same user of another tenant beside exclusive', 'exclusive', 'exclusive', (id) => id, B, false],
+    ])('takes a user lock %s', async (_label, held, wanted, spell, tenant, expected) => {
+      const userId = cfUuid();
+      const first: Hold = (tx) => repo.lockRosterUsers(tx, [userId], held);
+      expect(await blocks(first, (tx) => repo.lockRosterUsers(tx, [spell(userId)], wanted), [A, tenant])).toBe(expected);
+    });
+
+    it.each<[string, RosterLockMode, RosterLockMode, string, boolean]>([
+      ['shared beside shared', 'shared', 'shared', A, false],
+      ['shared behind exclusive', 'exclusive', 'shared', A, true],
+      ['exclusive behind shared', 'shared', 'exclusive', A, true],
+      ['exclusive of another tenant beside exclusive', 'exclusive', 'exclusive', B, false],
+    ])('takes the tenant lock %s', async (_label, held, wanted, tenant, expected) => {
+      expect(await blocks((tx) => repo.lockRosterTenant(tx, held), (tx) => repo.lockRosterTenant(tx, wanted), [A, tenant])).toBe(expected);
+    });
+
+    it('takes one user lock per collation-equal id, in ascending key order, and none for no id', async () => {
+      const [first, second] = [cfUuid(), cfUuid()];
+      const issued = await inTenant((tx) => issuedBy(tx, (t) => repo.lockRosterUsers(t, [first, second.toLowerCase(), `${first}  `, second], 'shared')));
+      const keys = issued.filter(([sql]) => sql.includes('pg_advisory_xact_lock_shared')).map(([, params]) => params[1] as number);
+      expect(keys).toHaveLength(2);
+      expect(keys).toEqual([...keys].sort((x, y) => x - y));
+      expect(await inTenant((tx) => issuedBy(tx, (t) => repo.lockRosterUsers(t, [], 'exclusive')))).toEqual([]);
+    });
+
+    it.each<[string, (tx: TenantTx, userId: string) => Promise<unknown>]>([
+      ['a fenced transaction of another spelling of the user', (tx, userId) => repo.lockRosterUsers(tx, [userId.toLowerCase()], 'shared')],
+      ['a tenant-wide reader', (tx) => repo.lockRosterTenant(tx, 'shared')],
+    ])('records an intent only once %s ends', async (_label, hold) => {
+      const userId = cfUuid();
+      const intent: Hold = (tx) => repo.insertRosterOperation(tx, { kind: 'admin-update', userId, payload: '{}' });
+      expect(await blocks((tx) => hold(tx, userId), intent)).toBe(true);
+      expect(await inTenant((tx) => repo.findOpenRosterOperation(tx, userId))).toMatchObject({ state: 'started' });
+    });
+
+    it('queues an intent behind a fenced user without blocking a tenant-wide reader', async () => {
+      const userId = cfUuid();
+      let release: () => void = () => undefined;
+      let taken: () => void = () => undefined;
+      const released = new Promise<void>((resolve) => (release = resolve));
+      const holding = new Promise<void>((resolve) => (taken = resolve));
+      const fenced = inTenant(async (tx) => {
+        await repo.lockRosterUsers(tx, [userId], 'shared');
+        taken();
+        await released;
+      });
+      await holding;
+      const intent = inTenant((tx) => repo.insertRosterOperation(tx, { kind: 'admin-update', userId, payload: '{}' }));
+      while (!(await advisoryWait())) await new Promise((resolve) => setTimeout(resolve, 20));
+      let read = false as boolean;
+      const reader = inTenant((tx) => repo.lockRosterTenant(tx, 'shared')).then(() => (read = true));
+      // Done, or queued as a second advisory waiter behind the intent.
+      while (!read && (await advisoryWaiters()) < 2) await new Promise((resolve) => setTimeout(resolve, 20));
+      const readerWaited = !read;
+      const intentWaiting = await advisoryWait();
+      release();
+      await Promise.all([fenced, reader]);
+      expect({ readerWaited, intentWaiting }).toEqual({ readerWaited: false, intentWaiting: true });
+      expect(await intent).toMatchObject({ state: 'started', user_id: userId });
+    });
+
+    type UserHold = (tx: TenantTx, userId: string) => Promise<unknown>;
+    it.each<[string, UserHold, (tx: TenantTx, userId: string, timeoutMs: number) => Promise<unknown>, string]>([
+      [
+        'a shared user lock behind an exclusive one',
+        (tx, userId) => repo.lockRosterUsers(tx, [userId], 'exclusive'),
+        (tx, userId, timeoutMs) => repo.lockRosterUsers(tx, [userId], 'shared', { timeoutMs }),
+        'user',
+      ],
+      ['a shared tenant lock behind an exclusive one', (tx) => repo.lockRosterTenant(tx, 'exclusive'), (tx, _userId, timeoutMs) => repo.lockRosterTenant(tx, 'shared', { timeoutMs }), 'tenant'],
+      [
+        'an intent behind a tenant-wide reader',
+        (tx) => repo.lockRosterTenant(tx, 'shared'),
+        (tx, userId, timeoutMs) => repo.insertRosterOperation(tx, { kind: 'admin-update', userId, payload: '{}' }, {}, { timeoutMs }),
+        'tenant',
+      ],
+    ])('gives up %s once its timeout passes, while the holder still holds it', async (_label, hold, wait, subject) => {
+      const userId = cfUuid();
+      let release: () => void = () => undefined;
+      let taken: () => void = () => undefined;
+      const released = new Promise<void>((resolve) => (release = resolve));
+      const holding = new Promise<void>((resolve) => (taken = resolve));
+      const holder = inTenant(async (tx) => {
+        await hold(tx, userId);
+        taken();
+        await released;
+      });
+      await holding;
+      const started = Date.now();
+      const error = await inTenant((tx) => wait(tx, userId, 300)).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      const elapsed = Date.now() - started;
+      release();
+      await holder;
+      expect(error).toBeInstanceOf(RosterLockTimeoutError);
+      expect(error).toMatchObject({ timeoutMs: 300, reason: 'roster-lock-timeout', message: expect.stringContaining(`roster lock of ${subject}`) as unknown });
+      expect(elapsed).toBeGreaterThanOrEqual(280);
+      expect(elapsed).toBeLessThan(2_000);
+      expect(await inTenant((tx) => repo.findOpenRosterOperation(tx, userId))).toBeNull();
+    });
+
+    it('restores the transaction lock_timeout after a bounded lock is granted', async () => {
+      const setting = await inTenant(async (tx) => {
+        await tx.query("SET LOCAL lock_timeout = '7s'");
+        await repo.lockRosterUsers(tx, [cfUuid(), cfUuid()], 'shared', { timeoutMs: 500 });
+        await repo.lockRosterTenant(tx, 'shared', { timeoutMs: 500 });
+        return (await tx.query<{ value: string }>("SELECT current_setting('lock_timeout') AS value")).rows[0]?.value;
+      });
+      expect(setting).toBe('7s');
+    });
+
+    it('finds the open operations of any listed id under any spelling, oldest first', async () => {
+      const [first, second, closed, unlisted] = [cfUuid(), cfUuid(), cfUuid(), cfUuid()];
+      const record = (userId: string) => inTenant((tx) => repo.insertRosterOperation(tx, { kind: 'admin-update', userId, payload: '{}' }));
+      const older = await record(first);
+      repo = createPeopleRepository({ clock: fixedClock(LATER), schema: handle.schema });
+      const newer = await record(second);
+      const done = await record(closed);
+      await inTenant((tx) => repo.setRosterOperationState(tx, done.operation_id, { state: 'rolled-back' }));
+      await record(unlisted);
+      const found = await inTenant((tx) => repo.findOpenRosterOperations(tx, [`${second}  `, first.toLowerCase(), closed]));
+      expect(found.map((row) => row.operation_id)).toEqual([older.operation_id, newer.operation_id]);
+      expect(await inTenant((tx) => repo.findOpenRosterOperations(tx, [first]), B)).toEqual([]);
+      expect(await inTenant((tx) => repo.findOpenRosterOperations(tx, []))).toEqual([]);
+    });
+
+    it('counts the operations of any listed id in every state under any spelling, in the transaction tenant only', async () => {
+      const [first, second, unlisted] = [cfUuid(), cfUuid(), cfUuid()];
+      const record = (userId: string) => inTenant((tx) => repo.insertRosterOperation(tx, { kind: 'admin-update', userId, payload: '{}' }));
+      const count = (userIds: readonly string[], tenant = TENANT_A.tenantId) => inTenant((tx) => repo.countRosterOperations(tx, userIds), tenant);
+      expect(await count([first, second])).toBe(0);
+      const done = await record(first);
+      await inTenant((tx) => repo.setRosterOperationState(tx, done.operation_id, { state: 'done' }));
+      await record(first.toLowerCase());
+      await record(second);
+      await record(unlisted);
+      expect(await count([first])).toBe(2);
+      expect(await count([`${first}  `, second.toLowerCase()])).toBe(3);
+      expect(await count([first], B)).toBe(0);
+      expect(await count([])).toBe(0);
+    });
+
+    it('finds every open operation of the tenant when no id is listed, and counts only listed operations when given', async () => {
+      const [first, second] = [cfUuid(), cfUuid()];
+      const record = (userId: string) => inTenant((tx) => repo.insertRosterOperation(tx, { kind: 'admin-update', userId, payload: '{}' }));
+      const done = await record(first);
+      await inTenant((tx) => repo.setRosterOperationState(tx, done.operation_id, { state: 'done' }));
+      const open = await record(first.toLowerCase());
+      const other = await record(second);
+      const ours = new Set([done.operation_id, open.operation_id, other.operation_id]);
+      const tenantOpen = (tenant = A) => inTenant(async (tx) => (await repo.findOpenRosterOperations(tx)).map((row) => row.operation_id).filter((id) => ours.has(id)), tenant);
+      expect((await tenantOpen()).sort()).toEqual([open.operation_id, other.operation_id].sort());
+      expect(await tenantOpen(B)).toEqual([]);
+      const among = (userIds: readonly string[], operationIds: readonly string[]) => inTenant((tx) => repo.countRosterOperations(tx, userIds, operationIds));
+      expect(await among([`${first}  `], [done.operation_id, open.operation_id, other.operation_id])).toBe(2);
+      expect(await among([first], [other.operation_id])).toBe(0);
+      expect(await among([first, second], [])).toBe(0);
+    });
   });
 
   it('upserts, lists and deletes group-name projection rows', async () => {
@@ -1108,6 +1399,7 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
       ['findPersonArchive', (tx) => repo.findPersonArchive(tx, cfUuid()), 'person_archive', 'person_archive_tenant_ci_person_effective_uidx', 'person_id'],
       ['listGroupNames', (tx) => repo.listGroupNames(tx, [cfUuid()]), 'group_name', 'group_name_tenant_ci_group_id_uidx', 'group_id'],
       ['personTombstoneVersion', (tx) => repo.personTombstoneVersion(tx, cfUuid()), 'person_tombstone', 'person_tombstone_tenant_ci_userid_uidx', 'userid'],
+      ['countRosterOperations', (tx) => repo.countRosterOperations(tx, [cfUuid()]), 'roster_operation', 'roster_operation_tenant_ci_user_id_idx', 'user_id'],
     ])('looks %s up through its case-insensitive index', async (_label, call, table, index, column) => {
       const scan = planNodes(await planOf(call, table)).find((node) => node['Index Name'] === index);
       expect(scan?.['Index Cond']).toMatch(new RegExp(`\\b${column}\\b`));

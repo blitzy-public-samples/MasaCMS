@@ -229,6 +229,7 @@ function fakeCatalog(failures: Readonly<Record<string, Error>> = {}) {
     isMigratable: unused('isMigratable'),
     isSplit: unused('isSplit'),
     ownersForLegacyTable: unused('ownersForLegacyTable'),
+    siteColumnOf: unused('siteColumnOf'),
     foldProgramTable,
     keyColumnsOf: (table) => {
       keyLookups.push(table);

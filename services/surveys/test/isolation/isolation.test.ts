@@ -217,12 +217,12 @@ function siteChangedEnvelope(tenantId: string): EventEnvelope<SiteChangedPayload
   });
 }
 
-/** Whether `err` is the fixture's unknown-survey error. */
-function isNotFound(err: unknown): boolean {
-  return err instanceof Error && err.name === 'FixtureApiError' && (err as { type?: unknown }).type === 'notFound';
+/** Whether `err` is the fixture's refusal of a stored survey the respondent's site may not respond to. */
+function isForbidden(err: unknown): boolean {
+  return err instanceof Error && err.name === 'FixtureApiError' && (err as { type?: unknown }).type === 'forbidden';
 }
 
-/** Submits a response to `surveyId` as a respondent of `acting`: 'allowed' once stored, 'denied' on the fixture's notFound. */
+/** Submits a response to `surveyId` as a respondent of `acting`: 'allowed' once stored, 'denied' on the fixture's forbidden. */
 async function respondAs(acting: TenantFixture, surveyId: string): Promise<'allowed' | 'denied'> {
   try {
     await submitResponse(domain(), {
@@ -234,7 +234,7 @@ async function respondAs(acting: TenantFixture, surveyId: string): Promise<'allo
     });
     return 'allowed';
   } catch (err) {
-    if (isNotFound(err)) {
+    if (isForbidden(err)) {
       return 'denied';
     }
     throw err;
@@ -367,7 +367,7 @@ describe('surveys: tenant isolation', () => {
       expect(await responsesOf(TENANT_UMBRELLA, id)).toEqual([]);
     });
 
-    it('answers notFound to a tenant umbrella respondent and stores nothing', async () => {
+    it('answers forbidden to a tenant umbrella respondent and stores nothing', async () => {
       const id = targeted();
       const before = await responsesOf(TENANT_A, id);
       await expect(
@@ -378,7 +378,7 @@ describe('surveys: tenant isolation', () => {
           surveyId: id,
           input: { answers: ANSWERS },
         }),
-      ).rejects.toMatchObject({ name: 'FixtureApiError', type: 'notFound' });
+      ).rejects.toMatchObject({ name: 'FixtureApiError', type: 'forbidden' });
       expect(await responsesOf(TENANT_A, id)).toEqual(before);
       expect(await responsesOf(TENANT_UMBRELLA, id)).toEqual([]);
     });

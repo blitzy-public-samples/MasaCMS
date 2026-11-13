@@ -15,7 +15,14 @@ import {
   type SerializedLegacyResponse,
 } from '@opt2/platform/legacy-compat';
 import { serializeError } from '@opt2/platform/logging';
-import { legacyParamsOf, sendLegacyResponse, type FastifyReply, type FastifyRequest } from '@opt2/platform/service-kit';
+import {
+  isUnstorableTextError,
+  legacyParamsOf,
+  recordOutcomeReason,
+  sendLegacyResponse,
+  type FastifyReply,
+  type FastifyRequest,
+} from '@opt2/platform/service-kit';
 
 /** Merged fixture request params: URL, then form, then a JSON body object. */
 export type FixtureParams = Record<string, unknown>;
@@ -279,6 +286,7 @@ export function fixtureErrorResponse(error: unknown, ctx: FixtureContext): Seria
 /**
  * Fastify handler running `fn` with the fixture method and params, answering its throws with the fixture error envelope.
  * Unavailability errors propagate to service-kit's legacy 503; only unhandled errors are logged, as api.cfm logs them.
+ * A value PostgreSQL cannot store answers invalidParameters; each answered error records its type or SQLSTATE as the reason.
  */
 export function fixtureHandler<R extends FastifyRequest = FastifyRequest>(
   method: string | ((request: R) => string),
@@ -293,8 +301,13 @@ export function fixtureHandler<R extends FastifyRequest = FastifyRequest>(
     try {
       return await fn(request, reply, ctx);
     } catch (error) {
+      if (isUnstorableTextError(error)) {
+        recordOutcomeReason(request, error.code);
+        return sendLegacyResponse(reply, fixtureErrorResponse(new LegacyApiError('invalidParameters'), ctx));
+      }
       const response = fixtureErrorResponse(error, ctx);
-      if (!(error instanceof LegacyApiError)) request.log.error({ error: serializeError(error) }, 'Unhandled fixture exception');
+      if (error instanceof LegacyApiError) recordOutcomeReason(request, error.type);
+      else request.log.error({ error: serializeError(error) }, 'Unhandled fixture exception');
       return sendLegacyResponse(reply, response);
     }
   };

@@ -36,7 +36,7 @@ describe('schedule task names', () => {
   });
 });
 
-const available = await pgAvailable();
+const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
 
 describe.skipIf(!available)('scheduleSurvey against PostgreSQL', () => {
   let handle: ThrowawaySchema;

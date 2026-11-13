@@ -469,6 +469,44 @@ describe('renderCchainPending', () => {
     );
   });
 
+  // Values and outcomes measured against ACF's `rc.compactDisplay eq 'true'` in legacy pending.cfm; the padded and NUL
+  // values through the admin layout choice, which reads the same scanned `rc.compactDisplay`.
+  it.each<[string | undefined, boolean]>([
+    ['true', true],
+    ['TRUE', true],
+    ['True', true],
+    ['1', true],
+    ['yes', true],
+    ['YES', true],
+    [' yes', true],
+    ['1.0', true],
+    ['1e0', true],
+    [' TRUE', true],
+    ['TRUE ', true],
+    [' True', true],
+    ['tr\u0000ue', true],
+    ['TRUE\u0001', true],
+    ['\u0001true', false],
+    ['true\u0001', false],
+    [' FALSE', false],
+    [undefined, false],
+    ['false', false],
+    ['0', false],
+    ['no', false],
+    [' true', false],
+    ['true ', false],
+    ['2', false],
+    ['1.', false],
+    ['', false],
+  ])('chooses the compact preview for compactDisplay %j: %s', (compactDisplay, compact) => {
+    const rc: Readonly<Record<string, string>> = compactDisplay === undefined ? {} : { compactDisplay };
+    const markup = render(pendingData([{ groupName: 'Editors', requests: [request()] }]), rc);
+
+    expect(markup).toContain(
+      `<li class="preview"><a href="#" onclick="${compact ? 'frontEndProxy.post(' : 'return preview('}`,
+    );
+  });
+
   it('URL-encodes the type and site of the row links', () => {
     const markup = render(
       pendingData([{ groupName: 'Editors', requests: [request({ type: 'Page Draft', siteId: 'tenant a&b' })] }]),

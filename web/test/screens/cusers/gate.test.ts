@@ -18,6 +18,7 @@ import {
 } from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
 import { fakeGatewayClient, routeKey } from '../../helpers/fake-gateway';
+import { REQUESTED_SITE_CASES } from '../../helpers/requested-site';
 import { userTokenFor } from '../../helpers/tokens';
 
 const USERS_MODULE = '00000000000000000000000000000000008';
@@ -63,10 +64,19 @@ describe('cusersGate', () => {
     ['Users module only', editorWith([Roles.systemUser, moduleRole(USERS_MODULE)])],
     ['Site Manager module only', editorWith([Roles.systemUser, moduleRole(SITE_MODULE)])],
     ['rc.s2 from a non-S2 user', editorWith([Roles.systemUser, moduleRole(SITE_MODULE)], { rc: { s2: '1' } })],
+    [
+      'Users and Site Manager module access granted for a site the token does not serve',
+      editorWith([Roles.systemUser, moduleRole(USERS_MODULE), moduleRole(SITE_MODULE)], { rc: { siteid: 'tenant-b' } }),
+    ],
   ])('secures %s', async (_who, req) => {
     const decision = await gate(req);
     expect(decision).toEqual(secure(req));
     expect(decision).toEqual({ kind: 'redirect', location: './' });
+  });
+
+  it.each(REQUESTED_SITE_CASES)('admits $who only when it administers that site', async ({ request, administers }) => {
+    const req = request({ circuit: 'cusers', item: 'list' });
+    expect(await gate(req)).toEqual(administers ? ALLOW : secure(req));
   });
 
   it('secures anonymous to the login form', async () => {
@@ -105,6 +115,27 @@ describe('cusersGate', () => {
       ],
       ['a missing baseID', [Roles.systemUser], 'loadExtendedAttributes', {}, false],
       ['another action', [Roles.systemUser], 'list', { baseID: OWN_ID }, false],
+      [
+        'the own baseID on a site the token does not serve',
+        [Roles.systemUser],
+        'loadExtendedAttributes',
+        { baseID: OWN_ID, siteid: 'tenant-b' },
+        true,
+      ],
+      [
+        'another baseID on a site the token does not serve',
+        [Roles.systemUser],
+        'loadExtendedAttributes',
+        { baseID: USER_IDS.admin, siteid: 'tenant-b' },
+        false,
+      ],
+      [
+        'another baseID with Users module access granted for a site the token does not serve',
+        [Roles.systemUser, moduleRole(USERS_MODULE)],
+        'loadExtendedAttributes',
+        { baseID: USER_IDS.admin, siteid: 'tenant-b' },
+        false,
+      ],
     ])('decides %s without the pooled lookup', async (_label, roles, item, rc, allowed) => {
       const pooledLookup = vi.fn(() => Promise.resolve(true));
       const req = editorWith(roles, { item, rc, pooledLookup });
@@ -185,6 +216,12 @@ describe('normaliseCusersRc', () => {
     }
   });
 
+  it.each(REQUESTED_SITE_CASES)('sets isAdmin for $who only when it administers that site', ({ request, administers }) => {
+    const req = request({ circuit: 'cusers', item: 'list' });
+    expect(normaliseCusersRc(req).isAdmin).toBe(administers);
+    expect(isCusersAdmin(req)).toBe(administers);
+  });
+
   it('drops s2 for non-S2 users only', () => {
     const editor = normaliseCusersRc(editorRequest({ rc: { S2: '1' } }));
     expect(editor.s2).toBeUndefined();
@@ -217,12 +254,25 @@ describe('normaliseCusersRc', () => {
     expect(rc.groupid).toBe('');
   });
 
+  // Oracle: legacy's admin Portcullis scan drops NUL and trims before `before()`; it re-serializes a padded lowercase
+  // `true`/`false` as a quoted "YES"/"NO", and other JSON as JSON, neither of which is boolean.
   it.each([
     ['abc', 'admin', '1'],
     ['0', 'non-admin', '1'],
+    [' FALSE ', 'non-admin', '1'],
     ['0', 'admin', '0'],
     ['1', 'admin', '1'],
-  ])('scrubs ispublic %s for an %s to %s', (value, who, expected) => {
+    [' no', 'admin', 'no'],
+    ['\tFALSE\n', 'admin', 'FALSE'],
+    [' True', 'admin', 'True'],
+    ['fa\u0000lse', 'admin', 'false'],
+    [' 0 ', 'admin', '0'],
+    ['1.', 'admin', '1.'],
+    [' false', 'admin', '1'],
+    ['true\u0001', 'admin', '1'],
+    ['"0"', 'admin', '1'],
+    ['\u00a0no', 'admin', '1'],
+  ])('scrubs ispublic %j for an %s to %j', (value, who, expected) => {
     const req = who === 'admin' ? adminS2Request({ rc: { ispublic: value } }) : editorRequest({ rc: { ispublic: value } });
     expect(normaliseCusersRc(req).ispublic).toBe(expected);
   });
@@ -232,7 +282,12 @@ describe('normaliseCusersRc', () => {
     ['0', '0', 1],
     ['no', 'no', 1],
     ['1', '1', 0],
-  ])('scrubs unassigned %s to %s with unassignedlink %d', (value, unassigned, link) => {
+    [' yes', 'yes', 0],
+    [' TRUE', 'TRUE', 0],
+    [' 1 ', '1', 0],
+    [' true', '0', 1],
+    ['"1"', '0', 1],
+  ])('scrubs unassigned %j to %j with unassignedlink %d', (value, unassigned, link) => {
     const rc = normaliseCusersRc(editorRequest({ rc: { unassigned: value } }));
     expect(rc.unassigned).toBe(unassigned);
     expect(rc.unassignedlink).toBe(link);
@@ -264,6 +319,8 @@ describe('userPoolIdFor', () => {
     ['an admin on system users', siteAdminRequest('tenant-a', { site: pools, rc: { ispublic: '0' } }), 'tenant-a'],
     ['an admin on site members', siteAdminRequest('tenant-a', { site: pools, rc: { ispublic: '1' } }), 'umbrella'],
     ['a non-admin on system users', editorRequest({ site: pools, rc: { ispublic: '0' } }), 'umbrella'],
+    ['an admin on scanned system users', siteAdminRequest('tenant-a', { site: pools, rc: { ispublic: ' FALSE ' } }), 'tenant-a'],
+    ['an admin on a padded literal', siteAdminRequest('tenant-a', { site: pools, rc: { ispublic: ' false' } }), 'umbrella'],
   ])('gives %s its pool', (_who, req, expected) => {
     expect(userPoolIdFor(req, normaliseCusersRc(req))).toBe(expected);
   });

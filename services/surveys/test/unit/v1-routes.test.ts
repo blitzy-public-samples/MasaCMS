@@ -68,7 +68,7 @@ const TENANT_B_SURVEY = cfId(900);
 const SURVEYS = `/v1/surveys?siteid=${TENANT_A.siteId}`;
 const responsesOf = (surveyId: string): string => `/v1/surveys/${surveyId}/responses?siteid=${TENANT_A.siteId}`;
 
-const available = await pgAvailable();
+const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
 
 describe.skipIf(!available)('surveys /v1 routes', () => {
   let handle: ThrowawaySchema;

@@ -19,6 +19,9 @@ export type WebServiceErrors = IdentityComponents['schemas']['LegacyErrors'];
 /** A system user of the site's private pool, as people lists it. */
 type ConnectedAccount = PeopleComponents['schemas']['UserListRow'];
 
+/** Accounts asked of people per `listUsersV2` page while the form collects every one. */
+const ACCOUNTS_PER_PAGE = 1000;
+
 /** The oauthClient bean the form renders. */
 export interface WebServiceEditState {
   readonly clientid: string;
@@ -118,10 +121,17 @@ export async function loadEditState(ctx: ScreenContext): Promise<WebServiceEditS
  */
 async function loadAccounts(ctx: ScreenContext): Promise<readonly ConnectedAccount[]> {
   const siteid = ctx.req.rc.siteid ?? '';
-  const response = await ctx.gateway.people.call('get', '/v1/users', {
-    query: { siteid: siteid || undefined, ispublic: '0' },
-  });
-  return okBody(response, 'people', 'listUsers').items;
+  const accounts: ConnectedAccount[] = [];
+  // people answers one page per call, and its `startrow` names the page, as the cusers user iterator reads it.
+  for (let page = 1, pages = 1; page <= pages; page += 1) {
+    const response = await ctx.gateway.people.call('get', '/v2/users', {
+      query: { siteid: siteid || undefined, ispublic: '0', startrow: String(page), recordsperpage: String(ACCOUNTS_PER_PAGE) },
+    });
+    const { items, nextn } = okBody(response, 'people', 'listUsersV2');
+    accounts.push(...items);
+    pages = nextn.numberofpages;
+  }
+  return accounts;
 }
 
 /** `settingsBean.getResourcePath(complete=1)` of the request's site, else of the request host as the shell takes it. */

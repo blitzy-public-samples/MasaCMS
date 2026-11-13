@@ -30,9 +30,25 @@ export type UserMemberships = Schemas['UserMemberships'];
 export type AdminSessionState = Schemas['AdminSessionState'];
 /** One site of a session's site selector. */
 export type SessionSite = Schemas['SessionSites']['sites'][number];
+/** Account predicates identity applies to a lookup, count or candidate read; a NULL column matches no given value. */
+export type AccountWhere = Schemas['AccountWhere'];
+/** Body of `countAccounts`: the pool, tenant or all-sites scope and its account predicates. */
+export type AccountCountRequest = Schemas['AccountCountRequest'];
+/** Body of `lookupUsernameCandidates`: the pool, the `COLLATE "C" ILIKE` pattern, the account predicates and the most items. */
+export type UsernameCandidateRequest = Schemas['UsernameCandidateRequest'];
+/** The pool accounts whose UserName matched, by user id, and whether they were every match. */
+export interface UsernameCandidates {
+  items: { userId: string; username: string }[];
+  complete: boolean;
+}
 
 /** Prepare's answer: the prepared operation, or identity's legacy validation errors unchanged. */
 export type PrepareOutcome = ({ ok: true } & AccountOperation) | { ok: false; errors: LegacyErrors };
+
+/** Options of one identity call; `timeoutMs` bounds it instead of the service client's timeout. */
+export interface IdentityCallOptions {
+  timeoutMs?: number;
+}
 
 /** The account, credential and login-state columns legacy `userDAO.read` selects with the person columns. */
 export interface AccountView {
@@ -85,28 +101,36 @@ export interface ActingUser {
 /** People's calls into identity. */
 export interface IdentityClient {
   /** `prepareAccountOperation`: validates and records the account part and closes the user. */
-  prepare(userId: string, operationId: string, change: AccountPrepareRequest): Promise<PrepareOutcome>;
+  prepare(userId: string, operationId: string, change: AccountPrepareRequest, options?: IdentityCallOptions): Promise<PrepareOutcome>;
   /** `commitAccountOperation`: applies the prepared change and records identity's write position; `request` is sent only when given. */
-  commit(userId: string, operationId: string, request?: AccountCommitRequest): Promise<CommitOutcome>;
+  commit(userId: string, operationId: string, request?: AccountCommitRequest, options?: IdentityCallOptions): Promise<CommitOutcome>;
   /** `abortAccountOperation`: discards a prepared change; an operation identity never prepared resolves too. */
-  abort(userId: string, operationId: string): Promise<void>;
+  abort(userId: string, operationId: string, options?: IdentityCallOptions): Promise<void>;
   /** `finishAccountOperation`: completes a committed operation and reopens the user. */
-  finish(userId: string, operationId: string): Promise<void>;
+  finish(userId: string, operationId: string, options?: IdentityCallOptions): Promise<void>;
   /** `revertAccountOperation`: restores the values recorded at prepare; an operation identity never prepared resolves too. */
-  revert(userId: string, operationId: string): Promise<void>;
+  revert(userId: string, operationId: string, options?: IdentityCallOptions): Promise<void>;
   /** `getAccountOperation`: the operation's state; undefined when identity never prepared it. */
-  operationState(userId: string, operationId: string): Promise<AccountOperationState | undefined>;
+  operationState(userId: string, operationId: string, options?: IdentityCallOptions): Promise<AccountOperationState | undefined>;
   /** `getAccount`: the user's account columns; undefined for a missing user, a group or a `pending` account. */
-  readAccount(userId: string): Promise<AccountView | undefined>;
-  /** `lookupAccounts`: the account columns of many users in one call, keyed by user id; an empty list makes no call. */
-  readAccounts(userIds: readonly string[]): Promise<Map<string, AccountView>>;
+  readAccount(userId: string, options?: IdentityCallOptions): Promise<AccountView | undefined>;
+  /** `lookupAccounts`: the account columns of the users `where` matches, keyed by user id, one call per 1000 ids; an empty list makes no call. */
+  readAccounts(userIds: readonly string[], where?: AccountWhere): Promise<Map<string, AccountView>>;
+  /** `lookupAccountsAllSites`: `readAccounts` over every registered site's user pools, which identity admits for an S2 token only. */
+  readAccountsAllSites(userIds: readonly string[], where?: AccountWhere): Promise<Map<string, AccountView>>;
+  /** `countAccounts`: how many accounts of the request's scope its `where` matches. */
+  countAccounts(request: AccountCountRequest): Promise<number>;
+  /** `lookupUsernameCandidates`: the first `limit` pool accounts by user id whose UserName matches the pattern, and whether that was all. */
+  usernameCandidates(request: UsernameCandidateRequest): Promise<UsernameCandidates>;
+  /** `lookupMemberships`: each user's stored membership group ids, keyed by requested id, one call per 1000 ids; an empty list makes no call. */
+  lookupMemberships(userIds: readonly string[]): Promise<Map<string, string[]>>;
   /** `listUserMemberships`: the site's groups and the user's memberships; `siteId` defaults to the token's site. */
   userMemberships(userId: string, siteId?: string): Promise<UserMemberships>;
   /** Ids of the groups the user belongs to, in identity's `readMembershipIDs` order. */
-  membershipGroupIds(userId: string): Promise<string[]>;
+  membershipGroupIds(userId: string, options?: IdentityCallOptions): Promise<string[]>;
   /** `listSiteGroups`: the groups of the site's private (`isPublic` 0) or public (1) user pool, in identity's order. */
   siteGroups(siteId: string, isPublic: number): Promise<GroupSummary[]>;
-  /** `listGroups`: the `cusers.list` group rows, by `Perm` descending, then group name. */
+  /** `listGroups`: every `cusers.list` group row, by `Perm` descending, then group name, read page by page. */
   userGroups(siteId: string, isPublic: number): Promise<UserGroupRow[]>;
   /** `getCurrentSession`: the forwarded token's login-time session user when it is `sessionId` and logged in. */
   actingUser(sessionId: string): Promise<ActingUser | undefined>;
@@ -116,6 +140,8 @@ export interface IdentityClient {
   saveAdminSessionState(state: AdminSessionState): Promise<AdminSessionState>;
   /** `listCurrentSessionSites`: the sites of the forwarded token's site selector, in identity's order. */
   sessionSites(): Promise<SessionSite[]>;
+  /** `loadLoginBlock`: loads the user's login block, clearing strikes first when requested. */
+  loginBlock(userId: string, removeBlock: boolean): Promise<string | null>;
 }
 
 /** Contract operation id, method and path template of one identity call. */
@@ -136,6 +162,10 @@ const OPS = {
   revert: { operationId: 'revertAccountOperation', method: 'POST', path: `${OPERATIONS_PATH}:revert` },
   readAccount: { operationId: 'getAccount', method: 'GET', path: '/internal/v1/accounts/{userId}' },
   readAccounts: { operationId: 'lookupAccounts', method: 'POST', path: '/internal/v1/accounts:lookup' },
+  readAccountsAllSites: { operationId: 'lookupAccountsAllSites', method: 'POST', path: '/internal/v1/accounts:lookup-all-sites' },
+  countAccounts: { operationId: 'countAccounts', method: 'POST', path: '/internal/v1/accounts:count' },
+  usernameCandidates: { operationId: 'lookupUsernameCandidates', method: 'POST', path: '/internal/v1/accounts:username-candidates' },
+  lookupMemberships: { operationId: 'lookupMemberships', method: 'POST', path: '/internal/v1/accounts:memberships' },
   userMemberships: { operationId: 'listUserMemberships', method: 'GET', path: '/v1/users/{userId}/memberships' },
   siteGroups: { operationId: 'listSiteGroups', method: 'GET', path: '/internal/v1/groups' },
   userGroups: { operationId: 'listGroups', method: 'GET', path: '/v1/groups' },
@@ -143,6 +173,7 @@ const OPS = {
   adminState: { operationId: 'getAdminSessionState', method: 'GET', path: '/v1/sessions/current/admin-state' },
   saveAdminState: { operationId: 'saveAdminSessionState', method: 'POST', path: '/v1/sessions/current/admin-state' },
   sessionSites: { operationId: 'listCurrentSessionSites', method: 'GET', path: '/v1/sessions/current/sites' },
+  loginBlock: { operationId: 'loadLoginBlock', method: 'POST', path: '/internal/v1/accounts/{userId}/login-block' },
 } as const satisfies Record<string, IdentityOperation>;
 
 const HTTP_OK = 200;
@@ -150,10 +181,21 @@ const HTTP_BAD_REQUEST = 400;
 const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
 
+/** `maxItems` of identity's `MembershipLookupRequest` user ids; account lookups take the same chunks to keep request bodies bounded. */
+const LOOKUP_MAX_IDS = 1000;
+
+/** The distinct ids of `userIds` in first-seen order, split into lookup bodies of at most `LOOKUP_MAX_IDS`. */
+function lookupChunks(userIds: readonly string[]): string[][] {
+  const distinct = [...new Set(userIds)];
+  const chunks: string[][] = [];
+  for (let start = 0; start < distinct.length; start += LOOKUP_MAX_IDS) chunks.push(distinct.slice(start, start + LOOKUP_MAX_IDS));
+  return chunks;
+}
+
 /** The legacy-shaped 503 for an identity answer outside the operation's handled statuses. */
 function unavailable(op: IdentityOperation, status: number): ServiceUnavailableError {
   const cause = Object.assign(new Error(`${IDENTITY_SERVICE} ${op.operationId} answered HTTP ${status}`), {
-    code: `${op.operationId} HTTP_${status}`,
+    code: `HTTP_${String(status)}`,
   });
   return new ServiceUnavailableError(IDENTITY_SERVICE, cause);
 }
@@ -177,6 +219,11 @@ function isLegacyErrors(body: unknown): body is LegacyErrors {
 /** Whether a step's 409 reports an operation identity never prepared, so there is nothing to undo. */
 function neverPrepared(response: ServiceResponse<AccountOperation | undefined>): boolean {
   return response.status === HTTP_CONFLICT && response.body?.state === 'unknown';
+}
+
+/** The service-request fields of `options`: a call timeout only when one is given. */
+function callBounds(options: IdentityCallOptions | undefined): { timeoutMs?: number } {
+  return options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs };
 }
 
 /** Identity's account record as people's account view. */
@@ -226,7 +273,7 @@ export function createIdentityClient(client: ServiceClient): IdentityClient {
   async function send<T>(
     op: IdentityOperation,
     path: string,
-    extra: { json?: unknown; query?: Record<string, string | undefined> } = {},
+    extra: { json?: unknown; query?: Record<string, string | undefined>; timeoutMs?: number } = {},
   ): Promise<ServiceResponse<T>> {
     const response = await client.request<T>({ service: IDENTITY_SERVICE, method: op.method, path, ...extra });
     // The CLI runs outside a request; there is then no response to carry the positions.
@@ -239,21 +286,33 @@ export function createIdentityClient(client: ServiceClient): IdentityClient {
     userId: string,
     operationId: string,
     resolveNeverPrepared: boolean,
+    options: IdentityCallOptions | undefined,
   ): Promise<void> {
-    const response = await send<AccountOperation | undefined>(op, fillPath(op.path, userId, operationId));
+    const response = await send<AccountOperation | undefined>(op, fillPath(op.path, userId, operationId), callBounds(options));
     if (response.status === HTTP_OK || (resolveNeverPrepared && neverPrepared(response))) return;
     throw unavailable(op, response.status);
   }
 
-  async function userMemberships(userId: string, siteId?: string): Promise<UserMemberships> {
+  async function userMemberships(userId: string, siteId?: string, options?: IdentityCallOptions): Promise<UserMemberships> {
     const op = OPS.userMemberships;
-    return okBody(op, await send<UserMemberships>(op, fillPath(op.path, userId), { query: { siteid: siteId } }));
+    return okBody(op, await send<UserMemberships>(op, fillPath(op.path, userId), { query: { siteid: siteId }, ...callBounds(options) }));
+  }
+
+  /** The account views `op` (`lookupAccounts` or `lookupAccountsAllSites`) answers for `userIds` and `where`, one call per chunk. */
+  async function lookupAccounts(op: IdentityOperation, userIds: readonly string[], where: AccountWhere | undefined): Promise<Map<string, AccountView>> {
+    const accounts = new Map<string, AccountView>();
+    for (const chunk of lookupChunks(userIds)) {
+      const lookup: Schemas['AccountLookupRequest'] = where === undefined ? { userIds: chunk } : { userIds: chunk, where };
+      const { items } = okBody(op, await send<Schemas['AccountList']>(op, op.path, { json: lookup }));
+      for (const record of items) accounts.set(record.UserID, accountView(record));
+    }
+    return accounts;
   }
 
   return {
-    async prepare(userId, operationId, change) {
+    async prepare(userId, operationId, change, options) {
       const op = OPS.prepare;
-      const response = await send<unknown>(op, fillPath(op.path, userId, operationId), { json: change });
+      const response = await send<unknown>(op, fillPath(op.path, userId, operationId), { json: change, ...callBounds(options) });
       if (response.status === HTTP_OK) return { ok: true, ...(response.body as AccountOperation) };
       if (response.status === HTTP_BAD_REQUEST && isLegacyErrors(response.body)) {
         return { ok: false, errors: response.body };
@@ -261,48 +320,64 @@ export function createIdentityClient(client: ServiceClient): IdentityClient {
       throw unavailable(op, response.status);
     },
 
-    async commit(userId, operationId, request) {
+    async commit(userId, operationId, request, options) {
       const op = OPS.commit;
       const body = request === undefined ? {} : { json: request };
-      const result = okBody(op, await send<CommitOutcome>(op, fillPath(op.path, userId, operationId), body));
+      const result = okBody(op, await send<CommitOutcome>(op, fillPath(op.path, userId, operationId), { ...body, ...callBounds(options) }));
       if (currentRequestContext() !== undefined) recordWritePosition(IDENTITY_SERVICE, result.writePosition);
       return result;
     },
 
-    abort: (userId, operationId) => step(OPS.abort, userId, operationId, true),
+    abort: (userId, operationId, options) => step(OPS.abort, userId, operationId, true, options),
 
-    finish: (userId, operationId) => step(OPS.finish, userId, operationId, false),
+    finish: (userId, operationId, options) => step(OPS.finish, userId, operationId, false, options),
 
-    revert: (userId, operationId) => step(OPS.revert, userId, operationId, true),
+    revert: (userId, operationId, options) => step(OPS.revert, userId, operationId, true, options),
 
-    async operationState(userId, operationId) {
+    async operationState(userId, operationId, options) {
       const op = OPS.operationState;
-      const operation = okBody(op, await send<AccountOperation>(op, fillPath(op.path, userId, operationId)));
+      const operation = okBody(op, await send<AccountOperation>(op, fillPath(op.path, userId, operationId), callBounds(options)));
       // The contract has no not-found status: an operation identity never prepared reads as `unknown`.
       return operation.state === 'unknown' ? undefined : operation.state;
     },
 
-    async readAccount(userId) {
+    async readAccount(userId, options) {
       const op = OPS.readAccount;
-      const response = await send<Schemas['AccountRecord']>(op, fillPath(op.path, userId));
+      const response = await send<Schemas['AccountRecord']>(op, fillPath(op.path, userId), callBounds(options));
       if (response.status === HTTP_NOT_FOUND) return undefined;
       return accountView(okBody(op, response));
     },
 
-    async readAccounts(userIds) {
-      const accounts = new Map<string, AccountView>();
-      const lookup: Schemas['AccountLookupRequest'] = { userIds: [...new Set(userIds)] };
-      if (lookup.userIds.length === 0) return accounts;
-      const op = OPS.readAccounts;
-      const { items } = okBody(op, await send<Schemas['AccountList']>(op, op.path, { json: lookup }));
-      for (const record of items) accounts.set(record.UserID, accountView(record));
-      return accounts;
+    readAccounts: (userIds, where) => lookupAccounts(OPS.readAccounts, userIds, where),
+
+    readAccountsAllSites: (userIds, where) => lookupAccounts(OPS.readAccountsAllSites, userIds, where),
+
+    async countAccounts(request) {
+      const op = OPS.countAccounts;
+      return okBody(op, await send<Schemas['AccountCount']>(op, op.path, { json: request })).count;
+    },
+
+    async usernameCandidates(request) {
+      const op = OPS.usernameCandidates;
+      const { items, complete } = okBody(op, await send<Schemas['UsernameCandidateList']>(op, op.path, { json: request }));
+      return { items: items.map(({ userId, username }) => ({ userId, username })), complete };
+    },
+
+    async lookupMemberships(userIds) {
+      const op = OPS.lookupMemberships;
+      const memberships = new Map<string, string[]>();
+      for (const chunk of lookupChunks(userIds)) {
+        const lookup: Schemas['MembershipLookupRequest'] = { userIds: chunk };
+        const { items } = okBody(op, await send<Schemas['MembershipList']>(op, op.path, { json: lookup }));
+        for (const item of items) memberships.set(item.userId, item.groupIds);
+      }
+      return memberships;
     },
 
     userMemberships,
 
-    async membershipGroupIds(userId) {
-      return (await userMemberships(userId)).groupIds;
+    async membershipGroupIds(userId, options) {
+      return (await userMemberships(userId, undefined, options)).groupIds;
     },
 
     async siteGroups(siteId, isPublic) {
@@ -313,8 +388,15 @@ export function createIdentityClient(client: ServiceClient): IdentityClient {
 
     async userGroups(siteId, isPublic) {
       const op = OPS.userGroups;
-      const query = { siteid: siteId, ispublic: String(isPublic) };
-      return okBody(op, await send<Schemas['GroupList']>(op, op.path, { query })).items.map(userGroupRow);
+      const rows: UserGroupRow[] = [];
+      // Every page in turn, each at identity's default size, until nextOffset ends the listing.
+      for (let offset: number | null = 0; offset !== null; ) {
+        const query: Record<string, string> = { siteid: siteId, ispublic: String(isPublic), offset: String(offset) };
+        const page: Schemas['GroupList'] = okBody(op, await send<Schemas['GroupList']>(op, op.path, { query }));
+        for (const item of page.items) rows.push(userGroupRow(item));
+        offset = page.nextOffset;
+      }
+      return rows;
     },
 
     // getSessionSnapshot admits only service:gateway; getCurrentSession reads the same login-time user for the forwarded token.
@@ -338,6 +420,14 @@ export function createIdentityClient(client: ServiceClient): IdentityClient {
     async sessionSites() {
       const op = OPS.sessionSites;
       return okBody(op, await send<Schemas['SessionSites']>(op, op.path)).sites;
+    },
+
+    async loginBlock(userId, removeBlock) {
+      const op = OPS.loginBlock;
+      const body: Schemas['LoginBlockRequest'] = { removeBlock };
+      const response = await send<Schemas['LoginBlock']>(op, fillPath(op.path, userId), { json: body });
+      if (response.status === HTTP_NOT_FOUND) return null;
+      return okBody(op, response).blockedUntil;
     },
   };
 }

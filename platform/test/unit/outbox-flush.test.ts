@@ -5,6 +5,7 @@ import type { EventPublisher, TopicValidator } from '../../src/events/index.js';
 import { REDACTED, createLogger } from '../../src/logging/index.js';
 import { rowFromDb } from '../../src/outbox/ddl.js';
 import {
+  FLUSH_DEADLINE_MS,
   OutboxNotConfiguredError,
   createOutbox,
   dropBlockedRows,
@@ -35,6 +36,7 @@ const BLOCKERS_SQL =
   ' WHERE ((published_at IS NULL AND NOT held) OR held) AND ordering_key = ANY($1::text[])' +
   ' AND seq < $2::bigint AND seq <> ALL($3::bigint[]) GROUP BY ordering_key';
 const STAMP_SQL = 'UPDATE "stub".outbox SET published_at = $1 WHERE event_id = ANY($2::uuid[]) AND published_at IS NULL';
+const LOCK_TIMEOUT_SQL = "SELECT set_config('lock_timeout', $1, true)";
 
 type LogLine = Record<string, unknown>;
 
@@ -69,7 +71,7 @@ function dbRow(seq: string, orderingKey: string): QueryResultRow {
 
 /**
  * A TenantDb whose locking SELECTs answer `rows` and whose blocker SELECT answers `blockers`, recording every statement;
- * `fail` rejects at connect, SELECT or UPDATE.
+ * `fail` rejects at connect, SELECT or UPDATE, and the lock_timeout setting always succeeds.
  */
 function fakeDb(
   rows: readonly QueryResultRow[] = [],
@@ -86,6 +88,9 @@ function fakeDb(
     query<R extends QueryResultRow = QueryResultRow>(text: string | QueryConfig, values?: unknown[]): Promise<QueryResult<R>> {
       const sql = typeof text === 'string' ? text : text.text;
       statements.push({ tenantId, sql, values });
+      if (sql === LOCK_TIMEOUT_SQL) {
+        return Promise.resolve({ command: 'SELECT', rowCount: 1, oid: 0, fields: [], rows: [{ set_config: values?.[0] }] as unknown as R[] });
+      }
       const failure = sql.startsWith('SELECT') ? fail.select : fail.update;
       if (failure !== undefined) return Promise.reject(failure);
       const result = sql === BLOCKERS_SQL ? [...blockers] : sql.startsWith('SELECT') ? [...rows] : [];
@@ -104,22 +109,24 @@ function fakeDb(
   return { db, statements, tenants, tx: tx(TENANT_A) };
 }
 
-/** A publisher whose publish rejects for the listed event ids and resolves a message id otherwise. */
-function fakePublisher(failing: readonly string[] = []) {
+/** A publisher whose publish rejects for the `failing` event ids, never settles for the `pending` ones and resolves a message id otherwise. */
+function fakePublisher(failing: readonly string[] = [], pending: readonly string[] = []) {
   const publish = vi.fn((_topic: string, envelope: { eventId: string }) =>
     failing.includes(envelope.eventId)
       ? Promise.reject(new Error(`publish rejected ${envelope.eventId}`))
-      : Promise.resolve(`msg-${envelope.eventId}`),
+      : pending.includes(envelope.eventId)
+        ? new Promise<string>(() => undefined)
+        : Promise.resolve(`msg-${envelope.eventId}`),
   );
   const publisher = { publish, publishRaw: vi.fn(), close: vi.fn() } as unknown as EventPublisher;
   return { publisher, publish };
 }
 
-function runtimeWith(db: TenantDb, failing: readonly string[] = []) {
+function runtimeWith(db: TenantDb, failing: readonly string[] = [], pending: readonly string[] = []) {
   const lines: LogLine[] = [];
   const destination: DestinationStream = { write: (chunk: string) => void lines.push(JSON.parse(chunk) as LogLine) };
   const logger = createLogger({ service: 'stub', version: '1.0.0', env: 'local', destination });
-  const { publisher, publish } = fakePublisher(failing);
+  const { publisher, publish } = fakePublisher(failing, pending);
   const runtime = createOutbox({ service: 'stub', db, publisher, logger, clock: fixedClock(NOW) });
   return { runtime, publish, lines };
 }
@@ -281,6 +288,34 @@ describe('publishLockedRows', () => {
     expect(statements).toEqual([]);
   });
 
+  it('fails the publish pending at the abort, skips every row after it and stamps only the rows published before it', async () => {
+    const { db, tx, statements } = fakeDb();
+    const rows = [dbRow('1', 'L'), dbRow('2', 'K'), dbRow('3', 'K'), dbRow('4', 'M')].map(rowFromDb);
+    const { runtime, publish, lines } = runtimeWith(db, [], [eventId(2)]);
+    const controller = new AbortController();
+
+    const pass = publishLockedRows(tx, runtime, rows, { signal: controller.signal });
+    await vi.waitFor(() => {
+      expect(publish).toHaveBeenCalledTimes(2);
+    });
+    controller.abort();
+
+    await expect(pass).resolves.toStrictEqual({ published: 1, failed: 1, skipped: 2 });
+    expect(publish.mock.calls).toEqual([
+      [TOPIC, rows[0]?.envelope],
+      [TOPIC, rows[1]?.envelope],
+    ]);
+    expect(statements).toEqual([{ tenantId: TENANT_A, sql: STAMP_SQL, values: [STAMP, [eventId(1)]] }]);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({
+      severity: 'ERROR',
+      message: 'outbox publish failed',
+      eventId: eventId(2),
+      tenantId: TENANT_A,
+      error: { type: 'AbortError', message: REDACTED },
+    });
+  });
+
   it('does nothing for no rows', async () => {
     const { db, tx, statements } = fakeDb();
     const { runtime, publish } = runtimeWith(db);
@@ -302,6 +337,7 @@ describe('flushAfterCommit', () => {
     expect(tenants).toEqual([TENANT_A]);
     expect(publish).toHaveBeenCalledTimes(2);
     expect(statements).toEqual([
+      { tenantId: TENANT_A, sql: LOCK_TIMEOUT_SQL, values: ['2000ms'] },
       { tenantId: TENANT_A, sql: SELECT_IDS, values: [ids] },
       { tenantId: TENANT_A, sql: BLOCKERS_SQL, values: [['K', 'L'], '2', ['1', '2']] },
       { tenantId: TENANT_A, sql: STAMP_SQL, values: [STAMP, ids] },
@@ -323,7 +359,27 @@ describe('flushAfterCommit', () => {
     const { db, statements } = fakeDb([dbRow('1', 'K'), dbRow('2', 'K')]);
     const { runtime } = runtimeWith(db, [eventId(1)]);
     await expect(flushAfterCommit(runtime, TENANT_A, ids)).resolves.toStrictEqual({ published: 0, failed: 1, skipped: 1 });
-    expect(statements.map((s) => s.sql)).toEqual([SELECT_IDS, BLOCKERS_SQL]);
+    expect(statements.map((s) => s.sql)).toEqual([LOCK_TIMEOUT_SQL, SELECT_IDS, BLOCKERS_SQL]);
+  });
+
+  it('resolves once FLUSH_DEADLINE_MS passes while a publish never settles, leaving every row unstamped', async () => {
+    const { db, statements } = fakeDb([dbRow('1', 'K'), dbRow('2', 'L')]);
+    const { runtime, publish, lines } = runtimeWith(db, [], ids);
+    const started = performance.now();
+
+    await expect(flushAfterCommit(runtime, TENANT_A, ids)).resolves.toStrictEqual({ published: 0, failed: 1, skipped: 1 });
+
+    const elapsed = performance.now() - started;
+    expect(elapsed).toBeGreaterThanOrEqual(FLUSH_DEADLINE_MS - 50);
+    expect(elapsed).toBeLessThan(FLUSH_DEADLINE_MS + 500);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(statements.map((s) => s.sql)).toEqual([LOCK_TIMEOUT_SQL, SELECT_IDS, BLOCKERS_SQL]);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({
+      message: 'outbox publish failed',
+      eventId: eventId(1),
+      error: { type: 'TimeoutError', message: REDACTED },
+    });
   });
 
   it('opens no transaction for an empty id list', async () => {
@@ -345,6 +401,11 @@ describe('flushAfterCommit', () => {
       case: 'the SELECT fails',
       fail: { select: pgError('canceling statement due to statement timeout', '57014') },
       logged: 'PostgreSQL error 57014',
+    },
+    {
+      case: 'a row lock is not granted within lock_timeout',
+      fail: { select: pgError('canceling statement due to lock timeout', '55P03') },
+      logged: 'PostgreSQL error 55P03',
     },
     {
       case: 'the stamp fails',

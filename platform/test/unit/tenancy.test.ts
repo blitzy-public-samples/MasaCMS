@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as tenancy from '../../src/tenancy/index.js';
 import {
   InvalidTenantIdError,
@@ -11,6 +11,7 @@ import {
   iamDbUser,
   isNonTenantTable,
   requireTenantTx,
+  sessionTimeZoneSetter,
   tenantDbFromPool,
   tenantIdForSite,
   withMetadata,
@@ -20,6 +21,7 @@ import {
   type MetadataTx,
   type Pool,
   type QueryConfig,
+  type Queryable,
   type TenantDb,
   type TenantTx,
   type TxBase,
@@ -147,6 +149,27 @@ const stream = (): void => undefined;
 
 const asPool = (pool: FakePoolInstance): Pool => pool as unknown as Pool;
 
+const SET_TIME_ZONE = "SELECT set_config('TimeZone', $1, false)";
+/** An error with SQLSTATE `code`, as pg rejects a statement with. */
+const pgError = (code: string, message: string): Error => Object.assign(new Error(message), { code, severity: 'ERROR' });
+/** set_config's rejection of a zone name missing from PostgreSQL's tzdata. */
+const unknownZone = (zone: string): Error => pgError('22023', `invalid value for parameter "TimeZone": "${zone}"`);
+// Legacy aliases this host's PostgreSQL tzdata lacks; ICU resolves Asia/Kolkata to Asia/Calcutta.
+const LEGACY_ALIASES = { 'US/Eastern': unknownZone('US/Eastern'), 'Asia/Calcutta': unknownZone('Asia/Calcutta') };
+
+/** A session whose set_config rejects each zone in `refused` with its error and accepts any other; records every statement. */
+function zoneSession(refused: Record<string, Error>): { client: Queryable; calls: Recorded[] } {
+  const calls: Recorded[] = [];
+  const query = (text: string, values?: unknown[]) => {
+    calls.push([text, values]);
+    const error = refused[String(values?.[0])];
+    return error === undefined ? Promise.resolve({ command: 'SELECT', rowCount: 1, oid: 0, fields: [], rows: [] }) : Promise.reject(error);
+  };
+  return { client: { query } as unknown as Queryable, calls };
+}
+
+const zoneCalls = (...zones: string[]): Recorded[] => zones.map((zone) => [SET_TIME_ZONE, [zone]]);
+
 function fakeDb(): { pool: FakePoolInstance; db: TenantDb } {
   const pool = new FakePool();
   return { pool, db: tenantDbFromPool(asPool(pool), { schema: 'people' }) };
@@ -187,6 +210,10 @@ beforeEach(() => {
   cloud.getCredentials.mockReset();
 });
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 // Tenant-id values, RLS DDL text, commit callbacks, transaction context and the registry consumer have their cases in
 // tenant-id, rls, tenancy-transaction and tenant-registry tests; this suite covers the barrel and the paths they do not reach.
 describe('tenancy subpath', () => {
@@ -217,7 +244,9 @@ describe('tenancy subpath', () => {
         'createPool',
         'tenantDbFromPool',
         'iamDbUser',
+        'sessionTimeZoneSetter',
         'registeredTenants',
+        'registryEntries',
         'registryEntryForTenant',
         'tenantForRegisteredSite',
         'siteForTenant',
@@ -297,14 +326,16 @@ describe('tenantDbFromPool', () => {
     expect(pool.client.releases).toEqual([new Error('connection reset')]);
   });
 
-  it('returns a frozen handle for the schema that listens for idle-client errors', () => {
+  it('returns a frozen handle for the schema that listens for idle and checked-out client errors', () => {
     const pool = new FakePool();
 
     const db = tenantDbFromPool(asPool(pool), { schema: 'programs_sites' });
 
     expect(db.schema).toBe('programs_sites');
     expect(Object.isFrozen(db)).toBe(true);
-    expect(pool.listeners.get('error')).toEqual(expect.any(Function));
+    for (const event of ['error', 'acquire', 'release']) {
+      expect(pool.listeners.get(event), event).toEqual(expect.any(Function));
+    }
   });
 
   it.each(['programs-sites', 'People', 'people.person', ''])('rejects the schema %j before touching the pool', (schema) => {
@@ -460,7 +491,9 @@ describe('createPool with password authentication', () => {
       password: 'local-test-only',
       max: 4,
       application_name: 'people',
+      onConnect: expect.any(Function),
     });
+    expect(pool.options).not.toHaveProperty('options');
     await withTenant(db, TENANT_A, (tx) => tx.query('SELECT 1'));
     expect(pool.client.calls[1]).toEqual([SET_TENANT, [TENANT_A]]);
     await db.end();
@@ -507,8 +540,16 @@ describe('createPool with Cloud SQL IAM authentication', () => {
       ipType: 'PRIVATE',
     });
     expect(cloud.getCredentials).toHaveBeenCalledTimes(credentialReads);
-    expect(pool.options).toEqual({ stream, user: IAM_USER, database: 'masa_services', max: 3, application_name: 'people' });
+    expect(pool.options).toEqual({
+      stream,
+      user: IAM_USER,
+      database: 'masa_services',
+      max: 3,
+      application_name: 'people',
+      onConnect: expect.any(Function),
+    });
     expect(pool.options).not.toHaveProperty('password');
+    expect(pool.options).not.toHaveProperty('options');
     expect(cloud.close).not.toHaveBeenCalled();
     await db.end();
     expect(pool.events).toEqual(['pool.end']);
@@ -537,6 +578,63 @@ describe('createPool with Cloud SQL IAM authentication', () => {
     await expect(createPool({ env: IAM_ENV, schema: 'people' })).rejects.toThrow(message);
     expect(cloud.close).toHaveBeenCalledOnce();
     expect(FakePool.created).toHaveLength(0);
+  });
+});
+
+describe('sessionTimeZoneSetter', () => {
+  it.each([
+    ['America/New_York', ['America/New_York']],
+    ['US/Eastern', ['US/Eastern', 'America/New_York']],
+    ['Asia/Kolkata', ['Asia/Kolkata']],
+    ['Foo/Bar', ['UTC']],
+    ['', ['UTC']],
+  ])('under TZ %j offers PostgreSQL the session TimeZone spellings %j in order, stopping at the first it accepts', async (tz, zones) => {
+    vi.stubEnv('TZ', tz);
+    const session = zoneSession(LEGACY_ALIASES);
+
+    await sessionTimeZoneSetter()(session.client);
+
+    expect(session.calls).toEqual(zoneCalls(...zones));
+  });
+
+  it.each([
+    ['a terminated connection', pgError('57P01', 'terminating connection due to administrator command')],
+    ['a client error without SQLSTATE', new Error('Connection terminated unexpectedly')],
+  ])('rethrows %s at once without trying another spelling', async (_label, error) => {
+    vi.stubEnv('TZ', 'US/Eastern');
+    const session = zoneSession({ 'US/Eastern': error });
+
+    await expect(sessionTimeZoneSetter()(session.client)).rejects.toBe(error);
+    expect(session.calls).toEqual(zoneCalls('US/Eastern'));
+  });
+
+  it('rethrows the last rejection when PostgreSQL accepts no spelling of the zone', async () => {
+    vi.stubEnv('TZ', 'US/Eastern');
+    const last = unknownZone('America/New_York');
+    const session = zoneSession({ ...LEGACY_ALIASES, 'America/New_York': last });
+
+    await expect(sessionTimeZoneSetter()(session.client)).rejects.toBe(last);
+    expect(session.calls).toEqual(zoneCalls('US/Eastern', 'America/New_York'));
+  });
+
+  it("tries the spelling PostgreSQL accepted first on the same setter's later connections, while TZ names that zone", async () => {
+    vi.stubEnv('TZ', 'US/Eastern');
+    const setTimeZone = sessionTimeZoneSetter();
+    const first = zoneSession(LEGACY_ALIASES);
+    const later = zoneSession(LEGACY_ALIASES);
+    const otherSetter = zoneSession(LEGACY_ALIASES);
+    const rezoned = zoneSession(LEGACY_ALIASES);
+
+    await setTimeZone(first.client);
+    await setTimeZone(later.client);
+    await sessionTimeZoneSetter()(otherSetter.client);
+    vi.stubEnv('TZ', 'Asia/Kolkata');
+    await setTimeZone(rezoned.client);
+
+    expect(first.calls).toEqual(zoneCalls('US/Eastern', 'America/New_York'));
+    expect(later.calls).toEqual(zoneCalls('America/New_York'));
+    expect(otherSetter.calls).toEqual(zoneCalls('US/Eastern', 'America/New_York'));
+    expect(rezoned.calls).toEqual(zoneCalls('Asia/Kolkata'));
   });
 });
 
