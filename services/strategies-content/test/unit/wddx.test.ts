@@ -1,4 +1,5 @@
 // Fidelity suite for the WDDX port; every expected packet and struct order was captured from ACF 2023 (Masa 7.6.1, server TZ UTC).
+import { readFileSync } from 'node:fs';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   cfStruct,
@@ -36,28 +37,8 @@ const FORM_UPDATE =
   "<var name='comments'><string>c2</string></var><var name='Email'><string>b2@x.com</string></var>" +
   "<var name='name'><string>Bobby</string></var></struct></data></wddxPacket>";
 
-const CHANGESET_TRASH =
-  "<wddxPacket version='1.0'><header/><data><struct><var name='ERRORS'><struct></struct></var>" +
-  "<var name='muraDeleteDateTime'><string>{ts '2026-11-10 18:29:32'}</string></var>" +
-  "<var name='ADDOBJECTS'><array length='0'></array></var>" +
-  "<var name='CREATED'><dateTime>2026-11-10T18:29:32+00:00</dateTime></var>" +
-  "<var name='LASTUPDATE'><dateTime>2026-11-10T18:29:32+00:00</dateTime></var>" +
-  "<var name='PUBLISHED'><number>0.0</number></var>" +
-  "<var name='DESCRIPTION'><string>desc<char code='0a'/>line2</string></var>" +
-  "<var name='CLOSEDATE'><string></string></var>" +
-  "<var name='muraDeleteID'><string>C33986A8-0364-2330-D256B6987181DD66</string></var>" +
-  "<var name='INSTANCEID'><string>C339864D-D81C-35A4-F1D36655E0F6B90D</string></var>" +
-  "<var name='LASTUPDATEBYID'><string></string></var>" +
-  "<var name='CHANGESETID'><string>C339851E-F35C-D931-94E0F789891A922C</string></var>" +
-  "<var name='PUBLISHDATE'><string></string></var><var name='CATEGORYID'><string></string></var>" +
-  "<var name='REMOVEOBJECTS'><array length='0'></array></var>" +
-  "<var name='SITEID'><string>default</string></var>" +
-  "<var name='NAME'><string>Blitzy CS &lt;1&gt; &amp; co</string></var>" +
-  "<var name='REMOTEID'><string></string></var><var name='REMOTESOURCEURL'><string></string></var>" +
-  "<var name='REMOTEPUBDATE'><string></string></var>" +
-  "<var name='FROMMURACACHE'><boolean value='false'/></var>" +
-  "<var name='LASTUPDATEBY'><string></string></var><var name='ISNEW'><string>0</string></var>" +
-  "<var name='TAGS'><string></string></var></struct></data></wddxPacket>";
+// Shared with trash.test.ts, which stores the same change-set delete through throwIn.
+const CHANGESET_TRASH = readFileSync(new URL('../fixtures/legacy-trash/changeset-trash.wddx', import.meta.url), 'utf8');
 
 const CATEGORY_RECORDSET =
   "<recordset rowCount='1' fieldNames='CONTENTHISTID,CATEGORYID,CONTENTID,ISFEATURE,ORDERNO,SITEID," +

@@ -8,7 +8,14 @@ import {
   type ObjectManifestEntry,
   type WriteContext,
 } from '@opt2/platform/migration-kit';
-import { contentFileKey, type BucketName, type ContentFileVariant, type StoragePort } from '@opt2/platform/storage';
+import {
+  StorageObjectNotFoundError,
+  contentFileKey,
+  type BucketName,
+  type ContentFileVariant,
+  type OpenedObject,
+  type StoragePort,
+} from '@opt2/platform/storage';
 import type { TenantDb } from '@opt2/platform/tenancy';
 import type { Clock } from '@opt2/platform/service-kit';
 import { LegacyApiError } from '@opt2/platform/legacy-compat';
@@ -115,6 +122,20 @@ export async function storeMigrationObject(deps: StoreObjectDeps, req: Migration
     );
   });
   return resultOf(stored, true);
+}
+
+/** The stored version of the object recorded under `key`, read in the key's own tenant; null when that tenant has no such row or object. */
+export async function openMigrationObject(deps: Pick<StoreObjectDeps, 'db' | 'repository' | 'storage'>, key: string): Promise<OpenedObject | null> {
+  // Keys are `<tenantId>/<fileId><variant>.<ext>`, so the first segment names the tenant whose row records the object.
+  const tenantId = key.slice(0, key.indexOf('/'));
+  const row = await deps.db.withTenant(tenantId, (tx) => deps.repository.files.findFileObjectBySha(tx, key));
+  if (row === null) return null;
+  try {
+    return await deps.storage.open(CONTENT_FILES_BUCKET, key);
+  } catch (err) {
+    if (err instanceof StorageObjectNotFoundError) return null;
+    throw err;
+  }
 }
 
 /** `row` as a manifest entry; no `legacyPath`, as the row keeps no site directory and a partial path would misname it. */
