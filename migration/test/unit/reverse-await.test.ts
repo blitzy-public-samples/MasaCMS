@@ -1,11 +1,12 @@
 // Unit tests for the projection awaiter over a scripted checkpoint table, owners client, authority and driven clock.
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import type { PositionResponse } from '@opt2/platform/migration-kit';
+import { ServiceUnavailableError } from '@opt2/platform/service-kit';
 import type { ConnectionPool } from 'mssql';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { CurrentAuthority } from '../../src/cutover/index.js';
-import type { DataOwner } from '../../src/owners/index.js';
+import { OwnerCallError, type DataOwner } from '../../src/owners/index.js';
 import type { LegacyEffect } from '../../src/reverse/apply-legacy.js';
 import { ProjectionTimeoutError, createAwaiter, type AwaitProjectionRequest, type ReadBudget } from '../../src/reverse/await.js';
 
@@ -346,6 +347,33 @@ describe('createAwaiter', () => {
     expect(result.positions).toEqual(positions({ identity: '800', people: '700' }));
     expect(h.position).toHaveBeenCalledTimes(2);
     expect(h.log).toEqual(['position:people', 'position:identity', 'checkpoints:identity,people']);
+  });
+
+  const ownerAnswer = (status: number): OwnerCallError =>
+    new OwnerCallError('people', 'GET', '/internal/v1/migration/position', status, { apiversion: 'v1', error: { code: 'server_error' } });
+
+  it.each([502, 503, 504])('throws ServiceUnavailableError, a legacy 503, when a requested owner answers its position read with %i', async (status) => {
+    const h = harness();
+    const answer = ownerAnswer(status);
+    h.position.mockRejectedValueOnce(answer);
+
+    const error: unknown = await h.awaiter.awaitProjection({ owners: ['people'] }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ServiceUnavailableError);
+    expect(error).toBeInstanceOf(LegacyServiceUnavailableError);
+    const unavailable = error as ServiceUnavailableError;
+    expect(unavailable.service).toBe('people');
+    expect(unavailable.cause).toBe(answer);
+    expect(unavailable.reason).toBe('service-unavailable');
+    expect(h.authority).not.toHaveBeenCalled();
+  });
+
+  it.each([500, 404])('propagates an owner position answer of %i unchanged', async (status) => {
+    const h = harness();
+    const answer = ownerAnswer(status);
+    h.position.mockRejectedValueOnce(answer);
+
+    await expect(h.awaiter.awaitProjection({ owners: ['people'] })).rejects.toBe(answer);
   });
 
   it('returns at once for an empty request without reading authority', async () => {

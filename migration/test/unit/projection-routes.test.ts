@@ -1,15 +1,26 @@
-// Unit tests for the `projectionAwait` route over a fake projector: both request forms, the default budget, contract shape, the legacy 400 and 503, and auth denials.
+// Unit tests for the `projectionAwait` route over a fake projector, and over a real awaiter reading an HTTP owner: both request forms, the default budget, contract shape, the legacy 400 and 503, and auth denials.
 import { readFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
-import { ServiceUnavailableError, createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
-import { assertResponseMatchesOpenApi, mintServiceToken, mintUserToken, testVerifier } from '@opt2/platform/testing';
+import {
+  ServiceUnavailableError,
+  createService,
+  createServiceClient,
+  loadEnv,
+  type FastifyInstance,
+  type ServiceClient,
+} from '@opt2/platform/service-kit';
+import { assertResponseMatchesOpenApi, mintServiceToken, mintUserToken, testInvocationMinter, testVerifier } from '@opt2/platform/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 
+import { createOwnersClient, type UnitCatalog } from '../../src/owners/index.js';
+import { createAwaiter, type AwaiterDeps } from '../../src/reverse/await.js';
 import { ProjectionTimeoutError, type AwaitProjectionRequest, type AwaitProjectionResult } from '../../src/reverse/index.js';
-import { PROJECTION_ROUTES, registerProjectionRoutes } from '../../src/routes/projection.js';
+import { PROJECTION_ROUTES, registerProjectionRoutes, type ProjectionRouteDeps } from '../../src/routes/projection.js';
 
 type Operation = Record<string, unknown>;
 
@@ -23,8 +34,9 @@ const DEFAULT_TIMEOUT_MS = 4321;
 const awaitProjection = vi.fn<(req: AwaitProjectionRequest) => Promise<AwaitProjectionResult>>();
 let app: FastifyInstance;
 
-beforeAll(async () => {
-  app = await createService({
+/** The migration service with only `projectionAwait` registered over `projector`. */
+async function projectionApp(projector: ProjectionRouteDeps['projector']): Promise<FastifyInstance> {
+  const service = await createService({
     name: 'migration',
     version: '1.0.0',
     env: loadEnv(undefined, {
@@ -39,8 +51,13 @@ beforeAll(async () => {
     verifierOverride: testVerifier('migration'),
     logger: createLogger({ service: 'migration', version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
   });
-  registerProjectionRoutes(app, { projector: { awaitProjection }, defaultTimeoutMs: DEFAULT_TIMEOUT_MS });
-  await app.ready();
+  registerProjectionRoutes(service, { projector, defaultTimeoutMs: DEFAULT_TIMEOUT_MS });
+  await service.ready();
+  return service;
+}
+
+beforeAll(async () => {
+  app = await projectionApp({ awaitProjection });
 });
 
 afterAll(async () => {
@@ -59,10 +76,10 @@ async function headersFor(caller: string | null, withUser = false): Promise<Reco
   return headers;
 }
 
-/** Injects a POST, with `payload` as a JSON body unless undefined, and checks the answer against the contract. */
-async function post(payload: unknown, headers: Record<string, string>) {
+/** Injects a POST into `target`, with `payload` as a JSON body unless undefined, and checks the answer against the contract. */
+async function post(payload: unknown, headers: Record<string, string>, target: FastifyInstance = app) {
   const body = payload === undefined ? {} : { payload: JSON.stringify(payload), headers: { ...headers, 'content-type': 'application/json' } };
-  const res = await app.inject({ method: 'POST', url: PATH, headers, ...body });
+  const res = await target.inject({ method: 'POST', url: PATH, headers, ...body });
   assertResponseMatchesOpenApi(OPENAPI, { method: 'POST', path: PATH, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
   return res;
 }
@@ -129,6 +146,82 @@ describe('answers', () => {
     const res = await app.inject({ method: 'POST', url: PATH, headers: await headersFor('gateway'), payload: { positions: { people: '42' } } });
     expect(res.statusCode).toBe(500);
     expect(res.json()).toMatchObject({ error: { code: 'server_error' } });
+  });
+});
+
+describe('answers over a real awaiter whose owner fails its position read', () => {
+  const seen: { method?: string; url?: string; invocation: boolean }[] = [];
+  let ownerStatus = 503;
+  let owner: Server;
+  let client: ServiceClient;
+  let realApp: FastifyInstance;
+
+  // An owners request fails at its first read, so no other port of the awaiter is reached.
+  const unreached = (): Promise<never> => Promise.reject(new Error('unreached awaiter port'));
+  const UNREACHED_CATALOG = new Proxy({} as UnitCatalog, {
+    get(_target, member) {
+      throw new Error(`catalog.${String(member)} was read`);
+    },
+  });
+
+  beforeAll(async () => {
+    owner = createServer((req, res) => {
+      seen.push({ method: req.method, url: req.url, invocation: req.headers[INVOCATION_HEADER] !== undefined });
+      res.writeHead(ownerStatus, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'owner stub failure' }));
+    });
+    await new Promise<void>((resolve) => owner.listen(0, '127.0.0.1', resolve));
+    client = createServiceClient({
+      serviceUrls: { people: `http://127.0.0.1:${String((owner.address() as AddressInfo).port)}` },
+      self: 'migration',
+      credentials: testInvocationMinter({ caller: 'migration' }),
+    });
+    const deps: AwaiterDeps = {
+      legacy: { live: unreached },
+      owners: createOwnersClient({ client, catalog: UNREACHED_CATALOG }),
+      authority: unreached,
+      catalog: UNREACHED_CATALOG,
+      tenants: unreached,
+      clock: { now: () => new Date() },
+      defaults: { timeoutMs: DEFAULT_TIMEOUT_MS, pollIntervalMs: 250 },
+    };
+    realApp = await projectionApp(createAwaiter(deps));
+  });
+
+  afterAll(async () => {
+    await realApp?.opt2.shutdown();
+    await client?.close();
+    owner.closeAllConnections();
+    await new Promise<void>((resolve, reject) => {
+      owner.close((error) => {
+        if (error === undefined) resolve();
+        else reject(error);
+      });
+    });
+  });
+
+  beforeEach(() => {
+    seen.length = 0;
+  });
+
+  it('answers an owner answering 503 with the legacy 503', async () => {
+    ownerStatus = 503;
+
+    const res = await post({ owners: ['people'] }, await headersFor('gateway'), realApp);
+
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'server_error', message: 'Unhandled Exception' } });
+    expect(seen).toEqual([{ method: 'GET', url: '/internal/v1/migration/position', invocation: true }]);
+  });
+
+  it('propagates an owner answering 500 as a server error', async () => {
+    ownerStatus = 500;
+
+    // The contract declares no 500, as for every operation, so the answer is injected without the contract check.
+    const res = await realApp.inject({ method: 'POST', url: PATH, headers: await headersFor('gateway'), payload: { owners: ['people'] } });
+
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toMatchObject({ error: { code: 'server_error' } });
+    expect(seen).toHaveLength(1);
   });
 });
 

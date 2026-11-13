@@ -3,11 +3,12 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import { formatWritePosition, isApplied, mergeWritePosition, type WritePositions } from '@opt2/platform/migration-kit';
+import { ServiceUnavailableError } from '@opt2/platform/service-kit';
 
 import type { MigrationContext } from '../context.js';
 import type { CurrentAuthority } from '../cutover/index.js';
 import type { LegacyDb } from '../legacy/index.js';
-import type { DataOwner, OwnersClient, UnitCatalog } from '../owners/index.js';
+import { OwnerCallError, type DataOwner, type OwnersClient, type UnitCatalog } from '../owners/index.js';
 
 import { readCheckpoints, readyHorizonOf, type CheckpointRow } from './apply-legacy.js';
 
@@ -71,9 +72,15 @@ export interface AwaiterDeps {
 
 /** Waits for the reverse projection of target write positions. */
 export interface Awaiter {
-  /** Resolves once every position is applied in legacy. @throws ProjectionTimeoutError when the budget passes first. */
+  /**
+   * Resolves once every position is applied in legacy.
+   * @throws ProjectionTimeoutError when the budget passes first; ServiceUnavailableError when an owner whose position is read is unavailable.
+   */
   awaitProjection(req: AwaitProjectionRequest): Promise<AwaitProjectionResult>;
 }
+
+/** Owner answers that mean the owner is unavailable. */
+const UNAVAILABLE_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
 
 function checkpointKey(owner: string, tenantId: string): string {
   return `${owner}\u0000${tenantId.toLowerCase()}`;
@@ -132,11 +139,21 @@ async function withinBudget<T>(remainingMs: number, read: (budget: ReadBudget) =
 export function createAwaiter(deps: AwaiterDeps): Awaiter {
   const sleep = deps.sleep ?? ((ms: number) => delay(ms));
 
+  /** The owner's current position; an owner answering 502, 503 or 504 is a ServiceUnavailableError. */
+  async function currentPosition(owner: DataOwner, timeoutMs: number): Promise<string> {
+    try {
+      return (await deps.owners.position(owner, {}, { timeoutMs })).position;
+    } catch (error) {
+      if (error instanceof OwnerCallError && UNAVAILABLE_STATUSES.has(error.status)) throw new ServiceUnavailableError(owner, error);
+      throw error;
+    }
+  }
+
   /** `req.positions` merged with each requested owner's current position, keeping the higher xid per owner. */
   async function resolvePositions(req: AwaitProjectionRequest, { timeoutMs }: ReadBudget): Promise<WritePositions> {
     const current = await Promise.all(
       // Request owners are contract `OwnerName` values, each of them a data owner.
-      (req.owners ?? []).map(async (owner): Promise<[string, string]> => [owner, (await deps.owners.position(owner as DataOwner, {}, { timeoutMs })).position]),
+      (req.owners ?? []).map(async (owner): Promise<[string, string]> => [owner, await currentPosition(owner as DataOwner, timeoutMs)]),
     );
     return mergeWritePosition(req.positions, new Map(current));
   }
