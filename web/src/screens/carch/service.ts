@@ -13,6 +13,7 @@ import {
   type MultipartRelay,
 } from '@/lib/gateway-client';
 import { setSessionMuraValue, type AdminRequest, type AdminSessionWrites } from '@/lib/request-context';
+import { REDIRECT_HEADERS } from '@/lib/responses';
 import { boundAdminUrl } from '@/lib/urls';
 import type { RawBody, Rc, ScreenContext, SubmitResult } from '../registry';
 
@@ -21,8 +22,8 @@ const SERVICE = 'strategies-content';
 /** Headers a legacy form or ajax call may carry instead of its `csrf_token` fields. */
 const CSRF_HEADERS = ['X-csrf_token', 'X-csrf_token_expires'] as const;
 
-/** Service response headers a raw relay keeps; the handler adds the legacy base headers itself. */
-const RELAYED_HEADERS = ['location', 'content-disposition', 'expires'] as const;
+/** End-to-end service response headers a raw relay keeps; the handler adds the legacy base headers itself. */
+const RELAYED_HEADERS = ['location', 'content-disposition', 'expires', 'cache-control', 'pragma'] as const;
 
 /** Service response header naming the session values the relayed controller set; applied, never relayed. */
 const SESSION_EFFECTS_HEADER = 'x-opt2-session-effects';
@@ -299,13 +300,18 @@ function settle<T>(req: AdminRequest, operation: string, res: Answer<T>): CarchO
 const firstValue = (value: string | string[] | undefined): string | undefined =>
   Array.isArray(value) ? value[0] : value;
 
-/** A relayed answer as a bare body: status, content type, bytes and the relayed headers and cookies as received. */
+/**
+ * A relayed answer as a bare body: status, content type, bytes and the relayed headers and cookies as received; a 3xx
+ * with a `Location` also carries legacy's `cflocation` headers beneath the relayed ones.
+ */
 function rawBodyOf(res: GatewayResponse<Buffer>): RawBody {
-  const headers: Record<string, string> = {};
+  const relayed: Record<string, string> = {};
   for (const name of RELAYED_HEADERS) {
     const value = firstValue(res.headers[name]);
-    if (value !== undefined) headers[name] = value;
+    if (value !== undefined) relayed[name] = value;
   }
+  const redirects = res.status >= 300 && res.status < 400 && relayed.location !== undefined;
+  const headers = redirects ? { ...REDIRECT_HEADERS, ...relayed } : relayed;
   return {
     status: res.status,
     // ACF labels every response, an aborted or redirecting action's included, with its HTML content type.
@@ -314,6 +320,11 @@ function rawBodyOf(res: GatewayResponse<Buffer>): RawBody {
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
     ...(res.setCookies.length > 0 ? { setCookies: [...res.setCookies] } : {}),
   };
+}
+
+/** A carch raw answer redirecting to `location` as legacy's `cflocation` does: a 302 with its headers and no body. */
+export function carchRawRedirect(location: string): RawBody {
+  return { status: 302, contentType: LEGACY_HTML_CONTENT_TYPE, body: '', headers: { ...REDIRECT_HEADERS, location } };
 }
 
 const isStruct = (value: unknown): value is Readonly<Record<string, unknown>> =>
@@ -413,10 +424,7 @@ export async function relayCarchRaw(
           query: declared(rc, 'siteid'),
           ...postInput(ctx.req, rc, multipart),
         });
-  if (res.status === 401 || res.status === 403) {
-    const { location } = secureRedirect(ctx.req);
-    return { status: 302, contentType: LEGACY_HTML_CONTENT_TYPE, body: '', headers: { location } };
-  }
+  if (res.status === 401 || res.status === 403) return carchRawRedirect(secureRedirect(ctx.req).location);
   applyRelayedSessionEffects(ctx.req, firstValue(res.headers[SESSION_EFFECTS_HEADER]));
   return rawBodyOf(res);
 }

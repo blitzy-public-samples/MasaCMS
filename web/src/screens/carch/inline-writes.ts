@@ -2,7 +2,7 @@
 import { LEGACY_HTML_CONTENT_TYPE } from '@opt2/platform/legacy-compat';
 import type { JsonScreen, RawBody, ScreenContext, ScreenDefinition } from '../registry';
 import { CARCH_OWNER, applyCarchDefaults, carchGate } from './controller';
-import { carchWrite, relayCarchRaw, type CarchRawAction, type CarchWriteResult } from './service';
+import { carchRawRedirect, carchWrite, relayCarchRaw, type CarchRawAction, type CarchWriteResult } from './service';
 
 /** The bare body an inline write answers with, for the request as carch before() leaves it. */
 type InlineWrite = (ctx: ScreenContext) => Promise<RawBody>;
@@ -32,9 +32,7 @@ async function updateObjectParams(ctx: ScreenContext): Promise<RawBody> {
   // loadBy an empty contentHistID gives a new bean, on which the controller aborts before any write.
   if (ctx.req.rc.contenthistid === '') return ABORTED;
   const outcome = await carchWrite(ctx, 'updateobjectparams');
-  if (outcome.kind === 'redirect') {
-    return { status: 302, contentType: LEGACY_HTML_CONTENT_TYPE, body: '', headers: { location: outcome.location } };
-  }
+  if (outcome.kind === 'redirect') return carchRawRedirect(outcome.location);
   if (outcome.kind === 'rejected') {
     // AdminNotFound is the unknown version, on which legacy aborts.
     if (outcome.status === 404) return ABORTED;

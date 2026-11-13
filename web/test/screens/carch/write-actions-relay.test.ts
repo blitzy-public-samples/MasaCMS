@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cfUuid } from '@opt2/platform/legacy-compat';
 import { runGate, secure } from '@/lib/access-gate';
 import { GatewayUnavailableError, type ServicePath } from '@/lib/gateway-client';
+import { REDIRECT_HEADERS } from '@/lib/responses';
 import { carchGate } from '@/screens/carch/controller';
 import { editliveScreen } from '@/screens/carch/editlive';
 import { inlineWriteScreens } from '@/screens/carch/inline-writes';
@@ -312,9 +313,47 @@ describe('relayed carch actions', () => {
       status: 302,
       contentType: HTML_TYPE,
       body: '',
-      headers: { location: REFERER },
+      headers: { ...REDIRECT_HEADERS, location: REFERER },
     });
   });
+
+  // Framing and internal headers a service answer may carry; none reaches the bare body.
+  const UNRELAYED = { 'Content-Length': '0', 'Transfer-Encoding': 'chunked', 'X-Opt2-Write-Position': '7' };
+  const LOCATION = `./?muraAction=cArch.list&siteid=${SITE}`;
+  const CACHED = { 'Cache-Control': 'no-store', Pragma: 'no-cache' };
+  const HEADER_CASES: ReadonlyArray<readonly [string, FakeReply, Readonly<Record<string, string>>]> = [
+    [
+      'a 302',
+      { status: 302, headers: { Location: LOCATION, ...UNRELAYED } },
+      { ...REDIRECT_HEADERS, location: LOCATION },
+    ],
+    [
+      'a 302 with its own cache headers',
+      { status: 302, headers: { Location: LOCATION, ...CACHED, ...UNRELAYED } },
+      { ...REDIRECT_HEADERS, 'cache-control': 'no-store', location: LOCATION },
+    ],
+    [
+      'a 200 with cache headers',
+      { status: 200, headers: { 'Content-Type': HTML_TYPE, ...CACHED, ...UNRELAYED } },
+      { 'cache-control': 'no-store', pragma: 'no-cache' },
+    ],
+  ];
+  const HEADER_RELAYS = RELAYED.flatMap((action) =>
+    HEADER_CASES.map(([name, reply, headers]) => [action, name, reply, headers] as const),
+  );
+
+  it.each(HEADER_RELAYS)(
+    'relays carch.%s answering %s with its end-to-end headers and the cflocation headers of a redirect',
+    async (action, _name, reply, headers) => {
+      const ctx = screenContext(action, { rc: FIELDS, routes: { [svc('GET', rawPath(action))]: reply } });
+      await expect(invoke(definition(action), ctx)).resolves.toEqual({
+        status: reply.status,
+        contentType: HTML_TYPE,
+        body: Buffer.alloc(0),
+        headers,
+      });
+    },
+  );
 });
 
 describe('carch.updateobjectparams', () => {
@@ -378,7 +417,7 @@ describe('carch.updateobjectparams', () => {
       status: 302,
       contentType: HTML_TYPE,
       body: '',
-      headers: { location: REFERER },
+      headers: { ...REDIRECT_HEADERS, location: REFERER },
     });
   });
 });
@@ -476,10 +515,15 @@ describe('carch.lockfile', () => {
     [
       'the lock redirect to the attachment',
       { status: 302, headers: { 'Content-Type': HTML_TYPE, Location: ATTACHMENT } },
-      { status: 302, contentType: HTML_TYPE, body: Buffer.alloc(0), headers: { location: ATTACHMENT } },
+      {
+        status: 302,
+        contentType: HTML_TYPE,
+        body: Buffer.alloc(0),
+        headers: { ...REDIRECT_HEADERS, location: ATTACHMENT },
+      },
     ],
     ['the empty abort of a refused lock', RELAYS.aborted.reply, RELAYS.aborted.answer],
-  ])('relays %s unchanged', async (_name, reply, answer) => {
+  ])('relays %s', async (_name, reply, answer) => {
     const rc = { contentid: CONTENT_ID, ...CSRF_FIELDS };
     const ctx = screenContext('lockfile', { rc, post: true, routes: { [svc('POST', rawPath('lockfile'))]: reply } });
     await expect(invoke(lockfileScreen, ctx)).resolves.toEqual(answer);

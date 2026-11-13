@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { secure } from '@/lib/access-gate';
 import { GatewayUnavailableError, type MultipartBody, type ServicePath } from '@/lib/gateway-client';
 import type { AdminRequest } from '@/lib/request-context';
+import { REDIRECT_HEADERS } from '@/lib/responses';
 import {
   applySessionEffects,
   carchPageData,
@@ -484,7 +485,7 @@ describe('relayCarchRaw', () => {
       status: 302,
       contentType: HTML_TYPE,
       body: Buffer.alloc(0),
-      headers: { location: LIST_LOCATION },
+      headers: { ...REDIRECT_HEADERS, location: LIST_LOCATION },
     });
     expect(received?.body).toBe(MULTIPART);
     expect(gateway.calls).toEqual([
@@ -505,7 +506,7 @@ describe('relayCarchRaw', () => {
       status: 302,
       contentType: HTML_TYPE,
       body: '',
-      headers: { location: REFERER },
+      headers: { ...REDIRECT_HEADERS, location: REFERER },
     });
   });
 
