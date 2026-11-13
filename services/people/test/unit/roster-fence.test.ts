@@ -259,8 +259,9 @@ describe.skipIf(!available)('roster fence against PostgreSQL', () => {
 
   /** Open transactions and held advisory locks of the schema's app role. */
   async function appHolds(): Promise<{ transactions: number; advisoryLocks: number }> {
+    // An idle backend's xact_start can be PostgreSQL's own invalidation catch-up transaction, which no client holds.
     const sql =
-      'SELECT (SELECT count(*)::int FROM pg_stat_activity WHERE usename = $1 AND xact_start IS NOT NULL) AS transactions,' +
+      "SELECT (SELECT count(*)::int FROM pg_stat_activity WHERE usename = $1 AND xact_start IS NOT NULL AND state <> 'idle') AS transactions," +
       " (SELECT count(*)::int FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE a.usename = $1 AND l.locktype = 'advisory') AS advisory_locks";
     const [row] = (await handle.adminPool.query<{ transactions: number; advisory_locks: number }>(sql, [handle.roles.app])).rows;
     return { transactions: row?.transactions ?? -1, advisoryLocks: row?.advisory_locks ?? -1 };

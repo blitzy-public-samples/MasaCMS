@@ -589,13 +589,14 @@ describe('sweepOutbox publish bounds', () => {
     const { db, statements } = pagedDb({ [TENANT_A]: slowRows, [TENANT_B]: rowsB });
     const { runtime, publish, lines } = runtimeWith(db);
     publish.mockImplementation((_topic, sent) => sleep(20).then(() => `msg-${sent.eventId}`));
+    const batchSize = 2;
     const started = performance.now();
 
     const result = await sweepOutbox(runtime, {
       service: 'stub',
       clock: fixedClock(NOW),
       tenantsOf,
-      batchSize: 2,
+      batchSize,
       publishStallMs: 10_000,
       publishDeadlineMs: 200,
     });
@@ -603,7 +604,8 @@ describe('sweepOutbox publish bounds', () => {
     const elapsed = performance.now() - started;
     expect(elapsed).toBeGreaterThanOrEqual(190);
     expect(elapsed).toBeLessThan(1_200);
-    expect(result).toMatchObject({ failed: 1, skipped: 0, tenants: 0 });
+    // The rows of the cut publish's page after it are never attempted, so skipped follows where load puts the cut.
+    expect(result).toMatchObject({ failed: 1, skipped: batchSize - 1 - (result.published % batchSize), tenants: 0 });
     expect(result.published).toBeLessThan(slowRows.length - 1);
     expect(publish).toHaveBeenCalledTimes(result.published + 1);
     expect(statements.filter((s) => s.tenantId === TENANT_B)).toEqual([]);
