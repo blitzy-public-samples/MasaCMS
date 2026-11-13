@@ -2767,6 +2767,7 @@ paths:
     post:
       operationId: saveChangeset
       summary: Saves a change set.
+      description: With a null `redirect`, the result's `data.rc` is the edit screen model as `getChangeset` returns it, its `changeset` the bean after `set(rc).save()`; a rejected token leaves no `changeset` in it, as legacy leaves `rc.changeset` undefined.
       tags: [changesets]
       x-opt2-transport: service
       x-opt2-requires: [s2, site-admin, 'm:014']

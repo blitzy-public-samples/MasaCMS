@@ -427,6 +427,10 @@ export interface PeopleRepository extends Repository {
   /** Makes `addressId` the person's only primary address [legacy: core/mura/user/userDAO.cfc:849-860]. */
   setPrimaryAddress(tx: TenantTx, userId: string, addressId: string, ctx?: WriteContext): Promise<void>;
 
+  /** The person's interests by category id, as `readInterestGroupIDs` lists them [legacy: core/mura/user/userDAO.cfc:674-682]. */
+  listInterests(tx: TenantTx, userId: string): Promise<InterestRow[]>;
+  /** The person's tags by tag id. */
+  listTags(tx: TenantTx, userId: string): Promise<TagRow[]>;
   /** Deletes the person's interests (only `scopeCategoryIds` when given), then inserts each new storable id [legacy: core/mura/user/userDAO.cfc:583-616]; returns the inserted rows. */
   replaceInterests(
     tx: TenantTx,
@@ -675,6 +679,9 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     ' AND NOT EXISTS (SELECT 1 FROM unnest($3::text[], $4::boolean[]) WITH ORDINALITY AS e(v, storable, n)' +
     ` WHERE e.n < u.n AND e.storable AND ${idEquals('e.v::bpchar', 'u.v')}) ORDER BY u.n`;
   const lockTagsSql = `SELECT tagid FROM ${tag} WHERE tenant_id = $1 AND ${idEquals('userid', '$2')} ORDER BY tagid FOR UPDATE`;
+  // tusersinterests is clustered on (userID, categoryID), the order its unordered select returns.
+  const interestsSql = `SELECT * FROM ${interest} WHERE tenant_id = $1 AND ${idEquals('userid', '$2')} ORDER BY categoryid`;
+  const tagsSql = `SELECT * FROM ${tag} WHERE tenant_id = $1 AND ${idEquals('userid', '$2')} ORDER BY tagid`;
   const favoritesSql = `SELECT * FROM ${favorite} WHERE tenant_id = $1 AND ${idEquals('userid', '$2')} ORDER BY datecreated, favoriteid`;
   const extendDataSql = `SELECT * FROM ${extendData} WHERE tenant_id = $1 AND ${idIn('baseid', '$2')} ORDER BY baseid, attributeid, dataid`;
   const lockExtendByBaseSql = `SELECT dataid FROM ${extendData} WHERE tenant_id = $1 AND ${idEquals('baseid', '$2')} ORDER BY dataid FOR UPDATE`;
@@ -983,6 +990,14 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     }
   }
 
+  function listInterests(tx: TenantTx, userId: string): Promise<InterestRow[]> {
+    return readUnits<InterestRow>(tx, INTEREST.unit, interestsSql, [tx.tenantId, userId]);
+  }
+
+  function listTags(tx: TenantTx, userId: string): Promise<TagRow[]> {
+    return readUnits<TagRow>(tx, TAG.unit, tagsSql, [tx.tenantId, userId]);
+  }
+
   async function replaceInterests(
     tx: TenantTx,
     userId: string,
@@ -1255,6 +1270,8 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     updateAddress,
     deleteAddress,
     setPrimaryAddress,
+    listInterests,
+    listTags,
     replaceInterests,
     replaceTags,
     listFavorites,

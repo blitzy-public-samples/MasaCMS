@@ -172,7 +172,7 @@ function errorsOf(changeset: Struct): ReadonlyArray<readonly [string, string]> {
  * `rc.hasPendingApprovals` (read only for an unpublished change set), `rc.categoryCount`, `rc.categories` (the site's
  * category rows) and the optional `rc.previewLink`.
  */
-function changesetEditData(rc: Struct): ChangesetEditData {
+export function changesetEditData(rc: Struct): ChangesetEditData {
   const changeset = structOf(rc, 'changeset');
   const published = cfToBoolean(member(changeset, 'published'));
   return {
@@ -225,12 +225,13 @@ export async function loadChangesetEdit(ctx: ScreenContext): Promise<ChangesetEd
 
 /** `utility.displayErrors`: every message but `siteID`'s, unencoded and in struct order, spaced as ACF emits them. */
 export function renderDisplayErrors(errors: ReadonlyArray<readonly [key: string, message: string]>): SafeHtml {
-  return join(
-    errors.flatMap(([key, message], index) =>
+  return join([
+    raw(' '),
+    ...errors.flatMap(([key, message], index) =>
       // The `<br>` test counts every key, `siteID` included.
       key.toLowerCase() === 'siteid' ? [] : [raw(`${message} ${errors.length > index + 1 ? '<br> ' : ''}`)],
     ),
-  );
+  ]);
 }
 
 /** `<option>`s `from`..`to` as cf_timeselector loops them, `selected` on `chosen`. */
@@ -414,7 +415,7 @@ export function renderChangesetEditView(
   const errors =
     changeset.errors.length === 0
       ? ''
-      : html`      <div class="alert alert-error"><span>${renderDisplayErrors(changeset.errors)}</span></div>\n`;
+      : html`      \n          <div class="alert alert-error"><span>${renderDisplayErrors(changeset.errors)}</span></div>\n`;
   let notice: SafeHtml | string = '';
   if (changeset.published) {
     notice = html`      <div class="alert alert-info"><span>${label('changesets.publishednotice')}</span></div>\n`;

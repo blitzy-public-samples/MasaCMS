@@ -72,6 +72,12 @@ export interface GenerateTokenOptions {
   userId?: string;
 }
 
+/** The `tusers` row a client's or token's `user` relation loads: its id and stored site id ('' for NULL). */
+export interface OAuthUser {
+  userId: string;
+  siteId: string;
+}
+
 /** Width of the ORM `fieldtype="id"` and relation key properties [legacy: core/mura/bean/bean.cfc:1096-1116]. */
 const ID_LENGTH = 35;
 /** Width the ORM gives the `site` relation [legacy: core/mura/bean/bean.cfc:1107-1110]. */
@@ -355,6 +361,22 @@ export async function findToken(deps: OAuthDeps, lookup: { token: string; grantT
   // An empty grant type is bound as NULL by the ORM, which no stored value equals.
   if (lookup.grantType !== undefined && (row.granttype === null || lookup.grantType === '' || charKey(row.granttype) !== charKey(lookup.grantType))) return null;
   return { ...row, errors: {} };
+}
+
+/** `oauthToken.delete()` in one gated transaction of the token's tenant; false when no row was removed [legacy: core/mura/client/api/json/v1/jsonApiUtility.cfc:755-757]. */
+export async function deleteToken(deps: OAuthDeps, token: Pick<OAuthTokenRow, 'tenant_id' | 'token'>): Promise<boolean> {
+  return withGatedTenant(deps.db, token.tenant_id, (tx) => deps.repo.deleteToken(tx, token.token));
+}
+
+/** The user `userId` of a `user` relation, an account or a group as `getBean('user').loadBy(userid=…)` finds either; null for '' or no row [legacy: core/mura/client/api/oauth/oauthTokenBean.cfc:5]. */
+export async function findOAuthUser(deps: OAuthDeps, userId: string | null): Promise<OAuthUser | null> {
+  if (userId === null || userId === '') return null;
+  return firstInTenants(deps, [], async (tx) => {
+    const account = await deps.repo.findAccountById(tx, userId);
+    if (account !== null) return { userId: account.userid, siteId: account.siteid ?? '' };
+    const group = await deps.repo.findGroup(tx, userId);
+    return group === null ? null : { userId: group.userid, siteId: group.siteid ?? '' };
+  });
 }
 
 /** The token holding access code `code`, of `clientId` when given (SQL Server equality); null when none [legacy: core/mura/client/api/json/v1/jsonApiUtility.cfc:601]. */

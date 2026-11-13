@@ -92,9 +92,11 @@ function usageRow(row: FeedUsageRow, req: FeedUsageRequest, rb: RbLookup): SafeH
 \t\t\t\t\t    ${displayCell(row, dateKeyFormat)}</td>
 \t\t\t\t\t\t<td>${lsDate(row.lastUpdate, dateKeyFormat)}</td>
 \t\t\t\t        </tr>
+\t\t\t\t      \x20
 `;
 }
 
+// The whitespace-only lines are the text ACF prints beside the view's cfif and cfloop tags.
 /** The usage label and table of a collection with usage rows. */
 function usageTable(rows: readonly FeedUsageRow[], req: FeedUsageRequest, rb: RbLookup): SafeHtml {
   return html`\t\t\t\t\t\t<div class="mura-control justify">
@@ -106,8 +108,10 @@ function usageTable(rows: readonly FeedUsageRow[], req: FeedUsageRequest, rb: Rb
 \t\t\t\t\t      <th>${label(rb, 'display')}</th>
 \t\t\t\t\t      <th>${label(rb, 'update')}</th>
 \t\t\t\t\t    </tr>
+\t\t\t\t    \x20
 ${rows.map((row) => usageRow(row, req, rb))}\t\t\t\t   \t\t</table>
 \t\t\t\t\t\t</div>
+\t\t\t\t    \x20
 `;
 }
 
@@ -115,6 +119,7 @@ ${rows.map((row) => usageRow(row, req, rb))}\t\t\t\t   \t\t</table>
 function emptyUsage(feedType: string, rb: RbLookup): SafeHtml {
   const key = feedType.toLowerCase() === 'local' ? 'noindexusage' : 'nofeedusage';
   return html`\t\t\t\t      \t<div class="help-block-empty">${label(rb, key)}</div>
+\t\t\t\t   \x20
 `;
 }
 
@@ -131,6 +136,7 @@ export function renderFeedUsageTab(req: FeedUsageRequest, rb: RbLookup, input: F
 \t\t</div> <!-- /.block header -->
 \t\t<div class="block-content">
 \t\t\t<div class="mura-control-group">
+\t\t\t\t   \x20
 ${body}\t\t\t </div>
 
 \t\t</div> <!-- /.block-content -->
