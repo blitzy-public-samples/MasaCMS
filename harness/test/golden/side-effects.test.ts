@@ -828,6 +828,62 @@ describe('collectMail', () => {
     ]);
   });
 
+  it('maps the recorded forgot-password message with its headers, beside a recorded template send', async () => {
+    const fixture = (name: string): Record<string, unknown> =>
+      JSON.parse(readFileSync(new URL(`../fixtures/mail/${name}`, import.meta.url), 'utf8')) as Record<string, unknown>;
+    const list = fixture('mailpit-list.json');
+    const forgot = fixture('mailpit-message.json') as { Text: string; HTML: string; Headers: Record<string, string[]> };
+    const send = {
+      From: { Name: 'Tenant A Communications', Address: 'communications@example.test' },
+      To: [{ Name: 'Blake Recipient', Address: 'blake.recipient@example.test' }],
+      Subject: 'June programme update',
+      Text: 'Hello Blake,',
+      HTML: '<p>Hello <b>Blake</b>,</p>',
+    };
+    const at = (id: string): string => `${MAILPIT}/api/v1/message/${id}`;
+    const http = fakeHttp()
+      .route('GET', `${MAILPIT}/api/v1/messages`, () => json(list))
+      .route('GET', at('mpForgotMail0000000001'), () => json(forgot))
+      .route('GET', `${at('mpForgotMail0000000001')}/headers`, () => json(forgot.Headers))
+      .route('GET', at('mpTemplateSend00000002'), () => json(send))
+      .route('GET', `${at('mpTemplateSend00000002')}/headers`, () => json({}));
+
+    const mail = await collectMail(scenarioEnv(), { fetch: http.fetch });
+
+    const link = 'http://127.0.0.1:8080/index.cfm/22222222-2222-2222-2222222222222222/?userID=33333333-3333-3333-3333333333333333';
+    expect(mail).toStrictEqual([
+      {
+        to: ['Blake Recipient <blake.recipient@example.test>'],
+        from: 'Tenant A Communications <communications@example.test>',
+        subject: 'June programme update',
+        text: 'Hello Blake,',
+        htmlText: 'Hello Blake,',
+        headers: {},
+      },
+      {
+        to: ['avery.member@example.test'],
+        from: 'Masa CMS <no-reply@example.test>',
+        subject: 'Masa CMS Account Information',
+        text: forgot.Text,
+        // HTML parsing reads CRLF as LF.
+        htmlText: forgot.HTML.replaceAll(/<[^>]+>/g, '').replaceAll('\r\n', '\n'),
+        headers: forgot.Headers,
+      },
+    ]);
+    const [, reset] = mail;
+    expect(reset?.text).toContain(link);
+    expect(reset?.htmlText).toContain(link);
+    expect(reset?.htmlText).not.toMatch(/<\/?[a-z]/i);
+    expect(reset?.headers.Subject).toStrictEqual(['Masa CMS Account Information']);
+    expect(http.to(MAILPIT)).toStrictEqual([
+      'GET /api/v1/messages?start=0&limit=250',
+      'GET /api/v1/message/mpForgotMail0000000001',
+      'GET /api/v1/message/mpForgotMail0000000001/headers',
+      'GET /api/v1/message/mpTemplateSend00000002',
+      'GET /api/v1/message/mpTemplateSend00000002/headers',
+    ]);
+  });
+
   it('stops listing at an empty page even when the total claims more', async () => {
     const http = mailpit(fakeHttp(), MESSAGES.slice(0, 1), { total: () => 5 });
 
@@ -1499,6 +1555,28 @@ describe('targetRows', () => {
 
     expect(sample?.rows).toHaveLength(1);
     expect(http.calls.map((call) => call.url.searchParams.get('siteId'))).toStrictEqual(['tenant-a']);
+  });
+
+  it('keeps each duplicate row of a keyless export, across tenants', async () => {
+    const stats = (rows: Record<string, unknown>[]): ExportTable[] => [
+      exportTable('communications.email_stat', 'temailstats', STAT_COLUMNS, [], rows),
+    ];
+    const http = exportService(fakeHttp(), 'communications', [
+      { unit: 'communications.email_stat', siteId: 'default', tables: stats([STAT, STAT, OTHER_STAT]) },
+      { unit: 'communications.email_stat', siteId: 'tenant-a', tables: stats([STAT]) },
+    ]);
+    const sql = await fakeSql(legacyDb());
+
+    const snapshots = await targetRows(
+      { table: 'temailstats', where: { EmailID: 'FIXTURE-E1' } },
+      await rowDeps(http, sql),
+    );
+
+    const stat = { unit: 'communications.email_stat', owner: 'communications', legacyTable: 'temailstats' };
+    expect(snapshots).toStrictEqual([
+      snapshot({ ...stat, columns: STAT_COLUMNS, keyColumns: [], keyless: true }, [STAT, STAT, OTHER_STAT, STAT]),
+    ]);
+    expect(snapshots[0]?.rows.filter((row) => row === encodeRow(STAT_COLUMNS, STAT))).toHaveLength(3);
   });
 
   interface TargetErrorCase {
@@ -2383,6 +2461,8 @@ describe('collectSideEffects', () => {
     const effects = await collectSideEffects(ctx, scenario, 'legacy', deps);
 
     expect(channels(http, sql)).toStrictEqual(read);
+    expect(http.calls.filter((call) => call.method !== 'GET')).toStrictEqual([]);
+    expect(sql.queries.filter((q) => !/^(SELECT|WITH)\b/.test(q.sql))).toStrictEqual([]);
     expect(effects.mail.length > 0).toBe(compare.includes('mail'));
     expect(Object.keys(effects.rows).length > 0).toBe(compare.includes('rows'));
     expect(effects.tasks.length > 0).toBe(compare.includes('tasks'));

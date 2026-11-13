@@ -9,6 +9,7 @@ import { GatewayDenialError, GatewayUnavailableError, type WebServiceName } from
 import {
   ORIGINAL_URL_HEADER,
   applyDefaults,
+  assignContext,
   buildAdminRequest,
   dashboardSpanFor,
   mergeFw1Context,
@@ -358,6 +359,18 @@ describe('applyDefaults', () => {
   });
 });
 
+describe('assignContext', () => {
+  it('replaces values case-insensitively under their stored names and adds new ones, leaving rc unchanged', () => {
+    const rc = mergeFw1Context([], { SiteID: 'tenant-a', processed: 'no' }, {});
+    const assigned = assignContext(rc, { PROCESSED: 'true', isapproved: '1' });
+
+    expect({ ...assigned }).toEqual({ SiteID: 'tenant-a', processed: 'true', isapproved: '1' });
+    expect(assigned['siteid']).toBe('tenant-a');
+    expect({ ...rc }).toEqual({ SiteID: 'tenant-a', processed: 'no' });
+  });
+});
+
+
 describe('dashboardSpanFor', () => {
   it.each([
     [0, 30],
@@ -497,6 +510,8 @@ describe('buildAdminRequest', () => {
 
       expect(request.rc).toMatchObject({ muraAction: 'core:cusers.update', userid: 'U2', fname: 'Ann' });
       expect(request.currentUrl).toBe('./?&muraAction=cusers.update&userid=U1');
+      expect({ ...request.formScope }).toEqual({ fname: 'Ann', userid: 'U2' });
+      expect(request.formScope.FNAME).toBe('Ann');
     });
 
     it('reads the body of a redirect request, a file part as its file name', async () => {
@@ -519,6 +534,7 @@ describe('buildAdminRequest', () => {
       });
       expect(request.rc.skip).toBeUndefined();
       expect(request.currentUrl).toBe('./?&muraAction=cusers.update&tag=a,b');
+      expect({ ...request.formScope }).toEqual({ fname: 'Ann', photo: 'photo.png' });
     });
 
     it('takes the URL scope from the original URL when a body is given', async () => {

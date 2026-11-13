@@ -341,6 +341,7 @@ export function makeAdminRequest(
     session: sessionOverrides,
     site: siteOverrides,
     rc: rcOverrides,
+    formScope: formOverrides,
     circuit: requestedCircuit = 'home',
     item: requestedItem = 'redirect',
     pooledLookup = () => Promise.resolve(false),
@@ -413,6 +414,8 @@ export function makeAdminRequest(
     circuit,
     item,
     rc: applyDefaults(mergeFw1Context([], rcBase, definedPairs(rcOverrides))),
+    // The `rc` overrides are merged as the form scope, so they are posted fields unless `formScope` says otherwise.
+    formScope: mergeFw1Context([], {}, definedPairs(formOverrides ?? rcOverrides)),
     ses: false,
     currentUrl: `./?&muraAction=${muraAction}`,
     session,

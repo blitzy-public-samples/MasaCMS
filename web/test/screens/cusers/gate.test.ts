@@ -10,12 +10,15 @@ import { USER_IDS } from '../../fixtures/session';
 import {
   adminS2Request,
   anonymousRequest,
+  buildTestAdminRequest,
   editorRequest,
   makeAdminRequest,
   siteAdminRequest,
   type AdminRequestPartial,
 } from '../../helpers/admin-request';
 import { useTestEnv } from '../../helpers/env';
+import { fakeGatewayClient, routeKey } from '../../helpers/fake-gateway';
+import { userTokenFor } from '../../helpers/tokens';
 
 const USERS_MODULE = '00000000000000000000000000000000008';
 const SITE_MODULE = '00000000000000000000000000000000000';
@@ -40,6 +43,12 @@ const editorWith = (roles: readonly string[], partial: AdminRequestPartial = {})
 
 const listOf = (req: (partial?: AdminRequestPartial) => AdminRequest): AdminRequest =>
   req({ circuit: 'cusers', item: 'list' });
+
+const REVERSE_LOOKUP_ROUTE = routeKey('GET', 'identity', '/v1/permissions/reverse-lookup');
+
+/** `site` claim of a recorded user token. */
+const tokenSite = (token: string | undefined): unknown =>
+  (JSON.parse(Buffer.from(token?.split('.')[1] ?? '', 'base64url').toString('utf8')) as { site?: unknown }).site;
 
 describe('cusersGate', () => {
   it.each([
@@ -112,6 +121,25 @@ describe('cusersGate', () => {
       });
       expect(await gate(req)).toEqual(granted ? ALLOW : secure(req));
       expect(pooledLookup).toHaveBeenCalledOnce();
+    });
+
+    it("asks identity once, under the request site's token, for another baseID", async () => {
+      const gateway = fakeGatewayClient(
+        { [REVERSE_LOOKUP_ROUTE]: { status: 200, body: { granted: true } } },
+        { userToken: await userTokenFor('systemUser') },
+      );
+      const req = await buildTestAdminRequest({
+        circuit: 'cusers',
+        action: 'loadExtendedAttributes',
+        query: { siteid: 'tenant-a', baseID: USER_IDS.admin },
+        user: 'systemUser',
+        gateway,
+      });
+      expect(await gate(req)).toEqual(ALLOW);
+      const lookups = gateway.calls.filter(({ path }) => path === '/v1/permissions/reverse-lookup');
+      expect(lookups).toEqual([expect.objectContaining({ service: 'identity', method: 'GET' })]);
+      expect(tokenSite(lookups[0]?.userToken)).toBe('tenant-a');
+      expect(normaliseCusersRc(req).siteid).toBe('tenant-a');
     });
 
     it('propagates a failed pooled lookup', async () => {

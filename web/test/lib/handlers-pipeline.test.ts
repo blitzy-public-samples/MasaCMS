@@ -9,7 +9,13 @@ import type { ScreenGate } from '@/lib/access-gate';
 import { GatewayUnavailableError, setServiceClientForTests } from '@/lib/gateway-client';
 import { html } from '@/lib/html';
 import { ensureTracing, logRequest, type RequestLogFields } from '@/lib/telemetry';
-import type { PageRedirect, ScreenContext, ScreenRequestBody, SubmitResult, UploadPart } from '@/screens/registry';
+import type {
+  PageControllerRedirect,
+  ScreenContext,
+  ScreenRequestBody,
+  SubmitResult,
+  UploadPart,
+} from '@/screens/registry';
 import { promptCountsZero } from '../fixtures/strategies-content/prompts';
 import { siteRecordFor } from '../helpers/admin-request';
 import { useTestEnv } from '../helpers/env';
@@ -22,7 +28,9 @@ const probe = vi.hoisted(() => ({
   body: undefined as ScreenRequestBody | undefined,
   inspect: undefined as ((ctx: ScreenContext) => Promise<void>) | undefined,
   renderError: undefined as Error | undefined,
-  redirect: undefined as PageRedirect | undefined,
+  redirect: undefined as PageControllerRedirect | undefined,
+  /** The controller step answers through a promise, as one that calls a service does. */
+  deferRedirect: false,
   steps: [] as string[],
 }));
 
@@ -110,7 +118,7 @@ vi.mock('@/screens/registry', async () => {
       gate: secured,
       redirect: () => {
         probe.steps.push('redirect');
-        return probe.redirect;
+        return probe.deferRedirect ? Promise.resolve(probe.redirect) : probe.redirect;
       },
       load: async () => {
         probe.steps.push('load');
@@ -239,6 +247,7 @@ beforeEach(async () => {
     inspect: undefined,
     renderError: undefined,
     redirect: undefined,
+    deferRedirect: false,
     steps: [],
   });
 });
@@ -438,6 +447,33 @@ describe('page controller redirect', () => {
     expect(probe.steps).toEqual(['redirect', 'load', 'render', 'redirect', 'load', 'render']);
   });
 
+  it('answers an asynchronous step\'s location unchanged with its relayed cookies and no flash', async () => {
+    const location = './?muraAction=cLogin.main&display=login&status=failed&returnURL=%2Fadmin%2F';
+    probe.redirect = { kind: 'location', location, setCookies: ['relayed=1'] };
+    probe.deferRedirect = true;
+
+    const response = await handleAdminPage(await sitesRequest(), SITES);
+    const result = await renderAdminPage(SITES, QUERY, await forwarded());
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toBe(location);
+    expect(lastCookies(response.headers.getSetCookie(), 1)).toEqual(['relayed=1']);
+    expect(result).toMatchObject({ kind: 'redirect', location });
+    expect(result.kind === 'redirect' && lastCookies(result.setCookies, 1)).toEqual(['relayed=1']);
+    expect(probe.steps).toEqual(['redirect', 'redirect']);
+    expect(savedStates().some(({ json }) => (json as Partial<SavedFlash>).flash !== undefined)).toBe(false);
+  });
+
+  it('renders the view after an asynchronous step that does not redirect', async () => {
+    probe.deferRedirect = true;
+
+    const response = await handleAdminPage(await sitesRequest(), SITES);
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('<p id="sites">sites</p>');
+    expect(probe.steps).toEqual(['redirect', 'load', 'render']);
+  });
+
   it('lets the access gate answer before the controller step runs', async () => {
     probe.redirect = { kind: 'redirect', action: 'cSettings.list', path: './' };
 
@@ -484,6 +520,23 @@ describe('redirect mode', () => {
     const saved = savedStates()[0]?.json as SavedFlash;
     expect(saved.flash).toEqual({ 5: { b: 'y' }, 11: { userid: 'U1' } });
     expect(saved.nextPreserveKey).toBe(12);
+  });
+
+  it('preserves and appends the values the controller set on rc over the request values', async () => {
+    probe.submit = {
+      kind: 'redirect',
+      action: 'cComments.default',
+      preserve: 'processed,userid',
+      append: 'processed',
+      path: './',
+      rc: { PROCESSED: 'true', USERID: 'U2' },
+    };
+
+    const response = await submitForm('userid=U1&processed=no&siteid=default');
+
+    expect(response.headers.get('location')).toBe('./?muraAction=cComments&processed=true&fw1pk=1');
+    const saved = savedStates()[0]?.json as SavedFlash;
+    expect(saved.flash['1']).toEqual({ processed: 'true', userid: 'U2' });
   });
 
   it('passes a service Location through after the set-up cookies', async () => {

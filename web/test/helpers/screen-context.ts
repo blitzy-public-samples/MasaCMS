@@ -139,9 +139,10 @@ export async function renderScreenPage(
     const decision = await runGate(ctx.req, page.gate);
     if (decision.kind === 'redirect') return { kind: 'redirect', location: decision.location };
     // The FW/1 redirect target is built by web's internal URL helpers, so a firing step is asserted on its own.
-    const step = 'mode' in page ? page.redirect?.(ctx) : undefined;
+    const step = 'mode' in page ? await page.redirect?.(ctx) : undefined;
     if (step !== undefined) {
-      throw new Error(`The page redirect step fires (to ${step.action}); assert on the screen's redirect(ctx) instead`);
+      const target = step.kind === 'location' ? step.location : step.action;
+      throw new Error(`The page redirect step fires (to ${target}); assert on the screen's redirect(ctx) instead`);
     }
     const data: unknown = page.load === undefined ? undefined : await page.load(ctx);
     const view = await page.render(ctx, data);

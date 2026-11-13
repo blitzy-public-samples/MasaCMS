@@ -165,6 +165,8 @@ export interface AdminRequest {
   readonly circuit: string;
   readonly item: string;
   readonly rc: RequestContext;
+  /** CFML form scope: the posted fields, or in page mode those the gateway appended to the query. */
+  readonly formScope: RequestContext;
   /** `request.generateSES`: the request carried FW/1 path segments. */
   readonly ses: boolean;
   /** `rc.currentURL`: `./` plus the URL scope as `?&name=value…`. */
@@ -389,6 +391,11 @@ function fillDefaults(rc: CfStruct): CfStruct {
 /** `rc` with the admin's `cfparam` defaults added where a key is absent. */
 export function applyDefaults(rc: RequestContext): RequestContext {
   return contextView(fillDefaults(new CfStruct(Object.entries(rc))));
+}
+
+/** `rc` after CFML assignments of `values`: each replaces the entry of its name in any case, which keeps its casing. */
+export function assignContext(rc: RequestContext, values: Readonly<Record<string, string>>): RequestContext {
+  return contextView(new CfStruct([...Object.entries(rc), ...Object.entries(values)]));
 }
 
 /** `session.dashboardSpan`: 30 days when session history is off or at least 180 days, else the history length. */
@@ -829,7 +836,8 @@ export async function buildAdminRequest(input: AdminRequestInput): Promise<Admin
   const identityLoad = loadIdentitySession(gateway, auth, isLoggedIn, roles);
   const scopes = requestScopes(input);
   const url = withFuseaction(cfScope(scopes.url));
-  const rc = mergeScopes(scopes.pathInfo, url, withFuseaction(cfScope(scopes.form)));
+  const form = withFuseaction(cfScope(scopes.form));
+  const rc = mergeScopes(scopes.pathInfo, url, form);
   const action = resolveAction(contextView(rc));
   const circuit = listLast(listFirst(action, '.'), ':');
   const identity = await identityLoad;
@@ -908,6 +916,7 @@ export async function buildAdminRequest(input: AdminRequestInput): Promise<Admin
     circuit,
     item: listLast(action, '.'),
     rc: contextView(rc),
+    formScope: contextView(form),
     ses: scopes.pathInfo.length > 0,
     currentUrl: currentUrlOf(url),
     session: { ...session, dateKey },

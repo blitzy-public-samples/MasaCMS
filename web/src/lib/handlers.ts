@@ -26,6 +26,7 @@ import { createCsrfRenderer } from './csrf';
 import { GatewayDenialError, createGatewayClient } from './gateway-client';
 import { isSafeHtml, toString as markupOf } from './html';
 import {
+  assignContext,
   buildAdminRequest,
   saveSessionWrites,
   type AdminMode,
@@ -332,12 +333,16 @@ function setStructKey(struct: Record<string, string>, name: string, value: strin
  * FW/1 `saveFlashContext(preserve)`: takes the next preserve key, purges the context stored ten keys earlier and adds
  * the named `rc` entries to the context under the key.
  */
-function saveFlashContext(req: AdminRequest, preserve: string): { key: number; writes: AdminSessionWrites } {
-  const key = req.session.nextPreserveKey;
+function saveFlashContext(
+  session: AdminRequest['session'],
+  rc: RequestContext,
+  preserve: string,
+): { key: number; writes: AdminSessionWrites } {
+  const key = session.nextPreserveKey;
   const purged = String(key - MAX_PRESERVED_CONTEXTS);
-  const flash = Object.fromEntries(Object.entries(req.session.flash).filter(([stored]) => stored !== purged));
+  const flash = Object.fromEntries(Object.entries(session.flash).filter(([stored]) => stored !== purged));
   const slot: Record<string, string> = { ...flash[String(key)] };
-  for (const [name, value] of namedEntries(req.rc, preserve)) setStructKey(slot, name, value);
+  for (const [name, value] of namedEntries(rc, preserve)) setStructKey(slot, name, value);
   return { key, writes: { flash: { ...flash, [String(key)]: slot }, nextPreserveKey: key + 1 } };
 }
 
@@ -347,10 +352,12 @@ function fw1RedirectOf(
   req: AdminRequest,
 ): { location: string; setCookies: string[]; writes?: AdminSessionWrites } {
   const { action, append, preserve, path, queryString, setCookies } = result;
-  const flash = preserve === undefined || cfEq(preserve, 'none') ? undefined : saveFlashContext(req, preserve);
+  const rc = result.rc === undefined ? req.rc : assignContext(req.rc, result.rc);
+  const flash =
+    preserve === undefined || cfEq(preserve, 'none') ? undefined : saveFlashContext(req.session, rc, preserve);
   const location = fw1RedirectTarget({
     action,
-    append: append === undefined || cfEq(append, 'none') ? [] : namedEntries(req.rc, append),
+    append: append === undefined || cfEq(append, 'none') ? [] : namedEntries(rc, append),
     queryString,
     path,
     preserveKey: flash?.key,
@@ -415,8 +422,11 @@ function pageDispatch<T>(
   return {
     gate: screen.gate,
     run: async (ctx, context) => {
-      const redirect = screen.redirect?.(ctx);
+      const redirect = await screen.redirect?.(ctx);
       if (redirect === undefined) return view.run(ctx, context);
+      if (redirect.kind === 'location') {
+        return { answer: answers.redirect(redirect.location, cookiesOf(ctx.req, redirect.setCookies), context) };
+      }
       const { location, setCookies, writes } = fw1RedirectOf(redirect, ctx.req);
       return { answer: answers.redirect(location, setCookies, context), writes };
     },

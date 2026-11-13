@@ -99,6 +99,8 @@ export type SubmitResult =
       preserve?: string;
       path?: string;
       queryString?: string;
+      /** Values the controller set on `rc` before redirecting; `append` and `preserve` read them over the request's. */
+      rc?: Readonly<Record<string, string>>;
     } & RelayedCookies)
   /** `cflocation`, or a service `Location` passed through. */
   | ({ kind: 'location'; location: string } & RelayedCookies)
@@ -124,11 +126,17 @@ interface ScreenBase<D> {
 /** FW/1 `redirect()` a page action's controller issues instead of rendering its view. */
 export type PageRedirect = Extract<SubmitResult, { kind: 'redirect' }>;
 
+/** A page controller's answer instead of its view: an FW/1 `redirect()`, or a `cflocation` such as a service's. */
+export type PageControllerRedirect = PageRedirect | Extract<SubmitResult, { kind: 'location' }>;
+
 /** A view rendered inside the shell. */
 export interface PageScreen<D = unknown> extends ScreenBase<D> {
   mode: 'page';
-  /** Controller step evaluated after the gate and before `load`; a result answers with that redirect instead. */
-  redirect?(ctx: ScreenContext): PageRedirect | undefined;
+  /**
+   * Controller step evaluated after the gate and before `load`; a result answers with that redirect instead. It may
+   * call services first, as a controller that writes and then redirects does.
+   */
+  redirect?(ctx: ScreenContext): PageControllerRedirect | undefined | Promise<PageControllerRedirect | undefined>;
   render(ctx: ScreenContext, data: D): ShellView | Promise<ShellView>;
 }
 
