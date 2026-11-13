@@ -1,25 +1,54 @@
 // Tests of the `clogin.main` login page: oracle DOM parity, every view branch, the send-login call and the redirect.
 import { readFileSync } from 'node:fs';
 import * as cheerio from 'cheerio';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { components } from '@/generated/clients/identity';
 import { createCsrfRenderer } from '@/lib/csrf';
 import { GatewayUnavailableError } from '@/lib/gateway-client';
 import { toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
 import { rbFor } from '@/lib/resource-bundles/rb';
+import { homeRedirectScreen } from '@/screens/clogin/home-redirect';
+import { cloginScreens } from '@/screens/clogin/index';
+import { cloginLoginScreen } from '@/screens/clogin/login';
+import { cloginLogoutScreen } from '@/screens/clogin/logout';
 import {
   MASA_LOGIN_CONFIG,
   cloginMainScreen,
   loadLoginViewState,
   renderLoginView,
   type LoginConfig,
+  type LoginViewState,
 } from '@/screens/clogin/main';
 import type { ScreenContext } from '@/screens/registry';
 import { CSRF_LOGIN } from '../../fixtures/identity/csrf';
+import {
+  loginPageBlocked,
+  loginPageDefault,
+  loginPageDenied,
+  loginPageFailed,
+  loginPageFailedChallenge,
+  loginPageSendLogin,
+  loginPageWithReturnUrl,
+  loginSessionAnonymous,
+  loginSessionBlocked,
+  sendLoginFound,
+  sendLoginNotFound,
+} from '../../fixtures/identity/session-login';
 import { adminS2Request, anonymousRequest, type AdminRequestPartial } from '../../helpers/admin-request';
-import { fragmentModel, normaliseIds, type DomControl } from '../../helpers/dom-model';
-import { fakeGatewayClient, routeKey, type FakeGatewayClient } from '../../helpers/fake-gateway';
+import { domModel, fragmentModel, normaliseIds, type DomControl } from '../../helpers/dom-model';
+import { useTestEnv } from '../../helpers/env';
+import {
+  fakeGatewayClient,
+  routeKey,
+  type FakeGatewayClient,
+  type FakeRoute,
+  type FakeRouteTable,
+} from '../../helpers/fake-gateway';
+import { FIXED_CSRF, makeScreenContext, renderScreenModel, renderScreenPage } from '../../helpers/screen-context';
+
+// The registry loads every circuit's screens; the screen context reads only its shell hooks.
+vi.mock('@/screens/registry', () => ({ shellHooks: Object.freeze({ secondaryMenus: Object.freeze({}) }) }));
 
 type CurrentSession = components['schemas']['CurrentSession'];
 
@@ -81,6 +110,16 @@ const hidden = (name: string, value: string): Pick<DomControl, 'name' | 'type' |
 const controlsOf = (markup: string): Array<Pick<DomControl, 'name' | 'type' | 'value'>> =>
   fragmentModel(markup).controls.map(({ name, type, value }) => ({ name, type, value }));
 const mailCalls = (gateway: FakeGatewayClient) => gateway.calls.filter((call) => call.path === LOGIN_MAIL_PATH);
+
+let restore: () => void;
+
+beforeEach(() => {
+  restore = useTestEnv();
+});
+
+afterEach(() => {
+  restore();
+});
 
 describe('clogin.main view against the legacy oracle', () => {
   it.each([
@@ -299,5 +338,213 @@ describe('cloginMainScreen', () => {
     const view = await cloginMainScreen.render(ctx, state);
 
     expect(squash(masked(toString(view.body)))).toBe(squash(fixture('default')));
+  });
+});
+
+
+type Rc = Readonly<Record<string, string>>;
+
+const LOGIN_MAIN: AdminRequestPartial = { circuit: 'clogin', item: 'main' };
+const LOGIN_MAIL_ROUTE = routeKey('POST', 'identity', LOGIN_MAIL_PATH);
+const SEND_LOGIN_EMAIL = 'Admin+Reset@Example.com';
+
+// Identity's current session and login-mail answers, keyed as the gateway relays them.
+const routesFor = (session: FakeRoute = loginSessionAnonymous, extra: FakeRouteTable = {}): FakeRouteTable => ({
+  [routeKey('GET', 'identity', '/v1/sessions/current')]: session,
+  [LOGIN_MAIL_ROUTE]: sendLoginFound,
+  ...extra,
+});
+
+/** The screen context of an anonymous `clogin.main` request with `rc`, over {@link routesFor}. */
+const pageContext = (rc: Rc = {}, session?: FakeRoute, extra?: FakeRouteTable) =>
+  makeScreenContext({
+    req: anonymousRequest({ ...LOGIN_MAIN, rc }),
+    gateway: fakeGatewayClient(routesFor(session, extra)),
+  });
+
+/** The in-shell page `clogin.main` answers, parsed, with the context it rendered in. */
+async function loginPage(rc: Rc = {}, session?: FakeRoute, extra?: FakeRouteTable) {
+  const ctx = pageContext(rc, session, extra);
+  const page = await renderScreenPage(cloginMainScreen, ctx);
+  if (page.kind !== 'document') throw new TypeError(`Redirected to ${page.location}`);
+  return { html: page.html, $: cheerio.load(page.html), ctx };
+}
+
+describe('clogin.main page', () => {
+  it.each<[string, Rc, FakeRoute, LoginViewState]>([
+    ['default', {}, loginSessionAnonymous, loginPageDefault],
+    ['returnURL', { returnURL: loginPageWithReturnUrl.returnURL }, loginSessionAnonymous, loginPageWithReturnUrl],
+    ['failed', { status: 'failed' }, loginSessionAnonymous, loginPageFailed],
+    ['denied', { status: 'denied' }, loginSessionAnonymous, loginPageDenied],
+    ['failed challenge', { failedchallenge: 'true' }, loginSessionAnonymous, loginPageFailedChallenge],
+    ['blocked', {}, loginSessionBlocked, loginPageBlocked],
+    ['send-login', { status: 'sendLogin', email: SEND_LOGIN_EMAIL }, loginSessionAnonymous, loginPageSendLogin],
+  ])('loads the %s state', async (_, rc, session, state) => {
+    expect(await loadLoginViewState(pageContext(rc, session))).toEqual(state);
+  });
+
+  it('renders the credentials and send-login forms', async () => {
+    const { html, $, ctx } = await loginPage();
+    const rb = (key: string): string => ctx.rb.rbKey(`login.${key}`);
+    const loginForm = fragmentModel($.html('#loginForm'));
+    const sendLogin = fragmentModel($.html('#sendLogin'));
+
+    const english = ['username', 'password', 'login', 'emailaddress', 'submit', 'forgetpassword', 'enteremail'];
+    expect(english.map(rb)).toEqual([
+      'Username',
+      'Password',
+      'Log In',
+      'Email Address',
+      'Submit',
+      'Forget your password?',
+      'Enter your email address to recover your account information.',
+    ]);
+    expect($('#loginForm').attr()).toMatchObject({ name: 'frmLogin', method: 'post', action: 'index.cfm' });
+    expect(controlsOf($.html('#loginForm'))).toEqual([
+      { name: 'username', type: 'text', value: '' },
+      { name: 'password', type: 'password', value: '' },
+      { name: 'rememberMe', type: 'checkbox', value: '1' },
+      { name: 'rb', type: 'select-one', value: '' },
+      hidden('returnUrl', ''),
+      hidden('muraAction', 'cLogin.login'),
+      hidden('isAdminLogin', 'true'),
+      hidden('compactDisplay', 'false'),
+      hidden('csrf_token', FIXED_CSRF.token),
+      hidden('csrf_token_expires', FIXED_CSRF.expires),
+    ]);
+    expect(loginForm.controls.find((control) => control.name === 'rb')?.options.map((option) => option.value)).toEqual(
+      ['en_US', 'da', 'de', 'nl', 'fil', 'fr', 'hu', 'id', 'it', 'pt', 'ru', 'es'],
+    );
+    expect(loginForm.buttons).toEqual([{ text: rb('login'), type: 'submit', hasOnclick: false }]);
+    expect(loginForm.labels).toEqual([rb('username'), rb('password'), rb('rememberme'), '']);
+    expect($('#pw-link a').text()).toBe(rb('forgetpassword'));
+
+    expect($('#sendLogin').attr('action')).toBe('./?muraAction=cLogin.main');
+    // main.cfm:303-330 renders no CSRF fields in the send-login form.
+    expect(controlsOf($.html('#sendLogin'))).toEqual([
+      { name: 'email', type: 'text', value: '' },
+      hidden('status', 'sendlogin'),
+      hidden('returnURL', ''),
+      hidden('isAdminLogin', 'true'),
+      hidden('compactDisplay', 'false'),
+    ]);
+    expect(sendLogin.buttons).toEqual([{ text: rb('submit'), type: 'submit', hasOnclick: false }]);
+    expect(sendLogin.headings).toEqual([rb('forgetpassword')]);
+    expect(sendLogin.labels).toEqual([rb('emailaddress')]);
+    expect($('#pw-response').text().trim()).toBe(rb('enteremail'));
+
+    const page = normaliseIds(domModel(html));
+    expect(page.controls.filter((control) => control.name === 'csrf_token')).toEqual([
+      expect.objectContaining({ value: '<token>' }),
+    ]);
+    expect(page.alerts).toEqual([]);
+    expect($('#mura-login-panel').attr('style')).toBeUndefined();
+    expect($('#mura-password-panel').attr('style')).toBe('display:none;');
+  });
+
+  it('echoes returnURL and compactDisplay into both forms', async () => {
+    const { returnURL } = loginPageWithReturnUrl;
+    const { $ } = await loginPage({ returnURL, compactDisplay: 'true' });
+    const value = (selector: string): string | undefined => $(selector).attr('value');
+
+    expect([value('#loginForm [name="returnUrl"]'), value('#sendLogin [name="returnURL"]')]).toEqual([
+      returnURL,
+      returnURL,
+    ]);
+    expect([value('#loginForm [name="compactDisplay"]'), value('#sendLogin [name="compactDisplay"]')]).toEqual([
+      'true',
+      'true',
+    ]);
+  });
+
+  it.each<[string, Rc, string]>([
+    ['failed', { status: 'failed' }, 'failed'],
+    ['denied', { status: 'denied' }, 'denied'],
+    ['failed challenge', { failedchallenge: 'true' }, 'incorrectauthorizationcode'],
+  ])('alerts the %s login above both forms', async (_, rc, key) => {
+    const { html, $, ctx } = await loginPage(rc);
+
+    expect(domModel(html).alerts).toEqual([{ text: ctx.rb.rbKey(`login.${key}`), className: 'alert alert-error' }]);
+    expect([$('#loginForm').length, $('#sendLogin').length]).toEqual([1, 1]);
+  });
+
+  it('alerts the strike block and renders no form', async () => {
+    const { html, $, ctx } = await loginPage({}, loginSessionBlocked);
+    const page = domModel(html);
+
+    expect(page.alerts).toEqual([{ text: ctx.rb.rbKey('login.blocked'), className: 'alert alert-error' }]);
+    expect(page.controls).toEqual([]);
+    expect($('#mura-password-panel')).toHaveLength(0);
+  });
+
+  it('sends the login mail and shows the password panel', async () => {
+    const { html, $, ctx } = await loginPage({ status: 'sendLogin', email: SEND_LOGIN_EMAIL });
+
+    expect($('#mura-login-panel').attr('style')).toBe('display:none;');
+    expect($('#mura-password-panel').attr('style')).toBeUndefined();
+    expect(domModel(html).alerts).toEqual([
+      { text: ctx.rb.rbKey('login.messagesent'), className: 'alert alert-error clear-both' },
+    ]);
+    expect(mailCalls(ctx.gateway)).toEqual([
+      expect.objectContaining({ service: 'identity', method: 'POST', json: { email: SEND_LOGIN_EMAIL, siteid: '' } }),
+    ]);
+  });
+
+  it('renders the same page whether or not an account matched', async () => {
+    const rc = { status: 'sendLogin', email: SEND_LOGIN_EMAIL };
+    const found = await renderScreenModel(cloginMainScreen, pageContext(rc));
+    const notFound = await renderScreenModel(
+      cloginMainScreen,
+      pageContext(rc, loginSessionAnonymous, { [LOGIN_MAIL_ROUTE]: sendLoginNotFound }),
+    );
+
+    expect(notFound).toEqual(found);
+  });
+
+  it('renders the loaded view state as the page body', async () => {
+    const rc = { status: 'failed' };
+    const { $ } = await loginPage(rc);
+    const ctx = pageContext(rc);
+    const direct = toString(renderLoginView(ctx, await loadLoginViewState(ctx)));
+
+    expect(fragmentModel(direct)).toEqual(fragmentModel($.html('#mura-login')));
+  });
+
+  it('renders in the shell without sidebar, header or content wrapper', async () => {
+    const { $ } = await loginPage();
+
+    expect($('nav#sidebar')).toHaveLength(0);
+    expect($('header#header-navbar')).toHaveLength(0);
+    expect($('#mura-content')).toHaveLength(0);
+    expect($('body').attr('id')).toMatch(/^clogin$/i);
+  });
+
+  it('redirects a private-pool session to the admin home without loading the form', async () => {
+    const gateway = fakeGatewayClient(routesFor());
+    const ctx = makeScreenContext({ req: adminS2Request(LOGIN_MAIN), gateway });
+    const page = await renderScreenPage(cloginMainScreen, ctx);
+
+    // FW/1 buildURL drops the home action, so main()'s redirect(action="home.redirect", path="./") is the bare path.
+    expect(page).toEqual({ kind: 'redirect', location: './' });
+    expect(gateway.calls).toEqual([]);
+  });
+});
+
+describe('cloginScreens', () => {
+  it('registers the login page, the login and logout actions and the admin home redirect', () => {
+    expect(cloginScreens).toEqual([cloginMainScreen, cloginLoginScreen, cloginLogoutScreen, homeRedirectScreen]);
+    expect(
+      cloginScreens.map(({ circuit, action, variant, owner, mode }) => ({
+        key: `admin:${circuit}.${action}`,
+        variant,
+        owner,
+        mode,
+      })),
+    ).toEqual([
+      { key: 'admin:clogin.main', variant: undefined, owner: 'identity', mode: 'page' },
+      { key: 'admin:clogin.login', variant: undefined, owner: 'identity', mode: 'page' },
+      { key: 'admin:clogin.logout', variant: undefined, owner: 'identity', mode: 'redirect' },
+      { key: 'admin:home.redirect', variant: undefined, owner: 'identity', mode: 'redirect' },
+    ]);
   });
 });

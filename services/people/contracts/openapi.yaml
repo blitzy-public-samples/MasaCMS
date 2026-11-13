@@ -3022,7 +3022,7 @@ paths:
     get:
       operationId: getProfile
       summary: Reads the token's user and the options of every Edit Profile tab, as `ceditprofile.edit` does.
-      description: A failed save's retained values and errors are returned until a save succeeds.
+      description: The stored user, so `errors` is empty and `retained` false; a failed save returns its values and errors in its own answer.
       tags: [profile]
       x-opt2-transport: service
       x-opt2-requires:
@@ -3048,7 +3048,7 @@ paths:
     post:
       operationId: updateProfile
       summary: Updates the token's own user as `ceditprofile.update` does, under the default CSRF context, ignoring `isPublic`, `s2`, `type` and `groupID`.
-      description: A photo or extended attributes answer 503 without executing, as they stay on legacy; a missing or invalid CSRF token, or validation errors, re-render the form.
+      description: A photo or extended attributes answer 503 without executing, as they stay on legacy; validation errors re-render the form.
       tags: [profile]
       x-opt2-transport: service
       x-opt2-requires:
@@ -3082,6 +3082,9 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: A missing or invalid CSRF token; nothing is written, and legacy fails on the unset user bean.
         '503':
           $ref: '#/components/responses/Unavailable'
           description: A withheld branch, or a roster write-protocol step with identity that did not complete; nothing is written on either side.
@@ -4297,7 +4300,7 @@ components:
           schema:
             $ref: '#/components/schemas/UpdateResult'
     ProfileWritten:
-      description: The outcome; a save redirects to `home.redirect`, and a missing or invalid CSRF token or validation errors leave `redirect` absent and `userBean` set for the re-rendered form.
+      description: The outcome; a save redirects to `home.redirect`, and validation errors leave `redirect` absent and `userBean` set for the re-rendered form.
       headers:
         X-Opt2-Write-Position:
           $ref: '#/components/headers/XOpt2WritePosition'

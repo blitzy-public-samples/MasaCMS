@@ -35,7 +35,7 @@ import {
   type RosterOperationCursor,
   type TrashInput,
 } from '../../src/repo/repository.js';
-import { FAVORITE, PEOPLE_UNITS, PERSON, type PersonRow } from '../../src/repo/tables.js';
+import { FAVORITE, FINISH_PENDING_ERROR, PEOPLE_UNITS, PERSON, type PersonRow } from '../../src/repo/tables.js';
 
 const NOW = new Date(2026, 5, 30, 10, 0, 0, 0);
 const LATER = new Date(2026, 5, 30, 11, 0, 0, 0);
@@ -816,8 +816,12 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
         repo.setRosterOperationState(tx, op.operation_id, { state: 'people-committed', beforeImage: '{"a":1}', identityXid: '42' }),
       );
       expect(committed).toMatchObject({ state: 'people-committed', before_image: '{"a":1}', identity_xid: '42', error: null, updated_at: LATER });
+      const afterLater = new Date(LATER.getTime() + 1);
+      await inTenant((tx) => repo.setRosterOperationState(tx, op.operation_id, { state: 'done', error: FINISH_PENDING_ERROR }));
+      expect((await inTenant((tx) => repo.listStaleRosterOperations(tx, afterLater))).map((row) => row.operation_id)).toContain(op.operation_id);
       const done = await inTenant((tx) => repo.setRosterOperationState(tx, op.operation_id, { state: 'done', error: null }));
       expect(done).toMatchObject({ state: 'done', before_image: '{"a":1}' });
+      expect((await inTenant((tx) => repo.listStaleRosterOperations(tx, afterLater))).map((row) => row.operation_id)).not.toContain(op.operation_id);
       expect(await inTenant((tx) => repo.findOpenRosterOperation(tx, userId))).toBeNull();
       expect(await inTenant((tx) => repo.findRosterOperation(tx, op.operation_id))).toMatchObject({ state: 'done' });
       expect(await inTenant((tx) => repo.insertRosterOperation(tx, { kind: 'admin-update', userId, payload: '{}' }))).toMatchObject({ state: 'started' });

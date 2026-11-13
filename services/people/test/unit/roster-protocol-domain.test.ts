@@ -134,6 +134,9 @@ function identityDouble(accounts: Map<string, AccountView>, behaviour: DoubleBeh
     siteGroups: unused('siteGroups'),
     userGroups: unused('userGroups'),
     actingUser: unused('actingUser'),
+    adminSessionState: unused('adminSessionState'),
+    saveAdminSessionState: unused('saveAdminSessionState'),
+    sessionSites: unused('sessionSites'),
   };
   return { client, calls, prepared, commits, states };
 }
@@ -400,6 +403,7 @@ describe.skipIf(!available)('roster protocol against PostgreSQL', () => {
     const result = await runRosterOperation(depsFor(identity.client), input);
     expect(result).toMatchObject({ ok: true, userId, values: { fname: 'Kai', siteid: SITE, ispublic: 0 } });
     expect(identity.prepared[0]).toMatchObject({ kind: 'update', siteId: SITE, updateGroups: false, account: { isPublic: 0, S2: 0 } });
+    expect(identity.calls).not.toContain('memberships');
     expect(await snapshot(userId)).toMatchObject({ fname: 'Kai', interests: [CAT.one], tags: ['old'] });
   });
 

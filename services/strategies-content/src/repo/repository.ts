@@ -1970,6 +1970,19 @@ export function createContentRepository({ clock = systemClock, schema = SCHEMA }
       return platform.upsert<CommenterRow>(tx, COMMENTER.table, { ...row, commenterid: row.commenterid ?? cfUuid() }, ctx);
     },
 
+    /** commenter.loadBy(commenterID | remoteID): the first matching commenter, or null. */
+    async findCommenter(tx: TenantTx, lookup: { commenterId: string } | { remoteId: string }): Promise<CommenterRow | null> {
+      const p = new SqlParams(1);
+      const where = 'commenterId' in lookup ? idEq(p, 'commenterid', lookup.commenterId) : ciEq(p, 'remoteid', lookup.remoteId);
+      const rows = await select<CommenterRow>(
+        tx,
+        [COMMENTER],
+        `SELECT * FROM ${name(COMMENTER)} WHERE tenant_id = $1 AND ${where} ORDER BY commenterid LIMIT 1`,
+        [tx.tenantId, ...p.values],
+      );
+      return rows[0] ?? null;
+    },
+
     /** contentCommentBean.getQuery: one comment by id or remote id, with legacy's self-referencing `kids` count. */
     async findComment(tx: TenantTx, lookup: { commentId: string } | { remoteId: string }): Promise<CommentFindRow | null> {
       const p = new SqlParams(1);

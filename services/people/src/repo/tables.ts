@@ -472,6 +472,8 @@ export type RosterState = (typeof ROSTER_STATES)[number];
 export const OPEN_ROSTER_STATES = ['started', 'people-committed', 'halted'] as const satisfies readonly RosterState[];
 /** Open states the outbox-sweep recovery resolves; `halted` waits for an operator. */
 export const RECOVERABLE_ROSTER_STATES = ['started', 'people-committed'] as const satisfies readonly RosterState[];
+/** `roster_operation.error` of a `done` operation whose identity `:finish` is not yet acknowledged; recovery repeats the finish. */
+export const FINISH_PENDING_ERROR = 'finish-pending';
 
 // Row shapes are type aliases, not interfaces, so they stay assignable to the repository's Record<string, unknown> rows.
 

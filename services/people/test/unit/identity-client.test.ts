@@ -474,3 +474,55 @@ describe('account and site-group reads', () => {
     expect(store.writePositions.get('identity')).toBe('7');
   });
 });
+
+describe('admin session reads and writes', () => {
+  const state = {
+    paramArray: [{ Field: 'tusers.lname^varchar', Relationship: 'and', Criteria: 'Doe', Condition: 'Contains' }],
+    paramCount: 1,
+    paramCircuit: 'cUsers',
+    inActive: '0',
+    membersOnly: 'false',
+    visitorStatus: 'All',
+    mura: { editBean: { userBean: {}, errors: {} } },
+  };
+  const sites = { sites: [{ siteID: 'default', site: 'Default' }, { siteID: 'tenant-a', site: 'Tenant A' }] };
+
+  it("reads the forwarded session's admin state", async () => {
+    const reply = { status: 200, body: state };
+    const { identity, requests } = identityWith(reply);
+    await expect(identity.adminSessionState()).resolves.toEqual(state);
+    expect(requests).toEqual([{ service: 'identity', method: 'GET', path: '/v1/sessions/current/admin-state' }]);
+    assertIdentityReply(requests[0], reply);
+  });
+
+  it('stores the given keys as JSON and returns the merged values, recording the write position', async () => {
+    const saved = { mura: {} };
+    const reply = { status: 200, body: { ...state, ...saved }, headers: { 'x-opt2-write-position': 'identity=31' } };
+    const { identity, requests } = identityWith(reply);
+    const { result, store } = await inContext(() => identity.saveAdminSessionState(saved));
+    expect(result).toEqual({ ...state, mura: {} });
+    expect(requests).toEqual([{ service: 'identity', method: 'POST', path: '/v1/sessions/current/admin-state', json: saved }]);
+    assertIdentityRequestBody(requests[0]);
+    assertIdentityReply(requests[0], reply);
+    expect(store.writePositions.get('identity')).toBe('31');
+  });
+
+  it("lists the session's site selector in identity's order", async () => {
+    const reply = { status: 200, body: sites };
+    const { identity, requests } = identityWith(reply);
+    await expect(identity.sessionSites()).resolves.toEqual(sites.sites);
+    expect(requests).toEqual([{ service: 'identity', method: 'GET', path: '/v1/sessions/current/sites' }]);
+    assertIdentityReply(requests[0], reply);
+  });
+
+  it.each([
+    ['adminSessionState', 'getAdminSessionState', (identity: IdentityClient) => identity.adminSessionState()],
+    ['saveAdminSessionState', 'saveAdminSessionState', (identity: IdentityClient) => identity.saveAdminSessionState({ mura: {} })],
+    ['sessionSites', 'listCurrentSessionSites', (identity: IdentityClient) => identity.sessionSites()],
+  ])('%s fails closed when identity answers 401', async (_method, operationId, call) => {
+    const { identity } = identityWith({ status: 401 });
+    const failure = call(identity);
+    await expect(failure).rejects.toBeInstanceOf(ServiceUnavailableError);
+    await expect(failure).rejects.toThrow(`${operationId} HTTP_401`);
+  });
+});

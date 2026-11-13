@@ -17,6 +17,7 @@ import {
   EXTEND_SET,
   EXTEND_SUBTYPE,
   FAVORITE,
+  FINISH_PENDING_ERROR,
   GROUP_NAME,
   INTEREST,
   OPEN_ROSTER_STATES,
@@ -473,7 +474,7 @@ export interface PeopleRepository extends Repository {
   findRosterOperation(tx: TenantTx, operationId: string): Promise<RosterOperationRow | null>;
   /** The user's open (started, people-committed or halted) operation; null when none. */
   findOpenRosterOperation(tx: TenantTx, userId: string): Promise<RosterOperationRow | null>;
-  /** Started or people-committed operations last updated before `olderThan`, oldest first. */
+  /** Started or people-committed operations, and done ones whose identity finish is pending, last updated before `olderThan`, oldest first, locked FOR UPDATE SKIP LOCKED. */
   listStaleRosterOperations(tx: TenantTx, olderThan: Date): Promise<RosterOperationRow[]>;
   /** One keyset page of `listStaleRosterOperations`. */
   pageStaleRosterOperations(
@@ -708,9 +709,11 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
   const openRosterSql =
     `SELECT * FROM ${rosterOperation} WHERE tenant_id = $1 AND ${idEquals('user_id', '$2')} AND state = ANY($3::text[])` +
     ' ORDER BY started_at, operation_id LIMIT 1';
+  // SKIP LOCKED leaves a row another sweep or a request holds to the next sweep.
   const staleRosterSql =
-    `SELECT * FROM ${rosterOperation} WHERE tenant_id = $1 AND state = ANY($2::text[]) AND updated_at < $3` +
-    ' AND ($4::timestamp IS NULL OR (updated_at, operation_id) > ($4::timestamp, $5::bpchar)) ORDER BY updated_at, operation_id LIMIT $6';
+    `SELECT * FROM ${rosterOperation} WHERE tenant_id = $1 AND (state = ANY($2::text[]) OR (state = 'done' AND error = $7)) AND updated_at < $3` +
+    ' AND ($4::timestamp IS NULL OR (updated_at, operation_id) > ($4::timestamp, $5::bpchar)) ORDER BY updated_at, operation_id LIMIT $6' +
+    ' FOR UPDATE SKIP LOCKED';
   const groupNamesSql =
     `SELECT * FROM ${groupName} WHERE tenant_id = $1 AND ($2::bpchar[] IS NULL OR ${idIn('group_id', '$2')})` +
     ' AND ($3::bpchar IS NULL OR group_id > $3::bpchar) ORDER BY group_id LIMIT $4';
@@ -1198,7 +1201,15 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     after: RosterOperationCursor | null | undefined,
     take: number,
   ): Promise<Page<RosterOperationRow, RosterOperationCursor>> {
-    const params = [tx.tenantId, [...RECOVERABLE_ROSTER_STATES], olderThan, after?.updatedAt ?? null, after?.operationId ?? null, take + 1];
+    const params = [
+      tx.tenantId,
+      [...RECOVERABLE_ROSTER_STATES],
+      olderThan,
+      after?.updatedAt ?? null,
+      after?.operationId ?? null,
+      take + 1,
+      FINISH_PENDING_ERROR,
+    ];
     const found = await select<RosterOperationRow>(tx, staleRosterSql, params);
     return pageOf(found, take, (row) => ({ updatedAt: row.updated_at, operationId: row.operation_id }));
   }

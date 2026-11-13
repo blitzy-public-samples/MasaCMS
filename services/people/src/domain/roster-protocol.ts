@@ -325,8 +325,11 @@ interface VoidedSave {
   values: UserValues;
 }
 
-/** People's rows of `userId` plus identity's account and memberships; null when no person row exists. */
-async function loadStoredUser(deps: RosterDeps, tenantId: string, userId: string): Promise<StoredUser | null> {
+/**
+ * People's rows of `userId` plus identity's account and, when `withMemberships`, its memberships; null when no person
+ * row exists.
+ */
+async function loadStoredUser(deps: RosterDeps, tenantId: string, userId: string, withMemberships: boolean): Promise<StoredUser | null> {
   const { repo } = deps;
   const config = deps.extendConfig ?? EXTEND_CONFIG_DEFAULTS;
   const local = await withTenant(deps.db, tenantId, async (tx) => {
@@ -340,7 +343,7 @@ async function loadStoredUser(deps: RosterDeps, tenantId: string, userId: string
   if (local === null) return null;
   const account = await deps.identity.readAccount(local.person.userid);
   if (account === undefined) throw personUnknown(userId);
-  const groupIds = await deps.identity.membershipGroupIds(local.person.userid);
+  const groupIds = withMemberships ? await deps.identity.membershipGroupIds(local.person.userid) : [];
   return { ...local, account, groupIds };
 }
 
@@ -364,7 +367,9 @@ async function shapeSave(deps: RosterDeps, input: RosterInput): Promise<ShapedSa
   let stored: StoredUser | null = null;
   if (operation === 'update') {
     await awaitPersonOpen(deps.db, tenantId, userId, { clock: deps.clock, sleep });
-    stored = await loadStoredUser(deps, tenantId, userId);
+    // A profile save writes no memberships (updateGroups=false), and identity lists them only to cUsers callers, which
+    // a profile's own user need not be.
+    stored = await loadStoredUser(deps, tenantId, userId, input.kind !== 'profile-update');
     if (stored === null) {
       // userManager.save creates a user no tusers row holds; the admin and profile updates read a stored one.
       if (input.kind !== 'json-save') throw personUnknown(userId);

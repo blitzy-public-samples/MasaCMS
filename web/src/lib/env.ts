@@ -58,6 +58,8 @@ export interface LegacySettings {
   readonly indexFileInURLS: boolean;
   /** `legacyIndexFileLocation`: index-file URL stems sit under `<siteAssetPath>/<siteid>`. */
   readonly legacyIndexFileLocation: boolean;
+  /** `keepMetaKeywords`: the content editor shows the meta keywords field. */
+  readonly keepMetaKeywords: boolean;
   /** configBean `fileAssetPath`: when set, site file asset URLs are `<fileAssetPath>/<filePoolID>`. */
   readonly fileAssetPath: string;
   /** configBean `corepath`: when set, the core URL on an admin domain. */
@@ -201,6 +203,8 @@ const SETTING_RULES: { readonly [K in keyof RuledSettings]: SettingRule<RuledSet
   indexFileInURLS: { key: 'indexfileinurls', template: 'true', fallback: true, apply: cfBoolean },
   // Not a configBean property; contentServer reads it with defaultValue=false.
   legacyIndexFileLocation: { key: 'legacyindexfilelocation', fallback: false, apply: cfBoolean },
+  // Not a configBean property; the content editor reads it with defaultValue=false.
+  keepMetaKeywords: { key: 'keepmetakeywords', fallback: false, apply: cfBoolean },
   fileAssetPath: { key: 'fileassetpath', fallback: '', apply: asIs },
   corePath: { key: 'corepath', fallback: '', apply: asIs },
   pluginsPath: { key: 'pluginspath', fallback: '', apply: asIs },

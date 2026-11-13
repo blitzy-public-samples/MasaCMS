@@ -1,0 +1,126 @@
+
+<div class="mura-panel panel">
+	<div class="mura-panel-heading" role="tab" id="heading-summary">
+		<h4 class="mura-panel-title">
+			<a class="collapse collapsed" role="button" data-toggle="collapse" data-parent="#content-panels" href="#panel-summary" aria-expanded="true" aria-controls="panel-summary">Summary</a>
+		</h4>
+	</div>
+	<div id="panel-summary" class="panel-collapse collapse" role="tabpanel" aria-labelledby="heading-summary" aria-expanded="false" style="height: 0px;">
+		<div class="mura-panel-body">
+
+
+			<span id="extendset-container-tabsummarytop" class="extendset-container"></span>
+
+			
+			<div class="help-block" id="mura-content-metadata">
+				
+					<span class="meta-label">Update: <span>11/317/2026 4:22 AM</span></span>
+					<span class="meta-label">Status:
+						<span>
+							Draft 
+						</span>
+					</span>
+
+					
+					<span class="meta-label meta-label-wide">
+				      Content ID: 
+				      Not Available
+				    </span>
+
+					<div class="clearfix"></div>
+		  		</div> 
+
+				
+				
+					<div class="mura-control-group summaryContainer" style="display:none;">
+				      	<label>
+					    	<span data-toggle="popover" title="" data-placement="right"
+					    	data-content="Create&#x20;a&#x20;summary&#x20;for&#x20;the&#x20;content.&#x20;The&#x20;summary&#x20;will&#x20;display&#x20;under&#x20;the&#x20;title&#x20;when&#x20;used&#x20;in&#x20;a&#x20;Masa&#x20;CMS&#x20;folder."
+					    	data-original-title="Summary">
+					    		Summary <i class="mi-question-circle"></i></span>
+			      		</label>
+				      	<div id="editSummary" class="summaryContainer" style="display:none;">
+						
+							<textarea name="summary" id="summary" cols="96" rows="10"></textarea>
+						
+						</div>
+					</div>
+					<script>
+						hideSummaryEditor=function(){
+							if(typeof CKEDITOR.instances.summary != 'undefined'){
+								CKEDITOR.instances.summary.updateElement();
+								CKEDITOR.instances.summary.destroy();
+							}
+							jQuery(".summaryContainer").hide();
+							summaryLoaded=true;
+						}
+
+						showSummaryEditor=function(){
+							if(typeof CKEDITOR.instances.summary == 'undefined'){
+								jQuery(".summaryContainer").show();
+								jQuery('#summary').ckeditor(
+					     		{ toolbar:'Summary',
+					     			height:'150',
+					     		  	customConfig : 'config.js.cfm'
+								},
+								function(editorInstance){
+									htmlEditorOnComplete(editorInstance);
+									if (!hasBody){
+										showPreview();
+									}
+								}
+					     	);
+							}
+						}
+						
+						showSummaryEditor();
+						
+					</script>
+				
+					
+					<div class="mura-control-group">
+					  <label>Credits</label>
+					  <input type="text" id="credits" name="credits" value=""  maxlength="255">
+					</div>
+
+					
+					
+						<div class="mura-control-group">
+							<label>Meta Description</label>
+							<textarea name="metadesc" id="metadesc"></textarea>
+						</div>
+						
+						<div class="mura-control-group">
+							<label>Canonical URL</label>
+							<input type="text" id="canonicalURL" name="canonicalURL" value=""  maxlength="255">
+						</div>
+					
+
+				
+				<div class="mura-control-group">
+					<label>
+						
+						Notes
+					</label>
+					<textarea name="notes" rows="3" id="abstract"></textarea>
+				</div> 
+
+
+				<div class="mura-control-group extendedattributes-group" id="extendedattributes-container-summary">
+					<div class="bigui" id="bigui__summary" data-label="Manage Extended Attributes">
+						<div class="bigui__title">Manage Extended Attributes</div>
+						<div class="bigui__controls">
+							<span id="extendset-container-tabextendedattributestop"></span>
+							<span id="extendset-container-summary" class="extendset-container extendedattributes-body" data-controlparent="extendedattributes-container-summary"></span>
+							<span id="extendset-container-tabextendedattributesbottom"></span>
+						</div>
+					</div>
+					
+				</div>
+			<span id="extendset-container-tabsummarybottom" class="extendset-container"></span>
+		</div>
+	</div>
+</div> 
+
+
+

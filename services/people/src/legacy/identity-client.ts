@@ -26,6 +26,10 @@ export type CommitOutcome = Schemas['AccountCommitResult'];
 export type LegacyErrors = Schemas['LegacyErrors'];
 /** The site's system and member groups and the user's memberships, for the Group Memberships tab of `cusers.editUser`. */
 export type UserMemberships = Schemas['UserMemberships'];
+/** Admin session-scope values of a session under their legacy `session` names, such as the advanced-search criteria. */
+export type AdminSessionState = Schemas['AdminSessionState'];
+/** One site of a session's site selector. */
+export type SessionSite = Schemas['SessionSites']['sites'][number];
 
 /** Prepare's answer: the prepared operation, or identity's legacy validation errors unchanged. */
 export type PrepareOutcome = ({ ok: true } & AccountOperation) | { ok: false; errors: LegacyErrors };
@@ -106,6 +110,12 @@ export interface IdentityClient {
   userGroups(siteId: string, isPublic: number): Promise<UserGroupRow[]>;
   /** `getCurrentSession`: the forwarded token's login-time session user when it is `sessionId` and logged in. */
   actingUser(sessionId: string): Promise<ActingUser | undefined>;
+  /** `getAdminSessionState`: the admin session values of the forwarded token's session; `{}` when it stored none. */
+  adminSessionState(): Promise<AdminSessionState>;
+  /** `saveAdminSessionState`: stores each given key whole in the forwarded token's session and returns the merged values. */
+  saveAdminSessionState(state: AdminSessionState): Promise<AdminSessionState>;
+  /** `listCurrentSessionSites`: the sites of the forwarded token's site selector, in identity's order. */
+  sessionSites(): Promise<SessionSite[]>;
 }
 
 /** Contract operation id, method and path template of one identity call. */
@@ -130,6 +140,9 @@ const OPS = {
   siteGroups: { operationId: 'listSiteGroups', method: 'GET', path: '/internal/v1/groups' },
   userGroups: { operationId: 'listGroups', method: 'GET', path: '/v1/groups' },
   currentSession: { operationId: 'getCurrentSession', method: 'GET', path: '/v1/sessions/current' },
+  adminState: { operationId: 'getAdminSessionState', method: 'GET', path: '/v1/sessions/current/admin-state' },
+  saveAdminState: { operationId: 'saveAdminSessionState', method: 'POST', path: '/v1/sessions/current/admin-state' },
+  sessionSites: { operationId: 'listCurrentSessionSites', method: 'GET', path: '/v1/sessions/current/sites' },
 } as const satisfies Record<string, IdentityOperation>;
 
 const HTTP_OK = 200;
@@ -310,6 +323,21 @@ export function createIdentityClient(client: ServiceClient): IdentityClient {
       const current = okBody(op, await send<Schemas['CurrentSession']>(op, op.path));
       if (current.sessionId !== sessionId || !current.user.isLoggedIn) return undefined;
       return { userId: current.user.userID, fname: current.user.fname ?? '', lname: current.user.lname ?? '' };
+    },
+
+    async adminSessionState() {
+      const op = OPS.adminState;
+      return okBody(op, await send<AdminSessionState>(op, op.path));
+    },
+
+    async saveAdminSessionState(state) {
+      const op = OPS.saveAdminState;
+      return okBody(op, await send<AdminSessionState>(op, op.path, { json: state }));
+    },
+
+    async sessionSites() {
+      const op = OPS.sessionSites;
+      return okBody(op, await send<Schemas['SessionSites']>(op, op.path)).sites;
     },
   };
 }
