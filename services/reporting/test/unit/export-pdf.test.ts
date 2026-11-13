@@ -116,7 +116,7 @@ function partOrder(pages: string[]): string[] {
 /** The first chunk of a paused `body`, once its buffer has stopped filling. */
 async function firstChunk(body: Readable): Promise<unknown> {
   const chunk: unknown = await new Promise((resolve) => body.once('readable', () => resolve(body.read())));
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  while (body.readableLength < body.readableHighWaterMark) await new Promise((resolve) => setTimeout(resolve, 5));
   return chunk;
 }
 
@@ -240,8 +240,8 @@ describe('renderPdf spill', () => {
     const { body } = await render(tableOf('Long', ['code', 'label'], numberedRows(12_000)));
     const closed = closeOf(body);
     await firstChunk(body);
-    const [laidOut] = spills.readings[0] ?? [];
     expect(await readdir(parent)).toHaveLength(1);
+    const [laidOut] = spills.readings[0] ?? [];
     body.destroy();
     await closed;
     expect(await readdir(parent)).toEqual([]);

@@ -23,7 +23,23 @@ import {
   type TokenRoleSite,
   type TokenRoles,
 } from '../../src/domain/roles.js';
-import type { CredentialRow, LoginSnapshot, LoginStateRow, PersonContactRow, UserAccountRow } from '../../src/repo/tables.js';
+import type { LoginSnapshot, UserAccountRow } from '../../src/repo/tables.js';
+import {
+  ADMIN_S2,
+  EDITOR,
+  MEMBER_B,
+  POOLED_MEMBER,
+  SITE_ADMIN_A,
+  SYNTHETIC_MEMBERS,
+  accountRow,
+  credentialRow,
+  groupRow,
+  loginSnapshotFixture,
+  loginStateRow,
+  membershipGroupOf,
+  personContactRow,
+  type TestActor,
+} from '../helpers/rows.js';
 
 const PIN_SHA = '696383140578f8dea3ece26f80cd7bfb370ddf0f';
 const USER_ID = 'A1B2C3D4-E5F6-4A7B-8C9D0E1F2A3B4C5D';
@@ -43,28 +59,10 @@ const PASSWORD_CREATED = new Date(2026, 2, 2, 8, 4, 9, 999);
 
 const ROLE_MAP = await loadRoleMap();
 
-function accountRow(overrides: Partial<UserAccountRow> = {}): UserAccountRow {
-  return {
-    tenant_id: TENANT_A.tenantId, userid: USER_ID, username: 'site_admin', type: 2, admin: 0, s2: 0, perm: 0, inactive: 0,
-    ispublic: 0, siteid: TENANT_A.siteId, remoteid: '', tablist: '', opt2_state: 'active', ...overrides,
-  };
-}
-
-function credentialRow(overrides: Partial<CredentialRow> = {}): CredentialRow {
-  return { tenant_id: TENANT_A.tenantId, userid: USER_ID, password: PASSWORD_HASH, passwordcreated: PASSWORD_CREATED, ...overrides };
-}
-
-function loginStateRow(lastlogin: Date | null): LoginStateRow {
-  return { tenant_id: TENANT_A.tenantId, userid: USER_ID, lastlogin };
-}
-
-function contactRow(overrides: Partial<PersonContactRow> = {}): PersonContactRow {
-  return {
-    tenant_id: TENANT_A.tenantId, user_id: USER_ID, site_id: TENANT_A.siteId, email: 'site.admin@tenant-a.example.com', fname: 'Site',
-    lname: 'Admin', company: 'Tenant A Programs', subtype: 'Default', aggregate_version: '1', updated_at: new Date(2026, 5, 1, 9, 0, 0),
-    ...overrides,
-  };
-}
+const SITE_ADMIN_ACCOUNT: Partial<UserAccountRow> = { userid: USER_ID, username: 'site_admin' };
+const SITE_ADMIN_CONTACT = {
+  user_id: USER_ID, email: 'site.admin@tenant-a.example.com', fname: 'Site', lname: 'Admin', company: 'Tenant A Programs',
+} as const;
 
 function group(groupId: string, groupName: string | null, siteId: string | null, isPublic: number | null): MembershipGroup {
   return { groupId, groupName, siteId, isPublic };
@@ -79,10 +77,10 @@ const FINANCE_A = group(FINANCE_GROUP_ID, Roles.financeApprover, TENANT_A.siteId
 
 function loginRows(overrides: Partial<LoginRows> = {}): LoginRows {
   return {
-    account: accountRow(),
-    credential: credentialRow(),
-    loginState: loginStateRow(LAST_LOGIN),
-    contact: contactRow(),
+    account: accountRow(SITE_ADMIN_ACCOUNT),
+    credential: credentialRow({ userid: USER_ID, password: PASSWORD_HASH, passwordcreated: PASSWORD_CREATED }),
+    loginState: loginStateRow({ userid: USER_ID, lastlogin: LAST_LOGIN }),
+    contact: personContactRow(SITE_ADMIN_CONTACT),
     groups: [ADMIN_A, EDITORS_A],
     ...overrides,
   };
@@ -111,6 +109,19 @@ function snapshotFor(account: Partial<UserAccountRow>, groups: readonly Membersh
   return { roleList: buildLegacyRoleList(accountRow(account), groups) };
 }
 
+/** The login rows the repository reads for `actor`. */
+function loginRowsOf(actor: TestActor): LoginRows {
+  const { account, credential, loginState, contact } = actor;
+  return { account, credential, loginState, contact, groups: actor.groups.map(membershipGroupOf) };
+}
+
+/** The seeded tenant-a member of `role`'s role-map group. */
+function syntheticMember(role: string): TestActor {
+  const actor = SYNTHETIC_MEMBERS[role];
+  if (actor === undefined) throw new Error(`The row helpers seed no member for ${role}`);
+  return actor;
+}
+
 function grant(moduleId: string, memberGroup: MembershipGroup): ModuleGroupGrant {
   return { moduleId, groupName: memberGroup.groupName, isPublic: memberGroup.isPublic };
 }
@@ -130,7 +141,7 @@ describe('buildLegacyRoleList [legacy: core/mura/user/userUtility.cfc:315-336]',
   it.each([
     {
       when: 'a private user lists each group as name;siteid;isPublic, then the S2IsPrivate pair and the username entry',
-      account: accountRow(),
+      account: accountRow(SITE_ADMIN_ACCOUNT),
       groups: [ADMIN_A, EDITORS_A],
       expected: 'Admin;tenant-a;0,Editors;tenant-a;0,S2IsPrivate;tenant-a,S2IsPrivate,site_admin;username;tenant-a',
     },
@@ -148,7 +159,7 @@ describe('buildLegacyRoleList [legacy: core/mura/user/userUtility.cfc:315-336]',
     },
     {
       when: 'a user in no group starts with the pool pair',
-      account: accountRow(),
+      account: accountRow(SITE_ADMIN_ACCOUNT),
       groups: [],
       expected: 'S2IsPrivate;tenant-a,S2IsPrivate,site_admin;username;tenant-a',
     },
@@ -206,10 +217,10 @@ describe('buildUserStruct [legacy: core/mura/user/userUtility.cfc:765-783]', () 
 
   it('renders NULL person_contact, credential, login-state and account columns as empty text', () => {
     const rows = loginRows({
-      account: accountRow({ remoteid: null }),
+      account: accountRow({ ...SITE_ADMIN_ACCOUNT, remoteid: null }),
       credential: credentialRow({ password: null, passwordcreated: null }),
-      loginState: loginStateRow(null),
-      contact: contactRow({ fname: null, lname: null, email: null, company: null, subtype: null }),
+      loginState: loginStateRow({ lastlogin: null }),
+      contact: personContactRow({ fname: null, lname: null, email: null, company: null, subtype: null }),
     });
     expect(buildUserStruct(rows)).toMatchObject({
       subtype: '', password: '', fname: '', lname: '', email: '', company: '', remoteID: '', lastlogin: '', passwordCreated: '',
@@ -259,6 +270,23 @@ describe('buildLoginSnapshot and userStructOf', () => {
   ])('hydrates the same session.mura struct the login built for $when', ({ rows }) => {
     expect(userStructOf(buildLoginSnapshot(rows))).toEqual(buildUserStruct(rows));
   });
+
+  it.each([
+    { actor: ADMIN_S2, lastlogin: '2026-06-30T12:00:00.000', roleList: 'S2IsPrivate;default,S2IsPrivate,S2,admin;username;default' },
+    { actor: EDITOR, lastlogin: null, roleList: 'Editor;tenant-a;0,S2IsPrivate;tenant-a,S2IsPrivate,qa_editor;username;tenant-a' },
+    { actor: SITE_ADMIN_A, lastlogin: null, roleList: 'Admin;tenant-a;0,S2IsPrivate;tenant-a,S2IsPrivate,site_admin_a;username;tenant-a' },
+    { actor: POOLED_MEMBER, lastlogin: null, roleList: 'S2IsPublic;umbrella,S2IsPublic,pooled_member;username;umbrella' },
+    { actor: MEMBER_B, lastlogin: null, roleList: 'S2IsPublic;tenant-b,S2IsPublic,member_b;username;tenant-b' },
+  ])('builds the $actor.key snapshot loginSnapshotFixture holds, from its rows as read before the LastLogin update [legacy: core/mura/user/userUtility.cfc:315-380]', ({ actor, lastlogin, roleList }) => {
+    const snapshot = buildLoginSnapshot(loginRowsOf(actor));
+    expect(snapshot).toEqual(loginSnapshotFixture({ actor }));
+    expect(snapshot).toMatchObject({
+      userid: actor.account.userid, username: actor.account.username, siteid: actor.siteId, password: actor.credential.password,
+      fname: actor.contact.fname, lname: actor.contact.lname, email: actor.contact.email, company: '', lastlogin, roleList,
+      membershipIds: [...actor.groups.map((memberGroup) => memberGroup.userid), actor.account.userid].join(','),
+    });
+  });
+
 
   it('reads NULL snapshot columns as empty text', () => {
     const snapshot: LoginSnapshot = {
@@ -336,16 +364,16 @@ describe('loadRoleMap and parseRoleMap', () => {
 });
 
 describe('tokenRolesFor [legacy: core/mura/permission.cfc:312,338-344,676,689-691]', () => {
-  it.each(REGISTERED_SITES.map((site) => ({ site })))('grants s2 to an S2 user on registered site $site.siteId', ({ site }) => {
-    expect(tokenRolesFor(snapshotFor(S2_ACCOUNT), site, NO_GRANTS)).toEqual(access(Roles.s2));
+  it.each(REGISTERED_SITES.map((site) => ({ site })))('grants the S2 admin s2 and site access on registered site $site.siteId', ({ site }) => {
+    expect(tokenRolesFor(loginSnapshotFixture({ actor: ADMIN_S2 }), site, NO_GRANTS)).toEqual(access(Roles.s2));
   });
 
   it.each([
     { when: 'the site whose private pool holds the Admin group', site: SITE_A, expected: access(Roles.siteAdmin, Roles.systemUser) },
     { when: 'a site with its own private pool', site: SITE_B, expected: NO_ACCESS },
     { when: 'the pool site', site: SITE_UMBRELLA, expected: NO_ACCESS },
-  ])('grants a private-pool Admin member site-admin only on $when', ({ site, expected }) => {
-    expect(tokenRolesFor(snapshotFor(PRIVATE_A_ACCOUNT, [ADMIN_A]), site, NO_GRANTS)).toEqual(expected);
+  ])('grants the tenant-a Admin member site-admin only on $when', ({ site, expected }) => {
+    expect(tokenRolesFor(loginSnapshotFixture({ actor: SITE_ADMIN_A }), site, NO_GRANTS)).toEqual(expected);
   });
 
   it('matches the Admin group name exactly', () => {
@@ -388,21 +416,36 @@ describe('tokenRolesFor [legacy: core/mura/permission.cfc:312,338-344,676,689-69
   });
 
   it.each([
-    { when: 'a tenant-a private-pool user on tenant-a', account: PRIVATE_A_ACCOUNT, site: SITE_A, expected: access(Roles.systemUser) },
+    { when: 'the tenant-a editor on tenant-a', snapshot: loginSnapshotFixture({ actor: EDITOR }), site: SITE_A, expected: access(Roles.systemUser) },
     {
       when: 'a private-pool user whose site id differs in case',
-      account: { username: 'editor_a', siteid: 'TENANT-A' }, site: SITE_A, expected: access(Roles.systemUser),
+      snapshot: snapshotFor({ username: 'editor_a', siteid: 'TENANT-A' }), site: SITE_A, expected: access(Roles.systemUser),
     },
-    { when: 'a tenant-a private-pool user on tenant-b', account: PRIVATE_A_ACCOUNT, site: SITE_B, expected: NO_ACCESS },
+    { when: 'the tenant-a editor on tenant-b', snapshot: loginSnapshotFixture({ actor: EDITOR }), site: SITE_B, expected: NO_ACCESS },
     {
-      when: 'an umbrella public-pool user on tenant-a, whose public pool is umbrella',
-      account: PUBLIC_UMBRELLA_ACCOUNT, site: SITE_A, expected: access(Roles.member),
+      when: 'the umbrella pooled member on tenant-a, whose public pool is umbrella',
+      snapshot: loginSnapshotFixture({ actor: POOLED_MEMBER }), site: SITE_A, expected: access(Roles.member),
     },
-    { when: 'an umbrella public-pool user on umbrella', account: PUBLIC_UMBRELLA_ACCOUNT, site: SITE_UMBRELLA, expected: access(Roles.member) },
-    { when: 'an umbrella public-pool user on tenant-b', account: PUBLIC_UMBRELLA_ACCOUNT, site: SITE_B, expected: NO_ACCESS },
-  ])('grants pool roles to $when', ({ account, site, expected }) => {
-    expect(tokenRolesFor(snapshotFor(account), site, NO_GRANTS)).toEqual(expected);
+    {
+      when: 'the umbrella pooled member on umbrella',
+      snapshot: loginSnapshotFixture({ actor: POOLED_MEMBER }), site: SITE_UMBRELLA, expected: access(Roles.member),
+    },
+    { when: 'the umbrella pooled member on tenant-b', snapshot: loginSnapshotFixture({ actor: POOLED_MEMBER }), site: SITE_B, expected: NO_ACCESS },
+    { when: 'the tenant-b member on tenant-b', snapshot: loginSnapshotFixture({ actor: MEMBER_B }), site: SITE_B, expected: access(Roles.member) },
+    { when: 'the tenant-b member on tenant-a, whose public pool is umbrella', snapshot: loginSnapshotFixture({ actor: MEMBER_B }), site: SITE_A, expected: NO_ACCESS },
+  ])('grants pool roles to $when', ({ snapshot, site, expected }) => {
+    expect(tokenRolesFor(snapshot, site, NO_GRANTS)).toEqual(expected);
   });
+
+  it.each(ROLE_MAP.groups.map(({ groupName, role }) => ({ groupName, role, actor: syntheticMember(role) })))(
+    'grants $role to the member of group $groupName only where that group is in the site private pool',
+    ({ groupName, role, actor }) => {
+      expect(tokenRolesFor(loginSnapshotFixture({ actor }), SITE_A, NO_GRANTS)).toEqual(access(Roles.systemUser, role));
+      expect(tokenRolesFor(loginSnapshotFixture({ actor }), SITE_B, NO_GRANTS)).toEqual(NO_ACCESS);
+      const tenantBGroup = groupRow({ tenant_id: TENANT_B.tenantId, siteid: TENANT_B.siteId, groupname: groupName });
+      expect(tokenRolesFor(loginSnapshotFixture({ actor, groups: [tenantBGroup] }), SITE_A, NO_GRANTS)).toEqual(access(Roles.systemUser));
+    },
+  );
 
   it.each([
     {
